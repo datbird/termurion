@@ -241,13 +241,6 @@ fn zone_stream(path: &Path) -> std::io::Result<crate::localfs::LocalPath> {
     crate::localfs::judge_io(std::path::PathBuf::from(stream))
 }
 
-/// Whether `path` carries a Zone.Identifier stream (the Mark of the Web), whatever zone it names:
-/// the file came from somewhere else and is not trusted (13x8 Task 3 ruling). A path that cannot
-/// be judged or whose stream cannot be read is not marked here; a drive without streams has none.
-pub fn has_mark(path: &Path) -> bool {
-    zone_stream(path).ok().and_then(|s| crate::localfs::open(&s).ok()).is_some()
-}
-
 /// Writes `bytes` to `path`, then the Zone.Identifier stream, so SmartScreen or Protected View
 /// meets a file opened after it was revealed. A drive without streams (FAT) keeps the file
 /// unmarked.

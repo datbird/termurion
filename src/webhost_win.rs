@@ -6880,12 +6880,13 @@ window.addEventListener('message', function (e) {
         p.finish();
     }
 
-    /// 13x8 Task 3 (Review Focus 10, R13x8-1): a file page reads and sends nothing. `T\site\a.html`'s
-    /// script tries a fetch and an XHR of the sibling file, a fetch of an `iterm2-ssh:` URL and of a
-    /// 127.0.0.1 listener, loads the sibling as an image, then navigates away; each attempt fails, the
-    /// page stays, the listener sees no connection, the served answers carry the sandbox policy, and the
-    /// page's message to an `iterm2-about:` handler comes from a source the router drops. Needs the
-    /// console session; never run on the desktop probe.
+    /// 13x8 Task 3 (Review Focus 10, R13x8-1) and R13x8-NS: a file page runs no script, so it reads and
+    /// sends nothing. `T\site\a.html`'s script would set the title to "loaded", fetch and XHR the
+    /// sibling file, fetch an `iterm2-ssh:` URL and a 127.0.0.1 listener, post a message to an
+    /// `iterm2-about:` handler and navigate to the listener; none of it runs: the title stays the
+    /// file's own ("static", read from the view, no script), the listener sees no connection at all,
+    /// nothing is refused because nothing is tried, no message arrives, the page stays, and every answer
+    /// carries the one no-script policy. Needs the console session.
     #[test]
     #[ignore]
     fn file_pages_cannot_read_or_send() {
@@ -6897,13 +6898,13 @@ window.addEventListener('message', function (e) {
         listener.set_nonblocking(true).expect("nonblocking");
         let port = listener.local_addr().expect("its address").port();
         let secret = crate::browser_pages::file_url_of(&t.join("other").join("secret.txt"), false);
+        let nav = format!("http://127.0.0.1:{port}/nav");
         let html = format!(
-            "<!doctype html><title></title><script>var t=[];function f(){{t.push('fail');document.title=t.join(',');}}function r(){{t.push('READ');document.title=t.join(',');}}\
-             fetch('{secret}').then(r,f);fetch('iterm2-ssh://box/etc/passwd').then(r,f);fetch('http://127.0.0.1:{port}/x?d=1').then(r,f);\
-             var x=new XMLHttpRequest();x.onload=r;x.onerror=f;x.open('GET','{secret}');x.send();\
-             var i=new Image();i.onload=r;i.onerror=f;i.src='{secret}';\
+            "<!doctype html><title>static</title><script>document.title='loaded';\
+             fetch('{secret}');fetch('iterm2-ssh://box/etc/passwd');fetch('http://127.0.0.1:{port}/x?d=1');\
+             var x=new XMLHttpRequest();x.open('GET','{secret}');x.send();\
              window.chrome.webview.postMessage({{handler:'iterm2-about:settings',body:{{}}}});\
-             setTimeout(function(){{location.href='http://127.0.0.1:{port}/nav';}},500);</script>"
+             setTimeout(function(){{location.href='{nav}';}},300);</script><p>shown</p>"
         );
         std::fs::write(t.join("site").join("a.html"), html).expect("page");
         let page = crate::browser_pages::file_url_of(&t.join("site").join("a.html"), false);
@@ -6911,19 +6912,12 @@ window.addEventListener('message', function (e) {
         let Some(mut p) = Probe::start_setup(&[], Vec::new(), &["iterm2-file", "iterm2-ssh", "iterm2-about"], setup) else { return };
         p.serve_files = true;
         p.file_root = crate::browser_pages::page_root(&page);
+        let (verdicts_before, exits_before) = (VERDICT_REFUSALS.lock().map(|l| l.len()).unwrap_or(0), EXIT_REFUSALS.lock().map(|l| l.len()).unwrap_or(0));
         let n = p.navigated.len();
         p.view().navigate_tandem(&page);
         assert!(p.wait(15, |p| p.navigated.len() > n), "Navigated within 15 s: {:?}", p.order);
-        assert!(p.page_becomes(10, "document.title", false, "fail,fail,fail,fail,fail"), "every attempt failed: {:?}", p.page_string("document.title"));
-        p.settle(1500);
-        // Probe run 2026-10-11b: the script's `location.href` passed the verdict (WebView2 called it
-        // user-initiated) and the listener got the connection. The evidence is read without a script
-        // (an ExecuteScript after a NavigationStarting waits for the next document): the listener, the
-        // host's order (a refused navigation posts no Starting) and the view's Source.
-        // Probe run 2026-10-11c: with the navigation refused (Refused, no Starting) the listener still
-        // accepted a connection; Chromium may preconnect to a navigation's host before
-        // NavigationStarting is judged. What leaves is what a connection carries: every connection is
-        // read, and none may carry a byte (no request line, no path, no query).
+        // Well past the script's 300 ms timer: a navigation it started would have been judged by now.
+        p.settle(2000);
         let mut carried: Vec<String> = Vec::new();
         let mut connections = 0;
         while let Ok((mut c, _)) = listener.accept() {
@@ -6932,26 +6926,100 @@ window.addEventListener('message', function (e) {
             let _ = c.set_nonblocking(false);
             let _ = c.set_read_timeout(Some(Duration::from_millis(1500)));
             let mut buf = [0u8; 2048];
-            let n = c.read(&mut buf).unwrap_or(0);
-            if n > 0 {
-                carried.push(String::from_utf8_lossy(&buf[..n]).lines().next().unwrap_or("").to_string());
+            let got = c.read(&mut buf).unwrap_or(0);
+            if got > 0 {
+                carried.push(String::from_utf8_lossy(&buf[..got]).lines().next().unwrap_or("").to_string());
             }
         }
-        println!("probe: connections={connections} carried={carried:?} source={:?} order={:?} log={:?} navigated={:?}", p.source(), p.order, p.auth_log, p.navigated);
-        // Probe run 2026-10-11d: "GET /nav" arrived although the verdict had cancelled the navigation;
-        // the host now answers that document request 403 where it is made (register_local_page_exit).
-        let exits: Vec<String> = EXIT_REFUSALS.lock().map(|l| l.clone()).unwrap_or_default();
-        println!("probe: the exit guard answered 403 to {exits:?}");
-        assert!(carried.is_empty(), "no connection carried a request: {carried:?} (exit guard: {exits:?})");
-        let refused: Vec<(String, bool)> = VERDICT_REFUSALS.lock().map(|l| l.clone()).unwrap_or_default();
-        assert!(refused.iter().any(|(u, _)| u == &format!("http://127.0.0.1:{port}/nav")), "the verdict refused the navigation away: {refused:?} / {:?}", p.order);
-        assert!(!p.order.iter().any(|o| o.starts_with("starting http")), "the navigation away never started: {:?}", p.order);
+        let verdicts: Vec<(String, bool)> = VERDICT_REFUSALS.lock().map(|l| l[verdicts_before.min(l.len())..].to_vec()).unwrap_or_default();
+        let exits: Vec<String> = EXIT_REFUSALS.lock().map(|l| l[exits_before.min(l.len())..].to_vec()).unwrap_or_default();
+        println!("probe: title={:?} connections={connections} carried={carried:?} verdict refusals={verdicts:?} exit 403s={exits:?} source={:?} order={:?} navigated={:?}", p.title(), p.source(), p.order, p.navigated);
+        assert_eq!(p.navigated.get(n), Some(&(page.clone(), true)), "the file page loaded: {:?}", p.navigated);
+        assert_eq!(p.title().as_deref(), Some("static"), "the file's script never ran (no 'loaded')");
+        assert_eq!((connections, carried.len()), (0, 0), "the listener saw no connection at all: {carried:?}");
+        assert!(!verdicts.iter().any(|(u, _)| u.contains(&format!(":{port}/"))) && !exits.iter().any(|u| u.contains(&format!(":{port}/"))), "nothing was tried, so nothing was refused: {verdicts:?} / {exits:?}");
+        assert!(!p.order.iter().any(|o| o.contains(&format!(":{port}/")) || o.contains("secret.txt") || o.contains("iterm2-ssh:")), "no request left the page: {:?}", p.order);
         assert_eq!(p.navigated.len(), n + 1, "nothing else loaded: {:?}", p.navigated);
         assert_eq!(p.source(), Some(page.clone()), "the view's Source is still the file page");
-        println!("probe: location.href answered {:?}", p.page_string("location.href"));
-        assert!(!p.served.is_empty() && p.served.iter().all(|(_, h)| h.iter().any(|(k, v)| k == "Content-Security-Policy" && v == crate::browser_pages::SANDBOX_CSP)), "every answer carried the sandbox: {:?}", p.served);
-        let messages: Vec<&Routed> = p.routed.iter().filter(|r| r.body.contains("iterm2-about:settings")).collect();
-        assert!(!messages.is_empty() && messages.iter().all(|m| !crate::browser::local_source_ok(&m.from)), "the router drops a file page's message: {:?}", messages.iter().map(|m| m.from.clone()).collect::<Vec<_>>());
+        assert!(!p.served.is_empty() && p.served.iter().all(|(_, h)| *h == crate::browser_pages::file_headers()), "every answer carried the no-script policy: {:?}", p.served);
+        assert!(!p.routed.iter().any(|r| r.body.contains("iterm2-about:settings")), "no message came from the page");
+        std::fs::remove_dir_all(&t).ok();
+        p.finish();
+    }
+
+    /// R13x8-NS, last-gate review 6 (the positive control of the exit guard): Tandem's own loads leave a
+    /// file page for the web. From a served file page, `navigate_tandem` (the address bar, a bookmark,
+    /// a menu action) to a 127.0.0.1 listener lands, and so does one the server redirects (302 to
+    /// another path); the exit guard answers neither 403 and the verdict refuses neither. Needs the
+    /// console session.
+    #[test]
+    #[ignore]
+    fn tandem_loads_leave_a_file_page_for_the_web() {
+        use std::io::{Read, Write};
+        let t = std::env::temp_dir().join(format!("tandem-fileexit-{}", hex32()));
+        std::fs::create_dir_all(&t).expect("folder");
+        std::fs::write(t.join("f.html"), "<title>f</title><p>file</p>").expect("page");
+        let page = crate::browser_pages::file_url_of(&t.join("f.html"), false);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let port = listener.local_addr().expect("its address").port();
+        listener.set_nonblocking(true).expect("nonblocking");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hits = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let (flag, seen) = (stop.clone(), hits.clone());
+        let server = std::thread::spawn(move || {
+            while !flag.load(std::sync::atomic::Ordering::SeqCst) {
+                let Ok((mut c, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let _ = c.set_nonblocking(false);
+                let _ = c.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buf = [0u8; 4096];
+                let got = c.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..got]).into_owned();
+                let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
+                if path.is_empty() {
+                    continue;
+                }
+                if let Ok(mut l) = seen.lock() {
+                    l.push(path.clone());
+                }
+                let reply = match path.as_str() {
+                    "/hop" => "HTTP/1.1 302 Found\r\nLocation: /landing\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    _ => "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 16\r\nConnection: close\r\n\r\n<title>w</title>",
+                };
+                let _ = c.write_all(reply.as_bytes());
+            }
+        });
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, fail_cert_errors: true, track_document_method: true, main_responses: true, resource_filters: vec!["iterm2-file:*".into()], ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&[], Vec::new(), &["iterm2-file"], setup) else {
+            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = server.join();
+            std::fs::remove_dir_all(&t).ok();
+            return;
+        };
+        p.serve_files = true;
+        p.file_root = crate::browser_pages::page_root(&page);
+        let base = format!("http://127.0.0.1:{port}");
+        for (load, lands) in [(format!("{base}/ok"), format!("{base}/ok")), (format!("{base}/hop"), format!("{base}/landing"))] {
+            let n = p.navigated.len();
+            p.view().navigate_tandem(&page);
+            assert!(p.wait(15, |p| p.navigated.len() > n && p.source().as_deref() == Some(page.as_str())), "the file page loaded: {:?}", p.order);
+            let (verdicts_before, exits_before) = (VERDICT_REFUSALS.lock().map(|l| l.len()).unwrap_or(0), EXIT_REFUSALS.lock().map(|l| l.len()).unwrap_or(0));
+            let n = p.navigated.len();
+            p.view().navigate_tandem(&load);
+            let landed = p.wait(15, |p| p.navigated.len() > n && p.source().as_deref() == Some(lands.as_str()));
+            let verdicts: Vec<(String, bool)> = VERDICT_REFUSALS.lock().map(|l| l[verdicts_before.min(l.len())..].to_vec()).unwrap_or_default();
+            let exits: Vec<String> = EXIT_REFUSALS.lock().map(|l| l[exits_before.min(l.len())..].to_vec()).unwrap_or_default();
+            println!("probe: {load} landed={landed} source={:?} title={:?} navigated={:?} https={:?} verdict refusals={verdicts:?} exit 403s={exits:?} hits={:?}", p.source(), p.title(), &p.navigated[n..], &p.https[n..], hits.lock().map(|l| l.clone()).unwrap_or_default());
+            assert!(landed, "{load} landed on {lands}: {:?} / {:?}", p.source(), p.order);
+            assert_eq!(p.title().as_deref(), Some("w"), "the server's page shows");
+            assert!(!exits.iter().any(|u| u.starts_with(&base)) && !verdicts.iter().any(|(u, _)| u.starts_with(&base)), "no refusal of Tandem's own load: {verdicts:?} / {exits:?}");
+        }
+        let seen = hits.lock().map(|l| l.clone()).unwrap_or_default();
+        assert!(["/ok", "/hop", "/landing"].iter().all(|h| seen.iter().any(|s| s == h)), "the server answered each: {seen:?}");
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = server.join();
         std::fs::remove_dir_all(&t).ok();
         p.finish();
     }
@@ -6996,7 +7064,8 @@ window.addEventListener('message', function (e) {
 
     /// 13x8 merge review 4: what a main-document load reports for a server that answered and for one
     /// that did not, as the error page's rule (`server_answered`) reads it. A local listener serves a 404
-    /// with a body, an empty 404, a 204 and a 503; a dead port is the network failure. A server that
+    /// with a body, an empty 404, a 204 and a 503; a dead port is the network failure, and so is a 302 to
+    /// the dead port (last-gate review 7: the hop's 302 is not the answer). A server that
     /// answered has `http >= 100` (its own page shows); the network failure has `http` under 100 (Tandem's
     /// page shows); a 204 makes no navigation or one that is not an error. Needs the console session.
     #[test]
@@ -7008,6 +7077,9 @@ window.addEventListener('message', function (e) {
         listener.set_nonblocking(true).expect("nonblocking");
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = stop.clone();
+        // A port nothing listens on: the network failure, and the target of a redirect (last-gate review 7).
+        let dead = std::net::TcpListener::bind("127.0.0.1:0").expect("a port").local_addr().expect("its address").port();
+        let to_dead = format!("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{dead}/gone\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         let server = std::thread::spawn(move || {
             while !flag.load(std::sync::atomic::Ordering::SeqCst) {
                 let Ok((mut c, _)) = listener.accept() else {
@@ -7021,6 +7093,7 @@ window.addEventListener('message', function (e) {
                 let head = String::from_utf8_lossy(&buf[..n]).into_owned();
                 let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
                 let reply = match path.as_str() {
+                    "/302dead" => to_dead.as_str(),
                     "/404" => "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 12\r\nConnection: close\r\n\r\n<b>nobody</b>",
                     "/empty404" => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                     "/204" => "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n",
@@ -7037,8 +7110,7 @@ window.addEventListener('message', function (e) {
             let _ = server.join();
             return;
         };
-        let dead = std::net::TcpListener::bind("127.0.0.1:0").expect("a port").local_addr().expect("its address").port();
-        for (path, port_of, answered) in [("/404", port, true), ("/empty404", port, true), ("/503", port, true), ("/dead", dead, false)] {
+        for (path, port_of, answered) in [("/404", port, true), ("/empty404", port, true), ("/503", port, true), ("/dead", dead, false), ("/302dead", port, false)] {
             let n = p.navigated.len();
             p.view().navigate_tandem(&format!("http://127.0.0.1:{port_of}{path}"));
             assert!(p.wait(15, |p| p.navigated.len() > n), "Navigated within 15 s for {path}: {:?}", p.order);

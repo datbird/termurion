@@ -8,10 +8,9 @@
 //! its canonical form, which is judged again and must not be a UNC or device form. A subresource must
 //! also resolve INSIDE its page's folder tree, so a link or junction in the tree cannot lead out of it.
 //! Reads are bounded (`MAX_FILE`, `MAX_LISTED`) and run on worker threads (`Pool`), never on the UI
-//! thread. Every answer carries the sandbox policy: a trusted HTML file runs script only in an opaque
-//! origin that can reach nothing (`browser_pages::SANDBOX_CSP`); a file with a Mark of the Web, an SVG
-//! or an XML file runs none (`UNTRUSTED_CSP`). The 404 for a missing, refused or oversized path carries
-//! no text and names no path.
+//! thread. Every answer carries the one no-script policy (`browser_pages::file_headers`, R13x8-NS): an
+//! HTML file shows without its scripts, in an opaque origin that can reach nothing. The 404 for a
+//! missing, refused or oversized path carries no text and names no path.
 
 use crate::browser_pages::{self, PageRoot, CONTEXT_DOCUMENT, NOT_FOUND_HTML};
 use crate::localfs::{self, LocalPath};
@@ -37,7 +36,7 @@ fn answer(status: u16, mime: &str, body: Vec<u8>, headers: Vec<(String, String)>
 
 /// A missing, refused or oversized path: 404, no text, the sandbox policy.
 pub fn not_found() -> Answer {
-    answer(404, "text/html; charset=utf-8", NOT_FOUND_HTML.as_bytes().to_vec(), browser_pages::untrusted_headers())
+    answer(404, "text/html; charset=utf-8", NOT_FOUND_HTML.as_bytes().to_vec(), browser_pages::file_headers())
 }
 
 /// `p` lies strictly inside `root`, compared as Windows compares: separators alike, case ignored,
@@ -127,26 +126,22 @@ pub fn serve_with(url: &str, context: i32, root: Option<&PageRoot>, max_file: u6
     if (&mut file).take(max_file + 1).read_to_end(&mut bytes).is_err() || bytes.len() as u64 > max_file {
         return not_found();
     }
-    // The Mark of the Web is read from the handle's verified final path: a copy of a downloaded file keeps it.
     // The handle is asked once more: a file moved while it was read names another path now, and then
-    // nothing is served (the stream itself is a judged read of the verified path, R13x8-5).
+    // nothing is served.
     if localfs::final_path(&file).as_deref() != Some(final_path.as_path()) {
         return not_found();
     }
-    let marked = crate::inert_files::has_mark(&final_path);
     let mime = crate::mime_ext::mime_for_extension(&extension(&final_path)).unwrap_or("application/octet-stream");
-    file_answer(&path, document, mime, marked, bytes)
+    file_answer(&path, document, mime, bytes)
 }
 
 /// The answer that carries a file's bytes. A Document request: an HTML file as it is, a picture, video
-/// or audio file as itself, an SVG or XML file as itself with no script, any other file as escaped
-/// text in a `<pre>` (`FH:143-157`). A subresource: the bytes with the table's type. A file with a
-/// Mark of the Web, an SVG or an XML file gets the no-script policy; so does every markup subresource
-/// (only the page the person opened may run its own script).
-pub fn file_answer(path: &Path, document: bool, mime: &str, marked: bool, bytes: Vec<u8>) -> Answer {
+/// or audio file as itself, an SVG or XML file as itself, any other file as escaped text in a `<pre>`
+/// (`FH:143-157`). A subresource: the bytes with the table's type. Every one carries the no-script
+/// policy (R13x8-NS): a page shows, nothing in it runs, whether or not it came with a Mark of the Web.
+pub fn file_answer(path: &Path, document: bool, mime: &str, bytes: Vec<u8>) -> Answer {
     let html = mime == "text/html";
-    let untrusted = marked || mime.contains("xml") || (!document && html);
-    let headers = if untrusted { browser_pages::untrusted_headers() } else { browser_pages::file_headers() };
+    let headers = browser_pages::file_headers();
     if document && (html || !(mime.starts_with("image/") || mime.starts_with("video/") || mime.starts_with("audio/") || markup(mime))) {
         let page = if html { browser_pages::file_page(path, &bytes) } else { browser_pages::file_page(path, &text_prefix(&bytes)) };
         return answer(200, "text/html; charset=utf-8", page.into_bytes(), headers);
@@ -190,7 +185,7 @@ fn listing(path: &Path, canon: &LocalPath) -> Answer {
         })
         .collect();
     let page = browser_pages::directory_page(path, &entries);
-    answer(200, "text/html; charset=utf-8", page.into_bytes(), browser_pages::untrusted_headers())
+    answer(200, "text/html; charset=utf-8", page.into_bytes(), browser_pages::file_headers())
 }
 
 /// The folder's handle (kept open by the caller while it lists) and the local path the handle names.
@@ -347,14 +342,14 @@ mod tests {
         let (s, mime, html, h) = body(&serve(&url(&t, true), CONTEXT_DOCUMENT, None));
         assert_eq!((s, mime.as_str()), (200, "text/html; charset=utf-8"));
         assert!(html.contains(">sub</a>") && html.contains(">b.txt</a>") && html.contains(">p.html</a>") && !html.contains(".hidden"));
-        assert_eq!(csp(&h), browser_pages::UNTRUSTED_CSP, "a listing holds no script");
+        assert_eq!(csp(&h), browser_pages::FILE_CSP, "a listing holds no script");
         let (s, _, text, h) = body(&serve(&url(&t.join("b.txt"), false), CONTEXT_DOCUMENT, None));
         assert_eq!((s, text.as_str()), (200, "<pre>a&lt;b</pre>"));
-        assert_eq!(csp(&h), browser_pages::SANDBOX_CSP);
-        // HTML from disk: as it is, with the sandbox (scripts only in an opaque origin).
+        assert_eq!(csp(&h), browser_pages::FILE_CSP);
+        // HTML from disk: as it is, with no script (R13x8-NS).
         let (s, _, text, h) = body(&serve(&url(&t.join("p.html"), false), CONTEXT_DOCUMENT, None));
         assert_eq!((s, text.as_str()), (200, "<b>x</b>"));
-        assert_eq!(csp(&h), browser_pages::SANDBOX_CSP);
+        assert_eq!(csp(&h), browser_pages::FILE_CSP);
         assert!(h.iter().any(|(k, v)| k == "X-Content-Type-Options" && v == "nosniff"));
         // A folder is no subresource; a missing path, a device name, a stream and a share are 404 with no text.
         let root = root_of(&t.join("p.html"));
@@ -369,7 +364,7 @@ mod tests {
         ] {
             let (s, _, text, h) = body(&serve(&u, ctx, Some(&root)));
             assert_eq!((s, text.as_str()), (404, ""), "{u}");
-            assert_eq!(csp(&h), browser_pages::UNTRUSTED_CSP, "{u}");
+            assert_eq!(csp(&h), browser_pages::FILE_CSP, "{u}");
         }
         std::fs::remove_dir_all(&t).unwrap();
     }
@@ -391,18 +386,18 @@ mod tests {
         let root = root_of(&site.join("a.html"));
         let (s, mime, text, h) = body(&serve(&url(&site.join("a.png"), false), 3, Some(&root)));
         assert_eq!((s, mime.as_str(), text.len()), (200, "image/png", 6));
-        assert_eq!(csp(&h), browser_pages::SANDBOX_CSP);
+        assert_eq!(csp(&h), browser_pages::FILE_CSP);
         let (s, mime, _, _) = body(&serve(&url(&site.join("sub").join("s.js"), false), 6, Some(&root)));
         assert_eq!((s, mime.as_str()), (200, "text/javascript"));
         // Markup as a subresource never runs script.
         for f in ["v.svg", "f.html"] {
             let (s, _, _, h) = body(&serve(&url(&site.join(f), false), 4, Some(&root)));
             assert_eq!(s, 200, "{f}");
-            assert_eq!(csp(&h), browser_pages::UNTRUSTED_CSP, "{f}");
+            assert_eq!(csp(&h), browser_pages::FILE_CSP, "{f}");
         }
-        // As the page the person opened, SVG shows with no script, HTML with the sandbox.
+        // As the page the person opened, SVG shows with no script.
         let (_, mime, _, h) = body(&serve(&url(&site.join("v.svg"), false), CONTEXT_DOCUMENT, None));
-        assert_eq!((mime.as_str(), csp(&h)), ("image/svg+xml", browser_pages::UNTRUSTED_CSP));
+        assert_eq!((mime.as_str(), csp(&h)), ("image/svg+xml", browser_pages::FILE_CSP));
         // The sibling folder, the parent, no root, a folder: all 404.
         for (u, r) in [
             (url(&t.join("other").join("secret.txt"), false), Some(&root)),
@@ -439,20 +434,18 @@ mod tests {
         std::fs::remove_dir_all(&t).unwrap();
     }
 
-    /// A file with a Mark of the Web runs no script, even as the page the person opened.
+    /// A file with a Mark of the Web and one without are served alike: neither runs script (R13x8-NS).
     #[cfg(windows)]
     #[test]
-    fn a_marked_file_is_untrusted() {
+    fn marked_or_not_a_file_runs_no_script() {
         let t = temp("motw");
         std::fs::write(t.join("m.html"), "<script>1</script>").unwrap();
         std::fs::write(t.join("n.html"), "<script>1</script>").unwrap();
         crate::inert_files::mark(&t.join("m.html"));
-        // The test host keeps streams (NTFS): a missing mark is a regression, never a skip.
-        assert!(crate::inert_files::has_mark(&t.join("m.html")), "the mark was not written or cannot be read");
-        let (_, _, text, h) = body(&serve(&url(&t.join("m.html"), false), CONTEXT_DOCUMENT, None));
-        assert_eq!((text.as_str(), csp(&h)), ("<script>1</script>", browser_pages::UNTRUSTED_CSP));
-        let (_, _, _, h) = body(&serve(&url(&t.join("n.html"), false), CONTEXT_DOCUMENT, None));
-        assert_eq!(csp(&h), browser_pages::SANDBOX_CSP);
+        for f in ["m.html", "n.html"] {
+            let (_, _, text, h) = body(&serve(&url(&t.join(f), false), CONTEXT_DOCUMENT, None));
+            assert_eq!((text.as_str(), h), ("<script>1</script>", browser_pages::file_headers()), "{f}");
+        }
         std::fs::remove_dir_all(&t).unwrap();
     }
 
@@ -492,25 +485,17 @@ mod tests {
 
     const CONTEXT_FETCH_LIKE: i32 = 3;
 
-    /// The file answer decides the policy by type and mark alone (pure).
+    /// R13x8-NS: every file answer, the page the person opened included, carries the one no-script
+    /// policy (pure).
     #[test]
-    fn the_policy_follows_the_type_and_the_mark() {
-        let p = Path::new(r"C:\x\a");
-        let policy = |document: bool, mime: &str, marked: bool| {
-            let (_, m, _, h) = body(&file_answer(p, document, mime, marked, b"x".to_vec()));
-            (m, csp(&h) == browser_pages::UNTRUSTED_CSP)
-        };
-        assert_eq!(policy(true, "text/html", false), ("text/html; charset=utf-8".into(), false));
-        assert_eq!(policy(true, "text/html", true), ("text/html; charset=utf-8".into(), true));
-        assert_eq!(policy(false, "text/html", false), ("text/html".into(), true));
-        assert_eq!(policy(true, "image/svg+xml", false), ("image/svg+xml".into(), true));
-        assert_eq!(policy(true, "application/xhtml+xml", false), ("application/xhtml+xml".into(), true));
-        assert_eq!(policy(true, "application/xml", false), ("application/xml".into(), true));
-        assert_eq!(policy(true, "image/png", false), ("image/png".into(), false));
-        assert_eq!(policy(true, "image/png", true), ("image/png".into(), true));
-        assert_eq!(policy(true, "text/plain", false), ("text/html; charset=utf-8".into(), false));
-        assert_eq!(policy(true, "application/octet-stream", false), ("text/html; charset=utf-8".into(), false));
-        assert_eq!(policy(false, "text/css", false), ("text/css".into(), false));
+    fn every_file_answer_runs_no_script() {
+        let p = Path::new(r"C:\x\a.html");
+        for document in [true, false] {
+            for mime in ["text/html", "image/svg+xml", "application/xhtml+xml", "application/xml", "image/png", "text/plain", "text/css", "text/javascript", "application/octet-stream"] {
+                let (_, _, _, h) = body(&file_answer(p, document, mime, b"<script>1</script>".to_vec()));
+                assert_eq!(h, browser_pages::file_headers(), "{document} {mime}");
+            }
+        }
     }
 
     /// The pool answers off the calling thread, wakes the loop, bounds its queue and ends with it.

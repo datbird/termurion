@@ -412,13 +412,26 @@ impl ErrorBurst {
 
 // --- File and ssh pages: what a page of those schemes may load (R13x8-1) ---
 
-/// The policy of every `iterm2-file:` and `iterm2-ssh:` response: sandboxed with no
-/// `allow-same-origin` (an opaque origin), so a page cannot read another file or reach any host;
-/// scripts may run for the page's own sake only.
-pub const SANDBOX_CSP: &str = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' iterm2-file: iterm2-ssh:; style-src 'unsafe-inline' iterm2-file: iterm2-ssh:; img-src iterm2-file: iterm2-ssh: data:; media-src iterm2-file: iterm2-ssh:; font-src iterm2-file: iterm2-ssh:; connect-src 'none'; form-action 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'";
+/// The policy of every `iterm2-file:` and `iterm2-ssh:` response, whatever it holds (a file the person
+/// opened, a subresource, a listing, Tandem's own waiting and error pages, a 404): a sandbox with no
+/// token (an opaque origin with no script, popup, form or top navigation) and no script at all
+/// (R13x8-NS, Robert 2026-10-11). Probe runs d and e showed a cancelled navigation still sends its
+/// request, and WebRTC and script-inserted DNS hints are governed by neither CSP nor the request filter,
+/// so a page that can run script can send what it read; a page with none has nothing to send. Only the
+/// page's own styles and images, media and fonts of the local schemes remain; the request filter keeps
+/// those to the page's own tree (`page_request_allowed`). HTML files show without their scripts,
+/// stricter than iTerm2.
+pub const FILE_CSP: &str = "sandbox; default-src 'none'; script-src 'none'; style-src 'unsafe-inline' iterm2-file: iterm2-ssh:; img-src iterm2-file: iterm2-ssh: data:; media-src iterm2-file: iterm2-ssh:; font-src iterm2-file: iterm2-ssh:; connect-src 'none'; form-action 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'";
 
-pub fn sandbox_headers() -> Vec<(String, String)> {
-    vec![("Content-Security-Policy".to_string(), SANDBOX_CSP.to_string())]
+/// The headers of every `iterm2-file:` and `iterm2-ssh:` answer: `FILE_CSP`, `nosniff`, no DNS
+/// prefetch and no referrer (as the web popover's, `webhost`).
+pub fn file_headers() -> Vec<(String, String)> {
+    vec![
+        ("Content-Security-Policy".to_string(), FILE_CSP.to_string()),
+        ("X-Content-Type-Options".to_string(), "nosniff".to_string()),
+        ("X-DNS-Prefetch-Control".to_string(), "off".to_string()),
+        ("Referrer-Policy".to_string(), "no-referrer".to_string()),
+    ]
 }
 
 /// `COREWEBVIEW2_WEB_RESOURCE_CONTEXT` values this module judges.
@@ -541,20 +554,31 @@ pub fn page_request_allowed(pending: Option<(&PageRoot, &str)>, committed: Optio
 
 // --- File pages: the path an `iterm2-file:` URL names, and the pages made of it (13x8 Task 3) ---
 
-/// The policy of a file that came with a Mark of the Web or is SVG or XML: sandboxed like
-/// `SANDBOX_CSP` and with no script at all, so a file the person opens cannot run anything. Only
-/// the page's own styles and its own tree's images, media and fonts remain.
-pub const UNTRUSTED_CSP: &str = "sandbox; default-src 'none'; script-src 'none'; style-src 'unsafe-inline' iterm2-file: iterm2-ssh:; img-src iterm2-file: iterm2-ssh: data:; media-src iterm2-file: iterm2-ssh:; font-src iterm2-file: iterm2-ssh:; connect-src 'none'; form-action 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'";
+/// The Try Again of a Tandem page served with no script: a link to the page itself (`href=""`), a reload
+/// the verdict allows, styled as the button it replaces.
+pub const SCRIPTLESS_RETRY: &str = r#"<a class="button retry-button" href="" style="display:inline-block;text-decoration:none">Try Again</a>"#;
 
-pub fn untrusted_headers() -> Vec<(String, String)> {
-    vec![("Content-Security-Policy".to_string(), UNTRUSTED_CSP.to_string()), ("X-Content-Type-Options".to_string(), "nosniff".to_string())]
-}
-
-/// `sandbox_headers` and `nosniff`: the headers of a file or listing answer from a trusted source.
-pub fn file_headers() -> Vec<(String, String)> {
-    let mut h = sandbox_headers();
-    h.push(("X-Content-Type-Options".to_string(), "nosniff".to_string()));
-    h
+/// A Tandem page (the error page, the ssh page's waiting page) as served at an `iterm2-file:` or
+/// `iterm2-ssh:` URL under `FILE_CSP` (R13x8-NS): its script blocks dropped, its Try Again button a
+/// link that needs none.
+pub fn scriptless_page(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    // Every Try Again button (the copied pages' onclick ones and the patched error page's) becomes the link.
+    while let Some(a) = rest.find(r#"<button class="button retry-button""#) {
+        let Some(b) = rest[a..].find("</button>") else { break };
+        out.push_str(&rest[..a]);
+        out.push_str(SCRIPTLESS_RETRY);
+        rest = &rest[a + b + "</button>".len()..];
+    }
+    out.push_str(rest);
+    while let Some(a) = out.find("<script") {
+        match out[a..].find("</script>") {
+            Some(b) => out.replace_range(a..a + b + "</script>".len(), ""),
+            None => out.truncate(a),
+        }
+    }
+    out
 }
 
 /// The most entries of one folder a listing shows.
@@ -1773,11 +1797,7 @@ mod plumbing_tests {
 
     #[test]
     fn pages_are_sandboxed() {
-        assert_eq!(sandbox_headers(), vec![("Content-Security-Policy".to_string(), SANDBOX_CSP.to_string())]);
-        assert!(SANDBOX_CSP.starts_with("sandbox allow-scripts;") && SANDBOX_CSP.contains("connect-src 'none'") && SANDBOX_CSP.contains("form-action 'none'"));
-        for never in ["allow-same-origin", "allow-popups", "allow-forms", "allow-top-navigation"] {
-            assert!(!SANDBOX_CSP.contains(never), "{never}");
-        }
+        assert_eq!(file_headers()[0], ("Content-Security-Policy".to_string(), FILE_CSP.to_string()));
         let file = PageRoot { scheme: "iterm2-file", host: None, folder: "C:/T/site/".to_string() };
         assert_eq!(page_root("iterm2-file:///C:/T/site/a.html"), Some(file.clone()));
         assert_eq!(page_root("iterm2-file:///C:/T/site/"), Some(file.clone()));
@@ -2068,13 +2088,29 @@ mod file_page_tests {
         assert_eq!(file_page(Path::new(r"C:\a.txt"), b"\"'&"), "<pre>&quot;&#39;&amp;</pre>");
     }
 
-    /// The policies: a file with no trust gets no script at all, and both carry `nosniff`.
+    /// R13x8-NS (Robert, 2026-10-11): every `iterm2-file:` and `iterm2-ssh:` answer runs no script.
+    /// A cancelled navigation still sent its request (probe runs d and e) and WebRTC and DNS hints are
+    /// governed by neither CSP nor the request filter, so a served page has no script to read and send
+    /// with: no script source, no inline script, no eval, a sandbox without `allow-scripts`, and no DNS
+    /// prefetch or referrer.
     #[test]
-    fn untrusted_files_run_no_script() {
-        assert!(UNTRUSTED_CSP.starts_with("sandbox;") && !UNTRUSTED_CSP.contains("allow-") && UNTRUSTED_CSP.contains("script-src 'none'") && UNTRUSTED_CSP.contains("connect-src 'none'"));
-        assert!(SANDBOX_CSP.contains("sandbox allow-scripts;") && !SANDBOX_CSP.contains("allow-same-origin") && !SANDBOX_CSP.contains("allow-top-navigation") && !SANDBOX_CSP.contains("allow-forms"));
-        for h in [file_headers(), untrusted_headers()] {
-            assert!(h.iter().any(|(k, v)| k == "X-Content-Type-Options" && v == "nosniff") && h.iter().any(|(k, _)| k == "Content-Security-Policy"));
+    fn file_and_ssh_answers_run_no_script() {
+        let h = file_headers();
+        let get = |k: &str| h.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).unwrap_or_default();
+        let csp = get("Content-Security-Policy");
+        let directives: Vec<&str> = csp.split(';').map(str::trim).collect();
+        assert_eq!(directives.first(), Some(&"sandbox"), "a sandbox with no allow- token: {csp}");
+        assert!(!csp.contains("allow-") && !csp.contains("unsafe-eval") && !csp.contains("wasm"), "{csp}");
+        for d in ["default-src 'none'", "script-src 'none'", "connect-src 'none'", "form-action 'none'", "frame-src 'none'", "object-src 'none'", "base-uri 'none'"] {
+            assert!(directives.contains(&d), "{d} in {csp}");
         }
+        assert_eq!(directives.iter().filter(|d| d.starts_with("script-src")).count(), 1, "{csp}");
+        assert_eq!(get("X-Content-Type-Options"), "nosniff");
+        assert_eq!(get("X-DNS-Prefetch-Control"), "off");
+        assert_eq!(get("Referrer-Policy"), "no-referrer");
+        // Tandem's own pages at those URLs drop their scripts; an unclosed one is cut.
+        assert_eq!(scriptless_page("a<script>x</script>b<script src=y>"), "ab");
+        assert_eq!(scriptless_page(r#"<button class="button retry-button" id="r">Try Again</button>"#), SCRIPTLESS_RETRY);
     }
+
 }

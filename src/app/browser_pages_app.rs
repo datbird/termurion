@@ -1,7 +1,7 @@
 //! File, ssh and error pages on the app side (milestone 13x8, Tasks 1 and 2): which page the main
 //! frame is on, the answer to a request for an `iterm2-file:` or `iterm2-ssh:` URL, and the error
 //! page of a failed load (its content is this pane's state, never a URL's). Every answer carries the
-//! sandbox policy (`browser_pages::sandbox_headers`); a request that is not the pane's own
+//! no-script policy (`browser_pages::file_headers`, R13x8-NS); a request that is not the pane's own
 //! navigation or a subresource of its page's tree is a 403 with no text. Tasks 3 and 9 add the
 //! arms that serve a file, a listing and a remote file; until then every allowed request is a 404.
 
@@ -520,7 +520,7 @@ impl App {
         if allowed && ssh {
             return self.ssh_page_request(pane, token, url, context == browser_pages::CONTEXT_DOCUMENT);
         }
-        let answer = Answer::Respond { status, mime: "text/html; charset=utf-8".to_string(), body: NOT_FOUND_HTML.as_bytes().to_vec(), headers: browser_pages::sandbox_headers() };
+        let answer = Answer::Respond { status, mime: "text/html; charset=utf-8".to_string(), body: NOT_FOUND_HTML.as_bytes().to_vec(), headers: browser_pages::file_headers() };
         if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
             v.answer_request(token, answer);
         }
@@ -641,7 +641,7 @@ mod tests {
         let f = &p[p.find("pub(super) fn browser_page_request").unwrap()..p.find("pub(super) fn files_tick").unwrap()];
         assert!(f.contains("browser_pages::page_request_allowed(pending, bv.page_root.as_ref(), top_url, url, context)"));
         assert_eq!(f.matches("Answer::Respond").count(), 1, "one place builds the answer");
-        assert!(f.contains("headers: browser_pages::sandbox_headers()"));
+        assert!(f.contains("headers: browser_pages::file_headers()"), "the refusal carries the no-script policy too (R13x8-NS)");
         // An allowed file request is read on a worker, never here, and only for the file scheme.
         assert!(f.contains("allowed && file") && f.contains("Pool::new(notify)") && f.contains(".submit(job)"));
         assert!(f.contains("let root = if context == browser_pages::CONTEXT_DOCUMENT { None } else { bv.page_root.clone() };"), "a subresource is judged against the committed tree");

@@ -221,9 +221,10 @@ fn respond(status: u16, mime: &str, body: Vec<u8>, headers: Vec<(String, String)
 }
 
 /// The page that waits where a remote file would be: Tandem's own text, 200 (as iTerm2's failed
-/// scheme task shows a page, `BM:1382`), the sandbox policy and nosniff.
+/// scheme task shows a page, `BM:1382`), with no script (`browser_pages::scriptless_page`) under the
+/// one no-script policy of the scheme (R13x8-NS).
 pub fn page_answer(html: String) -> crate::webhost::Answer {
-    respond(200, "text/html; charset=utf-8", html.into_bytes(), crate::browser_pages::file_headers())
+    respond(200, "text/html; charset=utf-8", crate::browser_pages::scriptless_page(&html).into_bytes(), crate::browser_pages::file_headers())
 }
 
 /// An error as a page (the generic error page with the error's text).
@@ -231,10 +232,10 @@ pub fn error_answer(text: &str, url: &str) -> crate::webhost::Answer {
     page_answer(crate::browser_pages::described_error_page(text, Some(url)))
 }
 
-/// The remote file as the person asked for it. It is treated as a downloaded file: the no-script
-/// sandbox policy and nosniff on everything (the one serving path of file pages, `file_serve`).
+/// The remote file as the person asked for it, through the one serving path of file pages
+/// (`file_serve`): the no-script policy on everything.
 pub fn body_answer(job: PageJob) -> crate::webhost::Answer {
-    crate::file_serve::file_answer(std::path::Path::new(&job.path), job.document, job.mime, true, job.body)
+    crate::file_serve::file_answer(std::path::Path::new(&job.path), job.document, job.mime, job.body)
 }
 
 /// Whether `url` is a well-formed view URL Tandem itself made (the one gate the first load of a View
@@ -384,6 +385,15 @@ mod tests {
             assert!(h.iter().any(|(k, v)| k == "Content-Security-Policy" && v.starts_with("sandbox")), "{h:?}");
             assert!(h.iter().any(|(k, v)| k == "X-Content-Type-Options" && v == "nosniff"));
             assert!(!String::from_utf8_lossy(body).contains("<b>failed"));
+        }
+        // R13x8-NS: Tandem's own pages at an `iterm2-ssh:` URL get the same no-script policy, so they hold
+        // no script; Try Again is a link to the page itself (a reload the verdict allows), which needs none.
+        for a in [error_answer("x", "iterm2-ssh://box/a"), page_answer(no_conductor_page(Some("box")))] {
+            assert_eq!(headers_of(&a), crate::browser_pages::file_headers());
+            let crate::webhost::Answer::Respond { body, .. } = &a else { panic!() };
+            let text = String::from_utf8_lossy(body);
+            assert!(!text.contains("<script") && !text.contains("onclick"), "{text}");
+            assert_eq!(text.matches(crate::browser_pages::SCRIPTLESS_RETRY).count(), 1, "{text}");
         }
         // A view that went away stops its jobs once.
         jobs.clear();
