@@ -280,29 +280,29 @@ mod tests {
             assert!(CATEGORIES.contains(&s.section.as_str()), "{} has section {}", s.key, s.section);
         }
         let expect = [
-            ("defaultWideMode", "Terminal"),
-            ("nativeRenderingCSSDark", "Drawing"),
-            ("nativeRenderingCSSLight", "Drawing"),
-            ("disableTopRightIndicators", "Drawing"),
-            ("silentUserNotifications", "General"),
-            ("simpleNotifications", "General"),
+            ("DefaultWideMode", "Terminal"),
+            ("NativeRenderingCSSDark", "Drawing"),
+            ("NativeRenderingCSSLight", "Drawing"),
+            ("DisableTopRightIndicators", "Drawing"),
+            ("SilentUserNotifications", "General"),
+            ("SimpleNotifications", "General"),
             ("CommandHistoryUsePower", "General"),
             ("CommandHistoryAgePower", "General"),
             ("AutocompleteMaxOptions", "General"),
-            ("sessionEndMessageText", "Session"),
-            ("showAutomaticProfileSwitchingBanner", "Session"),
-            ("preserveFontSizeOnAutomaticProfileSwitch", "Session"),
-            ("fileDropCoprocess", "Terminal"),
+            ("SessionEndMessageText", "Session"),
+            ("ShowAutomaticProfileSwitchingBanner", "Session"),
+            ("PreserveFontSizeOnAutomaticProfileSwitch", "Session"),
+            ("FileDropCoprocess", "Terminal"),
             ("StripZeroWidthFormatCharactersOnPaste", "Terminal"),
-            ("openProfilesInNewWindow", "Tabs"),
-            ("moveLeftAfterClosingTab", "Tabs"),
+            ("OpenProfilesInNewWindow", "Tabs"),
+            ("MoveLeftAfterClosingTab", "Tabs"),
             ("EscapeWithQuotes", "Experimental Features"),
             // iTerm2 defines it among the experimental ones but with SECTION_GENERAL (ASM:924).
             ("GenerativeAIAllowed", "General"),
-            ("clippingSeparator", "Pasteboard"),
+            ("ClippingSeparator", "Pasteboard"),
             ("WorkgroupAutoSendSubmitDelay", "Pasteboard"),
-            ("toolbeltFont", "Windows"),
-            ("toolbeltFontSize", "Windows"),
+            ("ToolbeltFont", "Windows"),
+            ("ToolbeltFontSize", "Windows"),
             ("PinEditSession", "General"),
             ("AutoLockSessionNameOnEdit", "Session"),
         ];
@@ -437,22 +437,22 @@ mod tests {
     fn row_text_follows_iterm2() {
         let rows = rows();
         let get = |key: &str| rows[index(&rows, key)].clone();
-        let cookie = get("setCookie");
+        let cookie = get("SetCookie");
         assert_eq!(cookie.label, "Set ITERM2_COOKIE environment variable, allowing Python scripts to be launched without confirmation?");
         assert_eq!(cookie.subtitle, Some("This will only affect sessions created after changing this setting."));
-        assert_eq!(cookie.description, schema::find_global("setCookie").unwrap().help);
+        assert_eq!(cookie.description, schema::find_global("SetCookie").unwrap().help);
         assert_eq!(cookie.kind, RowKind::Bool);
         assert_eq!(cookie.category, "Scripting");
         assert_eq!(cookie.default, Some(Value::Boolean(false)));
         assert_eq!(get("NoSyncDisableOpenURL").subtitle, None);
         assert_eq!(get("PreventEscapeSequenceFromChangingProfile").kind, RowKind::OptionalBool);
         assert_eq!(get("PreventEscapeSequenceFromChangingProfile").default, None);
-        let choices = schema::find_global("anonymousTmuxWindowsOpenInCurrentWindow").unwrap().choices.iter().map(|c| (c.value.clone(), c.label.clone())).collect::<Vec<_>>();
+        let choices = schema::find_global("AnonymousTmuxWindowsOpenInCurrentWindow").unwrap().choices.iter().map(|c| (c.value.clone(), c.label.clone())).collect::<Vec<_>>();
         assert_eq!(choices.len(), 3);
-        assert_eq!(get("anonymousTmuxWindowsOpenInCurrentWindow").kind, RowKind::Enum(choices));
-        assert_eq!(get("maximumBytesToProvideToPythonAPI").kind, RowKind::Int);
-        assert_eq!(get("statusBarHeight").kind, RowKind::Float);
-        assert_eq!(get("tmuxTitlePrefix").kind, RowKind::Text);
+        assert_eq!(get("AnonymousTmuxWindowsOpenInCurrentWindow").kind, RowKind::Enum(choices));
+        assert_eq!(get("MaximumBytesToProvideToPythonAPI").kind, RowKind::Int);
+        assert_eq!(get("StatusBarHeight").kind, RowKind::Float);
+        assert_eq!(get("TmuxTitlePrefix").kind, RowKind::Text);
         let empty_help = row("k", "General", "", RowKind::Bool);
         assert_eq!(empty_help.subtitle, None);
     }
@@ -466,7 +466,7 @@ mod tests {
         assert!(!matches("x", "x y"));
 
         let rows = rows();
-        let tmux = index(&rows, "tmuxTitlePrefix");
+        let tmux = index(&rows, "TmuxTitlePrefix");
         assert_eq!(searchable(&rows[tmux]), format!("{} Tmux Integration Tmux Integration", rows[tmux].description));
         assert_eq!(filtered(&rows, "tmux titles", false, &none, None), vec![Item::Header("Tmux Integration"), Item::Setting(tmux)]);
         // The key is not searched (iTerm2 matches the description and category only).
@@ -505,13 +505,13 @@ mod tests {
         assert!(is_non_default(Some(&Value::String("y".into())), Some(&Value::String("x".into()))));
 
         let rows = rows();
-        let height = index(&rows, "statusBarHeight");
-        let stored = |k: &str| (k == "statusBarHeight").then_some(f(22.0));
+        let height = index(&rows, "StatusBarHeight");
+        let stored = |k: &str| (k == "StatusBarHeight").then_some(f(22.0));
         assert_eq!(filtered(&rows, "", true, &stored, None), vec![Item::Header("General"), Item::Setting(height)]);
-        let git = index(&rows, "gitTimeout");
-        assert_eq!(filtered(&rows, "", true, &none, Some("gitTimeout")), vec![Item::Header("General"), Item::Setting(git)]);
+        let git = index(&rows, "GitTimeout");
+        assert_eq!(filtered(&rows, "", true, &none, Some("GitTimeout")), vec![Item::Header("General"), Item::Setting(git)]);
         // The row being edited is kept past the non-default filter only; the query still applies.
-        assert_eq!(filtered(&rows, "tmux titles", true, &none, Some("gitTimeout")), vec![]);
+        assert_eq!(filtered(&rows, "tmux titles", true, &none, Some("GitTimeout")), vec![]);
     }
 
     #[test]
@@ -549,37 +549,37 @@ mod tests {
             (s.label.as_str(), s.help.as_str())
         };
         assert_eq!(
-            text("statusBarHeight"),
+            text("StatusBarHeight"),
             ("Height of the status bar in points.", "Height of the status bar in points.\nThis will also affect the height of per-pane title bars becuase the status bar may be embedded in it. A change here takes effect at once.")
         );
         assert_eq!(
-            text("anonymousTmuxWindowsOpenInCurrentWindow"),
+            text("AnonymousTmuxWindowsOpenInCurrentWindow"),
             (
                 "Where should new tmux windows not created by Tandem open?",
                 "Where should new tmux windows not created by Tandem open?\n\u{201c}Focused window\u{201d} (the default) attaches the window as a tab of whichever Tandem window currently has keyboard focus. \u{201c}Topmost session window\u{201d} attaches it to the frontmost Tandem window that already shows a tab from this tmux session, regardless of focus."
             )
         );
         assert_eq!(
-            text("killJobsInServersOnQuit"),
+            text("KillJobsInServersOnQuit"),
             ("User-initiated Quit (Win+Q) of Tandem will kill all running jobs.", "User-initiated Quit (Win+Q) of Tandem will kill all running jobs.\nApplies only when session restoration is on.")
         );
         assert_eq!(
-            text("fileDropCoprocess").1,
+            text("FileDropCoprocess").1,
             "When files are dropped into a terminal window, execute a silent coprocess.\nThis is an interpolated string. Use \\(filenames) to reference the shell-quoted, space-delimited full paths to the dropped files. If this preference is empty, the filenames get pasted instead."
         );
-        assert_eq!(text("disableTmuxWindowResizing"), ("Don't automatically resize tmux windows", "Don't automatically resize tmux windows"));
+        assert_eq!(text("DisableTmuxWindowResizing"), ("Don't automatically resize tmux windows", "Don't automatically resize tmux windows"));
         // iTerm2's description ends in a newline with nothing after it.
         assert_eq!(text("PasteHistoryMaxOptions").1, "Number of entries to save in Paste History.\n");
         // Where Tandem behaves differently on Windows, the help says what Tandem does.
         assert_eq!(
-            text("gitSearchPath"),
+            text("GitSearchPath"),
             (
                 "PATH used when running git for the status bar component.",
                 "PATH used when running git for the status bar component.\nChange this to use a custom install of git. The first folder in this ;-separated list holds the git.exe the status bar runs; empty runs git from PATH. A change here takes effect at once."
             )
         );
         assert_eq!(
-            text("timeoutForDaemonAttachment").1,
+            text("TimeoutForDaemonAttachment").1,
             "How long to wait when trying to attach to the session host at startup when restoring windows (in seconds)?"
         );
         // The Windows folder stands in for iTerm2's ~/.config/iterm2.

@@ -171,6 +171,7 @@ impl Globals {
     /// Applies the write-point bounds to values written in bulk (the file at load, a remote-prefs
     /// snapshot), as `set` does for one value.
     pub fn bound_values(&mut self) {
+        self.migrate_renamed();
         match self.values.remove(crate::color_presets::CUSTOM_KEY) {
             Some(v) => self.set(crate::color_presets::CUSTOM_KEY, v),
             None => self.custom_presets = Default::default(),
@@ -186,6 +187,17 @@ impl Globals {
         for (key, _) in BOUNDS {
             if let Some(v) = self.values.remove(*key) {
                 self.set(key, v);
+            }
+        }
+    }
+
+    /// 13y2 Task 9b: a file written before the Advanced rename sweep holds the old lower-case
+    /// keys. Each moves to its new name once; when both spellings are present the new one wins
+    /// and the old entry is dropped, so the next save writes only the new name.
+    fn migrate_renamed(&mut self) {
+        for (old, new) in crate::settings_keys::RENAMED {
+            if let Some(v) = self.values.remove(*old) {
+                self.values.entry((*new).to_string()).or_insert(v);
             }
         }
     }
@@ -308,6 +320,28 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use toml::Value;
+
+    /// 13y2 Task 9b: a settings.toml written before the Advanced rename sweep holds lower-case keys.
+    /// Each loads into its new name, the capitalized one wins when both exist, and the old entry is
+    /// gone after the next save; a key not renamed is untouched.
+    #[test]
+    fn renamed_keys_migrate() {
+        let path = scratch("renamed");
+        std::fs::write(&path, "[settings]\ndisableTopRightIndicators = true\nstatusBarHeight = 33\nStatusBarHeight = 40\ntmuxTitlePrefix = \"T> \"\nSomethingElse = 1\n").unwrap();
+        let g = Globals::load(&path).unwrap();
+        assert!(g.bool("DisableTopRightIndicators"));
+        assert_eq!(g.raw("StatusBarHeight").and_then(|v| v.as_integer()), Some(40));
+        assert_eq!(g.string("TmuxTitlePrefix"), "T> ");
+        for (old, _) in crate::settings_keys::RENAMED {
+            assert!(g.raw(old).is_none(), "{old} is gone after load");
+        }
+        g.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        for (old, _) in crate::settings_keys::RENAMED {
+            assert!(!text.contains(&format!("{old} =")), "{old} written back: {text}");
+        }
+        assert!(text.contains("DisableTopRightIndicators") && text.contains("SomethingElse"), "{text}");
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("tandem-globals-{name}-{}", std::process::id()));

@@ -34,9 +34,9 @@ impl Settings {
     pub fn from_globals(g: &crate::globals::Globals) -> Settings {
         Settings {
             integration: g.bool("SshIntegrationForURLs"),
-            scheme_path: g.string("sshSchemePath"),
-            valid_user_chars: g.string("validCharactersInSSHUserNames"),
-            support_path: g.bool("sshURLsSupportPath"),
+            scheme_path: g.string("SshSchemePath"),
+            valid_user_chars: g.string("ValidCharactersInSSHUserNames"),
+            support_path: g.bool("SshURLsSupportPath"),
             ftp_path: g.string("PathToFTP"),
             telnet_path: g.string("PathToTelnet"),
         }
@@ -657,9 +657,9 @@ mod tests {
         let mut g = crate::globals::Globals::empty(&dir.join("g.toml"));
         assert_eq!(Settings::from_globals(&g), Settings { integration: false, scheme_path: "ssh".into(), valid_user_chars: "_-+.".into(), support_path: true, ftp_path: "ftp".into(), telnet_path: "telnet".into() });
         g.set("SshIntegrationForURLs", Value::Boolean(true));
-        g.set("sshSchemePath", s("plink"));
-        g.set("validCharactersInSSHUserNames", s("_"));
-        g.set("sshURLsSupportPath", Value::Boolean(false));
+        g.set("SshSchemePath", s("plink"));
+        g.set("ValidCharactersInSSHUserNames", s("_"));
+        g.set("SshURLsSupportPath", Value::Boolean(false));
         g.set("PathToFTP", s("ncftp"));
         g.set("PathToTelnet", s("putty"));
         assert_eq!(Settings::from_globals(&g), Settings { integration: true, scheme_path: "plink".into(), valid_user_chars: "_".into(), support_path: false, ftp_path: "ncftp".into(), telnet_path: "putty".into() });

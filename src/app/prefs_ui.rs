@@ -576,7 +576,7 @@ mod tests {
         let mut g = Globals::empty(&dir.join("settings.toml"));
         g.set(rp::LOAD_KEY, Value::Boolean(true));
         g.set(rp::FOLDER_KEY, Value::String(location.to_string()));
-        g.values.insert("tmuxTitlePrefix".into(), Value::String("local".into()));
+        g.values.insert("TmuxTitlePrefix".into(), Value::String("local".into()));
         g.values.insert("NoSyncX".into(), Value::Boolean(true));
         let mut store = Store::fresh(&dir.join("profiles.toml"));
         store.profiles[0].set(crate::profile::NAME, Value::String("Local".into()));
@@ -602,7 +602,7 @@ mod tests {
 
     fn assert_applied(g: &Globals, store: &Store, location: &str) {
         assert_eq!(g.values.get("FocusFollowsMouse"), Some(&Value::Boolean(true)));
-        assert!(!g.values.contains_key("tmuxTitlePrefix"), "a local syncable key goes");
+        assert!(!g.values.contains_key("TmuxTitlePrefix"), "a local syncable key goes");
         assert_eq!(g.values.get("NoSyncX"), Some(&Value::Boolean(true)));
         assert!(g.bool(rp::LOAD_KEY));
         assert_eq!(g.string(rp::FOLDER_KEY), location);
@@ -611,7 +611,7 @@ mod tests {
     }
 
     fn assert_untouched(g: &Globals, store: &Store) {
-        assert_eq!(g.values.get("tmuxTitlePrefix"), Some(&Value::String("local".into())));
+        assert_eq!(g.values.get("TmuxTitlePrefix"), Some(&Value::String("local".into())));
         assert!(!g.values.contains_key("FocusFollowsMouse"));
         assert_eq!(names(store), ["Local"]);
     }

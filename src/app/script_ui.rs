@@ -624,14 +624,14 @@ impl App {
     /// run's id while it waits; None when it finished at once (its result already went to
     /// its origin), including a syntax error or a receiver that names no object.
     pub(super) fn invoke(&mut self, invocation: &str, scope: ScopeSpec, timeout: Timeout, side_effects: bool, origin: Origin) -> Option<u64> {
-        let lax = self.globals.bool("laxNilPolicyInInterpolatedStrings");
+        let lax = self.globals.bool("LaxNilPolicyInInterpolatedStrings");
         let inv = Invocation::new(invocation, timeout, side_effects, lax, Instant::now());
         self.start_run(invocation, inv, scope, origin)
     }
 
     /// Starts the evaluation of a bound expression (no side effects).
     pub(super) fn invoke_expression(&mut self, text: &str, scope: ScopeSpec, timeout: Timeout, origin: Origin) -> Option<u64> {
-        let lax = self.globals.bool("laxNilPolicyInInterpolatedStrings");
+        let lax = self.globals.bool("LaxNilPolicyInInterpolatedStrings");
         let inv = Invocation::for_expression(text, timeout, false, lax, Instant::now());
         self.start_run(text, inv, scope, origin)
     }
@@ -1156,7 +1156,7 @@ impl App {
         if let Some(t) = self.script_templates.get_mut(&(pane, template.to_string())) {
             t.running = Some(nth);
         }
-        let lax = self.globals.bool("laxNilPolicyInInterpolatedStrings");
+        let lax = self.globals.bool("LaxNilPolicyInInterpolatedStrings");
         let inv = Invocation::for_template(template, timeout, false, lax, Instant::now());
         let origin = Origin::Template { pane, key: template.to_string(), nth };
         self.start_run(template, inv, ScopeSpec::Session { pane, frame: Values::new() }, origin);

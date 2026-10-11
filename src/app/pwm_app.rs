@@ -35,9 +35,9 @@ use crate::warnings::Preempt;
 const OP_PATH_KEY: &str = "NoSyncPasswordManagerOnePasswordCLI";
 const LP_PATH_KEY: &str = "NoSyncPasswordManagerLastPassCLI";
 /// `iTermAdvancedSettingsModel.onePasswordAccount`, which the account picker sets.
-const OP_ACCOUNT_KEY: &str = "onePasswordAccount";
+const OP_ACCOUNT_KEY: &str = "OnePasswordAccount";
 /// `iTermAdvancedSettingsModel.lastpassGroups`.
-const LP_GROUPS_KEY: &str = "lastpassGroups";
+const LP_GROUPS_KEY: &str = "LastpassGroups";
 /// The LastPass help page the Can't Find alert's Help opens (`LP:579`).
 const LP_HELP_URL: &str = "https://iterm2.com/lastpass-cli";
 /// The heading of an adapter's errors (`AP:999`) and of its list warning (`AP:697`).

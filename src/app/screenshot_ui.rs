@@ -262,7 +262,7 @@ impl App {
     /// Where Save puts screenshots: `screenshotSaveLocation` when it is a folder, else the
     /// Desktop.
     fn shot_folder(&self) -> Option<std::path::PathBuf> {
-        let set = self.globals.string("screenshotSaveLocation");
+        let set = self.globals.string("ScreenshotSaveLocation");
         let set = match (set.strip_prefix('~'), std::env::var("USERPROFILE")) {
             (Some(rest), Ok(home)) => format!("{home}{rest}"),
             _ => set,

@@ -54,7 +54,7 @@ impl App {
             let gone = self.tabs.remove(t);
             self.mru.forget(gone.id);
             self.api_vars.forget(crate::api_vars::Scope::Tab, &gone.id.to_string());
-            self.active = crate::close_rules::active_after_close(self.active, t, self.tabs.len(), self.globals.bool("moveLeftAfterClosingTab"));
+            self.active = crate::close_rules::active_after_close(self.active, t, self.tabs.len(), self.globals.bool("MoveLeftAfterClosingTab"));
             // The neighbor selected may be hidden in a collapsed group.
             self.expand_selected_group();
         }
@@ -131,7 +131,7 @@ impl App {
     /// icon's menu both list these.
     pub(super) fn buried_entries(&self) -> Vec<(muda::MenuId, String)> {
         let mut items: Vec<(String, String)> = self.buried.items().into_iter().map(|(p, n)| (format!("{BURIED_ID}{p}"), n)).collect();
-        let prefix = self.globals.string("tmuxTitlePrefix");
+        let prefix = self.globals.string("TmuxTitlePrefix");
         let mut gws: Vec<PaneId> = self.tmux.keys().copied().collect();
         gws.sort_unstable();
         let mut tmux_items = Vec::new();

@@ -54,7 +54,7 @@ impl App {
         let current = self.store.shared_guid(&p.profile);
         // The zoom to keep: measured against the original profile before the switch (`S:20830-20895`).
         let zoom = match (self.store.get(&p.profile), self.store.get(&current)) {
-            (Some(now), Some(original)) => fonts_ui::zoom_delta(now, original, self.globals.bool("preserveFontSizeOnAutomaticProfileSwitch")),
+            (Some(now), Some(original)) => fonts_ui::zoom_delta(now, original, self.globals.bool("PreserveFontSizeOnAutomaticProfileSwitch")),
             _ => 0.0,
         };
         let s = &p.own().shell;
@@ -96,7 +96,7 @@ impl App {
             self.write_font_size(pane, zoom);
             self.refresh_panes();
         }
-        if self.globals.bool("showAutomaticProfileSwitchingBanner") {
+        if self.globals.bool("ShowAutomaticProfileSwitchingBanner") {
             self.banners.set("aps", format!("Switched to profile \u{201c}{name}\u{201d}."));
         }
         self.redraw();

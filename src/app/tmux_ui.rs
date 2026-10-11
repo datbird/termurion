@@ -106,7 +106,7 @@ impl App {
         }
         let client = (p.own().term().columns() as u32, p.own().term().screen_lines() as u32);
         let mut gw = Gateway::new(newline);
-        gw.tolerate_unrecognized = self.globals.bool("tolerateUnrecognizedTmuxCommands");
+        gw.tolerate_unrecognized = self.globals.bool("TolerateUnrecognizedTmuxCommands");
         let mut ctl = crate::tmux_controller::Controller::new(tmux_handshake::FIRST_FREE_TAG);
         ctl.client = client;
         ctl.prefs = self.tmux_prefs(pane, client.1);
@@ -128,14 +128,14 @@ impl App {
         crate::tmux_controller::Prefs {
             open_in: crate::tmux_windows::OpenIn::from_pref(self.globals.int("OpenTmuxWindowsIn")),
             limit: self.globals.int("TmuxDashboardLimit"),
-            anonymous_location: self.globals.int("anonymousTmuxWindowsOpenInCurrentWindow"),
+            anonymous_location: self.globals.int("AnonymousTmuxWindowsOpenInCurrentWindow"),
             prevent_tab: p.is_some_and(|p| p.bool("Prevent Opening in a Tab")),
             max_history: crate::tmux_windows::max_history(rows, scrollback, unlimited),
-            variable_sizes: self.globals.bool("tmuxVariableWindowSizesSupported"),
+            variable_sizes: self.globals.bool("TmuxVariableWindowSizesSupported"),
             pause_age: self.globals.int("TmuxPauseModeAgeLimit").max(1) as f64,
             unpause_automatically: self.globals.bool("TmuxUnpauseAutomatically"),
-            warn_before_pausing: self.globals.bool("TmuxWarnBeforePausing") && !self.globals.bool("noSyncDontWarnAboutTmuxPause"),
-            poll_job: self.globals.bool("pollForTmuxForegroundJob"),
+            warn_before_pausing: self.globals.bool("TmuxWarnBeforePausing") && !self.globals.bool("NoSyncDontWarnAboutTmuxPause"),
+            poll_job: self.globals.bool("PollForTmuxForegroundJob"),
         }
     }
 
@@ -266,7 +266,7 @@ impl App {
 
     /// A tmux session's names: the gateway's `[prefix title client]`, a tmux pane's tab title.
     pub(super) fn tmux_titles(&self, pane: PaneId) -> Option<String> {
-        let prefix = self.globals.string("tmuxTitlePrefix");
+        let prefix = self.globals.string("TmuxTitlePrefix");
         if let Some(t) = self.tmux.get(&pane) {
             let base = self.panes.get(&pane).and_then(|p| p.own().title()).map(str::to_string).unwrap_or_else(|| self.session_title(pane));
             return Some(crate::tmux_windows::gateway_title(&prefix, &base, &t.client));

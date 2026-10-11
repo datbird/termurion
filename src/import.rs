@@ -167,7 +167,7 @@ pub fn from_dynamic_json(text: &str) -> Result<Vec<Profile>, String> {
 }
 
 /// The user-defaults key iTerm2 stores an Advanced setting under: its name with the first
-/// letter capitalized (`stringByCapitalizingFirstLetter`), "tmuxTitlePrefix" as "TmuxTitlePrefix".
+/// letter capitalized (`stringByCapitalizingFirstLetter`), "TmuxTitlePrefix" as "TmuxTitlePrefix".
 pub fn defaults_key(key: &str) -> String {
     let mut chars = key.chars();
     match chars.next() {
@@ -176,10 +176,19 @@ pub fn defaults_key(key: &str) -> String {
     }
 }
 
-/// The global settings (iTerm2 user defaults) in a com.googlecode.iterm2.plist, for the
+/// The key with its first letter lower-case: how Tandem spelled an Advanced key before the
+/// 13y2 rename sweep, which a settings plist written by that Tandem may still hold.
+fn lower_first(key: &str) -> String {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 /// The global settings (iTerm2 user defaults) in a com.googlecode.iterm2.plist, for the
 /// keys Tandem's global schema knows. Other keys are left out. A schema key spelled with a
-/// lower-case first letter is also found under iTerm2's capitalized defaults key; the exact
+/// lower-case first letter is also found under iTerm2's capitalized defaults key, and a capitalized schema key under its lower-case spelling (Tandem before the 13y2 rename); the schema
 /// spelling wins when a file holds both. The settings that stand between a person and an AI
 /// request (`ai_settings::guards_consent`) never come, even from a hand-edited plist: a person
 /// opts in again on Windows (Review Focus 3, ruling I5).
@@ -191,7 +200,7 @@ pub fn globals_from_file(path: &Path) -> Result<Vec<(String, Value)>, String> {
         .filter(|s| !crate::ai_settings::guards_consent(&s.key))
         .filter(|s| !crate::workgroup::is_workgroup_key(&s.key))
         .filter_map(|s| {
-            let v = dict.get(&s.key).or_else(|| dict.get(&defaults_key(&s.key)))?;
+            let v = dict.get(&s.key).or_else(|| dict.get(&defaults_key(&s.key))).or_else(|| dict.get(&lower_first(&s.key)))?;
             Some((s.key.clone(), from_plist(v)?))
         })
         .collect())
@@ -271,8 +280,8 @@ pub fn migrate_legacy(values: &mut Vec<(String, Value)>, legacy: &Legacy, profil
         let character = number(values, "HotkeyChar").unwrap_or(0.0) as i64 as u16;
         let characters = if character == 0 { String::new() } else { char::from_u32(u32::from(character)).map(String::from).unwrap_or_default() };
         let modifiers = number(values, "HotkeyModifiers").unwrap_or(0.0) as i64;
-        let duration = number(values, "hotkeyTermAnimationDuration")
-            .or_else(|| crate::schema::find_global("hotkeyTermAnimationDuration").and_then(|s| s.default.as_ref()).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))))
+        let duration = number(values, "HotkeyTermAnimationDuration")
+            .or_else(|| crate::schema::find_global("HotkeyTermAnimationDuration").and_then(|s| s.default.as_ref()).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))))
             .unwrap_or(0.0);
         // iTermHotKeyDockPreferenceShowIfNoOtherWindowsOpen, else DoNotShow.
         let dock = if legacy.dock_icon_toggles { 2 } else { 0 };
@@ -333,6 +342,19 @@ mod tests {
 
     use super::*;
     use crate::palette::rgb;
+
+    /// 13y2 Task 9b: an Advanced setting imports under its iTerm2 spelling or a lower-case-first one.
+    #[test]
+    fn plist_keys_match_either_spelling() {
+        for (name, spelling) in [("cap", "DisableTopRightIndicators"), ("low", "DisableTopRightIndicators")] {
+            let path = std::env::temp_dir().join(format!("tandem-import-spell-{name}-{}.plist", std::process::id()));
+            std::fs::write(&path, format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>{spelling}</key><true/></dict></plist>"#)).unwrap();
+            let got = globals_from_file(&path).unwrap();
+            let _ = std::fs::remove_file(&path);
+            assert!(got.iter().any(|(k, v)| k == "DisableTopRightIndicators" && v.as_bool() == Some(true)), "{spelling}: {got:?}");
+        }
+    }
 
     #[test]
     fn imports_global_keys_only() {
@@ -403,7 +425,7 @@ mod tests {
         assert_eq!(get(&values, "HotkeyChar"), Some(int(0)));
         assert_eq!(get(&values, "HotkeyMigratedFromSingleToMulti"), Some(Value::Boolean(true)));
         let mut values = hotkey();
-        values.push(("hotkeyTermAnimationDuration".to_string(), Value::Float(0.0)));
+        values.push(("HotkeyTermAnimationDuration".to_string(), Value::Float(0.0)));
         let mut profiles = [profile("G")];
         migrate_legacy(&mut values, &Legacy { dock_icon_toggles: false, ..legacy.clone() }, &mut profiles);
         assert_eq!(profiles[0].values.get("HotKey Window Animates"), Some(&Value::Boolean(false)));
@@ -479,7 +501,7 @@ mod tests {
 
     #[test]
     fn import_matches_iterm2_defaults_keys() {
-        assert_eq!(defaults_key("tmuxTitlePrefix"), "TmuxTitlePrefix");
+        assert_eq!(defaults_key("TmuxTitlePrefix"), "TmuxTitlePrefix");
         assert_eq!(defaults_key("NoSyncDisableOpenURL"), "NoSyncDisableOpenURL");
         assert_eq!(defaults_key(""), "");
         let dir = std::env::temp_dir();
@@ -490,17 +512,17 @@ mod tests {
   <key>NoSyncDisableOpenURL</key><true/>
 </dict></plist>"#).unwrap();
         let got = globals_from_file(&path).unwrap();
-        assert!(got.contains(&("tmuxTitlePrefix".to_string(), Value::String("x ".into()))), "{got:?}");
+        assert!(got.contains(&("TmuxTitlePrefix".to_string(), Value::String("x ".into()))), "{got:?}");
         assert!(got.contains(&("NoSyncDisableOpenURL".to_string(), Value::Boolean(true))), "{got:?}");
-        // Both spellings present: the exact one wins.
+        // Both spellings present: iTerm2's (the schema key) wins.
         let both = dir.join(format!("tandem-import-defaults-keys-both-{}.plist", std::process::id()));
         std::fs::write(&both, r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
-  <key>tmuxTitlePrefix</key><string>exact</string>
-  <key>TmuxTitlePrefix</key><string>capitalized</string>
+  <key>tmuxTitlePrefix</key><string>lower</string>
+  <key>TmuxTitlePrefix</key><string>exact</string>
 </dict></plist>"#).unwrap();
         let got = globals_from_file(&both).unwrap();
-        assert_eq!(got, [("tmuxTitlePrefix".to_string(), Value::String("exact".into()))]);
+        assert_eq!(got, [("TmuxTitlePrefix".to_string(), Value::String("exact".into()))]);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&both);
     }

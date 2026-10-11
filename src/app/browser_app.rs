@@ -886,7 +886,7 @@ impl App {
             ai_streaming,
             show_remembered: self.show_remembered,
         };
-        scene::session_indicators(&facts, self.globals.bool("disableTopRightIndicators"))
+        scene::session_indicators(&facts, self.globals.bool("DisableTopRightIndicators"))
     }
 
     /// A click on an indicator: Tandem's own help text in the one text popover below the glyph
@@ -1893,7 +1893,7 @@ mod tests {
         let src = include_str!("browser_app.rs");
         let p = &src[..src.find("#[cfg(test)]").unwrap()];
         let f = &p[p.find("pub(super) fn browser_indicators(").unwrap()..p.find("fn open_indicator_popover").unwrap()];
-        for needle in ["t.zoomed == Some(pane)", "self.broadcast.sends(&view, pane)", "self.broadcast.receives(&view, pane)", "marks.alert_next", "self.is_browser_copy_mode(pane)", "crate::dlog::is_on()", "self.in_pinned_hotkey_window()", "self.chat_pane_state(pane)", "self.show_remembered", "\"disableTopRightIndicators\""] {
+        for needle in ["t.zoomed == Some(pane)", "self.broadcast.sends(&view, pane)", "self.broadcast.receives(&view, pane)", "marks.alert_next", "self.is_browser_copy_mode(pane)", "crate::dlog::is_on()", "self.in_pinned_hotkey_window()", "self.chat_pane_state(pane)", "self.show_remembered", "\"DisableTopRightIndicators\""] {
             assert!(f.contains(needle), "{needle}");
         }
         assert!(!f.contains("browser_views") && !f.contains("io.") && !f.contains("url"), "nothing a page says is read");

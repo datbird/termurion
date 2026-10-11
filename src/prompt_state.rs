@@ -235,7 +235,7 @@ pub fn prompt_range(start: (i64, usize), end: (i64, usize)) -> ((i64, usize), (i
 
 /// The key that holds the clear sequence (`ADV:675`), its default, and how long the probe
 /// waits for the echo (`PS:8703`).
-pub const CLEAR_KEY: &str = "composerClearSequence";
+pub const CLEAR_KEY: &str = "ComposerClearSequence";
 pub const DEFAULT_CLEAR: &str = "0x15 0x0b";
 pub const PROBE: Duration = Duration::from_millis(100);
 
@@ -472,7 +472,7 @@ mod tests {
     #[test]
     fn clear_probe_follows_iterm2() {
         assert_eq!(keyaction::hex_bytes(DEFAULT_CLEAR), vec![0x15, 0x0b]);
-        assert_eq!(CLEAR_KEY, "composerClearSequence");
+        assert_eq!(CLEAR_KEY, "ComposerClearSequence");
         assert_eq!(PROBE, Duration::from_millis(100));
         assert_eq!(caret_pattern(&[0x15, 0x0b]), "(\\^U)?(\\^K)?");
         // 0 and bytes over 31 add no group; the letter is escaped like the caret.

@@ -847,8 +847,8 @@ impl App {
 
 /// `aiChatRawWireLogging` and `aiChatVerboseConsoleLogging` (12b's wire log and DebugView lines).
 #[cfg(windows)]
-const WIRE_LOG_KEY: &str = "aiChatRawWireLogging";
-const VERBOSE_KEY: &str = "aiChatVerboseConsoleLogging";
+const WIRE_LOG_KEY: &str = "AiChatRawWireLogging";
+const VERBOSE_KEY: &str = "AiChatVerboseConsoleLogging";
 
 /// A chat turn's requests: 12b's `Runner` over the App's transport, with the vendor's stored
 /// key read at the start.

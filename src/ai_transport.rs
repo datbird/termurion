@@ -61,7 +61,7 @@ pub enum Proxy {
 pub fn options_from(g: &Globals) -> Options {
     let secs = g.number(crate::ai_settings::TIMEOUT).unwrap_or(1200.0);
     let idle = if secs > 0.0 { Duration::try_from_secs_f64(secs).unwrap_or(Duration::MAX) } else { Duration::ZERO };
-    Options { idle, proxy: parse_proxy(&g.string("aiProxy")) }
+    Options { idle, proxy: parse_proxy(&g.string("AiProxy")) }
 }
 
 /// "host:port" with an integer port is an https proxy; anything else is ignored (`JF:149-160`;
@@ -571,7 +571,7 @@ mod tests {
         assert_eq!(options_from(&g).idle, Duration::ZERO);
         g.set("AI Timeout", Value::Integer(-3));
         assert_eq!(options_from(&g).idle, Duration::ZERO);
-        g.set("aiProxy", Value::String("proxy.test:8080".into()));
+        g.set("AiProxy", Value::String("proxy.test:8080".into()));
         assert_eq!(options_from(&g).proxy, Proxy::HttpsOnly { host: "proxy.test".into(), port: 8080 });
     }
 

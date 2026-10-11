@@ -111,7 +111,7 @@ impl App {
         prune(&self.store, &mut self.bonjour_live);
         let mut changed = false;
         while let Some(event) = self.bonjour.as_ref().and_then(|b| b.try_event()) {
-            let ssh = self.globals.string("sshSchemePath");
+            let ssh = self.globals.string("SshSchemePath");
             let ssh = if usable_ssh_path(&ssh) { ssh } else { "ssh".to_string() };
             changed |= apply_event(&mut self.store, &mut self.bonjour_live, event, &ssh);
         }

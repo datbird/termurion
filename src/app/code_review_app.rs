@@ -727,7 +727,7 @@ impl App {
         let main = inst.leader;
         let busy = self.panes.get(&main).is_some_and(|p| crate::session_state::reported_state(&p.own().tab_status) == crate::session_state::State::Working);
         let home = self.clip_home(main);
-        let separator = self.globals.string("clippingSeparator");
+        let separator = self.globals.string("ClippingSeparator");
         let list: Vec<String> = self.clips.get(&home).map(|c| c.model.live.iter().map(|k| crate::clippings::format(&[k], "")).collect()).unwrap_or_default();
         let Some(text) = cr::clippings_to_send(prev, now, Mode::CodeReview, toggle, busy, &list, &separator) else { return };
         if let Some(why) = cr::send_refusal(&self.review_send_target(instance, main, text.len())) {

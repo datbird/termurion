@@ -306,7 +306,7 @@ impl App {
 
     /// `statusBarHeight` in points (default 21).
     pub(super) fn status_bar_pt(&self) -> f32 {
-        self.globals.get("statusBarHeight").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(21.0).max(1.0) as f32
+        self.globals.get("StatusBarHeight").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(21.0).max(1.0) as f32
     }
 
     /// A bar's height in pixels: `statusBarHeight` points (21) at the window's scale.

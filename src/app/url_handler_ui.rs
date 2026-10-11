@@ -100,7 +100,7 @@ impl App {
         }
         let probe = self.path_probe();
         let dir = work_dir(cwd, &|p| crate::netpath::may_probe(p, &probe));
-        let lax = self.globals.bool("laxNilPolicyInInterpolatedStrings");
+        let lax = self.globals.bool("LaxNilPolicyInInterpolatedStrings");
         let vars = self.variables_with(pane, false);
         let lookup = |n: &str| crate::prompted::variable(n.strip_prefix("session.").unwrap_or(n), &vars);
         let path_var = std::env::var("PATH").unwrap_or_default();

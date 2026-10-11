@@ -105,8 +105,8 @@ impl Wire {
             token_limit: g.int(ai::TOKEN_LIMIT),
             response_limit: g.int(ai::RESPONSE_TOKEN_LIMIT),
             zdr: g.bool(ai::ZERO_DATA_RETENTION),
-            ollama_num_ctx: g.int("ollamaNumCtx"),
-            ollama_keep_alive: g.string("ollamaKeepAlive"),
+            ollama_num_ctx: g.int("OllamaNumCtx"),
+            ollama_keep_alive: g.string("OllamaKeepAlive"),
         }
     }
 }

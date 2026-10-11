@@ -455,7 +455,7 @@ mod tests {
 
     #[test]
     fn wire_log_help_says_what_the_code_does() {
-        let row = crate::schema::find_global("aiChatRawWireLogging").expect("12a's row");
+        let row = crate::schema::find_global("AiChatRawWireLogging").expect("12a's row");
         assert_eq!(row.help, HELP);
         assert!(HELP.contains("fingerprints"));
         assert!(HELP.contains("%APPDATA%\\Tandem\\AIChatWire"));

@@ -43,7 +43,7 @@ const SMALL: f32 = 0.8;
 /// View > Auto Composer's global (`kPreferenceAutoComposer`), menu-only.
 const AUTO_KEY: &str = "AutoComposer";
 /// Advanced > Session: Show Composer always uses the status bar when one shows (`ADV:676`).
-const ALWAYS_BAR_KEY: &str = "alwaysUseStatusBarComposer";
+const ALWAYS_BAR_KEY: &str = "AlwaysUseStatusBarComposer";
 /// Shell integration fed the history once (`kCommandHistoryHasEverBeenUsed`).
 const EVER_USED_KEY: &str = "NoSyncCommandHistoryHasEverBeenUsed";
 /// Popup row glyphs (Segoe Fluent Icons: History, Page, Folder, CommandPrompt).

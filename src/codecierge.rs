@@ -247,9 +247,9 @@ pub fn view(s: &Session, admin_allowed: bool, ai_enabled: bool, function_calling
 
 // ---- The conversation (`CG:62-370`) ----
 
-pub const GHOST_RIDING_KEY: &str = "codeciergeGhostRidingPrompt";
-pub const REGULAR_KEY: &str = "codeciergeRegularPrompt";
-pub const WARNING_COUNT_KEY: &str = "codeciergeCommandWarningCount";
+pub const GHOST_RIDING_KEY: &str = "CodeciergeGhostRidingPrompt";
+pub const REGULAR_KEY: &str = "CodeciergeRegularPrompt";
+pub const WARNING_COUNT_KEY: &str = "CodeciergeCommandWarningCount";
 
 /// `codeciergeGhostRidingPrompt`'s default (`ADV:921`): the system prompt when commands run
 /// automatically.
@@ -806,7 +806,7 @@ mod tests {
             system_prompt(GHOST_RIDING_DEFAULT, "g", "c"),
             "You operate a terminal emulator for me. My goal is g. c. Ask clarifying questions as needed and run commands using the execute function when you're ready. When I've reached my goal, remind me to click the End Task button."
         );
-        assert_eq!((GHOST_RIDING_KEY, REGULAR_KEY, WARNING_COUNT_KEY), ("codeciergeGhostRidingPrompt", "codeciergeRegularPrompt", "codeciergeCommandWarningCount"));
+        assert_eq!((GHOST_RIDING_KEY, REGULAR_KEY, WARNING_COUNT_KEY), ("CodeciergeGhostRidingPrompt", "CodeciergeRegularPrompt", "CodeciergeCommandWarningCount"));
         assert_eq!((GET_STARTED_MESSAGE, SESSION_GONE), ("Tell me how to get started.", "The session no longer exists"));
 
         let f = functions();

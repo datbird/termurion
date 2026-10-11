@@ -200,7 +200,7 @@ impl App {
         let prefix = uuid::Uuid::new_v4().hyphenated().to_string().to_uppercase();
         let mut c = Conductor::new(setup, p.conductor.take(), &prefix);
         c.saved = Some(saved);
-        c.uname_command = self.globals.string("unameCommand");
+        c.uname_command = self.globals.string("UnameCommand");
         if local {
             let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_default();
             for (path, destination) in &cfg.files_to_copy {

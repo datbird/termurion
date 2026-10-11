@@ -1125,7 +1125,7 @@ impl App {
                     gateways.push(gw);
                 }
             }
-            self.active = crate::close_rules::active_after_close(self.active, at, self.tabs.len(), self.globals.bool("moveLeftAfterClosingTab"));
+            self.active = crate::close_rules::active_after_close(self.active, at, self.tabs.len(), self.globals.bool("MoveLeftAfterClosingTab"));
             if self.tabs.is_empty() {
                 // The moving tab's browser views follow it before this window goes (N1).
                 self.browser_views_follow(&moving.layout.panes(), dest_id);

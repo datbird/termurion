@@ -952,7 +952,7 @@ impl App {
             focused.map(|f| self.session_title(f)).as_deref(),
         );
         let client = focused.and_then(|f| self.tmux_client_of(f));
-        crate::tmux_windows::window_title(&title, self.globals.bool("WindowNumber"), self.globals.bool("tmuxIncludeClientNameInWindowTitle"), client.as_deref())
+        crate::tmux_windows::window_title(&title, self.globals.bool("WindowNumber"), self.globals.bool("TmuxIncludeClientNameInWindowTitle"), client.as_deref())
     }
 
     /// Whether the current window has a title bar to carry the number label: decorated, not
@@ -1215,7 +1215,7 @@ impl App {
     pub(super) fn open_profile(&mut self, guid: &str, option: bool) {
         use crate::winmodel::{OpenRequest, Target, open_target};
         let prevent = self.store.get(guid).is_some_and(|p| p.bool("Prevent Opening in a Tab"));
-        match open_target(OpenRequest::ProfileMenu { option }, prevent, self.globals.bool("openProfilesInNewWindow")) {
+        match open_target(OpenRequest::ProfileMenu { option }, prevent, self.globals.bool("OpenProfilesInNewWindow")) {
             Target::Tab => self.new_tab(Some(guid)),
             Target::Window => {
                 self.pending_windows.push(NewWindow::Profile(Some(guid.to_string())));

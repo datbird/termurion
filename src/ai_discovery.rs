@@ -959,7 +959,7 @@ mod tests {
     #[test]
     fn discovery_ignores_ai_proxy() {
         let mut g = Globals::empty(&std::env::temp_dir().join("tandem-ai-discovery-test.toml"));
-        g.set("aiProxy", Value::String("proxy.test:8080".into()));
+        g.set("AiProxy", Value::String("proxy.test:8080".into()));
         let t: Table = r#"v = [{name="d", url="https://gpu.test/api/chat", dynamicModels=true}]"#.parse().unwrap();
         g.set(crate::ai_settings::MANUAL_MODELS, t["v"].clone());
         assert!(matches!(options_from(&g).proxy, Proxy::HttpsOnly { .. }), "model requests would use it");

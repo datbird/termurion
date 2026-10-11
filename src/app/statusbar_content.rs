@@ -626,7 +626,7 @@ impl App {
             let vars = if crate::prompted::names_selection(n) { full.get_or_init(|| self.variables_with(pane, true)) } else { light.get_or_init(|| self.variables_with(pane, false)) };
             crate::prompted::variable(n, vars)
         };
-        let lax = self.globals.bool("laxNilPolicyInInterpolatedStrings");
+        let lax = self.globals.bool("LaxNilPolicyInInterpolatedStrings");
         if cmd {
             return crate::interp::evaluate_cmd(template, &lookup, matches, lax);
         }

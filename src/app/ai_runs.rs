@@ -207,7 +207,7 @@ impl App {
         let options = crate::ai_transport::options_from(&self.globals);
         let runner = Runner::new(turn, self.ai_transport.clone(), options, self.notify.clone());
         #[cfg(windows)]
-        let runner = runner.with_log(self.ai_wire_log.clone(), self.globals.bool("aiChatRawWireLogging"));
+        let runner = runner.with_log(self.ai_wire_log.clone(), self.globals.bool("AiChatRawWireLogging"));
         let mut run = Run { runner, owner, endpoint };
         match launch(open, &mut run.runner, key.as_ref()) {
             Err(done) => {

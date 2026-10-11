@@ -59,7 +59,7 @@ impl App {
     pub(super) fn keep_jobs_on_quit(&self) -> bool {
         let g = &self.globals;
         let system_policy = !g.bool("OpenArrangementAtStartup") && !g.bool("OpenNoWindowsAtStartup");
-        self.host.is_some() && crate::close_rules::keep_jobs(true, g.bool("restoreWindowContents"), system_policy, g.bool("killJobsInServersOnQuit"))
+        self.host.is_some() && crate::close_rules::keep_jobs(true, g.bool("RestoreWindowContents"), system_policy, g.bool("KillJobsInServersOnQuit"))
     }
 
     /// Tandem is ending: with `keep`, every hosted shell stays in the host; otherwise the host
@@ -79,8 +79,8 @@ impl App {
     }
 
     fn restore_contents(&self) -> Contents {
-        if self.globals.bool("restoreWindowContents") {
-            Contents::Styled(self.globals.int("maxHistoryLinesToRestore").clamp(0, 10_000_000) as usize)
+        if self.globals.bool("RestoreWindowContents") {
+            Contents::Styled(self.globals.int("MaxHistoryLinesToRestore").clamp(0, 10_000_000) as usize)
         } else {
             // No text, but the shells still come back to their panes after a crash.
             Contents::KeysOnly
@@ -134,7 +134,7 @@ impl App {
         }
         // Only this launch-time read makes a saved chat reference adoptable.
         mark_adoptable(&mut state.windows);
-        if self.globals.bool("showSessionRestoredBanner") {
+        if self.globals.bool("ShowSessionRestoredBanner") {
             let line = restore_state::banner_text(&restore_date());
             for w in &mut state.windows {
                 mark_banner(w, &line);

@@ -147,7 +147,7 @@ impl App {
             self.session_hotkey_ids.push(panes);
         }
         let secs = |k: &str, d: f64| Duration::from_secs_f64(self.globals.get(k).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(d).clamp(0.0, 5.0));
-        let (min, max) = (secs("hotKeyDoubleTapMinDelay", 0.01), secs("hotKeyDoubleTapMaxDelay", 0.3));
+        let (min, max) = (secs("HotKeyDoubleTapMinDelay", 0.01), secs("HotKeyDoubleTapMaxDelay", 0.3));
         self.hotkey_errors.clear();
         for (pane, why) in plan.refused {
             self.hotkey_errors.insert(crate::session_hotkeys::error_key(pane), why.text().to_string());
@@ -502,7 +502,7 @@ impl App {
     }
 
     fn hotkey_duration(&self) -> Duration {
-        Duration::from_secs_f64(self.globals.get("hotkeyTermAnimationDuration").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(0.25).clamp(0.0, 5.0))
+        Duration::from_secs_f64(self.globals.get("HotkeyTermAnimationDuration").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(0.25).clamp(0.0, 5.0))
     }
 
     /// Cloaks the current hotkey window and, after a hide by the hotkey, gives focus back.

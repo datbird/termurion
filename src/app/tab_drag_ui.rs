@@ -425,7 +425,7 @@ impl App {
         if self.tabs.is_empty() {
             self.drop_current_window();
         } else {
-            self.active = crate::close_rules::active_after_close(self.active, from, self.tabs.len(), self.globals.bool("moveLeftAfterClosingTab"));
+            self.active = crate::close_rules::active_after_close(self.active, from, self.tabs.len(), self.globals.bool("MoveLeftAfterClosingTab"));
             // The neighbor selected may be hidden in a collapsed group.
             self.expand_selected_group();
             self.tmux_reorder();
@@ -475,7 +475,7 @@ impl App {
         tab.group = None;
         let gateway = self.tmux_of(tab.focused).map(|(gw, _, _)| gw);
         if !self.tabs.is_empty() {
-            self.active = crate::close_rules::active_after_close(self.active, from, self.tabs.len(), self.globals.bool("moveLeftAfterClosingTab"));
+            self.active = crate::close_rules::active_after_close(self.active, from, self.tabs.len(), self.globals.bool("MoveLeftAfterClosingTab"));
             self.expand_selected_group();
         }
         // Opened now, not with the pending windows, so a window whose only tab left closes

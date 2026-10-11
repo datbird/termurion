@@ -107,7 +107,7 @@ impl App {
             return self.banners.set("window", "Could not read the screen for Open Quickly.");
         };
         let dark = self.dark();
-        let duration = self.globals.get("openQuicklyAnimationDuration").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(0.12) as f32;
+        let duration = self.globals.get("OpenQuicklyAnimationDuration").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(0.12) as f32;
         let Some(g) = self.gpu.as_ref() else { return };
         match OpenQuicklyWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, monitor, &self.quickly_query, dark, duration) {
             Ok(window) => {

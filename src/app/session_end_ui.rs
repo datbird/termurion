@@ -147,7 +147,7 @@ impl App {
             p.own_mut().fire_event(crate::trigger_events::EventKind::SessionEnded, &Default::default(), &[]);
         }
         self.take_requests();
-        let custom = self.globals.string("sessionEndMessageText");
+        let custom = self.globals.string("SessionEndMessageText");
         let finished = self.globals.string("SessionFinishedMessageText");
         let divider = self.globals.string("SessionEndMessageDividerCharacter");
         let action = self.end_action_of(id);

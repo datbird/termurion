@@ -272,19 +272,19 @@ mod tests {
     #[test]
     fn text_writes_follow_iterm2() {
         let mut g = globals();
-        let height = row("statusBarHeight");
+        let height = row("StatusBarHeight");
         text_write(&mut g, &height, "22.5");
-        assert_eq!(g.values.get("statusBarHeight"), Some(&Value::Float(22.5)));
+        assert_eq!(g.values.get("StatusBarHeight"), Some(&Value::Float(22.5)));
         text_write(&mut g, &height, "21");
-        assert!(!g.values.contains_key("statusBarHeight"));
-        text_write(&mut g, &row("maximumBytesToProvideToPythonAPI"), "12abc");
-        assert_eq!(g.values.get("maximumBytesToProvideToPythonAPI"), Some(&Value::Integer(12)));
-        let prefix = row("tmuxTitlePrefix");
+        assert!(!g.values.contains_key("StatusBarHeight"));
+        text_write(&mut g, &row("MaximumBytesToProvideToPythonAPI"), "12abc");
+        assert_eq!(g.values.get("MaximumBytesToProvideToPythonAPI"), Some(&Value::Integer(12)));
+        let prefix = row("TmuxTitlePrefix");
         text_write(&mut g, &prefix, "> ");
-        assert_eq!(g.values.get("tmuxTitlePrefix"), Some(&Value::String("> ".into())));
+        assert_eq!(g.values.get("TmuxTitlePrefix"), Some(&Value::String("> ".into())));
         let default = prefix.default.as_ref().and_then(Value::as_str).unwrap().to_string();
         text_write(&mut g, &prefix, &default);
-        assert!(!g.values.contains_key("tmuxTitlePrefix"));
+        assert!(!g.values.contains_key("TmuxTitlePrefix"));
     }
 
     /// NSTableView floats group rows (iTerm2's pane is an NSTableView with group rows,
@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn enum_writes_follow_iterm2() {
         let mut g = globals();
-        let key = "anonymousTmuxWindowsOpenInCurrentWindow";
+        let key = "AnonymousTmuxWindowsOpenInCurrentWindow";
         let tmux = row(key);
         enum_write(&mut g, &tmux, 0);
         assert_eq!(g.values.get(key), Some(&Value::Integer(0)));

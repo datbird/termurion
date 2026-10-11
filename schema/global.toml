@@ -407,7 +407,7 @@ default = false
 help = "When pasting a dropped filename, wrap it in double quotes"
 
 [[setting]]
-key = "maximumBytesToProvideToPythonAPI"
+key = "MaximumBytesToProvideToPythonAPI"
 tab = "Advanced"
 section = "General"
 label = "Maximum number of bytes of selection to provide to Python API."
@@ -416,7 +416,7 @@ default = 100
 help = "Maximum number of bytes of selection to provide to Python API.\nA large value here can cause performance issues when you have a big selection."
 
 [[setting]]
-key = "disablePotentiallyInsecureEscapeSequences"
+key = "DisablePotentiallyInsecureEscapeSequences"
 tab = "Advanced"
 section = "General"
 label = "Disable potentially insecure escape sequences."
@@ -434,7 +434,7 @@ default = false
 help = "Use old-style find and paste progress indicator views.\nThis change will only affect new windows."
 
 [[setting]]
-key = "onePasswordAccount"
+key = "OnePasswordAccount"
 tab = "Advanced"
 section = "General"
 label = "1Password account name."
@@ -443,7 +443,7 @@ default = ""
 help = "1Password account name.\nThis is used if you\u2019ve enabled the 1Password integration in the password manager. Use `op account list` to get the list of accounts. This can be an account shorthand, sign-in address, account ID, or user ID."
 
 [[setting]]
-key = "defaultWideMode"
+key = "DefaultWideMode"
 tab = "Advanced"
 section = "Terminal"
 label = "When rendering natively, use wide mode by default?"
@@ -452,7 +452,7 @@ default = false
 help = "When rendering natively, use wide mode by default?"
 
 [[setting]]
-key = "nativeRenderingCSSDark"
+key = "NativeRenderingCSSDark"
 tab = "Advanced"
 section = "Drawing"
 label = "Path to CSS file to customize native drawing (for dark background colors)."
@@ -461,7 +461,7 @@ default = ""
 help = "Path to CSS file to customize native drawing (for dark background colors)."
 
 [[setting]]
-key = "nativeRenderingCSSLight"
+key = "NativeRenderingCSSLight"
 tab = "Advanced"
 section = "Drawing"
 label = "Path to CSS file to customize native drawing (for light background colors)."
@@ -470,7 +470,7 @@ default = ""
 help = "Path to CSS file to customize native drawing (for light background colors)."
 
 [[setting]]
-key = "screenshotSaveLocation"
+key = "ScreenshotSaveLocation"
 tab = "Advanced"
 section = "General"
 label = "Folder where the \u201cSave\u201d button in the screenshot window writes files."
@@ -527,7 +527,7 @@ default = true
 help = "A tab whose session printed something you have not looked at shows the new-output mark."
 
 [[setting]]
-key = "silentUserNotifications"
+key = "SilentUserNotifications"
 tab = "Advanced"
 section = "General"
 label = "System notifications should be silent."
@@ -536,7 +536,7 @@ default = false
 help = "System notifications should be silent."
 
 [[setting]]
-key = "simpleNotifications"
+key = "SimpleNotifications"
 tab = "Advanced"
 section = "General"
 label = "Omit session identifier from notifications."
@@ -545,7 +545,7 @@ default = false
 help = "Omit session identifier from notifications.\nWhen enabled, notifications will only show the message without the session name and tab number prefix."
 
 [[setting]]
-key = "sessionEndMessageText"
+key = "SessionEndMessageText"
 tab = "Advanced"
 section = "Session"
 label = "Text displayed when a session ends. Leave empty to use default."
@@ -653,7 +653,7 @@ default = true
 help = "Shell > Print leaves out text and background colors."
 
 [[setting]]
-key = "fileDropCoprocess"
+key = "FileDropCoprocess"
 tab = "Advanced"
 section = "Terminal"
 label = "When files are dropped into a terminal window, execute a silent coprocess."
@@ -689,7 +689,7 @@ default = false
 help = "Allow HDR effects\nWhen enabled, Tandem may render some UI effects, such as the selected tab's outline, brighter than white on an HDR-capable display. Off by default because forcing the display into extended dynamic range can cause hangs on some systems."
 
 [[setting]]
-key = "disableTopRightIndicators"
+key = "DisableTopRightIndicators"
 tab = "Advanced"
 section = "Drawing"
 label = "Disable indicator icons that appear in the top right of a session?"
@@ -698,7 +698,7 @@ default = false
 help = "Disable indicator icons that appear in the top right of a session?\nThis includes the following indicators: maximized pane, broadcast input, coprocess running, alert on next mark, output suppression, zoom, copy mode, and debug logging."
 
 [[setting]]
-key = "showAutomaticProfileSwitchingBanner"
+key = "ShowAutomaticProfileSwitchingBanner"
 tab = "Advanced"
 section = "Session"
 label = "Show a \u201cSwitched to profile\u201d message when Automatic Profile Switching activates."
@@ -707,7 +707,7 @@ default = true
 help = "Show a \u201cSwitched to profile\u201d message when Automatic Profile Switching activates."
 
 [[setting]]
-key = "preserveFontSizeOnAutomaticProfileSwitch"
+key = "PreserveFontSizeOnAutomaticProfileSwitch"
 tab = "Advanced"
 section = "Session"
 label = "Preserve font zoom level when Automatic Profile Switching changes profiles."
@@ -734,7 +734,7 @@ default = true
 help = "A window with a title bar shows its number (1, 2, ...) as a label at the right of the title, with its switch shortcut. A window without a title bar, in full screen, or with Show window number in titlebar accessory? off, starts its title with \"N. \" instead."
 
 [[setting]]
-key = "openProfilesInNewWindow"
+key = "OpenProfilesInNewWindow"
 tab = "Advanced"
 section = "Tabs"
 label = "Choosing a profile from the \u201cProfiles\u201d menu opens a new window."
@@ -807,7 +807,7 @@ default = true
 help = "Closing a tab or window with more than one running session asks first."
 
 [[setting]]
-key = "moveLeftAfterClosingTab"
+key = "MoveLeftAfterClosingTab"
 tab = "Advanced"
 section = "Tabs"
 label = "Select the tab to the left when closing a tab?"
@@ -972,7 +972,7 @@ default = ""
 help = "Tandem looks for Python API scripts in this folder instead of %APPDATA%\\Tandem\\Scripts. It must exist and have no spaces in its path. Network paths are not supported."
 
 [[setting]]
-key = "openNewWindowAtStartup"
+key = "OpenNewWindowAtStartup"
 tab = "Advanced"
 section = "General"
 label = "Open a window at startup?"
@@ -981,7 +981,7 @@ default = true
 help = "Open a window at startup?\nThis is useful if you wish to use the system window restoration settings but not create a new window if none would be restored."
 
 [[setting]]
-key = "runJobsInServers"
+key = "RunJobsInServers"
 tab = "Advanced"
 section = "Session"
 label = "Enable session restoration."
@@ -990,7 +990,7 @@ default = true
 help = "Enable session restoration.\nSession restoration runs jobs in a separate process (tandem-host). They will survive crashes, force quits, and upgrades.\nYou must restart Tandem for this change to take effect."
 
 [[setting]]
-key = "killJobsInServersOnQuit"
+key = "KillJobsInServersOnQuit"
 tab = "Advanced"
 section = "Session"
 label = "User-initiated Quit (Win+Q) of Tandem will kill all running jobs."
@@ -999,7 +999,7 @@ default = true
 help = "User-initiated Quit (Win+Q) of Tandem will kill all running jobs.\nApplies only when session restoration is on."
 
 [[setting]]
-key = "showSessionRestoredBanner"
+key = "ShowSessionRestoredBanner"
 tab = "Advanced"
 section = "Session"
 label = "When restoring a session without restoring a running job, draw a banner saying \u201cSession Contents Restored\u201d below the restored contents."
@@ -1008,7 +1008,7 @@ default = true
 help = "When restoring a session without restoring a running job, draw a banner saying \u201cSession Contents Restored\u201d below the restored contents."
 
 [[setting]]
-key = "composerClearSequence"
+key = "ComposerClearSequence"
 tab = "Advanced"
 section = "Session"
 label = "Hex codes to send to clear the command line when entering the composer."
@@ -1017,7 +1017,7 @@ default = "0x15 0x0b"
 help = "Hex codes to send to clear the command line when entering the composer.\n0x15 is ^U, 0x0b is ^K."
 
 [[setting]]
-key = "alwaysUseStatusBarComposer"
+key = "AlwaysUseStatusBarComposer"
 tab = "Advanced"
 section = "Session"
 label = "Temporarily add a composer to the status bar instead of opening the large composer view when a status bar is present."
@@ -1026,7 +1026,7 @@ default = false
 help = "Temporarily add a composer to the status bar instead of opening the large composer view when a status bar is present."
 
 [[setting]]
-key = "timeoutForDaemonAttachment"
+key = "TimeoutForDaemonAttachment"
 tab = "Advanced"
 section = "Session"
 label = "How long to wait when trying to attach to the session host at startup when restoring windows (in seconds)?"
@@ -1035,7 +1035,7 @@ default = 10.0
 help = "How long to wait when trying to attach to the session host at startup when restoring windows (in seconds)?"
 
 [[setting]]
-key = "translateScreenToXterm"
+key = "TranslateScreenToXterm"
 tab = "Advanced"
 section = "Terminal"
 label = "Support TERM=screen"
@@ -1044,7 +1044,7 @@ default = true
 help = "Support TERM=screen\nMost notably, this fixes italics replacing inverse text."
 
 [[setting]]
-key = "convertItalicsToReverseVideoForTmux"
+key = "ConvertItalicsToReverseVideoForTmux"
 tab = "Advanced"
 section = "Terminal"
 label = "Convert italics to reverse video in tmux integration?"
@@ -1053,7 +1053,7 @@ default = true
 help = "Convert italics to reverse video in tmux integration?\nThis is effective when the default TERM reported by tmux matches *screen*."
 
 [[setting]]
-key = "convertItalicsToReverseVideoForTmuxBugwardsCompatible"
+key = "ConvertItalicsToReverseVideoForTmuxBugwardsCompatible"
 tab = "Advanced"
 section = "Terminal"
 label = "Convert italics to reverse video in tmux integration, even when TERM matches *tmux*?"
@@ -1062,7 +1062,7 @@ default = false
 help = "Convert italics to reverse video in tmux integration, even when TERM matches *tmux*?\nThis was the default behavior for a long time, but it was incorrect. The conversion should only be done when TERM matches *screen*."
 
 [[setting]]
-key = "echoProbeDuration"
+key = "EchoProbeDuration"
 tab = "Advanced"
 section = "Terminal"
 label = "Amount of time to wait while testing if echo is on (seconds)."
@@ -1071,7 +1071,7 @@ default = 0.5
 help = "Amount of time to wait while testing if echo is on (seconds).\nThis is used by the password manager to ensure you're at a password prompt. Set to 0 to disable echo probe."
 
 [[setting]]
-key = "disablePasswordManagerAnimations"
+key = "DisablePasswordManagerAnimations"
 tab = "Advanced"
 section = "Terminal"
 label = "Disable animations for showing/hiding password manager."
@@ -1080,7 +1080,7 @@ default = false
 help = "Disable animations for showing/hiding password manager."
 
 [[setting]]
-key = "detectPasswordInput"
+key = "DetectPasswordInput"
 tab = "Advanced"
 section = "Terminal"
 label = "Show key at cursor at password prompt?"
@@ -1089,7 +1089,7 @@ default = true
 help = "Show key at cursor at password prompt?"
 
 [[setting]]
-key = "detectPasswordInputDebounce"
+key = "DetectPasswordInputDebounce"
 tab = "Advanced"
 section = "Terminal"
 label = "How long (seconds) terminal echo must remain disabled before Tandem treats it as a password prompt."
@@ -1125,7 +1125,7 @@ default = false
 help = "Asks again each time the password manager opens, instead of once until Tandem quits or the screen locks."
 
 [[setting]]
-key = "restoreWindowContents"
+key = "RestoreWindowContents"
 tab = "Advanced"
 section = "Terminal"
 label = "Restore window contents at startup."
@@ -1134,7 +1134,7 @@ default = true
 help = "Restore window contents at startup."
 
 [[setting]]
-key = "maxHistoryLinesToRestore"
+key = "MaxHistoryLinesToRestore"
 tab = "Advanced"
 section = "Terminal"
 label = "Maximum number of lines of history to restore."
@@ -1152,7 +1152,7 @@ default = false
 help = "Terminal windows resize smoothly.\nDisables snapping to character grid. Holding Control will temporarily disable snap-to-grid."
 
 [[setting]]
-key = "restoreWindowsWithinScreens"
+key = "RestoreWindowsWithinScreens"
 tab = "Advanced"
 section = "Windows"
 label = "When restoring a window arrangement, ensure windows are entirely within the bounds of the current displays."
@@ -1269,7 +1269,7 @@ default = 0
 help = "The app hotkey's modifiers (iTerm2's flags; Command is Win, Option is Alt)."
 
 [[setting]]
-key = "hotkeyTermAnimationDuration"
+key = "HotkeyTermAnimationDuration"
 tab = "Advanced"
 section = "Hotkey"
 label = "Duration in seconds of the hotkey window animation."
@@ -1305,7 +1305,7 @@ default = 0
 help = "The Open Quickly hotkey's modifiers (iTerm2's flags; Command is Win, Option is Alt)."
 
 [[setting]]
-key = "openQuicklyAnimationDuration"
+key = "OpenQuicklyAnimationDuration"
 tab = "Advanced"
 section = "Hotkey"
 label = "Duration in seconds of the Open Quickly window height animation."
@@ -1314,7 +1314,7 @@ default = 0.12
 help = "Duration in seconds of the Open Quickly window height animation.\nSet to 0 to disable the animation."
 
 [[setting]]
-key = "hotKeyDoubleTapMaxDelay"
+key = "HotKeyDoubleTapMaxDelay"
 tab = "Advanced"
 section = "Hotkey"
 label = "The maximum amount of time allowed between presses of a modifier key when performing a modifier double-tap."
@@ -1323,7 +1323,7 @@ default = 0.3
 help = "The maximum amount of time allowed between presses of a modifier key when performing a modifier double-tap."
 
 [[setting]]
-key = "hotKeyDoubleTapMinDelay"
+key = "HotKeyDoubleTapMinDelay"
 tab = "Advanced"
 section = "Hotkey"
 label = "The minimum amount of time required between presses of a modifier key when performing a modifier double-tap."
@@ -1782,7 +1782,7 @@ default = 20
 help = "Number of autocomplete options to present.\nA value less than 100 is recommended."
 
 [[setting]]
-key = "clippingSeparator"
+key = "ClippingSeparator"
 tab = "Advanced"
 section = "Pasteboard"
 label = "Separator inserted between multiple clippings when sending or copying them."
@@ -1958,7 +1958,7 @@ default = false
 help = "Suppress the \"Slow tmux Response\" warning shown when tmux does not answer its first command within five seconds."
 
 [[setting]]
-key = "tolerateUnrecognizedTmuxCommands"
+key = "TolerateUnrecognizedTmuxCommands"
 tab = "Advanced"
 section = "Tmux Integration"
 label = "Tolerate unrecognized commands from server."
@@ -2004,7 +2004,7 @@ default = 10
 help = "When a tmux session has more windows than this, none open on attach (iTerm2 tests more than, not at least)."
 
 [[setting]]
-key = "anonymousTmuxWindowsOpenInCurrentWindow"
+key = "AnonymousTmuxWindowsOpenInCurrentWindow"
 tab = "Advanced"
 section = "Tmux Integration"
 label = "Where should new tmux windows not created by Tandem open?"
@@ -2014,7 +2014,7 @@ choices = [ { value = 0, label = "New window" }, { value = 1, label = "Focused w
 help = "Where should new tmux windows not created by Tandem open?\n\u201cFocused window\u201d (the default) attaches the window as a tab of whichever Tandem window currently has keyboard focus. \u201cTopmost session window\u201d attaches it to the frontmost Tandem window that already shows a tab from this tmux session, regardless of focus."
 
 [[setting]]
-key = "pollForTmuxForegroundJob"
+key = "PollForTmuxForegroundJob"
 tab = "Advanced"
 section = "Tmux Integration"
 label = "Poll for foreground job name in tmux integration with tmux < 3.2?"
@@ -2023,7 +2023,7 @@ default = false
 help = "Poll for foreground job name in tmux integration with tmux < 3.2?\nThis enables tab icons but can cause a lot of background traffic. This has no effect in tmux 3.2 and later, where polling is unnecessary."
 
 [[setting]]
-key = "tmuxTitlePrefix"
+key = "TmuxTitlePrefix"
 tab = "Advanced"
 section = "Tmux Integration"
 label = "Insert this string at the start of tab and window titles to indicate tmux integration."
@@ -2032,7 +2032,7 @@ default = "↣ "
 help = "Insert this string at the start of tab and window titles to indicate tmux integration."
 
 [[setting]]
-key = "tmuxIncludeClientNameInWindowTitle"
+key = "TmuxIncludeClientNameInWindowTitle"
 tab = "Advanced"
 section = "Tmux Integration"
 label = "When using tmux integration, should the tmux client name (typically the name of the attaching session or the host name) appear in brackets in the window title?"
@@ -2041,7 +2041,7 @@ default = true
 help = "When using tmux integration, should the tmux client name (typically the name of the attaching session or the host name) appear in brackets in the window title?"
 
 [[setting]]
-key = "tmuxVariableWindowSizesSupported"
+key = "TmuxVariableWindowSizesSupported"
 tab = "Advanced"
 section = "Experimental Features"
 label = "Allow variable window sizes in tmux integration."
@@ -2050,7 +2050,7 @@ default = true
 help = "Allow variable window sizes in tmux integration.\nRequres tmux version 2.9 or later."
 
 [[setting]]
-key = "accelerateUploads"
+key = "AccelerateUploads"
 tab = "Advanced"
 section = "Experimental Features"
 label = "Make uploads with it2ul really fast."
@@ -2059,7 +2059,7 @@ default = true
 help = "Make uploads with it2ul really fast."
 
 [[setting]]
-key = "shouldSetLCTerminal"
+key = "ShouldSetLCTerminal"
 tab = "Advanced"
 section = "Experimental Features"
 label = "Set LC_TERMINAL=iTerm2."
@@ -2068,7 +2068,7 @@ default = true
 help = "Set LC_TERMINAL=iTerm2.\nopenssh and mosh pass this to hosts you connect to. It communicates the current terminal emulator. This is useful for enabling terminal emulator-specific features."
 
 [[setting]]
-key = "addUtilitiesToPATH"
+key = "AddUtilitiesToPATH"
 tab = "Advanced"
 section = "Experimental Features"
 label = "Add path to Tandem utilities to $PATH for new sessions?"
@@ -2077,7 +2077,7 @@ default = true
 help = "Add path to Tandem utilities to $PATH for new sessions?"
 
 [[setting]]
-key = "smartLoggingWithAutoComposer"
+key = "SmartLoggingWithAutoComposer"
 tab = "Advanced"
 section = "Experimental Features"
 label = "Enable more compact logging when using auto composer?"
@@ -2086,7 +2086,7 @@ default = false
 help = "Enable more compact logging when using auto composer?\nThis will avoid logging raw data in your prompt and your interactions with it. Instead, the prompt is logged once in plain text and the command is logged when sent."
 
 [[setting]]
-key = "disableTmuxWindowResizing"
+key = "DisableTmuxWindowResizing"
 tab = "Advanced"
 section = "Tmux Integration"
 label = "Don't automatically resize tmux windows"
@@ -2095,7 +2095,7 @@ default = true
 help = "Don't automatically resize tmux windows"
 
 [[setting]]
-key = "disableTmuxWindowPositionRestoration"
+key = "DisableTmuxWindowPositionRestoration"
 tab = "Advanced"
 section = "Tmux Integration"
 label = "Disable window position restoration in tmux integration."
@@ -2104,7 +2104,7 @@ default = false
 help = "Disable window position restoration in tmux integration."
 
 [[setting]]
-key = "rememberTmuxWindowSizes"
+key = "RememberTmuxWindowSizes"
 tab = "Advanced"
 section = "Tmux Integration"
 label = "Remember window sizes in tmux integration?"
@@ -2624,7 +2624,7 @@ type = "string"
 help = "Chat List Icon\nEdited in Settings > General > AI > Prompts."
 
 [[setting]]
-key = "llmPlatform"
+key = "LlmPlatform"
 tab = "Advanced"
 section = "General"
 label = "LLM Platform."
@@ -2633,7 +2633,7 @@ default = "OpenAI"
 help = "LLM Platform.\nLegal values are: OpenAI, Azure, Gemini. This determines the format of requests and responses."
 
 [[setting]]
-key = "aiModelCatalogURL"
+key = "AiModelCatalogURL"
 tab = "Advanced"
 section = "General"
 label = "URL to check for updates to the AI model catalog."
@@ -2642,7 +2642,7 @@ default = "https://iterm2.com/downloads/ai/manifest.json"
 help = "URL to check for updates to the AI model catalog.\nThe catalog defines the built-in AI models (context window, capabilities, and the recommended model per vendor). Tandem ships its catalog with each release and never downloads a newer one, so this URL is not used."
 
 [[setting]]
-key = "aiChatVerboseConsoleLogging"
+key = "AiChatVerboseConsoleLogging"
 tab = "Advanced"
 section = "Debugging"
 label = "Log AI chat traffic to the system console."
@@ -2651,7 +2651,7 @@ default = false
 help = "Log AI chat traffic to the system console.\nEmits per-turn user / agent / tool entries so you can trace exactly what the agent received and produced. Useful for debugging tool dispatch and history translation. Off by default; turn on only while reproducing an issue."
 
 [[setting]]
-key = "aiChatRawWireLogging"
+key = "AiChatRawWireLogging"
 tab = "Advanced"
 section = "Debugging"
 label = "Log raw AI API requests and responses to disk."
@@ -2660,7 +2660,7 @@ default = false
 help = "Log raw AI API requests and responses to disk.\nWrites every byte sent to and received from the AI vendor (request headers, body, streaming chunks, final response, errors, and timing) to %APPDATA%\\Tandem\\AIChatWire\\. One log file per app launch; rotate or delete it yourself when done. Every header value except known non-secret ones (such as Content-Type, Accept, User-Agent and anthropic-version), and keys that appear in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters); prompt and response content is logged verbatim. Off by default; turn on only while reproducing an issue and delete the files when finished."
 
 [[setting]]
-key = "unameCommand"
+key = "UnameCommand"
 tab = "Advanced"
 section = "SSH Integration"
 label = "Command used to set the `uname` variable."
@@ -2669,7 +2669,7 @@ default = "uname -s"
 help = "Command used to set the `uname` variable.\nThe main use of this is to use in the AI prompt so the language model knows the operating system."
 
 [[setting]]
-key = "sshSchemePath"
+key = "SshSchemePath"
 tab = "Advanced"
 section = "Terminal"
 label = "Command to run when handling an ssh:// URL."
@@ -2678,7 +2678,7 @@ default = "ssh"
 help = "Command to run when handling an ssh:// URL."
 
 [[setting]]
-key = "validCharactersInSSHUserNames"
+key = "ValidCharactersInSSHUserNames"
 tab = "Advanced"
 section = "SSH Integration"
 label = "Valid characters in SSH user names"
@@ -2687,7 +2687,7 @@ default = "_-+."
 help = "Valid characters in SSH user names\nAlphanumerics are always valid. This specifies other valid characters."
 
 [[setting]]
-key = "sshURLsSupportPath"
+key = "SshURLsSupportPath"
 tab = "Advanced"
 section = "Experimental Features"
 label = "SSH URLs respect the path."
@@ -2696,7 +2696,7 @@ default = true
 help = "SSH URLs respect the path.\nThey run the command: ssh -t \"cd $$PATH$$; exec \\$SHELL -l\""
 
 [[setting]]
-key = "restoreKeyModeAutomaticallyOnHostChange"
+key = "RestoreKeyModeAutomaticallyOnHostChange"
 tab = "Advanced"
 section = "Experimental Features"
 label = "Automatically restore keyboard mode when an ssh session ends?"
@@ -2705,7 +2705,7 @@ default = true
 help = "Automatically restore keyboard mode when an ssh session ends?"
 
 [[setting]]
-key = "aiModernModelPrefixes"
+key = "AiModernModelPrefixes"
 tab = "Advanced"
 section = "Experimental Features"
 label = "AI model name substrings that use the modern 'completions' API."
@@ -2714,7 +2714,7 @@ default = "gpt-"
 help = "AI model name substrings that use the modern 'completions' API.\nSubstrings should be space-delimited. This handles OpenRouter-style names like 'openai/gpt-4o'. Note that o1 models use a different API and have hard-coded behavior."
 
 [[setting]]
-key = "codeciergeGhostRidingPrompt"
+key = "CodeciergeGhostRidingPrompt"
 tab = "Advanced"
 section = "Experimental Features"
 label = "Prompt to send to LLM for Codecierge when it is able to execute commands automatically."
@@ -2723,7 +2723,7 @@ default = "You operate a terminal emulator for me. My goal is $GOAL. $CONTEXT. A
 help = "Prompt to send to LLM for Codecierge when it is able to execute commands automatically.\n$GOAL and $CONTEXT are replaced with the user-specified goal and info about the running environment, respectively."
 
 [[setting]]
-key = "codeciergeCommandWarningCount"
+key = "CodeciergeCommandWarningCount"
 tab = "Advanced"
 section = "Experimental Features"
 label = "After this many commands, make codecierge confirm that you intend to keep it enabled."
@@ -2732,7 +2732,7 @@ default = 10
 help = "After this many commands, make codecierge confirm that you intend to keep it enabled."
 
 [[setting]]
-key = "codeciergeRegularPrompt"
+key = "CodeciergeRegularPrompt"
 tab = "Advanced"
 section = "Experimental Features"
 label = "Prompt to send to LLM for Codecierge when it is NOT able to execute commands automatically."
@@ -2741,7 +2741,7 @@ default = "You help a me in a terminal emulator. My goal is $GOAL. $CONTEXT. Sta
 help = "Prompt to send to LLM for Codecierge when it is NOT able to execute commands automatically.\n$GOAL and $CONTEXT are replaced with the user-specified goal and info about the running environment, respectively."
 
 [[setting]]
-key = "aiProxy"
+key = "AiProxy"
 tab = "Advanced"
 section = "Experimental Features"
 label = "Host and port for proxy for AI requests."
@@ -2750,7 +2750,7 @@ default = ""
 help = "Host and port for proxy for AI requests.\ni.e., example.com:8080"
 
 [[setting]]
-key = "ollamaNumCtx"
+key = "OllamaNumCtx"
 tab = "Advanced"
 section = "Experimental Features"
 label = "Ollama context window size (num_ctx) for native /api/chat requests."
@@ -2759,7 +2759,7 @@ default = 0
 help = "Ollama context window size (num_ctx) for native /api/chat requests.\nOllama defaults num_ctx to a small value (around 4096) regardless of the model, silently truncating long prompts. 0 means size it automatically per request, capped at the model\u2019s context window. A positive value overrides that and is sent verbatim (larger values use more memory)."
 
 [[setting]]
-key = "ollamaKeepAlive"
+key = "OllamaKeepAlive"
 tab = "Advanced"
 section = "Experimental Features"
 label = "Ollama keep_alive for native /api/chat requests."
@@ -2767,7 +2767,7 @@ type = "string"
 default = "30m"
 help = "Ollama keep_alive for native /api/chat requests.\nHow long Ollama keeps the model resident after a request, e.g. 30m, 1h, or 0 to unload immediately. Empty means omit the field and use Ollama\u2019s own default."
 [[setting]]
-key = "noSyncDontWarnAboutTmuxPause"
+key = "NoSyncDontWarnAboutTmuxPause"
 tab = "Advanced"
 section = "Warnings"
 label = "Suppress announcement that tmux will pause a session."
@@ -2869,7 +2869,7 @@ default = false
 help = "Keeps the title bar on a pane that is alone in its tab."
 
 [[setting]]
-key = "statusBarHeight"
+key = "StatusBarHeight"
 tab = "Advanced"
 section = "General"
 label = "Height of the status bar in points."
@@ -2887,7 +2887,7 @@ default = true
 help = "In a tmux tab with the status bar on, the bar shows tmux's status-left and status-right instead of the profile's components."
 
 [[setting]]
-key = "gitSearchPath"
+key = "GitSearchPath"
 tab = "Advanced"
 section = "General"
 label = "PATH used when running git for the status bar component."
@@ -2896,7 +2896,7 @@ default = ""
 help = "PATH used when running git for the status bar component.\nChange this to use a custom install of git. The first folder in this ;-separated list holds the git.exe the status bar runs; empty runs git from PATH. A change here takes effect at once."
 
 [[setting]]
-key = "gitTimeout"
+key = "GitTimeout"
 tab = "Advanced"
 section = "General"
 label = "Timeout in seconds when running git for the status bar component."
@@ -2905,7 +2905,7 @@ default = 4.0
 help = "Timeout in seconds when running git for the status bar component."
 
 [[setting]]
-key = "excludeUtunFromNetworkUtilization"
+key = "ExcludeUtunFromNetworkUtilization"
 tab = "Advanced"
 section = "General"
 label = "Exclude tunnel interfaces from network utilization?"
@@ -2914,7 +2914,7 @@ default = true
 help = "Exclude tunnel interfaces from network utilization?\nThis is useful if you use a VPN and only want to see the traffic that goes over Wi-Fi or Ethernet."
 
 [[setting]]
-key = "lastpassGroups"
+key = "LastpassGroups"
 tab = "Advanced"
 section = "General"
 label = "Comma-separated list of LastPass groups for the password manager to look in for passwords."
@@ -2923,7 +2923,7 @@ default = ""
 help = "Comma-separated list of LastPass groups for the password manager to look in for passwords."
 
 [[setting]]
-key = "animateGraphStatusBarComponents"
+key = "AnimateGraphStatusBarComponents"
 tab = "Advanced"
 section = "Drawing"
 label = "Animate graph-based status bar components?"
@@ -2941,7 +2941,7 @@ default = 250.0
 help = "Width in points of the toolbelt in new windows. View > Toolbelt > Set Default Width records the current width."
 
 [[setting]]
-key = "toolbeltFont"
+key = "ToolbeltFont"
 tab = "Advanced"
 section = "Windows"
 label = "Toolbelt font family name"
@@ -2950,7 +2950,7 @@ default = "Menlo"
 help = "Toolbelt font family name\nMenlo is not on Windows: a missing font draws in Consolas."
 
 [[setting]]
-key = "toolbeltFontSize"
+key = "ToolbeltFontSize"
 tab = "Advanced"
 section = "Windows"
 label = "Toolbelt font size in points."
@@ -2959,7 +2959,7 @@ default = 0.0
 help = "Toolbelt font size in points.\nSet to 0 to use the system default. Changing this setting does not affect existing windows."
 
 [[setting]]
-key = "setCookie"
+key = "SetCookie"
 tab = "Advanced"
 section = "Scripting"
 label = "Set ITERM2_COOKIE environment variable, allowing Python scripts to be launched without confirmation?"
@@ -2968,7 +2968,7 @@ default = false
 help = "Set ITERM2_COOKIE environment variable, allowing Python scripts to be launched without confirmation?\nThis will only affect sessions created after changing this setting."
 
 [[setting]]
-key = "laxNilPolicyInInterpolatedStrings"
+key = "LaxNilPolicyInInterpolatedStrings"
 tab = "Advanced"
 section = "Scripting"
 label = "Should references to undefined variables in interpolated strings be converted to empty string?"
@@ -2977,7 +2977,7 @@ default = true
 help = "Should references to undefined variables in interpolated strings be converted to empty string?\nWhen enabled, an expression in an interpolated string that references an undefined variable will be treated as an empty string. For example, \u201c\\(bogus)\u201d. References to undefined variables as arguments to function calls, such as \u201c\\(f(bogus))\u201d, are still errors."
 
 [[setting]]
-key = "pythonRuntimeDownloadURL"
+key = "PythonRuntimeDownloadURL"
 tab = "Advanced"
 section = "Scripting"
 label = "URL to check for new versions of the Python scripting runtime."
@@ -2986,7 +2986,7 @@ default = "https://iterm2.com/downloads/pyenv/manifest.json"
 help = "URL to check for new versions of the Python scripting runtime."
 
 [[setting]]
-key = "uvManifestDownloadURL"
+key = "UvManifestDownloadURL"
 tab = "Advanced"
 section = "Scripting"
 label = "URL of the uv download manifest (used when the Python runtime is provisioned with uv)."
@@ -2995,7 +2995,7 @@ default = "https://iterm2.com/downloads/uv/manifest.json"
 help = "URL of the uv download manifest (used when the Python runtime is provisioned with uv)."
 
 [[setting]]
-key = "pythonRuntimeBetaDownloadURL"
+key = "PythonRuntimeBetaDownloadURL"
 tab = "Advanced"
 section = "Scripting"
 label = "URL to check for new Beta versions of the Python scripting runtime."
@@ -3004,7 +3004,7 @@ default = "https://iterm2.com/downloads/pyenv/betamanifest.json"
 help = "URL to check for new Beta versions of the Python scripting runtime."
 
 [[setting]]
-key = "pythonRuntimeUsesUV"
+key = "PythonRuntimeUsesUV"
 tab = "Advanced"
 section = "Scripting"
 label = "Use uv to provision the Python runtime for API scripts?"
@@ -3013,7 +3013,7 @@ default = true
 help = "Use uv to provision the Python runtime for API scripts?\nWhen enabled, Tandem uses uv to download Python and build per-script environments instead of the bundled Python runtime. Scripts already provisioned continue to run regardless of this setting; it only affects creating, importing, and migrating scripts."
 
 [[setting]]
-key = "setIT2AppPath"
+key = "SetIT2AppPath"
 tab = "Advanced"
 section = "Scripting"
 label = "Set IT2_APP_PATH environment variable on new sessions, pointing at this Tandem build\u2019s app bundle?"

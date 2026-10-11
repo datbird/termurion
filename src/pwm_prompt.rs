@@ -14,8 +14,8 @@ pub const ENABLE_LINE_INPUT: u32 = 0x2;
 
 /// The globals: detection on (`detectPasswordInput`, "Show key at cursor at password prompt?")
 /// and how long echo must stay off first (`detectPasswordInputDebounce`).
-pub const DETECT_KEY: &str = "detectPasswordInput";
-pub const DEBOUNCE_KEY: &str = "detectPasswordInputDebounce";
+pub const DETECT_KEY: &str = "DetectPasswordInput";
+pub const DEBOUNCE_KEY: &str = "DetectPasswordInputDebounce";
 pub const DEFAULT_DEBOUNCE: f64 = 0.2;
 
 /// The profile setting that opens the manager at a password prompt.

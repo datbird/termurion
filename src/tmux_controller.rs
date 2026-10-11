@@ -2273,7 +2273,7 @@ mod tests {
         }
         r.sent();
         r.ctl.poll(13.0, &mut r.gw);
-        assert_eq!(r.sent(), "display-message -t '%0' -p '#{pane_current_command}'\r", "pollForTmuxForegroundJob");
+        assert_eq!(r.sent(), "display-message -t '%0' -p '#{pane_current_command}'\r", "PollForTmuxForegroundJob");
     }
 
     #[test]

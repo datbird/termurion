@@ -12,6 +12,104 @@ use crate::pointer::{self, PointerBinding};
 use crate::profile::Profile;
 use crate::schema::{self, Kind, Setting};
 
+/// Every Advanced key the 13y2 rename sweep moved: (old lower-case key, new key). Settings
+/// files written before the sweep still load (`Globals::load` moves each value to its new key).
+pub const RENAMED: &[(&str, &str)] = &[
+    ("maximumBytesToProvideToPythonAPI", "MaximumBytesToProvideToPythonAPI"),
+    ("disablePotentiallyInsecureEscapeSequences", "DisablePotentiallyInsecureEscapeSequences"),
+    ("onePasswordAccount", "OnePasswordAccount"),
+    ("defaultWideMode", "DefaultWideMode"),
+    ("nativeRenderingCSSDark", "NativeRenderingCSSDark"),
+    ("nativeRenderingCSSLight", "NativeRenderingCSSLight"),
+    ("screenshotSaveLocation", "ScreenshotSaveLocation"),
+    ("silentUserNotifications", "SilentUserNotifications"),
+    ("simpleNotifications", "SimpleNotifications"),
+    ("sessionEndMessageText", "SessionEndMessageText"),
+    ("fileDropCoprocess", "FileDropCoprocess"),
+    ("disableTopRightIndicators", "DisableTopRightIndicators"),
+    ("showAutomaticProfileSwitchingBanner", "ShowAutomaticProfileSwitchingBanner"),
+    ("preserveFontSizeOnAutomaticProfileSwitch", "PreserveFontSizeOnAutomaticProfileSwitch"),
+    ("openProfilesInNewWindow", "OpenProfilesInNewWindow"),
+    ("moveLeftAfterClosingTab", "MoveLeftAfterClosingTab"),
+    ("openNewWindowAtStartup", "OpenNewWindowAtStartup"),
+    ("runJobsInServers", "RunJobsInServers"),
+    ("killJobsInServersOnQuit", "KillJobsInServersOnQuit"),
+    ("showSessionRestoredBanner", "ShowSessionRestoredBanner"),
+    ("composerClearSequence", "ComposerClearSequence"),
+    ("alwaysUseStatusBarComposer", "AlwaysUseStatusBarComposer"),
+    ("timeoutForDaemonAttachment", "TimeoutForDaemonAttachment"),
+    ("translateScreenToXterm", "TranslateScreenToXterm"),
+    ("convertItalicsToReverseVideoForTmux", "ConvertItalicsToReverseVideoForTmux"),
+    ("convertItalicsToReverseVideoForTmuxBugwardsCompatible", "ConvertItalicsToReverseVideoForTmuxBugwardsCompatible"),
+    ("echoProbeDuration", "EchoProbeDuration"),
+    ("disablePasswordManagerAnimations", "DisablePasswordManagerAnimations"),
+    ("detectPasswordInput", "DetectPasswordInput"),
+    ("detectPasswordInputDebounce", "DetectPasswordInputDebounce"),
+    ("restoreWindowContents", "RestoreWindowContents"),
+    ("maxHistoryLinesToRestore", "MaxHistoryLinesToRestore"),
+    ("restoreWindowsWithinScreens", "RestoreWindowsWithinScreens"),
+    ("hotkeyTermAnimationDuration", "HotkeyTermAnimationDuration"),
+    ("openQuicklyAnimationDuration", "OpenQuicklyAnimationDuration"),
+    ("hotKeyDoubleTapMaxDelay", "HotKeyDoubleTapMaxDelay"),
+    ("hotKeyDoubleTapMinDelay", "HotKeyDoubleTapMinDelay"),
+    ("clippingSeparator", "ClippingSeparator"),
+    ("tolerateUnrecognizedTmuxCommands", "TolerateUnrecognizedTmuxCommands"),
+    ("anonymousTmuxWindowsOpenInCurrentWindow", "AnonymousTmuxWindowsOpenInCurrentWindow"),
+    ("pollForTmuxForegroundJob", "PollForTmuxForegroundJob"),
+    ("tmuxTitlePrefix", "TmuxTitlePrefix"),
+    ("tmuxIncludeClientNameInWindowTitle", "TmuxIncludeClientNameInWindowTitle"),
+    ("tmuxVariableWindowSizesSupported", "TmuxVariableWindowSizesSupported"),
+    ("accelerateUploads", "AccelerateUploads"),
+    ("shouldSetLCTerminal", "ShouldSetLCTerminal"),
+    ("addUtilitiesToPATH", "AddUtilitiesToPATH"),
+    ("smartLoggingWithAutoComposer", "SmartLoggingWithAutoComposer"),
+    ("disableTmuxWindowResizing", "DisableTmuxWindowResizing"),
+    ("disableTmuxWindowPositionRestoration", "DisableTmuxWindowPositionRestoration"),
+    ("rememberTmuxWindowSizes", "RememberTmuxWindowSizes"),
+    ("llmPlatform", "LlmPlatform"),
+    ("aiModelCatalogURL", "AiModelCatalogURL"),
+    ("aiChatVerboseConsoleLogging", "AiChatVerboseConsoleLogging"),
+    ("aiChatRawWireLogging", "AiChatRawWireLogging"),
+    ("unameCommand", "UnameCommand"),
+    ("sshSchemePath", "SshSchemePath"),
+    ("validCharactersInSSHUserNames", "ValidCharactersInSSHUserNames"),
+    ("sshURLsSupportPath", "SshURLsSupportPath"),
+    ("restoreKeyModeAutomaticallyOnHostChange", "RestoreKeyModeAutomaticallyOnHostChange"),
+    ("aiModernModelPrefixes", "AiModernModelPrefixes"),
+    ("codeciergeGhostRidingPrompt", "CodeciergeGhostRidingPrompt"),
+    ("codeciergeCommandWarningCount", "CodeciergeCommandWarningCount"),
+    ("codeciergeRegularPrompt", "CodeciergeRegularPrompt"),
+    ("aiProxy", "AiProxy"),
+    ("ollamaNumCtx", "OllamaNumCtx"),
+    ("ollamaKeepAlive", "OllamaKeepAlive"),
+    ("noSyncDontWarnAboutTmuxPause", "NoSyncDontWarnAboutTmuxPause"),
+    ("statusBarHeight", "StatusBarHeight"),
+    ("gitSearchPath", "GitSearchPath"),
+    ("gitTimeout", "GitTimeout"),
+    ("excludeUtunFromNetworkUtilization", "ExcludeUtunFromNetworkUtilization"),
+    ("lastpassGroups", "LastpassGroups"),
+    ("animateGraphStatusBarComponents", "AnimateGraphStatusBarComponents"),
+    ("toolbeltFont", "ToolbeltFont"),
+    ("toolbeltFontSize", "ToolbeltFontSize"),
+    ("setCookie", "SetCookie"),
+    ("laxNilPolicyInInterpolatedStrings", "LaxNilPolicyInInterpolatedStrings"),
+    ("pythonRuntimeDownloadURL", "PythonRuntimeDownloadURL"),
+    ("uvManifestDownloadURL", "UvManifestDownloadURL"),
+    ("pythonRuntimeBetaDownloadURL", "PythonRuntimeBetaDownloadURL"),
+    ("pythonRuntimeUsesUV", "PythonRuntimeUsesUV"),
+    ("setIT2AppPath", "SetIT2AppPath"),
+];
+
+/// iTerm2's defaults key for an Advanced setting: its name with the first letter capitalized
+/// (`iTermAdvancedSettingsModel.m:102-112`).
+pub fn capitalized(key: &str) -> String {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 thread_local! {
     /// The snippets Send Snippet can pick and names; the settings window sets them each
     /// frame from the snippets file.
@@ -1753,6 +1851,61 @@ pub fn profile_key_mappings(ui: &mut egui::Ui, p: &mut Profile, st: &mut KeysSta
 mod tests {
     use super::*;
 
+    /// 13y2 Task 9b (Review Focus 10): every Advanced row is iTerm2's capitalized defaults key, each
+    /// renamed pair is old to capitalized(old) and lands on a schema row, no key repeats.
+    #[test]
+    fn advanced_keys_follow_iterm2() {
+        let mut seen = std::collections::HashSet::new();
+        for s in crate::schema::global() {
+            assert!(seen.insert(s.key.clone()), "{}: two rows share a key", s.key);
+            if s.tab == "Advanced" {
+                assert_eq!(capitalized(&s.key), s.key, "{}: an Advanced key starts upper-case", s.key);
+            }
+        }
+        assert!(!RENAMED.is_empty());
+        for (old, new) in RENAMED {
+            assert_eq!(&capitalized(old), new, "{old}");
+            assert_ne!(old, new);
+            assert!(crate::schema::find_global(new).is_some(), "{new}: not a schema key");
+            assert!(crate::schema::find_global(old).is_none(), "{old}: still a schema key");
+        }
+    }
+
+    /// 13y2 Task 9b: no reader is left on an old name (a reader of a key with no schema row reads
+    /// the empty default, silently). Every `src` file is scanned for the old keys as string
+    /// literals; only the `RENAMED` table and the migration tests may spell them.
+    #[test]
+    fn no_reader_left_on_an_old_key() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        let mut bad = Vec::new();
+        for f in files {
+            let text = std::fs::read_to_string(&f).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                let t = line.trim_start();
+                if t.starts_with("//") || t.starts_with("(\"") && t.ends_with("\"),") {
+                    continue;
+                }
+                for (old, _) in RENAMED {
+                    if line.contains(&format!("\"{old}\"")) {
+                        bad.push(format!("{}:{}: {old}", f.display(), n + 1));
+                    }
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{bad:#?}");
+    }
+
     /// 13j: the Advanced > Mouse rows and the three Experimental Features rows, iTerm2's text
     /// with "Tandem" for "iTerm2"; the label is the first line of the help.
     #[test]
@@ -1842,7 +1995,7 @@ mod tests {
             }
         }
         // m14e's row (already on main) is not this task's: it keeps its own section.
-        assert_eq!(schema::find_global("restoreKeyModeAutomaticallyOnHostChange").map(|s| s.tab.as_str()), Some("Advanced"));
+        assert_eq!(schema::find_global("RestoreKeyModeAutomaticallyOnHostChange").map(|s| s.tab.as_str()), Some("Advanced"));
         // The Keys tab keeps the layout rows after Remap modifiers globally, in iTerm2's order.
         let order: Vec<&str> = schema::global().iter().filter(|s| s.section == "Remap Modifiers").map(|s| s.key.as_str()).collect();
         let at = |k: &str| order.iter().position(|o| *o == k).unwrap_or_else(|| panic!("{k}"));
@@ -1980,7 +2133,7 @@ mod tests {
         let choices: Vec<(Value, &str)> = auth.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
         assert_eq!(choices, [(Value::Integer(0), REQUIRE_COOKIE), (Value::Integer(1), ALLOW_ALL_APPS)]);
         assert_eq!(auth.default, Some(Value::Integer(0)));
-        let cookie = schema::find_global("setCookie").unwrap();
+        let cookie = schema::find_global("SetCookie").unwrap();
         assert_eq!((cookie.tab.as_str(), cookie.section.as_str()), ("Advanced", "Scripting"));
         assert_eq!(cookie.kind, Kind::Bool);
         assert_eq!(cookie.default, Some(Value::Boolean(false)));
@@ -1989,13 +2142,13 @@ mod tests {
             cookie.help,
             "Set ITERM2_COOKIE environment variable, allowing Python scripts to be launched without confirmation?\nThis will only affect sessions created after changing this setting."
         );
-        let cap = schema::find_global("maximumBytesToProvideToPythonAPI").unwrap();
+        let cap = schema::find_global("MaximumBytesToProvideToPythonAPI").unwrap();
         assert_eq!((cap.tab.as_str(), cap.section.as_str()), ("Advanced", "General"));
         assert_eq!(cap.kind, Kind::Int);
         assert_eq!(cap.default, Some(Value::Integer(100)));
         assert_eq!(cap.label, "Maximum number of bytes of selection to provide to Python API.");
         assert_eq!(cap.help, "Maximum number of bytes of selection to provide to Python API.\nA large value here can cause performance issues when you have a big selection.");
-        let lax = schema::find_global("laxNilPolicyInInterpolatedStrings").unwrap();
+        let lax = schema::find_global("LaxNilPolicyInInterpolatedStrings").unwrap();
         assert_eq!((lax.tab.as_str(), lax.section.as_str()), ("Advanced", "Scripting"));
         assert_eq!(lax.kind, Kind::Bool);
         assert_eq!(lax.default, Some(Value::Boolean(true)));
@@ -2003,7 +2156,7 @@ mod tests {
         let mut g = Globals::empty(std::path::Path::new("api-rows-test.toml"));
         assert!(!row_enabled(&g, "API Authentication Method"));
         assert!(row_enabled(&g, "EnableAPIServer"));
-        assert!(row_enabled(&g, "setCookie"));
+        assert!(row_enabled(&g, "SetCookie"));
         g.set("EnableAPIServer", Value::Boolean(true));
         assert!(row_enabled(&g, "API Authentication Method"));
         assert!(row_enabled(&g, "IRMemory"));
@@ -2797,14 +2950,14 @@ mod tests {
     #[test]
     fn scripting_rows_follow_iterm2() {
         for (key, default, help) in [
-            ("pythonRuntimeDownloadURL", "https://iterm2.com/downloads/pyenv/manifest.json", "URL to check for new versions of the Python scripting runtime."),
+            ("PythonRuntimeDownloadURL", "https://iterm2.com/downloads/pyenv/manifest.json", "URL to check for new versions of the Python scripting runtime."),
             (
-                "uvManifestDownloadURL",
+                "UvManifestDownloadURL",
                 "https://iterm2.com/downloads/uv/manifest.json",
                 "URL of the uv download manifest (used when the Python runtime is provisioned with uv).",
             ),
             (
-                "pythonRuntimeBetaDownloadURL",
+                "PythonRuntimeBetaDownloadURL",
                 "https://iterm2.com/downloads/pyenv/betamanifest.json",
                 "URL to check for new Beta versions of the Python scripting runtime.",
             ),
@@ -2819,13 +2972,13 @@ mod tests {
         let app_label = "Set IT2_APP_PATH environment variable on new sessions, pointing at this Tandem build\u{2019}s app bundle?";
         for (key, default, label, help) in [
             (
-                "pythonRuntimeUsesUV",
+                "PythonRuntimeUsesUV",
                 true,
                 uv_label,
                 format!("{uv_label}\nWhen enabled, Tandem uses uv to download Python and build per-script environments instead of the bundled Python runtime. Scripts already provisioned continue to run regardless of this setting; it only affects creating, importing, and migrating scripts."),
             ),
             (
-                "setIT2AppPath",
+                "SetIT2AppPath",
                 false,
                 app_label,
                 format!("{app_label}\nThis disambiguates the AppleScript target when multiple Tandem builds with the same bundle identifier are running, so that the \u{201c}it2\u{201d} CLI requests its cookie from this Tandem instance. Intended for Tandem developers. Only affects sessions created after changing this setting."),
@@ -2890,12 +3043,12 @@ mod tests {
         assert!(!g.values.contains_key("FocusFollowsMouse"), "the file drops a default");
         assert!(global_is_default(&g, ffm));
         // Numbers: within 0.001 of the default is default (`isNullablyEqualToObject:epsilon:0.001`).
-        let height = schema::find_global("statusBarHeight").unwrap();
-        g.values.insert("statusBarHeight".into(), Value::Float(21.0005));
+        let height = schema::find_global("StatusBarHeight").unwrap();
+        g.values.insert("StatusBarHeight".into(), Value::Float(21.0005));
         assert!(global_is_default(&g, height));
-        g.values.insert("statusBarHeight".into(), Value::Integer(21));
+        g.values.insert("StatusBarHeight".into(), Value::Integer(21));
         assert!(global_is_default(&g, height));
-        g.values.insert("statusBarHeight".into(), Value::Float(21.01));
+        g.values.insert("StatusBarHeight".into(), Value::Float(21.01));
         assert!(!global_is_default(&g, height));
         // An optional bool has no default: a stored No or Yes is not default, unset is.
         let prevent = schema::find_global("PreventEscapeSequenceFromChangingProfile").unwrap();
@@ -2925,7 +3078,7 @@ mod tests {
         // The help is the whole DEFINE text (`AS:695`, with no closing period); the label its first line.
         assert_eq!((row.label.as_str(), row.help.as_str()), (label, format!("{label}\nThis only applies to changing the font size with Make Text Bigger, Make Text Normal Size, and Make Text Smaller").as_str()));
         let help = "Preserve font zoom level when Automatic Profile Switching changes profiles.";
-        let row = schema::find_global("preserveFontSizeOnAutomaticProfileSwitch").expect("preserveFontSizeOnAutomaticProfileSwitch");
+        let row = schema::find_global("PreserveFontSizeOnAutomaticProfileSwitch").expect("PreserveFontSizeOnAutomaticProfileSwitch");
         assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "Session", Kind::Bool));
         assert_eq!(row.default, Some(Value::Boolean(true)));
         assert_eq!((row.label.as_str(), row.help.as_str()), (help, help));
@@ -2956,11 +3109,11 @@ mod tests {
     /// m14e Task 4: the Advanced row that turns the key mode restore on.
     #[test]
     fn restore_key_mode_row_follows_iterm2() {
-        let row = schema::find_global("restoreKeyModeAutomaticallyOnHostChange").expect("restoreKeyModeAutomaticallyOnHostChange");
+        let row = schema::find_global("RestoreKeyModeAutomaticallyOnHostChange").expect("RestoreKeyModeAutomaticallyOnHostChange");
         assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "Experimental Features", Kind::Bool));
         assert_eq!(row.default, Some(Value::Boolean(true)));
         assert_eq!(row.label, "Automatically restore keyboard mode when an ssh session ends?");
-        assert!(page_rows("Advanced").iter().any(|s| s.key == "restoreKeyModeAutomaticallyOnHostChange"));
+        assert!(page_rows("Advanced").iter().any(|s| s.key == "RestoreKeyModeAutomaticallyOnHostChange"));
     }
 
     /// `SL:562-640`, `AS:444`, `AS:746`, `AS:880`: the ssh: URL rows. `SshIntegrationForURLs` is
@@ -2972,9 +3125,9 @@ mod tests {
         assert_eq!(ssh.default, Some(Value::Boolean(false)));
         assert!(page_rows("General").iter().any(|s| s.key == "SshIntegrationForURLs" && s.section == "Experimental"));
         for (key, section, kind, default, label, help) in [
-            ("sshSchemePath", "Terminal", Kind::String, Value::String("ssh".into()), "Command to run when handling an ssh:// URL.", None),
+            ("SshSchemePath", "Terminal", Kind::String, Value::String("ssh".into()), "Command to run when handling an ssh:// URL.", None),
             (
-                "validCharactersInSSHUserNames",
+                "ValidCharactersInSSHUserNames",
                 "SSH Integration",
                 Kind::String,
                 Value::String("_-+.".into()),
@@ -2982,7 +3135,7 @@ mod tests {
                 Some("Valid characters in SSH user names\nAlphanumerics are always valid. This specifies other valid characters."),
             ),
             (
-                "sshURLsSupportPath",
+                "SshURLsSupportPath",
                 "Experimental Features",
                 Kind::Bool,
                 Value::Boolean(true),
@@ -3000,7 +3153,7 @@ mod tests {
             assert!(page_rows("Advanced").iter().any(|s| s.key == key), "{key}");
         }
         // Each key is declared once.
-        for key in ["SshIntegrationForURLs", "sshSchemePath", "validCharactersInSSHUserNames", "sshURLsSupportPath"] {
+        for key in ["SshIntegrationForURLs", "SshSchemePath", "ValidCharactersInSSHUserNames", "SshURLsSupportPath"] {
             assert_eq!(schema::global().iter().filter(|s| s.key == key).count(), 1, "{key}");
         }
     }
@@ -3020,8 +3173,11 @@ mod tests {
             assert!(page_rows("Advanced").iter().any(|s| s.key == key), "{key}");
             assert_eq!(schema::global().iter().filter(|s| s.key == key).count(), 1, "{key}");
         }
-        for dup in ["SshSchemePath", "ValidCharactersInSSHUserNames"] {
-            assert!(schema::find_global(dup).is_none(), "{dup}: the built lower-case row is the only one");
+        // 13y2 Task 9b: the ssh rows took iTerm2's capitalized names; the lower-case rows are gone.
+        for new in ["SshSchemePath", "ValidCharactersInSSHUserNames"] {
+            let old = RENAMED.iter().find(|(_, n)| *n == new).map(|(o, _)| *o).expect("renamed");
+            assert!(schema::find_global(old).is_none(), "{old}: renamed");
+            assert_eq!(schema::global().iter().filter(|s| s.key == new).count(), 1, "{new}");
         }
     }
 
@@ -3116,8 +3272,8 @@ mod tests {
     fn utilities_rows_follow_iterm2() {
         let lc = "Set LC_TERMINAL=iTerm2.";
         for (key, label, help) in [
-            ("addUtilitiesToPATH", "Add path to Tandem utilities to $PATH for new sessions?", "Add path to Tandem utilities to $PATH for new sessions?".to_string()),
-            ("shouldSetLCTerminal", lc, format!("{lc}\nopenssh and mosh pass this to hosts you connect to. It communicates the current terminal emulator. This is useful for enabling terminal emulator-specific features.")),
+            ("AddUtilitiesToPATH", "Add path to Tandem utilities to $PATH for new sessions?", "Add path to Tandem utilities to $PATH for new sessions?".to_string()),
+            ("ShouldSetLCTerminal", lc, format!("{lc}\nopenssh and mosh pass this to hosts you connect to. It communicates the current terminal emulator. This is useful for enabling terminal emulator-specific features.")),
         ] {
             let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
             assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"), "{key}");
@@ -3134,9 +3290,9 @@ mod tests {
         let regular = "You help a me in a terminal emulator. My goal is $GOAL. $CONTEXT. Start by suggesting a command. Don't overwhelm me with too much information: just go one step at a time. When I've reached my goal, remind me to click the End Task button.";
         let second = "$GOAL and $CONTEXT are replaced with the user-specified goal and info about the running environment, respectively.";
         for (key, kind, default, label, help) in [
-            ("codeciergeGhostRidingPrompt", Kind::String, Value::String(ghost.into()), "Prompt to send to LLM for Codecierge when it is able to execute commands automatically.", Some(second)),
-            ("codeciergeCommandWarningCount", Kind::Int, Value::Integer(10), "After this many commands, make codecierge confirm that you intend to keep it enabled.", None),
-            ("codeciergeRegularPrompt", Kind::String, Value::String(regular.into()), "Prompt to send to LLM for Codecierge when it is NOT able to execute commands automatically.", Some(second)),
+            ("CodeciergeGhostRidingPrompt", Kind::String, Value::String(ghost.into()), "Prompt to send to LLM for Codecierge when it is able to execute commands automatically.", Some(second)),
+            ("CodeciergeCommandWarningCount", Kind::Int, Value::Integer(10), "After this many commands, make codecierge confirm that you intend to keep it enabled.", None),
+            ("CodeciergeRegularPrompt", Kind::String, Value::String(regular.into()), "Prompt to send to LLM for Codecierge when it is NOT able to execute commands automatically.", Some(second)),
         ] {
             let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
             // P18: iTerm2's section is "Experimental Features" (SECTION_EXPERIMENTAL).
@@ -3148,8 +3304,8 @@ mod tests {
             assert_eq!(row.help, want, "{key}");
         }
         let g = Globals::empty(std::path::Path::new("codecierge-rows-test.toml"));
-        assert_eq!(g.int("codeciergeCommandWarningCount"), 10);
-        assert_eq!(g.string("codeciergeGhostRidingPrompt"), ghost);
+        assert_eq!(g.int("CodeciergeCommandWarningCount"), 10);
+        assert_eq!(g.string("CodeciergeGhostRidingPrompt"), ghost);
     }
 
     #[test]
@@ -3164,13 +3320,13 @@ mod tests {
 
     #[test]
     fn upload_row_follows_iterm2() {
-        let row = schema::find_global("accelerateUploads").unwrap();
+        let row = schema::find_global("AccelerateUploads").unwrap();
         assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"));
         assert_eq!(row.kind, Kind::Bool);
         assert_eq!(row.default, Some(Value::Boolean(true)));
         assert_eq!(row.label, "Make uploads with it2ul really fast.");
         assert_eq!(row.help, "Make uploads with it2ul really fast.");
-        assert!(Globals::empty(std::path::Path::new("upload-row-test.toml")).bool("accelerateUploads"), "on until turned off");
+        assert!(Globals::empty(std::path::Path::new("upload-row-test.toml")).bool("AccelerateUploads"), "on until turned off");
     }
 
     #[test]
@@ -3650,52 +3806,52 @@ mod tests {
     fn advanced_ai_rows_follow_iterm2() {
         let s = |t: &str| Value::String(t.to_string());
         let rows: Vec<(&str, &str, Kind, Value, String)> = vec![
-            ("llmPlatform", "General", Kind::String, s("OpenAI"), "LLM Platform.\nLegal values are: OpenAI, Azure, Gemini. This determines the format of requests and responses.".into()),
+            ("LlmPlatform", "General", Kind::String, s("OpenAI"), "LLM Platform.\nLegal values are: OpenAI, Azure, Gemini. This determines the format of requests and responses.".into()),
             (
-                "aiModelCatalogURL",
+                "AiModelCatalogURL",
                 "General",
                 Kind::String,
                 s("https://iterm2.com/downloads/ai/manifest.json"),
                 "URL to check for updates to the AI model catalog.\nThe catalog defines the built-in AI models (context window, capabilities, and the recommended model per vendor). Tandem ships its catalog with each release and never downloads a newer one, so this URL is not used.".into(),
             ),
             (
-                "aiChatVerboseConsoleLogging",
+                "AiChatVerboseConsoleLogging",
                 "Debugging",
                 Kind::Bool,
                 Value::Boolean(false),
                 "Log AI chat traffic to the system console.\nEmits per-turn user / agent / tool entries so you can trace exactly what the agent received and produced. Useful for debugging tool dispatch and history translation. Off by default; turn on only while reproducing an issue.".into(),
             ),
             (
-                "aiChatRawWireLogging",
+                "AiChatRawWireLogging",
                 "Debugging",
                 Kind::Bool,
                 Value::Boolean(false),
                 "Log raw AI API requests and responses to disk.\nWrites every byte sent to and received from the AI vendor (request headers, body, streaming chunks, final response, errors, and timing) to %APPDATA%\\Tandem\\AIChatWire\\. One log file per app launch; rotate or delete it yourself when done. Every header value except known non-secret ones (such as Content-Type, Accept, User-Agent and anthropic-version), and keys that appear in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters); prompt and response content is logged verbatim. Off by default; turn on only while reproducing an issue and delete the files when finished.".into(),
             ),
             (
-                "unameCommand",
+                "UnameCommand",
                 "SSH Integration",
                 Kind::String,
                 s("uname -s"),
                 "Command used to set the `uname` variable.\nThe main use of this is to use in the AI prompt so the language model knows the operating system.".into(),
             ),
             (
-                "aiModernModelPrefixes",
+                "AiModernModelPrefixes",
                 "Experimental Features",
                 Kind::String,
                 s("gpt-"),
                 "AI model name substrings that use the modern 'completions' API.\nSubstrings should be space-delimited. This handles OpenRouter-style names like 'openai/gpt-4o'. Note that o1 models use a different API and have hard-coded behavior.".into(),
             ),
-            ("aiProxy", "Experimental Features", Kind::String, s(""), "Host and port for proxy for AI requests.\ni.e., example.com:8080".into()),
+            ("AiProxy", "Experimental Features", Kind::String, s(""), "Host and port for proxy for AI requests.\ni.e., example.com:8080".into()),
             (
-                "ollamaNumCtx",
+                "OllamaNumCtx",
                 "Experimental Features",
                 Kind::Int,
                 Value::Integer(0),
                 "Ollama context window size (num_ctx) for native /api/chat requests.\nOllama defaults num_ctx to a small value (around 4096) regardless of the model, silently truncating long prompts. 0 means size it automatically per request, capped at the model\u{2019}s context window. A positive value overrides that and is sent verbatim (larger values use more memory).".into(),
             ),
             (
-                "ollamaKeepAlive",
+                "OllamaKeepAlive",
                 "Experimental Features",
                 Kind::String,
                 s("30m"),
@@ -3733,12 +3889,12 @@ mod tests {
         let advanced = page_rows("Advanced");
         let has = |key: &str| advanced.iter().any(|s| s.key == key);
         assert!(has("GenerativeAIAllowed"));
-        assert!(has("unameCommand"));
+        assert!(has("UnameCommand"));
         assert!(!has("aiGeneratedTabTitles"));
         assert!(!has("logAITabTitleCorpus"));
         assert!(row_hidden("aiGeneratedTabTitles"));
         assert!(row_hidden("logAITabTitleCorpus"));
-        assert!(!row_hidden("aiProxy"));
+        assert!(!row_hidden("AiProxy"));
         // Schema order is kept.
         let order: Vec<&str> = schema::global().iter().filter(|s| s.tab == "Advanced" && !row_hidden(&s.key)).map(|s| s.key.as_str()).collect();
         assert_eq!(advanced.iter().map(|s| s.key.as_str()).collect::<Vec<_>>(), order);
@@ -4404,7 +4560,7 @@ mod tests {
             ("AutologAppends", "Session", Kind::Bool, b(true), "Automatic session logging appends to existing files.\nWhen set to No, the file will be overwritten instead.".into()),
             ("LogTimestampFormat", "Session", Kind::String, t("yyyy-MM-dd hh.mm.ss.SSS"), "Format for log timestamps. See Unicode TR 35-31 for syntax.\nYou must restart Tandem for changes to this setting to take effect.".into()),
             ("LogTimestampsWithPlainText", "Session", Kind::Bool, b(true), "When logging plain text, include timestamps for each line?".into()),
-            ("sessionEndMessageText", "Session", Kind::String, t(""), "Text displayed when a session ends. Leave empty to use default.".into()),
+            ("SessionEndMessageText", "Session", Kind::String, t(""), "Text displayed when a session ends. Leave empty to use default.".into()),
             ("SessionEndMessageDividerCharacter", "Session", Kind::String, t(""), divider.into()),
             ("SessionRestartedMessageText", "Session", Kind::String, t("Session Restarted"), "Text displayed when a session is restarted.".into()),
             ("SessionFinishedMessageText", "Session", Kind::String, t("Finished"), "Text displayed when a short-lived session finishes.".into()),
@@ -4427,9 +4583,9 @@ mod tests {
             assert!(!schema::find_global(key).unwrap().optional_bool(), "{key}");
         }
         // The text moved to Session once (13a); nothing of it is left in Notifications.
-        assert_eq!(schema::global().iter().filter(|s| s.key == "sessionEndMessageText").count(), 1);
-        assert_ne!(schema::find_global("sessionEndMessageText").unwrap().section, "Notifications");
-        let smart = schema::find_global("smartLoggingWithAutoComposer").unwrap();
+        assert_eq!(schema::global().iter().filter(|s| s.key == "SessionEndMessageText").count(), 1);
+        assert_ne!(schema::find_global("SessionEndMessageText").unwrap().section, "Notifications");
+        let smart = schema::find_global("SmartLoggingWithAutoComposer").unwrap();
         assert_eq!((smart.tab.as_str(), smart.kind, smart.default.clone()), ("Advanced", Kind::Bool, b(false)));
     }
 

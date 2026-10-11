@@ -57,7 +57,7 @@ impl App {
                 },
             };
             // A tmux client session with a custom title wears the tmux title prefix (`SNC:368-387`).
-            let prefixed = self.tmux_window_name_of(pane).and_then(|name| jobtitle::tmux_session_title(&self.globals.string("tmuxTitlePrefix"), Some(provider.as_deref()), &base, &name));
+            let prefixed = self.tmux_window_name_of(pane).and_then(|name| jobtitle::tmux_session_title(&self.globals.string("TmuxTitlePrefix"), Some(provider.as_deref()), &base, &name));
             return prefixed.unwrap_or(base);
         }
         let Some(p) = self.panes.get(&pane) else { return "Shell".into() };
@@ -95,7 +95,7 @@ impl App {
         // A tmux client session wears the tmux title prefix and its window's name, not the built-in
         // components (`SNC:381-382`); the gateway and the tab label paths keep their own titles.
         match self.tmux_window_name_of(pane) {
-            Some(name) => jobtitle::tmux_session_title(&self.globals.string("tmuxTitlePrefix"), None, &built, &name).unwrap_or(built),
+            Some(name) => jobtitle::tmux_session_title(&self.globals.string("TmuxTitlePrefix"), None, &built, &name).unwrap_or(built),
             None => built,
         }
     }
@@ -137,7 +137,7 @@ mod tests {
     fn built_in_session_title_wears_the_tmux_prefix() {
         let src = include_str!("jobs_ui.rs");
         let body = src.split("#[cfg(test)]").next().unwrap();
-        assert!(body.contains("jobtitle::tmux_session_title(&self.globals.string(\"tmuxTitlePrefix\"), None, &built, &name)"));
+        assert!(body.contains("jobtitle::tmux_session_title(&self.globals.string(\"TmuxTitlePrefix\"), None, &built, &name)"));
         assert!(!body.contains("tmux_tab_label"));
     }
 

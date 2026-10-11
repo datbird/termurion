@@ -32,8 +32,8 @@ const MAX_THREADS: usize = 8;
 /// How long past its deadline a thread may answer before the UI reports the timeout (the
 /// runner kills git at the deadline; this is the time to hand the answer over).
 const GRACE: Duration = Duration::from_millis(300);
-const TIMEOUT_KEY: &str = "gitTimeout";
-const SEARCH_PATH_KEY: &str = "gitSearchPath";
+const TIMEOUT_KEY: &str = "GitTimeout";
+const SEARCH_PATH_KEY: &str = "GitSearchPath";
 /// `gitTimeout`'s default (`ADV:534`).
 const DEFAULT_TIMEOUT: f64 = 4.0;
 /// The info bars standing in for iTerm2's git warnings and alert (headings dropped).

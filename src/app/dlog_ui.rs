@@ -109,7 +109,7 @@ impl App {
             return;
         }
         self.debug_notice_shown = true;
-        match crate::notify::show_with(dlog::AUTO_TITLE, dlog::AUTO_DETAIL, self.globals.bool("silentUserNotifications")) {
+        match crate::notify::show_with(dlog::AUTO_TITLE, dlog::AUTO_DETAIL, self.globals.bool("SilentUserNotifications")) {
             Ok(()) => {
                 self.last_notified_debug = Some(crate::notify::shown_count());
                 self.last_notified = None;

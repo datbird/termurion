@@ -183,7 +183,7 @@ impl App {
     /// logging, and the pin of a pinned hotkey window, and the AI chat's linked and streaming glyphs. Answers each AI glyph's rectangle, which the
     /// frame keeps for a press (the draw loop holds a borrow of the tab).
     pub(super) fn draw_coprocess_indicator(&self, frame: &mut Frame, id: PaneId, rect: Rect, cell: (f32, f32), broadcast: (bool, bool)) -> Vec<(PaneId, Rect, scene::IndicatorKind)> {
-        if self.globals.bool("disableTopRightIndicators") {
+        if self.globals.bool("DisableTopRightIndicators") {
             return Vec::new();
         }
         let Some(p) = self.panes.get(&id) else { return Vec::new() };
@@ -234,7 +234,7 @@ impl App {
         if let Some(why) = self.panes.get(&pane).and_then(|p| drop_refusal(p.exited.is_some(), p.ended, p.at_password_prompt())) {
             return self.banners.set("action", why);
         }
-        match coprocess::drop_command(&self.globals.string("fileDropCoprocess"), &files) {
+        match coprocess::drop_command(&self.globals.string("FileDropCoprocess"), &files) {
             Some(Ok(cmd)) => self.start_coprocess(pane, &cmd, true, Entry::FileDrop),
             // A dropped name the one cmd.exe builder refuses: nothing runs, and the banner says why.
             Some(Err(why)) => self.banners.set("action", why),

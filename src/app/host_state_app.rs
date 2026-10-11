@@ -16,7 +16,7 @@ impl App {
     /// are the pane's at the report (fix r1), not now: the rest of that output chunk may be the
     /// new host's.
     pub(super) fn host_moved(&mut self, pane: PaneId, previous: Remote, current: Remote, mode: crate::keyproto::KeyMode, title: Option<String>) {
-        let enabled = self.globals.bool("restoreKeyModeAutomaticallyOnHostChange");
+        let enabled = self.globals.bool("RestoreKeyModeAutomaticallyOnHostChange");
         if !hs::should_track(Some(&previous), &current, previous.local && current.local, false, enabled) {
             return;
         }

@@ -179,7 +179,7 @@ pub fn next(s: State, t: &Token) -> State {
 }
 
 /// `iTermAdvancedSettingsModel.echoProbeDuration`'s global key and default (0.5 s).
-pub const DURATION_KEY: &str = "echoProbeDuration";
+pub const DURATION_KEY: &str = "EchoProbeDuration";
 pub const DEFAULT_DURATION: f64 = 0.5;
 
 /// What a probe wants the caller to do.

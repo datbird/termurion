@@ -139,7 +139,7 @@ impl App {
                     }
                 }
                 Action::Notify(title, text) => {
-                    if let Err(e) = crate::notify::show_with(title, text, self.globals.bool("silentUserNotifications")) {
+                    if let Err(e) = crate::notify::show_with(title, text, self.globals.bool("SilentUserNotifications")) {
                         self.banners.set("notify", format!("Could not show a notification: {e}"));
                     }
                 }
@@ -566,7 +566,7 @@ impl App {
         let clock = self.started.elapsed().as_secs_f64();
         let age = self.globals.int("TmuxPauseModeAgeLimit").max(1) as f64;
         let auto = self.globals.bool("TmuxUnpauseAutomatically");
-        let warn = self.globals.bool("TmuxWarnBeforePausing") && !self.globals.bool("noSyncDontWarnAboutTmuxPause");
+        let warn = self.globals.bool("TmuxWarnBeforePausing") && !self.globals.bool("NoSyncDontWarnAboutTmuxPause");
         let mut next: Option<Instant> = None;
         let gws: Vec<PaneId> = self.tmux.keys().copied().collect();
         for gw in gws {
@@ -732,7 +732,7 @@ impl App {
 
     /// tmuxTitlePrefix before the window's name.
     fn tmux_title(&self, name: &str) -> String {
-        format!("{}{name}", self.globals.string("tmuxTitlePrefix"))
+        format!("{}{name}", self.globals.string("TmuxTitlePrefix"))
     }
 
     /// A tmux pane of the gateway `gw`, rebuilt from its captures.
@@ -755,8 +755,8 @@ impl App {
         pane.dvr = crate::dvr::Dvr::new(crate::pane::capacity_for(self.globals.int("IRMemory")));
         // TERM is tmux's default-terminal, else "screen" (iTerm2's termType for tmux panes).
         let term = self.tmux.get(&gw).and_then(|t| t.hs.default_terminal.clone()).unwrap_or_else(|| "screen".into());
-        if self.globals.bool("translateScreenToXterm") && crate::screenterm::screen_like(&term, self.globals.bool("convertItalicsToReverseVideoForTmuxBugwardsCompatible")) {
-            pane.screen_filter = Some(crate::screenterm::Filter::new(self.globals.bool("convertItalicsToReverseVideoForTmux")));
+        if self.globals.bool("TranslateScreenToXterm") && crate::screenterm::screen_like(&term, self.globals.bool("ConvertItalicsToReverseVideoForTmuxBugwardsCompatible")) {
+            pane.screen_filter = Some(crate::screenterm::Filter::new(self.globals.bool("ConvertItalicsToReverseVideoForTmux")));
         }
         // The rules go in before the restore is fed (the tab width is for a screen's first byte).
         pane.set_emu(self.emu_rules(), Some(&term));
@@ -830,8 +830,8 @@ impl App {
                 self.tmux_pane_hotkey_arrived(gw, *id, s, &restore.session_name);
             }
         }
-        let size = restore.settings.and_then(|s| s.size).filter(|_| self.globals.bool("rememberTmuxWindowSizes") && variable);
-        let origin = restore.origin.filter(|_| !self.globals.bool("disableTmuxWindowPositionRestoration"));
+        let size = restore.settings.and_then(|s| s.size).filter(|_| self.globals.bool("RememberTmuxWindowSizes") && variable);
+        let origin = restore.origin.filter(|_| !self.globals.bool("DisableTmuxWindowPositionRestoration"));
         let tab_index = restore.tab_index;
         let tab_id = tab.id;
         // A window hidden from a Tandem window that is still open goes back there, even
@@ -1034,7 +1034,7 @@ impl App {
             if self.globals.bool("NoSyncAutoBurialReveal") {
                 continue;
             }
-            if let Err(e) = crate::notify::show_with("Session Buried", "It can be restored by detaching from tmux, or from the Sessions > Buried Sessions menu.", self.globals.bool("silentUserNotifications")) {
+            if let Err(e) = crate::notify::show_with("Session Buried", "It can be restored by detaching from tmux, or from the Sessions > Buried Sessions menu.", self.globals.bool("SilentUserNotifications")) {
                 self.banners.set("notify", format!("Could not show a notification: {e}"));
             }
             self.globals.set("NoSyncAutoBurialReveal", toml::Value::Boolean(true));
@@ -1062,7 +1062,7 @@ impl App {
         if user.is_none() && (t.window_titles.contains_key(&window) || pane_title.is_empty()) {
             return None;
         }
-        let prefix = self.globals.string("tmuxTitlePrefix");
+        let prefix = self.globals.string("TmuxTitlePrefix");
         Some(crate::tmux_clients::tab_label(user.map(String::as_str), None, &pane_title, &self.session_title(focused), "", &prefix))
     }
 

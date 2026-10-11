@@ -353,7 +353,7 @@ impl App {
             self.script_history.add_log(id, &text, &stamp);
             let failed = self.script_history.find(id).filter(|e| sl::notifies(code, e.terminated_by_user)).map(|e| e.name.clone());
             if let Some(name) = failed {
-                match crate::notify::show_with(sl::SCRIPT_FAILED, &sl::ended_unexpectedly(&name), self.globals.bool("silentUserNotifications")) {
+                match crate::notify::show_with(sl::SCRIPT_FAILED, &sl::ended_unexpectedly(&name), self.globals.bool("SilentUserNotifications")) {
                     Ok(()) => {
                         self.last_notified_script = Some(id.to_string());
                         self.last_notified = None;

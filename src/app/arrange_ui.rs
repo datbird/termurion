@@ -917,7 +917,7 @@ impl App {
         self.win_locks = crate::winmodel::Locks { size: f.size_locked, layout: f.layout_locked && !f.size_locked };
         // restoreWindowsWithinScreens: a normal window moves back onto the displays of today.
         let mut frame = crate::placement::Rect { x: f.x as f32, y: f.y as f32, w: f.w as f32, h: f.h as f32 };
-        if f.style == crate::frames::NORMAL && self.globals.bool("restoreWindowsWithinScreens") {
+        if f.style == crate::frames::NORMAL && self.globals.bool("RestoreWindowsWithinScreens") {
             let monitors: Vec<crate::placement::Rect> = super::requests_ui::work_areas().into_iter().map(|(x, y, w, h)| crate::placement::Rect { x: x as f32, y: y as f32, w: w as f32, h: h as f32 }).collect();
             frame = crate::placement::within_screens(frame, &crate::placement::primary_first(monitors));
         }

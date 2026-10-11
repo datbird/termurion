@@ -2119,8 +2119,8 @@ pub fn run() {
     // A second Tandem (the host serves the first) neither restores nor saves windows: the
     // saved state belongs to the first.
     let mut second_copy = false;
-    let (host, host_welcome) = if globals.bool("runJobsInServers") {
-        let wait = std::time::Duration::from_secs_f64(globals.get("timeoutForDaemonAttachment").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(10.0).clamp(1.0, 120.0));
+    let (host, host_welcome) = if globals.bool("RunJobsInServers") {
+        let wait = std::time::Duration::from_secs_f64(globals.get("TimeoutForDaemonAttachment").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(10.0).clamp(1.0, 120.0));
         match crate::host_client::connect_or_start(&exe_dir, wait) {
             Ok((c, w)) => (Some(c), Some(w)),
             Err(e) => {
@@ -3939,7 +3939,7 @@ impl App {
         // A live shell ends first, as iTerm2's does (`PS:3863-3871`), with the words under its
         // text; a start that then fails leaves an ended pane.
         if self.panes.get(&id).is_some_and(|p| p.exited.is_none() && p.shell_pid().is_some()) {
-            let custom = self.globals.string("sessionEndMessageText");
+            let custom = self.globals.string("SessionEndMessageText");
             let text = crate::session_end::restarted_text(&custom, &self.globals.string("SessionRestartedMessageText"));
             let divider = self.globals.string("SessionEndMessageDividerCharacter");
             if let Some(pid) = self.panes.get(&id).and_then(|p| p.shell_pid()) {
@@ -4072,7 +4072,7 @@ impl App {
         let path = self
             .utilities
             .as_ref()
-            .filter(|_| self.globals.bool("addUtilitiesToPATH"))
+            .filter(|_| self.globals.bool("AddUtilitiesToPATH"))
             .and_then(|folder| crate::utilities::path_entry(&folder.to_string_lossy()))
             .and_then(|entry| crate::utilities::session_path(std::env::var_os("PATH").as_deref(), &system_root, &entry));
         // Every profile's Path to SSH is passed (`PS:3247-3252`, `PS:3548`).
@@ -4086,7 +4086,7 @@ impl App {
             profile_name: &name,
             cookie: cookie.as_deref(),
             term_features: &term_features,
-            lc_terminal: self.globals.bool("shouldSetLCTerminal"),
+            lc_terminal: self.globals.bool("ShouldSetLCTerminal"),
             path: path.as_deref(),
             ssh_path: ssh_path.as_deref(),
             ssh_transport: transport,
@@ -4870,8 +4870,8 @@ impl App {
         g.renderer.set_badge_bold(self.globals.bool("BadgeFontIsBold"));
         // Read with the window's other fonts, not on every change (iTerm2: "Changing this
         // setting does not affect existing windows").
-        g.renderer.set_toolbelt_family(&self.globals.string("toolbeltFont"));
-        g.renderer.set_toolbelt_size(self.globals.get("toolbeltFontSize").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(0.0) as f32);
+        g.renderer.set_toolbelt_family(&self.globals.string("ToolbeltFont"));
+        g.renderer.set_toolbelt_size(self.globals.get("ToolbeltFontSize").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(0.0) as f32);
         let missing: Vec<String> = std::iter::once(normal.family).chain(alt).filter(|f| !g.renderer.has_family(f)).collect();
         if missing.is_empty() {
             self.banners.clear("font");
@@ -5186,7 +5186,7 @@ impl App {
                 self.mru.forget(gone.id);
                 self.pane_seen.remove(&gone.id);
                 self.api_vars.forget(crate::api_vars::Scope::Tab, &gone.id.to_string());
-                self.active = crate::close_rules::active_after_close(self.active, t, self.tabs.len(), self.globals.bool("moveLeftAfterClosingTab"));
+                self.active = crate::close_rules::active_after_close(self.active, t, self.tabs.len(), self.globals.bool("MoveLeftAfterClosingTab"));
                 // The neighbor selected may be hidden in a collapsed group.
                 self.expand_selected_group();
             }
@@ -7055,7 +7055,7 @@ impl ApplicationHandler<UserEvent> for App {
         let regular_saved = saved.as_ref().is_some_and(|(w, _)| w.iter().any(|w| crate::arrangement::hotkey_guid(w).is_none()));
         let g = &self.globals;
         let policy = if arrangement_policy { crate::startup::DEFAULT_ARRANGEMENT } else if hotkey_only { crate::startup::HOTKEY_ONLY } else { crate::startup::SYSTEM };
-        let startup_prefs = crate::startup::StartupPrefs { open_profiles_window: g.bool("OpenBookmark"), policy, always_open: g.bool("AlwaysOpenWindowAtStartup"), open_new_window: g.bool("openNewWindowAtStartup") };
+        let startup_prefs = crate::startup::StartupPrefs { open_profiles_window: g.bool("OpenBookmark"), policy, always_open: g.bool("AlwaysOpenWindowAtStartup"), open_new_window: g.bool("OpenNewWindowAtStartup") };
         let early = crate::startup::plan_with(startup_prefs, false, !hotkey_profiles.is_empty(), system_policy && regular_saved);
         // Nothing to show at launch (Only Restore Hotkey Window, or policy 0 with a hotkey
         // window and nothing restored): the first window is a hotkey window, made hidden.
@@ -7231,7 +7231,7 @@ impl ApplicationHandler<UserEvent> for App {
         // The Profiles window follows Open profiles window.
         let g = &self.globals;
         let policy = if g.bool("OpenArrangementAtStartup") { crate::startup::DEFAULT_ARRANGEMENT } else if g.bool("OpenNoWindowsAtStartup") { crate::startup::HOTKEY_ONLY } else { crate::startup::SYSTEM };
-        let prefs = crate::startup::StartupPrefs { open_profiles_window: g.bool("OpenBookmark"), policy, always_open: g.bool("AlwaysOpenWindowAtStartup"), open_new_window: g.bool("openNewWindowAtStartup") };
+        let prefs = crate::startup::StartupPrefs { open_profiles_window: g.bool("OpenBookmark"), policy, always_open: g.bool("AlwaysOpenWindowAtStartup"), open_new_window: g.bool("OpenNewWindowAtStartup") };
         if crate::startup::plan_with(prefs, has_arrangement, !hotkey_profiles.is_empty(), has_saved).profiles_window {
             self.open_settings(event_loop, Mode::Profiles);
         }
@@ -7570,7 +7570,7 @@ impl ApplicationHandler<UserEvent> for App {
         // The prompt state machine follows View > Auto Composer before it reads output (the
         // Task 3 contract: every pane, new ones included).
         let auto_composer = self.globals.bool("AutoComposer");
-        let smart_logging = self.globals.bool("smartLoggingWithAutoComposer");
+        let smart_logging = self.globals.bool("SmartLoggingWithAutoComposer");
         let always_line_marks = self.globals.bool("AlwaysUseLineStyleMarks");
         for (id, p) in self.panes.iter_mut() {
             p.own_mut().prompt_state.enabled = auto_composer;

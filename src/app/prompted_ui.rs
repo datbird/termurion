@@ -404,7 +404,7 @@ impl App {
             v.session.insert("lastCommand", c.command.clone());
         }
         if let Some(sel) = selection.then(|| s.selection_text()).flatten() {
-            let (capped, length) = capped_selection(&sel, self.globals.int("maximumBytesToProvideToPythonAPI"));
+            let (capped, length) = capped_selection(&sel, self.globals.int("MaximumBytesToProvideToPythonAPI"));
             v.session.insert("selectionLength", length.to_string());
             v.session.insert("selection", capped);
         }
@@ -504,7 +504,7 @@ impl App {
     /// A window title format (Edit Window Title's or the profile's) evaluated in the window
     /// whose current tab's focused session is `front`.
     pub(super) fn window_title_text(&self, format: &str, front: Option<PaneId>) -> String {
-        let lax = self.globals.bool("laxNilPolicyInInterpolatedStrings");
+        let lax = self.globals.bool("LaxNilPolicyInInterpolatedStrings");
         match front {
             Some(pane) => crate::wintitle::evaluate(format, &self.window_title_lookup(pane), lax),
             None => crate::wintitle::evaluate(format, &|_: &str| None, lax),
@@ -518,7 +518,7 @@ impl App {
         if self.tmux_window_of(t.focused).is_some() {
             return Some(format.to_string());
         }
-        let lax = self.globals.bool("laxNilPolicyInInterpolatedStrings");
+        let lax = self.globals.bool("LaxNilPolicyInInterpolatedStrings");
         Some(crate::wintitle::evaluate(format, &self.tab_title_lookup(t.focused), lax))
     }
 
@@ -577,7 +577,7 @@ impl App {
         if self.upload_due.is_some_and(|t| now < t) {
             return self.upload_due;
         }
-        let pace = prompted::upload_pace(self.globals.bool("accelerateUploads"), self.paste_speed(false));
+        let pace = prompted::upload_pace(self.globals.bool("AccelerateUploads"), self.paste_speed(false));
         let chunk = pace.units;
         let mut done = Vec::new();
         let mut progress = None;

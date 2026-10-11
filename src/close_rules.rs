@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn move_left_after_close() {
         assert_eq!(active_after_close(2, 2, 3, false), 2, "the tab that took its place (the right one)");
-        assert_eq!(active_after_close(2, 2, 3, true), 1, "moveLeftAfterClosingTab");
+        assert_eq!(active_after_close(2, 2, 3, true), 1, "MoveLeftAfterClosingTab");
         assert_eq!(active_after_close(0, 0, 2, true), 0);
         assert_eq!(active_after_close(3, 1, 3, false), 2, "a tab before the active one closed");
         assert_eq!(active_after_close(2, 2, 2, false), 1, "the last tab closed");

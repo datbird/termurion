@@ -196,14 +196,14 @@ mod tests {
 
     #[test]
     fn notification_settings_can_be_set() {
-        for k in ["silentUserNotifications", "simpleNotifications", "sessionEndMessageText"] {
+        for k in ["SilentUserNotifications", "SimpleNotifications", "SessionEndMessageText"] {
             assert!(find_global(k).is_some(), "{k} is used but not in schema/global.toml");
         }
     }
 
     #[test]
     fn coprocess_and_aps_settings_can_be_set() {
-        for k in ["fileDropCoprocess", "disableTopRightIndicators", "showAutomaticProfileSwitchingBanner", "preserveFontSizeOnAutomaticProfileSwitch"] {
+        for k in ["FileDropCoprocess", "DisableTopRightIndicators", "ShowAutomaticProfileSwitchingBanner", "PreserveFontSizeOnAutomaticProfileSwitch"] {
             assert!(find_global(k).is_some(), "{k} is used but not in schema/global.toml");
         }
     }

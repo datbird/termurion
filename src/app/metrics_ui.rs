@@ -27,8 +27,8 @@ pub(super) const CHARGING_PT: f32 = 16.0;
 /// `NET`: the download and upload lines' colors when the knobs are unset.
 const DOWNLOAD_DEFAULT: Rgb = crate::palette::rgb(0, 0, 255);
 const UPLOAD_DEFAULT: Rgb = crate::palette::rgb(255, 0, 0);
-const ANIMATE_KEY: &str = "animateGraphStatusBarComponents";
-const EXCLUDE_TUNNELS_KEY: &str = "excludeUtunFromNetworkUtilization";
+const ANIMATE_KEY: &str = "AnimateGraphStatusBarComponents";
+const EXCLUDE_TUNNELS_KEY: &str = "ExcludeUtunFromNetworkUtilization";
 
 /// A color knob's color and alpha.
 fn knob_color(c: &Component, key: &str) -> Option<(Rgb, f32)> {

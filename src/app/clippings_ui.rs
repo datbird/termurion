@@ -205,7 +205,7 @@ impl App {
     }
 
     fn clip_button(&mut self, id: PaneId, b: ClipButton, event_loop: &ActiveEventLoop) {
-        let separator = self.globals.string("clippingSeparator");
+        let separator = self.globals.string("ClippingSeparator");
         let Some(c) = self.clips.get(&id) else { return };
         let e = c.model.enabled(c.selected.len());
         let mut sorted = c.selected.clone();

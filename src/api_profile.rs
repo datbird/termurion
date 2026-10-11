@@ -258,7 +258,7 @@ pub enum PrefStep {
 
 /// The setting that gives new sessions a cookie, which lets any program started in them
 /// connect without asking.
-pub const SET_COOKIE: &str = "setCookie";
+pub const SET_COOKIE: &str = "SetCookie";
 
 /// Settings a script may read but never write (a Windows safety addition over iTerm2, which
 /// stores any key): the stored answers to Tandem's consent questions, which would let a
@@ -541,7 +541,7 @@ mod tests {
             assert!(!crate::ai_settings::toggle_allowed(k), "{k}");
             assert!(refused(k), "{k}");
         }
-        for k in ["EnableAPIServer", "API Authentication Method", "NoSyncDoNotWarnBeforeMultilinePaste", "TmuxDashboardLimit", "NoSyncAllowPasteLater", "fileDropCoprocess", "AiModel", "AI Timeout"] {
+        for k in ["EnableAPIServer", "API Authentication Method", "NoSyncDoNotWarnBeforeMultilinePaste", "TmuxDashboardLimit", "NoSyncAllowPasteLater", "FileDropCoprocess", "AiModel", "AI Timeout"] {
             assert!(!refused(k), "{k}");
             assert_eq!(preference_step(k, &Value::Boolean(true), false), Store, "{k}");
         }

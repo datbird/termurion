@@ -128,7 +128,7 @@ impl App {
             windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK);
         };
         let dragging = matches!(self.drag, Drag::Select { .. });
-        let wide = self.globals.bool("defaultWideMode");
+        let wide = self.globals.bool("DefaultWideMode");
         let Some(id) = self.focused_id() else { return beep() };
         let Some(p) = self.panes.get_mut(&id) else { return beep() };
         // A Filter or Zoom view is a copy: nothing there to replace.
@@ -157,7 +157,7 @@ impl App {
 
     /// The highlight theme file set for a dark or light background ("" for the template).
     fn css_setting(&self, dark: bool) -> String {
-        self.globals.string(if dark { "nativeRenderingCSSDark" } else { "nativeRenderingCSSLight" })
+        self.globals.string(if dark { "NativeRenderingCSSDark" } else { "NativeRenderingCSSLight" })
     }
 
     /// Lays out the portholes in view whose width, font, or look changed.

@@ -41,8 +41,8 @@ impl App {
             return false;
         }
         let (name, tab) = self.session_label(pane);
-        let (title, body) = alerts::text(&kind, &name, tab, self.globals.bool("simpleNotifications"), &self.globals.string("sessionEndMessageText"));
-        match crate::notify::show_with(&title, &body, self.globals.bool("silentUserNotifications")) {
+        let (title, body) = alerts::text(&kind, &name, tab, self.globals.bool("SimpleNotifications"), &self.globals.string("SessionEndMessageText"));
+        match crate::notify::show_with(&title, &body, self.globals.bool("SilentUserNotifications")) {
             Ok(()) => {
                 self.last_notified = Some(pane);
                 self.last_notified_script = None;

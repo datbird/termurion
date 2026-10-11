@@ -120,9 +120,9 @@ mod tests {
         assert_eq!(t(&AlertKind::Idle), ("Idle".into(), "Session bash in tab #2 became idle.".into()));
         assert_eq!(t(&AlertKind::NewOutput), ("New Output".into(), "New output was received in bash, tab #2.".into()));
         assert_eq!(t(&AlertKind::SessionEnded), ("Session Ended".into(), "Session \"bash\" in tab #2 just terminated.".into()));
-        assert_eq!(text(&AlertKind::SessionEnded, "bash", 2, false, "Bye").0, "Bye", "sessionEndMessageText");
+        assert_eq!(text(&AlertKind::SessionEnded, "bash", 2, false, "Bye").0, "Bye", "SessionEndMessageText");
         assert_eq!(t(&AlertKind::Terminal { title: None, message: "hi".into() }), ("Alert".into(), "Session bash #2: hi".into()));
-        assert_eq!(text(&AlertKind::Terminal { title: None, message: "hi".into() }, "bash", 2, true, "").1, "hi", "simpleNotifications");
+        assert_eq!(text(&AlertKind::Terminal { title: None, message: "hi".into() }, "bash", 2, true, "").1, "hi", "SimpleNotifications");
         assert_eq!(t(&AlertKind::Terminal { title: Some("Build".into()), message: "done".into() }), ("Build".into(), "done".into()), "OSC 1337 Notification's own title");
         assert_eq!(t(&AlertKind::Trigger("done".into())), ("done".into(), "A trigger fired in session \u{201c}bash\u{201d} in tab #2.".into()));
     }

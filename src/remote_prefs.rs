@@ -439,7 +439,7 @@ mod tests {
         ] {
             assert!(!syncable(key), "{key}");
         }
-        for key in ["FocusFollowsMouse", "tmuxTitlePrefix", "GlobalKeyMap"] {
+        for key in ["FocusFollowsMouse", "TmuxTitlePrefix", "GlobalKeyMap"] {
             assert!(syncable(key), "{key}");
         }
     }

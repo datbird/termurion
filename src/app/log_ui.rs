@@ -240,7 +240,7 @@ impl App {
     /// Compact logging's prompt (`PS:16729-16740`): each line of the revealed prompt's text, then a
     /// space. Only with `smartLoggingWithAutoComposer`.
     pub(super) fn log_compact_prompt(&mut self, pane: PaneId, lines: &[String]) {
-        if !self.globals.bool("smartLoggingWithAutoComposer") {
+        if !self.globals.bool("SmartLoggingWithAutoComposer") {
             return;
         }
         let Some(p) = self.panes.get_mut(&pane) else { return };
@@ -252,7 +252,7 @@ impl App {
 
     /// Compact logging's sent command (`PS:24561-24566`), trailing newlines trimmed.
     pub(super) fn log_compact_command(&mut self, pane: PaneId, command: &str) {
-        if !self.globals.bool("smartLoggingWithAutoComposer") {
+        if !self.globals.bool("SmartLoggingWithAutoComposer") {
             return;
         }
         if let Some(p) = self.panes.get_mut(&pane) {

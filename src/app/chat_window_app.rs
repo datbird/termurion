@@ -774,7 +774,7 @@ impl App {
         let t = self.chat_search.tick(Instant::now(), &mut search, &mut messages);
         if let Some(e) = t.error {
             // Store errors are logged, never shown (`chat_db`'s policy).
-            crate::ai_wire_log::console(self.globals.bool("aiChatVerboseConsoleLogging"), &format!("chat search: {e}"));
+            crate::ai_wire_log::console(self.globals.bool("AiChatVerboseConsoleLogging"), &format!("chat search: {e}"));
             self.banners.set("chat_search", "The search could not be completed.".to_string());
         }
         (t.changed, t.next)
@@ -999,7 +999,7 @@ impl App {
         let stamp = format!("{} {}", crate::stamps::short_date(&now), crate::stamps::short_time(&now));
         let title = chat_view::fork_title(&source.title, &stamp);
         let Some(fork) = self.chat_create(&title, source.terminal_session_guid.as_deref(), source.browser_session_guid.as_deref(), &source.permissions, clones) else { return };
-        let verbose = self.globals.bool("aiChatVerboseConsoleLogging");
+        let verbose = self.globals.bool("AiChatVerboseConsoleLogging");
         // The icon: not fatal when it cannot be copied (`CWC:920-932`); the row is read again first.
         if let Some(icon) = source.icon.clone() {
             if !self.chat_update(&fork, |c| c.icon = Some(icon)) {
@@ -1091,7 +1091,7 @@ impl App {
                 }
             }
             Err(e) => {
-                crate::ai_wire_log::console(self.globals.bool("aiChatVerboseConsoleLogging"), &format!("attachment: {e}"));
+                crate::ai_wire_log::console(self.globals.bool("AiChatVerboseConsoleLogging"), &format!("attachment: {e}"));
                 self.banners.set("action", "The attachment could not be written.".to_string());
             }
         }
@@ -1358,7 +1358,7 @@ impl App {
                     self.notice(&chat, &chat_input::skipped_notice(&skipped));
                 }
             }
-            Err(e) => crate::ai_wire_log::console(self.globals.bool("aiChatVerboseConsoleLogging"), &format!("send: {e}")),
+            Err(e) => crate::ai_wire_log::console(self.globals.bool("AiChatVerboseConsoleLogging"), &format!("send: {e}")),
         }
         self.chat_window_refresh();
     }
@@ -1669,7 +1669,7 @@ impl App {
         }
         let m = Message::new(chat, Participant::Agent, Content::RenameChat(title.clone()), super::warnings_app::unix_now());
         if let Err(e) = self.chat_publish(chat, m, false) {
-            crate::ai_wire_log::console(self.globals.bool("aiChatVerboseConsoleLogging"), &format!("renameChat failed: {e}"));
+            crate::ai_wire_log::console(self.globals.bool("AiChatVerboseConsoleLogging"), &format!("renameChat failed: {e}"));
             return;
         }
         // Only after the rename actually landed (`ChatAgent.swift:1895-1900`): an icon for a title

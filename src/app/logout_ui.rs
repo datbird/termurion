@@ -276,7 +276,7 @@ impl super::App {
     /// `IC:1463-1472`), otherwise the shells are left as Quit leaves them. A window only gets the
     /// subclass (`watch`, from where its display watch goes on).
     pub(super) fn tick_logout(&mut self) {
-        let want = self.host.is_some() && crate::session_end::kill_on_logout(self.globals.bool("KillSessionsOnLogout"), self.globals.bool("runJobsInServers"), true);
+        let want = self.host.is_some() && crate::session_end::kill_on_logout(self.globals.bool("KillSessionsOnLogout"), self.globals.bool("RunJobsInServers"), true);
         if want != self.logout_armed || !self.logout_set {
             self.logout_armed = want;
             self.logout_set = true;
