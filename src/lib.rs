@@ -330,6 +330,7 @@ pub mod egui_host;
 
 #[cfg(windows)]
 pub mod prompt_ui;
+pub mod basic_auth_ui;
 #[cfg(windows)]
 pub mod note_ui;
 #[cfg(windows)]

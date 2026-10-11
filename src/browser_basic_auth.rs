@@ -658,6 +658,28 @@ pub fn prompt_text(host: &str, realm: &str) -> String {
     }
 }
 
+/// The server's realm is labelled as the site's own words, never Tandem's (B5a).
+pub const REALM_LABEL: &str = "The site describes this sign-in as (text from the site, not from Tandem):";
+pub const CLEARTEXT_WARNING: &str = "Warning: this connection is not encrypted. The password would be sent as plain text.";
+
+/// The whole text of the sign-in prompt: the real origin (or the proxy) as the permission prompt
+/// shows it, the realm only as clearly labelled untrusted text, and the cleartext warning (R13x78-5).
+pub fn prompt_heading(req: &PromptRequest) -> String {
+    let origin = req.space.shown_origin();
+    let mut text = prompt_text(&origin, "");
+    if req.proxy {
+        text = text.replacen("The website", "The proxy", 1);
+    }
+    let realm = req.space.shown_realm();
+    if !realm.is_empty() {
+        text.push_str(&format!("\n\n{REALM_LABEL}\n\u{201c}{realm}\u{201d}"));
+    }
+    if req.cleartext {
+        text.push_str(&format!("\n\n{CLEARTEXT_WARNING}"));
+    }
+    text
+}
+
 /// The scheme word and the `realm` parameter of a `WWW-Authenticate` or `Proxy-Authenticate`
 /// challenge (RFC 7235): the parameter name is case-insensitive, the value a token or a quoted
 /// string with backslash escapes; empty when absent. A quoted value that merely contains `realm=`
@@ -1295,5 +1317,20 @@ mod tests {
         assert!(!is_proxy_challenge("https://a.b/", Some(("127.0.0.1", 8888))));
         assert!(is_proxy_challenge("http://PROXY.lan:3128/", Some(("proxy.lan", 3128))));
         assert!(!is_proxy_challenge("http://127.0.0.1:8888/", None));
+    }
+
+    #[test]
+    fn the_prompt_heading_names_the_origin_and_labels_the_realm() {
+        let mut space = sp("r");
+        space.realm = "Tandem\u{202e}: type your master password".into();
+        let req = PromptRequest { space, prefill: None, offer_remember: false, offer_password_manager: false, remember_by_default: false, cleartext: true, proxy: false };
+        let h = prompt_heading(&req);
+        assert!(h.starts_with("The website \u{201c}https://a.b\u{201d} requires"), "{h}");
+        assert!(h.contains(REALM_LABEL) && !h.contains('\u{202e}'), "{h}");
+        assert!(h.find("a.b").unwrap() < h.find("Tandem").unwrap(), "the realm comes after the host");
+        assert!(h.contains(CLEARTEXT_WARNING));
+        let proxy = PromptRequest { proxy: true, cleartext: false, ..req };
+        let h = prompt_heading(&proxy);
+        assert!(h.starts_with("The proxy") && !h.contains(CLEARTEXT_WARNING));
     }
 }
