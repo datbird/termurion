@@ -98,7 +98,7 @@ $f = @(
 
 - [ ] A 401 Basic page (real https site or a proxy challenge) opens a native Tandem sign-in window that names the real origin (or "proxy"), shows the server's realm only after "The site describes this sign-in as (text from the site, not from Tandem):" as plain text (an over-long realm is cut), and shows the cleartext warning over http. WebView2's own dialog never appears.
 - [ ] The prompt only appears for the shown pane: switch to another tab and the sign-in is cancelled (the page shows its 401); a 401 loading in a hidden tab asks nothing.
-- [ ] Remember this password then OK signs in; after a Tandem restart the saved password only PREFILLS the prompt, and the prompt never submits on Enter while prefilled (OK by click, or type something first); there is no silent sign-in.
+- [ ] Remember this password then OK signs in; after a Tandem restart the saved password only PREFILLS the prompt, and the prompt never submits on Enter while prefilled (OK by click, or type something first); Tandem never signs in with a SAVED password by itself. Within one run the engine reuses a sign-in already typed for the same site with no prompt, in any non-Dev-Null tab (R13x78-1 amendment, flag 14): a second tab on that site loads without asking, and after a Tandem restart it asks again.
 - [ ] A saved password the server rejects is not prefilled or resent again this session and Remember is off on the re-prompt; the page does not loop.
 - [ ] Cancel: the page shows its 401 and that site stays quiet for 60 s (reloading asks nothing), then asks again.
 - [ ] A page that reloads itself after every 401 cannot flood: at most one prompt open and four waiting, the rest cancelled; closing the tab with prompts open cancels all.
