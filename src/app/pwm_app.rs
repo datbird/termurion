@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::broadcast::Write;
+use crate::browser_basic_auth::SpaceKey;
 use crate::browser_password::{self as bp, PwPage};
 use crate::echo_probe::{self, Finish, Out, Probe, Round};
 use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
@@ -167,6 +168,8 @@ pub(super) struct PwmState {
     browser_auth: Auth,
     browser_worker: Option<Worker>,
     browser_info: Option<(Kind, String, Caps)>,
+    /// Basic-auth store answers waiting for the coordinator's owner (Task 10).
+    store_replies: Vec<StoreReply>,
     /// Opens asked for, done on the next pass (a window needs the event loop).
     requests: Vec<PwmOpen>,
     /// The window whose authentication gate failed on the last pass: opens for it queued
@@ -371,6 +374,35 @@ impl PwmState {
         };
         self.auth_mut(scope).granted(false);
         Err(reason)
+    }
+
+    /// The first steps of `pwm_reply`, which need no window (review I5), in this order: (1) a basic-auth
+    /// store reply goes to the coordinator's owner and ends there; (2) the source info is stored per
+    /// scope, a browser reply never overwriting the terminal's; (3) a prompt or account pick with no
+    /// manager window to show it drops its sender (Cancel: a locked 1Password save fails, with the
+    /// toast). The rest is the window path, handed back.
+    fn route_reply(&mut self, r: Reply) -> Option<Reply> {
+        let Reply { scope, owner, instance, token, busy, info, done } = r;
+        if let Some(i) = info {
+            self.store_info(scope, i);
+        }
+        match done {
+            Done::AuthLooked { pane, id, found } => {
+                self.basic_auth_store_reply(StoreReply::Looked { pane, id, found });
+                None
+            }
+            Done::AuthSaved { pane, space, host, success } => {
+                self.basic_auth_store_reply(StoreReply::Saved { pane, space, host, success });
+                None
+            }
+            Done::Prompt { .. } | Done::Pick { .. } if owner.is_none() => None,
+            done => Some(Reply { scope, owner, instance, token, busy, info: None, done }),
+        }
+    }
+
+    /// A basic-auth store job's answer, held for the coordinator's owner (Task 10) to take.
+    fn basic_auth_store_reply(&mut self, r: StoreReply) {
+        self.store_replies.push(r);
     }
 
     /// The screen locked: both stores re-lock when "after lock" is on.
@@ -636,7 +668,11 @@ impl App {
     }
 
     fn pwm_kind(&self) -> Kind {
-        Kind::from_stored(&self.globals.string(self.cur_scope().source_key()))
+        self.pwm_kind_for(self.cur_scope())
+    }
+
+    fn pwm_kind_for(&self, scope: Scope) -> Kind {
+        Kind::from_stored(&self.globals.string(scope.source_key()))
     }
 
     /// The current source's name and capabilities, once the worker has built it.
@@ -1163,7 +1199,13 @@ impl App {
 
     /// What the worker builds the source from.
     fn pwm_config(&self) -> Config {
-        let kind = self.pwm_kind();
+        self.pwm_config_for(self.cur_scope())
+    }
+
+    /// What the worker of `scope`'s store builds its source from (a sign-in prompt's store jobs have
+    /// no manager window, so the scope is named, not read from the window in front).
+    fn pwm_config_for(&self, scope: Scope) -> Config {
+        let kind = self.pwm_kind_for(scope);
         let cli = match kind {
             Kind::OnePassword => self.globals.string(OP_PATH_KEY),
             Kind::LastPass => self.globals.string(LP_PATH_KEY),
@@ -1180,7 +1222,7 @@ impl App {
             adapter.settings = plain.chain(secret).collect();
             adapter.settings.sort();
         }
-        Config { kind, cli, groups: self.globals.string(LP_GROUPS_KEY), account: self.globals.string(OP_ACCOUNT_KEY), adapter, scope: self.cur_scope() }
+        Config { kind, cli, groups: self.globals.string(LP_GROUPS_KEY), account: self.globals.string(OP_ACCOUNT_KEY), adapter, scope }
     }
 
     /// Sends a request for the current window's manager to the worker; `busy` shows the scrim
@@ -1199,13 +1241,39 @@ impl App {
             Scope::Browser => &mut self.pwm.browser_worker,
         };
         let worker = slot.get_or_insert_with(|| Worker::start(notify, scope));
-        if worker.tx.send(Job { owner, instance, token, busy, config, work }).is_err() {
+        if worker.tx.send(Job::Window(WindowJob { owner, instance, token, busy, config, work })).is_err() {
             *slot = None;
             if busy {
                 w.busy.decr();
             }
             self.banners.set("pwm", "The password manager could not start its worker thread.");
         }
+    }
+
+    /// Sends a basic-auth store job to the browser store's worker (13x7 Task 9). The store is read only
+    /// when it is unlocked without any prompt (`BAS:87-89`); a locked one answers a miss or a failed save
+    /// at once, and never asks here. Returns false when it could not be sent.
+    #[allow(dead_code)] // Task 10 sends the jobs
+    pub(super) fn basic_auth_store_job(&mut self, work: AuthWork) -> bool {
+        let required = self.pwm_setting(pwm::REQUIRE_OPEN_KEY);
+        let authenticated = self.pwm.browser_auth.authenticated;
+        if !crate::browser_basic_auth::unlocked_without_prompt(authenticated, required) {
+            self.pwm.store_replies.push(match auth_failed(work) {
+                Done::AuthLooked { pane, id, found } => StoreReply::Looked { pane, id, found },
+                Done::AuthSaved { pane, space, host, success } => StoreReply::Saved { pane, space, host, success },
+                _ => return false,
+            });
+            return true;
+        }
+        let config = self.pwm_config_for(Scope::Browser);
+        let notify = self.notify.clone();
+        let slot = &mut self.pwm.browser_worker;
+        let worker = slot.get_or_insert_with(|| Worker::start(notify, Scope::Browser));
+        if worker.tx.send(Job::Auth(AuthJob { config, work })).is_err() {
+            *slot = None;
+            return false;
+        }
+        true
     }
 
     /// Every other window's manager lists the accounts again (`kPasswordManagersShouldReloadData`);
@@ -1333,11 +1401,8 @@ impl App {
     }
 
     fn pwm_reply(&mut self, r: Reply) {
-        let Reply { owner, instance, token, busy, info, done, scope } = r;
-        // A browser store's source info never overwrites the terminal manager's, and the other way round.
-        if let Some(i) = info {
-            self.pwm.store_info(scope, i);
-        }
+        // Store replies and ownerless prompts go first, never needing a manager window (review I5).
+        let Some(Reply { owner: Some(owner), instance, token, busy, done, scope, .. }) = self.pwm.route_reply(r) else { return };
         let here = self.current_window();
         if here != Some(owner) && !self.enter(owner) {
             return; // The window closed: a prompt's sender drops, which answers Cancel.
@@ -1393,7 +1458,7 @@ impl App {
     fn pwm_done(&mut self, done: Done) {
         let kind = self.pwm_kind();
         match done {
-            Done::Prompt { .. } | Done::Pick { .. } => {}
+            Done::Prompt { .. } | Done::Pick { .. } | Done::AuthLooked { .. } | Done::AuthSaved { .. } => {}
             Done::Listed { accounts, warning } => {
                 // A browser manager over a page lists only the accounts for that page's exact origin.
                 let (scope, target) = self.pwm_window.as_ref().map_or((Scope::Terminal, PwmTarget::Session), |w| (w.scope, w.target));
@@ -2166,13 +2231,43 @@ impl Config {
     }
 }
 
-struct Job {
+/// A request for the worker: a manager window's, or a sign-in prompt's store job, which has no window.
+enum Job {
+    Window(WindowJob),
+    #[allow(dead_code)]
+    Auth(AuthJob),
+}
+
+struct WindowJob {
     owner: WindowId,
     instance: u64,
     token: u32,
     busy: bool,
     config: Config,
     work: Work,
+}
+
+/// A basic-auth store job (13x7 Task 9): owner-less, no instance and no token; its reply is routed by
+/// the challenge, never by a manager window (review I5).
+struct AuthJob {
+    config: Config,
+    work: AuthWork,
+}
+
+/// What the sign-in prompt asks of the store (`BAS:100-190`).
+#[allow(dead_code)]
+pub(super) enum AuthWork {
+    /// The saved credential for the account name: it only prefills the prompt (R13x78-1).
+    Lookup { pane: PaneId, id: u64, name: String, preferred_user: Option<String> },
+    /// Remember a credential the server accepted.
+    Save { pane: PaneId, space: SpaceKey, name: String, user: String, password: Secret },
+}
+
+/// A store job's answer, queued for the coordinator's owner (Task 10).
+#[allow(dead_code)]
+pub(super) enum StoreReply {
+    Looked { pane: PaneId, id: u64, found: Option<(String, Secret)> },
+    Saved { pane: PaneId, space: SpaceKey, host: String, success: bool },
 }
 
 enum Why {
@@ -2229,12 +2324,17 @@ enum Done {
     Prompt { heading: String, user: Option<String>, answer: Sender<Option<Vec<(String, Secret)>>> },
     /// The 1Password account picker, as (email, account id); the worker waits.
     Pick { choices: Vec<(String, String)>, answer: Sender<Option<String>> },
+    /// A basic-auth lookup's result (no window).
+    AuthLooked { pane: PaneId, id: u64, found: Option<(String, Secret)> },
+    /// A basic-auth save's result (no window).
+    AuthSaved { pane: PaneId, space: SpaceKey, host: String, success: bool },
 }
 
 struct Reply {
     /// The store whose worker sent it.
     scope: Scope,
-    owner: WindowId,
+    /// None for a basic-auth store reply: there is no manager window to show it in.
+    owner: Option<WindowId>,
     instance: u64,
     token: u32,
     busy: bool,
@@ -2262,7 +2362,7 @@ struct Ctx {
 impl Ctx {
     fn send(&self, done: Done) -> bool {
         let Some((owner, instance)) = *self.current.lock().unwrap() else { return false };
-        let sent = self.out.send(Reply { scope: self.scope, owner, instance, token: 0, busy: false, info: None, done }).is_ok();
+        let sent = self.out.send(Reply { scope: self.scope, owner: Some(owner), instance, token: 0, busy: false, info: None, done }).is_ok();
         (self.notify)();
         sent
     }
@@ -2315,6 +2415,21 @@ impl Worker {
             let ctx = Ctx { scope, out: out.clone(), notify: notify.clone(), current: Arc::new(Mutex::new(None)), picked: Arc::new(Mutex::new(None)) };
             let mut slot: Option<(Config, Box<dyn Source>)> = None;
             for job in jobs {
+                let job = match job {
+                    Job::Window(j) => j,
+                    Job::Auth(j) => {
+                        // No window: a source that needs a master password cannot ask (its prompt
+                        // finds no window and answers Cancel), so a locked store fails the job.
+                        *ctx.current.lock().unwrap() = None;
+                        let done = run_auth(&mut slot, j, &ctx);
+                        let info = slot.as_ref().map(|(_, s)| (s.kind(), s.name(), s.caps()));
+                        if out.send(Reply { scope, owner: None, instance: 0, token: 0, busy: false, info, done }).is_err() {
+                            break;
+                        }
+                        notify();
+                        continue;
+                    }
+                };
                 *ctx.current.lock().unwrap() = Some((job.owner, job.instance));
                 let (owner, instance, token, busy) = (job.owner, job.instance, job.token, job.busy);
                 let done = run(&mut slot, job, &ctx);
@@ -2323,7 +2438,7 @@ impl Worker {
                 if let (Some(a), Some((c, _))) = (ctx.picked.lock().unwrap().take(), slot.as_mut()) {
                     c.account = a;
                 }
-                if out.send(Reply { scope, owner, instance, token, busy, info, done }).is_err() {
+                if out.send(Reply { scope, owner: Some(owner), instance, token, busy, info, done }).is_err() {
                     break;
                 }
                 notify();
@@ -2370,8 +2485,61 @@ fn list(src: &mut dyn Source) -> Done {
     Done::Listed { accounts, warning: src.take_warning() }
 }
 
+/// A basic-auth store job: the source built (or reused), then `auth_job` on it. A source that cannot be
+/// built answers as a miss or a failed save.
+fn run_auth(slot: &mut Option<(Config, Box<dyn Source>)>, job: AuthJob, ctx: &Ctx) -> Done {
+    if slot.as_ref().is_none_or(|(c, _)| !c.same_source(&job.config)) {
+        *slot = None;
+        if let Ok(s) = build(&job.config, ctx) {
+            *slot = Some((job.config.clone(), s));
+        }
+    }
+    match slot.as_mut() {
+        Some((_, src)) => auth_job(src.as_mut(), job.work),
+        None => auth_failed(job.work),
+    }
+}
+
+fn auth_failed(work: AuthWork) -> Done {
+    match work {
+        AuthWork::Lookup { pane, id, .. } => Done::AuthLooked { pane, id, found: None },
+        AuthWork::Save { pane, space, .. } => {
+            let host = space.host.clone();
+            Done::AuthSaved { pane, space, host, success: false }
+        }
+    }
+}
+
+/// `BAS:100-190` over a source: the first account named for the space (the proposed user preferred) and
+/// its password; a save sets the password of an existing (name, user) account, else adds with no flags.
+/// Any store error is a miss or a failed save, never a thrown prompt.
+fn auth_job(src: &mut dyn Source, work: AuthWork) -> Done {
+    use crate::browser_basic_auth::{pick_saved, save_plan, SavePlan};
+    match work {
+        AuthWork::Lookup { pane, id, name, preferred_user } => {
+            let found = src.accounts().ok().and_then(|accounts| {
+                let a = pick_saved(&accounts, &name, preferred_user.as_deref())?;
+                let (password, _) = src.password(a).ok()?;
+                Some((a.user_name.clone(), password))
+            });
+            Done::AuthLooked { pane, id, found }
+        }
+        AuthWork::Save { pane, space, name, user, password } => {
+            let host = space.host.clone();
+            let success = match src.accounts() {
+                Err(_) => false,
+                Ok(accounts) => match save_plan(&accounts, &name, &user) {
+                    SavePlan::SetPassword(a) => src.set_password(&a, password).is_ok(),
+                    SavePlan::Add => src.add(&name, &user, password, &[]).is_ok(),
+                },
+            };
+            Done::AuthSaved { pane, space, host, success }
+        }
+    }
+}
+
 /// Runs one request against the source, building it first when the configuration changed.
-fn run(slot: &mut Option<(Config, Box<dyn Source>)>, job: Job, ctx: &Ctx) -> Done {
+fn run(slot: &mut Option<(Config, Box<dyn Source>)>, job: WindowJob, ctx: &Ctx) -> Done {
     let choosing = matches!(job.work, Work::Choose);
     if slot.as_ref().is_none_or(|(c, _)| !c.same_source(&job.config)) {
         *slot = None;
@@ -2848,7 +3016,7 @@ mod tests {
         let prod = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
         assert!(prod.contains("Scope::Browser => &mut self.pwm.browser_worker"), "the browser's jobs go to its own worker");
         assert!(prod.contains("Worker::start(notify, scope)") && prod.contains("self.out.send(Reply { scope: self.scope,"), "replies carry the scope");
-        assert!(prod.contains("self.pwm.store_info(scope, i)"), "a reply updates its own store's info");
+        assert!(prod.contains("self.store_info(scope, i)"), "a reply updates its own store's info");
         assert!(prod.contains("self.globals.set(self.cur_scope().source_key(),"), "choosing a source writes the scope's key");
         assert!(prod.contains("browser: scope == Scope::Browser"));
         assert!(prod.contains("if scope == Scope::Terminal {\n                    pwm_prompt::set_cached_names"), "a browser list never reaches terminal triggers");
@@ -2983,5 +3151,105 @@ mod tests {
         let i = s.find(a).unwrap_or_else(|| panic!("{a}"));
         let j = s[i..].find(b).unwrap_or_else(|| panic!("{b}")) + i;
         &s[i..j]
+    }
+
+    /// A store whose accounts are a list; it records what was written.
+    struct FakeStore {
+        accounts: Vec<Account>,
+        calls: Vec<String>,
+        fail: bool,
+    }
+
+    impl Source for FakeStore {
+        fn kind(&self) -> Kind {
+            Kind::CredentialManager
+        }
+        fn name(&self) -> String {
+            "fake".into()
+        }
+        fn caps(&self) -> Caps {
+            Caps::default()
+        }
+        fn available(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+        fn accounts(&mut self) -> Result<Vec<Account>, String> {
+            if self.fail { Err("locked".into()) } else { Ok(self.accounts.clone()) }
+        }
+        fn password(&mut self, a: &Account) -> Result<(Secret, Option<Secret>), String> {
+            Ok((Secret::new(format!("pw-of-{}", a.user_name)), None))
+        }
+        fn set_password(&mut self, a: &Account, _p: Secret) -> Result<(), String> {
+            self.calls.push(format!("set {} {}", a.account_name, a.user_name));
+            if self.fail { Err("no".into()) } else { Ok(()) }
+        }
+        fn delete(&mut self, _a: &Account) -> Result<(), String> {
+            Ok(())
+        }
+        fn add(&mut self, name: &str, user: &str, _p: Secret, flags: &[(String, bool)]) -> Result<Account, String> {
+            self.calls.push(format!("add {name} {user} {}", flags.len()));
+            if self.fail { Err("no".into()) } else { Ok(acct(name, user)) }
+        }
+        fn edit_in_place(&mut self, _a: &Account, _n: Option<&str>, _u: Option<&str>, _p: Option<Secret>) -> Result<(), String> {
+            Ok(())
+        }
+        fn toggle_otp(&mut self, a: &Account) -> Result<Account, String> {
+            Ok(a.clone())
+        }
+        fn reload(&mut self) {}
+        fn reset_configuration(&mut self) {}
+        fn switch_account(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn space() -> SpaceKey {
+        SpaceKey { scheme: "https".into(), host: "a.b".into(), port: 443, realm: String::new() }
+    }
+
+    #[test]
+    fn auth_jobs_follow_iterm2() {
+        let mut st = FakeStore { accounts: vec![acct("https://a.b", "u")], calls: Vec::new(), fail: false };
+        let look = |st: &mut FakeStore, name: &str| auth_job(st, AuthWork::Lookup { pane: 1, id: 3, name: name.into(), preferred_user: None });
+        match look(&mut st, "https://a.b") {
+            Done::AuthLooked { pane: 1, id: 3, found: Some((user, pw)) } => assert_eq!((user.as_str(), pw.expose()), ("u", "pw-of-u")),
+            _ => panic!("a saved account is found"),
+        }
+        assert!(matches!(look(&mut st, "https://c.d"), Done::AuthLooked { found: None, .. }));
+        let save = |st: &mut FakeStore, name: &str, user: &str| auth_job(st, AuthWork::Save { pane: 1, space: space(), name: name.into(), user: user.into(), password: Secret::new("p".into()) });
+        assert!(matches!(save(&mut st, "https://a.b", "u"), Done::AuthSaved { success: true, .. }));
+        assert!(matches!(save(&mut st, "https://a.b", "v"), Done::AuthSaved { success: true, .. }));
+        assert_eq!(st.calls, vec!["set https://a.b u", "add https://a.b v 0"], "an existing pair is set, else added with no flags");
+        st.fail = true;
+        assert!(matches!(save(&mut st, "https://a.b", "u"), Done::AuthSaved { success: false, .. }), "the result comes from the store");
+        assert!(matches!(look(&mut st, "https://a.b"), Done::AuthLooked { found: None, .. }), "a store error is a miss");
+    }
+
+    #[test]
+    fn auth_replies_route_before_windows() {
+        let info = || Some((Kind::CredentialManager, "b".to_string(), Caps::default()));
+        let mut st = PwmState::default();
+        st.info = Some((Kind::OnePassword, "t".into(), Caps::default()));
+        let r = Reply { scope: Scope::Browser, owner: None, instance: 0, token: 0, busy: false, info: info(), done: Done::AuthLooked { pane: 5, id: 3, found: None } };
+        assert!(st.route_reply(r).is_none(), "a store reply needs no window");
+        assert_eq!(st.store_replies.len(), 1);
+        assert!(matches!(st.store_replies[0], StoreReply::Looked { pane: 5, id: 3, found: None }));
+        assert_eq!(st.browser_info.as_ref().map(|i| i.1.as_str()), Some("b"));
+        assert_eq!(st.info.as_ref().map(|i| i.1.as_str()), Some("t"), "the terminal's info is untouched");
+        let (tx, rx) = mpsc::channel::<Option<Vec<(String, Secret)>>>();
+        let r = Reply { scope: Scope::Browser, owner: None, instance: 0, token: 0, busy: false, info: None, done: Done::Prompt { heading: String::new(), user: None, answer: tx } };
+        assert!(st.route_reply(r).is_none());
+        assert!(rx.recv().is_err(), "an ownerless prompt drops its sender");
+        // A terminal window's reply still updates the terminal's info and goes on to its window.
+        let w = WindowId::dummy();
+        let r = Reply { scope: Scope::Terminal, owner: Some(w), instance: 1, token: 0, busy: false, info: Some((Kind::LastPass, "lp".into(), Caps::default())), done: Done::Reset };
+        assert!(st.route_reply(r).is_some());
+        assert_eq!(st.info.as_ref().map(|i| i.1.as_str()), Some("lp"));
+        assert_eq!(st.browser_info.as_ref().map(|i| i.1.as_str()), Some("b"));
+        let src = include_str!("pwm_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        let start = prod.find("fn pwm_reply").unwrap();
+        assert!(prod[start..start + 400].contains("route_reply"), "routing is the first step of pwm_reply");
+        assert!(!prod.contains("self.pwm.info = Some"), "no reply overwrites the terminal info directly");
     }
 }
