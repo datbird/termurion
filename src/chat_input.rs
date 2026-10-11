@@ -689,6 +689,11 @@ impl Drafts {
         }
     }
 
+    /// An attachment for a chat that is not the one shown (it joins that chat's kept draft).
+    pub fn attach(&mut self, chat: &str, p: Pending) {
+        self.kept.entry(chat.to_string()).or_default().pending.push(p);
+    }
+
     /// A deleted chat's draft goes with it.
     pub fn forget(&mut self, chat: &str) {
         self.kept.remove(chat);

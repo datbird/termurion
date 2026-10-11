@@ -277,8 +277,11 @@ impl App {
         if !reader::offers_reader(bv.reader.cached.as_deref()) {
             return None;
         }
-        let has_url = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| !io.url.is_empty());
-        Some(crate::browser::ReaderMenu { reader: bv.reader.reader, distraction: bv.reader.distraction, has_url })
+        let (has_url, ask_ai) = match self.panes.get(&pane).and_then(|p| p.browser_io()) {
+            Some(io) => (!io.url.is_empty(), !io.url.is_empty() && crate::ai_browser::offerable(&io.url, io.dev_null)),
+            None => (false, false),
+        };
+        Some(crate::browser::ReaderMenu { reader: bv.reader.reader, distraction: bv.reader.distraction, has_url, ask_ai })
     }
 }
 

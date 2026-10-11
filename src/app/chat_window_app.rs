@@ -365,6 +365,60 @@ impl App {
         }
     }
 
+    /// A chat about `pane`, linked through the one link path (`link_chat`): created unlinked, then
+    /// linked, so a Dev Null pane is refused, the notices show and the permissions publish. A refusal
+    /// is shown and the empty chat is deleted.
+    pub(super) fn create_linked_chat(&mut self, title: &str, pane: PaneId) -> Option<String> {
+        let id = self.chat_create(title, None, None, "", vec![])?;
+        if let Err(e) = self.link_chat(&id, pane) {
+            self.banners.set("chat_link", e);
+            self.chat_delete(&id);
+            return None;
+        }
+        Some(id)
+    }
+
+    /// Adds an in-memory file to `chat`'s input (the strip shows it; the send writes it as any 12d
+    /// attachment): the shown chat's draft, else that chat's kept draft.
+    pub(super) fn attach_in_memory(&mut self, chat: &str, name: String, content: Vec<u8>, mime: String) {
+        let p = chat_input::Pending::InMemory { name, content, mime };
+        if self.chat_shown.as_deref() == Some(chat) {
+            self.chat_input.draft.pending.push(p);
+        } else {
+            self.chat_drafts.attach(chat, p);
+        }
+        self.chat_window_refresh();
+    }
+
+    /// "Ask AI\u{2026}" (`BVC:1035-1046`, `PSB:127-134`): the person's pick in the browser toolbar menu.
+    /// The page text comes from `browser_page_content`, the one reader (Tandem's isolated world, a
+    /// constant script, answered for the page of its epoch), and is page-derived: capped and fenced by
+    /// `ai_browser::ask_ai_body`. Dev Null and Tandem, local or extension pages are refused (the item is
+    /// disabled for them; this checks again). The chat is created unlinked and linked by `link_chat`.
+    /// A page with no text does nothing; the log names the pane only.
+    pub(super) fn ask_ai_about_page(&mut self, pane: PaneId, event_loop: &ActiveEventLoop) {
+        let Some(io) = self.panes.get(&pane).and_then(|p| p.browser_io()) else { return };
+        if io.url.is_empty() || !crate::ai_browser::offerable(&io.url, io.dev_null) {
+            return;
+        }
+        if !self.chat_window_enter(event_loop) {
+            return;
+        }
+        self.browser_page_content(pane, Box::new(move |app, pane, r| {
+            let page = r.ok().and_then(|v| Some((v.get("title")?.as_str()?.to_string(), v.get("content")?.as_str()?.to_string())));
+            let still = app.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| crate::ai_browser::offerable(&io.url, io.dev_null));
+            let Some((title, content)) = page.filter(|_| still) else {
+                crate::rlog!("Ask AI: no page content for pane {}", pane);
+                return;
+            };
+            let name = crate::ai_browser::ask_ai_name(&title);
+            let Some(id) = app.create_linked_chat(&name, pane) else { return };
+            app.show_chat(Some(id.clone()));
+            let (file, bytes, mime) = crate::ai_browser::ask_ai_attachment(&name, &crate::ai_browser::ask_ai_body(&name, &content));
+            app.attach_in_memory(&id, file, bytes, mime.to_string());
+        }));
+    }
+
     /// The name an entry point shows for a pane: a terminal's window title, a browser pane's page
     /// title through `display_text` (a page sets it; no hidden or bidi characters reach a view).
     fn pane_entry_name(&self, pane: PaneId) -> String {
@@ -1825,6 +1879,35 @@ mod tests {
         let name = &prod[prod.find("fn pane_entry_name(").unwrap()..];
         let name = &name[..name.find("\n    }\n").unwrap()];
         assert!(name.contains("display_text("), "a page title is shown through display_text");
+    }
+
+    /// Task 8: Ask AI is the person's menu pick; the text comes through the one page reader, fenced
+    /// and capped; the chat is created unlinked and linked by `link_chat` (Dev Null refused); the file
+    /// goes to the input as an in-memory attachment; the log names the pane only.
+    #[test]
+    fn ask_ai_creates_a_linked_chat() {
+        let me = include_str!("chat_window_app.rs");
+        let prod = &me[..me.find("#[cfg(test)]\nmod tests").unwrap()];
+        let ask = &prod[prod.find("pub(super) fn ask_ai_about_page(").unwrap()..prod.find("    /// The name an entry point shows").unwrap()];
+        assert!(ask.contains("offerable(") && ask.contains("chat_window_enter(") && ask.contains("self.browser_page_content(pane,"));
+        assert!(ask.contains("create_linked_chat(&name, pane)") && ask.contains("ask_ai_body(") && ask.contains("attach_in_memory("));
+        assert!(!ask.contains("browser_copy_selection") && !ask.contains("chat_create(") && !ask.contains("browser_js_call") && !ask.contains("browser_eval"), "no second capture or link path");
+        assert!(ask.contains("no page content for pane {}") && !ask.contains("title}") && !ask.contains("url}"), "the log names the pane only");
+        let make = &prod[prod.find("pub(super) fn create_linked_chat(").unwrap()..prod.find("pub(super) fn attach_in_memory(").unwrap()];
+        assert!(make.contains("chat_create(title, None, None") && make.contains("self.link_chat(&id, pane)") && make.contains("self.chat_delete(&id)"));
+        let picked = include_str!("browser_app.rs");
+        assert!(picked.contains("browser::ASK_AI_ID => return { self.ask_ai_about_page(pane, event_loop); true }"));
+        // A page titled ..\a/b:c: the attachment keeps the name, the writer refuses it and writes nothing.
+        let (name, bytes, mime) = crate::ai_browser::ask_ai_attachment("..\\a/b:c", "x");
+        assert_eq!((name.as_str(), bytes.as_slice(), mime), ("..\\a/b:c.txt", &b"x"[..], "text/plain"));
+        let root = std::env::temp_dir().join(format!("tandem-askai-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(crate::chat_view::materialize(&root, "CHAT", "ci_1", &name, &bytes).is_err());
+        let count = |d: &std::path::Path| std::fs::read_dir(d).map(|r| r.count()).unwrap_or(0);
+        let inside = count(&root.join("CHAT").join("ci_1"));
+        let outside = root.parent().unwrap().join("b");
+        assert_eq!((inside, outside.exists()), (0, false), "nothing written, nothing outside");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Task 4: the icon is asked for only after the rename landed, its result is dropped for a newer

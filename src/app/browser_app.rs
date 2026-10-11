@@ -1268,7 +1268,7 @@ impl App {
     }
 
     /// A pick from the toolbar's menus. True when the id was theirs.
-    pub(super) fn browser_menu_picked(&mut self, id: &str) -> bool {
+    pub(super) fn browser_menu_picked(&mut self, id: &str, event_loop: &ActiveEventLoop) -> bool {
         if let Some(rest) = id.strip_prefix(HISTORY_ID) {
             let Some((pane, steps)) = rest.split_once(':').and_then(|(p, s)| Some((p.parse::<PaneId>().ok()?, s.parse::<i32>().ok()?))) else { return true };
             if steps != 0 && steps.abs() <= 100 && self.browser_history_fresh(pane, steps) {
@@ -1295,6 +1295,8 @@ impl App {
             return true;
         }
         match label {
+            // Tandem's own menu: the pick is the person's act and the only way in (no page can reach it).
+            browser::ASK_AI_ID => return { self.ask_ai_about_page(pane, event_loop); true },
             "Reader Mode" | "Exit Reader Mode" => return { self.toggle_reader_mode(pane); true },
             "Remove Distractions" | "Exit Distraction Removal" => return { self.toggle_distraction_removal(pane); true },
             _ => {}
