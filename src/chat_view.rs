@@ -240,7 +240,7 @@ fn explanation_request_text(r: &crate::ai_explain::Request) -> String {
 
 /// The offer to link a session (`CVC:2665-2680`). The name is a terminal program's to set, so it
 /// is escaped (ruling F20).
-fn offer_link(terminal: bool, name: Option<&str>) -> String {
+pub fn offer_link_body(terminal: bool, name: Option<&str>) -> String {
     let name = name.map_or_else(|| "Unnamed session".to_string(), |n| consent_field(n, Field::Text));
     let kind = if terminal { "terminal" } else { "browser" };
     format!(
@@ -279,7 +279,7 @@ pub fn body(content: &Content) -> Body {
             ClientLocal::StreamingChanged(Streaming::Active) => system(STREAM_ACTIVE),
             ClientLocal::StreamingChanged(Streaming::Stopped) => system(STREAM_STOPPED),
             ClientLocal::StreamingChanged(Streaming::StoppedAutomatically) => system(STREAM_STOPPED_AUTO),
-            ClientLocal::OfferLink { terminal, name, .. } => Body::Markdown(offer_link(*terminal, name.as_deref())),
+            ClientLocal::OfferLink { terminal, name, .. } => Body::Markdown(offer_link_body(*terminal, name.as_deref())),
             ClientLocal::OfferOrchestration => system(ORCHESTRATION_OFFER),
             ClientLocal::Permissions { .. } => system(PERMISSIONS_HELP),
             ClientLocal::Other(v) => Body::Markdown(orchestration_body(v)),
@@ -744,6 +744,23 @@ mod tests {
 
     fn attachment(id: &str, kind: serde_json::Value) -> Subpart {
         Subpart::Attachment(json!({"id": id, "type": kind}))
+    }
+
+    #[test]
+    fn entry_points_follow_iterm2() {
+        let want = "**Link this chat to browser session \u{201C}Docs\u{201D}, or enable orchestration?**\n\nLinking gives the AI access to this browser session subject to your per-call permission. **Orchestration** is an alternative mode where the AI can coordinate multiple sessions. It uses automatic safety checking and one-time per-session approval instead of fine-grained permissions.";
+        let offer = |name: Option<&str>| Content::ClientLocal(ClientLocal::OfferLink { terminal: false, guid: "g".into(), name: name.map(str::to_string) });
+        assert_eq!(body(&offer(Some("Docs"))), Body::Markdown(want.into()));
+        assert_eq!(offer_link_body(false, Some("Docs")), want);
+        let Body::Markdown(unnamed) = body(&offer(None)) else { panic!() };
+        assert!(unnamed.starts_with("**Link this chat to browser session \u{201C}Unnamed session\u{201D}, or enable"));
+        // A page's title cannot open a link or close the quotes: it is escaped like any program text.
+        let Body::Markdown(forged) = body(&offer(Some("[x](https://evil.example)**"))) else { panic!() };
+        assert!(!forged.contains("[x](https://evil.example)"), "{forged}");
+        let select = |terminal| body(&Content::SelectSessionRequest { original: Box::new(msg(Participant::Agent, plain("x"), 1.0)), terminal });
+        assert_eq!(select(false), Body::Markdown(crate::ai_permissions::NEEDS_SESSION_BROWSER.into()));
+        assert_eq!(select(true), Body::Markdown(crate::ai_permissions::NEEDS_SESSION.into()));
+        assert!(offer_link_body(true, Some("zsh")).starts_with("**Link this chat to terminal session \u{201C}zsh\u{201D}"));
     }
 
     #[test]

@@ -324,7 +324,7 @@ impl App {
         let session = self.chat_focused_pane();
         let session_ref = session.and_then(|p| self.session_ref(p));
         let chats = self.chat_db.as_ref().and_then(|db| db.chats().ok()).unwrap_or_default();
-        let linked = session_ref.as_deref().and_then(|r| chats.iter().find(|c| c.terminal_session_guid.as_deref() == Some(r)));
+        let linked = session_ref.as_deref().and_then(|r| chats.iter().find(|c| tb::is_linked(c.terminal_session_guid.as_deref(), c.browser_session_guid.as_deref(), &[r])));
         // The shown chat, else the most recent one.
         let recent_id = self.chat_shown.clone().or_else(|| chats.first().map(|c| c.id.clone()));
         let empty = recent_id.and_then(|id| self.chat_db.as_ref()?.messages(&id).ok()).is_some_and(|m| tb::trivially_empty(&m));
@@ -349,18 +349,27 @@ impl App {
             }
             return;
         };
-        let last = self.chat_db.as_ref().and_then(|db| db.chats().ok()).and_then(|chats| chats.into_iter().find(|c| c.terminal_session_guid.as_deref() == Some(reference.as_str())));
+        let browser = self.is_browser_pane(pane);
+        let last = self.chat_db.as_ref().and_then(|db| db.chats().ok()).and_then(|chats| chats.into_iter().find(|c| tb::is_linked(c.terminal_session_guid.as_deref(), c.browser_session_guid.as_deref(), &[reference.as_str()])));
         let id = match last {
             Some(c) => Some(c.id),
             None => {
-                let name = self.window_title(pane);
-                let name = if name.trim().is_empty() { "Unnamed session".to_string() } else { name };
-                self.chat_create(&tb::chat_about_title(&name), Some(&reference), None, "", vec![])
+                let name = self.pane_entry_name(pane);
+                // The guid goes in the field of the pane's kind, never both.
+                let (terminal, browser_guid) = if browser { (None, Some(reference.as_str())) } else { (Some(reference.as_str()), None) };
+                self.chat_create(&tb::chat_about_title(&name), terminal, browser_guid, "", vec![])
             }
         };
         if let Some(id) = id {
             self.show_chat(Some(id));
         }
+    }
+
+    /// The name an entry point shows for a pane: a terminal's window title, a browser pane's page
+    /// title through `display_text` (a page sets it; no hidden or bidi characters reach a view).
+    fn pane_entry_name(&self, pane: PaneId) -> String {
+        let raw = if self.is_browser_pane(pane) { self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| crate::inert_files::display_text(&io.title, 128, false)).unwrap_or_default() } else { self.window_title(pane) };
+        tb::entry_name(&raw)
     }
 
     /// `createNewChat(offerGuid:)` (`CWC:415-434`): a new chat that offers to link the live
@@ -370,8 +379,8 @@ impl App {
         self.show_chat(Some(id.clone()));
         match offer.and_then(|p| self.session_ref(p).map(|guid| (p, guid))) {
             Some((pane, guid)) => {
-                let name = Some(self.window_title(pane)).filter(|n| !n.trim().is_empty());
-                self.client_local(&id, ClientLocal::OfferLink { terminal: true, guid, name });
+                let name = Some(self.pane_entry_name(pane)).filter(|n| n != "Unnamed session");
+                self.client_local(&id, ClientLocal::OfferLink { terminal: !self.is_browser_pane(pane), guid, name });
             }
             None => self.client_local(&id, ClientLocal::OfferOrchestration),
         }
@@ -1798,6 +1807,25 @@ fn find_seed(text: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::menus::{Chord, ChordKey};
+
+    /// Task 7: Open AI Chat, AI Chats and the new-chat offer know a browser pane: the reuse rule
+    /// reads either binding, a new chat puts the guid in the field of its kind (never both), and
+    /// the offer names the pane's kind; a page's title only passes through `display_text`.
+    #[test]
+    fn browser_entry_points_follow_the_pane_kind() {
+        let me = include_str!("chat_window_app.rs");
+        let prod = &me[..me.find("#[cfg(test)]\nmod tests").unwrap()];
+        let open = &prod[prod.find("pub(super) fn open_ai_chat(").unwrap()..prod.find("pub(super) fn create_window_chat(").unwrap()];
+        assert!(open.contains("is_browser_pane(pane)") && open.contains("tb::is_linked("));
+        assert!(open.contains("if browser { (None, Some(") || open.contains("(None, Some(reference.as_str()))"), "a browser pane binds the browser guid only");
+        let chats = &prod[prod.find("pub(super) fn open_ai_chats(").unwrap()..prod.find("pub(super) fn open_ai_chat(").unwrap()];
+        assert!(chats.contains("tb::is_linked("));
+        let create = &prod[prod.find("pub(super) fn create_window_chat(").unwrap()..prod.find("pub(super) fn show_chat(").unwrap()];
+        assert!(create.contains("terminal: !self.is_browser_pane(pane)") && create.contains("pane_entry_name("));
+        let name = &prod[prod.find("fn pane_entry_name(").unwrap()..];
+        let name = &name[..name.find("\n    }\n").unwrap()];
+        assert!(name.contains("display_text("), "a page title is shown through display_text");
+    }
 
     /// Task 4: the icon is asked for only after the rename landed, its result is dropped for a newer
     /// title, a failure clears the icon through the row-merging writer, a chat deleted meanwhile
