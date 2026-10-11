@@ -49,6 +49,8 @@ pub(super) struct Calls {
     pub next: u64,
     /// One limiter per chat: the existing `webhost::PermissionLimiter` (no new limiter).
     pub limits: HashMap<String, crate::webhost::PermissionLimiter>,
+    /// Calls started in a chat's current person turn (`CALLS_PER_TURN`), cleared when its turn ends.
+    pub turns: HashMap<String, usize>,
 }
 
 /// What the App does next for a call.
@@ -240,7 +242,19 @@ impl Calls {
         if self.limits.len() >= 64 && !self.limits.contains_key(chat) {
             self.limits.clear();
         }
-        self.limits.entry(chat.to_string()).or_default().allow(now, pending)
+        if self.turn_capped(chat) {
+            return false;
+        }
+        let ok = self.limits.entry(chat.to_string()).or_default().allow(now, pending);
+        if ok {
+            *self.turns.entry(chat.to_string()).or_default() += 1;
+        }
+        ok
+    }
+
+    /// Whether the chat's current turn has started `CALLS_PER_TURN` browser calls.
+    pub fn turn_capped(&self, chat: &str) -> bool {
+        self.turns.get(chat).copied().unwrap_or(0) >= crate::ai_browser::CALLS_PER_TURN
     }
 
     /// Binds a token to the chat and request it answers; once.
@@ -420,8 +434,14 @@ impl App {
     }
 
     /// The chat's rate limit (I3).
-    pub(super) fn ai_browser_allow(&mut self, chat: &str) -> bool {
-        self.ai_browser.allow(chat, std::time::Instant::now())
+    pub(super) fn ai_browser_allow(&mut self, chat: &str) -> Result<(), Outcome> {
+        if self.ai_browser.turn_capped(chat) {
+            return Err(Outcome { model: crate::ai_browser::TURN_LIMITED.to_string(), notice: Some(crate::ai_browser::N_RATE_LIMITED.to_string()) });
+        }
+        if self.ai_browser.allow(chat, std::time::Instant::now()) {
+            return Ok(());
+        }
+        Err(Outcome { model: crate::ai_browser::RATE_LIMITED.to_string(), notice: Some(crate::ai_browser::N_RATE_LIMITED.to_string()) })
     }
 
     pub(super) fn ai_browser_bind(&mut self, token: u64, chat: &str, request_id: &str) {
@@ -457,6 +477,9 @@ impl App {
     pub(super) fn ai_browser_sweep(&mut self) {
         let keep: HashSet<String> = self.ai_browser.chats().into_iter().filter(|c| self.ai_browser_gate(c) && self.ai_browser_turn_active(c)).collect();
         self.ai_browser.sweep(&|chat| keep.contains(chat));
+        // A chat whose turn ended starts its next turn with a fresh count.
+        let active: HashSet<String> = self.ai_browser.turns.keys().filter(|c| self.ai_browser_turn_active(c)).cloned().collect();
+        self.ai_browser.turns.retain(|c, _| active.contains(c));
     }
 
     /// The answers ready for the one return path, `ai_tool_finished`.
@@ -520,9 +543,31 @@ mod tests {
         }
         assert!(!s.allow("E", now), "waiting calls are capped too");
         assert!(crate::ai_browser::RATE_LIMITED.len() < 100);
+        // The per-turn cap: through the same owner, 30 calls, then refused until the turn ends.
+        let mut t = Calls::default();
+        let later = |i: usize| now + std::time::Duration::from_secs(2 * i as u64);
+        for i in 0..crate::ai_browser::CALLS_PER_TURN {
+            assert!(t.allow("T", later(i)), "call {i}");
+        }
+        assert!(t.turn_capped("T") && !t.allow("T", later(99)), "the 31st is refused");
+        assert!(!t.turn_capped("U"), "another chat is unaffected");
+        t.turns.clear();
+        assert!(t.allow("T", later(200)), "a new turn starts fresh");
         let src = include_str!("chat_app.rs");
         let run = &src[src.find("pub(super) fn ai_run_tool").unwrap()..];
         assert!(run.find("ai_browser_allow(chat)").unwrap() < run.find("self.ai_tool_start(pane, call)").unwrap());
+    }
+
+    /// Task 5 review minors: a relink answers the old calls at once, and a closing pane answers
+    /// "the browser session was closed" before the unlink can say "page changed".
+    #[test]
+    fn relink_and_close_answer_the_right_text() {
+        let c = include_str!("chat_session_app.rs");
+        let link = &c[c.find("pub(super) fn link_chat").unwrap()..c.find("pub(super) fn chat_state_changed").unwrap()];
+        assert!(link.contains("!terminal && before.as_deref().is_some_and(|b| b != reference.as_str())") && link.contains("self.ai_browser_unlinked(chat)"));
+        let m = include_str!("mod.rs");
+        let close = &m[m.find("self.ai_browser_pane_gone(id);\n        // Every chat linked").unwrap()..];
+        assert!(close.find("self.ai_browser_pane_gone(id)").unwrap() < close.find("self.chat_pane_gone(id)").unwrap());
     }
 
     #[test]

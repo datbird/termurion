@@ -42,6 +42,9 @@ pub const AI_OFF: &str = "Generative AI features are turned off, so the web brow
 /// A chat's browser tool calls came faster than the limiter allows (`webhost::PermissionLimiter`, the one owner).
 pub const RATE_LIMITED: &str = "Too many web browser requests at once. Wait a moment and try again.";
 pub const N_RATE_LIMITED: &str = "Too many requests";
+/// Browser tool calls one person turn may start (ROBERT FLAG: this number is a Tandem choice, not iTerm2's).
+pub const CALLS_PER_TURN: usize = 30;
+pub const TURN_LIMITED: &str = "This request has used the web browser too many times. Answer with what you have, or ask the person to continue.";
 pub const PAGE_CHANGED: &str = "The web page changed while the request was running, so nothing was returned. Ask again if you still need it.";
 /// A browser call that arrives for a pane the tools are not offered on (the engine's call-time gate).
 pub const NOT_OFFERED: &str = "The linked browser pane is private or is not showing an ordinary web page, so the browser tools are not available there.";

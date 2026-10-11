@@ -4991,6 +4991,9 @@ impl App {
         self.warn_short_lived(id);
         // The source ending cancels the pick (`PS:3940-3942`).
         self.pane_move_event(pane_move_ui::PickEvent::Ended(id));
+        // Waiting browser tools answer "the browser session was closed" first; the unlink below
+        // would otherwise answer them "page changed".
+        self.ai_browser_pane_gone(id);
         // Every chat linked to this session unlinks while its reference still names the pane.
         self.chat_pane_gone(id);
         // AI requests that belong to the pane end with it.

@@ -124,8 +124,13 @@ impl App {
         // A new session starts from no watermark: "the screen is unchanged" must not carry over
         // from the old one (ruling F34).
         self.ai_watermarks.remove(chat);
-        // A new browser session starts with no call in flight for the old one: whatever the chat
-        // waited on is answered "page changed" by the binding check, never by this page.
+        // A new browser session starts with no call in flight for the old one: a relink to another
+        // pane answers every call of the chat "page changed" at once (the binding check compares
+        // against the OLD pane's own page, which has not changed), so the old pane's text is
+        // never delivered under the new link.
+        if !terminal && before.as_deref().is_some_and(|b| b != reference.as_str()) {
+            self.ai_browser_unlinked(chat);
+        }
         let name = if terminal { self.window_title(pane) } else { self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| crate::inert_files::display_text(&io.title, 128, false)).unwrap_or_default() };
         self.notice(chat, &chat_buttons::linked_notice(terminal, Some(name.as_str()).filter(|n| !n.trim().is_empty())));
         if !terminal {
