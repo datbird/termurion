@@ -516,6 +516,7 @@ pub mod api_misc;
 pub mod api_notify;
 pub mod session_env;
 pub mod session_end;
+pub mod session_params;
 pub mod start_dir;
 pub mod shell_inject;
 pub mod sleep_guard;

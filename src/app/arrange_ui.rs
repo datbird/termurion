@@ -648,6 +648,7 @@ impl App {
                 _ => arrangement::folder_for(&session, ssh),
             });
             let mut launched = true;
+            self.restoring_session = true;
             // A browser pane comes back at its saved URL, judged again (an arrangement file is another party's).
             self.browser_url_override = super::browser_app::restored_url(&session);
             // A workgroup's shown member saved its descriptor (Task 9). A restored Code Review or Diff
@@ -685,6 +686,7 @@ impl App {
                 None => self.start_pane(area, guid.as_deref()),
                 }
             };
+            self.restoring_session = false;
             self.start_dir_override = None;
             self.browser_url_override = None;
             match id {

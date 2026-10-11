@@ -244,6 +244,7 @@ mod workgroup_git_app;
 mod workgroup_restore_app;
 mod code_review_app;
 mod workgroup_toolbar_ui;
+mod session_params_app;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -693,6 +694,12 @@ pub struct App {
     /// The command the next pane runs instead of its profile's (a git menu command's
     /// single-use window, the REPL's interpreter).
     start_command_override: Option<String>,
+    /// Sessions waiting for their `$$NAME$$` answers (13y2 Task 9e), oldest first.
+    param_prompts: Vec<session_params_app::Pending>,
+    /// The profile with the answers in it, set only while the answered session starts.
+    param_profile: Option<Profile>,
+    /// A session is being rebuilt from an arrangement: it never prompts.
+    restoring_session: bool,
     /// The hops the next pane reconnects through (Duplicate Session), moved into the new pane
     /// by `start_pane_as`. Set and cleared around one start, so it is not per-window state.
     start_jumps_override: Option<Vec<crate::ssh_jumps::Reconnection>>,
@@ -2256,6 +2263,9 @@ pub fn run() {
         menus_dirty: false,
         start_dir_override: None,
         start_command_override: None,
+        param_prompts: Vec::new(),
+        param_profile: None,
+        restoring_session: false,
         start_jumps_override: None,
         start_env_override: None,
         start_tab: None,
@@ -3631,6 +3641,9 @@ impl App {
 
     /// The profile with this Guid, or the default profile.
     fn profile(&self, guid: Option<&str>) -> Profile {
+        if let Some(answered) = &self.param_profile {
+            return answered.clone();
+        }
         guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).clone()
     }
 
@@ -4176,8 +4189,19 @@ impl App {
             return self.start_browser_pane(id, rect, &p);
         }
         self.browser_url_override = None;
+        // A `$$NAME$$` left in the command, name or folder asks first (13y2 Task 9e).
+        match self.param_gate(id, rect, guid, &p) {
+            session_params_app::Gate::Deferred => return true,
+            session_params_app::Gate::Refused(why) => {
+                self.banners.set("start", why);
+                return false;
+            }
+            session_params_app::Gate::Start(answered) => self.param_profile = answered,
+        }
         let handed = self.start_handoff.is_some();
-        match self.spawn_pane(id, rect, guid, None) {
+        let spawned = self.spawn_pane(id, rect, guid, None);
+        self.param_profile = None;
+        match spawned {
             Ok((pane, p)) => {
                 self.install_pane(id, pane, &p, false);
                 // iTerm2 blanks Initial Text for single-use and URL launches (`iTermController.m:1872`,
@@ -4999,6 +5023,7 @@ impl App {
         // A timed restart of a pane that is gone must not fire.
         self.pending_restarts.remove(&id);
         self.restart_history.remove(&id);
+        self.param_pane_gone(id);
         // A buried session that ends leaves the Buried Sessions menu.
         if self.buried.take(id).is_some() {
             self.menus_dirty = true;
@@ -7375,6 +7400,7 @@ impl ApplicationHandler<UserEvent> for App {
         let frame_due = self.frame_wake();
         let flicker_due = self.flicker_tick(Instant::now());
         let ended_due = self.tick_ended(event_loop);
+        self.param_prompt_next(event_loop);
         let workgroup_due = self.tick_workgroups(event_loop);
         let restart_due = self.tick_restarts();
         self.tick_progress();
@@ -7509,7 +7535,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.mark_confirm_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.review_window_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.autofill_card_event(id, &event) || self.basic_auth_window_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.browser_tip_event(id, &event) || self.web_popover_event(id, &event) || self.web_replay_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) {
+        if self.prompt_event(id, &event) || self.param_prompt_event(id, &event) || self.mark_confirm_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.review_window_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.autofill_card_event(id, &event) || self.basic_auth_window_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.browser_tip_event(id, &event) || self.web_popover_event(id, &event) || self.web_replay_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) {
             return;
         }
         let window_exists = self.current_window().is_some() && !self.resident;
