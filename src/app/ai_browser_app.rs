@@ -47,6 +47,8 @@ pub(super) struct Calls {
     pub waits: Waits,
     pub done: Vec<(u64, Ready)>,
     pub next: u64,
+    /// One limiter per chat: the existing `webhost::PermissionLimiter` (no new limiter).
+    pub limits: HashMap<String, crate::webhost::PermissionLimiter>,
 }
 
 /// What the App does next for a call.
@@ -231,6 +233,16 @@ impl Calls {
         }
     }
 
+    /// Whether the chat may start another browser call now: the per-second rate and the cap on its
+    /// waiting calls come from `PermissionLimiter`.
+    pub fn allow(&mut self, chat: &str, now: std::time::Instant) -> bool {
+        let pending = self.calls.values().filter(|c| c.bound.as_ref().is_some_and(|(ch, _)| ch == chat)).count();
+        if self.limits.len() >= 64 && !self.limits.contains_key(chat) {
+            self.limits.clear();
+        }
+        self.limits.entry(chat.to_string()).or_default().allow(now, pending)
+    }
+
     /// Binds a token to the chat and request it answers; once.
     pub fn bind(&mut self, token: u64, chat: &str, request_id: &str) {
         if let Some(c) = self.calls.get_mut(&token).filter(|c| c.bound.is_none()) {
@@ -286,6 +298,8 @@ impl App {
         let Some(io) = self.panes.get(&pane).and_then(|p| p.browser_io()) else { return ToolStart::Done(Outcome { model: crate::ai_browser::NOT_A_BROWSER.to_string(), notice: None }) };
         let started = match call {
             Call::GetUrl => return ToolStart::Done(crate::ai_browser::current_url_outcome(&io.url, io.dev_null)),
+            // A load or a search starts from an ordinary page only: not Dev Null, not a Tandem or local page.
+            Call::LoadUrl { .. } | Call::WebSearch { .. } if !crate::ai_browser::offerable(&io.url, io.dev_null) => return ToolStart::Done(Outcome { model: crate::ai_browser::NOT_OFFERED.to_string(), notice: None }),
             Call::LoadUrl { url } => self.ai_browser.start_load(pane, url),
             Call::WebSearch { query } => {
                 let template = self.globals.string("SearchCommand");
@@ -350,31 +364,31 @@ impl App {
     }
 
     /// The one place a model's URL is loaded: the GUARDED `WebView::navigate` (never Tandem's own
-    /// load), so `navigation_allowed` judges it and each redirect; with no view yet the URL waits in
-    /// `pending_url`, which the view's creation loads the same way. While the permission store is
+    /// load), so `navigation_allowed` judges it and each redirect; with no view yet the load fails
+    /// (never the pending-load slot, which view creation loads as Tandem's own). While the permission store is
     /// not synced or the world is being set up nothing loads (the parked/deferred loads are
     /// Tandem's own, which a model's URL must never become): a fixed failure.
     fn ai_browser_load(&mut self, pane: PaneId, url: &str) -> Result<(), &'static str> {
         const NOT_READY: &str = "the browser is not ready, try again";
         let synced = self.perm_synced(pane);
-        let bv = self.browser_views.get_mut(&pane).ok_or(NOT_READY)?;
-        match &bv.view {
-            Some(v) => {
-                if !synced || bv.world.setup.is_some() {
-                    return Err(NOT_READY);
-                }
-                v.navigate(url);
-            }
-            None => {
-                bv.pending_url = Some(url.to_string());
-                bv.stopped = false;
-            }
+        let bv = self.browser_views.get(&pane).ok_or(NOT_READY)?;
+        // No view yet means the view is being set up: the URL never waits in the pending-load slot, which the
+        // view's creation loads as Tandem's own load (I1).
+        let Some(v) = bv.view.as_ref() else { return Err(NOT_READY) };
+        if !synced || bv.world.setup.is_some() {
+            return Err(NOT_READY);
         }
+        v.navigate(url);
         Ok(())
     }
 
     /// A main-frame navigation of `pane` began (`Event::Starting`).
     pub(super) fn ai_browser_starting(&mut self, pane: PaneId, redirect: bool, nav: u64) {
+        // While the world is being set up the navigations are Tandem's own (the world check's
+        // about:blank, the parked load): a waiting load never binds to one (I1).
+        if self.browser_views.get(&pane).is_some_and(|bv| bv.world.setup.is_some() || bv.view.is_none()) {
+            return;
+        }
         self.ai_browser.starting(pane, redirect, nav);
     }
 
@@ -403,6 +417,11 @@ impl App {
     /// Unlinking takes effect at once (`unlink_chat`): in-flight calls are answered "page changed".
     pub(super) fn ai_browser_unlinked(&mut self, chat: &str) {
         self.ai_browser.unlinked(chat);
+    }
+
+    /// The chat's rate limit (I3).
+    pub(super) fn ai_browser_allow(&mut self, chat: &str) -> bool {
+        self.ai_browser.allow(chat, std::time::Instant::now())
     }
 
     pub(super) fn ai_browser_bind(&mut self, token: u64, chat: &str, request_id: &str) {
@@ -485,6 +504,25 @@ mod tests {
             assert_eq!(o.model, crate::ai_browser::PAGE_CHANGED);
             assert!(!o.model.contains("secret"));
         }
+    }
+
+    #[test]
+    fn a_chat_is_rate_limited_by_the_existing_limiter() {
+        let mut s = Calls::default();
+        let now = std::time::Instant::now();
+        let ok = (0..10).filter(|_| s.allow("C", now)).count();
+        assert_eq!(ok, crate::webhost::PERMISSIONS_PER_SECOND);
+        assert!(s.allow("D", now), "another chat has its own budget");
+        assert!(s.allow("C", now + std::time::Duration::from_secs(2)));
+        for i in 0..crate::webhost::MAX_PENDING_PERMISSIONS as u64 {
+            s.calls.insert(i, call(7));
+            s.bind(i, "E", "r");
+        }
+        assert!(!s.allow("E", now), "waiting calls are capped too");
+        assert!(crate::ai_browser::RATE_LIMITED.len() < 100);
+        let src = include_str!("chat_app.rs");
+        let run = &src[src.find("pub(super) fn ai_run_tool").unwrap()..];
+        assert!(run.find("ai_browser_allow(chat)").unwrap() < run.find("self.ai_tool_start(pane, call)").unwrap());
     }
 
     #[test]
@@ -748,6 +786,14 @@ mod tests {
     #[test]
     fn the_runner_stays_on_the_guarded_paths() {
         let p = prod();
+        assert!(p.contains("!crate::ai_browser::offerable(&io.url, io.dev_null)"), "a load starts from an offered page");
+        let msg = include_str!("browser_scripts_app.rs");
+        let router = &msg[msg.find("pub(super) fn browser_message").unwrap()..];
+        let router = &router[..router.find("\n    }\n").unwrap_or(router.len())];
+        assert!(!router.contains("ai_browser"), "a page's message never answers a call");
+        assert!(!p.contains("pending_url"), "a model's URL never waits in pending_url (I1)");
+        let start = &p[p.find("pub(super) fn ai_browser_starting").unwrap()..p.find("pub(super) fn ai_browser_navigated").unwrap()];
+        assert!(start.contains("world.setup.is_some()") && start.contains("view.is_none()"), "setup navigations are Tandem's own (I1)");
         assert!(!p.contains("navigate_tandem") && !p.contains("defer_load") && !p.contains("browser_navigate("), "a model's URL never takes Tandem's own load");
         assert_eq!(p.matches("v.navigate(url)").count(), 1);
         assert_eq!(p.matches("browser_page_markdown_with(").count(), 1);

@@ -291,6 +291,32 @@ mod tests {
         "distraction-removal-helpers.js", "enter-distraction-removal.js", "exit-distraction-removal.js", "remove-element-at-point.js", "extract-plain-text.js", "convert-to-markdown.js", "turndown.browser.umd.js",
     ];
 
+    /// Tandem's own page UI (a mark's name, an autofill or password button, a find bubble) never
+    /// reaches the model: the converter's clone drops each node the injecting scripts create, and
+    /// every selector names something a script really creates.
+    #[test]
+    fn the_markdown_reader_drops_tandem_ui() {
+        let conv = file("convert-to-markdown.js");
+        let created: [(&str, &str, &str); 7] = [
+            ("#iterm-mark-annotations", "show-named-mark-annotations.js", "iterm-mark-annotations"),
+            (".iterm-mark-annotation", "show-named-mark-annotations.js", "iterm-mark-annotation"),
+            (".find-nav-bubble", "find-nav.js", "find-nav-bubble"),
+            ("#find-nav-styles", "find-nav.js", "find-nav-styles"),
+            ("#iterm2-autofill-highlight-style", "autofill-write.js", "iterm2-autofill-highlight-style"),
+            ("button[aria-label=\"Open Password Manager\"]", "password-button.js", "Open Password Manager"),
+            ("button[aria-label^=\"Autofill \"]", "autofill-detector.js", "Autofill ${fieldType}"),
+        ];
+        for (sel, script, needle) in created {
+            assert!(conv.contains(sel), "{sel}");
+            assert!(file(script).contains(needle), "{script} creates {needle}");
+        }
+        assert!(conv.contains("#iterm-copy-mode-cursor") && file("copy-mode-cursor.js").contains("iterm-copy-mode-cursor") && conv.contains("[data-tandem-ui]"));
+        // The removal runs before the markdown is made from the clone.
+        assert!(conv.find("#iterm-mark-annotations").unwrap() < conv.find("service.turndown(").unwrap());
+        // The injecting scripts stay upstream's: no Tandem marker patched into them.
+        assert!(!file("show-named-mark-annotations.js").contains("data-tandem-ui"));
+    }
+
     #[test]
     fn reader_logs_and_answers_follow_iterm2() {
         assert_eq!(failure_line(Failure::Enter, "boom"), "Error entering reader mode: boom");

@@ -711,6 +711,9 @@ impl App {
             if !self.ai_browser_gate(chat) {
                 return self.ai_tool_finished(chat, request_id, Outcome { model: crate::ai_browser::AI_OFF.to_string(), notice: None });
             }
+            if !self.ai_browser_allow(chat) {
+                return self.ai_tool_finished(chat, request_id, Outcome { model: crate::ai_browser::RATE_LIMITED.to_string(), notice: Some(crate::ai_browser::N_RATE_LIMITED.to_string()) });
+            }
             match self.ai_tool_start(pane, call) {
                 super::ai_tools_app::ToolStart::Done(o) => self.ai_tool_finished(chat, request_id, o),
                 super::ai_tools_app::ToolStart::Waiting(token) => self.ai_browser_bind(token, chat, request_id),

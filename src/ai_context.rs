@@ -158,7 +158,8 @@ pub fn neutralize(s: &str) -> String {
             '\u{0440}' | '\u{0420}' | '\u{03C1}' | '\u{03A1}' => 'p',
             '\u{0455}' | '\u{0405}' => 's',
             '\u{0442}' | '\u{0422}' | '\u{03C4}' | '\u{03A4}' => 't',
-            '\u{0475}' | '\u{03BD}' | '\u{039D}' => 'v',
+            '\u{0475}' | '\u{03BD}' => 'v',
+            '\u{039D}' => 'n',
             '\u{0445}' | '\u{0425}' | '\u{03C7}' | '\u{03A7}' => 'x',
             '\u{0443}' | '\u{0423}' | '\u{03C5}' => 'y',
             // Mathematical alphanumerics (bold, italic, script, fraktur, double-struck, sans, monospace):
