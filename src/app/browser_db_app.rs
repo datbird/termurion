@@ -113,7 +113,7 @@ impl App {
             self.browser_page_request(pane, token, url, context);
             return;
         }
-        let source = if scheme == "iterm2-about" { self.browser_source_answer(pane, url, context) } else { None };
+        let source = if scheme == "iterm2-about" { self.browser_error_answer(pane, url, context).or_else(|| self.browser_source_answer(pane, url, context)) } else { None };
         let answer: Answer = if let Some(source) = source {
             source
         } else if scheme == "iterm2-about" { browser_pages::answer(url, context, top_url) } else { self.adblock_answer(url, context, top_url) };

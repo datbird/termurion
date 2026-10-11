@@ -1,5 +1,6 @@
-//! File and ssh pages on the app side (milestone 13x8, Task 1): which page the main frame is on and
-//! the answer to a request for an `iterm2-file:` or `iterm2-ssh:` URL. Every answer carries the
+//! File, ssh and error pages on the app side (milestone 13x8, Tasks 1 and 2): which page the main
+//! frame is on, the answer to a request for an `iterm2-file:` or `iterm2-ssh:` URL, and the error
+//! page of a failed load (its content is this pane's state, never a URL's). Every answer carries the
 //! sandbox policy (`browser_pages::sandbox_headers`); a request that is not the pane's own
 //! navigation or a subresource of its page's tree is a 403 with no text. Tasks 3 and 9 add the
 //! arms that serve a file, a listing and a remote file; until then every allowed request is a 404.
@@ -7,6 +8,12 @@
 use super::*;
 use crate::browser_pages::{self, NOT_FOUND_HTML};
 use crate::webhost::Answer;
+
+/// Milliseconds on a clock that only moves forward (the error page's rate cap).
+fn mono_ms() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
 
 impl App {
     /// A main-frame navigation began and the one verdict let it go (`Event::Starting`): a file or
@@ -16,6 +23,66 @@ impl App {
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
         bv.page_root = browser_pages::page_root(url);
         bv.page_url = bv.page_root.is_some().then(|| url.to_string());
+    }
+
+    /// A main-frame load failed (`BM:1329-1390`): the error page when this URL is not the one that
+    /// failed last. A cancelled load shows nothing (`BM:1342-1345`), nor does a `file:` failure (Task 3's
+    /// page), an `iterm2-file:` one (`BM:1382`; an `iterm2-ssh:` failure does get the page) or a failure of a
+    /// local page. The page's text comes from `pending_error`, set here from the failure and the URL
+    /// the NavigationStarting named; the load is Tandem's own (`navigate_tandem`), so it passes the one
+    /// verdict as Tandem's load and its document request is the pane's.
+    pub(super) fn browser_load_failed(&mut self, pane: PaneId, url: &str, status: i32) {
+        let failure = browser_pages::failure_of(status);
+        let scheme = crate::webhost::scheme_of(url);
+        if failure == browser_pages::Failure::Cancelled || url.is_empty() || matches!(scheme.as_str(), "file" | browser_pages::FILE_SCHEME | browser_pages::ABOUT) {
+            return;
+        }
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        if !browser_pages::should_show_error(Some(url), bv.last_failed.as_deref()) || !bv.error_burst.allow(mono_ms()) {
+            return;
+        }
+        let html = browser_pages::error_page(failure, Some(url));
+        if html.is_empty() {
+            return;
+        }
+        bv.last_failed = Some(url.to_string());
+        bv.pending_error = Some(html);
+        if let Some(v) = bv.view.as_ref() {
+            v.navigate_tandem(browser_pages::ERROR_URL);
+        }
+    }
+
+    /// A main-frame load finished: leaving the error page for a page that loaded ends the failure
+    /// (`BM:1290-1292`); the error page's own load keeps it.
+    pub(super) fn browser_load_succeeded(&mut self, pane: PaneId, url: &str) {
+        if url.eq_ignore_ascii_case(browser_pages::ERROR_URL) {
+            return;
+        }
+        if let Some(bv) = self.browser_views.get_mut(&pane) {
+            bv.last_failed = None;
+            bv.pending_error = None;
+        }
+    }
+
+    /// The answer to a request for `iterm2-about:error`: None for any other URL. Only the document
+    /// request gets a page, from the pane's own `pending_error` (taken once) or the generic page; a
+    /// subresource or any other context is a 404. The URL carries nothing the page shows.
+    pub(super) fn browser_error_answer(&mut self, pane: PaneId, url: &str, context: i32) -> Option<Answer> {
+        if !url.eq_ignore_ascii_case(browser_pages::ERROR_URL) {
+            return None;
+        }
+        let nonce = browser_pages::new_nonce();
+        let html = if context == browser_pages::CONTEXT_DOCUMENT {
+            let pending = self.browser_views.get_mut(&pane).and_then(|b| b.pending_error.take());
+            Some(pending.filter(|h| !h.is_empty()).unwrap_or_else(browser_pages::default_error_page)).filter(|h| !h.is_empty())
+        } else {
+            None
+        };
+        let (status, mime, body) = match html {
+            Some(h) => (200, "text/html; charset=utf-8", browser_pages::with_nonce(&h, &nonce)),
+            None => (404, "text/plain; charset=utf-8", "Not found".to_string()),
+        };
+        Some(Answer::Respond { status, mime: mime.to_string(), body: body.into_bytes(), headers: browser_pages::response_headers(&nonce) })
     }
 
     /// The answer to a request for an `iterm2-file:` or `iterm2-ssh:` URL.
@@ -70,5 +137,38 @@ mod tests {
         assert!(router.contains("b.page_root.is_some()") && router.contains("return;"));
         let p = prod();
         assert!(!p.contains("std::fs") && !p.contains("localfs"), "this file reads no file; the serving arms live on a worker (Tasks 3, 9)");
+    }
+
+    /// The error page's content is this pane's state: the answer is built in one place, takes
+    /// `pending_error` once for the document request only, and reads nothing from the URL; a failure
+    /// is shown from the one Navigated arm, a person's load and a good page clear it, a reset too.
+    #[test]
+    fn failures_reach_every_handler() {
+        let p = prod();
+        let a = &p[p.find("pub(super) fn browser_error_answer").unwrap()..p.find("/// The answer to a request for an `iterm2-file:`").unwrap()];
+        assert!(a.contains("eq_ignore_ascii_case(browser_pages::ERROR_URL)") && a.contains("pending_error.take()") && a.contains("context == browser_pages::CONTEXT_DOCUMENT"));
+        assert!(a.contains("browser_pages::with_nonce(&h, &nonce)") && a.contains("browser_pages::response_headers(&nonce)") && a.matches("Answer::Respond").count() == 1);
+        assert!(!a.contains("url.split") && !a.contains("query"), "nothing is read from the URL");
+        let f = &p[p.find("pub(super) fn browser_load_failed").unwrap()..p.find("pub(super) fn browser_load_succeeded").unwrap()];
+        assert!(f.contains("Failure::Cancelled") && f.contains("\"file\" | browser_pages::FILE_SCHEME | browser_pages::ABOUT"), "iterm2-ssh is not excluded");
+        assert!(!f.contains("SSH_SCHEME"));
+        assert!(f.contains("should_show_error(Some(url), bv.last_failed.as_deref())") && f.contains("error_burst.allow(") && f.contains("navigate_tandem(browser_pages::ERROR_URL)"));
+        let app = include_str!("browser_app.rs");
+        let prod_app = &app[..app.find("#[cfg(test)]").unwrap()];
+        let arm = &prod_app[prod_app.find("Event::Navigated { ok, nav, .. } => {").unwrap()..prod_app.find("Event::History { back, forward, .. } =>").unwrap()];
+        assert_eq!(arm.matches("self.browser_load_failed(pane, url, *status)").count(), 1, "one call, in the one arm, after the other consumers");
+        assert_eq!(arm.matches("self.browser_load_succeeded(pane, url)").count(), 1);
+        assert!(arm.find("self.browser_marks_navigated(pane, *ok, *nav);").unwrap() < arm.find("self.browser_load_failed").unwrap());
+        assert!(prod_app.contains("fail_cert_errors: true,"));
+        let nav = &prod_app[prod_app.find("pub(super) fn browser_navigate(").unwrap()..prod_app.find("pub(super) fn browser_suggest").unwrap()];
+        assert!(nav.contains("bv.last_failed = None;"), "a URL the person loads starts over");
+        let scripts = include_str!("browser_scripts_app.rs");
+        let reset = &scripts[scripts.find("pub(super) fn browser_reset_world").unwrap()..scripts.find("// --- Setup ---").unwrap()];
+        assert!(reset.contains("bv.last_failed = None") && reset.contains("bv.pending_error = None") && reset.contains("bv.error_burst = Default::default()"));
+        let db = include_str!("browser_db_app.rs");
+        assert!(db.contains("self.browser_error_answer(pane, url, context).or_else(|| self.browser_source_answer(pane, url, context))"));
+        let win = include_str!("../webhost_win.rs");
+        let win = &win[..win.find("#[cfg(test)]\nmod tests").unwrap_or(win.len())];
+        assert!(win.contains("COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL") && !win.contains("ALWAYS_ALLOW"), "a certificate error never proceeds silently");
     }
 }

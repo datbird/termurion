@@ -25,7 +25,7 @@ use webview2_com::{
     AcceleratorKeyPressedEventHandler, CallDevToolsProtocolMethodCompletedHandler, FrameChildFrameCreatedEventHandler, FrameCreatedEventHandler, FrameDestroyedEventHandler, FrameWebMessageReceivedEventHandler, CapturePreviewCompletedHandler, DevToolsProtocolEventReceivedEventHandler, CoreWebView2CustomSchemeRegistration, CoreWebView2EnvironmentOptions, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, DocumentTitleChangedEventHandler, ExecuteScriptCompletedHandler, FaviconChangedEventHandler, FocusChangedEventHandler, GetFaviconCompletedHandler, HistoryChangedEventHandler,
     LaunchingExternalUriSchemeEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler, NewWindowRequestedEventHandler, PermissionRequestedEventHandler,
-    ProcessFailedEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler, WebResourceRequestedEventHandler, take_pwstr,
+    ProcessFailedEventHandler, ServerCertificateErrorDetectedEventHandler, SourceChangedEventHandler, WebMessageReceivedEventHandler, WebResourceRequestedEventHandler, take_pwstr,
 };
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::core::{BOOL, Interface, PCWSTR, PWSTR};
@@ -463,6 +463,9 @@ pub struct ViewSetup {
     /// The view reports the HTTP method of its main document requests (`Event::DocumentMethod`,
     /// 13x5): a second `WebResourceRequested` handler on a Document-context filter, no deferral.
     pub track_document_method: bool,
+    /// A certificate error fails the load (`ServerCertificateErrorDetected` answers Cancel), so the
+    /// app shows its error page and Edge's interstitial, with its "continue anyway", never appears.
+    pub fail_cert_errors: bool,
 }
 
 #[derive(Clone)]
@@ -1406,7 +1409,30 @@ fn configure(inner: &Rc<RefCell<Inner>>, core: &Core, bounds: (i32, i32, i32, i3
     if setup.track_document_method {
         register_document_method(inner, view, &mut token).map_err(|x| e("document method", x))?;
     }
+    if setup.fail_cert_errors {
+        register_cert_cancel(view, &mut token);
+    }
     Ok(())
+}
+
+/// A server certificate error cancels the request (`ServerCertificateErrorDetected`): the load
+/// fails with a certificate status and the app's error page replaces Edge's interstitial, which has
+/// a "continue anyway". iTerm2 offers none either. A runtime without the event keeps its own page
+/// (logged), as the external-protocol handler does.
+fn register_cert_cancel(view: &ICoreWebView2, token: &mut i64) {
+    let Ok(v14) = view.cast::<ICoreWebView2_14>() else {
+        crate::dlog!("webhost: this WebView2 Runtime cannot cancel certificate errors");
+        return;
+    };
+    let handler = ServerCertificateErrorDetectedEventHandler::create(Box::new(|_sender, args| guard(|| {
+        if let Some(args) = args {
+            let _ = unsafe { args.SetAction(COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL) };
+        }
+        Ok(())
+    })));
+    if unsafe { v14.add_ServerCertificateErrorDetected(&handler, token) }.is_err() {
+        crate::dlog!("webhost: the certificate error handler was not registered");
+    }
 }
 
 #[cfg(test)]
@@ -3078,6 +3104,8 @@ mod probe {
         rejected_bindings: usize,
         attached: Vec<(String, String)>,
         navigated: Vec<(String, bool)>,
+        /// Each `Navigated`'s url and status (13x8 Task 2).
+        statuses: Vec<(String, i32)>,
         failed: Vec<String>,
         created: bool,
         /// WebView2's own frame ids (`watch_frames`).
@@ -3182,6 +3210,7 @@ mod probe {
                 rejected_bindings: 0,
                 attached: Vec::new(),
                 navigated: Vec::new(),
+                statuses: Vec::new(),
                 failed: Vec::new(),
                 created: false,
                 frames: Vec::new(),
@@ -3347,7 +3376,10 @@ mod probe {
                 Event::Created(_) => self.created = true,
                 Event::Failed(_, why) => self.failed.push(why),
                 Event::ProcessFailed { kind, .. } => self.failed.push(format!("process failed {kind}")),
-                Event::Navigated { ok, url, .. } => self.navigated.push((url, ok)),
+                Event::Navigated { ok, url, status, .. } => {
+                    self.statuses.push((url.clone(), status));
+                    self.navigated.push((url, ok));
+                }
                 Event::Starting { url, redirect: false, .. } => self.order.push(format!("starting {url}")),
                 Event::Request { token, url, context, .. } => {
                     self.order.push(format!("request {context} {url}"));
@@ -5826,6 +5858,25 @@ window.addEventListener('message', function (e) {
         // Review I2: the flood is held AT the cap, so a grant that raised nothing fails here.
         assert_eq!(p.notes.len(), MAX_HELD_NOTES, "the flood fills the cap of {MAX_HELD_NOTES} and no more: {}", p.notes.len());
         assert_eq!(p.page_eval("1"), Ok("1".into()), "still responsive after the flood");
+        p.finish();
+    }
+
+    /// 13x8 Task 2: a load that fails posts its own URL (the NavigationStarting's, iTerm2's
+    /// `lastRequestedURL`) with a connection status, so the app needs no second failure event. A port
+    /// bound and closed inside the test refuses the connection. Skips when the runtime is missing.
+    #[test]
+    #[ignore]
+    fn failed_load_posts_its_url() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0").expect("a port").local_addr().expect("its address").port();
+        let url = format!("http://127.0.0.1:{port}/");
+        let setup = ViewSetup { guard_local_schemes: true, fail_cert_errors: true, ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&[], Vec::new(), &[], setup) else { return };
+        let n = p.navigated.len();
+        p.view().navigate_tandem(&url);
+        assert!(p.wait(10, |p| p.navigated.len() > n), "Navigated within 10 s: {:?}", p.order);
+        assert_eq!(p.navigated[n], (url.clone(), false), "a failed load, with the URL asked for");
+        let status = p.statuses[n].1;
+        assert!(status == 12 || status == 6, "a connection status: {status}");
         p.finish();
     }
 

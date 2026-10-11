@@ -222,6 +222,9 @@ impl App {
             bv.world = WorldState::default();
             bv.pointer_sig = None;
             bv.pointer_down = None;
+            bv.last_failed = None;
+            bv.pending_error = None;
+            bv.error_burst = Default::default();
             bv.receiving_broadcast = 0;
             bv.receiving_since = None;
             bv.echo = Default::default();

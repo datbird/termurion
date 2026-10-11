@@ -41,6 +41,13 @@ pub(super) struct BrowserView {
     /// The main frame began a navigation to `iterm2-about:source` that has not yet made its document
     /// request: only that request may take the pending source.
     pub(super) source_nav: bool,
+    /// The URL whose failure got the error page last (iTerm2's `lastFailedURL`, `BM:1348-1352`): the same
+    /// URL failing again shows nothing; cleared by a person's load and a page that loaded.
+    pub(super) last_failed: Option<String>,
+    /// The error page the next `iterm2-about:error` document request serves; taken once.
+    pub(super) pending_error: Option<String>,
+    /// At most a few error pages in a few seconds (preflight P6).
+    pub(super) error_burst: crate::browser_pages::ErrorBurst,
     /// The toolbar's state: the address field, its suggestions, a press, the history list.
     pub(super) bar: BarState,
     /// Browser Instant Replay: this pane's frames and the state of the capture round trip.
@@ -214,6 +221,8 @@ pub(super) fn browser_setup(dev_null: bool, adblock: bool, page_scripts: Vec<Str
         context_menu: true,
         permissions: true,
         track_document_method: true,
+        // iTerm2 never offers "continue anyway": a certificate error fails the load (Task 2 ruling).
+        fail_cert_errors: true,
         ..Default::default()
     }
 }
@@ -261,7 +270,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { perms: Default::default(), view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, page_root: None, page_url: None, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), triggers: None, trigger_gate: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default() });
+        self.browser_views.insert(id, BrowserView { perms: Default::default(), view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, last_failed: None, pending_error: None, error_burst: Default::default(), bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, page_root: None, page_url: None, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), triggers: None, trigger_gate: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default() });
         self.browser_triggers_init(id);
         true
     }
@@ -591,6 +600,14 @@ impl App {
                 }
                 self.browser_name(pane);
                 self.browser_marks_navigated(pane, *ok, *nav);
+                // The error page (13x8): a failed load, or a page that loaded after one.
+                if let Event::Navigated { url, status, .. } = e {
+                    if *ok {
+                        self.browser_load_succeeded(pane, url);
+                    } else {
+                        self.browser_load_failed(pane, url, *status);
+                    }
+                }
             }
             Event::History { back, forward, .. } => {
                 if let Some(io) = self.panes.get_mut(&pane).and_then(|p| p.browser_io_mut()) {
@@ -1339,6 +1356,8 @@ impl App {
         if let Some(bv) = self.browser_views.get_mut(&pane) {
             bv.bar.transition = Some(browser::TRANSITION_TYPED);
             bv.bar.nav_state.will_load(url);
+            // A URL the person loads starts over (`BM:661`).
+            bv.last_failed = None;
             // A person's own load ends the wait of a restored page.
             bv.world.restore_load = None;
             bv.world.restore_from = None;

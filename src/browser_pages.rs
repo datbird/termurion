@@ -160,6 +160,249 @@ pub fn static_page(url: &str) -> Option<String> {
     }
 }
 
+// --- The error page (13x8 Task 2; EH, EP, BM) ---
+
+/// The error page's URL (`EH:15`). Its content is never read from this URL: it is Tandem's state
+/// for the pane that asked (`BrowserView.pending_error`), served by the app (`browser_error_answer`),
+/// so a web page that navigates here shows only the generic page.
+pub const ERROR_URL: &str = "iterm2-about:error";
+
+/// Why a load failed, in iTerm2's cases (`EH:89-133`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    Offline,
+    HostNotFound,
+    TimedOut,
+    CannotConnect,
+    ConnectionLost,
+    TooManyRedirects,
+    Certificate(i32),
+    Cancelled,
+    Other(i32),
+}
+
+/// `COREWEBVIEW2_WEB_ERROR_STATUS` to iTerm2's case.
+pub fn failure_of(status: i32) -> Failure {
+    match status {
+        1..=5 => Failure::Certificate(status),
+        6 | 12 => Failure::CannotConnect,
+        7 => Failure::TimedOut,
+        9 | 10 => Failure::ConnectionLost,
+        11 => Failure::Offline,
+        13 => Failure::HostNotFound,
+        14 => Failure::Cancelled,
+        15 => Failure::TooManyRedirects,
+        other => Failure::Other(other),
+    }
+}
+
+/// Tandem's stand-in for Apple's `localizedDescription` (no Windows source for it).
+pub fn describe(status: i32) -> &'static str {
+    match status {
+        1 => "The certificate's common name does not match the host name.",
+        2 => "The certificate has expired.",
+        3 => "The client certificate contains errors.",
+        4 => "The certificate has been revoked.",
+        5 => "The certificate is invalid.",
+        6 => "The server is unreachable.",
+        7 => "The connection timed out.",
+        8 => "The server returned an invalid response.",
+        9 => "The connection was aborted.",
+        10 => "The connection was reset.",
+        11 => "The internet connection was lost.",
+        12 => "Could not connect to the server.",
+        13 => "The host name could not be resolved.",
+        14 => "The operation was canceled.",
+        15 => "The redirect failed.",
+        16 => "An unexpected error occurred.",
+        17 => "Authentication credentials are required.",
+        18 => "Proxy authentication is required.",
+        _ => "An unknown error occurred.",
+    }
+}
+
+/// The message HTML of a case: `<strong>` text `</strong><br/><br/>` detail (`EH:131-132`). The
+/// text is Tandem's own; the detail is escaped (it may be a caller's description).
+fn message_html(text: &str, detail: &str) -> String {
+    format!("<strong>{text}</strong><br/><br/>{}", crate::view_source::escape_html(detail))
+}
+
+/// The title and message HTML of a failure, None for a cancelled load (`BM:781-800`).
+pub fn error_texts(f: Failure) -> Option<(&'static str, String)> {
+    Some(match f {
+        Failure::Offline => ("No Internet Connection", message_html("Your computer appears to be offline. Check your internet connection and try again.", describe(11))),
+        Failure::HostNotFound => ("Server Not Found", message_html("Tandem can\u{2019}t find the server. Check that the web address is correct and try again.", describe(13))),
+        Failure::TimedOut => ("The Connection Timed Out", message_html("The server didn\u{2019}t respond in time. The site may be temporarily unavailable or overloaded.", describe(7))),
+        Failure::CannotConnect => ("Can\u{2019}t Connect to Server", message_html("Tandem can\u{2019}t establish a secure connection to the server. The server may be down or unreachable.", describe(12))),
+        Failure::ConnectionLost => ("Network Connection Lost", message_html("The network connection was lost. Check your internet connection and try again.", describe(10))),
+        Failure::TooManyRedirects => ("Too Many Redirects", message_html("Tandem can\u{2019}t open the page because the server redirected too many times.", describe(15))),
+        Failure::Certificate(n) => {
+            let detail = match n {
+                1 => "The hostname does not match the certificate.",
+                2 => "The certificate is expired.",
+                5 => "The presented chain is not valid (e.g., self-signed without trust).",
+                other => describe(other),
+            };
+            ("Secure Connection Failed", message_html("Tandem can\u{2019}t verify the identity of the website. The connection may not be secure.", detail))
+        }
+        Failure::Cancelled => return None,
+        Failure::Other(n) => described(describe(n)),
+    })
+}
+
+/// The default case for an error whose description is `description` (`EH:127-133`).
+fn described(description: &str) -> (&'static str, String) {
+    let text = format!("An error occurred while loading this page. {}", crate::view_source::escape_html(description));
+    ("Page Can\u{2019}t Be Loaded", message_html(&text, description))
+}
+
+/// The longest URL shown on the page, and the longest one a retry is given (a URL the host cut at
+/// 8192 bytes is never navigated, so the retry target stops short of it).
+pub const SHOWN_URL_MAX: usize = 512;
+pub const RETRY_URL_MAX: usize = 8000;
+
+/// A URL as the error page shows it: hidden characters removed, at most `SHOWN_URL_MAX`
+/// characters, and the END of the host kept (`inert_files::display_text`'s removal set): a long
+/// user-info or host part shows its tail, a long path loses its tail, so what the person reads
+/// still ends where the real host ends.
+pub fn shown_url(url: &str) -> String {
+    let clean = crate::inert_files::display_text(url, usize::MAX, false);
+    let chars: Vec<char> = clean.chars().collect();
+    if chars.len() <= SHOWN_URL_MAX {
+        return clean;
+    }
+    let scheme_end = clean.find("://").map_or(0, |n| clean[..n].chars().count() + 3);
+    let auth_end = chars[scheme_end..].iter().position(|c| matches!(c, '/' | '?' | '#')).map_or(chars.len(), |n| scheme_end + n);
+    let room = SHOWN_URL_MAX - 1;
+    let (head, tail_from) = if auth_end <= room {
+        (&chars[..auth_end], None)
+    } else {
+        // The authority alone is over the cap: its start gives way, its end stays.
+        (&chars[..0], Some(auth_end - room))
+    };
+    let mut out = String::new();
+    match tail_from {
+        None => {
+            out.extend(head);
+            out.extend(&chars[auth_end..auth_end + (room - head.len())]);
+            out.push('\u{2026}');
+        }
+        Some(from) => {
+            out.push('\u{2026}');
+            out.extend(&chars[from..auth_end]);
+        }
+    }
+    out
+}
+
+/// `s` inside a single-quoted JavaScript string in a `<script>` element: backslash, quotes, `<`,
+/// `>`, `&`, `{`, line and control characters escaped as `\uXXXX`.
+fn js_single_quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '\\' | '\'' | '"' | '<' | '>' | '&' | '{' | '}' | '`' | '\u{2028}' | '\u{2029}') || c.is_control() {
+            let mut buf = [0u16; 2];
+            for unit in c.encode_utf16(&mut buf) {
+                out.push_str(&format!("\\u{unit:04x}"));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Whether the retry button may take the person to `url`: a scheme Tandem loads itself.
+fn retry_target(url: &str) -> bool {
+    url.len() <= RETRY_URL_MAX && matches!(crate::webhost::scheme_of(url).as_str(), "http" | "https" | "file" | "iterm2-ssh")
+}
+
+/// The copied template's load-time patches (R13x3-1/-2 pattern; each target exactly once, else no
+/// page): the script carries the response's nonce, the inline `onclick` becomes a listener that
+/// counts only a click the person made (`isTrusted`), and so does the key handler. (name, iTerm2's
+/// text, Tandem's text)
+pub const ERROR_PATCHES: [(&str, &str, &str); 4] = [
+    ("SCRIPT", "    <script>\n        function retryLoad() {", "    <script nonce=\"{{NONCE}}\">\n        function retryLoad() {"),
+    ("BUTTON", "<button class=\"button retry-button\" onclick=\"retryLoad()\">", "<button class=\"button retry-button\" id=\"tandem-retry\">"),
+    ("LISTENER", "        // Add keyboard support\n", "        document.getElementById('tandem-retry').addEventListener('click', function(event) {\n            if (event.isTrusted) { retryLoad(); }\n        });\n\n        // Add keyboard support\n"),
+    ("KEYS", "if (event.key === 'Enter' || event.key === ' ') {", "if (event.isTrusted && (event.key === 'Enter' || event.key === ' ')) {"),
+];
+
+/// The template filled (`EH:73-87`). The title and message are Tandem's text; the URL is escaped
+/// for its HTML slot and for its script slot, `{` is escaped in both so no `{{` of a URL can be
+/// read as a slot, and the nonce is left as `{{NONCE}}` for `with_nonce`. An empty string when a
+/// patch missed (no page is served).
+fn error_html(title: &str, message: &str, url: Option<&str>) -> String {
+    let template = match crate::view_source::apply_patches(crate::browser_js::resource("error-page.html").unwrap_or_default(), &ERROR_PATCHES) {
+        Ok(t) => t,
+        Err(e) => {
+            crate::rlog!("{}", crate::dlog::name(&e));
+            return String::new();
+        }
+    };
+    let url = url.filter(|u| !u.is_empty());
+    let shown = url.map(|u| format!("<div class=\"error-url\">{}</div>", crate::view_source::escape_html(&shown_url(u)).replace('{', "&#123;"))).unwrap_or_default();
+    let original = url.filter(|u| retry_target(u)).map(js_single_quoted).unwrap_or_default();
+    page(&template, &[("TITLE", title), ("MESSAGE", message), ("URL_DISPLAY", &shown), ("ORIGINAL_URL", &original)])
+}
+
+/// The page for a failure and the URL that failed (`EH:73-87`); a cancelled load has no page, so
+/// the generic one.
+pub fn error_page(f: Failure, failed_url: Option<&str>) -> String {
+    match error_texts(f) {
+        Some((title, message)) => error_html(title, &message, failed_url),
+        None => default_error_page(),
+    }
+}
+
+/// `iterm2-about:error` with nothing pending (`EH:52-58`): "Page Not Available" as
+/// `NSURLErrorResourceUnavailable`.
+pub fn default_error_page() -> String {
+    error_html("Page Unavailable", &message_html("The requested page is currently unavailable. Try again later.", "Page Not Available"), None)
+}
+
+/// The default case for an error described by `description` (`EH:127-133`): "Invalid file path"
+/// and a failed `iterm2-ssh:` transfer. The description is escaped and cut.
+pub fn described_error_page(description: &str, failed_url: Option<&str>) -> String {
+    let description = crate::inert_files::display_text(description, 512, false);
+    let (title, message) = described(&description);
+    error_html(title, &message, failed_url)
+}
+
+/// The served page: this response's nonce in the script (the only place `{{NONCE}}` can be).
+pub fn with_nonce(html: &str, nonce: &str) -> String {
+    html.replace("{{NONCE}}", nonce)
+}
+
+/// Whether to show the page for a failed URL: not the one that failed last (`BM:1348-1352`).
+pub fn should_show_error(failed: Option<&str>, last_failed: Option<&str>) -> bool {
+    failed.is_some() && failed != last_failed
+}
+
+/// The pane's cap on error pages (preflight P6): the loop guard keys on the URL, so a page that
+/// redirects to a fresh failing URL each time would load a page for each; at most `LIMIT` in `WINDOW_MS`.
+#[derive(Debug, Default)]
+pub struct ErrorBurst {
+    shown: std::collections::VecDeque<u64>,
+}
+
+impl ErrorBurst {
+    pub const LIMIT: usize = 5;
+    pub const WINDOW_MS: u64 = 10_000;
+
+    /// Whether one more error page may be shown at `now_ms` (counted when it may).
+    pub fn allow(&mut self, now_ms: u64) -> bool {
+        while self.shown.front().is_some_and(|t| now_ms.saturating_sub(*t) >= Self::WINDOW_MS) {
+            self.shown.pop_front();
+        }
+        if self.shown.len() >= Self::LIMIT {
+            return false;
+        }
+        self.shown.push_back(now_ms);
+        true
+    }
+}
+
 // --- File and ssh pages: what a page of those schemes may load (R13x8-1) ---
 
 /// The policy of every `iterm2-file:` and `iterm2-ssh:` response: sandboxed with no
@@ -1253,5 +1496,98 @@ mod plumbing_tests {
         ] {
             assert_eq!(subresource_allowed(s, url, IMG), ok, "{url}");
         }
+    }
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn error_pages_follow_iterm2() {
+        for (status, want) in [(13, Failure::HostNotFound), (7, Failure::TimedOut), (6, Failure::CannotConnect), (12, Failure::CannotConnect), (9, Failure::ConnectionLost), (10, Failure::ConnectionLost), (11, Failure::Offline), (15, Failure::TooManyRedirects), (1, Failure::Certificate(1)), (2, Failure::Certificate(2)), (3, Failure::Certificate(3)), (4, Failure::Certificate(4)), (5, Failure::Certificate(5)), (14, Failure::Cancelled), (16, Failure::Other(16)), (0, Failure::Other(0)), (17, Failure::Other(17))] {
+            assert_eq!(failure_of(status), want, "{status}");
+        }
+        assert_eq!(error_texts(Failure::HostNotFound), Some(("Server Not Found", "<strong>Tandem can\u{2019}t find the server. Check that the web address is correct and try again.</strong><br/><br/>The host name could not be resolved.".to_string())));
+        let (t, m) = error_texts(Failure::Offline).unwrap();
+        assert!(t == "No Internet Connection" && m.contains("Your computer appears to be offline. Check your internet connection and try again."));
+        assert_eq!(error_texts(Failure::TimedOut).unwrap().0, "The Connection Timed Out");
+        let (t, m) = error_texts(Failure::CannotConnect).unwrap();
+        assert!(t == "Can\u{2019}t Connect to Server" && m.contains("Tandem can\u{2019}t establish a secure connection to the server. The server may be down or unreachable."));
+        assert_eq!(error_texts(Failure::ConnectionLost).unwrap().0, "Network Connection Lost");
+        let (t, m) = error_texts(Failure::TooManyRedirects).unwrap();
+        assert!(t == "Too Many Redirects" && m.contains("Tandem can\u{2019}t open the page because the server redirected too many times."));
+        let (t, m) = error_texts(Failure::Certificate(2)).unwrap();
+        assert_eq!(t, "Secure Connection Failed");
+        assert_eq!(m, "<strong>Tandem can\u{2019}t verify the identity of the website. The connection may not be secure.</strong><br/><br/>The certificate is expired.");
+        assert!(error_texts(Failure::Certificate(1)).unwrap().1.ends_with("The hostname does not match the certificate."));
+        assert!(error_texts(Failure::Certificate(5)).unwrap().1.ends_with("The presented chain is not valid (e.g., self-signed without trust)."));
+        let (t, m) = error_texts(Failure::Other(16)).unwrap();
+        assert!(t == "Page Can\u{2019}t Be Loaded" && m.contains(&format!("An error occurred while loading this page. {}", describe(16))));
+        assert_eq!(error_texts(Failure::Cancelled), None);
+
+        let page = error_page(Failure::HostNotFound, Some("https://a.b/"));
+        assert!(page.contains("<div class=\"error-url\">https://a.b/</div>") && page.contains("const originalURL = 'https://a.b/';"));
+        assert!(!error_page(Failure::HostNotFound, None).contains("error-url\">"));
+        assert!(default_error_page().contains("<title>Page Unavailable</title>"));
+        // A hostile URL cannot leave its slots.
+        let bad = "https://a/'</script><img src=x onerror=alert(1)>{{NONCE}}\u{2028}\\";
+        let page = error_page(Failure::HostNotFound, Some(bad));
+        assert!(!page.contains("</script><img") && !page.contains("<img src=x") && !page.contains("onerror=alert(1)>"));
+        assert!(page.contains("const originalURL = 'https://a/\\u0027\\u003c/script\\u003e"), "{page}");
+        assert_eq!(page.matches("{{NONCE}}").count(), 1, "only the script's own nonce slot is left");
+        assert_eq!(page.matches("<script").count(), 1);
+        // Glyphs are not applied to a substituted value (review I9).
+        let page = error_page(Failure::HostNotFound, Some("https://a/\u{1F512}"));
+        assert!(page.contains("const originalURL = 'https://a/\u{1F512}';") && !page.contains("originalURL = 'https://a/<span"));
+        let d = described_error_page("Invalid file path: C:\\x", Some("file:///C:/x"));
+        assert!(d.contains("<title>Page Can\u{2019}t Be Loaded</title>"));
+        assert!(d.contains("<strong>An error occurred while loading this page. Invalid file path: C:\\x</strong><br/><br/>Invalid file path: C:\\x"));
+        assert!(described_error_page("<b>x</b>", None).contains("&lt;b&gt;x&lt;/b&gt;"));
+    }
+
+    #[test]
+    fn error_loop_guard_follows_iterm2() {
+        assert!(should_show_error(Some("u"), None));
+        assert!(!should_show_error(Some("u"), Some("u")));
+        assert!(should_show_error(Some("u"), Some("v")));
+        assert!(!should_show_error(None, None));
+        let mut b = ErrorBurst::default();
+        assert!((0..5).all(|i| b.allow(i * 100)));
+        assert!(!b.allow(900), "a sixth in ten seconds");
+        assert!(b.allow(10_100), "the window moves on");
+    }
+
+    /// The page is the copied template, patched exact-once; its script has the nonce, no inline
+    /// handler stays, and a click or key counts only when the person made it.
+    #[test]
+    fn the_error_page_is_a_patched_copy_under_the_nonce_policy() {
+        let raw = crate::browser_js::resource("error-page.html").unwrap();
+        for (name, target, _) in ERROR_PATCHES {
+            assert_eq!(raw.matches(target).count(), 1, "{name}");
+            assert!(crate::view_source::apply_patches(&format!("{raw}{target}"), &ERROR_PATCHES).is_err(), "a second copy of {name} is a miss");
+        }
+        let html = with_nonce(&error_page(Failure::TimedOut, Some("https://a.b/")), "n0nce");
+        assert!(html.contains("<script nonce=\"n0nce\">") && !html.contains("onclick") && html.matches("<script").count() == 1);
+        assert!(html.contains("event.isTrusted") && html.contains("window.location.href = originalURL"), "Try Again is a plain navigation: the one verdict judges it");
+        assert!(!html.contains("{{"), "every slot filled");
+        let headers = response_headers("n0nce");
+        assert!(headers.iter().any(|(k, v)| k == "Content-Security-Policy" && v.contains("frame-ancestors 'none'") && v.contains("script-src 'nonce-n0nce'")));
+    }
+
+    #[test]
+    fn a_long_url_keeps_the_end_of_its_host() {
+        let long_path = format!("https://example.com/{}", "p".repeat(2000));
+        let s = shown_url(&long_path);
+        assert!(s.starts_with("https://example.com/") && s.chars().count() <= SHOWN_URL_MAX && s.ends_with('\u{2026}'));
+        let long_host = format!("https://{}.evil.example/x", "u".repeat(900));
+        let s = shown_url(&long_host);
+        assert!(s.chars().count() <= SHOWN_URL_MAX && s.ends_with(".evil.example") && s.starts_with('\u{2026}'), "{s}");
+        assert_eq!(shown_url("https://a\u{202E}b/"), "https://ab/", "hidden characters go");
+        // Too long to retry: no target, never a cut URL.
+        let page = error_page(Failure::TimedOut, Some(&format!("https://a/{}", "p".repeat(RETRY_URL_MAX))));
+        assert!(page.contains("const originalURL = '';"));
+        let page = error_page(Failure::TimedOut, Some("javascript:alert(1)"));
+        assert!(page.contains("const originalURL = '';"), "only a scheme Tandem loads is retried");
     }
 }

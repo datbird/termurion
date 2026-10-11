@@ -267,14 +267,14 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("app/windows_ui.rs", 3),
     ("app/workgroup_app.rs", 3),
     ("app/workgroup_restore_app.rs", 3),
-    ("browser_pages.rs", 2),
+    ("browser_pages.rs", 3),
     ("globals.rs", 1),
     ("host_client.rs", 2),
     ("jobwatch.rs", 2),
     ("perm_queue.rs", 1),
     ("trigger_eval.rs", 1),
     ("view_source.rs", 1),
-    ("webhost_win.rs", 18),
+    ("webhost_win.rs", 20),
 ];
 
 
