@@ -349,15 +349,13 @@ impl App {
             }
             return;
         };
-        let browser = self.is_browser_pane(pane);
         let last = self.chat_db.as_ref().and_then(|db| db.chats().ok()).and_then(|chats| chats.into_iter().find(|c| tb::is_linked(c.terminal_session_guid.as_deref(), c.browser_session_guid.as_deref(), &[reference.as_str()])));
         let id = match last {
             Some(c) => Some(c.id),
             None => {
                 let name = self.pane_entry_name(pane);
-                // The guid goes in the field of the pane's kind, never both.
-                let (terminal, browser_guid) = if browser { (None, Some(reference.as_str())) } else { (Some(reference.as_str()), None) };
-                self.chat_create(&tb::chat_about_title(&name), terminal, browser_guid, "", vec![])
+                // Created unlinked, then linked by the one link path (a Dev Null pane is refused there).
+                self.create_linked_chat(&tb::chat_about_title(&name), pane)
             }
         };
         if let Some(id) = id {
@@ -1871,7 +1869,7 @@ mod tests {
         let prod = &me[..me.find("#[cfg(test)]\nmod tests").unwrap()];
         let open = &prod[prod.find("pub(super) fn open_ai_chat(").unwrap()..prod.find("pub(super) fn create_window_chat(").unwrap()];
         assert!(open.contains("is_browser_pane(pane)") && open.contains("tb::is_linked("));
-        assert!(open.contains("if browser { (None, Some(") || open.contains("(None, Some(reference.as_str()))"), "a browser pane binds the browser guid only");
+        assert!(open.contains("self.create_linked_chat(&tb::chat_about_title(&name), pane)") && !open[..open.find("pub(super) fn create_linked_chat(").unwrap_or(open.len())].contains("chat_create("), "the one link path: link_chat refuses Dev Null and shows the notices");
         let chats = &prod[prod.find("pub(super) fn open_ai_chats(").unwrap()..prod.find("pub(super) fn open_ai_chat(").unwrap()];
         assert!(chats.contains("tb::is_linked("));
         let create = &prod[prod.find("pub(super) fn create_window_chat(").unwrap()..prod.find("pub(super) fn show_chat(").unwrap()];
@@ -1908,6 +1906,18 @@ mod tests {
         let outside = root.parent().unwrap().join("b");
         assert_eq!((inside, outside.exists()), (0, false), "nothing written, nothing outside");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 7 review I1: Open AI Chat and Ask AI link only through `link_chat`, whose rule refuses a Dev
+    /// Null pane; the offer's Link button passes the offer's kind to the same function.
+    #[test]
+    fn dev_null_panes_are_never_linked_by_an_entry_point() {
+        assert_eq!(crate::chat_menu::link_field(true, true, false), Err(crate::chat_menu::LINK_DEV_NULL));
+        let session = include_str!("chat_session_app.rs");
+        let link = &session[session.find("pub(super) fn link_chat(").unwrap()..session.find("pub(super) fn chat_state_changed").unwrap()];
+        assert!(link.contains("chat_menu::link_field(browser, browser && self.pane_dev_null(pane), orchestrating)"));
+        let press = &session[session.find("Press::Link { terminal, guid } =>").unwrap()..];
+        assert!(press[..press.find("Press::Permission").unwrap()].contains("self.is_browser_pane(*p) != terminal") && press.contains("self.link_chat(chat, pane)"), "the offer's kind reaches link_chat");
     }
 
     /// Task 4: the icon is asked for only after the rename landed, its result is dropped for a newer
