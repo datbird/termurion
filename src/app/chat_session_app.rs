@@ -43,6 +43,18 @@ pub(super) fn choice_of(a: Answer) -> Choice {
     }
 }
 
+/// Whether a pane shows the picker's button for a pick: a terminal pick on every terminal pane, a
+/// browser pick on a linkable browser pane only (`SS:35-40`, `SV:1203-1210`).
+pub(super) fn pane_gets_picker(terminal_pick: bool, browser_pane: bool, linkable: bool) -> bool {
+    if terminal_pick { !browser_pane } else { browser_pane && linkable }
+}
+
+/// Whether a browser pane may be linked to a chat: never Dev Null, never a Tandem, power or local
+/// page (`ai_browser::offerable`, the one rule the tools use too).
+pub(super) fn browser_pane_linkable(url: &str, dev_null: bool) -> bool {
+    crate::ai_browser::offerable(url, dev_null)
+}
+
 /// A pick for a request the chat's agent no longer holds (Stop, a turn that ended) has nobody
 /// to answer: it is dropped (ruling F29). A pick that only links never goes stale.
 pub(super) fn pick_stale(pick: &Pick, agent: Option<&Agent>) -> bool {
@@ -161,6 +173,7 @@ impl App {
         let Some(pick) = self.chat_picker.take() else { return };
         // A pick takes the kind of pane it asked for (a terminal pick never links a browser pane).
         let pane = pane.filter(|p| self.session_ref(*p).is_some() && self.is_browser_pane(*p) != pick.terminal);
+        let pane = pane.filter(|p| pick.terminal || self.browser_linkable(*p));
         match pick_outcome(&pick, pane) {
             Outcome::Nothing => {}
             Outcome::Link { chat, pane } => {
@@ -195,12 +208,31 @@ impl App {
     /// The picker's button on a terminal pane while a pick for a terminal is open; answers the
     /// button's rectangle, which the frame keeps as this window's hits (`picker_hits`).
     pub(super) fn draw_session_picker(&self, frame: &mut Frame, id: PaneId, rect: Rect, cell: (f32, f32)) -> Option<(PaneId, Rect)> {
-        if !self.chat_picker.as_ref().is_some_and(|p| p.terminal) {
+        if !self.chat_picker.as_ref().is_some_and(|p| pane_gets_picker(p.terminal, self.is_browser_pane(id), true)) {
             return None;
         }
         let p = self.panes.get(&id)?;
         let (fg, bg) = (p.own().palette.fg, p.own().palette.bg);
         Some((id, scene::session_picker_button(frame, rect, chat_buttons::PICK_REASON, fg, bg, cell, self.scale())))
+    }
+
+    /// Whether the browser pane `pane` may be linked now (not Dev Null, not a Tandem or local page).
+    fn browser_linkable(&self, pane: PaneId) -> bool {
+        self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| browser_pane_linkable(&io.url, io.dev_null))
+    }
+
+    /// The picker's button on a browser pane while a pick for a browser is open: drawn by Tandem in
+    /// the toolbar strip (the web view covers the pane), replacing the address field, and only on a
+    /// linkable pane. The label is a constant; no page title or address is drawn. The rectangle
+    /// goes in the same `picker_hits` as a terminal pane's.
+    pub(super) fn draw_browser_picker(&self, frame: &mut Frame, id: PaneId, bar: Rect, cell: (f32, f32)) -> Option<(PaneId, Rect)> {
+        let terminal = self.chat_picker.as_ref()?.terminal;
+        if !pane_gets_picker(terminal, true, self.browser_linkable(id)) {
+            return None;
+        }
+        let p = self.panes.get(&id)?;
+        let (fg, bg) = (p.own().palette.fg, p.own().palette.bg);
+        Some((id, scene::browser_picker_button(frame, bar, chat_buttons::PICK_REASON, fg, bg, cell, self.scale())))
     }
 
     /// A left press: on a picker's button it picks that pane; anywhere else the pick keeps
@@ -838,6 +870,36 @@ mod tests {
         let src = include_str!("chat_session_app.rs");
         let picked = &src[src.find("pub(super) fn picked").unwrap()..src.find("pub(super) fn pick_tick").unwrap()];
         assert!(picked.contains("pick.terminal") && picked.contains("is_browser_pane("), "a pick takes the kind it asked for");
+    }
+
+    /// `SS:35-40`, `SV:1203-1210`: a terminal pick shows the button on terminal panes, a browser
+    /// pick on browser panes only, and a browser pane that is not linkable (Dev Null, a Tandem or
+    /// local page) never shows one. A browser pane's button is Tandem's, drawn in the toolbar strip
+    /// from `picker_in_toolbar`, and its press is the one `picker_press`.
+    #[test]
+    fn picker_kind_follows_iterm2() {
+        // (terminal pick, browser pane, linkable)
+        assert!(pane_gets_picker(true, false, true) && !pane_gets_picker(true, true, true));
+        assert!(!pane_gets_picker(false, false, true) && pane_gets_picker(false, true, true));
+        assert!(!pane_gets_picker(false, true, false), "a pane the model may not read is never offered");
+        assert!(browser_pane_linkable("https://a.example/", false) && browser_pane_linkable("", false));
+        assert!(!browser_pane_linkable("https://a.example/", true), "Dev Null");
+        for u in ["iterm2-about:settings", "file:///c:/x", "iterm2-ssh://h/", "chrome-extension://x/a.html"] {
+            assert!(!browser_pane_linkable(u, false), "{u}");
+        }
+        let src = include_str!("chat_session_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]").unwrap()];
+        let draw = &prod[prod.find("pub(super) fn draw_browser_picker").unwrap()..prod.find("pub(super) fn picker_press").unwrap()];
+        assert!(draw.contains("ai_browser::picker_in_toolbar(") || draw.contains("scene::browser_picker_button("), "the rectangle is the one rule");
+        assert!(draw.contains("pane_gets_picker(") && draw.contains("chat_buttons::PICK_REASON") && !draw.contains("title") && !draw.contains("io.url"), "a constant label, no page text");
+        let picked = &prod[prod.find("pub(super) fn picked").unwrap()..prod.find("pub(super) fn pick_tick").unwrap()];
+        assert!(picked.contains("browser_linkable("), "a pick links only a linkable browser pane");
+        let m = include_str!("mod.rs");
+        assert!(m.contains("picker_hits.extend(self.draw_browser_picker("), "browser hits go in the same picker_hits");
+        assert!(prod.find("pub(super) fn draw_browser_picker").is_some() && !m.contains("injectpicker"));
+        let b = include_str!("browser_app.rs");
+        let press = &b[b.find("pub(super) fn browser_toolbar_press").unwrap()..b.find("fn browser_field_click").unwrap()];
+        assert!(press.find("self.picker_press(").unwrap() < press.find("browser_suggest_rects").unwrap(), "the picker is asked first");
     }
 
     #[test]

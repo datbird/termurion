@@ -3245,6 +3245,23 @@ pub fn session_picker_button(frame: &mut Frame, pane: Rect, label: &str, fg: Rgb
     r
 }
 
+/// The session picker's button in a browser pane's toolbar strip (13x AI browser tools Task 6): the
+/// strip is covered (the address field gives way while the pick lasts) and the button is centered
+/// in it by `ai_browser::picker_in_toolbar`. Tandem draws it; the page cannot click or hide it.
+/// Answers the button's hit rectangle.
+pub fn browser_picker_button(frame: &mut Frame, bar: Rect, label: &str, fg: Rgb, bg: Rgb, cell: (f32, f32), scale: f32) -> Rect {
+    let pad = 2.0 * cell.0;
+    let r = crate::ai_browser::picker_in_toolbar(bar, label.chars().count() as f32 * cell.0, pad);
+    cut_out(frame, bar, cell.1);
+    frame.popups.push(Quad { rect: bar, color: rgba(blend(bg, fg, 0.08), 1.0) });
+    frame.popups.push(Quad { rect: r, color: rgba(blend(bg, fg, 0.18), 1.0) });
+    frame_lines(&mut frame.popups, r, rgba(blend(bg, fg, 0.6), 1.0));
+    let _ = scale;
+    let span = Span { text: label.to_string(), color: fg, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+    frame.rows.push(TextRow { x: r.x + pad.min(r.w / 2.0), y: r.y + (r.h - cell.1) / 2.0, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    r
+}
+
 /// The selected command's buttons (`TV:6832-6917`): one pill per button on view row `row`, each
 /// at its first column (`cmdbuttons::columns`) and two cells wide, filled with the text color at
 /// a low alpha and holding the button's icon glyph. The pill goes in `popups` (the pane's text

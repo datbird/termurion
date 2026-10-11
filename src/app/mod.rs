@@ -6473,6 +6473,7 @@ impl App {
                     }
                     if let Some(bar) = self.browser_strip(tab, id) {
                         self.draw_browser_bar(&mut frame, id, bar, rect, self.cell());
+                        picker_hits.extend(self.draw_browser_picker(&mut frame, id, bar, self.cell()));
                     }
                     // An announcement bar covers the top of the page (the web view gives way below it).
                     overlay_drawn.extend(self.draw_info_bar(&mut frame, id, rect, self.pane_cell(id)).map(|r| (mouse::Overlay::InfoBar, r)));

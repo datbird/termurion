@@ -154,6 +154,15 @@ pub fn kind_refusal(browser_call: bool, browser_pane: bool) -> Option<Outcome> {
     }
 }
 
+/// The picker's button in a browser pane's toolbar strip (Task 6): centered, never wider than the
+/// strip, the strip's height less 4 points above and below. A browser pane's view covers its
+/// rectangle, so the button lives in the strip Tandem draws, never in the page.
+pub fn picker_in_toolbar(bar: crate::layout::Rect, label_w: f32, pad: f32) -> crate::layout::Rect {
+    let w = (label_w + 2.0 * pad).clamp(0.0, bar.w.max(0.0));
+    let h = (bar.h - 8.0).max(0.0);
+    crate::layout::Rect { x: bar.x + (bar.w - w) / 2.0, y: bar.y + 4.0, w, h }
+}
+
 /// Whether a browser pane showing `url` may be offered browser tools at all: never a private
 /// (Dev Null) pane, never a Tandem, local or extension page (`webhost::tandem_or_local_page`, the one
 /// predicate the nav judge's atoms build), and otherwise only an ordinary web origin (`origin_of`).
@@ -567,6 +576,20 @@ mod tests {
     }
     fn page() -> Page {
         Page::open(7, 1, "https://a.example/x?q=1", "T", false).unwrap()
+    }
+
+    /// The picker's button in a browser pane's toolbar strip: centered, never wider than the strip,
+    /// the strip's height less 4 points above and below (the brief's x of 88 is its own arithmetic
+    /// slip: 10 + (400 - 224) / 2 = 98).
+    #[test]
+    fn browser_picker_follows_the_toolbar() {
+        use crate::layout::Rect;
+        let bar = Rect { x: 10.0, y: 20.0, w: 400.0, h: 32.0 };
+        assert_eq!(picker_in_toolbar(bar, 200.0, 12.0), Rect { x: 98.0, y: 24.0, w: 224.0, h: 24.0 });
+        let wide = picker_in_toolbar(bar, 900.0, 12.0);
+        assert_eq!(wide, Rect { x: 10.0, y: 24.0, w: 400.0, h: 24.0 });
+        let tiny = picker_in_toolbar(Rect { x: 0.0, y: 0.0, w: 100.0, h: 6.0 }, 50.0, 4.0);
+        assert!(tiny.h >= 0.0 && tiny.w <= 100.0);
     }
 
     #[test]

@@ -1005,6 +1005,10 @@ impl App {
     /// is the program's).
     pub(super) fn browser_toolbar_press(&mut self, pane: PaneId, x: f32, y: f32, _event_loop: &ActiveEventLoop) -> bool {
         let Some((bar, area)) = self.browser_bar_rects(pane) else { return false };
+        // A browser pick's button replaces the address field in the strip: asked first.
+        if self.picker_press(x, y) {
+            return true;
+        }
         if let Some(t) = self.tabs.get_mut(self.active) {
             t.focused = pane;
         }
