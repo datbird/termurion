@@ -3644,6 +3644,10 @@ mod probe {
         /// 13x8 Task 3: when set, `iterm2-file:` requests are answered by `file_serve::serve` (the page's tree
         /// is `file_root`, as the app holds it) and each answer's headers are kept.
         serve_files: bool,
+        /// 13x8 Task 9: `iterm2-ssh:` requests are answered with this remote file's bytes through the
+        /// ssh page's own answer, or (`hold_ssh`) not at all, as a transfer still running.
+        ssh_body: Option<Vec<u8>>,
+        hold_ssh: bool,
         file_root: Option<crate::browser_pages::PageRoot>,
         served: Vec<(String, Vec<(String, String)>)>,
     }
@@ -3755,6 +3759,8 @@ mod probe {
                 commits: Vec::new(),
                 auth_log: Vec::new(),
                 serve_files: false,
+                ssh_body: None,
+                hold_ssh: false,
                 file_root: None,
                 served: Vec::new(),
             };
@@ -3937,6 +3943,17 @@ mod probe {
                 Event::Request { token, url, context, .. } => {
                     self.order.push(format!("request {context} {url}"));
                     let key = url.split(['#', '?']).next().unwrap_or("").to_string();
+                    if url.starts_with("iterm2-ssh:") && (self.hold_ssh || self.ssh_body.is_some()) {
+                        if let Some(body) = self.ssh_body.clone() {
+                            let job = crate::ssh_page::PageJob { pane: 1, view_pane: 2, token, url: url.clone(), path: "/a.html".into(), document: context == crate::browser_pages::CONTEXT_DOCUMENT, mime: "text/html", body, answered: false };
+                            let answer = crate::ssh_page::body_answer(job);
+                            if let Answer::Respond { headers, .. } = &answer {
+                                self.served.push((url.clone(), headers.clone()));
+                            }
+                            self.view().answer_request(token, answer);
+                        }
+                        return;
+                    }
                     if self.serve_files && url.starts_with("iterm2-file:") {
                         let root = if context == crate::browser_pages::CONTEXT_DOCUMENT { None } else { self.file_root.clone() };
                         let answer = crate::file_serve::serve(&url, context, root.as_ref());
@@ -6638,6 +6655,34 @@ window.addEventListener('message', function (e) {
         let messages: Vec<&Routed> = p.routed.iter().filter(|r| r.body.contains("iterm2-about:settings")).collect();
         assert!(!messages.is_empty() && messages.iter().all(|m| !crate::browser::local_source_ok(&m.from)), "the router drops a file page's message: {:?}", messages.iter().map(|m| m.from.clone()).collect::<Vec<_>>());
         std::fs::remove_dir_all(&t).ok();
+        p.finish();
+    }
+
+    /// 13x8 Task 9: a remote file answered through the ssh page's own answer is shown as text with no
+    /// script (the page's script does not run, its title stays), under the sandbox policy and nosniff; and
+    /// a view closed while its `iterm2-ssh:` request is still waiting completes the deferral (the view
+    /// shuts down without hanging or leaving the request pending). Needs the console session; never run
+    /// on the desktop probe.
+    #[test]
+    #[ignore]
+    fn ssh_page_serves_text_and_a_closed_view_completes_the_deferral() {
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, resource_filters: vec!["iterm2-ssh:*".into()], ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&[], Vec::new(), &["iterm2-ssh", "iterm2-about"], setup) else { return };
+        p.ssh_body = Some(b"<title>kept</title><script>document.title='RAN'</script>hello".to_vec());
+        let n = p.navigated.len();
+        p.view().navigate_tandem("iterm2-ssh://box/a.txt");
+        assert!(p.wait(15, |p| p.navigated.len() > n), "Navigated within 15 s: {:?}", p.order);
+        p.settle(500);
+        assert_ne!(p.page_string("document.title"), Ok("RAN".to_string()), "no remote script ran");
+        assert!(!p.served.is_empty() && p.served.iter().all(|(_, h)| h.iter().any(|(k, v)| k == "Content-Security-Policy" && v.starts_with("sandbox;")) && h.iter().any(|(k, v)| k == "X-Content-Type-Options" && v == "nosniff")), "{:?}", p.served);
+        // A second request is held: the view is dropped with it waiting.
+        p.ssh_body = None;
+        p.hold_ssh = true;
+        let n = p.order.len();
+        p.view().navigate_tandem("iterm2-ssh://box/b.txt");
+        assert!(p.wait(15, |p| p.order.iter().skip(n).any(|o| o.contains("iterm2-ssh://box/b.txt"))), "the request arrived: {:?}", p.order);
+        p.view.take();
+        p.settle(500);
         p.finish();
     }
 

@@ -269,8 +269,9 @@ impl App {
         // A restored (or opened) URL is judged by the one navigation gate again at load time: a stored
         // file: or javascript: URL never loads, the pane starts at the profile's Initial URL.
         let restored = self.browser_url_override.take().and_then(|u| crate::browser_restore::load_gate(&u));
+        let ssh_view = self.ssh_view_url.take().filter(|u| crate::ssh_page::view_url_ok(u));
         let url = match browser::start_plan(&p.string("Custom Command"), self.globals.bool("BrowserProfiles"), &p.string("Initial URL"), restored.as_deref()) {
-            Start::Browser(u) => u,
+            Start::Browser(u) => ssh_view.unwrap_or(u),
             Start::Terminal => return false,
         };
         if self.web_runtime() == Runtime::Missing {
@@ -1685,7 +1686,7 @@ impl App {
 
     /// (allowed, runtime) for `open_decision`: `allowed` is `BrowserProfiles` on with the runtime
     /// found; `runtime` is false only when the browser is on and the runtime is missing.
-    fn browser_gate(&self) -> (bool, bool) {
+    pub(super) fn browser_gate(&self) -> (bool, bool) {
         let on = self.globals.bool("BrowserProfiles");
         let found = self.web_runtime() != Runtime::Missing;
         (on && found, found || !on)
@@ -1763,6 +1764,24 @@ impl App {
         let Some(url) = browser::normalize_url(url).filter(|u| matches!(webhost::scheme_of(u).as_str(), "http" | "https" | "iterm2-about")).and_then(|u| browser::saved_url(&u)) else {
             return;
         };
+        self.open_in_browser_pane(url, style, near);
+    }
+
+    /// The tab for a remote file the person chose to View (13x8 Task 9, `CD:1670`): the one open path,
+    /// so the profile choice and the split rules are the same; the pane's first load is `url`, which
+    /// only `view_url_ok` lets in and only this function sets (no link, page or arrangement can).
+    pub(super) fn open_ssh_view(&mut self, url: &str, near: Option<PaneId>) {
+        if !crate::ssh_page::view_url_ok(url) {
+            return;
+        }
+        self.ssh_view_url = Some(url.to_string());
+        // The profile a made browser profile starts at is the welcome page, never this URL.
+        self.open_in_browser_pane(browser::DEFAULT_URL.to_string(), browser::Style::Tab, near);
+        self.ssh_view_url = None;
+    }
+
+    /// Opens `url` (already judged by the caller) in a browser pane of the default browser profile.
+    fn open_in_browser_pane(&mut self, url: String, style: browser::Style, near: Option<PaneId>) {
         let default = self.store.default_profile();
         let found = if self.is_browser_profile(default) { Some(default.guid()) } else { self.store.profiles.iter().find(|p| self.is_browser_profile(p)).map(|p| p.guid()) };
         let (guid, made) = match found {

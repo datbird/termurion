@@ -434,6 +434,7 @@ pub mod update_ui;
 pub mod url_open;
 pub mod ssh_recovery;
 pub mod ssh_registry;
+pub mod ssh_page;
 pub mod ssh_procs;
 pub mod ssh_clock;
 pub mod side_channel;

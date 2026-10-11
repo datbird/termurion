@@ -445,7 +445,7 @@ pub struct PageRoot {
 
 /// A local-scheme URL taken apart: (scheme, authority, decoded path). None for another scheme, a
 /// path that does not decode to UTF-8, or one holding `\`, a control character or a `..` segment.
-fn local_parts(url: &str) -> Option<(&'static str, String, String)> {
+pub(crate) fn local_parts(url: &str) -> Option<(&'static str, String, String)> {
     let (scheme, rest) = url.split_once(':')?;
     let scheme = if scheme.eq_ignore_ascii_case(FILE_SCHEME) {
         FILE_SCHEME

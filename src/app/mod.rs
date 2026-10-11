@@ -239,6 +239,7 @@ mod builtin_ui;
 mod ssh_app;
 mod ssh_framer_app;
 mod ssh_files_app;
+mod ssh_page_app;
 mod ssh_panel_app;
 mod ssh_url_app;
 mod workgroup_app;
@@ -1238,6 +1239,11 @@ pub struct App {
     /// The framed conductors of every window, by identity (app-wide, not in `swap_live`):
     /// 14d's Download Files reads it. Only `ssh_apply` and the pane drop paths change it.
     ssh_registry: crate::ssh_registry::Registry,
+    /// Remote files being fetched for browser views, by the transfer engine's job (app-wide, 13x8).
+    ssh_page_jobs: HashMap<u64, crate::ssh_page::PageJob>,
+    /// The `iterm2-ssh:` URL the new browser pane loads first: set only by the person's View answer
+    /// and taken by `start_browser_pane` in the same call.
+    ssh_view_url: Option<String>,
     /// What waits for each file request, by pane and the id Tandem sent it with (app-wide,
     /// not in `swap_live`; 14d).
     ssh_waiters: HashMap<(PaneId, u64), ssh_files_app::Waiter>,
@@ -2519,6 +2525,8 @@ pub fn run() {
         api_jar: Default::default(),
         ssh_secrets: Default::default(),
         ssh_registry: Default::default(),
+        ssh_page_jobs: HashMap::new(),
+        ssh_view_url: None,
         ssh_waiters: HashMap::new(),
         ssh_next_file_id: 1,
         ssh_suggest_cache: HashMap::new(),
@@ -4169,6 +4177,7 @@ impl App {
         self.autofill_pane_gone(id);
         self.browser_pw_pane_gone(id);
         self.browser_downloads_view_gone(id);
+        self.ssh_page_view_gone(id);
         self.close_browser_view(id);
     }
 

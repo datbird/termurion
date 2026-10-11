@@ -143,7 +143,7 @@ pub fn serve_with(url: &str, context: i32, root: Option<&PageRoot>, max_file: u6
 /// text in a `<pre>` (`FH:143-157`). A subresource: the bytes with the table's type. A file with a
 /// Mark of the Web, an SVG or an XML file gets the no-script policy; so does every markup subresource
 /// (only the page the person opened may run its own script).
-fn file_answer(path: &Path, document: bool, mime: &str, marked: bool, bytes: Vec<u8>) -> Answer {
+pub fn file_answer(path: &Path, document: bool, mime: &str, marked: bool, bytes: Vec<u8>) -> Answer {
     let html = mime == "text/html";
     let untrusted = marked || mime.contains("xml") || (!document && html);
     let headers = if untrusted { browser_pages::untrusted_headers() } else { browser_pages::file_headers() };

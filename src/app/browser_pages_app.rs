@@ -475,13 +475,14 @@ impl App {
     /// The answer to a request for an `iterm2-file:` or `iterm2-ssh:` URL. A request that is not the
     /// pane's own navigation or a subresource of its page's tree is a 403 with no text; an allowed
     /// `iterm2-file:` request is read on a worker (`file_serve::Pool`) and answered from `web_tick`
-    /// (`files_tick`), so the UI thread never touches a file; an allowed `iterm2-ssh:` request is a 404
-    /// until Task 9. The refusal and every file answer carry the sandbox policy.
+    /// (`files_tick`), so the UI thread never touches a file; an allowed `iterm2-ssh:` request is a remote
+    /// file over the person's own session (`ssh_page_request`). The refusal and every file answer carry the sandbox policy.
     pub(super) fn browser_page_request(&mut self, pane: PaneId, token: u64, url: &str, context: i32, top_url: &str) {
         let Some(bv) = self.browser_views.get(&pane) else { return };
         let pending = bv.nav_root.as_ref().zip(bv.nav_url.as_deref());
         let allowed = browser_pages::page_request_allowed(pending, bv.page_root.as_ref(), top_url, url, context);
         let file = crate::webhost::scheme_of(url) == browser_pages::FILE_SCHEME;
+        let ssh = crate::webhost::scheme_of(url) == browser_pages::SSH_SCHEME;
         // A subresource is judged against the committed page's tree; the page itself against nothing.
         let root = if context == browser_pages::CONTEXT_DOCUMENT { None } else { bv.page_root.clone() };
         let status = if allowed { 404 } else { 403 };
@@ -491,6 +492,10 @@ impl App {
             if self.file_pool.get_or_insert_with(|| crate::file_serve::Pool::new(notify)).submit(job) {
                 return;
             }
+        }
+        // A remote file over the person's own ssh session; answered when its transfer ends.
+        if allowed && ssh {
+            return self.ssh_page_request(pane, token, url, context == browser_pages::CONTEXT_DOCUMENT);
         }
         let answer = Answer::Respond { status, mime: "text/html; charset=utf-8".to_string(), body: NOT_FOUND_HTML.as_bytes().to_vec(), headers: browser_pages::sandbox_headers() };
         if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {

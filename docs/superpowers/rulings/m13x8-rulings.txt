@@ -84,3 +84,10 @@ R13x8-11 (Task 7 review follow-ups)
 - The final move never replaces (MoveFileExW with no flags); on a taken name the name is picked again, four tries.
 - Menu > Downloads is removed (not in iTerm2). The downloads page stays reachable by its URL.
   FLAG for Robert: the page is a Tandem extra.
+
+Task 9 (the ssh page and View for remote files).
+R13x8-9. mime: the extension table stays one owner, mime_ext.rs (preflight B7); mime_types.rs is not created. mime_for_extension now consults iTerm2's main table, then its OpenAI table (ETM:9-31, 21 pairs; the plan counted 22). Cost if wrong: none.
+R13x8-9 ssh: a remote file is served through file_serve::file_answer, the one serving path of file pages, as a downloaded file: UNTRUSTED_CSP (sandbox, no script), nosniff, escaped text for unknown types. Tandem's own answers (no-connection page, error pages) carry the sandbox policy and nosniff. The URL only selects among the registry's sessions; the path reaches Transfers::download as one typed argument; no connection or credential prompt can start from a URL. Cost if wrong: a remote .html page cannot run its own script.
+R13x8-9 limits: 64 MB buffer, at most 8 jobs per browser view and 16 in all (a page of many images gets the error page for the rest). A folder is not stat'ed before the prompt (iTerm2 does): its page says "Only a file can be shown." Cost if wrong: a folder named like a picture asks View and then says so.
+R13x8-9 open: View opens the tab through open_in_browser_pane (the one open path); the first URL is App::ssh_view_url, set only by open_ssh_view after view_url_ok and taken by start_browser_pane, so no link, page, arrangement or restored URL can start an ssh page. Cost if wrong: none.
+R13x8-9 dropped: a view dropped or made again (browser_reset_world) and a pane that goes abandon their page jobs (the transfer is cancelled, nothing is answered); a session that ends fails its waiters and the page gets the error text. Probe ssh_page_serves_text_and_a_closed_view_completes_the_deferral is written and NOT run.

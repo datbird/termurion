@@ -91,6 +91,8 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::TriggerImportMarked(_) => Answer::Button(1),
         // Cancel: a closed window opens no link and downloads nothing.
         Then::OpenLink { .. } | Then::BrowserUpsell { .. } => Answer::Button(2),
+        // Cancel (the third button): a closed window neither downloads nor opens a tab for a remote file.
+        Then::SshViewOrDownload { .. } => Answer::Button(2),
         // Cancel: a closed window runs nothing and opens nothing a page's text named.
         Then::BrowserRun { .. } | Then::BrowserOpenFile { .. } => Answer::Button(1),
         // Cancel: a closed window clears nothing (Clear All Data from the settings page).
@@ -247,6 +249,11 @@ pub(super) enum Then {
     /// directory `to`; Cancel (1) does nothing. A closed window cancels and a dropped ask is
     /// dropped (P9: a close never sends local files). Never capped.
     SshUpload { pane: crate::layout::PaneId, files: Vec<std::path::PathBuf>, to: crate::ssh_files::ScpPath },
+    /// "Download or View File?" for the remote file `to` of `pane`'s host (`CD:1630-1675`): Download (0),
+    /// View (1) opens a browser tab at the file's `iterm2-ssh:` URL, Cancel (2). Only View is
+    /// remembered (a remembered Download would repeat a failed download without asking). A closed
+    /// window cancels. Not capped: the person's own click.
+    SshViewOrDownload { pane: crate::layout::PaneId, to: crate::ssh_files::ScpPath, mime: String },
     /// "Uninstall Claude Code Integration?": Uninstall (0) strips the hook; Cancel (1) does
     /// nothing. A closed window cancels (P10).
     ClaudeUninstall,
@@ -363,6 +370,7 @@ impl Then {
             Then::Archive(_) => vec![1, 2],
             // Replace would overwrite for every later file of that name.
             Then::SshKeepOrReplace { .. } => vec![1],
+            Then::SshViewOrDownload { .. } => vec![0, 2],
             // A remembered Reinstall would rewrite the person's settings.json unasked.
             Then::ClaudeRepair => vec![0],
             // A remembered Register would let every later program claim a system-wide hotkey.
@@ -739,6 +747,7 @@ impl App {
                 }
             }
             Then::SshKeepOrReplace { job } => self.ssh_keep_or_replace(job, index),
+            Then::SshViewOrDownload { pane, to, .. } => self.ssh_view_answered(pane, &to, index),
             Then::LocaleMismatch { guid, locale, from_settings } => self.locale_mismatch_answered(guid, locale, from_settings, index),
             Then::OpenProfiles(guids, how, from) => {
                 if index == 0 {
