@@ -392,8 +392,13 @@ impl Env {
                 f(r);
             }
         };
+        // A probe's control environment (test builds only): its own whole argument line, unchecked.
+        #[cfg(test)]
+        let control = probe_control_args();
+        #[cfg(not(test))]
+        let control: Option<String> = None;
         // The one argument that may reach the browser is the proxy's, exactly as `proxy_args` makes it.
-        if !crate::adblock::proxy_args_ok(&opts.args) {
+        if control.is_none() && !crate::adblock::proxy_args_ok(&opts.args) {
             return finish(&done, Err("the environment arguments were refused".to_string()));
         }
         scrub_env();
@@ -403,7 +408,7 @@ impl Env {
         let options = CoreWebView2EnvironmentOptions::default();
         // SAFETY: the setters write fields of an object no other thread has yet.
         unsafe {
-            options.set_additional_browser_arguments(webhost::browser_arguments(&opts.args));
+            options.set_additional_browser_arguments(control.unwrap_or_else(|| webhost::browser_arguments(&opts.args)));
             // Windows single sign-on with the OS primary account is off (it is also WebView2's default).
             options.set_allow_single_sign_on_using_os_primary_account(false);
             // No second process shares this profile.
@@ -518,6 +523,18 @@ struct Pending {
 struct PendingPerm {
     deferral: ICoreWebView2Deferral,
     args: ICoreWebView2PermissionRequestedEventArgs,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A probe's control environment: the next `Env::create` on this thread uses exactly these
+    /// browser arguments (taken once), so a probe can show what the engine does WITHOUT Tandem's.
+    static PROBE_CONTROL_ARGS: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn probe_control_args() -> Option<String> {
+    PROBE_CONTROL_ARGS.with(|c| c.borrow_mut().take())
 }
 
 /// An HTTP authentication request held back until the app answers (`answer_basic_auth`).
@@ -3314,6 +3331,9 @@ mod probe {
         finished: Vec<u64>,
         responses: Vec<(u64, i32)>,
         commits: Vec<u64>,
+        /// The navigation and authentication events in the order the host posted them (probe run
+        /// 2026-10-11: the order is the evidence a failure is read from).
+        auth_log: Vec<String>,
     }
 
     impl Probe {
@@ -3417,6 +3437,7 @@ mod probe {
                 finished: Vec::new(),
                 responses: Vec::new(),
                 commits: Vec::new(),
+                auth_log: Vec::new(),
             };
             let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
             let c2 = cell.clone();
@@ -3568,17 +3589,28 @@ mod probe {
                 Event::Created(_) => self.created = true,
                 Event::Failed(_, why) => self.failed.push(why),
                 Event::ProcessFailed { kind, .. } => self.failed.push(format!("process failed {kind}")),
-                Event::Navigated { ok, url, nav, .. } => {
+                Event::Navigated { ok, url, nav, status, .. } => {
+                    self.auth_log.push(format!("navigated {nav} ok={ok} status={status}"));
                     self.navigated.push((url, ok));
                     self.finished.push(nav);
                 }
                 Event::Starting { url, redirect: false, nav, .. } => {
+                    self.auth_log.push(format!("starting {nav} {url}"));
                     self.order.push(format!("starting {url}"));
                     self.starts.push(nav);
                 }
-                Event::BasicAuth { token, uri, challenge, .. } => self.auths.push((token, uri, challenge)),
-                Event::Response { nav, status, .. } => self.responses.push((nav, status)),
-                Event::Committed { nav, .. } => self.commits.push(nav),
+                Event::BasicAuth { token, uri, challenge, .. } => {
+                    self.auth_log.push(format!("basic-auth {token} {challenge}"));
+                    self.auths.push((token, uri, challenge));
+                }
+                Event::Response { nav, status, .. } => {
+                    self.auth_log.push(format!("response {nav} {status}"));
+                    self.responses.push((nav, status));
+                }
+                Event::Committed { nav, .. } => {
+                    self.auth_log.push(format!("committed {nav}"));
+                    self.commits.push(nav);
+                }
                 Event::Request { token, url, context, .. } => {
                     self.order.push(format!("request {context} {url}"));
                     let key = url.split(['#', '?']).next().unwrap_or("").to_string();
@@ -3756,6 +3788,22 @@ mod probe {
         fn settle(&mut self, ms: u64) {
             let end = Instant::now() + Duration::from_millis(ms);
             self.wait(ms / 1000 + 1, |_| Instant::now() >= end);
+        }
+
+        /// A person's left click at a viewport point: `Input.dispatchMouseEvent` (move, press, release),
+        /// which the page sees as `isTrusted` events (the same path as a real mouse in the view).
+        fn trusted_click(&mut self, x: f64, y: f64) {
+            for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
+                self.call_wait(None, "Input.dispatchMouseEvent", &json!({"type": kind, "x": x, "y": y, "button": "left", "clickCount": 1})).expect("a trusted press");
+            }
+        }
+
+        /// The point 12 px inside the right edge of element `id`, at its middle: where Tandem's in-page
+        /// buttons sit (5 px padding, a side of at least 14 px).
+        fn button_spot(&mut self, id: &str) -> (f64, f64) {
+            let r = self.page_string(&format!("(() => {{ const r = document.getElementById('{id}').getBoundingClientRect(); return JSON.stringify([r.right - 12, r.top + r.height / 2]); }})()")).expect("the field");
+            let xy: Vec<f64> = serde_json::from_str(&r).expect("two numbers");
+            (xy[0], xy[1])
         }
 
         fn clients(&self, handler: &str) -> Vec<(Option<u64>, Value)> {
@@ -4240,7 +4288,7 @@ mod probe {
 
     /// The detector as the app injects it, on a local form (13x7 Task 3).
     fn autofill_form() -> String {
-        "<!doctype html><html><body style=\"margin:0\"><form><input id=fn name=fname><input id=em type=email></form></body></html>".to_string()
+        "<!doctype html><html><body style=\"margin:0\"><form><input id=fn name=fname style=\"display:block;width:260px;height:30px\"><input id=em type=email style=\"display:block;width:260px;height:30px\"></form></body></html>".to_string()
     }
 
     /// 13x7 Task 3: a page script's click on Tandem's button posts nothing and fills nothing (R13x67-2); a
@@ -4267,6 +4315,17 @@ mod probe {
         assert!(p.clients(ba::HANDLER).is_empty(), "a scripted click requests nothing");
         let vals = |p: &mut Probe| p.page_eval("[document.getElementById('fn').value, document.getElementById('em').value].join('|')");
         assert_eq!(vals(&mut p), Ok("\"|\"".into()), "both inputs still empty");
+        // A person's press on the button (trusted, at the button's spot): exactly one request, and it
+        // writes nothing by itself (the native confirm does). This is also the scripted click's
+        // positive control: the button is there and listening.
+        let (x, y) = p.button_spot("fn");
+        p.trusted_click(x, y);
+        assert!(p.wait(5, |p| !p.clients(ba::HANDLER).is_empty()), "the trusted press requests: routed {:?}", p.routed.iter().map(|r| r.body.chars().take(80).collect::<String>()).collect::<Vec<_>>());
+        p.settle(800);
+        let reqs = p.clients(ba::HANDLER);
+        assert_eq!(reqs.len(), 1, "exactly one request: {reqs:?}");
+        assert_eq!(reqs[0].1["type"], ba::REQUEST_TYPE, "{reqs:?}");
+        assert_eq!(vals(&mut p), Ok("\"|\"".into()), "a press alone writes nothing");
         // The confirmed fill, as the app runs it after the person pressed Fill.
         let a = ba::write_call("fn", "", "Ann");
         let b = ba::write_call("em", "", "a@b");
@@ -4301,6 +4360,15 @@ mod probe {
         p.page_eval("(() => { for (const el of document.querySelectorAll('*')) { el.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, cancelable: true })); } })()").expect("scripted clicks");
         p.settle(2000);
         assert!(p.clients(bp::HANDLER).is_empty(), "a scripted click opens nothing");
+        // A person's press on the key button posts exactly one `openPassword` (the scripted click's
+        // positive control: the button is shown and listening). Focus stays in the field.
+        let (x, y) = p.button_spot("pw");
+        p.trusted_click(x, y);
+        assert!(p.wait(5, |p| !p.clients(bp::HANDLER).is_empty()), "the trusted press opens: routed {:?}", p.routed.iter().map(|r| r.body.chars().take(80).collect::<String>()).collect::<Vec<_>>());
+        p.settle(800);
+        let opens = p.clients(bp::HANDLER);
+        assert_eq!(opens.len(), 1, "exactly one: {opens:?}");
+        assert_eq!(opens[0].1["type"], "openPassword", "{opens:?}");
         p.finish();
     }
 
@@ -4325,12 +4393,17 @@ mod probe {
         };
         let vals = |p: &mut Probe| p.page_eval("['u','p','h'].map(i => document.getElementById(i).value).join('|')");
         let origin = p.page_eval("location.origin").expect("origin").trim_matches('"').to_string();
-        // PAGE is http(s) only on a real server; the origin guard compares exactly, so another origin fails.
-        assert_eq!(run(&mut p, "https://other.test", true, "p"), Ok("false".into()), "another origin takes nothing");
-        assert_eq!(run(&mut p, &origin, true, "u"), Ok("false".into()), "a text field takes nothing when a password field is required");
-        assert_eq!(run(&mut p, &origin, true, "h"), Ok("false".into()), "a transparent field takes nothing");
+        // `eval` answers the JSON value (probe run 2026-10-11: the refusal is `false`, a boolean, which
+        // is what `browser_password_app` reads with `as_bool`). The origin guard compares exactly, so
+        // another origin fails on the very field the right origin then fills.
+        assert_eq!(origin, PAGE.trim_end_matches('/'), "PAGE is https: the success case is real");
+        assert_eq!(run(&mut p, "https://other.test", true, "p"), Ok(json!(false)), "another origin takes nothing");
+        assert_eq!(vals(&mut p), Ok("\"||\"".into()), "another origin wrote nothing");
+        assert_eq!(run(&mut p, &format!("{origin}:443"), true, "p"), Ok(json!(false)), "not the exact origin string: nothing");
+        assert_eq!(run(&mut p, &origin, true, "u"), Ok(json!(false)), "a text field takes nothing when a password field is required");
+        assert_eq!(run(&mut p, &origin, true, "h"), Ok(json!(false)), "a transparent field takes nothing");
         assert_eq!(vals(&mut p), Ok("\"||\"".into()), "nothing was written");
-        assert_eq!(run(&mut p, &origin, true, "p"), Ok("true".into()), "the visible password field takes it");
+        assert_eq!(run(&mut p, &origin, true, "p"), Ok(json!(true)), "the visible password field takes it");
         assert_eq!(vals(&mut p), Ok("\"|pw\\\"1\\n</script>|\"".into()));
         assert_eq!(p.page_eval("Object.keys(window).filter(k => /pw|text|secret/i.test(k)).length"), Ok("0".into()), "no page global holds it");
         p.finish();
@@ -6313,7 +6386,9 @@ window.addEventListener('message', function (e) {
                     let mut buf = [0u8; 8192];
                     let n = s.read(&mut buf).unwrap_or(0);
                     let head = String::from_utf8_lossy(&buf[..n]).to_string();
-                    seen2.lock().unwrap().push(head.lines().next().unwrap_or("").to_string());
+                    // The request line and the scheme of any credential header (never its value).
+                    let creds: Vec<String> = head.lines().filter_map(|l| l.split_once(':')).filter(|(k, _)| k.eq_ignore_ascii_case("authorization") || k.eq_ignore_ascii_case("proxy-authorization")).map(|(k, v)| format!("{k}: {}", v.trim().split(' ').next().unwrap_or(""))).collect();
+                    seen2.lock().unwrap().push(format!("{} {creds:?}", head.lines().next().unwrap_or("")));
                     let ok = !want.is_empty() && head.contains(want);
                     let reply = if ok {
                         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 27\r\nConnection: close\r\n\r\n<!doctype html><title>in</title>".to_string()
@@ -6369,17 +6444,29 @@ window.addEventListener('message', function (e) {
         assert!(challenge.contains("realm=\"T\""), "{challenge}");
         assert!(uri.starts_with(&format!("http://127.0.0.1:{}", server.port)), "{uri}");
         assert!(!p.view().is_muted());
-        // The held request is not answered by the page's own dialog: nothing finishes while it waits.
-        assert!(p.finished.is_empty());
+        // While the person has not answered: the deferral stays held (nothing completed it), and the
+        // server never saw a credential (none was sent without the person).
+        p.settle(2000);
+        let held = p.view().inner.borrow().auths.contains_key(&token);
+        let seen_before: Vec<String> = server.seen.lock().unwrap().clone();
+        println!("basic auth before the answer: held {held}; events {:?}; server saw {seen_before:?}", p.auth_log);
+        assert!(held, "the deferral is still held before the person answers: {:?}", p.auth_log);
+        assert!(seen_before.iter().all(|l| l.ends_with("[]")), "no credential before the answer: {seen_before:?}");
+        assert!(p.auths.len() == 1, "one challenge: {:?}", p.auths);
+        let before = p.auth_log.len();
         p.auths.clear();
         p.view().answer_basic_auth(token, Some(("u".into(), crate::pwm::Secret::new("p".into()))));
         p.view().answer_basic_auth(token, None);
         p.view().answer_basic_auth(token ^ 0xffff, None);
-        assert!(p.wait(20, |p| p.responses.iter().any(|r| r.1 == 200) && !p.finished.is_empty()), "signed in: responses {:?} finished {:?}", p.responses, p.finished);
+        assert!(!p.view().inner.borrow().auths.contains_key(&token), "answered once, gone");
+        assert!(p.wait(20, |p| p.auth_log[before..].iter().any(|l| l.starts_with("navigated ") && l.ends_with("status=200"))), "signed in: {:?}", p.auth_log);
+        p.settle(500);
+        println!("basic auth after the answer: events {:?}; server saw {:?}", p.auth_log, server.seen.lock().unwrap());
         let start = p.starts[0];
-        assert_eq!(p.finished[0], start, "the finished navigation is the starting one");
+        assert!(p.auth_log.contains(&format!("navigated {start} ok=true status=200")), "the starting navigation finishes signed in: {:?}", p.auth_log);
         assert!(p.responses.iter().any(|r| r.0 == start && r.1 == 200), "the response carries the navigation id: {:?} / {start}", p.responses);
         assert!(p.commits.contains(&start), "ContentLoading carries it too: {:?}", p.commits);
+        assert!(p.auths.is_empty(), "no second challenge for an accepted answer: {:?}", p.auths);
         // A fragment on another path is the same document request: its response is posted too.
         let n = p.responses.len();
         p.view().navigate_tandem(&format!("{url}other#frag"));
@@ -6389,6 +6476,7 @@ window.addEventListener('message', function (e) {
         let n = p.responses.len();
         p.view().navigate_tandem(&format!("{url}cancel"));
         assert!(drive_auth(&mut p, 20, None, |p| p.responses.len() > n), "a cancelled request still ends: {:?}", p.responses);
+        println!("basic auth end: events {:?}", p.auth_log);
         p.finish();
         server.stop();
     }
@@ -6410,22 +6498,67 @@ window.addEventListener('message', function (e) {
         server.stop();
     }
 
-    /// NTLM and Negotiate reach the app like any other challenge (never answered by Windows itself).
+    /// Task 10 review I2: the engine never answers an NTLM or Negotiate challenge with the person's
+    /// Windows credentials by itself, from a site or from a proxy. Each case runs in a control
+    /// environment first (no Tandem argument: the engine's own behavior, which must send a credential
+    /// for the probe to be able to fail), then with candidate arguments, then with what Tandem ships
+    /// (`webhost::browser_arguments`). The site is `localhost` (dotless: the intranet zone, where
+    /// Windows allows automatic logon), the proxy a 407 from 127.0.0.1. What each server saw is
+    /// printed, and Tandem's environment must send no integrated credential anywhere.
     #[test]
     #[ignore]
-    fn integrated_challenges_reach_the_app() {
+    fn integrated_auth_is_never_sent_by_itself() {
+        const ALLOWLIST: &str = "--auth-server-allowlist=tandem-no-integrated-auth.invalid";
+        const SCHEMES: &str = "--auth-schemes=basic,digest";
+        let configs: [(&str, Option<&str>); 4] = [("control", Some("")), ("allowlist", Some(ALLOWLIST)), ("schemes", Some(SCHEMES)), ("tandem", None)];
+        let integrated = |seen: &[String]| seen.iter().any(|l| l.contains(": NTLM\"") || l.contains(": Negotiate\""));
+        let mut table: Vec<(String, &str, &str, bool, usize, Vec<String>)> = Vec::new();
         for scheme in ["NTLM", "Negotiate"] {
-            let header: &'static str = if scheme == "NTLM" { "WWW-Authenticate: NTLM" } else { "WWW-Authenticate: Negotiate" };
-            let mut server = AuthServer::start("", "401 Unauthorized", header);
-            let Some(mut p) = Probe::start_setup(&[], Vec::new(), &[], auth_setup()) else { return server.stop() };
-            p.view().navigate_tandem(&format!("http://127.0.0.1:{}/", server.port));
-            assert!(p.wait(20, |p| !p.auths.is_empty()), "{scheme}: the challenge arrives (Windows did not answer it): seen {:?}", server.seen.lock().unwrap());
-            assert!(p.auths[0].2.starts_with(scheme), "{}", p.auths[0].2);
-            let (t, ..) = p.auths[0].clone();
-            p.view().answer_basic_auth(t, None);
-            p.finish();
-            server.stop();
+            for proxy in [false, true] {
+                for (name, args) in configs {
+                    let (status, header): (&'static str, &'static str) = match (proxy, scheme) {
+                        (false, "NTLM") => ("401 Unauthorized", "WWW-Authenticate: NTLM"),
+                        (false, _) => ("401 Unauthorized", "WWW-Authenticate: Negotiate"),
+                        (true, "NTLM") => ("407 Proxy Authentication Required", "Proxy-Authenticate: NTLM"),
+                        (true, _) => ("407 Proxy Authentication Required", "Proxy-Authenticate: Negotiate"),
+                    };
+                    let mut server = AuthServer::start("", status, header);
+                    let proxy_arg = if proxy { crate::adblock::proxy_args(true, "127.0.0.1", server.port as i64) } else { String::new() };
+                    if let Some(a) = args {
+                        let line = [proxy_arg.as_str(), a].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" ");
+                        PROBE_CONTROL_ARGS.with(|c| *c.borrow_mut() = Some(line));
+                    }
+                    let Some(mut p) = Probe::start_args(&[], Vec::new(), &[], auth_setup(), &proxy_arg) else {
+                        PROBE_CONTROL_ARGS.with(|c| c.borrow_mut().take());
+                        return server.stop();
+                    };
+                    let url = if proxy { "http://example.invalid/".to_string() } else { format!("http://localhost:{}/", server.port) };
+                    p.view().navigate_tandem(&url);
+                    // Long enough for an automatic exchange to reach the server, or the request to end.
+                    p.wait(10, |p| !p.auths.is_empty() || !p.finished.is_empty());
+                    p.settle(1500);
+                    let asked = p.auths.len();
+                    for (t, ..) in std::mem::take(&mut p.auths) {
+                        p.view().answer_basic_auth(t, None);
+                    }
+                    p.settle(500);
+                    let seen = server.seen.lock().unwrap().clone();
+                    drop(p);
+                    server.stop();
+                    table.push((format!("{scheme} {}", if proxy { "proxy" } else { "site" }), name, if integrated(&seen) { "SENT" } else { "none" }, integrated(&seen), asked, seen));
+                }
+            }
         }
+        for row in &table {
+            println!("integrated auth: {} {:9} credential {} challenges posted {} server saw {:?}", row.0, row.1, row.2, row.4, row.5);
+        }
+        for case in ["NTLM site", "Negotiate site", "NTLM proxy", "Negotiate proxy"] {
+            let tandem = table.iter().find(|r| r.0 == case && r.1 == "tandem").expect("ran");
+            assert!(!tandem.3, "{case}: Tandem's environment sent an integrated credential by itself: {:?}", tandem.5);
+        }
+        // The probe can fail: the engine's own behavior sends one somewhere (the proxy at least, which
+        // Chromium's server allowlist never covers).
+        assert!(table.iter().any(|r| r.1 == "control" && r.3), "the control environment sent no integrated credential anywhere: the probe could not tell");
     }
 
     /// Review I10: a proxy's 407 reaches the app as a challenge, and the URI WebView2 reports tells the
