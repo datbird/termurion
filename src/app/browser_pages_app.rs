@@ -109,7 +109,7 @@ impl App {
             bv.pending_error = None;
             return;
         }
-        if !browser_pages::should_show_error(Some(url), bv.last_failed.as_deref()) || !bv.error_burst.allow(mono_ms()) {
+        if !browser_pages::should_show_error(Some(url), bv.last_failed.as_deref()) || !bv.error_burst.allow(std::time::Instant::now()) {
             return;
         }
         let html = if blocked { browser_pages::described_error_page(browser_pages::BLOCKED_TEXT, Some(url)) } else { browser_pages::error_page(failure, Some(url)) };
@@ -550,7 +550,7 @@ impl App {
             }
             return;
         }
-        if !bv.error_burst.allow(mono_ms()) {
+        if !bv.error_burst.allow(std::time::Instant::now()) {
             return;
         }
         let shown = crate::inert_files::display_text(&crate::semantic::file_url_path(uri).unwrap_or_else(|| uri.to_string()), 512, false);

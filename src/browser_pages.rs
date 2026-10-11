@@ -393,26 +393,20 @@ pub fn should_show_error(failed: Option<&str>, last_failed: Option<&str>) -> boo
 }
 
 /// The pane's cap on error pages (preflight P6): the loop guard keys on the URL, so a page that
-/// redirects to a fresh failing URL each time would load a page for each; at most `LIMIT` in `WINDOW_MS`.
+/// redirects to a fresh failing URL each time would load a page for each; at most `LIMIT` in each
+/// `WINDOW` (the view limiters' one counter, `webhost::WindowCount`).
 #[derive(Debug, Default)]
 pub struct ErrorBurst {
-    shown: std::collections::VecDeque<u64>,
+    count: crate::webhost::WindowCount,
 }
 
 impl ErrorBurst {
     pub const LIMIT: usize = 5;
-    pub const WINDOW_MS: u64 = 10_000;
+    pub const WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 
-    /// Whether one more error page may be shown at `now_ms` (counted when it may).
-    pub fn allow(&mut self, now_ms: u64) -> bool {
-        while self.shown.front().is_some_and(|t| now_ms.saturating_sub(*t) >= Self::WINDOW_MS) {
-            self.shown.pop_front();
-        }
-        if self.shown.len() >= Self::LIMIT {
-            return false;
-        }
-        self.shown.push_back(now_ms);
-        true
+    /// Whether one more error page may be shown at `now` (counted when it may).
+    pub fn allow(&mut self, now: std::time::Instant) -> bool {
+        self.count.allow(now, Self::WINDOW, Self::LIMIT)
     }
 }
 
@@ -1905,9 +1899,11 @@ mod error_tests {
         assert!(should_show_error(Some("u"), Some("v")));
         assert!(!should_show_error(None, None));
         let mut b = ErrorBurst::default();
-        assert!((0..5).all(|i| b.allow(i * 100)));
-        assert!(!b.allow(900), "a sixth in ten seconds");
-        assert!(b.allow(10_100), "the window moves on");
+        let t = std::time::Instant::now();
+        let at = |ms: u64| t + std::time::Duration::from_millis(ms);
+        assert!((0..5).all(|i| b.allow(at(i * 100))));
+        assert!(!b.allow(at(900)), "a sixth in ten seconds");
+        assert!(b.allow(at(10_100)), "the window moves on");
     }
 
     /// The page is the copied template, patched exact-once; its script has the nonce, no inline

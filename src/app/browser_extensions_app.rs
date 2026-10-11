@@ -193,15 +193,23 @@ impl App {
         self.set_session_values(pane, &[(key.to_string(), value.clone())]);
         let Some(guid) = self.panes.get(&pane).map(|p| p.profile.clone()) else { return };
         let shared = self.store.shared_guid(&guid);
-        if let Some(p) = self.store.get_mut(&shared) {
+        let written = if let Some(p) = self.store.get_mut(&shared) {
             match value {
                 Some(v) => p.set(key, v),
                 None => {
                     p.remove(key);
                 }
             }
-        }
+            true
+        } else {
+            false
+        };
         let _ = self.save_store();
+        // The Settings window's owner: every open window and pane of that profile sees the change
+        // (13x8 final review M5).
+        if written {
+            self.apply_edit(Edit::Changed(shared));
+        }
     }
 
     /// Looks at the pane's chosen root (if any) and the approved folders on a worker, then syncs WebView2
@@ -532,6 +540,9 @@ mod tests {
         assert!(ans.contains("index == 0") && ans.find("read_folder_manifest").unwrap() < ans.find(".approve(").unwrap() && ans.contains("h == hash"));
         // Questions come only from choosing a folder; the sync never asks.
         assert_eq!(l.matches("browser_extensions_request(pane, true").count(), 1);
+        // The folder setting goes through the Settings window's owner (final review M5).
+        let w = body(l, "fn browser_ext_write", "/// Looks at the pane's chosen root");
+        assert!(w.find("self.save_store()").unwrap() < w.find("self.apply_edit(Edit::Changed(shared))").unwrap());
         assert!(body(l, "pub(super) fn browser_extensions_choose", "/// Raises the next").contains("localfs::pick_folder("));
         assert!(include_str!("browser_app.rs").contains("if !dev_null {\n                    self.browser_extensions_request(pane, false, false);"));
         // An unreadable root never removes anything.

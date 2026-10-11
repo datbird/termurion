@@ -352,7 +352,8 @@ pub(super) enum Then {
     /// input-guarded and it is never remembered.
     BrowserClearData { pane: crate::layout::PaneId },
     /// "Enable Browser Extension?" (13x8 Task 10): Enable (0) records the approval of this folder's
-    /// manifest (`hash`) for the pane's saved profile; Cancel (1) does nothing. Never remembered.
+    /// manifest (`hash`) for the shared browser data (every non-Dev-Null browser profile, R13x8-14);
+    /// Cancel (1) does nothing. Never remembered.
     BrowserExtension { pane: crate::layout::PaneId, folder: std::path::PathBuf, hash: String },
     /// "Are you sure you want to delete this bookmark?" from Edit Bookmark: Delete (0) removes it;
     /// Cancel (1) nothing. The person's own window raised it.

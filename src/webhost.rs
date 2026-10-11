@@ -1073,12 +1073,38 @@ pub fn favicon_ok(bytes: &[u8]) -> bool {
         .is_some_and(|(w, h)| w > 0 && h > 0 && w <= MAX_FAVICON_SIDE && h <= MAX_FAVICON_SIDE)
 }
 
+/// The one fixed-window counter the view's limiters share (and the browser pane's error-page cap,
+/// `browser_pages::ErrorBurst`, 13x8 final review M4): at most `limit` in each `span` from the
+/// window's first event.
+#[derive(Debug, Default)]
+pub struct WindowCount {
+    window_start: Option<Instant>,
+    in_window: usize,
+}
+
+impl WindowCount {
+    /// Whether one more may go at `now` (counted when it may).
+    pub fn allow(&mut self, now: Instant, span: Duration, limit: usize) -> bool {
+        match self.window_start {
+            Some(t) if now.saturating_duration_since(t) < span => {}
+            _ => {
+                self.window_start = Some(now);
+                self.in_window = 0;
+            }
+        }
+        if self.in_window >= limit {
+            return false;
+        }
+        self.in_window += 1;
+        true
+    }
+}
+
 /// `NewWindowRequested` limiter (P20): only a user-initiated request, at most 4 a second, never
 /// more than 8 pending.
 #[derive(Debug, Default)]
 pub struct NewWindowLimiter {
-    window_start: Option<Instant>,
-    in_window: usize,
+    count: WindowCount,
 }
 
 impl NewWindowLimiter {
@@ -1086,18 +1112,7 @@ impl NewWindowLimiter {
         if !user_initiated || pending >= MAX_PENDING_NEW_WINDOWS {
             return false;
         }
-        match self.window_start {
-            Some(t) if now.duration_since(t) < Duration::from_secs(1) => {}
-            _ => {
-                self.window_start = Some(now);
-                self.in_window = 0;
-            }
-        }
-        if self.in_window >= NEW_WINDOWS_PER_SECOND {
-            return false;
-        }
-        self.in_window += 1;
-        true
+        self.count.allow(now, Duration::from_secs(1), NEW_WINDOWS_PER_SECOND)
     }
 }
 
@@ -1109,8 +1124,7 @@ pub const MAX_PENDING_PERMISSIONS: usize = 8;
 /// `PermissionRequested` limiter, the `NewWindowLimiter` pattern.
 #[derive(Debug, Default)]
 pub struct PermissionLimiter {
-    window_start: Option<Instant>,
-    in_window: usize,
+    count: WindowCount,
 }
 
 impl PermissionLimiter {
@@ -1118,18 +1132,7 @@ impl PermissionLimiter {
         if pending >= MAX_PENDING_PERMISSIONS {
             return false;
         }
-        match self.window_start {
-            Some(t) if now.duration_since(t) < Duration::from_secs(1) => {}
-            _ => {
-                self.window_start = Some(now);
-                self.in_window = 0;
-            }
-        }
-        if self.in_window >= PERMISSIONS_PER_SECOND {
-            return false;
-        }
-        self.in_window += 1;
-        true
+        self.count.allow(now, Duration::from_secs(1), PERMISSIONS_PER_SECOND)
     }
 }
 
@@ -1140,8 +1143,7 @@ pub const MAX_HELD_NOTES: usize = 16;
 /// `NotificationReceived` limiter: what it refuses is reported closed to the page and released.
 #[derive(Debug, Default)]
 pub struct NotificationLimiter {
-    window_start: Option<Instant>,
-    in_window: usize,
+    count: WindowCount,
 }
 
 impl NotificationLimiter {
@@ -1149,18 +1151,7 @@ impl NotificationLimiter {
         if held >= MAX_HELD_NOTES {
             return false;
         }
-        match self.window_start {
-            Some(t) if now.duration_since(t) < Duration::from_secs(60) => {}
-            _ => {
-                self.window_start = Some(now);
-                self.in_window = 0;
-            }
-        }
-        if self.in_window >= NOTES_PER_MINUTE {
-            return false;
-        }
-        self.in_window += 1;
-        true
+        self.count.allow(now, Duration::from_secs(60), NOTES_PER_MINUTE)
     }
 }
 
