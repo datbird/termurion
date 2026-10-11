@@ -479,6 +479,7 @@ pub mod pwm_cli;
 pub mod pwm_adapter;
 pub mod pwm_bitwarden;
 pub mod pwm_keepassxc;
+pub mod pwm_keeper;
 
 #[cfg(windows)]
 pub mod winclip;

@@ -50,9 +50,13 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 /// derives the key again for every `keepassxc-cli` call, and a listing makes one per entry).
 const LONG_TIMEOUT: Duration = Duration::from_secs(180);
 
+/// A single read (Keeper's service answers a get in seconds, polling up to 15 s).
+const GET_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn timeout_for(subcommand: &str) -> Duration {
     match subcommand {
-        "login" | "list-accounts" | "add-account" => LONG_TIMEOUT,
+        "login" | "list-accounts" | "add-account" | "set-password" | "delete-account" | "sync-down" => LONG_TIMEOUT,
+        "get-password" => GET_TIMEOUT,
         _ => DEFAULT_TIMEOUT,
     }
 }
@@ -762,9 +766,10 @@ pub fn zero_bytes(bytes: &mut [u8]) {
 }
 
 /// The whole `main` of an adapter executable: the subcommand is argument 1, stdin is read to the
-/// end (capped), `handle`'s JSON is printed, and the process exits 0 after an error response
-/// except for "No input provided", which exits 1 (iTerm2's adapters). Returns the exit code.
-pub fn run_main(args: &[String], stdin: &mut dyn std::io::Read, stdout: &mut dyn std::io::Write, handle: Handle, runner: &mut dyn Runner) -> i32 {
+/// end (capped), `call`'s JSON is printed, and the process exits 0 after an error response
+/// except for "No input provided", which exits 1 (iTerm2's adapters). `call` gets the subcommand
+/// and the request bytes. Returns the exit code.
+pub fn run_main_with(args: &[String], stdin: &mut dyn std::io::Read, stdout: &mut dyn std::io::Write, call: impl FnOnce(&str, &[u8]) -> Vec<u8>) -> i32 {
     use std::io::Read;
     let Some(command) = args.get(1) else {
         let _ = stdout.write_all(&error_json("Usage: <adapter> <command>"));
@@ -776,11 +781,16 @@ pub fn run_main(args: &[String], stdin: &mut dyn std::io::Read, stdout: &mut dyn
         let _ = stdout.write_all(&error_json("No input provided"));
         return 1;
     }
-    let out = handle(command, &input, runner);
+    let out = call(command, &input);
     zero_bytes(&mut input);
     let _ = stdout.write_all(&out);
     let _ = stdout.flush();
     0
+}
+
+/// `run_main_with` for the adapters that drive a CLI through a `Runner`.
+pub fn run_main(args: &[String], stdin: &mut dyn std::io::Read, stdout: &mut dyn std::io::Write, handle: Handle, runner: &mut dyn Runner) -> i32 {
+    run_main_with(args, stdin, stdout, |c, i| handle(c, i, runner))
 }
 
 #[cfg(test)]
