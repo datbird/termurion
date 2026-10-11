@@ -67,8 +67,8 @@ fn url_markable(url: &str) -> bool {
 /// A browser mark window took the focus again: its guard (`mark_guard`) starts over. A free function
 /// so the window's own event handler can call it while it holds the window.
 pub(super) fn mark_window_refocused(guard: &mut Option<crate::prompt_ui::InputGuard>, event: &WindowEvent) {
-    if let (WindowEvent::Focused(true), Some(g)) = (event, guard.as_mut()) {
-        g.refocus(Instant::now());
+    if let Some(g) = guard.as_mut() {
+        g.window_event(event, Instant::now());
     }
 }
 
@@ -153,7 +153,7 @@ impl App {
     /// keystroke meant for the page must not answer it). The guard is `prompt_ui::InputGuard`, the
     /// one the permission prompt uses too.
     pub(super) fn mark_input_guarded(&self, event: &WindowEvent) -> bool {
-        matches!(event, WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. } | WindowEvent::Ime(_)) && self.mark_guard.is_some_and(|g| !g.armed(Instant::now()))
+        self.mark_guard.is_some_and(|g| g.drops(event, Instant::now()))
     }
 
 
@@ -672,9 +672,9 @@ mod tests {
         assert!(!g.armed(t0 + Duration::from_secs(3) + Duration::from_millis(500)), "regaining focus starts it over");
         let p = prod();
         let guarded = &p[p.find("pub(super) fn mark_input_guarded").unwrap()..p.find("fn mark_edit_valid").unwrap()];
-        assert!(guarded.contains("self.mark_guard.is_some_and(|g| !g.armed(Instant::now()))"));
+        assert!(guarded.contains("self.mark_guard.is_some_and(|g| g.drops(event, Instant::now()))"), "the one rule, touch included");
         let refocus = &p[p.find("pub(super) fn mark_window_refocused").unwrap()..p.find("impl App {").unwrap()];
-        assert!(refocus.contains("WindowEvent::Focused(true)") && refocus.contains("g.refocus(Instant::now())"));
+        assert!(refocus.contains("g.window_event(event, Instant::now())"));
         // The delete confirm restarts the guard on focus; so does the name window, for browser marks only.
         let confirm = &p[p.find("pub(super) fn mark_confirm_event").unwrap()..];
         assert!(confirm[..confirm.find("match event").unwrap()].contains("mark_window_refocused(&mut self.mark_guard, event);"));

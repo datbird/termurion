@@ -177,8 +177,6 @@ struct Confirm {
     kind: ConfirmKind,
     /// A notice shown in the remembered mode: the saved answer's label.
     remembered: Option<String>,
-    /// When the window opened (the input guard of a question a page can cause).
-    opened: Option<Instant>,
 }
 
 enum ConfirmKind {
@@ -227,9 +225,13 @@ impl App {
                 ConfirmKind::Notice(spec) => super::warnings_app::open_warning(event_loop, (&g.instance, &g.adapter, &g.device, &g.queue), spec, c.remembered.as_deref(), underline),
             };
             match opened {
-                Ok(w) => {
+                Ok(mut w) => {
+                    // A question a page can raise: the one shared input guard (prompt_ui::InputGuard,
+                    // 1 s, restarted on refocus, keys, clicks and touch), no default button.
+                    if matches!(c.kind, ConfirmKind::Autofill(..)) {
+                        w.guard_input();
+                    }
                     c.window = Some(w);
-                    c.opened = Some(Instant::now());
                 }
                 Err(e) => failed = Some(e),
             }
@@ -359,7 +361,7 @@ impl App {
     }
 
     fn pwm_warning(&mut self, heading: &str, text: &str) {
-        self.pwm.confirms.push(Confirm { window: None, heading: heading.to_string(), text: text.to_string(), kind: ConfirmKind::Warning, remembered: None, opened: None });
+        self.pwm.confirms.push(Confirm { window: None, heading: heading.to_string(), text: text.to_string(), kind: ConfirmKind::Warning, remembered: None });
     }
 
     /// A gear setting's value (stored, else iTerm2's default).
@@ -1137,7 +1139,7 @@ impl App {
                         Preempt::ShowRemembered { saved_label } => Some(Some(saved_label)),
                     };
                     if let Some(remembered) = remembered {
-                        self.pwm.confirms.push(Confirm { window: None, heading: spec.heading.clone(), text, kind: ConfirmKind::Notice(spec), remembered, opened: None });
+                        self.pwm.confirms.push(Confirm { window: None, heading: spec.heading.clone(), text, kind: ConfirmKind::Notice(spec), remembered });
                     }
                 }
             }
@@ -1407,7 +1409,7 @@ impl App {
                 Out::SendPassword if single => self.send_entry(pane),
                 Out::Failed if single => {
                     let id = self.pwm.entries.get(&pane).map_or(0, |(id, _)| *id);
-                    self.pwm.confirms.push(Confirm { window: None, heading: WARNING_HEADING.to_string(), text: echo_probe::CHECK_TEXT.to_string(), kind: ConfirmKind::Check(pane, id), remembered: None, opened: None });
+                    self.pwm.confirms.push(Confirm { window: None, heading: WARNING_HEADING.to_string(), text: echo_probe::CHECK_TEXT.to_string(), kind: ConfirmKind::Check(pane, id), remembered: None });
                 }
                 Out::SendPassword | Out::Failed => {
                     let ok = matches!(o, Out::SendPassword);
@@ -1478,7 +1480,7 @@ impl App {
                 }
                 Finish::Ask { heading, text, ok, .. } => {
                     let kind = if ok.is_empty() { ConfirmKind::Warning } else { ConfirmKind::Broadcast(ok, r.password) };
-                    self.pwm.confirms.push(Confirm { window: None, heading: heading.to_string(), text, kind, remembered: None, opened: None });
+                    self.pwm.confirms.push(Confirm { window: None, heading: heading.to_string(), text, kind, remembered: None });
                 }
             }
         }
@@ -1493,16 +1495,17 @@ impl App {
     /// Events for the password manager's questions. False for other windows.
     pub(super) fn pwm_confirm_event(&mut self, id: WindowId, event: &WindowEvent) -> bool {
         let Some(i) = self.pwm.confirms.iter().position(|c| c.window.as_ref().is_some_and(|w| w.id() == id)) else { return false };
-        // THE call site of the native-window input guard for a question a page can raise (the same
-        // 500 ms rule as 13x5's mark windows; it becomes the one shared guard when 13x6 merges).
+        // The autofill question: its window carries the one shared input guard (`guard_input` at
+        // open; `ConfirmWindow::event` drops what it guards). Only a pointer click answers Fill;
+        // the keyboard's one key is Escape (Cancel), itself held back while the guard waits.
         let autofill = matches!(self.pwm.confirms[i].kind, ConfirmKind::Autofill(..));
-        let guarded = autofill && (native_input_guarded(self.pwm.confirms[i].opened, event) || autofill_key_dropped(event));
         let Some(w) = self.pwm.confirms[i].window.as_mut() else { return false };
         let answer = match event {
             WindowEvent::CloseRequested => ConfirmResult::Cancel,
             WindowEvent::RedrawRequested => w.redraw(),
+            WindowEvent::KeyboardInput { event: k, .. } if autofill && autofill_escape(k) && !w.input_guarded(event) => ConfirmResult::Cancel,
             other => {
-                if !guarded {
+                if !(autofill && autofill_key_dropped(other)) {
                     w.event(other);
                 }
                 ConfirmResult::Open
@@ -1514,7 +1517,7 @@ impl App {
                 let spec = spec.clone();
                 if self.warning_window_answered(&spec, c.remembered.is_some(), *index, *suppress) {
                     // Forgotten: the notice again, without the remembered mode.
-                    self.pwm.confirms.push(Confirm { window: None, remembered: None, opened: None, ..c });
+                    self.pwm.confirms.push(Confirm { window: None, remembered: None, ..c });
                 }
                 return true;
             }
@@ -1526,7 +1529,7 @@ impl App {
     /// Opens a page's autofill question for `pane` on the next pass. One at a time per pane (the
     /// caller checks `autofill_ask_open`).
     pub(super) fn pwm_ask_autofill(&mut self, pane: PaneId, text: String, ask: super::browser_autofill_app::AutofillAsk) {
-        self.pwm.confirms.push(Confirm { window: None, heading: crate::browser_autofill::CONFIRM_HEADING.to_string(), text, kind: ConfirmKind::Autofill(pane, ask), remembered: None, opened: None });
+        self.pwm.confirms.push(Confirm { window: None, heading: crate::browser_autofill::CONFIRM_HEADING.to_string(), text, kind: ConfirmKind::Autofill(pane, ask), remembered: None });
         self.redraw();
     }
 
@@ -1604,10 +1607,9 @@ impl App {
     }
 }
 
-/// Whether a key or click is dropped: the window opened less than the guard's time ago (a keystroke
-/// meant for the page must not answer a question a page raised).
-fn native_input_guarded(opened: Option<Instant>, event: &WindowEvent) -> bool {
-    matches!(event, WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. } | WindowEvent::Ime(_)) && opened.is_some_and(|t| crate::browser_marks::input_ignored(t, Instant::now()))
+/// The autofill question's Escape press: its Cancel (a guarded window ignores Escape itself).
+fn autofill_escape(k: &winit::event::KeyEvent) -> bool {
+    k.state == winit::event::ElementState::Pressed && autofill_key_allowed(&k.logical_key)
 }
 
 /// Whether the autofill question lets a key through: Escape (Cancel) only. Tab never moves focus
@@ -2380,9 +2382,15 @@ mod tests {
         }
         assert!(!autofill_key_dropped(&WindowEvent::Focused(true)), "pointer and focus events pass");
         assert!(autofill_key_dropped(&WindowEvent::Ime(winit::event::Ime::Enabled)));
-        // The call site routes every keyboard event of an Autofill question through the rule.
+        // The call site routes every keyboard event of an Autofill question through the rule, and the
+        // window carries the one shared guard (no second delay of its own).
         let src = include_str!("pwm_app.rs");
-        assert!(src.contains("autofill && (native_input_guarded(self.pwm.confirms[i].opened, event) || autofill_key_dropped(event))"));
+        let prod = &src[..src.find("#[cfg(test)]").unwrap()];
+        let ev = &prod[prod.find("pub(super) fn pwm_confirm_event").unwrap()..prod.find("pub(super) fn pwm_ask_autofill").unwrap()];
+        assert!(ev.contains("if autofill && autofill_escape(k) && !w.input_guarded(event) => ConfirmResult::Cancel"), "Escape cancels only once the guard is armed");
+        assert!(ev.contains("if !(autofill && autofill_key_dropped(other)) {\n                    w.event(other);"), "every other key is dropped; the window's guard drops early clicks and touches");
+        assert!(prod.contains("if matches!(c.kind, ConfirmKind::Autofill(..)) {\n                        w.guard_input();"));
+        assert!(!prod.contains("input_ignored(") && !prod.contains("opened: Option<Instant>"), "no second guard");
     }
 
     #[test]

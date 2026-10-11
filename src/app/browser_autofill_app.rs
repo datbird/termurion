@@ -334,14 +334,51 @@ mod tests {
         assert!(between(src, "pub(super) fn open_autofill_windows", "/// A pane closed").contains("autofill_ask_drop(pane, false"), "a moved page closes the question");
     }
 
-    /// The state goes with the view's world and the pane, and the native-window guard has one call site.
+    /// The state goes with the view's world and the pane, and the question uses the ONE shared
+    /// native-window guard (`prompt_ui::InputGuard` through `ConfirmWindow::guard_input`), once.
     #[test]
     fn state_follows_the_world_and_the_guard_has_one_site() {
         let scripts = prod(include_str!("browser_scripts_app.rs"));
         assert!(between(scripts, "pub(super) fn browser_reset_world", "// --- Setup ---").contains("bv.autofill.reset();"));
         assert!(include_str!("mod.rs").contains("self.autofill_pane_gone(id);"));
         let pwm = prod(include_str!("pwm_app.rs"));
-        assert_eq!(pwm.matches("native_input_guarded(").count(), 2, "the definition and one call");
+        assert_eq!(pwm.matches("w.guard_input();").count(), 1, "one call site");
+        assert!(!pwm.contains("native_input_guarded(") && !pwm.contains("input_ignored("), "no 500 ms guard of its own");
+    }
+
+    /// Merge with 13x6 (as R13x6-M2): the navigation epoch a fill is bound to moves only for a
+    /// navigation that passed `nav_verdict` and the permission sync gate. A parked navigation is no
+    /// navigation (no `Starting`, the epoch and the waiting request stay); its release is Tandem's
+    /// own load, a new NavigationStarting, and moves the epoch then.
+    #[test]
+    fn the_epoch_moves_only_for_a_navigation_that_passed_the_gate() {
+        let host = include_str!("../webhost_win.rs");
+        let h = between(host, "fn starting_handler(", "fn register_navigation_rest(");
+        let (verdict, gate, park, start) = (h.find("webhost::nav_verdict(").unwrap(), h.find("webhost::nav_gate(").unwrap(), h.find("Event::Parked {").unwrap(), h.find("i.poster.post(Event::Starting {").unwrap());
+        assert!(verdict < gate && gate < park && park < start, "verdict, then the gate (park returns), then Starting");
+        // The epoch moves in one place, the Starting arm, and the autofill reset is beside it.
+        let app: String = ["browser_app.rs", "browser_marks_app.rs", "browser_perms_app.rs", "browser_restore_app.rs"].iter().map(|f| match *f {
+            "browser_app.rs" => prod(include_str!("browser_app.rs")),
+            "browser_marks_app.rs" => prod(include_str!("browser_marks_app.rs")),
+            "browser_perms_app.rs" => prod(include_str!("browser_perms_app.rs")),
+            _ => prod(include_str!("browser_restore_app.rs")),
+        }).collect();
+        assert_eq!(app.matches("marks_method.starting(").count(), 1);
+        let arm = between(prod(include_str!("browser_marks_app.rs")), "Event::Starting { nav, redirect, user, .. } => {", "Event::DocumentMethod");
+        assert!(arm.contains("bv.marks_method.starting(*nav);") && arm.contains("bv.autofill.pending = None;"));
+        let parked = between(prod(include_str!("browser_perms_app.rs")), "pub(super) fn browser_navigation_parked(", "/// The toolbar's Reload");
+        for banned in ["marks_method", "autofill", "password", "epoch"] {
+            assert!(!parked.contains(banned), "a parked navigation leaves {banned} alone");
+        }
+        // The pure rule: a fill bound before a parked navigation still holds; after the released
+        // navigation's Starting it does not.
+        let mut m = crate::browser_marks::MethodState::default();
+        m.starting(1);
+        let bound = m.epoch();
+        let url = "https://a.example/form";
+        assert!(crate::browser_autofill::bound_valid("https://a.example", bound, url, m.epoch()), "parked: no Starting, the epoch holds");
+        m.starting(2);
+        assert!(!crate::browser_autofill::bound_valid("https://a.example", bound, url, m.epoch()), "released: its Starting moves the epoch");
     }
 
     /// Nothing in this file logs a value: logs carry the origin, counts and fixed text.

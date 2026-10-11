@@ -525,10 +525,14 @@ pub fn kind_label(kind: &str) -> &'static str {
     CARD_LABELS.iter().find(|(k, _)| *k == kind).map_or("Other", |(_, l)| l)
 }
 
+/// Longest origin the autofill question shows (as the permission prompt's).
+const CONFIRM_ORIGIN_CHARS: usize = 120;
+
 /// The question: the page's origin as a person reads it (punycode host, the end of a long host kept,
 /// no hidden character) and each type to be filled. No value.
 pub fn confirm_text(origin: &str, kinds: &[&str]) -> String {
-    let shown = crate::inert_files::display_text(&crate::browser::display_url(origin), 300, false);
+    // The origin label the permission prompt shows (13x6, `browser_perms::origin_label`): one owner.
+    let shown = crate::browser_perms::origin_label(origin, CONFIRM_ORIGIN_CHARS);
     let list: Vec<&str> = kinds.iter().map(|k| kind_label(k)).collect();
     format!("A page on {shown} asked to fill its form from your contact card.\n\nFields to fill: {}.\n\nClick Fill only if you asked for this and trust that site. Only a mouse click fills; the keyboard can only cancel (Escape).", list.join(", "))
 }
@@ -999,6 +1003,7 @@ mod tests {
         let long = format!("https://{}.bank.example", "a.".repeat(300));
         let t = confirm_text(&long, &kinds);
         assert!(t.contains("bank.example"), "the end of a long host stays: {t}");
+        assert!(t.contains(&crate::browser_perms::origin_label(&long, CONFIRM_ORIGIN_CHARS)), "the permission prompt's origin label");
         let hostile = confirm_text("https://exa\u{202e}mple.com", &kinds);
         assert!(!hostile.contains('\u{202e}'), "display text hides bidi marks");
     }
