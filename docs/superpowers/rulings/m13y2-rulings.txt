@@ -26,3 +26,5 @@ Task 9a: Ruling (security, 13y1 Imported trust): the settings folder's Data file
 Task 9 follow-up (review M1): Ruling: paste progress stays the info bar in both styles; both say PasteView's "Pasting…" plus the percentage; no bar widget is drawn in either style. Cost: no progress bar drawing in the old style.
 Task 9 follow-up (review M2): Decision: UseOldStyleDropDownViews is read once per window when it opens (as the setting's help text says), not per pane or per paste as iTerm2 does. Cost: a pane opened later in an old window keeps the window's style.
 Task 7/8 follow-up: EXTREME builds with rustc 1.98.1 (>= 1.77.2 required by the code).
+
+Jump List (EXTREME banner): Ruling: E_ACCESSDENIED from AppendCategory (Windows "Show recently opened items in Start, Jump Lists and File Explorer" off, Start_TrackDocs 0) skips the custom categories and still adds the tasks and commits; no banner, a debug-build stderr line only; other errors keep today's abort and banner. iTerm2's dock menu has no such failure. Cost: with that Windows setting off the list shows tasks only.

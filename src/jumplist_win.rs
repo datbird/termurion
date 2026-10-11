@@ -98,7 +98,17 @@ pub fn commit(m: &Model, exe: &Path) -> Result<Vec<Vec<String>>, String> {
         }
         for c in &m.categories {
             let links = collection(&c.links, exe)?;
-            unsafe { list.AppendCategory(&HSTRING::from(c.name.as_str()), &links.cast::<IObjectArray>()?)? };
+            match unsafe { list.AppendCategory(&HSTRING::from(c.name.as_str()), &links.cast::<IObjectArray>()?) } {
+                Ok(()) => {}
+                // Windows' "Show recently opened items in Start, Jump Lists and File Explorer" is off:
+                // custom categories are refused, the tasks (already added) and the commit still go.
+                Err(e) if access_denied(e.code().0) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("Jump List: custom categories are off in Windows; committing the tasks only");
+                    break;
+                }
+                Err(e) => return Err(e),
+            }
         }
         unsafe { list.CommitList() }
     };
@@ -108,6 +118,26 @@ pub fn commit(m: &Model, exe: &Path) -> Result<Vec<Vec<String>>, String> {
             let _ = unsafe { list.AbortList() };
             Err(format!("Jump List: {e}"))
         }
+    }
+}
+
+/// E_ACCESSDENIED (0x80070005): `AppendCategory` when Start_TrackDocs is 0 (13y2).
+pub fn access_denied(code: i32) -> bool {
+    code as u32 == 0x8007_0005
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_access_denied_skips_the_categories() {
+        assert!(access_denied(0x8007_0005_u32 as i32));
+        assert!(!access_denied(0x8000_4005_u32 as i32));
+        // The commit still adds the tasks and commits when the categories are refused.
+        let src = include_str!("jumplist_win.rs");
+        let live = src.split("#[cfg(test)]\nmod tests").next().unwrap();
+        assert!(live.contains("Err(e) if access_denied(e.code().0)") && live.contains("Err(e) => return Err(e),"));
     }
 }
 
