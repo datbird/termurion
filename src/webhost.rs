@@ -1061,12 +1061,16 @@ pub fn redirect_source(source: Option<&str>, tandem_chain: bool) -> Option<&str>
 /// when that is 0, the status of the main document's response that arrived for the same navigation
 /// (`response`: its id and status). A 204 ends the load with IsSuccess false, WebErrorStatus 9
 /// (connection aborted) and HttpStatusCode 0 (probe run 2026-10-11b); the server answered, so the
-/// app shows no error page for it (`browser_pages::server_answered`). A 3xx is a redirect's hop, not
-/// the answer: a 302 to a dead host is a network failure with Tandem's error page, not a blank pane
-/// (last-gate review 7).
+/// app shows no error page for it (`browser_pages::server_answered`). A 3xx, WebView2's own or the
+/// recorded one, is a redirect's hop, not the answer: a 302 to a dead host is a network failure with
+/// Tandem's error page, not a blank pane (last-gate review 7).
 pub fn completed_http(http: i32, response: Option<(u64, i32)>, nav: u64) -> i32 {
+    let hop = |status: i32| (300..400).contains(&status);
+    // WebView2's own HttpStatusCode is the hop's 3xx when the redirect's target cannot be reached
+    // (probe run 2026-10-11f): no server answered the page.
+    let http = if hop(http) { 0 } else { http };
     match response {
-        Some((n, status)) if http == 0 && n == nav && !(300..400).contains(&status) => status,
+        Some((n, status)) if http == 0 && n == nav && !hop(status) => status,
         _ => http,
     }
 }
@@ -2006,6 +2010,10 @@ mod tests {
         // a network failure (Tandem's error page), not a blank pane.
         for hop in [301, 302, 303, 307, 308] {
             assert_eq!(completed_http(0, Some((6, hop)), 6), 0, "{hop}");
+            // Probe run 2026-10-11f: WebView2's own HttpStatusCode is the hop's 302 when the redirect's
+            // target cannot be reached (ok=false, http=302).
+            assert_eq!(completed_http(hop, None, 6), 0, "WebView2's own {hop}");
+            assert_eq!(completed_http(hop, Some((6, hop)), 6), 0, "both {hop}");
         }
     }
 
