@@ -296,6 +296,9 @@ impl App {
                 bv.marks_method.starting(*nav);
                 // A new page: the waiting request is the old page's, and an empty card may ask again.
                 bv.autofill.pending = None;
+                // The password writer's queued operations (and their secrets) are the old page's: drop
+                // them now rather than when the running one returns (Task 5 review M3).
+                bv.password.navigated();
                 if !*redirect {
                     bv.autofill.asked = false;
                 }

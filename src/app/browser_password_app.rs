@@ -30,26 +30,26 @@ impl PanePassword {
     pub(super) fn reset(&mut self) {
         self.queue.clear();
     }
+
+    /// A navigation started: the waiting operations (and their secrets) are the old page's and go now;
+    /// the running one's answer is still due and finds its page gone (Task 5 review M3).
+    pub(super) fn navigated(&mut self) {
+        self.queue.drop_waiting();
+    }
 }
 
 // The callers are Task 6's manager (Enter User Name, Enter Password, Enter Username & Password).
 #[allow(dead_code)]
 impl App {
-    /// The main frame's URL and navigation epoch (`navigationCount`, `BM:1250`).
-    fn pw_page_now(&self, pane: PaneId) -> Option<(String, u64)> {
-        let io = self.panes.get(&pane)?.browser_io()?;
-        Some((io.url.clone(), self.browser_views.get(&pane)?.marks_method.epoch()))
-    }
-
     /// The navigation count of `pane` (bumped by each new main-frame navigation).
     pub(super) fn browser_nav_count(&self, pane: PaneId) -> u64 {
-        self.pw_page_now(pane).map_or(0, |(_, e)| e)
+        self.page_bound_now(pane).map_or(0, |(_, e)| e)
     }
 
     /// The page a pick is bound to, taken at the moment of the pick; None (with the reason shown) on a
     /// page that is not https.
     pub(super) fn browser_pw_page(&mut self, pane: PaneId) -> Option<PwPage> {
-        let (url, epoch) = self.pw_page_now(pane)?;
+        let (url, epoch) = self.page_bound_now(pane)?;
         let page = PwPage::new(&url, epoch);
         if page.is_none() {
             self.show_toast(bp::HTTPS_ONLY);
@@ -58,7 +58,7 @@ impl App {
     }
 
     fn pw_still(&self, pane: PaneId, page: &PwPage) -> bool {
-        self.pw_page_now(pane).is_some_and(|(url, epoch)| page.valid(&url, epoch))
+        self.page_bound_now(pane).is_some_and(|(url, epoch)| page.valid(&url, epoch))
     }
 
     /// Enter Password (`fillPassword`, `PWR:14-35`).
@@ -204,12 +204,24 @@ mod tests {
     /// follows the world and the pane.
     #[test]
     fn nothing_but_the_manager_can_call_the_writer() {
-        for (name, src) in [("browser_triggers_app.rs", include_str!("browser_triggers_app.rs")), ("browser_scripts_app.rs", include_str!("browser_scripts_app.rs")), ("browser_smart_app.rs", include_str!("browser_smart_app.rs")), ("browser_input_app.rs", include_str!("browser_input_app.rs"))] {
-            let p = prod(src);
+        // An allowlist (Task 5 review M1): of every file in src/app, only the writer and the manager
+        // name the writer's entry points.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("app");
+        let mut seen = 0;
+        for e in std::fs::read_dir(&dir).unwrap() {
+            let path = e.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if !name.ends_with(".rs") || name == "browser_password_app.rs" || name == "pwm_app.rs" {
+                continue;
+            }
+            seen += 1;
+            let src = std::fs::read_to_string(&path).unwrap();
+            let p = prod(&src);
             for f in ["browser_fill_password", "browser_fill_username", "browser_focus_password", "browser_pw_page"] {
                 assert!(!p.contains(f), "{name} must not reach {f}");
             }
         }
+        assert!(seen > 50, "the scan read src/app ({seen} files)");
         for f in ["fn browser_fill_password", "fn browser_fill_username", "fn browser_focus_password", "fn browser_pw_page", "fn browser_pw_pane_gone"] {
             let line = me().lines().find(|l| l.contains(f)).unwrap();
             assert!(line.contains("pub(super)"), "{line}");

@@ -599,6 +599,12 @@ impl<T> Queue<T> {
         next
     }
 
+    /// The waiting entries are dropped; a running one keeps the queue busy until its `finish` (a
+    /// navigation drops what waits, while the running operation's answer is still due).
+    pub fn drop_waiting(&mut self) {
+        self.waiting.clear();
+    }
+
     /// Forgets everything waiting and goes idle (the pane closed or its world reset).
     pub fn clear(&mut self) {
         self.waiting.clear();

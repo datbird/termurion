@@ -119,15 +119,16 @@ impl App {
         true
     }
 
-    /// The page a pane shows: its URL and navigation epoch (what a fill is bound to).
-    fn autofill_page(&self, pane: PaneId) -> Option<(String, u64)> {
+    /// The page a pane shows: its URL and navigation epoch (`navigationCount`, `BM:1250`), what an
+    /// autofill fill and a password write are bound to (the one helper for both).
+    pub(super) fn page_bound_now(&self, pane: PaneId) -> Option<(String, u64)> {
         let io = self.panes.get(&pane)?.browser_io()?;
         Some((io.url.clone(), self.browser_views.get(&pane)?.marks_method.epoch()))
     }
 
     /// Whether a fill asked on `origin` in `epoch` still belongs to `pane`'s page.
     fn autofill_bound(&self, pane: PaneId, origin: &str, epoch: u64) -> bool {
-        self.autofill_page(pane).is_some_and(|(url, now)| browser_autofill::bound_valid(origin, epoch, &url, now))
+        self.page_bound_now(pane).is_some_and(|(url, now)| browser_autofill::bound_valid(origin, epoch, &url, now))
     }
 
     /// `iTermAutofillHandler`'s arm: the isolated world's message with the view's secret, nothing else.
@@ -143,7 +144,7 @@ impl App {
     /// `autofillRequest` (`BM:1985-2003`): logs the host and count, then asks the person. An https page
     /// only; one question at a time per pane; an empty card opens the editor and the request waits.
     pub(super) fn browser_autofill_request(&mut self, pane: PaneId, fields: Vec<Field>) {
-        let Some((url, epoch)) = self.autofill_page(pane) else { return };
+        let Some((url, epoch)) = self.page_bound_now(pane) else { return };
         let host = crate::dlog::origin(&url);
         crate::rlog!("Autofill requested for host: {} with {} fields", host, fields.len());
         if let Some(why) = browser_autofill::refusal(&url) {
@@ -263,7 +264,7 @@ impl App {
     /// Opens what waited for the event loop (the card editor) and drops questions whose page moved on.
     pub(super) fn open_autofill_windows(&mut self, event_loop: &ActiveEventLoop) {
         for pane in self.autofill_ask_panes() {
-            let page = self.autofill_page(pane);
+            let page = self.page_bound_now(pane);
             self.autofill_ask_drop(pane, false, |origin, epoch| page.as_ref().is_some_and(|(url, now)| browser_autofill::bound_valid(origin, epoch, url, *now)));
         }
         if std::mem::take(&mut self.autofill.want_card) {
@@ -365,7 +366,7 @@ mod tests {
         }).collect();
         assert_eq!(app.matches("marks_method.starting(").count(), 1);
         let arm = between(prod(include_str!("browser_marks_app.rs")), "Event::Starting { nav, redirect, user, .. } => {", "Event::DocumentMethod");
-        assert!(arm.contains("bv.marks_method.starting(*nav);") && arm.contains("bv.autofill.pending = None;"));
+        assert!(arm.contains("bv.marks_method.starting(*nav);") && arm.contains("bv.autofill.pending = None;") && arm.contains("bv.password.navigated();"));
         let parked = between(prod(include_str!("browser_perms_app.rs")), "pub(super) fn browser_navigation_parked(", "/// The toolbar's Reload");
         for banned in ["marks_method", "autofill", "password", "epoch"] {
             assert!(!parked.contains(banned), "a parked navigation leaves {banned} alone");

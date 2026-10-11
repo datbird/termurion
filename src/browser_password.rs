@@ -352,6 +352,14 @@ mod tests {
         assert!(matches!(q.finish().unwrap().op, Op::Focus { .. }));
         assert!(matches!(q.finish().unwrap().op, Op::Password(_)));
         assert!(q.finish().is_none() && !q.busy());
+        // A navigation drops what waits (and its secret) and the running one stays busy until it returns.
+        assert!(q.push(item(Op::Username(Secret::new("me".into())))).is_some());
+        assert!(q.push(item(Op::Password(Secret::new("p".into())))).is_none());
+        q.drop_waiting();
+        assert!(q.busy(), "the running operation's answer is still due");
+        assert!(q.push(item(Op::focus("pw").unwrap())).is_none(), "nothing starts beside it");
+        q.drop_waiting();
+        assert!(q.finish().is_none() && !q.busy(), "the old page's password was dropped, not run");
         assert!(Op::focus(&"x".repeat(MAX_TEXT + 1)).is_none());
     }
 

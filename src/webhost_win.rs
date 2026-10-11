@@ -43,6 +43,38 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
+/// `wide` for text that can hold a secret (a DevTools call's params, a password among them, B10):
+/// built at its exact size (no growth leaves a copy) and wiped when dropped, whether the call ran or
+/// waited in `queued` and went with the view.
+struct WideSecret(Vec<u16>);
+
+impl WideSecret {
+    fn new(s: &str) -> WideSecret {
+        let mut v = Vec::with_capacity(s.encode_utf16().count() + 1);
+        v.extend(s.encode_utf16());
+        v.push(0);
+        WideSecret(v)
+    }
+
+    fn as_ptr(&self) -> *const u16 {
+        self.0.as_ptr()
+    }
+
+    fn wipe(&mut self) {
+        for u in self.0.iter_mut() {
+            // SAFETY: a valid, aligned element of the vector; volatile so the store is never elided.
+            unsafe { std::ptr::write_volatile(u, 0) };
+        }
+        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Drop for WideSecret {
+    fn drop(&mut self) {
+        self.wipe();
+    }
+}
+
 fn pwstr_out(f: impl FnOnce(*mut PWSTR) -> windows::core::Result<()>) -> Option<String> {
     let mut p = PWSTR::null();
     f(&mut p).ok()?;
@@ -805,7 +837,8 @@ impl WebView {
             i.poster.post(Event::ScriptDone { view: i.id, token, json: Err("that DevTools method is not allowed".into()) });
             return;
         }
-        let (wm, wp) = (wide(method), wide(params_json));
+        // The params can hold a password (`browser_js_call_secret`): a wiping copy, every call.
+        let (wm, wp) = (wide(method), WideSecret::new(params_json));
         let ws = session.as_deref().map(wide);
         let (poster, id) = {
             let i = self.inner.borrow();
@@ -2230,6 +2263,21 @@ fn register_document_method(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, to
 
 #[cfg(test)]
 mod tests {
+    /// Task 5 review I1: the DevTools params (a password among them) go to COM from a wiping UTF-16
+    /// copy, built at its exact size, on every call, the queued path included (the closure owns it).
+    #[test]
+    fn devtools_params_are_a_wiping_wide_copy() {
+        let mut w = WideSecret::new("{\"t\":\"pw\u{e9}\u{1f600}\"}");
+        let want: Vec<u16> = "{\"t\":\"pw\u{e9}\u{1f600}\"}".encode_utf16().chain(Some(0)).collect();
+        assert_eq!(w.0, want);
+        assert_eq!(w.0.capacity(), w.0.len(), "exact size: no growth left a copy");
+        w.wipe();
+        assert!(w.0.iter().all(|u| *u == 0), "wiped");
+        let src = include_str!("webhost_win.rs");
+        let f = &src[src.find("fn devtools_call_in(").unwrap()..src.find("pub fn take_devtools_held").unwrap()];
+        assert!(f.contains("WideSecret::new(params_json)") && !f.contains("wide(params_json)"));
+        assert!(f.contains("self.with(move |c|"), "the closure owns the copy, so a queued call wipes it when it runs or goes with the view");
+    }
     use super::*;
     use std::sync::mpsc;
     use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
