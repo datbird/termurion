@@ -16,7 +16,9 @@ use serde_json::Value;
 use super::browser_scripts_app::JsDone;
 use super::*;
 use crate::browser_password::{self as bp, Item, Op, PwPage, PwQueue, Step};
+use super::pwm_app::{PwmOpen, PwmTarget};
 use crate::pwm::Secret;
+use crate::pwm_source::Scope;
 
 /// One pane's password operations; they live in `BrowserView` and go with the view's world
 /// (`browser_reset_world`), so no queued secret survives into a new page or a closed pane.
@@ -44,6 +46,25 @@ impl App {
     /// The navigation count of `pane` (bumped by each new main-frame navigation).
     pub(super) fn browser_nav_count(&self, pane: PaneId) -> u64 {
         self.page_bound_now(pane).map_or(0, |(_, e)| e)
+    }
+
+    /// Opens the browser password manager over `pane` (`openPasswordManagerForHost:forUser:didSendUserName:`,
+    /// `PSB:113-124`): the account is the page's exact origin (what `account_matches` compares), `for_user`
+    /// makes the default button send the user name, and a `focus_after_user` field id makes it send both,
+    /// focusing that password field in between (while the page's navigation count is still this one).
+    pub(super) fn browser_open_password_manager(&mut self, pane: Option<PaneId>, for_user: bool, focus_after_user: Option<String>) {
+        let Some(pane) = pane.or_else(|| self.focused_id()).filter(|p| self.is_browser_pane(*p)) else { return };
+        let account = self.page_bound_now(pane).and_then(|(url, epoch)| PwPage::new(&url, epoch)).map(|p| p.origin);
+        let at = self.browser_nav_count(pane);
+        self.open_password_manager_with(PwmOpen {
+            account,
+            pane: Some(pane),
+            scope: Scope::Browser,
+            for_user,
+            send_both: focus_after_user.is_some(),
+            target: PwmTarget::Session,
+            focus_after_user: focus_after_user.map(|id| (id, at)),
+        });
     }
 
     /// The page a pick is bound to, taken at the moment of the pick; None (with the reason shown) on a

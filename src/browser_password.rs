@@ -27,6 +27,8 @@ pub const NOT_PASSWORD_FIELD: &str = "The focused field is not a visible passwor
 /// A write that could not run because the page moved on since the pick.
 pub const PAGE_CHANGED: &str = "The page changed, so Tandem did not fill it.";
 /// A fill is refused on any page that is not https.
+/// A stored account for another site is never typed into this page.
+pub const WRONG_SITE: &str = "That password is for a different site, so Tandem did not fill it.";
 pub const HTTPS_ONLY: &str = "Tandem fills passwords only on secure (https) pages.";
 
 fn file(name: &str) -> &'static str {

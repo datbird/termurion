@@ -545,6 +545,8 @@ pub struct Gear {
     pub adapter_settings: bool,
     /// An adapter's custom commands as (name, label).
     pub commands: Vec<(String, String)>,
+    /// The browser's manager (`PMW:2381-2415`): no Probe, no Send Return, and no separator after them.
+    pub browser: bool,
 }
 
 pub const GEAR_REQUIRE_OPEN: &str = "Require Authentication to Open Password Manager";
@@ -585,10 +587,13 @@ pub fn gear_menu(g: &Gear) -> Vec<Entry<GearItem>> {
         item(GEAR_REQUIRE_LOCK, g.require_lock || (g.require_open && g.require_every), g.require_open && !g.require_every, GearItem::RequireLock),
         item(GEAR_REQUIRE_EVERY, g.require_every, g.require_open, GearItem::RequireEvery),
         Entry::Separator,
-        item(GEAR_PROBE, g.probe, true, GearItem::Probe),
-        item(GEAR_SEND_RETURN, g.send_return, true, GearItem::SendReturn),
-        Entry::Separator,
     ];
+    // The browser's window removes Probe, Send Return and the separator after them (`PMW:2406-2408`).
+    if !g.browser {
+        v.push(item(GEAR_PROBE, g.probe, true, GearItem::Probe));
+        v.push(item(GEAR_SEND_RETURN, g.send_return, true, GearItem::SendReturn));
+        v.push(Entry::Separator);
+    }
     v.extend(Kind::ALL.into_iter().map(|k| item(k.menu_title(), k == g.source, true, GearItem::Source(k))));
     v.push(Entry::Separator);
     v.push(item(&g.reset_title, false, g.reset_on, GearItem::Reset));
@@ -1033,6 +1038,7 @@ mod tests {
             switch_on: false,
             adapter_settings: false,
             commands: Vec::new(),
+            browser: false,
         };
         let menu = gear_menu(&gear);
         assert_eq!(
@@ -1350,5 +1356,45 @@ mod tests {
         assert!(reply_current(Some(7), 7, false, t, &b), "but not the Edit panel's prefetch");
         let fresh = Busy::default();
         assert!(!reply_current(Some(2), 1, true, 0, &fresh), "a fresh window's token 0 does not match an old instance");
+    }
+
+    #[test]
+    fn browser_gear_follows_iterm2() {
+        let gear = Gear {
+            authenticated: true,
+            require_open: true,
+            require_lock: false,
+            require_every: false,
+            probe: true,
+            send_return: false,
+            source: crate::pwm_source::Kind::CredentialManager,
+            reset_title: reset_title(false, "Windows Credential Manager"),
+            reset_on: false,
+            switch_on: false,
+            adapter_settings: false,
+            commands: Vec::new(),
+            browser: false,
+        };
+        let acts = |g: &Gear| -> Vec<Option<GearItem>> {
+            gear_menu(g)
+                .into_iter()
+                .map(|e| match e {
+                    Entry::Separator => None,
+                    Entry::Item { act, .. } => Some(act),
+                })
+                .collect()
+        };
+        let terminal = acts(&gear);
+        let browser = acts(&Gear { browser: true, ..gear.clone() });
+        assert!(terminal.contains(&Some(GearItem::Probe)) && terminal.contains(&Some(GearItem::SendReturn)));
+        assert!(!browser.contains(&Some(GearItem::Probe)) && !browser.contains(&Some(GearItem::SendReturn)), "no Probe, no Send Return in the browser");
+        let seps = |v: &[Option<GearItem>]| v.iter().filter(|a| a.is_none()).count();
+        assert_eq!(seps(&browser) + 1, seps(&terminal), "one separator fewer");
+        let rest: Vec<_> = terminal.iter().filter(|a| !matches!(a, Some(GearItem::Probe | GearItem::SendReturn))).cloned().collect();
+        // Everything else is identical, the separator after the two included once.
+        let mut expect = rest.clone();
+        let at = expect.iter().position(|a| a.is_none()).unwrap();
+        expect.remove(at + 1);
+        assert_eq!(browser, expect);
     }
 }
