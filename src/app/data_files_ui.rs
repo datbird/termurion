@@ -127,11 +127,20 @@ fn backup(local: &LocalPath, name: &str) -> bool {
 /// written, a folder that lacks a file removes the local one, a refused or invalid folder file
 /// leaves the local file alone. Returns whether anything changed.
 pub(super) fn apply_pull(local: &Path, remote: &Set) -> bool {
-    let Some(dir) = LocalPath::judge(local) else { return false };
+    pull(local, remote).0
+}
+
+/// `apply_pull`, and whether it was complete: no backup, write or removal failed. The baseline
+/// moves to the folder's state only after a complete pull; otherwise the next reconcile pulls
+/// again instead of seeing the unpulled local files as the person's newer edits and pushing them
+/// over the folder (13y2 review 9a N1). A refused or invalid folder file does not make a pull
+/// incomplete: it is left alone by design.
+pub(super) fn pull(local: &Path, remote: &Set) -> (bool, bool) {
+    let Some(dir) = LocalPath::judge(local) else { return (false, false) };
     if localfs::create_dir_all(&dir).is_err() {
-        return false;
+        return (false, false);
     }
-    let mut changed = false;
+    let (mut changed, mut complete) = (false, true);
     for name in ALLOWLIST {
         if remote.refused.contains(&name) {
             continue;
@@ -140,20 +149,22 @@ pub(super) fn apply_pull(local: &Path, remote: &Set) -> bool {
         match remote.get(name) {
             Some(bytes) if dfs::valid_content(name, bytes) => {
                 if current.as_deref() != Some(bytes.as_slice()) {
-                    changed |= backup(&dir, name) && write_atomic(&dir, name, bytes).is_ok();
+                    let done = backup(&dir, name) && write_atomic(&dir, name, bytes).is_ok();
+                    changed |= done;
+                    complete &= done;
                 }
             }
             Some(_) => {}
             None => {
-                if current.is_some() && backup(&dir, name) {
-                    if let Some(p) = dir.child(name) {
-                        changed |= localfs::remove_file(&p).is_ok();
-                    }
+                if current.is_some() {
+                    let done = backup(&dir, name) && dir.child(name).is_some_and(|p| localfs::remove_file(&p).is_ok());
+                    changed |= done;
+                    complete &= done;
                 }
             }
         }
     }
-    changed
+    (changed, complete)
 }
 
 /// The local files go to `<folder>\Data`, creating it. A union: a file the folder holds and the
@@ -263,8 +274,11 @@ pub(super) fn reconcile_with(g: &mut Globals, local_dir: &Path, folder: &Path, r
         }
         Reconcile::AskConsent => asks.push(consent_ask(folder)),
         Reconcile::Pull => {
-            pulled |= apply_pull(local_dir, &remote);
-            adopt(g, &key, &r);
+            let (changed, complete) = pull(local_dir, &remote);
+            pulled |= changed;
+            if complete {
+                adopt(g, &key, &r);
+            }
         }
         Reconcile::Push => {
             if apply_push(folder, &local) {
@@ -409,8 +423,10 @@ impl App {
                         adopt_after_push(&mut self.globals, &key, &folder, &local.signature());
                     }
                 } else if let Some(remote) = read_remote(&folder, dfs::REMOTE_READ_TIMEOUT) {
-                    let pulled = apply_pull(&local_dir, &remote);
-                    adopt(&mut self.globals, &key, &remote.signature());
+                    let (pulled, complete) = pull(&local_dir, &remote);
+                    if complete {
+                        adopt(&mut self.globals, &key, &remote.signature());
+                    }
                     if pulled {
                         self.data_files_reload();
                     }
@@ -559,6 +575,36 @@ mod tests {
         assert!(asks.is_empty());
         assert!(!folder.join("Data").join("notes.txt").exists(), "the discarded edits are not published");
         assert!(!push_if_allowed(&mut g, &local, &folder, Some(read_set(&folder.join("Data")))));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 9a N1: a pull a failed backup stopped leaves the baseline alone, so the next sync sees the
+    /// folder's newer data (a pull again), never a local push over it.
+    #[test]
+    fn a_pull_stopped_by_a_failed_backup_keeps_the_baseline() {
+        let root = temp("pullbaseline");
+        let (local, folder) = (root.join("local"), root.join("folder"));
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::create_dir_all(folder.join("Data")).unwrap();
+        std::fs::write(local.join("notes.txt"), "old").unwrap();
+        std::fs::write(local.join("Backups"), "x").unwrap();
+        let mut g = globals(&root);
+        let key = folder.display().to_string();
+        set_entry(&mut g, dfs::CONSENT_KEY, &key, Some(Value::Boolean(true)));
+        adopt(&mut g, &key, &read_set(&local).signature());
+        let baseline = text_entry(&g, dfs::BASELINE_KEY, &key);
+        std::fs::write(folder.join("Data").join("notes.txt"), "newer from another PC").unwrap();
+        let (asks, pulled) = reconcile_with(&mut g, &local, &folder, Some(read_set(&folder.join("Data"))));
+        assert!(asks.is_empty() && !pulled);
+        assert_eq!(std::fs::read_to_string(local.join("notes.txt")).unwrap(), "old", "no backup, no overwrite");
+        assert_eq!(text_entry(&g, dfs::BASELINE_KEY, &key), baseline, "the baseline did not move");
+        assert!(!push_if_allowed(&mut g, &local, &folder, Some(read_set(&folder.join("Data")))), "the stale file is not pushed");
+        assert_eq!(std::fs::read_to_string(folder.join("Data").join("notes.txt")).unwrap(), "newer from another PC");
+        // With the backup possible again the same reconcile pulls and adopts.
+        std::fs::remove_file(local.join("Backups")).unwrap();
+        let (_, pulled) = reconcile_with(&mut g, &local, &folder, Some(read_set(&folder.join("Data"))));
+        assert!(pulled);
+        assert_eq!(std::fs::read_to_string(local.join("notes.txt")).unwrap(), "newer from another PC");
         let _ = std::fs::remove_dir_all(&root);
     }
 
