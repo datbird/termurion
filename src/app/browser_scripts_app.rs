@@ -258,6 +258,7 @@ impl App {
             bv.page_url = None;
             bv.nav_root = None;
             bv.nav_url = None;
+            bv.nav_id = 0;
             bv.autofill.reset();
             bv.password.reset();
         }

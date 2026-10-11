@@ -132,6 +132,9 @@ pub(super) struct BrowserView {
     /// `Event::Starting`, cleared by any other start): only its Document request is answered.
     pub(super) nav_root: Option<crate::browser_pages::PageRoot>,
     pub(super) nav_url: Option<String>,
+    /// That navigation's id (`Event::Starting.nav`; 0 for none): its commit (13x7's `Event::Committed`)
+    /// keeps the page root, any other commit drops it.
+    pub(super) nav_id: u64,
     /// Autofill's queue, waiting request and ask flag (13x7); goes with the view's world.
     pub(super) autofill: super::browser_autofill_app::PaneAutofill,
     /// The password writer's waiting operations and their secrets (13x7 Task 5); go with the view's world.
@@ -278,7 +281,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { perms: Default::default(), view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, last_failed: None, pending_error: None, error_burst: Default::default(), bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, page_root: None, page_url: None, nav_root: None, nav_url: None, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), triggers: None, trigger_gate: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default(), autofill: Default::default(), password: Default::default() });
+        self.browser_views.insert(id, BrowserView { perms: Default::default(), view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, last_failed: None, pending_error: None, error_burst: Default::default(), bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, page_root: None, page_url: None, nav_root: None, nav_url: None, nav_id: 0, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), triggers: None, trigger_gate: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default(), autofill: Default::default(), password: Default::default() });
         self.browser_triggers_init(id);
         true
     }
@@ -698,8 +701,8 @@ impl App {
             Event::ContextMenu { token, target, .. } => self.browser_context_menu(pane, *token, target.clone()),
             Event::ContextMenuPicked { token, id, .. } => self.browser_ctx_event(pane, *token, *id, event_loop),
             // A navigation began: how, for the history row it makes (`BNS:60-82`); the scripts see it too.
-            Event::Starting { url, kind, user, redirect, .. } => {
-                self.browser_page_starting(pane, url);
+            Event::Starting { url, kind, user, redirect, nav, .. } => {
+                self.browser_page_starting(pane, url, *nav);
                 // Every start counts, redirects included: a redirected load is a new document request.
                 self.marks_method_event(pane, e);
                 self.browser_nav_starting(pane, url, *kind, *user, *redirect);
@@ -716,6 +719,13 @@ impl App {
             Event::AudioPlaying { playing, .. } => self.browser_audio_playing(pane, *playing),
             Event::PermissionStates { view, states, complete, workers_cleared } => self.permission_states_read(pane, *view, states, *complete, *workers_cleared),
             Event::PermissionWritten { view, seq, ok } => self.perm_written(pane, *view, *seq, *ok),
+            // A navigation committed (ContentLoading, 13x7): HTTP authentication's tracker saw it first
+            // (`basic_auth_event` above), then the file or ssh page root holds only for the navigation
+            // that named it (13x8); the scripts see it last, as before.
+            Event::Committed { nav, .. } => {
+                self.browser_page_nav_committed(pane, *nav);
+                self.browser_script_event(pane, e);
+            }
             // The method of the document request (13x5): the Edit menu's gate and the prompt's OK.
             Event::DocumentMethod { .. } => self.marks_method_event(pane, e),
             // Everything a page's script says, the world's events and the calls' answers: the router.
