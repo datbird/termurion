@@ -1433,8 +1433,11 @@ pub fn title_choice(components: i64, function: Option<(String, String)>, provide
     let mut items = vec![(BUILT_IN_COMPONENTS.to_string(), String::new())];
     items.extend(providers.iter().cloned());
     let text = match &function {
-        Some((name, _)) if components & i64::from(crate::jobtitle::CUSTOM) != 0 => name.clone(),
-        _ => BUILT_IN_COMPONENTS.to_string(),
+        Some((name, _)) if components & i64::from(crate::jobtitle::CUSTOM) != 0 => crate::inert_files::display_text(name, 128, false),
+        _ => match crate::jobtitle::preview(components.clamp(0, i64::from(u32::MAX)) as u32) {
+            p if p.trim().is_empty() => BUILT_IN_COMPONENTS.to_string(),
+            p => p,
+        },
     };
     if let Some(f) = function.filter(|(_, id)| !providers.iter().any(|(_, p)| p == id)) {
         items.push(f);
@@ -2495,14 +2498,18 @@ mod tests {
     fn title_choice_follows_iterm2() {
         let providers = vec![("Hello".to_string(), "com.ex.t".to_string())];
         let item = |a: &str, b: &str| (a.to_string(), b.to_string());
-        assert_eq!(title_choice(2, None, &providers), ("Built-in components".to_string(), vec![item("Built-in components", ""), item("Hello", "com.ex.t")]));
+        assert_eq!(title_choice(2, None, &providers), ("Job".to_string(), vec![item("Built-in components", ""), item("Hello", "com.ex.t")]));
         assert_eq!(title_choice(16, Some(item("Hello", "com.ex.t")), &providers).0, "Hello");
         assert_eq!(title_choice(16, Some(item("Hello", "com.ex.t")), &providers).1.len(), 2, "the registered one is not listed twice");
         let (text, items) = title_choice(16, Some(item("Old", "com.old")), &providers);
         assert_eq!(text, "Old");
         assert_eq!(items, vec![item("Built-in components", ""), item("Hello", "com.ex.t"), item("Old", "com.old")]);
         assert_eq!(title_choice(2, Some(item("Old", "com.old")), &[]).1, vec![item("Built-in components", ""), item("Old", "com.old")], "kept while not Custom too");
-        assert_eq!(title_choice(16, None, &providers).0, "Built-in components");
+        assert_eq!(title_choice(16, None, &providers).0, "Built-in components", "an empty preview falls back to the item's label");
+        let hostile = Some(item("Hi\u{202e}\nthere", "com.ex.t"));
+        assert_eq!(title_choice(16, hostile, &providers).0, "Hithere", "a provider's name is untrusted text");
+        let long = Some(("x".repeat(500), "com.ex.t".to_string()));
+        assert_eq!(title_choice(16, long, &providers).0.chars().count(), 128);
     }
 
     /// `iTermProfilePreferencesBaseViewController.m:253-265`: a profile control is default when

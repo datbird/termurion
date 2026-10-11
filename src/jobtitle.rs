@@ -154,9 +154,89 @@ pub fn title(components: u32, p: &TitleParts) -> String {
     out
 }
 
+/// The Title Function popup's sample title (`PGP:1525-1545`, `STF:246-450`): the built-in function's
+/// tab-title path on iTerm2's samples. A port of its own, not `title`, whose explicit-name rules serve
+/// live sessions.
+pub fn preview(components: u32) -> String {
+    if components == CUSTOM {
+        return String::new();
+    }
+    if components == 0 {
+        return "\u{201c}Shell\u{201d}".to_string();
+    }
+    let c = components;
+    let mut out = String::new();
+    if c & (TEMPORARY_NAME | SESSION_NAME) != 0 {
+        out.push_str("Name");
+    } else if c & AI != 0 {
+        out.push_str("AI");
+    } else if c & PROFILE_NAME != 0 {
+        out.push_str("Profile");
+    } else if c & PROFILE_AND_SESSION != 0 {
+        out.push_str("Profile: Name");
+    }
+    let job = if c & COMMAND_LINE != 0 { "Job+Args" } else if c & JOB != 0 { "Job" } else { "" };
+    if !job.is_empty() {
+        if out.is_empty() { out.push_str(job) } else { out.push_str(&format!(" ({job})")) }
+    }
+    let (user, host) = (c & USER != 0, c & HOST != 0);
+    let mut uhp = String::new();
+    if user {
+        uhp.push_str("User");
+    }
+    if host {
+        if user {
+            uhp.push('@');
+        }
+        uhp.push_str("Host");
+    }
+    if c & PWD != 0 {
+        if user || host {
+            uhp.push(':');
+        }
+        uhp.push_str("PWD");
+    }
+    if !uhp.is_empty() {
+        if out.is_empty() { out.push_str(&uhp) } else { out.push_str(&format!("{SEP}{uhp}")) }
+    }
+    if c & TTY != 0 {
+        if out.is_empty() { out.push_str("TTY") } else { out.push_str(&format!("{SEP}TTY")) }
+    }
+    if c & SIZE != 0 {
+        if !out.ends_with(' ') {
+            out.push(' ');
+        }
+        out.push_str(&format!("{SEP}25\u{2715}80"));
+    }
+    if out.is_empty() {
+        out.push(' ');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `PGP:1525-1545`, `STF:246-450`: the Title Function popup's sample title. Its empty fallback is
+    /// iTerm2's icon name with curly quotes, on purpose unlike `title`'s plain "Shell".
+    #[test]
+    fn title_preview_follows_iterm2() {
+        assert_eq!(preview(0), "\u{201c}Shell\u{201d}");
+        assert_eq!(preview(JOB), "Job");
+        assert_eq!(preview(SESSION_NAME | JOB), "Name (Job)");
+        assert_eq!(preview(COMMAND_LINE | JOB), "Job+Args");
+        assert_eq!(preview(PROFILE_NAME), "Profile");
+        assert_eq!(preview(PROFILE_AND_SESSION), "Profile: Name");
+        assert_eq!(preview(TEMPORARY_NAME), "Name");
+        assert_eq!(preview(USER | HOST | PWD), "User@Host:PWD");
+        assert_eq!(preview(JOB | USER | HOST), "Job - User@Host");
+        assert_eq!(preview(TTY), "TTY");
+        assert_eq!(preview(JOB | TTY), "Job - TTY");
+        assert_eq!(preview(SIZE), "  - 25\u{2715}80");
+        assert_eq!(preview(CUSTOM), "");
+        assert_eq!(preview(AI), "AI");
+    }
 
     fn parts() -> TitleParts {
         TitleParts {
