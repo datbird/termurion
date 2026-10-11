@@ -441,6 +441,9 @@ impl App {
             // The request is blocked and nothing is saved: a WebView2 request never keeps its
             // deferral, and a closed window never grants.
             Then::BrowserPermission(id) => self.browser_permission_answered(id, None),
+            // Clear All Data could not ask (the queue refused it, or the window never opened): that is a
+            // Cancel, and the settings page's pending question is released (no dead button).
+            Then::BrowserClearData { pane } => self.browser_clear_data_answered(pane, 1),
             // The pane's output waits on the answer: dropped, the file is not shown.
             Then::Inline { pane, serial, .. } | Then::BigInline(pane, serial) => self.inline_released(pane, serial, false),
             _ => {}

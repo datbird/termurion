@@ -279,10 +279,8 @@ impl App {
                 calls.push(sp::link_ui_script(sp::link_pref_of(silenced, selection)));
             }
             sp::Msg::GetAdblockSettings => calls.push(sp::adblock_ui_script(self.globals.bool("WebKitAdblockEnabled"), &self.globals.string("AdblockListURL"))),
-            sp::Msg::GetAdblockStats => {
-                let last = self.globals.raw(crate::adblock::LAST_UPDATE_KEY).and_then(|v| v.as_integer()).unwrap_or(0).max(0);
-                calls.push(sp::stats_script(self.adblock_rule_count(), last as f64));
-            }
+            // Answered from memory, or later from a worker (adblock_stats_request): never a disk read here.
+            sp::Msg::GetAdblockStats => self.adblock_stats_request(),
             sp::Msg::SetAdblockEnabled(on) => {
                 self.globals.set("WebKitAdblockEnabled", toml::Value::Boolean(on));
                 self.apply_edit(Edit::GlobalsChanged);
@@ -366,9 +364,14 @@ impl App {
         self.browser_settings_run(pane, calls);
     }
 
-    /// The rules in use: the compiled list when it is loaded, else the saved list's length.
-    fn adblock_rule_count(&self) -> usize {
-        self.adblock_loaded_rules().unwrap_or_else(|| self.adblock_saved_rules())
+    /// The rule statistics reach every pane showing the settings page.
+    pub(super) fn browser_settings_stats(&mut self, rules: usize, last: f64) {
+        use crate::browser_settings_page as sp;
+        let text = sp::stats_script(rules, last);
+        let panes: Vec<PaneId> = self.browser_views.keys().copied().filter(|p| self.panes.get(p).and_then(|x| x.browser_io()).is_some_and(|io| io.url == sp::SETTINGS_URL)).collect();
+        for pane in panes {
+            self.browser_settings_run(pane, vec![text.clone()]);
+        }
     }
 
     /// Every browser pane showing the settings page is told how an update it asked for ended

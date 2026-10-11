@@ -1188,18 +1188,21 @@ pub fn scheme_ok(url: &str, allowed: &[String]) -> bool {
 
 /// Whether the URI WebView2 reports for a navigation is the one Tandem asked for: equal, or equal
 /// once WebView2's own added `/` after a bare host is ignored (P19).
-/// How long after Tandem's own Back or Forward the next history navigation counts as Tandem's.
-pub const TANDEM_HISTORY_WINDOW_MS: u64 = 3000;
+/// The `NavigationKind` value of a history step (Back, Forward, `history.go`).
+pub const NAV_KIND_HISTORY: i32 = 1;
 
-/// Whether a navigation is the Back or Forward Tandem itself started (toolbar, keys, menu): one
-/// flag, taken by the FIRST navigation that starts after it, true only when that is a history
-/// navigation (`kind` 1) within the window. A page's own history.back() or go() has no flag, so a
-/// power page stays refused for it (Task 5 review I1).
-pub fn history_by_tandem(flag: &mut Option<u64>, kind: i32, now_ms: u64) -> bool {
-    match flag.take() {
-        Some(at) => kind == 1 && now_ms.saturating_sub(at) <= TANDEM_HISTORY_WINDOW_MS,
-        None => false,
-    }
+/// A history step never lands on a power page, whoever started it and whatever the source (13x8 Task 5
+/// review I1, redesigned): no flag a page could take. Tandem's own Back, Forward and history pick look
+/// at the pane's record first and, for such a target, load the page fresh (`needs_fresh_load`).
+pub fn history_refused(kind: i32, target: &str) -> bool {
+    kind == NAV_KIND_HISTORY && power_page(target)
+}
+
+/// Whether Tandem loads a history target as a fresh Tandem navigation instead of stepping to it: a
+/// power page or a local (`file:`, `iterm2-file:`, `iterm2-ssh:`) page, which only Tandem's own load
+/// may open.
+pub fn needs_fresh_load(target: &str) -> bool {
+    power_page(target) || local_scheme(&scheme_of(target))
 }
 
 pub fn same_navigation_uri(requested: &str, started: &str) -> bool {
@@ -1815,18 +1818,17 @@ mod tests {
     }
 
     #[test]
-    fn tandems_own_history_move_is_marked_once() {
-        let mut f = Some(1000);
-        assert!(history_by_tandem(&mut f, 1, 1500) && f.is_none(), "Tandem's Back");
-        assert!(!history_by_tandem(&mut f, 1, 1600), "a page's history.back() has no flag");
-        let mut f = Some(1000);
-        assert!(!history_by_tandem(&mut f, 0, 1100) && f.is_none(), "another navigation takes the flag and is not history");
-        assert!(!history_by_tandem(&mut f, 1, 1200), "so a later page history.back() is not marked");
-        let mut f = Some(1000);
-        assert!(!history_by_tandem(&mut f, 1, 1000 + TANDEM_HISTORY_WINDOW_MS + 1), "too late");
-        // The marked move is allowed onto a power page; the unmarked one is refused.
-        assert!(navigation_allowed(Some("https://evil.test/"), "iterm2-about:settings", false, false, true, true));
+    fn history_never_lands_on_a_power_page() {
+        for target in ["iterm2-about:settings", "ITERM2-ABOUT:Settings#x", "iterm2-about:onboarding-setup", "iterm2-about:downloads"] {
+            assert!(history_refused(NAV_KIND_HISTORY, target), "{target}");
+            assert!(!history_refused(0, target), "a typed or Tandem load is the verdict's, not this rule's: {target}");
+            assert!(needs_fresh_load(target));
+        }
+        assert!(!history_refused(NAV_KIND_HISTORY, "https://a.example/") && !needs_fresh_load("https://a.example/"));
+        assert!(needs_fresh_load("iterm2-file:///C:/x") && needs_fresh_load("iterm2-ssh://h/x") && needs_fresh_load("file:///C:/x"));
+        // A web page's script navigation to a power page stays refused by the verdict as before.
         assert!(!navigation_allowed(Some("https://evil.test/"), "iterm2-about:settings", false, false, false, true));
+        assert!(navigation_allowed(Some("https://evil.test/"), "iterm2-about:settings", false, false, true, true), "Tandem's own load");
     }
 
     #[test]

@@ -613,7 +613,6 @@ struct Inner {
     /// that matches takes it (or 30 s pass): preflight P19.
     tandem_uri: Option<(String, Instant)>,
     /// Milliseconds (`webhost::now_ms`-style, since `START`) when Tandem started a Back or Forward.
-    tandem_history: Option<u64>,
     new_windows: webhost::NewWindowLimiter,
     pending: HashMap<u64, Pending>,
     next_token: u64,
@@ -666,12 +665,6 @@ pub enum NoteReport {
 }
 
 /// One WebView2 controller. Dropping it closes the controller; `close` says so.
-/// Milliseconds since the first call: the clock of the Back and Forward flag.
-fn history_ms() -> u64 {
-    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    START.get_or_init(Instant::now).elapsed().as_millis() as u64
-}
-
 pub struct WebView {
     inner: Rc<RefCell<Inner>>,
 }
@@ -704,7 +697,6 @@ impl WebView {
             nav_uris: VecDeque::new(),
             last_main_nav: None,
             tandem_uri: None,
-            tandem_history: None,
             new_windows: webhost::NewWindowLimiter::default(),
             pending: HashMap::new(),
             next_token: 1,
@@ -1043,14 +1035,12 @@ impl WebView {
     }
 
     pub fn go_back(&self) {
-        self.inner.borrow_mut().tandem_history = Some(history_ms());
         self.with(|c| {
             let _ = unsafe { c.view.GoBack() };
         });
     }
 
     pub fn go_forward(&self) {
-        self.inner.borrow_mut().tandem_history = Some(history_ms());
         self.with(|c| {
             let _ = unsafe { c.view.GoForward() };
         });
@@ -1839,7 +1829,7 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
         let (user, redirect) = (bool_out(|b| unsafe { args.IsUserInitiated(b) }), bool_out(|b| unsafe { args.IsRedirected(b) }));
         let mut nav = 0u64;
         let _ = unsafe { args.NavigationId(&mut nav) };
-        // The kind first: a Back or Forward Tandem started is Tandem's own navigation (Task 5 review I1).
+        // The kind first: a history step onto a power page is refused below, whoever started it (Task 5 review I1).
         let mut kind = COREWEBVIEW2_NAVIGATION_KIND(-1);
         if let Ok(a3) = args.cast::<ICoreWebView2NavigationStartingEventArgs3>() {
             let _ = unsafe { a3.NavigationKind(&mut kind) };
@@ -1852,7 +1842,7 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
                 i.nav_uris.pop_front();
             }
             // Tandem's own load: consumed by the first matching NavigationStarting (P19).
-            let mut by_tandem = webhost::history_by_tandem(&mut i.tandem_history, kind.0, history_ms());
+            let mut by_tandem = false;
             if let Some((url, at)) = i.tandem_uri.clone() {
                 if at.elapsed() > Duration::from_secs(30) {
                     i.tandem_uri = None;
@@ -1866,7 +1856,8 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
         // The one verdict (webhost::nav_verdict): scheme list, then the local-scheme guard.
         let source = sender.as_ref().and_then(source_of);
         let info = webhost::NavInfo { target: &uri, source: source.as_deref(), user, redirect, by_tandem };
-        let allowed = webhost::nav_verdict(&info, &policy, &|u| webhost::file_url_local(u, &local_judge));
+        // A history step never lands on a power page, whoever started it (Tandem loads it fresh instead).
+        let allowed = !webhost::history_refused(kind.0, &uri) && webhost::nav_verdict(&info, &policy, &|u| webhost::file_url_local(u, &local_judge));
         if !allowed {
             let _ = unsafe { args.SetCancel(true) };
             if webhost::refused_click(&info, allowed) {

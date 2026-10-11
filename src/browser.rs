@@ -1315,6 +1315,12 @@ impl NavList {
         self.pending = Some(steps);
     }
 
+    /// The URL `steps` entries from the current one (negative is back), when the list holds it.
+    pub fn target_url(&self, steps: i32) -> Option<&str> {
+        let at = i64::try_from(self.index).ok()?.checked_add(i64::from(steps))?;
+        usize::try_from(at).ok().and_then(|i| self.entries.get(i)).map(|e| e.0.as_str())
+    }
+
     /// The entries before the current one, nearest first, with the steps back to each.
     pub fn back_items(&self) -> Vec<(String, String, i32)> {
         (0..self.index).rev().take(NAV_MENU).map(|i| (self.entries[i].1.clone(), self.entries[i].0.clone(), i as i32 - self.index as i32)).collect()
@@ -2327,6 +2333,8 @@ mod tests {
             n.source(u);
         }
         n.title("C");
+        assert_eq!((n.target_url(-1), n.target_url(-2), n.target_url(-3), n.target_url(1), n.target_url(0)), (Some("https://b/"), Some("https://a/"), None, None, Some("https://c/")));
+        assert_eq!(n.target_url(i32::MIN), None);
         assert_eq!(n.back_items(), vec![("".into(), "https://b/".into(), -1), ("".into(), "https://a/".into(), -2)]);
         assert!(n.forward_items().is_empty());
         n.expect(-2);

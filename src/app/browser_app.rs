@@ -1086,6 +1086,20 @@ impl App {
         true
     }
 
+    /// Tandem's own Back, Forward and history pick (13x8 Task 5 review I1, redesigned): when the pane's
+    /// record says the target entry is a power page or a local page, the history step is not taken; the
+    /// page is loaded as a fresh Tandem navigation (the path of typing it or opening it from the menu).
+    /// A history step onto such a page is refused by the host whoever starts it, so no flag exists for a
+    /// page to take. True when it was loaded this way.
+    pub(super) fn browser_history_fresh(&mut self, pane: PaneId, steps: i32) -> bool {
+        let Some(url) = self.browser_views.get(&pane).and_then(|bv| bv.bar.nav.target_url(steps)).map(str::to_string) else { return false };
+        if !webhost::needs_fresh_load(&url) {
+            return false;
+        }
+        self.browser_navigate(pane, &url);
+        true
+    }
+
     /// What a toolbar button does.
     fn browser_button(&mut self, pane: PaneId, b: Button, menu_at: (f32, f32)) {
         // The world is being set up: there is no page to go back from or reload (review I2).
@@ -1093,6 +1107,8 @@ impl App {
             return;
         }
         match b {
+            Button::Back if self.browser_history_fresh(pane, -1) => {}
+            Button::Forward if self.browser_history_fresh(pane, 1) => {}
             Button::Back => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
                     bv.bar.nav.expect(-1);
@@ -1231,6 +1247,9 @@ impl App {
     pub(super) fn browser_menu_picked(&mut self, id: &str) -> bool {
         if let Some(rest) = id.strip_prefix(HISTORY_ID) {
             let Some((pane, steps)) = rest.split_once(':').and_then(|(p, s)| Some((p.parse::<PaneId>().ok()?, s.parse::<i32>().ok()?))) else { return true };
+            if steps != 0 && steps.abs() <= 100 && self.browser_history_fresh(pane, steps) {
+                return true;
+            }
             if let Some(bv) = self.browser_views.get_mut(&pane) {
                 if steps != 0 && steps.abs() <= 100 {
                     bv.bar.nav.expect(steps);
@@ -1806,6 +1825,21 @@ pub(super) fn restored_url(session: &toml::Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Task 5 review I1 (redesign): Back, Forward and the history pick ask the pane's own record first and
+    /// load a power or local target fresh; no flag or window exists for a page to take.
+    #[test]
+    fn tandems_history_steps_never_land_on_a_power_page() {
+        let src = include_str!("browser_app.rs");
+        let p = &src[..src.find("#[cfg(test)]").unwrap()];
+        assert!(p.contains("Button::Back if self.browser_history_fresh(pane, -1) => {}") && p.contains("Button::Forward if self.browser_history_fresh(pane, 1) => {}"));
+        assert!(p.contains("if steps != 0 && steps.abs() <= 100 && self.browser_history_fresh(pane, steps) {"));
+        let f = &p[p.find("pub(super) fn browser_history_fresh").unwrap()..p.find("fn browser_button(").unwrap()];
+        assert!(f.contains("webhost::needs_fresh_load(&url)") && f.contains("self.browser_navigate(pane, &url)") && !f.contains("go_back") && !f.contains("history.go"));
+        let win = include_str!("../webhost_win.rs");
+        assert!(!win.contains("tandem_history") && !win.contains("history_by_tandem"), "no flag a page could take");
+        assert!(win.contains("!webhost::history_refused(kind.0, &uri) && webhost::nav_verdict("));
+    }
+
     /// Task 10: the indicators come from Tandem's own state only, the click opens only the help.
     #[test]
     fn browser_indicators_follow_iterm2() {
