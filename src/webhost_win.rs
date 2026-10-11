@@ -1528,7 +1528,7 @@ fn configure(inner: &Rc<RefCell<Inner>>, core: &Core, bounds: (i32, i32, i32, i3
         register_document_method(inner, view, &mut token).map_err(|x| e("document method", x))?;
     }
     if setup.fail_cert_errors {
-        register_cert_cancel(view, &mut token);
+        register_cert_cancel(view, &mut token).map_err(|x| e("certificate errors", x))?;
     }
     Ok(())
 }
@@ -1536,21 +1536,17 @@ fn configure(inner: &Rc<RefCell<Inner>>, core: &Core, bounds: (i32, i32, i32, i3
 /// A server certificate error cancels the request (`ServerCertificateErrorDetected`): the load
 /// fails with a certificate status and the app's error page replaces Edge's interstitial, which has
 /// a "continue anyway". iTerm2 offers none either. A runtime without the event keeps its own page
-/// (logged), as the external-protocol handler does.
-fn register_cert_cancel(view: &ICoreWebView2, token: &mut i64) {
-    let Ok(v14) = view.cast::<ICoreWebView2_14>() else {
-        crate::dlog!("webhost: this WebView2 Runtime cannot cancel certificate errors");
-        return;
-    };
+/// fails closed (13x8 Task 2 review M4): a view that asked for it and cannot have it is not made, so
+/// Edge's interstitial and its "continue anyway" never appear (R13x8-3).
+fn register_cert_cancel(view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
+    let v14 = view.cast::<ICoreWebView2_14>()?;
     let handler = ServerCertificateErrorDetectedEventHandler::create(Box::new(|_sender, args| guard(|| {
         if let Some(args) = args {
             let _ = unsafe { args.SetAction(COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL) };
         }
         Ok(())
     })));
-    if unsafe { v14.add_ServerCertificateErrorDetected(&handler, token) }.is_err() {
-        crate::dlog!("webhost: the certificate error handler was not registered");
-    }
+    unsafe { v14.add_ServerCertificateErrorDetected(&handler, token) }
 }
 
 #[cfg(test)]
@@ -1820,10 +1816,14 @@ fn register_navigation_rest(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, to
         let mut nav = 0u64;
         let _ = unsafe { args.NavigationId(&mut nav) };
         let mut status = 0i32;
+        // The HTTP status, read on a failure too: a server that answered 4xx or 5xx ends with
+        // IsSuccess false, and its own page is what the person sees (13x8 Task 2 review I1).
+        let mut http = 0i32;
+        if let Ok(a2) = args.cast::<ICoreWebView2NavigationCompletedEventArgs2>() {
+            let _ = unsafe { a2.HttpStatusCode(&mut http) };
+        }
         if ok {
-            if let Ok(a2) = args.cast::<ICoreWebView2NavigationCompletedEventArgs2>() {
-                let _ = unsafe { a2.HttpStatusCode(&mut status) };
-            }
+            status = http;
         } else {
             let mut web = COREWEBVIEW2_WEB_ERROR_STATUS(0);
             let _ = unsafe { args.WebErrorStatus(&mut web) };
@@ -1833,7 +1833,7 @@ fn register_navigation_rest(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, to
         let at = i.nav_uris.iter().position(|(n, _)| *n == nav);
         let url = at.and_then(|p| i.nav_uris.remove(p)).map(|(_, u)| u).unwrap_or_default();
         let id = i.id;
-        i.poster.post(Event::Navigated { view: id, ok, status, url, nav });
+        i.poster.post(Event::Navigated { view: id, ok, status, http, url, nav });
         i.poster.post(Event::Loading(id, false));
         Ok(())
     })));

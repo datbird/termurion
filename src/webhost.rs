@@ -271,7 +271,9 @@ pub enum Event {
     ProcessFailed { view: ViewId, kind: i32 },
     /// A finished navigation: `url` is the URI of the matching NavigationStarting (iTerm2's
     /// `lastRequestedURL`), `nav` its `NavigationId`.
-    Navigated { view: ViewId, ok: bool, status: i32, url: String, nav: u64 },
+    /// `status`: the HTTP status on success, `COREWEBVIEW2_WEB_ERROR_STATUS` on failure. `http`: the
+    /// HTTP status whenever a response arrived (a server's 4xx or 5xx fails with one), else 0.
+    Navigated { view: ViewId, ok: bool, status: i32, http: i32, url: String, nav: u64 },
     Source(ViewId, String),
     Title(ViewId, String),
     Favicon(ViewId, Vec<u8>),
@@ -1819,7 +1821,7 @@ mod tests {
         assert!(gate.take_dropped() >= 9_950);
         // A lifecycle event is admitted even when the queue is full.
         post(Event::Created(1));
-        post(Event::Navigated { view: 1, ok: true, status: 200, url: "https://a/".into(), nav: 1 });
+        post(Event::Navigated { view: 1, ok: true, status: 200, http: 200, url: "https://a/".into(), nav: 1 });
         let mut kinds = 0;
         while let Ok(p) = rx.try_recv() {
             if matches!(p.event, Some(Event::Created(1)) | Some(Event::Navigated { .. })) {
@@ -2145,7 +2147,7 @@ mod tests {
         assert_eq!((auth.view(), Event::Committed { view: 3, nav: 7 }.view(), Event::Response { view: 4, nav: 7, status: 401 }.view()), (1, 3, 4));
         let (start, done) = (
             Event::Starting { view: 1, url: "https://a.b/".into(), kind: 0, user: true, redirect: false, nav: 7 },
-            Event::Navigated { view: 1, ok: true, status: 0, url: "https://a.b/".into(), nav: 7 },
+            Event::Navigated { view: 1, ok: true, status: 0, http: 0, url: "https://a.b/".into(), nav: 7 },
         );
         let mut t = crate::browser_basic_auth::NavTracker::default();
         let (Event::Starting { url, redirect, nav, .. }, Event::Navigated { ok, nav: done_nav, .. }) = (&start, &done) else { unreachable!() };

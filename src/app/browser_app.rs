@@ -624,11 +624,11 @@ impl App {
                 self.browser_name(pane);
                 self.browser_marks_navigated(pane, *ok, *nav);
                 // The error page (13x8): a failed load, or a page that loaded after one.
-                if let Event::Navigated { url, status, .. } = e {
+                if let Event::Navigated { url, status, http, .. } = e {
                     if *ok {
                         self.browser_load_succeeded(pane, url);
                     } else {
-                        self.browser_load_failed(pane, url, *status);
+                        self.browser_load_failed(pane, url, *status, *http);
                     }
                 }
             }

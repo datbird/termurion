@@ -25,6 +25,10 @@ impl App {
         bv.nav_root = browser_pages::page_root(url);
         bv.nav_url = bv.nav_root.is_some().then(|| url.to_string());
         bv.nav_id = nav;
+        // A new navigation that is not Tandem's error page ends the pending one (Task 2 review M1).
+        if !url.eq_ignore_ascii_case(browser_pages::ERROR_URL) {
+            bv.pending_error = None;
+        }
     }
 
     /// A main-frame navigation committed (`Event::Committed`, the same event 13x7's NavTracker takes,
@@ -51,6 +55,10 @@ impl App {
             bv.page_root = None;
             bv.page_url = None;
         }
+        // Any other page committed: no later request takes a stale error page (Task 2 review M1).
+        if !source.eq_ignore_ascii_case(browser_pages::ERROR_URL) {
+            bv.pending_error = None;
+        }
     }
 
     /// A main-frame load failed (`BM:1329-1390`): the error page when this URL is not the one that
@@ -59,10 +67,11 @@ impl App {
     /// local page. The page's text comes from `pending_error`, set here from the failure and the URL
     /// the NavigationStarting named; the load is Tandem's own (`navigate_tandem`), so it passes the one
     /// verdict as Tandem's load and its document request is the pane's.
-    pub(super) fn browser_load_failed(&mut self, pane: PaneId, url: &str, status: i32) {
+    pub(super) fn browser_load_failed(&mut self, pane: PaneId, url: &str, status: i32, http: i32) {
         let failure = browser_pages::failure_of(status);
         let scheme = crate::webhost::scheme_of(url);
-        if failure == browser_pages::Failure::Cancelled || url.is_empty() || matches!(scheme.as_str(), "file" | browser_pages::FILE_SCHEME | browser_pages::ABOUT) {
+        // A server that answered (4xx, 5xx) shows its own page.
+        if browser_pages::server_answered(http) || failure == browser_pages::Failure::Cancelled || url.is_empty() || matches!(scheme.as_str(), "file" | browser_pages::FILE_SCHEME | browser_pages::ABOUT) {
             return;
         }
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
@@ -229,6 +238,12 @@ mod tests {
         assert!(!start_fn.contains("page_root ="), "a start sets the pending navigation only");
         assert!(app.contains("self.browser_page_committed(pane, url);"));
         let p = prod();
+        // A start or a commit of anything but the error page drops a pending error page (Task 2 review M1).
+        for f in ["pub(super) fn browser_page_starting", "pub(super) fn browser_page_committed"] {
+            let body = &p[p.find(f).unwrap()..];
+            let body = &body[..body.find("\n    }\n").unwrap()];
+            assert!(body.contains("eq_ignore_ascii_case(browser_pages::ERROR_URL)") && body.contains("bv.pending_error = None;"), "{f}");
+        }
         assert!(!p.contains("std::fs") && !p.contains("localfs"), "this file reads no file; the serving arms live on a worker (Tasks 3, 9)");
     }
 
@@ -243,13 +258,13 @@ mod tests {
         assert!(a.contains("browser_pages::with_nonce(&h, &nonce)") && a.contains("browser_pages::response_headers(&nonce)") && a.matches("Answer::Respond").count() == 1);
         assert!(!a.contains("url.split") && !a.contains("query"), "nothing is read from the URL");
         let f = &p[p.find("pub(super) fn browser_load_failed").unwrap()..p.find("pub(super) fn browser_load_succeeded").unwrap()];
-        assert!(f.contains("Failure::Cancelled") && f.contains("\"file\" | browser_pages::FILE_SCHEME | browser_pages::ABOUT"), "iterm2-ssh is not excluded");
+        assert!(f.contains("browser_pages::server_answered(http) || failure == browser_pages::Failure::Cancelled") && f.contains("\"file\" | browser_pages::FILE_SCHEME | browser_pages::ABOUT"), "iterm2-ssh is not excluded");
         assert!(!f.contains("SSH_SCHEME"));
         assert!(f.contains("should_show_error(Some(url), bv.last_failed.as_deref())") && f.contains("error_burst.allow(") && f.contains("navigate_tandem(browser_pages::ERROR_URL)"));
         let app = include_str!("browser_app.rs");
         let prod_app = &app[..app.find("#[cfg(test)]").unwrap()];
         let arm = &prod_app[prod_app.find("Event::Navigated { ok, nav, .. } => {").unwrap()..prod_app.find("Event::History { back, forward, .. } =>").unwrap()];
-        assert_eq!(arm.matches("self.browser_load_failed(pane, url, *status)").count(), 1, "one call, in the one arm, after the other consumers");
+        assert_eq!(arm.matches("self.browser_load_failed(pane, url, *status, *http)").count(), 1, "one call, in the one arm, after the other consumers");
         assert_eq!(arm.matches("self.browser_load_succeeded(pane, url)").count(), 1);
         assert!(arm.find("self.browser_marks_navigated(pane, *ok, *nav);").unwrap() < arm.find("self.browser_load_failed").unwrap());
         assert!(prod_app.contains("fail_cert_errors: true,"));

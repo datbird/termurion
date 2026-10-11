@@ -224,7 +224,19 @@ pub fn describe(status: i32) -> &'static str {
 /// The message HTML of a case: `<strong>` text `</strong><br/><br/>` detail (`EH:131-132`). The
 /// text is Tandem's own; the detail is escaped (it may be a caller's description).
 fn message_html(text: &str, detail: &str) -> String {
-    format!("<strong>{text}</strong><br/><br/>{}", crate::view_source::escape_html(detail))
+    format!("<strong>{text}</strong><br/><br/>{}", escape_slot(detail))
+}
+
+/// A value for an HTML slot: escaped, and `{` as `&#123;` so no later fill (the nonce) can match in it.
+fn escape_slot(s: &str) -> String {
+    crate::view_source::escape_html(s).replace('{', "&#123;")
+}
+
+/// Whether a failed navigation still got a server's answer (an HTTP status, `http` of
+/// `Event::Navigated`): its own page is shown, never Tandem's error page (Task 2 review I1;
+/// iTerm2's `didFailProvisionalNavigation` never fires for an HTTP error response).
+pub fn server_answered(http: i32) -> bool {
+    http >= 100
 }
 
 /// The title and message HTML of a failure, None for a cancelled load (`BM:781-800`).
@@ -252,7 +264,7 @@ pub fn error_texts(f: Failure) -> Option<(&'static str, String)> {
 
 /// The default case for an error whose description is `description` (`EH:127-133`).
 fn described(description: &str) -> (&'static str, String) {
-    let text = format!("An error occurred while loading this page. {}", crate::view_source::escape_html(description));
+    let text = format!("An error occurred while loading this page. {}", escape_slot(description));
     ("Page Can\u{2019}t Be Loaded", message_html(&text, description))
 }
 
@@ -341,7 +353,7 @@ fn error_html(title: &str, message: &str, url: Option<&str>) -> String {
         }
     };
     let url = url.filter(|u| !u.is_empty());
-    let shown = url.map(|u| format!("<div class=\"error-url\">{}</div>", crate::view_source::escape_html(&shown_url(u)).replace('{', "&#123;"))).unwrap_or_default();
+    let shown = url.map(|u| format!("<div class=\"error-url\">{}</div>", escape_slot(&shown_url(u)))).unwrap_or_default();
     let original = url.filter(|u| retry_target(u)).map(js_single_quoted).unwrap_or_default();
     page(&template, &[("TITLE", title), ("MESSAGE", message), ("URL_DISPLAY", &shown), ("ORIGINAL_URL", &original)])
 }
@@ -1568,6 +1580,31 @@ mod error_tests {
         assert!(d.contains("<title>Page Can\u{2019}t Be Loaded</title>"));
         assert!(d.contains("<strong>An error occurred while loading this page. Invalid file path: C:\\x</strong><br/><br/>Invalid file path: C:\\x"));
         assert!(described_error_page("<b>x</b>", None).contains("&lt;b&gt;x&lt;/b&gt;"));
+    }
+
+    #[test]
+    fn a_server_that_answered_keeps_its_page() {
+        // Task 2 review I1: a 404 or 500 fails with IsSuccess false but a response; no error page.
+        // The engine's real values for a 404, a 500 and a 204 need the runtime probe.
+        for http in [400, 401, 404, 500, 503, 204, 100] {
+            assert!(server_answered(http), "{http}");
+        }
+        for http in [0, -1, 99] {
+            assert!(!server_answered(http), "{http}: no response, the error page");
+        }
+    }
+
+    #[test]
+    fn a_description_never_carries_a_fill_key() {
+        // Task 2 review M2: a description (a path, a remote error) holding a key is shown as text and
+        // the nonce lands only in the script.
+        let html = described_error_page("x {{NONCE}} {{TITLE}}", Some("https://a.test/{{NONCE}}"));
+        assert!(!html.is_empty());
+        let served = with_nonce(&html, "N0NCE");
+        assert!(!html.contains("x {{NONCE}}") && html.contains("x &#123;&#123;NONCE}} &#123;&#123;TITLE}}"));
+        let in_script = served.matches("N0NCE").count();
+        assert_eq!(in_script, html.matches("{{NONCE}}").count(), "only the template's own keys are filled");
+        assert!(!served.contains("x N0NCE"));
     }
 
     #[test]
