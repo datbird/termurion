@@ -541,6 +541,18 @@ pub fn needs_update(last: Option<i64>, now: i64, have_rules: bool) -> bool {
     }
 }
 
+/// The number of rules in a saved list: the length of its JSON array, 0 for anything else (and for a
+/// text above the list bound).
+pub fn saved_rule_count(json: &str) -> usize {
+    if json.len() > MAX_LIST_BYTES {
+        return 0;
+    }
+    match serde_json::from_str::<Value>(json) {
+        Ok(Value::Array(a)) => a.len(),
+        _ => 0,
+    }
+}
+
 pub fn stale_text(days: i64) -> Option<String> {
     (days >= STALE_DAYS).then(|| format!("Adblock rules haven't been updated for {days} days"))
 }
@@ -595,6 +607,14 @@ mod tests {
 
     fn block_rule(filter: &str) -> String {
         format!(r#"{{"trigger":{{"url-filter":"{filter}"}},"action":{{"type":"block"}}}}"#)
+    }
+
+    #[test]
+    fn saved_rule_count_is_the_array_length() {
+        assert_eq!(saved_rule_count("[{},{},{}]"), 3);
+        assert_eq!(saved_rule_count("{}"), 0);
+        assert_eq!(saved_rule_count("x"), 0);
+        assert_eq!(saved_rule_count(&format!("[{}]", " ".repeat(MAX_LIST_BYTES))), 0, "above the bound");
     }
 
     #[test]

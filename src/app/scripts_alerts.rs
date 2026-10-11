@@ -93,6 +93,8 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::OpenLink { .. } | Then::BrowserUpsell { .. } => Answer::Button(2),
         // Cancel: a closed window runs nothing and opens nothing a page's text named.
         Then::BrowserRun { .. } | Then::BrowserOpenFile { .. } => Answer::Button(1),
+        // Cancel: a closed window clears nothing (Clear All Data from the settings page).
+        Then::BrowserClearData { .. } => Answer::Button(1),
         // Cancel is the third button: a closed window never opens a profile either way (B6).
         Then::OpenRenamedProfile { .. } => Answer::Button(2),
         // Cancel: a closed window never uninstalls or goes on past a failed removal (P10).
@@ -334,6 +336,10 @@ pub(super) enum Then {
     /// "Open file?" for a Smart Selection action from a page (`PSB:335-346`): OK (0) opens it as
     /// `open_file_run` plans (a program is revealed, never run); Cancel (1) nothing.
     BrowserOpenFile { pane: crate::layout::PaneId, file: String },
+    /// "Clear all website data?" for the settings page's Clear All Data (it also erases bookmarks and
+    /// history): Clear (0) clears; Cancel (1) nothing. A page's button raised it, so the window is
+    /// input-guarded and it is never remembered.
+    BrowserClearData { pane: crate::layout::PaneId },
     /// "Allow Notifications" (and the other permission questions) for the open ask `id`
     /// (`browser_perms_app::Asks`): Allow (0) or Block (1). A closed window, or an ask that never
     /// shows, blocks the request and saves nothing. A page raises it, so it is capped.
@@ -511,7 +517,7 @@ impl App {
                 }
                 // A page raised it: no default button, input ignored for a moment after it appears
                 // and after it regains focus (13x6 B1).
-                if matches!(ask.then, Then::BrowserPermission(_)) {
+                if matches!(ask.then, Then::BrowserPermission(_) | Then::BrowserClearData { .. }) {
                     w.guard_input();
                 }
                 self.scripts_alert = Some((w, ask));
@@ -588,6 +594,7 @@ impl App {
                     self.browser_run_confirmed(pane, command);
                 }
             }
+            Then::BrowserClearData { pane } => self.browser_clear_data_answered(pane, index),
             Then::BrowserOpenFile { pane, file } => {
                 if index == 0 {
                     self.browser_open_file_confirmed(pane, &file);

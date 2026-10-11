@@ -155,6 +155,11 @@ pub fn link_ui_script(p: LinkPref) -> String {
     format!("updateLinkOpeningUI({});", json!({ "preference": word }))
 }
 
+/// The native confirmation of Clear All Data (R13x8-8).
+pub const CLEAR_HEADING: &str = "Clear all website data?";
+pub const CLEAR_TEXT: &str = "This deletes the cookies, cache and site data of this browser profile, and its bookmarks and history. It cannot be undone.";
+pub const CLEAR_BUTTON: &str = "Clear";
+
 pub const DATA_CLEARED: &str = "All website data has been cleared successfully!";
 /// Shown when the web view could not clear its data (Decision: iTerm2's call always completes).
 pub const DATA_CLEAR_FAILED: &str = "The website data could not be cleared.";
@@ -218,6 +223,100 @@ pub fn link_pref_of(silenced: bool, selection: Option<i64>) -> LinkPref {
         (true, Some(0)) => LinkPref::Default,
         _ => LinkPref::Ask,
     }
+}
+
+// --- Search engine, ad blocking and proxy (Task 6; `SH:239-428`) ---
+
+pub const ADBLOCK_ON: &str = "Ad blocking enabled";
+pub const ADBLOCK_OFF: &str = "Ad blocking disabled";
+pub const FILTER_URL_UPDATED: &str = "Filter list URL updated";
+/// Tandem's: the list is fetched by Tandem, so the address must be an https address.
+pub const INVALID_FILTER_URL: &str = "Invalid filter list URL: must be an https address";
+pub const RULES_UPDATED: &str = "Ad block rules updated successfully";
+/// Tandem's: an update was asked for while ad blocking is off.
+pub const ADBLOCK_IS_OFF: &str = "Ad blocking is disabled";
+pub const INVALID_SEARCH: &str = "Invalid search URL: must contain %@ placeholder";
+pub const SEARCH_UPDATED: &str = "Search engine updated";
+pub const INVALID_SUGGEST: &str = "Invalid suggestion URL: must contain %@ placeholder";
+pub const SUGGEST_DISABLED: &str = "Search suggestions disabled";
+pub const SUGGEST_UPDATED: &str = "Search suggestions updated";
+pub const PROXY_ON: &str = "Proxy enabled";
+pub const PROXY_OFF: &str = "Proxy disabled";
+pub const PROXY_HOST_UPDATED: &str = "Proxy host updated";
+pub const INVALID_PROXY_HOST: &str = "Invalid proxy host";
+pub const INVALID_PORT: &str = "Invalid port number";
+pub const PROXY_PORT_UPDATED: &str = "Proxy port updated";
+/// The host the page shows when none is saved (`SH:416`).
+pub const DEFAULT_PROXY_HOST: &str = "127.0.0.1";
+
+/// `Failed to update ad block rules: <e>` (`SH:315`).
+pub fn rules_failed(e: &str) -> String {
+    format!("Failed to update ad block rules: {e}")
+}
+
+/// A search or suggestion template the page may set: https, one `%@` and no more, no white space
+/// or control character, at most the browser's URL bound. The query is percent-encoded into the
+/// placeholder when used (`browser::search_url`), so nothing the person types leaves the query
+/// position. A scheme other than https (javascript:, data:, file:, iterm2-*, http) never passes
+/// (R13x8-7).
+fn template_https(t: &str) -> bool {
+    crate::webhost::scheme_of(t) == "https"
+        && t.len() <= crate::browser::MAX_URL.min(MAX_VALUE)
+        && t.matches("%@").count() == 1
+        && !t.chars().any(|c| c.is_control() || c.is_whitespace() || crate::inert_files::is_hidden(c))
+        && t.split_once("://").is_some_and(|(_, r)| r.split(['/', '?', '#']).next().is_some_and(|a| !a.is_empty() && !a.starts_with(['%', '@', ':']) && !a.contains('@')))
+}
+
+/// `SH:321`: non-empty and holding `%@` (plus Tandem's rules above).
+pub fn search_command_ok(url: &str) -> bool {
+    !url.is_empty() && template_https(url)
+}
+
+/// `SH:332`: empty (suggestions off) or holding `%@` (plus Tandem's rules above).
+pub fn suggest_url_ok(url: &str) -> bool {
+    url.is_empty() || template_https(url)
+}
+
+/// `SH:395`: a TCP port.
+pub fn port_ok(port: i64) -> bool {
+    (1..=65535).contains(&port)
+}
+
+/// The list address the page may set (P13): the updater's own rule (https, a host, no white space)
+/// within the message bound.
+pub fn filter_url_ok(url: &str) -> bool {
+    url.len() <= MAX_VALUE && crate::adblock::list_url_ok(url)
+}
+
+fn call(name: &str, args: &[String]) -> String {
+    format!("{name}({});", args.join(","))
+}
+
+fn js_str(s: &str) -> String {
+    Value::String(s.to_string()).to_string()
+}
+
+/// `updateAdblockUI({"enabled":..,"url":..});` (`SH:262-275`).
+pub fn adblock_ui_script(enabled: bool, url: &str) -> String {
+    call("updateAdblockUI", &[format!("{{\"enabled\":{enabled},\"url\":{}}}", js_str(url))])
+}
+
+/// `updateAdblockStats({"ruleCount":..,"lastUpdate":..});` (`SH:280-297`); a Unix time, 0 when never.
+pub fn stats_script(rule_count: usize, last_update: f64) -> String {
+    let last = if last_update.is_finite() { last_update } else { 0.0 };
+    call("updateAdblockStats", &[format!("{{\"ruleCount\":{rule_count},\"lastUpdate\":{last:?}}}")])
+}
+
+/// `updateSearchEngineUI({"searchCommand":..,"searchSuggestURL":..});` (`SH:349-363`).
+pub fn search_ui_script(search: &str, suggest: &str) -> String {
+    call("updateSearchEngineUI", &[format!("{{\"searchCommand\":{},\"searchSuggestURL\":{}}}", js_str(search), js_str(suggest))])
+}
+
+/// `updateProxyUI({"enabled":..,"host":..,"port":..});` (`SH:414-428`). An empty (or unusable) host
+/// shows 127.0.0.1. Credentials are not part of any setting and are never sent.
+pub fn proxy_ui_script(enabled: bool, host: &str, port: i64) -> String {
+    let host = if host.is_empty() || !crate::adblock::proxy_host_ok(host) { DEFAULT_PROXY_HOST } else { host };
+    call("updateProxyUI", &[format!("{{\"enabled\":{enabled},\"host\":{},\"port\":{port}}}", js_str(host))])
 }
 
 // --- The copied page, adapted at load time (R13x3-1/-2 pattern) ---
@@ -318,12 +417,14 @@ pub fn document(state: &PageState, nonce: &str) -> Option<String> {
 pub struct State {
     /// A Clear All Data is waiting for the web view to finish; its `DataCleared` then erases the database.
     pub clearing: bool,
+    /// Clear All Data is waiting for the person's answer on Tandem's own window.
+    pub confirming: bool,
     limit: Cooldown<u8>,
 }
 
 impl Default for State {
     fn default() -> Self {
-        State { clearing: false, limit: Cooldown::new(1000, 8) }
+        State { clearing: false, confirming: false, limit: Cooldown::new(1000, 16) }
     }
 }
 
@@ -336,6 +437,13 @@ impl State {
             Msg::ClearAllData => 2,
             Msg::OpenPasswordManager => 3,
             Msg::SetLinkOpening(_) => 4,
+            // Each of these rebuilds the browser views or starts a download.
+            Msg::SetProxyEnabled(_) => 5,
+            Msg::SetProxyHost(_) => 6,
+            Msg::SetProxyPort(_) => 7,
+            Msg::SetAdblockEnabled(_) => 8,
+            Msg::ForceAdblockUpdate => 9,
+            Msg::SetAdblockUrl(_) => 10,
             _ => return true,
         };
         if self.limit.active(&key, now_ms) {
@@ -509,5 +617,77 @@ mod tests {
         let src = include_str!("browser_settings_page.rs");
         let live = &src[..src.find("#[cfg(test)]").unwrap()];
         assert!(!live.contains("'{}'") && !live.contains("\\'{"), "values go in as JSON strings");
+    }
+
+    #[test]
+    fn settings_search_follows_iterm2() {
+        assert!(search_command_ok("https://duckduckgo.com/?q=%@"));
+        assert!(!search_command_ok("") && !search_command_ok("https://x"));
+        assert!(suggest_url_ok("") && suggest_url_ok("https://x?q=%@") && !suggest_url_ok("https://x"));
+        assert_eq!(INVALID_SEARCH, "Invalid search URL: must contain %@ placeholder");
+        assert_eq!(SEARCH_UPDATED, "Search engine updated");
+        assert_eq!(INVALID_SUGGEST, "Invalid suggestion URL: must contain %@ placeholder");
+        assert_eq!(SUGGEST_DISABLED, "Search suggestions disabled");
+        assert_eq!(SUGGEST_UPDATED, "Search suggestions updated");
+        assert_eq!(search_ui_script("a", "b"), r#"updateSearchEngineUI({"searchCommand":"a","searchSuggestURL":"b"});"#);
+        let page = crate::browser_js::resource("settings-page.html").unwrap();
+        for (name, s, g) in [
+            ("google", "https://google.com/search?q=%@", "https://suggestqueries.google.com/complete/search?client=firefox&q=%@"),
+            ("duckduckgo", "https://duckduckgo.com/?q=%@", "https://duckduckgo.com/ac/?q=%@&type=list"),
+            ("bing", "https://www.bing.com/search?q=%@", "https://www.bing.com/osjson.aspx?query=%@"),
+            ("kagi", "https://kagi.com/search?q=%@", "https://kagi.com/api/autosuggest?q=%@"),
+        ] {
+            assert!(page.contains(&format!("{name}: {{\n                searchURL: '{s}',\n                suggestURL: '{g}'")), "{name}");
+            assert!(search_command_ok(s) && suggest_url_ok(g), "{name} passes our own rules");
+        }
+        assert_eq!(crate::browser::DEFAULT_SEARCH, "https://google.com/search?q=%@");
+        assert_eq!(crate::browser::DEFAULT_SUGGEST, "https://suggestqueries.google.com/complete/search?client=firefox&q=%@");
+    }
+
+    /// Hostile templates: a scheme that is not https, no or two placeholders, white space, control or
+    /// hidden characters, no host, user info, too long.
+    #[test]
+    fn a_search_template_is_https_with_one_placeholder() {
+        for bad in [
+            "http://x.test/?q=%@", "javascript:alert(1)//%@", "data:text/html,%@", "file:///C:/%@", "iterm2-about:settings?%@", "iterm2-file:///C:/%@",
+            "ms-msdt:%@", "https://x.test/?q=%@&r=%@", "https://x.test/?q=%@ --x", "https://x.test/\n?q=%@", "https://x.test/?q=%@\u{202e}", "https:///?q=%@", "https://u:p@x.test/?q=%@",
+            "https://@x.test/?q=%@", "//x.test/?q=%@", "%@",
+        ] {
+            assert!(!search_command_ok(bad), "{bad:?}");
+            assert!(!suggest_url_ok(bad), "{bad:?}");
+        }
+        assert!(!search_command_ok(&format!("https://x.test/{}?q=%@", "a".repeat(MAX_VALUE))), "too long");
+        assert!(search_command_ok("HTTPS://x.test/?q=%@"));
+    }
+
+    #[test]
+    fn settings_adblock_proxy_follow_iterm2() {
+        assert_eq!(ADBLOCK_ON, "Ad blocking enabled");
+        assert_eq!(ADBLOCK_OFF, "Ad blocking disabled");
+        assert_eq!(FILTER_URL_UPDATED, "Filter list URL updated");
+        assert_eq!(RULES_UPDATED, "Ad block rules updated successfully");
+        assert_eq!(rules_failed("x"), "Failed to update ad block rules: x");
+        assert!(!port_ok(0) && port_ok(1) && port_ok(65535) && !port_ok(65536) && !port_ok(-1));
+        assert_eq!(INVALID_PORT, "Invalid port number");
+        assert_eq!((PROXY_ON, PROXY_OFF), ("Proxy enabled", "Proxy disabled"));
+        assert_eq!((PROXY_HOST_UPDATED, PROXY_PORT_UPDATED, INVALID_PROXY_HOST), ("Proxy host updated", "Proxy port updated", "Invalid proxy host"));
+        assert_eq!(proxy_ui_script(false, "", 8118), r#"updateProxyUI({"enabled":false,"host":"127.0.0.1","port":8118});"#);
+        assert_eq!(proxy_ui_script(true, "p.test", 3128), r#"updateProxyUI({"enabled":true,"host":"p.test","port":3128});"#);
+        assert_eq!(proxy_ui_script(true, "a b\"--x", 1), r#"updateProxyUI({"enabled":true,"host":"127.0.0.1","port":1});"#, "an unusable host is never echoed");
+        assert_eq!(stats_script(3, 0.0), r#"updateAdblockStats({"ruleCount":3,"lastUpdate":0.0});"#);
+        assert_eq!(stats_script(1, 1700000000.0), r#"updateAdblockStats({"ruleCount":1,"lastUpdate":1700000000.0});"#);
+        assert_eq!(adblock_ui_script(true, "https://a/\"</script>"), r#"updateAdblockUI({"enabled":true,"url":"https://a/\"</script>"});"#);
+        assert!(filter_url_ok("https://a.test/l.json") && !filter_url_ok("http://a.test/l.json") && !filter_url_ok("file:///C:/l.json") && !filter_url_ok("https://a b/") && !filter_url_ok("javascript:1"));
+        assert!(!filter_url_ok(&format!("https://a.test/{}", "x".repeat(MAX_VALUE))));
+    }
+
+    #[test]
+    fn network_settings_are_rate_limited() {
+        let mut s = State::default();
+        for m in [Msg::SetProxyEnabled(true), Msg::SetProxyHost("h".into()), Msg::SetProxyPort(1), Msg::SetAdblockEnabled(true), Msg::ForceAdblockUpdate, Msg::SetAdblockUrl("u".into())] {
+            assert!(s.allow(&m, 5_000), "{m:?}");
+            assert!(!s.allow(&m, 5_100), "{m:?} again");
+        }
+        assert!(s.allow(&Msg::SetSearchCommand("x".into()), 5_100) && s.allow(&Msg::GetProxySettings, 5_100));
     }
 }

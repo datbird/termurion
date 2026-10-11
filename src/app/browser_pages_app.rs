@@ -247,17 +247,12 @@ impl App {
                     v.delete_all_cookies();
                 }
             }
+            // Native confirmation first: it wipes bookmarks too, so the page's own confirm() is not enough.
             sp::Msg::ClearAllData => {
-                let started = self.browser_views.get_mut(&pane).is_some_and(|bv| match bv.view.as_ref() {
-                    Some(v) => {
-                        bv.settings.clearing = true;
-                        v.clear_browsing_data();
-                        true
-                    }
-                    None => false,
-                });
-                if !started {
-                    calls.push(sp::alert_script(sp::DATA_CLEAR_FAILED));
+                let asked = self.browser_views.get_mut(&pane).is_some_and(|bv| !std::mem::replace(&mut bv.settings.confirming, true));
+                if asked {
+                    let ask = super::scripts_alerts::ask(sp::CLEAR_HEADING, sp::CLEAR_TEXT, &[sp::CLEAR_BUTTON, crate::api_auth::CANCEL], None, crate::warnings::Kind::Persistent, super::scripts_alerts::Then::BrowserClearData { pane });
+                    self.ask_scripts(ask);
                 }
             }
             sp::Msg::OpenPasswordManager => self.open_password_manager(None, Some(pane)),
@@ -283,9 +278,111 @@ impl App {
                 };
                 calls.push(sp::link_ui_script(sp::link_pref_of(silenced, selection)));
             }
+            sp::Msg::GetAdblockSettings => calls.push(sp::adblock_ui_script(self.globals.bool("WebKitAdblockEnabled"), &self.globals.string("AdblockListURL"))),
+            sp::Msg::GetAdblockStats => {
+                let last = self.globals.raw(crate::adblock::LAST_UPDATE_KEY).and_then(|v| v.as_integer()).unwrap_or(0).max(0);
+                calls.push(sp::stats_script(self.adblock_rule_count(), last as f64));
+            }
+            sp::Msg::SetAdblockEnabled(on) => {
+                self.globals.set("WebKitAdblockEnabled", toml::Value::Boolean(on));
+                self.apply_edit(Edit::GlobalsChanged);
+                calls.push(sp::status_script(if on { sp::ADBLOCK_ON } else { sp::ADBLOCK_OFF }, "success"));
+            }
+            // An empty address changes nothing and answers nothing (`SH:246`).
+            sp::Msg::SetAdblockUrl(url) if url.is_empty() => {}
+            sp::Msg::SetAdblockUrl(url) => {
+                if sp::filter_url_ok(&url) {
+                    self.globals.set("AdblockListURL", toml::Value::String(url));
+                    self.apply_edit(Edit::GlobalsChanged);
+                    calls.push(sp::status_script(sp::FILTER_URL_UPDATED, "success"));
+                } else {
+                    calls.push(sp::status_script(sp::INVALID_FILTER_URL, "error"));
+                }
+            }
+            sp::Msg::ForceAdblockUpdate => {
+                if !self.adblock_refresh_now() {
+                    calls.push(sp::status_script(&sp::rules_failed(sp::ADBLOCK_IS_OFF), "error"));
+                }
+            }
+            sp::Msg::GetSearchSettings => {
+                // Shown as used: a saved value that is not a usable template shows the default.
+                let search = crate::browser::search_template(&self.globals.string("SearchCommand"));
+                let suggest = self.globals.string("SearchSuggestURL");
+                let suggest = if sp::suggest_url_ok(&suggest) { suggest } else { crate::browser::DEFAULT_SUGGEST.to_string() };
+                calls.push(sp::search_ui_script(&search, &suggest));
+            }
+            sp::Msg::SetSearchCommand(url) => {
+                if sp::search_command_ok(&url) {
+                    self.globals.set("SearchCommand", toml::Value::String(url));
+                    self.apply_edit(Edit::GlobalsChanged);
+                    calls.push(sp::status_script(sp::SEARCH_UPDATED, "success"));
+                } else {
+                    calls.push(sp::status_script(sp::INVALID_SEARCH, "error"));
+                }
+            }
+            sp::Msg::SetSearchSuggestUrl(url) => {
+                if sp::suggest_url_ok(&url) {
+                    let text = if url.is_empty() { sp::SUGGEST_DISABLED } else { sp::SUGGEST_UPDATED };
+                    self.globals.set("SearchSuggestURL", toml::Value::String(url));
+                    self.apply_edit(Edit::GlobalsChanged);
+                    calls.push(sp::status_script(text, "success"));
+                } else {
+                    calls.push(sp::status_script(sp::INVALID_SUGGEST, "error"));
+                }
+            }
+            sp::Msg::GetProxySettings => {
+                let port = self.globals.int("BrowserProxyPort");
+                calls.push(sp::proxy_ui_script(self.globals.bool("BrowserProxyEnabled"), &self.globals.string("BrowserProxyHost"), port));
+            }
+            sp::Msg::SetProxyEnabled(on) => {
+                self.globals.set("BrowserProxyEnabled", toml::Value::Boolean(on));
+                self.apply_edit(Edit::GlobalsChanged);
+                calls.push(sp::status_script(if on { sp::PROXY_ON } else { sp::PROXY_OFF }, "success"));
+            }
+            // An empty host changes nothing and answers nothing (`SH:383`).
+            sp::Msg::SetProxyHost(host) if host.is_empty() => {}
+            sp::Msg::SetProxyHost(host) => {
+                // The host is what `adblock::proxy_host_ok` accepts, nothing that is more than a host
+                // (a space or `--switch` is refused); `proxy_args` judges it again before Chromium.
+                if crate::adblock::proxy_host_ok(&host) {
+                    self.globals.set("BrowserProxyHost", toml::Value::String(host));
+                    self.apply_edit(Edit::GlobalsChanged);
+                    calls.push(sp::status_script(sp::PROXY_HOST_UPDATED, "success"));
+                } else {
+                    calls.push(sp::status_script(sp::INVALID_PROXY_HOST, "error"));
+                }
+            }
+            sp::Msg::SetProxyPort(port) => {
+                if sp::port_ok(port) {
+                    self.globals.set("BrowserProxyPort", toml::Value::Integer(port));
+                    self.apply_edit(Edit::GlobalsChanged);
+                    calls.push(sp::status_script(sp::PROXY_PORT_UPDATED, "success"));
+                } else {
+                    calls.push(sp::status_script(sp::INVALID_PORT, "error"));
+                }
+            }
             _ => {}
         }
         self.browser_settings_run(pane, calls);
+    }
+
+    /// The rules in use: the compiled list when it is loaded, else the saved list's length.
+    fn adblock_rule_count(&self) -> usize {
+        self.adblock_loaded_rules().unwrap_or_else(|| self.adblock_saved_rules())
+    }
+
+    /// Every browser pane showing the settings page is told how an update it asked for ended
+    /// (`BM:1843-1848`). The text is Tandem's own or a bounded reason, never the server's.
+    pub(super) fn browser_settings_adblock_result(&mut self, result: Result<(), String>) {
+        use crate::browser_settings_page as sp;
+        let text = match result {
+            Ok(()) => sp::status_script(sp::RULES_UPDATED, "success"),
+            Err(e) => sp::status_script(&sp::rules_failed(&crate::inert_files::display_text(&e, 200, false)), "error"),
+        };
+        let panes: Vec<PaneId> = self.browser_views.keys().copied().filter(|p| self.panes.get(p).and_then(|x| x.browser_io()).is_some_and(|io| io.url == sp::SETTINGS_URL)).collect();
+        for pane in panes {
+            self.browser_settings_run(pane, vec![text.clone()]);
+        }
     }
 
     /// Runs reply calls in the settings page, guarded: nothing happens if the pane left that page.
@@ -296,6 +393,30 @@ impl App {
                     v.execute_script(&js, 0);
                 }
             }
+        }
+    }
+
+    /// The answer to "Clear all website data?": only Clear (0), and only while the pane still shows
+    /// the settings page, starts the clear (the data-cleared event then erases the database).
+    pub(super) fn browser_clear_data_answered(&mut self, pane: PaneId, index: usize) {
+        use crate::browser_settings_page as sp;
+        if let Some(bv) = self.browser_views.get_mut(&pane) {
+            bv.settings.confirming = false;
+        }
+        let on_page = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.url == sp::SETTINGS_URL);
+        if index != 0 || !on_page {
+            return;
+        }
+        let started = self.browser_views.get_mut(&pane).is_some_and(|bv| match bv.view.as_ref() {
+            Some(v) => {
+                bv.settings.clearing = true;
+                v.clear_browsing_data();
+                true
+            }
+            None => false,
+        });
+        if !started {
+            self.browser_settings_run(pane, vec![sp::alert_script(sp::DATA_CLEAR_FAILED)]);
         }
     }
 
@@ -608,9 +729,23 @@ mod tests {
         assert!(f.contains("if url != sp::SETTINGS_URL || source != sp::SETTINGS_URL {\n            return;"), "the pane's own main-frame URL and the source are both the settings page");
         assert!(f.find("source != sp::SETTINGS_URL").unwrap() < f.find("bv.settings.allow(&msg, mono_ms())").unwrap());
         assert!(f.find("bv.settings.allow(&msg, mono_ms())").unwrap() < f.find("v.delete_all_cookies()").unwrap(), "limited before any effect");
-        assert!(f.contains("v.clear_browsing_data()") && f.contains("self.open_password_manager(None, Some(pane))"));
+        assert!(f.contains("self.open_password_manager(None, Some(pane))"));
+        assert!(!f.contains("clear_browsing_data"), "Clear All Data starts only from the native answer");
+        assert!(f.contains("Then::BrowserClearData { pane }") && f.contains("settings.confirming, true"), "asked once at a time");
+        let ca = &p[p.find("pub(super) fn browser_clear_data_answered").unwrap()..p.find("pub(super) fn browser_data_cleared").unwrap()];
+        assert!(ca.contains("index != 0 || !on_page") && ca.contains("v.clear_browsing_data()") && ca.find("index != 0").unwrap() < ca.find("clear_browsing_data").unwrap());
+        let alerts = include_str!("scripts_alerts.rs");
+        assert!(alerts.contains("Then::BrowserPermission(_) | Then::BrowserClearData { .. }") && alerts.contains("Then::BrowserClearData { .. } => Answer::Button(1)"), "input guard, closed window is Cancel");
         assert!(f.contains("sp::link_pref_writes(&word)") && f.contains("self.globals.set(&key, v)") && f.contains("self.globals.remove(&key)"), "link opening writes only the keys link_pref_writes returns");
-        assert_eq!(f.matches("self.globals.set(").count(), 1, "one settings writer, fed by the closed link keys");
+        // Task 6: the writes are a closed list of keys, each after its own check.
+        for key in ["WebKitAdblockEnabled", "AdblockListURL", "SearchCommand", "SearchSuggestURL", "BrowserProxyEnabled", "BrowserProxyHost", "BrowserProxyPort"] {
+            assert_eq!(f.matches(&format!("self.globals.set(\"{key}\"")).count(), 1, "{key}");
+        }
+        assert_eq!(f.matches("self.globals.set(").count(), 8, "seven named keys and the closed link keys, nothing else");
+        assert!(f.contains("if sp::search_command_ok(&url)") && f.contains("if sp::suggest_url_ok(&url)") && f.contains("if sp::filter_url_ok(&url)") && f.contains("if sp::port_ok(port)") && f.contains("if crate::adblock::proxy_host_ok(&host)"), "each value is judged before it is written");
+        assert!(f.contains("sp::Msg::SetAdblockUrl(url) if url.is_empty() => {}") && f.contains("sp::Msg::SetProxyHost(host) if host.is_empty() => {}"));
+        assert!(f.contains("self.adblock_refresh_now()") && !f.contains("adblock_download") && !f.contains("compile("), "the update runs through the existing owner");
+        assert!(!f.contains("BrowserProxyUser") && !f.contains("--proxy-server"), "no credential, no switch text here");
         assert!(!f.contains("serde_json") && !f.contains("rlog!") && !f.contains("dlog!") && !f.contains("password(") && !f.contains("secret"), "no page JSON read, nothing logged, no password handled here");
         assert!(!f.contains("permission"), "permissions have their one writer on their own page");
         let c = &p[p.find("pub(super) fn browser_data_cleared").unwrap()..p.find("/// The browser profile onboarding switches to").unwrap()];
@@ -625,5 +760,32 @@ mod tests {
         // The completion and the switch are host-driven (Task 4 review).
         let o = &p[p.find("pub(super) fn browser_onboarding_message").unwrap()..p.find("pub(super) fn browser_settings_answer").unwrap()];
         assert!(o.contains("self.browser_navigate(pane, ob::SETUP_URL)") && o.contains("self.browser_navigate(pane, \"iterm2-about:welcome\")"));
+    }
+
+    /// Search, ad blocking and proxy: an invalid value writes nothing and answers an error; an empty
+    /// list address or proxy host answers nothing; the proxy host never reaches a switch unjudged.
+    #[test]
+    fn settings_writes_follow_iterm2() {
+        let p = prod();
+        let f = &p[p.find("pub(super) fn browser_settings_message").unwrap()..p.find("fn browser_settings_run").unwrap()];
+        let arm = |name: &str| {
+            let a = &f[f.find(name).unwrap()..];
+            a[..a.find("\n            sp::Msg::").or_else(|| a.find("\n            _ =>")).unwrap()].to_string()
+        };
+        let search = arm("sp::Msg::SetSearchCommand(url) =>");
+        assert!(search.contains("sp::INVALID_SEARCH, \"error\"") && search.find("search_command_ok").unwrap() < search.find("self.globals.set(").unwrap());
+        let host = arm("sp::Msg::SetProxyHost(host) =>");
+        assert!(host.find("proxy_host_ok(&host)").unwrap() < host.find("self.globals.set(").unwrap() && host.contains("sp::INVALID_PROXY_HOST, \"error\""));
+        let port = arm("sp::Msg::SetProxyPort(port) =>");
+        assert!(port.contains("toml::Value::Integer(port)") && port.contains("sp::PROXY_PORT_UPDATED") && port.contains("sp::INVALID_PORT"));
+        let on = arm("sp::Msg::SetAdblockEnabled(on) =>");
+        assert!(on.contains("\"WebKitAdblockEnabled\"") && on.contains("sp::ADBLOCK_ON") && on.contains("\"success\""));
+        // The update result reaches only a pane that shows the settings page, and only a requested one.
+        let r = &p[p.find("pub(super) fn browser_settings_adblock_result").unwrap()..];
+        assert!(r.contains("io.url == sp::SETTINGS_URL"));
+        let ad = include_str!("adblock_app.rs");
+        let ad = &ad[..ad.find("#[cfg(test)]").unwrap()];
+        assert!(ad.contains("std::mem::take(&mut self.adblock.report)") && ad.matches("self.adblock_report(").count() >= 4, "every end of an update is reported once");
+        assert!(ad.contains("self.adblock.next_check = Some(Instant::now());"), "Update Now does not wait for the hourly look");
     }
 }

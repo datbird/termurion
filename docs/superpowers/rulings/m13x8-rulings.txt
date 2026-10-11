@@ -25,3 +25,25 @@ R13x8-6 residual (B11, recorded): Clear Cookies / Clear All Data keep the page's
 R13x8-6 navigation (B5): webhost::navigation_allowed refuses a navigation to iterm2-about:settings, onboarding-setup or onboarding-profile from any source that is not an iterm2-about: page (a web page by click, script or redirect, about:blank, a file page); Tandem's own load and a typed address (no source, user) pass. nav_gate (page-supplied URLs, new-tab requests, restore) blocks them. Known limit: a Back step from a web page onto the settings page is a non-user navigation from a web source and is refused (reload the page from the menu).
 R13x8-5 correction: the Mark of the Web is a judged by-name read of the handle's verified final path (the handle is asked again for its path afterwards and a changed answer serves nothing), not a read relative to the handle.
 R13x8-4 addendum (Task 4 review): Finish and Continue are host-driven. The page no longer navigates; Tandem completes onboarding (or handles the profile switch) and then loads the welcome / setup page itself, so a lost race cannot loop the welcome redirect. The write limiter is keyed per action (Create, Switch, other).
+
+R13x8-7 (Task 6, settings page: search engine, ad blocking, proxy)
+- A search or suggestion template set from the page must be https (not http: the page is the one place Tandem can
+  insist), hold exactly one "%@", have a host with no user info, no white space, control or hidden character, and be
+  at most 2048 bytes. javascript:, data:, file:, iterm2-* and every other scheme are refused. The query is
+  percent-encoded by browser::search_url when used (as iTerm2's urlQueryAllowed: "&" and "=" stay, so a typed query can
+  add parameters to the search request, as in iTerm2). A template already saved or imported keeps the older rule
+  (browser::template_ok, http allowed) and is not rewritten.
+- The filter list address from the page: https only (adblock::list_url_ok), 2048 bytes. The download, its 8 MiB cap, its
+  deadline and the compile caps are the existing owner's (adblock_app); Update Now only sets its force flag.
+- Proxy: the host passes adblock::proxy_host_ok before it is written and proxy_args judges it again; the port is 1..65535.
+  The proxy NTLM residual (13x7 FLAG 15) is untouched. No credential is read or sent to the page.
+- Network settings (proxy switch/host/port, ad blocking switch, list address, Update Now) are limited to one per second
+  each, since each rebuilds the browser views or starts a download.
+
+R13x8-8 (Task 5 review I1, Task 6)
+- Tandem's own Back or Forward (WebView::go_back/go_forward) sets a one-time flag (3 s); the first navigation that starts
+  after it, if it is a history navigation, is Tandem's own (by_tandem) and so may load a power page (settings,
+  onboarding steps). A page's history.back()/go() carries no flag and stays refused. No banner on the allowed path.
+- Clear All Data (which also erases bookmarks and history) asks on Tandem's own window (Then::BrowserClearData, input
+  guarded, closed window = Cancel) before anything is cleared; one question at a time. Clear Cookies keeps the page's
+  confirm() only (cookies only; a sign-out is recoverable).

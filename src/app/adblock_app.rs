@@ -23,6 +23,8 @@ const CHECK_EVERY: Duration = Duration::from_secs(3600);
 /// How long a browser environment that failed after a proxy change is tried again: the old
 /// browser process may still hold the folder for a moment.
 /// The longest one download may take in all.
+/// What the settings page is told when the download itself fails (no reason text from the server).
+const UPDATE_FAILED: &str = "The filter list could not be downloaded";
 const LIST_DEADLINE: Duration = Duration::from_secs(300);
 /// The requests judged in one tick; the rest of a burst goes on unjudged.
 const MAX_JUDGED_PER_TICK: usize = 64;
@@ -57,6 +59,8 @@ pub(super) struct Adblock {
     /// The list address last looked at (None until the first look: not a change).
     url_seen: Option<String>,
     force: bool,
+    /// The settings page asked for this update and wants to be told how it ended.
+    report: bool,
     /// Requests judged in this tick (reset by `web_tick`).
     pub(super) judged: std::cell::Cell<usize>,
 }
@@ -215,6 +219,7 @@ impl App {
 
     fn adblock_download(&mut self, url: &str) {
         if !adblock::list_url_ok(url) {
+            self.adblock_report(Err(crate::browser_settings_page::INVALID_FILTER_URL.to_string()));
             crate::rlog!("adblock: the list address was refused");
             self.banners.set("adblock", adblock::invalid_url_text(&crate::inert_files::display_text(url, 120, false)));
             return;
@@ -235,6 +240,7 @@ impl App {
                 Some(HttpEvent::Done { body, error }) => {
                     self.adblock.call = None;
                     if error.is_some() || body.len() > adblock::MAX_LIST_BYTES {
+                        self.adblock_report(Err(UPDATE_FAILED.to_string()));
                         self.adblock_failed();
                     } else {
                         self.adblock.working = true;
@@ -270,12 +276,47 @@ impl App {
                     self.globals.set(adblock::LAST_UPDATE_KEY, toml::Value::Integer(unix_now()));
                     let _ = self.globals.save();
                     self.banners.clear("adblock");
+                    self.adblock_report(Ok(()));
                 }
-                Done::Fetched(Err(_)) => {
+                Done::Fetched(Err(e)) => {
                     self.adblock.working = false;
+                    self.adblock_report(Err(e));
                     self.adblock_failed();
                 }
             }
+        }
+    }
+
+    /// The compiled rules' count while a list is loaded.
+    pub(super) fn adblock_loaded_rules(&self) -> Option<usize> {
+        self.adblock.rules.as_ref().map(|r| r.len())
+    }
+
+    /// The saved list's rule count (read bounded, the file is a plain file below the cap).
+    pub(super) fn adblock_saved_rules(&self) -> usize {
+        data_dir().ok().and_then(|d| load_list(&d)).map_or(0, |json| adblock::saved_rule_count(&json))
+    }
+
+    /// "Update Now" on the settings page (`SH:254-257`): an update starts at the next look even when
+    /// 24 hours have not passed, and the page is told how it ended. An update already running is
+    /// the one reported. Returns false when ad blocking is off (nothing starts).
+    pub(super) fn adblock_refresh_now(&mut self) -> bool {
+        if !self.adblock_on() {
+            return false;
+        }
+        self.adblock.report = true;
+        if self.adblock.call.is_none() && !self.adblock.working {
+            self.adblock.force = true;
+            self.adblock.next_check = Some(Instant::now());
+            self.redraw();
+        }
+        true
+    }
+
+    /// An update the settings page asked for ended (once): every settings page is told.
+    fn adblock_report(&mut self, result: Result<(), String>) {
+        if std::mem::take(&mut self.adblock.report) {
+            self.browser_settings_adblock_result(result);
         }
     }
 
