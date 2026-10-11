@@ -818,15 +818,54 @@ fn local_scheme(s: &str) -> bool {
 /// - a navigation Tandem started (`navigate_tandem`) or the person started is allowed;
 /// - a page on `iterm2-file:` or `iterm2-ssh:` may navigate nowhere;
 /// - a `file:`, `iterm2-file:` or `iterm2-ssh:` target is allowed only from an `iterm2-about:`
-///   source;
+///   source, or from a folder listing to an entry inside the committed root (`listing_click_ok`; a
+///   served file and an ssh page navigate to no local page, except a reload of themselves);
 /// - everything else is allowed. Schemes compare ignoring ASCII case.
 pub fn navigation_allowed(source: Option<&str>, target: &str, user: bool, redirect: bool, by_tandem: bool, file_ok: bool) -> bool {
+    navigation_allowed_in(source, target, user, redirect, by_tandem, file_ok, None)
+}
+
+/// Whether `url` is a page of the file or ssh scheme (`iterm2-file:` / `iterm2-ssh:`).
+fn local_page(url: &str) -> bool {
+    matches!(scheme_of(url).as_str(), "iterm2-file" | "iterm2-ssh")
+}
+
+/// `url` without its fragment: the same document.
+fn bare(url: &str) -> &str {
+    url.split('#').next().unwrap_or("")
+}
+
+/// A click on a Tandem-made folder LISTING (`iterm2-file:` whose path ends in `/`) may go to an entry of
+/// the same scheme and authority, inside the committed `root` (else inside the listing's own folder), and
+/// nowhere else. A served file (remote or local content) and every `iterm2-ssh:` page may navigate to no
+/// local page at all; the caller allows a reload of the same URL first (13x8 Task 9 review I1).
+pub fn listing_click_ok(source: &str, target: &str, root: Option<&crate::browser_pages::PageRoot>) -> bool {
+    use crate::browser_pages::{FILE_SCHEME, local_parts};
+    let (Some((ss, sa, sp)), Some((ts, ta, tp))) = (local_parts(source), local_parts(target)) else { return false };
+    if ss != FILE_SCHEME || ts != ss || !sa.eq_ignore_ascii_case(&ta) || !sp.ends_with('/') {
+        return false;
+    }
+    let own = sp.trim_start_matches('/').to_lowercase();
+    let bound = match root {
+        Some(r) if r.scheme == ss && r.host.is_none() => r.folder.trim_start_matches('/').to_lowercase(),
+        _ => own,
+    };
+    let tp = tp.trim_start_matches('/').to_lowercase();
+    let bound = if bound.ends_with('/') { bound } else { format!("{bound}/") };
+    tp == bound.trim_end_matches('/') || tp.starts_with(&bound)
+}
+
+pub fn navigation_allowed_in(source: Option<&str>, target: &str, user: bool, redirect: bool, by_tandem: bool, file_ok: bool, root: Option<&crate::browser_pages::PageRoot>) -> bool {
     let t = scheme_of(target);
     if t == "file" && !file_ok {
         return false;
     }
     if redirect && local_scheme(&t) {
         return false;
+    }
+    // A reload of the page itself (Try Again, F5) goes on, whoever asks.
+    if !by_tandem && source.is_some_and(|src| local_page(src) && bare(src) == bare(target)) {
+        return true;
     }
     let s = source.map(scheme_of).unwrap_or_default();
     // A page that acts with power (settings, onboarding steps) is opened by Tandem, by the person
@@ -838,7 +877,11 @@ pub fn navigation_allowed(source: Option<&str>, target: &str, user: bool, redire
     // A page of the web cannot start a file or ssh page, not even by a click the person is tricked
     // into (preflight B5): only Tandem, or the local pages themselves (a listing's links).
     if user && !by_tandem && matches!(t.as_str(), "iterm2-file" | "iterm2-ssh") {
-        return matches!(s.as_str(), "iterm2-about" | "iterm2-file" | "iterm2-ssh");
+        return match s.as_str() {
+            "iterm2-about" => true,
+            "iterm2-file" | "iterm2-ssh" => source.is_some_and(|src| listing_click_ok(src, target, root)),
+            _ => false,
+        };
     }
     if by_tandem || user {
         return true;
@@ -1099,6 +1142,8 @@ pub fn notifications_offered(events: bool, workers_refused: bool, old_workers_cl
 /// `Charge` they make.
 #[derive(Debug, Default)]
 pub struct ViewGate {
+    /// The tree the app committed for the view's file page (see `NavPolicy.local_root`).
+    local_root: std::sync::Mutex<Option<crate::browser_pages::PageRoot>>,
     events: AtomicUsize,
     bytes: AtomicUsize,
     messages: AtomicUsize,
@@ -1137,6 +1182,14 @@ impl Drop for Charge {
 impl ViewGate {
     pub fn new() -> Arc<ViewGate> {
         Arc::new(ViewGate::default())
+    }
+
+    pub fn set_local_root(&self, root: Option<crate::browser_pages::PageRoot>) {
+        *self.local_root.lock().unwrap_or_else(|e| e.into_inner()) = root;
+    }
+
+    pub fn local_root(&self) -> Option<crate::browser_pages::PageRoot> {
+        self.local_root.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Room for `event`? A droppable event over the caps is refused and counted (the newest is
@@ -1357,6 +1410,9 @@ pub struct NavPolicy {
     pub guard_local_schemes: bool,
     /// Only these schemes may load (a Tandem load is exempt); None allows any the guard allows.
     pub allowed_schemes: Option<Vec<String>>,
+    /// The tree the person opened a file page in (set by the app at the commit): a click on a listing
+    /// may go only inside it (13x8 Task 9 review I1).
+    pub local_root: Option<crate::browser_pages::PageRoot>,
 }
 
 /// The whole decision of the one NavigationStarting handler: true lets the navigation go, false
@@ -1372,7 +1428,7 @@ pub fn nav_verdict(info: &NavInfo, policy: &NavPolicy, file_ok: &dyn Fn(&str) ->
         return true;
     }
     let file_ok = scheme_of(info.target) == "file" && file_ok(info.target);
-    navigation_allowed(info.source, info.target, info.user, info.redirect, info.by_tandem, file_ok)
+    navigation_allowed_in(info.source, info.target, info.user, info.redirect, info.by_tandem, file_ok, policy.local_root.as_ref())
 }
 
 /// Whether a refused navigation is offered to the app: a person's own click on a link (not a
@@ -2231,7 +2287,7 @@ mod tests {
     fn nav_verdict_guard_cancels_local_navigations_from_a_page() {
         let from_page = |target| NavInfo { target, source: Some("https://example.test/"), user: false, redirect: false, by_tandem: false };
         let yes = |_: &str| true;
-        let guarded = NavPolicy { guard_local_schemes: true, allowed_schemes: None };
+        let guarded = NavPolicy { guard_local_schemes: true, allowed_schemes: None, local_root: None };
         let open = NavPolicy::default();
         for target in ["file:///C:/Windows/", "iterm2-file:///x", "iterm2-ssh:host"] {
             assert!(!nav_verdict(&from_page(target), &guarded, &yes), "{target} from a web page");
@@ -2245,7 +2301,7 @@ mod tests {
         let redirected = NavInfo { target: "file:///C:/x", source: None, user: false, redirect: true, by_tandem: true };
         assert!(!nav_verdict(&redirected, &guarded, &yes));
         // The scheme list cancels what it does not name, except Tandem's own load.
-        let only_https = NavPolicy { guard_local_schemes: true, allowed_schemes: Some(vec!["https".into()]) };
+        let only_https = NavPolicy { guard_local_schemes: true, allowed_schemes: Some(vec!["https".into()]), local_root: None };
         assert!(!nav_verdict(&from_page("http://example.test/"), &only_https, &yes));
         let own = NavInfo { target: "http://tandem.test/", source: None, user: false, redirect: false, by_tandem: true };
         assert!(nav_verdict(&own, &only_https, &yes));
@@ -2307,6 +2363,42 @@ mod tests {
         assert!(!refused.droppable() && refused.view() == 2 && refused.weight() == 0, "a refusal is always said");
         assert_eq!((start.view(), done.view(), progress.view()), (2, 2, 2));
         assert_eq!((start.weight(), done.weight()), (11, 28));
+    }
+
+    /// 13x8 Task 9 review I1: a click in a served file (remote or local) or an ssh page goes to no local
+    /// page; a folder listing's links stay inside the committed root and the same scheme; a reload of
+    /// the page itself always goes on (Try Again).
+    #[test]
+    fn local_pages_link_only_inside_the_listing_root() {
+        let n = |s: &str, t: &str, user: bool, root: Option<&crate::browser_pages::PageRoot>| navigation_allowed_in(Some(s), t, user, false, false, true, root);
+        let ssh = "iterm2-ssh://box/a.html";
+        for target in ["iterm2-ssh://other/x", "iterm2-ssh://box/b.txt", "iterm2-ssh://u@box:2222/a.html", "iterm2-file:///C:/Users/u/x.txt", "iterm2-file:///C:/"] {
+            assert!(!n(ssh, target, true, None), "{target} from an ssh page");
+            assert!(!n("iterm2-file:///C:/T/a.html", target, true, None), "{target} from a served file");
+        }
+        assert!(!n("iterm2-file:///C:/T/a.html", "iterm2-file:///C:/T/b.txt", true, None), "a served file links nowhere");
+        for (src, same) in [(ssh, ssh), ("iterm2-file:///C:/T/a.html", "iterm2-file:///C:/T/a.html"), ("iterm2-file:///C:/T/a.html", "iterm2-file:///C:/T/a.html#top")] {
+            assert!(n(src, same, true, None) && n(src, same, false, None), "a reload of {src}");
+        }
+        assert!(!navigation_allowed_in(Some(ssh), ssh, true, true, false, true, None), "a redirect to a local page stays refused");
+        let root = crate::browser_pages::page_root("iterm2-file:///C:/T/").unwrap();
+        let r = Some(&root);
+        assert!(n("iterm2-file:///C:/T/", "iterm2-file:///C:/T/b.txt", true, r));
+        assert!(n("iterm2-file:///C:/T/sub/", "iterm2-file:///C:/T/", true, r), "up to the root");
+        assert!(n("iterm2-file:///C:/T/sub/", "iterm2-file:///c:/t/Sub/x.txt", true, r), "Windows paths ignore case");
+        assert!(!n("iterm2-file:///C:/T/", "iterm2-file:///C:/", true, r), ".. above the root");
+        assert!(!n("iterm2-file:///C:/T/", "iterm2-file:///C:/Tx/a", true, r), "a prefix is not a folder");
+        assert!(!n("iterm2-file:///C:/T/", "iterm2-file:///D:/x", true, r));
+        assert!(!n("iterm2-file:///C:/T/", "iterm2-file://host/C:/T/x", true, r), "another authority");
+        assert!(!n("iterm2-file:///C:/T/", "iterm2-ssh://box/x", true, r), "file to ssh");
+        assert!(!n("iterm2-file:///C:/T/", "iterm2-file:///C:/T/b.txt", false, r), "a script's navigation");
+        assert!(n("iterm2-file:///C:/T/", "iterm2-file:///C:/T/b.txt", true, None), "no root: inside the listing's own folder");
+        assert!(!n("iterm2-file:///C:/T/", "iterm2-file:///C:/", true, None));
+        // The same through the handler's own entry point.
+        let policy = NavPolicy { guard_local_schemes: true, allowed_schemes: None, local_root: Some(root.clone()) };
+        let info = |source, target| NavInfo { target, source: Some(source), user: true, redirect: false, by_tandem: false };
+        assert!(nav_verdict(&info("iterm2-file:///C:/T/", "iterm2-file:///C:/T/x"), &policy, &|_| true));
+        assert!(!nav_verdict(&info("iterm2-file:///C:/T/", "iterm2-file:///C:/"), &policy, &|_| true));
     }
 
     /// 13x8 Task 10: an extension's page (`chrome-extension:`) cannot start a power page, a file page or

@@ -1417,7 +1417,7 @@ impl App {
             browser::Typed::Navigate(u) => self.browser_navigate(pane, &u),
             browser::Typed::File(u) => {
                 let info = webhost::NavInfo { target: &u, source: None, user: true, redirect: false, by_tandem: false };
-                let policy = webhost::NavPolicy { guard_local_schemes: true, allowed_schemes: None };
+                let policy = webhost::NavPolicy { guard_local_schemes: true, allowed_schemes: None, local_root: None };
                 let judge = |p: &std::path::Path| crate::localfs::LocalPath::judge(p).is_some();
                 if webhost::nav_verdict(&info, &policy, &|t| webhost::file_url_local(t, &judge)) {
                     self.browser_navigate(pane, &u);

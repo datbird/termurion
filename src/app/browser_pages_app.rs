@@ -43,6 +43,25 @@ impl App {
             bv.page_root = None;
             bv.page_url = None;
         }
+        self.browser_local_root_sync(pane);
+    }
+
+    /// The tree the navigation guard lets a listing's links go to: the root the person opened the file
+    /// page at. A page committed inside the old root keeps it; any other file page (one the person or
+    /// Tandem opened, since a click out of the root was refused) starts a new one; leaving file pages
+    /// ends it (13x8 Task 9 review I1).
+    pub(super) fn browser_local_root_sync(&mut self, pane: PaneId) {
+        let Some(bv) = self.browser_views.get(&pane) else { return };
+        let Some(view) = bv.view.as_ref() else { return };
+        let old = view.local_root();
+        let next = match (&bv.page_root, &old) {
+            (None, _) => None,
+            (Some(new), Some(old)) if new.scheme == old.scheme && new.host == old.host && new.folder.to_lowercase().starts_with(&old.folder.to_lowercase()) => Some(old.clone()),
+            (Some(new), _) => Some(new.clone()),
+        };
+        if next != old {
+            view.set_local_root(next);
+        }
     }
 
     /// The view's Source changed (a navigation committed): the page root is the pending navigation's
@@ -63,6 +82,7 @@ impl App {
         if !source.eq_ignore_ascii_case(browser_pages::ERROR_URL) {
             bv.pending_error = None;
         }
+        self.browser_local_root_sync(pane);
     }
 
     /// A main-frame load failed (`BM:1329-1390`): the error page when this URL is not the one that

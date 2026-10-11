@@ -1116,6 +1116,16 @@ impl WebView {
         });
     }
 
+    /// The tree the app committed for this view's file page (the navigation guard reads it at
+    /// every NavigationStarting). None: no file page.
+    pub fn set_local_root(&self, root: Option<crate::browser_pages::PageRoot>) {
+        self.inner.borrow().poster.gate.set_local_root(root);
+    }
+
+    pub fn local_root(&self) -> Option<crate::browser_pages::PageRoot> {
+        self.inner.borrow().poster.gate.local_root()
+    }
+
     /// Adds the unpacked extension in `folder` to this view's profile (`AddBrowserExtension`; it is
     /// enabled once added). `Event::ExtensionAdded` follows with the id and name, or a reason. The
     /// app calls this only for a folder the person chose and approved for this profile.
@@ -2000,7 +2010,7 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
                     by_tandem = true;
                 }
             }
-            (webhost::NavPolicy { guard_local_schemes: i.setup.guard_local_schemes, allowed_schemes: i.setup.allowed_schemes.clone() }, by_tandem)
+            (webhost::NavPolicy { guard_local_schemes: i.setup.guard_local_schemes, allowed_schemes: i.setup.allowed_schemes.clone(), local_root: i.poster.gate.local_root() }, by_tandem)
         };
         // The one verdict (webhost::nav_verdict): scheme list, then the local-scheme guard.
         let source = sender.as_ref().and_then(source_of);
@@ -6842,8 +6852,12 @@ window.addEventListener('message', function (e) {
         let n = p.order.len();
         p.view().navigate_tandem("iterm2-ssh://box/b.txt");
         assert!(p.wait(15, |p| p.order.iter().skip(n).any(|o| o.contains("iterm2-ssh://box/b.txt"))), "the request arrived: {:?}", p.order);
+        // The deferral of the held request is in the view's table; dropping the view completes and empties it.
+        let inner = p.view().inner.clone();
+        assert!(!inner.borrow().pending.is_empty(), "the held request is a deferral the view holds");
         p.view.take();
         p.settle(500);
+        assert!(inner.borrow().pending.is_empty(), "the dropped view completed the deferral (no hang)");
         p.finish();
     }
 

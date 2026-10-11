@@ -54,7 +54,7 @@ impl App {
         }
         let ext = std::path::Path::new(&path).extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
         let mime = crate::mime_ext::mime_for_extension(&ext).unwrap_or("application/octet-stream");
-        let (job, actions) = self.ssh_transfers.download(conductor, &path);
+        let (job, actions) = self.ssh_transfers.download_file_only(conductor, &path);
         self.ssh_page_jobs.insert(job, PageJob { pane: conductor, view_pane: pane, token, url: url.to_string(), path, document, mime, body: Vec::new(), answered: false });
         self.ssh_transfer_apply(actions);
     }
@@ -168,7 +168,7 @@ mod tests {
         let parse = req.find("ssh_page::parse(").unwrap();
         let ident = req.find("ssh_page::identity_matches(").unwrap();
         let pane = req.find("self.pane_for_identity(").unwrap();
-        let start = req.find("self.ssh_transfers.download(").unwrap();
+        let start = req.find("self.ssh_transfers.download_file_only(").unwrap();
         assert!(parse < ident && ident < pane && pane < start);
         assert!(req.contains("self.ssh_registry.identities()"), "only a session the registry holds");
         assert!(req.contains("ssh_page::no_conductor_page("), "none: the page that says so");
