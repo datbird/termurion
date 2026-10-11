@@ -251,9 +251,9 @@ impl App {
             let on_bar = self.bar_shown_for(id);
             match pct {
                 Some(pct) if !on_bar => {
-                    // A window opened with the old-style key on says it in `PasteView.xib`'s words.
+                    // Both styles say it in the xibs' words ("Pasting\u{2026}"); the bar widget is not drawn in either.
                     let layout = crate::dropdown_views::paste_layout(self.dropdown_views.old_style());
-                    let text = if self.dropdown_views.old_style() { format!("{} {pct}%", layout.label_text) } else { format!("Pasting... {pct}%") };
+                    let text = format!("{} {pct}%", layout.label_text);
                     self.ask(id, PASTE_BAR, &text, &["Cancel"], true);
                 }
                 _ => {

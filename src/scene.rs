@@ -686,15 +686,25 @@ pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) 
     mode_rect
 }
 
+/// The rectangles of the old find bar a click lands on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OldFind {
+    /// The field's left end, which opens the mode menu.
+    pub mode: Rect,
+    pub previous: Rect,
+    pub next: Rect,
+    pub close: Rect,
+}
+
 /// The find bar in `FindView.xib`'s old layout (`UseOldStyleDropDownViews`): a 288 by 28 point box
 /// at the pane's top right with the search field, the previous/next pair and the close button at
-/// the xib's frames (`dropdown_views::find_layout`, origin bottom-left, so y is flipped). Returns
-/// the rectangle of the field's left end, which opens the mode menu when clicked.
-pub fn find_bar_old(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) -> Rect {
+/// the xib's frames (`dropdown_views::find_layout`, origin bottom-left, so y is flipped). The
+/// xib's points become pixels by `scale` (the window's DPI scale). Returns the click targets.
+pub fn find_bar_old(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32), scale: f32) -> OldFind {
     let l = crate::dropdown_views::find_layout(true);
-    let (w, h) = (l.size.0.min(pane.w), l.size.1);
+    let (w, h) = ((l.size.0 * scale).min(pane.w), l.size.1 * scale);
     let r = Rect { x: pane.x + pane.w - w, y: pane.y, w, h };
-    let at = |f: crate::dropdown_views::Frame| Rect { x: r.x + f.x, y: r.y + (h - f.y - f.h), w: f.w, h: f.h };
+    let at = |f: crate::dropdown_views::Frame| Rect { x: r.x + f.x * scale, y: r.y + (h - (f.y + f.h) * scale), w: f.w * scale, h: f.h * scale };
     frame.quads.push(Quad { rect: r, color: rgba(FIND_BAR, 1.0) });
     cut_rows_from(frame, r, cell.1);
     let field = at(l.field);
@@ -711,11 +721,14 @@ pub fn find_bar_old(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f3
     frame.rows.push(TextRow { x: field.x + cell.0, y: text_y(field), spans: vec![span(format!("{shown}_"), color)], clip: field, scale: 1.0, face: crate::render::DEFAULT_FACE });
     let arrows = at(l.arrows);
     let (a, b) = crate::dropdown_views::ARROW_SEGMENTS;
-    frame.rows.push(TextRow { x: arrows.x + (a - cell.0) / 2.0, y: text_y(arrows), spans: vec![span("<".into(), TAB_TEXT)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
-    frame.rows.push(TextRow { x: arrows.x + a + (b - cell.0) / 2.0, y: text_y(arrows), spans: vec![span(">".into(), TAB_TEXT)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    let (a, b) = (a * scale, b * scale);
+    let previous = Rect { x: arrows.x, y: arrows.y, w: a, h: arrows.h };
+    let next = Rect { x: arrows.x + a, y: arrows.y, w: b, h: arrows.h };
+    frame.rows.push(TextRow { x: previous.x + (a - cell.0) / 2.0, y: text_y(arrows), spans: vec![span("<".into(), TAB_TEXT)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    frame.rows.push(TextRow { x: next.x + (b - cell.0) / 2.0, y: text_y(arrows), spans: vec![span(">".into(), TAB_TEXT)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
     let close = at(l.close);
     frame.rows.push(TextRow { x: close.x + (close.w - cell.0) / 2.0, y: text_y(close), spans: vec![span("x".into(), TAB_TEXT_DIM)], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
-    Rect { x: field.x, y: field.y, w: (cell.0 * 2.0).min(field.w), h: field.h }
+    OldFind { mode: Rect { x: field.x, y: field.y, w: (cell.0 * 2.0).min(field.w), h: field.h }, previous, next, close }
 }
 
 /// iTerm2's Copy Mode cursor: a flag in the lower third of the cell at `row`, `col` (on
@@ -5685,6 +5698,29 @@ mod tests {
         assert!(f.popups.iter().any(|q| q.rect == r), "the box goes in popups");
         let text: String = f.rows.iter().flat_map(|row| row.spans.iter().map(|s| s.text.clone())).collect::<Vec<_>>().join(" ");
         assert!(text.contains("restricts Find, Filter, and Select All") && text.ends_with(crate::cmdsel::DISABLE_LINK));
+    }
+
+    /// Review fix I1: the old bar's xib points are scaled by the window's DPI scale, so the typed
+    /// text fits its field at 200%, and the buttons sit inside the box.
+    #[test]
+    fn the_old_find_bar_scales_the_xibs_points() {
+        let area = Rect { x: 0.0, y: 0.0, w: 1200.0, h: 600.0 };
+        let bar = FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false, notice: None, progress: None, selection: rgb(0, 0, 0) };
+        let cell = (16.0, 34.0);
+        let mut f = Frame::default();
+        let o = find_bar_old(&mut f, &bar, area, cell, 2.0);
+        let field = f.quads[f.quads.len() - 1].rect;
+        assert_eq!((field.w, field.h), (412.0, 38.0));
+        assert!(cell.1 <= field.h, "the text row fits inside the field");
+        let bx = f.quads.iter().find(|q| q.rect.w == 576.0).expect("the 288 pt box at 2x").rect;
+        assert_eq!(bx.h, 56.0);
+        for r in [o.previous, o.next, o.close] {
+            assert!(r.x >= bx.x && r.x + r.w <= bx.x + bx.w && r.y >= bx.y && r.y + r.h <= bx.y + bx.h, "{r:?} inside the box");
+        }
+        assert!(o.previous.x + o.previous.w <= o.next.x + 0.01 && o.next.x + o.next.w <= o.close.x + 0.01 + 4.0);
+        let mut one = Frame::default();
+        let o1 = find_bar_old(&mut one, &bar, area, (8.0, 17.0), 1.0);
+        assert_eq!(o1.previous.w, 19.0);
     }
 
     #[test]

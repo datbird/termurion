@@ -27,6 +27,7 @@ pub(super) struct WinSlot {
     command_info: Option<selection_ui::CommandInfo>,
     find_bar_rect: Option<Rect>,
     find_mode_rect: Option<Rect>,
+    find_old_buttons: Option<scene::OldFind>,
     /// The title bars drawn last frame (pane, geometry), for clicks.
     title_bars: Vec<(PaneId, crate::pane_title::Geometry)>,
     title_press: Option<super::pane_title_ui::TitlePress>,
@@ -175,6 +176,7 @@ impl WinSlot {
             command_info: None,
             find_bar_rect: None,
             find_mode_rect: None,
+            find_old_buttons: None,
             title_bars: Vec::new(),
             title_press: None,
             tab_bar: crate::tab_layout::Bar::default(),
@@ -303,6 +305,7 @@ impl App {
         swap(&mut self.command_info, &mut s.command_info);
         swap(&mut self.find_bar_rect, &mut s.find_bar_rect);
         swap(&mut self.find_mode_rect, &mut s.find_mode_rect);
+        swap(&mut self.find_old_buttons, &mut s.find_old_buttons);
         swap(&mut self.title_bars, &mut s.title_bars);
         swap(&mut self.title_press, &mut s.title_press);
         swap(&mut self.tab_bar, &mut s.tab_bar);
@@ -1069,6 +1072,7 @@ impl WinSlot {
             command_info: None,
             find_bar_rect: None,
             find_mode_rect: None,
+            find_old_buttons: None,
             title_bars: Vec::new(),
             title_press: None,
             tab_bar: crate::tab_layout::Bar::default(),

@@ -210,7 +210,7 @@ impl App {
             ui.push(Overlay::Indicator, h.1);
         }
         if self.focused_id().is_some_and(|id| self.finds.get(&id).is_some_and(|f| f.open)) {
-            for r in self.find_bar_rect.into_iter().chain(self.find_mode_rect) {
+            for r in self.find_bar_rect.into_iter().chain(self.find_mode_rect).chain(self.find_old_buttons.into_iter().flat_map(|o| [o.previous, o.next, o.close])) {
                 ui.push(Overlay::Find, r);
             }
         }

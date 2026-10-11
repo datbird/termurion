@@ -416,7 +416,7 @@ mod win {
         for dir in std::env::split_paths(path) {
             // An empty or relative entry means the current folder: never searched, so a file
             // planted there cannot stand in for the CLI.
-            if dir.as_os_str().is_empty() || !dir.is_absolute() {
+            if dir.as_os_str().is_empty() || !dir.is_absolute() || crate::remote_prefs::is_unc(&dir.to_string_lossy()) {
                 continue;
             }
             for name in &names {
@@ -592,6 +592,14 @@ mod win {
         }
 
         /// An empty entry (";;") or a relative one never means the current folder.
+        /// Re-review N2: a network entry of PATH is never looked into.
+        #[test]
+        fn the_path_search_skips_network_entries() {
+            let body = include_str!("pwm_run.rs").split("fn resolve_in(").nth(1).unwrap().split("fn wait_polling").next().unwrap();
+            assert!(body.contains("is_unc"), "a UNC entry is skipped before any probe");
+            assert!(resolve_in("bw", std::ffi::OsStr::new("\\\\host\\share;//host/share"), ".CMD").is_err());
+        }
+
         #[test]
         fn the_path_lookup_skips_empty_and_relative_entries() {
             let name = format!("kxplant{}", std::process::id());

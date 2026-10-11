@@ -560,10 +560,20 @@ impl<'a> Cmdr<'a> {
         // Secrets are replaced on the whole text first; a cut before it could keep a prefix.
         // One to three character secrets are not replaced (every word would turn into the mask
         // and show the pattern).
+        // Hidden characters go before the replace too, so one inside a secret cannot defeat it.
         let mut s = text.to_string();
-        for h in &self.hide {
-            if h.expose().chars().count() >= 4 {
-                s = s.replace(h.expose(), "<hidden>");
+        for pass in 0..2 {
+            for h in &self.hide {
+                if h.expose().chars().count() >= 4 {
+                    s = s.replace(h.expose(), "<hidden>");
+                    let plain = display_text(h.expose(), usize::MAX, false);
+                    if plain.chars().count() >= 4 {
+                        s = s.replace(&plain, "<hidden>");
+                    }
+                }
+            }
+            if pass == 0 {
+                s = display_text(&s, usize::MAX, false);
             }
         }
         display_text(&s, MAX_TEXT, false)
@@ -1165,6 +1175,18 @@ mod tests {
 
     fn header(url: &str) -> serde_json::Value {
         serde_json::json!({"mode": "terminal", "settings": {"serviceURL": url}})
+    }
+
+    /// Re-review N3: a hidden character inside the key in the server's text cannot keep the key
+    /// from being replaced.
+    #[test]
+    fn a_hidden_character_cannot_defeat_the_mask() {
+        let mut fake = Fake::new(&[]);
+        let hdr: RequestHeader = serde_json::from_value(header("http://127.0.0.1:8900")).unwrap();
+        let Ok(c) = Cmdr::new(&mut fake, &hdr, Secret::new(KEY.to_string())) else { panic!("no client") };
+        let shown = c.clean("bad key key-SE\u{200b}CRET-123 and key-SECRET-123");
+        assert!(!shown.contains("SECRET") && !shown.contains('\u{200b}'), "{shown}");
+        assert_eq!(shown.matches("<hidden>").count(), 2);
     }
 
     fn token() -> String {

@@ -363,6 +363,10 @@ mod tests {
             ("NoSyncCodeReviewLastSelectedPromptUUID", "Workgroups", Kind::String, text("")),
             ("NoSyncClaudeCodeAutoSendClippingsBackfilled", "Workgroups", Kind::Bool, bool(false)),
             ("NoSyncClaudeCodeAutoRequestReviewBackfilled", "Workgroups", Kind::Bool, bool(false)),
+            ("NoSyncSyncDataFilesWithCustomFolder", "General", Kind::Dict, Some(toml::Value::Table(toml::Table::new()))),
+            ("NoSyncRemoteDataFileSyncBaselineSignatures", "General", Kind::Dict, Some(toml::Value::Table(toml::Table::new()))),
+            ("NoSyncRemoteDataFileSyncLastPushedLocal", "General", Kind::Dict, Some(toml::Value::Table(toml::Table::new()))),
+            ("NoSyncRemoteDataFileSyncDiscardPending", "General", Kind::Dict, Some(toml::Value::Table(toml::Table::new()))),
         ];
         for (key, section, kind, default) in &expect {
             let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));

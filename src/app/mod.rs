@@ -500,6 +500,8 @@ pub struct App {
     /// Where the focused pane's find bar and its mode label were last drawn.
     find_bar_rect: Option<Rect>,
     find_mode_rect: Option<Rect>,
+    /// The old find bar's previous, next and close rectangles (`UseOldStyleDropDownViews`).
+    find_old_buttons: Option<scene::OldFind>,
     /// The title bars drawn last frame (pane, geometry), for clicks (per window).
     title_bars: Vec<(PaneId, crate::pane_title::Geometry)>,
     /// A left press on a title bar button, waiting for its release.
@@ -2161,6 +2163,7 @@ pub fn run() {
         find_focus_seen: None,
         find_bar_rect: None,
         find_mode_rect: None,
+        find_old_buttons: None,
         title_bars: Vec::new(),
         title_press: None,
         pane_move: None,
@@ -6633,6 +6636,7 @@ impl App {
             }
             self.find_bar_rect = browser_find_drawn.map(|d| d.0);
             self.find_mode_rect = browser_find_drawn.map(|d| d.1);
+            self.find_old_buttons = None;
             // A pane whose status bar shows its find (a Search or Filter Tool) has no find bar; a
             // browser pane's was drawn above its page.
             let bar_pane = self.visible(tab).into_iter().find(|(id, _)| *id == tab.focused).filter(|_| self.bar_find_host(tab.focused).is_none() && !self.is_browser_pane(tab.focused));
@@ -6643,9 +6647,15 @@ impl App {
                 let palette_selection = self.panes.get(&tab.focused).map_or(crate::palette::Palette::default().selection, |p| p.screen.palette.selection);
                 let bar = scene::FindBar { query: &f.query, count: &count, mode: mode.label(), error: f.error.is_some(), notice: restricted.then_some(crate::cmdsel::NOTICE), progress: f.progress, selection: palette_selection };
                 let first_quad = frame.quads.len();
-                let mode_rect = if self.dropdown_views.old_style() { scene::find_bar_old(&mut frame, &bar, rect, cell) } else { scene::find_bar(&mut frame, &bar, rect, cell) };
+                let (mode_rect, old) = if self.dropdown_views.old_style() {
+                    let o = scene::find_bar_old(&mut frame, &bar, rect, cell, self.scale());
+                    (o.mode, Some(o))
+                } else {
+                    (scene::find_bar(&mut frame, &bar, rect, cell), None)
+                };
                 self.find_bar_rect = frame.quads.get(first_quad).map(|q| q.rect);
                 self.find_mode_rect = Some(mode_rect);
+                self.find_old_buttons = old;
             }
         }
         for (id, held, until) in held_updates {

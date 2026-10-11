@@ -933,7 +933,7 @@ mod tests {
             assert!(push_capped(&mut q, ask(d(pane))).is_none());
         }
         assert!(push_capped(&mut q, ask(d(99))).is_some(), "one download too many");
-        for then in [Then::Paste(1), Then::Restart(1, Default::default()), Then::PrefsQuit, Then::PrefsQuitData, Then::Broadcast { clear: true, me: 1, targets: vec![2] }, Then::TmuxNew { anchor: 1, window: false, beside: Some(3) }, Then::SlowScan, Then::CloseTabs { window: winit::window::WindowId::from(1), ids: vec![2] }] {
+        for then in [Then::Paste(1), Then::Restart(1, Default::default()), Then::PrefsQuit, Then::Broadcast { clear: true, me: 1, targets: vec![2] }, Then::TmuxNew { anchor: 1, window: false, beside: Some(3) }, Then::SlowScan, Then::CloseTabs { window: winit::window::WindowId::from(1), ids: vec![2] }] {
             assert!(push_capped(&mut q, ask(then.clone())).is_none(), "{then:?}");
         }
         assert_eq!(q.len(), LIMIT + 7);

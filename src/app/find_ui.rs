@@ -519,6 +519,13 @@ impl App {
             self.redraw();
             return true;
         }
+        self.find_outcome(id, outcome, was_filter);
+        self.redraw();
+        true
+    }
+
+    /// What the bar's answer does, for a key and for the old bar's buttons alike (one owner).
+    fn find_outcome(&mut self, id: PaneId, outcome: Outcome, was_filter: bool) {
         match outcome {
             Outcome::Nothing => {}
             Outcome::Close => {
@@ -540,8 +547,6 @@ impl App {
                 }
             }
         }
-        self.redraw();
-        true
     }
 
     /// Text the IME commits while the find bar has the keyboard: typed into the query, as
@@ -965,6 +970,27 @@ impl App {
             self.show_find_mode_menu();
             return true;
         }
+        // The old bar's buttons do what Shift+Return, Return and Esc do.
+        if let Some(o) = self.find_old_buttons {
+            let key = if o.previous.contains(x, y) {
+                Some(BarKey::Previous)
+            } else if o.next.contains(x, y) {
+                Some(BarKey::Next)
+            } else if o.close.contains(x, y) {
+                Some(BarKey::Close)
+            } else {
+                None
+            };
+            if let Some(key) = key {
+                if let Some(f) = self.finds.get_mut(&id) {
+                    let was_filter = f.filter;
+                    let outcome = f.key(key, Instant::now());
+                    self.find_outcome(id, outcome, was_filter);
+                }
+                self.redraw();
+                return true;
+            }
+        }
         let in_bar = self.find_bar_rect.is_some_and(|r| r.contains(x, y));
         if let Some(f) = self.finds.get_mut(&id) {
             f.typing = in_bar;
@@ -1227,6 +1253,15 @@ mod tests {
         assert_eq!(find_delay(&g), Duration::from_secs(1));
         g.set("FindDelaySeconds", toml::Value::Float(1e300));
         assert_eq!(find_delay(&g), Duration::from_secs(10));
+    }
+
+    /// Review fix I2: the old bar's previous, next and close buttons take the key's route.
+    #[test]
+    fn the_old_bars_buttons_do_what_the_keys_do() {
+        let body = include_str!("find_ui.rs").split("pub(super) fn find_press").nth(1).unwrap().split("\n    }\n").next().unwrap();
+        assert!(body.contains("BarKey::Previous") && body.contains("BarKey::Next") && body.contains("BarKey::Close"));
+        assert!(body.contains("find_outcome"), "one owner of what the bar's answer does");
+        assert!(include_str!("find_ui.rs").contains("self.find_outcome(id, outcome, was_filter);"));
     }
 
     /// Enter searches up with the swap on, down with it off; Shift+Enter the reverse
