@@ -72,7 +72,7 @@ window). A proxy log of the provider host is needed for row 33. Mark each line p
 
 | # | Check | Result |
 |---|---|---|
-| 35 | An orchestration chat with a browser tab open: the model asks to claim the session (per-session claim bubble); after Approve, `session_get_current_url`, find, read, load and web search work on it. | |
+| 35 | An orchestration chat with a browser tab open: the model asks to claim the session; the bubble names the action and the site the tab shows ("read the web page on example.com", never "send keystrokes", never the page title); after Approve, `session_get_current_url`, find, read, load and web search work on it. A workgroup with a browser member: approving a terminal role (or @-picking a terminal member) does not cover the browser member, which asks on its own. | |
 | 36 | Without a claim, the mirror asks first; after Deny it does not act. The mirror acts on the session the model names, not on the parent chat's browser link (FLAG FOR ROBERT). | |
 | 37 | A mirror result holds the same fence and the orchestration model gets the fence sentence; a mirror that waits more than 30 s answers SESSION_TIMEOUT. | |
 | 38 | A mirror naming a Dev Null tab or a power page is refused and sends no page text. | |

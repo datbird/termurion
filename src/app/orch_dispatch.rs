@@ -342,6 +342,10 @@ impl App {
 
     /// A session's name as the person reads it, else its stable id.
     pub(super) fn orch_name(&self, pane: PaneId) -> String {
+        // A browser pane goes by a constant and its host, never its page title (final review I2).
+        if let Some(io) = self.panes.get(&pane).and_then(|p| p.browser_io()) {
+            return crate::ai_browser::session_name(&io.url, io.dev_null);
+        }
         let n = crate::inert_files::shown_name(&self.session_label(pane).0);
         if n.is_empty() { self.panes.get(&pane).map(|p| p.stable_id.clone()).unwrap_or_default() } else { n }
     }
@@ -575,8 +579,21 @@ impl App {
             ot::Claim::Denied => Some(done(Self::claim_refusal(mirror_guid))),
             ot::Claim::Ask => {
                 let shown = self.orch_scope_name(scope);
+                // Task 9 review I1: a browser session's bubble is Tandem's text naming the action and
+                // the site it shows (never keystrokes, never the page title).
+                let text = match self.orch_scope_browser_url(scope) {
+                    Some(url) => {
+                        let host = crate::browser::display_host(&url);
+                        let action = match mirror_call(name, args) {
+                            Ok((_, call, _)) if call.category().is_browser() => crate::ai_browser::approval_text(&call, &host),
+                            _ => crate::ai_browser::session_use_text(&host),
+                        };
+                        ot::browser_claim_text(&action)
+                    }
+                    None => ot::claim_text(&shown),
+                };
                 let wait = Wait::Claim { scope: scope.to_string(), name: name.to_string(), args: args.clone(), mirror_guid: mirror_guid.map(str::to_string) };
-                Some(self.orch_ask(chat_id, call_id, scope, &shown, &ot::claim_text(&shown), wait))
+                Some(self.orch_ask(chat_id, call_id, scope, &shown, &text, wait))
             }
         }
     }
@@ -586,6 +603,12 @@ impl App {
             Some(g) => ot::declined_session(g),
             None => ot::error_json(&OrchError::PermissionDenied),
         }
+    }
+
+    /// The page URL of the browser pane a session scope names; None for any other scope.
+    fn orch_scope_browser_url(&self, scope: &str) -> Option<String> {
+        let pane = scope.strip_prefix(orch::SYNTHETIC_PREFIX).and_then(|id| self.pane_by_reference(id))?;
+        self.panes.get(&pane)?.browser_io().map(|io| io.url.clone())
     }
 
     /// A scope's name for the person: the session's name, else the scope itself.
@@ -1543,6 +1566,13 @@ mod tests {
             assert!(body(c, tool).contains("self.claim_scope_of(pane)"), "{tool}");
         }
         assert!(body(c, "fn orch_mirror(").contains("self.claim_scope_of(pane)"));
+        // Task 9 review I1: a browser pane is claimed on its own, with Tandem's text naming the
+        // action and the site; the page title never names it.
+        let wc_scope = body_of(app, "pub(super) fn claim_scope_of(");
+        assert!(wc_scope.contains("session_claim_scope(") && wc_scope.contains("self.is_browser_pane(pane)"), "{wc_scope}");
+        let claim = body(c, "pub(super) fn orch_claim(");
+        assert!(claim.contains("self.orch_scope_browser_url(scope)") && claim.contains("ot::browser_claim_text(") && claim.contains("crate::ai_browser::approval_text(&call, &host)"), "{claim}");
+        assert!(body(c, "pub(super) fn orch_name(").contains("crate::ai_browser::session_name(&io.url, io.dev_null)"));
         // start_code_review needs the claim first, then only the member's own restart runs.
         let review = body(c, "\"start_code_review\" => {");
         assert!(review.find("self.orch_claim(").unwrap() < review.find("self.request_review_with(").unwrap(), "a model starts a review only where the person let it act");

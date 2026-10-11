@@ -273,6 +273,16 @@ pub fn current_url_outcome(url: &str, dev_null: bool) -> Outcome {
     outcome(safe_url(url), N_URL)
 }
 
+/// The name a browser pane goes by wherever Tandem names it to a model or in an orchestration
+/// bubble (final review I2, Task 9 review I1): a constant and the host, never the page title. A
+/// private (Dev Null) pane or one that is not showing an ordinary web page is named by the constant.
+pub fn session_name(url: &str, dev_null: bool) -> String {
+    let host = crate::browser::display_host(url);
+    if dev_null || host.is_empty() || !offerable(url, false) { BROWSER_SESSION.to_string() } else { format!("{BROWSER_SESSION} ({host})") }
+}
+
+pub const BROWSER_SESSION: &str = "Web browser";
+
 // ---- the approval (final review I1, B2) ----
 
 /// What a browser approval was asked about: the page's exact origin and navigation epoch (compared
@@ -302,6 +312,13 @@ impl Site {
 /// one site (exact origin), not for the pane (final review I1). A pane's own key never starts so.
 pub fn site_scope(origin: Option<&str>) -> String {
     format!("tandem-site:{}", origin.unwrap_or(""))
+}
+
+/// The approval text for using a browser session with no browser call named (a claim asked by
+/// another tool): the site it shows.
+pub fn session_use_text(host: &str) -> String {
+    let on = if host.is_empty() { "a blank page".to_string() } else { crate::ai_tools::consent_field(host, crate::ai_tools::Field::Text) };
+    format!("The AI agent would like to use the web browser session showing {on}")
 }
 
 /// Tandem's approval text for a browser call (final review I1, a deviation from iTerm2's
