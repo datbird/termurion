@@ -274,9 +274,20 @@ pub fn unsafe_entry_text(entry: &Path) -> String {
     crate::zip_check::refused(&format!("\u{201c}{}\u{201d} is a link or has another name", entry.display()))
 }
 
-/// A signed archive cannot be checked, so it is refused (Tandem's; Decision).
-pub fn its_refused() -> String {
-    "Tandem cannot check the signature of a signed script archive (.its), so it cannot be installed. Ask its author for an unsigned .zip export.".to_string()
+/// `AR:138-230`: the heading and buttons of the AutoLaunch question; "Lauch Manually" keeps
+/// iTerm2's misspelling (Decision).
+pub const AUTOLAUNCH_HEADING: &str = "Allow Auto-Launch?";
+pub const LAUNCH_AUTOMATICALLY: &str = "Launch Automatically";
+pub const LAUNCH_MANUALLY: &str = "Lauch Manually";
+
+/// A verified archive whose metadata asks for AutoLaunch (`AR:216-230`).
+pub fn trusted_autolaunch_text(name: &str) -> String {
+    format!("\u{201c}{}\u{201d} would like to launch automatically when Tandem starts. Would you like to allow that?", crate::inert_files::display_text(name, 128, false))
+}
+
+/// The offer when the import itself asked for AutoLaunch (`AR:216-230`).
+pub fn explicit_autolaunch_text(name: &str) -> String {
+    format!("\u{201c}{}\u{201d} can launch automatically when Tandem starts. Would you like to allow that?", crate::inert_files::display_text(name, 128, false))
 }
 
 #[cfg(test)]
@@ -482,9 +493,7 @@ mod tests {
         assert_eq!(SETUP_CFG_PARSE, "Could not parse install_requires in setup.cfg");
         assert_eq!(OFFER_AUTOLAUNCH, "Offer to launch automatically during installation");
         assert_eq!(EXPORT_TITLE, "Export Script");
-        let r = its_refused();
-        assert!(r.contains(".its") && r.contains(".zip"), "{r}");
-        let all = [IMPORT_IN_PROGRESS.to_string(), unzip_failed("e"), NO_VALID_SCRIPT.into(), LEGACY_ARCHIVE.into(), already_installed("n"), ALREADY_HEADING.into(), REPLACE.into(), replace_failed("n"), replace_canceled("n"), COULD_NOT_INSTALL.into(), MISSING_SETUP_CFG.into(), runtime_install_failed("e"), COULD_NOT_INSTALL_TITLE.into(), TRY_AGAIN.into(), IMPORTED_TITLE.into(), LAUNCH.into(), EXPORT_FAILED.into(), FAILED_TO_CREATE.into(), ZIP_FAILED.into(), INVALID_LOCATION.into(), NO_SCRIPT_FOUND.into(), SETUP_CFG_PARSE.into(), OFFER_AUTOLAUNCH.into(), EXPORT_TITLE.into(), r];
+        let all = [IMPORT_IN_PROGRESS.to_string(), unzip_failed("e"), NO_VALID_SCRIPT.into(), LEGACY_ARCHIVE.into(), already_installed("n"), ALREADY_HEADING.into(), REPLACE.into(), replace_failed("n"), replace_canceled("n"), COULD_NOT_INSTALL.into(), MISSING_SETUP_CFG.into(), runtime_install_failed("e"), COULD_NOT_INSTALL_TITLE.into(), TRY_AGAIN.into(), IMPORTED_TITLE.into(), LAUNCH.into(), EXPORT_FAILED.into(), FAILED_TO_CREATE.into(), ZIP_FAILED.into(), INVALID_LOCATION.into(), NO_SCRIPT_FOUND.into(), SETUP_CFG_PARSE.into(), OFFER_AUTOLAUNCH.into(), EXPORT_TITLE.into(), trusted_autolaunch_text("n"), explicit_autolaunch_text("n"), AUTOLAUNCH_HEADING.into()];
         for t in all {
             assert!(!t.contains("iTerm2"), "{t}");
         }

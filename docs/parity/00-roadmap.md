@@ -216,7 +216,7 @@ API is on; New Python Script with iTerm2's templates; Open Python REPL; Import (
 checked before extraction, Replace with a backup) and Export (iTerm2's unsigned zip); Manage
 Dependencies; and Open Quickly's script items. The Automatic Profile Switching debug log moved into
 the Script Console. pythonRuntimeUsesUV, the three runtime manifest URLs and setIT2AppPath are stored
-and inert (no macOS runtime, no AppleScript target); signed `.its` archives are refused. Every kept
+and inert (no macOS runtime, no AppleScript target); signed `.its` archives install after their signature and certificate chain verify and the person confirms (export signing is a recorded gap). Every kept
 quirk is listed in `docs/acceptance/m11d-checklist.md` and ruled on in
 `docs/superpowers/rulings/m11d-rulings.txt`.
 Milestone 11e closed the utilities (03, 02): one console program, `tandem-utils.exe`, holds

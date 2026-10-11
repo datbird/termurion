@@ -101,6 +101,9 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::ClaudeDisableApi => Answer::Button(0),
         // Not Now: a closed window never rewrites settings.json (P10).
         Then::ClaudeRepair => Answer::Button(1),
+        // Cancel: a closed window installs nothing; Launch Manually: it never starts anything by itself.
+        Then::ConfirmSigned => Answer::Button(1),
+        Then::AllowAutoLaunch(_) => Answer::Button(0),
         // Cancel: a closed window never turns session cookies on.
         Then::ClaudeCookie => Answer::Button(1),
         // Keep It: a closed window never removes a workgroup the person edited.
@@ -157,6 +160,14 @@ pub(super) enum Then {
     TurnOnOsc7 { was_silenced: bool },
     /// "Could Not Install Script": OK (0), or Try Again (1) with the same file.
     ImportFailed(std::path::PathBuf),
+    /// "Confirm Installation" for a signed `.its` archive whose signature and chain verified: OK (0)
+    /// installs it as a trusted archive, Cancel (1) ends the import quietly, Reveal Contents (2)
+    /// extracts it into a temporary folder and shows that, installing nothing. Never remembered.
+    ConfirmSigned,
+    /// "Allow Auto-Launch?" for a trusted archive that asks to launch automatically (the script's
+    /// name): Lauch Manually (0) installs it into the Scripts folder, Launch Automatically (1) into
+    /// AutoLaunch. Never remembered.
+    AllowAutoLaunch(String),
     /// Manage Dependencies' "Run this Command?": OK (0) runs the pip command in a window on
     /// the next loop pass; Cancel (1) does nothing.
     RunPip(Box<super::script_deps_app::RunPip>),
@@ -426,6 +437,9 @@ impl App {
             // Canceled: what waits on a consent or on the replace question hears so.
             Then::Consent(jobs) => self.consent_declined(jobs),
             Then::AlreadyInstalled(_) => self.scripts_answered(then, 1),
+            // The question could not open: nothing is installed, nothing launches by itself.
+            Then::ConfirmSigned => self.scripts_answered(then, 1),
+            Then::AllowAutoLaunch(_) => self.scripts_answered(then, 0),
             // The finished download keeps both files.
             Then::SshKeepOrReplace { .. } => self.scripts_answered(then, 0),
             Then::Paste(pane) => self.paste_answered(pane, None),
@@ -511,7 +525,8 @@ impl App {
                 }
                 // A page raised it: no default button, input ignored for a moment after it appears
                 // and after it regains focus (13x6 B1).
-                if matches!(ask.then, Then::BrowserPermission(_)) {
+                // A file the person opened can raise these, with a key press in flight: no default button.
+                if matches!(ask.then, Then::BrowserPermission(_) | Then::ConfirmSigned | Then::AllowAutoLaunch(_)) {
                     w.guard_input();
                 }
                 self.scripts_alert = Some((w, ask));
@@ -662,6 +677,8 @@ impl App {
                     self.launch_script(crate::script_launch::Request { path, args: Vec::new(), explicit: true });
                 }
             }
+            Then::ConfirmSigned => self.its_confirmed(index),
+            Then::AllowAutoLaunch(_) => self.autolaunch_answered(index),
             Then::ImportFailed(path) => {
                 if index == 1 {
                     self.import_path(path, false);
@@ -779,6 +796,19 @@ mod tests {
 
     /// The entry question's default (Return) is Cancel; Return, Escape and a closed window all cancel,
     /// and only the second button, by click or access key, enters.
+    #[test]
+    fn signed_archive_questions_follow_iterm2() {
+        // A closed window installs nothing and starts nothing; neither answer is ever remembered.
+        assert_eq!(on_close(&Then::ConfirmSigned, 0), Answer::Button(1));
+        assert_eq!(on_close(&Then::AllowAutoLaunch("x".into()), 1), Answer::Button(0));
+        assert!(Then::ConfirmSigned.never_remember().is_empty() && !Then::ConfirmSigned.capped());
+        let confirm = ask(crate::sigarchive::CONFIRM_HEADING, "t", &[crate::api_auth::OK, crate::api_auth::CANCEL, crate::sigarchive::REVEAL_CONTENTS], None, Kind::Persistent, Then::ConfirmSigned);
+        assert_eq!((confirm.spec.id.clone(), confirm.spec.cancel), (None, Some(1)));
+        // The windows are guarded (a key press in flight cannot answer them).
+        let src = include_str!("scripts_alerts.rs");
+        assert!(src.contains("Then::BrowserPermission(_) | Then::ConfirmSigned | Then::AllowAutoLaunch(_)"));
+    }
+
     #[test]
     fn the_entry_question_defaults_to_cancel() {
         use crate::workgroup_run::{ASK_ENTER, ASK_LABELS};

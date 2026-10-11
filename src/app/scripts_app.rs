@@ -16,6 +16,7 @@ use super::scripts_alerts::{ask, Then};
 use crate::warnings;
 use super::App;
 use crate::script_archive as sa;
+use crate::sigarchive;
 use crate::script_export_ui::{ExportEvent, ExportWindow};
 use crate::script_history::{Entry, Relaunch};
 use crate::script_launch::{self as sl, Kind, LaunchGate, Request};
@@ -737,6 +738,29 @@ pub(super) struct Import {
     /// Replace Script right after a Terminate: the backup path and until when moving the old
     /// script aside is tried again (its files may be held for a moment), from `import_tick`.
     moving: Option<(PathBuf, std::time::Instant)>,
+    /// A signed `.its` archive's stage, while it is verified, asked about or revealed.
+    its: Option<Its>,
+    /// The archive's signature and chain verified and the person confirmed it (`installTrusted:`,
+    /// `AR:176-196`); false for every other import. Only a trusted archive asks for AutoLaunch.
+    trusted: bool,
+    /// The person allowed the archive to launch automatically: it installs into AutoLaunch.
+    autolaunch: bool,
+}
+
+/// Where a signed archive is. Nothing of it is unpacked before the person confirmed.
+enum Its {
+    /// The file is read and verified off the UI thread (the chain check may reach the network).
+    Verifying(std::sync::mpsc::Receiver<Result<crate::sigarchive::Verified, String>>),
+    /// "Confirm Installation" is up; the verified payload waits.
+    Asking(Box<crate::sigarchive::Verified>),
+    /// Reveal Contents extracts into a new temporary folder off the UI thread.
+    Revealing(std::sync::mpsc::Receiver<Result<PathBuf, String>>),
+}
+
+impl Import {
+    fn new(source: PathBuf, trash: bool, quiet: Option<bool>, staging: PathBuf) -> Import {
+        Import { source, trash, quiet, staging, extracting: None, layout: None, name: String::new(), dest: PathBuf::new(), backup: None, moving: None, its: None, trusted: false, autolaunch: false }
+    }
 }
 
 /// A file or folder removed, a link without touching what it names; errors ignored (iTerm2
@@ -780,6 +804,26 @@ pub(super) fn run_tar(args: Vec<String>) -> Result<(), String> {
 
 pub(super) use sa::stage_entries;
 
+/// The folders Reveal Contents extracts into, under the temporary folder; a start sweeps what an
+/// earlier run left.
+const ITS_REVEAL_PREFIX: &str = "tandem-its-";
+
+/// Reads and verifies the `.its` at `path` (off the UI thread): read once through the one door,
+/// refused above 256 MB, parsed and checked by `sigarchive`, the chain and signature by Windows.
+/// Nothing is unpacked or written.
+fn verify_its_file(path: &Path) -> Result<crate::sigarchive::Verified, String> {
+    let bytes = crate::extract::read_whole(path, crate::sigarchive::MAX_FILE).map_err(|e| sa::unzip_failed(&e))?;
+    #[cfg(windows)]
+    {
+        crate::sigarchive::verify_file(&bytes, &crate::sigarchive_win::CryptoApi::online())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = bytes;
+        Err(crate::sigarchive::NOT_VALID.to_string())
+    }
+}
+
 /// Extracts `zip` into `to` (`unzipURL:`) and reads its layout (off the UI thread). Nothing
 /// that could reach outside `to` gets through: the file is read once, and its bytes must be a zip
 /// whose every entry is a plain file or folder with a safe name (`zip_check`), written by Tandem's
@@ -790,7 +834,13 @@ pub(super) use sa::stage_entries;
 fn extract_archive(zip: &Path, to: &Path) -> Result<sa::Layout, String> {
     // The archive came from outside: judged before it is read, read once.
     let bytes = crate::extract::read_whole(zip, crate::extract::MAX_ARCHIVE).map_err(|e| sa::unzip_failed(&e))?;
-    crate::extract::zip(&bytes, to, crate::zip_check::Limits::DEFAULT).map_err(|e| sa::unzip_failed(&e))?;
+    extract_bytes(&bytes, to)
+}
+
+/// `extract_archive` over the zip's bytes already read (a signed archive's payload is one: never
+/// written to a file of its own, so nothing can swap it between the check and the unpacking).
+fn extract_bytes(bytes: &[u8], to: &Path) -> Result<sa::Layout, String> {
+    crate::extract::zip(bytes, to, crate::zip_check::Limits::DEFAULT).map_err(|e| sa::unzip_failed(&e))?;
     if let Some(entry) = sa::unsafe_entry(to, &stage_entries) {
         return Err(sa::unzip_failed(&sa::unsafe_entry_text(entry.strip_prefix(to).unwrap_or(&entry))));
     }
@@ -887,6 +937,24 @@ pub(super) fn export_script_to(path: &Path, zip: &Path, autolaunch: bool) -> Res
 /// `urlIsScript:` (`EX:245-247`): what Export All Settings and Data exports.
 pub(super) fn is_exportable_script(path: &Path) -> bool {
     export_kind(path).is_some()
+}
+
+/// Whether an extracted archive asks "Allow Auto-Launch?": only a verified, confirmed archive
+/// (`trusted`) whose `metadata.json` asks for it, imported by the person (no import with no
+/// questions). Any other archive's `AutoLaunch` is ignored: it installs where it was sent.
+fn offers_autolaunch(layout: &sa::Layout, trusted: bool, quiet: Option<bool>) -> bool {
+    trusted && quiet.is_none() && matches!(layout, sa::Layout::Full { autolaunch: true, .. })
+}
+
+/// The folders an earlier run's Reveal Contents left in `temp` go (a folder the person was shown
+/// stays only until the next start).
+fn sweep_reveals(temp: &Path) {
+    let Ok(entries) = std::fs::read_dir(temp) else { return };
+    for e in entries.flatten() {
+        if e.file_name().to_string_lossy().starts_with(ITS_REVEAL_PREFIX) {
+            remove_path(&e.path());
+        }
+    }
 }
 
 /// Puts right what an import that did not finish left in the Scripts folder
@@ -1026,7 +1094,21 @@ impl App {
                 });
                 self.import_result(path, trash, quiet, copied.map(|_| Some(to)).map_err(|e| e.to_string()));
             }
-            Some("its") => self.import_result(path, trash, quiet, Err(sa::its_refused())),
+            // A signed archive: an import with no questions never installs one.
+            Some("its") if quiet.is_some() => self.import_result(path, trash, quiet, Err(crate::sigarchive::NOT_VALID.to_string())),
+            Some("its") => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let notify = self.notify.clone();
+                let from = path.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(verify_its_file(&from));
+                    notify();
+                });
+                let staging = scripts.join(format!("{}{}", sa::STAGING_PREFIX, crate::api_auth::fresh_key()));
+                let mut import = Import::new(path, trash, quiet, staging);
+                import.its = Some(Its::Verifying(rx));
+                self.importing = Some(import);
+            }
             _ => {
                 let staging = scripts.join(format!("{}{}", sa::STAGING_PREFIX, crate::api_auth::fresh_key()));
                 let (tx, rx) = std::sync::mpsc::channel();
@@ -1036,7 +1118,9 @@ impl App {
                     let _ = tx.send(extract_archive(&zip, &to));
                     notify();
                 });
-                self.importing = Some(Import { source: path, trash, quiet, staging, extracting: Some(rx), layout: None, name: String::new(), dest: PathBuf::new(), backup: None, moving: None });
+                let mut import = Import::new(path, trash, quiet, staging);
+                import.extracting = Some(rx);
+                self.importing = Some(import);
             }
         }
     }
@@ -1046,6 +1130,10 @@ impl App {
     pub(super) fn import_tick(&mut self) -> Option<std::time::Instant> {
         if let Some((backup, until)) = self.importing.as_ref().and_then(|i| i.moving.clone()) {
             return self.move_aside_again(backup, until);
+        }
+        if self.importing.as_ref().is_some_and(|i| matches!(i.its, Some(Its::Verifying(_) | Its::Revealing(_)))) {
+            self.its_tick();
+            return None;
         }
         let rx = self.importing.as_ref().and_then(|i| i.extracting.as_ref())?;
         let result = match rx.try_recv() {
@@ -1058,9 +1146,97 @@ impl App {
         }
         match result {
             Err(e) => self.import_finish(Err(e)),
-            Ok(layout) => self.import_layout(layout),
+            Ok(layout) => self.import_extracted(layout),
         }
         None
+    }
+
+    /// The archive is extracted. A trusted one whose `metadata.json` asks for AutoLaunch asks
+    /// "Allow Auto-Launch?" first (`AR:138-230`); the install waits for the answer. Nothing has run.
+    fn import_extracted(&mut self, layout: sa::Layout) {
+        let Some(i) = self.importing.as_mut() else { return };
+        if !offers_autolaunch(&layout, i.trusted, i.quiet) {
+            return self.import_layout(layout);
+        }
+        let name = match &layout {
+            sa::Layout::Full { name, .. } => name.clone(),
+            sa::Layout::Basic { .. } => String::new(),
+        };
+        i.layout = Some(layout);
+        // Launch Manually first: it is the button Enter presses and the one a closed window answers.
+        let ask = ask(sa::AUTOLAUNCH_HEADING, &sa::trusted_autolaunch_text(&name), &[sa::LAUNCH_MANUALLY, sa::LAUNCH_AUTOMATICALLY], None, warnings::Kind::Persistent, Then::AllowAutoLaunch(name));
+        self.ask_scripts(ask);
+    }
+
+    /// "Allow Auto-Launch?" answered: Launch Automatically (1) installs into AutoLaunch, anything
+    /// else into the Scripts folder, where nothing starts by itself.
+    pub(super) fn autolaunch_answered(&mut self, index: usize) {
+        let Some(i) = self.importing.as_mut() else { return };
+        i.autolaunch = index == 1;
+        match i.layout.take() {
+            Some(layout) => self.import_layout(layout),
+            None => self.import_finish(Ok(None)),
+        }
+    }
+
+    /// The verification or the Reveal Contents extraction finished.
+    fn its_tick(&mut self) {
+        let Some(i) = self.importing.as_mut() else { return };
+        match i.its.take() {
+            Some(Its::Verifying(rx)) => match rx.try_recv() {
+                Err(std::sync::mpsc::TryRecvError::Empty) => i.its = Some(Its::Verifying(rx)),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.import_finish(Err(sigarchive::CORRUPT.to_string())),
+                Ok(Err(message)) => self.import_finish(Err(message)),
+                Ok(Ok(verified)) => {
+                    let file = i.source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let text = format!("{}\n\n{}", sigarchive::confirm_text(&file, verified.author.as_deref()), sigarchive::confirm_note(&verified.leaf));
+                    i.its = Some(Its::Asking(Box::new(verified)));
+                    let ask = ask(sigarchive::CONFIRM_HEADING, &text, &[crate::api_auth::OK, crate::api_auth::CANCEL, sigarchive::REVEAL_CONTENTS], None, warnings::Kind::Persistent, Then::ConfirmSigned);
+                    self.ask_scripts(ask);
+                }
+            },
+            Some(Its::Revealing(rx)) => match rx.try_recv() {
+                Err(std::sync::mpsc::TryRecvError::Empty) => i.its = Some(Its::Revealing(rx)),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.import_finish(Err(sa::unzip_failed("the extraction stopped"))),
+                Ok(Err(message)) => self.import_finish(Err(message)),
+                Ok(Ok(folder)) => {
+                    self.reveal_path(&folder);
+                    self.import_finish(Ok(None));
+                }
+            },
+            other => i.its = other,
+        }
+    }
+
+    /// "Confirm Installation" answered (`IM:223-270`): OK extracts the payload and installs it as
+    /// a trusted archive; Cancel ends the import quietly ("Installation canceled by user request.");
+    /// Reveal Contents extracts into a new temporary folder and shows it, installing nothing.
+    pub(super) fn its_confirmed(&mut self, index: usize) {
+        let Some(i) = self.importing.as_mut() else { return };
+        let Some(Its::Asking(verified)) = i.its.take() else { return };
+        let notify = self.notify.clone();
+        match index {
+            0 => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                i.trusted = true;
+                i.extracting = Some(rx);
+                let to = i.staging.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(extract_bytes(&verified.payload, &to));
+                    notify();
+                });
+            }
+            2 => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                i.its = Some(Its::Revealing(rx));
+                std::thread::spawn(move || {
+                    let folder = std::env::temp_dir().join(format!("{ITS_REVEAL_PREFIX}{}", crate::api_auth::fresh_key())).join("Contents");
+                    let _ = tx.send(crate::extract::zip(&verified.payload, &folder, crate::zip_check::Limits::DEFAULT).map(|_| folder).map_err(|e| sa::unzip_failed(&e)));
+                    notify();
+                });
+            }
+            _ => self.import_finish(Ok(None)),
+        }
     }
 
     /// Moves the replaced script aside again (never sleeping on the UI thread); past the
@@ -1094,12 +1270,10 @@ impl App {
             sa::Layout::Full { name, .. } => name.clone(),
         };
         let quiet = self.importing.as_ref().and_then(|i| i.quiet);
-        let folder = match quiet {
-            Some(true) => crate::scripts::autolaunch_folder(&self.scripts_folder()),
-            _ => self.scripts_folder(),
-        };
+        let into_autolaunch = quiet == Some(true) || self.importing.as_ref().is_some_and(|i| i.autolaunch);
+        let folder = if into_autolaunch { crate::scripts::autolaunch_folder(&self.scripts_folder()) } else { self.scripts_folder() };
         // An AutoLaunch folder reached through a link to a network path is never probed.
-        if quiet == Some(true) && !crate::scripts::ancestors_stay_local(&folder, &crate::netpath::read_reparse) {
+        if into_autolaunch && !crate::scripts::ancestors_stay_local(&folder, &crate::netpath::read_reparse) {
             return self.import_finish(Err(crate::scripts::autolaunch_not_local(&folder).trim_end().to_string()));
         }
         let _ = std::fs::create_dir_all(&folder);
@@ -1263,6 +1437,7 @@ impl App {
     /// listing and a few renames.
     pub(super) fn recover_imports(&mut self) {
         recover_in(&self.scripts_folder(), &crate::netpath::read_reparse);
+        sweep_reveals(&std::env::temp_dir());
     }
 
     /// Scripts > Manage > Export (`chooseAndExportScript`, `M:683-714`): the chooser.
@@ -1387,6 +1562,48 @@ mod tests {
         let mut v: Vec<String> = std::fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
         v.sort();
         v
+    }
+
+    #[test]
+    fn signed_archives_install_only_after_the_checks() {
+        use crate::zip_check::tests::{file, valid, zip};
+        // The payload is extracted by the one extractor, from bytes already checked: a hostile
+        // payload writes nothing.
+        let root = temp_dir("its-payload");
+        let good = zip(&valid()[..4]);
+        let to = root.join(".installing-A");
+        assert!(matches!(extract_bytes(&good, &to), Ok(sa::Layout::Full { ref name, .. }) if name == "tool"));
+        let mut entries = valid();
+        entries.push(file("../escape.py", "evil"));
+        let hostile = root.join(".installing-B");
+        let r = extract_bytes(&zip(&entries), &hostile);
+        assert!(r.as_ref().is_err_and(|e| e.contains("not safe to extract")), "{r:?}");
+        assert!(!hostile.exists() && !root.join("escape.py").exists());
+        // Only a trusted archive, imported by the person, asks for AutoLaunch.
+        let full = |autolaunch| sa::Layout::Full { folder: PathBuf::from("f"), name: "n".into(), autolaunch };
+        assert!(offers_autolaunch(&full(true), true, None));
+        assert!(!offers_autolaunch(&full(true), false, None), "an unsigned zip's metadata is ignored");
+        assert!(!offers_autolaunch(&full(true), true, Some(false)) && !offers_autolaunch(&full(true), true, Some(true)));
+        assert!(!offers_autolaunch(&full(false), true, None));
+        assert!(!offers_autolaunch(&sa::Layout::Basic { file: PathBuf::from("a.py") }, true, None));
+        // Reveal Contents' folders are swept at the next start; nothing else in the temp folder is.
+        let temp = temp_dir("its-sweep");
+        std::fs::create_dir_all(temp.join(format!("{ITS_REVEAL_PREFIX}x")).join("Contents")).unwrap();
+        std::fs::create_dir_all(temp.join("other")).unwrap();
+        sweep_reveals(&temp);
+        assert_eq!(names(&temp), ["other"]);
+        // The wiring: the `.its` arm verifies on a worker and unpacks nothing; only the confirmation
+        // extracts; a quiet import never installs a signed archive.
+        let src = include_str!("scripts_app.rs");
+        let live = src.split("#[cfg(test)]").next().unwrap();
+        let start = live.split("fn import_start").nth(1).unwrap().split("fn import_tick").next().unwrap();
+        let its_arm = start.split("Some(\"its\")").nth(2).unwrap().split("_ =>").next().unwrap();
+        assert!(its_arm.contains("verify_its_file") && !its_arm.contains("extract"), "{its_arm}");
+        assert!(start.contains("Some(\"its\") if quiet.is_some()"));
+        assert_eq!(live.matches("extract_bytes(").count(), 3, "the definition, extract_archive and the confirmed install");
+        assert!(live.split("fn its_confirmed").nth(1).unwrap().contains("extract_bytes(&verified.payload"));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&temp);
     }
 
     #[test]

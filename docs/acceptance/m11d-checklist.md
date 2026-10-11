@@ -84,9 +84,9 @@ record it as a finding rather than pinning. The Script Console is Scripts > Mana
 | 40 | Scripts > Manage > Import... of `hello.zip` while `hello` exists asks "Script Already Exists" / A script named "hello" is already installed (Replace Script, Cancel). Cancel keeps the old script. Replace installs it (a full environment is built after the download consent), then "Script Imported Successfully" with OK and Launch; Launch runs it. | |
 | 41 | Replace of a full-environment script that is running terminates it first; when a helper it left running holds its files, the import ends with the replace-failed text and the old script is left unchanged. Declining the download consent during a Replace restores the old script ("Replacing ... was canceled. The existing script was kept."). | |
 | 42 | Import of a `.py` copies it into the Scripts folder (an existing name fails with Windows' "file exists" text). Importing two zips at once runs them one after the other, never "Another import is in progress". | |
-| 43 | Import of a `.its` file shows "Could Not Install Script" with "Tandem cannot check the signature of a signed script archive (.its), so it cannot be installed. Ask its author for an unsigned .zip export." and Try Again. | |
+| 43 | Import of a `.its` file that is not a signed archive shows "Could Not Install Script" with "This script archive is corrupt and cannot be installed." and Try Again (13y2 Task 4; a signed archive asks "Confirm Installation" instead). | |
 | 44 | A zip holding `../x.py`, an absolute path, `CON`, or a symbolic link entry is refused ("The archive is not safe to extract: ...") and nothing is written beside the Scripts folder. A zip with no valid layout gives "Archive does not contain a valid Tandem script". | |
-| 45 | An `.its` file dropped into the Scripts folder is offered at the next scan: "Install Script Archive?" (OK, Cancel, Move to Trash); OK leads to the `.its` refusal of item 43; Move to Trash puts the file in the Recycle Bin. Asked once per file per run. | |
+| 45 | An `.its` file dropped into the Scripts folder is offered at the next scan: "Install Script Archive?" (OK, Cancel, Move to Trash); OK leads to the `.its` check of item 43; Move to Trash puts the file in the Recycle Bin. Asked once per file per run. | |
 
 ## Manage Dependencies
 

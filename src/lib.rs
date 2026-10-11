@@ -162,6 +162,9 @@ pub mod script_history;
 pub mod script_launch;
 pub mod script_new;
 pub mod script_archive;
+pub mod sigarchive;
+#[cfg(windows)]
+pub mod sigarchive_win;
 pub mod script_deps;
 pub mod zip_check;
 #[cfg(windows)]
