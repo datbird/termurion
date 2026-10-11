@@ -242,7 +242,17 @@ pub fn manifest_hash(bytes: &[u8]) -> String {
 
 /// The text of the approval window: the manifest's permissions and sites, all of them.
 pub fn approval_text(m: &Manifest, folder: &str) -> String {
-    let mut t = format!("\"{}\" version {}\n", m.name, if m.version.is_empty() { "unknown" } else { &m.version });
+    // Permissions that reach outside the page sandbox are named first, whether asked now or later.
+    let mut t = String::new();
+    for (perm, what) in [("debugger", "attach a debugger to pages"), ("nativeMessaging", "start programs installed on this computer")] {
+        if m.permissions.iter().chain(m.optional_permissions.iter()).any(|p| p == perm) {
+            t.push_str(&format!("WARNING: this extension asks for \"{perm}\": it can {what}.\n"));
+        }
+    }
+    if !t.is_empty() {
+        t.push('\n');
+    }
+    t.push_str(&format!("\"{}\" version {}\n", m.name, if m.version.is_empty() { "unknown" } else { &m.version }));
     if let Some(d) = &m.description {
         t.push_str(d);
         t.push('\n');
@@ -460,7 +470,7 @@ mod tests {
         assert_eq!(m.name, "<img src=x onerror=alert(1)>A");
         assert!(!m.version.contains('\0'));
         let json = extensions_json(&[("x".into(), m, false)]);
-        assert!(!json.contains('\u{202e}') && json.contains(r#"\u003c"#) == json.contains("\\u003c"));
+        assert!(!json.contains('\u{202e}') && json.contains("<img src=x onerror=alert(1)>"), "the markup travels as text; the page renders it with textContent");
         let long = format!(r#"{{"name":"{}","version":"{}"}}"#, "n".repeat(500), "v".repeat(500));
         let m = manifest(&long).unwrap();
         assert_eq!((m.name.chars().count(), m.version.chars().count()), (MAX_NAME, MAX_VERSION));
@@ -491,6 +501,18 @@ mod tests {
         let none = approval_text(&manifest(r#"{"name":"N","version":"1"}"#).unwrap(), "D:\\e");
         assert!(none.contains("No special permissions") && none.contains("No sites"), "{none}");
         assert!(!t.contains('\u{202e}'));
+    }
+
+    /// 13x8 Task 10 review minor 2: permissions that reach outside the page sandbox get a warning on top.
+    #[test]
+    fn debugger_and_native_messaging_are_warned_about() {
+        for (field, perm) in [("permissions", "debugger"), ("permissions", "nativeMessaging"), ("optional_permissions", "debugger"), ("optional_permissions", "nativeMessaging")] {
+            let m = manifest(&format!(r#"{{"name":"X","version":"1","{field}":["{perm}"]}}"#)).unwrap();
+            let t = approval_text(&m, "D:\\e");
+            assert!(t.starts_with("WARNING:") && t.contains(perm), "{field} {perm}: {t}");
+        }
+        let t = approval_text(&manifest(r#"{"name":"X","version":"1","permissions":["storage"]}"#).unwrap(), "D:\\e");
+        assert!(!t.contains("WARNING:"), "{t}");
     }
 
     /// 13x8 Task 10 review I2: what an extension may ask for later is shown too.

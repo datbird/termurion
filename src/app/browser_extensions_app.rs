@@ -420,6 +420,9 @@ impl App {
     /// Reveal in Explorer: never a network root; created only here, on the person's request.
     pub(super) fn browser_extensions_reveal(&mut self, pane: PaneId) -> Vec<String> {
         use crate::browser_settings_page::status_script;
+        if !self.browser_ext_pane_ok(pane) {
+            return vec![status_script(be::NOT_ALLOWED, "error")];
+        }
         let value = self.browser_ext_value(pane, be::ROOT_KEY).and_then(|v| v.as_str().map(str::to_string));
         let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
         let root = be::root(value.as_deref(), &appdata);
@@ -514,6 +517,10 @@ mod tests {
         let req = body(l, "pub(super) fn browser_extensions_request", "/// From the tick");
         assert!(req.find("browser_ext_pane_ok").unwrap() < req.find("std::thread::spawn").unwrap(), "checked before any work");
         assert!(req.contains("filter(|r| !r.trim().is_empty())") && !req.contains("else { return };"), "no chosen root: the approved set still syncs, no orphan");
+        // Reveal, like the picker, refuses a Dev Null pane; the page is always answered.
+        let reveal = body(l, "pub(super) fn browser_extensions_reveal", "/// The native folder picker");
+        assert!(reveal.find("browser_ext_pane_ok").unwrap() < reveal.find("create_dir_all").unwrap() && reveal.contains("be::NOT_ALLOWED"));
+        assert!(req.contains("if report {") && req.find("if report {").unwrap() < req.find("std::thread::spawn").unwrap(), "GetExtensions is answered even when no sync runs");
         assert!(!l.contains("a.profile == profile") && l.contains("be::STORE"), "approvals are for the shared browser data");
         // A folder reaches WebView2 only from `browser_extensions_listed`, only among approved folders.
         assert_eq!(l.matches("add_extension(").count(), 1);
