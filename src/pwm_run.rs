@@ -168,7 +168,7 @@ mod win {
     impl Runner for ProcessRunner {
         fn run(&mut self, r: Request) -> Result<Output, String> {
             let start = Instant::now();
-            let mut cmd = Command::new(&r.program);
+            let mut cmd = Command::new(resolve(&r.program));
             cmd.args(&r.args);
             cmd.creation_flags(CREATE_NO_WINDOW);
             // A request with its own stdin data closes the pipe after the write as ever; only
@@ -181,6 +181,7 @@ mod win {
                 cmd.env(k, v.expose());
             }
             let mut child = cmd.spawn().map_err(|e| format!("{} could not start: {e}", r.program))?;
+            let job = Job::new(&child);
 
             if let Some(input) = r.stdin {
                 let mut stdin = child.stdin.take().expect("piped stdin");
@@ -207,7 +208,7 @@ mod win {
             let (tx_err, rx_err) = mpsc::channel();
             std::thread::spawn(move || {
                 let mut buf = Vec::new();
-                let _ = stdout_pipe.read_to_end(&mut buf);
+                let _ = (&mut stdout_pipe).take(MAX_OUTPUT).read_to_end(&mut buf);
                 let _ = tx_out.send(buf);
             });
             let (slot, cancel_flag, exit_flag, answered_flag, reprompt_flag, ask_clock) = (stdin_slot.clone(), canceled.clone(), exited.clone(), answered.clone(), reprompted.clone(), clock.clone());
@@ -215,7 +216,7 @@ mod win {
                 let mut buf = Vec::new();
                 match watched {
                     None => {
-                        let _ = stderr_pipe.read_to_end(&mut buf);
+                        let _ = (&mut stderr_pipe).take(MAX_OUTPUT).read_to_end(&mut buf);
                     }
                     Some(i) => {
                         let mut watch = Watch::new(i.needs_login);
@@ -256,6 +257,9 @@ mod win {
                     Waited::TimedOut | Waited::Canceled => {
                         let canceled = canceled.load(Ordering::SeqCst);
                         exited.store(true, Ordering::SeqCst);
+                        if let Some(j) = &job {
+                            j.kill();
+                        }
                         let _ = child.kill();
                         let _ = child.wait();
                         stdin_slot.lock().unwrap().take();
@@ -317,25 +321,97 @@ mod win {
     /// and type a master password inside `ls`'s 5 s), so the time spent asking is not counted.
     #[derive(Default)]
     struct Clock {
-        total: Mutex<Duration>,
-        since: Mutex<Option<Instant>>,
+        // One mutex, so no two locks can ever be taken in opposite orders: (time already spent
+        // asking, start of the ask still open).
+        state: Mutex<(Duration, Option<Instant>)>,
     }
 
     impl Clock {
         fn pause(&self) {
-            *self.since.lock().unwrap() = Some(Instant::now());
+            self.state.lock().unwrap().1 = Some(Instant::now());
         }
 
         fn resume(&self) {
-            if let Some(t) = self.since.lock().unwrap().take() {
-                *self.total.lock().unwrap() += t.elapsed();
+            let mut s = self.state.lock().unwrap();
+            if let Some(t) = s.1.take() {
+                s.0 += t.elapsed();
             }
         }
 
         /// Time spent asking so far, including an ask still open.
         fn paused(&self) -> Duration {
-            *self.total.lock().unwrap() + self.since.lock().unwrap().map(|t| t.elapsed()).unwrap_or_default()
+            let s = self.state.lock().unwrap();
+            s.0 + s.1.map(|t| t.elapsed()).unwrap_or_default()
         }
+    }
+
+    /// A kill-on-close Job Object holding the child and everything it starts (an adapter's
+    /// `bw`/`lpass`/`keepassxc-cli`), so ending the request ends them all, never leaving one
+    /// running with a secret in its environment.
+    struct Job(windows_sys::Win32::Foundation::HANDLE);
+
+    // SAFETY: a job handle is only used to terminate and close.
+    unsafe impl Send for Job {}
+
+    impl Job {
+        fn new(child: &Child) -> Option<Job> {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::JobObjects::*;
+            // SAFETY: plain Win32 calls on a handle created here and the child's own handle.
+            unsafe {
+                let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if job.is_null() {
+                    return None;
+                }
+                let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let set = SetInformationJobObject(job, JobObjectExtendedLimitInformation, (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(), std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32);
+                if set == 0 || AssignProcessToJobObject(job, child.as_raw_handle() as _) == 0 {
+                    CloseHandle(job);
+                    return None;
+                }
+                Some(Job(job))
+            }
+        }
+
+        fn kill(&self) {
+            // SAFETY: terminating our own job.
+            unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(self.0, 1) };
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY: closing our own handle; kill-on-close ends anything still inside.
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+        }
+    }
+
+    /// The most output read from a child (untrusted; read under the cap, not trimmed after).
+    const MAX_OUTPUT: u64 = 64 << 20;
+
+    /// `program` as the file to start: a bare name is looked up on PATH with each PATHEXT
+    /// extension (`bw.cmd` as well as `bw.exe`); anything else is used as given.
+    pub(super) fn resolve(program: &str) -> String {
+        let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+        resolve_in(program, &std::env::var_os("PATH").unwrap_or_default(), &exts)
+    }
+
+    fn resolve_in(program: &str, path: &std::ffi::OsStr, exts: &str) -> String {
+        let bare = !program.contains(['\\', '/', ':']) && std::path::Path::new(program).extension().is_none();
+        if !bare {
+            return program.to_string();
+        }
+        for dir in std::env::split_paths(path) {
+            for ext in exts.split(';').filter(|e| !e.is_empty()) {
+                let candidate = dir.join(format!("{program}{ext}"));
+                if candidate.is_file() {
+                    return candidate.to_string_lossy().into_owned();
+                }
+            }
+        }
+        program.to_string()
     }
 
     /// Polls the child until it exits, `timeout` passes (if any, not counting time spent asking)
@@ -407,6 +483,49 @@ mod win {
             let err = runner.run(hang).unwrap_err();
             assert_eq!(err, TIMED_OUT);
             assert!(start.elapsed() < Duration::from_secs(5), "{:?}", start.elapsed());
+        }
+
+        #[test]
+        fn timing_out_kills_the_whole_process_tree() {
+            let dir = std::env::temp_dir().join(format!("tandem-pwm-job-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let marker = dir.join("marker.txt");
+            std::fs::write(dir.join("inner.bat"), format!("@echo off\r\nping -n 6 127.0.0.1 >NUL\r\necho x >\"{}\"\r\n", marker.display())).unwrap();
+            std::fs::write(dir.join("outer.bat"), "@echo off\r\nstart /b cmd /d /c call inner.bat\r\nping -n 30 127.0.0.1 >NUL\r\n").unwrap();
+            let mut req = Request::new("cmd.exe", vec!["/d".to_string(), "/c".to_string(), dir.join("outer.bat").to_string_lossy().into_owned()]);
+            req.timeout = Some(Duration::from_millis(500));
+            assert_eq!(ProcessRunner::new().run(req).unwrap_err(), TIMED_OUT);
+            std::thread::sleep(Duration::from_secs(8));
+            let survived = marker.exists();
+            let _ = std::fs::remove_dir_all(&dir);
+            assert!(!survived, "a grandchild outlived the timed-out request");
+        }
+
+        #[test]
+        fn the_clock_has_one_lock_order() {
+            let clock = std::sync::Arc::new(Clock::default());
+            let a = clock.clone();
+            let t = std::thread::spawn(move || {
+                for _ in 0..20_000 {
+                    a.pause();
+                    a.resume();
+                }
+            });
+            for _ in 0..20_000 {
+                let _ = clock.paused();
+            }
+            t.join().unwrap();
+        }
+
+        #[test]
+        fn a_bare_name_is_found_with_its_extension() {
+            let dir = std::env::temp_dir().join(format!("tandem-pwm-ext-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("kxfake.cmd"), "@echo off\r\n").unwrap();
+            let found = resolve_in("kxfake", dir.as_os_str(), ".COM;.EXE;.CMD");
+            let _ = std::fs::remove_dir_all(&dir);
+            assert!(found.to_lowercase().ends_with("kxfake.cmd"), "{found}");
+            assert_eq!(resolve_in("C:\\x\\bw", std::ffi::OsStr::new(""), ""), "C:\\x\\bw");
         }
     }
 }

@@ -737,6 +737,7 @@ mod tests {
         ("app/api_ui.rs", "sync_api_server", 1, "Tandem's own API consent file beside its settings and the API's disable-auth file it writes"),
         ("app/api_ui.rs", "write_noauth_file", 4, "Tandem's own API consent file beside its settings and the API's disable-auth file it writes"),
         ("app/scripts_app.rs", "mark_tree", 2, "the Reveal Contents folder Tandem itself just created under the temp folder (marks the files it extracted there)"),
+        ("pwm_run.rs", "resolve_in", 1, "a PATH folder of the person's own environment, searched for the password manager CLI (bw.cmd) to start; nothing is read from it"),
         ("app/claude_code_app.rs", "install_hook", 1, "the hook exe beside Tandem's own exe"),
         ("app/coprocess_ui.rs", "coprocess_bar", 1, "a file Tandem names in the temp folder for the coprocess's errors"),
         ("app/jumplist_ui.rs", "delete_orphans", 2, "Tandem's own Recents folder under %APPDATA%\\Tandem (the list and its .itermtab files, exact uuid names only)"),
