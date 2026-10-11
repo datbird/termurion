@@ -294,6 +294,10 @@ pub enum Event {
     /// A top-level navigation the view refused after a person's click (`refused_click`): the app
     /// judges the URL itself (a popover link goes through `guard_open`).
     Refused { view: ViewId, url: String, user: bool },
+    /// A main-frame navigation to a `file:` URL was cancelled because the view shows local files as
+    /// `iterm2-file:` pages (`ViewSetup.redirect_file_urls`, 13x8 Task 3) and the one verdict, then
+    /// `file_redirect_allowed`, let it go. The app loads `iterm2_file_url(uri)` as Tandem's own load.
+    FileRedirect { view: ViewId, uri: String },
     /// A main-frame navigation was cancelled because the store's profile permissions are not
     /// synced yet (13x6, the one gate in the NavigationStarting handler): `url` is its TARGET, which
     /// the app loads once the sync lands. Never dropped.
@@ -416,6 +420,7 @@ impl Event {
             | Event::Request { view, .. }
             | Event::ExternalUri { view, .. }
             | Event::Refused { view, .. }
+            | Event::FileRedirect { view, .. }
             | Event::Parked { view, .. }
             | Event::ProcessFailed { view, .. }
             | Event::DevTools { view, .. }
@@ -485,6 +490,7 @@ impl Event {
             Event::ContextMenu { target: t, .. } => t.page_uri.len() + t.frame_uri.len() + t.link.as_ref().map_or(0, String::len) + t.link_text.as_ref().map_or(0, String::len) + t.source.as_ref().map_or(0, String::len) + t.selection.as_ref().map_or(0, String::len),
             Event::DevTools { json, name, session, .. } => json.len() + name.len() + session.as_ref().map_or(0, |s| s.len()),
             Event::Navigated { url, .. } | Event::NewWindow { url, .. } | Event::ExternalUri { url, .. } | Event::Refused { url, .. } | Event::Parked { url, .. } => url.len(),
+            Event::FileRedirect { uri, .. } => uri.len(),
             Event::Request { url, top_url, .. } => url.len() + top_url.len(),
             Event::ScriptDone { json, .. } => json.as_ref().map_or_else(|e| e.len(), |s| s.len()),
             Event::Permission { uri, .. } => uri.len(),
@@ -789,6 +795,43 @@ pub fn navigation_allowed(source: Option<&str>, target: &str, user: bool, redire
         return s == "iterm2-about";
     }
     true
+}
+
+/// The step a view's setup fails at when the runtime has no `ServerCertificateErrorDetected`, and what
+/// the person is told (13x8 Task 2 review M4).
+pub const OLD_RUNTIME_WHAT: &str = "certificate errors";
+pub const OLD_RUNTIME_TEXT: &str = "This WebView2 runtime is too old; update Microsoft Edge WebView2.";
+
+/// Whether a `file:` navigation the one verdict allowed may become an `iterm2-file:` page (13x8 Task 3,
+/// preflight B5): Tandem's own load, or a source that is not a web page (an `iterm2-about:` or
+/// `iterm2-file:` page, or no source at all). A person's click on a link of a WEB page is refused: a
+/// clickjacked click must not make Tandem list or read a local path.
+pub fn file_redirect_allowed(source: Option<&str>, by_tandem: bool) -> bool {
+    if by_tandem {
+        return true;
+    }
+    match source.map(scheme_of).as_deref() {
+        None | Some("") => true,
+        Some(s) => matches!(s, "iterm2-about" | "iterm2-file" | "iterm2-ssh"),
+    }
+}
+
+/// `file:///C:/a%20b/` as the `iterm2-file:` URL of the same path (13x8 Task 3); None for a host
+/// other than empty or `localhost`, a UNC path, or a path that does not start at a drive letter.
+/// Nothing is probed. The escapes stay as they are, so the one decoder (`browser_pages::file_path_of`)
+/// reads both forms alike.
+pub fn iterm2_file_url(file_url: &str) -> Option<String> {
+    if scheme_of(file_url) != "file" {
+        return None;
+    }
+    let rest = file_url.get("file:".len()..)?.strip_prefix("//")?;
+    let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    if !(host.is_empty() || host.eq_ignore_ascii_case("localhost")) {
+        return None;
+    }
+    let b = path.as_bytes();
+    let drive = b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' && (b.len() == 3 || matches!(b[3], b'/' | b'?' | b'#'));
+    drive.then(|| format!("iterm2-file://{path}"))
 }
 
 /// Whether a `file:` URL names a local file the one path judge accepts (B4): no host other than
@@ -2056,6 +2099,30 @@ mod tests {
         }
         for u in ["https://a/", "about:blank", "iterm2-aboutx:y", "data:text/html,x", "https://a/iterm2-about:source"] {
             assert!(!frame_nav_cancelled(u), "{u}");
+        }
+    }
+
+    /// 13x8 Task 3 (Review Focus 2): a `file:` URL becomes the `iterm2-file:` URL of the same drive
+    /// path; a host, a UNC path or a non-drive path answers None.
+    #[test]
+    fn file_urls_follow_windows() {
+        assert_eq!(iterm2_file_url("file:///C:/Users/u/a%20b.txt").as_deref(), Some("iterm2-file:///C:/Users/u/a%20b.txt"));
+        assert_eq!(iterm2_file_url("file://localhost/C:/x").as_deref(), Some("iterm2-file:///C:/x"));
+        assert_eq!(iterm2_file_url("FILE:///d:/").as_deref(), Some("iterm2-file:///d:/"));
+        assert_eq!(iterm2_file_url("file:///C:").as_deref(), Some("iterm2-file:///C:"));
+        for none in ["file://server/share/x", "file:////server/share", "file:///x", "file:///", "file:", "file:C:/x", "file:///C:x", "https://a/", "iterm2-file:///C:/x", ""] {
+            assert_eq!(iterm2_file_url(none), None, "{none}");
+        }
+    }
+
+    /// 13x8 Task 3 (preflight B5): only Tandem's load or a local page's click becomes a file page; a
+    /// click on a link of a web page does not.
+    #[test]
+    fn a_web_page_cannot_start_a_file_page() {
+        assert!(file_redirect_allowed(None, false) && file_redirect_allowed(Some("https://a/"), true));
+        assert!(file_redirect_allowed(Some("iterm2-about:welcome"), false) && file_redirect_allowed(Some("iterm2-file:///C:/"), false));
+        for web in ["https://a/", "http://a/", "about:blank", "data:text/html,x", "file:///C:/a.html", "blob:https://a/1"] {
+            assert!(!file_redirect_allowed(Some(web), false), "{web}");
         }
     }
 

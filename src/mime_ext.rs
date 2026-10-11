@@ -997,6 +997,13 @@ pub const EXTENSION_TO_MIME: &[(&str, &str)] = &[
     ("zmm", "application/vnd.handheld-entertainment+xml"),
 ];
 
+/// The MIME type of a file extension (no dot, any case), from the same table; None when the table
+/// has no such extension.
+pub fn mime_for_extension(ext: &str) -> Option<&'static str> {
+    let ext = ext.to_ascii_lowercase();
+    EXTENSION_TO_MIME.iter().find(|(e, _)| *e == ext).map(|(_, m)| *m)
+}
+
 /// The extension a MIME type is saved under (`MTU:11-36`): the inverted table on the lower-cased
 /// MIME, then on the part before ";" trimmed, then the prefix fallbacks, else "dat". A MIME listed
 /// under several extensions answers the LAST one in source order.
@@ -1029,6 +1036,15 @@ pub fn extension_for_mime(mime: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extensions_map_to_their_mime() {
+        assert_eq!(mime_for_extension("PNG"), Some("image/png"));
+        assert_eq!(mime_for_extension("svg"), Some("image/svg+xml"));
+        assert_eq!(mime_for_extension("html"), Some("text/html"));
+        assert_eq!(mime_for_extension("nosuchext"), None);
+        assert_eq!(mime_for_extension(""), None);
+    }
 
     #[test]
     fn mime_table_follows_iterm2() {

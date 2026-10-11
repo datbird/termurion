@@ -269,6 +269,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("app/workgroup_app.rs", 3),
     ("app/workgroup_restore_app.rs", 3),
     ("browser_pages.rs", 3),
+    ("file_serve.rs", 1),
     ("globals.rs", 1),
     ("host_client.rs", 2),
     ("jobwatch.rs", 2),

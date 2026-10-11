@@ -54,6 +54,7 @@ pub fn resource(name: &str) -> Option<&'static str> {
         "graph-discovery.js" => include_str!("../resources/browser/graph-discovery.js"),
         "has-selection.js" => include_str!("../resources/browser/has-selection.js"),
         "history-page.html" => include_str!("../resources/browser/history-page.html"),
+        "file-page.html" => include_str!("../resources/browser/file-page.html"),
         "file-page.css" => include_str!("../resources/browser/file-page.css"),
         "error-page.html" => include_str!("../resources/browser/error-page.html"),
         "onboarding-intro.html" => include_str!("../resources/browser/onboarding-intro.html"),

@@ -236,6 +236,7 @@ impl App {
             bv.last_failed = None;
             bv.pending_error = None;
             bv.error_burst = Default::default();
+            bv.blocked_url = None;
             bv.receiving_broadcast = 0;
             bv.receiving_since = None;
             bv.echo = Default::default();

@@ -1736,6 +1736,9 @@ pub struct App {
     /// post. App-wide, never per window.
     web_envs: webhost_app::Envs,
     web_events: std::sync::mpsc::Receiver<crate::webhost::Posted>,
+    /// The workers that read `iterm2-file:` pages' files (13x8 Task 3), started on the first request.
+    /// App-wide, never per window.
+    file_pool: Option<crate::file_serve::Pool>,
     /// The window whose keyboard focus sits in one of its own web views (13x Task 1a): the parent saw
     /// `Focused(false)` but is still the foreground window. App-wide, never per window.
     web_focus_held: Option<WindowId>,
@@ -2754,6 +2757,7 @@ pub fn run() {
         restored_dir: None,
         web_envs,
         web_events,
+        file_pool: None,
         web_focus_held: None,
         web_focus_view: None,
         tool_view_ids: HashMap::new(),

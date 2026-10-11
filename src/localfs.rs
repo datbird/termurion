@@ -352,6 +352,8 @@ pub struct Stat {
     pub len: u64,
     pub modified: Option<SystemTime>,
     pub readonly: bool,
+    /// The hidden attribute (Windows); a leading dot is the caller's rule.
+    pub hidden: bool,
 }
 
 impl Stat {
@@ -361,7 +363,11 @@ impl Stat {
         let reparse = std::os::windows::fs::MetadataExt::file_attributes(m) & 0x400 != 0;
         #[cfg(not(windows))]
         let reparse = t.is_symlink();
-        Stat { is_dir: t.is_dir(), is_file: t.is_file(), is_link: t.is_symlink(), is_reparse: reparse || t.is_symlink(), len: m.len(), modified: m.modified().ok(), readonly: m.permissions().readonly() }
+        #[cfg(windows)]
+        let hidden = std::os::windows::fs::MetadataExt::file_attributes(m) & 0x2 != 0;
+        #[cfg(not(windows))]
+        let hidden = false;
+        Stat { is_dir: t.is_dir(), is_file: t.is_file(), is_link: t.is_symlink(), is_reparse: reparse || t.is_symlink(), len: m.len(), modified: m.modified().ok(), readonly: m.permissions().readonly(), hidden }
     }
 }
 

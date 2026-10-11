@@ -46,6 +46,8 @@ pub(super) struct BrowserView {
     pub(super) last_failed: Option<String>,
     /// The error page the next `iterm2-about:error` document request serves; taken once.
     pub(super) pending_error: Option<String>,
+    /// The main document URL the ad blocker refused (answered `Block`), until its failed load is seen.
+    pub(super) blocked_url: Option<String>,
     /// At most a few error pages in a few seconds (preflight P6).
     pub(super) error_burst: crate::browser_pages::ErrorBurst,
     /// The toolbar's state: the address field, its suggestions, a press, the history list.
@@ -224,6 +226,7 @@ pub(super) fn browser_setup(dev_null: bool, adblock: bool, page_scripts: Vec<Str
         devtools: true,
         new_windows: true,
         guard_local_schemes: true,
+        redirect_file_urls: true,
         in_private: dev_null,
         web_message: true,
         scripts: page_scripts.into_iter().chain([crate::web_replay::sensitive_script()]).collect(),
@@ -281,7 +284,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { perms: Default::default(), view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, last_failed: None, pending_error: None, error_burst: Default::default(), bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, page_root: None, page_url: None, nav_root: None, nav_url: None, nav_id: 0, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), triggers: None, trigger_gate: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default(), autofill: Default::default(), password: Default::default() });
+        self.browser_views.insert(id, BrowserView { perms: Default::default(), view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, last_failed: None, pending_error: None, blocked_url: None, error_burst: Default::default(), bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, page_root: None, page_url: None, nav_root: None, nav_url: None, nav_id: 0, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), triggers: None, trigger_gate: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default(), autofill: Default::default(), password: Default::default() });
         self.browser_triggers_init(id);
         true
     }
@@ -667,6 +670,8 @@ impl App {
                 }
             }
             Event::ExternalUri { url, user, .. } | Event::Refused { url, user, .. } => self.run_external(url, *user),
+            // A `file:` page is Tandem's `iterm2-file:` page (13x8 Task 3).
+            Event::FileRedirect { uri, .. } => self.browser_file_redirect(pane, uri),
             // A key the page did not take as its own: Tandem's Win chords and the address
             // field's accelerators (Review: the page keeps every other key).
             Event::Key { vk, mods, taken, .. } => self.browser_accel_key(pane, *vk, *mods, *taken, event_loop),
@@ -683,9 +688,17 @@ impl App {
                 self.browser_audio_created(pane);
             }
             // The view could not be made: remade from the URL within the budget.
-            Event::Failed(view, _) => {
+            Event::Failed(view, why) => {
                 // The reason is COM's text: only that it happened and which view (13w B8).
                 crate::rlog!("webhost: a browser pane's view {} failed", *view);
+                // A runtime without the certificate event: no remake loop, one clear message (M4).
+                if why.starts_with(webhost::OLD_RUNTIME_WHAT) {
+                    if let Some(bv) = self.browser_views.get_mut(&pane) {
+                        bv.stopped = true;
+                    }
+                    self.banners.set("window", webhost::OLD_RUNTIME_TEXT);
+                    return;
+                }
                 self.browser_view_failed(pane, webhost::PROCESS_RENDER_EXITED);
             }
             // A process failed: the kind says what to do (final review I5).
@@ -1840,7 +1853,7 @@ mod tests {
         // The views are made in the Dev Null store InPrivate, and never with a bridge or host objects.
         assert!(browser_setup(true, false, vec![]).in_private && !browser_setup(false, false, vec![]).in_private);
         let s = browser_setup(false, false, vec![]);
-        assert!(s.guard_local_schemes && s.user_agent.as_deref() == Some(""));
+        assert!(s.guard_local_schemes && s.redirect_file_urls && s.user_agent.as_deref() == Some(""));
     }
 
     /// Task 10 review I1: one window's pass reports a pane hidden (sign-in cancelled, replay hidden,

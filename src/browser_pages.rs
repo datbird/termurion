@@ -11,6 +11,7 @@ use crate::browser;
 use crate::browser_db::Db;
 use crate::webhost::{scheme_of, Answer};
 use serde_json::{json, Map, Value};
+use std::path::{Path, PathBuf};
 
 /// The policy every local page response carries (B3b, tightened by the Task 7 review ruling): no
 /// remote script, frame, fetch or form. Script runs only with this response's nonce (no
@@ -542,6 +543,212 @@ pub fn page_request_allowed(pending: Option<(&PageRoot, &str)>, committed: Optio
         return pending.is_some_and(|(_, nav_url)| nav_url == url);
     }
     committed.is_some() && page_root(top_url).as_ref() == committed && subresource_allowed(committed, url, context)
+}
+
+// --- File pages: the path an `iterm2-file:` URL names, and the pages made of it (13x8 Task 3) ---
+
+/// The policy of a file that came with a Mark of the Web or is SVG or XML: sandboxed like
+/// `SANDBOX_CSP` and with no script at all, so a file the person opens cannot run anything. Only
+/// the page's own styles and its own tree's images, media and fonts remain.
+pub const UNTRUSTED_CSP: &str = "sandbox; default-src 'none'; script-src 'none'; style-src 'unsafe-inline' iterm2-file: iterm2-ssh:; img-src iterm2-file: iterm2-ssh: data:; media-src iterm2-file: iterm2-ssh:; font-src iterm2-file: iterm2-ssh:; connect-src 'none'; form-action 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'";
+
+pub fn untrusted_headers() -> Vec<(String, String)> {
+    vec![("Content-Security-Policy".to_string(), UNTRUSTED_CSP.to_string()), ("X-Content-Type-Options".to_string(), "nosniff".to_string())]
+}
+
+/// `sandbox_headers` and `nosniff`: the headers of a file or listing answer from a trusted source.
+pub fn file_headers() -> Vec<(String, String)> {
+    let mut h = sandbox_headers();
+    h.push(("X-Content-Type-Options".to_string(), "nosniff".to_string()));
+    h
+}
+
+/// The most entries of one folder a listing shows.
+pub const MAX_LISTED: usize = 5000;
+
+/// What the error page says of a main document the ad blocker refused.
+pub const BLOCKED_TEXT: &str = "This page was blocked by ad blocking.";
+
+/// "Invalid file path: <path>" (`LPM:192`).
+pub fn invalid_path_text(path: &str) -> String {
+    format!("Invalid file path: {path}")
+}
+
+/// "File not found: <path>" (`FH:70`).
+pub fn file_not_found_text(path: &str) -> String {
+    format!("File not found: {path}")
+}
+
+/// The longest name of one path component.
+const MAX_COMPONENT: usize = 255;
+
+/// The Windows path an `iterm2-file:` URL names, decoded: `iterm2-file:///C:/a%20b/` is `C:\a b`.
+/// Pure: nothing is probed. Refused (Err) are an empty path (`FH:31`), a host (so `//srv/share`), a
+/// path that is not a drive path (`/C:/...`), a backslash or control character after decoding, an
+/// empty, `.` or `..` component, a component that ends in a dot or a space (Windows would read it
+/// as another name), holds `<>:"|?*` (a stream `name:stream` too), or is a device name
+/// (`inline_file::is_device_name`). Whatever this accepts cannot climb out of the drive or reach
+/// a share; the filesystem steps (`file_serve`) add the link checks.
+pub fn file_path_of(url: &str) -> Result<PathBuf, &'static str> {
+    const INVALID: &str = "Invalid file path";
+    let (scheme, rest) = url.split_once(':').ok_or(INVALID)?;
+    if !scheme.eq_ignore_ascii_case(FILE_SCHEME) {
+        return Err(INVALID);
+    }
+    let rest = rest.split(['?', '#']).next().unwrap_or("");
+    if rest.is_empty() {
+        return Err("No path specified");
+    }
+    let rest = rest.strip_prefix("//").ok_or(INVALID)?;
+    let (authority, raw) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    if !authority.is_empty() {
+        return Err(INVALID);
+    }
+    if raw.is_empty() {
+        return Err("No path specified");
+    }
+    let path = percent_decode(raw).ok_or(INVALID)?;
+    if path.len() > MAX_STRING || path.chars().any(|c| c == '\\' || c.is_control()) {
+        return Err(INVALID);
+    }
+    let b = path.as_bytes();
+    let drive = b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' && (b.len() == 3 || b[3] == b'/');
+    if !drive {
+        return Err(INVALID);
+    }
+    let mut out = format!("{}:\\", path[1..2].to_string());
+    let tail = path.get(4..).unwrap_or("");
+    // One trailing slash is dropped (`FH:35-38`); any other empty component is refused.
+    let tail = tail.strip_suffix('/').unwrap_or(tail);
+    if !tail.is_empty() {
+        for (n, comp) in tail.split('/').enumerate() {
+            let bad = comp.is_empty()
+                || comp == "."
+                || comp == ".."
+                || comp.chars().count() > MAX_COMPONENT
+                || comp.ends_with(['.', ' '])
+                || comp.contains(['<', '>', ':', '"', '|', '?', '*'])
+                || crate::inert_files::is_device_name(comp);
+            if bad {
+                return Err(INVALID);
+            }
+            if n > 0 {
+                out.push('\\');
+            }
+            out.push_str(comp);
+        }
+    }
+    Ok(PathBuf::from(out))
+}
+
+/// Whether a link's target may be followed at all: a drive path (plain or `\\?\C:\` verbatim) or a
+/// relative target, never a UNC, `\\?\UNC\`, `\\.\` or other `\\` or `//` form, and no device name in it.
+pub fn link_target_ok(target: &Path) -> bool {
+    let s = target.to_string_lossy();
+    let verbatim_drive = s.strip_prefix(r"\\?\").is_some_and(|r| {
+        let b = r.as_bytes();
+        b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b.len() == 2 || b[2] == b'\\')
+    });
+    if (s.starts_with(r"\\") || s.starts_with("//")) && !verbatim_drive {
+        return false;
+    }
+    !s.split(['\\', '/']).any(|c| !c.is_empty() && crate::inert_files::is_device_name(c))
+}
+
+/// `%XX` for every byte that is not an unreserved URL character.
+fn encode_segment(s: &str, out: &mut String) {
+    for &b in s.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+}
+
+/// The `iterm2-file:` URL of a path: `C:\x\y` is `iterm2-file:///C:/x/y`, a folder gets a trailing `/`
+/// (`FH:118-127`; a drive root is always one). Every byte but unreserved characters is escaped.
+pub fn file_url_of(path: &Path, dir: bool) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let text = text.trim_end_matches('/');
+    let mut out = String::from("iterm2-file:///");
+    let mut segments = text.split('/');
+    let first = segments.next().unwrap_or("");
+    let drive = first.len() == 2 && first.as_bytes()[1] == b':' && first.as_bytes()[0].is_ascii_alphabetic();
+    if drive {
+        out.push_str(first);
+    } else {
+        encode_segment(first, &mut out);
+    }
+    let mut rest = false;
+    for seg in segments {
+        out.push('/');
+        encode_segment(seg, &mut out);
+        rest = true;
+    }
+    if dir || (drive && !rest) {
+        out.push('/');
+    }
+    out
+}
+
+/// One entry of a folder as the listing needs it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    pub name: String,
+    pub dir: bool,
+    pub hidden: bool,
+}
+
+/// A drive root (`C:\`), which has no parent row.
+fn drive_root(path: &Path) -> bool {
+    path.parent().is_none_or(|p| p.as_os_str().is_empty())
+}
+
+/// A name as the page shows it: the one sanitizer (`inert_files::display_text`), then escaped.
+fn shown(name: &str) -> String {
+    escape_slot(&crate::inert_files::display_text(name, MAX_COMPONENT, false))
+}
+
+/// The listing page of a folder (`FH:78-141`): `..` first (not at a drive root), folders then files,
+/// each ignoring case, hidden entries skipped, every name sanitized and escaped, every link an
+/// absolute `iterm2-file:` URL built by `file_url_of`. More than `MAX_LISTED` entries end in a note.
+pub fn directory_page(path: &Path, entries: &[Entry]) -> String {
+    let mut items = String::new();
+    if !drive_root(path) {
+        if let Some(parent) = path.parent() {
+            items.push_str(&format!("<li><a href=\"{}\">..</a></li>\n", escape_slot(&file_url_of(parent, true))));
+        }
+    }
+    let mut shown_entries: Vec<&Entry> = entries.iter().filter(|e| !e.hidden).collect();
+    shown_entries.sort_by(|a, b| b.dir.cmp(&a.dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())).then_with(|| a.name.cmp(&b.name)));
+    for e in shown_entries.iter().take(MAX_LISTED) {
+        let href = file_url_of(&path.join(&e.name), e.dir);
+        items.push_str(&format!("<li><a href=\"{}\">{}</a></li>\n", escape_slot(&href), shown(&e.name)));
+    }
+    if shown_entries.len() > MAX_LISTED {
+        items.push_str(&format!("<li>Only the first {MAX_LISTED} items are shown.</li>\n"));
+    }
+    let content = format!("<ul>\n{items}</ul>");
+    let text = path.to_string_lossy();
+    let title = if drive_root(path) { text.to_string() } else { path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() };
+    let (title, shown_path) = (shown(&title), shown(&text));
+    page(crate::browser_js::resource("file-page.html").unwrap_or_default(), &[("TITLE", &title), ("PATH", &shown_path), ("CONTENT", &content)])
+}
+
+/// A file as a page (`FH:143-157`): `.html` and `.htm` as they are (lossy UTF-8), any other file as
+/// escaped text in a `<pre>`, UTF-8 or else Latin-1 (every byte string is Latin-1, so iTerm2's
+/// hexadecimal branch never runs and is not built).
+pub fn file_page(path: &Path, bytes: &[u8]) -> String {
+    let html = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"));
+    if html {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    let text = match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_string(),
+        Err(_) => bytes.iter().map(|&b| b as char).collect(),
+    };
+    format!("<pre>{}</pre>", crate::view_source::escape_html(&text))
 }
 
 /// The script that makes `window.webkit.messageHandlers[name].postMessage(body)` (iTerm2's pages call
@@ -1650,5 +1857,144 @@ mod error_tests {
         assert!(page.contains("const originalURL = '';"));
         let page = error_page(Failure::TimedOut, Some("javascript:alert(1)"));
         assert!(page.contains("const originalURL = '';"), "only a scheme Tandem loads is retried");
+    }
+}
+
+#[cfg(test)]
+mod file_page_tests {
+    use super::*;
+
+    /// Review Focus 2: the path rules are pure and Windows-shaped; nothing is probed.
+    #[test]
+    fn file_urls_follow_windows() {
+        let ok = |u: &str| file_path_of(u).map(|p| p.to_string_lossy().into_owned());
+        assert_eq!(ok("iterm2-file:///C:/Users/u/").unwrap(), r"C:\Users\u");
+        assert_eq!(ok("iterm2-file:///C:/").unwrap(), r"C:\");
+        assert_eq!(ok("iterm2-file:///C:").unwrap(), r"C:\");
+        assert_eq!(ok("iterm2-file:///C:/a%20b.txt").unwrap(), r"C:\a b.txt");
+        assert_eq!(ok("ITERM2-FILE:///c:/x?q#f").unwrap(), r"c:\x");
+        assert_eq!(ok("iterm2-file:"), Err("No path specified"));
+        assert_eq!(ok("iterm2-file://"), Err("No path specified"));
+        assert_eq!(file_url_of(Path::new(r"C:\a b"), true), "iterm2-file:///C:/a%20b/");
+        assert_eq!(file_url_of(Path::new(r"C:\x\y.txt"), false), "iterm2-file:///C:/x/y.txt");
+        assert_eq!(file_url_of(Path::new(r"C:\"), true), "iterm2-file:///C:/");
+        assert_eq!(file_url_of(Path::new(r"C:\"), false), "iterm2-file:///C:/");
+        assert_eq!(file_url_of(Path::new("C:\\d\\\u{e9}'\"<>"), false), "iterm2-file:///C:/d/%C3%A9%27%22%3C%3E");
+        assert_eq!(invalid_path_text("x"), "Invalid file path: x");
+        assert_eq!(file_not_found_text("x"), "File not found: x");
+        // Review I8: a share, verbatim or device form is refused after decoding.
+        for bad in [
+            "iterm2-file:///%5C%5Csrv%5Cshare",
+            "iterm2-file:////srv/share",
+            "iterm2-file://srv/share",
+            "iterm2-file:///%5C%5C%3F%5CUNC%5Csrv%5Cs",
+            "iterm2-file:///%5C%5C.%5CC:%5Cx",
+            "iterm2-file:///x",
+            "iterm2-file:///",
+            "iterm2-file:C:/x",
+            "https://a/C:/x",
+        ] {
+            assert!(file_path_of(bad).is_err(), "{bad}");
+        }
+        // Review M5: a device name in any component.
+        for bad in ["iterm2-file:///C:/CON", "iterm2-file:///C:/a/nul.txt", "iterm2-file:///C:/COM1/x", "iterm2-file:///C:/CONIN$", "iterm2-file:///C:/lpt9.log"] {
+            assert!(file_path_of(bad).is_err(), "{bad}");
+        }
+        // Traversal in every spelling, alternate streams, trailing dots and spaces, mixed slashes.
+        for bad in [
+            "iterm2-file:///C:/a/../b",
+            "iterm2-file:///C:/a/%2e%2e/b",
+            "iterm2-file:///C:/a/%2E%2E",
+            "iterm2-file:///C:/a/./b",
+            "iterm2-file:///C:/a%5C..%5Cb",
+            "iterm2-file:///C:/a%2F..%2Fb",
+            "iterm2-file:///C:/a//b",
+            "iterm2-file:///C:/a.txt:stream",
+            "iterm2-file:///C:/a.txt::$DATA",
+            "iterm2-file:///C:/a./b",
+            "iterm2-file:///C:/a /b",
+            "iterm2-file:///C:/.. /b",
+            "iterm2-file:///C:/.../b",
+            "iterm2-file:///C:/a%00b",
+            "iterm2-file:///C:/a%0Ab",
+            "iterm2-file:///C:/a*b",
+            "iterm2-file:///C:/a%3Fb",
+            "iterm2-file:///C:/%FF",
+            "iterm2-file:///CC:/a",
+            "iterm2-file:///1:/a",
+        ] {
+            assert!(file_path_of(bad).is_err(), "{bad}");
+        }
+        assert!(file_path_of(&format!("iterm2-file:///C:/{}", "a".repeat(256))).is_err(), "a component over 255 characters");
+        // A link may lead to a local path only.
+        for bad in [r"\\srv\share", r"\\?\UNC\srv\s", r"\\.\pipe\x", "//srv/share", r"\\?\GLOBALROOT\x", r"C:\x\NUL"] {
+            assert!(!link_target_ok(Path::new(bad)), "{bad}");
+        }
+        for good in [r"C:\x", r"\\?\C:\x", r"..\y", "y"] {
+            assert!(link_target_ok(Path::new(good)), "{good}");
+        }
+        // Every path the decoder accepts re-encodes to a URL that decodes to the same path.
+        for p in [r"C:\", r"C:\a b\c\d.txt", "C:\\\u{e9}\\\u{4e2d}"] {
+            assert_eq!(file_path_of(&file_url_of(Path::new(p), false)).unwrap(), PathBuf::from(p));
+        }
+    }
+
+    #[test]
+    fn directory_listing_follows_iterm2() {
+        let e = |name: &str, dir: bool, hidden: bool| Entry { name: name.into(), dir, hidden };
+        let entries = [e("b.txt", false, false), e("A", true, false), e(".git", true, true), e("c", true, false), e("a.txt", false, false)];
+        let html = directory_page(Path::new(r"C:\d"), &entries);
+        let at = |needle: &str| html.find(needle).unwrap_or_else(|| panic!("{needle} missing in {html}"));
+        let order = [
+            "<li><a href=\"iterm2-file:///C:/\">..</a></li>",
+            "<li><a href=\"iterm2-file:///C:/d/A/\">A</a></li>",
+            "<li><a href=\"iterm2-file:///C:/d/c/\">c</a></li>",
+            "<li><a href=\"iterm2-file:///C:/d/a.txt\">a.txt</a></li>",
+            "<li><a href=\"iterm2-file:///C:/d/b.txt\">b.txt</a></li>",
+        ];
+        for pair in order.windows(2) {
+            assert!(at(pair[0]) < at(pair[1]), "{pair:?}");
+        }
+        assert!(!html.contains(".git"), "hidden entries are skipped");
+        assert!(html.contains("<title>d</title>") && html.contains("<p class=\"directory-path\">C:\\d</p>"));
+        assert!(html.contains("<span class=\"tandem-glyph\">\u{E8B7}</span>") && !html.contains('\u{1F4C1}'), "the folder glyph, not the emoji");
+        // A name is text, never markup; a hidden or bidi character is dropped from what is shown.
+        let hostile = directory_page(Path::new(r"C:\d"), &[e("<x>&", false, false), e("a\u{202e}b\u{200b}", false, false), e("\"onmouseover=\"x", false, false), e("{{TITLE}}", false, false)]);
+        assert!(hostile.contains("&lt;x&gt;&amp;") && !hostile.contains("<x>"));
+        assert!(hostile.contains(">ab</a>") && !hostile.contains('\u{202e}') && !hostile.contains('\u{200b}'));
+        assert!(!hostile.contains("\"onmouseover=\"x") && hostile.contains("href=\"iterm2-file:///C:/d/%22onmouseover%3D%22x\""));
+        assert!(hostile.contains("&#123;&#123;TITLE}}"), "a name holding a slot is not substituted again");
+        // Review M6: the title and path slots are escaped too.
+        let odd = directory_page(Path::new(r"C:\d\<b>x"), &[]);
+        assert!(odd.contains("<title>&lt;b&gt;x</title>") && odd.contains("C:\\d\\&lt;b&gt;x"));
+        assert!(!odd.contains("<b>x"));
+        // A drive root has no ".." row.
+        let root = directory_page(Path::new(r"C:\"), &[e("x", false, false)]);
+        assert!(!root.contains(">..<") && root.contains("href=\"iterm2-file:///C:/x\""));
+        // A listing holds no script of ours.
+        assert!(!html.contains("<script") && !html.contains("innerHTML"));
+        // A very long folder ends in a note.
+        let many: Vec<Entry> = (0..MAX_LISTED + 3).map(|n| e(&format!("f{n:05}"), false, false)).collect();
+        let long = directory_page(Path::new(r"C:\d"), &many);
+        assert!(long.contains("Only the first 5000 items are shown.") && !long.contains("f05001"));
+    }
+
+    #[test]
+    fn file_view_follows_iterm2() {
+        assert_eq!(file_page(Path::new(r"C:\a.html"), b"<b>x</b>"), "<b>x</b>");
+        assert_eq!(file_page(Path::new(r"C:\a.HTM"), b"<b>x</b>"), "<b>x</b>");
+        assert_eq!(file_page(Path::new(r"C:\a.txt"), b"a<b"), "<pre>a&lt;b</pre>");
+        assert_eq!(file_page(Path::new(r"C:\a"), &[0xE9, 0x41]), "<pre>\u{e9}A</pre>");
+        assert_eq!(file_page(Path::new(r"C:\a.txt"), b"\"'&"), "<pre>&quot;&#39;&amp;</pre>");
+    }
+
+    /// The policies: a file with no trust gets no script at all, and both carry `nosniff`.
+    #[test]
+    fn untrusted_files_run_no_script() {
+        assert!(UNTRUSTED_CSP.starts_with("sandbox;") && !UNTRUSTED_CSP.contains("allow-") && UNTRUSTED_CSP.contains("script-src 'none'") && UNTRUSTED_CSP.contains("connect-src 'none'"));
+        assert!(SANDBOX_CSP.contains("sandbox allow-scripts;") && !SANDBOX_CSP.contains("allow-same-origin") && !SANDBOX_CSP.contains("allow-top-navigation") && !SANDBOX_CSP.contains("allow-forms"));
+        for h in [file_headers(), untrusted_headers()] {
+            assert!(h.iter().any(|(k, v)| k == "X-Content-Type-Options" && v == "nosniff") && h.iter().any(|(k, _)| k == "Content-Security-Policy"));
+        }
     }
 }

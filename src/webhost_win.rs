@@ -484,6 +484,10 @@ pub struct ViewSetup {
     /// The view's NavigationStarting handler asks `navigation_allowed` and cancels a refused
     /// navigation. Every view sets it (preflight B4c).
     pub guard_local_schemes: bool,
+    /// A main-frame navigation to a `file:` URL the one verdict allowed is cancelled and posted as
+    /// `Event::FileRedirect` when `webhost::file_redirect_allowed` says so (browser panes: the app shows
+    /// the same path as an `iterm2-file:` page, 13x8 Task 3). WebView2 never lists a folder itself.
+    pub redirect_file_urls: bool,
     /// Only these schemes may load (compared ignoring case); None allows any the guard allows.
     pub allowed_schemes: Option<Vec<String>>,
     /// `IsWebMessageEnabled`: true only for popover HTML, tool views and `iterm2-about:` pages (preflight P5).
@@ -1528,7 +1532,7 @@ fn configure(inner: &Rc<RefCell<Inner>>, core: &Core, bounds: (i32, i32, i32, i3
         register_document_method(inner, view, &mut token).map_err(|x| e("document method", x))?;
     }
     if setup.fail_cert_errors {
-        register_cert_cancel(view, &mut token).map_err(|x| e("certificate errors", x))?;
+        register_cert_cancel(view, &mut token).map_err(|x| e(webhost::OLD_RUNTIME_WHAT, x))?;
     }
     Ok(())
 }
@@ -1795,6 +1799,17 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
                 i.poster.post(Event::Parked { view: i.id, url: webhost::cap_url(&uri).0, user, redirect, by_tandem, history: kind.0 == 1, source });
                 return Ok(());
             }
+        }
+        // A `file:` page is Tandem's own `iterm2-file:` page (13x8 Task 3), after the verdict and the sync
+        // gate (preflight B5): cancelled here whatever happens, posted only when the source is not a
+        // web page and the URL was not cut short (a cut URL names another path).
+        if i.setup.redirect_file_urls && webhost::scheme_of(&uri) == "file" {
+            let _ = unsafe { args.SetCancel(true) };
+            let (capped, over) = webhost::cap_url(&uri);
+            if !over && webhost::file_redirect_allowed(source.as_deref(), by_tandem) {
+                i.poster.post(Event::FileRedirect { view: i.id, uri: capped });
+            }
+            return Ok(());
         }
         // The per-navigation hooks (13x5), only for a navigation that passed the verdict and the sync
         // gate: the Document filter's method is matched to this start (a refused or parked one is not).
@@ -3330,6 +3345,8 @@ mod probe {
         navigated: Vec<(String, bool)>,
         /// Each `Navigated`'s url and status (13x8 Task 2).
         statuses: Vec<(String, i32)>,
+        /// Each `Navigated`'s HTTP status (13x8 merge review 4).
+        https: Vec<i32>,
         failed: Vec<String>,
         created: bool,
         /// WebView2's own frame ids (`watch_frames`).
@@ -3365,6 +3382,11 @@ mod probe {
         /// The navigation and authentication events in the order the host posted them (probe run
         /// 2026-10-11: the order is the evidence a failure is read from).
         auth_log: Vec<String>,
+        /// 13x8 Task 3: when set, `iterm2-file:` requests are answered by `file_serve::serve` (the page's tree
+        /// is `file_root`, as the app holds it) and each answer's headers are kept.
+        serve_files: bool,
+        file_root: Option<crate::browser_pages::PageRoot>,
+        served: Vec<(String, Vec<(String, String)>)>,
     }
 
     impl Probe {
@@ -3450,6 +3472,7 @@ mod probe {
                 attached: Vec::new(),
                 navigated: Vec::new(),
                 statuses: Vec::new(),
+                https: Vec::new(),
                 failed: Vec::new(),
                 created: false,
                 frames: Vec::new(),
@@ -3470,6 +3493,9 @@ mod probe {
                 responses: Vec::new(),
                 commits: Vec::new(),
                 auth_log: Vec::new(),
+                serve_files: false,
+                file_root: None,
+                served: Vec::new(),
             };
             let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
             let c2 = cell.clone();
@@ -3621,7 +3647,8 @@ mod probe {
                 Event::Created(_) => self.created = true,
                 Event::Failed(_, why) => self.failed.push(why),
                 Event::ProcessFailed { kind, .. } => self.failed.push(format!("process failed {kind}")),
-                Event::Navigated { ok, url, nav, status, .. } => {
+                Event::Navigated { ok, url, nav, status, http, .. } => {
+                    self.https.push(http);
                     self.statuses.push((url.clone(), status));
                     self.auth_log.push(format!("navigated {nav} ok={ok} status={status}"));
                     self.navigated.push((url, ok));
@@ -3647,6 +3674,15 @@ mod probe {
                 Event::Request { token, url, context, .. } => {
                     self.order.push(format!("request {context} {url}"));
                     let key = url.split(['#', '?']).next().unwrap_or("").to_string();
+                    if self.serve_files && url.starts_with("iterm2-file:") {
+                        let root = if context == crate::browser_pages::CONTEXT_DOCUMENT { None } else { self.file_root.clone() };
+                        let answer = crate::file_serve::serve(&url, context, root.as_ref());
+                        if let Answer::Respond { headers, .. } = &answer {
+                            self.served.push((url.clone(), headers.clone()));
+                        }
+                        self.view().answer_request(token, answer);
+                        return;
+                    }
                     let answer = match self.pages.get(&key) {
                         Some(body) => {
                             // A page by default; a stylesheet or an image by its extension (Save Page As).
@@ -6294,6 +6330,116 @@ window.addEventListener('message', function (e) {
         assert_eq!(p.navigated[n], (url.clone(), false), "a failed load, with the URL asked for");
         let status = p.statuses[n].1;
         assert!(status == 12 || status == 6, "a connection status: {status}");
+        p.finish();
+    }
+
+    /// 13x8 Task 3 (Review Focus 10, R13x8-1): a file page reads and sends nothing. `T\site\a.html`'s
+    /// script tries a fetch and an XHR of the sibling file, a fetch of an `iterm2-ssh:` URL and of a
+    /// 127.0.0.1 listener, loads the sibling as an image, then navigates away; each attempt fails, the
+    /// page stays, the listener sees no connection, the served answers carry the sandbox policy, and the
+    /// page's message to an `iterm2-about:` handler comes from a source the router drops. Needs the
+    /// console session; never run on the desktop probe.
+    #[test]
+    #[ignore]
+    fn file_pages_cannot_read_or_send() {
+        let t = std::env::temp_dir().join(format!("tandem-filepage-{}", hex32()));
+        std::fs::create_dir_all(t.join("site")).expect("site");
+        std::fs::create_dir_all(t.join("other")).expect("other");
+        std::fs::write(t.join("other").join("secret.txt"), "s3cret").expect("secret");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let port = listener.local_addr().expect("its address").port();
+        let secret = crate::browser_pages::file_url_of(&t.join("other").join("secret.txt"), false);
+        let html = format!(
+            "<!doctype html><title></title><script>var t=[];function f(){{t.push('fail');document.title=t.join(',');}}function r(){{t.push('READ');document.title=t.join(',');}}\
+             fetch('{secret}').then(r,f);fetch('iterm2-ssh://box/etc/passwd').then(r,f);fetch('http://127.0.0.1:{port}/x?d=1').then(r,f);\
+             var x=new XMLHttpRequest();x.onload=r;x.onerror=f;x.open('GET','{secret}');x.send();\
+             var i=new Image();i.onload=r;i.onerror=f;i.src='{secret}';\
+             window.chrome.webview.postMessage({{handler:'iterm2-about:settings',body:{{}}}});\
+             setTimeout(function(){{location.href='http://127.0.0.1:{port}/nav';}},500);</script>"
+        );
+        std::fs::write(t.join("site").join("a.html"), html).expect("page");
+        let page = crate::browser_pages::file_url_of(&t.join("site").join("a.html"), false);
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, resource_filters: vec!["iterm2-file:*".into(), "iterm2-ssh:*".into()], ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&[], Vec::new(), &["iterm2-file", "iterm2-ssh", "iterm2-about"], setup) else { return };
+        p.serve_files = true;
+        p.file_root = crate::browser_pages::page_root(&page);
+        let n = p.navigated.len();
+        p.view().navigate_tandem(&page);
+        assert!(p.wait(15, |p| p.navigated.len() > n), "Navigated within 15 s: {:?}", p.order);
+        assert!(p.page_becomes(10, "document.title", false, "fail,fail,fail,fail,fail"), "every attempt failed: {:?}", p.page_string("document.title"));
+        p.settle(1500);
+        assert_eq!(p.page_string("location.href"), Ok(page.clone()), "the page is still the file page");
+        assert!(listener.accept().is_err(), "the listener saw no connection");
+        assert!(!p.served.is_empty() && p.served.iter().all(|(_, h)| h.iter().any(|(k, v)| k == "Content-Security-Policy" && v == crate::browser_pages::SANDBOX_CSP)), "every answer carried the sandbox: {:?}", p.served);
+        let messages: Vec<&Routed> = p.routed.iter().filter(|r| r.body.contains("iterm2-about:settings")).collect();
+        assert!(!messages.is_empty() && messages.iter().all(|m| !crate::browser::local_source_ok(&m.from)), "the router drops a file page's message: {:?}", messages.iter().map(|m| m.from.clone()).collect::<Vec<_>>());
+        std::fs::remove_dir_all(&t).ok();
+        p.finish();
+    }
+
+    /// 13x8 merge review 4: what a main-document load reports for a server that answered and for one
+    /// that did not, as the error page's rule (`server_answered`) reads it. A local listener serves a 404
+    /// with a body, an empty 404, a 204 and a 503; a dead port is the network failure. A server that
+    /// answered has `http >= 100` (its own page shows); the network failure has `http` under 100 (Tandem's
+    /// page shows); a 204 makes no navigation or one that is not an error. Needs the console session.
+    #[test]
+    #[ignore]
+    fn server_answers_and_network_failures_differ() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let port = listener.local_addr().expect("its address").port();
+        listener.set_nonblocking(true).expect("nonblocking");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = stop.clone();
+        let server = std::thread::spawn(move || {
+            while !flag.load(std::sync::atomic::Ordering::SeqCst) {
+                let Ok((mut c, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                };
+                let _ = c.set_nonblocking(false);
+                let _ = c.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buf = [0u8; 4096];
+                let n = c.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let reply = match path.as_str() {
+                    "/404" => "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nContent-Length: 12\r\nConnection: close\r\n\r\n<b>nobody</b>",
+                    "/empty404" => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    "/204" => "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n",
+                    "/503" => "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/html\r\nContent-Length: 4\r\nConnection: close\r\n\r\nbusy",
+                    _ => "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                };
+                let _ = c.write_all(reply.as_bytes());
+            }
+        });
+        let setup = ViewSetup { guard_local_schemes: true, fail_cert_errors: true, ..Default::default() };
+        let Some(mut p) = Probe::start_setup(&[], Vec::new(), &[], setup) else {
+            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = server.join();
+            return;
+        };
+        let dead = std::net::TcpListener::bind("127.0.0.1:0").expect("a port").local_addr().expect("its address").port();
+        for (path, port_of, answered) in [("/404", port, true), ("/empty404", port, true), ("/503", port, true), ("/dead", dead, false)] {
+            let n = p.navigated.len();
+            p.view().navigate_tandem(&format!("http://127.0.0.1:{port_of}{path}"));
+            assert!(p.wait(15, |p| p.navigated.len() > n), "Navigated within 15 s for {path}: {:?}", p.order);
+            let (ok, http) = (p.navigated[n].1, p.https[n]);
+            println!("probe: {path} ok={ok} http={http} status={}", p.statuses[n].1);
+            assert_eq!(crate::browser_pages::server_answered(http), answered, "{path}: ok={ok} http={http}");
+        }
+        // A 204 keeps the page: no navigation completes, or it is not a failure the error page would cover.
+        let n = p.navigated.len();
+        p.view().navigate_tandem(&format!("http://127.0.0.1:{port}/204"));
+        let came = p.wait(4, |p| p.navigated.len() > n);
+        println!("probe: /204 navigated={came}");
+        if came {
+            let (ok, http) = (p.navigated[n].1, p.https[n]);
+            assert!(ok || crate::browser_pages::server_answered(http), "a 204 is no network failure: ok={ok} http={http}");
+        }
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = server.join();
         p.finish();
     }
 

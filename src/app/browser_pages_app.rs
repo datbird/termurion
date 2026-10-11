@@ -22,6 +22,7 @@ impl App {
     /// this far (`webhost::navigation_allowed`).
     pub(super) fn browser_page_starting(&mut self, pane: PaneId, url: &str, nav: u64) {
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        bv.blocked_url = None;
         bv.nav_root = browser_pages::page_root(url);
         bv.nav_url = bv.nav_root.is_some().then(|| url.to_string());
         bv.nav_id = nav;
@@ -48,9 +49,12 @@ impl App {
     /// when the Source is that URL, else none (a web page, or any other document, holds no root).
     pub(super) fn browser_page_committed(&mut self, pane: PaneId, source: &str) {
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
-        if bv.nav_url.as_deref() == Some(source) && bv.nav_root.is_some() {
+        // A same-document move (`a.html#x`) changes the Source with no new navigation: the page is still
+        // its pending URL, fragment aside (Task 3: file pages have anchors).
+        let bare = |u: &str| u.split('#').next().unwrap_or("").to_string();
+        if bv.nav_url.as_deref().is_some_and(|n| bare(n) == bare(source)) && bv.nav_root.is_some() {
             bv.page_root = bv.nav_root.clone();
-            bv.page_url = Some(source.to_string());
+            bv.page_url = bv.nav_url.clone();
         } else {
             bv.page_root = None;
             bv.page_url = None;
@@ -70,15 +74,25 @@ impl App {
     pub(super) fn browser_load_failed(&mut self, pane: PaneId, url: &str, status: i32, http: i32) {
         let failure = browser_pages::failure_of(status);
         let scheme = crate::webhost::scheme_of(url);
-        // A server that answered (4xx, 5xx) shows its own page.
-        if browser_pages::server_answered(http) || failure == browser_pages::Failure::Cancelled || url.is_empty() || matches!(scheme.as_str(), "file" | browser_pages::FILE_SCHEME | browser_pages::ABOUT) {
+        if failure == browser_pages::Failure::Cancelled || url.is_empty() || matches!(scheme.as_str(), "file" | browser_pages::FILE_SCHEME | browser_pages::ABOUT) {
             return;
         }
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        // The main document the ad blocker refused (a synthetic 403): Tandem's page says so, not
+        // Chromium's "HTTP ERROR 403" (merge review 2).
+        let unfragmented = |u: &str| u.split('#').next().unwrap_or("").to_string();
+        let blocked = bv.blocked_url.take().is_some_and(|b| unfragmented(&b) == unfragmented(url));
+        // A server that answered (4xx, 5xx) shows its own page, and its answer ends the earlier failure
+        // like a page that loaded (`BM:1290-1292`; merge review 1).
+        if !blocked && browser_pages::server_answered(http) {
+            bv.last_failed = None;
+            bv.pending_error = None;
+            return;
+        }
         if !browser_pages::should_show_error(Some(url), bv.last_failed.as_deref()) || !bv.error_burst.allow(mono_ms()) {
             return;
         }
-        let html = browser_pages::error_page(failure, Some(url));
+        let html = if blocked { browser_pages::described_error_page(browser_pages::BLOCKED_TEXT, Some(url)) } else { browser_pages::error_page(failure, Some(url)) };
         if html.is_empty() {
             return;
         }
@@ -122,15 +136,68 @@ impl App {
         Some(Answer::Respond { status, mime: mime.to_string(), body: body.into_bytes(), headers: browser_pages::response_headers(&nonce) })
     }
 
-    /// The answer to a request for an `iterm2-file:` or `iterm2-ssh:` URL.
+    /// The answer to a request for an `iterm2-file:` or `iterm2-ssh:` URL. A request that is not the
+    /// pane's own navigation or a subresource of its page's tree is a 403 with no text; an allowed
+    /// `iterm2-file:` request is read on a worker (`file_serve::Pool`) and answered from `web_tick`
+    /// (`files_tick`), so the UI thread never touches a file; an allowed `iterm2-ssh:` request is a 404
+    /// until Task 9. The refusal and every file answer carry the sandbox policy.
     pub(super) fn browser_page_request(&mut self, pane: PaneId, token: u64, url: &str, context: i32, top_url: &str) {
         let Some(bv) = self.browser_views.get(&pane) else { return };
         let pending = bv.nav_root.as_ref().zip(bv.nav_url.as_deref());
         let allowed = browser_pages::page_request_allowed(pending, bv.page_root.as_ref(), top_url, url, context);
+        let file = crate::webhost::scheme_of(url) == browser_pages::FILE_SCHEME;
+        // A subresource is judged against the committed page's tree; the page itself against nothing.
+        let root = if context == browser_pages::CONTEXT_DOCUMENT { None } else { bv.page_root.clone() };
         let status = if allowed { 404 } else { 403 };
+        if allowed && file {
+            let job = crate::file_serve::Job { pane, token, url: url.to_string(), context, root };
+            let notify = self.notify.clone();
+            if self.file_pool.get_or_insert_with(|| crate::file_serve::Pool::new(notify)).submit(job) {
+                return;
+            }
+        }
         let answer = Answer::Respond { status, mime: "text/html; charset=utf-8".to_string(), body: NOT_FOUND_HTML.as_bytes().to_vec(), headers: browser_pages::sandbox_headers() };
-        if let Some(v) = bv.view.as_ref() {
+        if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
             v.answer_request(token, answer);
+        }
+    }
+
+    /// The answers the workers finished (`web_tick`): each goes to the view that asked, if it is
+    /// still there and still waiting (a view that was made again ignores a token it never issued).
+    pub(super) fn files_tick(&mut self) {
+        let Some(pool) = self.file_pool.as_ref() else { return };
+        for done in pool.finished() {
+            if let Some(v) = self.browser_views.get(&done.pane).and_then(|b| b.view.as_ref()) {
+                v.answer_request(done.token, done.answer);
+            }
+        }
+    }
+
+    /// A `file:` navigation the host cancelled (`Event::FileRedirect`, after the one verdict): the same
+    /// path as an `iterm2-file:` page, loaded as Tandem's own navigation so the one verdict lets it
+    /// through; a path the one decoder refuses shows "Invalid file path" (`LPM:190-195`).
+    pub(super) fn browser_file_redirect(&mut self, pane: PaneId, uri: &str) {
+        let target = crate::webhost::iterm2_file_url(uri).filter(|u| browser_pages::file_path_of(u).is_ok());
+        let Some(bv) = self.browser_views.get_mut(&pane) else { return };
+        if let Some(url) = target {
+            bv.last_failed = None;
+            if let Some(v) = bv.view.as_ref() {
+                v.navigate_tandem(&url);
+            }
+            return;
+        }
+        if !bv.error_burst.allow(mono_ms()) {
+            return;
+        }
+        let shown = crate::inert_files::display_text(&crate::semantic::file_url_path(uri).unwrap_or_else(|| uri.to_string()), 512, false);
+        let html = browser_pages::described_error_page(&browser_pages::invalid_path_text(&shown), Some(uri));
+        if html.is_empty() {
+            return;
+        }
+        bv.last_failed = Some(uri.to_string());
+        bv.pending_error = Some(html);
+        if let Some(v) = bv.view.as_ref() {
+            v.navigate_tandem(browser_pages::ERROR_URL);
         }
     }
 }
@@ -207,10 +274,13 @@ mod tests {
     #[test]
     fn file_and_ssh_answers_are_sandboxed() {
         let p = prod();
-        let f = &p[p.find("pub(super) fn browser_page_request").unwrap()..];
+        let f = &p[p.find("pub(super) fn browser_page_request").unwrap()..p.find("pub(super) fn files_tick").unwrap()];
         assert!(f.contains("browser_pages::page_request_allowed(pending, bv.page_root.as_ref(), top_url, url, context)"));
         assert_eq!(f.matches("Answer::Respond").count(), 1, "one place builds the answer");
         assert!(f.contains("headers: browser_pages::sandbox_headers()"));
+        // An allowed file request is read on a worker, never here, and only for the file scheme.
+        assert!(f.contains("allowed && file") && f.contains("Pool::new(notify)") && f.contains(".submit(job)"));
+        assert!(f.contains("let root = if context == browser_pages::CONTEXT_DOCUMENT { None } else { bv.page_root.clone() };"), "a subresource is judged against the committed tree");
         let db = include_str!("browser_db_app.rs");
         let db = &db[..db.find("#[cfg(test)]").unwrap()];
         let r = &db[db.find("fn browser_local_request").unwrap()..db.find("pub(super) fn local_page_message").unwrap()];
@@ -244,7 +314,15 @@ mod tests {
             let body = &body[..body.find("\n    }\n").unwrap()];
             assert!(body.contains("eq_ignore_ascii_case(browser_pages::ERROR_URL)") && body.contains("bv.pending_error = None;"), "{f}");
         }
-        assert!(!p.contains("std::fs") && !p.contains("localfs"), "this file reads no file; the serving arms live on a worker (Tasks 3, 9)");
+        assert!(!p.contains("std::fs") && !p.contains("localfs"), "this file reads no file; the serving arms live on a worker (file_serve)");
+        // The file arm is answered from the tick, and the redirect loads Tandem's own page.
+        let web = include_str!("webhost_app.rs");
+        let tick = &web[web.find("pub(super) fn web_tick").unwrap()..web.find("fn web_focus_recheck").unwrap()];
+        assert!(tick.contains("self.files_tick();"));
+        assert!(app.contains("Event::FileRedirect { uri, .. } => self.browser_file_redirect(pane, uri),"));
+        let r = &p[p.find("pub(super) fn browser_file_redirect").unwrap()..];
+        let r = &r[..r.find("\n    }\n").unwrap()];
+        assert!(r.contains("iterm2_file_url(uri)") && r.contains("file_path_of(u).is_ok()") && r.contains("navigate_tandem(&url)") && r.contains("invalid_path_text(&shown)") && r.contains("error_burst.allow("));
     }
 
     /// The error page's content is this pane's state: the answer is built in one place, takes
@@ -258,7 +336,8 @@ mod tests {
         assert!(a.contains("browser_pages::with_nonce(&h, &nonce)") && a.contains("browser_pages::response_headers(&nonce)") && a.matches("Answer::Respond").count() == 1);
         assert!(!a.contains("url.split") && !a.contains("query"), "nothing is read from the URL");
         let f = &p[p.find("pub(super) fn browser_load_failed").unwrap()..p.find("pub(super) fn browser_load_succeeded").unwrap()];
-        assert!(f.contains("browser_pages::server_answered(http) || failure == browser_pages::Failure::Cancelled") && f.contains("\"file\" | browser_pages::FILE_SCHEME | browser_pages::ABOUT"), "iterm2-ssh is not excluded");
+        assert!(f.contains("browser_pages::server_answered(http)") && f.contains("failure == browser_pages::Failure::Cancelled") && f.contains("\"file\" | browser_pages::FILE_SCHEME | browser_pages::ABOUT"), "iterm2-ssh is not excluded");
+        assert!(f.contains("!blocked && browser_pages::server_answered(http)") && f.contains("bv.last_failed = None;") && f.contains("bv.blocked_url.take()"), "a server answer ends the earlier failure; a blocked document shows Tandem's page");
         assert!(!f.contains("SSH_SCHEME"));
         assert!(f.contains("should_show_error(Some(url), bv.last_failed.as_deref())") && f.contains("error_burst.allow(") && f.contains("navigate_tandem(browser_pages::ERROR_URL)"));
         let app = include_str!("browser_app.rs");
@@ -278,5 +357,12 @@ mod tests {
         let win = include_str!("../webhost_win.rs");
         let win = &win[..win.find("#[cfg(test)]\nmod tests").unwrap_or(win.len())];
         assert!(win.contains("COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL") && !win.contains("ALWAYS_ALLOW"), "a certificate error never proceeds silently");
+        // M4: a runtime without the event returns the cast error (the view is not made) and the pane says why.
+        let reg = &win[win.find("fn register_cert_cancel").unwrap()..];
+        assert!(reg.contains("view.cast::<ICoreWebView2_14>()?;") && win.contains("e(webhost::OLD_RUNTIME_WHAT, x)"));
+        assert!(prod_app.contains("why.starts_with(webhost::OLD_RUNTIME_WHAT)") && prod_app.contains("self.banners.set(\"window\", webhost::OLD_RUNTIME_TEXT);"));
+        // The blocker's refusal of a main document is remembered for the error page.
+        let dbs = include_str!("browser_db_app.rs");
+        assert!(dbs.contains("bv.blocked_url = Some(url.to_string());"));
     }
 }
