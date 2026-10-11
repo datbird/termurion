@@ -6,7 +6,7 @@ Build a release binary (`scripts/xt build --release`). Close any open Tandem win
 WebView2 Runtime installed (one run). Mark each line pass or fail.
 
 Before anything else: `m13x7-rulings.txt` ends with PROBE and FLAGS FOR ROBERT, the behaviors that
-differ from iTerm2. Section A lists the probe tests (none has run: Probe: PENDING). Sections B to J
+differ from iTerm2. Section A lists the probe tests (all ran 2026-10-11: run d, the full set, 64/64; see PROBE in the rulings). Sections B to J
 are what no test could execute (a real click, a real native window, a real sign-in).
 
 Test pages (serve a folder with `python -m http.server 8000`; that origin is `http://127.0.0.1:8000`,
