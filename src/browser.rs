@@ -576,7 +576,7 @@ pub fn menu_items(bookmarked: bool, has_url: bool, dev_null: bool, reader: Optio
         out.push(Some(("History", true)));
         out.push(None);
     }
-    out.push(Some(("Settings", false)));
+    out.push(Some(("Settings", true)));
     // The one menu filter (13w): an item this build removes is never shown, here as in every
     // other menu copy (iTerm2's own toolbar menu has a debug-build-only item).
     out.retain(|i| i.is_none_or(|(label, _)| !crate::menus::hidden_in_menu(menu_selector(label), cfg!(debug_assertions))));
@@ -1668,7 +1668,7 @@ mod tests {
         }
         assert_eq!(names(&m), vec!["Remove Bookmark", "Manage Bookmarks", "History", "Settings"]);
         assert_eq!(m[1], None);
-        assert_eq!(m.last().copied().flatten(), Some(("Settings", false)), "Settings stays disabled until 13x8");
+        assert_eq!(m.last().copied().flatten(), Some(("Settings", true)), "Settings opens the settings page (13x8 Task 5)");
         let dev = menu_items(false, true, true, None);
         assert_eq!(names(&dev), vec!["Settings"], "Dev Null hides the bookmark and history items (`BT:344`)");
         assert_eq!(history_menu(&[("T".into(), "https://a/".into()), ("".into(), "https://b/".into()), ("x\u{202e}y".into(), "u".into())], 80), vec!["T", "https://b/", "xy"]);

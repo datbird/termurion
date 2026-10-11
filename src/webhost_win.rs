@@ -1033,6 +1033,40 @@ impl WebView {
         });
     }
 
+    /// Deletes every cookie of this view's profile (`CookieManager().DeleteAllCookies()`, `SH:193-201`).
+    /// The profile is the view's store's: a Dev Null view clears Dev Null's, never the persistent one.
+    pub fn delete_all_cookies(&self) {
+        self.with(|c| {
+            if let Ok(v2) = c.view.cast::<ICoreWebView2_2>() {
+                if let Ok(cookies) = unsafe { v2.CookieManager() } {
+                    let _ = unsafe { cookies.DeleteAllCookies() };
+                }
+            }
+        });
+    }
+
+    /// Clears every kind of website data of this view's profile (`ClearBrowsingDataAll`, `SH:204-227`);
+    /// `Event::DataCleared` follows with whether the web view did it (always posts).
+    pub fn clear_browsing_data(&self) {
+        let (poster, id) = {
+            let i = self.inner.borrow();
+            (i.poster.clone(), i.id)
+        };
+        self.with(move |c| {
+            let failed = |poster: &Poster| poster.post(Event::DataCleared { view: id, ok: false });
+            let p2 = c.view.cast::<ICoreWebView2_13>().ok().and_then(|v13| unsafe { v13.Profile() }.ok()).and_then(|p| p.cast::<ICoreWebView2Profile2>().ok());
+            let Some(p2) = p2 else { return failed(&poster) };
+            let p = poster.clone();
+            let done = webview2_com::ClearBrowsingDataCompletedHandler::create(Box::new(move |hr| guard(|| {
+                p.post(Event::DataCleared { view: id, ok: hr.is_ok() });
+                Ok(())
+            })));
+            if unsafe { p2.ClearBrowsingDataAll(&done) }.is_err() {
+                failed(&poster);
+            }
+        });
+    }
+
     pub fn reload(&self) {
         self.with(|c| {
             let _ = unsafe { c.view.Reload() };

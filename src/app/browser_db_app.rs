@@ -48,6 +48,30 @@ impl App {
         self.browser_db.as_ref()
     }
 
+    /// Clear All Data's database step (`BD:147-167`): drops the open database of the store (Dev Null's
+    /// memory one is replaced by a fresh one), deletes the file and its journals, and lets the next
+    /// `browser_db` call make the tables again. The error holds the path for the page's message (it is
+    /// shown to the person, never logged).
+    pub(super) fn browser_db_erase(&mut self, dev_null: bool) -> Result<(), Option<std::path::PathBuf>> {
+        if dev_null {
+            self.browser_db_mem = Some(Db::open_in_memory());
+            return Ok(());
+        }
+        let Some(base) = webhost_win::local_appdata() else { return Err(None) };
+        let path = crate::browser_db::path(&base, USER_ID);
+        self.browser_db = None;
+        if self.browser_db_failed {
+            self.browser_db_mem = Some(Db::open_in_memory());
+        }
+        match crate::browser_db::erase_files(&path) {
+            Ok(()) => {
+                self.browser_db_failed = false;
+                Ok(())
+            }
+            Err(()) => Err(Some(path)),
+        }
+    }
+
     pub(super) fn pane_dev_null(&self, pane: PaneId) -> bool {
         self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null)
     }
@@ -113,7 +137,7 @@ impl App {
             self.browser_page_request(pane, token, url, context, top_url);
             return;
         }
-        let source = if scheme == "iterm2-about" { self.browser_error_answer(pane, url, context).or_else(|| self.browser_source_answer(pane, url, context)).or_else(|| self.browser_welcome_answer(url, context)) } else { None };
+        let source = if scheme == "iterm2-about" { self.browser_error_answer(pane, url, context).or_else(|| self.browser_source_answer(pane, url, context)).or_else(|| self.browser_welcome_answer(url, context)).or_else(|| self.browser_settings_answer(pane, url, context)) } else { None };
         let answer: Answer = if let Some(source) = source {
             source
         } else if scheme == "iterm2-about" { browser_pages::answer(url, context, top_url) } else { self.adblock_answer(url, context, top_url) };
@@ -150,6 +174,7 @@ impl App {
                 }
                 Reply::Navigate(url) => self.browser_navigate(pane, &url),
                 Reply::Onboarding(action) => self.browser_onboarding_message(pane, source, action),
+                Reply::Settings(msg) => self.browser_settings_message(pane, source, msg),
                 Reply::Permission(op) => {
                     confirmed = self.permission_page_op(pane, dev_null, op);
                     if !confirmed {

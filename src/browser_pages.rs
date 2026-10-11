@@ -781,6 +781,9 @@ pub enum Reply {
     /// An onboarding page's request, already typed and judged to belong to that page; the app
     /// acts on it only if the pane's own main frame is that page (Task 4).
     Onboarding(crate::browser_onboarding::Action),
+    /// A settings page request, typed and bounded; the app acts only if the pane's main frame is
+    /// the settings page (Task 5).
+    Settings(crate::browser_settings_page::Msg),
 }
 
 /// What the permissions page asked for, already typed: the origin is a normalized one.
@@ -800,7 +803,7 @@ pub fn page_name(url: &str) -> Option<&str> {
     if !scheme.eq_ignore_ascii_case("iterm2-about") || rest.is_empty() || rest.len() > 64 {
         return None;
     }
-    matches!(rest, "welcome" | "history" | "bookmarks" | "permissions" | "onboarding-intro" | "onboarding-features" | "onboarding-setup" | "onboarding-profile" | "iterm-browser-common.css").then_some(rest)
+    matches!(rest, "welcome" | "history" | "bookmarks" | "permissions" | "onboarding-intro" | "onboarding-features" | "onboarding-setup" | "onboarding-profile" | "settings" | "iterm-browser-common.css").then_some(rest)
 }
 
 /// A page's document and its MIME type, its `{{...}}` slots filled as iTerm2's template loader
@@ -820,6 +823,7 @@ pub fn document(name: &str, nonce: &str) -> Option<(String, &'static str)> {
         "permissions" => (permissions_document(nonce)?, HTML),
         "onboarding-intro" | "onboarding-features" => (static_page(&format!("{SCHEME_PREFIX}{name}"))?, HTML),
         "onboarding-setup" | "onboarding-profile" => (crate::browser_onboarding::document(name, nonce)?, HTML),
+        // "settings" is served by the app (`browser_settings_answer`): its page shows live state.
         "iterm-browser-common.css" => (format!("{COMMON_CSS}{GLYPH_CSS}"), "text/css; charset=utf-8"),
         _ => return None,
     })
@@ -969,6 +973,7 @@ pub fn route(db: &Db, json: &str, source: &str) -> Vec<Reply> {
         "welcome" => welcome(db, body, page),
         "permissions" => permissions(db, body, page),
         "onboarding-setup" | "onboarding-profile" => onboarding(body, page),
+        "settings" => crate::browser_settings_page::parse(&Value::Object(body.clone())).map(|m| vec![Reply::Settings(m)]),
         _ => None,
     };
     out.unwrap_or_default()

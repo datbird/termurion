@@ -186,6 +186,8 @@ impl App {
                 if let Some(guid) = guid.filter(|g| self.store.get(g).is_some()) {
                     self.remarry(pane, &guid);
                 }
+                // The page no longer navigates on its own: Tandem loads the setup step once the switch is handled.
+                self.browser_navigate(pane, ob::SETUP_URL);
             }
             ob::Action::GetSettingsStatus => {
                 let replay = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).is_some_and(|p| p.bool("Instant Replay"));
@@ -194,6 +196,8 @@ impl App {
             ob::Action::CompleteOnboarding => {
                 self.globals.set(ob::COMPLETED_KEY, toml::Value::Boolean(true));
                 self.apply_edit(Edit::GlobalsChanged);
+                // Completed first, then the welcome page loads (host-driven, so no lost race can loop the redirect).
+                self.browser_navigate(pane, "iterm2-about:welcome");
             }
         }
         // Every answer runs in the page, guarded: it does nothing if the pane left that page.
@@ -204,6 +208,115 @@ impl App {
                 }
             }
         }
+    }
+
+    /// The settings page (`SH:44-83`) as the pane's store shows it: the ad blocker's switch and list
+    /// URL, whether this is a Dev Null pane. Served under the same nonce policy as every local page,
+    /// only for the document itself.
+    pub(super) fn browser_settings_answer(&mut self, pane: PaneId, url: &str, context: i32) -> Option<Answer> {
+        if browser_pages::page_name(url) != Some(crate::browser_settings_page::PAGE) || context != browser_pages::CONTEXT_DOCUMENT {
+            return None;
+        }
+        let state = crate::browser_settings_page::PageState { adblock_enabled: self.globals.bool("WebKitAdblockEnabled"), adblock_url: self.globals.string("AdblockListURL"), dev_null: self.pane_dev_null(pane), show_extensions: false };
+        let nonce = browser_pages::new_nonce();
+        let html = crate::browser_settings_page::document(&state, &nonce)?;
+        Some(Answer::Respond { status: 200, mime: "text/html; charset=utf-8".to_string(), body: html.into_bytes(), headers: browser_pages::response_headers(&nonce) })
+    }
+
+    /// A settings page request (`SH:108-190`). It is already typed and bounded (`browser_pages::route`)
+    /// and acts only when the pane's own main-frame URL is the settings page and so is the message's
+    /// source, so a web page, a frame or a page that navigated away changes nothing and is answered
+    /// nothing. Each action goes through the owner that already does it: the web view for clearing,
+    /// `open_password_manager` (the page never lists or shows a password), the warning keys through
+    /// `warnings::Store` for link opening. The page's JSON never names a settings key. The Get and
+    /// Set actions of Task 6 and the extension actions of Task 10 answer nothing until those land.
+    pub(super) fn browser_settings_message(&mut self, pane: PaneId, source: &str, msg: crate::browser_settings_page::Msg) {
+        use crate::browser_settings_page as sp;
+        use crate::warnings::Store as _;
+        let url = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone()).unwrap_or_default();
+        if url != sp::SETTINGS_URL || source != sp::SETTINGS_URL {
+            return;
+        }
+        if !self.browser_views.get_mut(&pane).is_some_and(|bv| bv.settings.allow(&msg, mono_ms())) {
+            return;
+        }
+        let mut calls: Vec<String> = Vec::new();
+        match msg {
+            sp::Msg::ClearCookies => {
+                if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
+                    v.delete_all_cookies();
+                }
+            }
+            sp::Msg::ClearAllData => {
+                let started = self.browser_views.get_mut(&pane).is_some_and(|bv| match bv.view.as_ref() {
+                    Some(v) => {
+                        bv.settings.clearing = true;
+                        v.clear_browsing_data();
+                        true
+                    }
+                    None => false,
+                });
+                if !started {
+                    calls.push(sp::alert_script(sp::DATA_CLEAR_FAILED));
+                }
+            }
+            sp::Msg::OpenPasswordManager => self.open_password_manager(None, Some(pane)),
+            sp::Msg::SetLinkOpening(word) => match sp::link_pref_writes(&word) {
+                Some((pref, writes)) => {
+                    for (key, value) in writes {
+                        match value {
+                            Some(v) => self.globals.set(&key, v),
+                            None => self.globals.remove(&key),
+                        }
+                    }
+                    self.apply_edit(Edit::GlobalsChanged);
+                    calls.push(sp::status_script(pref.text(), "success"));
+                }
+                None => calls.push(sp::status_script(sp::LINK_INVALID, "error")),
+            },
+            sp::Msg::GetLinkOpening => {
+                let id = crate::browser::OPEN_LINKS_ID;
+                let silenced = crate::warnings::is_silenced(&self.globals, id, super::warnings_app::unix_now());
+                let selection = match self.globals.get(&crate::warnings::selection_key(id)) {
+                    Some(toml::Value::Integer(n)) => Some(n),
+                    _ => None,
+                };
+                calls.push(sp::link_ui_script(sp::link_pref_of(silenced, selection)));
+            }
+            _ => {}
+        }
+        self.browser_settings_run(pane, calls);
+    }
+
+    /// Runs reply calls in the settings page, guarded: nothing happens if the pane left that page.
+    fn browser_settings_run(&mut self, pane: PaneId, calls: Vec<String>) {
+        for call in calls.into_iter().filter(|c| !c.is_empty()) {
+            for reply in browser_pages::script(crate::browser_settings_page::PAGE, &call) {
+                if let (browser_pages::Reply::Script(js), Some(v)) = (reply, self.browser_views.get(&pane).and_then(|b| b.view.as_ref())) {
+                    v.execute_script(&js, 0);
+                }
+            }
+        }
+    }
+
+    /// The web view finished Clear All Data (`Event::DataCleared`, `SH:204-227`). Only a clear the
+    /// settings page asked for counts (the flag is set by that request and taken here). The database
+    /// of the pane's own store is erased, then the page alerts the result.
+    pub(super) fn browser_data_cleared(&mut self, pane: PaneId, ok: bool) {
+        use crate::browser_settings_page as sp;
+        if !self.browser_views.get_mut(&pane).is_some_and(|bv| std::mem::take(&mut bv.settings.clearing)) {
+            return;
+        }
+        let message = if !ok {
+            sp::DATA_CLEAR_FAILED.to_string()
+        } else {
+            let dev_null = self.pane_dev_null(pane);
+            match self.browser_db_erase(dev_null) {
+                Ok(()) => sp::DATA_CLEARED.to_string(),
+                Err(path) => sp::db_delete_failed(path.as_deref()),
+            }
+        };
+        self.browser_settings_run(pane, vec![sp::alert_script(&message)]);
     }
 
     /// The browser profile onboarding switches to (`PSB:251-271`).
@@ -484,5 +597,33 @@ mod tests {
         assert!(db.contains(".or_else(|| self.browser_welcome_answer(url, context))") && db.contains("Reply::Onboarding(action) => self.browser_onboarding_message(pane, source, action)"));
         let scripts = include_str!("browser_scripts_app.rs");
         assert!(scripts.contains("bv.onboarding = Default::default();"));
+    }
+
+    /// The settings page acts only from its own main frame, through the existing owners, and nothing
+    /// the page sends names a settings key (review M8, Task 5).
+    #[test]
+    fn settings_messages_need_the_page() {
+        let p = prod();
+        let f = &p[p.find("pub(super) fn browser_settings_message").unwrap()..p.find("fn browser_settings_run").unwrap()];
+        assert!(f.contains("if url != sp::SETTINGS_URL || source != sp::SETTINGS_URL {\n            return;"), "the pane's own main-frame URL and the source are both the settings page");
+        assert!(f.find("source != sp::SETTINGS_URL").unwrap() < f.find("bv.settings.allow(&msg, mono_ms())").unwrap());
+        assert!(f.find("bv.settings.allow(&msg, mono_ms())").unwrap() < f.find("v.delete_all_cookies()").unwrap(), "limited before any effect");
+        assert!(f.contains("v.clear_browsing_data()") && f.contains("self.open_password_manager(None, Some(pane))"));
+        assert!(f.contains("sp::link_pref_writes(&word)") && f.contains("self.globals.set(&key, v)") && f.contains("self.globals.remove(&key)"), "link opening writes only the keys link_pref_writes returns");
+        assert_eq!(f.matches("self.globals.set(").count(), 1, "one settings writer, fed by the closed link keys");
+        assert!(!f.contains("serde_json") && !f.contains("rlog!") && !f.contains("dlog!") && !f.contains("password(") && !f.contains("secret"), "no page JSON read, nothing logged, no password handled here");
+        assert!(!f.contains("permission"), "permissions have their one writer on their own page");
+        let c = &p[p.find("pub(super) fn browser_data_cleared").unwrap()..p.find("/// The browser profile onboarding switches to").unwrap()];
+        assert!(c.contains("std::mem::take(&mut bv.settings.clearing)"), "only a clear the settings page asked for");
+        assert!(c.contains("self.browser_db_erase(dev_null)") && c.contains("self.pane_dev_null(pane)"), "the pane's own store");
+        let a = &p[p.find("pub(super) fn browser_settings_answer").unwrap()..p.find("pub(super) fn browser_settings_message").unwrap()];
+        assert!(a.contains("context != browser_pages::CONTEXT_DOCUMENT") && a.contains("browser_pages::response_headers(&nonce)"));
+        let db = include_str!("browser_db_app.rs");
+        assert!(db.contains(".or_else(|| self.browser_settings_answer(pane, url, context))") && db.contains("Reply::Settings(msg) => self.browser_settings_message(pane, source, msg)"));
+        assert!(include_str!("browser_scripts_app.rs").contains("bv.settings = Default::default();"));
+        assert!(include_str!("browser_app.rs").contains("Event::DataCleared { ok, .. } => self.browser_data_cleared(pane, *ok)"));
+        // The completion and the switch are host-driven (Task 4 review).
+        let o = &p[p.find("pub(super) fn browser_onboarding_message").unwrap()..p.find("pub(super) fn browser_settings_answer").unwrap()];
+        assert!(o.contains("self.browser_navigate(pane, ob::SETUP_URL)") && o.contains("self.browser_navigate(pane, \"iterm2-about:welcome\")"));
     }
 }

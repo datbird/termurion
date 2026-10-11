@@ -96,6 +96,7 @@ pub mod browser_password;
 pub mod browser_basic_auth;
 pub mod browser_pages;
 pub mod browser_onboarding;
+pub mod browser_settings_page;
 pub mod file_serve;
 pub mod browser_restore;
 pub mod adblock;

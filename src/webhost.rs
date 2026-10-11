@@ -298,6 +298,9 @@ pub enum Event {
     /// `iterm2-file:` pages (`ViewSetup.redirect_file_urls`, 13x8 Task 3) and the one verdict, then
     /// `file_redirect_allowed`, let it go. The app loads `iterm2_file_url(uri)` as Tandem's own load.
     FileRedirect { view: ViewId, uri: String },
+    /// `WebView::clear_browsing_data` finished (13x8 Task 5); `ok` is whether the web view cleared it.
+    /// Never dropped: the settings page waits on it.
+    DataCleared { view: ViewId, ok: bool },
     /// A main-frame navigation was cancelled because the store's profile permissions are not
     /// synced yet (13x6, the one gate in the NavigationStarting handler): `url` is its TARGET, which
     /// the app loads once the sync lands. Never dropped.
@@ -421,6 +424,7 @@ impl Event {
             | Event::ExternalUri { view, .. }
             | Event::Refused { view, .. }
             | Event::FileRedirect { view, .. }
+            | Event::DataCleared { view, .. }
             | Event::Parked { view, .. }
             | Event::ProcessFailed { view, .. }
             | Event::DevTools { view, .. }
@@ -757,6 +761,16 @@ pub fn scheme_registration(scheme: &str) -> (Vec<String>, bool) {
     }
 }
 
+/// Whether `url` is an `iterm2-about:` page whose buttons change settings: the settings page and the
+/// two onboarding steps that write.
+pub fn power_page(url: &str) -> bool {
+    let (scheme, rest) = match url.split_once(':') {
+        Some(p) => p,
+        None => return false,
+    };
+    scheme.eq_ignore_ascii_case("iterm2-about") && ["settings", "onboarding-setup", "onboarding-profile"].iter().any(|n| rest.eq_ignore_ascii_case(n) || rest.get(..n.len()).is_some_and(|h| h.eq_ignore_ascii_case(n)) && matches!(rest.as_bytes().get(n.len()), Some(b'#' | b'?' | b'/')))
+}
+
 fn local_scheme(s: &str) -> bool {
     matches!(s, "file" | "iterm2-file" | "iterm2-ssh")
 }
@@ -780,6 +794,12 @@ pub fn navigation_allowed(source: Option<&str>, target: &str, user: bool, redire
         return false;
     }
     let s = source.map(scheme_of).unwrap_or_default();
+    // A page that acts with power (settings, onboarding steps) is opened by Tandem, by the person
+    // (no source: the address bar) or from a Tandem page, never from a web page, whether by a click,
+    // a script or a redirect (preflight B5, 13x8 Task 5).
+    if !by_tandem && power_page(target) {
+        return s == "iterm2-about" || (s.is_empty() && user && !redirect);
+    }
     // A page of the web cannot start a file or ssh page, not even by a click the person is tricked
     // into (preflight B5): only Tandem, or the local pages themselves (a listing's links).
     if user && !by_tandem && matches!(t.as_str(), "iterm2-file" | "iterm2-ssh") {
@@ -1784,6 +1804,21 @@ mod tests {
         assert!(!n(Some("iterm2-ssh://box/a.html"), "https://evil.test/", false, false, false));
         assert!(!n(Some("https://a/"), "iterm2-file:///C:/x", true, true, false));
         assert!(!n(Some("https://a/"), "file:///C:/x", false, true, true));
+        // The settings and onboarding pages: not from a web page by any road; Tandem, the address bar and
+        // Tandem's own pages may.
+        for t in ["iterm2-about:settings", "ITERM2-ABOUT:Settings#x", "iterm2-about:onboarding-setup", "iterm2-about:onboarding-profile?x"] {
+            for (user, redirect) in [(true, false), (false, false), (false, true), (true, true)] {
+                assert!(!n(Some("https://evil.test/"), t, user, redirect, false), "{t} {user} {redirect}");
+                assert!(!n(Some("about:blank"), t, user, redirect, false));
+                assert!(!n(Some("iterm2-file:///C:/T/a.html"), t, user, redirect, false));
+            }
+            assert!(n(Some("https://evil.test/"), t, true, false, true), "Tandem's own load");
+            assert!(n(Some("iterm2-about:welcome"), t, true, false, false) && n(Some("iterm2-about:permissions"), t, false, false, false));
+            assert!(n(None, t, true, false, false), "typed by the person");
+            assert!(!n(None, t, false, false, false));
+        }
+        assert!(n(Some("https://evil.test/"), "iterm2-about:permissions", true, false, false), "other pages keep ruling 4");
+        assert!(!power_page("iterm2-about:settingsx") && !power_page("iterm2-about:onboarding-intro") && !power_page("https://a/settings"));
         assert!(n(None, "iterm2-ssh://box/a.png", false, false, true));
         assert!(n(Some("https://a/"), "https://b/", false, false, false));
         assert!(!n(Some("https://evil.test/"), "FILE:///C:/x", false, false, false));

@@ -61,6 +61,7 @@ pub fn resource(name: &str) -> Option<&'static str> {
         "onboarding-features.html" => include_str!("../resources/browser/onboarding-features.html"),
         "onboarding-setup.html" => include_str!("../resources/browser/onboarding-setup.html"),
         "onboarding-profile.html" => include_str!("../resources/browser/onboarding-profile.html"),
+        "settings-page.html" => include_str!("../resources/browser/settings-page.html"),
         "history-page.js" => include_str!("../resources/browser/history-page.js"),
         "permissions-page.html" => include_str!("../resources/browser/permissions-page.html"),
         "permissions-page.js" => include_str!("../resources/browser/permissions-page.js"),
@@ -760,6 +761,10 @@ pub fn nav_gate(url: &str) -> NavGate {
     }
     if let Some(why) = gate_refusal(t) {
         return NavGate::Blocked(why);
+    }
+    // A page, page text or an arrangement never opens the settings or an onboarding step (Task 5).
+    if crate::webhost::power_page(t) {
+        return NavGate::Blocked("Tandem does not open that page from a link.".into());
     }
     if plain_navigation(t) {
         return NavGate::Navigate(t.to_string());

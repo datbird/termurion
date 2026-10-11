@@ -143,6 +143,8 @@ pub(super) struct BrowserView {
     pub(super) password: super::browser_password_app::PanePassword,
     /// The onboarding pages' per-pane state (13x8 Task 4): the profile found, the write limit.
     pub(super) onboarding: crate::browser_onboarding::State,
+    /// The settings page's per-pane state (13x8 Task 5): a Clear All Data waiting, the action limits.
+    pub(super) settings: crate::browser_settings_page::State,
 }
 
 /// A press on a toolbar part, waiting for its release (or, on Back and Forward, the long press).
@@ -286,7 +288,7 @@ impl App {
         self.install_pane(id, pane, p, false);
         crate::rlog!("browser pane {} started: profile {} dev null {}", id, crate::dlog::name(&name), dev_null);
         let view = self.next_view_id();
-        self.browser_views.insert(id, BrowserView { perms: Default::default(), view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, last_failed: None, pending_error: None, blocked_url: None, error_burst: Default::default(), bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, page_root: None, page_url: None, nav_root: None, nav_url: None, nav_id: 0, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), triggers: None, trigger_gate: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default(), autofill: Default::default(), password: Default::default(), onboarding: Default::default() });
+        self.browser_views.insert(id, BrowserView { perms: Default::default(), view: None, id: view, pending_url: Some(url), parent: 0, restarts: webhost::Restarts::default(), stopped: false, settled: false, last_title: None, pending_source: None, status: 0, source_nav: false, last_failed: None, pending_error: None, blocked_url: None, error_burst: Default::default(), bar: BarState::default(), replay: super::web_replay_app::Recorder::new(), secret: crate::browser_js::new_secret(), dom_secret: crate::browser_js::new_secret(), pending_js: HashMap::new(), result_caps: HashMap::new(), frames: Vec::new(), page_frames: Vec::new(), eval_waiting: Default::default(), client_world: crate::browser_world::ClientWorld::Setting, contexts: Default::default(), world_scripts: Vec::new(), next_token: super::browser_scripts_app::TOKEN_BASE, world: Default::default(), editing: false, selection: None, selection_gate: Default::default(), graph: Default::default(), menu: None, bars: HashMap::new(), find: crate::browser_find::fresh_model(), find_out: Default::default(), global_gen: 0, page_root: None, page_url: None, nav_root: None, nav_url: None, nav_id: 0, gate: Default::default(), gate_sig: None, copy_mode: None, reader: Default::default(), menu_pending: false, marks_method: Default::default(), marks_page: crate::browser_marks::PageState::new(crate::browser_js::new_secret()), triggers: None, trigger_gate: Default::default(), pointer_sig: None, pointer_down: None, receiving_broadcast: 0, receiving_since: None, echo: Default::default(), autofill: Default::default(), password: Default::default(), onboarding: Default::default(), settings: Default::default() });
         self.browser_triggers_init(id);
         true
     }
@@ -674,6 +676,7 @@ impl App {
             Event::ExternalUri { url, user, .. } | Event::Refused { url, user, .. } => self.run_external(url, *user),
             // A `file:` page is Tandem's `iterm2-file:` page (13x8 Task 3).
             Event::FileRedirect { uri, .. } => self.browser_file_redirect(pane, uri),
+            Event::DataCleared { ok, .. } => self.browser_data_cleared(pane, *ok),
             // A key the page did not take as its own: Tandem's Win chords and the address
             // field's accelerators (Review: the page keeps every other key).
             Event::Key { vk, mods, taken, .. } => self.browser_accel_key(pane, *vk, *mods, *taken, event_loop),
@@ -1254,6 +1257,7 @@ impl App {
         let target = match label {
             "Manage Bookmarks" => Some("iterm2-about:bookmarks"),
             "History" => Some("iterm2-about:history"),
+            "Settings" => Some(crate::browser_settings_page::SETTINGS_URL),
             _ => None,
         };
         if let Some(url) = target {

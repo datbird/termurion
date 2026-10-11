@@ -263,6 +263,7 @@ impl App {
             bv.autofill.reset();
             bv.password.reset();
             bv.onboarding = Default::default();
+            bv.settings = Default::default();
         }
         self.autofill_ask_drop(pane, true, |_, _| false);
         self.basic_auth_reset(pane);

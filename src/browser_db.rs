@@ -101,6 +101,24 @@ pub fn path(local_appdata: &Path, user: &str) -> PathBuf {
     local_appdata.join("Tandem").join(format!("browserdb-{user}.sqlite"))
 }
 
+/// Deletes the database file and its journals (Clear All Data, `BD:147-167`); a file already gone is
+/// fine. Judged local first and removed as themselves (a link is deleted, never followed). The caller
+/// has dropped its connection. Err holds nothing: the caller names the path.
+pub fn erase_files(path: &Path) -> Result<(), ()> {
+    let judged = LocalPath::judge(path).ok_or(())?;
+    let dir = judged.parent().ok_or(())?;
+    let name = path.file_name().and_then(|n| n.to_str()).ok_or(())?.to_string();
+    for suffix in ["", "-journal", "-wal", "-shm"] {
+        let Some(file) = dir.unfollowed(format!("{name}{suffix}")) else { return Err(()) };
+        match localfs::remove_unfollowed(&file) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(()),
+        }
+    }
+    Ok(())
+}
+
 /// Query parameters iTerm2 removes before it counts a visit (`BrowserVisits.parseUrl`).
 const TRACKING: [&str; 8] = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid", "ref"];
 
@@ -707,5 +725,22 @@ mod tests {
         // A path on a share is refused.
         assert!(Db::open(Path::new("\\\\srv\\share\\browserdb-u.sqlite")).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Clear All Data removes the file and its journals, and a missing file is fine (BD:147-167).
+    #[cfg(windows)]
+    #[test]
+    fn erase_removes_the_database_files() {
+        let dir = std::env::temp_dir().join(format!("tandem-erase-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("browserdb-x.sqlite");
+        for suffix in ["", "-journal", "-wal", "-shm"] {
+            std::fs::write(dir.join(format!("browserdb-x.sqlite{suffix}")), b"x").unwrap();
+        }
+        assert_eq!(erase_files(&file), Ok(()));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        assert_eq!(erase_files(&file), Ok(()), "already gone");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(erase_files(Path::new(r"\\host\share\browserdb-x.sqlite")), Err(()), "a share is never touched");
     }
 }
