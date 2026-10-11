@@ -1035,6 +1035,28 @@ pub fn clean_title(t: &str) -> String {
     crate::inert_files::display_text(&spaced, MAX_TITLE, false)
 }
 
+/// Whether a main-document request must be refused where it is made: the view's committed page is
+/// an `iterm2-file:` or `iterm2-ssh:` page and the request is not the navigation the one verdict
+/// allowed last (`allowed_main`, the view's last main-frame NavigationStarting that passed; fragment
+/// ignored). Probe run 2026-10-11d: a cancelled NavigationStarting did not stop a file page's script
+/// navigation from sending its request (the listener read "GET /nav"), so the verdict alone cannot
+/// keep what a hostile file read from leaving in a URL (R13x8-P2). Local schemes are the app's own
+/// answers and are judged by the verdict; a web page is not judged here.
+pub fn local_page_exit_refused(top: &str, target: &str, allowed_main: Option<&str>) -> bool {
+    if !local_page(top) || matches!(scheme_of(target).as_str(), "iterm2-file" | "iterm2-ssh" | "iterm2-about") {
+        return false;
+    }
+    !allowed_main.is_some_and(|a| bare(a) == bare(target))
+}
+
+/// The source a main-frame navigation is judged from: the view's current page, except for a redirect
+/// of Tandem's own load (`tandem_chain`: the same navigation id `navigate_tandem` started), which is
+/// judged as from no page (the address bar), so a Tandem load from a file page that the server
+/// redirects goes on (R13x8-P2) while a redirect onto a power or local page is still refused.
+pub fn redirect_source(source: Option<&str>, tandem_chain: bool) -> Option<&str> {
+    if tandem_chain { None } else { source }
+}
+
 /// The HTTP status a main-frame `NavigationCompleted` reports: WebView2's own `HttpStatusCode`, or,
 /// when that is 0, the status of the main document's response that arrived for the same navigation
 /// (`response`: its id and status). A 204 ends the load with IsSuccess false, WebErrorStatus 9
@@ -1942,6 +1964,32 @@ mod tests {
         // A web page's script navigation to a power page stays refused by the verdict as before.
         assert!(!navigation_allowed(Some("https://evil.test/"), "iterm2-about:settings", false, false, false, true));
         assert!(navigation_allowed(Some("https://evil.test/"), "iterm2-about:settings", false, false, true, true), "Tandem's own load");
+    }
+
+    #[test]
+    fn a_local_page_sends_no_document_request_the_verdict_did_not_allow() {
+        // Probe run 2026-10-11d: the verdict cancelled a file page's script navigation and the
+        // listener still got "GET /nav", so the request itself is refused where it is made.
+        let file = "iterm2-file:///C:/T/a.html";
+        assert!(local_page_exit_refused(file, "http://127.0.0.1:1/nav?d=x", Some(file)));
+        assert!(local_page_exit_refused("iterm2-ssh://box/a.html", "https://evil.test/", Some("iterm2-ssh://box/a.html")));
+        assert!(local_page_exit_refused(file, "https://evil.test/", None));
+        assert!(!local_page_exit_refused(file, "https://a.test/x#f", Some("https://a.test/x")), "the navigation the verdict allowed (Tandem's load)");
+        assert!(!local_page_exit_refused("https://a.test/", "https://evil.test/", Some("https://a.test/")), "a web page is not judged here");
+        assert!(!local_page_exit_refused(file, "iterm2-file:///C:/T/b.html", Some(file)), "local schemes are the app's own answers");
+        assert!(!local_page_exit_refused(file, "iterm2-about:error", Some(file)));
+    }
+
+    #[test]
+    fn a_redirect_of_tandems_own_load_is_judged_from_no_page() {
+        // A Tandem load from a file page that a server redirects (http to https) goes on; a redirect of
+        // it onto a power page or a local page still does not.
+        let n = |s: Option<&str>, t: &str| navigation_allowed(s, t, false, true, false, true);
+        assert!(!n(Some("iterm2-file:///C:/T/a.html"), "https://a.test/"), "judged from the file page it is refused");
+        assert!(n(redirect_source(Some("iterm2-file:///C:/T/a.html"), true), "https://a.test/"));
+        assert!(!n(redirect_source(Some("iterm2-file:///C:/T/a.html"), true), "iterm2-about:settings"));
+        assert!(!n(redirect_source(Some("iterm2-about:bookmarks"), true), "iterm2-file:///C:/"));
+        assert_eq!(redirect_source(Some("iterm2-file:///C:/T/a.html"), false), Some("iterm2-file:///C:/T/a.html"));
     }
 
     #[test]

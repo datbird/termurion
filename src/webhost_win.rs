@@ -651,6 +651,9 @@ struct Inner {
     /// The URI of the navigation `navigate_tandem` started, until the first NavigationStarting
     /// that matches takes it (or 30 s pass): preflight P19.
     tandem_uri: Option<(String, Instant)>,
+    /// The navigation id Tandem's own load took (`by_tandem`), so its redirects are judged as from no
+    /// page (`webhost::redirect_source`, R13x8-P2).
+    tandem_nav: Option<u64>,
     /// Milliseconds (`webhost::now_ms`-style, since `START`) when Tandem started a Back or Forward.
     new_windows: webhost::NewWindowLimiter,
     pending: HashMap<u64, Pending>,
@@ -737,6 +740,7 @@ impl WebView {
             last_main_nav: None,
             main_response: None,
             tandem_uri: None,
+            tandem_nav: None,
             new_windows: webhost::NewWindowLimiter::default(),
             pending: HashMap::new(),
             next_token: 1,
@@ -1777,6 +1781,9 @@ fn configure(inner: &Rc<RefCell<Inner>>, core: &Core, bounds: (i32, i32, i32, i3
     if setup.track_document_method {
         register_document_method(inner, view, &mut token).map_err(|x| e("document method", x))?;
     }
+    if setup.guard_local_schemes {
+        register_local_page_exit(inner, view, &mut token).map_err(|x| e("local page exit", x))?;
+    }
     if setup.fail_cert_errors {
         register_cert_cancel(view, &mut token).map_err(|x| e(webhost::OLD_RUNTIME_WHAT, x))?;
     }
@@ -2002,7 +2009,7 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
         if let Ok(a3) = args.cast::<ICoreWebView2NavigationStartingEventArgs3>() {
             let _ = unsafe { a3.NavigationKind(&mut kind) };
         }
-        let (policy, by_tandem) = {
+        let (policy, by_tandem, tandem_chain) = {
             let mut i = inner.borrow_mut();
             let (capped, _) = webhost::cap_url(&uri);
             i.nav_uris.push_back((nav, capped));
@@ -2019,11 +2026,17 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
                     by_tandem = true;
                 }
             }
-            (webhost::NavPolicy { guard_local_schemes: i.setup.guard_local_schemes, allowed_schemes: i.setup.allowed_schemes.clone(), local_root: i.poster.gate.local_root() }, by_tandem)
+            if by_tandem {
+                i.tandem_nav = Some(nav);
+            } else if !redirect {
+                i.tandem_nav = None;
+            }
+            let tandem_chain = redirect && i.tandem_nav == Some(nav);
+            (webhost::NavPolicy { guard_local_schemes: i.setup.guard_local_schemes, allowed_schemes: i.setup.allowed_schemes.clone(), local_root: i.poster.gate.local_root() }, by_tandem, tandem_chain)
         };
         // The one verdict (webhost::nav_verdict): scheme list, then the local-scheme guard.
         let source = sender.as_ref().and_then(source_of);
-        let info = webhost::NavInfo { target: &uri, source: source.as_deref(), user, redirect, by_tandem };
+        let info = webhost::NavInfo { target: &uri, source: webhost::redirect_source(source.as_deref(), tandem_chain), user, redirect, by_tandem };
         // A history step never lands on a power page, whoever started it (Tandem loads it fresh instead).
         let allowed = !webhost::history_refused(kind.0, &uri) && webhost::nav_verdict(&info, &policy, &|u| webhost::file_url_local(u, &local_judge));
         if !allowed {
@@ -2592,7 +2605,7 @@ fn register_requests(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, filters: 
         let _ = unsafe { args.ResourceContext(&mut context) };
         // Every handler sees every request any filter matched: a Document request that only the
         // method tracker's filter matched is not this handler's (B10), and takes no deferral.
-        if context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT && (inner.borrow().setup.track_document_method || inner.borrow().setup.main_responses) && !inner.borrow().setup.resource_filters.iter().any(|f| webhost::filter_matches(f, &url)) {
+        if context == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT && (inner.borrow().setup.track_document_method || inner.borrow().setup.main_responses || inner.borrow().setup.guard_local_schemes) && !inner.borrow().setup.resource_filters.iter().any(|f| webhost::filter_matches(f, &url)) {
             return Ok(());
         }
         let Ok(deferral) = (unsafe { args.GetDeferral() }) else { return Ok(()) };
@@ -2638,6 +2651,46 @@ fn register_document_method(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, to
     let w = wide("*");
     unsafe { view.AddWebResourceRequestedFilter(PCWSTR(w.as_ptr()), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT) }
 }
+
+/// A file or ssh page's main-document request that the verdict did not allow is answered 403 by the
+/// host where it is made (`webhost::local_page_exit_refused`): probe run 2026-10-11d showed a cancelled
+/// NavigationStarting still let the request leave. Its own Document filter, no deferral: the answer is
+/// set synchronously, so nothing waits on the app.
+fn register_local_page_exit(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token: &mut i64) -> windows::core::Result<()> {
+    let weak = Rc::downgrade(inner);
+    let handler = WebResourceRequestedEventHandler::create(Box::new(move |sender, args| guard(|| {
+        let (Some(inner), Some(args)) = (weak.upgrade(), args) else { return Ok(()) };
+        let mut context = COREWEBVIEW2_WEB_RESOURCE_CONTEXT(0);
+        let _ = unsafe { args.ResourceContext(&mut context) };
+        if context != COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT {
+            return Ok(());
+        }
+        let Ok(request) = (unsafe { args.Request() }) else { return Ok(()) };
+        let uri = pwstr_out(|p| unsafe { request.Uri(p) }).unwrap_or_default();
+        let top = sender.as_ref().and_then(source_of).unwrap_or_default();
+        let i = inner.borrow();
+        if !webhost::local_page_exit_refused(&top, &uri, i.last_main_nav.as_ref().map(|(u, _)| u.as_str())) {
+            return Ok(());
+        }
+        #[cfg(test)]
+        if let Ok(mut l) = EXIT_REFUSALS.lock() {
+            l.push(webhost::cap_url(&uri).0);
+        }
+        let env = i.env.clone();
+        drop(i);
+        if let Ok(resp) = unsafe { env.env.CreateWebResourceResponse(None::<&windows::Win32::System::Com::IStream>, 403, windows::core::w!("Blocked"), windows::core::w!("")) } {
+            let _ = unsafe { args.SetResponse(&resp) };
+        }
+        Ok(())
+    })));
+    unsafe { view.add_WebResourceRequested(&handler, token) }?;
+    let w = wide("*");
+    unsafe { view.AddWebResourceRequestedFilter(PCWSTR(w.as_ptr()), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT) }
+}
+
+/// Document requests the local-page exit guard answered 403 (tests only, the probe's evidence).
+#[cfg(test)]
+static EXIT_REFUSALS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 /// HTTP and proxy authentication (13x7 Task 10). Every view cancels a request on the spot (WebView2's
 /// own dialog is never shown); a view with `ViewSetup::basic_auth` holds it as a deferral and posts
@@ -6885,7 +6938,11 @@ window.addEventListener('message', function (e) {
             }
         }
         println!("probe: connections={connections} carried={carried:?} source={:?} order={:?} log={:?} navigated={:?}", p.source(), p.order, p.auth_log, p.navigated);
-        assert!(carried.is_empty(), "no connection carried a request: {carried:?}");
+        // Probe run 2026-10-11d: "GET /nav" arrived although the verdict had cancelled the navigation;
+        // the host now answers that document request 403 where it is made (register_local_page_exit).
+        let exits: Vec<String> = EXIT_REFUSALS.lock().map(|l| l.clone()).unwrap_or_default();
+        println!("probe: the exit guard answered 403 to {exits:?}");
+        assert!(carried.is_empty(), "no connection carried a request: {carried:?} (exit guard: {exits:?})");
         let refused: Vec<(String, bool)> = VERDICT_REFUSALS.lock().map(|l| l.clone()).unwrap_or_default();
         assert!(refused.iter().any(|(u, _)| u == &format!("http://127.0.0.1:{port}/nav")), "the verdict refused the navigation away: {refused:?} / {:?}", p.order);
         assert!(!p.order.iter().any(|o| o.starts_with("starting http")), "the navigation away never started: {:?}", p.order);
