@@ -95,6 +95,8 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::BrowserRun { .. } | Then::BrowserOpenFile { .. } => Answer::Button(1),
         // Cancel: a closed window clears nothing (Clear All Data from the settings page).
         Then::BrowserClearData { .. } => Answer::Button(1),
+        // Cancel: a closed window deletes no bookmark.
+        Then::BookmarkDelete { .. } => Answer::Button(1),
         // Cancel is the third button: a closed window never opens a profile either way (B6).
         Then::OpenRenamedProfile { .. } => Answer::Button(2),
         // Cancel: a closed window never uninstalls or goes on past a failed removal (P10).
@@ -340,6 +342,9 @@ pub(super) enum Then {
     /// history): Clear (0) clears; Cancel (1) nothing. A page's button raised it, so the window is
     /// input-guarded and it is never remembered.
     BrowserClearData { pane: crate::layout::PaneId },
+    /// "Are you sure you want to delete this bookmark?" from Edit Bookmark: Delete (0) removes it;
+    /// Cancel (1) nothing. The person's own window raised it.
+    BookmarkDelete { pane: crate::layout::PaneId, url: String },
     /// "Allow Notifications" (and the other permission questions) for the open ask `id`
     /// (`browser_perms_app::Asks`): Allow (0) or Block (1). A closed window, or an ask that never
     /// shows, blocks the request and saves nothing. A page raises it, so it is capped.
@@ -444,6 +449,7 @@ impl App {
             // Clear All Data could not ask (the queue refused it, or the window never opened): that is a
             // Cancel, and the settings page's pending question is released (no dead button).
             Then::BrowserClearData { pane } => self.browser_clear_data_answered(pane, 1),
+            Then::BookmarkDelete { pane, url } => self.bookmark_delete_answered(pane, &url, 1),
             // The pane's output waits on the answer: dropped, the file is not shown.
             Then::Inline { pane, serial, .. } | Then::BigInline(pane, serial) => self.inline_released(pane, serial, false),
             _ => {}
@@ -598,6 +604,7 @@ impl App {
                 }
             }
             Then::BrowserClearData { pane } => self.browser_clear_data_answered(pane, index),
+            Then::BookmarkDelete { pane, url } => self.bookmark_delete_answered(pane, &url, index),
             Then::BrowserOpenFile { pane, file } => {
                 if index == 0 {
                     self.browser_open_file_confirmed(pane, &file);

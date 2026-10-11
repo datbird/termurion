@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 /// The three tables and their indexes, verbatim (`BrowserHistory.swift:41-56`,
 /// `BrowserBookmarks.swift:34-43`, `BrowserVisits.swift:55-71`). The tag, named-mark, permission and
-/// key-value tables are not created (Decision).
+/// key-value tables are `browser_db_tags::{TAGS_SCHEMA, KV_SCHEMA}`; the named-mark and permission tables are theirs too.
 pub const SCHEMA: &str = "
 create table if not exists BrowserHistory
     (id text primary key,
@@ -169,7 +169,7 @@ pub fn host_and_path(url: &str) -> (String, String) {
 
 /// The URL as stored: not over `MAX_URL` bytes, no control character, no `user:password@`.
 /// None when it cannot be stored.
-fn clean_url(url: &str) -> Option<String> {
+pub(crate) fn clean_url(url: &str) -> Option<String> {
     let url = url.trim();
     if url.is_empty() || url.len() > MAX_URL || url.chars().any(char::is_control) {
         return None;
@@ -193,7 +193,7 @@ fn clean_title(title: &str) -> Option<String> {
 }
 
 /// `text` as a `LIKE` pattern for "contains", the pattern characters taken literally.
-fn like_contains(text: &str) -> String {
+pub(crate) fn like_contains(text: &str) -> String {
     let mut out = String::from("%");
     for c in text.chars() {
         if matches!(c, '\\' | '%' | '_') {
@@ -206,15 +206,15 @@ fn like_contains(text: &str) -> String {
 }
 
 /// A search text's terms: whitespace separated, at most `MAX_TERMS`, each cut to `MAX_TERM`.
-fn terms_of(text: &str) -> Vec<String> {
+pub(crate) fn terms_of(text: &str) -> Vec<String> {
     text.split_whitespace().take(MAX_TERMS).map(|t| t.chars().take(MAX_TERM).collect()).collect()
 }
 
-fn lim(n: usize) -> i64 {
+pub(crate) fn lim(n: usize) -> i64 {
     n.min(MAX_LIMIT) as i64
 }
 
-fn off(n: usize) -> i64 {
+pub(crate) fn off(n: usize) -> i64 {
     n.min(MAX_OFFSET) as i64
 }
 
@@ -224,9 +224,14 @@ fn err(e: impl std::fmt::Display) -> String {
 
 /// Schemas later plans add (each plan's tables, verbatim from iTerm2's `Database/*.swift`), run in
 /// order after `SCHEMA` by `open` and `open_in_memory`.
-pub const EXTRA_SCHEMAS: &[&str] = &[crate::browser_marks_db::SCHEMA, crate::browser_db_perms::SCHEMA];
+pub const EXTRA_SCHEMAS: &[&str] = &[crate::browser_marks_db::SCHEMA, crate::browser_db_perms::SCHEMA, crate::browser_db_tags::TAGS_SCHEMA, crate::browser_db_tags::KV_SCHEMA];
 
 fn bring_up(conn: &Connection, extra: &[&str]) -> Result<(), String> {
+    // R13x8-3: iTerm2 never runs `PRAGMA foreign_keys`, so its engine enforces none. rusqlite's bundled
+    // SQLite is built with enforcement ON by default, which refuses every tag insert and bookmark
+    // delete ("foreign key mismatch": the tag table references the implicit rowid of a table keyed by
+    // url). Turned OFF here, once, on every connection; nothing in Tandem turns it on.
+    conn.pragma_update(None, "foreign_keys", false).map_err(err)?;
     conn.execute_batch(SCHEMA).map_err(err)?;
     for schema in extra {
         conn.execute_batch(schema).map_err(err)?;
@@ -376,7 +381,13 @@ impl Db {
 
     pub fn remove_bookmark(&self, url: &str) -> bool {
         let Some(url) = clean_url(url) else { return false };
-        self.conn.execute("delete from BrowserBookmarks where url = ?1", params![url]).is_ok_and(|n| n > 0)
+        // iTerm2 deletes the bookmark row only (`BD:577-582`) and runs no `PRAGMA foreign_keys`, so
+        // its declared cascade never fires and the tag rows stay for a reused rowid to inherit. The
+        // tags go first, in the same transaction.
+        let Ok(tx) = self.conn.unchecked_transaction() else { return false };
+        let done = tx.execute("delete from BrowserBookmarkTags where bookmarkRowId in (select rowid from BrowserBookmarks where url = ?1)", params![url]).is_ok()
+            && tx.execute("delete from BrowserBookmarks where url = ?1", params![url]).is_ok_and(|n| n > 0);
+        done && tx.commit().is_ok()
     }
 
     pub fn delete_history(&self, id: &str) {
@@ -389,7 +400,11 @@ impl Db {
     }
 
     pub fn clear_bookmarks(&self) {
-        let _ = self.conn.execute("delete from BrowserBookmarks", []);
+        // Both tables (`BD:707-712`), in one transaction.
+        let Ok(tx) = self.conn.unchecked_transaction() else { return };
+        if tx.execute("delete from BrowserBookmarkTags", []).is_ok() && tx.execute("delete from BrowserBookmarks", []).is_ok() {
+            let _ = tx.commit();
+        }
     }
 
     // --- Reads (every text is a bound parameter; every limit at most `MAX_LIMIT`) ---
@@ -525,7 +540,7 @@ impl Db {
         (format!("{base} where {}", conds.join(" or ")), terms.iter().map(|t| Value::Text(like_contains(t))).collect())
     }
 
-    fn rows<T>(&self, sql: &str, args: impl rusqlite::Params, map: impl FnMut(&rusqlite::Row) -> rusqlite::Result<T>) -> Vec<T> {
+    pub(crate) fn rows<T>(&self, sql: &str, args: impl rusqlite::Params, map: impl FnMut(&rusqlite::Row) -> rusqlite::Result<T>) -> Vec<T> {
         let Ok(mut st) = self.conn.prepare_cached(sql) else { return Vec::new() };
         let Ok(it) = st.query_map(args, map) else { return Vec::new() };
         it.flatten().collect()
@@ -578,12 +593,16 @@ mod tests {
         assert_eq!(
             indexes(&db),
             [
+                "idx_bkv_area_ext_key",
+                "idx_browser_bookmark_tags_rowid",
+                "idx_browser_bookmark_tags_tag",
                 "idx_browser_bookmarks_date",
                 "idx_browser_bookmarks_title",
                 "idx_browser_history_date",
                 "idx_browser_history_session",
                 "idx_browser_history_title",
                 "idx_browser_history_url",
+                "idx_browser_key_value_store_ext",
                 "idx_browser_named_marks_date",
                 "idx_browser_named_marks_guid",
                 "idx_browser_named_marks_url",

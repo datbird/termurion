@@ -119,12 +119,14 @@ impl App {
             return;
         }
         let title = self.browser_views.get(&pane).and_then(|b| b.last_title.clone()).unwrap_or(title);
-        if let Some(db) = self.browser_db(false) {
-            if db.is_bookmarked(&url) {
-                db.remove_bookmark(&url);
-            } else {
-                db.add_bookmark(&url, Some(&title), now());
+        // Remove with a toast, or add and open Edit Bookmark for its tags (`BVC:984-998`).
+        let Some(db) = self.browser_db(false) else { return };
+        if db.is_bookmarked(&url) {
+            if db.remove_bookmark(&url) {
+                self.show_toast(crate::bookmark_tag_ui::REMOVED_TOAST);
             }
+        } else if db.add_bookmark(&url, Some(&title), now()) {
+            self.open_bookmark_editor(pane, &url, Some(&title));
         }
     }
 

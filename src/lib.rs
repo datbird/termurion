@@ -85,6 +85,8 @@ pub mod view_source;
 pub mod devtools;
 pub mod browser_db;
 pub mod browser_db_perms;
+pub mod browser_db_tags;
+pub mod bookmark_tag_ui;
 pub mod browser_perms;
 pub mod cooldown;
 pub mod browser_download;

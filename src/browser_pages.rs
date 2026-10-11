@@ -1081,26 +1081,27 @@ fn bookmarks(db: &Db, body: &Map<String, Value>, page: &str) -> Option<Vec<Reply
                 Some(Value::String(s)) if matches!(s.as_str(), "dateAdded" | "title" | "url") => s.as_str(),
                 _ => return None,
             };
-            let tags: Vec<&Value> = match body.get("tags") {
+            // At most 16 tags of 64 characters (13x8 P9); the database cleans them again.
+            let tags: Vec<String> = match body.get("tags") {
                 None => Vec::new(),
-                Some(Value::Array(a)) if a.len() <= 16 && a.iter().all(|t| t.as_str().is_some_and(|t| t.len() <= 128)) => a.iter().collect(),
+                Some(Value::Array(a)) if a.len() <= 16 && a.iter().all(|t| t.as_str().is_some_and(|t| t.chars().count() <= 64)) => a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect(),
                 _ => return None,
             };
-            // Tags are not kept (the tag table is not created), so a tag filter finds nothing.
-            let rows: Vec<(String, Option<String>, i64)> = if !tags.is_empty() {
-                Vec::new()
-            } else if query.trim().is_empty() {
-                db.all_bookmarks(sort, offset, limit + 1).into_iter().map(|b| (b.url, b.title, b.date_added)).collect()
+            let rows: Vec<(String, Option<String>, i64)> = if !tags.is_empty() || !query.trim().is_empty() {
+                db.search_bookmarks_with_tags(&query, &tags, offset, limit + 1)
             } else {
-                db.search_bookmarks(&query, offset, limit + 1)
+                db.all_bookmarks(sort, offset, limit + 1).into_iter().map(|b| (b.url, b.title, b.date_added)).collect()
             };
             let more = rows.len() > limit;
-            let list: Vec<Value> = rows.into_iter().take(limit).map(|(url, title, added)| json!({"displayUrl": page_url(&url), "url": url, "title": title.unwrap_or_default(), "dateAdded": added})).collect();
+            let list: Vec<Value> = rows.into_iter().take(limit).map(|(url, title, added)| {
+                let tags = db.tags_for(&url);
+                json!({"displayUrl": page_url(&url), "url": url, "title": title.unwrap_or_default(), "dateAdded": added, "tags": tags})
+            }).collect();
             Some(script(page, &call("onBookmarksLoaded", &json!({"bookmarks": list, "hasMore": more}))))
         }
         "loadTags" => {
             keys_within(body, &["action"])?;
-            Some(script(page, &call("onTagsLoaded", &json!({"tags": []}))))
+            Some(script(page, &call("onTagsLoaded", &json!({"tags": db.all_tags()}))))
         }
         "deleteBookmark" => {
             keys_within(body, &["action", "url"])?;
@@ -1486,11 +1487,28 @@ mod tests {
         let s = scripts(&r)[0];
         assert!(s.contains("onBookmarkDeleted") && s.contains("\\\"q") && !s.contains("('https://"), "{s}");
         assert!(!db.is_bookmarked(EVIL_URL));
-        // Tags: none are kept; a tag filter finds nothing.
+        // Tags (13x8): none yet; a tag filter finds nothing.
         let r = route(&db, &msg(b, serde_json::json!({"action": "loadTags"})), b);
         assert!(scripts(&r)[0].contains("onTagsLoaded") && scripts(&r)[0].contains("\"tags\":[]"));
         let r = route(&db, &msg(b, serde_json::json!({"action": "loadBookmarks", "offset": 0, "limit": 50, "searchQuery": "", "sortBy": "title", "tags": ["x"]})), b);
         assert!(scripts(&r)[0].contains("\"bookmarks\":[]"));
+        // With tags on a bookmark: the page lists them, filters by them (every tag must match), rows carry them.
+        db.add_bookmark("https://tg.test/", Some("Tagged"), 400);
+        assert!(db.add_tag("https://tg.test/", "x") && db.add_tag("https://tg.test/", "<b>y</b>"));
+        let r = route(&db, &msg(b, serde_json::json!({"action": "loadTags"})), b);
+        assert!(scripts(&r)[0].contains("window.onTagsLoaded && window.onTagsLoaded({\"tags\":[\"<b>y</b>\",\"x\"]})"), "{}", scripts(&r)[0]);
+        let r = route(&db, &msg(b, serde_json::json!({"action": "loadBookmarks", "offset": 0, "limit": 50, "searchQuery": "", "sortBy": "title", "tags": ["x"]})), b);
+        assert!(scripts(&r)[0].contains("https://tg.test/") && scripts(&r)[0].contains("\"tags\":[\"<b>y</b>\",\"x\"]") && !scripts(&r)[0].contains("bk.test"));
+        let r = route(&db, &msg(b, serde_json::json!({"action": "loadBookmarks", "offset": 0, "limit": 50, "searchQuery": "", "sortBy": "title", "tags": ["x", "nope"]})), b);
+        assert!(scripts(&r)[0].contains("\"bookmarks\":[]"));
+        // The typed bounds: 16 tags of 64 characters.
+        let many: Vec<String> = (0..17).map(|i| format!("t{i}")).collect();
+        assert!(route(&db, &msg(b, serde_json::json!({"action": "loadBookmarks", "tags": many})), b).is_empty());
+        assert!(route(&db, &msg(b, serde_json::json!({"action": "loadBookmarks", "tags": ["z".repeat(65)]})), b).is_empty());
+        assert!(!route(&db, &msg(b, serde_json::json!({"action": "loadBookmarks", "tags": ["z".repeat(64)]})), b).is_empty());
+        // Deleting the bookmark takes its tags with it.
+        let r = route(&db, &msg(b, serde_json::json!({"action": "deleteBookmark", "url": "https://tg.test/"})), b);
+        assert!(!scripts(&r).is_empty() && db.all_tags().is_empty());
         let r = route(&db, &msg(b, serde_json::json!({"action": "loadBookmarks", "offset": 0, "limit": 50, "searchQuery": "", "sortBy": "dateAdded", "tags": []})), b);
         assert!(scripts(&r)[0].contains("https://bk.test/"));
         assert!(route(&db, &msg(b, serde_json::json!({"action": "loadBookmarks", "sortBy": "'; drop"})), b).is_empty());

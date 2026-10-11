@@ -723,6 +723,10 @@ impl App {
             // A navigation began: how, for the history row it makes (`BNS:60-82`); the scripts see it too.
             Event::Starting { url, kind, user, redirect, nav, .. } => {
                 self.browser_page_starting(pane, url, *nav);
+                // A navigation of the pane closes its Edit Bookmark window (`BVC:1095-1096`).
+                if !*redirect {
+                    self.bookmark_editor_close_for(pane);
+                }
                 // Every start counts, redirects included: a redirected load is a new document request.
                 self.marks_method_event(pane, e);
                 self.browser_nav_starting(pane, url, *kind, *user, *redirect);
