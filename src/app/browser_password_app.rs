@@ -15,6 +15,7 @@ use serde_json::Value;
 
 use super::browser_scripts_app::JsDone;
 use super::*;
+use crate::browser_js::{Routed, World};
 use crate::browser_password::{self as bp, Item, Op, PwPage, PwQueue, Step};
 use super::pwm_app::{PwmOpen, PwmTarget};
 use crate::pwm::Secret;
@@ -64,7 +65,32 @@ impl App {
             send_both: focus_after_user.is_some(),
             target: PwmTarget::Session,
             focus_after_user: focus_after_user.map(|id| (id, at)),
+            from_page: true,
         });
+    }
+
+    /// `iTermOpenPasswordManager`'s arm (`BM:1107-1135`): the isolated world's message with the view's
+    /// secret, nothing else. A press only REQUESTS: it opens the native manager bound to the page's exact
+    /// https origin and epoch (Task 6), where the person picks; nothing is typed from here. Nothing is
+    /// asked of the store, so the button and this arm answer the same for 0 or N accounts. The origin is
+    /// the main page's (iTerm2 uses `webView.url?.host` even for a frame's message); a frame's message
+    /// never carries a field id to focus (the focus step is the main frame's).
+    pub(super) fn browser_password_message(&mut self, pane: PaneId, r: &Routed) {
+        if r.world != World::Client || !self.client_open(pane) {
+            return;
+        }
+        let Some(secret) = self.browser_view_secret(pane) else { return };
+        let Some(action) = bp::parse_action(&r.body, secret) else { return };
+        // Only an https page (the same test as the pick's binding) and no toast: a page learns nothing.
+        if !self.page_bound_now(pane).is_some_and(|(url, epoch)| PwPage::new(&url, epoch).is_some()) {
+            return;
+        }
+        let (for_user, focus) = match action {
+            bp::Action::ForPassword => (false, None),
+            bp::Action::ForUser => (true, None),
+            bp::Action::ForBoth { password_id } => (true, r.frame.is_none().then_some(password_id)),
+        };
+        self.browser_open_password_manager(Some(pane), for_user, focus);
     }
 
     /// The page a pick is bound to, taken at the moment of the pick; None (with the reason shown) on a
@@ -204,6 +230,28 @@ mod tests {
         }
         // The secret goes into the runner by reference and is dropped with its closure.
         assert!(&src[src.find("fn pw_write").unwrap()..].contains("self.browser_js_call_secret(pane, &call.body, call.args, bp::TEXT_ARG, text, done)"));
+    }
+
+    /// Task 7: the button's message arm. Client world only, the view's secret, an https page, the
+    /// main frame's origin; it opens the native manager and types nothing; and it asks the store nothing,
+    /// so the page cannot tell 0 accounts from N. The script is one isolated-world user script.
+    #[test]
+    fn password_button_opens_the_manager() {
+        let src = me();
+        let arm = between(src, "pub(super) fn browser_password_message", "/// The page a pick is bound to");
+        assert!(arm.contains("World::Client") && arm.contains("self.client_open(pane)") && arm.contains("bp::parse_action(&r.body, secret)"));
+        assert!(arm.contains("PwPage::new(&url, epoch).is_some()") && !arm.contains("show_toast"), "https only, silent to the page");
+        assert!(arm.contains("bp::Action::ForPassword => (false, None)") && arm.contains("bp::Action::ForUser => (true, None)"));
+        assert!(arm.contains("r.frame.is_none().then_some(password_id)"), "a frame's message never carries a focus id");
+        for banned in ["browser_fill_", "browser_pw_page", "browser_js_call", "Work::", "accounts", "pwm_job", "format!(", "rlog!", "dlog!"] {
+            assert!(!arm.contains(banned), "{banned}");
+        }
+        let opener = between(src, "pub(super) fn browser_open_password_manager", "/// The page a pick is bound to");
+        assert!(opener.contains("from_page: true") && opener.contains("scope: Scope::Browser"));
+        let scripts = prod(include_str!("browser_scripts_app.rs"));
+        assert!(scripts.contains("h if h == crate::browser_password::HANDLER => self.browser_password_message(pane, &r),"));
+        assert!(scripts.contains("UserScript { id: \"passwordManager\", code, inject: Inject::DocumentEnd, main_frame_only: false, world: World::Client }"));
+        assert!(scripts.contains("crate::browser_password::button_script(secret)"), "inside the isolated-world block, none when the patches fail");
     }
 
     /// Every operation is checked against the pick's page when queued, when started and before the

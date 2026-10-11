@@ -14,7 +14,7 @@
 use serde_json::{Value, json};
 
 use crate::browser_autofill::{MAX_TEXT, Queue, TRUSTED_CHECK, origin_of};
-use crate::browser_js::resource;
+use crate::browser_js::{fill_template, resource, secret_ok};
 use crate::browser_marks::patch_once;
 use crate::pwm::Secret;
 
@@ -35,14 +35,80 @@ fn file(name: &str) -> &'static str {
     resource(name).expect("a copied password script is in the resource table")
 }
 
-/// `password-button.js` with Tandem's one patch (R13x67-2): the click handler acts only on a person's
-/// click. Exact once, fail closed (no button script is injected when the copy changed).
-pub fn button_js() -> Result<String, String> {
-    patch_once(
-        file("password-button.js"),
+/// The frame and page guard patched into `password-button.js`: no button on a page that is not https
+/// (this also leaves every `iterm2-*` page, `about:blank` and `data:` without one) and none in an
+/// iframe of another origin than the top page (a cross-origin parent throws on `window.top.location`).
+const BUTTON_GUARD: &str = "'use strict';\n    // Tandem: no button on a page that is not https, nor in an iframe of another origin.\n    if (location.protocol !== 'https:') return;\n    try { if (window.top !== window && window.top.location.origin !== window.location.origin) return; } catch (_) { return; }";
+
+/// The closed shadow root (13x5's lesson, as Task 1 gave the autofill button): the button lives in a
+/// root only this world holds, under a host styled with `!important` inline rules; its label is
+/// generated content (`::after`), never text, so `window.find` and select-all read nothing of it. A
+/// click counts only when it is a person's (`isTrusted`) and the pointer's point holds that very button
+/// (`elementFromPoint` on the root), or, for a keyboard activation, when the button has focus. The
+/// autofill button is another closed root: its host is the one other max z-index element at the spot
+/// (`tandemShift`), so this button steps aside by its own width, as iTerm2's does for a visible one.
+const BUTTON_ROOT: &str = "let btn = null;\n    // Tandem: the button lives in a closed shadow root the page cannot reach; its label is generated content.\n    let tandemHost = null;\n    let tandemShadow = null;\n    function tandemRoot() {\n        if (!tandemShadow) {\n            tandemHost = document.createElement('div');\n            tandemHost.style.cssText = 'all: initial !important; display: block !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 0 !important; overflow: visible !important; z-index: 2147483647 !important; pointer-events: none !important;';\n            tandemShadow = tandemHost.attachShadow({mode: 'closed'});\n            const rule = document.createElement('style');\n            rule.textContent = 'button { pointer-events: auto !important; } [data-tandem-glyph]::after { content: attr(data-tandem-glyph); }';\n            tandemShadow.appendChild(rule);\n        }\n        if (!tandemHost.isConnected && document.body) { document.body.appendChild(tandemHost); }\n        return tandemShadow;\n    }\n    function tandemReal(e, button) {\n        if (!e.isTrusted) return false;\n        const root = tandemRoot();\n        if (e.detail === 0) return root.activeElement === button;\n        return root.elementFromPoint(e.clientX, e.clientY) === button;\n    }\n    function tandemShift(samples, side) {\n        for (const {x, y} of samples) {\n            for (const el of document.elementsFromPoint(x, y)) {\n                if (el === tandemHost || el === activeField) continue;\n                if (parseInt(getComputedStyle(el).zIndex) === 2147483647) return side + 5;\n            }\n        }\n        return 0;\n    }";
+
+/// `password-button.js` with Tandem's patches, every one exact once and fail closed (the copy in
+/// `resources/` stays iTerm2's, byte for byte; a copy that changed makes no button script, never a
+/// half-patched one). See `BUTTON_ROOT` and `BUTTON_GUARD`. The click handler acts only on
+/// `event.isTrusted` (R13x67-2, an iTerm2 bug fixed) and a real press on the button, and then only
+/// REQUESTS: the app opens the native password manager (Task 6); nothing fills without a pick there.
+pub fn button_patched(src: &str) -> Result<String, String> {
+    let s = patch_once(src, "'use strict';", BUTTON_GUARD)?;
+    let s = patch_once(&s, "let btn = null;", BUTTON_ROOT)?;
+    let s = patch_once(
+        &s,
         "btn.addEventListener('click', e => {\n            e.preventDefault();",
-        &format!("btn.addEventListener('click', e => {{\n            // Tandem: act only on a person's click, never a page script's (R13x67-2; iTerm2 bug).\n            {TRUSTED_CHECK}\n            e.preventDefault();"),
-    )
+        &format!("btn.addEventListener('click', e => {{\n            // Tandem: act only on a person's click, never a page script's (R13x67-2; iTerm2 bug).\n            {TRUSTED_CHECK}\n            if (!tandemReal(e, btn)) return;\n            e.preventDefault();"),
+    )?;
+    let s = patch_once(&s, "document.body.appendChild(btn);", "tandemRoot().appendChild(btn);")?;
+    let s = patch_once(&s, "btn.textContent = emoji;", "btn.setAttribute('data-tandem-glyph', emoji);")?;
+    let s = patch_once(&s, "meas.textContent = emoji;", "meas.setAttribute('data-tandem-glyph', emoji);")?;
+    let s = patch_once(&s, "document.body.appendChild(meas);", "tandemRoot().appendChild(meas);")?;
+    let s = patch_once(&s, "document.body.removeChild(meas);", "meas.remove();")?;
+    patch_once(&s, "let newLeft = baseLeft;", "let newLeft = baseLeft - tandemShift(samples, side);")
+}
+
+/// The patched button script, or the reason it could not be made.
+pub fn button_js() -> Result<String, String> {
+    button_patched(file("password-button.js"))
+}
+
+/// The message handler the button posts to (`PMH:15`).
+pub const HANDLER: &str = "iTermOpenPasswordManager";
+
+/// The button script as injected (`PMH:31-35`): the view's secret in. Tandem's own hex, never page text.
+/// None when a patch failed closed: no button, no request.
+pub fn button_script(secret: &str) -> Option<String> {
+    button_js().ok().map(|js| fill_template(&js, &[("SECRET", secret)]))
+}
+
+/// What a press asks for (`PMH:18-22`). A press only REQUESTS: the app opens the native manager and
+/// nothing is typed without the person's pick there. No field name, account or secret is carried (the
+/// page's `fieldName` is dropped unread; only the next password field's id, which the focus step
+/// compares to nothing but its own page).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Action {
+    ForPassword,
+    ForUser,
+    ForBoth { password_id: String },
+}
+
+/// `userContentController(_:didReceive:)` (`PMH:38-58`): the type picks the action; a wrong secret, a
+/// missing or unknown type is none. A password field id that is not text is no id.
+pub fn parse_action(body: &Value, secret: &str) -> Option<Action> {
+    if !secret_ok(body, secret) {
+        return None;
+    }
+    match body.get("type")?.as_str()? {
+        "openPassword" => Some(Action::ForPassword),
+        "openUser" => match body.get("nextPasswordFieldId").and_then(Value::as_str) {
+            Some(id) if !id.is_empty() && id.len() <= MAX_TEXT => Some(Action::ForBoth { password_id: id.to_string() }),
+            _ => Some(Action::ForUser),
+        },
+        _ => None,
+    }
 }
 
 /// `probe-password.js` as iTerm2 wrote it (`PPJ`).
@@ -276,18 +342,67 @@ mod tests {
     }
 
     #[test]
-    fn the_button_acts_only_on_a_persons_click() {
+    fn password_button_messages_follow_iterm2() {
+        let m = |v: Value| parse_action(&v, "s");
+        assert_eq!(m(json!({"type": "openPassword", "sessionSecret": "s"})), Some(Action::ForPassword));
+        assert_eq!(m(json!({"type": "openUser", "sessionSecret": "s", "nextPasswordFieldId": "pw"})), Some(Action::ForBoth { password_id: "pw".into() }));
+        assert_eq!(m(json!({"type": "openUser", "sessionSecret": "s", "nextPasswordFieldId": null})), Some(Action::ForUser));
+        assert_eq!(m(json!({"type": "openUser", "sessionSecret": "s"})), Some(Action::ForUser));
+        assert_eq!(m(json!({"type": "openUser", "sessionSecret": "s", "nextPasswordFieldId": 7})), Some(Action::ForUser));
+        assert_eq!(m(json!({"type": "openUser", "sessionSecret": "s", "nextPasswordFieldId": "x".repeat(MAX_TEXT + 1)})), Some(Action::ForUser), "a hostile id is no id");
+        assert_eq!(m(json!({"type": "openPassword", "sessionSecret": "t"})), None, "wrong secret");
+        assert_eq!(m(json!({"type": "openPassword"})), None, "no secret");
+        assert_eq!(m(json!({"sessionSecret": "s"})), None, "no type");
+        assert_eq!(m(json!({"type": "x", "sessionSecret": "s"})), None);
+        assert_eq!(m(json!({"type": 5, "sessionSecret": "s"})), None);
+        assert_eq!(parse_action(&json!({"type": "openPassword", "sessionSecret": ""}), ""), None, "an empty secret is no secret");
+        let js = button_script("s").unwrap();
+        assert!(js.contains("const sessionSecret = \"s\";") && js.contains("const handlerName   = 'iTermOpenPasswordManager';"));
+        assert_eq!(HANDLER, "iTermOpenPasswordManager");
+        // The message carries no secret of Tandem's, no account and no user name: the request has no payload.
+        assert!(!js.contains("{{"));
+    }
+
+    #[test]
+    fn the_button_is_a_closed_trusted_request_only() {
         let b = button_js().unwrap();
+        // Everything Tandem added is the patches: a copy that lost any one of them is caught below.
         assert_eq!(b.matches(TRUSTED_CHECK).count(), 1);
         let at = b.find("btn.addEventListener('click', e => {").unwrap();
         let body = &b[at..];
-        let first = body.lines().skip(1).map(str::trim).find(|l| !l.starts_with("//")).unwrap();
-        assert_eq!(first, TRUSTED_CHECK, "first statement of the handler, before preventDefault");
-        // Everything else is iTerm2's: removing the two inserted lines gives the copy back.
-        let inserted = format!("            // Tandem: act only on a person's click, never a page script's (R13x67-2; iTerm2 bug).\n            {TRUSTED_CHECK}\n");
-        assert_eq!(b.replacen(&inserted, "", 1), resource("password-button.js").unwrap());
-        // Fail closed: a copy that changed makes no button.
-        assert!(patch_once("nothing", "btn.addEventListener('click', e => {", "x").is_err());
+        let lines: Vec<&str> = body.lines().skip(1).map(str::trim).filter(|l| !l.starts_with("//")).collect();
+        assert_eq!(lines[0], TRUSTED_CHECK, "first statement of the handler");
+        assert_eq!(lines[1], "if (!tandemReal(e, btn)) return;", "then a real press on the button");
+        assert_eq!(lines[2], "e.preventDefault();");
+        // A closed shadow root; the button is never a child of the page.
+        assert_eq!(b.matches("attachShadow({mode: 'closed'})").count(), 1);
+        assert_eq!(b.matches("tandemRoot().appendChild(btn);").count(), 1);
+        assert!(!b.contains("document.body.appendChild(btn)") && !b.contains("document.body.appendChild(meas)"));
+        // The label is generated content: no text node holds it (window.find / select-all read none).
+        assert!(!b.contains("textContent = emoji") && b.contains("[data-tandem-glyph]::after { content: attr(data-tandem-glyph); }"));
+        assert!(b.contains("btn.setAttribute('data-tandem-glyph', emoji);") && b.contains("meas.setAttribute('data-tandem-glyph', emoji);"));
+        // The press posts one thing: a type, the view's secret, a field name and the next password id.
+        assert_eq!(b.matches("postMessage(").count(), 1);
+        // https only, and no frame of another origin; the guard is the script's first statement.
+        let g = b.find("location.protocol !== 'https:'").unwrap();
+        assert!(g < b.find("let activeField").unwrap() && b.contains("window.top.location.origin !== window.location.origin"));
+        // The bridge is Tandem's: no `window.webkit` once wrapped.
+        let wrapped = crate::browser_js::wrap(&crate::browser_js::UserScript { id: "passwordManager", code: button_script("s").unwrap(), inject: crate::browser_js::Inject::DocumentEnd, main_frame_only: false, world: crate::browser_js::World::Client });
+        assert!(!wrapped.contains("window.webkit"));
+        // The copy is untouched.
+        assert!(!resource("password-button.js").unwrap().contains("Tandem"));
+    }
+
+    /// Fail closed: a copy whose target moved (or doubled) makes no button script at all.
+    #[test]
+    fn the_button_patches_fail_closed() {
+        let src = resource("password-button.js").unwrap();
+        assert!(button_patched(src).is_ok());
+        for target in ["'use strict';", "let btn = null;", "btn.addEventListener('click', e => {\n            e.preventDefault();", "document.body.appendChild(btn);", "btn.textContent = emoji;", "meas.textContent = emoji;", "document.body.appendChild(meas);", "document.body.removeChild(meas);", "let newLeft = baseLeft;"] {
+            assert!(button_patched(&src.replace(target, "")).is_err(), "gone: {target}");
+            assert!(button_patched(&format!("{src}\n{target}")).is_err(), "twice: {target}");
+        }
+        assert!(button_patched("nothing").is_err());
     }
 
     #[test]

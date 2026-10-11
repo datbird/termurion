@@ -190,6 +190,12 @@ impl App {
             if let Some(code) = crate::browser_autofill::detector_script(secret) {
                 scripts.push(UserScript { id: "autofillHandler", code, inject: Inject::DocumentEnd, main_frame_only: true, world: World::Client });
             }
+            // iTerm2's password button (13x7 Task 7): the isolated world, every frame (the script itself
+            // refuses non-https pages and frames of another origin), document end. None when its patches
+            // failed closed: no button.
+            if let Some(code) = crate::browser_password::button_script(secret) {
+                scripts.push(UserScript { id: "passwordManager", code, inject: Inject::DocumentEnd, main_frame_only: false, world: World::Client });
+            }
         }
         scripts
     }
@@ -927,6 +933,7 @@ impl App {
             h if h == crate::browser_marks::LAYOUT_HANDLER => self.marks_layout_message(pane, &r),
             h if h == crate::browser_triggers::MESSAGE_HANDLER => self.browser_trigger_message(pane, &r),
             h if h == crate::browser_autofill::HANDLER => self.browser_autofill_message(pane, &r),
+            h if h == crate::browser_password::HANDLER => self.browser_password_message(pane, &r),
             _ if browser_js::always_on(&r, self.browser_view_secret(pane).unwrap_or(""), self.browser_views.get(&pane).map_or("", |b| b.dom_secret.as_str())).is_some() => self.browser_always_on(pane, &r),
             _ => {
                 if let Some(bv) = self.browser_views.get_mut(&pane) {
@@ -1121,7 +1128,7 @@ mod tests {
     /// Task 3 review minor 2: a function of any file in src/app that takes a routed message is the
     /// router or is a listed Client handler that asks `client_open` before it acts.
     fn client_handler_violations(files: &[(String, String)]) -> Vec<String> {
-        let known = ["browser_autofill_message", "marks_message", "marks_layout_message", "browser_graph_message", "browser_always_on", "browser_find_message", "browser_copy_mode_key", "browser_reader_message", "browser_trigger_message"];
+        let known = ["browser_autofill_message", "browser_password_message", "marks_message", "marks_layout_message", "browser_graph_message", "browser_always_on", "browser_find_message", "browser_copy_mode_key", "browser_reader_message", "browser_trigger_message"];
         let routers = ["browser_message", "local_page_message", "browser_page_message"];
         let mut out = Vec::new();
         for (file, src) in files {

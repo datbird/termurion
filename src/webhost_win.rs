@@ -4104,6 +4104,32 @@ mod probe {
         p.finish();
     }
 
+    /// 13x7 Task 7: a password field's focus shows the key button (in a closed root: the page sees none), a
+    /// page script's click posts nothing, a real press posts exactly one `openPassword`, and the label is not
+    /// text (select-all and `window.find` read none). Needs the console session.
+    #[test]
+    #[ignore]
+    fn password_button_appears_on_focus_and_scripted_click_opens_nothing() {
+        use crate::browser_password as bp;
+        let secret = hex32();
+        let code = bp::button_script(&secret).expect("the button assembles");
+        let btn = crate::browser_js::wrap(&crate::browser_js::UserScript { id: "passwordManager", code, inject: crate::browser_js::Inject::DocumentEnd, main_frame_only: false, world: crate::browser_js::World::Client });
+        let page = "<!doctype html><html><body style=\"margin:0\"><input id=pw type=password style=\"width:200px;height:30px\"></body></html>".to_string();
+        let Some(mut p) = Probe::start(&[(PAGE, page)], vec![btn]) else { return };
+        p.load(PAGE);
+        p.settle(1500);
+        p.page_eval("document.getElementById('pw').focus()").expect("focus");
+        p.settle(800);
+        // Closed root: the page finds no button, its label or any text of it.
+        assert_eq!(p.page_eval("document.querySelectorAll('[aria-label=\"Open Password Manager\"]').length"), Ok("0".into()));
+        assert_eq!(p.page_eval("(() => { getSelection().selectAllChildren(document.body); return getSelection().toString().length; })()"), Ok("0".into()));
+        // A scripted click at every element of the page posts nothing.
+        p.page_eval("(() => { for (const el of document.querySelectorAll('*')) { el.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, cancelable: true })); } })()").expect("scripted clicks");
+        p.settle(2000);
+        assert!(p.clients(bp::HANDLER).is_empty(), "a scripted click opens nothing");
+        p.finish();
+    }
+
     /// 13x7 Task 5: the password writer in Tandem's world: a visible password field takes the password
     /// (typed argument, secret call text, as the app runs it), the page sees it only as that field's value, a
     /// text field, a hidden field and another origin take nothing, and no page global holds it. Needs the

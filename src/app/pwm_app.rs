@@ -199,6 +199,8 @@ pub(super) struct PwmOpen {
     pub(super) target: PwmTarget,
     /// The password field's id and the page's navigation count, for send-both's focus step.
     pub(super) focus_after_user: Option<(String, u64)>,
+    /// A web page's button asked for it: the window carries the one input guard (`PwmWindow::guard_input`).
+    pub(super) from_page: bool,
 }
 
 /// What the manager's entries go to.
@@ -486,19 +488,19 @@ impl App {
     /// True when a manager opened (or the open was refused as iTerm2 refuses it); false when a picker's
     /// challenge must end because nothing opened.
     fn open_pwm_now(&mut self, event_loop: &ActiveEventLoop, o: PwmOpen, handled: &mut Vec<WindowId>) -> bool {
-        let PwmOpen { account, pane, scope, for_user, send_both, target, focus_after_user } = o;
+        let PwmOpen { account, pane, scope, for_user, send_both, target, focus_after_user, from_page } = o;
         let session = target == PwmTarget::Session;
         if let Some(p) = pane {
             // Unburied first, else it has no window (`AD:650-653`).
             self.disinter(p);
             if !self.enter_pane_window(p) {
-                return !session;
+                return session;
             }
             self.reveal_pane(p);
         } else if let Some(w) = self.last_window {
             self.enter(w);
         }
-        let Some(here) = self.current_window() else { return !session };
+        let Some(here) = self.current_window() else { return session };
         // The refuse-if-open rules are the session path's; a picker's one slot is decided below.
         if session && !first_for(handled, here) {
             return true;
@@ -529,7 +531,7 @@ impl App {
                 if session {
                     self.pwm.refused = Some(here);
                 }
-                return !session;
+                return session;
             }
         } else if !required {
             self.pwm_auth(scope).open_unprompted();
@@ -539,7 +541,12 @@ impl App {
             _ => Err("no terminal window".to_string()),
         };
         let (window, owner_hwnd) = match opened {
-            Ok(w) => w,
+            Ok((mut win, h)) => {
+                if from_page {
+                    win.guard_input();
+                }
+                (win, h)
+            }
             Err(e) => {
                 self.banners.set("window", format!("Could not open the window: {e}"));
                 match hold {
@@ -551,7 +558,7 @@ impl App {
                     }
                     None => {}
                 }
-                return !session;
+                return session;
             }
         };
         if let Some(h) = window.hwnd() {
@@ -1703,7 +1710,11 @@ impl App {
     /// reports held until it is done. A tmux gateway gets nothing. A browser pane never gets a
     /// password here: the page path binds the pick's page (`enter_browser`).
     pub(super) fn enter_password(&mut self, pane: PaneId, password: Secret) {
-        if self.is_tmux_gateway(pane) || !self.panes.contains_key(&pane) || self.is_browser_pane(pane) {
+        if self.is_browser_pane(pane) {
+            self.show_toast("This manager types into a terminal; open the browser's password manager for a page.");
+            return;
+        }
+        if self.is_tmux_gateway(pane) || !self.panes.contains_key(&pane) {
             return;
         }
         self.end_probe_of(pane);
@@ -1750,6 +1761,7 @@ impl App {
     /// again).
     pub(super) fn enter_username(&mut self, pane: PaneId, user: &str, broadcast: bool) {
         if self.is_browser_pane(pane) {
+            self.show_toast("This manager types into a terminal; open the browser's password manager for a page.");
             return; // a page takes its user name through the bound writer
         }
         let text = format!("{user}\n");
@@ -2945,6 +2957,26 @@ mod tests {
             let browser = between(prod, "fn pick_why", "pub(super) fn enter_password");
             assert!(!browser.contains(banned), "{banned}");
         }
+    }
+
+    /// Task 6 review I1: a picker whose window cannot open must report false so its challenge is
+    /// answered; only a session may report true on a failure. Task 6 review M1 (class rule): the
+    /// manager a page's button opens carries the one input guard.
+    #[test]
+    fn a_failed_open_answers_a_picker_and_a_page_opened_manager_is_guarded() {
+        let src = include_str!("pwm_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        assert!(!prod.contains("return !session") && !prod.contains("{ return !session }"), "no inverted failure return");
+        let open = between(prod, "fn open_pwm_now", "pub(super) fn authenticate");
+        assert_eq!(open.matches("return session").count(), 4, "all four failure paths answer a picker");
+        let guard = between(open, "Ok((mut win, h)) => {", "Err(e) =>");
+        assert!(guard.contains("if from_page {") && guard.contains("win.guard_input();"));
+        assert_eq!(prod.matches("guard_input()").count(), 2, "the autofill question and this window");
+        let ui = include_str!("../pwm_ui.rs");
+        assert!(ui.contains("g.drops(e, now)") && ui.contains("g.window_event(e, now)"), "the window drops guarded input before egui");
+        assert!(include_str!("browser_password_app.rs").contains("from_page: true,"));
+        // The toast tells the person why nothing was entered (M5).
+        assert!(between(prod, "pub(super) fn enter_password", "let bs =").contains("show_toast"));
     }
 
     fn between<'a>(s: &'a str, a: &str, b: &str) -> &'a str {

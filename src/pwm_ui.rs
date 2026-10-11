@@ -125,6 +125,10 @@ pub struct PwmWindow {
     win_down: bool,
     /// Win chords (b, u, c) waiting for the next redraw.
     chords: Vec<char>,
+    /// A manager a web page's button asked for: input is ignored for the one shared guard's delay after it
+    /// appears and after it regains focus (`prompt_ui::InputGuard`, the one owner), so a lured click plus
+    /// Return cannot fill.
+    guard: Option<crate::prompt_ui::InputGuard>,
 }
 
 impl PwmWindow {
@@ -166,6 +170,7 @@ impl PwmWindow {
             focus_search: true,
             win_down: false,
             chords: Vec::new(),
+            guard: None,
         })
     }
 
@@ -218,8 +223,20 @@ impl PwmWindow {
         self.host.request_redraw();
     }
 
+    /// Guards the window against a stray key or click (see `guard`). Call right after opening.
+    pub fn guard_input(&mut self) {
+        self.guard = Some(crate::prompt_ui::InputGuard::new(Instant::now()));
+    }
+
     /// Feeds a window event to egui. True when the window should redraw.
     pub fn event(&mut self, e: &WindowEvent) -> bool {
+        let now = Instant::now();
+        if let Some(g) = self.guard.as_mut() {
+            g.window_event(e, now);
+            if g.drops(e, now) {
+                return false;
+            }
+        }
         match e {
             WindowEvent::ModifiersChanged(m) => self.win_down = m.state().super_key(),
             WindowEvent::KeyboardInput { event, .. } if self.win_down && event.state == ElementState::Pressed && !event.repeat => {
