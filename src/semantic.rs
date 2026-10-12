@@ -1168,6 +1168,19 @@ mod tests {
         assert!(open.contains("LocalPath::semantic(") && open.contains("open_with_shell("), "a Semantic History file opens as a judged LocalPath");
     }
 
+    /// TWEAKS 6 review I4: the schemes Tandem owns (or does not offer) never reach the Windows handler.
+    #[test]
+    fn tandems_own_schemes_never_reach_the_windows_handler() {
+        for u in ["telnet://h", "TELNET://h:23", "ssh://h", "x-man-page://1/ls", "iterm2:annotation?ann=A", "tandem://x"] {
+            assert!(matches!(guard_open(u, false), Run::Blocked(_)), "{u}");
+        }
+        let Run::Blocked(why) = guard_open("telnet://h", false) else { panic!("refused") };
+        assert!(why.contains("telnet"), "{why}");
+        for s in crate::url_schemes::SCHEMES {
+            assert!(crate::link_scheme::OWN.contains(&s), "{s}");
+        }
+    }
+
     #[test]
     fn an_unbound_ssh_link_says_how_to_open_it() {
         let Run::Blocked(why) = guard_open("ssh://host", false) else { panic!("refused") };

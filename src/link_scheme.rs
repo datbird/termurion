@@ -18,6 +18,11 @@ pub const BLOCKED: &[&str] = &[
     "its", "ms-its", "hcp", "ldap", "ldaps", "res", "jar", "smb", "dav", "davs", "webdav", "webdavs", "about", "blob", "filesystem", "view-source", "ms-help", "mhtml",
 ];
 
+/// Schemes Tandem owns or deliberately does not offer: never handed to whatever Windows registered
+/// (TWEAKS 6 review I4). ftp, ssh and telnet are `url_schemes::SCHEMES` (Tandem's own, bound per
+/// profile); `x-man-page` is macOS only; `iterm2` is the app's internal link scheme; `tandem` is Tandem's own.
+pub const OWN: &[&str] = &["ftp", "ssh", "telnet", "x-man-page", "iterm2", "tandem"];
+
 /// Programs that read their argument as script: a scheme whose handler is one is refused.
 pub const BAD_HANDLERS: &[&str] = &["cmd", "powershell", "pwsh", "wscript", "cscript", "mshta", "rundll32", "regsvr32", "wsl", "bash", "msiexec", "forfiles", "msbuild"];
 
@@ -53,6 +58,9 @@ pub fn screen(scheme: &str, url: &str) -> Result<(), String> {
     let refuse = || Err(format!("Tandem never opens {scheme}: links."));
     if BLOCKED.contains(&scheme) {
         return refuse();
+    }
+    if OWN.contains(&scheme) {
+        return Err(format!("Tandem handles {scheme}: links itself and never hands them to another app."));
     }
     // The Office schemes open a document from a URL with the ofe and ofv commands.
     if matches!(scheme, "ms-word" | "ms-excel" | "ms-powerpoint") {
