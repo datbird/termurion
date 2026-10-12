@@ -370,7 +370,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 1337 ; ReportWindowFrame (query) | Terminal reports current window frame in points. | have |
 | OSC 1337 ; ReportScreenFrames (query, trusted) | Terminal reports frames of all connected screens. | have, monitor work areas |
 | OSC 1337 ; UnicodeVersion=push\|pop\|&lt;n&gt; | Pushes/pops or sets the Unicode width calculation version for wide character handling. | partial, the version is kept and reported; character widths do not change with it |
-| OSC 1337 ; SetColors=&lt;name&gt;=&lt;color&gt;,... | Sets one or more named ANSI/theme colors at once. | have, badge included (TWEAKS 4a: the session's Badge Color, profile alpha kept); tab draws a stripe; preset=NAME loads a color preset (milestone 13t: the 24 or 25 named colors and the tab color, undone when the program ends) |
+| OSC 1337 ; SetColors=&lt;name&gt;=&lt;color&gt;,... | Sets one or more named ANSI/theme colors at once. | have, badge included (TWEAKS 4a: the session's Badge Color at alpha 1, as iTerm2 does); tab draws a stripe; preset=NAME loads a color preset (milestone 13t: the 24 or 25 named colors and the tab color, undone when the program ends) |
 | OSC 1337 ; SetKeyLabel=&lt;key&gt;=&lt;label&gt; | Sets the on screen label for a Touch Bar key. | partial, Windows has no Touch Bar: labels are kept, not shown |
 | OSC 1337 ; PushKeyLabels / PopKeyLabels | Saves/restores a set of Touch Bar key labels. | partial, Windows has no Touch Bar: labels are kept, not shown |
 | OSC 1337 ; Disinter | Detaches (disinters) a session from its buried state. | have, milestone 8e: a buried session that sends it is restored |

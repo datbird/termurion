@@ -36,14 +36,14 @@ pub(super) fn tab_color_values(color: Option<crate::palette::Rgb>, separate: boo
 }
 
 /// The session values `SetColors=badge=...` writes (`screenSetColor:profileKey:` on the badge
-/// key): "Badge Color" with the profile's own alpha kept (the sequence names a color, not a
-/// transparency), and with `separate` the Dark and Light variants too, as the tab color does.
-pub(super) fn badge_color_values(color: crate::palette::Rgb, alpha: f32, separate: bool) -> Vec<(String, Option<toml::Value>)> {
+/// key): "Badge Color" at alpha 1 (iTerm2 writes the color dictionary whole), and with
+/// `separate` the Dark and Light variants too, as the tab color does.
+pub(super) fn badge_color_values(color: crate::palette::Rgb, separate: bool) -> Vec<(String, Option<toml::Value>)> {
     let mut v = match crate::profile::color_value(color) {
         toml::Value::Table(t) => t,
         other => return vec![("Badge Color".to_string(), Some(other))],
     };
-    v.insert("a".into(), toml::Value::Float(f64::from(alpha)));
+    v.insert("a".into(), toml::Value::Float(1.0));
     let value = toml::Value::Table(v);
     let keys = if separate { vec!["Badge Color".to_string(), "Badge Color (Dark)".into(), "Badge Color (Light)".into()] } else { vec!["Badge Color".to_string()] };
     keys.into_iter().map(|k| (k, Some(value.clone()))).collect()
@@ -164,8 +164,8 @@ impl App {
             }
             Request::BadgeColor(c) => {
                 let Some(pr) = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)) else { return };
-                let (separate, alpha) = (pr.bool("Use Separate Colors for Light and Dark Mode"), pr.alpha_for("Badge Color", self.dark()));
-                self.set_session_values(pane, &badge_color_values(crate::palette::rgb(c.r, c.g, c.b), alpha, separate));
+                let separate = pr.bool("Use Separate Colors for Light and Dark Mode");
+                self.set_session_values(pane, &badge_color_values(crate::palette::rgb(c.r, c.g, c.b), separate));
             }
             Request::ColorPreset(name) => self.escape_preset(pane, &name),
             Request::NamedColor(name, c) => {
@@ -457,12 +457,12 @@ mod tests {
         assert_eq!(CHOOSE_COLOR, "Choose Color\u{2026}");
     }
 
-    /// TWEAKS 4a: SetColors badge writes the profile's badge color, alpha kept.
+    /// TWEAKS 4a: SetColors badge writes the session's badge color at alpha 1 (as iTerm2 does).
     #[test]
     fn badge_color_follows_iterm2() {
         use super::badge_color_values;
         let c = crate::palette::rgb(0x10, 0x20, 0x30);
-        let one = badge_color_values(c, 0.5, false);
+        let one = badge_color_values(c, false);
         assert_eq!(one.len(), 1);
         assert_eq!(one[0].0, "Badge Color");
         let p = {
@@ -471,8 +471,8 @@ mod tests {
             p
         };
         assert_eq!(p.color("Badge Color"), c);
-        assert!((p.alpha_for("Badge Color", false) - 0.5).abs() < 1e-6);
-        let all: Vec<String> = badge_color_values(c, 1.0, true).into_iter().map(|(k, _)| k).collect();
+        assert!((p.alpha_for("Badge Color", false) - 1.0).abs() < 1e-6, "iTerm2 writes the color dictionary at alpha 1");
+        let all: Vec<String> = badge_color_values(c, true).into_iter().map(|(k, _)| k).collect();
         assert_eq!(all, ["Badge Color", "Badge Color (Dark)", "Badge Color (Light)"]);
     }
 
