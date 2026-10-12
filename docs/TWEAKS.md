@@ -67,6 +67,14 @@ Each item says what is wrong, what it should do, and where it was seen.
    (b) Browser Save Page As has no SSH destination (13x4 ruling). Recorded by the 13y2 parity
    sweep.
 
+8. **Tandem stays running with no window.** On EXTREME, tandem.exe (started from Explorer at
+   17:00 on 2026-10-11) and its tandem-host.exe were still running at 22:10 with no window
+   (MainWindowHandle 0), so the installer refused to replace them ("Tandem is running"). Robert
+   had no Tandem window open. Expected: when the last window closes, Tandem exits (unless a
+   setting like a hotkey window or "stay running" asks it not to, and then it shows that it is
+   still running, e.g. in the tray). tandem-host.exe exited a few seconds after tandem.exe was
+   stopped. Seen 2026-10-11.
+
 ## In progress
 
 (none)
