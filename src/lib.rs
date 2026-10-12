@@ -446,6 +446,8 @@ pub mod ssh_clock;
 pub mod side_channel;
 #[cfg(test)]
 pub mod ssh_fixtures;
+#[cfg(test)]
+mod parity_audit;
 pub mod tmux_proto;
 pub mod tmux_gateway;
 pub mod tmux_handshake;

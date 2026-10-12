@@ -27,6 +27,17 @@ Each item says what is wrong, what it should do, and where it was seen.
    found no terminal or developer tool using any of them (not a trademark search). Decide the
    name before this rename, so the menus change only once.
 
+3. **OSC 22: a program sets the mouse pointer shape.** iTerm2 supports it
+   (VT100XtermParser.m:291, VT100Terminal.m:2723, PTYSession.m:18420). Tandem has no parser entry
+   and no pointer-name map, so a program cannot change the pointer over its pane. It should parse
+   OSC 22 (and the reset form), map X11 cursor names to `pointer_shape`, and reset on pane leave
+   and on a terminal reset. Recorded by 13j and 13y2 Task 10 (parity 03, OSC 22 row).
+
+4. **Three terminal sequences are partial.** (a) `OSC 1337 ; SetColors` does not set the badge
+   color; (b) `OSC 1337 ; ExecFailed` keeps its flag but draws no session-ended message; (c) `OSC
+   21337` (tab status) keeps the dot, text and priority but raises no notification and no taskbar
+   badge. Each is a small change in the module that owns it. Recorded by 13y2 Task 10 (parity 03).
+
 ## In progress
 
 1. **"Jump List: Access is denied. (0x80070005)" red banner.** Cause: EXTREME has "Show

@@ -33,7 +33,7 @@ pub const DISABLED_UNDER_UV: &[&str] = &["installAlreadyDownloadedPythonRuntime:
 
 /// Commands that work now. "selector|Label" names one item of a shared selector.
 pub const DONE: &[&str] = &[
-    "showAbout:", "showPrefWindow:", "checkForUpdatesFromMenu:", "showTipOfTheDay:", "copyModeShortcuts:", "openSourceLicenses:", "terminate:", "hide:", "newSession:", "newSessionAlternate:",
+    "showAbout:", "filter:", "zoomOnSelection:", "showPrefWindow:", "checkForUpdatesFromMenu:", "showTipOfTheDay:", "copyModeShortcuts:", "openSourceLicenses:", "terminate:", "hide:", "newSession:", "newSessionAlternate:",
     "newSessionWithSameProfile:", "duplicateTab:", "splitHorizontally:", "splitVertically:",
     "openSplitHorizontallySheet:", "openSplitVerticallySheet:", "saveContents:", "saveDocumentAs:",
     "closeCurrentSession:", "closeTerminalWindow:", "closeCurrentTab:", "copy:", "paste:|Paste",
@@ -93,6 +93,17 @@ pub const DONE: &[&str] = &[
 
 /// Commands that will not be built, with the reason (rulings 3 and 4 of milestone 14).
 const NOT_APPLICABLE: &[(&str, &str)] = &[
+    (
+        "pairCompanionDevice:",
+        "iTerm2's companion is a proprietary iPhone pairing over its relay, with no Windows host story; the item stays hidden, as iTerm2 hides it unless pairing is allowed.",
+    ),
+    ("hideOtherApplications:", "macOS hides other applications; Windows has no such command."),
+    ("unhideAllApplications:", "macOS unhides applications; Windows has no such command."),
+    ("toggleSecureInput:", "macOS Secure Keyboard Entry (EnableSecureEventInput); Windows has no equivalent mode."),
+    (
+        "installAlreadyDownloadedPythonRuntime:",
+        "Disabled, as iTerm2 does under its default uv setting; Tandem always provisions Python through uv.",
+    ),
     (
         "toggleRemoteHostCanControlIterm2:",
         "Milestone 11 did not port the it2 command tree, so there is nothing for a remote host to control.",
