@@ -38,6 +38,14 @@ Each item says what is wrong, what it should do, and where it was seen.
    21337` (tab status) keeps the dot, text and priority but raises no notification and no taskbar
    badge. Each is a small change in the module that owns it. Recorded by 13y2 Task 10 (parity 03).
 
+5. **Hotkey-window routing for a launch URL.** iTerm2 opens a URL launch in a hotkey window
+   when one fits (AD:2311-2322); Tandem opens it in a normal window. Recorded by the 13y2
+   carried pass.
+
+6. **Other apps' link schemes (`vscode:`, `slack:`).** iTerm2 asks once and remembers; Tandem
+   refuses them. Needs a ruling from Robert on the question and a deny list. Recorded by the
+   13y2 carried pass.
+
 ## In progress
 
 1. **"Jump List: Access is denied. (0x80070005)" red banner.** Cause: EXTREME has "Show
