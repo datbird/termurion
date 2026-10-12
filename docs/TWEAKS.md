@@ -95,9 +95,11 @@ Each item says what is wrong, what it should do, and where it was seen.
    a5633ab; Robert's ruling): asked once per scheme with Always, Once or Never, naming the app
    Windows registered (AssocQueryStringW, never link text); Always and Never are kept in the settings
    LinkSchemesAlways and LinkSchemesNever (Advanced > General, editable); a fixed blocked list
-   (ms-msdt, search-ms, file, javascript, ms-settings and others, plus ms-word/excel/powerpoint
-   ofe|ofv) never opens; no registered app, or a cmd, powershell, wscript, mshta or rundll32 app,
-   is refused; launched by ShellExecuteW with the encoded URL as the one file argument. m13v1
+   (ms-msdt, search-ms, file, javascript, ms-settings, the whole Office family, jnlp,
+   microsoft-edge and others, one table with reasons) never opens; no registered app, a handler
+   that is not a .exe (resolved with ASSOCSTR_EXECUTABLE), or a cmd, powershell, wscript, mshta or
+   rundll32 app, is refused; the two lists stay local (never synced or imported); ftp, ssh, telnet,
+   x-man-page, iterm2 and tandem stay Tandem's own (security review fixes I1 to I4); launched by ShellExecuteW with the encoded URL as the one file argument. m13v1
    ruling updated.
 
 7a. **Selection helpers in the terminal context menu.** Done 2026-10-12 (tw-small, 13cae8b).
