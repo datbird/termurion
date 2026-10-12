@@ -10,6 +10,12 @@ use crate::warnings::{Kind, Spec};
 pub const ALWAYS_KEY: &str = "LinkSchemesAlways";
 pub const NEVER_KEY: &str = "LinkSchemesNever";
 
+/// Whether `key` is one of the two lists a person's answers fill. They are consent, so they stay on
+/// this machine: no custom folder, URL, import or Toggle Setting carries them (TWEAKS 6 review I2).
+pub fn stays_local(key: &str) -> bool {
+    key == ALWAYS_KEY || key == NEVER_KEY
+}
+
 /// Schemes no choice can open, each with its reason: they run code, read a local or remote file, or
 /// reach a shell namespace through the handler Windows registers for them. One table (TWEAKS 6 review I3).
 pub const BLOCKED: &[(&str, &str)] = &[
@@ -216,6 +222,23 @@ mod tests {
             assert!(matches!(decide(url, &app("A", "\"C:\\a.exe\" \"%1\""), &s, ""), Plan::Refuse(_)), "{url} even with Always");
         }
         assert!(BLOCKED.iter().all(|(s, why)| !why.is_empty() && *s == s.to_ascii_lowercase()), "one table, a reason each");
+    }
+
+    #[test]
+    fn the_choice_lists_stay_local() {
+        for key in [ALWAYS_KEY, NEVER_KEY] {
+            assert!(!crate::remote_prefs::syncable(key), "{key} syncs");
+            assert!(!crate::ai_settings::toggle_allowed(key), "{key} toggles");
+        }
+        let dir = std::env::temp_dir().join(format!("tandem-linkscheme-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p.plist");
+        std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>LinkSchemesAlways</key><string>vscode</string><key>LinkSchemesNever</key><string>slack</string><key>FocusFollowsMouse</key><true/></dict></plist>"#).unwrap();
+        let got = crate::import::globals_from_file(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let keys: Vec<&str> = got.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"FocusFollowsMouse") && !keys.contains(&ALWAYS_KEY) && !keys.contains(&NEVER_KEY), "{keys:?}");
     }
 
     #[test]
