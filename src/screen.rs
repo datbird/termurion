@@ -485,6 +485,8 @@ pub enum Request {
     RequestUpload(String),
     /// SetColors `tab`: the pane's tab color, or back to none.
     TabColor(Option<alacritty_terminal::vte::ansi::Rgb>),
+    /// SetColors `badge`: the session's badge color.
+    BadgeColor(alacritty_terminal::vte::ansi::Rgb),
     /// SetColors `preset=Name`: load the named color preset into this pane.
     ColorPreset(String),
     /// A SetColors named color that came after a pending preset: applied in order after it.
@@ -587,6 +589,9 @@ pub(crate) struct PendingColors {
     colors: [Option<crate::osc1337::Color>; 25],
     tab_before: Option<Option<alacritty_terminal::vte::ansi::Rgb>>,
     tab_after: Option<Option<alacritty_terminal::vte::ansi::Rgb>>,
+    /// The latest `badge=` on each side of the preset, as the tab color is kept.
+    badge_before: Option<alacritty_terminal::vte::ansi::Rgb>,
+    badge_after: Option<alacritty_terminal::vte::ansi::Rgb>,
 }
 
 impl PendingColors {
@@ -1866,6 +1871,7 @@ impl Screen {
         let pending = std::mem::take(&mut self.pending);
         let mut out = std::mem::take(&mut self.requests);
         out.extend(pending.tab_before.map(Request::TabColor));
+        out.extend(pending.badge_before.map(Request::BadgeColor));
         if let Some(name) = pending.preset {
             out.push(Request::ColorPreset(name));
             for (slot, c) in pending.colors.into_iter().enumerate() {
@@ -1875,6 +1881,7 @@ impl Screen {
             }
         }
         out.extend(pending.tab_after.map(Request::TabColor));
+        out.extend(pending.badge_after.map(Request::BadgeColor));
         out
     }
 
@@ -1899,6 +1906,18 @@ impl Screen {
         }
     }
 
+    /// A SetColors `badge=`: the latest one is kept, before or after a pending preset (the preset
+    /// carries a badge color of its own, so stream order matters).
+    pub(crate) fn queue_badge_color(&mut self, c: alacritty_terminal::vte::ansi::Rgb) {
+        #[cfg(test)]
+        pending_work(1);
+        if self.pending.preset.is_some() {
+            self.pending.badge_after = Some(c);
+        } else {
+            self.pending.badge_before = Some(c);
+        }
+    }
+
     /// Queues a preset load. An earlier pending load and the colors behind it come before this
     /// one in the stream, so they are dropped (this preset overwrites its colors); a tab color
     /// set after that load becomes one set before this one.
@@ -1907,6 +1926,7 @@ impl Screen {
         pending_work(1);
         let p = &mut self.pending;
         p.tab_before = p.tab_after.take().or(p.tab_before.take());
+        p.badge_before = p.badge_after.take().or(p.badge_before.take());
         p.colors = [None; 25];
         p.preset = Some(name);
     }

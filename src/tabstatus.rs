@@ -233,6 +233,30 @@ mod tests {
         assert_eq!(other.tab_status.background_tasks, 0);
     }
 
+    /// TWEAKS 4c: an OSC 21337 status is the one the pass in `tick_status_change` reads, so it
+    /// raises the pattern notification (`should_notify`) and the taskbar count (`is_waiting`)
+    /// as a Set Tab Status trigger's does. (The parity note called both missing; they were wired
+    /// in the Session Status tool and never recorded.)
+    #[test]
+    fn osc_21337_status_reaches_the_notification_and_the_badge() {
+        let mut sc = Screen::new(20, 4);
+        sc.feed(b"\x1b]21337;status=Waiting for input\x07");
+        let text = sc.tab_status.status.clone();
+        assert_eq!(text.as_deref(), Some("Waiting for input"));
+        let pats = crate::status_tool::load_patterns(None, None);
+        let names: Vec<&str> = pats.iter().map(|p| p.pattern.as_str()).collect();
+        assert!(crate::bell_badge::is_waiting(text.as_deref(), &names), "the highest-priority pattern counts on the taskbar");
+        let notify = [crate::status_tool::Pattern { pattern: "waiting".into(), notify: true }];
+        assert!(crate::status_tool::should_notify(text.as_deref(), &notify), "a pattern flagged to notify raises one");
+        let alerts = include_str!("app/alerts_ui.rs");
+        let tick = &alerts[alerts.find("fn tick_status_change").unwrap()..];
+        let tick = &tick[..tick.find("\n    }\n").unwrap()];
+        assert!(tick.contains("p.own().tab_status.status") && tick.contains("bell_badge::is_waiting") && tick.contains("self.status_changes(&changes)"));
+        let more = include_str!("app/toolbelt_more_ui.rs");
+        let changes = &more[more.find("fn status_changes").unwrap()..];
+        assert!(changes[..changes.find("\n    }\n").unwrap()].contains("should_notify") && changes.contains("notify::show_with"));
+    }
+
     #[test]
     fn prompt_start_clears_status() {
         let mut sc = Screen::new(20, 4);

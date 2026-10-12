@@ -1673,6 +1673,11 @@ impl Screen {
                                 let c = self.palette.indexed(i);
                                 self.queue_tab_color(Some(c));
                             }
+                            ("badge", Some(crate::osc1337::Color::Rgb(c))) => self.queue_badge_color(c),
+                            ("badge", Some(crate::osc1337::Color::Index(i))) => {
+                                let c = self.palette.indexed(i);
+                                self.queue_badge_color(c);
+                            }
                             // iTerm2 pauses the stream for a preset: colors after a pending one apply
                             // after it, in order (the window's handler).
                             (_, Some(c)) if self.pending.preset_pending() => self.queue_color_after_preset(&name, c),
@@ -1864,6 +1869,35 @@ mod tests {
                 _ => {}
             }
         }
+    }
+
+    /// TWEAKS 4a: `SetColors=badge=` is a request for the session's badge color (it lives in the
+    /// profile, not the palette), in stream order with a preset, bounded, and bad values ignored.
+    #[test]
+    fn set_colors_badge_is_a_request() {
+        use alacritty_terminal::vte::ansi::Rgb;
+        let orange = Rgb { r: 255, g: 128, b: 0 };
+        let mut s = Screen::new(40, 10);
+        s.feed(b"\x1b]1337;SetColors=badge=ff8000\x07");
+        assert_eq!(s.take_requests(), vec![Request::BadgeColor(orange)]);
+        s.feed(b"\x1b]1337;SetColors=badge=i:4\x07");
+        let want = s.palette.ansi[4];
+        assert_eq!(s.take_requests(), vec![Request::BadgeColor(want)]);
+        for bad in ["badge=zzz", "badge=", "badge=i:999"] {
+            s.feed(format!("\x1b]1337;SetColors={bad}\x07").as_bytes());
+            assert!(s.take_requests().is_empty(), "{bad}");
+        }
+        // Before a preset the preset's own badge color wins; after it the program's does.
+        s.feed(b"\x1b]1337;SetColors=badge=ff8000\x07\x1b]1337;SetColors=preset=Tango Dark\x07\x1b]1337;SetColors=badge=102030\x07");
+        let reqs = s.take_requests();
+        let at = |f: &dyn Fn(&Request) -> bool| reqs.iter().position(f).unwrap();
+        assert!(at(&|r| *r == Request::BadgeColor(orange)) < at(&|r| matches!(r, Request::ColorPreset(_))));
+        assert!(at(&|r| matches!(r, Request::ColorPreset(_))) < at(&|r| *r == Request::BadgeColor(Rgb { r: 0x10, g: 0x20, b: 0x30 })));
+        // A flood keeps one request on each side.
+        for i in 0..5000u32 {
+            s.feed(format!("\x1b]1337;SetColors=badge={:06x}\x07\x1b]1337;SetColors=preset=Tango Dark\x07", i).as_bytes());
+        }
+        assert!(s.take_requests().iter().filter(|r| matches!(r, Request::BadgeColor(_))).count() <= 2);
     }
 
     /// iTerm2 pauses the stream for a preset, so SetColors after it (in the same payload or the

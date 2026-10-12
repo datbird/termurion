@@ -35,6 +35,20 @@ pub(super) fn tab_color_values(color: Option<crate::palette::Rgb>, separate: boo
     values
 }
 
+/// The session values `SetColors=badge=...` writes (`screenSetColor:profileKey:` on the badge
+/// key): "Badge Color" with the profile's own alpha kept (the sequence names a color, not a
+/// transparency), and with `separate` the Dark and Light variants too, as the tab color does.
+pub(super) fn badge_color_values(color: crate::palette::Rgb, alpha: f32, separate: bool) -> Vec<(String, Option<toml::Value>)> {
+    let mut v = match crate::profile::color_value(color) {
+        toml::Value::Table(t) => t,
+        other => return vec![("Badge Color".to_string(), Some(other))],
+    };
+    v.insert("a".into(), toml::Value::Float(f64::from(alpha)));
+    let value = toml::Value::Table(v);
+    let keys = if separate { vec!["Badge Color".to_string(), "Badge Color (Dark)".into(), "Badge Color (Light)".into()] } else { vec!["Badge Color".to_string()] };
+    keys.into_iter().map(|k| (k, Some(value.clone()))).collect()
+}
+
 /// The tooltip of a tab (`PT:8701-8723`): "Name", "Profile" and "Command" lines, the name
 /// the tab's label (`tab_label`) without HTML when `html`, the profile the saved original's
 /// name for a session copy (`original_name`) else the profile's own, and "None" for no
@@ -147,6 +161,11 @@ impl App {
                     None => self.tab_colors.remove(&pane),
                 };
                 self.redraw();
+            }
+            Request::BadgeColor(c) => {
+                let Some(pr) = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)) else { return };
+                let (separate, alpha) = (pr.bool("Use Separate Colors for Light and Dark Mode"), pr.alpha_for("Badge Color", self.dark()));
+                self.set_session_values(pane, &badge_color_values(crate::palette::rgb(c.r, c.g, c.b), alpha, separate));
             }
             Request::ColorPreset(name) => self.escape_preset(pane, &name),
             Request::NamedColor(name, c) => {
@@ -436,6 +455,25 @@ mod tests {
         assert_eq!(tab_color_values(None, true), vec![f("Use Tab Color"), f("Use Tab Color (Dark)"), f("Use Tab Color (Light)")]);
         assert_eq!(NO_COLOR, "Default");
         assert_eq!(CHOOSE_COLOR, "Choose Color\u{2026}");
+    }
+
+    /// TWEAKS 4a: SetColors badge writes the profile's badge color, alpha kept.
+    #[test]
+    fn badge_color_follows_iterm2() {
+        use super::badge_color_values;
+        let c = crate::palette::rgb(0x10, 0x20, 0x30);
+        let one = badge_color_values(c, 0.5, false);
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].0, "Badge Color");
+        let p = {
+            let mut p = crate::profile::Profile::default();
+            p.set("Badge Color", one[0].1.clone().unwrap());
+            p
+        };
+        assert_eq!(p.color("Badge Color"), c);
+        assert!((p.alpha_for("Badge Color", false) - 0.5).abs() < 1e-6);
+        let all: Vec<String> = badge_color_values(c, 1.0, true).into_iter().map(|(k, _)| k).collect();
+        assert_eq!(all, ["Badge Color", "Badge Color (Dark)", "Badge Color (Light)"]);
     }
 
     #[test]

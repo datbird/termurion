@@ -44,6 +44,7 @@ impl App {
             hold_open: p.hold_open,
             // A restored archive's panes ended long ago.
             archived: p.archived,
+            exec_failed: p.exec_failed,
             lived: p.created_at.elapsed(),
             limit_seconds: self.globals.number("ShortLivedSessionDuration").unwrap_or(3.0),
         };
@@ -124,6 +125,9 @@ impl App {
         p.inline_paused_off();
         // Logging stops with the session (`cleanUpAfterBrokenPipe`, `PS:4728`).
         p.stop_log();
+        // ExecFailed is read first: ending the program's state clears it from the screen, and the
+        // end bar and the short-lived warning still need it (`_execDidFail`).
+        p.exec_failed = p.own().exec_failed;
         // Everything bound to the program goes; the message below is written to the pane's own
         // screen, never a Filter or Zoom view or a replay frame (B9).
         p.own_mut().program_ended();
@@ -217,7 +221,8 @@ impl App {
 
     /// The restart offer: "Session ended (command exited). Restart it?" (`NC:318-327`).
     pub(super) fn offer_restart(&mut self, id: PaneId) {
-        self.ask(id, se::RESTART_BAR, se::RESTART_OFFER, &[se::RESTART, se::DONT_ASK_AGAIN], true);
+        let text = se::offer_text(self.panes.get(&id).is_some_and(|p| p.exec_failed));
+        self.ask(id, se::RESTART_BAR, text, &[se::RESTART, se::DONT_ASK_AGAIN], true);
     }
 
     /// The timer pass of the Restart end action: each pane whose second is up restarts, if it is
@@ -479,6 +484,16 @@ mod tests {
         assert!(run.contains("self.store.default_profile().int(crate::session_end::END_ACTION_KEY)"), "the default profile's value");
         assert!(run.contains("run_window_single_use(owner, end)"));
         assert!(!run.contains("SingleUse {"), "one constructor");
+    }
+
+    /// TWEAKS 4b: `ExecFailed` is read before the program's state ends (program_ended clears it),
+    /// kept on the pane, and the offer bar says "Session failed to start.".
+    #[test]
+    fn a_failed_exec_is_read_before_the_program_ends() {
+        let ended = body(include_str!("session_end_ui.rs"), "pub(super) fn session_exited(");
+        let read = ended.find("exec_failed = ").expect("the flag is copied to the pane");
+        assert!(read < ended.find("program_ended()").unwrap(), "read before program_ended clears it");
+        assert!(body(include_str!("session_end_ui.rs"), "pub(super) fn offer_restart(").contains("offer_text("));
     }
 
     /// 13q restart_via x 13r Run Command in Window: every route (menu, bar, timer, API, AI tool)

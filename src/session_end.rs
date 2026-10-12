@@ -151,6 +151,12 @@ pub const SESSION_RESTARTED_DEFAULT: &str = "Session Restarted";
 pub const FINISHED_DEFAULT: &str = "Finished";
 pub const RESTART_OFFER: &str = "Session ended (command exited). Restart it?";
 pub const FAILED_TO_START: &str = "Session failed to start.";
+
+/// The words of the bar an ended session offers (`sessionEndedWithExecFailure:`, `NC:318-327`): a
+/// command that never started says so; otherwise the restart question.
+pub fn offer_text(exec_failed: bool) -> &'static str {
+    if exec_failed { FAILED_TO_START } else { RESTART_OFFER }
+}
 pub const RESTART: &str = "Restart";
 pub const DONT_ASK_AGAIN: &str = "Don\u{2019}t Ask Again";
 pub const TMUX_CLOSE_QUESTION: &str = "Close tmux windows after detaching?";
@@ -231,6 +237,8 @@ pub struct CloseFacts {
     pub read_only: bool,
     pub hold_open: bool,
     pub archived: bool,
+    /// The program sent `ExecFailed`: the person must be able to read the error (`PS:3896`).
+    pub exec_failed: bool,
     pub lived: Duration,
     pub limit_seconds: f64,
 }
@@ -238,7 +246,7 @@ pub struct CloseFacts {
 /// Whether closing the pane warns (`PS:3748-3822`, `PS:3887-3898`): an ended session that is not
 /// single-use, tmux, a recording, a kept-open pane or an archive, and lived under the limit.
 pub fn short_lived_due(f: CloseFacts) -> bool {
-    f.exited && !f.single_use && !f.tmux && !f.read_only && !f.hold_open && !f.archived && short_lived(f.lived, f.limit_seconds)
+    f.exited && !f.single_use && !f.tmux && !f.read_only && !f.hold_open && !f.archived && !f.exec_failed && short_lived(f.lived, f.limit_seconds)
 }
 
 /// The write of the Settings check box "Warn about short-lived sessions" (`PSV:391-446`):
@@ -497,7 +505,7 @@ mod tests {
 
     #[test]
     fn short_lived_is_due_only_for_a_plain_ended_session() {
-        let base = CloseFacts { exited: true, single_use: false, tmux: false, read_only: false, hold_open: false, archived: false, lived: Duration::from_secs(1), limit_seconds: 3.0 };
+        let base = CloseFacts { exited: true, single_use: false, tmux: false, read_only: false, hold_open: false, archived: false, exec_failed: false, lived: Duration::from_secs(1), limit_seconds: 3.0 };
         assert!(short_lived_due(base));
         assert!(!short_lived_due(CloseFacts { exited: false, ..base }));
         assert!(!short_lived_due(CloseFacts { single_use: true, ..base }));
@@ -505,6 +513,7 @@ mod tests {
         assert!(!short_lived_due(CloseFacts { read_only: true, ..base }));
         assert!(!short_lived_due(CloseFacts { hold_open: true, ..base }));
         assert!(!short_lived_due(CloseFacts { archived: true, ..base }));
+        assert!(!short_lived_due(CloseFacts { exec_failed: true, ..base }), "a failed exec keeps the error readable");
         assert!(!short_lived_due(CloseFacts { lived: Duration::from_secs(3), ..base }));
     }
 
@@ -554,6 +563,13 @@ mod tests {
         assert_eq!((spec.id.clone(), spec.kind), (None, Kind::Persistent));
         assert_eq!(checkbox_label(&spec), None);
         assert_eq!(restart_survivors_spec(&["a.exe".to_string()]).text, "1 program is still running: a.exe. Restarting ends it.");
+    }
+
+    /// TWEAKS 4b: `ExecFailed` draws iTerm2's "Session failed to start." in place of the restart question.
+    #[test]
+    fn a_failed_exec_has_its_own_message() {
+        assert_eq!(offer_text(true), "Session failed to start.");
+        assert_eq!(offer_text(false), "Session ended (command exited). Restart it?");
     }
 
     #[test]
