@@ -185,6 +185,10 @@ pub trait SchemeRegistry {
     fn handler_command(&self, scheme: &str) -> Option<String>;
     /// The effective handler's friendly name, None when it has none.
     fn handler_name(&self, scheme: &str) -> Option<String>;
+    /// The effective handler's program as a full path (`ASSOCSTR_EXECUTABLE`), None when Windows names none.
+    fn handler_exe(&self, _scheme: &str) -> Option<String> {
+        None
+    }
     /// The ProgId of the protected user choice for the scheme (read only).
     fn user_choice(&self, scheme: &str) -> Option<String>;
     /// The command of `HKCU\Software\Classes\<scheme>\shell\open\command`, the entry Tandem's OK
@@ -516,6 +520,11 @@ impl SchemeRegistry for WinRegistry {
     fn handler_name(&self, scheme: &str) -> Option<String> {
         use windows_sys::Win32::UI::Shell::ASSOCSTR_FRIENDLYAPPNAME;
         Self::assoc(scheme, ASSOCSTR_FRIENDLYAPPNAME)
+    }
+
+    fn handler_exe(&self, scheme: &str) -> Option<String> {
+        use windows_sys::Win32::UI::Shell::ASSOCSTR_EXECUTABLE;
+        Self::assoc(scheme, ASSOCSTR_EXECUTABLE)
     }
 
     fn user_choice(&self, scheme: &str) -> Option<String> {

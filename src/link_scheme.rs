@@ -76,8 +76,12 @@ pub const BLOCKED: &[(&str, &str)] = &[
 /// profile); `x-man-page` is macOS only; `iterm2` is the app's internal link scheme; `tandem` is Tandem's own.
 pub const OWN: &[&str] = &["ftp", "ssh", "telnet", "x-man-page", "iterm2", "tandem"];
 
-/// Programs that read their argument as script: a scheme whose handler is one is refused.
-pub const BAD_HANDLERS: &[&str] = &["cmd", "powershell", "pwsh", "wscript", "cscript", "mshta", "rundll32", "regsvr32", "wsl", "bash", "msiexec", "forfiles", "msbuild"];
+/// Programs that read their argument as script, or that run what they are given: a scheme whose handler
+/// is one is refused. Compared by file name stem, lowercase, after the path is resolved.
+pub const BAD_HANDLERS: &[&str] = &[
+    "cmd", "powershell", "powershell_ise", "pwsh", "wscript", "cscript", "mshta", "rundll32", "regsvr32", "conhost", "wsl", "bash", "sh", "msiexec", "installutil", "msbuild", "forfiles", "hh", "wt",
+    "explorer", "msdt", "control", "mmc", "cmstp", "regasm", "regsvcs", "odbcconf", "pcalua", "msxsl", "wmic", "javaws",
+];
 
 /// The longest URL handed to an app.
 pub const MAX_URL: usize = 2048;
@@ -89,6 +93,9 @@ pub struct Handler {
     pub name: Option<String>,
     /// Its `shell\open\command` line; None when no app is registered.
     pub command: Option<String>,
+    /// The program's full path (`ASSOCSTR_EXECUTABLE`, quotes and spaces already handled); None when Windows
+    /// cannot name one. The command line is never parsed for the program (TWEAKS 6 review I1).
+    pub exe: Option<String>,
 }
 
 /// What to do with a link.
@@ -121,16 +128,23 @@ pub fn screen(scheme: &str, url: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The file stem of a registered command's program (`"C:\App\app.exe" "%1"` gives `app`), lowercase.
-pub fn program_stem(command: &str) -> Option<String> {
-    let c = command.trim();
-    let program = match c.strip_prefix('"') {
-        Some(rest) => rest.split('"').next()?,
-        None => c.split_whitespace().next()?,
+/// The lowercase file stem of a resolved executable path (`"C:\App\app.exe"` gives `app`), or why it is
+/// refused: not an absolute path (an unexpanded `%ComSpec%`, a bare name), not a `.exe`, or an interpreter.
+pub fn exe_stem(exe: &str) -> Result<String, String> {
+    let path = exe.trim().trim_matches('"');
+    let bytes = path.as_bytes();
+    let absolute = bytes.len() > 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/');
+    if !absolute || path.contains('%') {
+        return Err("Windows did not name the app's program".into());
+    }
+    let file = path.rsplit(['\\', '/']).next().unwrap_or("").to_ascii_lowercase();
+    let Some(stem) = file.strip_suffix(".exe").filter(|s| !s.is_empty()) else {
+        return Err("the app is not an .exe program".into());
     };
-    let file = program.rsplit(['\\', '/']).next()?;
-    let stem = file.rsplit_once('.').map_or(file, |(s, _)| s);
-    (!stem.is_empty()).then(|| stem.to_ascii_lowercase())
+    if BAD_HANDLERS.contains(&stem) {
+        return Err("the app runs commands".into());
+    }
+    Ok(stem.to_string())
 }
 
 /// The plan for `url` given the registered app and the person's two lists.
@@ -142,12 +156,14 @@ pub fn decide(url: &str, handler: &Handler, always: &str, never: &str) -> Plan {
     if listed(never, &scheme) {
         return Plan::Refuse(format!("{scheme}: links are set to Never open (Settings > Advanced > Link schemes never opened)."));
     }
-    let Some(stem) = handler.command.as_deref().and_then(program_stem) else {
+    if handler.command.is_none() {
         return Plan::Refuse(format!("No app is registered for {scheme}: links."));
-    };
-    if BAD_HANDLERS.contains(&stem.as_str()) {
-        return Plan::Refuse(format!("The app registered for {scheme}: links runs commands, so Tandem does not open them."));
     }
+    let stem = match handler.exe.as_deref().map(exe_stem) {
+        Some(Ok(stem)) => stem,
+        Some(Err(why)) => return Plan::Refuse(format!("Tandem does not open {scheme}: links: {why}.")),
+        None => return Plan::Refuse(format!("Tandem does not open {scheme}: links: Windows did not name the app's program.")),
+    };
     if listed(always, &scheme) {
         return Plan::Open;
     }
@@ -186,8 +202,13 @@ pub fn question(scheme: &str, app: &str) -> Spec {
 mod tests {
     use super::*;
 
-    fn app(name: &str, cmd: &str) -> Handler {
-        Handler { name: Some(name.into()), command: Some(cmd.into()) }
+    /// A registered app whose executable (ASSOCSTR_EXECUTABLE) is `exe` and whose command line is `cmd`.
+    fn app_cmd(name: &str, exe: &str, cmd: &str) -> Handler {
+        Handler { name: Some(name.into()), command: Some(cmd.into()), exe: Some(exe.into()) }
+    }
+
+    fn app(name: &str, exe: &str) -> Handler {
+        app_cmd(name, exe, &format!("\"{exe}\" \"%1\""))
     }
 
     #[test]
@@ -205,7 +226,7 @@ mod tests {
         for s in ["ms-msdt", "search-ms", "search", "ms-officecmd", "file", "javascript", "vbscript", "data", "shell", "mk", "its", "ms-its", "hcp", "ldap", "res", "jar", "ms-settings", "ms-appinstaller"] {
             assert!(screen(s, &format!("{s}:x")).is_err(), "{s}");
             // Not even Always opens it.
-            assert!(matches!(decide(&format!("{s}:x"), &app("A", "\"C:\\a.exe\" \"%1\""), s, ""), Plan::Refuse(_)), "{s}");
+            assert!(matches!(decide(&format!("{s}:x"), &app("A", "C:\\a.exe"), s, ""), Plan::Refuse(_)), "{s}");
         }
         for url in ["ms-word:ofe|u|https://h/x.docx", "MS-EXCEL:ofv|u|https://h/x", "ms-powerpoint:ofe%7Cu%7Chttps://h/x"] {
             assert!(screen(&scheme_of(url).unwrap(), url).is_err(), "{url}");
@@ -219,7 +240,7 @@ mod tests {
         for url in ["ms-word:https://h/x.docx", "ms-word:nft|u|https://h/t.dotm", "ms-excel:ofv|u|https://h/x", "ms-powerpoint:ofe%7Cu%7Chttps://h/x", "ms-visio:https://h/x", "ms-access:https://h/x", "ms-project:https://h/x", "ms-publisher:https://h/x", "ms-spd:https://h/x", "ms-infopath:https://h/x", "onenote:https://h/x.one", "ms-officecmd:x", "ms-officeapp:x", "jnlp://h/x.jnlp", "jnlps://h/x.jnlp", "microsoft-edge:file:///c:/x"] {
             let s = scheme_of(url).unwrap();
             assert!(screen(&s, url).is_err(), "{url}");
-            assert!(matches!(decide(url, &app("A", "\"C:\\a.exe\" \"%1\""), &s, ""), Plan::Refuse(_)), "{url} even with Always");
+            assert!(matches!(decide(url, &app("A", "C:\\a.exe"), &s, ""), Plan::Refuse(_)), "{url} even with Always");
         }
         assert!(BLOCKED.iter().all(|(s, why)| !why.is_empty() && *s == s.to_ascii_lowercase()), "one table, a reason each");
     }
@@ -245,21 +266,52 @@ mod tests {
     fn no_handler_and_interpreters_are_refused() {
         let none = Handler::default();
         assert!(matches!(decide("foo:x", &none, "foo", ""), Plan::Refuse(m) if m.contains("foo")));
-        for cmd in ["cmd.exe /c %1", "\"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -c %1", "C:\\Windows\\System32\\mshta.exe \"%1\"", "\"C:\\Windows\\system32\\RUNDLL32.EXE\" x,y %1", "wscript.exe %1"] {
-            assert!(matches!(decide("foo:x", &app("X", cmd), "foo", ""), Plan::Refuse(_)), "{cmd}");
+        // A command with no resolved executable is refused too.
+        let unresolved = Handler { name: None, command: Some("\"C:\\a.exe\" \"%1\"".into()), exe: None };
+        assert!(matches!(decide("foo:x", &unresolved, "foo", ""), Plan::Refuse(_)));
+        for exe in [
+            "C:\\Windows\\System32\\cmd.exe",
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+            "C:\\Windows\\System32\\mshta.exe",
+            "C:\\Windows\\system32\\RUNDLL32.EXE",
+            "C:\\Windows\\System32\\wscript.exe",
+            "C:\\Windows\\System32\\cscript.exe",
+            "C:\\Windows\\System32\\regsvr32.exe",
+            "C:\\Windows\\System32\\conhost.exe",
+            "C:\\Windows\\System32\\wsl.exe",
+            "C:\\Windows\\System32\\bash.exe",
+            "C:\\Windows\\System32\\msiexec.exe",
+            "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\InstallUtil.exe",
+            "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\MSBuild.exe",
+            "C:\\Windows\\System32\\forfiles.exe",
+            "C:\\Windows\\hh.exe",
+        ] {
+            assert!(matches!(decide("foo:x", &app("X", exe), "foo", ""), Plan::Refuse(_)), "{exe}");
         }
-        assert_eq!(program_stem("\"C:\\Program Files\\Code\\Code.exe\" --open-url -- \"%1\"").as_deref(), Some("code"));
-        assert_eq!(program_stem("C:\\x\\app.exe %1").as_deref(), Some("app"));
+        // Only a real .exe: scripts, shortcuts and the old executable types are refused.
+        for exe in ["C:\\x\\h.bat", "C:\\x\\h.cmd", "C:\\x\\h.com", "C:\\x\\h.pif", "C:\\x\\h.scr", "C:\\x\\h.vbs", "C:\\x\\h.js", "C:\\x\\h.ps1", "C:\\x\\h.lnk", "C:\\x\\h", "C:\\x\\h.exe.bat"] {
+            assert!(matches!(decide("foo:x", &app("X", exe), "foo", ""), Plan::Refuse(_)), "{exe}");
+        }
+        // The cases the command line gets wrong: a .bat run through cmd, an unquoted path with spaces,
+        // an unexpanded %ComSpec%.
+        assert!(matches!(decide("foo:x", &app_cmd("X", "C:\\x\\h.bat", "\"C:\\x\\h.bat\" \"%1\""), "foo", ""), Plan::Refuse(_)));
+        assert!(matches!(decide("foo:x", &app_cmd("X", "C:\\Program Files\\PowerShell\\7\\pwsh.exe", "C:\\Program Files\\PowerShell\\7\\pwsh.exe -c %1"), "foo", ""), Plan::Refuse(_)));
+        assert!(matches!(decide("foo:x", &app_cmd("X", "%ComSpec%", "%ComSpec% /c %1"), "foo", ""), Plan::Refuse(_)));
+        assert!(matches!(decide("foo:x", &app("X", "cmd.exe"), "foo", ""), Plan::Refuse(_)), "a bare name is not a resolved path");
+        // A normal app, in a folder with spaces and a quoted path, is asked about.
+        assert_eq!(exe_stem("\"C:\\Program Files\\Code\\Code.exe\"").as_deref(), Ok("code"));
+        assert_eq!(exe_stem("C:\\x\\App.EXE").as_deref(), Ok("app"));
     }
 
     #[test]
     fn ask_once_per_scheme_and_remember() {
-        let code = app("Visual Studio Code", "\"C:\\Code.exe\" \"%1\"");
+        let code = app("Visual Studio Code", "C:\\Code.exe");
         assert_eq!(decide("vscode://file/x", &code, "", ""), Plan::Ask { app: "Visual Studio Code".into() });
         assert_eq!(decide("vscode://file/x", &code, "slack vscode", ""), Plan::Open);
         assert!(matches!(decide("vscode://file/x", &code, "", "vscode"), Plan::Refuse(_)));
         assert!(matches!(decide("vscode://file/x", &code, "vscode", "vscode"), Plan::Refuse(_)), "Never wins");
-        assert_eq!(decide("vscode://file/x", &Handler { name: None, command: Some("\"C:\\Code.exe\" \"%1\"".into()) }, "", ""), Plan::Ask { app: "code".into() }, "the program, never link text");
+        assert_eq!(decide("vscode://file/x", &Handler { name: None, command: Some("\"C:\\Code.exe\" \"%1\"".into()), exe: Some("C:\\Code.exe".into()) }, "", ""), Plan::Ask { app: "code".into() }, "the program, never link text");
         assert!(listed("a  VSCode b", "vscode"));
         assert!(!listed("vscode2", "vscode"));
         assert_eq!(added("slack", "VSCode"), "slack vscode");
