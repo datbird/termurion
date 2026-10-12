@@ -9,6 +9,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum AppMode {
+    /// Follow Windows: the system's own mode drives `ShouldAppsUseDarkMode` (winit's check) and the menus.
+    AllowDark = 1,
     ForceDark = 2,
     ForceLight = 3,
 }
@@ -46,9 +48,16 @@ pub fn menu_dark(forced: Option<bool>, system_dark: bool, high_contrast: bool) -
     !high_contrast && forced.unwrap_or(system_dark)
 }
 
-/// The app mode for a menu decision.
-pub fn app_mode(dark: bool) -> AppMode {
-    if dark { AppMode::ForceDark } else { AppMode::ForceLight }
+/// The app mode for a menu decision. Only a fixed Theme forces one; with none, `AllowDark` keeps
+/// winit's own dark-mode check following Windows (title bar and terminal colors switch live with
+/// the menus). High contrast is light.
+pub fn app_mode(forced: Option<bool>, high_contrast: bool) -> AppMode {
+    match forced {
+        _ if high_contrast => AppMode::ForceLight,
+        Some(true) => AppMode::ForceDark,
+        Some(false) => AppMode::ForceLight,
+        None => AppMode::AllowDark,
+    }
 }
 
 /// Whether a `WM_SETTINGCHANGE` names the app mode change (its lParam string).
@@ -148,7 +157,7 @@ pub mod win {
     /// flushes the cached menu themes so the next popup uses the mode.
     pub fn apply(hwnd: isize, mode: AppMode) {
         let e = exports();
-        let dark = mode == AppMode::ForceDark;
+        let dark = mode != AppMode::ForceLight;
         // SAFETY: each export was found by its ordinal and takes the arguments given here.
         unsafe {
             if let Some(f) = e.allow_window {
@@ -221,10 +230,18 @@ mod tests {
 
     #[test]
     fn app_mode_forces_the_decision() {
-        assert_eq!(app_mode(true), AppMode::ForceDark);
-        assert_eq!(app_mode(false), AppMode::ForceLight);
+        assert_eq!(app_mode(Some(true), false), AppMode::ForceDark);
+        assert_eq!(app_mode(Some(false), false), AppMode::ForceLight);
         assert_eq!(AppMode::ForceDark as i32, 2);
         assert_eq!(AppMode::ForceLight as i32, 3);
+    }
+
+    #[test]
+    fn no_fixed_theme_allows_dark_so_winit_follows_windows() {
+        assert_eq!(app_mode(None, false), AppMode::AllowDark);
+        assert_eq!(AppMode::AllowDark as i32, 1);
+        assert_eq!(app_mode(None, true), AppMode::ForceLight);
+        assert_eq!(app_mode(Some(true), true), AppMode::ForceLight);
     }
 
     #[test]

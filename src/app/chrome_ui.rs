@@ -200,9 +200,11 @@ impl App {
     /// allowed dark, which winit never does, so the bar is always told Dark or Light). The
     /// drop-downs follow the process app mode, set here too.
     pub(super) fn apply_menu_theme(&mut self) {
-        let dark = crate::dark_menu::menu_dark(crate::tab_theme::forced_dark(self.tab_style()), crate::dark_menu::win::system_dark(), crate::tab_theme::system_high_contrast());
+        let forced = crate::tab_theme::forced_dark(self.tab_style());
+        let hc = crate::tab_theme::system_high_contrast();
+        let dark = crate::dark_menu::menu_dark(forced, crate::dark_menu::win::system_dark(), hc);
         let Some(hwnd) = self.hwnd() else { return };
-        crate::dark_menu::win::apply(hwnd, crate::dark_menu::app_mode(dark));
+        crate::dark_menu::win::apply(hwnd, crate::dark_menu::app_mode(forced, hc));
         if let Some(bar) = &self.menu_bar {
             let theme = if dark { muda::MenuTheme::Dark } else { muda::MenuTheme::Light };
             // SAFETY: the HWND is this window's, and the bar was attached to it.
