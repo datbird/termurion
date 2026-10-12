@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Termurion"><defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#141d3a"/><stop offset="1" stop-color="#0a0f1f"/></linearGradient>
+<linearGradient id="ring" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2fd4ff"/><stop offset="1" stop-color="#8a5cff"/></linearGradient>
+<radialGradient id="sun" cx="0.4" cy="0.4" r="0.7"><stop offset="0" stop-color="#fff3c4"/><stop offset="0.55" stop-color="#ffc24a"/><stop offset="1" stop-color="#ff8a2a"/></radialGradient>
+<linearGradient id="word" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#7fe6ff"/><stop offset="1" stop-color="#b79bff"/></linearGradient>
+<radialGradient id="sky" cx="0.5" cy="0.45" r="0.8"><stop offset="0" stop-color="#1a2348"/><stop offset="1" stop-color="#070b18"/></radialGradient></defs>
+<rect x="16" y="16" width="480" height="480" rx="108" fill="url(#bg)"/><g transform="rotate(-24 256 256)" fill="none" stroke="url(#ring)" stroke-linecap="round">
+  <ellipse cx="256" cy="256" rx="190" ry="86" stroke-width="12" opacity="0.6"/>
+  <ellipse cx="256" cy="256" rx="128" ry="56" stroke-width="14"/>
+</g>
+<circle cx="256" cy="256" r="46" fill="url(#sun)"/>
+<circle cx="374" cy="225" r="15" fill="#2fd4ff"/>
+<g transform="translate(81 302)">
+  <rect x="-58" y="-34" width="116" height="68" rx="20" fill="#0d1428" stroke="url(#ring)" stroke-width="8"/>
+  <path d="M-34 -16 L-12 0 L-34 16" fill="none" stroke="#e8f1ff" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="2" y="10" width="32" height="10" rx="5" fill="#2fd4ff"/>
+</g></svg>
