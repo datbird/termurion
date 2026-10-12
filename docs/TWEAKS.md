@@ -40,33 +40,17 @@ Each item says what is wrong, what it should do, and where it was seen.
    milestone with a pre-flight scan for every "tandem" string (case-insensitive) and a
    migration test, then a desktop probe.
 
-3. **OSC 22: a program sets the mouse pointer shape.** iTerm2 supports it
-   (VT100XtermParser.m:291, VT100Terminal.m:2723, PTYSession.m:18420). Tandem has no parser entry
-   and no pointer-name map, so a program cannot change the pointer over its pane. It should parse
-   OSC 22 (and the reset form), map X11 cursor names to `pointer_shape`, and reset on pane leave
-   and on a terminal reset. Recorded by 13j and 13y2 Task 10 (parity 03, OSC 22 row).
-
-4. **Three terminal sequences are partial.** (a) `OSC 1337 ; SetColors` does not set the badge
-   color; (b) `OSC 1337 ; ExecFailed` keeps its flag but draws no session-ended message; (c) `OSC
-   21337` (tab status) keeps the dot, text and priority but raises no notification and no taskbar
-   badge. Each is a small change in the module that owns it. Recorded by 13y2 Task 10 (parity 03).
-
-5. **Hotkey-window routing for a launch URL.** iTerm2 opens a URL launch in a hotkey window
-   when one fits (AD:2311-2322); Tandem opens it in a normal window. Recorded by the 13y2
-   carried pass.
-
 6. **Other apps' link schemes (`vscode:`, `slack:`).** iTerm2 opens any scheme
    (m13v1 ruling, item 6); Tandem refuses them by that deliberate security ruling. Changing it
    needs a ruling from Robert on the question and a deny list. Recorded by the
-   13y2 carried pass.
+   13y2 carried pass. Not started 2026-10-12 for that reason (tweaks progress.md has the
+   questions and the proposed design: confirm first, deny list, the one URL-open owner).
 
-7. **Two small gaps found by the 13y2 sweep.** (a) The selection helpers (numbers, dates,
-   colors, bytes, Base64, synonyms) and the Smart Selection actions that iTerm2 puts in a
-   terminal's context menu (`iTermTextViewContextMenuHelper.m:440-460`) show only in a browser
-   pane's menu; `src/ctx_help.rs` is pure and shared, so the terminal menu needs the call.
-   (b) Browser Save Page As has no SSH destination (13x4 ruling). Recorded by the 13y2 parity
-   sweep.
-
+7. **Browser Save Page As has no SSH destination (13x4 ruling).** Item 7 (a) is done (see Done).
+   (b) needs a design from Robert before code: a remote folder picker, an upload of a whole saved
+   folder (up to 2000 files, 256 MiB) over the SSH file machinery, and what stands in for the Mark
+   of the Web, create-new and cleanup guarantees the local saver has. Recorded by the 13y2 parity
+   sweep. Looked at 2026-10-12, not started (tweaks progress.md).
 8. **Tandem stays running with no window.** On EXTREME, tandem.exe (started from Explorer at
    17:00 on 2026-10-11) and its tandem-host.exe were still running at 22:10 with no window
    (MainWindowHandle 0), so the installer refused to replace them ("Tandem is running"). Robert
@@ -103,3 +87,19 @@ Each item says what is wrong, what it should do, and where it was seen.
    the custom Recents category and the whole Jump List commit fails. Done in 13y2 (13b7b50, retry
    in 634e998): the custom categories are skipped, the taskbar tasks stay, no banner. Seen
    2026-10-11. Checklist m13y2 row 22.
+
+3. **OSC 22: a program sets the mouse pointer shape.** Done 2026-10-12 (tw-small, 396cd06): the
+   23 X11 names iTerm2 knows map to pointer shapes (an exact table; an empty or unknown name puts
+   the default back, as iTerm2's lookup miss does); the shape replaces the I-beam and the
+   reporting ring over that pane; RIS, Reset and the program ending clear it.
+
+4. **Three terminal sequences were partial.** Done 2026-10-12 (tw-small, 62f70f5): (a) SetColors
+   `badge=` writes the session's Badge Color; (b) ExecFailed makes the end bar say "Session failed
+   to start." and closing raises no short-lived warning; (c) OSC 21337 already raised the pattern
+   notification and the taskbar count (wired through `tick_status_change` earlier, the note was
+   stale); a test pins it.
+
+5. **Hotkey-window routing for a launch URL.** Done 2026-10-12 (tw-small, 552a17f): an
+   ssh, telnet or ftp URL for a profile with a hotkey window opens there, as iTerm2's `getUrl`.
+
+7a. **Selection helpers in the terminal context menu.** Done 2026-10-12 (tw-small, 13cae8b).
