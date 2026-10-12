@@ -713,6 +713,42 @@ mod tests {
         assert!(prod.contains("remove_file(Self::state_path().with_file_name(crate::settings_export::STATE_IMPORTED))"), "Tandem's own state replaces it");
     }
 
+    /// 13y2 final review I1: a crafted named arrangement's buried member restored idle, saved into
+    /// Tandem's own state and restored from it at the next launch, runs nothing. The pane built idle is
+    /// held; its saved session carries the mark (with the arrangement's profile copy beside it); every
+    /// restore reads the mark before deciding; a start by the person makes a fresh pane, not held.
+    #[test]
+    fn a_member_restored_idle_is_saved_idle_and_restored_idle() {
+        use crate::workgroup::Mode;
+        // Restore: the named arrangement builds the member idle, and build_tab holds an idle build.
+        let mut crafted = toml::Table::new();
+        crafted.insert("Command".into(), Value::String("calc.exe".into()));
+        let named = wr::Inhibit::of(None, None, wr::member_inhibits(Mode::Regular, wr::foreign_restore(true, false, false)));
+        assert!(named.held(crate::arrangement::held_idle(&Value::Table(crafted.clone()))).with(false));
+        let arrange = include_str!("arrange_ui.rs");
+        let tab = body(arrange, "    pub(super) fn build_tab(");
+        assert!(tab.contains("let held = !archive && arrangement::held_idle(&session);"), "{tab}");
+        assert!(tab.contains("self.restore_inhibits(descriptor.as_ref()).held(held)"), "{tab}");
+        assert_eq!(tab.matches("self.start_held_idle_pane(area, guid.as_deref())").count(), 2, "both idle builds are held: {tab}");
+        assert!(!tab.contains("self.start_idle_pane("), "{tab}");
+        // Save: the held pane's session carries the mark, the member's and the shown pane's alike.
+        let mut pane = crate::pane::Pane::idle(1, 80, 24);
+        pane.held_idle = true;
+        let mut saved = Value::Table(crafted);
+        super::super::arrange_ui::save_idle_mark(&pane, &mut saved);
+        assert!(crate::arrangement::held_idle(&saved), "Tandem's own state keeps the member idle");
+        assert!(body(arrange, "    fn session_value(").contains("save_idle_mark(p, &mut v)"));
+        // Reload: Tandem's own launch state, no Import All mark: still idle, nothing runs.
+        let launch = wr::Inhibit::of(None, None, wr::member_inhibits(Mode::Regular, wr::foreign_restore(false, true, false)));
+        assert!(launch.held(crate::arrangement::held_idle(&saved)).with(false));
+        // The person starts it: Restart makes a fresh pane, which is not held, so the mark goes.
+        let fresh = crate::pane::Pane::relaunch(pane, crate::pane::Pane::idle(1, 80, 24));
+        assert!(!fresh.held_idle);
+        let mut started = Value::Table(Default::default());
+        super::super::arrange_ui::save_idle_mark(&fresh, &mut started);
+        assert!(!crate::arrangement::held_idle(&started));
+    }
+
     /// Task 9 review minor 6: a split or tab child is found only in the anchor's own window, so a plain
     /// pane elsewhere whose GUID collides is never taken in (and torn down at Exit).
     #[test]

@@ -36,7 +36,7 @@ Each item says what is wrong, what it should do, and where it was seen.
      (datbird/tandem to datbird/termurion; update every remote and scripts/xt paths, and the
      EXTREME build folders);
    - memory notes and handoff files that name Tandem.
-   Keep iTerm2 names where they are compatibility keys (see item 2). Plan it as its own short
+   Keep iTerm2 names where they are compatibility keys (see item 1). Plan it as its own short
    milestone with a pre-flight scan for every "tandem" string (case-insensitive) and a
    migration test, then a desktop probe.
 
@@ -69,11 +69,14 @@ Each item says what is wrong, what it should do, and where it was seen.
 
 ## In progress
 
-1. **"Jump List: Access is denied. (0x80070005)" red banner.** Cause: EXTREME has "Show
-   recently opened items in Start, Jump Lists and File Explorer" turned off, so Windows refuses
-   the custom Recents category and the whole Jump List commit fails. Fix (in 13y2): skip the
-   custom categories, keep the taskbar tasks, show no banner. Seen 2026-10-11.
+(none)
 
 ## Done
 
 1. **The menu bar ignores Windows dark mode.** Done 2026-10-11 (main, tw1-darkmenu merged): menus follow the Windows app mode and switch live; Automatic uses AllowDark so the title bar and terminal colors follow too. Needs Robert's desktop look (dark, light, live switch).
+
+2. **"Jump List: Access is denied. (0x80070005)" red banner.** Cause: EXTREME has "Show
+   recently opened items in Start, Jump Lists and File Explorer" turned off, so Windows refuses
+   the custom Recents category and the whole Jump List commit fails. Done in 13y2 (13b7b50, retry
+   in 634e998): the custom categories are skipped, the taskbar tasks stay, no banner. Seen
+   2026-10-11. Checklist m13y2 row 22.

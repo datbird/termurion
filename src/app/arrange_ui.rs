@@ -169,6 +169,8 @@ impl App {
         if p.archived {
             crate::archive::mark_archived(&mut v);
         }
+        // A pane a restore built idle comes back idle from every later restore (13y2 final review I1).
+        save_idle_mark(p, &mut v);
         // A browser pane keeps its URL, sanitized and bounded, and nothing of the page: no cookies,
         // no content. A Dev Null pane keeps none (it keeps no history).
         if let (Some(io), Some(t)) = (p.browser_io().filter(|io| !io.dev_null), v.as_table_mut()) {
@@ -597,6 +599,17 @@ impl App {
         guid
     }
 
+    /// A restored session that starts nothing (a buried member of a foreign restore, a Code Review or
+    /// Diff session with no program, a session saved held idle): an idle pane, held, so the session
+    /// Tandem saves for it keeps it idle until the person starts it (13y2 final review I1).
+    fn start_held_idle_pane(&mut self, rect: Rect, guid: Option<&str>) -> Option<PaneId> {
+        let id = self.start_idle_pane(rect, guid)?;
+        if let Some(p) = self.panes.get_mut(&id) {
+            p.held_idle = true;
+        }
+        Some(id)
+    }
+
     /// A restored archive's pane (`PS:3577-3580`): no shell starts; the pane is ended with the
     /// saved text, at the size its profile and the layout give.
     fn archived_pane(&mut self, rect: Rect, guid: Option<&str>) -> Option<PaneId> {
@@ -655,7 +668,9 @@ impl App {
             // member with no program to take back is an idle session, never a stray shell.
             let attach = super::restore_ui::attach_key(&session);
             let descriptor = if archive { None } else { self.restored_descriptor(&session, launch, name.is_some()) };
-            let inhibit = self.restore_inhibits(descriptor.as_ref());
+            // A session saved held idle (13y2 final review I1) starts nothing at any restore.
+            let held = !archive && arrangement::held_idle(&session);
+            let inhibit = self.restore_inhibits(descriptor.as_ref()).held(held);
             let inhibited = inhibit.with(attach.is_some()) && !archive;
             let id = if archive {
                 launched = false;
@@ -672,7 +687,7 @@ impl App {
                         if inhibit.with(false) {
                             self.banners.set("reattach", format!("A running shell could not be taken back ({e})."));
                             launched = false;
-                            self.start_idle_pane(area, guid.as_deref())
+                            self.start_held_idle_pane(area, guid.as_deref())
                         } else {
                             self.banners.set("reattach", format!("A running shell could not be taken back ({e}); a new shell started in its place."));
                             self.start_pane(area, guid.as_deref())
@@ -681,7 +696,7 @@ impl App {
                 },
                 None if inhibited => {
                     launched = false;
-                    self.start_idle_pane(area, guid.as_deref())
+                    self.start_held_idle_pane(area, guid.as_deref())
                 }
                 None => self.start_pane(area, guid.as_deref()),
                 }
@@ -1092,6 +1107,15 @@ impl App {
 /// Whether a file may open: a file with no mark always, a downloaded one when `ask` says yes.
 fn trusted(marked: bool, ask: impl FnOnce() -> bool) -> bool {
     !marked || ask()
+}
+
+/// Writes the idle mark into `v` for a pane still held idle: one a restore built idle that has no
+/// program (a start gives the pane a fresh one, which is never held). The session's profile may be a
+/// delivered arrangement's copy with a command, so no later restore may start it (13y2 final review I1).
+pub(super) fn save_idle_mark(p: &Pane, v: &mut Value) {
+    if p.still_held_idle() {
+        arrangement::mark_idle(v);
+    }
 }
 
 #[cfg(test)]

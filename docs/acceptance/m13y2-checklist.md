@@ -38,6 +38,7 @@ pass or fail.
 | 20 | A profile whose command, name or folder holds `$$LOCATION$$` asks "Enter the value for "Location":" in the Session Parameter window; the answer reaches the session; Restart Session reruns with the stored answers (it does not ask again, ruled); `$$$$` becomes `$$`; Cancel opens nothing. | |
 | 21 | A URL value typed as an answer is not substituted into a command, name or folder as a URL (ruled); nothing typed shows in the debug log. | |
 | 22 | Windows Settings > Personalization > Start > "Show recently opened items in Start, Jump Lists and File Explorer" off: right-click the Tandem taskbar button: the tasks and profiles still show, and no red "Jump List: Access is denied" banner appears. Turn it on and restart or rebuild the list: the Recents category returns. | |
+| 23 | Workgroup restore rule: save a named arrangement holding a workgroup with a buried Regular member, then open it (Window > Restore Window Arrangement): the member comes back idle (nothing runs until you start it). Quit and relaunch with window restoration on: it is still idle. Start it (Restart Session), quit and relaunch: it now comes back running, as a member you started. | |
 
 ## Probe tests
 

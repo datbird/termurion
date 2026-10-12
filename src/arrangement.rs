@@ -593,6 +593,23 @@ pub fn saved_cursor(session: &Value) -> Option<(usize, usize)> {
 /// Set on a session while it is restored: the host session to take over (`{Id, Pid, Since}`).
 pub const ATTACH_KEY: &str = "Tandem Attach";
 
+/// Not iTerm2's: a session that a restore built idle and that nobody has started since (13y2 final
+/// review I1). Its profile may be a delivered arrangement's copy with a command, so every later restore
+/// builds it idle again, whatever file it comes back from, until the person starts it.
+pub const IDLE_KEY: &str = "Tandem Idle";
+
+/// Marks a session table as held idle (`IDLE_KEY`).
+pub fn mark_idle(session: &mut Value) {
+    if let Some(t) = session.as_table_mut() {
+        t.insert(IDLE_KEY.into(), Value::Boolean(true));
+    }
+}
+
+/// Whether a session table is held idle: only a true mark counts.
+pub fn held_idle(session: &Value) -> bool {
+    session.get(IDLE_KEY).and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
 /// The text saved "with contents".
 pub fn contents(session: &Value) -> Option<&str> {
     session.get(CONTENTS_KEY).and_then(|v| v.as_str())

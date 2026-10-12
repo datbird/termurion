@@ -320,17 +320,25 @@ pub struct Inhibit {
     member: bool,
     /// The anchor's mode, when its workgroup still exists, and whether it was on its overlay.
     anchor: Option<(Mode, bool)>,
+    /// The session was saved held idle (`arrangement::held_idle`, 13y2 final review I1).
+    held: bool,
 }
 
 impl Inhibit {
     pub fn of(d: Option<&Descriptor>, anchor_mode: Option<Mode>, member: bool) -> Inhibit {
-        Inhibit { member, anchor: d.zip(anchor_mode).map(|(d, m)| (m, d.anchor_pending)) }
+        Inhibit { member, anchor: d.zip(anchor_mode).map(|(d, m)| (m, d.anchor_pending)), held: false }
+    }
+
+    /// The same, for a session saved held idle: with no program from the session host it starts
+    /// nothing, at every restore (a program the host kept is this machine's own and is taken back).
+    pub fn held(self, held: bool) -> Inhibit {
+        Inhibit { held, ..self }
     }
 
     /// The answer for a session that has a program from the session host (`had_program`) or not.
     pub fn with(self, had_program: bool) -> bool {
         let anchor = self.anchor.is_some_and(|(mode, pending)| !(had_program && !pending) && mode_inhibits(mode));
-        (self.member && !had_program) || anchor
+        ((self.member || self.held) && !had_program) || anchor
     }
 }
 
@@ -738,6 +746,41 @@ mod tests {
         assert!(super::member_inhibits(Mode::Regular, true), "a delivered arrangement starts nothing hidden");
         assert!(!super::member_inhibits(Mode::Regular, false), "the person's own saved state keeps its shells");
         assert!(super::member_inhibits(Mode::Diff, false));
+    }
+
+    /// 13y2 final review I1: a member a foreign restore built idle keeps the arrangement's profile copy
+    /// (with its Command) in the session Tandem saves. The session carries the idle mark, so every later
+    /// restore (the launch state, which counts as Tandem's own, a named arrangement, an Import All) keeps
+    /// it idle until the person starts it; a session saved without the mark behaves as before.
+    #[test]
+    fn a_member_restored_idle_stays_idle_at_every_later_restore() {
+        use crate::workgroup::Mode;
+        let mut crafted = Table::new();
+        crafted.insert("Command".into(), Value::String("calc.exe".into()));
+        crafted.insert("Custom Command".into(), Value::String("Yes".into()));
+        let mut saved = Value::Table(crafted);
+        // The named restore built it idle (13y1 M6); Tandem's save writes the mark with it.
+        assert!(Inhibit::of(None, None, member_inhibits(Mode::Regular, foreign_restore(true, false, false))).with(false));
+        crate::arrangement::mark_idle(&mut saved);
+        let held = crate::arrangement::held_idle(&saved);
+        assert!(held, "the saved session carries the mark");
+        for (named, launch, imported) in [(false, true, false), (true, false, false), (false, true, true), (false, false, false)] {
+            let member = Inhibit::of(None, None, member_inhibits(Mode::Regular, foreign_restore(named, launch, imported))).held(held);
+            assert!(member.with(false), "nothing runs: named {named} launch {launch} imported {imported}");
+            assert!(!member.with(true), "a program this machine's session host kept is taken back, never a new one");
+        }
+        // Shown later (the person picked it but never started it), it is the anchor: idle too.
+        let d = descriptor();
+        assert!(Inhibit::of(Some(&d), Some(Mode::Regular), false).held(held).with(false));
+        assert!(Inhibit::of(None, None, false).held(held).with(false), "a plain session with the mark");
+        // The person's own state from before the mark: a member Tandem created starts its shell.
+        let old = Value::Table(Table::new());
+        assert!(!crate::arrangement::held_idle(&old));
+        assert!(!Inhibit::of(None, None, member_inhibits(Mode::Regular, foreign_restore(false, true, false))).held(crate::arrangement::held_idle(&old)).with(false));
+        // Only a true mark counts.
+        let mut other = Table::new();
+        other.insert(crate::arrangement::IDLE_KEY.into(), Value::String("yes".into()));
+        assert!(!crate::arrangement::held_idle(&Value::Table(other)));
     }
 
     use super::*;
