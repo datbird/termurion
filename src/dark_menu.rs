@@ -60,9 +60,10 @@ pub fn app_mode(forced: Option<bool>, high_contrast: bool) -> AppMode {
     }
 }
 
-/// Whether a `WM_SETTINGCHANGE` names the app mode change (its lParam string).
-pub fn is_color_set_change(area: &str) -> bool {
-    area == "ImmersiveColorSet"
+/// Whether a window message can change the app mode or high contrast, so the menus are told
+/// their mode again: `WM_SETTINGCHANGE` (0x1A) and `WM_SYSCOLORCHANGE` (0x15).
+pub fn reapplies_menus(msg: u32) -> bool {
+    msg == 0x001A || msg == 0x0015
 }
 
 /// A `CurrentBuildNumber` string as a number.
@@ -178,23 +179,6 @@ pub mod win {
             }
         }
     }
-
-    /// The area a `WM_SETTINGCHANGE` names (its lParam, a string or null).
-    ///
-    /// # Safety
-    /// `lparam` is the lParam of a `WM_SETTINGCHANGE` the system delivered.
-    pub unsafe fn setting_area(lparam: isize) -> Option<String> {
-        if lparam == 0 {
-            return None;
-        }
-        let p = lparam as *const u16;
-        let mut n = 0usize;
-        // SAFETY: a null-terminated wide string; capped so a bad pointer cannot run on.
-        while n < 256 && unsafe { *p.add(n) } != 0 {
-            n += 1;
-        }
-        Some(String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(p, n) }))
-    }
 }
 
 #[cfg(test)]
@@ -254,10 +238,10 @@ mod tests {
     }
 
     #[test]
-    fn only_the_color_set_broadcast_counts() {
-        assert!(is_color_set_change("ImmersiveColorSet"));
-        assert!(!is_color_set_change("WindowsThemeElement"));
-        assert!(!is_color_set_change(""));
+    fn contrast_and_color_changes_reapply() {
+        assert!(reapplies_menus(0x001A)); // WM_SETTINGCHANGE
+        assert!(reapplies_menus(0x0015)); // WM_SYSCOLORCHANGE
+        assert!(!reapplies_menus(0x000F));
     }
 
     #[test]

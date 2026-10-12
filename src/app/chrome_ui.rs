@@ -15,25 +15,18 @@ thread_local! {
     /// A `ThemeReset` is queued and not yet handled: one `WM_SETTINGCHANGE` broadcast reaches every
     /// terminal window, and the app needs to hear of it once.
     static RESET_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// A `WM_SETTINGCHANGE` named "ImmersiveColorSet" (Windows' app mode may have changed) since
-    /// the last `ThemeReset` was handled.
-    static COLOR_SET_CHANGED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The window's subclass proc: winit handles `WM_SETTINGCHANGE` (resetting the title bar to
 /// Windows' mode), then the app is asked to apply the Theme again.
 unsafe extern "system" fn theme_guard(hwnd: windows_sys::Win32::Foundation::HWND, msg: u32, wparam: windows_sys::Win32::Foundation::WPARAM, lparam: windows_sys::Win32::Foundation::LPARAM, _id: usize, _data: usize) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_NCDESTROY, WM_SETTINGCHANGE};
+    use windows_sys::Win32::UI::WindowsAndMessaging::WM_NCDESTROY;
     // SAFETY: forwarding the message the system delivered, unchanged.
     let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
-    if msg == WM_SETTINGCHANGE {
-        // The high contrast state may have changed.
+    if crate::dark_menu::reapplies_menus(msg) {
+        // The app mode or the high contrast state may have changed.
         crate::tab_theme::forget_high_contrast();
-        // SAFETY: the lParam of the WM_SETTINGCHANGE the system delivered.
-        if unsafe { crate::dark_menu::win::setting_area(lparam) }.is_some_and(|a| crate::dark_menu::is_color_set_change(&a)) {
-            COLOR_SET_CHANGED.with(|c| c.set(true));
-        }
         if !RESET_PENDING.with(|p| p.replace(true)) {
             WAKE.with(|w| {
                 if let Some(proxy) = w.borrow().as_ref() {
@@ -230,11 +223,10 @@ impl App {
         RESET_PENDING.with(|p| p.set(false));
         // The same broadcast carries "Always show scrollbars" (`DynamicScrollbars`).
         self.refresh_scroll_style();
-        let color_set = COLOR_SET_CHANGED.with(|c| c.replace(false));
         if crate::tab_theme::forced_dark(self.tab_style()).is_some() {
             self.apply_theme_everywhere();
-        } else if color_set {
-            // Windows' app mode changed: every window's menus follow it live.
+        } else {
+            // Windows' app mode or high contrast may have changed: every window's menus follow it live.
             self.apply_menu_theme_everywhere();
         }
     }
