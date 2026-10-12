@@ -123,7 +123,11 @@ impl Gate {
 /// shortcut key, else only for a chord the shortcut key's own modifiers cannot press
 /// (`shortcut_key`), so Win+D and the other Windows chords stay with Windows.
 fn win_is_cmd(c: &Chord) -> bool {
-    let mode = crate::shortcut_key::mode();
+    win_is_cmd_for(crate::shortcut_key::mode(), c)
+}
+
+/// `win_is_cmd` for a given mode (the mode itself is process-wide, so tests pass it in).
+fn win_is_cmd_for(mode: crate::shortcut_key::ShortcutKey, c: &Chord) -> bool {
     mode == crate::shortcut_key::ShortcutKey::Win || !mode.reachable(c)
 }
 
@@ -1310,17 +1314,15 @@ mod tests {
 
     /// TWEAKS 9: with Ctrl+Shift or Ctrl+Alt the hook leaves Win+D and every other Win chord that has
     /// a pair of its own to Windows, and still takes the Cmd chords no pair reaches (Cmd+Ctrl+...).
-    /// The mode is process-wide, so this test sets it and restores it.
+    /// The mode is passed in: the process-wide one is shared by every test in the binary.
     #[test]
     fn win_is_cmd_only_where_the_shortcut_key_cannot_reach() {
-        use crate::shortcut_key::{set_mode, ShortcutKey};
+        use crate::shortcut_key::ShortcutKey::{CtrlShift, Win};
         let c = |key, ctrl, alt, shift| Chord { key, cmd: true, alt, shift, ctrl };
-        let before = crate::shortcut_key::mode();
-        set_mode(ShortcutKey::Win);
-        assert!(win_is_cmd(&c(ChordKey::Char('d'), false, false, false)));
-        set_mode(ShortcutKey::CtrlShift);
-        let (d, sd, cd) = (win_is_cmd(&c(ChordKey::Char('d'), false, false, false)), win_is_cmd(&c(ChordKey::Char('d'), false, false, true)), win_is_cmd(&c(ChordKey::Char('d'), true, false, false)));
-        set_mode(before);
+        assert!(win_is_cmd_for(Win, &c(ChordKey::Char('d'), false, false, false)));
+        let d = win_is_cmd_for(CtrlShift, &c(ChordKey::Char('d'), false, false, false));
+        let sd = win_is_cmd_for(CtrlShift, &c(ChordKey::Char('d'), false, false, true));
+        let cd = win_is_cmd_for(CtrlShift, &c(ChordKey::Char('d'), true, false, false));
         assert!(!d && !sd, "Win+D and Win+Shift+D stay with Windows");
         assert!(cd, "Cmd+Ctrl+D has no pair: the Win key still carries it");
     }
