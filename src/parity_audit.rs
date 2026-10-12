@@ -74,6 +74,7 @@ mod tests {
     const F01: &str = include_str!("../docs/parity/01-profile-settings.md");
     const F02: &str = include_str!("../docs/parity/02-global-settings.md");
     const F03: &str = include_str!("../docs/parity/03-features-and-menus.md");
+    const ROADMAP: &str = include_str!("../docs/parity/00-roadmap.md");
 
     /// Follow-up plans whose rows may still say "to come". Every 13x follow-up has landed (their
     /// rulings files exist), so the list is empty; `accepted_plans_are_unbuilt` fails a plan that
@@ -274,5 +275,31 @@ mod tests {
             }
         }
         assert!(stale.is_empty(), "stale stubs:\n{}", stale.join("\n"));
+    }
+
+    /// The roadmap's milestone 13 paragraph states the counts in one fixed form,
+    /// "Parity counts at the close of milestone 13: 01: <h> have, <p> partial, <m> missing, <n> n/a;
+    /// 02: ...; 03: ...", and the files must agree with it.
+    #[test]
+    fn counts_follow_the_roadmap() {
+        const MARK: &str = "Parity counts at the close of milestone 13: ";
+        let at = ROADMAP.find(MARK).expect("the roadmap's milestone 13 paragraph has the counts sentence") + MARK.len();
+        let sentence = ROADMAP[at..].lines().next().unwrap();
+        let mut bad = Vec::new();
+        for (tag, rs) in files() {
+            let from = sentence.find(&format!("{tag}: ")).unwrap_or_else(|| panic!("no {tag} counts in the sentence"));
+            let body = sentence[from + 4..].split(';').next().unwrap().trim_end_matches('.');
+            let stated: Vec<usize> = body.split(", ").map(|p| p.split(' ').next().unwrap().parse().unwrap_or(usize::MAX)).collect();
+            let n = |w: &str| rs.iter().filter(|r| r.status == w).count();
+            let counted = vec![n("have"), n("partial"), n("missing"), n("n/a")];
+            if stated != counted {
+                bad.push(format!("{tag}: the roadmap says {stated:?} (have, partial, missing, n/a), the file has {counted:?}"));
+            }
+            let other = rs.len() - counted.iter().sum::<usize>();
+            if other != 0 {
+                bad.push(format!("{tag}: {other} rows have a status that is none of the four"));
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 }
