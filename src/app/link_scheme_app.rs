@@ -4,19 +4,48 @@
 
 use super::*;
 
-impl App {
-    /// What Windows has registered for `scheme`: its command and its friendly name.
-    fn scheme_handler(scheme: &str) -> crate::link_scheme::Handler {
-        let reg = crate::url_schemes::system();
-        let exe = reg.handler_exe(scheme);
-        let version_names = exe.as_deref().and_then(|e| reg.version_names(e));
-        crate::link_scheme::Handler { name: reg.handler_name(scheme), command: reg.handler_command(scheme), exe, version_names }
-    }
+/// The registered app for one scheme and the files it names, read from the system registry on demand
+/// (nothing is read until `link_scheme::plan` asks).
+struct Live {
+    reg: Box<dyn crate::url_schemes::SchemeRegistry>,
+    scheme: String,
+}
 
+impl Live {
+    fn new(scheme: &str) -> Self {
+        Live { reg: crate::url_schemes::system(), scheme: scheme.to_string() }
+    }
+}
+
+impl crate::link_scheme::Source for Live {
+    fn name(&self) -> Option<String> {
+        self.reg.handler_name(&self.scheme)
+    }
+    fn command(&self) -> Option<String> {
+        self.reg.handler_command(&self.scheme)
+    }
+    fn exe(&self) -> Option<String> {
+        self.reg.handler_exe(&self.scheme)
+    }
+    fn is_local_drive(&self, exe: &str) -> bool {
+        self.reg.is_local_drive(exe)
+    }
+    fn long_path(&self, exe: &str) -> String {
+        self.reg.long_path(exe)
+    }
+    fn version_names(&self, exe: &str) -> Option<Vec<String>> {
+        self.reg.version_names(exe)
+    }
+    fn trusted_folders(&self) -> crate::link_scheme::TrustedFolders {
+        self.reg.trusted_folders()
+    }
+}
+
+impl App {
     /// A terminal link of another app's scheme was clicked: refused, opened (Always), or asked.
     pub(super) fn open_scheme_link(&mut self, url: &str, background: bool) {
         let Some(scheme) = crate::link_scheme::scheme_of(url) else { return };
-        let plan = crate::link_scheme::decide(url, &Self::scheme_handler(&scheme), &self.globals.string(crate::link_scheme::ALWAYS_KEY), &self.globals.string(crate::link_scheme::NEVER_KEY));
+        let plan = crate::link_scheme::plan(url, &Live::new(&scheme), &self.globals.string(crate::link_scheme::ALWAYS_KEY), &self.globals.string(crate::link_scheme::NEVER_KEY));
         match plan {
             crate::link_scheme::Plan::Refuse(why) => self.banners.set("action", why),
             crate::link_scheme::Plan::Open => self.launch_scheme(url, background),
@@ -40,7 +69,7 @@ impl App {
                     self.remember_scheme(crate::link_scheme::ALWAYS_KEY, scheme);
                 }
                 // Judged again at the answer: the registered app may have changed since the question.
-                match crate::link_scheme::decide(url, &Self::scheme_handler(scheme), scheme, "") {
+                match crate::link_scheme::plan(url, &Live::new(scheme), scheme, "") {
                     crate::link_scheme::Plan::Open => self.launch_scheme(url, background),
                     crate::link_scheme::Plan::Refuse(why) => self.banners.set("action", why),
                     crate::link_scheme::Plan::Ask { .. } => {}

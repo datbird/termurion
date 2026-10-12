@@ -193,6 +193,18 @@ pub trait SchemeRegistry {
     fn version_names(&self, _exe: &str) -> Option<Vec<String>> {
         None
     }
+    /// Whether the drive of `exe` is local (not remote, not unknown); reads the drive type only.
+    fn is_local_drive(&self, _exe: &str) -> bool {
+        true
+    }
+    /// `exe` with 8.3 aliases expanded.
+    fn long_path(&self, exe: &str) -> String {
+        exe.to_string()
+    }
+    /// The administrator-only folders on this machine; none named when unknown, so nothing is trusted.
+    fn trusted_folders(&self) -> crate::link_scheme::TrustedFolders {
+        crate::link_scheme::TrustedFolders::default()
+    }
     /// The ProgId of the protected user choice for the scheme (read only).
     fn user_choice(&self, scheme: &str) -> Option<String>;
     /// The command of `HKCU\Software\Classes\<scheme>\shell\open\command`, the entry Tandem's OK
@@ -528,11 +540,33 @@ impl SchemeRegistry for WinRegistry {
 
     fn handler_exe(&self, scheme: &str) -> Option<String> {
         use windows_sys::Win32::UI::Shell::ASSOCSTR_EXECUTABLE;
-        Self::assoc(scheme, ASSOCSTR_EXECUTABLE).map(|p| long_path(&p))
+        Self::assoc(scheme, ASSOCSTR_EXECUTABLE)
     }
 
     fn version_names(&self, exe: &str) -> Option<Vec<String>> {
         read_version_names(exe)
+    }
+
+    fn is_local_drive(&self, exe: &str) -> bool {
+        use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW};
+        let root: String = exe.trim().trim_matches('"').chars().take(2).chain(['\\']).collect();
+        let w = win::wide(&root);
+        let kind = unsafe { GetDriveTypeW(w.as_ptr()) };
+        // Anything else (DRIVE_REMOTE, DRIVE_UNKNOWN, DRIVE_NO_ROOT_DIR) is not a local drive.
+        // DRIVE_REMOVABLE 2, DRIVE_FIXED 3, DRIVE_CDROM 5, DRIVE_RAMDISK 6 (the constants sit behind a feature this crate does not enable).
+        matches!(kind, 2 | 3 | 5 | 6)
+    }
+
+    fn long_path(&self, exe: &str) -> String {
+        long_path(exe)
+    }
+
+    fn trusted_folders(&self) -> crate::link_scheme::TrustedFolders {
+        use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_Windows};
+        crate::link_scheme::TrustedFolders {
+            program_files: [&FOLDERID_ProgramFiles, &FOLDERID_ProgramFilesX86].into_iter().filter_map(|id| known_folder(id)).collect(),
+            windows: known_folder(&FOLDERID_Windows),
+        }
     }
 
     fn user_choice(&self, scheme: &str) -> Option<String> {
@@ -1009,6 +1043,23 @@ fn long_path(path: &str) -> String {
         return path.to_string();
     }
     String::from_utf16_lossy(&buf[..n])
+}
+
+/// A known folder's full path (`SHGetKnownFolderPath`); None when the machine has none.
+#[cfg(windows)]
+fn known_folder(id: &windows_sys::core::GUID) -> Option<String> {
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::SHGetKnownFolderPath;
+    let mut p: *mut u16 = std::ptr::null_mut();
+    let hr = unsafe { SHGetKnownFolderPath(id, 0, std::ptr::null_mut(), &mut p) };
+    let out = (hr == 0 && !p.is_null()).then(|| {
+        let len = (0..).take_while(|&i| unsafe { *p.add(i) } != 0).count();
+        String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(p, len) })
+    });
+    if !p.is_null() {
+        unsafe { CoTaskMemFree(p.cast()) };
+    }
+    out.filter(|s| !s.is_empty())
 }
 
 /// OriginalFilename and InternalName from the version resource of `exe`, in every language it lists

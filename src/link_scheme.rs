@@ -93,9 +93,41 @@ pub const BAD_HANDLERS: &[&str] = &[
 /// `php-cgi`, `php-win`, `pwsh`): any name starting with one is a bad handler.
 const BAD_PREFIXES: &[&str] = &["python", "pwsh", "php-", "powershell"];
 
-/// Folders only an administrator can write to, as the path after the drive letter and colon. A program
-/// there with no readable version info is trusted; anywhere else it is refused.
-const SYSTEM_ROOTS: &[&str] = &["\\program files\\", "\\program files (x86)\\", "\\windows\\"];
+/// Folders under the Windows folder that a standard user can write to by default (AppLocker bypass list), as paths
+/// below it. A program there is never trusted for lacking version info.
+const USER_WRITABLE_UNDER_WINDOWS: &[&str] = &[
+    "temp", "tasks", "tracing", "registration\\crmlog", "debug\\wia", "system32\\tasks", "system32\\tasks_migrated", "system32\\com\\dmp", "system32\\fxstmp",
+    "system32\\spool\\drivers\\color", "system32\\spool\\printers", "system32\\spool\\servers", "system32\\microsoft\\crypto\\rsa\\machinekeys",
+    "syswow64\\tasks", "syswow64\\com\\dmp", "syswow64\\fxstmp",
+];
+
+/// The administrator-only folders as Windows names them on this machine (`SHGetKnownFolderPath`: Program Files,
+/// Program Files (x86), Windows), each a full `X:\...` path without a trailing separator. A program there with no
+/// readable version info is trusted; anywhere else it is refused.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TrustedFolders {
+    pub program_files: Vec<String>,
+    pub windows: Option<String>,
+}
+
+/// What the plan reads about the machine: the registered app and the files it names. Every file access goes
+/// through here, so a test can prove none happens before the scheme and the path pass (review I1).
+pub trait Source {
+    /// The app's friendly name.
+    fn name(&self) -> Option<String>;
+    /// Its `shell\open\command` line.
+    fn command(&self) -> Option<String>;
+    /// The program's full path as Windows names it (`ASSOCSTR_EXECUTABLE`); no file is opened for it.
+    fn exe(&self) -> Option<String>;
+    /// Whether the drive of `exe` is a local one (not remote, not unknown). Reads the drive type only.
+    fn is_local_drive(&self, exe: &str) -> bool;
+    /// `exe` with 8.3 aliases expanded; touches the file.
+    fn long_path(&self, exe: &str) -> String;
+    /// OriginalFilename and InternalName from the program's version info; touches the file.
+    fn version_names(&self, exe: &str) -> Option<Vec<String>>;
+    /// The trusted folders.
+    fn trusted_folders(&self) -> TrustedFolders;
+}
 
 /// The longest URL handed to an app.
 pub const MAX_URL: usize = 2048;
@@ -112,6 +144,30 @@ pub struct Handler {
     pub exe: Option<String>,
     /// OriginalFilename and InternalName from the program's version info; None when unreadable.
     pub version_names: Option<Vec<String>>,
+}
+
+impl Source for Handler {
+    fn name(&self) -> Option<String> {
+        self.name.clone()
+    }
+    fn command(&self) -> Option<String> {
+        self.command.clone()
+    }
+    fn exe(&self) -> Option<String> {
+        self.exe.clone()
+    }
+    fn is_local_drive(&self, _exe: &str) -> bool {
+        true
+    }
+    fn long_path(&self, exe: &str) -> String {
+        exe.to_string()
+    }
+    fn version_names(&self, _exe: &str) -> Option<Vec<String>> {
+        self.version_names.clone()
+    }
+    fn trusted_folders(&self) -> TrustedFolders {
+        TrustedFolders { program_files: vec!["C:\\Program Files".into(), "C:\\Program Files (x86)".into()], windows: Some("C:\\Windows".into()) }
+    }
 }
 
 /// What to do with a link.
@@ -148,12 +204,10 @@ pub fn screen(scheme: &str, url: &str) -> Result<(), String> {
 /// refused: not an absolute path (an unexpanded `%ComSpec%`, a bare name), not a `.exe`, or an interpreter.
 pub fn exe_stem(exe: &str) -> Result<String, String> {
     let path = exe.trim().trim_matches('"');
-    let bytes = path.as_bytes();
-    let absolute = bytes.len() > 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/');
-    if !absolute || path.contains('%') {
-        return Err("Windows did not name the app's program".into());
+    if !is_local_drive_path(path) {
+        return Err("Windows did not name the app's program on a local drive".into());
     }
-    let file = path.rsplit(['\\', '/']).next().unwrap_or("").to_ascii_lowercase();
+    let file = path.rsplit('\\').next().unwrap_or("").to_ascii_lowercase();
     let Some(stem) = file.strip_suffix(".exe").filter(|s| !s.is_empty()) else {
         return Err("the app is not an .exe program".into());
     };
@@ -167,15 +221,52 @@ pub fn exe_stem(exe: &str) -> Result<String, String> {
     Ok(stem.to_string())
 }
 
+/// Whether `path` is spelled as a local drive path, `X:\...`: not UNC (`\\host`), not `\\?\` or `\\.\` device
+/// paths, not relative, not unexpanded (`%`). Judged on the text alone, before any file is touched.
+pub fn is_local_drive_path(path: &str) -> bool {
+    let b = path.as_bytes();
+    b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\' && !path.contains(['%', '/'])
+}
+
 /// Whether `stem` has the shape of an 8.3 alias: up to six characters, `~`, digits.
 fn is_short_alias(stem: &str) -> bool {
     stem.rsplit_once('~').is_some_and(|(head, tail)| !head.is_empty() && head.len() <= 6 && !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// Whether the path (already known to be `X:\...`) is inside an administrator-only folder.
-fn in_system_root(exe: &str) -> bool {
-    let rest = exe.trim().trim_matches('"').get(2..).unwrap_or("").replace('/', "\\").to_ascii_lowercase();
-    SYSTEM_ROOTS.iter().any(|r| rest.starts_with(r))
+/// `path` as lowercase components with `.` and `..` resolved (what `GetFullPathNameW` does to the text);
+/// None when a `..` climbs above the drive root.
+fn components(path: &str) -> Option<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for part in path.trim().trim_matches('"').split('\\') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                out.pop()?;
+            }
+            p => out.push(p.to_ascii_lowercase()),
+        }
+    }
+    Some(out)
+}
+
+/// Whether `exe` (already known to be `X:\...`) lies inside one of the machine's administrator-only folders,
+/// by its canonical path and a whole-folder prefix, and not in a user-writable subfolder of Windows.
+fn in_system_root(exe: &str, trusted: &TrustedFolders) -> bool {
+    let Some(path) = components(exe) else { return false };
+    let inside = |root: &str| components(root).is_some_and(|r| !r.is_empty() && path.len() > r.len() && path[..r.len()] == r[..]);
+    if trusted.program_files.iter().any(|r| inside(r)) {
+        return true;
+    }
+    let Some(win) = trusted.windows.as_deref() else { return false };
+    let Some(win_parts) = components(win) else { return false };
+    if !inside(win) {
+        return false;
+    }
+    let below = &path[win_parts.len()..];
+    !USER_WRITABLE_UNDER_WINDOWS.iter().any(|w| {
+        let w: Vec<&str> = w.split('\\').collect();
+        below.len() >= w.len() && below.iter().zip(&w).all(|(a, b)| a == b)
+    })
 }
 
 /// The program a name stands for: lowercase, a trailing `.mui` dropped, everything from the first dot
@@ -197,17 +288,24 @@ fn is_bad_name(name: &str) -> bool {
 /// Judges the program's own version info (OriginalFilename, InternalName), which a rename cannot change.
 /// Unreadable info is refused outside the administrator-only folders: every real app ships it, and
 /// anything a person could drop into their profile without it is not worth a link.
-fn check_version(exe: &str, names: Option<&[String]>) -> Result<(), String> {
+fn check_version(exe: &str, names: Option<&[String]>, trusted: &TrustedFolders) -> Result<(), String> {
     match names {
         Some(names) if names.iter().any(|n| is_bad_name(n)) => Err("the app is a renamed command interpreter".into()),
         Some(_) => Ok(()),
-        None if in_system_root(exe) => Ok(()),
+        None if in_system_root(exe, trusted) => Ok(()),
         None => Err("the app has no readable version information".into()),
     }
 }
 
-/// The plan for `url` given the registered app and the person's two lists.
+/// The plan for `url` given a registered app and the person's two lists.
 pub fn decide(url: &str, handler: &Handler, always: &str, never: &str) -> Plan {
+    plan(url, handler, always, never)
+}
+
+/// The plan for `url` read from `src`. Order matters (review I1): the scheme passes the blocked list and the
+/// Never list first; the program's path is judged as text (a local `X:\` path) and by its drive type; only then
+/// is the file touched (long name, version info).
+pub fn plan(url: &str, src: &dyn Source, always: &str, never: &str) -> Plan {
     let Some(scheme) = scheme_of(url) else { return Plan::Refuse("Tandem opens only links here, not paths.".into()) };
     if let Err(why) = screen(&scheme, url) {
         return Plan::Refuse(why);
@@ -215,21 +313,32 @@ pub fn decide(url: &str, handler: &Handler, always: &str, never: &str) -> Plan {
     if listed(never, &scheme) {
         return Plan::Refuse(format!("{scheme}: links are set to Never open (Settings > Advanced > Link schemes never opened)."));
     }
-    if handler.command.is_none() {
+    let refuse = |why: &str| Plan::Refuse(format!("Tandem does not open {scheme}: links: {why}."));
+    if src.command().is_none() {
         return Plan::Refuse(format!("No app is registered for {scheme}: links."));
     }
-    let stem = match handler.exe.as_deref().map(exe_stem) {
-        Some(Ok(stem)) => stem,
-        Some(Err(why)) => return Plan::Refuse(format!("Tandem does not open {scheme}: links: {why}.")),
-        None => return Plan::Refuse(format!("Tandem does not open {scheme}: links: Windows did not name the app's program.")),
+    let Some(raw) = src.exe() else { return refuse("Windows did not name the app's program") };
+    if !is_local_drive_path(raw.trim().trim_matches('"')) {
+        return refuse("the app's program is not on a local drive");
+    }
+    if !src.is_local_drive(&raw) {
+        return refuse("the app's program is on a network or unknown drive");
+    }
+    let exe = src.long_path(&raw);
+    let stem = match exe_stem(&exe) {
+        Ok(stem) => stem,
+        Err(why) => return refuse(&why),
     };
-    if let Err(why) = check_version(handler.exe.as_deref().unwrap_or(""), handler.version_names.as_deref()) {
-        return Plan::Refuse(format!("Tandem does not open {scheme}: links: {why}."));
+    if !src.is_local_drive(&exe) {
+        return refuse("the app's program is on a network or unknown drive");
+    }
+    if let Err(why) = check_version(&exe, src.version_names(&exe).as_deref(), &src.trusted_folders()) {
+        return refuse(&why);
     }
     if listed(always, &scheme) {
         return Plan::Open;
     }
-    let app = handler.name.as_deref().map(str::trim).filter(|n| !n.is_empty()).map_or(stem, str::to_string);
+    let app = src.name().as_deref().map(str::trim).filter(|n| !n.is_empty()).map_or(stem, str::to_string);
     Plan::Ask { app }
 }
 
@@ -423,8 +532,106 @@ mod tests {
             let names = reg.version_names(&exe).unwrap_or_else(|| panic!("no version info read for {exe}"));
             assert!(!names.is_empty(), "{exe}: {names:?}");
             // The names a renamed copy would carry, outside any trusted folder.
-            assert!(check_version("D:\\tools\\helper.exe", Some(&names)).is_err(), "{exe}: {names:?}");
+            assert!(check_version("D:\\tools\\helper.exe", Some(&names), &TrustedFolders::default()).is_err(), "{exe}: {names:?}");
         }
+    }
+
+    /// A source that records every call, to prove what is touched and when (review I1).
+    #[derive(Default)]
+    struct Rec {
+        h: Handler,
+        remote: bool,
+        calls: std::cell::RefCell<Vec<String>>,
+    }
+    impl Source for Rec {
+        fn name(&self) -> Option<String> {
+            self.h.name()
+        }
+        fn command(&self) -> Option<String> {
+            self.h.command()
+        }
+        fn exe(&self) -> Option<String> {
+            self.calls.borrow_mut().push("exe".into());
+            self.h.exe()
+        }
+        fn is_local_drive(&self, exe: &str) -> bool {
+            self.calls.borrow_mut().push(format!("drive {exe}"));
+            !self.remote
+        }
+        fn long_path(&self, exe: &str) -> String {
+            self.calls.borrow_mut().push(format!("long_path {exe}"));
+            exe.to_string()
+        }
+        fn version_names(&self, exe: &str) -> Option<Vec<String>> {
+            self.calls.borrow_mut().push(format!("version {exe}"));
+            Source::version_names(&self.h, exe)
+        }
+        fn trusted_folders(&self) -> TrustedFolders {
+            self.h.trusted_folders()
+        }
+    }
+    fn touched(c: &Rec) -> Vec<String> {
+        c.calls.borrow().iter().filter(|c| c.starts_with("long_path") || c.starts_with("version")).cloned().collect()
+    }
+
+    #[test]
+    fn no_file_is_touched_before_the_scheme_and_the_path_pass() {
+        let rec = |exe: &str| Rec { h: app("X", exe), ..Default::default() };
+        // Blocked, own and Never schemes never even ask for the program.
+        for (url, never) in [("ms-msdt:x", ""), ("file:x", ""), ("ssh://h", ""), ("foo:x", "foo")] {
+            let r = rec("C:\\Program Files\\A\\a.exe");
+            assert!(matches!(plan(url, &r, "foo", never), Plan::Refuse(_)), "{url}");
+            assert!(r.calls.borrow().is_empty(), "{url}: {:?}", r.calls.borrow());
+        }
+        // A path that is not a local drive path is refused as text: nothing is opened, not even the drive type.
+        for exe in ["\\\\server\\share\\app.exe", "\\\\?\\UNC\\server\\share\\app.exe", "\\\\?\\C:\\app.exe", "\\\\.\\C:\\app.exe", "//server/share/app.exe", "C:/a/app.exe", "app.exe", "\\app.exe", "C:app.exe"] {
+            let r = rec(exe);
+            assert!(matches!(plan("foo:x", &r, "foo", ""), Plan::Refuse(_)), "{exe}");
+            assert!(touched(&r).is_empty() && !r.calls.borrow().iter().any(|c| c.starts_with("drive")), "{exe}: {:?}", r.calls.borrow());
+        }
+        // A mapped network drive is refused from its drive type alone.
+        let r = Rec { h: app("X", "Z:\\share\\app.exe"), remote: true, ..Default::default() };
+        assert!(matches!(plan("foo:x", &r, "foo", ""), Plan::Refuse(m) if m.contains("network")));
+        assert!(touched(&r).is_empty(), "{:?}", r.calls.borrow());
+        // A good path is resolved and read, in that order.
+        let r = rec("C:\\Users\\u\\Tool\\t.exe");
+        assert!(matches!(plan("foo:x", &r, "", ""), Plan::Ask { .. }));
+        assert_eq!(touched(&r), ["long_path C:\\Users\\u\\Tool\\t.exe", "version C:\\Users\\u\\Tool\\t.exe"]);
+        // A refused program name is refused before its version info is read.
+        let r = rec("C:\\Windows\\System32\\cmd.exe");
+        assert!(matches!(plan("foo:x", &r, "", ""), Plan::Refuse(_)));
+        assert!(!touched(&r).iter().any(|c| c.starts_with("version")), "{:?}", touched(&r));
+    }
+
+    #[test]
+    fn the_system_folder_exception_is_exact() {
+        let t = TrustedFolders { program_files: vec!["C:\\Program Files".into(), "C:\\Program Files (x86)".into()], windows: Some("C:\\Windows".into()) };
+        for exe in ["C:\\Program Files\\T\\t.exe", "c:\\program files (x86)\\T\\t.exe", "C:\\Windows\\System32\\t.exe", "C:\\Program Files\\.\\T\\t.exe", "C:\\Windows\\System32\\spool\\t.exe"] {
+            assert!(in_system_root(exe, &t), "{exe}");
+        }
+        for exe in [
+            "D:\\Program Files\\T\\t.exe", "D:\\Windows\\t.exe", "C:\\Program Files Evil\\t.exe", "C:\\Windows.old\\t.exe", "C:\\Program Files\\..\\Users\\u\\t.exe", "C:\\Program Files\\T\\..\\..\\Users\\t.exe",
+            "C:\\Program Files\\t.exe\\..\\..\\..\\..\\t.exe", "C:\\Program Files", "C:\\Windows\\Temp\\t.exe", "c:\\windows\\TASKS\\t.exe", "C:\\Windows\\Tracing\\t.exe", "C:\\Windows\\System32\\Tasks\\x\\t.exe",
+            "C:\\Windows\\System32\\spool\\drivers\\color\\t.exe", "C:\\Windows\\System32\\..\\Temp\\t.exe", "C:\\Windows\\SysWOW64\\Com\\dmp\\t.exe", "C:\\Users\\u\\Program Files\\t.exe",
+        ] {
+            assert!(!in_system_root(exe, &t), "{exe}");
+        }
+        // A relocated Program Files is followed; the hardcoded one no longer is.
+        let moved = TrustedFolders { program_files: vec!["E:\\Apps".into()], windows: None };
+        assert!(in_system_root("E:\\Apps\\T\\t.exe", &moved) && !in_system_root("C:\\Program Files\\T\\t.exe", &moved) && !in_system_root("C:\\Windows\\t.exe", &moved));
+        assert!(!in_system_root("C:\\Windows\\System32\\t.exe", &TrustedFolders::default()), "no folders named, nothing trusted");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_real_machine_names_its_trusted_folders_and_drives() {
+        let reg = crate::url_schemes::system();
+        let t = reg.trusted_folders();
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+        assert_eq!(t.windows.as_deref().map(str::to_ascii_lowercase), Some(root.to_ascii_lowercase()));
+        assert!(!t.program_files.is_empty() && t.program_files.iter().all(|p| is_local_drive_path(&format!("{p}\\x.exe"))), "{t:?}");
+        assert!(in_system_root(&format!("{root}\\System32\\x.exe"), &t) && !in_system_root(&format!("{root}\\Temp\\x.exe"), &t));
+        assert!(reg.is_local_drive(&format!("{root}\\System32\\cmd.exe")));
     }
 
     #[test]
