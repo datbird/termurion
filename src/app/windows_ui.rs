@@ -627,6 +627,7 @@ impl App {
         let gpu = match made {
             Ok(g) => g,
             Err(e) => {
+                super::ssh_url_app::forget_hotkey_url(&mut self.hotkey_urls, &first);
                 // A tab on its way to the new window stays where it was.
                 match first {
                     NewWindow::Tab(tab) | NewWindow::TornOff(tab, _) => self.tabs.push(tab),

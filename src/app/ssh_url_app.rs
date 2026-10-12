@@ -77,6 +77,20 @@ pub(super) fn session_values(base: &crate::profile::Profile, url: &str, s: &crat
     Ok(Some(values))
 }
 
+/// Whether a launch URL can open at all (a good host, a legal user name). A URL that fails here
+/// must not queue a hotkey window's first session, nor raise an "opening" banner.
+pub(super) fn url_accepted(base: &crate::profile::Profile, url: &str, s: &crate::ssh_url::Settings) -> bool {
+    !matches!(session_values(base, url, s), Err(_))
+}
+
+/// Drops the launch URL kept for a hotkey window that was not made, so a later press of the
+/// hotkey does not open it long after the launch.
+pub(super) fn forget_hotkey_url(urls: &mut HashMap<String, String>, window: &super::windows_ui::NewWindow) {
+    if let super::windows_ui::NewWindow::Hotkey(guid, _) = window {
+        urls.remove(guid);
+    }
+}
+
 impl App {
     /// The profile `ssh` is bound to, when Tandem is the default handler (iTerm2's `profileForScheme`).
     pub(super) fn bound_ssh_profile(&self) -> Option<String> {
@@ -114,6 +128,12 @@ impl App {
                 self.open_ssh_url(url, Some(guid))
             }
             UrlHome::HotkeyNew => {
+                // A URL that would be refused (bad host, illegal user name) queues nothing: the dialog or
+                // silence of `open_ssh_url`, no window, no banner.
+                let base = self.profile(Some(&guid));
+                if !url_accepted(&base, url, &crate::ssh_url::Settings::from_globals(&self.globals)) {
+                    return self.open_ssh_url(url, Some(guid));
+                }
                 // The window is made on the next turn of the event loop and takes the URL as its first session.
                 self.hotkey_urls.insert(guid.clone(), url.to_string());
                 self.show_hotkey_window(&guid, super::hotkey_ui::foreground());
@@ -227,6 +247,23 @@ mod tests {
     }
 
     use super::*;
+
+    /// TWEAKS 5 review: a refused URL queues nothing; a window that failed to be made forgets its URL.
+    #[test]
+    fn a_refused_url_and_an_unmade_window_leave_no_stale_url() {
+        let base = crate::profile::Profile::default();
+        let s = crate::ssh_url::Settings { integration: false, scheme_path: String::new(), valid_user_chars: String::new(), support_path: false, ftp_path: String::new(), telnet_path: String::new() };
+        assert!(url_accepted(&base, "ssh://host.example", &s));
+        assert!(!url_accepted(&base, "ssh://", &s), "no host");
+        let mut urls = HashMap::from([("G".to_string(), "ssh://h".to_string()), ("H".to_string(), "ssh://i".to_string())]);
+        forget_hotkey_url(&mut urls, &super::super::windows_ui::NewWindow::Hotkey("G".into(), None));
+        assert!(!urls.contains_key("G") && urls.contains_key("H"));
+        let src = include_str!("windows_ui.rs");
+        let at = src.find("// A tab on its way to the new window stays").unwrap();
+        assert!(src[at - 200..at].contains("forget_hotkey_url("));
+        let open = &include_str!("ssh_url_app.rs")[..];
+        assert!(open[open.find("UrlHome::HotkeyNew => {").unwrap()..].contains("url_accepted("));
+    }
 
     /// TWEAKS 5: a launch URL for a profile with a hotkey window goes to that window.
     #[test]
