@@ -6061,7 +6061,7 @@ impl App {
             }
         }
         if let (true, Some(mb)) = (reportable, mb) {
-            let ev = mouse::Event { button: mb, action: mouse::Action::Press, mods, col: rcol, row: rrow };
+            let ev = mouse::report_event(mb, mouse::Action::Press, self.mods, rcol, rrow);
             if let Some(bytes) = mouse::encode(modes, ev) {
                 self.write_mouse_report(id, &bytes);
             }
@@ -6257,7 +6257,7 @@ impl App {
                 if let Some(rect) = self.pane_rect(pane) {
                     let (col, row) = self.report_cell(pane, rect, x, y);
                     let modes = self.modes(pane);
-                    let ev = mouse::Event { button, action: mouse::Action::Release, mods: self.mods, col, row };
+                    let ev = mouse::report_event(button, mouse::Action::Release, self.mods, col, row);
                     if let Some(bytes) = mouse::encode(modes, ev) {
                         self.write_mouse_report(pane, &bytes);
                     }
@@ -6389,7 +6389,7 @@ impl App {
         if !self.report_gate(pane, kind) {
             return;
         }
-        let ev = mouse::Event { button: button.unwrap_or(Button::None), action: mouse::Action::Motion, mods: self.mods, col, row };
+        let ev = mouse::report_event(button.unwrap_or(Button::None), mouse::Action::Motion, self.mods, col, row);
         if let Some(bytes) = mouse::encode(modes, ev) {
             self.write_mouse_report(pane, &bytes);
         }

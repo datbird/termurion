@@ -626,6 +626,17 @@ mod tests {
         assert!(!b.contains("app_owns_mouse("), "mouse_press keeps its own copy of the rule");
     }
 
+    /// TWEAKS 9 review I1: the program is told the physical modifiers (Ctrl+Shift+click reports
+    /// Ctrl and Shift), the same for press, release and motion; `pointer_mods` is for Cmd decisions.
+    #[test]
+    fn mouse_reports_carry_the_physical_modifiers() {
+        let press = body(MOD, "mouse_press");
+        assert!(press.contains("mouse::report_event(mb, mouse::Action::Press, self.mods,"), "press reports self.mods");
+        assert!(!press.contains("mouse::Event {"), "no hand-built report event in press");
+        assert!(body(MOD, "mouse_release").contains("mouse::report_event(button, mouse::Action::Release, self.mods,"));
+        assert!(body(MOD, "send_motion").contains("mouse::report_event(") && !body(MOD, "send_motion").contains("pointer_mods"));
+    }
+
     #[test]
     fn release_pointer_action_reads_report_gate() {
         let b = body(MOD, "mouse_release");
@@ -771,7 +782,7 @@ mod tests {
         }
         let press = body(MOD, "mouse_press");
         assert!(press.contains("self.report_cell("), "the press report takes the visual column");
-        assert!(press.contains("col: rcol, row: rrow"), "the press event carries it");
+        assert!(press.contains("self.mods, rcol, rrow"), "the press event carries it");
         let b = body(MOD, "report_cell");
         assert!(b.contains("mouse::cell_at(") && !b.contains("logical_col"), "{b}");
         assert!(!MOD.contains("PTYTextView.m:7353"), "the accessibility helper is not the mouse-report path");

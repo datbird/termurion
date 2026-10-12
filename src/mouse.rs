@@ -59,6 +59,13 @@ pub struct Event {
     pub row: u32,
 }
 
+/// The event a press, release or motion reports to a tracking program. It carries the PHYSICAL
+/// modifiers, the same for all three: the shortcut key (TWEAKS 9) only changes what a click means
+/// to Tandem, never what the program is told, so Ctrl+Shift+click reports Ctrl and Shift.
+pub fn report_event(button: Button, action: Action, physical: Mods, col: u32, row: u32) -> Event {
+    Event { button, action, mods: physical, col, row }
+}
+
 /// True when mouse events go to the app. Alt always takes the mouse back for
 /// selection, like Option in iTerm2.
 pub fn app_owns_mouse(modes: Modes, mods: Mods) -> bool {
@@ -353,6 +360,19 @@ mod tests {
     const SGR_DRAG: Modes = Modes { tracking: Tracking::Drag, sgr: true };
     const SGR_ANY: Modes = Modes { tracking: Tracking::Any, sgr: true };
     const LEGACY_CLICK: Modes = Modes { tracking: Tracking::Click, sgr: false };
+
+    /// TWEAKS 9 review I1: a press, release and motion report the physical modifiers, also when
+    /// they are the shortcut key (Ctrl+Shift), so the pair never turns into Cmd and is dropped.
+    #[test]
+    fn reports_carry_the_physical_modifiers_for_press_release_and_motion() {
+        let ctrl_shift = Mods { ctrl: true, shift: true, ..Mods::default() };
+        for (action, end) in [(Action::Press, 'M'), (Action::Release, 'm'), (Action::Motion, 'M')] {
+            let e = report_event(Button::Left, action, ctrl_shift, 0, 0);
+            let motion = if action == Action::Motion { 32 } else { 0 };
+            let want = format!("\x1b[<{};1;1{end}", 4 + 16 + motion);
+            assert_eq!(encode(SGR_ANY, e), Some(want.into_bytes()), "{action:?}");
+        }
+    }
 
     #[test]
     fn horizontal_wheel_reports_66_and_67() {
