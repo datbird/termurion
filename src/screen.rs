@@ -360,6 +360,8 @@ pub struct Screen {
     pub(crate) ssh_flags: Option<Vec<String>>,
     /// ExecFailed: the command could not start.
     pub exec_failed: bool,
+    /// OSC 22: the pointer shape the program asked for over this pane (None is the default).
+    pub pointer: Option<crate::pointer_shape::Shape>,
     /// UnicodeVersion and the Touch Bar key labels.
     pub unicode: crate::osc1337::Unicode,
     /// The profile's "Unicode Version" (`osc1337::profile_unicode`), the session's version
@@ -700,6 +702,7 @@ impl Screen {
             env: None,
             ssh_flags: None,
             exec_failed: false,
+            pointer: None,
             unicode: crate::osc1337::Unicode::default(),
             profile_unicode: look.unicode_version,
             normalization: look.normalization,
@@ -2257,6 +2260,7 @@ impl Screen {
         if self.term.resets != self.resets_seen {
             self.resets_seen = self.term.resets;
             self.set_progress(crate::progress::Progress::Stopped);
+            self.pointer = None;
         }
         let splices = self.term.take_history_splices();
         self.splices_taken += splices.len() as u64;
@@ -2570,6 +2574,7 @@ impl Screen {
     pub fn soft_reset(&mut self) {
         // The person's Reset ends a print job that is collecting; it must reach the parser.
         self.print_capture = None;
+        self.pointer = None;
         const DECSTR: &[u8] = b"\x1b[?25h\x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\
             \x1b[?2004l\x1b[?1004l\x1b[?1007l\x1b[4l\x1b[0m\x1b[r\x1b[?6l\x1b[?7h\x1b[?2048l\x1b[?1036l\x1b(B";
         // Straight to the parser: Literal Controls would print the sequence instead.
@@ -2615,6 +2620,7 @@ impl Screen {
         self.set_progress(crate::progress::Progress::Stopped);
         self.unicode = Default::default();
         self.exec_failed = false;
+        self.pointer = None;
         self.color_sets.clear();
         self.key_labels = Default::default();
         self.shell.host = None;

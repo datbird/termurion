@@ -14,6 +14,38 @@ pub enum Shape {
     ResizeH,
     /// Vertical resize: the divider of a stacked split.
     ResizeV,
+    /// OSC 22 only: not allowed, resize toward one edge, an open hand, zoom in and out.
+    NotAllowed,
+    ResizeUp,
+    ResizeDown,
+    ResizeLeft,
+    ResizeRight,
+    Grab,
+    ZoomIn,
+    ZoomOut,
+}
+
+/// The shape an X11 cursor name asks for in OSC 22 (`PTYSession.m:18420-18457`). An exact lookup
+/// in a fixed table: a name the table does not hold gives None (the caller goes back to the
+/// default), and the text is never used for anything else.
+pub fn from_x11(name: &str) -> Option<Shape> {
+    Some(match name {
+        "X_cursor" => Shape::NotAllowed,
+        "arrow" | "left_ptr" | "watch" => Shape::Arrow,
+        "based_arrow_down" => Shape::ResizeDown,
+        "based_arrow_up" | "sb_up_arrow" => Shape::ResizeUp,
+        "cross" | "cross_reverse" | "crosshair" | "tcross" => Shape::Crosshair,
+        "fleur" => Shape::Grab,
+        "hand1" | "hand2" => Shape::PointingHand,
+        "left_side" | "sb_left_arrow" => Shape::ResizeLeft,
+        "right_side" | "sb_right_arrow" => Shape::ResizeRight,
+        "minus" => Shape::ZoomOut,
+        "plus" => Shape::ZoomIn,
+        "sb_h_double_arrow" => Shape::ResizeH,
+        "sb_v_double_arrow" => Shape::ResizeV,
+        "xterm" => Shape::IBeam,
+        _ => return None,
+    })
 }
 
 /// What is under the pointer, as `PTYTextView+ARC.m:728-771` asks.
@@ -33,6 +65,9 @@ pub struct Over {
     pub fold: bool,
     /// A pane's text area (not a bar, the tab bar, a divider or a panel).
     pub terminal: bool,
+    /// The shape the pane's program asked for with OSC 22: it replaces the I-beam and the
+    /// reporting ring (`PTYTextView+ARC.m:750-770`).
+    pub program: Option<Shape>,
 }
 
 /// The shape iTerm2 picks, in its order: a rectangle chord, a link with Win, an image, a
@@ -47,11 +82,11 @@ pub fn choose(o: Over) -> Shape {
     } else if o.image {
         Shape::Arrow
     } else if o.reporting {
-        Shape::IBeamWithCircle
+        o.program.unwrap_or(Shape::IBeamWithCircle)
     } else if o.button || o.fold {
         Shape::Arrow
     } else {
-        Shape::IBeam
+        o.program.unwrap_or(Shape::IBeam)
     }
 }
 
@@ -151,6 +186,46 @@ mod tests {
             o.reporting = true;
             o.button = true;
         })), Shape::IBeamWithCircle, "reporting comes before buttons");
+    }
+
+    #[test]
+    fn osc22_names_map_to_shapes() {
+        let t = [
+            ("X_cursor", Shape::NotAllowed), ("arrow", Shape::Arrow), ("based_arrow_down", Shape::ResizeDown),
+            ("based_arrow_up", Shape::ResizeUp), ("cross", Shape::Crosshair), ("cross_reverse", Shape::Crosshair),
+            ("crosshair", Shape::Crosshair), ("fleur", Shape::Grab), ("hand1", Shape::PointingHand),
+            ("hand2", Shape::PointingHand), ("left_ptr", Shape::Arrow), ("left_side", Shape::ResizeLeft),
+            ("minus", Shape::ZoomOut), ("plus", Shape::ZoomIn), ("right_side", Shape::ResizeRight),
+            ("sb_h_double_arrow", Shape::ResizeH), ("sb_left_arrow", Shape::ResizeLeft),
+            ("sb_right_arrow", Shape::ResizeRight), ("sb_up_arrow", Shape::ResizeUp),
+            ("sb_v_double_arrow", Shape::ResizeV), ("tcross", Shape::Crosshair), ("watch", Shape::Arrow),
+            ("xterm", Shape::IBeam),
+        ];
+        for (name, shape) in t {
+            assert_eq!(from_x11(name), Some(shape), "{name}");
+        }
+        for bad in ["", "Arrow", "xterm ", "nonsense", "arrow\x1b[31m", "..\\..\\x"] {
+            assert_eq!(from_x11(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_program_shape_replaces_the_beam_and_the_ring_only() {
+        let prog = Some(Shape::PointingHand);
+        assert_eq!(choose(over(|o| o.program = prog)), Shape::PointingHand);
+        assert_eq!(choose(over(|o| {
+            o.program = prog;
+            o.reporting = true;
+        })), Shape::PointingHand, "honored while the program tracks the mouse");
+        assert_eq!(choose(over(|o| {
+            o.program = prog;
+            o.image = true;
+        })), Shape::Arrow);
+        assert_eq!(choose(over(|o| {
+            o.program = prog;
+            o.button = true;
+        })), Shape::Arrow);
+        assert_eq!(choose(Over { program: prog, ..Over::default() }), Shape::Arrow, "outside a pane");
     }
 
     #[test]

@@ -562,3 +562,36 @@ mod tests {
         assert!(u.stack.len() <= 64);
     }
 }
+
+#[cfg(test)]
+mod pointer_tests {
+    use crate::pointer_shape::Shape;
+    use crate::screen::Screen;
+
+    #[test]
+    fn osc22_sets_and_resets_the_pointer() {
+        let mut s = Screen::new(10, 3);
+        assert_eq!(s.pointer, None);
+        s.feed(b"\x1b]22;hand2\x07");
+        assert_eq!(s.pointer, Some(Shape::PointingHand));
+        s.feed(b"\x1b]22;sb_v_double_arrow\x1b\\");
+        assert_eq!(s.pointer, Some(Shape::ResizeV));
+        // An empty name and an unknown one put the default back (iTerm2's lookup misses).
+        s.feed(b"\x1b]22;\x07");
+        assert_eq!(s.pointer, None);
+        s.feed(b"\x1b]22;xterm\x07\x1b]22;no_such_cursor\x07");
+        assert_eq!(s.pointer, None);
+        // A hostile name changes nothing but the shape.
+        s.feed(b"\x1b]22;arrow\x07");
+        s.feed(b"\x1b]22;arrow;calc.exe\x07");
+        assert_eq!(s.pointer, None);
+        // A terminal reset (RIS) and Terminal State > Reset put it back.
+        s.feed(b"\x1b]22;fleur\x07");
+        assert_eq!(s.pointer, Some(Shape::Grab));
+        s.feed(b"\x1bc");
+        assert_eq!(s.pointer, None, "RIS");
+        s.feed(b"\x1b]22;fleur\x07");
+        s.soft_reset();
+        assert_eq!(s.pointer, None, "Reset");
+    }
+}

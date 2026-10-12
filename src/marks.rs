@@ -1323,6 +1323,8 @@ impl Screen {
                 let pairs = crate::tabstatus::parse(&payload);
                 self.apply_tab_status(&pairs);
             }
+            // iTerm2 sets the shape when the name is known and puts the default back otherwise.
+            Osc::Pointer(name) => self.pointer = crate::pointer_shape::from_x11(&name),
             Osc::Clipboard(payload) => match crate::clipboard_osc::osc52(&payload) {
                 Some(crate::clipboard_osc::Osc52::Write(t)) => self.requests.push(crate::screen::Request::ClipboardWrite(t)),
                 Some(crate::clipboard_osc::Osc52::Read(pc)) => self.requests.push(crate::screen::Request::ClipboardRead(pc)),

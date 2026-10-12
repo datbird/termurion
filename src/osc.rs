@@ -33,7 +33,7 @@ fn cut_at_cap(buf: &[u8]) -> bool {
 }
 
 /// OSC payload prefixes Tandem acts on.
-const WANTED: [&[u8]; 7] = [b"133;", b"7;", b"1337;", b"52;", b"21337;", b"9;", b"72;"];
+const WANTED: [&[u8]; 8] = [b"133;", b"7;", b"1337;", b"52;", b"21337;", b"9;", b"72;", b"22;"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptKind {
@@ -64,6 +64,8 @@ pub enum Osc {
     Kitty(Vec<u8>),
     /// OSC 21337: tab status fields.
     TabStatus(String),
+    /// OSC 22: the X11 cursor name the program wants over its pane (empty puts the default back).
+    Pointer(String),
     /// OSC 52: the payload after `52;`.
     Clipboard(Vec<u8>),
     /// A report request alacritty does not answer.
@@ -517,6 +519,9 @@ fn arg<'a>(args: &[&'a str], key: &str) -> Option<&'a str> {
     args.iter().find_map(|a| a.strip_prefix(key).and_then(|r| r.strip_prefix('=')))
 }
 
+/// How many characters of an OSC 22 name are kept (the longest table name is 17).
+const POINTER_NAME_KEPT: usize = 32;
+
 /// How many characters of an OSC 9;4 body are kept (state, value and a few more fields).
 const PROGRESS_KEPT: usize = 64;
 
@@ -579,6 +584,7 @@ pub fn parse(payload: &str) -> Option<Osc> {
         }
         "52" => Some(Osc::Clipboard(rest.as_bytes().to_vec())),
         "21337" => Some(Osc::TabStatus(rest.to_string())),
+        "22" => Some(Osc::Pointer(rest.chars().take(POINTER_NAME_KEPT).collect())),
         "72" => Some(Osc::KittyDnd(rest.as_bytes().to_vec())),
         "1337" => {
             let (k, v) = rest.split_once('=').unwrap_or((rest, ""));

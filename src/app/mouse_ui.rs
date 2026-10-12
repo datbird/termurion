@@ -259,6 +259,7 @@ impl App {
             o.image = self.panes.get(&id).is_some_and(|p| p.screen.term().grid()[point].image().is_some());
             o.fold = self.fold_at_point(id, point).is_some();
             o.reporting = self.report_gate(id, mouse::Kind::Click);
+            o.program = self.panes.get(&id).and_then(|p| p.screen.pointer);
         }
         Ok(o)
     }
@@ -282,6 +283,14 @@ impl App {
             Shape::Crosshair => Cursor::Icon(CursorIcon::Crosshair),
             Shape::ResizeH => Cursor::Icon(CursorIcon::EwResize),
             Shape::ResizeV => Cursor::Icon(CursorIcon::NsResize),
+            Shape::NotAllowed => Cursor::Icon(CursorIcon::NotAllowed),
+            Shape::ResizeUp => Cursor::Icon(CursorIcon::NResize),
+            Shape::ResizeDown => Cursor::Icon(CursorIcon::SResize),
+            Shape::ResizeLeft => Cursor::Icon(CursorIcon::WResize),
+            Shape::ResizeRight => Cursor::Icon(CursorIcon::EResize),
+            Shape::Grab => Cursor::Icon(CursorIcon::Grab),
+            Shape::ZoomIn => Cursor::Icon(CursorIcon::ZoomIn),
+            Shape::ZoomOut => Cursor::Icon(CursorIcon::ZoomOut),
         };
         if let Some(g) = self.gpu.as_mut() {
             g.window.set_cursor(cursor);
