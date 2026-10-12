@@ -205,7 +205,7 @@ pub fn modifier_prefix(tag: i64) -> Option<&'static str> {
 pub fn shortcut_label(tab_index: usize, current_tab: bool, pane_ordinal: usize, panes_in_tab: usize, tab_tag: i64, pane_tag: i64) -> Option<String> {
     if current_tab && panes_in_tab > 1 && pane_ordinal != 0 {
         return Some(match modifier_prefix(pane_tag) {
-            Some(prefix) => format!("{prefix}+{pane_ordinal}"),
+            Some(prefix) => crate::shortcut_key::mode().show(&format!("{prefix}+{pane_ordinal}")),
             None => format!("Pane {pane_ordinal}"),
         });
     }
@@ -213,7 +213,7 @@ pub fn shortcut_label(tab_index: usize, current_tab: bool, pane_ordinal: usize, 
         return None;
     }
     Some(match modifier_prefix(tab_tag) {
-        Some(prefix) => format!("{prefix}+{tab_index}"),
+        Some(prefix) => crate::shortcut_key::mode().show(&format!("{prefix}+{tab_index}")),
         None => format!("Tab {tab_index}"),
     })
 }

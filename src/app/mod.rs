@@ -4705,6 +4705,7 @@ impl App {
         self.menus_dirty = true;
         self.sync_checks();
         self.remap_setting_changed();
+        self.shortcut_key_changed();
         self.locale_update();
         self.register_hotkeys();
         self.scripts_folder_changed();
@@ -5665,6 +5666,9 @@ impl App {
         }
         // A Win chord made by an in-app remap never passed the hook, which takes real Win chords
         // for the menu commands: it takes the same road.
+        if let Some(chord) = self.shortcut_chord(ev) {
+            return self.run_chord(&chord, event_loop);
+        }
         if self.remap_in_app_on() && self.mods.cmd && !self.phys_mods.cmd {
             if let Some(chord) = crate::winkeys::vk_to_key(crate::winkeys::vk_of(ev.physical_key)).map(|key| crate::menus::Chord { key, cmd: true, alt: self.mods.alt, shift: self.mods.shift, ctrl: self.mods.ctrl }) {
                 return self.run_chord(&chord, event_loop);
@@ -5990,7 +5994,7 @@ impl App {
         // bar or status bar press is never swallowed and never counts as first mouse.
         // Captured before the press focuses the pane (`MH:278-295`).
         let was_focused = self.focused_id() == Some(id);
-        let (kind, counts) = mouse::first_click(first, self.mods.cmd, self.globals.bool("AlwaysAcceptFirstMouse"), self.globals.bool("FocusFollowsMouse"), self.focused_id() == Some(id));
+        let (kind, counts) = mouse::first_click(first, self.pointer_mods().cmd, self.globals.bool("AlwaysAcceptFirstMouse"), self.globals.bool("FocusFollowsMouse"), self.focused_id() == Some(id));
         self.first_mouse_down = counts;
         match kind {
             mouse::FirstClick::ActivateOnly => return,
@@ -6011,7 +6015,7 @@ impl App {
         }
         let (col, row, side) = self.cell_at(id, rect, x, y);
         let (rcol, rrow) = self.report_cell(id, rect, x, y);
-        let mods = self.mods;
+        let mods = self.pointer_mods();
         let modes = self.modes(id);
         let mb = match b {
             0 => Some(Button::Left),
@@ -6173,7 +6177,7 @@ impl App {
                 let modes = self.modes(pd.pane);
                 let reportable = b <= 2 && self.report_gate(pd.pane, mouse::Kind::Drag);
                 let map = self.globals.table("PointerActions");
-                if let Up::Perform(binding) = pointer::on_up(b, pd.clicks, self.mods, reportable, modes.tracking != Tracking::Off, &map, &self.pointer_prefs()) {
+                if let Up::Perform(binding) = pointer::on_up(b, pd.clicks, self.pointer_mods(), reportable, modes.tracking != Tracking::Off, &map, &self.pointer_prefs()) {
                     self.run_pointer_action(&binding, pd.pane, pd.cell, event_loop);
                 }
                 self.relayout();

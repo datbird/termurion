@@ -58,7 +58,7 @@ pub fn modifiers(tag: i64) -> Option<&'static str> {
 pub fn shortcut_label(tag: i64, number: usize) -> String {
     let ordinal = number + 1;
     match modifiers(tag) {
-        Some(mods) if ordinal < 10 => format!("{mods}{ordinal}"),
+        Some(mods) if ordinal < 10 => crate::shortcut_key::mode().show(&format!("{mods}{ordinal}")),
         _ => ordinal.to_string(),
     }
 }
@@ -105,7 +105,7 @@ pub fn compact_caption(base: &str, show_number: bool, accessory: bool, tag: i64,
 pub fn menu_entry(text: &str, title: &str, include_shortcut: bool, tag: i64, number: usize) -> String {
     let Some(mods) = modifiers(tag).filter(|_| include_shortcut) else { return text.to_string() };
     let ordinal = number + 1;
-    if ordinal >= 10 { format!("{text} \u{2014} {ordinal}") } else { format!("{title} \u{2014} {mods}{ordinal}") }
+    if ordinal >= 10 { format!("{text} \u{2014} {ordinal}") } else { format!("{title} \u{2014} {}", crate::shortcut_key::mode().show(&format!("{mods}{ordinal}"))) }
 }
 
 /// Where a window's scope finds its focused session.

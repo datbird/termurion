@@ -64,7 +64,7 @@ pub fn ordinal_of(ordered: &[PaneId], pane: PaneId) -> u32 {
 pub fn title_text(title: &str, ordinal: u32, pane_tag: i64) -> String {
     let shown = crate::inert_files::shown_name(title);
     match crate::status_tool::modifier_prefix(pane_tag) {
-        Some(prefix) if ordinal != 0 => format!("{prefix}+{ordinal}   {shown}"),
+        Some(prefix) if ordinal != 0 => format!("{}   {shown}", crate::shortcut_key::mode().show(&format!("{prefix}+{ordinal}"))),
         _ => shown,
     }
 }

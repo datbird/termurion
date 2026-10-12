@@ -2457,7 +2457,7 @@ impl App {
         if let Some(at) = self.composer_windows.help_at.take() {
             if self.composer_windows.help.take().is_none() {
                 let ai = self.globals.bool("GenerativeAIAllowed");
-                let lines: Vec<(String, String)> = composer::help_lines(ai).into_iter().map(|(k, d)| (k.to_string(), d.to_string())).collect();
+                let lines: Vec<(String, String)> = composer::help_lines(ai).into_iter().map(|(k, d)| (crate::shortcut_key::mode().show(k), d.to_string())).collect();
                 let dark = self.dark();
                 let work = self.monitor_rects().map(|(w, _)| w);
                 if let Some(g) = self.gpu.as_ref() {

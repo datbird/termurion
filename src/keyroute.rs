@@ -188,6 +188,12 @@ pub fn yields_to_system(respect: bool, shell_owned: bool, menu_command: bool) ->
 /// True when Tandem has something for this Win chord: the Leader, a number shortcut,
 /// a key mapping, or a working menu command.
 pub fn win_chord_bound(s: &Snapshot, chord: &Chord) -> bool {
+    chord_bound(s, chord, true)
+}
+
+/// `win_chord_bound` for a Cmd chord pressed as `via_win` (the Win key) or as the shortcut key's
+/// own modifiers: Windows keeps nothing of the latter, so a mapping never yields to the system.
+pub fn chord_bound(s: &Snapshot, chord: &Chord, via_win: bool) -> bool {
     if s.leader_on || (s.composer && crate::composer::chord_of(chord).is_some()) {
         return true;
     }
@@ -209,7 +215,7 @@ pub fn win_chord_bound(s: &Snapshot, chord: &Chord) -> bool {
     if s.keys.contains(&a) || s.keys.contains(&b) {
         // A stock mapping is Tandem's own, like a menu command.
         let stock_only = !s.user.contains(&a) && !s.user.contains(&b);
-        return !yields_to_system(s.respect_system, crate::winkeys::shell_owned_chord(chord), menu || stock_only || profile);
+        return !yields_to_system(s.respect_system, via_win && crate::winkeys::shell_owned_chord(chord), menu || stock_only || profile);
     }
     menu || profile
 }
@@ -279,6 +285,23 @@ mod tests {
     }
     fn win(key: ChordKey) -> Chord {
         Chord { key, cmd: true, alt: false, shift: false, ctrl: false }
+    }
+
+    /// TWEAKS 9: a Cmd chord pressed with the shortcut key's own keys never yields to a Windows
+    /// shortcut (Windows has none on Ctrl+Shift), and is the same stroke a saved binding, an
+    /// import or an export names with iTerm2's Cmd.
+    #[test]
+    fn a_shortcut_key_chord_is_bound_like_its_win_chord_and_never_yields() {
+        let e = toml::Table::new();
+        let g = map("0x62-0x100000", 13); // Cmd+B
+        let mut snap = Snapshot::new(&ctx(&e, &g));
+        snap.respect_system = true;
+        let b = win(ChordKey::Char('b'));
+        assert!(!win_chord_bound(&snap, &b), "Win+B is the shell's (Windows keeps it) and yields to it");
+        assert!(chord_bound(&snap, &b, false), "Ctrl+Shift+B is not, so the binding runs");
+        assert_eq!(press_from_chord(&b).stroke.flags & COMMAND, COMMAND, "the stroke keeps iTerm2's Cmd");
+        assert!(chord_bound(&Snapshot::new(&ctx(&e, &e)), &win(ChordKey::Char('t')), false), "a menu command");
+        assert!(!chord_bound(&Snapshot::new(&ctx(&e, &e)), &win(ChordKey::F(13)), false), "nothing owns Cmd+F13: it goes to the terminal");
     }
 
     #[test]
@@ -569,7 +592,7 @@ mod tests {
         let at = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("hook_body calls {needle}"));
         assert!(at("global_hotkeys(") < at("remap(h, kb, down)"), "a registered hotkey before a remap");
         assert!(at("remap(h, kb, down)") < at("(h.bound)(c)"), "a remap before the Win-chord gate");
-        let gate = include_str!("keyroute.rs").split("pub fn win_chord_bound(").nth(1).and_then(|r| r.split("\n}").next()).expect("win_chord_bound");
+        let gate = include_str!("keyroute.rs").split("pub fn chord_bound(").nth(1).and_then(|r| r.split("\n}").next()).expect("chord_bound");
         assert!(gate.find("s.keys.contains").unwrap() < gate.find("menu || profile").unwrap(), "a key mapping before a menu command or profile shortcut");
         let e = toml::Table::new();
         let x = Chord { ctrl: true, ..win(ChordKey::Char('x')) };

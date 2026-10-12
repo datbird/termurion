@@ -119,6 +119,14 @@ impl Gate {
     }
 }
 
+/// Whether the Win key stands for Cmd in a Tandem window for this chord: always with the Win
+/// shortcut key, else only for a chord the shortcut key's own modifiers cannot press
+/// (`shortcut_key`), so Win+D and the other Windows chords stay with Windows.
+fn win_is_cmd(c: &Chord) -> bool {
+    let mode = crate::shortcut_key::mode();
+    mode == crate::shortcut_key::ShortcutKey::Win || !mode.reachable(c)
+}
+
 struct Hook {
     gate: Mutex<Gate>,
     send: Box<dyn Fn(Chord) + Send + Sync>,
@@ -500,7 +508,7 @@ unsafe fn hook_body(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
                     alt: held(0x12),
                     ctrl: held(0x11),
                 };
-                let bound = |c: &Chord| recording || if pwm { pwm_chord(c) } else if chat { chat_chord(c) } else if cockpit { cockpit_chord(c) } else { (h.bound)(c) };
+                let bound = |c: &Chord| recording || if pwm { pwm_chord(c) } else if chat { chat_chord(c) } else if cockpit { cockpit_chord(c) } else { win_is_cmd(c) && (h.bound)(c) };
                 let verdict = locked(&h.gate).on_key(e, &bound);
                 if let Verdict::Take(chord) = verdict {
                     if let Some(c) = chord {
@@ -1298,6 +1306,23 @@ mod tests {
         let pump = code.split("fn install(").nth(1).expect("install");
         assert!(pump.contains("pump_guarded("), "the message loop dispatches through pump_guarded");
         assert!(pump.contains("OnEnd::new("), "the hook thread holds an unhook guard");
+    }
+
+    /// TWEAKS 9: with Ctrl+Shift or Ctrl+Alt the hook leaves Win+D and every other Win chord that has
+    /// a pair of its own to Windows, and still takes the Cmd chords no pair reaches (Cmd+Ctrl+...).
+    /// The mode is process-wide, so this test sets it and restores it.
+    #[test]
+    fn win_is_cmd_only_where_the_shortcut_key_cannot_reach() {
+        use crate::shortcut_key::{set_mode, ShortcutKey};
+        let c = |key, ctrl, alt, shift| Chord { key, cmd: true, alt, shift, ctrl };
+        let before = crate::shortcut_key::mode();
+        set_mode(ShortcutKey::Win);
+        assert!(win_is_cmd(&c(ChordKey::Char('d'), false, false, false)));
+        set_mode(ShortcutKey::CtrlShift);
+        let (d, sd, cd) = (win_is_cmd(&c(ChordKey::Char('d'), false, false, false)), win_is_cmd(&c(ChordKey::Char('d'), false, false, true)), win_is_cmd(&c(ChordKey::Char('d'), true, false, false)));
+        set_mode(before);
+        assert!(!d && !sd, "Win+D and Win+Shift+D stay with Windows");
+        assert!(cd, "Cmd+Ctrl+D has no pair: the Win key still carries it");
     }
 
     #[test]

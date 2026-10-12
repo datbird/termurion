@@ -271,9 +271,9 @@ pub fn counter_text(number: usize, is_last: bool, modifier: &str) -> String {
     if modifier.is_empty() {
         String::new()
     } else if number < 9 {
-        format!("{modifier}{number}")
+        crate::shortcut_key::mode().show(&format!("{modifier}{number}"))
     } else if is_last {
-        format!("{modifier}9")
+        crate::shortcut_key::mode().show(&format!("{modifier}9"))
     } else {
         String::new()
     }

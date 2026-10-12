@@ -556,7 +556,7 @@ impl App {
         let (x, y) = self.cursor;
         let (underline, preview) = self.hover_wanted();
         let window_key = semantic::hover_allowed(self.focused && self.app_active, self.globals.bool("CmdClickWhenInactiveInvokesSemanticHistory"));
-        let want = window_key && self.mods.cmd && !self.mods.ctrl && self.globals.bool("CommandSelection") && matches!(self.drag, Drag::None);
+        let want = window_key && self.pointer_mods().cmd && !self.pointer_mods().ctrl && self.globals.bool("CommandSelection") && matches!(self.drag, Drag::None);
         let at = want.then(|| self.pane_at(x, y)).flatten().map(|(id, rect)| {
             let (col, row, _) = self.cell_at(id, rect, x, y);
             (id, self.grid_point(id, col, row))

@@ -35,6 +35,38 @@ impl App {
         self.apply_remapped_mods();
     }
 
+    /// The modifiers a pointer press sees: the shortcut key's own keys held with a click are Cmd
+    /// (Cmd+click opens a link), as the Win key is in every mode.
+    pub(super) fn pointer_mods(&self) -> Mods {
+        crate::shortcut_key::mode().logical(self.mods)
+    }
+
+    /// The Cmd chord a key press makes with the shortcut key's own modifiers (Ctrl+Shift+D is
+    /// Cmd+D), when Tandem has a command, mapping or shortcut for it. Anything else is not a
+    /// shortcut and goes on to the terminal with the keys as pressed, whatever key reporting the
+    /// program asked for: iTerm2's menu key equivalents come before the terminal's key handler
+    /// too (`PTYTextView.m:731`), so a bound shortcut is never sent to the program.
+    pub(super) fn shortcut_chord(&self, ev: &KeyEvent) -> Option<crate::menus::Chord> {
+        if ev.state != ElementState::Pressed {
+            return None;
+        }
+        let types = ev.text.as_deref().is_some_and(|t| t.chars().any(|c| !c.is_control()));
+        let l = crate::shortcut_key::mode().press_as_cmd(self.mods, types)?;
+        let key = crate::winkeys::vk_to_key(crate::winkeys::vk_of(ev.physical_key))?;
+        let chord = crate::menus::Chord { key, cmd: true, alt: l.alt, shift: l.shift, ctrl: false };
+        let snapshot = self.route_snapshot.read().unwrap_or_else(|e| e.into_inner());
+        crate::keyroute::chord_bound(&snapshot, &chord, false).then_some(chord)
+    }
+
+    /// The Shortcut key setting changed: the hook, the key path and the menu text follow it.
+    pub(super) fn shortcut_key_changed(&mut self) {
+        let now = crate::shortcut_key::ShortcutKey::from_globals(&self.globals);
+        if now != crate::shortcut_key::mode() {
+            crate::shortcut_key::set_mode(now);
+            self.refresh_chord_text();
+        }
+    }
+
     /// `ev` with the text and character a remapped modifier calls for, when remapping is off and
     /// the remap changed what is held: Alt remapped as Control types Ctrl+C's byte, Control remapped
     /// as Alt types the plain letter. None when nothing differs.
