@@ -40,17 +40,11 @@ Each item says what is wrong, what it should do, and where it was seen.
    milestone with a pre-flight scan for every "tandem" string (case-insensitive) and a
    migration test, then a desktop probe.
 
-6. **Other apps' link schemes (`vscode:`, `slack:`).** iTerm2 opens any scheme
-   (m13v1 ruling, item 6); Tandem refuses them by that deliberate security ruling. Changing it
-   needs a ruling from Robert on the question and a deny list. Recorded by the
-   13y2 carried pass. Not started 2026-10-12 for that reason (tweaks progress.md has the
-   questions and the proposed design: confirm first, deny list, the one URL-open owner).
-
 7. **Browser Save Page As has no SSH destination (13x4 ruling).** Item 7 (a) is done (see Done).
    (b) needs a design from Robert before code: a remote folder picker, an upload of a whole saved
    folder (up to 2000 files, 256 MiB) over the SSH file machinery, and what stands in for the Mark
    of the Web, create-new and cleanup guarantees the local saver has. Recorded by the 13y2 parity
-   sweep. Looked at 2026-10-12, not started (tweaks progress.md).
+   sweep. Plan written 2026-10-12, build after the rename: plan: docs/superpowers/plans/2026-10-20-tw7b-save-page-to-ssh.md
 8. **Tandem stays running with no window.** On EXTREME, tandem.exe (started from Explorer at
    17:00 on 2026-10-11) and its tandem-host.exe were still running at 22:10 with no window
    (MainWindowHandle 0), so the installer refused to replace them ("Tandem is running"). Robert
@@ -87,12 +81,23 @@ Each item says what is wrong, what it should do, and where it was seen.
    reporting ring over that pane; RIS, Reset and the program ending clear it.
 
 4. **Three terminal sequences were partial.** Done 2026-10-12 (tw-small, 62f70f5): (a) SetColors
-   `badge=` writes the session's Badge Color; (b) ExecFailed makes the end bar say "Session failed
+   `badge=` writes the session's Badge Color at alpha 1, as iTerm2 does (be18ca8); (b) ExecFailed makes the end bar say "Session failed
    to start." and closing raises no short-lived warning; (c) OSC 21337 already raised the pattern
    notification and the taskbar count (wired through `tick_status_change` earlier, the note was
    stale); a test pins it.
 
 5. **Hotkey-window routing for a launch URL.** Done 2026-10-12 (tw-small, 552a17f): an
    ssh, telnet or ftp URL for a profile with a hotkey window opens there, as iTerm2's `getUrl`.
+   Review fix (this branch): a window that fails to be made forgets its pending URL, and a URL
+   that would be refused queues nothing and shows no banner.
+
+6. **Other apps' link schemes (`vscode:`, `slack:`).** Done 2026-10-12 (tw-small, a35fa74 and
+   a5633ab; Robert's ruling): asked once per scheme with Always, Once or Never, naming the app
+   Windows registered (AssocQueryStringW, never link text); Always and Never are kept in the settings
+   LinkSchemesAlways and LinkSchemesNever (Advanced > General, editable); a fixed blocked list
+   (ms-msdt, search-ms, file, javascript, ms-settings and others, plus ms-word/excel/powerpoint
+   ofe|ofv) never opens; no registered app, or a cmd, powershell, wscript, mshta or rundll32 app,
+   is refused; launched by ShellExecuteW with the encoded URL as the one file argument. m13v1
+   ruling updated.
 
 7a. **Selection helpers in the terminal context menu.** Done 2026-10-12 (tw-small, 13cae8b).
