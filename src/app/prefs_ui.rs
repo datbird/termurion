@@ -595,10 +595,10 @@ mod tests {
         let dir = temp("older-snapshot");
         let (mut g, mut store) = local(&dir, "x");
         let mut snap = remote();
-        snap.settings.insert("disableTopRightIndicators".into(), Value::Boolean(true));
+        snap.settings.insert("disableTopRightIndicators".into(), Value::Boolean(true)); // old key on purpose
         apply_snapshot(&snap, &mut g, &mut store);
         assert_eq!(g.values.get("DisableTopRightIndicators"), Some(&Value::Boolean(true)));
-        assert!(!g.values.contains_key("disableTopRightIndicators"));
+        assert!(!g.values.contains_key("disableTopRightIndicators")); // old key on purpose
     }
 
     fn names(store: &Store) -> Vec<String> {

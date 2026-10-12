@@ -8465,6 +8465,9 @@ mod tests {
         tell(&mut led, 1, true, on);
         tell(&mut led, 1, true, on);
         assert_eq!(*wrote.borrow(), vec![(1, true)]);
+        // The tick's catch-up reports go through the same ledger (driven in
+        // `webhost::focus_tick_catches_panes_up`: close of the active pane, a hold that ended).
+        assert!(fn_body(include_str!("webhost_app.rs").split("#[cfg(test)]").next().unwrap(), "fn pane_focus_tick(", "    ").contains("crate::webhost::focus_tick("));
         // Wiring: one path, a tick per pass, state dropped with the pane, no second reporter.
         let live = include_str!("mod.rs").split("#[cfg(test)]\nmod tests").next().unwrap();
         assert!(live.contains("self.pane_focus_tick();"));

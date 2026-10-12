@@ -396,10 +396,20 @@ impl App {
         let in_front = crate::webhost_win::foreground_root() == Some(hwnd) && self.web_focus_held != self.current_window();
         let Some(window) = self.current_window() else { return };
         let focused = self.focused_pane_id();
-        let Some(seen) = self.report_seen.step(window, focused, in_front) else { return };
-        let mine: Vec<crate::layout::PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
-        let prev = seen.filter(|p| mine.contains(p));
-        self.browser_focus_moved(prev, focused);
+        let moved = match self.report_seen.step(window, focused, in_front) {
+            Some(seen) => {
+                let mine: Vec<crate::layout::PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
+                let tag = |p: Option<crate::layout::PaneId>| p.map(|p| (p, self.is_browser_pane(p)));
+                crate::webhost::pane_focus_reports(tag(seen.filter(|p| mine.contains(p))), tag(focused))
+            }
+            None => Vec::new(),
+        };
+        let active_terminal = focused.filter(|p| !self.is_browser_pane(*p));
+        // Only a pane the ledger last told "gained" is looked up, so an idle pass allocates nothing.
+        let reports = crate::webhost::focus_tick(moved, &self.focus_reported, active_terminal, in_front, |p| self.tabs.iter().any(|t| t.layout.panes().contains(&p)));
+        for (pane, gained) in reports {
+            self.report_focus_to(pane, gained);
+        }
     }
 
     /// One view event, by view id. No owner exists yet: log what is ours, drop the rest.

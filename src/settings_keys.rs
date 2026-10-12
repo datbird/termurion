@@ -1873,7 +1873,7 @@ mod tests {
 
     /// 13y2 Task 9b: no reader is left on an old name (a reader of a key with no schema row reads
     /// the empty default, silently). Every `src` file is scanned for the old keys as string
-    /// literals; only the `RENAMED` table and the migration tests may spell them.
+    /// literals; only the `RENAMED` table and the migration tests (a line ending `// old key on purpose`) may spell them.
     #[test]
     fn no_reader_left_on_an_old_key() {
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -1893,7 +1893,7 @@ mod tests {
             let text = std::fs::read_to_string(&f).unwrap();
             for (n, line) in text.lines().enumerate() {
                 let t = line.trim_start();
-                if t.starts_with("//") || t.starts_with("(\"") && t.ends_with("\"),") {
+                if t.starts_with("//") || t.starts_with("(\"") && t.ends_with("\"),") || line.contains("// old key on purpose") {
                     continue;
                 }
                 for (old, _) in RENAMED {

@@ -347,7 +347,7 @@ mod tests {
     /// 13y2 Task 9b: an Advanced setting imports under its iTerm2 spelling or a lower-case-first one.
     #[test]
     fn plist_keys_match_either_spelling() {
-        for (name, spelling) in [("cap", "DisableTopRightIndicators"), ("low", "disableTopRightIndicators")] {
+        for (name, spelling) in [("cap", "DisableTopRightIndicators"), ("low", "disableTopRightIndicators")] { // old key on purpose
             let path = std::env::temp_dir().join(format!("tandem-import-spell-{name}-{}.plist", std::process::id()));
             std::fs::write(&path, format!(r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict><key>{spelling}</key><true/></dict></plist>"#)).unwrap();

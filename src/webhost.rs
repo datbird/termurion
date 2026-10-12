@@ -1665,6 +1665,9 @@ pub fn pane_focus_reports(prev: Option<(crate::layout::PaneId, bool)>, next: Opt
         (Some((from, false)), Some((to, false))) => vec![(from, false), (to, true)],
         (Some((from, false)), Some((_, true))) => vec![(from, false)],
         (Some((_, true)), Some((to, false))) => vec![(to, true)],
+        // The active pane went away (closed, or moved out of the window): the pane that takes its
+        // place hears it gained focus (`PTYTab.m:951-960` sets every session's state on any change).
+        (None, Some((to, false))) => vec![(to, true)],
         _ => Vec::new(),
     }
 }
@@ -1704,6 +1707,39 @@ impl FocusLedger {
     pub fn forget(&mut self, pane: crate::layout::PaneId) {
         self.told.remove(&pane);
     }
+
+    /// The reports that bring every pane `mine` to the state it should have while its window is
+    /// in front and `active` is the active terminal pane: the active pane gained, any other pane
+    /// last told it gained now lost. It catches up what a report could not say when it was due
+    /// (a password manager's hold that has since ended; `PTYSession.m:9850-9854` re-runs
+    /// `setFocused:` when the hold reaches 0).
+    pub fn out_of_step(&self, active: Option<crate::layout::PaneId>, mine: impl Fn(crate::layout::PaneId) -> bool) -> Vec<(crate::layout::PaneId, bool)> {
+        let mut out: Vec<(crate::layout::PaneId, bool)> = self.told.iter().filter(|(p, told)| **told && Some(**p) != active && mine(**p)).map(|(p, _)| (*p, false)).collect();
+        out.sort();
+        if let Some(a) = active {
+            if !self.told.get(&a).copied().unwrap_or(false) {
+                out.push((a, true));
+            }
+        }
+        out
+    }
+}
+
+/// One pass of the focus tick: the reports owed for the active pane's move (`moved`, from
+/// `pane_focus_reports`) and, while the window is in front, the ones that bring every pane to its
+/// state (`FocusLedger::out_of_step`). The app writes each through `report_focus_to`.
+pub fn focus_tick(
+    moved: Vec<(crate::layout::PaneId, bool)>,
+    led: &FocusLedger,
+    active_terminal: Option<crate::layout::PaneId>,
+    in_front: bool,
+    mine: impl Fn(crate::layout::PaneId) -> bool,
+) -> Vec<(crate::layout::PaneId, bool)> {
+    let mut out = moved;
+    if in_front {
+        out.extend(led.out_of_step(active_terminal, mine));
+    }
+    out
 }
 
 /// The fixed Tandem-only host that program and model content is served under (never resolvable).
@@ -2517,7 +2553,8 @@ mod tests {
         assert_eq!(pane_focus_reports(Some((1, false)), Some((2, true))), vec![(1, false)]);
         assert_eq!(pane_focus_reports(Some((2, true)), Some((1, false))), vec![(1, true)]);
         assert_eq!(pane_focus_reports(Some((2, true)), Some((4, true))), Vec::<(u64, bool)>::new());
-        assert_eq!(pane_focus_reports(None, Some((1, false))), Vec::<(u64, bool)>::new());
+        assert_eq!(pane_focus_reports(None, Some((1, false))), vec![(1, true)], "the active pane closed: the survivor hears focus-in");
+        assert_eq!(pane_focus_reports(None, Some((1, true))), Vec::<(u64, bool)>::new());
     }
 
     #[test]
@@ -2537,6 +2574,43 @@ mod tests {
         assert!(!l.report(5, true, FocusFacts { gateway: true, ..on }), "gateway");
         l.forget(1);
         assert!(l.report(1, true, on));
+    }
+
+    /// 13y2 Task 9d review: the tick catches panes up. The active pane closing leaves the
+    /// survivor told it gained focus; a hold that ended gets the report it missed.
+    #[test]
+    fn focus_tick_catches_panes_up() {
+        let on = FocusFacts { held: false, gateway: false, wants: true };
+        let mut l = FocusLedger::default();
+        let wrote = std::cell::RefCell::new(Vec::<(u64, bool)>::new());
+        let run = |l: &mut FocusLedger, moved: Vec<(u64, bool)>, active: Option<u64>, facts: &dyn Fn(u64) -> FocusFacts| {
+            for (p, g) in focus_tick(moved, l, active, true, |_| true) {
+                if l.report(p, g, facts(p)) {
+                    wrote.borrow_mut().push((p, g));
+                }
+            }
+        };
+        // Pane 1 active and told; the window is in front.
+        run(&mut l, Vec::new(), Some(1), &|_| on);
+        assert_eq!(*wrote.borrow(), vec![(1, true)]);
+        // Pane 1 closes: its state goes with it, the tick sees (None, Some(2)).
+        l.forget(1);
+        wrote.borrow_mut().clear();
+        run(&mut l, pane_focus_reports(None, Some((2, false))), Some(2), &|_| on);
+        assert_eq!(*wrote.borrow(), vec![(2, true)], "the survivor hears focus-in");
+        run(&mut l, Vec::new(), Some(2), &|_| on);
+        assert_eq!(*wrote.borrow(), vec![(2, true)], "nothing twice");
+        // A hold is open while focus moves 2 to 3: nothing can be said, then the hold ends.
+        wrote.borrow_mut().clear();
+        run(&mut l, pane_focus_reports(Some((2, false)), Some((3, false))), Some(3), &|_| FocusFacts { held: true, ..on });
+        assert!(wrote.borrow().is_empty());
+        run(&mut l, Vec::new(), Some(3), &|_| on);
+        assert_eq!(*wrote.borrow(), vec![(2, false), (3, true)], "the missed pair is sent when the hold ends");
+        // A window that is not in front catches up nothing.
+        wrote.borrow_mut().clear();
+        assert!(focus_tick(Vec::new(), &l, Some(2), false, |_| true).is_empty());
+        // A pane of another window is left alone.
+        assert!(focus_tick(Vec::new(), &l, Some(3), true, |p| p != 3).is_empty());
     }
 
     /// 13x AI browser tools final review I3: a host literal that is this computer or the local
