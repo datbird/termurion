@@ -214,7 +214,13 @@ impl App {
 
     /// `HoveredFileCancelled`: the drag left every pane that was told about it.
     pub(super) fn dnd_cancel(&mut self) {
-        for p in self.panes.values_mut() {
+        self.dnd_exit_hovering(None);
+    }
+
+    /// Tells every hovering pane except `keep` that the drag left it (a drag that entered pane A and
+    /// was dropped on pane B must not leave A hovering: 13o parked minor).
+    pub(super) fn dnd_exit_hovering(&mut self, keep: Option<PaneId>) {
+        for p in self.panes.values_mut().filter(|p| Some(p.id) != keep) {
             if p.own().dnd.hovering() {
                 // A screen that lost trust since is not told anything.
                 let replies = if p.own().dnd_accepting() { p.own_mut().dnd.drag_exited() } else { Vec::new() };
@@ -359,6 +365,18 @@ mod dnd_tests {
         let place = own.find("fn dnd_place").unwrap();
         let place_end = own[place..].find("/// winit's `HoveredFile`").unwrap() + place;
         assert!(!own[place..place_end].contains("self.cursor"));
+    }
+
+    /// 13o parked minor: a drop on pane B ends the drag over pane A too.
+    #[test]
+    fn a_drop_on_one_pane_exits_the_hover_of_another() {
+        let src = include_str!("mod.rs");
+        let arm = src.find("WindowEvent::DroppedFile(path)").unwrap();
+        let end = src[arm..].find("self.dnd_dropped.push").unwrap() + arm;
+        assert!(src[arm..end].contains("self.dnd_exit_hovering(Some(p));"));
+        let own = include_str!("emu_ui.rs");
+        let f = &own[own.find("fn dnd_exit_hovering").unwrap()..];
+        assert!(f[..f.find("\n    }\n").unwrap()].contains("Some(p.id) != keep") && f.contains("drag_exited()"));
     }
 
     /// 13o final review I2 and Task 9 minor 5: a dropped link, junction, device or network path is

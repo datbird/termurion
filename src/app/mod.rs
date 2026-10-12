@@ -7750,6 +7750,7 @@ impl ApplicationHandler<UserEvent> for App {
                 // Only the pane under the pointer, and only when its program asked: any other
                 // drop keeps the file-name paste (a background pane never gets a file).
                 if let Some((pt, p)) = real.and_then(|pt| self.pane_at(pt.0, pt.1).map(|(p, _)| (pt, p))).filter(|(_, p)| self.dnd_accepts(*p)) {
+                    self.dnd_exit_hovering(Some(p));
                     self.dnd_dropped.push((p, path, pt));
                     return;
                 }
