@@ -98,7 +98,8 @@ const BAD_PREFIXES: &[&str] = &["python", "pwsh", "php-", "powershell"];
 const USER_WRITABLE_UNDER_WINDOWS: &[&str] = &[
     "temp", "tasks", "tracing", "registration\\crmlog", "debug\\wia", "system32\\tasks", "system32\\tasks_migrated", "system32\\com\\dmp", "system32\\fxstmp",
     "system32\\spool\\drivers\\color", "system32\\spool\\printers", "system32\\spool\\servers", "system32\\microsoft\\crypto\\rsa\\machinekeys",
-    "syswow64\\tasks", "syswow64\\com\\dmp", "syswow64\\fxstmp",
+    "syswow64\\tasks", "syswow64\\tasks_migrated", "syswow64\\com\\dmp", "syswow64\\fxstmp", "syswow64\\microsoft\\crypto\\rsa\\machinekeys",
+    "pla\\reports", "pla\\rules", "pla\\templates", "pla\\system", "system32\\logfiles\\wmi\\rtbackup",
 ];
 
 /// The administrator-only folders as Windows names them on this machine (`SHGetKnownFolderPath`: Program Files,
@@ -233,13 +234,18 @@ fn is_short_alias(stem: &str) -> bool {
     stem.rsplit_once('~').is_some_and(|(head, tail)| !head.is_empty() && head.len() <= 6 && !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// `path` as lowercase components with `.` and `..` resolved (what `GetFullPathNameW` does to the text);
-/// None when a `..` climbs above the drive root.
+/// `path` as lowercase components, the way Windows reads the text: `.` and `..` resolved, trailing dots and
+/// spaces cut from every component (`Temp.` is `Temp`), and None when a `..` climbs above the drive root or a
+/// component after the drive holds `:` (an alternate data stream, `Tracing:x.exe`).
 fn components(path: &str) -> Option<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
-    for part in path.trim().trim_matches('"').split('\\') {
+    for (i, part) in path.trim().trim_matches('"').split('\\').enumerate() {
+        if i > 0 && part.contains(':') {
+            return None;
+        }
+        let part = if part == ".." { part } else { part.trim_end_matches(['.', ' ']) };
         match part {
-            "" | "." => {}
+            "" => {}
             ".." => {
                 out.pop()?;
             }
@@ -520,20 +526,71 @@ mod tests {
         }
     }
 
-    /// The FFI against real version strings (the class of miss in review I2): the inbox interpreters are refused
-    /// by what their own version resource says, read from the real files.
+    /// The FFI against real version strings (the class of miss in review I2): an inbox interpreter is refused
+    /// by what its own version resource says, read from the real file. One test per file, so each row can fail
+    /// on its own: in a single looping test the first failing row hides whether the others still pass, and
+    /// only rundll32 (InternalName `rundll`, OriginalFilename `.MUI`) was missed before the normalization.
+    #[cfg(windows)]
+    fn system32_row_is_refused(sub: &str) {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+        let exe = format!("{root}\\System32\\{sub}");
+        let names = crate::url_schemes::system().version_names(&exe).unwrap_or_else(|| panic!("no version info read for {exe}"));
+        assert!(!names.is_empty(), "{exe}: {names:?}");
+        assert!(names.iter().any(|n| is_bad_name(n)), "{exe}: none of {names:?} is a bad name");
+        // The names a renamed copy would carry, outside any trusted folder.
+        assert!(check_version("D:\\tools\\helper.exe", Some(&names), &TrustedFolders::default()).is_err(), "{exe}: {names:?}");
+    }
     #[cfg(windows)]
     #[test]
-    fn real_system32_interpreters_are_refused_by_their_version_info() {
-        let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
-        let reg = crate::url_schemes::system();
-        for file in ["rundll32.exe", "cmd.exe", "powershell.exe"] {
-            let exe = if file == "powershell.exe" { format!("{root}\\System32\\WindowsPowerShell\\v1.0\\{file}") } else { format!("{root}\\System32\\{file}") };
-            let names = reg.version_names(&exe).unwrap_or_else(|| panic!("no version info read for {exe}"));
-            assert!(!names.is_empty(), "{exe}: {names:?}");
-            // The names a renamed copy would carry, outside any trusted folder.
-            assert!(check_version("D:\\tools\\helper.exe", Some(&names), &TrustedFolders::default()).is_err(), "{exe}: {names:?}");
+    fn real_rundll32_is_refused_by_its_version_info() {
+        system32_row_is_refused("rundll32.exe");
+    }
+    #[cfg(windows)]
+    #[test]
+    fn real_cmd_is_refused_by_its_version_info() {
+        system32_row_is_refused("cmd.exe");
+    }
+    #[cfg(windows)]
+    #[test]
+    fn real_powershell_is_refused_by_its_version_info() {
+        system32_row_is_refused("WindowsPowerShell\\v1.0\\powershell.exe");
+    }
+
+    /// What `WinRegistry::handler_exe` hands the plan, through the same text step: quoted, unquoted with spaces,
+    /// and with arguments. The plan judges the program, never the command line.
+    #[test]
+    fn handler_exe_answers_reach_the_plan_as_the_program_path() {
+        let via = |raw: &str| {
+            let exe = crate::url_schemes::executable_path(raw);
+            let h = Handler { name: Some("X".into()), command: Some(raw.into()), exe, version_names: Some(vec![]) };
+            decide("foo:x", &h, "", "")
+        };
+        assert!(matches!(via("\"C:\\Program Files\\Code\\Code.exe\""), Plan::Ask { .. }));
+        assert!(matches!(via("\"C:\\Program Files\\Code\\Code.exe\" \"%1\""), Plan::Ask { .. }));
+        assert!(matches!(via("C:\\Program Files\\Code\\Code.exe"), Plan::Ask { .. }));
+        // An interpreter is refused whichever way it is spelled, and arguments on an unquoted answer make it no .exe.
+        assert!(matches!(via("\"C:\\Windows\\System32\\cmd.exe\" /c %1"), Plan::Refuse(_)));
+        assert!(matches!(via("C:\\Program Files\\Code\\Code.exe --open %1"), Plan::Refuse(_)));
+        assert!(matches!(via("\"unterminated"), Plan::Refuse(_)));
+    }
+
+    #[test]
+    fn trailing_dots_spaces_and_streams_cannot_dodge_the_excluded_folders() {
+        let t = TrustedFolders { program_files: vec!["C:\\Program Files".into()], windows: Some("C:\\Windows".into()) };
+        for exe in [
+            "C:\\Windows\\Temp.\\x.exe", "C:\\Windows\\Temp. .\\x.exe", "C:\\Windows\\Temp...\\x.exe", "C:\\Windows\\Tasks \\x.exe", "C:\\Windows\\Tracing:x.exe", "C:\\Windows\\Tracing\\x.exe:s",
+            "C:\\Windows\\System32:s\\x.exe", "C:\\Program Files\\T\\t.exe:evil", "C:\\Windows\\System32\\Tasks.\\x.exe", "C:\\Windows\\System32\\spool\\drivers\\color.\\x.exe",
+            "C:\\Windows\\PLA\\Reports\\x.exe", "C:\\Windows\\PLA\\Rules\\x.exe", "C:\\Windows\\PLA\\Templates\\x.exe", "C:\\Windows\\Registration\\CRMLog\\x.exe",
+            "C:\\Windows\\System32\\Microsoft\\Crypto\\RSA\\MachineKeys\\x.exe", "C:\\Windows\\SysWOW64\\Tasks\\x.exe", "C:\\Windows\\SysWOW64\\Microsoft\\Crypto\\RSA\\MachineKeys\\x.exe",
+            "C:\\Windows\\System32\\LogFiles\\WMI\\RtBackup\\x.exe", "C:\\Windows\\System32\\spool\\drivers\\color\\x.exe",
+        ] {
+            assert!(!in_system_root(exe, &t), "{exe}");
         }
+        // Trailing dots are folded, not refused outright: a dotted name that lands in a trusted folder is that folder.
+        assert!(in_system_root("C:\\Windows\\System32.\\x.exe", &t));
+        assert!(in_system_root("C:\\Windows\\System32\\Sub. \\x.exe", &t));
+        assert_eq!(components("C:\\a.\\b \\..\\c").unwrap(), ["c:", "a", "c"]);
+        assert_eq!(components("C:\\a\\b:s"), None);
     }
 
     /// A source that records every call, to prove what is touched and when (review I1).

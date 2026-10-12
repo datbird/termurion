@@ -540,7 +540,7 @@ impl SchemeRegistry for WinRegistry {
 
     fn handler_exe(&self, scheme: &str) -> Option<String> {
         use windows_sys::Win32::UI::Shell::ASSOCSTR_EXECUTABLE;
-        Self::assoc(scheme, ASSOCSTR_EXECUTABLE)
+        Self::assoc(scheme, ASSOCSTR_EXECUTABLE).and_then(|raw| executable_path(&raw))
     }
 
     fn version_names(&self, exe: &str) -> Option<Vec<String>> {
@@ -554,7 +554,7 @@ impl SchemeRegistry for WinRegistry {
         let kind = unsafe { GetDriveTypeW(w.as_ptr()) };
         // Anything else (DRIVE_REMOTE, DRIVE_UNKNOWN, DRIVE_NO_ROOT_DIR) is not a local drive.
         // DRIVE_REMOVABLE 2, DRIVE_FIXED 3, DRIVE_CDROM 5, DRIVE_RAMDISK 6 (the constants sit behind a feature this crate does not enable).
-        matches!(kind, 2 | 3 | 5 | 6)
+        matches!(kind, 2 | 3 | 5 | 6) && !subst_to_remote(&root[..2])
     }
 
     fn long_path(&self, exe: &str) -> String {
@@ -603,6 +603,30 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// handler_exe's text step, pure: a quoted answer is the path inside the quotes, an unquoted one with
+    /// spaces is kept whole, and arguments never become part of (or are split off) the program.
+    #[test]
+    fn handler_exe_text_is_the_path_not_the_command_line() {
+        assert_eq!(executable_path(r#""C:\Program Files\Code\Code.exe""#).as_deref(), Some(r"C:\Program Files\Code\Code.exe"));
+        assert_eq!(executable_path(r#"  "C:\Program Files\Code\Code.exe" --open "%1"  "#).as_deref(), Some(r"C:\Program Files\Code\Code.exe"), "arguments after the quote are dropped");
+        assert_eq!(executable_path(r"C:\Program Files\Code\Code.exe").as_deref(), Some(r"C:\Program Files\Code\Code.exe"), "spaces are kept");
+        // Never split at the first space: an unquoted answer with arguments stays one string, which the plan then refuses (not an .exe).
+        assert_eq!(executable_path(r"C:\Tools\a.exe -c %1").as_deref(), Some(r"C:\Tools\a.exe -c %1"));
+        assert!(matches!(crate::link_scheme::exe_stem(r"C:\Tools\a.exe -c %1"), Err(_)));
+        assert_eq!(executable_path(r#""C:\a.exe"#), None, "an unterminated quote names nothing");
+        assert_eq!(executable_path("   "), None);
+        assert_eq!(executable_path(r#""""#), None);
+    }
+
+    #[test]
+    fn dos_device_targets_on_the_network_are_remote() {
+        for t in [r"\??\UNC\host\share", r"\Device\Mup\host\share", r"\Device\LanmanRedirector\;Z:0\host\share", r"\Device\WebDavRedirector\h\s"] {
+            assert!(dos_target_is_remote(t), "{t}");
+        }
+        for t in [r"\Device\HarddiskVolume3", r"\??\C:\Users\u\folder", r"\Device\CdRom0", ""] {
+            assert!(!dos_target_is_remote(t), "{t}");
+        }
+    }
 
     /// Final review item 14: a `%` in the exe path is refused (the shell would substitute `%1` inside
     /// the program part of the registered command).
@@ -1043,6 +1067,54 @@ fn long_path(path: &str) -> String {
         return path.to_string();
     }
     String::from_utf16_lossy(&buf[..n])
+}
+
+/// Whether the drive `X:` is a `subst` (or `DefineDosDevice`) alias that ends on a network path: its DOS device
+/// target, followed through other drive letters, is a UNC / MUP / redirector path. GetDriveTypeW reports the
+/// type of the volume under a subst, so a subst onto a share must be read from the target itself.
+#[cfg(windows)]
+fn subst_to_remote(drive: &str) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::QueryDosDeviceW;
+    let mut name = drive.to_string();
+    for _ in 0..4 {
+        let w = win::wide(&name);
+        let mut buf = vec![0u16; 1024];
+        let n = unsafe { QueryDosDeviceW(w.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+        if n == 0 {
+            return false;
+        }
+        let first_end = buf.iter().position(|&c| c == 0).unwrap_or(0);
+        let target = String::from_utf16_lossy(&buf[..first_end]);
+        if dos_target_is_remote(&target) {
+            return true;
+        }
+        // `\??\Y:\dir` is another drive letter: follow it.
+        match target.strip_prefix("\\??\\") {
+            Some(rest) if rest.len() >= 2 && rest.as_bytes()[1] == b':' && rest.as_bytes()[0].is_ascii_alphabetic() => name = rest[..2].to_string(),
+            _ => return false,
+        }
+    }
+    // A chain that deep is not an ordinary alias.
+    true
+}
+
+/// Whether a DOS device target (what QueryDosDeviceW returns for a drive letter) is a network path:
+/// `\??\UNC\host\share`, `\Device\Mup\...`, `\Device\LanmanRedirector\...`, `\Device\WebDavRedirector\...`.
+pub fn dos_target_is_remote(target: &str) -> bool {
+    let t = target.trim().to_ascii_lowercase();
+    ["\\??\\unc\\", "\\??\\unc", "\\device\\mup", "\\device\\lanmanredirector", "\\device\\webdavredirector", "\\device\\mrxsmb", "\\device\\winnfs"].iter().any(|p| t.starts_with(p))
+}
+
+/// The program path from an `ASSOCSTR_EXECUTABLE` answer, as text: a quoted answer is the text between the
+/// quotes (anything after the closing quote is arguments and dropped); an unquoted answer is taken whole, spaces
+/// and all, never split into program and arguments. Nothing is opened for it (TWEAKS 6 review I1).
+pub fn executable_path(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    let path = match t.strip_prefix('"') {
+        Some(rest) => &rest[..rest.find('"')?],
+        None => t,
+    };
+    (!path.trim().is_empty()).then(|| path.to_string())
 }
 
 /// A known folder's full path (`SHGetKnownFolderPath`); None when the machine has none.
