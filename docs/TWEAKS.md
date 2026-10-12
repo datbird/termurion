@@ -65,20 +65,13 @@ Each item says what is wrong, what it should do, and where it was seen.
    while Tandem is resident (retry on failure and on TaskbarCreated after an Explorer restart),
    use the real Tandem icon, offer Quit, and log the result.
 
-9. **The app shortcut key (iTerm2's Cmd) must not default to the Windows key.** Win
-   collides with many Windows shortcuts (Win+L, Win+D, Win+arrows, Win+Shift+S, Win+number),
-   and some never reach an app. Make it a setting: Ctrl+Shift (new default, as Windows Terminal
-   and VS Code), Win, or Ctrl+Alt. Not Ctrl alone (shell control keys) and not Alt (iTerm2's
-   Option-as-Meta; shells use Alt+B/F). Ctrl+Alt is AltGr on many European layouts, so warn when
-   it is chosen. Shortcuts that already use Shift (Cmd+Shift+D) map to Ctrl+Shift+Alt+D. Menus
-   show the real keys; key binding import/export keeps iTerm2's Cmd notation; existing saved
-   bindings keep working. Robert, 2026-10-11.
-
 ## In progress
 
 (none)
 
 ## Done
+
+9. **The app shortcut key (iTerm2's Cmd) must not default to the Windows key.** Done 2026-10-12 (branch tw9-keys, c9b20a0 and 0d58329): Keys > Shortcut Key is Ctrl+Shift (new default, also for anyone who never chose), Win, or Ctrl+Alt (warned: AltGr). Cmd+X is the pair, Cmd+Shift+X is Ctrl+Shift+Alt+X, Cmd+Option+X the third pair; chords no pair reaches (Cmd+Ctrl) stay on Win. Menus, tab/pane/window numbers, composer help and the bindings table show the real keys; stored bindings and import/export keep Cmd. A bound shortcut beats key reporting protocols (as iTerm2's menu does); unbound Ctrl+Shift keys reach the program. Rulings: docs/superpowers/rulings/tweaks-9-rulings.txt. Needs Robert's desktop try (Ctrl+Shift+D, Ctrl+Shift+T, Ctrl+Shift+C/V, and a program under CSI u).
 
 1. **The menu bar ignores Windows dark mode.** Done 2026-10-11 (main, tw1-darkmenu merged): menus follow the Windows app mode and switch live; Automatic uses AllowDark so the title bar and terminal colors follow too. Needs Robert's desktop look (dark, light, live switch).
 

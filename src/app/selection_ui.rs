@@ -507,7 +507,7 @@ impl App {
             self.drag = Drag::None;
             return;
         }
-        if !drag_threshold_met(d.from, (x, y), self.scale()) || (self.globals.bool("RequireCmdForDraggingText") && !(d.win || self.mods.cmd)) {
+        if !drag_threshold_met(d.from, (x, y), self.scale()) || (self.globals.bool("RequireCmdForDraggingText") && !(d.win || self.pointer_mods().cmd)) {
             return;
         }
         let Some(text) = self.selected_text(d.pane).filter(|t| !t.is_empty()) else { return };

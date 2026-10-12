@@ -707,8 +707,11 @@ impl SettingsWindow {
         if let WindowEvent::KeyboardInput { event: k, .. } = event {
             if self.keys.recording() {
                 if k.state == winit::event::ElementState::Pressed {
-                    if let Some(stroke) = crate::keystroke::from_key_event(k, self.mods) {
-                        self.keys.deliver(stroke);
+                    // The shortcut key's own modifiers are recorded as Cmd (Ctrl+Shift+D is Cmd+D).
+                    let types = k.text.as_deref().is_some_and(|t| t.chars().any(|c| !c.is_control()));
+                    let rec = crate::shortcut_key::mode().recorded_mods(self.mods, types);
+                    if let Some(stroke) = crate::keystroke::from_key_event(k, rec) {
+                        self.keys.deliver(crate::shortcut_key::recorded_stroke(stroke, self.mods, rec));
                         crate::winkeys::set_recording(self.keys.recording());
                     }
                 }

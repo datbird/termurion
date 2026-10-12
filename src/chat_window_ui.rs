@@ -326,6 +326,7 @@ pub struct ChatWindow {
     list: ListState,
     convo: ConvoState,
     input: InputUi,
+    keys: crate::shortcut_key::WindowKeys,
 }
 
 impl ChatWindow {
@@ -337,7 +338,7 @@ impl ChatWindow {
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
         host.track_taskbar();
         crate::settings_keys::add_icon_font(host.ctx());
-        Ok(ChatWindow { host, data: ChatData::default(), title: tb::WINDOW_TITLE.to_string(), list_visible: true, list: ListState::default(), convo: ConvoState::default(), input: InputUi::default() })
+        Ok(ChatWindow { host, data: ChatData::default(), title: tb::WINDOW_TITLE.to_string(), list_visible: true, list: ListState::default(), convo: ConvoState::default(), input: InputUi::default(), keys: Default::default() })
     }
 
     /// Follows a forced appearance (`tab_theme::forced_dark`), or Windows' when `None`.
@@ -359,6 +360,11 @@ impl ChatWindow {
 
     pub fn event(&mut self, event: &WindowEvent) -> bool {
         self.host.event(event)
+    }
+
+    /// The shortcut key's own chord (Ctrl+Shift+W) this event makes; the hook carries the Win form.
+    pub fn shortcut(&mut self, event: &WindowEvent) -> Option<crate::menus::Chord> {
+        self.keys.chord(event)
     }
 
     /// Centers the frame on a monitor (`CWC:348-401`).

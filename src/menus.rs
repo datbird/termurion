@@ -210,6 +210,19 @@ pub fn reaches_tandem(c: &Chord) -> bool {
     !(c.cmd && c.key == ChordKey::Char('l'))
 }
 
+/// A chord key as Windows menus show it.
+pub fn key_label(k: &ChordKey) -> String {
+    match k {
+        ChordKey::Char(ch) => ch.to_ascii_uppercase().to_string(),
+        ChordKey::F(n) => format!("F{n}"),
+        ChordKey::PageUp => "PgUp".into(),
+        ChordKey::PageDown => "PgDn".into(),
+        ChordKey::Delete => "Del".into(),
+        ChordKey::Escape => "Esc".into(),
+        other => format!("{other:?}"),
+    }
+}
+
 pub fn chord_label(c: &Chord) -> String {
     let mut parts: Vec<String> = Vec::new();
     if c.cmd {
@@ -224,15 +237,7 @@ pub fn chord_label(c: &Chord) -> String {
     if c.shift {
         parts.push("Shift".into());
     }
-    parts.push(match &c.key {
-        ChordKey::Char(ch) => ch.to_ascii_uppercase().to_string(),
-        ChordKey::F(n) => format!("F{n}"),
-        ChordKey::PageUp => "PgUp".into(),
-        ChordKey::PageDown => "PgDn".into(),
-        ChordKey::Delete => "Del".into(),
-        ChordKey::Escape => "Esc".into(),
-        other => format!("{other:?}"),
-    });
+    parts.push(key_label(&c.key));
     parts.join("+")
 }
 

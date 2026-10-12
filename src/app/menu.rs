@@ -43,9 +43,48 @@ const NUDGE: f32 = 0.05;
 /// as Windows ones ("Finder" is "Explorer").
 pub(super) fn menu_text(item: &Item) -> String {
     let label = crate::menu_tips::split_hint(&item.selector, &menus::shown_label(item.label()), *SPLIT_HINTS.get().unwrap_or(&false)).replace('&', "&&");
-    match item.chord().filter(menus::reaches_tandem) {
-        Some(c) => format!("{label}\t{}", menus::chord_label(&c)),
+    match chord_text(item) {
+        Some(c) => format!("{label}\t{c}"),
         None => label,
+    }
+}
+
+/// The accelerator text of an item: the real keys of its chord, or none when it has no chord
+/// that reaches Tandem. Menus show it after a tab, so a changed shortcut key swaps only that part.
+pub(super) fn chord_text(item: &Item) -> Option<String> {
+    let shortcut = crate::shortcut_key::mode();
+    item.chord().filter(|c| shortcut.reaches(c)).map(|c| shortcut.label(&c))
+}
+
+/// Rewrites the accelerator text after the tab of every menu item that names a chord, for a
+/// changed shortcut key. The label before the tab is kept as it stands now.
+fn retext(items: Vec<muda::MenuItemKind>) {
+    use muda::MenuItemKind as K;
+    for kind in items {
+        let (id, text, set): (String, String, Box<dyn Fn(&str)>) = match kind {
+            K::Submenu(s) => {
+                retext(s.items());
+                continue;
+            }
+            K::MenuItem(m) => (m.id().0.clone(), m.text(), Box::new(move |t| m.set_text(t))),
+            K::Check(m) => (m.id().0.clone(), m.text(), Box::new(move |t| m.set_text(t))),
+            _ => continue,
+        };
+        let Some(item) = menus::by_id(&id) else { continue };
+        let base = text.split('\t').next().unwrap_or("").to_string();
+        set(&match chord_text(item) {
+            Some(c) => format!("{base}\t{c}"),
+            None => base,
+        });
+    }
+}
+
+impl App {
+    /// The Shortcut key changed: every menu item shows its chord with the new keys.
+    pub(super) fn refresh_chord_text(&mut self) {
+        if let Some(bar) = &self.menu_bar {
+            retext(bar.menu.items());
+        }
     }
 }
 
@@ -167,6 +206,8 @@ impl App {
     pub(super) fn install_menus(&mut self) {
         let Some(hwnd) = self.hwnd() else { return };
         SPLIT_HINTS.get_or_init(|| self.globals.bool("ShowHintsInSplitPaneMenuItems"));
+        // The shortcut key, before any menu text or the hook's first key reads it.
+        crate::shortcut_key::set_mode(crate::shortcut_key::ShortcutKey::from_globals(&self.globals));
         let menu = Menu::new();
         let mut subs: HashMap<Vec<String>, Submenu> = HashMap::new();
         let mut checks = HashMap::new();

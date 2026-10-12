@@ -1024,6 +1024,14 @@ pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profile
             changed |= global_control(ui, g, s, true);
         }
         ui.add_space(8.0);
+        ui.strong("Shortcut Key");
+        for s in globals_in("Shortcut Key") {
+            changed |= global_control(ui, g, s, true);
+        }
+        if let Some(w) = crate::shortcut_key::warning(crate::shortcut_key::ShortcutKey::from_globals(g)) {
+            ui.colored_label(ui.visuals().warn_fg_color, w);
+        }
+        ui.add_space(8.0);
         ui.strong("Navigation Shortcuts");
         for s in globals_in("Navigation Shortcuts") {
             changed |= global_control(ui, g, s, true);
@@ -1980,6 +1988,7 @@ mod tests {
             ("ForceKeyboardOncePerSession", "Keys", "Remap Modifiers", Kind::Bool, b(false), "Only force once per session when it first receives keyboard focus", force_once.into()),
             ("KeyboardLocale", "Keys", "Remap Modifiers", Kind::String, Value::String(String::new()), "Keyboard locale", "Keyboard locale".into()),
             ("AllowSymbolicHotKeys", "Keys", "Remap Modifiers", Kind::Bool, b(true), "Respect shortcuts from Windows keyboard shortcuts", "Win shortcuts Windows keeps for itself go to Windows instead of a key mapping; Tandem's own menu shortcuts still work.".into()),
+            ("ShortcutKey", "Keys", "Shortcut Key", Kind::Enum, Value::Integer(0), "Shortcut key", "The keys that stand for iTerm2's Cmd in Tandem's shortcuts, menus and key bindings. Cmd+Shift+X becomes Ctrl+Shift+Alt+X. Win collides with Windows shortcuts (Win+L, Win+D, Win+arrows). Ctrl+Alt is AltGr on many European layouts, so it can swallow characters you type; prefer Ctrl+Shift there.".into()),
             ("RemapModifiersGlobally", "Keys", "Remap Modifiers", Kind::Bool, b(true), "Remap modifiers globally", "When off, Tandem remaps modifiers only for keys it receives, so Windows' own shortcuts see the physical keys.".into()),
         ];
         for (key, tab, section, kind, default, label, help) in rows {
