@@ -167,7 +167,7 @@ pub fn from_dynamic_json(text: &str) -> Result<Vec<Profile>, String> {
 }
 
 /// The user-defaults key iTerm2 stores an Advanced setting under: its name with the first
-/// letter capitalized (`stringByCapitalizingFirstLetter`), "TmuxTitlePrefix" as "TmuxTitlePrefix".
+/// letter capitalized (`stringByCapitalizingFirstLetter`), "tmuxTitlePrefix" as "TmuxTitlePrefix".
 pub fn defaults_key(key: &str) -> String {
     let mut chars = key.chars();
     match chars.next() {
@@ -188,8 +188,9 @@ fn lower_first(key: &str) -> String {
 
 /// The global settings (iTerm2 user defaults) in a com.googlecode.iterm2.plist, for the
 /// keys Tandem's global schema knows. Other keys are left out. A schema key spelled with a
-/// lower-case first letter is also found under iTerm2's capitalized defaults key, and a capitalized schema key under its lower-case spelling (Tandem before the 13y2 rename); the schema
-/// spelling wins when a file holds both. The settings that stand between a person and an AI
+/// lower-case first letter is also found under iTerm2's capitalized defaults key, and a
+/// capitalized schema key under its lower-case spelling (Tandem before the 13y2 rename); the
+/// schema spelling wins when a file holds both. The settings that stand between a person and an AI
 /// request (`ai_settings::guards_consent`) never come, even from a hand-edited plist: a person
 /// opts in again on Windows (Review Focus 3, ruling I5).
 pub fn globals_from_file(path: &Path) -> Result<Vec<(String, Value)>, String> {
@@ -346,7 +347,7 @@ mod tests {
     /// 13y2 Task 9b: an Advanced setting imports under its iTerm2 spelling or a lower-case-first one.
     #[test]
     fn plist_keys_match_either_spelling() {
-        for (name, spelling) in [("cap", "DisableTopRightIndicators"), ("low", "DisableTopRightIndicators")] {
+        for (name, spelling) in [("cap", "DisableTopRightIndicators"), ("low", "disableTopRightIndicators")] {
             let path = std::env::temp_dir().join(format!("tandem-import-spell-{name}-{}.plist", std::process::id()));
             std::fs::write(&path, format!(r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict><key>{spelling}</key><true/></dict></plist>"#)).unwrap();

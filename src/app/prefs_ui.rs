@@ -588,6 +588,19 @@ mod tests {
         Snapshot { settings: map(&[("FocusFollowsMouse", Value::Boolean(true))]), default: "g1".into(), profiles: vec![profile] }
     }
 
+    /// 13y2 Task 9b review: a snapshot written by a Tandem before the rename sweep (old
+    /// lower-case Advanced keys) lands under the capitalized keys.
+    #[test]
+    fn an_older_snapshot_with_old_keys_migrates() {
+        let dir = temp("older-snapshot");
+        let (mut g, mut store) = local(&dir, "x");
+        let mut snap = remote();
+        snap.settings.insert("disableTopRightIndicators".into(), Value::Boolean(true));
+        apply_snapshot(&snap, &mut g, &mut store);
+        assert_eq!(g.values.get("DisableTopRightIndicators"), Some(&Value::Boolean(true)));
+        assert!(!g.values.contains_key("disableTopRightIndicators"));
+    }
+
     fn names(store: &Store) -> Vec<String> {
         store.profiles.iter().map(|p| p.name()).collect()
     }
