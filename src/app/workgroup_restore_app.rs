@@ -731,6 +731,10 @@ mod tests {
         assert!(tab.contains("self.restore_inhibits(descriptor.as_ref()).held(held)"), "{tab}");
         assert_eq!(tab.matches("self.start_held_idle_pane(area, guid.as_deref())").count(), 2, "both idle builds are held: {tab}");
         assert!(!tab.contains("self.start_idle_pane("), "{tab}");
+        // The held build marks its pane held: without it the save would drop the mark.
+        let held_build = body(arrange, "    fn start_held_idle_pane(");
+        assert!(held_build.contains("let id = self.start_idle_pane(rect, guid)?;"), "{held_build}");
+        assert!(held_build.contains("p.held_idle = true;"), "{held_build}");
         // Save: the held pane's session carries the mark, the member's and the shown pane's alike.
         let mut pane = crate::pane::Pane::idle(1, 80, 24);
         pane.held_idle = true;
