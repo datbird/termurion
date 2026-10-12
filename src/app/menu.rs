@@ -313,7 +313,7 @@ impl App {
         self.ssh_menu_shown = None;
         self.download_files_shown = None;
         self.sync_checks();
-        // A fixed Theme forces the window's mode; the bar was attached with `Auto`.
+        // The bar was attached with `Auto`; `apply_theme` gives it the menu mode (a fixed Theme's or Windows').
         self.apply_theme();
     }
 
