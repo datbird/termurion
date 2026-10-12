@@ -355,6 +355,9 @@ pub(super) enum Then {
     /// "WebView2 Runtime Required" (`GW:136-160`): Download (0) opens Microsoft's page, Use System
     /// Browser (1) opens the link, Cancel nothing. Not capped.
     BrowserUpsell { url: String },
+    /// "Open this scheme: link with <app>?" (TWEAKS 6): Always (0) and Never (2) are remembered for the
+    /// scheme, Once (1) opens; a closed window opens nothing. The person's own click, so not capped.
+    LinkScheme { url: String, scheme: String, background: bool },
     /// "Enter the workgroup ...?" for an imported workgroup, a trigger, or more than eight members
     /// (13y1): Cancel (0, the default) nothing, Enter (1, `ASK_ENTER`) enters the very workgroup the
     /// question showed. A trigger raises it, so then it is capped.
@@ -570,7 +573,7 @@ impl App {
                 // A page raised it: no default button, input ignored for a moment after it appears
                 // and after it regains focus (13x6 B1).
                 // A file the person opened can raise these, with a key press in flight: no default button.
-                if matches!(ask.then, Then::BrowserPermission(_) | Then::BrowserClearData { .. } | Then::BrowserExtension { .. } | Then::ConfirmSigned | Then::AllowAutoLaunch(_)) {
+                if matches!(ask.then, Then::BrowserPermission(_) | Then::BrowserClearData { .. } | Then::BrowserExtension { .. } | Then::ConfirmSigned | Then::AllowAutoLaunch(_) | Then::LinkScheme { .. }) {
                     w.guard_input();
                 }
                 // Enable waits until every permission has been shown (the list can be long).
@@ -646,6 +649,7 @@ impl App {
             Then::BrowserPermission(id) => self.browser_permission_answered(id, Some(index)),
             Then::OpenLink { url, style, background, pane, file } => self.open_link_answered(&url, style, background, pane, file, index),
             Then::BrowserUpsell { url } => self.upsell_answered(&url, index),
+            Then::LinkScheme { url, scheme, background } => self.link_scheme_answered(&url, &scheme, background, index),
             Then::BrowserRun { pane, command } => {
                 if index == 0 {
                     self.browser_run_confirmed(pane, command);

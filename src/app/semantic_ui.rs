@@ -429,6 +429,7 @@ impl App {
             Run::Coprocess(command) => self.start_coprocess(id, &command, false, crate::coprocess::Entry::SemanticHistory),
             Run::Blocked(why) => self.banners.set("action", why),
             Run::Reveal(path) => self.reveal_in_explorer(&path),
+            Run::OpenScheme(url) => self.open_scheme_link(&url, background),
             Run::OpenLocal { path, has_code } => self.open_local(id, path, has_code, background),
             Run::Spawn { program, args } => self.spawn_direct(&program, &args, cwd),
             Run::Window(command) => match event_loop {
@@ -1026,6 +1027,27 @@ pub(super) fn shell_open(target: &str, background: bool) -> Result<(), String> {
     let r = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), show) };
     // Values of 32 or less are errors (SE_ERR_*).
     if r as isize > 32 { Ok(()) } else { Err(format!("ShellExecute error {}", r as isize)) }
+}
+
+/// Hands a link of another app's scheme to the app Windows registered for it: the URL is judged again
+/// (`link_scheme::screen`), percent-encoded so no quote or space can split what the app's command
+/// receives, and passed to ShellExecuteW as the one file argument, never as a shell string.
+#[cfg(windows)]
+pub(super) fn shell_open_scheme(url: &str, background: bool) -> Result<(), String> {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, SW_SHOWNORMAL};
+    let scheme = crate::link_scheme::scheme_of(url).ok_or_else(|| "Tandem opens only links here, not paths.".to_string())?;
+    crate::link_scheme::screen(&scheme, url)?;
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let (verb, file) = (wide("open"), wide(&crate::semantic::encode_url_chars(url)));
+    let show = if background { SW_SHOWNOACTIVATE } else { SW_SHOWNORMAL };
+    let r = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), show) };
+    if r as isize > 32 { Ok(()) } else { Err(format!("ShellExecute error {}", r as isize)) }
+}
+
+#[cfg(not(windows))]
+pub(super) fn shell_open_scheme(_url: &str, _background: bool) -> Result<(), String> {
+    Err("opening a link needs Windows".to_string())
 }
 
 #[cfg(not(windows))]

@@ -433,6 +433,9 @@ pub enum Run {
     Spawn { program: PathBuf, args: Vec<String> },
     /// A command line run in a new single-use window of the default profile.
     Window(String),
+    /// A link of another app's scheme (`vscode:`): the caller asks once per scheme, then hands it
+    /// to the app Windows registered (`link_scheme`). Never a shell string.
+    OpenScheme(String),
     /// Not opened, and why.
     Blocked(String),
 }
@@ -835,7 +838,10 @@ pub fn guard_open(target: &str, has_code: bool) -> Run {
         // An ssh: link a bound handler would have opened never gets here; an unbound one is not
         // handed to whatever the system registered (14e's Decision).
         Some("ssh") => Run::Blocked("Tandem opens ssh: links when ssh is set to open in Tandem (Settings > Profiles > General > URL schemes).".into()),
-        Some(s) => Run::Blocked(format!("Tandem opens only http, https, mailto, and ftp links, not {s}: links.")),
+        Some(s) => match crate::link_scheme::screen(s, target) {
+            Ok(()) => Run::OpenScheme(target.to_string()),
+            Err(why) => Run::Blocked(why),
+        },
     }
 }
 
@@ -1691,6 +1697,19 @@ mod tests {
         assert!(matches!(plan_of("notes.txt"), Some(Run::Blocked(_))));
         let (b, a) = click(r"see C:\missing\|x.txt now");
         assert_eq!(url_like(&b, &a, true), None);
+    }
+
+    /// TWEAKS 6: another app's scheme is a request to open (the App asks once per scheme); the
+    /// always-blocked ones and text that is no URL stay refused.
+    #[test]
+    fn other_schemes_become_open_scheme_unless_blocked() {
+        assert_eq!(guard_open("vscode://file/C:/x.rs:3", false), Run::OpenScheme("vscode://file/C:/x.rs:3".into()));
+        assert_eq!(guard_open("Slack://open", false), Run::OpenScheme("Slack://open".into()));
+        for t in ["ms-msdt:/id x", "search-ms:query=a", "javascript:alert(1)", "shell:startup", "ms-word:ofe|u|https://h/x.docx", "vscode:a\nb"] {
+            assert!(matches!(guard_open(t, false), Run::Blocked(_)), "{t}");
+        }
+        assert!(matches!(guard_open("ssh://h", false), Run::Blocked(_)));
+        assert_eq!(guard_open("https://a.b/x", false), Run::Open("https://a.b/x".into()));
     }
 
     #[test]

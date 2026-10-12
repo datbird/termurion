@@ -156,6 +156,7 @@ mod git_ui;
 mod toolbelt_ui;
 mod tool_web_ui;
 mod browser_app;
+mod link_scheme_app;
 mod browser_find_app;
 mod browser_copymode_app;
 mod adblock_app;

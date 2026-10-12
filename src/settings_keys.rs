@@ -3167,6 +3167,17 @@ mod tests {
         }
     }
 
+    /// TWEAKS 6: the two lists of link schemes the person chose Always / Never for are editable.
+    #[test]
+    fn link_scheme_rows_are_editable() {
+        for key in [crate::link_scheme::ALWAYS_KEY, crate::link_scheme::NEVER_KEY] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} is not in the schema"));
+            assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "General", Kind::String), "{key}");
+            assert_eq!(row.default, Some(Value::String(String::new())), "{key}");
+            assert!(page_rows("Advanced").iter().any(|s| s.key == key), "{key}");
+        }
+    }
+
     /// `AS:444-450` and `AS:880-885`: the ftp: and telnet: URL rows (Task 3). The ssh rows are
     /// 14e's (`sshSchemePath`, `validCharactersInSSHUserNames`: lower-case, one row each, P20).
     #[test]
