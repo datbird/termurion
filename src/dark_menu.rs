@@ -66,6 +66,12 @@ pub fn reapplies_menus(msg: u32) -> bool {
     msg == 0x001A || msg == 0x0015
 }
 
+/// Whether the muda bar is painted dark: with no uxtheme exports the drop-downs stay light, so
+/// the bar stays light too and they always match.
+pub fn bar_dark(dark: bool, api: Api) -> bool {
+    dark && api != Api::None
+}
+
 /// A `CurrentBuildNumber` string as a number.
 pub fn parse_build(s: &str) -> Option<u32> {
     s.trim().parse().ok()
@@ -147,6 +153,11 @@ pub mod win {
         }
         let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
         super::parse_build(&String::from_utf16_lossy(&buf[..end]))
+    }
+
+    /// Which uxtheme call this build has.
+    pub fn api() -> Api {
+        exports().api
     }
 
     /// Windows' app mode now (light when unreadable).
@@ -242,6 +253,14 @@ mod tests {
         assert!(reapplies_menus(0x001A)); // WM_SETTINGCHANGE
         assert!(reapplies_menus(0x0015)); // WM_SYSCOLORCHANGE
         assert!(!reapplies_menus(0x000F));
+    }
+
+    #[test]
+    fn the_bar_stays_light_without_the_exports() {
+        assert!(!bar_dark(true, Api::None));
+        assert!(bar_dark(true, Api::SetPreferredAppMode));
+        assert!(bar_dark(true, Api::AllowDarkModeForApp));
+        assert!(!bar_dark(false, Api::SetPreferredAppMode));
     }
 
     #[test]

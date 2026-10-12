@@ -199,7 +199,7 @@ impl App {
         let Some(hwnd) = self.hwnd() else { return };
         crate::dark_menu::win::apply(hwnd, crate::dark_menu::app_mode(forced, hc));
         if let Some(bar) = &self.menu_bar {
-            let theme = if dark { muda::MenuTheme::Dark } else { muda::MenuTheme::Light };
+            let theme = if crate::dark_menu::bar_dark(dark, crate::dark_menu::win::api()) { muda::MenuTheme::Dark } else { muda::MenuTheme::Light };
             // SAFETY: the HWND is this window's, and the bar was attached to it.
             if let Err(e) = unsafe { bar.menu.set_theme_for_hwnd(hwnd, theme) } {
                 self.banners.set("menu", format!("Could not set the menu bar's theme: {e}"));
