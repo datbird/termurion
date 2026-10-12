@@ -69,7 +69,7 @@ pub mod win {
     use super::{Api, AppMode};
     use std::sync::OnceLock;
     use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HWND};
-    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+    use windows_sys::Win32::System::LibraryLoader::GetProcAddress;
     use windows_sys::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegGetValueW};
 
     const REFRESH_IMMERSIVE_COLOR_POLICY_STATE: usize = 104;
@@ -99,11 +99,8 @@ pub mod win {
             if api == Api::None {
                 return none;
             }
-            // SAFETY: loading a system DLL by name; it stays loaded for the process.
-            let lib = unsafe { LoadLibraryW(wide("uxtheme.dll").as_ptr()) };
-            if lib.is_null() {
-                return none;
-            }
+            // From System32 only; it stays loaded for the process.
+            let Some(lib) = crate::dll::load_system("uxtheme.dll") else { return none };
             // SAFETY: an ordinal lookup (MAKEINTRESOURCE); a missing export gives None. Each
             // export's signature is the one win32-darkmode, muda and winit use.
             unsafe {
