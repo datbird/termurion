@@ -345,7 +345,6 @@ impl App {
         let step = window.and_then(|w| self.focus_seen.step(w, focused, in_front));
         if let Some(seen) = step {
             let prev = seen.filter(|p| mine.contains(p));
-            self.browser_focus_moved(prev, focused);
             if let Some(next) = focused.filter(|p| self.is_browser_pane(*p) && self.browser_page_may_focus(*p)) {
                 if let Some(v) = self.browser_views.get(&next).and_then(|b| b.view.as_ref()) {
                     v.focus();

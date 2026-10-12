@@ -1804,6 +1804,10 @@ pub struct App {
     browser_ext: browser_extensions_app::Extensions,
     /// The pane that was focused at the last placement, to tell a pane change from none.
     focus_seen: crate::browser::FocusSeen<WindowId>,
+    /// The active pane at the last focus-report tick, per window (13y2 Task 9d).
+    report_seen: crate::browser::FocusSeen<WindowId>,
+    /// iTerm2's `_focused` per pane: the last focus state each pane was told (app-wide).
+    focus_reported: crate::webhost::FocusLedger,
     /// The URL the next browser pane starts at (an arrangement's, or a page's new tab).
     browser_url_override: Option<String>,
     /// The launch is applying the saved windows: a browser pane makes its view but loads its page
@@ -2823,6 +2827,8 @@ pub fn run() {
         adblock: adblock_app::Adblock::default(),
         browser_ext: Default::default(),
         focus_seen: Default::default(),
+        report_seen: Default::default(),
+        focus_reported: Default::default(),
         browser_url_override: None,
         restoring_windows: false,
     };
@@ -4186,6 +4192,8 @@ impl App {
     /// failed arrangement's): its API subscriptions, unread counts and script caches go.
     /// Every drop path calls this, so an app-wide map keyed by pane cannot leak.
     pub(super) fn pane_gone(&mut self, id: PaneId) {
+        self.focus_reported.forget(id);
+        self.report_seen.forget(id);
         self.page_save_cancel(id);
         self.browser_extensions_pane_gone(id);
         self.api_session_subs.forget_session(id);
@@ -7288,6 +7296,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.enter(w);
         }
         self.sync_pane_activity();
+        self.pane_focus_tick();
         self.session_hotkeys_flush();
         self.open_pending_mark_prompt(event_loop);
         self.flush_dropped();
@@ -8223,10 +8232,8 @@ impl App {
         }
         // Focus reporting (DECSET 1004), before the password manager's hold ends below: tell the app the window gained or lost focus.
         if let Some(gained) = a.report {
-            if let Some(p) = self.focused_pane() {
-                if p.screen.term().mode().contains(TermMode::FOCUS_IN_OUT) {
-                    p.focus_report(gained);
-                }
+            if let Some(pane) = self.focused_pane_id() {
+                self.report_focus_to(pane, gained);
             }
         }
         if a.gain_stamps {
@@ -8345,7 +8352,8 @@ mod tests {
         ("self.api_focus_lost", "api_lost"),
         ("self.leader_on", "drop_leader"),
         ("self.refresh_route", "drop_leader"),
-        ("self.focused_pane", "report"),
+        ("self.focused_pane_id", "report"),
+        ("self.report_focus_to", "report"),
         ("self.bell_badge.reset_bells", "bell_reset"),
         ("self.redraw", "always"),
     ];
@@ -8391,7 +8399,7 @@ mod tests {
     #[test]
     fn the_focus_report_runs_before_the_password_hold_ends() {
         let (body, _) = focus_source();
-        let report = body.find("p.focus_report(").expect("the report");
+        let report = body.find("self.report_focus_to(").expect("the report");
         let hold = body.find("self.pwm_focus_gained()").expect("the hold release");
         assert!(report < hold, "report at {report}, pwm_focus_gained at {hold}");
     }
@@ -8406,6 +8414,65 @@ mod tests {
         assert_eq!(named, classified.into_iter().collect::<Vec<_>>());
         // report is read through `a.report` too, and the web hold is the arm's own state.
         assert!(include_str!("mod.rs").contains("web_focus_held: Option<WindowId>"));
+    }
+
+    /// 13y2 Task 9d (`PTYTab.m:951-960`, `PTYSession.m:9856-9886`): the sequence of reports two
+    /// terminal panes get through the app's ledger, and the wiring that makes it one path.
+    #[test]
+    fn terminal_panes_report_focus() {
+        use crate::webhost::{pane_focus_reports, FocusFacts, FocusLedger};
+        let on = FocusFacts { held: false, gateway: false, wants: true };
+        let mut led = FocusLedger::default();
+        let wrote = std::cell::RefCell::new(Vec::<(u64, bool)>::new());
+        let tell = |led: &mut FocusLedger, pane: u64, gained: bool, f: FocusFacts| {
+            if led.report(pane, gained, f) {
+                wrote.borrow_mut().push((pane, gained));
+            }
+        };
+        // The window gains focus with pane 1 active, then focus moves to pane 2.
+        tell(&mut led, 1, true, on);
+        for (p, g) in pane_focus_reports(Some((1, false)), Some((2, false))) {
+            tell(&mut led, p, g, on);
+        }
+        assert_eq!(*wrote.borrow(), vec![(1, true), (1, false), (2, true)]);
+        // The next tick with no change writes nothing (a repeated step is a no-op).
+        wrote.borrow_mut().clear();
+        tell(&mut led, 2, true, on);
+        tell(&mut led, 1, false, on);
+        assert!(wrote.borrow().is_empty(), "nothing twice");
+        // Pane 2 without DECSET 1004 gets nothing while pane 1 still hears its focus-out.
+        let off = FocusFacts { wants: false, ..on };
+        tell(&mut led, 2, false, on);
+        tell(&mut led, 1, true, on);
+        wrote.borrow_mut().clear();
+        for (p, g) in pane_focus_reports(Some((1, false)), Some((2, false))) {
+            tell(&mut led, p, g, if p == 2 { off } else { on });
+        }
+        assert_eq!(*wrote.borrow(), vec![(1, false)]);
+        // A held pane and a gateway pane get nothing.
+        wrote.borrow_mut().clear();
+        tell(&mut led, 7, true, FocusFacts { held: true, ..on });
+        tell(&mut led, 8, true, FocusFacts { gateway: true, ..on });
+        assert!(wrote.borrow().is_empty());
+        // The window arm reported the loss; the pane change while unfocused then writes nothing
+        // new, and the window's next gain reports to the pane focused then, once.
+        tell(&mut led, 1, false, on);
+        tell(&mut led, 2, false, on);
+        wrote.borrow_mut().clear();
+        tell(&mut led, 2, false, on);
+        tell(&mut led, 1, false, on);
+        assert!(wrote.borrow().is_empty());
+        tell(&mut led, 1, true, on);
+        tell(&mut led, 1, true, on);
+        assert_eq!(*wrote.borrow(), vec![(1, true)]);
+        // Wiring: one path, a tick per pass, state dropped with the pane, no second reporter.
+        let live = include_str!("mod.rs").split("#[cfg(test)]\nmod tests").next().unwrap();
+        assert!(live.contains("self.pane_focus_tick();"));
+        assert!(fn_body(live, "pub(super) fn pane_gone(", "    ").contains("self.focus_reported.forget(id);"));
+        assert!(!include_str!("browser_app.rs").split("#[cfg(test)]").next().unwrap().contains("browser_focus_moved"), "the tick owns the pane comparison");
+        let w = include_str!("webhost_app.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(!w.contains("p.screen.term().mode().contains(alacritty_terminal::term::TermMode::FOCUS_IN_OUT)"));
+        assert!(fn_body(w, "fn report_focus_to(", "    ").contains("self.focus_reported.report("));
     }
 
     /// 13w seam S12: the browser views are placed before the first draw timer starts, and only

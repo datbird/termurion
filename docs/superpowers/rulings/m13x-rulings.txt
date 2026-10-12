@@ -219,3 +219,5 @@ Ruling: deferred, final review Minor 11: the launch sweep of stale Dev Null and 
 Ruling: deferred, final review Minor 13: two count(*) scans per visit for the history caps and quick_check on the UI thread at first open - cost if wrong: a large history makes each visit and the first open slower.
 Ruling: deferred, final review Minor 15 (Task 10 M1, M2, M5, M6, M7): ring copies outside the caps at Start and Reveal, base64 and JPEG decode on the UI thread, the playback window ignoring a forced theme, fixed probe and capture tokens, the probe-to-capture gap (narrowed by the sticky sensitive mark) - cost if wrong: peak memory above the caps while a large replay is saved; a little UI-thread work per frame.
 Ruling: deferred, final review Minor 17 (triaged list): unchanged, see the review file - cost if wrong: as each original deferral says.
+
+Lifted by 13y2 Task 9d: the Decision that terminal-to-terminal pane changes send no focus reports is superseded (see m13y2-rulings.txt).

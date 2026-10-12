@@ -362,18 +362,44 @@ impl App {
         crate::winkeys::set_web_focus(self.web_focus_held.and_then(|w| self.window_hwnd(w)).unwrap_or(0));
     }
 
-    /// The active session of the key window changed from `prev` to `next` (`PTYTab.m:955-960`): a
-    /// terminal pane that hands focus to a browser pane is told it lost focus and one that takes it
-    /// back is told it gained it, when its program asked for DECSET 1004. Task 5 calls this.
+    /// The active session of the key window changed from `prev` to `next` (`PTYTab.m:951-960`):
+    /// every pane `pane_focus_reports` names is told through `report_focus_to`, so a pane is
+    /// told only a real change, once.
     pub(super) fn browser_focus_moved(&mut self, prev: Option<crate::layout::PaneId>, next: Option<crate::layout::PaneId>) {
         let tag = |p: Option<crate::layout::PaneId>| p.map(|p| (p, self.is_browser_pane(p)));
         for (pane, gained) in crate::webhost::pane_focus_reports(tag(prev), tag(next)) {
+            self.report_focus_to(pane, gained);
+        }
+    }
+
+    /// `PTYSession setFocused:`: writes the DECSET 1004 report when `pane` is not a gateway, is
+    /// not held, its program asked, and its last told state differs; records it.
+    pub(super) fn report_focus_to(&mut self, pane: crate::layout::PaneId, gained: bool) {
+        use alacritty_terminal::term::TermMode;
+        let Some(p) = self.panes.get(&pane) else { return };
+        if p.browser_io().is_some() {
+            return;
+        }
+        let facts = crate::webhost::FocusFacts { held: p.no_focus_reports > 0, gateway: p.gateway, wants: p.screen.term().mode().contains(TermMode::FOCUS_IN_OUT) };
+        if self.focus_reported.report(pane, gained, facts) {
             if let Some(p) = self.panes.get_mut(&pane) {
-                if p.screen.term().mode().contains(alacritty_terminal::term::TermMode::FOCUS_IN_OUT) {
-                    p.focus_report(gained);
-                }
+                p.focus_report(gained);
             }
         }
+    }
+
+    /// Once per pass for the entered window: when the active pane changed while the window is in
+    /// front (and its keyboard is not in its own web view), the panes that lost and gained it hear
+    /// it. The per-pane ledger keeps this and the window's own gain or loss from reporting twice.
+    pub(super) fn pane_focus_tick(&mut self) {
+        let Some(hwnd) = self.hwnd() else { return };
+        let in_front = crate::webhost_win::foreground_root() == Some(hwnd) && self.web_focus_held != self.current_window();
+        let Some(window) = self.current_window() else { return };
+        let focused = self.focused_pane_id();
+        let Some(seen) = self.report_seen.step(window, focused, in_front) else { return };
+        let mine: Vec<crate::layout::PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
+        let prev = seen.filter(|p| mine.contains(p));
+        self.browser_focus_moved(prev, focused);
     }
 
     /// One view event, by view id. No owner exists yet: log what is ours, drop the rest.

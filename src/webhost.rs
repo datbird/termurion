@@ -1655,15 +1655,54 @@ pub fn held_focus_lost(window_hwnd: isize, foreground_root: Option<isize>) -> bo
     foreground_root.is_some_and(|root| root != window_hwnd)
 }
 
-/// The focus reports a change of the active session owes (`PTYTab.m:955-960`: every session of
+/// The focus reports a change of the active session owes (`PTYTab.m:951-960`: every session of
 /// the key window hears it). Each pair is (pane id, is a browser pane). A terminal pane that
-/// hands focus to a browser pane is told it lost focus, one that takes it back is told it
-/// gained it; terminal to terminal is no change (the pane's own path reports nothing today).
+/// hands focus to another pane is told it lost focus, the pane that takes it is told it gained
+/// it; a browser pane is never sent a terminal report (13y2 Task 9d lifts 13x's Decision that
+/// terminal to terminal changes report nothing).
 pub fn pane_focus_reports(prev: Option<(crate::layout::PaneId, bool)>, next: Option<(crate::layout::PaneId, bool)>) -> Vec<(crate::layout::PaneId, bool)> {
     match (prev, next) {
+        (Some((from, false)), Some((to, false))) => vec![(from, false), (to, true)],
         (Some((from, false)), Some((_, true))) => vec![(from, false)],
         (Some((_, true)), Some((to, false))) => vec![(to, true)],
         _ => Vec::new(),
+    }
+}
+
+/// What a pane's state says about a focus report (`PTYSession.m:9856-9886`).
+#[derive(Clone, Copy, Debug)]
+pub struct FocusFacts {
+    /// Reporting is held (`incrementDisableFocusReporting:`, a password manager window open).
+    pub held: bool,
+    /// A tmux gateway never reports.
+    pub gateway: bool,
+    /// The program turned DECSET 1004 on.
+    pub wants: bool,
+}
+
+/// iTerm2's `_focused` per pane: the last state a pane was told, so every report is single.
+#[derive(Clone, Debug, Default)]
+pub struct FocusLedger {
+    told: std::collections::HashMap<crate::layout::PaneId, bool>,
+}
+
+impl FocusLedger {
+    /// Records `gained` for `pane` and answers whether the report is to be written. A held or
+    /// gateway pane records nothing; a pane whose program did not ask records the state without
+    /// a write (iTerm2 updates `_focused` before it looks at `terminalReportFocus`).
+    pub fn report(&mut self, pane: crate::layout::PaneId, gained: bool, facts: FocusFacts) -> bool {
+        if facts.held || facts.gateway {
+            return false;
+        }
+        if self.told.get(&pane).copied().unwrap_or(false) == gained {
+            return false;
+        }
+        self.told.insert(pane, gained);
+        facts.wants
+    }
+
+    pub fn forget(&mut self, pane: crate::layout::PaneId) {
+        self.told.remove(&pane);
     }
 }
 
@@ -2474,11 +2513,30 @@ mod tests {
 
     #[test]
     fn pane_focus_reports_follow_iterm2() {
+        assert_eq!(pane_focus_reports(Some((1, false)), Some((3, false))), vec![(1, false), (3, true)]);
         assert_eq!(pane_focus_reports(Some((1, false)), Some((2, true))), vec![(1, false)]);
         assert_eq!(pane_focus_reports(Some((2, true)), Some((1, false))), vec![(1, true)]);
-        assert_eq!(pane_focus_reports(Some((1, false)), Some((3, false))), Vec::<(u64, bool)>::new());
         assert_eq!(pane_focus_reports(Some((2, true)), Some((4, true))), Vec::<(u64, bool)>::new());
         assert_eq!(pane_focus_reports(None, Some((1, false))), Vec::<(u64, bool)>::new());
+    }
+
+    #[test]
+    fn focus_ledger_reports_once() {
+        let on = FocusFacts { held: false, gateway: false, wants: true };
+        let mut l = FocusLedger::default();
+        assert!(l.report(1, true, on), "first gain writes");
+        assert!(!l.report(1, true, on), "same state writes nothing");
+        assert!(l.report(1, false, on));
+        assert!(!l.report(1, false, on));
+        assert!(!l.report(2, false, on), "a pane never told anything starts unfocused");
+        let off = FocusFacts { wants: false, ..on };
+        assert!(!l.report(3, true, off), "no DECSET 1004: no write");
+        assert!(l.report(3, false, on) , "but the state was recorded, so the loss is a change");
+        assert!(!l.report(4, true, FocusFacts { held: true, ..on }), "held");
+        assert!(l.report(4, true, on), "a held report recorded nothing");
+        assert!(!l.report(5, true, FocusFacts { gateway: true, ..on }), "gateway");
+        l.forget(1);
+        assert!(l.report(1, true, on));
     }
 
     /// 13x AI browser tools final review I3: a host literal that is this computer or the local

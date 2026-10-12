@@ -206,7 +206,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Session > Log > Export Recording | no shortcut | Exports the session's recorded history to a file. (milestone 10) | have, milestone 10a: during a replay this menu command shows "Error encoding recording." (kept iTerm2 bug); the panel's own Export button works during a replay |
 | Session > Make Screenshot... | no shortcut | Captures a screenshot of the session content. | have, milestone 5e: a frozen copy with a camera sign, the panel with minimap and line range, Redact and Highlight, blur or solid, Copy, Save, Save As, 30000 px parts |
 | Session > Terminal State > Alternate Screen | no shortcut | Manually toggles the alternate screen buffer mode. | have |
-| Session > Terminal State > Focus Reporting | no shortcut | Manually toggles DECSET focus in/out event reporting. | have |
+| Session > Terminal State > Focus Reporting | no shortcut | Manually toggles DECSET focus in/out event reporting. | have | Milestone 13y2 Task 9d: a pane change in the key window reports focus-out and focus-in to the panes whose program enabled DECSET 1004, once each (`App::report_focus_to`, `webhost::FocusLedger`); never to browser panes, tmux gateways or held panes. |
 | Session > Terminal State > Mouse Reporting | no shortcut | Manually toggles mouse tracking/reporting mode. | have |
 | Session > Terminal State > Paste Bracketing | no shortcut | Manually toggles bracketed paste mode. | have |
 | Session > Terminal State > Application Cursor | no shortcut | Manually toggles DECCKM application cursor key mode. | have |
