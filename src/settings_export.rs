@@ -59,7 +59,12 @@ pub const ENTITIES: [Entity; 4] = [Entity::PythonRuntimes, Entity::UserDefaults,
 /// entity), uv's runtimes (provisioned again on first launch), the Python API consent marker
 /// (only OK in "Enable Python API?" grants it), the host's log, an import waiting for the
 /// next start and the workgroup approval key (only this install may seal an approval, 13y1). Glob patterns on one name, at the top level only (`IE:1181`, `:1199`).
-pub const APP_SUPPORT_EXCLUDE: [&str; 10] = ["settings.toml", "profiles.toml", "*.tmp", "*.recovered", "Scripts", "uv", "python-api-consent", "host.log", "import-pending", crate::workgroup_restore::KEY_FILE];
+pub const APP_SUPPORT_EXCLUDE: [&str; 11] = ["settings.toml", "profiles.toml", "*.tmp", "*.recovered", "Scripts", "uv", "python-api-consent", "host.log", "import-pending", STATE_IMPORTED, crate::workgroup_restore::KEY_FILE];
+
+/// The file in `%APPDATA%\Tandem` that says the `state` beside it came from an Import All (13y2): the next
+/// launch restore starts no buried workgroup member of it (`workgroup_restore::foreign_restore`). Written by
+/// `finish_import`, removed when Tandem writes its own state, never exported.
+pub const STATE_IMPORTED: &str = "state-imported";
 
 /// `fnmatch` on one name (`IE:1235-1241`): `*` any run, `?` one character; ASCII case is
 /// ignored, as Windows file names ignore it.

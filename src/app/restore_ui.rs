@@ -95,6 +95,10 @@ impl App {
             }
             restore_state::write_atomic(&path, &bytes)
         });
+        if result.is_ok() {
+            // Tandem's own state replaces an imported one.
+            let _ = std::fs::remove_file(Self::state_path().with_file_name(crate::settings_export::STATE_IMPORTED));
+        }
         crate::rlog!("saving the windows for the next launch: {}", if result.is_ok() { "saved" } else { "failed" });
         match result {
             Ok(()) => self.banners.clear("state"),
@@ -128,6 +132,7 @@ impl App {
         if state.windows.is_empty() {
             return None;
         }
+        self.state_imported = path.with_file_name(crate::settings_export::STATE_IMPORTED).is_file();
         crate::rlog!("restoring saved windows: {}", state.windows.len());
         if self.globals.bool("LogRestorableStateSize") {
             self.write_state_sizes(&state);

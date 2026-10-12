@@ -1201,6 +1201,9 @@ pub struct App {
     /// last window closed), and a focus loss waiting to be saved.
     state_debounce: crate::restore_state::Debounce,
     state_frozen: bool,
+    /// The state file at this launch came from an Import All (`settings_export::STATE_IMPORTED`), so its
+    /// restore starts no buried workgroup member (`workgroup_restore::foreign_restore`).
+    state_imported: bool,
     focus_lost: bool,
     /// The shell's virtual desktop manager, made on first use (13g); `desktops_tried` is set
     /// once the attempt was made, so a machine without one is asked only once.
@@ -2533,6 +2536,7 @@ pub fn run() {
         query_set: false,
         state_debounce: Default::default(),
         state_frozen: second_copy,
+        state_imported: false,
         focus_lost: false,
         desktops: None,
         desktops_tried: false,
@@ -4360,10 +4364,7 @@ impl App {
                 // name, and for a parameterised start the program before the answers.
                 let base = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile());
                 // A session copy whose shared profile is gone logs a fixed word, never its own Name (it may hold an answer).
-                let shared_name = match base.get(crate::session_profile::ORIGINAL_GUID).and_then(|v| v.as_str().map(str::to_string)) {
-                    Some(g) => self.store.get(&g).map_or_else(|| "a deleted profile".to_string(), |p| p.name()),
-                    None => base.name(),
-                };
+                let shared_name = session_params_app::shared_name(base.get(crate::session_profile::ORIGINAL_GUID).and_then(|v| v.as_str().map(str::to_string)), |g| self.store.get(g).map(|p| p.name()), || base.name());
                 let unanswered = self.param_profile.is_some().then(|| profile::command_line(base, &self.shell, None));
                 crate::rlog!("session started: profile {} program {}", crate::dlog::name(&shared_name), crate::dlog::program(session_params_app::start_log_command(&cmd, unanswered.as_deref())));
                 pane.cookie = cookie;

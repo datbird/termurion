@@ -390,7 +390,7 @@ impl App {
     fn discard_members(&mut self, mut d: wr::Descriptor, name: Option<&str>, launch: bool) {
         for m in d.members.iter_mut().filter(|m| !m.pending && super::restore_ui::attach_key(&m.arrangement).is_some()) {
             let session = std::mem::replace(&mut m.arrangement, Value::Table(Default::default()));
-            if let Some(id) = self.restore_member_pane(session, name, launch, false) {
+            if let Some(id) = self.restore_member_pane(session, name, launch, true) {
                 self.workgroups.close_later(id);
             }
         }
@@ -432,7 +432,7 @@ impl App {
         let mut built: Vec<PaneId> = Vec::new();
         for config in &plan.restored {
             let Some(m) = d.members.iter_mut().find(|m| &m.config_id == config) else { continue };
-            let inhibit = w.session(config).is_some_and(|s| wr::member_inhibits(s.mode, name.is_some() && !launch));
+            let inhibit = w.session(config).is_some_and(|s| wr::member_inhibits(s.mode, wr::foreign_restore(name.is_some(), launch, self.state_imported)));
             let session = std::mem::replace(&mut m.arrangement, Value::Table(Default::default()));
             if let Some(id) = self.restore_member_pane(session, name.as_deref(), launch, inhibit) {
                 panes.insert(config.clone(), id);
@@ -688,7 +688,29 @@ mod tests {
     fn buried_members_of_a_named_arrangement_are_built_idle() {
         let production = THIS.split("#[cfg(test)]").next().unwrap();
         let adopt = body(production, "    fn adopt_one(");
-        assert!(adopt.contains("wr::member_inhibits(s.mode, name.is_some() && !launch)"), "{adopt}");
+        assert!(adopt.contains("wr::member_inhibits(s.mode, wr::foreign_restore(name.is_some(), launch, self.state_imported))"), "{adopt}");
+    }
+
+    /// Carried pass I1: a member taken back only to be ended is built idle too, so a forged attach table
+    /// cannot start its embedded command when a restore is declined, unfit, too long or over the cap.
+    #[test]
+    fn discarded_members_are_built_idle() {
+        let production = THIS.split("#[cfg(test)]").next().unwrap();
+        let discard = body(production, "    fn discard_members(");
+        assert!(discard.contains("self.restore_member_pane(session, name, launch, true)"), "{discard}");
+        assert!(!discard.contains("launch, false)"), "{discard}");
+    }
+
+    /// Carried pass I2: an imported state file restores like a named arrangement.
+    #[test]
+    fn an_imported_state_starts_no_hidden_member() {
+        assert!(wr::foreign_restore(true, false, false), "a named arrangement");
+        assert!(wr::foreign_restore(false, true, true), "the launch state an Import All brought");
+        assert!(!wr::foreign_restore(false, true, false), "the person's own launch state keeps its shells");
+        let restore = include_str!("restore_ui.rs");
+        let prod = restore.split("#[cfg(test)]").next().unwrap();
+        assert!(prod.contains("self.state_imported = path.with_file_name(crate::settings_export::STATE_IMPORTED).is_file()"), "the launch read notes the marker");
+        assert!(prod.contains("remove_file(Self::state_path().with_file_name(crate::settings_export::STATE_IMPORTED))"), "Tandem's own state replaces it");
     }
 
     /// Task 9 review minor 6: a split or tab child is found only in the anchor's own window, so a plain

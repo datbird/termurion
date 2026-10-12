@@ -293,6 +293,13 @@ pub fn member_inhibits(mode: Mode, named_arrangement: bool) -> bool {
     mode_inhibits(mode) || named_arrangement
 }
 
+/// Whether a restore reads a document that did not come from this install's own launch state: a named
+/// arrangement, or the launch state while it is one an Import All brought (13y2 carried pass I2).
+/// Its buried members start idle (`member_inhibits`).
+pub fn foreign_restore(named: bool, launch: bool, state_imported: bool) -> bool {
+    (named && !launch) || (launch && state_imported)
+}
+
 /// Whether restoring the anchor starts no program of its own (`WR:shouldInhibitRelaunch`, `PS:2361-2390`).
 /// A Code Review or Diff session with no program to take back is restored as an idle session: its last
 /// output stays and nothing runs until the person starts it. A shell would be a stray one. When the

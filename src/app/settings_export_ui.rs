@@ -309,7 +309,12 @@ pub(super) fn finish_import(appdata_tandem: &Path) -> Vec<PathBuf> {
     apply_user_defaults(&staging.join(Entity::UserDefaults.key()).join(se::USER_DEFAULTS_FILE), appdata_tandem);
     let support = staging.join(Entity::AppSupport.key());
     if support.is_dir() && !is_reparse(&support) {
+        let carries_state = support.join("state").is_file() && !is_reparse(&support.join("state"));
         let _ = copy_contents(&support, appdata_tandem, true);
+        // An imported state is another person's or machine's document: its restore starts no hidden member.
+        if carries_state {
+            let _ = std::fs::write(appdata_tandem.join(se::STATE_IMPORTED), b"");
+        }
     }
     let zips = stage_scripts(&staging.join(Entity::Scripts.key()), &appdata_tandem.join(IMPORT_SCRIPTS_DIR));
     let _ = std::fs::remove_dir_all(&staging);
@@ -706,6 +711,30 @@ mod tests {
 
     /// Controller ruling I5: Import All's User Defaults never bring the AI consent switches
     /// (`ai_settings::guards_consent`); the local values stay.
+    /// Carried pass I2: an imported state file is marked, so its restore starts no hidden member; an import
+    /// without one writes no mark, and the mark is never exported.
+    #[test]
+    fn finish_import_marks_an_imported_state() {
+        let root = temp("finish-state");
+        let tandem = root.join("Tandem");
+        std::fs::create_dir_all(&tandem).unwrap();
+        let staging = se::staging_dir(&root, "S");
+        std::fs::create_dir_all(staging.join("app-support")).unwrap();
+        std::fs::write(staging.join(r"app-support\state"), "x").unwrap();
+        std::fs::write(tandem.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
+        finish_import(&tandem);
+        assert!(tandem.join(se::STATE_IMPORTED).exists(), "the state came from an import");
+        assert!(se::excluded(se::STATE_IMPORTED), "and the mark is never exported");
+        let _ = std::fs::remove_file(tandem.join(se::STATE_IMPORTED));
+        let staging = se::staging_dir(&root, "T");
+        std::fs::create_dir_all(staging.join("app-support")).unwrap();
+        std::fs::write(staging.join(r"app-support\snippets.json"), "[]").unwrap();
+        std::fs::write(tandem.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
+        finish_import(&tandem);
+        assert!(!tandem.join(se::STATE_IMPORTED).exists(), "no state, no mark");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn finish_import_keeps_the_ai_consent_switches() {
         use crate::ai_settings as ai;

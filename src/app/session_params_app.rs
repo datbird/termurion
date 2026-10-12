@@ -82,6 +82,16 @@ pub(super) fn restart_profile(base: &Profile, answers: Option<&[(String, String)
 /// The command whose program the start log line names (review I4): the command before the answers
 /// for a start that has them, so nothing typed into the prompt reaches the log. The line names the
 /// shared profile (a session's own Name may hold an answer).
+/// The profile name a start logs (9e I4, N2): the shared profile's, or the fixed word when a session copy's
+/// shared profile is gone, never the copy's own Name (it may hold an answer). `original` is the copy's
+/// saved original GUID, `lookup` the shared profile's name, `own` the profile's own name.
+pub(super) fn shared_name(original: Option<String>, lookup: impl Fn(&str) -> Option<String>, own: impl FnOnce() -> String) -> String {
+    match original {
+        Some(g) => lookup(&g).unwrap_or_else(|| "a deleted profile".to_string()),
+        None => own(),
+    }
+}
+
 pub(super) fn start_log_command<'a>(cmd: &'a str, unanswered: Option<&'a str>) -> &'a str {
     unanswered.unwrap_or(cmd)
 }
@@ -216,6 +226,15 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    /// 9e N2: a copy whose shared profile is gone logs the fixed word, never its own (answered) Name.
+    #[test]
+    fn a_deleted_shared_profile_logs_a_fixed_word() {
+        let gone = super::shared_name(Some("g".into()), |_| None, || "to Alice".to_string());
+        assert_eq!(gone, "a deleted profile");
+        assert_eq!(super::shared_name(Some("g".into()), |_| Some("Work".into()), || "to Alice".to_string()), "Work");
+        assert_eq!(super::shared_name(None, |_| unreachable!(), || "Plain".to_string()), "Plain");
+    }
+
     use super::*;
 
     fn body<'a>(src: &'a str, name: &str) -> &'a str {
