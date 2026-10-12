@@ -7,23 +7,14 @@ Each item says what is wrong, what it should do, and where it was seen.
 
 ## Open
 
-1. **The menu bar ignores Windows dark mode.** The "iTerm2", "Shell", "Edit", "View",
-   "Session", "Scripts", "Profiles", "Window" and "Help" bar and its drop-down menus are always
-   white. They should follow the Windows app mode (Settings > Personalization > Colors >
-   "Choose your default app mode"): dark menus in dark mode, light menus in light mode, and a
-   live switch when the person changes the mode. Seen on EXTREME, 2026-10-11 (dark mode, white
-   bar). Note: the native Win32 menu bar has no documented dark mode; the usual paths are the
-   uxtheme `SetPreferredAppMode` / `AllowDarkModeForWindow` calls or an owner-drawn bar. Pick
-   one in a short plan first.
-
-2. **The first menu says "iTerm2", not the product name.** The application menu (first item
-   on the menu bar) should be named "Termurion" (see item 3). Check the items inside it too
+1. **The first menu says "iTerm2", not the product name.** The application menu (first item
+   on the menu bar) should be named "Termurion" (see item 2). Check the items inside it too
    (for example "About iTerm2", "Quit iTerm2", "Hide iTerm2") and any other place the menu bar
    or its menus show the iTerm2 product name to the person; keep iTerm2 names only where they
    are file formats or compatibility keys (plists, escape sequences, the Python API). Do this
-   together with item 3, so the menus change only once. Seen 2026-10-11.
+   together with item 2, so the menus change only once. Seen 2026-10-11.
 
-3. **Rename the whole project from Tandem to Termurion.** Robert chose the name on
+2. **Rename the whole project from Tandem to Termurion.** Robert chose the name on
    2026-10-11 ("Tandem" is crowded: several products and a trademark-heavy word). Checks that
    day: no web, crates.io, npm, PyPI or GitHub use; termurion.com/.dev/.app/.io/.org did not
    resolve; RDAP lookups the same day returned "not found" for termurion.com, .net, .org, .io,
@@ -57,3 +48,5 @@ Each item says what is wrong, what it should do, and where it was seen.
    custom categories, keep the taskbar tasks, show no banner. Seen 2026-10-11.
 
 ## Done
+
+1. **The menu bar ignores Windows dark mode.** Done 2026-10-11 (main, tw1-darkmenu merged): menus follow the Windows app mode and switch live; Automatic uses AllowDark so the title bar and terminal colors follow too. Needs Robert's desktop look (dark, light, live switch).
