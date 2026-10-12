@@ -581,13 +581,19 @@ pub fn install(
                         }
                         Flow::Go
                     }
-                    WM_APP_UNHOOK => {
-                        // The hotkeys go here; the guard then releases held keys and the hook.
-                        let _ = register(&mut registered, &last, true);
-                        Flow::Stop
-                    }
                     _ => Flow::Go,
                 });
+                // The unhook message always ends the loop, even when its hotkey cleanup panics (13u
+                // minor): the hotkeys go here, then the guard releases held keys and the hook.
+                let flow = if msg.message == WM_APP_UNHOOK {
+                    let _ = pump_guarded(|| {
+                        let _ = register(&mut registered, &last, true);
+                        Flow::Go
+                    });
+                    Flow::Stop
+                } else {
+                    flow
+                };
                 if flow == Flow::Stop {
                     break;
                 }
@@ -1304,6 +1310,15 @@ mod tests {
         assert!(closures.contains("set_hotkey_sink("));
         assert!(!closures.contains(".unwrap()"), "a hook closure unwraps a lock");
         assert!(!closures.contains(".expect("), "a hook closure can panic");
+    }
+
+    #[test]
+    fn the_unhook_message_stops_the_loop_whatever_its_cleanup_does() {
+        let src = include_str!("winkeys.rs").split("#[cfg(test)]").next().unwrap();
+        let at = src.find("let flow = if msg.message == WM_APP_UNHOOK").expect("the unhook is decided outside the guarded arms");
+        let arm = &src[at..at + 400];
+        assert!(arm.contains("Flow::Stop") && arm.contains("pump_guarded("), "{arm}");
+        assert!(!src[..at].contains("WM_APP_UNHOOK => {"), "no guarded arm can swallow the stop");
     }
 
     #[test]
