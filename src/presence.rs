@@ -93,7 +93,8 @@ pub const TRAY_TIP: &str = "Tandem";
 
 /// The icon's menu (`AD:1846-1880`): label, and the selector of the menu item it runs or the
 /// kind of submenu ("buried", "main").
-pub const TRAY_ITEMS: [(&str, &str); 6] = [
+pub const TRAY_ITEMS: [(&str, &str); 7] = [
+    ("New Window", "newWindow:"),
     ("Settings", "showPrefWindow:"),
     ("Bring All Windows to Front", "arrangeInFront:"),
     ("Buried Sessions", "buried"),
@@ -127,6 +128,100 @@ pub fn tray_settle(want: bool, on: bool, done: bool) -> bool {
 /// Whether a pass has anything to do for the icon.
 pub fn tray_changes(want: bool, on: bool) -> bool {
     want != on
+}
+
+/// How many times in a row a failed add is retried before waiting for a change or a
+/// TaskbarCreated (Explorer restarting) to start over.
+pub const TRAY_MAX_ATTEMPTS: u32 = 12;
+
+/// The wait after `failures` failed adds in a row: 1 s, doubling, at most 30 s; None once the
+/// retries are used up (and for no failure at all).
+pub fn tray_retry_delay(failures: u32) -> Option<std::time::Duration> {
+    if failures == 0 || failures >= TRAY_MAX_ATTEMPTS {
+        return None;
+    }
+    Some(std::time::Duration::from_secs((1u64 << (failures - 1).min(5)).min(30)))
+}
+
+/// Whether a pass tries the icon now: it differs from what is wanted, the retries are not used
+/// up, and the last failure's delay has passed.
+pub fn tray_attempt_due(want: bool, on: bool, failures: u32, due: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    tray_changes(want, on) && failures < TRAY_MAX_ATTEMPTS && due.is_none_or(|d| now >= d)
+}
+
+/// The failure count after an attempt: cleared by a success.
+pub fn tray_failures_after(failures: u32, ok: bool) -> u32 {
+    if ok {
+        0
+    } else {
+        failures.saturating_add(1)
+    }
+}
+
+/// Tandem's logo (docs/assets/tandem-logo.svg) as `size` x `size` RGBA pixels for the tray: the
+/// blue card behind, the dark terminal card in front with its border, the prompt chevron and
+/// cursor bar. 3x3 supersampled; clear outside the cards.
+pub fn tray_icon_rgba(size: u32) -> Vec<u8> {
+    fn round_rect(x: f64, y: f64, (rx, ry, w, h, r): (f64, f64, f64, f64, f64)) -> f64 {
+        // Signed distance, negative inside.
+        let (cx, cy) = (rx + w / 2.0, ry + h / 2.0);
+        let (qx, qy) = ((x - cx).abs() - (w / 2.0 - r), (y - cy).abs() - (h / 2.0 - r));
+        qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r
+    }
+    fn segment(x: f64, y: f64, (ax, ay): (f64, f64), (bx, by): (f64, f64)) -> f64 {
+        let (dx, dy) = (bx - ax, by - ay);
+        let t = (((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        (x - (ax + t * dx)).hypot(y - (ay + t * dy))
+    }
+    let sample = |x: f64, y: f64| -> [f64; 4] {
+        // Back to front, in the logo's 160 unit space.
+        // Premultiplied colour, then alpha.
+        let mut out = [0.0; 4];
+        let mut put = |c: [f64; 3], a: f64| {
+            for i in 0..3 {
+                out[i] = c[i] * a + out[i] * (1.0 - a);
+            }
+            out[3] = a + out[3] * (1.0 - a);
+        };
+        let blue = [0x66 as f64, 0x78 as f64, 0xff as f64];
+        if round_rect(x, y, (14.0, 14.0, 104.0, 84.0, 16.0)) <= 0.0 {
+            put(blue, 0.9);
+        }
+        let front = (40.0, 52.0, 106.0, 94.0, 16.0);
+        if round_rect(x, y, front) <= 0.0 {
+            put(blue, 1.0);
+            if round_rect(x, y, (44.0, 56.0, 98.0, 86.0, 12.0)) <= 0.0 {
+                put([0x1d as f64, 0x24 as f64, 0x33 as f64], 1.0);
+            }
+        }
+        let prompt = [0x8f as f64, 0xb3 as f64, 0xff as f64];
+        if segment(x, y, (60.0, 94.0), (76.0, 106.0)).min(segment(x, y, (76.0, 106.0), (60.0, 118.0))) <= 5.0 || round_rect(x, y, (86.0, 113.0, 34.0, 7.0, 3.5)) <= 0.0 {
+            put(prompt, 1.0);
+        }
+        out
+    };
+    let scale = 160.0 / f64::from(size);
+    let mut px = Vec::with_capacity((size * size * 4) as usize);
+    for j in 0..size {
+        for i in 0..size {
+            let mut acc = [0.0; 4];
+            for sj in 0..3 {
+                for si in 0..3 {
+                    let s = sample((f64::from(i) + (f64::from(si) + 0.5) / 3.0) * scale, (f64::from(j) + (f64::from(sj) + 0.5) / 3.0) * scale);
+                    for k in 0..3 {
+                        acc[k] += s[k];
+                    }
+                    acc[3] += s[3];
+                }
+            }
+            let a = acc[3] / 9.0;
+            for k in 0..3 {
+                px.push(if acc[3] > 0.0 { (acc[k] / acc[3]).round() as u8 } else { 0 });
+            }
+            px.push((a * 255.0).round() as u8);
+        }
+    }
+    px
 }
 
 /// What the reopen (a dock click with no preference handling it) does.
@@ -275,7 +370,7 @@ mod tests {
     fn tray_items_follow_iterm2() {
         assert_eq!(
             TRAY_ITEMS,
-            [("Settings", "showPrefWindow:"), ("Bring All Windows to Front", "arrangeInFront:"), ("Buried Sessions", "buried"), ("Check For Updates", "checkForUpdatesFromMenu:"), ("Main Menu", "main"), ("Quit Tandem", "terminate:")]
+            [("New Window", "newWindow:"), ("Settings", "showPrefWindow:"), ("Bring All Windows to Front", "arrangeInFront:"), ("Buried Sessions", "buried"), ("Check For Updates", "checkForUpdatesFromMenu:"), ("Main Menu", "main"), ("Quit Tandem", "terminate:")]
         );
         for (_, sel) in TRAY_ITEMS.iter().filter(|(_, s)| s.ends_with(':')) {
             assert!(crate::menus::items().iter().any(|i| i.selector == *sel), "{sel}");
@@ -315,6 +410,49 @@ mod tests {
         // A pass changes something only while the wanted and actual states differ.
         assert!(tray_changes(true, false));
         assert!(!tray_changes(true, true));
+    }
+
+    /// TWEAKS 8: while resident the icon is tried at once, retried on a growing delay a bounded
+    /// number of times, and a TaskbarCreated starts over.
+    #[test]
+    fn tray_retry_is_bounded_and_backs_off() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        // Nothing to do when the icon is as wanted.
+        assert!(!tray_attempt_due(true, true, 0, None, t0));
+        // A first attempt needs no wait.
+        assert!(tray_attempt_due(true, false, 0, None, t0));
+        // After a failure the attempt waits for its due time.
+        let due = t0 + tray_retry_delay(1).unwrap();
+        assert!(!tray_attempt_due(true, false, 1, Some(due), t0));
+        assert!(tray_attempt_due(true, false, 1, Some(due), due));
+        // The delay grows and is capped; the retries end.
+        assert!(tray_retry_delay(2).unwrap() > tray_retry_delay(1).unwrap());
+        assert_eq!(tray_retry_delay(TRAY_MAX_ATTEMPTS - 1), Some(Duration::from_secs(30)));
+        assert_eq!(tray_retry_delay(TRAY_MAX_ATTEMPTS), None);
+        assert!(!tray_attempt_due(true, false, TRAY_MAX_ATTEMPTS, None, t0), "gave up until a TaskbarCreated or a change");
+        // A result counts or clears the failures.
+        assert_eq!(tray_failures_after(0, false), 1);
+        assert_eq!(tray_failures_after(5, true), 0);
+    }
+
+    /// TWEAKS 8: the icon drawn for the tray is Tandem's (the logo), the right size, not blank.
+    #[test]
+    fn tray_icon_is_the_logo() {
+        let px = tray_icon_rgba(32);
+        assert_eq!(px.len(), 32 * 32 * 4);
+        assert_eq!(px[3], 0, "the corner is clear");
+        let opaque = px.chunks(4).filter(|p| p[3] == 255).count();
+        assert!(opaque > 300, "the terminal card is drawn");
+        let light = px.chunks(4).filter(|p| p[3] == 255 && p[0] > 0x80 && p[1] > 0xa0).count();
+        assert!(light > 5, "the prompt is drawn");
+    }
+
+    /// TWEAKS 8: the menu opens with a way to a window, and ends with Quit.
+    #[test]
+    fn tray_menu_offers_new_window_and_quit() {
+        assert_eq!(TRAY_ITEMS[0], ("New Window", "newWindow:"));
+        assert_eq!(TRAY_ITEMS[TRAY_ITEMS.len() - 1], ("Quit Tandem", "terminate:"));
     }
 
     /// iTerm2's reopen (`AD:946-952`): the last window comes forward, never a hidden hotkey
