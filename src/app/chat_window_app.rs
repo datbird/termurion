@@ -1130,6 +1130,11 @@ impl App {
         if crate::winkeys::chord_foreground() != hwnd {
             return false;
         }
+        self.chat_run_chord(chord)
+    }
+
+    /// What a chat window chord does, from the hook (Win) or the window's own keys (the shortcut key).
+    fn chat_run_chord(&mut self, chord: ChatChord) -> bool {
         match chord {
             ChatChord::Close => self.close_chat_window(),
             ChatChord::Focus => {
@@ -1155,6 +1160,11 @@ impl App {
         let Some(w) = self.chat_window.as_mut() else { return false };
         if w.id() != window {
             return false;
+        }
+        // The shortcut key's own chords (Ctrl+Shift+W); the hook carries the Win form.
+        if let Some(chord) = w.shortcut(event).filter(crate::winkeys::chat_chord).and_then(|c| chat_chord(&c)) {
+            self.chat_run_chord(chord);
+            return true;
         }
         match event {
             WindowEvent::CloseRequested => self.close_chat_window(),

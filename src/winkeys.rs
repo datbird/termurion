@@ -131,6 +131,17 @@ fn win_is_cmd_for(mode: crate::shortcut_key::ShortcutKey, c: &Chord) -> bool {
     mode == crate::shortcut_key::ShortcutKey::Win || !mode.reachable(c)
 }
 
+/// What the hook takes in a password manager window: its Win chord, unless the shortcut key's own
+/// modifiers reach it (then the window reads Ctrl+Shift+B itself and Windows keeps Win+B).
+fn pwm_hook_takes(mode: crate::shortcut_key::ShortcutKey, c: &Chord) -> bool {
+    pwm_chord(c) && win_is_cmd_for(mode, c)
+}
+
+/// The same for the AI Chat window.
+fn chat_hook_takes(mode: crate::shortcut_key::ShortcutKey, c: &Chord) -> bool {
+    chat_chord(c) && win_is_cmd_for(mode, c)
+}
+
 struct Hook {
     gate: Mutex<Gate>,
     send: Box<dyn Fn(Chord) + Send + Sync>,
@@ -512,7 +523,7 @@ unsafe fn hook_body(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
                     alt: held(0x12),
                     ctrl: held(0x11),
                 };
-                let bound = |c: &Chord| recording || if pwm { pwm_chord(c) } else if chat { chat_chord(c) } else if cockpit { cockpit_chord(c) } else { win_is_cmd(c) && (h.bound)(c) };
+                let bound = |c: &Chord| recording || if pwm { pwm_hook_takes(crate::shortcut_key::mode(), c) } else if chat { chat_hook_takes(crate::shortcut_key::mode(), c) } else if cockpit { cockpit_chord(c) } else { win_is_cmd(c) && (h.bound)(c) };
                 let verdict = locked(&h.gate).on_key(e, &bound);
                 if let Verdict::Take(chord) = verdict {
                     if let Some(c) = chord {
@@ -1325,6 +1336,23 @@ mod tests {
         let cd = win_is_cmd_for(CtrlShift, &c(ChordKey::Char('d'), true, false, false));
         assert!(!d && !sd, "Win+D and Win+Shift+D stay with Windows");
         assert!(cd, "Cmd+Ctrl+D has no pair: the Win key still carries it");
+    }
+
+    /// TWEAKS 9 review I3: with a pair chosen the hook leaves Win+E, Win+F, Win+G, Win+U, Win+C and
+    /// Win+B to Windows in the password manager and AI Chat windows; Win mode takes them as before.
+    #[test]
+    fn the_pwm_and_chat_windows_keep_win_chords_only_in_win_mode() {
+        use crate::shortcut_key::ShortcutKey::{CtrlAlt, CtrlShift, Win};
+        let c = |k: char, shift: bool| Chord { key: ChordKey::Char(k), cmd: true, alt: false, shift, ctrl: false };
+        for k in ['b', 'u', 'c'] {
+            assert!(pwm_hook_takes(Win, &c(k, false)), "{k}");
+            assert!(!pwm_hook_takes(CtrlShift, &c(k, false)) && !pwm_hook_takes(CtrlAlt, &c(k, false)), "{k}");
+        }
+        for (k, shift) in [('w', false), ('f', false), ('e', false), ('g', false), ('g', true), ('y', true)] {
+            assert!(chat_hook_takes(Win, &c(k, shift)), "{k}");
+            assert!(!chat_hook_takes(CtrlShift, &c(k, shift)), "{k} {shift}");
+        }
+        assert!(!pwm_hook_takes(Win, &c('x', false)) && !chat_hook_takes(Win, &c('x', false)), "only their own chords");
     }
 
     #[test]

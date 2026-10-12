@@ -122,6 +122,14 @@ impl ShortcutKey {
         self.press_as_cmd(phys, types_a_character).unwrap_or(phys)
     }
 
+    /// The Cmd chord a key press makes in a Tandem window that has no menu of its own (the
+    /// password manager, AI Chat): the shortcut key's own modifiers with `key`. None in Win mode
+    /// (the hook carries the Win chord) and when the press is no pair or is AltGr typing.
+    pub fn window_chord(self, phys: Mods, types_a_character: bool, key: crate::menus::ChordKey) -> Option<Chord> {
+        let l = self.press_as_cmd(phys, types_a_character)?;
+        Some(Chord { key, cmd: true, alt: l.alt, shift: l.shift, ctrl: false })
+    }
+
     /// Whether a Cmd chord is pressed without the Win key in this mode.
     pub fn reachable(self, c: &Chord) -> bool {
         !c.cmd || self == ShortcutKey::Win || self.held_for(c.shift, c.alt, c.ctrl).is_some()
@@ -154,6 +162,37 @@ impl ShortcutKey {
         let Some(h) = self.held_for(has("Shift"), has("Alt"), has("Ctrl")) else { return text.to_string() };
         let rest: Vec<&str> = tokens.into_iter().filter(|t| !matches!(*t, "Win" | "Ctrl" | "Alt" | "Shift")).collect();
         held_label(h) + &rest.join("+")
+    }
+}
+
+/// The modifiers a window without menus (password manager, AI Chat) has seen, and the Cmd chord a
+/// key press makes with them. The hook carries the Win form; this is the shortcut key's own form.
+#[derive(Default)]
+pub struct WindowKeys {
+    mods: Mods,
+}
+
+impl WindowKeys {
+    /// Feed every window event; a key press that is a shortcut-key chord comes back.
+    pub fn chord(&mut self, e: &winit::event::WindowEvent) -> Option<Chord> {
+        use winit::event::{ElementState, WindowEvent};
+        match e {
+            WindowEvent::ModifiersChanged(m) => {
+                let s = m.state();
+                self.mods = Mods { shift: s.shift_key(), alt: s.alt_key(), ctrl: s.control_key(), cmd: s.super_key() };
+                None
+            }
+            WindowEvent::Focused(false) => {
+                self.mods = Mods::default();
+                None
+            }
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && !event.repeat => {
+                let types = event.text.as_deref().is_some_and(|t| t.chars().any(|c| !c.is_control()));
+                let key = crate::winkeys::vk_to_key(crate::winkeys::vk_of(event.physical_key))?;
+                mode().window_chord(self.mods, types, key)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -303,6 +342,21 @@ mod tests {
         assert_eq!(recorded_stroke(raw, phys(true, true, true, false), cs).ch, 'D' as u32, "Cmd+Shift keeps the shifted character");
     }
 
+    /// TWEAKS 9 review I3: the password manager and AI Chat windows take the chosen chord.
+    #[test]
+    fn windows_without_menus_take_the_shortcut_key_chord() {
+        use crate::menus::ChordKey;
+        let m = ShortcutKey::CtrlShift;
+        let c = m.window_chord(phys(true, true, false, false), false, ChordKey::Char('b')).expect("Ctrl+Shift+B is Cmd+B");
+        assert_eq!((c.cmd, c.shift, c.alt, c.ctrl, c.key), (true, false, false, false, ChordKey::Char('b')));
+        let g = m.window_chord(phys(true, true, true, false), false, ChordKey::Char('g')).expect("Ctrl+Shift+Alt+G is Cmd+Shift+G");
+        assert!(g.cmd && g.shift && !g.alt);
+        assert!(m.window_chord(phys(true, false, false, false), false, ChordKey::Char('b')).is_none(), "Ctrl+B is the program's");
+        assert!(m.window_chord(phys(false, false, false, true), false, ChordKey::Char('b')).is_none(), "Win is the hook's");
+        assert!(ShortcutKey::Win.window_chord(phys(true, true, false, false), false, ChordKey::Char('b')).is_none());
+        assert!(ShortcutKey::CtrlAlt.window_chord(phys(true, false, true, false), true, ChordKey::Char('e')).is_none(), "AltGr+E types a character");
+    }
+
     #[test]
     fn menus_show_the_real_keys() {
         let d = chord('d', false, false, false);
@@ -357,5 +411,18 @@ mod tests {
         let chord = ui.split("fn shortcut_chord(").nth(1).and_then(|r| r.split("\n    }\n").next()).expect("shortcut_chord");
         assert!(chord.contains("chord_bound(&snapshot, &chord, false)") && chord.contains(".then_some(chord)"), "only a bound chord is taken; the rest is the terminal's");
         assert!(!chord.contains("user_write"), "a shortcut writes nothing to the program");
+    }
+
+    /// TWEAKS 9 review I3: the windows read the shortcut key through `WindowKeys` and label it.
+    #[test]
+    fn the_pwm_and_chat_windows_read_the_shortcut_key() {
+        let pwm = include_str!("pwm_ui.rs");
+        let prod = pwm.split("#[cfg(test)]").next().unwrap();
+        assert!(prod.contains("keys: crate::shortcut_key::WindowKeys") && prod.contains("self.keys.chord(e)"), "pwm_ui");
+        assert!(prod.contains("shortcut_key::mode().show(pwm::TITLE_BROADCAST)") && prod.contains("shortcut_key::mode().show(pwm::TOOLTIP_ENTER_USER_NAME)"), "pwm labels");
+        let chat = include_str!("chat_window_ui.rs");
+        assert!(chat.contains("shortcut_key::WindowKeys") && chat.contains("self.keys.chord(event)"), "chat_window_ui");
+        let app = include_str!("app/chat_window_app.rs");
+        assert!(app.contains("w.shortcut(event)") && app.contains("filter(crate::winkeys::chat_chord)"), "the chat window takes its own chord");
     }
 }

@@ -123,6 +123,8 @@ pub struct PwmWindow {
     /// The search field takes the focus once the window is authenticated.
     focus_search: bool,
     win_down: bool,
+    /// The shortcut key's own chords (Ctrl+Shift+B) for the window's keys; the hook carries Win.
+    keys: crate::shortcut_key::WindowKeys,
     /// Win chords (b, u, c) waiting for the next redraw.
     chords: Vec<char>,
     /// A manager a web page's button asked for: input is ignored for the one shared guard's delay after it
@@ -173,6 +175,7 @@ impl PwmWindow {
             focus_password: false,
             focus_search: true,
             win_down: false,
+            keys: Default::default(),
             chords: Vec::new(),
             guard: None,
             pointer_only: false,
@@ -248,6 +251,13 @@ impl PwmWindow {
         }
         if self.pointer_only && pointer_only_drops(e) {
             return false;
+        }
+        if let Some(c) = self.keys.chord(e) {
+            if let (true, crate::menus::ChordKey::Char(k)) = (crate::winkeys::pwm_chord(&c), c.key) {
+                self.chords.push(k);
+                self.host.request_redraw();
+                return true;
+            }
         }
         match e {
             WindowEvent::ModifiersChanged(m) => self.win_down = m.state().super_key(),
@@ -549,7 +559,7 @@ fn main(ui: &mut egui::Ui, v: &PwmView, rows: &[usize], search: &mut String, two
         if r.changed() {
             acts.push(PwmAct::TwoFactor(two_factor.clone()));
         }
-        if ui.add_enabled(b.broadcast_on, egui::Checkbox::new(broadcast, pwm::TITLE_BROADCAST)).changed() {
+        if ui.add_enabled(b.broadcast_on, egui::Checkbox::new(broadcast, crate::shortcut_key::mode().show(pwm::TITLE_BROADCAST))).changed() {
             acts.push(PwmAct::Broadcast(*broadcast));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -560,8 +570,8 @@ fn main(ui: &mut egui::Ui, v: &PwmView, rows: &[usize], search: &mut String, two
             if b.secondary_shown {
                 let r = ui
                     .add_enabled(b.secondary_on, egui::Button::new(pwm::TITLE_ENTER_USER_NAME).min_size(wide))
-                    .on_hover_text(pwm::TOOLTIP_ENTER_USER_NAME)
-                    .on_disabled_hover_text(pwm::TOOLTIP_ENTER_USER_NAME);
+                    .on_hover_text(crate::shortcut_key::mode().show(pwm::TOOLTIP_ENTER_USER_NAME))
+                    .on_disabled_hover_text(crate::shortcut_key::mode().show(pwm::TOOLTIP_ENTER_USER_NAME));
                 if r.clicked() {
                     acts.push(PwmAct::EnterUserName);
                 }
