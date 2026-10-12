@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Shell::{NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_NOSOUND, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW};
-use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, IDI_APPLICATION, LoadIconW, RegisterClassW, RegisterWindowMessageW, WM_APP, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP};
+use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, CreateIcon, IDI_APPLICATION, LoadIconW, RegisterClassW, RegisterWindowMessageW, WM_APP, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP};
 
 const ICON_ID: u32 = 0x7A4D;
 /// The tray icon's callback message.
@@ -22,8 +22,10 @@ static ADDED: AtomicBool = AtomicBool::new(false);
 static WINDOW: AtomicIsize = AtomicIsize::new(0);
 static ON_CLICK: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static ON_TRAY: OnceLock<Box<dyn Fn(bool) + Send + Sync>> = OnceLock::new();
-/// Whether the resident (notification area) icon is wanted: it is re-added when Explorer restarts.
-static RESIDENT: AtomicBool = AtomicBool::new(false);
+/// Told when Explorer restarted (TaskbarCreated): the app owns the tray, so it re-adds the icon.
+static ON_TASKBAR: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+/// Tandem's icon, made once (an HICON handle).
+static ICON: AtomicIsize = AtomicIsize::new(0);
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 const WM_LBUTTONUP: u32 = 0x0202;
 const WM_RBUTTONUP: u32 = 0x0205;
@@ -54,6 +56,29 @@ pub fn on_tray(f: Box<dyn Fn(bool) + Send + Sync>) {
     let _ = ON_TRAY.set(f);
 }
 
+/// What Explorer restarting does (called on the window's thread): the app adds the icon again.
+pub fn on_taskbar_created(f: Box<dyn Fn() + Send + Sync>) {
+    let _ = ON_TASKBAR.set(f);
+}
+
+/// Tandem's icon (the logo, drawn by `presence::tray_icon_rgba`), the generic application icon if
+/// Windows refuses to make it.
+fn icon() -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
+    let h = ICON.load(Ordering::SeqCst);
+    if h != 0 {
+        return h as _;
+    }
+    const SIZE: u32 = 32;
+    let bgra: Vec<u8> = crate::presence::tray_icon_rgba(SIZE).chunks(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
+    let mask = vec![0u8; (SIZE / 8 * SIZE) as usize];
+    let made = unsafe { CreateIcon(std::ptr::null_mut(), SIZE as i32, SIZE as i32, 1, 32, mask.as_ptr(), bgra.as_ptr()) };
+    if made.is_null() {
+        return unsafe { LoadIconW(std::ptr::null_mut(), IDI_APPLICATION) };
+    }
+    ICON.store(made as isize, Ordering::SeqCst);
+    made
+}
+
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if msg == CALLBACK {
         let low = lparam as u32 & 0xFFFF;
@@ -68,10 +93,11 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
     }
     let created = TASKBAR_CREATED.load(Ordering::SeqCst);
     if created != 0 && msg == created {
-        // Explorer restarted and dropped every icon: the resident one is added again.
+        // Explorer restarted and dropped every icon: the app (the one owner of the tray) adds the
+        // resident one again, with its retries.
         ADDED.store(false, Ordering::SeqCst);
-        if RESIDENT.load(Ordering::SeqCst) {
-            let _ = add_resident(hwnd);
+        if let Some(f) = ON_TASKBAR.get() {
+            f();
         }
         return 0;
     }
@@ -121,12 +147,12 @@ fn add_resident(hwnd: HWND) -> Result<(), String> {
     let mut nid = base(hwnd);
     nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     nid.uCallbackMessage = CALLBACK;
-    nid.hIcon = unsafe { LoadIconW(std::ptr::null_mut(), IDI_APPLICATION) };
+    nid.hIcon = icon();
     copy(&mut nid.szTip, crate::presence::TRAY_TIP);
     let op = if ADDED.swap(true, Ordering::SeqCst) { NIM_MODIFY } else { NIM_ADD };
     if unsafe { Shell_NotifyIconW(op, &nid) } == 0 {
         ADDED.store(false, Ordering::SeqCst);
-        return Err("Windows did not add the notification area icon".into());
+        return Err(format!("Windows did not add the notification area icon ({})", std::io::Error::last_os_error()));
     }
     Ok(())
 }
@@ -134,7 +160,6 @@ fn add_resident(hwnd: HWND) -> Result<(), String> {
 /// Adds or removes the resident notification area icon (the way back for a Tandem that left
 /// the taskbar). Removing always deletes the icon; a later balloon adds it again.
 pub fn set_resident(on: bool) -> Result<(), String> {
-    RESIDENT.store(on, Ordering::SeqCst);
     if on {
         return add_resident(window()?);
     }
@@ -156,7 +181,7 @@ pub fn show_with(title: &str, body: &str, silent: bool) -> Result<(), String> {
     nid.uID = ICON_ID;
     nid.uFlags = NIF_INFO | NIF_ICON | NIF_TIP | NIF_MESSAGE;
     nid.uCallbackMessage = CALLBACK;
-    nid.hIcon = unsafe { LoadIconW(std::ptr::null_mut(), IDI_APPLICATION) };
+    nid.hIcon = icon();
     nid.dwInfoFlags = NIIF_INFO | if silent { NIIF_NOSOUND } else { 0 };
     copy(&mut nid.szTip, "Tandem");
     copy(&mut nid.szInfoTitle, title);

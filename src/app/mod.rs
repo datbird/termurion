@@ -268,6 +268,8 @@ pub enum UserEvent {
     DisplayChanged,
     /// The notification area icon was clicked (true for a right click).
     Tray(bool),
+    /// Explorer restarted (TaskbarCreated): the icon is added again.
+    TaskbarCreated,
     /// A shell's foreground job changed.
     JobsChanged,
     /// A system-wide hotkey was pressed (the ids of every hotkey it matched).
@@ -1225,6 +1227,9 @@ pub struct App {
     ui_element_now: bool,
     /// The notification area icon is added (app-wide).
     tray_on: bool,
+    /// Failed icon adds in a row, and when the next try is due (`presence::tray_retry_delay`).
+    tray_failures: u32,
+    tray_due: Option<Instant>,
     /// The font settings the renderer last loaded.
     font_sig: String,
     /// The faces of this window's panes (`fonts_ui::PaneFaces`; per window like the renderer).
@@ -1957,6 +1962,10 @@ pub fn run() {
     crate::notify::on_tray(Box::new(move |right| {
         let _ = trays.lock().map(|p| p.send_event(UserEvent::Tray(right)));
     }));
+    let taskbars = proxy.clone();
+    crate::notify::on_taskbar_created(Box::new(move || {
+        let _ = taskbars.lock().map(|p| p.send_event(UserEvent::TaskbarCreated));
+    }));
     let displays = proxy.clone();
     crate::display_watch::on_change(Box::new(move || {
         let _ = displays.lock().map(|p| p.send_event(UserEvent::DisplayChanged));
@@ -2548,6 +2557,8 @@ pub fn run() {
         ui_element_confirmed,
         ui_element_now: false,
         tray_on: false,
+        tray_failures: 0,
+        tray_due: None,
         font_sig: String::new(),
         pane_faces: Default::default(),
         profiles_win: None,
@@ -7107,6 +7118,8 @@ impl ApplicationHandler<UserEvent> for App {
                 // A resident start has no window in the list until a tab makes it one.
                 if resident_start {
                     self.resident = true;
+                    // The icon is the way back: add it now, not on some later event (TWEAKS 8).
+                    self.tray_tick(false);
                 } else {
                     self.registry.open(k);
                 }
@@ -7483,7 +7496,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
         let desktop_due = self.desktop_tick();
         let ui_element = self.presence_tick();
-        self.tray_tick(ui_element);
+        let tray_due = self.tray_tick(ui_element);
         if self.settings.as_mut().is_some_and(|s| s.take_space_warning()) {
             self.ask_scripts(scripts_alerts::ask(crate::desktops::SPACES_WARNING_HEADING, crate::desktops::SPACES_WARNING, &["OK"], Some(crate::desktops::SPACES_WARNING_ID), crate::warnings::Kind::Permanent, scripts_alerts::Then::Nothing));
         }
@@ -7512,7 +7525,7 @@ impl ApplicationHandler<UserEvent> for App {
         let command_due = self.command_click_tick();
         // Update and Tip of the Day deadlines wake no resident Tandem (the 13v1 merge).
         let (update_wake, tip_of_day_wake) = (update_app::idle_due(self.update_due, self.resident), update_app::idle_due(self.tip_due, self.resident));
-        let wake = [workgroup_due, jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let wake = [tray_due, workgroup_due, jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -7548,6 +7561,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::NotificationClicked => return self.reveal_notified(),
             UserEvent::Tray(right) => return self.tray_clicked(right, event_loop),
+            UserEvent::TaskbarCreated => return self.taskbar_created(),
             UserEvent::JobsChanged => return self.jobs_changed(),
             UserEvent::DebugLogSaved(result, announce) => return self.debug_log_saved(result, announce),
             UserEvent::PageSaveFile { pane, id, done } => return self.page_save_file_done(pane, id, done),

@@ -130,17 +130,39 @@ const TRAY_BRING_ALL_ID: &str = "tray-bring-all";
 
 impl App {
     /// Follows `presence_tick`'s value: the notification area icon is added or removed on a change.
-    pub(super) fn tray_tick(&mut self, ui_element_now: bool) {
+    /// A failed add is retried on a growing delay (`presence::tray_retry_delay`), woken through the
+    /// pass's wake array, so a resident Tandem with no events still gets its icon once Explorer is
+    /// up. Returns the next retry's due time. Every result is logged to host.log.
+    pub(super) fn tray_tick(&mut self, ui_element_now: bool) -> Option<Instant> {
         let want = crate::resident::icon_wanted(presence::tray_wanted(ui_element_now, self.globals.bool(presence::STATUS_BAR_ICON_KEY)), self.resident);
-        if !presence::tray_changes(want, self.tray_on) {
-            return;
+        let now = Instant::now();
+        if !presence::tray_attempt_due(want, self.tray_on, self.tray_failures, self.tray_due, now) {
+            // Waiting for a retry's time, or nothing to do (or the retries are used up).
+            return if presence::tray_changes(want, self.tray_on) && self.tray_failures < presence::TRAY_MAX_ATTEMPTS { self.tray_due } else { None };
         }
-        // A failure leaves the state as it was, so the next pass tries again (Explorer not up yet).
+        // A failure leaves the state as it was, so the next try is the retry (Explorer not up yet).
         let result = crate::notify::set_resident(want);
         self.tray_on = presence::tray_settle(want, self.tray_on, result.is_ok());
-        if let Err(e) = result {
-            self.banners.set("tray", e);
+        self.tray_failures = presence::tray_failures_after(self.tray_failures, result.is_ok());
+        let verb = if want { "add" } else { "remove" };
+        match &result {
+            Ok(()) => crate::host::log(&format!("tray: {verb} ok")),
+            Err(e) => {
+                crate::host::log(&format!("tray: {verb} failed ({e}), failures in a row {}", self.tray_failures));
+                self.banners.set("tray", e.clone());
+            }
         }
+        self.tray_due = presence::tray_retry_delay(self.tray_failures).map(|d| now + d);
+        self.tray_due
+    }
+
+    /// Explorer restarted and dropped every icon: add it again from a clean count.
+    pub(super) fn taskbar_created(&mut self) {
+        crate::host::log("tray: TaskbarCreated, adding the icon again");
+        self.tray_on = false;
+        self.tray_failures = 0;
+        self.tray_due = None;
+        self.tray_tick(false);
     }
 
     /// Terminal windows: (id, Some(shown) for a hotkey window, on screen), current first.

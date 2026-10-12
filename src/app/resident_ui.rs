@@ -557,7 +557,10 @@ mod tests {
     #[test]
     fn the_resident_icon_survives_explorer() {
         let notify = production(include_str!("../notify.rs"));
-        assert!(notify.contains("RegisterWindowMessageW") && notify.contains("if RESIDENT.load(Ordering::SeqCst)") && notify.contains("add_resident(hwnd)"));
+        assert!(notify.contains("RegisterWindowMessageW") && notify.contains("ON_TASKBAR.get()"), "TaskbarCreated reaches the app");
+        let created = body(production(include_str!("presence_ui.rs")), "taskbar_created");
+        assert!(created.contains("self.tray_on = false") && created.contains("self.tray_tick("), "the one owner adds it again");
+        assert!(production(MOD).contains("UserEvent::TaskbarCreated => return self.taskbar_created()"));
         assert!(production(PRESENCE).contains("crate::resident::icon_wanted(presence::tray_wanted("));
         assert!(production(PRESENCE).contains("crate::notify::set_resident(want)"));
     }
