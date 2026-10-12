@@ -10,12 +10,59 @@ use crate::warnings::{Kind, Spec};
 pub const ALWAYS_KEY: &str = "LinkSchemesAlways";
 pub const NEVER_KEY: &str = "LinkSchemesNever";
 
-/// Schemes no choice can open: each runs code, reads a local or remote file, or reaches a shell
-/// namespace through the handler Windows registers for it. `ms-settings` is here too: it is only
-/// reachable from a terminal link as a lure to a security page, and the old guard refused it.
-pub const BLOCKED: &[&str] = &[
-    "ms-msdt", "msdt", "search-ms", "search", "ms-officecmd", "ms-appinstaller", "ms-cxh", "ms-cxh-full", "ms-settings", "file", "javascript", "vbscript", "data", "shell", "mk",
-    "its", "ms-its", "hcp", "ldap", "ldaps", "res", "jar", "smb", "dav", "davs", "webdav", "webdavs", "about", "blob", "filesystem", "view-source", "ms-help", "mhtml",
+/// Schemes no choice can open, each with its reason: they run code, read a local or remote file, or
+/// reach a shell namespace through the handler Windows registers for them. One table (TWEAKS 6 review I3).
+pub const BLOCKED: &[(&str, &str)] = &[
+    ("ms-msdt", "Follina (CVE-2022-30190): runs a diagnostic tool with a remote payload"),
+    ("msdt", "the same diagnostic tool as ms-msdt"),
+    ("search-ms", "opens a remote search folder (2022 malware campaigns)"),
+    ("search", "the same search folder as search-ms"),
+    ("ms-officecmd", "Office argument injection to code execution (2021)"),
+    ("ms-appinstaller", "installs a package from a URL (Emotet; disabled by Microsoft)"),
+    ("ms-cxh", "Cloud Experience Host: a shell namespace"),
+    ("ms-cxh-full", "Cloud Experience Host: a shell namespace"),
+    ("ms-settings", "only a lure to a security page from a terminal link"),
+    ("file", "a local or network file: Tandem's own file rules apply"),
+    ("javascript", "runs script"),
+    ("vbscript", "runs script"),
+    ("data", "carries its own content"),
+    ("shell", "a shell namespace"),
+    ("mk", "CHM help content (script)"),
+    ("its", "CHM help content (script)"),
+    ("ms-its", "CHM help content (script)"),
+    ("hcp", "Help and Support Center command execution (CVE-2010-1885)"),
+    ("ldap", "a directory lookup that leaves the machine"),
+    ("ldaps", "a directory lookup that leaves the machine"),
+    ("res", "reads a resource out of a program file"),
+    ("jar", "fetches and reads a Java archive"),
+    ("smb", "a network share (NTLM leak)"),
+    ("dav", "a network share (NTLM leak)"),
+    ("davs", "a network share (NTLM leak)"),
+    ("webdav", "a network share (NTLM leak)"),
+    ("webdavs", "a network share (NTLM leak)"),
+    ("about", "a browser internal page"),
+    ("blob", "a browser internal object"),
+    ("filesystem", "a browser internal file"),
+    ("view-source", "a browser internal page"),
+    ("ms-help", "help content (script)"),
+    ("mhtml", "an archived page that can hold script"),
+    // The whole Office family: the abbreviated form (ms-word:https://h/x.docx) and nft| open a remote
+    // document or template, and a UNC target leaks NTLM; onenote: opens remote .one files.
+    ("ms-word", "Office opens a remote document or template; a UNC target leaks NTLM"),
+    ("ms-excel", "Office opens a remote document or template; a UNC target leaks NTLM"),
+    ("ms-powerpoint", "Office opens a remote document or template; a UNC target leaks NTLM"),
+    ("ms-visio", "Office opens a remote document or template; a UNC target leaks NTLM"),
+    ("ms-access", "Office opens a remote document or template; a UNC target leaks NTLM"),
+    ("ms-project", "Office opens a remote document or template; a UNC target leaks NTLM"),
+    ("ms-publisher", "Office opens a remote document or template; a UNC target leaks NTLM"),
+    ("ms-spd", "SharePoint Designer opens a remote site"),
+    ("ms-infopath", "InfoPath opens a remote form"),
+    ("onenote", "OneNote opens remote .one files (2023 malware wave)"),
+    ("ms-officeapp", "the Office app launcher"),
+    ("ms-outlook", "Office opens a remote item"),
+    ("jnlp", "Java Web Start runs remote code"),
+    ("jnlps", "Java Web Start runs remote code"),
+    ("microsoft-edge", "hands any URL, file: included, to Edge past Tandem's own browser gates"),
 ];
 
 /// Schemes Tandem owns or deliberately does not offer: never handed to whatever Windows registered
@@ -56,18 +103,11 @@ pub fn scheme_of(url: &str) -> Option<String> {
 /// Whether `scheme` (and `url`) can never open.
 pub fn screen(scheme: &str, url: &str) -> Result<(), String> {
     let refuse = || Err(format!("Tandem never opens {scheme}: links."));
-    if BLOCKED.contains(&scheme) {
+    if BLOCKED.iter().any(|(s, _)| *s == scheme) {
         return refuse();
     }
     if OWN.contains(&scheme) {
         return Err(format!("Tandem handles {scheme}: links itself and never hands them to another app."));
-    }
-    // The Office schemes open a document from a URL with the ofe and ofv commands.
-    if matches!(scheme, "ms-word" | "ms-excel" | "ms-powerpoint") {
-        let lower = url.to_ascii_lowercase().replace("%7c", "|");
-        if lower.contains("ofe|") || lower.contains("ofv|") {
-            return refuse();
-        }
     }
     if url.len() > MAX_URL || url.chars().any(char::is_control) {
         return Err(format!("Tandem did not open this {scheme}: link (too long, or it holds a control character)."));
@@ -164,9 +204,18 @@ mod tests {
         for url in ["ms-word:ofe|u|https://h/x.docx", "MS-EXCEL:ofv|u|https://h/x", "ms-powerpoint:ofe%7Cu%7Chttps://h/x"] {
             assert!(screen(&scheme_of(url).unwrap(), url).is_err(), "{url}");
         }
-        assert!(screen("ms-word", "ms-word:nft|u|https://h/x").is_ok(), "only the open commands are refused");
         assert!(screen("vscode", &format!("vscode:{}", "a".repeat(MAX_URL))).is_err(), "too long");
         assert!(screen("vscode", "vscode:a\nb").is_err(), "control characters");
+    }
+
+    #[test]
+    fn the_whole_office_family_and_java_web_start_are_blocked() {
+        for url in ["ms-word:https://h/x.docx", "ms-word:nft|u|https://h/t.dotm", "ms-excel:ofv|u|https://h/x", "ms-powerpoint:ofe%7Cu%7Chttps://h/x", "ms-visio:https://h/x", "ms-access:https://h/x", "ms-project:https://h/x", "ms-publisher:https://h/x", "ms-spd:https://h/x", "ms-infopath:https://h/x", "onenote:https://h/x.one", "ms-officecmd:x", "ms-officeapp:x", "jnlp://h/x.jnlp", "jnlps://h/x.jnlp", "microsoft-edge:file:///c:/x"] {
+            let s = scheme_of(url).unwrap();
+            assert!(screen(&s, url).is_err(), "{url}");
+            assert!(matches!(decide(url, &app("A", "\"C:\\a.exe\" \"%1\""), &s, ""), Plan::Refuse(_)), "{url} even with Always");
+        }
+        assert!(BLOCKED.iter().all(|(s, why)| !why.is_empty() && *s == s.to_ascii_lowercase()), "one table, a reason each");
     }
 
     #[test]
