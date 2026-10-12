@@ -74,6 +74,12 @@ Each item says what is wrong, what it should do, and where it was seen.
    setting like a hotkey window or "stay running" asks it not to, and then it shows that it is
    still running, e.g. in the tray). tandem-host.exe exited a few seconds after tandem.exe was
    stopped. Seen 2026-10-11.
+   Cause (tw8-windowless.md): this is the intended "resident" mode (iTerm2 parity:
+   QuitWhenAllWindowsClosed defaults off, so Tandem stays running after the last window
+   closes). Robert (2026-10-11): keep that behavior; the bug is that the tray icon never
+   showed, so nothing told him Tandem was still running. Fix the tray: it must always appear
+   while Tandem is resident (retry on failure and on TaskbarCreated after an Explorer restart),
+   use the real Tandem icon, offer Quit, and log the result.
 
 ## In progress
 
