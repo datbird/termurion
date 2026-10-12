@@ -15,6 +15,9 @@ thread_local! {
     /// A `ThemeReset` is queued and not yet handled: one `WM_SETTINGCHANGE` broadcast reaches every
     /// terminal window, and the app needs to hear of it once.
     static RESET_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// A `WM_SETTINGCHANGE` named "ImmersiveColorSet" (Windows' app mode may have changed) since
+    /// the last `ThemeReset` was handled.
+    static COLOR_SET_CHANGED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The window's subclass proc: winit handles `WM_SETTINGCHANGE` (resetting the title bar to
@@ -27,6 +30,10 @@ unsafe extern "system" fn theme_guard(hwnd: windows_sys::Win32::Foundation::HWND
     if msg == WM_SETTINGCHANGE {
         // The high contrast state may have changed.
         crate::tab_theme::forget_high_contrast();
+        // SAFETY: the lParam of the WM_SETTINGCHANGE the system delivered.
+        if unsafe { crate::dark_menu::win::setting_area(lparam) }.is_some_and(|a| crate::dark_menu::is_color_set_change(&a)) {
+            COLOR_SET_CHANGED.with(|c| c.set(true));
+        }
         if !RESET_PENDING.with(|p| p.replace(true)) {
             WAKE.with(|w| {
                 if let Some(proxy) = w.borrow().as_ref() {
@@ -167,9 +174,8 @@ impl App {
     }
 
     /// This window (and its menu bar, password manager and replay panel) follows a fixed Theme's
-    /// mode, or Windows' again (`updateAppearance`, `iTermApplication.m:1276-1292`). muda's
-    /// `MenuTheme::Auto` reads the system's mode, not the window's, so a forced window's menu
-    /// bar is told its mode. Returns whether the mode the window follows changed. winit's
+    /// mode, or Windows' again (`updateAppearance`, `iTermApplication.m:1276-1292`). The menu
+    /// bar and drop-downs are told their mode (`apply_menu_theme`). Returns whether the mode the window follows changed. winit's
     /// `Window::set_theme` does not update `Window::theme` on Windows, so the mode is worked out
     /// here (`dark`) and remembered per window (`theme_applied`), never read back from winit.
     pub(super) fn apply_theme(&mut self) -> bool {
@@ -179,17 +185,7 @@ impl App {
         let dark = self.dark();
         let changed = crate::tab_theme::theme_changed(self.theme_applied, dark);
         self.theme_applied = Some(dark);
-        if let (Some(hwnd), Some(bar)) = (self.hwnd(), &self.menu_bar) {
-            let theme = match forced {
-                Some(true) => muda::MenuTheme::Dark,
-                Some(false) => muda::MenuTheme::Light,
-                None => muda::MenuTheme::Auto,
-            };
-            // SAFETY: the HWND is this window's, and the bar was attached to it.
-            if let Err(e) = unsafe { bar.menu.set_theme_for_hwnd(hwnd, theme) } {
-                self.banners.set("menu", format!("Could not set the menu bar's theme: {e}"));
-            }
-        }
+        self.apply_menu_theme();
         if let Some(w) = &self.pwm_window {
             w.follow_theme(forced);
         }
@@ -197,6 +193,23 @@ impl App {
             w.follow_theme(forced);
         }
         changed
+    }
+
+    /// The menu bar and its drop-down menus take the mode `dark_menu::menu_dark` decides: a fixed
+    /// Theme's, else Windows' app mode read from the registry (muda's `Auto` needs a window
+    /// allowed dark, which winit never does, so the bar is always told Dark or Light). The
+    /// drop-downs follow the process app mode, set here too.
+    pub(super) fn apply_menu_theme(&mut self) {
+        let dark = crate::dark_menu::menu_dark(crate::tab_theme::forced_dark(self.tab_style()), crate::dark_menu::win::system_dark(), crate::tab_theme::system_high_contrast());
+        let Some(hwnd) = self.hwnd() else { return };
+        crate::dark_menu::win::apply(hwnd, crate::dark_menu::app_mode(dark));
+        if let Some(bar) = &self.menu_bar {
+            let theme = if dark { muda::MenuTheme::Dark } else { muda::MenuTheme::Light };
+            // SAFETY: the HWND is this window's, and the bar was attached to it.
+            if let Err(e) = unsafe { bar.menu.set_theme_for_hwnd(hwnd, theme) } {
+                self.banners.set("menu", format!("Could not set the menu bar's theme: {e}"));
+            }
+        }
     }
 
     /// Keeps this window's forced title bar: winit resets a window with no preferred theme to
@@ -215,8 +228,26 @@ impl App {
         RESET_PENDING.with(|p| p.set(false));
         // The same broadcast carries "Always show scrollbars" (`DynamicScrollbars`).
         self.refresh_scroll_style();
+        let color_set = COLOR_SET_CHANGED.with(|c| c.replace(false));
         if crate::tab_theme::forced_dark(self.tab_style()).is_some() {
             self.apply_theme_everywhere();
+        } else if color_set {
+            // Windows' app mode changed: every window's menus follow it live.
+            self.apply_menu_theme_everywhere();
+        }
+    }
+
+    /// Every terminal window's menu bar takes the menu mode again (`apply_menu_theme`).
+    fn apply_menu_theme_everywhere(&mut self) {
+        let back = self.current_window();
+        let ids: Vec<WindowId> = self.registry.order().into_iter().filter_map(|k| self.window_id_of_key(k)).collect();
+        for id in ids {
+            if self.enter(id) {
+                self.apply_menu_theme();
+            }
+        }
+        if let Some(b) = back {
+            self.enter(b);
         }
     }
 
