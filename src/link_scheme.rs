@@ -81,7 +81,15 @@ pub const OWN: &[&str] = &["ftp", "ssh", "telnet", "x-man-page", "iterm2", "tand
 pub const BAD_HANDLERS: &[&str] = &[
     "cmd", "powershell", "powershell_ise", "pwsh", "wscript", "cscript", "mshta", "rundll32", "regsvr32", "conhost", "wsl", "bash", "sh", "msiexec", "installutil", "msbuild", "forfiles", "hh", "wt",
     "explorer", "msdt", "control", "mmc", "cmstp", "regasm", "regsvcs", "odbcconf", "pcalua", "msxsl", "wmic", "javaws",
+    // Language runtimes (a handler like `node.exe -e "%1"` would run the URL as code) and living-off-the-land
+    // binaries that fetch, schedule or run what they are given (TWEAKS 6 re-review residuals).
+    "node", "python", "pythonw", "py", "pyw", "java", "javaw", "dotnet", "ruby", "perl", "php", "scriptrunner", "syncappvpublishingserver", "bitsadmin", "certutil",
+    "presentationhost", "dfsvc", "ieexec", "schtasks", "at", "mavinject", "pcwrun", "runas", "ftp",
 ];
+
+/// Folders only an administrator can write to, as the path after the drive letter and colon. A program
+/// there with no readable version info is trusted; anywhere else it is refused.
+const SYSTEM_ROOTS: &[&str] = &["\\program files\\", "\\program files (x86)\\", "\\windows\\"];
 
 /// The longest URL handed to an app.
 pub const MAX_URL: usize = 2048;
@@ -96,6 +104,8 @@ pub struct Handler {
     /// The program's full path (`ASSOCSTR_EXECUTABLE`, quotes and spaces already handled); None when Windows
     /// cannot name one. The command line is never parsed for the program (TWEAKS 6 review I1).
     pub exe: Option<String>,
+    /// OriginalFilename and InternalName from the program's version info; None when unreadable.
+    pub version_names: Option<Vec<String>>,
 }
 
 /// What to do with a link.
@@ -144,7 +154,40 @@ pub fn exe_stem(exe: &str) -> Result<String, String> {
     if BAD_HANDLERS.contains(&stem) {
         return Err("the app runs commands".into());
     }
+    // An 8.3 alias (POWERS~1) that was not resolved to the long name hides the real program from the list.
+    if is_short_alias(stem) {
+        return Err("the app is named by a short 8.3 alias".into());
+    }
     Ok(stem.to_string())
+}
+
+/// Whether `stem` has the shape of an 8.3 alias: up to six characters, `~`, digits.
+fn is_short_alias(stem: &str) -> bool {
+    stem.rsplit_once('~').is_some_and(|(head, tail)| !head.is_empty() && head.len() <= 6 && !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Whether the path (already known to be `X:\...`) is inside an administrator-only folder.
+fn in_system_root(exe: &str) -> bool {
+    let rest = exe.trim().trim_matches('"').get(2..).unwrap_or("").replace('/', "\\").to_ascii_lowercase();
+    SYSTEM_ROOTS.iter().any(|r| rest.starts_with(r))
+}
+
+/// The program a version-info name stands for: `Python.EXE` gives `python`, `pwsh.dll` gives `pwsh`.
+fn version_stem(name: &str) -> String {
+    let name = name.trim().to_ascii_lowercase();
+    name.rsplit_once('.').map_or(name.clone(), |(s, _)| s.to_string())
+}
+
+/// Judges the program's own version info (OriginalFilename, InternalName), which a rename cannot change.
+/// Unreadable info is refused outside the administrator-only folders: every real app ships it, and
+/// anything a person could drop into their profile without it is not worth a link.
+fn check_version(exe: &str, names: Option<&[String]>) -> Result<(), String> {
+    match names {
+        Some(names) if names.iter().any(|n| BAD_HANDLERS.contains(&version_stem(n).as_str())) => Err("the app is a renamed command interpreter".into()),
+        Some(_) => Ok(()),
+        None if in_system_root(exe) => Ok(()),
+        None => Err("the app has no readable version information".into()),
+    }
 }
 
 /// The plan for `url` given the registered app and the person's two lists.
@@ -164,6 +207,9 @@ pub fn decide(url: &str, handler: &Handler, always: &str, never: &str) -> Plan {
         Some(Err(why)) => return Plan::Refuse(format!("Tandem does not open {scheme}: links: {why}.")),
         None => return Plan::Refuse(format!("Tandem does not open {scheme}: links: Windows did not name the app's program.")),
     };
+    if let Err(why) = check_version(handler.exe.as_deref().unwrap_or(""), handler.version_names.as_deref()) {
+        return Plan::Refuse(format!("Tandem does not open {scheme}: links: {why}."));
+    }
     if listed(always, &scheme) {
         return Plan::Open;
     }
@@ -204,7 +250,13 @@ mod tests {
 
     /// A registered app whose executable (ASSOCSTR_EXECUTABLE) is `exe` and whose command line is `cmd`.
     fn app_cmd(name: &str, exe: &str, cmd: &str) -> Handler {
-        Handler { name: Some(name.into()), command: Some(cmd.into()), exe: Some(exe.into()) }
+        Handler { name: Some(name.into()), command: Some(cmd.into()), exe: Some(exe.into()), version_names: Some(vec![]) }
+    }
+
+    /// The same app with these OriginalFilename / InternalName values (None = version info unreadable).
+    fn with_version(mut h: Handler, names: Option<&[&str]>) -> Handler {
+        h.version_names = names.map(|n| n.iter().map(|s| s.to_string()).collect());
+        h
     }
 
     fn app(name: &str, exe: &str) -> Handler {
@@ -267,7 +319,7 @@ mod tests {
         let none = Handler::default();
         assert!(matches!(decide("foo:x", &none, "foo", ""), Plan::Refuse(m) if m.contains("foo")));
         // A command with no resolved executable is refused too.
-        let unresolved = Handler { name: None, command: Some("\"C:\\a.exe\" \"%1\"".into()), exe: None };
+        let unresolved = Handler { name: None, command: Some("\"C:\\a.exe\" \"%1\"".into()), exe: None, version_names: None };
         assert!(matches!(decide("foo:x", &unresolved, "foo", ""), Plan::Refuse(_)));
         for exe in [
             "C:\\Windows\\System32\\cmd.exe",
@@ -305,13 +357,56 @@ mod tests {
     }
 
     #[test]
+    fn runtimes_and_lolbins_are_refused() {
+        for stem in [
+            "node", "python", "pythonw", "py", "pyw", "java", "javaw", "dotnet", "ruby", "perl", "php", "scriptrunner", "syncappvpublishingserver", "pcalua", "bitsadmin", "certutil", "cmstp", "odbcconf", "regasm", "regsvcs",
+            "installutil", "presentationhost", "dfsvc", "ieexec", "wmic", "schtasks", "at", "mavinject", "control", "pcwrun", "runas", "ftp",
+        ] {
+            let exe = format!("C:\\Tools\\{stem}.exe");
+            assert!(matches!(decide("foo:x", &app("X", &exe), "foo", ""), Plan::Refuse(_)), "{exe}");
+        }
+    }
+
+    #[test]
+    fn a_short_8_3_name_is_refused_when_it_was_not_resolved() {
+        for exe in ["C:\\PROGRA~1\\POWERS~1\\7\\POWERS~1.EXE", "C:\\x\\PYTHON~1.EXE", "C:\\x\\NODE~2.exe"] {
+            assert!(matches!(decide("foo:x", &app("X", exe), "foo", ""), Plan::Refuse(_)), "{exe}");
+        }
+        // A tilde that is not an 8.3 alias is an ordinary name.
+        assert_eq!(exe_stem("C:\\x\\my~app.exe").as_deref(), Ok("my~app"));
+    }
+
+    #[test]
+    fn a_renamed_interpreter_is_caught_by_its_version_info() {
+        let renamed = |names: &[&str]| with_version(app("X", "C:\\Users\\u\\AppData\\Local\\Tool\\helper.exe"), Some(names));
+        for names in [&["python.exe", "python"][..], &["POWERSHELL.EXE"], &["", "cmd"], &["pwsh.dll"], &["Node.exe"], &["wscript.exe", "x"]] {
+            assert!(matches!(decide("foo:x", &renamed(names), "foo", ""), Plan::Refuse(_)), "{names:?}");
+        }
+        // Real apps keep working: Electron apps and their ordinary version strings.
+        for names in [&["Code.exe", "Code"][..], &["slack.exe", "Slack"], &["ms-teams.exe", "Teams"], &[]] {
+            assert!(matches!(decide("foo:x", &renamed(names), "", ""), Plan::Ask { .. }), "{names:?}");
+        }
+    }
+
+    #[test]
+    fn unreadable_version_info_is_refused_outside_the_system_folders() {
+        let unreadable = |exe: &str| with_version(app("X", exe), None);
+        for exe in ["C:\\Users\\u\\AppData\\Local\\Tool\\t.exe", "D:\\tools\\t.exe", "C:\\ProgramData\\t\\t.exe", "C:\\Program Files Evil\\t.exe", "C:\\Windows.old\\t.exe"] {
+            assert!(matches!(decide("foo:x", &unreadable(exe), "foo", ""), Plan::Refuse(_)), "{exe}");
+        }
+        for exe in ["C:\\Program Files\\T\\t.exe", "c:\\program files (x86)\\T\\t.exe", "C:\\Windows\\System32\\t.exe"] {
+            assert!(matches!(decide("foo:x", &unreadable(exe), "", ""), Plan::Ask { .. }), "{exe}");
+        }
+    }
+
+    #[test]
     fn ask_once_per_scheme_and_remember() {
         let code = app("Visual Studio Code", "C:\\Code.exe");
         assert_eq!(decide("vscode://file/x", &code, "", ""), Plan::Ask { app: "Visual Studio Code".into() });
         assert_eq!(decide("vscode://file/x", &code, "slack vscode", ""), Plan::Open);
         assert!(matches!(decide("vscode://file/x", &code, "", "vscode"), Plan::Refuse(_)));
         assert!(matches!(decide("vscode://file/x", &code, "vscode", "vscode"), Plan::Refuse(_)), "Never wins");
-        assert_eq!(decide("vscode://file/x", &Handler { name: None, command: Some("\"C:\\Code.exe\" \"%1\"".into()), exe: Some("C:\\Code.exe".into()) }, "", ""), Plan::Ask { app: "code".into() }, "the program, never link text");
+        assert_eq!(decide("vscode://file/x", &Handler { name: None, command: Some("\"C:\\Code.exe\" \"%1\"".into()), exe: Some("C:\\Code.exe".into()), version_names: Some(vec![]) }, "", ""), Plan::Ask { app: "code".into() }, "the program, never link text");
         assert!(listed("a  VSCode b", "vscode"));
         assert!(!listed("vscode2", "vscode"));
         assert_eq!(added("slack", "VSCode"), "slack vscode");

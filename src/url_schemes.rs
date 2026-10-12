@@ -189,6 +189,10 @@ pub trait SchemeRegistry {
     fn handler_exe(&self, _scheme: &str) -> Option<String> {
         None
     }
+    /// OriginalFilename and InternalName of the program's version info; None when it cannot be read.
+    fn version_names(&self, _exe: &str) -> Option<Vec<String>> {
+        None
+    }
     /// The ProgId of the protected user choice for the scheme (read only).
     fn user_choice(&self, scheme: &str) -> Option<String>;
     /// The command of `HKCU\Software\Classes\<scheme>\shell\open\command`, the entry Tandem's OK
@@ -524,7 +528,11 @@ impl SchemeRegistry for WinRegistry {
 
     fn handler_exe(&self, scheme: &str) -> Option<String> {
         use windows_sys::Win32::UI::Shell::ASSOCSTR_EXECUTABLE;
-        Self::assoc(scheme, ASSOCSTR_EXECUTABLE)
+        Self::assoc(scheme, ASSOCSTR_EXECUTABLE).map(|p| long_path(&p))
+    }
+
+    fn version_names(&self, exe: &str) -> Option<Vec<String>> {
+        read_version_names(exe)
     }
 
     fn user_choice(&self, scheme: &str) -> Option<String> {
@@ -987,4 +995,60 @@ mod registration_tests {
         // Bound to another profile: unchecked for this one.
         assert!(!row_items(&t, &reg, "G2", &exe()).iter().any(|(_, on)| *on));
     }
+}
+
+/// `path` with 8.3 aliases expanded (`GetLongPathNameW`), so the name check sees the real program name;
+/// the path unchanged when Windows cannot expand it (the check then refuses a leftover alias).
+#[cfg(windows)]
+fn long_path(path: &str) -> String {
+    use windows_sys::Win32::Storage::FileSystem::GetLongPathNameW;
+    let w = win::wide(path);
+    let mut buf = vec![0u16; 4096];
+    let n = unsafe { GetLongPathNameW(w.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    if n == 0 || n >= buf.len() {
+        return path.to_string();
+    }
+    String::from_utf16_lossy(&buf[..n])
+}
+
+/// OriginalFilename and InternalName from the version resource of `exe`, in every language it lists
+/// (and US English); None when the file has no readable version resource.
+#[cfg(windows)]
+fn read_version_names(exe: &str) -> Option<Vec<String>> {
+    use windows_sys::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
+    let path = win::wide(exe);
+    let size = unsafe { GetFileVersionInfoSizeW(path.as_ptr(), std::ptr::null_mut()) };
+    if size == 0 {
+        return None;
+    }
+    let mut data = vec![0u8; size as usize];
+    if unsafe { GetFileVersionInfoW(path.as_ptr(), 0, size, data.as_mut_ptr().cast()) } == 0 {
+        return None;
+    }
+    let query = |sub: &str| -> Option<(*const u8, u32)> {
+        let q = win::wide(sub);
+        let mut p: *mut core::ffi::c_void = std::ptr::null_mut();
+        let mut len = 0u32;
+        let ok = unsafe { VerQueryValueW(data.as_ptr().cast(), q.as_ptr(), &mut p, &mut len) };
+        (ok != 0 && !p.is_null() && len > 0).then_some((p as *const u8, len))
+    };
+    let mut langs: Vec<String> = vec!["040904B0".into(), "040904E4".into(), "04090000".into()];
+    if let Some((p, len)) = query("\\VarFileInfo\\Translation") {
+        for i in 0..(len as usize / 4) {
+            let pair = unsafe { std::slice::from_raw_parts(p.add(i * 4), 4) };
+            let (lang, page) = (u16::from_le_bytes([pair[0], pair[1]]), u16::from_le_bytes([pair[2], pair[3]]));
+            langs.push(format!("{lang:04X}{page:04X}"));
+        }
+    }
+    let mut names = Vec::new();
+    for lang in &langs {
+        for field in ["OriginalFilename", "InternalName"] {
+            if let Some((p, len)) = query(&format!("\\StringFileInfo\\{lang}\\{field}")) {
+                let units = unsafe { std::slice::from_raw_parts(p as *const u16, len as usize) };
+                let end = units.iter().position(|&c| c == 0).unwrap_or(units.len());
+                names.push(String::from_utf16_lossy(&units[..end]));
+            }
+        }
+    }
+    Some(names)
 }

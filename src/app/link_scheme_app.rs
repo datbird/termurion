@@ -8,7 +8,9 @@ impl App {
     /// What Windows has registered for `scheme`: its command and its friendly name.
     fn scheme_handler(scheme: &str) -> crate::link_scheme::Handler {
         let reg = crate::url_schemes::system();
-        crate::link_scheme::Handler { name: reg.handler_name(scheme), command: reg.handler_command(scheme), exe: reg.handler_exe(scheme) }
+        let exe = reg.handler_exe(scheme);
+        let version_names = exe.as_deref().and_then(|e| reg.version_names(e));
+        crate::link_scheme::Handler { name: reg.handler_name(scheme), command: reg.handler_command(scheme), exe, version_names }
     }
 
     /// A terminal link of another app's scheme was clicked: refused, opened (Always), or asked.
