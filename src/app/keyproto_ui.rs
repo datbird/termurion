@@ -55,6 +55,11 @@ impl App {
         let key = crate::winkeys::vk_to_key(crate::winkeys::vk_of(ev.physical_key))?;
         let chord = crate::menus::Chord { key, cmd: true, alt: l.alt, shift: l.shift, ctrl: false };
         let snapshot = self.route_snapshot.read().unwrap_or_else(|e| e.into_inner());
+        // The person's own mapping for these very keys (a literal Ctrl+Shift+X) runs first, as
+        // iTerm2 runs key mappings before the menu's key equivalents: it is not the Cmd chord.
+        if crate::keystroke::from_key_event(ev, self.mods).is_some_and(|pressed| snapshot.literal_wins(&pressed)) {
+            return None;
+        }
         crate::keyroute::chord_bound(&snapshot, &chord, false).then_some(chord)
     }
 

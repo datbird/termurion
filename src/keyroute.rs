@@ -150,20 +150,26 @@ pub struct Snapshot {
     pub peer_digits: bool,
     /// The forms of the peers' custom shortcuts that have Win in them.
     pub peer_keys: HashSet<String>,
+    /// The forms of the person's own mappings with no Cmd in them (a literal Ctrl+Shift+X).
+    literal: HashSet<String>,
 }
 
 impl Snapshot {
     pub fn new(ctx: &Context) -> Snapshot {
         let mut keys = HashSet::new();
         let mut user = HashSet::new();
+        let mut literal = HashSet::new();
         let stock = crate::globals::keymaps::factory_global();
         for (is_global, map) in [(false, ctx.profile_map), (true, ctx.global_map)] {
             for (k, v) in map {
                 let (Some(stroke), Some(b)) = (keystroke::parse(k), Binding::from_value(v)) else { continue };
+                let is_stock = if is_global { stock.get(k) == Some(v) } else { crate::globals::keymaps::presets().iter().any(|(_, t)| t.get(k) == Some(v)) };
+                if stroke.flags & COMMAND == 0 && !is_stock {
+                    literal.extend([stroke.legacy(), stroke.modified_key()]);
+                }
                 if stroke.flags & COMMAND != 0 && !matches!(b.action, 22 | 24) {
                     // Byte for byte Tandem's shipped global entry, or (in a profile) one of its key
                     // mapping presets' entries: not the person's mapping.
-                    let is_stock = if is_global { stock.get(k) == Some(v) } else { crate::globals::keymaps::presets().iter().any(|(_, t)| t.get(k) == Some(v)) };
                     for form in [stroke.legacy(), stroke.modified_key()] {
                         if !is_stock {
                             user.insert(form.clone());
@@ -173,7 +179,14 @@ impl Snapshot {
                 }
             }
         }
-        Snapshot { keys, user, leader: ctx.leader.clone(), leader_on: ctx.leader_on, switch: [ctx.switch_window, ctx.switch_pane, ctx.switch_tab], composer: false, respect_system: false, profile_shortcuts: Vec::new(), peer_digits: false, peer_keys: HashSet::new() }
+        Snapshot { keys, user, leader: ctx.leader.clone(), leader_on: ctx.leader_on, switch: [ctx.switch_window, ctx.switch_pane, ctx.switch_tab], composer: false, respect_system: false, profile_shortcuts: Vec::new(), peer_digits: false, peer_keys: HashSet::new(), literal }
+    }
+
+    /// Whether the person wrote a mapping for exactly these keys as pressed (Ctrl+Shift+X, no Cmd).
+    /// It runs before a menu command, as iTerm2 runs key mappings before the menu (`iTermApplication
+    /// sendEvent:`), so the Cmd reading of the same press yields to it.
+    pub fn literal_wins(&self, pressed: &Keystroke) -> bool {
+        pressed.flags & COMMAND == 0 && (self.literal.contains(&pressed.legacy()) || self.literal.contains(&pressed.modified_key()))
     }
 }
 
@@ -285,6 +298,21 @@ mod tests {
     }
     fn win(key: ChordKey) -> Chord {
         Chord { key, cmd: true, alt: false, shift: false, ctrl: false }
+    }
+
+    /// TWEAKS 9 review I4: a literal Ctrl+Shift+X mapping beats the Cmd+X menu command the same
+    /// press would be; a mapping with Cmd in it, a stock mapping and other keys do not count.
+    #[test]
+    fn a_literal_mapping_beats_the_cmd_reading_of_the_same_press() {
+        let e = toml::Table::new();
+        let pressed = Keystroke::new(0x58, CONTROL | SHIFT, None, 0x58);
+        let literal = map("0x58-0x60000", 13);
+        assert!(Snapshot::new(&ctx(&e, &literal)).literal_wins(&pressed), "the person's own Ctrl+Shift+X");
+        let other = map("0x59-0x60000", 13);
+        assert!(!Snapshot::new(&ctx(&e, &other)).literal_wins(&pressed), "another key");
+        let cmd = map("0x58-0x100000", 13);
+        assert!(!Snapshot::new(&ctx(&e, &cmd)).literal_wins(&pressed), "a Cmd mapping is the chord's own");
+        assert!(!Snapshot::new(&ctx(&e, &e)).literal_wins(&pressed), "nothing mapped");
     }
 
     /// TWEAKS 9: a Cmd chord pressed with the shortcut key's own keys never yields to a Windows

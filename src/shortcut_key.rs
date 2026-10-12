@@ -425,4 +425,12 @@ mod tests {
         let app = include_str!("app/chat_window_app.rs");
         assert!(app.contains("w.shortcut(event)") && app.contains("filter(crate::winkeys::chat_chord)"), "the chat window takes its own chord");
     }
+
+    /// TWEAKS 9 review I4: a literal mapping on the pressed keys is checked before the Cmd chord.
+    #[test]
+    fn a_literal_mapping_is_asked_before_the_cmd_chord_is_taken() {
+        let ui = include_str!("app/keyproto_ui.rs");
+        let f = ui.split("fn shortcut_chord(").nth(1).and_then(|r| r.split("\n    }\n").next()).expect("shortcut_chord");
+        assert!(f.find("literal_wins(").expect("literal_wins") < f.find("chord_bound(").expect("chord_bound"));
+    }
 }
