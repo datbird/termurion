@@ -285,6 +285,14 @@ pub fn mode_inhibits(mode: Mode) -> bool {
     matches!(mode, Mode::CodeReview | Mode::Diff)
 }
 
+/// Whether a buried member rebuilt from its saved session starts idle. Code Review and Diff always do;
+/// every member of a NAMED arrangement does too (13y1 final review minor 6): the file can come from
+/// elsewhere and carry an embedded profile copy with a command, and the members are hidden and outside
+/// any question. A member whose program came back from the session host is unaffected (`Inhibit`).
+pub fn member_inhibits(mode: Mode, named_arrangement: bool) -> bool {
+    mode_inhibits(mode) || named_arrangement
+}
+
 /// Whether restoring the anchor starts no program of its own (`WR:shouldInhibitRelaunch`, `PS:2361-2390`).
 /// A Code Review or Diff session with no program to take back is restored as an idle session: its last
 /// output stays and nothing runs until the person starts it. A shell would be a stray one. When the
@@ -717,6 +725,14 @@ fn rename_new(from: &crate::localfs::Unfollowed, to: &crate::localfs::Unfollowed
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_named_arrangement_starts_every_buried_member_idle() {
+        use crate::workgroup::Mode;
+        assert!(super::member_inhibits(Mode::Regular, true), "a delivered arrangement starts nothing hidden");
+        assert!(!super::member_inhibits(Mode::Regular, false), "the person's own saved state keeps its shells");
+        assert!(super::member_inhibits(Mode::Diff, false));
+    }
+
     use super::*;
 
     fn session(name: &str) -> Value {

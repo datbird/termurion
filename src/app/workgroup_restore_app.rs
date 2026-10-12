@@ -432,7 +432,7 @@ impl App {
         let mut built: Vec<PaneId> = Vec::new();
         for config in &plan.restored {
             let Some(m) = d.members.iter_mut().find(|m| &m.config_id == config) else { continue };
-            let inhibit = w.session(config).is_some_and(|s| wr::mode_inhibits(s.mode));
+            let inhibit = w.session(config).is_some_and(|s| wr::member_inhibits(s.mode, name.is_some() && !launch));
             let session = std::mem::replace(&mut m.arrangement, Value::Table(Default::default()));
             if let Some(id) = self.restore_member_pane(session, name.as_deref(), launch, inhibit) {
                 panes.insert(config.clone(), id);
@@ -681,6 +681,14 @@ mod tests {
         assert!(!member.with(true) && member.with(false), "a buried Code Review or Diff member: the same");
         let plain = wr::Inhibit::of(Some(&d), Some(crate::workgroup::Mode::Regular), false);
         assert!(!plain.with(false) && !plain.with(true));
+    }
+
+    /// 13y1 final review minor 6: a named arrangement's buried members are never started hidden.
+    #[test]
+    fn buried_members_of_a_named_arrangement_are_built_idle() {
+        let production = THIS.split("#[cfg(test)]").next().unwrap();
+        let adopt = body(production, "    fn adopt_one(");
+        assert!(adopt.contains("wr::member_inhibits(s.mode, name.is_some() && !launch)"), "{adopt}");
     }
 
     /// Task 9 review minor 6: a split or tab child is found only in the anchor's own window, so a plain
