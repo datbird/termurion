@@ -129,8 +129,8 @@ impl App {
     /// Whether the tab's panes show title bars (`PTYTab updatePaneTitles`): every pane of
     /// the tab or none. A zoomed tab still counts every pane.
     pub(super) fn tab_shows_titles(&self, tab: &Tab) -> bool {
-        let top_bar = self.per_pane_bars(tab) && self.status_bar_position() == Position::Top && tab.layout.panes().iter().any(|&p| self.shows_status_bar(p));
-        pane_title::shows_titles(self.globals.bool("ShowPaneTitles"), self.globals.bool("ShowPaneTitlesEvenIfOnlyOnePane"), tab.layout.panes().len(), top_bar)
+        let top_bar = self.per_pane_bars(tab) && self.status_bar_position() == Position::Top && tab.layout.any_pane(&|p| self.shows_status_bar(p));
+        pane_title::shows_titles(self.globals.bool("ShowPaneTitles"), self.globals.bool("ShowPaneTitlesEvenIfOnlyOnePane"), tab.layout.pane_count(), top_bar)
     }
 
     /// A title bar's height in pixels.

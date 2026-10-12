@@ -275,6 +275,28 @@ impl Layout {
         go(&mut self.root, target)
     }
 
+    /// How many panes the tree holds, without building the list (called every frame).
+    pub fn pane_count(&self) -> usize {
+        fn go(n: &Node) -> usize {
+            match n {
+                Node::Leaf(_) => 1,
+                Node::Split { a, b, .. } => go(a) + go(b),
+            }
+        }
+        go(&self.root)
+    }
+
+    /// Whether any pane satisfies `f`, without building the list.
+    pub fn any_pane(&self, f: &dyn Fn(PaneId) -> bool) -> bool {
+        fn go(n: &Node, f: &dyn Fn(PaneId) -> bool) -> bool {
+            match n {
+                Node::Leaf(id) => f(*id),
+                Node::Split { a, b, .. } => go(a, f) || go(b, f),
+            }
+        }
+        go(&self.root, f)
+    }
+
     pub fn panes(&self) -> Vec<PaneId> {
         self.rects(Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 }, 0.0).into_iter().map(|(id, _)| id).collect()
     }
@@ -598,6 +620,16 @@ pub fn visible_rects(layout: &Layout, zoomed: Option<PaneId>, area: Rect, gap: f
 
 #[cfg(test)]
 mod tests {
+    /// 13u minor: the per-frame title question counts and searches without building a list.
+    #[test]
+    fn count_and_any_agree_with_the_list() {
+        let t: Tree<PaneId> = Tree::Split { axis: Axis::Row, ratio: 0.5, a: Box::new(Tree::Leaf(1)), b: Box::new(Tree::Split { axis: Axis::Column, ratio: 0.5, a: Box::new(Tree::Leaf(2)), b: Box::new(Tree::Leaf(3)) }) };
+        let l = Layout::from_tree(t);
+        assert_eq!(l.pane_count(), l.panes().len());
+        assert!(l.any_pane(&|p| p == 3) && !l.any_pane(&|p| p == 9));
+        assert_eq!(Layout::from_tree(Tree::Leaf(5)).pane_count(), 1);
+    }
+
     /// The room a tmux tab's width gives up: the widest row's panes add, stacked panes do not.
     #[test]
     fn the_widest_row_gives_up_the_most_room() {
