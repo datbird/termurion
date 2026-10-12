@@ -17,6 +17,24 @@ pub(super) fn url_plan(url: &str, bound: Option<&str>, default_guid: &str) -> Op
     })
 }
 
+/// Where an outside URL opens (`getUrl`, `AD:2311-2322`): a profile that has a hotkey window
+/// opens it there when there is one fitting (shown, and a tab in it) or makes the window with the
+/// URL as its first session; any other profile opens a tab in the current window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum UrlHome {
+    Tab,
+    HotkeyExisting,
+    HotkeyNew,
+}
+
+pub(super) fn url_home(has_hotkey: bool, window_exists: bool) -> UrlHome {
+    match (has_hotkey, window_exists) {
+        (false, _) => UrlHome::Tab,
+        (true, true) => UrlHome::HotkeyExisting,
+        (true, false) => UrlHome::HotkeyNew,
+    }
+}
+
 /// A clicked link opens only when a profile is bound; an unbound one stays refused (Decision).
 /// Only ssh: links are clickable (14e); telnet: and ftp: arrive from outside.
 pub(super) fn url_plan_for_click(url: &str, bound: Option<&str>) -> Option<String> {
@@ -72,13 +90,36 @@ impl App {
         crate::url_schemes::profile_for_scheme(&table, crate::url_schemes::system().as_ref(), scheme, &exe, &|g| self.store.get(g).is_some())
     }
 
-    /// An ssh:, telnet: or ftp: URL for Tandem to open (iTerm2's `getUrl`): the scheme's bound
-    /// profile, else the default. False when Tandem does not handle it (another scheme).
-    pub(super) fn open_url_in_tandem(&mut self, url: &str) -> bool {
+    /// The profile an ssh:, telnet: or ftp: URL opens in and where (iTerm2's `getUrl`): the scheme's
+    /// bound profile, else the default; a profile with a hotkey window opens it there. None when
+    /// Tandem does not handle the scheme.
+    fn url_route(&self, url: &str) -> Option<(String, UrlHome)> {
         let default = self.store.default_profile().guid();
         let bound = crate::url_open::scheme_of(url).and_then(|scheme| self.bound_profile(scheme));
-        let Some((guid, _)) = url_plan(url, bound.as_deref(), &default) else { return false };
-        self.open_ssh_url(url, Some(guid))
+        let (guid, _) = url_plan(url, bound.as_deref(), &default)?;
+        let has_hotkey = self.store.get(&guid).is_some_and(|p| crate::hotkey::Prefs::from_profile(p).has_hotkey);
+        let home = url_home(has_hotkey, self.hotkey_window_of(&guid).is_some());
+        Some((guid, home))
+    }
+
+    /// An ssh:, telnet: or ftp: URL for Tandem to open (iTerm2's `getUrl`, `AD:2311-2322`): in the
+    /// profile's hotkey window when it has one (shown, with a tab in it; made, with the URL as
+    /// its first session), else a tab. False when Tandem does not handle it (another scheme).
+    pub(super) fn open_url_in_tandem(&mut self, url: &str) -> bool {
+        let Some((guid, home)) = self.url_route(url) else { return false };
+        match home {
+            UrlHome::Tab => self.open_ssh_url(url, Some(guid)),
+            UrlHome::HotkeyExisting => {
+                self.show_hotkey_window(&guid, super::hotkey_ui::foreground());
+                self.open_ssh_url(url, Some(guid))
+            }
+            UrlHome::HotkeyNew => {
+                // The window is made on the next turn of the event loop and takes the URL as its first session.
+                self.hotkey_urls.insert(guid.clone(), url.to_string());
+                self.show_hotkey_window(&guid, super::hotkey_ui::foreground());
+                true
+            }
+        }
     }
 
     /// Opens a tab for `url` in profile `guid` (None: the default). A profile the URL changes is
@@ -150,9 +191,13 @@ impl App {
 
     fn open_external_url(&mut self, url: &str) {
         let Some(text) = crate::url_launch::open_banner(url) else { return };
+        // A hotkey window brings itself forward; the normal window must not cover it.
+        let hotkey = self.url_route(url).is_some_and(|(_, home)| home != UrlHome::Tab);
         if self.open_url_in_tandem(url) {
             self.banners.set("ssh-url", text);
-            self.bring_forward();
+            if !hotkey {
+                self.bring_forward();
+            }
             self.redraw();
         }
     }
@@ -182,6 +227,27 @@ mod tests {
     }
 
     use super::*;
+
+    /// TWEAKS 5: a launch URL for a profile with a hotkey window goes to that window.
+    #[test]
+    fn a_launch_url_prefers_the_hotkey_window() {
+        assert_eq!(url_home(false, false), UrlHome::Tab);
+        assert_eq!(url_home(false, true), UrlHome::Tab, "a stale window of a profile that lost its hotkey");
+        assert_eq!(url_home(true, true), UrlHome::HotkeyExisting);
+        assert_eq!(url_home(true, false), UrlHome::HotkeyNew);
+    }
+
+    /// The wiring: the route is decided in `open_url_in_tandem`, the hotkey window is shown, and
+    /// the window made for it opens the URL as its first session.
+    #[test]
+    fn the_hotkey_route_is_wired() {
+        let src = include_str!("ssh_url_app.rs");
+        let open = &src[src.find("fn url_route").unwrap()..src.find("fn open_ssh_url").unwrap()];
+        assert!(open.contains("url_home(") && open.contains("show_hotkey_window(") && open.contains("hotkey_urls"));
+        let win = include_str!("windows_ui.rs");
+        let made = &win[win.find("NewWindow::Hotkey(guid, previous) =>").unwrap()..win.find("NewWindow::HotkeyRestored(guid, w) =>").unwrap()];
+        assert!(made.contains("hotkey_urls.remove(") && made.contains("open_ssh_url("));
+    }
 
     #[test]
     fn url_open_follows_iterm2() {

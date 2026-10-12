@@ -756,7 +756,12 @@ impl App {
             NewWindow::Orphans(sessions) => self.adopt_orphans(&sessions),
             NewWindow::Hotkey(guid, previous) => {
                 self.begin_window_start(from_pane, from_dir);
-                self.new_tab(Some(&guid));
+                // A launch URL for this profile is its first session (`createWindowWithURL:`); a
+                // tab that does not start falls back to the profile's own.
+                let url = self.hotkey_urls.remove(&guid);
+                if !url.is_some_and(|u| self.open_ssh_url(&u, Some(guid.clone()))) {
+                    self.new_tab(Some(&guid));
+                }
                 self.end_window_start();
                 let mut h = super::hotkey_ui::HotkeyWin::new(guid);
                 h.previous = previous;

@@ -751,6 +751,9 @@ pub struct App {
     background_windows: std::collections::HashSet<u64>,
     /// ssh: URLs that arrived before the first window (app-wide, not in `swap_live`; m14e).
     pending_urls_at_start: Vec<String>,
+    /// A launch URL waiting for the hotkey window of a profile to be made (guid to URL); the
+    /// window's first session takes it (`ssh_url_app::open_url_in_tandem`).
+    hotkey_urls: HashMap<String, String>,
     /// The launch pipe this Tandem serves, when it owns it (an idle `-Embedding` start stops it
     /// before it ends; otherwise it ends with the process).
     url_listener: Option<crate::url_launch::Serving>,
@@ -2328,6 +2331,7 @@ pub fn run() {
         pending_windows: Vec::new(),
         background_windows: Default::default(),
         pending_urls_at_start,
+        hotkey_urls: HashMap::new(),
         url_listener,
         url_flood: Default::default(),
         launch_queue,
