@@ -112,7 +112,7 @@ pub struct TrustedFolders {
 
 /// What the plan reads about the machine: the registered app and the files it names. Every file access goes
 /// through here, so a test can prove none happens before the scheme and the path pass (review I1).
-pub trait Source {
+pub trait HandlerInfo {
     /// The app's friendly name.
     fn name(&self) -> Option<String>;
     /// Its `shell\open\command` line.
@@ -146,7 +146,7 @@ pub struct Handler {
     pub version_names: Option<Vec<String>>,
 }
 
-impl Source for Handler {
+impl HandlerInfo for Handler {
     fn name(&self) -> Option<String> {
         self.name.clone()
     }
@@ -305,7 +305,7 @@ pub fn decide(url: &str, handler: &Handler, always: &str, never: &str) -> Plan {
 /// The plan for `url` read from `src`. Order matters (review I1): the scheme passes the blocked list and the
 /// Never list first; the program's path is judged as text (a local `X:\` path) and by its drive type; only then
 /// is the file touched (long name, version info).
-pub fn plan(url: &str, src: &dyn Source, always: &str, never: &str) -> Plan {
+pub fn plan(url: &str, src: &dyn HandlerInfo, always: &str, never: &str) -> Plan {
     let Some(scheme) = scheme_of(url) else { return Plan::Refuse("Tandem opens only links here, not paths.".into()) };
     if let Err(why) = screen(&scheme, url) {
         return Plan::Refuse(why);
@@ -543,7 +543,7 @@ mod tests {
         remote: bool,
         calls: std::cell::RefCell<Vec<String>>,
     }
-    impl Source for Rec {
+    impl HandlerInfo for Rec {
         fn name(&self) -> Option<String> {
             self.h.name()
         }
@@ -564,7 +564,7 @@ mod tests {
         }
         fn version_names(&self, exe: &str) -> Option<Vec<String>> {
             self.calls.borrow_mut().push(format!("version {exe}"));
-            Source::version_names(&self.h, exe)
+            HandlerInfo::version_names(&self.h, exe)
         }
         fn trusted_folders(&self) -> TrustedFolders {
             self.h.trusted_folders()

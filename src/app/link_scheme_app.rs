@@ -17,7 +17,7 @@ impl Live {
     }
 }
 
-impl crate::link_scheme::Source for Live {
+impl crate::link_scheme::HandlerInfo for Live {
     fn name(&self) -> Option<String> {
         self.reg.handler_name(&self.scheme)
     }
