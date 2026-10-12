@@ -116,6 +116,12 @@ impl ShortcutKey {
         Some(self.logical(phys)).filter(|l| l.cmd)
     }
 
+    /// The modifiers the settings key recorder stores for a press: the Cmd (with Shift and Option)
+    /// its shortcut-key modifiers stand for, else the keys as pressed.
+    pub fn recorded_mods(self, phys: Mods, types_a_character: bool) -> Mods {
+        self.press_as_cmd(phys, types_a_character).unwrap_or(phys)
+    }
+
     /// Whether a Cmd chord is pressed without the Win key in this mode.
     pub fn reachable(self, c: &Chord) -> bool {
         !c.cmd || self == ShortcutKey::Win || self.held_for(c.shift, c.alt, c.ctrl).is_some()
@@ -149,6 +155,17 @@ impl ShortcutKey {
         let rest: Vec<&str> = tokens.into_iter().filter(|t| !matches!(*t, "Win" | "Ctrl" | "Alt" | "Shift")).collect();
         held_label(h) + &rest.join("+")
     }
+}
+
+/// The stroke the recorder stores, built with the physical Shift: a letter shows its capital, but
+/// Cmd+D (Ctrl+Shift+D) is the key `d`, as `press_from_chord` makes it, so the letter is lowered
+/// when the Shift was part of the shortcut key.
+pub fn recorded_stroke(stroke: crate::keystroke::Keystroke, phys: Mods, recorded: Mods) -> crate::keystroke::Keystroke {
+    let lower = |c: u32| char::from_u32(c).filter(char::is_ascii_uppercase).map_or(c, |c| c.to_ascii_lowercase() as u32);
+    if phys.shift && !recorded.shift && recorded.cmd {
+        return crate::keystroke::Keystroke::new(lower(stroke.ch), stroke.flags, stroke.keycode, lower(stroke.modified));
+    }
+    stroke
 }
 
 /// "Ctrl+Shift+Alt+" for the held modifiers: all three in the order the setting names them,
@@ -259,6 +276,31 @@ mod tests {
         assert!(ShortcutKey::CtrlShift.press_as_cmd(phys(false, false, true, false), false).is_none(), "Alt alone is Meta");
         assert!(warning(ShortcutKey::CtrlAlt).is_some_and(|w| w.contains("AltGr")));
         assert!(warning(ShortcutKey::CtrlShift).is_none() && warning(ShortcutKey::Win).is_none());
+    }
+
+    /// TWEAKS 9 review I2: recording Ctrl+Shift+D stores Cmd+D (the key `d`, the COMMAND flag).
+    #[test]
+    fn the_recorder_stores_the_shortcut_key_as_cmd() {
+        use crate::keystroke::{Keystroke, COMMAND};
+        let m = ShortcutKey::CtrlShift;
+        let p = phys(true, true, false, false);
+        let r = m.recorded_mods(p, false);
+        assert_eq!((r.cmd, r.shift, r.alt, r.ctrl), (true, false, false, false));
+        assert_eq!(m.recorded_mods(phys(true, true, true, false), false).shift, true, "Ctrl+Shift+Alt is Cmd+Shift");
+        // Win is Cmd as it always was; Ctrl alone and Win mode are recorded as pressed.
+        assert_eq!(m.recorded_mods(phys(false, false, false, true), false), phys(false, false, false, true));
+        assert_eq!(m.recorded_mods(phys(true, false, false, false), false), phys(true, false, false, false));
+        assert_eq!(ShortcutKey::Win.recorded_mods(p, false), p);
+        // AltGr typing is never a shortcut, so it is recorded as pressed.
+        let a = phys(true, false, true, false);
+        assert_eq!(ShortcutKey::CtrlAlt.recorded_mods(a, true), a);
+        // The stroke: the capital D from the held Shift becomes d.
+        let raw = Keystroke::new('D' as u32, crate::keystroke::from_mods(r), None, 'D' as u32);
+        let s = recorded_stroke(raw, p, r);
+        assert_eq!((s.ch, s.flags), ('d' as u32, COMMAND));
+        let cs = ShortcutKey::CtrlShift.recorded_mods(phys(true, true, true, false), false);
+        let raw = Keystroke::new('D' as u32, 0, None, 'D' as u32);
+        assert_eq!(recorded_stroke(raw, phys(true, true, true, false), cs).ch, 'D' as u32, "Cmd+Shift keeps the shifted character");
     }
 
     #[test]
