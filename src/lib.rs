@@ -146,6 +146,7 @@ pub mod clipboard_osc;
 pub mod commands;
 pub mod completion;
 pub mod menus;
+pub mod shortcut_key;
 pub mod import;
 pub mod store;
 pub mod print;

@@ -119,7 +119,8 @@ impl Keystroke {
         let keypad = self.flags & NUMPAD != 0 && !(UP..=RIGHT).contains(&self.ch);
         let name = key_name(self.ch);
         parts.push(if keypad { format!("Keypad {name}") } else { name });
-        let text = parts.join("+");
+        // iTerm2's Cmd is spelled with the shortcut key's real keys; the stored notation is untouched.
+        let text = crate::shortcut_key::mode().show(&parts.join("+"));
         if self.flags & LEADER != 0 { format!("Leader, {text}") } else { text }
     }
 }
