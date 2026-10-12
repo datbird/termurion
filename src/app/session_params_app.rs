@@ -315,7 +315,7 @@ mod tests {
         assert_eq!(crate::dlog::program(start_log_command("pwsh.exe -NoLogo", None)).to_string(), "pwsh");
         let m = include_str!("mod.rs");
         let spawn = body(m, "    fn spawn_pane(");
-        assert!(spawn.contains("crate::dlog::name(&shared.name()), crate::dlog::program(session_params_app::start_log_command(&cmd, unanswered.as_deref()))"));
+        assert!(spawn.contains("crate::dlog::name(&shared_name), crate::dlog::program(session_params_app::start_log_command(&cmd, unanswered.as_deref()))"));
         assert!(spawn.contains("self.param_profile.is_some().then(|| profile::command_line(base, &self.shell, None))"));
         assert!(spawn.contains("crate::session_profile::ORIGINAL_GUID"), "a session's own Name is never logged");
         assert!(!spawn.contains("crate::dlog::name(&p.name())"));
