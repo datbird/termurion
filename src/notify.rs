@@ -19,6 +19,8 @@ const BALLOON_CLICK: u32 = 0x0405;
 /// Every notification shown, so a click can tell whether the one it means is still the last.
 static SHOWN: AtomicU64 = AtomicU64::new(0);
 static ADDED: AtomicBool = AtomicBool::new(false);
+/// An add failed or timed out: the icon may exist anyway, so the next try modifies first.
+static ADD_UNSURE: AtomicBool = AtomicBool::new(false);
 static WINDOW: AtomicIsize = AtomicIsize::new(0);
 static ON_CLICK: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static ON_TRAY: OnceLock<Box<dyn Fn(bool) + Send + Sync>> = OnceLock::new();
@@ -149,12 +151,26 @@ fn add_resident(hwnd: HWND) -> Result<(), String> {
     nid.uCallbackMessage = CALLBACK;
     nid.hIcon = icon();
     copy(&mut nid.szTip, crate::presence::TRAY_TIP);
-    let op = if ADDED.swap(true, Ordering::SeqCst) { NIM_MODIFY } else { NIM_ADD };
-    if unsafe { Shell_NotifyIconW(op, &nid) } == 0 {
-        ADDED.store(false, Ordering::SeqCst);
-        return Err(format!("Windows did not add the notification area icon ({})", std::io::Error::last_os_error()));
+    // Shell_NotifyIconW does not set the last error: the log names each operation, the window and
+    // the BOOL it returned. A failed add may still have added the icon (it can time out), so the
+    // next try modifies first.
+    let mut tried = Vec::new();
+    for op in crate::presence::tray_add_order(ADDED.load(Ordering::SeqCst), ADD_UNSURE.load(Ordering::SeqCst)) {
+        let (code, name) = match op {
+            crate::presence::TrayOp::Add => (NIM_ADD, "NIM_ADD"),
+            crate::presence::TrayOp::Modify => (NIM_MODIFY, "NIM_MODIFY"),
+        };
+        let ok = unsafe { Shell_NotifyIconW(code, &nid) };
+        if ok != 0 {
+            ADDED.store(true, Ordering::SeqCst);
+            ADD_UNSURE.store(false, Ordering::SeqCst);
+            return Ok(());
+        }
+        tried.push(format!("{name} returned {ok}"));
     }
-    Ok(())
+    ADDED.store(false, Ordering::SeqCst);
+    ADD_UNSURE.store(true, Ordering::SeqCst);
+    Err(format!("Windows did not add the notification area icon (hwnd {:#x}: {})", hwnd as usize, tried.join(", ")))
 }
 
 /// Adds or removes the resident notification area icon (the way back for a Tandem that left
@@ -189,8 +205,10 @@ pub fn show_with(title: &str, body: &str, silent: bool) -> Result<(), String> {
     let op = if ADDED.swap(true, Ordering::SeqCst) { NIM_MODIFY } else { NIM_ADD };
     if unsafe { Shell_NotifyIconW(op, &nid) } == 0 {
         ADDED.store(false, Ordering::SeqCst);
+        ADD_UNSURE.store(true, Ordering::SeqCst);
         return Err("Windows did not show the notification".into());
     }
+    ADD_UNSURE.store(false, Ordering::SeqCst);
     SHOWN.fetch_add(1, Ordering::SeqCst);
     Ok(())
 }

@@ -137,13 +137,17 @@ impl App {
         let want = crate::resident::icon_wanted(presence::tray_wanted(ui_element_now, self.globals.bool(presence::STATUS_BAR_ICON_KEY)), self.resident);
         let now = Instant::now();
         if !presence::tray_attempt_due(want, self.tray_on, self.tray_failures, self.tray_due, now) {
-            // Waiting for a retry's time, or nothing to do (or the retries are used up).
-            return if presence::tray_changes(want, self.tray_on) && self.tray_failures < presence::TRAY_MAX_ATTEMPTS { self.tray_due } else { None };
+            // Waiting for a retry's time, or nothing to do.
+            return if presence::tray_changes(want, self.tray_on) { self.tray_due } else { None };
         }
         // A failure leaves the state as it was, so the next try is the retry (Explorer not up yet).
         let result = crate::notify::set_resident(want);
         self.tray_on = presence::tray_settle(want, self.tray_on, result.is_ok());
+        let before = self.tray_failures;
         self.tray_failures = presence::tray_failures_after(self.tray_failures, result.is_ok());
+        if presence::tray_enters_steady_retry(before, self.tray_failures) {
+            crate::host::log(&format!("tray: {before} failures, retrying every 30 s while resident with no icon"));
+        }
         let verb = if want { "add" } else { "remove" };
         match &result {
             Ok(()) => crate::host::log(&format!("tray: {verb} ok")),

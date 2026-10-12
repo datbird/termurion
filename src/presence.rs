@@ -130,23 +130,45 @@ pub fn tray_changes(want: bool, on: bool) -> bool {
     want != on
 }
 
-/// How many times in a row a failed add is retried before waiting for a change or a
-/// TaskbarCreated (Explorer restarting) to start over.
+/// How many failures in a row end the backoff: from here the retry stays at 30 s (and is logged once).
 pub const TRAY_MAX_ATTEMPTS: u32 = 12;
 
-/// The wait after `failures` failed adds in a row: 1 s, doubling, at most 30 s; None once the
-/// retries are used up (and for no failure at all).
+/// The wait after `failures` failed adds in a row: 1 s, doubling, at most 30 s, for as long as it
+/// keeps failing (never gives up); None for no failure at all.
 pub fn tray_retry_delay(failures: u32) -> Option<std::time::Duration> {
-    if failures == 0 || failures >= TRAY_MAX_ATTEMPTS {
+    if failures == 0 {
         return None;
     }
     Some(std::time::Duration::from_secs((1u64 << (failures - 1).min(5)).min(30)))
 }
 
-/// Whether a pass tries the icon now: it differs from what is wanted, the retries are not used
-/// up, and the last failure's delay has passed.
-pub fn tray_attempt_due(want: bool, on: bool, failures: u32, due: Option<std::time::Instant>, now: std::time::Instant) -> bool {
-    tray_changes(want, on) && failures < TRAY_MAX_ATTEMPTS && due.is_none_or(|d| now >= d)
+/// Whether a pass tries the icon now: it differs from what is wanted and the last failure's delay
+/// has passed. `_failures` no longer limits it: a resident Tandem keeps trying.
+pub fn tray_attempt_due(want: bool, on: bool, _failures: u32, due: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    tray_changes(want, on) && due.is_none_or(|d| now >= d)
+}
+
+/// Whether this failure is the one that ends the backoff (logged once).
+pub fn tray_enters_steady_retry(before: u32, after: u32) -> bool {
+    before < TRAY_MAX_ATTEMPTS && after == TRAY_MAX_ATTEMPTS
+}
+
+/// A notification area operation for adding the icon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayOp {
+    Add,
+    Modify,
+}
+
+/// The operations to try, in order, to get the icon up. When it is added, or an earlier add failed
+/// (it may have timed out after succeeding), a modify goes first: success means it exists, and a
+/// duplicate add is never made.
+pub fn tray_add_order(added: bool, add_unsure: bool) -> &'static [TrayOp] {
+    if added || add_unsure {
+        &[TrayOp::Modify, TrayOp::Add]
+    } else {
+        &[TrayOp::Add]
+    }
 }
 
 /// The failure count after an attempt: cleared by a success.
@@ -429,11 +451,29 @@ mod tests {
         // The delay grows and is capped; the retries end.
         assert!(tray_retry_delay(2).unwrap() > tray_retry_delay(1).unwrap());
         assert_eq!(tray_retry_delay(TRAY_MAX_ATTEMPTS - 1), Some(Duration::from_secs(30)));
-        assert_eq!(tray_retry_delay(TRAY_MAX_ATTEMPTS), None);
-        assert!(!tray_attempt_due(true, false, TRAY_MAX_ATTEMPTS, None, t0), "gave up until a TaskbarCreated or a change");
+        // TWEAKS 8 review I3: never give up; past the backoff it stays at 30 s.
+        assert_eq!(tray_retry_delay(TRAY_MAX_ATTEMPTS), Some(Duration::from_secs(30)));
+        assert_eq!(tray_retry_delay(500), Some(Duration::from_secs(30)));
+        assert_eq!(tray_retry_delay(0), None);
+        assert!(tray_attempt_due(true, false, TRAY_MAX_ATTEMPTS + 40, None, t0), "still retrying while resident with no icon");
+        assert!(!tray_attempt_due(true, false, TRAY_MAX_ATTEMPTS + 40, Some(t0 + Duration::from_secs(30)), t0));
+        // The steady retry is logged once, on the pass that enters it.
+        assert!(!tray_enters_steady_retry(TRAY_MAX_ATTEMPTS - 2, TRAY_MAX_ATTEMPTS - 1));
+        assert!(tray_enters_steady_retry(TRAY_MAX_ATTEMPTS - 1, TRAY_MAX_ATTEMPTS));
+        assert!(!tray_enters_steady_retry(TRAY_MAX_ATTEMPTS, TRAY_MAX_ATTEMPTS + 1));
+        assert!(!tray_enters_steady_retry(TRAY_MAX_ATTEMPTS, 0));
         // A result counts or clears the failures.
         assert_eq!(tray_failures_after(0, false), 1);
         assert_eq!(tray_failures_after(5, true), 0);
+    }
+
+    /// TWEAKS 8 review I2: an add that failed or timed out may have succeeded, so the next try is a
+    /// modify first, then an add.
+    #[test]
+    fn tray_add_tries_modify_first_when_the_add_is_unsure() {
+        assert_eq!(tray_add_order(false, false), &[TrayOp::Add]);
+        assert_eq!(tray_add_order(false, true), &[TrayOp::Modify, TrayOp::Add], "after a failed add");
+        assert_eq!(tray_add_order(true, false), &[TrayOp::Modify, TrayOp::Add], "already added");
     }
 
     /// TWEAKS 8: the icon drawn for the tray is Tandem's (the logo), the right size, not blank.
