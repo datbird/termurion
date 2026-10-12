@@ -289,12 +289,17 @@ pub fn copy_title_text(title: &str, url: &str) -> Option<String> {
 /// A label a page's text made, safe to show (P15): hidden characters out (`display_text`), cut to
 /// `MAX_LABEL`, "&" doubled so no page text sets an access key; one that comes out empty shows its first character's code point. Empty stays empty.
 fn safe_label(raw: &str) -> String {
+    // WebView2's menus read "&" as the access-key marker: "&&" shows one.
+    inert_label(raw).replace('&', "&&")
+}
+
+/// `safe_label` without the "&" doubling, for a menu that does its own (the terminal's).
+pub fn inert_label(raw: &str) -> String {
     let clean = crate::inert_files::display_text(raw, MAX_LABEL, false);
     if clean.trim().is_empty() {
         return raw.chars().next().map(|c| format!("U+{:04X}", c as u32)).unwrap_or_default();
     }
-    // WebView2's menus read "&" as the access-key marker: "&&" shows one.
-    clean.replace('&', "&&")
+    clean
 }
 
 /// A color helper's swatch (`CMU:343-350`): 24 by 24 pixels of the color with a 1-pixel border, light

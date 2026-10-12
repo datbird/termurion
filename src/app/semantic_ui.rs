@@ -618,7 +618,7 @@ impl App {
                 let link = c.ctx.link.clone().or_else(|| semantic::url_like_in(&c.ctx.before, &c.ctx.after, &c.ctx.urls));
                 let cwd = c.ctx.cwd.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
                 let actions = c.found.as_ref().map(|f| (c.rules[f.rule].actions.clone(), f.captures.clone())).unwrap_or_default();
-                pending = Some(CtxPending { pane: id, link, actions: actions.0, captures: actions.1, cwd, fold, providers: Vec::new(), quick_look: None, selection: None, search: None });
+                pending = Some(CtxPending { pane: id, link, actions: actions.0, captures: actions.1, cwd, fold, providers: Vec::new(), quick_look: None, selection: None, helpers: Vec::new(), search: None });
             } else if fold.is_some() {
                 pending = Some(CtxPending { fold, ..CtxPending::for_pane(id, Vec::new()) });
             }
@@ -653,6 +653,12 @@ impl App {
                 extra.push((label.into(), item));
             }
             pend.selection = short;
+            // The conversions of the selection (`CMH:440-465`), after the web items.
+            let rows = self.selected_text(id).map(|t| helper_rows(&t)).unwrap_or_default();
+            for (i, (label, h)) in rows.iter().enumerate() {
+                extra.push((label.clone(), CtxItem::Helper(i, h.copy.is_some())));
+            }
+            pend.helpers = rows.into_iter().map(|(_, h)| h).collect();
             // Search takes the whole selection, short or not (`CMH:1179-1186`), bounded and cleaned.
             pend.search = self.selected_text(id).as_deref().and_then(crate::browser::search_query);
             if let Some(url) = quick {
@@ -717,6 +723,13 @@ impl App {
         } else if item == "unfold" {
             if let Some(f) = pend.fold {
                 self.unfold(pend.pane, f);
+            }
+        } else if let Some(i) = item.strip_prefix("helper.").and_then(|n| n.parse::<usize>().ok()) {
+            // A helper copies its text (bytes decoded as UTF-8 with what is not lost), and remembers it.
+            if let Some(copy) = pend.helpers.get(i).and_then(|h| h.copy.as_ref()) {
+                let text = crate::ctx_help::copy_text(copy);
+                self.set_clipboard_text(text.clone());
+                self.remember_paste(&text);
             }
         } else if item == "quicklook" {
             if let Some((url, at)) = pend.quick_look {
@@ -829,6 +842,8 @@ pub(super) enum CtxItem {
     OpenUrlHorizontal,
     SearchWeb,
     Unfold,
+    /// A selection helper (`CMH:440-465`): copies its text; shown greyed when it copies nothing.
+    Helper(usize, bool),
     StopCoprocess,
     ToggleBroadcast,
     /// Swap With Session...: the pick mode for a swap, from the pane the menu is for.
@@ -845,7 +860,7 @@ pub(super) enum CtxItem {
 
 impl CtxItem {
     pub(super) fn enabled(&self) -> bool {
-        !matches!(self, CtxItem::Action(_, false) | CtxItem::Command(_, false))
+        !matches!(self, CtxItem::Action(_, false) | CtxItem::Command(_, false) | CtxItem::Helper(_, false))
     }
 
     pub(super) fn id(&self) -> String {
@@ -858,6 +873,7 @@ impl CtxItem {
             CtxItem::OpenUrlHorizontal => format!("{CTX_ID}openurlh"),
             CtxItem::SearchWeb => format!("{CTX_ID}searchweb"),
             CtxItem::Unfold => format!("{CTX_ID}unfold"),
+            CtxItem::Helper(i, _) => format!("{CTX_ID}helper.{i}"),
             CtxItem::StopCoprocess => format!("{CTX_ID}stopcoprocess"),
             CtxItem::ToggleBroadcast => format!("{CTX_ID}togglebroadcast"),
             CtxItem::SwapPane => format!("{CTX_ID}swappane"),
@@ -868,6 +884,19 @@ impl CtxItem {
             CtxItem::Command(id, _) => format!("{CTX_ID}cmd.{id}"),
         }
     }
+}
+
+/// The selection helper items of the terminal menu (`CMH:440-465`, the synonyms, color, Base64 and
+/// numeric conversions of `ctx_help`) for a selection, as (label, helper). The selection is the
+/// program's text, so each label is made inert and cut; the caller doubles the "&".
+pub(super) fn helper_rows(selection: &str) -> Vec<(String, crate::ctx_help::Helper)> {
+    crate::ctx_help::menu_helpers(selection)
+        .into_iter()
+        .filter_map(|h| {
+            let label = crate::browser_ctx::inert_label(&h.title);
+            (!label.is_empty()).then_some((label, h))
+        })
+        .collect()
 }
 
 /// The fixed items of the pane menu, by label: Stop Coprocess while one runs, then Toggle
@@ -945,6 +974,8 @@ pub(super) struct CtxPending {
     quick_look: Option<(String, (f64, f64))>,
     /// The short selection the menu was made for (the URL and search items act on it).
     selection: Option<String>,
+    /// The selection helpers shown (`helper_rows`): a pick copies the helper's text.
+    helpers: Vec<crate::ctx_help::Helper>,
     /// The whole selection as a search text (`browser::search_query`): Search the Web for Selection acts on it.
     search: Option<String>,
 }
@@ -952,7 +983,7 @@ pub(super) struct CtxPending {
 impl CtxPending {
     /// A pending menu for `pane` with no link, fold or Smart Selection action.
     fn for_pane(pane: PaneId, providers: Vec<(String, String)>) -> Self {
-        CtxPending { pane, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold: None, providers, quick_look: None, selection: None, search: None }
+        CtxPending { pane, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold: None, providers, quick_look: None, selection: None, helpers: Vec::new(), search: None }
     }
 }
 
@@ -1085,6 +1116,33 @@ mod title_menu_tests {
 
 #[cfg(test)]
 mod tests {
+    /// TWEAKS 7a: the terminal menu offers the selection helpers, inert and bounded.
+    #[test]
+    fn the_terminal_menu_has_the_selection_helpers() {
+        use super::{helper_rows, CtxItem, CTX_ID};
+        let rows = helper_rows("255");
+        assert!(rows.iter().any(|(l, h)| l == "255 = 0xff" && h.copy.is_some()), "{rows:?}");
+        let color = helper_rows("#ff8000");
+        assert!(color.iter().any(|(_, h)| h.color == Some((255, 128, 0)) && h.copy.is_none()), "a color shows, copies nothing");
+        assert!(helper_rows("").is_empty());
+        let evil = format!("{}\u{202e}\u{200b}", "9".repeat(150));
+        for (l, _) in helper_rows(&evil) {
+            assert!(!l.contains('\u{202e}') && !l.contains('\u{200b}') && l.chars().count() <= 120, "{l:?}");
+        }
+        assert!(!CtxItem::Helper(0, false).enabled() && CtxItem::Helper(0, true).enabled());
+        assert_eq!(CtxItem::Helper(3, true).id(), format!("{CTX_ID}helper.3"));
+    }
+
+    /// The wiring: the menu builder adds the rows for the selection and a pick copies and remembers.
+    #[test]
+    fn the_helper_rows_are_wired() {
+        let src = include_str!("semantic_ui.rs");
+        let build = &src[src.find("pub(super) fn show_context_menu_at").unwrap()..src.find("pub(super) fn context_picked").unwrap()];
+        assert!(build.contains("helper_rows(") && build.contains("CtxItem::Helper("));
+        let pick = &src[src.find("fn context_other_picked").unwrap()..src.find("pub(super) fn open_text").unwrap()];
+        assert!(pick.contains("\"helper.\"") && pick.contains("remember_paste"));
+    }
+
 
     /// The 13w merge (S14 and the one locality answer): a browser pane has no directory, and no
     /// browser code makes its own "is this on this computer" check: a session's locality comes
