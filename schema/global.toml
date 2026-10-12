@@ -5378,7 +5378,7 @@ section = "General"
 label = "Link schemes of other apps that open without asking (space separated)."
 type = "string"
 default = ""
-help = "Link schemes of other apps (vscode, slack) that open at once in the app Windows has registered for them, when a terminal link is clicked.\nTandem asks once per scheme; Always adds the scheme here. Some schemes (ms-msdt, search-ms, file, javascript and others) never open, whatever is listed."
+help = "Link schemes of other apps that open without asking (space separated).\nThese (vscode, slack) open at once in the app Windows has registered for them when a terminal link is clicked. Tandem asks once per scheme; Always adds the scheme here. Some schemes (ms-msdt, search-ms, file, javascript and others) never open, whatever is listed."
 
 [[setting]]
 key = "LinkSchemesNever"
@@ -5387,7 +5387,7 @@ section = "General"
 label = "Link schemes of other apps that never open (space separated)."
 type = "string"
 default = ""
-help = "Link schemes of other apps (vscode, slack) that are never opened from a terminal link.\nTandem asks once per scheme; Never adds the scheme here. Remove it to be asked again."
+help = "Link schemes of other apps that never open (space separated).\nThese (vscode, slack) are never opened from a terminal link. Tandem asks once per scheme; Never adds the scheme here. Remove it to be asked again."
 
 [[setting]]
 key = "WebUserAgent"

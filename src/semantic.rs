@@ -1173,7 +1173,7 @@ mod tests {
         let Run::Blocked(why) = guard_open("ssh://host", false) else { panic!("refused") };
         assert!(why.contains("Tandem opens ssh: links when ssh is set to open in Tandem"), "{why}");
         let Run::Blocked(other) = guard_open("ms-msdt:x", false) else { panic!("refused") };
-        assert!(other.contains("not ms-msdt: links"), "{other}");
+        assert!(other.contains("never opens ms-msdt: links"), "{other}");
     }
 
     use super::*;

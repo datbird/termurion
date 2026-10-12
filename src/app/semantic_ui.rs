@@ -1256,6 +1256,7 @@ mod tests {
         ("app/semantic_ui.rs", "smart_action_run", "builds the Run; its callers are checked"),
         ("app/pathnav_ui.rs", "pathnav_tick", "runs what open_local settled: a Run that came through guard_open or open_file_run, whose callers are checked"),
         ("app/semantic_ui.rs", "shell_open", "the sink itself; its callers are checked"),
+        ("app/semantic_ui.rs", "shell_open_scheme", "the sink itself; its only caller is link_scheme_app::launch_scheme, after link_scheme::decide and the person's answer"),
         ("app/browser_download_app.rs", "browser_downloads_message", "Show in folder only SELECTS the file Tandem itself finished in the Downloads folder (the id names its own record, never the page's text); nothing is opened or run"),
         ("app/page_saver_app.rs", "page_save_acts", "selects the index.html the saver itself wrote in the folder the person picked in Explorer; nothing is opened or run, and the path is not pane text"),
         ("app/workgroup_toolbar_ui.rs", "usage_report_answered", "opens the fixed issue form; the person's click on Report Bug, the query holds only the report Tandem built"),

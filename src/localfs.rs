@@ -916,6 +916,7 @@ mod tests {
         ("utilities.rs", "ensure", 5, "Tandem's own utilities folder under %APPDATA%\\Tandem"),
         ("utilities.rs", "refresh", 6, "Tandem's own utilities folder under %APPDATA%\\Tandem"),
         ("app/semantic_ui.rs", "shell_open", 1, "URL targets only: semantic::shell_url refuses a path, a drive path, a network path and a file: link before ShellExecuteW; a file opens only through localfs::open_with_shell with a LocalPath"),
+        ("app/semantic_ui.rs", "shell_open_scheme", 1, "URL targets only: link_scheme::scheme_of and screen judge it again (a path has no scheme, file: is on the blocked list) before ShellExecuteW"),
         ("utilities.rs", "stamp", 1, "Tandem's own utilities folder under %APPDATA%\\Tandem"),
         ("winpipe.rs", "connect_owned", 1, "a named pipe, not a file path"),
     ];
