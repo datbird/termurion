@@ -729,6 +729,10 @@ impl App {
             if in_group && what == "enterWorkgroupTrigger" {
                 return None;
             }
+            // Once per session, workgroup and trigger: the trigger fires again every pass.
+            if !self.workgroup_refused_logged.insert((pane, id.clone(), what)) {
+                return None;
+            }
             let guid = self.panes.get(&pane).map(|p| p.session_guid.clone()).unwrap_or_default();
             crate::rlog!("{}: refused for workgroup {} on session {}", what, crate::dlog::name(&id), crate::dlog::name(&guid));
             return None;
@@ -1086,6 +1090,19 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 13x5 final review M7: a refused trigger writes its log line once per session, workgroup and
+    /// trigger (the trigger fires again every pass), and the pane's entries go with the pane.
+    #[test]
+    fn a_refused_workgroup_trigger_logs_once() {
+        let src = include_str!("workgroup_app.rs").split("#[cfg(test)]").next().unwrap();
+        let f = &src[src.find("fn trigger_enter_id(").unwrap()..];
+        let f = &f[..f.find("if self.workgroups.restoring.declined").unwrap()];
+        assert!(f.find("workgroup_refused_logged.insert((pane, id.clone(), what))").unwrap() < f.find("rlog!").unwrap(), "{f}");
+        let gone = include_str!("mod.rs");
+        let gone = &gone[gone.find("pub(super) fn pane_gone(").unwrap()..];
+        assert!(gone[..gone.find("self.close_browser_view(id);").unwrap()].contains("self.workgroup_refused_logged.retain("));
+    }
 
     fn inst(id: &str, leader: PaneId) -> Instance {
         let w = crate::workgroup::presets::coding_agent_plus_diff_plus_code_review(Some(("builtin.claudeCode", "MAIN", "DIFF", "REVIEW")), Some("Claude Code"));

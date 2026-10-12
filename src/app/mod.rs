@@ -1367,6 +1367,8 @@ pub struct App {
     bonjour_wanted: Option<bool>,
     /// The active pane `follow_edit_session` last saw; app-wide, so no `swap_live`.
     edit_follow_seen: Option<PaneId>,
+    /// Workgroup trigger refusals already logged, once per (session, workgroup, trigger) (13y2 carried pass, 13x5 M7).
+    workgroup_refused_logged: std::collections::HashSet<(PaneId, String, &'static str)>,
     script_tokens: HashMap<u64, u64>,
     /// "Function Call Failed" alerts (and results) waiting to show, and the one showing (true:
     /// in the remembered mode).
@@ -2606,6 +2608,7 @@ pub fn run() {
         bonjour_live: Vec::new(),
         bonjour_wanted: None,
         edit_follow_seen: None,
+        workgroup_refused_logged: Default::default(),
         script_tokens: HashMap::new(),
         script_alerts: VecDeque::new(),
         script_templates: HashMap::new(),
@@ -4211,6 +4214,7 @@ impl App {
                 s.session_hotkey_refused = None;
             }
         }
+        self.workgroup_refused_logged.retain(|(p, _, _)| *p != id);
         if self.edit_follow_seen == Some(id) {
             self.edit_follow_seen = None;
         }
