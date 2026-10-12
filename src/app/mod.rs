@@ -4359,9 +4359,13 @@ impl App {
                 // Never the answered profile's name or program (13y2 Task 9e I4): the shared profile's
                 // name, and for a parameterised start the program before the answers.
                 let base = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile());
-                let shared = base.get(crate::session_profile::ORIGINAL_GUID).and_then(|v| v.as_str().map(str::to_string)).and_then(|g| self.store.get(&g)).unwrap_or(base);
+                // A session copy whose shared profile is gone logs a fixed word, never its own Name (it may hold an answer).
+                let shared_name = match base.get(crate::session_profile::ORIGINAL_GUID).and_then(|v| v.as_str().map(str::to_string)) {
+                    Some(g) => self.store.get(&g).map_or_else(|| "a deleted profile".to_string(), |p| p.name()),
+                    None => base.name(),
+                };
                 let unanswered = self.param_profile.is_some().then(|| profile::command_line(base, &self.shell, None));
-                crate::rlog!("session started: profile {} program {}", crate::dlog::name(&shared.name()), crate::dlog::program(session_params_app::start_log_command(&cmd, unanswered.as_deref())));
+                crate::rlog!("session started: profile {} program {}", crate::dlog::name(&shared_name), crate::dlog::program(session_params_app::start_log_command(&cmd, unanswered.as_deref())));
                 pane.cookie = cookie;
                 pane.command = cmd;
                 pane.start_dir = Some(cwd);

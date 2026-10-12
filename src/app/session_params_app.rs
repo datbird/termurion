@@ -43,8 +43,12 @@ pub(super) enum Gate {
 
 /// `p` with the answers in its command, name and custom folder.
 pub(super) fn answered(p: &Profile, answers: &[(String, String)]) -> Profile {
+    answered_keys(p, answers, &["Command", "Name", "Working Directory"])
+}
+
+fn answered_keys(p: &Profile, answers: &[(String, String)], keys: &[&str]) -> Profile {
     let mut out = p.clone();
-    for key in ["Command", "Name", "Working Directory"] {
+    for key in keys {
         let before = p.string(key);
         let after = sp::apply(&before, answers);
         if after != before {
@@ -70,7 +74,9 @@ pub(super) fn answered_name(p: &Profile, answers: &[(String, String)]) -> Option
 /// The profile a (re)start of a pane with `answers` runs: `base` with the answers in, or None for a
 /// pane that never had a parameter.
 pub(super) fn restart_profile(base: &Profile, answers: Option<&[(String, String)]>) -> Option<Profile> {
-    answers.map(|a| answered(base, a))
+    // The session copy's Name already holds the answers (`answered_name` at the first start): a
+    // restart does not scan it again, so an answer that reads `$$OTHER$$` stays text (9e review N3).
+    answers.map(|a| answered_keys(base, a, &["Command", "Working Directory"]))
 }
 
 /// The command whose program the start log line names (review I4): the command before the answers
@@ -289,6 +295,10 @@ mod tests {
         let mut own = p.clone();
         own.set("Name", toml::Value::String("to box".into()));
         assert_eq!(restart_profile(&own, Some(&answers)).unwrap().string("Name"), "to box");
+        own.set("Name", toml::Value::String("to $$OTHER$$".into()));
+        let more = vec![("$$OTHER$$".to_string(), "x".to_string())];
+        assert_eq!(restart_profile(&own, Some(&more)).unwrap().string("Name"), "to $$OTHER$$", "a restart never rescans the answered Name");
+        own.set("Name", toml::Value::String("to box".into()));
         assert_eq!(answered_name(&p, &answers).as_deref(), Some("to box"));
         assert_eq!(answered_name(&own, &answers), None, "nothing to set when the Name has no parameter");
         // M1: the folder is asked for even with Custom Directory off.
