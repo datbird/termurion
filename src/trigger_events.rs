@@ -265,9 +265,7 @@ impl Screen {
     /// job is stored as the person reads it (`inert_files::clean_name`), so no reader of
     /// `shell.job` sees a control or bidirectional character.
     pub fn set_job(&mut self, job: Option<crate::proctree::Job>, ancestors: Vec<String>) {
-        use crate::inert_files::clean_name;
-        let job = job.map(|j| crate::proctree::Job { name: clean_name(&j.name), title: clean_name(&j.title), cmdline: clean_name(&j.cmdline), pid: j.pid });
-        let ancestors: Vec<String> = ancestors.iter().map(|a| clean_name(a)).collect();
+        let (job, ancestors) = cleaned_job(job, ancestors);
         let (started, ended) = job_events(&self.shell.job_ancestors, &ancestors);
         self.shell.job = job;
         self.shell.job_ancestors = ancestors;
@@ -277,6 +275,14 @@ impl Screen {
                 self.fire_event(kind, &facts, &[n]);
             }
         }
+    }
+
+    /// Whether `set_job` would change anything: the stored job is the cleaned one, so a raw job
+    /// with a hidden character is compared after the same cleaning (13p minor; it was re-stored
+    /// every pass).
+    pub fn job_differs(&self, job: &Option<crate::proctree::Job>, ancestors: &[String]) -> bool {
+        let (job, ancestors) = cleaned_job(job.clone(), ancestors.to_vec());
+        self.shell.job != job || self.shell.job_ancestors != ancestors
     }
 
     /// A user variable set (SetUserVar, a trigger): Variable Changed when its value changed.
@@ -289,6 +295,12 @@ impl Screen {
             self.fire_event(EventKind::VariableChanged, &facts, &[value, full]);
         }
     }
+}
+
+fn cleaned_job(job: Option<crate::proctree::Job>, ancestors: Vec<String>) -> (Option<crate::proctree::Job>, Vec<String>) {
+    use crate::inert_files::clean_name;
+    let job = job.map(|j| crate::proctree::Job { name: clean_name(&j.name), title: clean_name(&j.title), cmdline: clean_name(&j.cmdline), pid: j.pid });
+    (job, ancestors.iter().map(|a| clean_name(a)).collect())
 }
 
 impl Screen {
@@ -498,6 +510,17 @@ mod tests {
         assert_eq!(j.cmdline.chars().count(), 255, "a command line is cleaned, not cut");
         assert_eq!(s.trigger_var("session.jobName", 0).as_deref(), Some("vim"));
         assert_eq!(s.trigger_var("session.foregroundJobAncestors", 0).as_deref(), Some("vim\ncmd"));
+    }
+
+    #[test]
+    fn a_job_with_hidden_characters_is_not_a_change_again() {
+        let mut s = Screen::new(40, 4);
+        let job = Some(crate::proctree::Job { name: "vi\u{202e}m".into(), title: "vim".into(), cmdline: "vim".into(), pid: 1 });
+        let anc = vec!["v\u{1b}im".to_string()];
+        assert!(s.job_differs(&job, &anc));
+        s.set_job(job.clone(), anc.clone());
+        assert!(!s.job_differs(&job, &anc), "the stored job is the cleaned one: the same raw job is no change");
+        assert!(s.job_differs(&None, &anc));
     }
 
     #[test]

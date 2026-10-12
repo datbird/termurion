@@ -23,7 +23,7 @@ impl App {
                 s.shell.job_root = now.root.clone();
             }
             let (job, ancestors) = pane_job(now, remote);
-            if s.shell.job != job || s.shell.job_ancestors != ancestors {
+            if s.job_differs(&job, &ancestors) {
                 s.set_job(job, ancestors);
             }
         }
