@@ -440,6 +440,7 @@ pub mod dynamic_profiles_scan;
 pub mod update_fetch_win;
 pub mod update_ui;
 pub mod url_open;
+pub mod link_scheme;
 pub mod ssh_recovery;
 pub mod ssh_registry;
 pub mod ssh_page;
