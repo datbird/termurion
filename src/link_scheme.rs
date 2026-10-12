@@ -85,7 +85,13 @@ pub const BAD_HANDLERS: &[&str] = &[
     // binaries that fetch, schedule or run what they are given (TWEAKS 6 re-review residuals).
     "node", "python", "pythonw", "py", "pyw", "java", "javaw", "dotnet", "ruby", "perl", "php", "scriptrunner", "syncappvpublishingserver", "bitsadmin", "certutil",
     "presentationhost", "dfsvc", "ieexec", "schtasks", "at", "mavinject", "pcwrun", "runas", "ftp",
+    // rundll32's own InternalName, and more interpreters and LOLBins (TWEAKS 6 residuals, review I2).
+    "rundll", "jrunscript", "jjs", "jshell", "deno", "bun", "lua", "tclsh", "wish", "rscript", "csi", "fsi", "infdefaultinstall", "diskshadow", "pwsh-preview", "ntvdm",
 ];
+
+/// Name prefixes of interpreters that ship under versioned or suffixed names (`python3.12`, `pythonw3`,
+/// `php-cgi`, `php-win`, `pwsh`): any name starting with one is a bad handler.
+const BAD_PREFIXES: &[&str] = &["python", "pwsh", "php-", "powershell"];
 
 /// Folders only an administrator can write to, as the path after the drive letter and colon. A program
 /// there with no readable version info is trusted; anywhere else it is refused.
@@ -151,7 +157,7 @@ pub fn exe_stem(exe: &str) -> Result<String, String> {
     let Some(stem) = file.strip_suffix(".exe").filter(|s| !s.is_empty()) else {
         return Err("the app is not an .exe program".into());
     };
-    if BAD_HANDLERS.contains(&stem) {
+    if is_bad_name(stem) {
         return Err("the app runs commands".into());
     }
     // An 8.3 alias (POWERS~1) that was not resolved to the long name hides the real program from the list.
@@ -172,10 +178,20 @@ fn in_system_root(exe: &str) -> bool {
     SYSTEM_ROOTS.iter().any(|r| rest.starts_with(r))
 }
 
-/// The program a version-info name stands for: `Python.EXE` gives `python`, `pwsh.dll` gives `pwsh`.
+/// The program a name stands for: lowercase, a trailing `.mui` dropped, everything from the first dot
+/// cut (`RUNDLL32.EXE.MUI` gives `rundll32`, `Python3.12.exe` gives `python3`, `pwsh.dll` gives `pwsh`).
 fn version_stem(name: &str) -> String {
     let name = name.trim().to_ascii_lowercase();
-    name.rsplit_once('.').map_or(name.clone(), |(s, _)| s.to_string())
+    let name = name.strip_suffix(".mui").unwrap_or(&name);
+    name.split('.').next().unwrap_or("").to_string()
+}
+
+/// Whether a file or version-info name is a command interpreter or a program that runs what it is given:
+/// the stem, the stem without its trailing version digits (`node18`), or a versioned family prefix.
+fn is_bad_name(name: &str) -> bool {
+    let stem = version_stem(name);
+    let bare = stem.trim_end_matches(|c: char| c.is_ascii_digit() || c == '-' || c == '_');
+    BAD_HANDLERS.contains(&stem.as_str()) || (!bare.is_empty() && BAD_HANDLERS.contains(&bare)) || BAD_PREFIXES.iter().any(|p| stem.starts_with(p))
 }
 
 /// Judges the program's own version info (OriginalFilename, InternalName), which a rename cannot change.
@@ -183,7 +199,7 @@ fn version_stem(name: &str) -> String {
 /// anything a person could drop into their profile without it is not worth a link.
 fn check_version(exe: &str, names: Option<&[String]>) -> Result<(), String> {
     match names {
-        Some(names) if names.iter().any(|n| BAD_HANDLERS.contains(&version_stem(n).as_str())) => Err("the app is a renamed command interpreter".into()),
+        Some(names) if names.iter().any(|n| is_bad_name(n)) => Err("the app is a renamed command interpreter".into()),
         Some(_) => Ok(()),
         None if in_system_root(exe) => Ok(()),
         None => Err("the app has no readable version information".into()),
@@ -364,6 +380,50 @@ mod tests {
         ] {
             let exe = format!("C:\\Tools\\{stem}.exe");
             assert!(matches!(decide("foo:x", &app("X", &exe), "foo", ""), Plan::Refuse(_)), "{exe}");
+        }
+    }
+
+    #[test]
+    fn version_names_are_normalized_before_the_list() {
+        for (name, bad) in [
+            ("RUNDLL32.EXE.MUI", true), ("Cmd.Exe.MUI", true), ("PowerShell.EXE.MUI", true), ("REGSVR32.EXE.MUI", true), ("rundll", true), ("RUNDLL", true),
+            ("python3", true), ("python3.12.exe", true), ("pythonw3.12.exe", true), ("py.exe", true), ("php-cgi.exe", true), ("php-win", true), ("node18.exe", true), ("pwsh.dll", true),
+            ("MSHTA.EXE", true), ("jrunscript", true), ("diskshadow.exe", true),
+            ("Code.exe", false), ("slack.exe", false), ("ms-teams.exe", false), ("pycharm64.exe", false), ("my~app", false), ("spotify", false), ("", false),
+        ] {
+            assert_eq!(is_bad_name(name), bad, "{name}");
+        }
+        assert_eq!(version_stem("RUNDLL32.EXE.MUI"), "rundll32");
+        assert_eq!(version_stem("Python3.12.exe"), "python3");
+        assert_eq!(version_stem("Code.exe"), "code");
+        // The same normalization on a file name.
+        for exe in ["C:\\x\\python3.12.exe", "C:\\x\\Python3.exe", "C:\\x\\pythonw3.11.exe", "C:\\x\\php-cgi.exe", "C:\\x\\rundll.exe"] {
+            assert!(exe_stem(exe).is_err(), "{exe}");
+        }
+        assert!(exe_stem("C:\\x\\pycharm64.exe").is_ok());
+    }
+
+    #[test]
+    fn a_renamed_rundll32_is_caught_by_every_spelling_of_its_names() {
+        let renamed = |names: &[&str]| with_version(app("X", "C:\\Users\\u\\AppData\\Local\\Tool\\helper.exe"), Some(names));
+        for names in [&["RUNDLL32.EXE.MUI", "rundll"][..], &["rundll"], &["Cmd.Exe.MUI"], &["python3.12.exe"], &["PowerShell.EXE.MUI"]] {
+            assert!(matches!(decide("foo:x", &renamed(names), "foo", ""), Plan::Refuse(_)), "{names:?}");
+        }
+    }
+
+    /// The FFI against real version strings (the class of miss in review I2): the inbox interpreters are refused
+    /// by what their own version resource says, read from the real files.
+    #[cfg(windows)]
+    #[test]
+    fn real_system32_interpreters_are_refused_by_their_version_info() {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+        let reg = crate::url_schemes::system();
+        for file in ["rundll32.exe", "cmd.exe", "powershell.exe"] {
+            let exe = if file == "powershell.exe" { format!("{root}\\System32\\WindowsPowerShell\\v1.0\\{file}") } else { format!("{root}\\System32\\{file}") };
+            let names = reg.version_names(&exe).unwrap_or_else(|| panic!("no version info read for {exe}"));
+            assert!(!names.is_empty(), "{exe}: {names:?}");
+            // The names a renamed copy would carry, outside any trusted folder.
+            assert!(check_version("D:\\tools\\helper.exe", Some(&names)).is_err(), "{exe}: {names:?}");
         }
     }
 
