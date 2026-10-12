@@ -18,6 +18,7 @@ pub mod mru;
 pub mod desktops;
 #[cfg(windows)]
 pub mod display_watch;
+pub mod dark_menu;
 #[cfg(windows)]
 pub mod dragtext_win;
 #[cfg(windows)]
