@@ -81,6 +81,15 @@ Each item says what is wrong, what it should do, and where it was seen.
    while Tandem is resident (retry on failure and on TaskbarCreated after an Explorer restart),
    use the real Tandem icon, offer Quit, and log the result.
 
+9. **The app shortcut key (iTerm2's Cmd) must not default to the Windows key.** Win
+   collides with many Windows shortcuts (Win+L, Win+D, Win+arrows, Win+Shift+S, Win+number),
+   and some never reach an app. Make it a setting: Ctrl+Shift (new default, as Windows Terminal
+   and VS Code), Win, or Ctrl+Alt. Not Ctrl alone (shell control keys) and not Alt (iTerm2's
+   Option-as-Meta; shells use Alt+B/F). Ctrl+Alt is AltGr on many European layouts, so warn when
+   it is chosen. Shortcuts that already use Shift (Cmd+Shift+D) map to Ctrl+Shift+Alt+D. Menus
+   show the real keys; key binding import/export keeps iTerm2's Cmd notation; existing saved
+   bindings keep working. Robert, 2026-10-11.
+
 ## In progress
 
 (none)
