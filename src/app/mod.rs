@@ -7105,7 +7105,7 @@ impl ApplicationHandler<UserEvent> for App {
         // iTerm2 runs with no window: the first window is made hidden and empty, the icon is the way in.
         // The icon-click key never decides a launch window (`AD:2463-2470`): only the plan does.
         let resident_start = self.start_handoff.is_none() && startup_hotkey.is_none() && matches!(policy, crate::startup::SYSTEM | crate::startup::HOTKEY_ONLY) && hotkey_profiles.is_empty() && !early.restore && !early.window;
-        let mut attrs = Window::default_attributes().with_title("Termurion").with_inner_size(LogicalSize::new(1000.0, 650.0));
+        let mut attrs = Window::default_attributes().with_title("Termurion").with_window_icon(crate::presence::window_icon()).with_inner_size(LogicalSize::new(1000.0, 650.0));
         if startup_hotkey.is_some() || resident_start {
             use winit::platform::windows::WindowAttributesExtWindows;
             attrs = attrs.with_visible(false).with_skip_taskbar(true);

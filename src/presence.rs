@@ -198,6 +198,12 @@ pub fn tray_icon_rgba(size: u32) -> Vec<u8> {
     icon_rgba(size).0
 }
 
+/// Termurion's icon for a window's title bar and taskbar button (the 48 px art).
+pub fn window_icon() -> Option<winit::window::Icon> {
+    let (rgba, side) = icon_rgba(48);
+    winit::window::Icon::from_rgba(rgba, side, side).ok()
+}
+
 /// The pixels and side of the art nearest `size`: 16, 32 or 48 px.
 pub fn icon_rgba(size: u32) -> (Vec<u8>, u32) {
     let png: &[u8] = match size {
@@ -281,6 +287,17 @@ pub fn dock_click(visible_hotkey_windows: usize, profiles: &[(String, i64)], vis
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every window gets Termurion's icon, not the default one: the terminal windows (made in
+    /// three places) and the egui windows.
+    #[test]
+    fn every_window_gets_the_termurion_icon() {
+        assert!(window_icon().is_some(), "the embedded art decodes");
+        let read = |p: &str| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(p)).unwrap();
+        for p in ["src/app/mod.rs", "src/app/windows_ui.rs", "src/app/transparency_ui.rs", "src/egui_host.rs"] {
+            assert!(read(p).contains("with_window_icon(crate::presence::window_icon())"), "{p} sets the icon");
+        }
+    }
 
     /// `AD:3756-3765` (`updateProcessType`).
     #[test]

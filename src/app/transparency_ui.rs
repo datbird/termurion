@@ -332,6 +332,7 @@ impl App {
         let look = crate::presence::with_accessory(crate::presence::window_look(self.ui_element_now, hotkey_shown, self.globals.bool(crate::presence::EXCLUDED_FROM_CYCLING_KEY)), self.win_style == crate::frames::ACCESSORY);
         let mut attrs = Window::default_attributes()
             .with_title(old.title())
+            .with_window_icon(crate::presence::window_icon())
             .with_inner_size(size)
             .with_decorations(old.is_decorated())
             .with_resizable(old.is_resizable())
