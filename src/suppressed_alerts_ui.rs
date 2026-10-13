@@ -1,4 +1,4 @@
-//! iTerm2 > Suppressed Alerts (iTerm2's `iTermSuppressedAlertsWindowController`, `SAW`): the
+//! Termurion > Suppressed Alerts (iTerm2's `iTermSuppressedAlertsWindowController`, `SAW`): the
 //! warnings being answered automatically, un-suppressing them, and the "Always show alerts
 //! with remembered selections" mode; and the menu item's title (`iTermApplicationDelegate.m:548-566`).
 
@@ -34,7 +34,7 @@ const WHEN_WIDTH: f32 = 130.0;
 const ALERT_MIN_WIDTH: f32 = 120.0;
 const ROW_H: f32 = 22.0;
 
-/// iTerm2 > Suppressed Alerts' title: the count and how long ago the newest was answered
+/// Termurion > Suppressed Alerts' title: the count and how long ago the newest was answered
 /// (`newest_age` seconds), or the plain title when nothing is suppressed.
 pub fn menu_title(count: usize, newest_age: Option<f64>) -> String {
     if count == 0 {

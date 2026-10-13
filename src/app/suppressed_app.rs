@@ -1,4 +1,4 @@
-//! iTerm2 > Suppressed Alerts on the app side: the one window (app-wide), un-suppressing, the
+//! Termurion > Suppressed Alerts on the app side: the one window (app-wide), un-suppressing, the
 //! "Always show alerts with remembered selections" mode, and the menu item's title in every
 //! window's menu bar (`iTermApplicationDelegate.m:548-566`).
 
@@ -17,7 +17,7 @@ use crate::suppressed_alerts_ui::{self as sa, SuppressedEvent, SuppressedWindow}
 const RETITLE_EVERY: Duration = Duration::from_secs(60);
 
 impl App {
-    /// iTerm2 > Suppressed Alerts: opens the window, or brings the open one forward.
+    /// Termurion > Suppressed Alerts: opens the window, or brings the open one forward.
     pub(super) fn show_suppressed_alerts(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(w) = &self.suppressed_window {
             return w.focus();

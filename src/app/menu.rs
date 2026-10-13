@@ -158,12 +158,12 @@ pub(super) struct MenuBar {
     /// Edit > Engage Artificial Intelligence, enabled only while `GenerativeAIAllowed` is on
     /// (`PTA:169-171`; `sync_checks`).
     pub(super) engage_ai: Option<MenuItem>,
-    /// iTerm2 > Make Termurion Default Term, enabled while Termurion is not the default terminal (`AD:481-482`).
+    /// Termurion > Make Termurion Default Term, enabled while Termurion is not the default terminal (`AD:481-482`).
     pub(super) make_default: Option<MenuItem>,
     /// Edit > Explain Output with AI, enabled with a selection or a command mark in the focused
     /// pane (`PTA:172-174`; `sync_checks`).
     pub(super) explain_ai: Option<MenuItem>,
-    /// iTerm2 > Show Tip of the Day, disabled while a tip shows (`AD:523-524`; `sync_checks`).
+    /// Termurion > Show Tip of the Day, disabled while a tip shows (`AD:523-524`; `sync_checks`).
     pub(super) tip_item: Option<MenuItem>,
     /// Shell > ssh > Disconnect, retitled and enabled for the focused session (`refresh_ssh_menu`).
     pub(super) ssh_disconnect: Option<MenuItem>,
@@ -172,7 +172,7 @@ pub(super) struct MenuBar {
     /// Termurion > Install, Reinstall and Uninstall Claude Code Integration (`refresh_claude_menu`
     /// enables them by `claude_code::menu_enabled`; muda cannot hide an item).
     pub(super) claude_items: Option<[MenuItem; 3]>,
-    /// iTerm2 > Suppressed Alerts, retitled with the count and time (`retitle_suppressed_menu`).
+    /// Termurion > Suppressed Alerts, retitled with the count and time (`retitle_suppressed_menu`).
     pub(super) suppressed: Option<MenuItem>,
     /// The Scripts menu and its fixed items (Manage and the line), then the scripts after them.
     pub(super) scripts: Option<(Submenu, usize)>,
@@ -1682,7 +1682,7 @@ pub(super) fn curl_command(utilities: bool) -> &'static str {
 }
 
 /// Termurion's box for `Plan::Curl`: "Also install iTerm2 Utilities?" as Yes/No/Cancel.
-const CURL_TEXT: &str = "Termurion will type iTerm2's installer into this session. It adds iTerm2's script to your shell's startup file.\n\nAlso install iTerm2 Utilities? Utilities include scripts to download files, display images inline, and more.\n\nYes types:\ncurl -L https://iterm2.com/shell_integration/install_shell_integration_and_utilities.sh | bash\n\nNo types:\ncurl -L https://iterm2.com/shell_integration/install_shell_integration.sh | bash";
+const CURL_TEXT: &str = "Termurion will type iTerm2's installer into this session. It adds iTerm2's script to your shell's startup file.\n\nAlso install Termurion Utilities? Utilities include scripts to download files, display images inline, and more.\n\nYes types:\ncurl -L https://iterm2.com/shell_integration/install_shell_integration_and_utilities.sh | bash\n\nNo types:\ncurl -L https://iterm2.com/shell_integration/install_shell_integration.sh | bash";
 
 /// Yes, No or Cancel for `text`, the default button Yes when `yes_first`, else No: Some(true),
 /// Some(false), None.
@@ -1750,7 +1750,7 @@ impl App {
         }
     }
 
-    /// iTerm2 > Install Shell Integration, for the focused pane's shell.
+    /// Termurion > Install Shell Integration, for the focused pane's shell.
     pub(super) fn install_shell_integration(&mut self) {
         if let Some(pane) = self.focused_id() {
             self.install_shell_integration_in(pane);

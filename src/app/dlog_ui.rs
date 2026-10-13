@@ -59,7 +59,7 @@ impl App {
         }
     }
 
-    /// iTerm2 > Save Retrospective Debug Logs (`AD:3345-3373`): the recent low-frequency log,
+    /// Termurion > Save Retrospective Debug Logs (`AD:3345-3373`): the recent low-frequency log,
     /// kept while debug logging was off, saved where the person picks.
     pub(super) fn save_retrospective_logs(&mut self) {
         let Some(text) = retrospective_text(&self.debug_log_header(), &dlog::ring_text()) else {

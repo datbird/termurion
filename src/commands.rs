@@ -436,7 +436,7 @@ mod tests {
         }
         assert_eq!(status(find("downloadFiles:", "Download Files...")), Status::Done, "14d");
         assert_eq!(
-            status(find("toggleRemoteHostCanControlIterm2:", "Remote host can control iTerm2")),
+            status(find("toggleRemoteHostCanControlIterm2:", "Remote host can control Termurion")),
             Status::NotApplicable("Milestone 11 did not port the it2 command tree, so there is nothing for a remote host to control."),
             "14e ruling 3: not applicable, no milestone"
         );
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn a_not_applicable_command_is_unavailable_and_owns_no_chord() {
-        let item = find("toggleRemoteHostCanControlIterm2:", "Remote host can control iTerm2");
+        let item = find("toggleRemoteHostCanControlIterm2:", "Remote host can control Termurion");
         assert!(matches!(status(item), Status::NotApplicable(_)));
         assert!(status(item).unavailable());
         assert!(Status::Later(14).unavailable());

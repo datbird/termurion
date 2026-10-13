@@ -47,7 +47,8 @@ def walk(menu, path):
             out.append("separator = true")
             out.append("")
             continue
-        title = it.get("title", "").replace("…", "...")
+        # The displayed name is the product's; identifiers (the Python API's) keep iTerm2's text.
+        title = it.get("title", "").replace("…", "...").replace("iTerm2", "Termurion")
         key = it.get("keyEquivalent", "")
         mm = it.find("modifierMask")
         # A key the XIB cannot write as an attribute (Enter, Esc) is a base64 child element.

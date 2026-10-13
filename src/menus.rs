@@ -293,11 +293,22 @@ mod tests {
         Chord { key, cmd: true, alt: false, shift: false, ctrl: false }
     }
 
+    /// m14r Task 7: the menu bar shows the product name; identifiers keep iTerm2's text (the Python API's).
+    #[test]
+    fn menu_displays_product_name() {
+        for i in items().iter().filter(|i| !i.separator) {
+            assert!(i.path.iter().all(|p| !p.contains("iTerm2") && !p.contains("Tandem")), "{:?}", i.path);
+        }
+        assert!(items().iter().any(|i| i.path == ["Termurion", "About Termurion"]));
+        assert!(items().iter().any(|i| i.path == ["Termurion", "Quit Termurion"]));
+        assert!(items().iter().any(|i| i.path == ["Help", "Termurion Help"]));
+    }
+
     #[test]
     fn loads_the_whole_menu() {
         assert!(items().len() >= 431, "{}", items().len());
         let top: Vec<&str> = items().iter().filter(|i| !i.separator && i.path.len() == 1).map(|i| i.label()).collect();
-        assert_eq!(top, ["iTerm2", "Shell", "Edit", "View", "Session", "Scripts", "Profiles", "Window", "Help"]);
+        assert_eq!(top, ["Termurion", "Shell", "Edit", "View", "Session", "Scripts", "Profiles", "Window", "Help"]);
     }
 
     #[test]

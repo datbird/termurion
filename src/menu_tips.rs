@@ -216,10 +216,10 @@ mod tests {
     fn menu_tips_skip_hidden_items() {
         for i in menus::items().iter().filter(|i| !i.separator && menus::hidden_in_menu(&i.selector, cfg!(debug_assertions))) {
             assert!(tip_for(&i.identifier).is_none(), "{} is hidden but has a tip", i.identifier);
-            assert_eq!(identifier_for(&menus::shown_label(i.label()), "iTerm2"), None, "{}", i.identifier);
+            assert_eq!(identifier_for(&menus::shown_label(i.label()), "Termurion"), None, "{}", i.identifier);
         }
-        assert_eq!(identifier_for("Check Settings Control Truncation", "iTerm2"), None);
-        assert_eq!(identifier_for("Capture GPU Frame", "iTerm2").is_some(), cfg!(debug_assertions));
+        assert_eq!(identifier_for("Check Settings Control Truncation", "Termurion"), None);
+        assert_eq!(identifier_for("Capture GPU Frame", "Termurion").is_some(), cfg!(debug_assertions));
     }
 
     /// The 13v2 x 13w seam: the Toggle Debug Logging tip names the file 13w's debug log writes
