@@ -1,21 +1,22 @@
 m14r rename dry run (read only; no file written by the tool)
 table: rename_table.toml
 
-total hits (case-insensitive 'tandem'): 11580
-matching lines: 9214
-files with hits: 809
+total hits (case-insensitive 'tandem'): 12158
+matching lines: 9803
+files with hits: 784
 UNMAPPED outside keep and keep-history paths: 0
 
 per-group hits mapped by a rename row (A user strings, B identifiers, C data paths,
 D code identifiers, E docs and scripts, F assets, K keep rows):
-  A: 3035
-  B: 1692
-  C: 286
-  D: 486
-  E: 1442
-  F: 33
-  K: 4
-  whole-file keep paths: 240
+  A: 2302
+  B: 1477
+  C: 472
+  D: 838
+  E: 1474
+  F: 29
+  K: 22
+  T: 3
+  whole-file keep paths: 1179
   keep-history paths:    4362
 
 per path rule:
@@ -24,111 +25,419 @@ per path rule:
   keep-history     1308  docs/superpowers/rulings/**
   keep                6  tests/fixtures/tmux/*.bin
   keep                3  tools/rename_*.py
-  keep              178  tools/rename_table.toml
-  keep               43  tools/test_rename_table.py
+  keep             1041  tools/rename_table.toml
+  keep              119  tools/test_rename_table.py
 
 per row (group, mode, old -> new, hits), most used first:
-  A exact   2952  Tandem -> Termurion
-  E exact   1281  Tandem -> Termurion
-  B exact    338  tandem.exe -> termurion.exe
-  B exact    256  tandem- -> termurion-
-  D exact    191  Tandem -> Termurion
-  B exact    146  tandem-host -> termurion-host
-  D exact    114  _tandem -> _termurion
+  A exact   2238  Tandem -> Termurion
+  E prose   1272  Tandem -> Termurion
+  D exact    633  Tandem -> Termurion
+  B exact    265  tandem.exe -> termurion.exe
+  B exact    135  tandem-host -> termurion-host
   E exact     98  tandem\target -> termurion\target
-  B exact     97  __tandem -> __termurion
-  D exact     90  tandem_ -> termurion_
   C exact     85  %APPDATA%\Tandem -> %APPDATA%\Termurion
-  A exact     80  tandem -> termurion
-  B exact     80  tandem-git -> termurion-git
   B exact     69  by_tandem -> by_termurion
-  B exact     68  TANDEM_ -> TERMURION_
+  B exact     64  tandem-git -> termurion-git
+  B exact     62  navigate_tandem -> navigate_termurion
   B exact     61  data-tandem -> data-termurion
   B exact     54  tandem.test -> termurion.test
-  B exact     46  tandem.join -> termurion.join
-  D exact     45  tandem:: -> termurion::
-  B exact     43  __Tandem -> __Termurion
-  B exact     42  tandem-utils -> termurion-utils
+  B exact     43  tandem.join -> termurion.join
+  A exact     42  tandem -> termurion
   C exact     42  .join("Tandem") -> .join("Termurion")
   C exact     42  \Tandem -> \Termurion
   C exact     40  tandem-probe -> termurion-probe
   E exact     39  datbird/tandem -> datbird/termurion
-  B exact     33  TandemAI -> TermurionAI
+  E prose     33  tandem -> termurion
   B exact     30  tandem_command -> termurion_command
+  D exact     30  tandem -> termurion
   C exact     27  %APPDATA%\\Tandem -> %APPDATA%\\Termurion
+  B exact     25  tandem-client -> termurion-client
   B exact     25  window.tandem -> window.termurion
-  B exact     24  tandem-settings -> termurion-settings
-  B exact     22  tandemexport -> termurionexport
+  B exact     24  TandemAI/ -> TermurionAI/
   C exact     22  %LOCALAPPDATA%\Tandem -> %LOCALAPPDATA%\Termurion
   B exact     20  tandem-import -> termurion-import
   B exact     18  Tandem/ -> Termurion/
+  B exact     18  __tandemPost -> __termurionPost
   F exact     17  tandem_shell_integration -> termurion_shell_integration
+  B exact     16  tandem-settings -> termurion-settings
+  B exact     16  tandem-utils -> termurion-utils
+  B exact     16  tandemexport -> termurionexport
+  B exact     15  __tandemClient -> __termurionClient
+  D exact     15  tandem_ui_at -> termurion_ui_at
+  B exact     14  TANDEM_SCRIPT -> TERMURION_SCRIPT
+  D exact     14  is_tandem -> is_termurion
   B exact     13  Software\\Tandem -> Software\\Termurion
-  B exact     13  Tandem-Browser -> Termurion-Browser
   B exact     13  tandemHost -> termurionHost
   B exact     13  tandemReal -> termurionReal
+  E exact     13  Tandem -> Termurion
+  A exact     12  nTandem -> nTermurion
   B exact     12  tandemRoot -> termurionRoot
-  E exact     12  tandem -> termurion
-  B exact     11  tandem-ssh-probe -> termurion-ssh-probe
+  B exact     11  TANDEM_UI -> TERMURION_UI
+  B exact     11  tandem-glyph -> termurion-glyph
   B exact     11  tandem.ctx -> termurion.ctx
   C exact     11  \\Tandem -> \\Termurion
-  B exact     10  tandem-ssh-secrets -> termurion-ssh-secrets
+  D exact     11  appdata_tandem -> appdata_termurion
+  B exact     10  tandem-ssh-probe -> termurion-ssh-probe
   B exact     10  tandemShadow -> termurionShadow
   D exact     10  CLSID_TANDEM_TERMINAL -> CLSID_TERMURION_TERMINAL
+  D exact     10  tandem_or_local_page -> termurion_or_local_page
   F exact     10  tandem-cloak -> termurion-cloak
-  B exact      9  Applications\\tandem -> Applications\\termurion
+  B exact      9  API Key for Tandem -> API Key for Termurion
+  B exact      9  Classes\\Applications\\tandem.exe -> Classes\\Applications\\termurion.exe
+  B exact      9  TandemAI -> TermurionAI
+  B exact      9  __tandemWebkit -> __termurionWebkit
+  B exact      9  self.tandem_ui_at -> self.termurion_ui_at
+  D exact      9  make_tandem_entries -> make_termurion_entries
   E exact      9  src\tandem -> src\termurion
   B exact      8  Classes\\Tandem -> Classes\\Termurion
+  B exact      8  Tandem-Browser/ -> Termurion-Browser/
+  B exact      8  __TandemOsc -> __TermurionOsc
+  B exact      8  globalThis.__tandemClient -> globalThis.__termurionClient
   B exact      8  tandemCopyModeKey -> termurionCopyModeKey
   B exact      8  tandemSecretField -> termurionSecretField
-  B exact      7  tandem-url -> termurion-url
-  B exact      6  tandem-backup -> termurion-backup
+  B exact      7  TANDEM_SSH_TRANSPORT -> TERMURION_SSH_TRANSPORT
+  B exact      7  __TandemAid -> __TermurionAid
+  B exact      7  {{TANDEM_UI}} -> {{TERMURION_UI}}
+  D exact      7  tandem_chain -> termurion_chain
+  K keep       7  Tandem Contents -> (keep)
+  B exact      6  __tandemCap -> __termurionCap
+  C exact      6  tandem_in_front -> termurion_in_front
+  D exact      6  tandem_uri -> termurion_uri
   B exact      5  Software\Tandem -> Software\Termurion
+  B exact      5  __TandemMachineId -> __TermurionMachineId
+  B exact      5  __TandemRan -> __TermurionRan
+  B exact      5  __tandemTriggerCap -> __termurionTriggerCap
+  B exact      5  pipe\tandem-ssh-secrets- -> pipe\termurion-ssh-secrets-
   B exact      5  tandemDeadline -> termurionDeadline
   B exact      5  tandemDeepest -> termurionDeepest
   B exact      5  tandemSite -> termurionSite
   D exact      5  OtherTandem -> OtherTermurion
+  D exact      5  open_url_in_tandem -> open_url_in_termurion
+  D exact      5  reaches_tandem -> reaches_termurion
+  D exact      5  tandem_has_keyboard -> termurion_has_keyboard
+  D exact      5  tandem_nav -> termurion_nav
+  E exact      5  tandem -> termurion
+  B exact      4  TANDEM_T -> TERMURION_T
   B exact      4  TandemMachineIdHash -> TermurionMachineIdHash
+  B exact      4  __TandemFirst -> __TermurionFirst
+  B exact      4  __tandemGate -> __termurionGate
+  B exact      4  __tandemRun -> __termurionRun
+  B exact      4  tandem-backup -> termurion-backup
+  B exact      4  tandem-local.invalid -> termurion-local.invalid
+  B exact      4  tandem-url -> termurion-url
   B exact      4  tandem-utilities -> termurion-utilities
   B exact      4  tandemNames -> termurionNames
+  B exact      4  {{TANDEM_SCRIPT}} -> {{TERMURION_SCRIPT}}
   C exact      4  tandemprobe -> termurionprobe
-  F exact      4  TANDEM-PATCHES -> TERMURION-PATCHES
   A exact      3  TANDEM -> TERMURION
-  B exact      3  TANDEM.EXE -> TERMURION.EXE
+  B exact      3  RegisteredApplications", "Tandem" -> RegisteredApplications", "Termurion"
+  B exact      3  TANDEM_PAGE -> TERMURION_PAGE
+  B exact      3  TANDEM_UTILITY_CHILD -> TERMURION_UTILITY_CHILD
+  B exact      3  Tandem.ABC -> Termurion.ABC
+  B exact      3  __TandemCount -> __TermurionCount
+  B exact      3  __TandemHistory -> __TermurionHistory
+  B exact      3  __tandem -> __termurion
+  B exact      3  __tandemCanary -> __termurionCanary
+  B exact      3  __tandemResult -> __termurionResult
   B exact      3  messageHandlers.tandem -> messageHandlers.termurion
+  B exact      3  pipe\tandem-host- -> pipe\termurion-host-
+  B exact      3  pipe\tandem-url- -> pipe\termurion-url-
+  B exact      3  rel-tandem -> rel-termurion
   B exact      3  tandem-bonjour -> termurion-bonjour
   B exact      3  tandem-tmp -> termurion-tmp
   B exact      3  tandemBroadcastInput -> termurionBroadcastInput
   B exact      3  tandemShift -> termurionShift
+  B exact      3  window.__tandemClient -> window.__termurionClient
   C exact      3  <LOCALAPPDATA>\Tandem -> <LOCALAPPDATA>\Termurion
+  C exact      3  tandem-end -> termurion-end
   C exact      3  tandem_vim_pos -> termurion_vim_pos
   D exact      3  OPEN_IN_TANDEM -> OPEN_IN_TERMURION
   D exact      3  TandemChatAttachments -> TermurionChatAttachments
   D exact      3  TandemDebugLog -> TermurionDebugLog
   D exact      3  TandemDlogTest -> TermurionDlogTest
+  K keep       3  Tandem Attach -> (keep)
+  A exact      2  Tandem-internal -> Termurion-internal
+  B exact      2  "FriendlyAppName", "Tandem" -> "FriendlyAppName", "Termurion"
+  B exact      2  "Tandem-" -> "Termurion-"
+  B exact      2  REGISTERED_APPS, "Tandem" -> REGISTERED_APPS, "Termurion"
+  B exact      2  TANDEM_CLOSE_CHILD -> TERMURION_CLOSE_CHILD
+  B exact      2  TANDEM_DLL_CHILD -> TERMURION_DLL_CHILD
+  B exact      2  TANDEM_MEASURE_CHILD -> TERMURION_MEASURE_CHILD
+  B exact      2  TANDEM_RESIZE_KEY -> TERMURION_RESIZE_KEY
+  B exact      2  TANDEM_RESIZE_USER -> TERMURION_RESIZE_USER
+  B exact      2  TANDEM_SIGNAL_CHILD -> TERMURION_SIGNAL_CHILD
+  B exact      2  Tandem Terminal Handoff -> Termurion Terminal Handoff
+  B exact      2  Tandem-{ -> Termurion-{
+  B exact      2  Tandem.NEW -> Termurion.NEW
   B exact      2  Tandem.ssh -> Termurion.ssh
   B exact      2  TandemShellIntegration -> TermurionShellIntegration
+  B exact      2  Tandemx -> Termurionx
+  B exact      2  __TandemLocation -> __TermurionLocation
+  B exact      2  __TandemOriginalReadLine -> __TermurionOriginalReadLine
+  B exact      2  __TandemSalt -> __TermurionSalt
+  B exact      2  __tandemAt.x -> __termurionAt.x
+  B exact      2  new-tandem -> new-termurion
+  B exact      2  old-tandem -> old-termurion
+  B exact      2  tandem-dl -> termurion-dl
+  B exact      2  tandem-no-integrated-auth.invalid -> termurion-no-integrated-auth.invalid
+  B exact      2  tandem-retry -> termurion-retry
+  B exact      2  tandem-update.microsoft.com -> termurion-update.microsoft.com
+  B exact      2  tandem-wv2-method -> termurion-wv2-method
+  B exact      2  tandem.invalid -> termurion.invalid
   B exact      2  tandemBinding -> termurionBinding
+  B exact      2  window.__tandemProbeWorld -> window.__termurionProbeWorld
   C exact      2  %LOCALAPPDATA%\\Tandem -> %LOCALAPPDATA%\\Termurion
   C exact      2  <appdata>\Tandem -> <appdata>\Termurion
+  C exact      2  tandem-ai-discovery-test.toml -> termurion-ai-discovery-test.toml
+  C exact      2  tandem-dynapp -> termurion-dynapp
+  C exact      2  tandem-export -> termurion-export
+  C exact      2  tandem-its -> termurion-its
+  C exact      2  tandem-noauth -> termurion-noauth
+  C exact      2  tandem-ok -> termurion-ok
+  C exact      2  tandem-pipes -> termurion-pipes
+  C exact      2  tandem-pwm -> termurion-pwm
+  C exact      2  tandem-store -> termurion-store
   D exact      2  TandemLoaded -> TermurionLoaded
-  D exact      2  tandem -> termurion
+  D exact      2  foreground_is_tandem -> foreground_is_termurion
+  D exact      2  other_tandem -> other_termurion
+  D exact      2  pair_is_tandem -> pair_is_termurion
+  E prose      2  TANDEM -> TERMURION
   F exact      2  tandem-logo -> termurion-logo
+  T exact      2  tandem-host -> termurion-host
+  A exact      1  Tandem-Claude -> Termurion-Claude
+  A exact      1  Tandem-Screenshot -> Termurion-Screenshot
+  A exact      1  Tandem-Screenshot-2026-09-05-01-02-03.png -> Termurion-Screenshot-2026-09-05-01-02-03.png
+  A exact      1  Tandem-Screenshot-x -> Termurion-Screenshot-x
+  A exact      1  Tandem-Screenshot-x-part-2-of-3.png -> Termurion-Screenshot-x-part-2-of-3.png
+  B exact      1  ".Tandem." -> ".Termurion."
+  B exact      1  "FriendlyAppName".to_string(), "Tandem" -> "FriendlyAppName".to_string(), "Termurion"
+  B exact      1  "iterm2", "tandem"] -> "iterm2", "termurion"]
   B exact      1  Classes\Tandem -> Classes\Termurion
   B exact      1  SERVICE: &str = "Tandem" -> SERVICE: &str = "Termurion"
+  B exact      1  TANDEM_WAIT_PID -> TERMURION_WAIT_PID
+  B exact      1  Tandem.OLD -> Termurion.OLD
+  B exact      1  Tandem.R -> Termurion.R
+  B exact      1  Tandem.U -> Termurion.U
   B exact      1  Tandem.lnk -> Termurion.lnk
-  B exact      1  applications\\tandem -> applications\\termurion
+  B exact      1  __TandemOriginalPrompt -> __TermurionOriginalPrompt
+  B exact      1  __TandemOriginalPrompt.Invoke -> __TermurionOriginalPrompt.Invoke
+  B exact      1  __tandemAt -> __termurionAt
+  B exact      1  __tandemAt.y -> __termurionAt.y
+  B exact      1  __tandemReplaySensitive -> __termurionReplaySensitive
+  B exact      1  __tandemWebkit.messageHandlers -> __termurionWebkit.messageHandlers
+  B exact      1  __tandemWebkit.messageHandlers.iTermHoverLink.postMessage -> __termurionWebkit.messageHandlers.iTermHoverLink.postMessage
+  B exact      1  __tandemWebkit.messageHandlers.probeEcho.postMessage -> __termurionWebkit.messageHandlers.probeEcho.postMessage
+  B exact      1  __tandemWebkit.messageHandlers.x.postMessage -> __termurionWebkit.messageHandlers.x.postMessage
+  B exact      1  applications\\TANDEM.EXE -> applications\\TERMURION.EXE
+  B exact      1  as_deref(), Some("Tandem"), "key compare -> as_deref(), Some("Termurion"), "key compare
+  B exact      1  classes\\applications\\tandem. -> classes\\applications\\termurion.
   B exact      1  classes\\tandem -> classes\\termurion
+  B exact      1  eq_ignore_ascii_case("Tandem") -> eq_ignore_ascii_case("Termurion")
+  B exact      1  globalThis.__tandemCanary -> globalThis.__termurionCanary
+  B exact      1  globalThis.__tandemGate -> globalThis.__termurionGate
   B exact      1  messageHandlers.Tandem -> messageHandlers.Termurion
+  B exact      1  n.tandem-glyph -> n.termurion-glyph
+  B exact      1  pipe\\tandem-ssh-probe- -> pipe\\termurion-ssh-probe-
+  B exact      1  pipe\tandem-ssh-secrets-missing- -> pipe\termurion-ssh-secrets-missing-
+  B exact      1  pipe\tandem-ssh-secrets-refuse- -> pipe\termurion-ssh-secrets-refuse-
+  B exact      1  pipe\tandem-ssh-secrets-silent- -> pipe\termurion-ssh-secrets-silent-
+  B exact      1  pipe\tandem-ssh-secrets-test- -> pipe\termurion-ssh-secrets-test-
+  B exact      1  pipe\tandem-test- -> pipe\termurion-test-
+  B exact      1  rooted-tandem -> rooted-termurion
   B exact      1  software\\tandem -> software\\termurion
+  B exact      1  tandem-bdb -> termurion-bdb
+  B exact      1  tandem-card -> termurion-card
+  B exact      1  tandem-dl-probe -> termurion-dl-probe
+  B exact      1  tandem-erase -> termurion-erase
+  B exact      1  tandem-ext-probe -> termurion-ext-probe
+  B exact      1  tandem-ext-test -> termurion-ext-test
+  B exact      1  tandem-fileexit -> termurion-fileexit
+  B exact      1  tandem-filepage -> termurion-filepage
+  B exact      1  tandem-hint -> termurion-hint
+  B exact      1  tandem-menu-test -> termurion-menu-test
+  B exact      1  tandem-onb -> termurion-onb
+  B exact      1  tandem-perms -> termurion-perms
+  B exact      1  tandem-save-probe -> termurion-save-probe
+  B exact      1  tandem-site -> termurion-site
+  B exact      1  tandem-ssh-secrets -> termurion-ssh-secrets
+  B exact      1  tandem-world-probe -> termurion-world-probe
+  B exact      1  tandem-wv2 -> termurion-wv2
+  B exact      1  tandem-wv2-acl -> termurion-wv2-acl
+  B exact      1  tandem-wv2-menu -> termurion-wv2-menu
+  B exact      1  tandem-wv2-test -> termurion-wv2-test
+  B exact      1  tandem-wv2-ui -> termurion-wv2-ui
   B exact      1  tandem.browsermark -> termurion.browsermark
   B exact      1  tandem.finderase -> termurion.finderase
   B exact      1  tandem.findmode -> termurion.findmode
   B exact      1  tandem.namedmark -> termurion.namedmark
   B exact      1  tandemPointer -> termurionPointer
+  B exact      1  tandem_data -> termurion_data
+  B exact      1  tandem_history -> termurion_history
+  B exact      1  tandemai -> termurionai
+  B exact      1  window.__tandemReplaySensitive -> window.__termurionReplaySensitive
+  B exact      1  {name} API Key for Tandem -> {name} API Key for Termurion
   C exact      1  <APPDATA>\Tandem -> <APPDATA>\Termurion
   C exact      1  Programs\Tandem -> Programs\Termurion
+  C exact      1  Tandem-Browse -> Termurion-Browse
+  C exact      1  Tandem-Browser -> Termurion-Browser
+  C exact      1  Tandem-U1 -> Termurion-U1
+  C exact      1  Tandem-U2 -> Termurion-U2
+  C exact      1  Tandem-notes -> Termurion-notes
+  C exact      1  Tandem-tmux -> Termurion-tmux
+  C exact      1  tandem-adblock -> termurion-adblock
+  C exact      1  tandem-adblock-g -> termurion-adblock-g
+  C exact      1  tandem-ai-model-test.toml -> termurion-ai-model-test.toml
+  C exact      1  tandem-ai-safety-test.toml -> termurion-ai-safety-test.toml
+  C exact      1  tandem-ai-transport-test.toml -> termurion-ai-transport-test.toml
+  C exact      1  tandem-ai-turn-test.toml -> termurion-ai-turn-test.toml
+  C exact      1  tandem-app -> termurion-app
+  C exact      1  tandem-archive -> termurion-archive
+  C exact      1  tandem-archive-big -> termurion-archive-big
+  C exact      1  tandem-archive-seq -> termurion-archive-seq
+  C exact      1  tandem-archive-test -> termurion-archive-test
+  C exact      1  tandem-askai -> termurion-askai
+  C exact      1  tandem-badge -> termurion-badge
+  C exact      1  tandem-batch -> termurion-batch
+  C exact      1  tandem-batch-last -> termurion-batch-last
+  C exact      1  tandem-bg -> termurion-bg
+  C exact      1  tandem-bidi-rows.toml -> termurion-bidi-rows.toml
+  C exact      1  tandem-binding-dialog -> termurion-binding-dialog
+  C exact      1  tandem-cc -> termurion-cc
+  C exact      1  tandem-chat-agent-test.toml -> termurion-chat-agent-test.toml
+  C exact      1  tandem-chat-engine-test.toml -> termurion-chat-engine-test.toml
+  C exact      1  tandem-chat-input -> termurion-chat-input
+  C exact      1  tandem-chat-links -> termurion-chat-links
+  C exact      1  tandem-chat-lock -> termurion-chat-lock
+  C exact      1  tandem-chat-loop -> termurion-chat-loop
+  C exact      1  tandem-chatdb-corrupt -> termurion-chatdb-corrupt
+  C exact      1  tandem-chatdb-lock -> termurion-chatdb-lock
+  C exact      1  tandem-chatdb-squelch -> termurion-chatdb-squelch
+  C exact      1  tandem-conductor-level1 -> termurion-conductor-level1
+  C exact      1  tandem-conductor-missing -> termurion-conductor-missing
+  C exact      1  tandem-conductor-payloads -> termurion-conductor-payloads
+  C exact      1  tandem-cp -> termurion-cp
+  C exact      1  tandem-cp-load -> termurion-cp-load
+  C exact      1  tandem-cr-bounds-never-saved.toml -> termurion-cr-bounds-never-saved.toml
+  C exact      1  tandem-crowd -> termurion-crowd
+  C exact      1  tandem-data-sync -> termurion-data-sync
+  C exact      1  tandem-dest -> termurion-dest
+  C exact      1  tandem-dl2 -> termurion-dl2
+  C exact      1  tandem-dl3 -> termurion-dl3
+  C exact      1  tandem-dlog -> termurion-dlog
+  C exact      1  tandem-dlref -> termurion-dlref
+  C exact      1  tandem-dnd -> termurion-dnd
+  C exact      1  tandem-dnd-links -> termurion-dnd-links
+  C exact      1  tandem-door -> termurion-door
+  C exact      1  tandem-dp-list -> termurion-dp-list
+  C exact      1  tandem-dp-open -> termurion-dp-open
+  C exact      1  tandem-dp-trust -> termurion-dp-trust
+  C exact      1  tandem-dynscan -> termurion-dynscan
+  C exact      1  tandem-entries -> termurion-entries
+  C exact      1  tandem-env-path -> termurion-env-path
+  C exact      1  tandem-export-test -> termurion-export-test
+  C exact      1  tandem-extract -> termurion-extract
+  C exact      1  tandem-fileserve -> termurion-fileserve
+  C exact      1  tandem-ftp-pw -> termurion-ftp-pw
+  C exact      1  tandem-gate -> termurion-gate
+  C exact      1  tandem-globals -> termurion-globals
+  C exact      1  tandem-gpu-restart -> termurion-gpu-restart
+  C exact      1  tandem-handoff -> termurion-handoff
+  C exact      1  tandem-icons -> termurion-icons
+  C exact      1  tandem-imgls -> termurion-imgls
+  C exact      1  tandem-inert -> termurion-inert
+  C exact      1  tandem-install -> termurion-install
+  C exact      1  tandem-it2api -> termurion-it2api
+  C exact      1  tandem-it2check -> termurion-it2check
+  C exact      1  tandem-it2ul-conpty -> termurion-it2ul-conpty
+  C exact      1  tandem-junction -> termurion-junction
+  C exact      1  tandem-kitty -> termurion-kitty
+  C exact      1  tandem-layout -> termurion-layout
+  C exact      1  tandem-licenses -> termurion-licenses
+  C exact      1  tandem-licenses-stale -> termurion-licenses-stale
+  C exact      1  tandem-linkscheme -> termurion-linkscheme
+  C exact      1  tandem-locale -> termurion-locale
+  C exact      1  tandem-lpass-ask -> termurion-lpass-ask
+  C exact      1  tandem-new -> termurion-new
+  C exact      1  tandem-no-such-dll.dll -> termurion-no-such-dll.dll
+  C exact      1  tandem-no-such-folder -> termurion-no-such-folder
+  C exact      1  tandem-no-such-log-folder-13q -> termurion-no-such-log-folder-13q
+  C exact      1  tandem-notes -> termurion-notes
+  C exact      1  tandem-ollama-models-test -> termurion-ollama-models-test
+  C exact      1  tandem-open-colors -> termurion-open-colors
+  C exact      1  tandem-popsrc -> termurion-popsrc
+  C exact      1  tandem-prefs-dyn -> termurion-prefs-dyn
+  C exact      1  tandem-prefs-folder-valid -> termurion-prefs-folder-valid
+  C exact      1  tandem-prefs-keepdyn -> termurion-prefs-keepdyn
+  C exact      1  tandem-prefs-presets -> termurion-prefs-presets
+  C exact      1  tandem-prefs-rows -> termurion-prefs-rows
+  C exact      1  tandem-prefs-ui -> termurion-prefs-ui
+  C exact      1  tandem-prefs-unc -> termurion-prefs-unc
+  C exact      1  tandem-prefs-unc2 -> termurion-prefs-unc2
+  C exact      1  tandem-prefs-wg -> termurion-prefs-wg
+  C exact      1  tandem-presets -> termurion-presets
+  C exact      1  tandem-presets-strand -> termurion-presets-strand
   C exact      1  tandem-protogen -> termurion-protogen
+  C exact      1  tandem-psave -> termurion-psave
+  C exact      1  tandem-pwm-abs -> termurion-pwm-abs
+  C exact      1  tandem-pwm-ext -> termurion-pwm-ext
+  C exact      1  tandem-pwm-rel -> termurion-pwm-rel
+  C exact      1  tandem-pwm-run -> termurion-pwm-run
+  C exact      1  tandem-recover-test -> termurion-recover-test
+  C exact      1  tandem-remote-prefs -> termurion-remote-prefs
+  C exact      1  tandem-reparse -> termurion-reparse
+  C exact      1  tandem-resources -> termurion-resources
+  C exact      1  tandem-review -> termurion-review
+  C exact      1  tandem-save -> termurion-save
+  C exact      1  tandem-scripts -> termurion-scripts
+  C exact      1  tandem-scripts-folder-pending -> termurion-scripts-folder-pending
+  C exact      1  tandem-scripts-folder-valid -> termurion-scripts-folder-valid
+  C exact      1  tandem-sem -> termurion-sem
+  C exact      1  tandem-session-log -> termurion-session-log
+  C exact      1  tandem-sha -> termurion-sha
+  C exact      1  tandem-sound -> termurion-sound
+  C exact      1  tandem-ssh-args -> termurion-ssh-args
+  C exact      1  tandem-ssh-caps -> termurion-ssh-caps
+  C exact      1  tandem-ssh-config -> termurion-ssh-config
+  C exact      1  tandem-ssh-inject -> termurion-ssh-inject
+  C exact      1  tandem-ssh-url -> termurion-ssh-url
+  C exact      1  tandem-sshlocal -> termurion-sshlocal
+  C exact      1  tandem-state -> termurion-state
+  C exact      1  tandem-stock -> termurion-stock
+  C exact      1  tandem-stock-script -> termurion-stock-script
+  C exact      1  tandem-store-edit -> termurion-store-edit
+  C exact      1  tandem-store-map -> termurion-store-map
+  C exact      1  tandem-strict -> termurion-strict
+  C exact      1  tandem-svg -> termurion-svg
+  C exact      1  tandem-tab-icons -> termurion-tab-icons
+  C exact      1  tandem-taskbar -> termurion-taskbar
+  C exact      1  tandem-terminfo -> termurion-terminfo
+  C exact      1  tandem-test -> termurion-test
+  C exact      1  tandem-tips-state-test -> termurion-tips-state-test
+  C exact      1  tandem-tmuxprof -> termurion-tmuxprof
+  C exact      1  tandem-trigger-limits -> termurion-trigger-limits
+  C exact      1  tandem-unmarked -> termurion-unmarked
+  C exact      1  tandem-up -> termurion-up
+  C exact      1  tandem-up-folders -> termurion-up-folders
+  C exact      1  tandem-update -> termurion-update
+  C exact      1  tandem-util-cli-open -> termurion-util-cli-open
+  C exact      1  tandem-util-cli-path -> termurion-util-cli-path
+  C exact      1  tandem-util-files -> termurion-util-files
+  C exact      1  tandem-util-git -> termurion-util-git
+  C exact      1  tandem-util-git-hooks -> termurion-util-git-hooks
+  C exact      1  tandem-util-git-submodule -> termurion-util-git-submodule
+  C exact      1  tandem-util-simple -> termurion-util-simple
+  C exact      1  tandem-util-tip -> termurion-util-tip
+  C exact      1  tandem-var -> termurion-var
+  C exact      1  tandem-wg-bound -> termurion-wg-bound
+  C exact      1  tandem-wg-key -> termurion-wg-key
+  C exact      1  tandem-wg-key-copied -> termurion-wg-key-copied
+  C exact      1  tandem-wg-key-pending -> termurion-wg-key-pending
+  C exact      1  tandem-wg-key-race -> termurion-wg-key-race
+  C exact      1  tandem-winkeys -> termurion-winkeys
+  C exact      1  tandem-wire-log-block -> termurion-wire-log-block
+  C exact      1  tandem-wire-log-test -> termurion-wire-log-test
+  C exact      1  tandem-write -> termurion-write
+  C exact      1  tandem-wt -> termurion-wt
   D exact      1  TandemAlphaTest -> TermurionAlphaTest
   D exact      1  TandemCopyModeKeys -> TermurionCopyModeKeys
   D exact      1  TandemCredentialProbe -> TermurionCredentialProbe
@@ -144,25 +453,443 @@ per row (group, mode, old -> new, hits), most used first:
   D exact      1  TandemWebView2MethodTest -> TermurionWebView2MethodTest
   D exact      1  TandemWebView2Test -> TermurionWebView2Test
   D exact      1  TandemWorldProbe -> TermurionWorldProbe
+  D exact      1  Tandems -> Termurions
+  D exact      1  a_busy_hand_over_never_starts_a_second_tandem -> a_busy_hand_over_never_starts_a_second_termurion
+  D exact      1  a_hotkey_window_keeps_tandem_running -> a_hotkey_window_keeps_termurion_running
+  D exact      1  a_key_being_removed_by_another_tandem_is_waited_for -> a_key_being_removed_by_another_termurion_is_waited_for
+  D exact      1  a_page_cannot_pose_as_tandem -> a_page_cannot_pose_as_termurion
+  D exact      1  a_pane_closed_in_tandem_comes_back_with_the_next_layout -> a_pane_closed_in_termurion_comes_back_with_the_next_layout
+  D exact      1  a_redirect_of_tandems_own_load_is_judged_from_no_page -> a_redirect_of_termurions_own_load_is_judged_from_no_page
+  D exact      1  a_server_that_is_not_tandem_gets_no_request -> a_server_that_is_not_termurion_gets_no_request
+  D exact      1  band_hit_area_excludes_tandem_surfaces -> band_hit_area_excludes_termurion_surfaces
+  D exact      1  each_overlay_kind_is_a_tandem_hit -> each_overlay_kind_is_a_termurion_hit
+  D exact      1  embedding_with_a_running_tandem_exits -> embedding_with_a_running_termurion_exits
+  D exact      1  files_reach_tandem -> files_reach_termurion
+  D exact      1  interpolation_keeps_tandem_forms -> interpolation_keeps_termurion_forms
+  D exact      1  natural_text_editing_win_arrows_stay_tandems -> natural_text_editing_win_arrows_stay_termurions
+  D exact      1  only_the_focused_tandem_window_takes_win_chords -> only_the_focused_termurion_window_takes_win_chords
+  D exact      1  open_with_entries_name_only_tandem -> open_with_entries_name_only_termurion
+  D exact      1  overlays_are_tandems_own -> overlays_are_termurions_own
+  D exact      1  registry_deletes_only_tandems_keys -> registry_deletes_only_termurions_keys
+  D exact      1  setters_reach_tandem -> setters_reach_termurion
+  D exact      1  stock_global_win_arrows_stay_tandems -> stock_global_win_arrows_stay_termurions
+  D exact      1  tandem_loads_leave_a_file_page_for_the_web -> termurion_loads_leave_a_file_page_for_the_web
+  D exact      1  tandem_ui_at_reads_every_overlay_list -> termurion_ui_at_reads_every_overlay_list
+  D exact      1  tandems_history_steps_never_land_on_a_power_page -> termurions_history_steps_never_land_on_a_power_page
+  D exact      1  tandems_own_schemes_never_reach_the_windows_handler -> termurions_own_schemes_never_reach_the_windows_handler
+  D exact      1  tandems_starting_together_share_one_key -> termurions_starting_together_share_one_key
+  D exact      1  the_cookie_is_turned_off_only_if_tandem_turned_it_on -> the_cookie_is_turned_off_only_if_termurion_turned_it_on
+  D exact      1  the_markdown_reader_drops_tandem_ui -> the_markdown_reader_drops_termurion_ui
+  D exact      1  the_server_must_be_tandem -> the_server_must_be_termurion
+  D exact      1  the_shared_predicate_decides_tandem_and_local_pages -> the_shared_predicate_decides_termurion_and_local_pages
+  D exact      1  typed_write_follows_tandem -> typed_write_follows_termurion
+  D exact      1  underline_and_flicker_helps_follow_tandem -> underline_and_flicker_helps_follow_termurion
+  D exact      1  unregistering_removes_only_what_tandem_wrote -> unregistering_removes_only_what_termurion_wrote
+  D exact      1  wrapped_sequences_reach_tandem -> wrapped_sequences_reach_termurion
   E exact      1  gitrepos/tandem -> gitrepos/termurion
   E exact      1  src/tandem -> src/termurion
   E exact      1  src\\tandem -> src\\termurion
-  K keep       1  in tandem -> (keep)
+  K keep       1  Tandem Adopt Reference -> (keep)
+  K keep       1  Tandem Adopt Stable Session ID -> (keep)
+  K keep       1  Tandem Banner -> (keep)
+  K keep       1  Tandem Cursor -> (keep)
+  K keep       1  Tandem Idle -> (keep)
+  K keep       1  Tandem Session Reference -> (keep)
+  K keep       1  Tandem Stable Session ID -> (keep)
+  K keep       1  Tandem Styled Contents -> (keep)
+  K keep       1  Tandem Virtual Desktop -> (keep)
   K keep       1  tandem autofill contact card\0v1 -> (keep)
   K keep       1  tandem workgroup approval -> (keep)
   K keep       1  tandem workgroup approval key\0v1 -> (keep)
+  T exact      1  tandem.exe -> termurion.exe
 
-file names that contain the name (renamed by git mv in their tasks): 11
-  crates/alacritty_terminal/TANDEM-PATCHES.md
-  crates/glyphon/TANDEM-PATCHES.md
-  crates/vte/TANDEM-PATCHES.md
+ALIAS rows (old name stays readable for one release; Tasks 3-5 work from this list): 41 rows, 216 hits
+  ALIAS B ".Tandem." -> ".Termurion." (1)
+    src/ssh_local.rs:16:33
+  ALIAS B "FriendlyAppName", "Tandem" -> "FriendlyAppName", "Termurion" (2)
+    src/reg.rs:155:82
+    src/reg.rs:157:86
+  ALIAS B "FriendlyAppName".to_string(), "Tandem" -> "FriendlyAppName".to_string(), "Termurion" (1)
+    src/open_file.rs:391:71
+  ALIAS B "Tandem-" -> "Termurion-" (2)
+    src/app/ssh_panel_app.rs:17:40
+    src/ssh_local.rs:378:79
+  ALIAS B "iterm2", "tandem"] -> "iterm2", "termurion"] (1)
+    src/link_scheme.rs:77:77
+  ALIAS B API Key for Tandem -> API Key for Termurion (9)
+    src/ai_keys.rs:231:65
+    src/ai_keys.rs:232:71
+    src/ai_keys.rs:233:65
+    src/ai_keys.rs:234:69
+    src/ai_keys.rs:235:63
+    src/ai_keys.rs:236:76
+    src/ai_keys.rs:246:99
+    src/ai_keys.rs:262:93
+    src/pwm_credman.rs:362:66
+  ALIAS B Classes\\Applications\\tandem.exe -> Classes\\Applications\\termurion.exe (9)
+    src/open_file.rs:385:69
+    src/open_file.rs:618:96
+    src/reg.rs:155:49
+    src/reg.rs:157:53
+    src/reg.rs:158:53
+    src/reg.rs:159:53
+    src/reg.rs:164:60
+    src/reg.rs:171:151
+    src/reg.rs:179:57
+  ALIAS B REGISTERED_APPS, "Tandem" -> REGISTERED_APPS, "Termurion" (2)
+    src/url_schemes.rs:91:29
+    src/url_schemes.rs:128:42
+  ALIAS B RegisteredApplications", "Tandem" -> RegisteredApplications", "Termurion" (3)
+    src/url_schemes.rs:880:58
+    src/url_schemes.rs:927:60
+    src/url_schemes.rs:930:60
+  ALIAS B TANDEM_CLOSE_CHILD -> TERMURION_CLOSE_CHILD (2)
+    src/pty.rs:835:30
+    src/pty.rs:982:19
+  ALIAS B TANDEM_DLL_CHILD -> TERMURION_DLL_CHILD (2)
+    src/dll.rs:253:19
+    src/dll.rs:266:30
+  ALIAS B TANDEM_MEASURE_CHILD -> TERMURION_MEASURE_CHILD (2)
+    src/pty.rs:886:30
+    src/pty.rs:929:19
+  ALIAS B TANDEM_PAGE -> TERMURION_PAGE (3)
+    src/webhost_win.rs:7196:15
+    src/webhost_win.rs:7197:23
+    src/webhost_win.rs:7205:22
+  ALIAS B TANDEM_RESIZE_KEY -> TERMURION_RESIZE_KEY (2)
+    src/ssh_probe_win.rs:819:51
+    src/ssh_probe_win.rs:840:19
+  ALIAS B TANDEM_RESIZE_USER -> TERMURION_RESIZE_USER (2)
+    src/ssh_probe_win.rs:819:87
+    src/ssh_probe_win.rs:841:19
+  ALIAS B TANDEM_SCRIPT -> TERMURION_SCRIPT (14)
+    src/app/browser_pages_app.rs:155:68
+    src/browser_onboarding.rs:154:11
+    src/browser_onboarding.rs:178:98
+    src/browser_onboarding.rs:178:114
+    src/browser_pages.rs:872:11
+    src/browser_pages.rs:896:104
+    src/browser_pages.rs:896:120
+    src/browser_pages.rs:1619:17
+    src/browser_pages.rs:1619:58
+    src/browser_pages.rs:1620:18
+    src/browser_pages.rs:1620:58
+    src/browser_settings_page.rs:370:11
+    src/browser_settings_page.rs:415:25
+    src/browser_settings_page.rs:415:41
+  ALIAS B TANDEM_SIGNAL_CHILD -> TERMURION_SIGNAL_CHILD (2)
+    src/host.rs:689:30
+    src/host.rs:715:19
+  ALIAS B TANDEM_SSH_TRANSPORT -> TERMURION_SSH_TRANSPORT (7)
+    src/app/mod.rs:4081:11
+    src/session_env.rs:59:43
+    src/session_env.rs:81:25
+    src/session_env.rs:107:25
+    src/session_env.rs:352:78
+    src/session_env.rs:357:52
+    src/util_it2ssh.rs:22:34
+  ALIAS B TANDEM_T -> TERMURION_T (4)
+    src/script_proc.rs:253:85
+    src/script_proc.rs:253:113
+    src/script_provision.rs:1285:72
+    src/script_provision.rs:1285:98
+  ALIAS B TANDEM_UI -> TERMURION_UI (11)
+    src/browser_reader.rs:99:71
+    src/browser_reader.rs:99:83
+    src/browser_reader.rs:105:11
+    src/browser_reader.rs:109:133
+    src/browser_reader.rs:109:145
+    src/browser_reader.rs:315:21
+    src/browser_reader.rs:318:17
+    src/browser_reader.rs:318:132
+    src/browser_reader.rs:320:18
+    src/browser_reader.rs:327:35
+    src/browser_reader.rs:473:140
+  ALIAS B TANDEM_UTILITY_CHILD -> TERMURION_UTILITY_CHILD (3)
+    src/util_console.rs:495:46
+    src/util_console.rs:501:40
+    src/util_console.rs:532:31
+  ALIAS B TANDEM_WAIT_PID -> TERMURION_WAIT_PID (1)
+    src/app/settings_export_ui.rs:26:40
+  ALIAS B Tandem Terminal Handoff -> Termurion Terminal Handoff (2)
+    src/default_term.rs:69:26
+    src/default_term.rs:384:41
+  ALIAS B Tandem-Browser/ -> Termurion-Browser/ (8)
+    src/pwm_credman.rs:30:14
+    src/pwm_credman.rs:82:6
+    src/pwm_credman.rs:83:48
+    src/pwm_credman.rs:214:10
+    src/pwm_credman.rs:329:50
+    src/pwm_credman.rs:331:62
+    src/pwm_credman.rs:334:24
+    src/pwm_source.rs:247:24
+  ALIAS B Tandem-{ -> Termurion-{ (2)
+    src/ssh_local.rs:510:41
+    src/ssh_local.rs:511:42
+  ALIAS B Tandem/ -> Termurion/ (18)
+    src/pwm_credman.rs:3:11
+    src/pwm_credman.rs:29:76
+    src/pwm_credman.rs:81:71
+    src/pwm_credman.rs:83:37
+    src/pwm_credman.rs:213:71
+    src/pwm_credman.rs:319:51
+    src/pwm_credman.rs:320:26
+    src/pwm_credman.rs:321:74
+    src/pwm_credman.rs:330:51
+    src/pwm_credman.rs:341:24
+    src/pwm_credman.rs:358:28
+    src/pwm_source.rs:202:52
+    src/pwm_source.rs:214:21
+    src/pwm_source.rs:251:50
+    src/pwm_source.rs:258:24
+    src/pwm_source.rs:267:34
+    src/pwm_source.rs:271:30
+    src/pwm_source.rs:284:42
+  ALIAS B TandemAI/ -> TermurionAI/ (24)
+    src/ai_keys.rs:1:76
+    src/ai_keys.rs:15:34
+    src/ai_keys.rs:19:31
+    src/ai_keys.rs:217:31
+    src/ai_keys.rs:218:34
+    src/ai_keys.rs:219:31
+    src/ai_keys.rs:220:33
+    src/ai_keys.rs:221:30
+    src/ai_keys.rs:222:30
+    src/ai_keys.rs:246:43
+    src/ai_keys.rs:247:32
+    src/ai_keys.rs:253:44
+    src/ai_keys.rs:254:38
+    src/ai_keys.rs:262:43
+    src/ai_keys.rs:266:23
+    src/ai_keys.rs:271:42
+    src/ai_keys.rs:300:23
+    src/ai_keys.rs:325:34
+    src/ai_keys.rs:326:29
+    src/pwm_credman.rs:6:69
+    src/pwm_credman.rs:82:41
+    src/pwm_credman.rs:83:67
+    src/pwm_credman.rs:340:24
+    src/pwm_credman.rs:362:28
+  ALIAS B applications\\TANDEM.EXE -> applications\\TERMURION.EXE (1)
+    src/reg.rs:163:60
+  ALIAS B as_deref(), Some("Tandem"), "key compare -> as_deref(), Some("Termurion"), "key compare (1)
+    src/reg.rs:163:110
+  ALIAS B classes\\applications\\tandem. -> classes\\applications\\termurion. (1)
+    src/reg.rs:32:190
+  ALIAS B eq_ignore_ascii_case("Tandem") -> eq_ignore_ascii_case("Termurion") (1)
+    src/reg.rs:20:134
+  ALIAS B pipe\tandem-host- -> pipe\termurion-host- (3)
+    src/winpipe.rs:298:15
+    src/winpipe.rs:301:27
+    src/winpipe.rs:739:66
+  ALIAS B pipe\tandem-ssh-secrets- -> pipe\termurion-ssh-secrets- (5)
+    src/ssh_secret_win.rs:1:39
+    src/winpipe.rs:304:15
+    src/winpipe.rs:308:27
+    src/winpipe.rs:747:45
+    src/winpipe.rs:752:45
+  ALIAS B pipe\tandem-url- -> pipe\termurion-url- (3)
+    src/winpipe.rs:311:15
+    src/winpipe.rs:316:27
+    src/winpipe.rs:716:65
+  ALIAS B tandem-backup -> termurion-backup (4)
+    src/claude_code.rs:562:17
+    src/claude_code.rs:801:68
+    src/claude_code.rs:818:60
+    src/claude_code.rs:830:53
+  ALIAS B tandem-settings -> termurion-settings (16)
+    schema/global.toml:1612:57
+    src/app/prefs_ui.rs:822:68
+    src/remote_prefs.rs:5:18
+    src/remote_prefs.rs:16:31
+    src/remote_prefs.rs:50:95
+    src/remote_prefs.rs:113:37
+    src/remote_prefs.rs:359:76
+    src/remote_prefs.rs:362:96
+    src/remote_prefs.rs:365:93
+    src/remote_prefs.rs:399:48
+    src/remote_prefs.rs:536:40
+    src/remote_prefs.rs:536:109
+    src/remote_prefs.rs:591:107
+    src/remote_prefs.rs:615:18
+    src/settings_keys.rs:1375:20
+    src/settings_keys.rs:2268:62
+  ALIAS B tandem-tmp -> termurion-tmp (3)
+    src/app/dynamic_profiles_app.rs:298:42
+    src/app/dynamic_profiles_app.rs:742:127
+    src/app/dynamic_profiles_app.rs:910:77
+  ALIAS B tandemSite -> termurionSite (5)
+    src/chat_message.rs:74:59
+    src/chat_message.rs:290:95
+    src/chat_message.rs:295:138
+    src/chat_message.rs:966:80
+    src/chat_message.rs:975:51
+  ALIAS B tandemexport -> termurionexport (16)
+    src/app/settings_export_ui.rs:556:43
+    src/app/settings_export_ui.rs:603:34
+    src/app/settings_export_ui.rs:646:34
+    src/app/settings_export_ui.rs:911:44
+    src/app/settings_export_ui.rs:957:37
+    src/app/settings_export_ui.rs:1005:32
+    src/app/settings_export_ui.rs:1022:34
+    src/app/settings_export_ui.rs:1080:50
+    src/app/settings_export_ui.rs:1106:37
+    src/app/settings_export_ui.rs:1127:36
+    src/settings_export.rs:12:30
+    src/settings_export.rs:14:46
+    src/settings_export.rs:384:64
+    src/settings_export.rs:387:48
+    src/settings_export.rs:411:48
+    src/settings_export.rs:413:32
+  ALIAS B {name} API Key for Tandem -> {name} API Key for Termurion (1)
+    src/ai_keys.rs:31:33
+  ALIAS F tandem_shell_integration -> termurion_shell_integration (17)
+    src/app/menu.rs:1620:81
+    src/app/menu.rs:1623:79
+    src/app/menu.rs:1632:32
+    src/app/menu.rs:1640:34
+    src/app/menu.rs:1719:258
+    src/app/menu.rs:1723:86
+    src/host_identity.rs:347:67
+    src/host_identity.rs:373:67
+    src/licenses.rs:137:29
+    src/pane.rs:4118:105
+    src/pane.rs:4133:105
+    src/pane.rs:4169:105
+    src/shell_inject.rs:125:5
+    src/shell_inject.rs:127:60
+    src/shell_inject.rs:173:92
+    src/shell_inject.rs:176:158
+    src/shell_inject.rs:178:123
+
+PROSE rows (docs prose, bare name renamed): 3 rows, 1307 hits
+  PROSE E TANDEM -> TERMURION (2)
+    docs/TWEAKS.md (1), first at line 24
+    docs/acceptance/m14a-checklist.md (1), first at line 33
+  PROSE E Tandem -> Termurion (1272)
+    README.md (18), first at line 3
+    docs/TWEAKS.md (14), first at line 3
+    docs/acceptance/m10a-checklist.md (5), first at line 3
+    docs/acceptance/m10b-checklist.md (7), first at line 4
+    docs/acceptance/m11a-checklist.md (25), first at line 3
+    docs/acceptance/m11b-checklist.md (10), first at line 3
+    docs/acceptance/m11c-checklist.md (4), first at line 3
+    docs/acceptance/m11d-checklist.md (22), first at line 3
+    docs/acceptance/m11e-checklist.md (30), first at line 3
+    docs/acceptance/m12a-checklist.md (8), first at line 3
+    docs/acceptance/m12b-checklist.md (6), first at line 3
+    docs/acceptance/m12c-checklist.md (17), first at line 7
+    docs/acceptance/m12d-checklist.md (9), first at line 3
+    docs/acceptance/m12e-checklist.md (5), first at line 3
+    docs/acceptance/m12f-checklist.md (10), first at line 5
+    docs/acceptance/m13a-checklist.md (24), first at line 3
+    docs/acceptance/m13b-checklist.md (14), first at line 3
+    docs/acceptance/m13c-checklist.md (2), first at line 3
+    docs/acceptance/m13d-checklist.md (9), first at line 3
+    docs/acceptance/m13e-checklist.md (2), first at line 3
+    docs/acceptance/m13f-checklist.md (3), first at line 3
+    docs/acceptance/m13g-checklist.md (8), first at line 3
+    docs/acceptance/m13h-checklist.md (5), first at line 3
+    docs/acceptance/m13i-checklist.md (3), first at line 3
+    docs/acceptance/m13j-checklist.md (20), first at line 3
+    docs/acceptance/m13k-checklist.md (1), first at line 3
+    docs/acceptance/m13l-checklist.md (8), first at line 3
+    docs/acceptance/m13m-checklist.md (2), first at line 3
+    docs/acceptance/m13n-checklist.md (3), first at line 3
+    docs/acceptance/m13o-checklist.md (3), first at line 3
+    docs/acceptance/m13p-checklist.md (7), first at line 3
+    docs/acceptance/m13q-checklist.md (8), first at line 4
+    docs/acceptance/m13r-checklist.md (8), first at line 3
+    docs/acceptance/m13s-checklist.md (4), first at line 3
+    docs/acceptance/m13t-checklist.md (2), first at line 3
+    docs/acceptance/m13u-checklist.md (26), first at line 3
+    docs/acceptance/m13v1-checklist.md (77), first at line 3
+    docs/acceptance/m13v2-checklist.md (20), first at line 3
+    docs/acceptance/m13w-checklist.md (18), first at line 3
+    docs/acceptance/m13x-ai-browser-tools-checklist.md (4), first at line 3
+    docs/acceptance/m13x-checklist.md (26), first at line 3
+    docs/acceptance/m13x2-checklist.md (12), first at line 3
+    docs/acceptance/m13x3-checklist.md (4), first at line 3
+    docs/acceptance/m13x4-checklist.md (3), first at line 3
+    docs/acceptance/m13x5-checklist.md (8), first at line 3
+    docs/acceptance/m13x6-checklist.md (7), first at line 3
+    docs/acceptance/m13x7-checklist.md (10), first at line 3
+    docs/acceptance/m13x8-checklist.md (12), first at line 3
+    docs/acceptance/m13y1-checklist.md (5), first at line 3
+    docs/acceptance/m13y2-checklist.md (2), first at line 3
+    docs/acceptance/m14a-checklist.md (13), first at line 3
+    docs/acceptance/m14b-checklist.md (15), first at line 3
+    docs/acceptance/m14c-checklist.md (17), first at line 3
+    docs/acceptance/m14d-checklist.md (10), first at line 3
+    docs/acceptance/m14e-checklist.md (30), first at line 3
+    docs/acceptance/m2-checklist.md (1), first at line 15
+    docs/acceptance/m3a-checklist.md (3), first at line 3
+    docs/acceptance/m3b-checklist.md (2), first at line 3
+    docs/acceptance/m4a-checklist.md (1), first at line 3
+    docs/acceptance/m4b-checklist.md (1), first at line 3
+    docs/acceptance/m4c-checklist.md (1), first at line 3
+    docs/acceptance/m5a-checklist.md (2), first at line 3
+    docs/acceptance/m5b-checklist.md (2), first at line 3
+    docs/acceptance/m5c-checklist.md (3), first at line 3
+    docs/acceptance/m5d-checklist.md (1), first at line 3
+    docs/acceptance/m5e-checklist.md (2), first at line 3
+    docs/acceptance/m5f-checklist.md (1), first at line 3
+    docs/acceptance/m6a-checklist.md (2), first at line 3
+    docs/acceptance/m6b-checklist.md (2), first at line 3
+    docs/acceptance/m6c-checklist.md (1), first at line 3
+    docs/acceptance/m7a-checklist.md (2), first at line 3
+    docs/acceptance/m7b-checklist.md (4), first at line 3
+    docs/acceptance/m7c-checklist.md (2), first at line 3
+    docs/acceptance/m7d-checklist.md (14), first at line 3
+    docs/acceptance/m7e-checklist.md (7), first at line 3
+    docs/acceptance/m7f-checklist.md (1), first at line 3
+    docs/acceptance/m8a-checklist.md (1), first at line 3
+    docs/acceptance/m8b-checklist.md (7), first at line 3
+    docs/acceptance/m8c-checklist.md (11), first at line 3
+    docs/acceptance/m8d-checklist.md (2), first at line 3
+    docs/acceptance/m8e-checklist.md (2), first at line 3
+    docs/acceptance/m8f-checklist.md (1), first at line 3
+    docs/acceptance/m8g-checklist.md (4), first at line 3
+    docs/acceptance/m8h-checklist.md (4), first at line 3
+    docs/acceptance/m9a-checklist.md (1), first at line 3
+    docs/acceptance/m9b-checklist.md (2), first at line 3
+    docs/acceptance/m9c-checklist.md (3), first at line 3
+    docs/acceptance/m9d-checklist.md (2), first at line 3
+    docs/acceptance/m9e-checklist.md (2), first at line 3
+    docs/acceptance/m9f-checklist.md (1), first at line 3
+    docs/acceptance/m9g-checklist.md (3), first at line 3
+    docs/acceptance/m9h-checklist.md (1), first at line 3
+    docs/acceptance/m9i-checklist.md (1), first at line 3
+    docs/acceptance/m9j-checklist.md (3), first at line 3
+    docs/acceptance/m9k-checklist.md (8), first at line 3
+    docs/acceptance/m9l-checklist.md (2), first at line 3
+    docs/assets/tandem-logo.svg (1), first at line 1
+    docs/parity/00-roadmap.md (69), first at line 1
+    docs/parity/01-profile-settings.md (39), first at line 5
+    docs/parity/02-global-settings.md (197), first at line 5
+    docs/parity/03-features-and-menus.md (179), first at line 8
+    docs/probe/2026-09-24-m0-results.md (1), first at line 32
+    docs/superpowers/specs/2026-09-23-tandem-design.md (25), first at line 1
+  PROSE E tandem -> termurion (33)
+    README.md (2), first at line 18
+    docs/TWEAKS.md (4), first at line 23
+    docs/acceptance/m12c-checklist.md (3), first at line 69
+    docs/acceptance/m12f-checklist.md (1), first at line 35
+    docs/acceptance/m13a-checklist.md (8), first at line 11
+    docs/acceptance/m13s-checklist.md (1), first at line 46
+    docs/acceptance/m13v2-checklist.md (2), first at line 21
+    docs/acceptance/m13x2-checklist.md (2), first at line 39
+    docs/acceptance/m13x8-checklist.md (1), first at line 21
+    docs/acceptance/m14b-checklist.md (2), first at line 32
+    docs/acceptance/m6a-checklist.md (1), first at line 19
+    docs/parity/00-roadmap.md (2), first at line 360
+    docs/parity/02-global-settings.md (3), first at line 145
+    docs/parity/03-features-and-menus.md (1), first at line 31
+
+file names that contain the name (renamed by git mv in their tasks): 4
   docs/assets/tandem-logo.svg
   docs/superpowers/specs/2026-09-23-tandem-design.md
   resources/browser/tandem-cloak.js
   resources/shell_integration/tandem_shell_integration.ps1
-  src/bin/tandem-git.rs
-  src/bin/tandem-host.rs
-  src/bin/tandem-utils.rs
-  src/bin/tandem.rs
 
 UNMAPPED hits outside keep-history paths: 0

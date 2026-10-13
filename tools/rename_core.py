@@ -6,6 +6,9 @@ Rules (see tools/rename_table.toml):
   * For one line of text, every occurrence of every applicable row is a candidate. The longest
     candidate wins; on equal length a keep row wins; on a further tie the row listed first wins.
     Winners never overlap.
+  * Modes: exact (plain literal), word (literal with word boundaries), keep (never changed),
+    keep-word (keep with word boundaries on both sides), prose (exact, listed in its own report
+    section; only for docs prose). A row with alias = true marks a name that stays readable.
   * A "hit" is a case-insensitive occurrence of the old name. A hit is MAPPED when a winning
     candidate covers it, UNMAPPED otherwise.
   * Path globs mark whole files: keep (never touched) or keep-history (historical record).
@@ -27,9 +30,10 @@ class Row:
     group: str
     old: str
     new: str
-    mode: str  # exact | word | keep
+    mode: str  # exact | word | keep | keep-word | prose
     scope: list
     reason: str
+    alias: bool = False  # the old name is also read (legacy alias) by Tasks 3-5; the row maps writes
 
 
 @dataclass
@@ -61,6 +65,10 @@ class Selected:
     row: Row
 
 
+def is_keep(row):
+    return row.mode in ("keep", "keep-word")
+
+
 def load_table(path):
     with open(path, "rb") as f:
         data = tomllib.load(f)
@@ -70,10 +78,11 @@ def load_table(path):
             Row(
                 group=r["group"],
                 old=r["old"],
-                new=r.get("new", r["old"] if r["mode"] == "keep" else ""),
+                new=r.get("new", r["old"] if r["mode"].startswith("keep") else ""),
                 mode=r["mode"],
                 scope=list(r.get("scope", ["**"])),
                 reason=r.get("reason", ""),
+                alias=bool(r.get("alias", False)),
             )
         )
     for p in data.get("path", []):
@@ -135,7 +144,7 @@ def _occurrences(row, text):
         if i < 0:
             return
         j = i + len(old)
-        if row.mode == "word":
+        if row.mode in ("word", "keep-word"):
             before = text[i - 1] if i > 0 else ""
             after = text[j] if j < len(text) else ""
             if (before and re.match("[" + WORD_CHARS + "]", before)) or (
@@ -153,7 +162,7 @@ def resolve(table, path, text, rows=None):
     cands = []
     for order, row in enumerate(rows):
         for i, j in _occurrences(row, text):
-            cands.append((-(j - i), 0 if row.mode == "keep" else 1, order, i, j, row))
+            cands.append((-(j - i), 0 if is_keep(row) else 1, order, i, j, row))
     cands.sort(key=lambda c: c[:5])
     taken = []
     chosen = []
@@ -180,6 +189,9 @@ def classify_hits(table, path, text, rows=None):
     return out
 
 
+BACKUP_PREFIX = ".rename-backup/"
+
+
 def tracked_files(root):
     res = subprocess.run(
         ["git", "-C", root, "ls-files", "-z", "-c", "-o", "--exclude-standard"],
@@ -187,7 +199,7 @@ def tracked_files(root):
         capture_output=True,
     )
     names = [n for n in res.stdout.decode("utf-8", "surrogateescape").split("\0") if n]
-    return sorted(set(n for n in names if os.path.isfile(os.path.join(root, n))))
+    return sorted(set(n for n in names if not n.startswith(BACKUP_PREFIX) and os.path.isfile(os.path.join(root, n))))
 
 
 def read_text(root, rel):

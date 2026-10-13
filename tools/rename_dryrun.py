@@ -35,6 +35,8 @@ class Report:
     unmapped: list = field(default_factory=list)  # (file, line, col, snippet)
     listing: list = field(default_factory=list)  # (file, line, col, label)
     path_hits: list = field(default_factory=list)  # file names that contain the name
+    by_alias: dict = field(default_factory=lambda: defaultdict(list))  # (group, old, new) -> [(file, line, col)]
+    by_prose: dict = field(default_factory=lambda: defaultdict(list))  # (group, old, new) -> [(file, line, col)]
 
 
 def scan(root, table_path):
@@ -72,7 +74,11 @@ def scan(root, table_path):
                     rep.unmapped.append((rel, ln, col + 1, line.strip()[:160]))
                     rep.listing.append((rel, ln, col + 1, "UNMAPPED"))
                     continue
-                if row.mode == "keep":
+                if row.alias:
+                    rep.by_alias[(row.group, row.old, row.new)].append((rel, ln, col + 1))
+                if row.mode == "prose":
+                    rep.by_prose[(row.group, row.old, row.new)].append((rel, ln, col + 1))
+                if core.is_keep(row):
                     rep.keep_hits += 1
                     rep.by_group["K"] += 1
                 else:
@@ -108,7 +114,22 @@ def render(rep, table_path, listing=False):
     w("")
     w("per row (group, mode, old -> new, hits), most used first:")
     for (g, mode, old, new), n in sorted(rep.by_row.items(), key=lambda kv: (-kv[1], kv[0])):
-        w("  %s %-5s %6d  %s -> %s" % (g, mode, n, old, new if mode != "keep" else "(keep)"))
+        w("  %s %-5s %6d  %s -> %s" % (g, mode, n, old, new if not mode.startswith("keep") else "(keep)"))
+    w("")
+    w("ALIAS rows (old name stays readable for one release; Tasks 3-5 work from this list): %d rows, %d hits"
+      % (len(rep.by_alias), sum(len(v) for v in rep.by_alias.values())))
+    for (g, old, new), hits in sorted(rep.by_alias.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+        w("  ALIAS %s %s -> %s (%d)" % (g, old, new, len(hits)))
+        for rel, ln, col in hits:
+            w("    %s:%d:%d" % (rel, ln, col))
+    w("")
+    w("PROSE rows (docs prose, bare name renamed): %d rows, %d hits"
+      % (len(rep.by_prose), sum(len(v) for v in rep.by_prose.values())))
+    for (g, old, new), hits in sorted(rep.by_prose.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+        w("  PROSE %s %s -> %s (%d)" % (g, old, new, len(hits)))
+        files = Counter(h[0] for h in hits)
+        for rel, n in sorted(files.items()):
+            w("    %s (%d), first at line %d" % (rel, n, min(h[1] for h in hits if h[0] == rel)))
     w("")
     w("file names that contain the name (renamed by git mv in their tasks): %d" % len(rep.path_hits))
     for p in rep.path_hits:

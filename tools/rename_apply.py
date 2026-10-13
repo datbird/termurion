@@ -18,6 +18,7 @@ import argparse
 import difflib
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rename_core as core  # noqa: E402
@@ -41,7 +42,7 @@ def plan_file(table, rel, raw, text, groups):
     pos = 0
     changes = 0
     for s in sel:
-        if s.row.mode == "keep" or (groups and s.row.group not in groups):
+        if core.is_keep(s.row) or (groups and s.row.group not in groups):
             continue
         out.append(text[pos : s.start])
         out.append(s.row.new)
@@ -49,6 +50,23 @@ def plan_file(table, rel, raw, text, groups):
         changes += 1
     out.append(text[pos:])
     return "".join(out), changes, unmapped
+
+
+def write_atomic(full, data):
+    """Write through a temp file in the same directory, then rename over the target (mode kept)."""
+    d = os.path.dirname(full)
+    fd, tmp = tempfile.mkstemp(prefix=".rename-tmp-", dir=d)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, os.stat(full).st_mode & 0o7777)
+        os.replace(tmp, full)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 
 
 def main(argv=None):
@@ -91,6 +109,9 @@ def main(argv=None):
         print("refused: %d UNMAPPED hit(s); nothing was changed" % len(all_unmapped), file=sys.stderr)
         return 2
 
+    if plans == [] and args.files:
+        print("notice: every named file is a keep file (a keep or keep-history path rule); nothing to rename, nothing written")
+        return 0
     diffs = []
     total = 0
     for rel, full, text, new_text, changes in plans:
@@ -117,8 +138,7 @@ def main(argv=None):
         return 0
     for rel, full, text, new_text, changes in plans:
         if new_text != text:
-            with open(full, "wb") as f:
-                f.write(new_text.encode("latin-1"))
+            write_atomic(full, new_text.encode("latin-1"))
     os.makedirs(os.path.dirname(diff_out), exist_ok=True)
     with open(diff_out, "wb") as f:
         f.write("".join(diffs).encode("latin-1"))
