@@ -34,7 +34,7 @@ fn split_cells(line: &str) -> Vec<String> {
     cells
 }
 
-/// The rows of every table that has a "Tandem status" column.
+/// The rows of every table that has a "Termurion status" column.
 pub fn rows(md: &str) -> Vec<Row> {
     let lines: Vec<&str> = md.lines().collect();
     let mut out = Vec::new();
@@ -45,7 +45,7 @@ pub fn rows(md: &str) -> Vec<Row> {
             continue;
         }
         if lines.get(i + 1).is_some_and(|n| n.starts_with("|---")) {
-            col = split_cells(l).iter().position(|c| c == "Tandem status");
+            col = split_cells(l).iter().position(|c| c == "Termurion status");
             continue;
         }
         let Some(c) = col else { continue };
@@ -103,7 +103,7 @@ mod tests {
 
     #[test]
     fn rows_parse_the_three_table_shapes() {
-        let md = "x\n| A | B | Tandem status | Note |\n|---|---|---|---|\n| a | b | have | cite |\n| c | d | **partial**, only x | n |\n\n| E | Tandem status |\n|---|---|\n| e | n/a, reason |\n";
+        let md = "x\n| A | B | Termurion status | Note |\n|---|---|---|---|\n| a | b | have | cite |\n| c | d | **partial**, only x | n |\n\n| E | Termurion status |\n|---|---|\n| e | n/a, reason |\n";
         let r = rows(md);
         assert_eq!(r.len(), 3);
         assert_eq!((r[0].line, r[0].status.as_str(), r[0].note.as_str()), (4, "have", "cite"));

@@ -1,8 +1,8 @@
 # Milestone 13f acceptance checklist
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Nothing in this milestone was checked on screen while it was built, so every line here is a
 first look. Setup: the window rows are on Settings > Appearance ("Windows") and Settings >
@@ -10,7 +10,7 @@ Advanced ("Windows"); "Each tab may have its own window title" is on Settings > 
 ("Window"); the profile rows are on Settings > Profiles > Window and Text. The border checks need
 Windows 11 (Windows 10 shows no border). There is no Theme popup until milestone 13e, so a
 Minimal window needs `TabStyleWithAutomaticOption = 5` in `%APPDATA%\Tandem\settings.toml` with
-Tandem closed. Window Types 4 and 14 are set by hand in `%APPDATA%\Tandem\profiles.toml` (the
+Termurion closed. Window Types 4 and 14 are set by hand in `%APPDATA%\Tandem\profiles.toml` (the
 Window style popup shows them blank). Run the shell checks in a PowerShell session. Mark each
 line pass or fail.
 
@@ -77,7 +77,7 @@ line pass or fail.
 | 27 | The profile's Window style popup has ten entries (Normal, Full Screen, Maximized, No Title Bar, Left/Right/Top/Bottom of Screen, Centered and so on). Beside Columns and Rows are units popups: "Columns" / "% of screen width" and "Rows" / "% of screen height". | |
 | 28 | Pick "Top of Screen": the width popup shows "% of screen width" and the window fills the width; switch the height to "Rows" and open a window: it is that many rows tall. | |
 | 29 | A Normal window with width 50 "% of screen width" and height 50 "% of screen height": a new window is about half the work area each way (whole cells). A No Title Bar and a Centered window take percents too. Set both back to cells: the window uses Columns x Rows. | |
-| 30 | Edit `profiles.toml` (Tandem closed) to set Window Type 4: the window opens full screen. Set 14: the window is a topmost tool window with no taskbar button, and stays above others. | |
+| 30 | Edit `profiles.toml` (Termurion closed) to set Window Type 4: the window opens full screen. Set 14: the window is a topmost tool window with no taskbar button, and stays above others. | |
 | 31 | For Maximized and full screen types the units labels read "columns by" and "rows" with the fields dimmed. | |
 
 ## Kept bugs and rulings a person can see

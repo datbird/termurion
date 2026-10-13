@@ -1,8 +1,8 @@
 # Milestone 13y1 acceptance checklist
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Setup: a git repository with at least two commits and an uncommitted change. Claude Code installed
 for the Claude steps; otherwise use a stand-in command (a batch file named `claude.cmd` on PATH that
@@ -24,9 +24,9 @@ desktop. Mark each line pass or fail.
 | 10 | Close the leader while the workgroup is entered: the warning reads "This will also exit the workgroup ..."; Cancel keeps everything. | |
 | 11 | Exit Workgroup (Shell > Workgroups): the tab's title and group are restored and the other members close. | |
 | 12 | Save an arrangement (Window > Save Window Arrangement) with the workgroup entered, quit, open the arrangement: because it is a named arrangement it asks before restoring an imported workgroup (your own is restored); the shown and buried members come back, split and tab children are plain panes (ruled). | |
-| 13 | adopt_one restore question flow: import a workgroup (Import All of a Tandem export that holds one, or a remote-prefs folder; an iTerm2 export and a Dynamic Profile carry none) and enter it, say Yes to the question, quit Tandem with Restore Windows on, start it again: the window comes back and a question lists the commands once more (same commands, sealed approval, so it may restore unasked: record which). Edit one of its commands in Settings, restart: you are asked again. Answer No: the buried members' shells end and the anchor is a plain session. Answer Yes while another workgroup is entered in that window: nothing is left hidden. | |
+| 13 | adopt_one restore question flow: import a workgroup (Import All of a Termurion export that holds one, or a remote-prefs folder; an iTerm2 export and a Dynamic Profile carry none) and enter it, say Yes to the question, quit Termurion with Restore Windows on, start it again: the window comes back and a question lists the commands once more (same commands, sealed approval, so it may restore unasked: record which). Edit one of its commands in Settings, restart: you are asked again. Answer No: the buried members' shells end and the anchor is a plain session. Answer Yes while another workgroup is entered in that window: nothing is left hidden. | |
 | 14 | Review and Diff peers after a restart: they come back as idle sessions (no program) with their overlay; Start or the Diff selection runs them. Nothing runs at the restore by itself. | |
-| 15 | DPAPI key: with Tandem closed delete workgroup-approval-key beside the settings file, start Tandem: a fresh key is made and every imported workgroup's restore asks again. Replace the file with 32 plain bytes (or copy it from another user or machine): it is refused and replaced the same way, and everything asks. | |
+| 15 | DPAPI key: with Termurion closed delete workgroup-approval-key beside the settings file, start Termurion: a fresh key is made and every imported workgroup's restore asks again. Replace the file with 32 plain bytes (or copy it from another user or machine): it is refused and replaced the same way, and everything asks. | |
 | 16 | Import All refusing an aliased name: make an export archive, add a file named `notes.` (trailing dot), another `a.txt:stream`, and one named WORKGR~1; Import All refuses the whole archive with the name shown, and imports nothing; remove the names and it imports. Check again after a restart that nothing half-imported. | |
 | 17 | iTerm2 > Install Claude Code Integration shows Install Workgroup and Auto-Enter Workgroup (already installed ones checked); install both. | |
 | 18 | Running `claude` in a session (Auto-Enter on) asks to enter the workgroup (the Enter trigger always asks); Enter it; quitting claude exits it. | |

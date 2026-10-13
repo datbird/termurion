@@ -1,8 +1,8 @@
 # Milestone 13m acceptance checklist
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Nothing in this milestone was checked on screen while it was built, so every line is a first look. The pure
 parts (the contrast math, harmonized colors, mark colors, the bidi order and mirror table, the selection runs and
@@ -74,7 +74,7 @@ display scale. Mark each line pass or fail.
 
 | # | Check | Result |
 |---|---|---|
-| 33 | Windows Settings > Accessibility > Visual effects > Always show scrollbars ON: every pane has a 15 px track at its right edge and the grid is narrower by it; dragging the thumb scrolls; clicking the track pages; the wheel over the bar scrolls even in a mouse-reporting app; the arrow pointer shows over the bar. OFF: a thin thumb appears for about 1 s after a scroll, widens on hover, and the grid does not change. Toggle the setting while Tandem runs: panes resize without a restart (a tmux window reports the new columns). | |
+| 33 | Windows Settings > Accessibility > Visual effects > Always show scrollbars ON: every pane has a 15 px track at its right edge and the grid is narrower by it; dragging the thumb scrolls; clicking the track pages; the wheel over the bar scrolls even in a mouse-reporting app; the arrow pointer shows over the bar. OFF: a thin thumb appears for about 1 s after a scroll, widens on hover, and the grid does not change. Toggle the setting while Termurion runs: panes resize without a restart (a tmux window reports the new columns). | |
 | 34 | A pane with no history: a press on the bar does nothing (no drag, no page). | |
 | 35 | Two split panes: each has its own bar and ticks. A completion list, find bar or toast over the right edge sits above the bar and its ticks. | |
 | 36 | Prompt marks (green, red, gray), manual marks and annotations (yellow) show as ticks along the bar (Advanced > Experimental Features, ShowMarksInScrollbar). Find open: Find matches show as ticks that vanish when the bar closes. ShowLocationsInScrollbar off: no ticks; ShowMarksInScrollbar off: only Find ticks. | |

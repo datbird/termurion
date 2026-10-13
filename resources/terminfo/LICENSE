@@ -1,4 +1,4 @@
-Tandem: the compiled terminfo entries in this folder were copied from iTerm2's Resources/terminfo
+Termurion: the compiled terminfo entries in this folder were copied from iTerm2's Resources/terminfo
 (https://github.com/gnachman/iTerm2, commit 64791fc), which builds them from the ncurses terminfo
 sources. ncurses is used under its license, reproduced here.
 

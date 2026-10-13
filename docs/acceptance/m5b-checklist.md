@@ -1,6 +1,6 @@
 # Milestone 5b acceptance checklist
 
-Close any open Tandem window, then run `C:\Users\datbi\src\tandem\target\release\tandem.exe`.
+Close any open Termurion window, then run `C:\Users\datbi\src\termurion\target\release\tandem.exe`.
 Cmd is the Win key and Option is Alt. The checks use WSL (`wsl`) for its tools. Mark each line
 pass or fail.
 
@@ -18,7 +18,7 @@ pass or fail.
 | 8 | Settings > Profiles > Keys: "Apps can change how keys are reported" off: step 3's `printf '\e[>1u'` no longer changes keys. "Report keys using CSI u" on: a new tab starts in CSI u Mode. Set both back. | |
 | 9 | Session > Terminal State > Literal Controls, then `printf 'a\tb\n'`: the tab shows as a reverse `^I` and the new line as `^J`. Turn it off: output is normal. | |
 | 10 | `printf '\e[c'; read -rs -t1 -d c x; echo "$x" | cat -v` shows `^[[?64;1;2;4;6;17;18;21;22;52`. Session > Terminal State > Emulation Level > VT100, then again: `^[[?1;2`. Set VT500 back. | |
-| 11 | `printf '\e[>q'; read -rs -t1 x; echo "$x" | cat -v` shows `Tandem` and the version. `printf '\e[1337n'` answers `ITERM2`. | |
+| 11 | `printf '\e[>q'; read -rs -t1 x; echo "$x" | cat -v` shows `Termurion` and the version. `printf '\e[1337n'` answers `ITERM2`. | |
 | 12 | `printf '\e[?996n'; read -rs -t1 -d n x; echo "$x" | cat -v` shows `997;1` on a dark profile. `printf '\e[?2031h\e]11;#ffffff\a'` answers `997;2` at once. | |
 | 13 | `printf '\e[?2026hHELLO'` and wait: HELLO shows within a fraction of a second although the update never ended. | |
 | 14 | Run `btop` or `nvim` (they use synchronized output): no tearing while they redraw. | |

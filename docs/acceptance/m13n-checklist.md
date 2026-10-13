@@ -1,8 +1,8 @@
 # Milestone 13n acceptance checklist
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Nothing in this milestone was checked on screen while it was built, so every line is a first look. The pure
 parts (weight and bold choice, line height, ligature levels, anti-alias and thin-stroke rules, the box and
@@ -92,11 +92,11 @@ and 200% display scale. Mark each line pass or fail.
 
 | # | Check | Result |
 |---|---|---|
-| 44 | Settings > Profiles > Text > Manage Special Exceptions opens the window with its explanation; the table starts empty; Install Nerd Font Bundle is disabled with "Downloading fonts is not available in Tandem." | |
+| 44 | Settings > Profiles > Text > Manage Special Exceptions opens the window with its explanation; the table starts empty; Install Nerd Font Bundle is disabled with "Downloading fonts is not available in Termurion." | |
 | 45 | "+" opens "Edit Special Exception": U+41 to U+50 shows the ASCII refusal; U+100 to U+1ff with Consolas previews its characters (the preview uses the UI font); OK is disabled until valid and a font is picked. | |
 | 46 | Add Preset... lists presets alphabetically; picking one fills the range; pick a font, OK: the row appears sorted. An overlapping range shows "Range includes an already-assigned code point."; double-click a row edits it; "-" deletes. | |
 | 47 | Export then Import a .json file round-trips; a file naming a missing font or malformed text shows iTerm2's alert text. | |
-| 48 | A range U+E000 to U+F8FF mapped to a Nerd Font draws the icons in that font while the text stays in the main font. With U+E0B0 to U+E0FF mapped and Draw Powerline Glyphs off, the arrows draw in that font; with it on they stay Tandem's. | |
+| 48 | A range U+E000 to U+F8FF mapped to a Nerd Font draws the icons in that font while the text stays in the main font. With U+E0B0 to U+E0FF mapped and Draw Powerline Glyphs off, the arrows draw in that font; with it on they stay Termurion's. | |
 | 49 | A destination entry (start U+41, destination U+10000): `printf '\xf0\x90\x80\x80'` draws "A" from the chosen font; copying the selection copies the original character. Make Text Bigger on a pane with a sized entry grows that entry too. | |
 | 50 | Import a .json file with overlapping ranges and an entry starting below U+80 (hand-written): it imports, the window lists every row, an edit that still overlaps another is refused, OK keeps every row; the earlier start draws an overlapped code point and nothing in ASCII is drawn from the table. | |
 | 51 | In a destination entry, an end past U+10FFFF in the font's own run (start U+10FFF0, end U+110010, destination U+1000) shows "End is higher than U+110000, the maximum Unicode code point." | |

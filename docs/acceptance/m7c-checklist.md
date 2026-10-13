@@ -1,6 +1,6 @@
 # Milestone 7c acceptance checklist
 
-Close any open Tandem window, then run `C:\Users\datbi\src\tandem\target\release\tandem.exe`.
+Close any open Termurion window, then run `C:\Users\datbi\src\termurion\target\release\tandem.exe`.
 Cmd is the Win key and Option is Alt. Mark each line pass or fail.
 
 | # | Check | Result |
@@ -16,6 +16,6 @@ Cmd is the Win key and Option is Alt. Mark each line pass or fail.
 | 9 | Settings > Arrangements: the list with "(default)" on the first saved; Set Default, Rename, and "-" work; the preview shows the windows and the selected tab's panes. Restore submenus follow the changes. | |
 | 10 | Settings > Arrangements > pick a profile > Change Profile in Arrangement, then restore it: every pane uses that profile. | |
 | 11 | Delete the profile an arrangement uses, restore: the panes use the default profile and a banner says so. | |
-| 12 | Settings > General > Startup > "Open default window arrangement", restart Tandem: the default arrangement opens. | |
+| 12 | Settings > General > Startup > "Open default window arrangement", restart Termurion: the default arrangement opens. | |
 | 13 | Shell > Duplicate Window on a window with splits: the copy has the same splits, profiles, and folders. | |
 | 14 | Settings > Appearance now opens and shows Show window number, New window placement, Dim background windows, and Show new-output indicator. | |

@@ -1,8 +1,8 @@
 # Milestone 13e acceptance checklist
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Nothing in this milestone was checked on screen while it was built, so every line here is a
 first look. Most of the Win32 work (the caption frame, the hit tests, the key and menu paths, the
@@ -103,7 +103,7 @@ switch windows. Mark each line pass or fail.
 | 44 | Regular reads a Windows contrast theme as macOS's increased contrast; a contrast change applies at the next redraw, with no polling. | |
 | 45 | Context and popup menus follow Windows' mode under a forced theme. | |
 | 46 | The window may show a brief system-colored title bar when a forced-theme window opens. | |
-| 47 | The caption buttons are Tandem's own, at the right: no menu bar in Minimal and Compact windows (the menu button, Alt and F10 replace it); Alt+Space still opens the Windows system menu. | |
+| 47 | The caption buttons are Termurion's own, at the right: no menu bar in Minimal and Compact windows (the menu button, Alt and F10 replace it); Alt+Space still opens the Windows system menu. | |
 | 48 | Shift+Alt alone does not open the menu; F10 opens it on the key press, not the release. | |
 | 49 | A double click in the edge strip over a tab does nothing: it neither maximizes the window nor edits the tab (iTerm2 runs the title bar's double click only off a tab). Over the "+" or the overflow button in the strip it does not maximize either (the first click opens a tab or the overflow menu). Over a group chip in the strip it maximizes. | |
 | 50 | An Alt drag starts after the pointer passes MinimumTabDragDistance, so a very small Alt jitter is still a click. | |

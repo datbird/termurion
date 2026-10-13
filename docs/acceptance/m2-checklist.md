@@ -1,6 +1,6 @@
 # Milestone 2 acceptance checklist
 
-Run `C:\Users\datbi\src\tandem\target\release\tandem.exe`. Mark each line pass or fail.
+Run `C:\Users\datbi\src\termurion\target\release\tandem.exe`. Mark each line pass or fail.
 
 | # | Check | Result |
 |---|---|---|
@@ -12,7 +12,7 @@ Run `C:\Users\datbi\src\tandem\target\release\tandem.exe`. Mark each line pass o
 | 6 | "Import from iTerm2..." with your Mac's `com.googlecode.iterm2.plist` (or a Dynamic Profiles JSON). Your profiles appear with their own colors and font names. | |
 | 7 | Ctrl+Shift+O opens Profiles. Double-click a profile: a new tab opens with it. Split Right and Split Down work too. | |
 | 8 | Session tab: set Command to `wsl.exe` (Custom Command = Command). New tabs with that profile open WSL. | |
-| 9 | Close Tandem and start it again. Your edits are still there (`%APPDATA%\Tandem\profiles.toml`). | |
+| 9 | Close Termurion and start it again. Your edits are still there (`%APPDATA%\Tandem\profiles.toml`). | |
 
 ## Deferred review items
 

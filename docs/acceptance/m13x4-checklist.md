@@ -1,8 +1,8 @@
 # Milestone 13x4 acceptance checklist (browser reader, source, saver)
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe` on a machine with the
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe` on a machine with the
 WebView2 Runtime installed (one run). Mark each line pass or fail.
 
 Before anything else: `m13x4-rulings.txt` line "Probe:" records the 13x4 desktop probe (PASS, 34
@@ -17,7 +17,7 @@ a headline, 8 paragraphs, an image, a cookie banner (`position:fixed`) and an ad
 `short.html`, `<title>short</title><p>hi</p>`; `links.html`:
 
 ```
-<title>Tandem 13x4 links</title>
+<title>Termurion 13x4 links</title>
 <p><a href="JAVASCRIPT:alert(1)">js link</a></p>
 <div style="background:url(javascript:alert(1))">css js</div>
 <p><a href="https://example.com/">example</a> <a href="a.exe::$DATA">stream link</a></p>
@@ -80,7 +80,7 @@ All 34 passed on 2026-10-10 (run c, after one product fix and the probe fixes; m
 
 ## E. Risky names and links (changes on main)
 
-- [ ] Download an `.exe` through a page link (an inline download): the file is saved as `x.exe.download`, and opening it from Tandem (a path link, semantic history) reveals it in Explorer and never launches it.
+- [ ] Download an `.exe` through a page link (an inline download): the file is saved as `x.exe.download`, and opening it from Termurion (a path link, semantic history) reveals it in Explorer and never launches it.
 - [ ] In `links.html`, click `a.exe::$DATA`: it is revealed in Explorer or refused, never opened.
 - [ ] A `.cmd`, `.lnk` and `.js` saved the same way end in `.download`.
 - [ ] A file link to a normal `.txt` still opens.

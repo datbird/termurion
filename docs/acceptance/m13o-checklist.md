@@ -1,14 +1,14 @@
 # Milestone 13o acceptance checklist
 
-Build a release binary (`scripts/xt build --release`), close any open Tandem window, copy `tandem.exe`,
+Build a release binary (`scripts/xt build --release`), close any open Termurion window, copy `tandem.exe`,
 `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`. Nothing of milestone 13o
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`. Nothing of milestone 13o
 was checked on screen during the build; every row below is an item the task reports list as untested.
 
 Setup: a WSL pane (bash) for the `printf` lines and a `cmd.exe` pane for the ENQ line; a second profile
 with Character Encoding Latin-1 (and a third with Shift JIS); a profile with Disable Printing off and a
 printer or "Microsoft Print to PDF" for the print lines; Settings > Advanced > Terminal open to read the
-rows. Rows marked UNVERIFIED depend on ConPTY passing a sequence that Tandem cannot see itself; record
+rows. Rows marked UNVERIFIED depend on ConPTY passing a sequence that Termurion cannot see itself; record
 what happened instead of pass or fail. Mark each line pass or fail.
 
 | # | Check | Result |
@@ -52,4 +52,4 @@ what happened instead of pass or fail. Mark each line pass or fail.
 | 37 | Terminal Type: a profile with no stored Terminal Type shows xterm-256color in Settings and `echo $TERM` in WSL prints xterm-256color; `printf '\eP+q544e\e\\'` (XTGETTCAP TN) in a profile set to `screen` reports it. cmd.exe and PowerShell ignore TERM (WSL, MSYS2 and ssh read it). | |
 | 38 | Advanced Accept OSC 7 off, then run a shell integration that sends OSC 7 with a machine ID: the "Shell Integration Setting Conflict" question appears once with Turn On OSC 7 and Cancel; Turn On turns the row on and the working directory follows. | |
 | 39 | Default tab stop width 4 in Advanced: a new session's `printf 'a\tb\n'` puts b at column 5; the width clamps at 4096. | |
-| 40 | An OSC 52 with no end: `printf '\e]52;c;'` then 3 MB of the letter A (for example `head -c 3000000 /dev/zero` through `tr '\0' A`) does not grow the Tandem process by more than about a megabyte for it, and `printf '\a'` ends it. Reset (Edit > Reset) while `printf '\e[5i'` is collecting a print job ends the job. | |
+| 40 | An OSC 52 with no end: `printf '\e]52;c;'` then 3 MB of the letter A (for example `head -c 3000000 /dev/zero` through `tr '\0' A`) does not grow the Termurion process by more than about a megabyte for it, and `printf '\a'` ends it. Reset (Edit > Reset) while `printf '\e[5i'` is collecting a print job ends the job. | |

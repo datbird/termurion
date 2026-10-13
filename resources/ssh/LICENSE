@@ -1,4 +1,4 @@
-Tandem: every file in this folder was copied from iTerm2 (https://github.com/gnachman/iTerm2,
+Termurion: every file in this folder was copied from iTerm2 (https://github.com/gnachman/iTerm2,
 commit 64791fc) and is used under iTerm2's license. COPYING-iTerm2 is iTerm2's COPYING (GPL v2
 or later) and LICENSE-iTerm2 is iTerm2's LICENSE, the full license text, both copied verbatim
 from iTerm2's tree.
@@ -8,7 +8,7 @@ Which files are iTerm2's, and where they come from:
   framer.py
       iTerm2 OtherResources/framer.py, byte for byte.
   it2ssh
-      iTerm2 OtherResources/Utilities/it2ssh, byte for byte. Tandem sends it to a remote
+      iTerm2 OtherResources/Utilities/it2ssh, byte for byte. Termurion sends it to a remote
       host as the jump script (Duplicate Session through several hops).
   shell_integration/bash-si-loader
       iTerm2 OtherResources/bash-si-loader, byte for byte.
@@ -26,4 +26,4 @@ submodules/iTerm2-shell-integration is iTerm2's own shell integration repository
 (https://github.com/gnachman/iTerm2-shell-integration, commit bbf5a33, the one iTerm2's commit
 64791fc pins). It is GPL v2 like iTerm2 (its LICENSE file is the GPL v2 text).
 
-Any file in this folder not listed above is Tandem's own.
+Any file in this folder not listed above is Termurion's own.

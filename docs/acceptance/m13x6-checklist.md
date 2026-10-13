@@ -1,8 +1,8 @@
 # Milestone 13x6 acceptance checklist (browser permissions and notifications)
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe` on a machine with the
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe` on a machine with the
 WebView2 Runtime installed (one run; a camera or microphone if available, otherwise mark the
 media rows not applicable). Mark each line pass or fail.
 
@@ -14,7 +14,7 @@ Test pages (serve a folder with `python -m http.server 8000`; the origin is
 `http://127.0.0.1:8000`): `note.html`
 
 ```
-<title>Tandem 13x6 note</title>
+<title>Termurion 13x6 note</title>
 <button onclick="Notification.requestPermission().then(p=>document.title=p)">ask</button>
 <button onclick="new Notification('T',{body:'B'})">show</button>
 <button onclick="new Notification('T')">show no body</button>
@@ -90,7 +90,7 @@ $f = @(
 
 ## C. Allow, deny, revoke, reset take effect at once
 
-- [ ] Notifications: Allow, reload the page: no second question; "show" produces a Tandem notification with sound; clicking it brings the pane forward and does nothing else.
+- [ ] Notifications: Allow, reload the page: no second question; "show" produces a Termurion notification with sound; clicking it brings the pane forward and does nothing else.
 - [ ] Notifications: Block, reload: "ask" gives "denied" with no alert; "show" shows nothing.
 - [ ] Location: with Windows Settings > Privacy > Location off, a request is refused with no alert; on, an alert "Allow Location" appears; Allow gives a position; the next request on a reload gives it with no question.
 - [ ] Camera and microphone: Allow, the video shows; the camera light is on; the toolbar menu Reset (camera and microphone) or `iterm2-about:permissions` Revoke reloads the page and the camera light goes OFF at once.
@@ -100,7 +100,7 @@ $f = @(
 
 ## D. Start-up sync
 
-- [ ] Grant notifications, quit Tandem, start it: the pane's first page is blank until the permission store has synced (a moment), then loads; a granted site needs no question.
+- [ ] Grant notifications, quit Termurion, start it: the pane's first page is blank until the permission store has synced (a moment), then loads; a granted site needs no question.
 - [ ] While unsynced (right after start), press Alt+Left, F5 and the mouse back button: none of them loads a page that has a revoked grant; the page waits blank and loads after the sync.
 - [ ] Revoke a site, then Alt+Left to it from another page: it does not get its old grant.
 
@@ -108,7 +108,7 @@ $f = @(
 
 - [ ] The alert and the notification name the real end of a long host: a host like `very-long-name.example.com.evil.test` shows its END and port behind an ellipsis, never only its start.
 - [ ] "show no body" shows the origin as the text; a long title or body is cut with an ellipsis.
-- [ ] A page cannot close or replace a Tandem alert (a finished command's notification) with its own close; a Tandem alert shown after the page's notification stays up when the page closes its own.
+- [ ] A page cannot close or replace a Termurion alert (a finished command's notification) with its own close; a Termurion alert shown after the page's notification stays up when the page closes its own.
 - [ ] A page navigating away drops its notification only when it is still the one on screen.
 
 ## F. Audio
@@ -134,7 +134,7 @@ $f = @(
 ## I. Indicators
 
 - [ ] Zoom a browser pane (Maximize): the Maximized indicator shows in the toolbar; a click shows its help text.
-- [ ] Tandem draws no camera or microphone capture indicator (iTerm2 has none); the camera light shows capture.
+- [ ] Termurion draws no camera or microphone capture indicator (iTerm2 has none); the camera light shows capture.
 - [ ] Turn on debug logging: its indicator shows in every browser pane's toolbar.
 - [ ] Too many indicators are clipped at the toolbar's end, not scrolled.
 

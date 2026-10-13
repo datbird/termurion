@@ -1,8 +1,8 @@
 # Milestone 13x3 acceptance checklist (browser find and copy mode)
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe` on a machine with the
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe` on a machine with the
 WebView2 Runtime installed (one run). Mark each line pass or fail.
 
 Before anything else: `m13x3-rulings.txt` line "Probe:" records the 13x3 desktop probe
@@ -15,7 +15,7 @@ Test pages (serve a folder with `python -m http.server 8000`): `long.html`, a lo
 word "the" many times, words "The" and "there", and links; `frames.html`:
 
 ```
-<title>Tandem 13x3 frames</title>
+<title>Termurion 13x3 frames</title>
 <p>outer the text</p>
 <iframe srcdoc="<p>inner the text</p>" width="300" height="80"></iframe>
 <iframe src="https://example.org/" width="300" height="80"></iframe>
@@ -78,13 +78,13 @@ exists and nothing is selected, so it can fail; the probe does not read the clip
 - [ ] `j`, `w`, `v`, `w`, `y`: a phrase is selected and copied; paste it in a terminal pane and in another app (the clipboard really holds it); the cursor is hidden after `y`. `q` leaves and keeps the selection.
 - [ ] One press of `j` moves exactly one line (no double delivery); Esc leaves copy mode.
 - [ ] `3j`, `V`, `$`, `y` copy three lines; `0` and the digits act as iTerm2's count; Ctrl+Space toggles character selection.
-- [ ] A key binding with key action 73 "3jV$y" copies lines from the page; one with a parse error shows Tandem's banner.
+- [ ] A key binding with key action 73 "3jV$y" copies lines from the page; one with a parse error shows Termurion's banner.
 - [ ] `/` from copy mode opens the find bar with the last query.
 - [ ] Navigating or a failed navigation while copy mode is on turns it off.
 - [ ] Focus inside the srcdoc iframe with copy mode on: `j` moves the cursor, the iframe's own key handlers see nothing.
 - [ ] Task 1 minor 4 (carried): the cap arithmetic is verified only by section A; if `find_result_is_capped_*` fails, a very common word on a long page (700 or more matches) stops updating its count.
 
-## F. Keys Tandem must not swallow in copy mode
+## F. Keys Termurion must not swallow in copy mode
 
 - [ ] With copy mode on, Alt+F4 closes the window and F10 reaches the host as it does for a terminal pane (Task 8 minor 1). `GateState::owner` excludes them (`system_key`, final wave); if either is still swallowed, record it.
 - [ ] A person's key binding on Ctrl+B/F/U/D wins over that copy-mode key on a page (the ruled order); a binding on a plain letter does not (known, WebView2 raises no accelerator event).

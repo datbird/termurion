@@ -1,8 +1,8 @@
 # Milestone 13x8 acceptance checklist (browser pages and extensions)
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe` on a machine with the
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe` on a machine with the
 WebView2 Runtime installed (one run). Mark each line pass or fail.
 
 Before anything else: `m13x8-rulings.txt` ends with PROBE and FLAGS FOR ROBERT, the behaviors that
@@ -18,11 +18,11 @@ Test material: a folder served with `python -m http.server 8000` (`http://127.0.
 - [ ] `webhost_win::probe::failed_load_posts_its_url`
 - [ ] `webhost_win::probe::server_answers_and_network_failures_differ` (404 with a body, empty 404, 503, a dead port, a 302 to the dead port, 204)
 - [ ] `webhost_win::probe::file_pages_cannot_read_or_send` (the served file's script never runs: title stays, no connection, nothing refused because nothing is tried; R13x8-NS)
-- [ ] `webhost_win::probe::tandem_loads_leave_a_file_page_for_the_web` (from a file page, Tandem's own load and a 302 hop land on the web, no 403)
+- [ ] `webhost_win::probe::termurion_loads_leave_a_file_page_for_the_web` (from a file page, Termurion's own load and a 302 hop land on the web, no 403)
 - [ ] `webhost_win::probe::ssh_page_serves_text_and_a_closed_view_completes_the_deferral`
 - [ ] `webhost_win::probe::download_lands_where_told`
 - [ ] `webhost_win::probe::an_unpacked_extension_loads`
-- [ ] `webhost_win::probe::redirect_onto_a_power_page_is_refused` (a server 302 to `iterm2-about:settings` from a Tandem page and from a web page)
+- [ ] `webhost_win::probe::redirect_onto_a_power_page_is_refused` (a server 302 to `iterm2-about:settings` from a Termurion page and from a web page)
 
 Full run (from an ssh session on EXTREME, with Robert's yes and no implementer building in the
 checkout; a PowerShell console window shows for the whole run; `probe: process session N` must show
@@ -66,9 +66,9 @@ automatic downloads with Handled true, and extension add and enable.
 - [ ] Open `https://nonexistent.invalid/`: "Server Not Found" with the URL and Try Again; Try Again retries that URL.
 - [ ] Open a page with a bad certificate (a local test server with a self-signed certificate): "Secure Connection Failed", no "continue anyway", no Edge page.
 - [ ] A very long URL or one with `<b>` and quotes in it shows as text, cut with the end of its host kept; nothing runs.
-- [ ] A server that answers 404 (or 503) with its own body shows the SERVER's page, not Tandem's error page.
+- [ ] A server that answers 404 (or 503) with its own body shows the SERVER's page, not Termurion's error page.
 - [ ] Stop a load part way: no error page for a cancelled load.
-- [ ] A site blocked by the ad blocker shows Tandem's blocked page, not a Chromium 403.
+- [ ] A site blocked by the ad blocker shows Termurion's blocked page, not a Chromium 403.
 - [ ] On a machine with an old WebView2 runtime (if you have one): the banner "This WebView2 runtime is too old" shows and no browser opens.
 
 ## D. File pages
@@ -87,18 +87,18 @@ automatic downloads with Handled true, and extension add and enable.
 
 - [ ] Menu > Settings opens `iterm2-about:settings`.
 - [ ] Clear Cookies (the page's own confirm): sign in to a site, clear, reload: signed out.
-- [ ] Clear All Data: a NATIVE Tandem window asks first; Cancel clears nothing; OK empties the history page and the bookmarks page, and the page says so.
+- [ ] Clear All Data: a NATIVE Termurion window asks first; Cancel clears nothing; OK empties the history page and the bookmarks page, and the page says so.
 - [ ] Search engine: each built-in choice changes what the URL bar searches. Custom with a URL lacking `%@` shows the error; an `http://` template is refused (https only); a template with two `%@` is refused.
 - [ ] Ad blocking: the toggle works; statistics show a rule count; Update Now reports the result once (invalid list address, download fail, or success); a list address that is not https is refused.
 - [ ] Proxy: host and port save; port 0 or 70000 shows the error; a host with a space, `--flag` or a user name shows "Invalid proxy host".
-- [ ] Link opening: Always Ask brings back the "Open in Tandem?" question; the other choices change what a clicked link does.
+- [ ] Link opening: Always Ask brings back the "Open in Termurion?" question; the other choices change what a clicked link does.
 - [ ] Manage Passwords opens the password manager; Manage Permissions opens `iterm2-about:permissions`.
 - [ ] In a Dev Null pane the settings page shows its Dev Null note.
 - [ ] Rapid clicking a privileged button (Clear, Update Now, proxy) acts at most about once a second.
 
 ## F. Back and Forward onto power pages
 
-- [ ] Open Settings, go to a web page, press Back: the settings page comes back (loaded fresh by Tandem), no wrong banner. Same for Forward and the long-press history list.
+- [ ] Open Settings, go to a web page, press Back: the settings page comes back (loaded fresh by Termurion), no wrong banner. Same for Forward and the long-press history list.
 - [ ] A web page that calls `history.back()` or `history.go(-1)` while the settings page is the previous entry does not land on it.
 - [ ] A web page cannot navigate to `iterm2-about:settings`, `iterm2-about:downloads` or `iterm2-file:` by click, script or redirect.
 - [ ] A local HTML file with a link to `https://example.com/`: clicking it does nothing (a file or ssh page leaves for no other page, R13x8-P2); the address bar still goes there.
@@ -142,7 +142,7 @@ extensions folder, so the lines below are BLOCKED until the section is shown (on
 `show_extensions`) or Robert rules otherwise. Mark them blocked, not failed. Once shown:
 
 - [ ] Choose Folder opens a native folder picker; choosing an unpacked extension folder (or its parent) lists the extension with its name, version and description ("No description available" when none).
-- [ ] Enabling asks in a native Tandem window that lists every permission and every site and must be scrolled to its end; Cancel loads nothing; Enable loads it into the next browser tab and it acts.
+- [ ] Enabling asks in a native Termurion window that lists every permission and every site and must be scrolled to its end; Cancel loads nothing; Enable loads it into the next browser tab and it acts.
 - [ ] A manifest with `optional_permissions` or `optional_host_permissions` lists them in the window under "It may ask later for:".
 - [ ] A manifest asking for `debugger` or `nativeMessaging` shows a WARNING line first in the window. In a Dev Null pane the settings page shows an empty extensions list and Reveal says it is not allowed.
 - [ ] A manifest name with `<b>` or a script tag shows as text on the page and in the window.
@@ -158,13 +158,13 @@ extensions folder, so the lines below are BLOCKED until the section is shown (on
 
 - [ ] From a page on `http://127.0.0.1:8000`, a link, a script `location=`, a meta refresh and a redirect to each of `iterm2-about:settings`, `iterm2-about:downloads`, `iterm2-about:onboarding-setup`, `iterm2-file:///C:/`, `iterm2-ssh://...` and `file:///C:/` do nothing.
 - [ ] A web page's script cannot post a message that clears data, changes settings or starts a download action (DevTools: `window.chrome.webview.postMessage` with any shape does nothing).
-- [ ] An `iframe` of a Tandem page inside a web page is refused (frame-ancestors none).
+- [ ] An `iframe` of a Termurion page inside a web page is refused (frame-ancestors none).
 
 ## L. Security of local pages
 
 - [ ] A saved HTML page opened through `file:` runs none of its scripts (DevTools console shows the CSP refusal), cannot reach the network, submit a form or open a window.
 - [ ] An outbound link in a local or remote `.html` does nothing (FLAG 1); the address bar, a bookmark or the menu still leave the page for the web.
-- [ ] No Tandem script (autofill button, password key button, find, marks) runs inside a file or ssh page.
+- [ ] No Termurion script (autofill button, password key button, find, marks) runs inside a file or ssh page.
 
 ## M. Nothing leaks
 
@@ -173,4 +173,4 @@ extensions folder, so the lines below are BLOCKED until the section is shown (on
 ## N. Existing browser behavior
 
 - [ ] The pages of 13x to 13x7 (welcome, bookmarks, history, permissions, source, autofill, password manager, HTTP sign-in) still work.
-- [ ] Tab and window close with a download or an editor open leaves nothing running (Task Manager shows no stray `Tandem` process).
+- [ ] Tab and window close with a download or an editor open leaves nothing running (Task Manager shows no stray `Termurion` process).

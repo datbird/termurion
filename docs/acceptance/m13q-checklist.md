@@ -1,9 +1,9 @@
 # Milestone 13q acceptance checklist
 
 Nothing of 13q was run on screen during the build. Build a release binary (`scripts/xt build --release`;
-the debug build is a console-subsystem app). Close any open Tandem window, copy `tandem.exe`,
+the debug build is a console-subsystem app). Close any open Termurion window, copy `tandem.exe`,
 `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Setup: make three profiles from Settings > Profiles > Session: one with "After a session ends" set to
 No Action, one to Close, one to Restart. Give the No Action profile a Log Directory of a scratch folder
@@ -19,7 +19,7 @@ Safety are the ones the reviews found: run them all. A program-set title can be 
 | 3 | Click Restart on the bar: the same pane gets a new prompt below the divider (not over the top lines), the old text and scrollback are kept, the bar is gone, the pane's lock and pinned width are kept. | |
 | 4 | End the session again and click Don't Ask Again: the bar goes, later exits show no bar, and Settings > Advanced > Session "Suppress the Restart Session offer" (SuppressRestartAnnouncement) shows Yes. | |
 | 5 | Close Pane on an ended pane (nothing left running): it closes at once with no question. | |
-| 6 | New profile (stock, Close): `exit` closes the pane at once. A profile imported with no "After a session ends" value keeps the ended pane instead (iTerm2's missing-key default). An existing Tandem profile saved before 13q now keeps the pane (release-note item, ruling P12). | |
+| 6 | New profile (stock, Close): `exit` closes the pane at once. A profile imported with no "After a session ends" value keeps the ended pane instead (iTerm2's missing-key default). An existing Termurion profile saved before 13q now keeps the pane (release-note item, ruling P12). | |
 | 7 | Close profile whose command is `cmd /c exit`: opening it shows "A session ended very soon after starting. Check that the command in profile ..." with a "Suppress this message permanently" box and OK. Check the box: the next short session closes with no warning and Settings > Session "Warn about short-lived sessions" shows unchecked; check it again and the warning returns. | |
 | 8 | Close a pane after more than 3 seconds, a git window, a tmux pane, a recording or a restored archive: no short-lived warning. Advanced > Warnings "Warn about short-lived sessions" time changes the 3 seconds. | |
 | 9 | Profile set to Restart: `exit` restarts the shell about one second later in the same pane, history kept. A command that exits at once (`cmd /c exit`) stops restarting after five tries in ten seconds and shows "Session keeps ending. Restart it?". | |
@@ -48,25 +48,25 @@ Safety are the ones the reviews found: run them all. A program-set title can be 
 | 32 | Safety: a title that makes a 200+ character name ending in `.bat` (or a title of exactly `NUL`, `CON` or `COM1`): the log file name ends in `.log` and never names a device; no .bat appears in the log folder. | |
 | 33 | Safety: a Log Directory typed as plain `C:\temp\new` writes to that folder (the backslashes are kept); a template using `\(profileName)` evaluates. | |
 | 34 | A very slow log disk or share while output streams fast (for example `type` of a big file): output never stalls; if the write queue fills, the log goes off with one notification. | |
-| 35 | Shell > Archives > Save Archive of Current Session...: a save dialog defaulting to "<session name>.itermarchive" ("Tandem Session.itermarchive" when unnamed); the file appears and the menu lists it after the separator by its name. | |
+| 35 | Shell > Archives > Save Archive of Current Session...: a save dialog defaulting to "<session name>.itermarchive" ("Termurion Session.itermarchive" when unnamed); the file appears and the menu lists it after the separator by its name. | |
 | 36 | Shell > Archives > Restore Archive... (or the recent item): a new window opens with the pane's text and an "Archive Restored" banner; typing does nothing; Session > Restart Session starts a live shell below the kept text. | |
 | 37 | Closing a restored archive pane within 3 seconds shows no short-lived warning. | |
 | 38 | Archive On Closure with an Archive Directory: closing a pane writes "9-27-26_3.04.05_PM - <name>.itermarchive" there (never ending in .log); closing two panes of the same name in the same second writes "... (2)" as well; an empty directory writes nothing; an unwritable or relative folder shows an "Archiving failed" notification. | |
-| 39 | Archive On Closure and Quit: quit Tandem with the shells ending with it and Archive On Closure on: an archive of each pane is in the folder when it exits. Quit that keeps the shells in the host writes none. | |
+| 39 | Archive On Closure and Quit: quit Termurion with the shells ending with it and Archive On Closure on: an archive of each pane is in the folder when it exits. Quit that keeps the shells in the host writes none. | |
 | 40 | Safety: a crafted archive opens no more than the limit: a file over 512 MB is refused with a message; more than 64 windows or 64 tabs in a window is refused; a pane with more than 10,000,000 lines opens with the last 10,000,000; an unmarked file with several windows asks "Restore Archive?" first. | |
 | 41 | Safety: a downloaded (Mark of the Web) archive asks "Restore Archive?" listing what its profiles run; No opens nothing. After Yes, Restart on its pane runs its profile; with No nothing starts. | |
 | 42 | Safety: a program-set title cannot move the archive either: the archive name for a session titled `..\x` stays inside the Archive Directory. | |
-| 43 | Safety: closing the shell that logs, quitting Tandem and restarting a pane each leave the log file complete up to the last output (no lost tail, no second writer overwriting). | |
+| 43 | Safety: closing the shell that logs, quitting Termurion and restarting a pane each leave the log file complete up to the last output (no lost tail, no second writer overwriting). | |
 | 44 | With Advanced > Experimental Features KillSessionsOnLogout and "Run jobs in servers" on: with a long job running, sign out of Windows and sign back in: no session comes back, no tandem-host or shell remains, and the session logs are complete. With the key off the sessions survive the sign-out (when the host does). The sign-out waits 4.5 s at most; if a modal dialog stops the app thread it waits up to 8 s and the sessions end without the log flush. | |
-| 45 | Safety: logoff ends hosted sessions and writes logs: with Automatically Log on in a hosted pane with two Tandem windows open, sign out and read the log afterward: the output up to the sign-out is in it, and Archive On Closure wrote its archive. Turn the key off with the second window current: the sessions survive the sign-out. | |
+| 45 | Safety: logoff ends hosted sessions and writes logs: with Automatically Log on in a hosted pane with two Termurion windows open, sign out and read the log afterward: the output up to the sign-out is in it, and Archive On Closure wrote its archive. Turn the key off with the second window current: the sessions survive the sign-out. | |
 | 46 | Restore a window (session restoration) whose pane started in D:\work: `cd` elsewhere, end the shell and Restart: the new shell starts in D:\work. | |
 | 47 | Advanced settings that are stored and inert (ruling R5): Multiserver and UseNewContentFormat show and save but turning them off changes nothing. | |
 | 48 | Settings > Session shows After a session ends, Warn about short-lived sessions, Automatically Log, Log Directory, Log Filename Format, Logging style, Archive On Closure and Archive Directory with iTerm2's enable rules (log rows enabled only with Automatically Log; the short-lived row only for Close). | |
-| 49 | Kept iTerm2 quirks to recognise (not defects): a Restart end action has no limit in iTerm2 (Tandem stops after five in ten seconds); the end action Restart never writes "Session Restarted" (only Restart Session over a live shell does); a custom end text replaces every message; with No Action the short-lived warning appears only when the pane is closed within the limit; AutoLogFormat only supplies a profile's missing Log Filename Format. | |
+| 49 | Kept iTerm2 quirks to recognise (not defects): a Restart end action has no limit in iTerm2 (Termurion stops after five in ten seconds); the end action Restart never writes "Session Restarted" (only Restart Session over a live shell does); a custom end text replaces every message; with No Action the short-lived warning appears only when the pane is closed within the limit; AutoLogFormat only supplies a profile's missing Log Filename Format. | |
 | 50 | Safety: Session > Restart Session over a running shell asks "Restart session?"; leave it open, exit the shell (Restart end action) and let the timer restart it, type something in the new shell, then click OK on the old question: the new shell is NOT ended; the question asks again about the new shell. | |
 | 51 | Safety: save a restored archive pane through session restoration (quit with it open, relaunch): it comes back as an archived pane (text, no shell, no profile started); Restart starts the shell. | |
 | 52 | Safety: an imported profile or archive with Log Filename Format `x.bat` and Log Directory the Startup folder: its open question names the log and folder, and the file made is `x.bat.log`. Same for `\(profileName).cmd`. | |
 | 53 | Restart over a live shell whose new command fails to start: the pane keeps its text, the log file is complete, the progress bar and drop targets are gone. | |
 | 54 | Close a pane in a background window with Archive On Closure on: the archive holds that window's pane, frame and title, not the current window's. | |
-| 55 | Two logging panes idle: Tandem shows no periodic wakeups (idle CPU stays at zero); a log on a removed drive still gives its one notification. | |
+| 55 | Two logging panes idle: Termurion shows no periodic wakeups (idle CPU stays at zero); a log on a removed drive still gives its one notification. | |
 | 56 | Restore Archive of a file over 512 MB is refused at once (no pause). Load Arrangement of an unmarked file with several windows opens with no question. | |

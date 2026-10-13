@@ -1,7 +1,7 @@
 # Milestone 9l acceptance checklist
 
-Close any open Tandem window. Copy `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`,
-`conpty.dll`, and `OpenConsole.exe` from `C:\Users\datbi\src\tandem\target\release\` together,
+Close any open Termurion window. Copy `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`,
+`conpty.dll`, and `OpenConsole.exe` from `C:\Users\datbi\src\termurion\target\release\` together,
 then run `tandem.exe`.
 
 Setup: install shell integration in the PowerShell session (milestone 4a). On the profile you
@@ -47,7 +47,7 @@ look. Mark each line pass or fail.
 | 28 | With text in the field, click its expand glyph: the text moves into a full dropdown panel and the field is left with its own separate text (editing the dropdown afterward does not change what the field shows). | |
 | 29 | On the profile that has a status bar but no Composer placed on it (temporarily drag the Composer component off the layout, or use a second profile with a bar and no Composer), press Win+Shift+. (or your Compose key): a temporary Composer field appears at the right of that pane's status bar instead of the full dropdown, editable the same way, and disappears back into whatever was there before (paste progress, Filter) once you finish editing it. On the profile with NO status bar at all, the same key instead opens the normal floating dropdown, since there is no bar to place a field on. | |
 | 30 | Turn on `alwaysUseStatusBarComposer` in Advanced settings on a profile with a status bar: Show Composer now always routes to a status bar field (temporary if none is placed) instead of the dropdown, even though the bar's own layout did not change. | |
-| 31 | With `composerClearSequence` left at its default (`0x15 0x0b`), type a partial command directly at a normal PowerShell prompt (not through the composer) and, within a moment, press Show Composer or let the Auto Composer reveal: Tandem sends Ctrl+U then Ctrl+K to the shell before showing the captured text in the composer (PSReadLine's own bindings should clear the visible line). Type again right after it reveals: none of the clear-probe's backspaces show up in what you type (a write cancels the pending probe). | |
+| 31 | With `composerClearSequence` left at its default (`0x15 0x0b`), type a partial command directly at a normal PowerShell prompt (not through the composer) and, within a moment, press Show Composer or let the Auto Composer reveal: Termurion sends Ctrl+U then Ctrl+K to the shell before showing the captured text in the composer (PSReadLine's own bindings should clear the visible line). Type again right after it reveals: none of the clear-probe's backspaces show up in what you type (a write cancels the pending probe). | |
 | 32 | On the tmux-attached pane, open its Composer and send a command: it reaches the remote pane through tmux send-keys, the same as a normal keystroke. Press Ctrl+L in that pane's Auto Composer: only the local grid clears (kept parity limitation, not full tmux-server parity). | |
 | 33 | With Broadcast Input on between the focused pane and a second one, open the Composer in the focused pane and Send a command: both panes receive it. | |
 | 34 | Directly press each of the seven help-menu chords once more with the composer focused: Ctrl+Shift+Up/Down and Ctrl+Shift+click add carets; Alt+drag makes a box selection of carets; Win+F opens the pane's Find bar (and gives up the composer's keyboard); Win+Alt+V opens Advanced Paste; Win+click opens explainshell; Win+Shift+; opens command history. | |

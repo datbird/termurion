@@ -1,6 +1,6 @@
 # Milestone 6b acceptance checklist
 
-Close any open Tandem window, then run `C:\Users\datbi\src\tandem\target\release\tandem.exe`.
+Close any open Termurion window, then run `C:\Users\datbi\src\termurion\target\release\tandem.exe`.
 Cmd is the Win key and Option is Alt. The checks use WSL (`wsl`). Mark each line pass or fail.
 
 | # | Check | Result |
@@ -9,7 +9,7 @@ Cmd is the Win key and Option is Alt. The checks use WSL (`wsl`). Mark each line
 | 2 | Turn on "Show bell icon in tabs", open a second tab, run `sleep 2; printf '\a'` in the first and switch to the second: the first tab shows a bell icon until you select it. | |
 | 3 | Turn on "Flash visual bell": `printf '\a'` flashes the pane. | |
 | 4 | `while true; do printf '\a'; sleep 0.005; done`: at most about 10 beeps a second, and within a few seconds a bar asks "The bell is ringing a lot. Silence it?" with four buttons. Silence Bell Temporarily: quiet for a minute. Ctrl+C the loop. | |
-| 5 | Turn on "Notification Center alerts" and the Bell filter; with "Show bell icon in tabs" on, switch to another app, then `sleep 3; printf '\a'`: a Windows notification "Bell" / "Session <name> #1 just rang a bell!" appears. Click it: Tandem comes forward on that session. | |
+| 5 | Turn on "Notification Center alerts" and the Bell filter; with "Show bell icon in tabs" on, switch to another app, then `sleep 3; printf '\a'`: a Windows notification "Bell" / "Session <name> #1 just rang a bell!" appears. Click it: Termurion comes forward on that session. | |
 | 6 | Turn on the Idle filter: in a background tab run `for i in 1 2 3; do echo $i; sleep 1; done`: about 3 s after the output stops, "Idle" / "Session <name> in tab #2 became idle." | |
 | 7 | Turn on the New Output filter: output in a background tab posts "New Output" once per burst. The tab shows a dot while the output is new, and the idle icon after it stops. | |
 | 8 | `printf '\e]9;Build finished\a'` (Send escape sequence-generated alerts on): "Alert" / "Session <name> #1: Build finished", even while you look at it. | |

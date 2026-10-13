@@ -1,8 +1,8 @@
 # Milestone 12b acceptance checklist
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Setup: AI enabled in Settings as 12a leaves it ("Enable generative AI features" on). A real API key
 for at least one cloud vendor (OpenAI, Anthropic, Gemini or DeepSeek), stored with Set API Key…; mark
@@ -67,9 +67,9 @@ while ($true) {
 }
 ```
 
-`aiProxy` has no field in Settings until milestone 13: set it by closing Tandem and adding
+`aiProxy` has no field in Settings until milestone 13: set it by closing Termurion and adding
 `aiProxy = "127.0.0.1:8888"` under `[settings]` in `%APPDATA%\Tandem\settings.toml`, then starting
-Tandem again; remove the line the same way. "The editor" means Settings > General > AI > General,
+Termurion again; remove the line the same way. "The editor" means Settings > General > AI > General,
 Manage AI Models…, then Add (or Edit on a row). Test Connection asks consent for a host once, the
 first time: answer Allow and press Test Connection again (it does not run by itself). Mark each
 line pass or fail.
@@ -87,7 +87,7 @@ line pass or fail.
 | 7 | Set API Key…: replace one vendor's key with a wrong one (for example `sk-wrong-0000000000000000`) and OK. Test Connection on that vendor's model: "Connection Failed" with the provider's own reason (OpenAI "Incorrect API key provided: ...", Anthropic "invalid x-api-key", Gemini "API key not valid. Please pass a valid API key."), and no withheld-key advice (a cloud host). For Gemini the text never shows the key. Put the real key back. | |
 | 8 | Set API Key…: clear one vendor's key and OK. Test Connection on that vendor's model opens the key prompt ("Manage AI API Keys", one masked field named for the vendor, OK and Cancel). Cancel: nothing is shown, and Test Connection is enabled again. Test again, type the real key, OK: the test runs and succeeds, and Credential Manager shows `TandemAI/<vendor>` again. | |
 | 9 | With the test server in mode `ok` on port 1234: Preset "Local OpenAI-compatible (LM Studio, vLLM, …)", URL `http://localhost:1234/v1/chat/completions`, any model name. Test Connection asks consent for localhost, then succeeds, and no key prompt appears (a local server never gets the vendor key). | |
-| 10 | Restart the test server in mode `auth`. Test Connection on the same entry: "Connection Failed" with "Unauthorized", a blank line, then "Tandem did not send an API key with this request. If this endpoint requires authentication, add the header “Authorization” under “Custom headers”." | |
+| 10 | Restart the test server in mode `auth`. Test Connection on the same entry: "Connection Failed" with "Unauthorized", a blank line, then "Termurion did not send an API key with this request. If this endpoint requires authentication, add the header “Authorization” under “Custom headers”." | |
 | 11 | Add the custom header `Authorization` with the value `Bearer sk-local-test` and Test Connection again: "Connection Succeeded". | |
 | 12 | Clear the model name and press Test Connection: "Missing Information" with "Enter a model name and URL before testing the connection." Nothing is sent. | |
 | 13 | Enter a model name and the URL `not a url`: Test Connection shows "Connection Failed" with "The URL is not valid." at once, with no consent alert and no key prompt. | |
@@ -117,7 +117,7 @@ line pass or fail.
 | 27 | Set `aiProxy` to `127.0.0.1` (no port) or `127.0.0.1:x`: it is ignored and Test Connection goes direct (nothing in Fiddler). | |
 | 28 | Remove `aiProxy` and turn Fiddler's capture on (Fiddler becomes the Windows proxy), or set a manual proxy of 127.0.0.1:8888 in Windows Settings > Network & internet > Proxy: Test Connection on the `gpt-5-mini` entry shows a tunnel to api.openai.com:443 in Fiddler (the system proxy is honored). Turn the capture or the manual proxy off again. | |
 | 29 | Settings > Advanced > Debugging shows "Log raw AI API requests and responses to disk." and "Log AI chat traffic to the system console."; hovering the first shows its help, which names `%APPDATA%\Tandem\AIChatWire\` and says every header value except known non-secret ones (such as Content-Type), and keys in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters). | |
-| 30 | Turn both on and run Test Connection and Refresh Models: no `%APPDATA%\Tandem\AIChatWire\` folder appears, and DebugView (Capture Win32 on) shows no "Tandem AI:" lines. In 12b only the chat turn writes the wire log and the console entries, and the chat comes with 12c; the key fingerprints are covered by the unit tests. Turn both off. | |
+| 30 | Turn both on and run Test Connection and Refresh Models: no `%APPDATA%\Tandem\AIChatWire\` folder appears, and DebugView (Capture Win32 on) shows no "Termurion AI:" lines. In 12b only the chat turn writes the wire log and the console entries, and the chat comes with 12c; the key fingerprints are covered by the unit tests. Turn both off. | |
 
 ## File jobs
 
@@ -139,4 +139,4 @@ line pass or fail.
 | 39 | The Fetch Models names list is a small list over the editor (Escape or a click outside closes it), where iTerm2 pops a menu under the button; the probe sheet's spinner is round. | |
 | 40 | Closing the Settings window while "Contacting Ollama…" shows keeps Ollama as the chosen model even if the server then turns out to be down (iTerm2's sheet cannot be left that way). | |
 | 41 | File jobs, when 12c runs them, go to OpenAI only for a model whose own host is api.openai.com; any other model fails with "Files can be sent to OpenAI only with a model at api.openai.com, so that another server’s key or headers never reach OpenAI." before any request, and the App Review key `placeholder` never uploads a file (iTerm2 sends both). | |
-| 42 | Test server in mode `huge` on port 1235 and the entry from row 14: Test Connection shows "Connection Failed" with "HTTP request failed with resource exceeds maximum size" (every answer is capped at 64 MiB; iTerm2 has no cap), and Tandem's memory in Task Manager does not keep growing. | |
+| 42 | Test server in mode `huge` on port 1235 and the entry from row 14: Test Connection shows "Connection Failed" with "HTTP request failed with resource exceeds maximum size" (every answer is capped at 64 MiB; iTerm2 has no cap), and Termurion's memory in Task Manager does not keep growing. | |

@@ -1,8 +1,8 @@
 # Milestone 13c acceptance checklist
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Setup: the tab bar settings are on Settings > Appearance > Tabs and Settings > Advanced > Tabs.
 The number and text Advanced rows (Minimum tab width, Minimum tab width for compact tabs,
@@ -19,7 +19,7 @@ or Git Bash). Mark each line pass or fail.
 | 2 | With three tabs the tabs are equal and together fill the whole bar, with the "+" button right after the last tab. | |
 | 3 | Each of the three tabs shows "Win+1", "Win+2", "Win+3" at its right end. Change Keys > "Shortcut to select a tab" to Alt+Number: the tabs read "Alt+1" and so on; to No Shortcut: no numbers. Turn off Appearance > Tabs "Show tab numbers": the numbers go. | |
 | 4 | Hover a tab: a close button appears at its left and the title stays centered; move away: the button goes. In Advanced > Tabs turn on "Should tab close buttons always remain visible?": every tab shows its close button and the title starts after it. Turn off "Tabs have close buttons": no tab has one. | |
-| 5 | In an unfocused Tandem window the close buttons draw at half strength. | |
+| 5 | In an unfocused Termurion window the close buttons draw at half strength. | |
 | 6 | Turn off "Stretch tabs to fill bar": the three tabs are 175 points wide each, from the left. | |
 | 7 | Open 20 tabs: the bar scrolls instead of shrinking the tabs (each 120 points wide). Shift+wheel over the bar (or a horizontal wheel or trackpad swipe) scrolls it; the "+" stays pinned at the right end and tabs are cut under it. Press Win+Shift+] (Window > Tab > Select Tab > Select Next Tab) repeatedly: whenever the selected tab would pass the edge, the bar scrolls to show it fully. | |
 | 8 | With 20 tabs, turn off Appearance > Tabs "Tab bar scrolls when tabs don't fit": the tabs that fit share the bar and a double chevron button at the right lists the hidden tabs, each with its number as " (n)" and a check on the selected one; picking one selects it. | |

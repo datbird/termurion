@@ -1,6 +1,6 @@
-# Tandem: an iTerm2-style terminal for Windows
+# Termurion: an iTerm2-style terminal for Windows
 
-Status: draft for review, 2026-09-23. "Tandem" is a working name.
+Status: draft for review, 2026-09-23. "Termurion" is a working name.
 
 ## 1. Goal
 
@@ -14,7 +14,7 @@ others I am not using yet." Settings sync is therefore not a goal.
 
 ### Success criteria
 
-1. Every iTerm2 feature in `docs/parity/` has a Windows equivalent in Tandem, or a written
+1. Every iTerm2 feature in `docs/parity/` has a Windows equivalent in Termurion, or a written
    reason why the feature cannot exist on Windows (for example the Touch Bar).
 2. Someone who knows iTerm2 finds each setting, menu command, and shortcut where they expect it,
    with Cmd mapped as in section 3.4.
@@ -25,14 +25,14 @@ others I am not using yet." Settings sync is therefore not a goal.
 - The target is the whole feature list in `docs/parity/`: profiles and settings, menus, tmux
   integration, shell integration, triggers, status bar, toolbelt, Instant Replay, the password
   manager, Composer, the Python API, AI features, and the rest.
-- Tandem has its own settings window, laid out like iTerm2's. Importing an iTerm2 settings file
+- Termurion has its own settings window, laid out like iTerm2's. Importing an iTerm2 settings file
   is an optional one-time convenience, not a sync.
 - Not in scope: a Mac or Linux build, and code copied from Windows Terminal or iTerm2 (the
   ConPTY DLL is the one exception, section 3.1).
 
 ## 2. Architecture
 
-Tandem is one Rust program with five parts. Each part has one job and a small interface.
+Termurion is one Rust program with five parts. Each part has one job and a small interface.
 
 | Part | Job | Built on |
 |---|---|---|
@@ -40,7 +40,7 @@ Tandem is one Rust program with five parts. Each part has one job and a small in
 | `core` | Parses escape codes, holds the screen and scrollback | `alacritty_terminal` crate |
 | `render` | Draws cells, cursor, selection, and images on the GPU | wgpu and glyphon (cosmic-text) |
 | `ui` | Windows, tabs, splits, mouse, keys, hotkey window | winit plus direct Win32 calls |
-| `settings` | Tandem's own profiles and settings, plus an optional iTerm2 import | TOML files, `plist` crate for import |
+| `settings` | Termurion's own profiles and settings, plus an optional iTerm2 import | TOML files, `plist` crate for import |
 
 Two feature parts sit on top of `core` and `ui`:
 
@@ -74,17 +74,17 @@ In tmux mode, one `pty` runs `tmux -CC` and `tmuxcc` feeds every pane's `core` f
   The shipped copy gets the newest fixes. (Current ConPTY has no separate "passthrough mode" flag.
   Its only creation flags are cursor inheritance and glyph width.)
 - `conpty.dll` starts `OpenConsole.exe` from its own folder. If that exe is missing, ConPTY quietly uses
-  the Windows copy. Tandem checks that both files exist before it loads the DLL.
-- Tandem has its own ConPTY code, not the one in `alacritty_terminal`. The Alacritty code falls back
+  the Windows copy. Termurion checks that both files exist before it loads the DLL.
+- Termurion has its own ConPTY code, not the one in `alacritty_terminal`. The Alacritty code falls back
   to the Windows copy without saying so, which breaks the next rule.
-- If the shipped DLL fails to load, Tandem says so in a visible banner, then uses the built-in ConPTY.
+- If the shipped DLL fails to load, Termurion says so in a visible banner, then uses the built-in ConPTY.
   It does not switch without telling you.
 - Shells come from the profile's Windows override (section 4.2). Default: `pwsh.exe`.
 
 ### 3.2 core
 
 - `alacritty_terminal` (Apache-2.0) provides the parser, grid, scrollback, and selection model.
-- Tandem adds parsing for sequences Alacritty ignores: OSC 1337, OSC 133, and the iTerm2 image protocol.
+- Termurion adds parsing for sequences Alacritty ignores: OSC 1337, OSC 133, and the iTerm2 image protocol.
   These go through a hook ahead of the core parser, so the Alacritty crate stays unmodified.
 - If an upstream change blocks the hook, we vendor the crate and record why in the repo.
 
@@ -102,22 +102,22 @@ In tmux mode, one `pty` runs `tmux -CC` and `tmuxcc` feeds every pane's `core` f
 
 Window, tabs, and splits:
 
-- Tabs and a tab bar drawn by Tandem, styled like iTerm2's minimal and compact themes.
+- Tabs and a tab bar drawn by Termurion, styled like iTerm2's minimal and compact themes.
 - Vertical and horizontal splits with draggable dividers. Dimming of inactive panes, as in iTerm2.
 
 Keys:
 
 - **Decided 2026-09-24 (Robert): Cmd is the Win key.** Cmd = Win, Option = Alt, Ctrl = Ctrl, Shift =
   Shift, so every iTerm2 shortcut has one exact Windows chord (Cmd+D is Win+D, Opt+Cmd+Left is
-  Alt+Win+Left). Windows claims many Win chords for itself, so while a Tandem window has focus a
-  low-level keyboard hook takes Win chords for Tandem (Win+L still locks; Windows does not allow that
+  Alt+Win+Left). Windows claims many Win chords for itself, so while a Termurion window has focus a
+  low-level keyboard hook takes Win chords for Termurion (Win+L still locks; Windows does not allow that
   one to be taken). Ctrl+Shift+C and Ctrl+Shift+V stay as extra copy and paste keys, a Windows habit.
 - Option maps to Alt. The profile's "Left/Right Option key sends" setting applies to Alt.
 - The profile's `Keyboard Map` entries apply, translated with the same modifier map.
 
 Mouse (the top-priority feature):
 
-| iTerm2 on Mac | Tandem on Windows |
+| iTerm2 on Mac | Termurion on Windows |
 |---|---|
 | Drag selects text | Same |
 | Option-drag selects even when the app holds the mouse | Alt-drag |
@@ -139,7 +139,7 @@ Hotkey window:
 - `RegisterHotKey` claims the global key from the iTerm2 hotkey profile.
 - The window is borderless and always on top. It slides in from the edge set in the profile.
 - It hides when it loses focus, unless pinned. It floats over full-screen apps.
-- If another program already owns the key, Tandem shows an error with the key name. It does not pick another key.
+- If another program already owns the key, Termurion shows an error with the key name. It does not pick another key.
 
 ### 3.5 settings
 
@@ -160,7 +160,7 @@ Shell integration:
 - OSC 133 A/B/C/D: prompt and command marks. Jump between prompts, select a command's output.
 - OSC 1337: `CurrentDir`, `RemoteHost`, `SetUserVar`, `SetBadgeFormat`, `SetMark`, `File=` (inline images).
 - OSC 7: current directory.
-- Tandem ships a PowerShell integration script. iTerm2's own bash, zsh, and fish scripts
+- Termurion ships a PowerShell integration script. iTerm2's own bash, zsh, and fish scripts
   work as they are inside WSL and over SSH.
 
 ### 3.7 tmuxcc
@@ -168,16 +168,16 @@ Shell integration:
 - Starts `tmux -CC` (or `ssh host -t tmux -CC`) in a pty and reads the control protocol:
   `%begin`/`%end`/`%error`, `%output`, `%window-add`, `%window-close`, `%layout-change`,
   `%session-changed`, `%exit`.
-- Each tmux window becomes a Tandem tab. Each tmux pane becomes a Tandem split, placed from the layout string.
-- Keys in a pane go out as `send-keys`. Resizing a Tandem split sends `resize-pane`.
-- On attach, Tandem reads pane history with `capture-pane` so scrollback is present.
+- Each tmux window becomes a Termurion tab. Each tmux pane becomes a Termurion split, placed from the layout string.
+- Keys in a pane go out as `send-keys`. Resizing a Termurion split sends `resize-pane`.
+- On attach, Termurion reads pane history with `capture-pane` so scrollback is present.
 - Target: real tmux in WSL and over SSH. psmux (the tmux on EXTREME) may not support control mode.
   We check that at milestone 5. It is not a requirement.
-- A protocol error shows the raw text in the tab and a clear message. Tandem does not guess.
+- A protocol error shows the raw text in the tab and a clear message. Termurion does not guess.
 
 ## 4. Settings
 
-Superseded 2026-09-24. Tandem keeps its own profiles and global settings in `%APPDATA%\Tandem`,
+Superseded 2026-09-24. Termurion keeps its own profiles and global settings in `%APPDATA%\Tandem`,
 edited in a settings window laid out like iTerm2's (Profiles, Appearance, Keys, Pointer,
 Arrangements, Advanced). A one-time import can read an iTerm2 `com.googlecode.iterm2.plist` or
 Dynamic Profiles JSON. The full list of settings to match is in `docs/parity/01-profile-settings.md`
@@ -189,7 +189,7 @@ Errors in a settings file keep the last good settings and show a banner with the
 
 ### Where things run
 
-- The code lives in `~/gitrepos/tandem` on sirtoolio, in a private `datbird` repo.
+- The code lives in `~/gitrepos/termurion` on sirtoolio, in a private `datbird` repo.
 - EXTREME builds and runs it (Rust stable, MSVC toolchain, already installed).
 - The build pulls from the repo on EXTREME and runs `cargo build`.
 
@@ -208,9 +208,9 @@ milestone 2 on is in `docs/parity/00-roadmap.md`, ordered from the feature inven
 ## 7. Licensing
 
 - `alacritty_terminal` is Apache-2.0. The ConPTY DLL is MIT. Both allow a private or public app.
-- iTerm2 is GPL. Tandem reads iTerm2's file format and copies its behavior, but no iTerm2 code.
-  If we copy iTerm2 code later (for example the default smart selection rules), Tandem becomes GPL.
+- iTerm2 is GPL. Termurion reads iTerm2's file format and copies its behavior, but no iTerm2 code.
+  If we copy iTerm2 code later (for example the default smart selection rules), Termurion becomes GPL.
 
 ## 8. Open items for review
 
-1. **Name.** "Tandem" is a working name.
+1. **Name.** "Termurion" is a working name.

@@ -1,6 +1,6 @@
 # Milestone 7a acceptance checklist
 
-Close any open Tandem window, then run `C:\Users\datbi\src\tandem\target\release\tandem.exe`.
+Close any open Termurion window, then run `C:\Users\datbi\src\termurion\target\release\tandem.exe`.
 Cmd is the Win key and Option is Alt. Mark each line pass or fail.
 
 | # | Check | Result |
@@ -22,5 +22,5 @@ Cmd is the Win key and Option is Alt. Mark each line pass or fail.
 | 15 | Window > Resize Window > Increase Height / Decrease Width: the window grows or shrinks by one row or column. | |
 | 16 | Window > Edit Window Title "build": the title bar reads "1. build"; an empty title returns to the automatic one. Window > Tab > Edit Tab Title renames the tab. | |
 | 17 | Window > Arrange Windows > Arrange Windows Horizontally with three windows: they sit side by side across the monitor. | |
-| 18 | Click another app: Tandem's focused pane stays bright (its cursor turns hollow). Settings > Appearance > "Dim background windows" on: the whole window dims when in the background. | |
+| 18 | Click another app: Termurion's focused pane stays bright (its cursor turns hollow). Settings > Appearance > "Dim background windows" on: the whole window dims when in the background. | |
 | 19 | A profile with "Hide after opening": its new window opens minimized. With "Lock window size automatically", it cannot be resized. | |

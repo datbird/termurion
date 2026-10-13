@@ -1,20 +1,20 @@
 # Milestone 13p acceptance checklist
 
-Build a release binary (`scripts/xt build --release`), close any open Tandem window, copy `tandem.exe`,
+Build a release binary (`scripts/xt build --release`), close any open Termurion window, copy `tandem.exe`,
 `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`. Nothing of milestone 13p
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`. Nothing of milestone 13p
 was checked on screen during the build; every row below is an item the task reports list as untested,
 plus the security rows (marked SECURITY).
 
 Setup: a WSL profile (`wsl.exe`, Ubuntu with `en_US.UTF-8` generated), a `pwsh` profile, a `cmd.exe`
 profile, an MSYS2 or Git Bash profile if installed, a laptop (or a battery switch) for the sleep rows,
 Settings > Advanced open to read the rows, and `powercfg /requests` in an admin shell. Rows marked
-UNVERIFIED depend on a program (WSL, ncurses) Tandem cannot see itself; record what happened instead of
+UNVERIFIED depend on a program (WSL, ncurses) Termurion cannot see itself; record what happened instead of
 pass or fail. Mark each line pass or fail.
 
 | # | Check | Result |
 |---|---|---|
-| 1 | In a WSL profile (`wsl.exe`): `echo $LANG $COLORFGBG $TERMINFO_DIRS` shows `en_US.UTF-8` (or the machine's language), `15;0` on the dark stock profile, and a path ending `/mnt/c/.../Tandem/terminfo`. UNVERIFIED: WSL honoring WSLENV `/p` was never run; record what happened. | |
+| 1 | In a WSL profile (`wsl.exe`): `echo $LANG $COLORFGBG $TERMINFO_DIRS` shows `en_US.UTF-8` (or the machine's language), `15;0` on the dark stock profile, and a path ending `/mnt/c/.../Termurion/terminfo`. UNVERIFIED: WSL honoring WSLENV `/p` was never run; record what happened. | |
 | 2 | `infocmp xterm-256color \| grep Smulx` finds undercurl and `infocmp vt100` still works (UNVERIFIED: ncurses searching its own directories after `TERMINFO_DIRS`). | |
 | 3 | In a `pwsh`, `cmd.exe` and MSYS2 tab `TERMINFO_DIRS` is not set (WSL only) while `LANG` or `LC_CTYPE` and `COLORFGBG` are. Turn Advanced > Terminal `ShouldSetTerminfoDirs` off: a new WSL tab has no `TERMINFO_DIRS`. Turn `UseColorfgbgFallback` off and use a profile whose colors match no ANSI color: `COLORFGBG` is unset. | |
 | 4 | A profile with Terminal Type `xterm-direct` (13o): `echo $TERM` in WSL shows it (TERM travels through WSLENV). | |
@@ -36,10 +36,10 @@ pass or fail. Mark each line pass or fail.
 | 20 | The band's layering: with an info bar (OSC 1337 SetProfileProperty ask), the find bar (Win+F), the composer, a completion list, a porthole, the tab tooltip and the AI or broadcast indicator over a scrolled pane, the band draws around them, their buttons click and the band's text never overlaps; row 0's underline or box lines never show through the band. Two windows: a click in one never reveals in the other. A per-pane font size changes the band's text and height. | |
 | 21 | Progress bars: `pwsh -c "for($i=0;$i -le 100;$i+=10){[Console]::Write(\"`e]9;4;1;$i`a\"); Start-Sleep -Milliseconds 200}; [Console]::Write(\"`e]9;4;0`a\")"` draws a green bar filling from the left at the pane top in one tab, and in the tab cell (2 px at its top) with two tabs; a split tab shows it inline. `9;4;3` glides (3 s dark, 6 s light), `9;4;2` pulses red, `9;4;2;30` is red at 30%, `9;4;4;50` amber, `9;4;4` keeps the shown percentage (10 with none); `9;4;1;500` and `9;4;9` change nothing; a bare `9;4` and `printf '\ec'` (RIS) remove the bar; every Progress Bar Color Scheme changes it in a dark and a light profile. | |
 | 22 | Progress settings: Enable Progress Bars off greys the height and scheme rows and draws no bar; typing 5 into the height shows the margin message and stores the margin. A running bar does not keep the CPU busy once it is cleared or when its tab is in the background (Task Manager idle). No bar on the Windows taskbar button (as iTerm2). | |
-| 23 | Prevent Sleep on a profile: `powercfg /requests` lists Tandem under SYSTEM while on power (on battery only with Advanced > General `PreventSleepOnBatteryToo`), and Settings > Profiles > Session shows "1 session is currently preventing sleep."; unplugged, within 5 s it reads "would prevent sleep, but it is disabled while on battery."; closing or exiting the session shows "No sessions are currently preventing sleep." and the request is gone; Undo Close restores it; quitting Tandem releases it. | |
+| 23 | Prevent Sleep on a profile: `powercfg /requests` lists Termurion under SYSTEM while on power (on battery only with Advanced > General `PreventSleepOnBatteryToo`), and Settings > Profiles > Session shows "1 session is currently preventing sleep."; unplugged, within 5 s it reads "would prevent sleep, but it is disabled while on battery."; closing or exiting the session shows "No sessions are currently preventing sleep." and the request is gone; Undo Close restores it; quitting Termurion releases it. | |
 | 24 | Advanced > General `JiggleTTYSizeOnClearBuffer` on: Edit > Clear Buffer redraws the prompt in a WSL shell; off it does not. | |
 | 25 | Advanced > General `IdleTimeSeconds` 10: the idle indicator waits 11 s after output stops (default 2 s needs 3 s); a running session keeps its value until restarted (ruled). | |
-| 26 | Advanced > Experimental Features `FastForegroundJobUpdates` on: the tab title and status bar job return to the shell as soon as `ping -n 3 127.0.0.1` ends, also with Tandem in the background; off they follow the poll (0.5 s in front, 5 s behind). An idle Tandem shows 0% CPU. | |
+| 26 | Advanced > Experimental Features `FastForegroundJobUpdates` on: the tab title and status bar job return to the shell as soon as `ping -n 3 127.0.0.1` ends, also with Termurion in the background; off they follow the poll (0.5 s in front, 5 s behind). An idle Termurion shows 0% CPU. | |
 | 27 | Advanced shows the eight new rows with iTerm2's text: Terminal (DoNotSetCtype, UseColorfgbgFallback, ShouldSetTerminfoDirs), General (PreventSleepOnBatteryToo, IdleTimeSeconds, JiggleTTYSizeOnClearBuffer, FallbackLCCType), Experimental Features (FastForegroundJobUpdates). DoNotSetCtype can be switched and changes nothing (R2). | |
 
 Kept iTerm2 quirks and rulings a person can see (all in `docs/superpowers/rulings/m13p-rulings.txt`):

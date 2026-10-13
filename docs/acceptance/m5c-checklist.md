@@ -1,6 +1,6 @@
 # Milestone 5c acceptance checklist
 
-Close any open Tandem window, then run `C:\Users\datbi\src\tandem\target\release\tandem.exe`.
+Close any open Termurion window, then run `C:\Users\datbi\src\termurion\target\release\tandem.exe`.
 Cmd is the Win key and Option is Alt. The checks use WSL (`wsl`). Mark each line pass or fail.
 
 | # | Check | Result |
@@ -13,7 +13,7 @@ Cmd is the Win key and Option is Alt. The checks use WSL (`wsl`). Mark each line
 | 6 | `printf '\e]1337;CursorShape=1\a'`: the cursor is a bar. `CursorShape=0` goes back to a block. | |
 | 7 | `seq 500; printf '\e]1337;ClearScrollback\a'`: the screen and scrollback clear; the prompt line stays. | |
 | 8 | `printf '\e]1337;HighlightCursorLine=yes\a'`: the cursor row gets the cursor guide; `=no` removes it. | |
-| 9 | Switch to another window, then from Tandem run `sleep 2; printf '\e]1337;RequestAttention=once\a'`: the taskbar button flashes once. `=yes` flashes until Tandem comes to the front. `=flash`: the pane flashes white. `=fireworks`: sparks burst at the cursor. | |
+| 9 | Switch to another window, then from Termurion run `sleep 2; printf '\e]1337;RequestAttention=once\a'`: the taskbar button flashes once. `=yes` flashes until Termurion comes to the front. `=flash`: the pane flashes white. `=fireworks`: sparks burst at the cursor. | |
 | 10 | `printf '\e]1337;ReportCellSize\a'; read -rs -t1 -d '\' x; echo "$x" | cat -v` shows `ReportCellSize=<height>;<width>;<scale>`. `ReportWindowFrame` and `ReportScreenFrames` answer with numbers that match the window and monitors (points, y from the bottom). | |
 | 11 | `printf '\e]1337;SetWindowFrame=100;100;800;500\a'`: the window moves and resizes (y counts from the bottom of the main monitor). | |
 | 12 | `printf '\e]1337;SetColors=bg=202040,red=ff8000,tab=00a0ff\a'; printf '\e[31mred\e[0m\n'`: the background changes, red text is orange, and with two tabs open this tab has a blue stripe. `tab=default` removes the stripe. | |

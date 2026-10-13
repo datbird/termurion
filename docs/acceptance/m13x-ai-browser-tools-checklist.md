@@ -1,8 +1,8 @@
 # Milestone 13x AI browser tools acceptance checklist
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Setup: a provider key in Settings > General > AI, "Enable generative AI features" on, the WebView2
 Runtime installed, and a Browser profile from 13x (Settings > Profiles, Profile type Browser). Have
@@ -13,7 +13,7 @@ window). A proxy log of the provider host is needed for row 33. Mark each line p
 
 | # | Check | Result |
 |---|---|---|
-| 1 | Open a browser tab on a docs page. In an AI chat, Chat Info > Link Browser Session starts a pick, and the picker button appears in that tab's toolbar strip (drawn by Tandem, covering the address field). | |
+| 1 | Open a browser tab on a docs page. In an AI chat, Chat Info > Link Browser Session starts a pick, and the picker button appears in that tab's toolbar strip (drawn by Termurion, covering the address field). | |
 | 2 | Press the button: the chat shows the link notice naming the page title and the site, and the permission bubble shows one button (Act in Web Browser), not the terminal ones. | |
 | 3 | Chat Info now shows Reveal, Unlink, Put Chat and "AI can Act in Web Browser" for the browser session. | |
 | 4 | Session > Open AI Chat in a browser tab opens "Chat about <title>" already linked to that tab. | |
@@ -35,7 +35,7 @@ window). A proxy log of the provider host is needed for row 33. Mark each line p
 
 | # | Check | Result |
 |---|---|---|
-| 13 | Ask "what is on this page?": the model asks to read it; the approval is Tandem's text naming the action and the site the tab shows ("read the web page on example.com", host end kept, never the page title); Allow Once; it quotes the page. Ask again, and before answering move the tab to another site (or reload it): Allow Once answers "Page changed" and nothing is read. | |
+| 13 | Ask "what is on this page?": the model asks to read it; the approval is Termurion's text naming the action and the site the tab shows ("read the web page on example.com", host end kept, never the page title); Allow Once; it quotes the page. Ask again, and before answering move the tab to another site (or reload it): Allow Once answers "Page changed" and nothing is read. | |
 | 14 | Ask it to find a word on the page: Allow Once; it answers with line numbers and the matching lines. | |
 | 15 | Ask it to read one section by line numbers: Allow Once; it returns that slice; a start past the end answers out of bounds. | |
 | 16 | Ask for the current URL: it answers with the page's address without credentials (user name and password removed); the query string is kept whole, as iTerm2 does (B9 cuts only credentials). | |
@@ -89,7 +89,7 @@ window). A proxy log of the provider host is needed for row 33. Mark each line p
 
 One probe test belongs to this milestone:
 
-- [ ] `webhost_win::probe::ai_browser_tools_run_on_a_page` (the pure answer functions over the real markdown script on a 127.0.0.1 page, loads through the guarded `navigate`; secret fields, a `[hidden]` element, a password-autocomplete textarea and a Tandem mark annotation absent from the page text while their unmarked twins are present; a `</page-content>` line in the page cannot close the fence; a model may not read the 127.0.0.1 page itself (final review I3); find and section answers). Changed in the final wave after the 2026-10-11 PASS: run it again.
+- [ ] `webhost_win::probe::ai_browser_tools_run_on_a_page` (the pure answer functions over the real markdown script on a 127.0.0.1 page, loads through the guarded `navigate`; secret fields, a `[hidden]` element, a password-autocomplete textarea and a Termurion mark annotation absent from the page text while their unmarked twins are present; a `</page-content>` line in the page cannot close the fence; a model may not read the 127.0.0.1 page itself (final review I3); find and section answers). Changed in the final wave after the 2026-10-11 PASS: run it again.
 
 Run it from an ssh session on EXTREME with Robert's yes and no implementer building in the
 checkout; a PowerShell console window shows for the whole run; `probe: process session N` must show

@@ -1,8 +1,8 @@
 # Milestone 13d acceptance checklist
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Nothing in this milestone was checked on screen while it was built, so every line here is a
 first look. Setup: the tab bar settings are on Settings > Appearance > General ("Tab bar
@@ -24,7 +24,7 @@ or fail.
 | 5 | In Advanced > Tabs turn off "Allow a tab to be dragged and dropped outside any existing tab bar to create a new window.": a tab dropped over the desktop stays where it was. Turn it back on. | |
 | 6 | With two pinned tabs (Pin Tab, check 23) and two unpinned ones, drag a pinned tab far to the right: it stops at the last pinned slot. Drag an unpinned tab to the far left: it stops at the first unpinned slot. Drag a pinned tab over the desktop: no window opens; dragged onto another window's bar it moves there. | |
 | 7 | Press on the "+" button and drag: the window moves with the pointer; a plain click on "+" still opens a tab. In Advanced > Tabs turn off "Allow dragging window by the Add Tab button in the tab bar?": a drag from "+" no longer moves the window. | |
-| 8 | Set Advanced > Tabs "How far must the mouse move before a tab drag is initiated?" to 60 and restart Tandem: a tab starts to move only after about 60 pixels. Set it back to 10 and restart. | |
+| 8 | Set Advanced > Tabs "How far must the mouse move before a tab drag is initiated?" to 60 and restart Termurion: a tab starts to move only after about 60 pixels. Set it back to 10 and restart. | |
 
 ## Tab bar position and size
 
@@ -60,8 +60,8 @@ or fail.
 | # | Check | Result |
 |---|---|---|
 | 23 | With four tabs, right-click tab 3 and choose Pin Tab: it moves to the front, 64 points wide (64 pixels at 100% display scale), with the pin glyph at its left and only the first character of its title; hovering it shows no close button and it shows no "Win+N" number. Pin tab 4 too: it lands right after the first pinned tab. | |
-| 24 | Close a pinned tab with the tab menu's Close Tab: Tandem asks ("Close tab #1?" with "Tab #1 is pinned."), even with nothing running. Cancel. | |
-| 25 | Quit Tandem with a pinned tab open: the quit question lists "Tab #1 is pinned." (and one line per other pinned tab, window by window). Cancel. | |
+| 24 | Close a pinned tab with the tab menu's Close Tab: Termurion asks ("Close tab #1?" with "Tab #1 is pinned."), even with nothing running. Cancel. | |
+| 25 | Quit Termurion with a pinned tab open: the quit question lists "Tab #1 is pinned." (and one line per other pinned tab, window by window). Cancel. | |
 | 26 | Right-click a pinned tab: there is no Move to New Window, and the item reads Unpin Tab; Close Other Tabs and Close Tabs to the Right skip the pinned tabs. Unpin both. | |
 | 27 | In Advanced > Tabs set "Width of pinned tabs in pixels." to 100: pinned tabs are 100 points wide. Set it back to 64. | |
 
@@ -96,8 +96,8 @@ or fail.
 | 42 | Run `git cat-file --batch` (git waits for input; Ctrl+C ends it): the tab shows the git icon in git's orange. Run `timeout /t 30`: a "T" circle while it waits. (`git log` at its pager may show the pager's book icon, since `less` is then the foreground job.) | |
 | 43 | Turn off Advanced > Tabs "Use the running command's first letter as the tab's default icon if there isn't a built in one.": the letter circles go, the git icon stays. Turn it back on. | |
 | 44 | Set "Profile icon" to Custom and "Custom icon path" to the PNG: the tab shows it in a 16-point box. A path that does not exist shows nothing, and so do `\\host\share\i.png`, `\/host/share/i.png` and a path under a folder link (`mklink /D`) to a share. "No Icon" shows none. | |
-| 45 | With the git icon showing, create `%APPDATA%\Tandem\graphic_colors.json` containing `{"git": "#ff0000"}` and restart Tandem: the git icon is red. Delete the file and restart: orange again. | |
-| 46 | Pin a tab that shows an icon: the pinned tab shows only the icon (no pin glyph, no title). The window's title bar keeps the Tandem app icon. | |
+| 45 | With the git icon showing, create `%APPDATA%\Tandem\graphic_colors.json` containing `{"git": "#ff0000"}` and restart Termurion: the git icon is red. Delete the file and restart: orange again. | |
+| 46 | Pin a tab that shows an icon: the pinned tab shows only the icon (no pin glyph, no title). The window's title bar keeps the Termurion app icon. | |
 
 ## Duplicate Tab
 
@@ -112,7 +112,7 @@ or fail.
 |---|---|---|
 | 49 | Attach `tmux -CC` with two windows as tabs, set the tab bar to Left: run `seq -s ' ' 1 400` in a tmux tab: the lines wrap at the visible edge of the pane and nothing is hidden under the bar. Drag the side bar wider: tmux's lines re-wrap to the narrower pane. Try Bottom and Right the same way. | |
 | 50 | Right-click a tmux tab: there is no Duplicate Tab and no Pin Tab. Put a tmux tab in a group with a local tab and pin the local tab: nothing happens (a group holding a tmux tab never pins). | |
-| 51 | Drag a tmux tab into another Tandem window: it moves whole. Detach and reattach: that tmux window opens in the window it was dragged to. | |
+| 51 | Drag a tmux tab into another Termurion window: it moves whole. Detach and reattach: that tmux window opens in the window it was dragged to. | |
 | 52 | New Tab to the Right on a tmux tab asks "What kind of tab do you want to open?"; New tmux Tab opens a tmux tab (at the end of the bar, kept item 70). Shell > Duplicate Tab on a tmux tab makes a local tab at the end. | |
 | 53 | With "Built-in Icon for Current App", run `vim` in a tmux tab: the tab shows the vim icon. | |
 
@@ -137,5 +137,5 @@ or fail.
 | 68 | The icon sits in the close button's place: hidden while the hover close button shows, never shown in the key window with "Should tab close buttons always remain visible?" on (in a window that is not key it shows at half strength, YS:896-905). A centered title does not shift for the icon unless it truncates. | |
 | 69 | Icon files and the two map files on a network path, however spelled, or reached through a link to one, are never read; a map with a trailing comma is read anyway. | |
 | 70 | A tmux tab opened by New Tab to the Right lands at the end of the bar, not next to the clicked tab. | |
-| 71 | An icon or map file over 8 MiB, or a picture over 4096 pixels a side, shows nothing (a Tandem limit; iTerm2 has none). | |
-| 72 | A Custom icon path naming a Windows device (`COM1`, `NUL`, `CON.png`, `C:\Users\datbi\Pictures\LPT1.png`, `\\.\COM1`) or a folder shows no icon, and the window never stops responding (a Tandem limit: only regular files are read). | |
+| 71 | An icon or map file over 8 MiB, or a picture over 4096 pixels a side, shows nothing (a Termurion limit; iTerm2 has none). | |
+| 72 | A Custom icon path naming a Windows device (`COM1`, `NUL`, `CON.png`, `C:\Users\datbi\Pictures\LPT1.png`, `\\.\COM1`) or a folder shows no icon, and the window never stops responding (a Termurion limit: only regular files are read). | |

@@ -1,7 +1,7 @@
 # Milestone 9g acceptance checklist
 
-Close any open Tandem window. Copy `tandem.exe`, `tandem-host.exe`, `conpty.dll`, and
-`OpenConsole.exe` from `C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+Close any open Termurion window. Copy `tandem.exe`, `tandem-host.exe`, `conpty.dll`, and
+`OpenConsole.exe` from `C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 Mark each line pass or fail.
 
 | # | Check | Result |
@@ -29,9 +29,9 @@ Mark each line pass or fail.
 | 21 | Two panes, one whose profile shows a bar and one whose profile does not (bars not per pane): move focus between them. The bar comes and goes with the focus, and the terminal resizes each time (run `mode` or `$Host.UI.RawUI.WindowSize` to see the rows change). | |
 | 22 | The same in a tmux tab (`tmux -CC`): the tab has one bar for the window even with bars per pane on, and tmux is told the size without the bar (`tmux display -p '#{window_height}'` changes when the bar comes and goes). | |
 | 23 | Run a program with mouse reporting on (for example `vim` in WSL with `:set mouse=a`) and click the bar several times, left and right: the program never sees a click or release (the cursor does not move, no visual selection starts). | |
-| 24 | Advanced > General > statusBarHeight set to 30: the bar grows to 30 points (Tandem applies it at once; iTerm2 needs a restart). Set it back to 21. | |
+| 24 | Advanced > General > statusBarHeight set to 30: the bar grows to 30 points (Termurion applies it at once; iTerm2 needs a restart). Set it back to 21. | |
 | 25 | A session with its own profile copy (a program changed one of its settings, for example with OSC 1337 SetProfileProperty, allowed): right-click its bar, Configure Status Bar, add a spacer, OK. The saved profile changes and the session's copy follows it, so every session of that profile shows the spacer. | |
-| 26 | Import an iTerm2 profile whose status bar has a clock and a spring (milestone 2's iTerm2 import): the bar shows the spring only; the setup window lists "Clock" in grey in Active Components; after OK Tandem's saved profile still has the clock component. | |
+| 26 | Import an iTerm2 profile whose status bar has a clock and a spring (milestone 2's iTerm2 import): the bar shows the spring only; the setup window lists "Clock" in grey in Active Components; after OK Termurion's saved profile still has the clock component. | |
 | 27 | General > tmux shows "Status bar shows tmux status bar content, not native components" (on); its help says it comes in milestone 9h. | |
 | 28 | "Separate status bars per pane" on, two windows, each with a pane whose profile shows a bar. With the second window in front, turn that profile's "Status bar enabled" off in Settings, then on: the first window's panes lose and regain their bars and their terminals resize each time (run `mode` there: the rows change by one or two; the bottom row is never hidden under a bar). The same for statusBarHeight 30 and back, and for turning "Separate status bars per pane" off and on. | |
 | 29 | A session whose own profile copy overrides Status Bar Layout (open Configure Status Bar on it after a SetProfileProperty, add a spacer, a spring and a spacer, OK): right-click its bar on the spring, Hide Empty Space. That session's bar loses the spring; another session of the same saved profile keeps its layout. | |

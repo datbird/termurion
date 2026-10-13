@@ -1,7 +1,7 @@
 # Milestone 9a acceptance checklist
 
-Close any open Tandem window. Copy `tandem.exe`, `tandem-host.exe`, `conpty.dll`, and
-`OpenConsole.exe` from `C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+Close any open Termurion window. Copy `tandem.exe`, `tandem-host.exe`, `conpty.dll`, and
+`OpenConsole.exe` from `C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 Use a WSL bash tab with shell integration unless a line says otherwise. Mark each line pass or fail.
 
 | # | Check | Result |

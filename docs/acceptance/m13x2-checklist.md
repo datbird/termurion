@@ -1,8 +1,8 @@
 # Milestone 13x2 acceptance checklist (browser foundations)
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe` with the WebView2
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe` with the WebView2
 Runtime installed (one run). Mark each line pass or fail. Nothing of 13x2's window, COM or
 isolated-world code has run on a real WebView2: the ignored runtime tests, the context menu, the
 link tip window, the overlays, the DevTools replay and the world itself are all on this list.
@@ -16,7 +16,7 @@ Two test pages, served from a folder on this machine with `python -m http.server
 
 ```
 <!-- ok.html -->
-<title>Tandem 13x2 test</title>
+<title>Termurion 13x2 test</title>
 <p>255 1700000000 2023-11-14T22:13:20Z #ff8000 aGVsbG8= 68 69 00 00 00 01 x@example.com</p>
 <p><a href="https://example.com/a">example link</a></p>
 <p><a href="http://user:pass@x.blob.core.windows.net/p">blob link</a>
@@ -36,7 +36,7 @@ Two test pages, served from a folder on this machine with `python -m http.server
 <p id="p">select me</p>
 <script>
 window.report = [];
-try { report.push('binding:' + typeof window.__tandemClient); } catch (e) {}
+try { report.push('binding:' + typeof window.__termurionClient); } catch (e) {}
 try { report.push('webview:' + typeof (window.chrome && window.chrome.webview)); } catch (e) {}
 document.addEventListener('message', e => report.push('msg:' + JSON.stringify(e.data)), true);
 setTimeout(() => { var r = document.createRange(); r.selectNodeContents(document.getElementById('p'));
@@ -52,20 +52,20 @@ setTimeout(() => { var r = document.createRange(); r.selectNodeContents(document
 | 3 | The output's `Runtime.enable detectable: yes` or `no` line is copied into the rulings file; replace line 1 with `Probe: PASS\|FAIL on EXTREME, WebView2 Runtime <version>, <date>; Runtime.enable detectable: yes\|no`. If yes, the controller revisits P25 before 13x3. | |
 | 4 | The script's last lines say `left running: none`, `left scheduled: none` and `left on disk: none`; `schtasks /Query /TN tandem-probe-<stamp>` says the task cannot be found; no `tandem-probe-*` folder remains under `C:\Users\datbi` or `%TEMP%`, and Teams, Outlook and other WebView2 hosts were not touched. | |
 | 5 | Also in the console session (same method, one task): the other ignored runtime tests pass: `bridge_round_trip` (`typeof window.webkit` is "undefined" on an https page and "object" on `iterm2-about:history`), `menu_gets_our_items`, `hover_reaches_the_router`, `send_text_reaches_a_field` (a field, a contenteditable, nothing focused), `smart_selection_selects_in_a_page`, `synthetic_click_runs_nothing`, `broadcast_types_into_a_second_view`, `probe_page_cannot_reach_evaluate_in_frame`. The script's default filters (`webhost_win::probe::` and `webhost_win::tests::menu_gets_our_items`) run all of them. (`synthetic_selection_copies_nothing` is not written: row 10 covers it by hand.) | |
-| **B. Security (page world versus Tandem's world)** | | |
+| **B. Security (page world versus Termurion's world)** | | |
 | 6 | Open `evil.html` in a Browser profile tab, then in DevTools (Inspect) console run `report`: it contains `binding:undefined` and `webview:undefined` (a page cannot call the binding or the host object from its own world). | |
-| 7 | In the same page's console, search for the per-view secret: no `msg:` entry, no global, no DOM attribute and no `postMessage` to the page contains a long random string that also appears in a Tandem log; open `ok.html` with its iframe, focus fields inside the frame, and re-check `report`-style message listeners (a capture-phase `message` listener in the page): nothing it records contains the view secret (the detector's `dom_secret` may appear and is public by design). | |
-| 8 | Call `window.__tandemClient('{}')` and `window.chrome.webview.postMessage('x')` from the page console: the first is not a function, the second does nothing visible (no menu, no toast, no navigation). | |
-| 9 | A page cannot reach Tandem's evaluator: in the console, override `document.elementFromPoint` and `Range.prototype.toString` to return `x&calc`, then four-click text and Win-click it: the selected text and any command ask come from the real DOM, not the override (the host scripts run in Tandem's world). | |
+| 7 | In the same page's console, search for the per-view secret: no `msg:` entry, no global, no DOM attribute and no `postMessage` to the page contains a long random string that also appears in a Termurion log; open `ok.html` with its iframe, focus fields inside the frame, and re-check `report`-style message listeners (a capture-phase `message` listener in the page): nothing it records contains the view secret (the detector's `dom_secret` may appear and is public by design). | |
+| 8 | Call `window.__termurionClient('{}')` and `window.chrome.webview.postMessage('x')` from the page console: the first is not a function, the second does nothing visible (no menu, no toast, no navigation). | |
+| 9 | A page cannot reach Termurion's evaluator: in the console, override `document.elementFromPoint` and `Range.prototype.toString` to return `x&calc`, then four-click text and Win-click it: the selected text and any command ask come from the real DOM, not the override (the host scripts run in Termurion's world). | |
 | 10 | Open `evil.html`: after a second its script selects "select me" with no click. The clipboard and Paste History are unchanged (a page-made selection never copies). Then click once on the page, wait 2 s past the 1 s window, and let the script select again: still nothing new copied. | |
 | 11 | Hover a link in `ok.html` (the one on a long URL): the tip shows the real host. Make a link whose URL has 3,000 characters of user information ending in `accounts.google.com` before an `@evil.test` host: the tip keeps `evil.test` visible, never `google.com` alone. | |
 | 12 | Hover the `x.blob.core.windows.net` link: the tip shows `x.blob.core.windows.net` (the attacker's label is kept, not just `blob.core.windows.net` or a trusted-looking tail). Hover `evil.github.io`: shows `evil.github.io`. In a narrow pane both keep the whole registrable host (an ellipsis, then `evil.github.io`; never a cut label). Narrow a pane until the address field is about 12 characters wide on `https://paypal-verify.com/`: the field shows `paypal-verify.com` from its start (clipped at the right edge), never `paypal` plus an ellipsis plus `.com`; the same for `notpaypal.com`. | |
 | 13 | Broadcast never types a password into another pane: two browser panes on `ok.html`, broadcast to both as sources; focus `#pw` (type=password) in the first and type: nothing appears in the second pane's `#pw` or anywhere. Repeat with `#mask` (`-webkit-text-security`) and with `#c` inside the closed shadow root: nothing is sent or typed. Focus the field in the second pane's `#pw` and type in the first's `#t1`: the second's password field receives nothing. | |
 | 14 | An iframe focus is skipped: click into the iframe in one pane and type: nothing is broadcast; a pane whose page has focus inside an iframe receives nothing. | |
 | 15 | A restored arrangement with a `javascript:` or `file:` URL never loads: save an arrangement with a browser pane, edit the arrangement file's `Browser URL` to `javascript:alert(1)`, restore: the pane starts the profile's Initial URL and no alert shows. Repeat with `file:///C:/Windows/win.ini`, `file://evil/s/x` and `\\evil\s\x`: none loads. | |
-| 16 | Ctrl+L, Alt+D and F6 go to Tandem: with a page focused, each focuses the address field and the page does not react (a page `keydown` logger sees no key for the page's own handlers except a KEY_UP, which is known and ruled). Then bind Ctrl+L to Send Text "x" in the profile: your own binding wins and types "x" (outside a text field), not the address field. | |
+| 16 | Ctrl+L, Alt+D and F6 go to Termurion: with a page focused, each focuses the address field and the page does not react (a page `keydown` logger sees no key for the page's own handlers except a KEY_UP, which is known and ruled). Then bind Ctrl+L to Send Text "x" in the profile: your own binding wins and types "x" (outside a text field), not the address field. | |
 | 17 | A page `window.open("javascript:alert(1)")` and `window.open("file:///C:/")` and `window.open("data:text/html,x")` do nothing; `window.open("https://example.com/")` opens a tab. | |
-| 18 | A terminal link to `\\host\share\x` or a percent-encoded network file link shows "Tandem does not open network file links: ..." and opens nothing; a page link to `file://host/share/x` opens nothing in the pane. | |
+| 18 | A terminal link to `\\host\share\x` or a percent-encoded network file link shows "Termurion does not open network file links: ..." and opens nothing; a page link to `file://host/share/x` opens nothing in the pane. | |
 | 19 | A page cannot put a long text on the command path: select `x&calc` in the page, right-click: a Smart Selection rule action "Run Command in Window" shows a banner, no ask, nothing runs. With a rule whose action matches `ping 127.0.0.1`: an ask shows the WHOLE line; Cancel runs nothing; a selection of 400 or more characters offers no Smart Selection items. | |
 | **C. Page load and the world** | | |
 | 20 | Open a Browser profile tab on `ok.html`: it loads as before; the toolbar may show about:blank for an instant at the start only (the isolation check), with no flicker loop and no flash on later pages; Back is disabled on a new pane (`CanGoBack` false). | |
@@ -93,7 +93,7 @@ setTimeout(() => { var r = document.createRange(); r.selectNodeContents(document
 | 39 | Hover a link: its URL shows in a small box at the pane's bottom-left (8 by 4 padding, 4 from the edges); hover a link at the bottom-left: the box moves to the bottom-right; the box never takes focus or clicks and does not move the cursor. | |
 | 40 | A look-alike (IDN) host shows as xn-- punycode; a very long URL keeps the end of the host with wide letters in a narrow pane; hovering several links with different lengths in turn shows no flash of the old size. | |
 | 41 | Move off the link: the box goes. Switch tab, click the address field, navigate, Alt+Tab away, minimize: the box goes. Rapidly sweep over many links: no flicker, no growing number of windows (Task Manager shows one tip window). | |
-| 42 | A page that reports a link rectangle far from the pointer shows nothing. A tip near the screen's right edge with the Tandem window partly off screen: note whether the host end is cut (known: bounded by the pane, not the monitor). | |
+| 42 | A page that reports a link rectangle far from the pointer shows nothing. A tip near the screen's right edge with the Termurion window partly off screen: note whether the host end is cut (known: bounded by the pane, not the monitor). | |
 | 43 | Copy Link Address (pointer action or menu) shows "Copied" for 1 second above the pointer and does not vanish early when a hover happens during it. | |
 | 44 | An announcement bar (when 13x6 or 13x7 raise one) covers the top of the page and the page starts below it; each button answers once; closing answers nothing. A browser pane's toolbar sits flush under the title bar with no empty second strip, also beside an open Clippings or inline-chat panel. | |
 | **G. Key bindings in a page** | | |
@@ -105,7 +105,7 @@ setTimeout(() => { var r = document.createRange(); r.selectNodeContents(document
 | 50 | Set Profile to a terminal profile does nothing on a browser pane; to a browser profile it switches. A pending Leader is dropped by the next key, including F6 and Ctrl+L. | |
 | **H. Pointer bindings and four clicks (world)** | | |
 | 51 | Bind middle click to Next Tab: middle-clicking a page switches tabs and the page gets no middle click and no autoscroll. Without the binding, middle click pastes the clipboard into the focused field. Bind a mouse button 4 or 5 (Back or Forward) to an action: it runs and the page does not navigate. | |
-| 52 | Right click still shows WebView2's menu with Tandem's items; Ctrl+left click shows the same menu; a middle button bound to Open Context Menu shows a menu (note whether WebView2 raises it for a synthesized click). | |
+| 52 | Right click still shows WebView2's menu with Termurion's items; Ctrl+left click shows the same menu; a middle button bound to Open Context Menu shows a menu (note whether WebView2 raises it for a synthesized click). | |
 | 53 | Open URL binding on a link opens it in place; Open URL in background opens a new tab; a link to a network file path shows a banner and opens nothing. | |
 | 54 | Four clicks on an email select it; with Copy on Selection on it is copied, off it is not. Win-click on it runs its first action (Run Command asks first) and copies nothing; Win-click over text whose best rule has no action selects it and runs nothing. | |
 | 55 | Extend Selection binding moves the selection end to the click; Jump to Selection (Find menu) scrolls the selection to the middle. Quick Look on an image or link shows the popover for the first URL. | |
@@ -116,6 +116,6 @@ setTimeout(() => { var r = document.createRange(); r.selectNodeContents(document
 | 59 | A terminal pane in the same broadcast set gets nothing from browser typing, and a browser pane's typing never reaches a terminal. A pane turned off as source, or closed, stops receiving. A Dev Null browser pane and a normal one in one set exchange nothing. A target page with no focused field ignores text (known; note it). | |
 | 60 | Turn broadcast off while typing fast: at most a few characters arrive late (queued replays). | |
 | 61 | Save a window arrangement with a browser pane on a page, restore it: the pane shows that page; a Dev Null pane restores to its profile's Initial URL; the arrangement file holds the URL without fragment or user information and a `Browser Target` of at most 256 characters. | |
-| 62 | Quit and relaunch with a browser tab open in several windows: every restored window's page loads after the windows appear. Duplicate Session and Duplicate Tab on a browser pane open the same page. A browser profile whose Initial URL is a local `file:///C:/...` page, or `about:version`, loads it after a relaunch as it does in a new pane; one on `file://evil/s/x` shows the banner "Tandem will not open that file location.", never a silent blank pane. | |
-| 63 | History (`iterm2-about:history`): a typed address shows Typed (so does a page Tandem loads itself: a restored page, a bookmark), a clicked link Link, Reload Reload, Back and Forward BackForward, a redirecting URL Redirect. | |
+| 62 | Quit and relaunch with a browser tab open in several windows: every restored window's page loads after the windows appear. Duplicate Session and Duplicate Tab on a browser pane open the same page. A browser profile whose Initial URL is a local `file:///C:/...` page, or `about:version`, loads it after a relaunch as it does in a new pane; one on `file://evil/s/x` shows the banner "Termurion will not open that file location.", never a silent blank pane. | |
+| 63 | History (`iterm2-about:history`): a typed address shows Typed (so does a page Termurion loads itself: a restored page, a bookmark), a clicked link Link, Reload Reload, Back and Forward BackForward, a redirecting URL Redirect. | |
 | 64 | Minimal tab style (after 13e): a browser pane's tab tint follows the page's background and changes at most four times a second. (Not applicable until 13e consumes `browser_page_color`.) | |

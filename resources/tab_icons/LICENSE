@@ -18,7 +18,7 @@ Postgres icon from iTerm2 PR 389
 
 -
 
-Tandem: this folder is iTerm2's tab icon set, copied from iTerm2's tree
+Termurion: this folder is iTerm2's tab icon set, copied from iTerm2's tree
 (ThirdParty/hyper-tab-icons-plus: graphic_icons.json, graphic_colors.json, png/ and this
 file). png/graphic_emacs.png and png/graphic_emacs@2x.png are iTerm2's own first-party icons
 (images/FirstPartyTabIcons), under iTerm2's license: COPYING-iTerm2 is iTerm2's COPYING
