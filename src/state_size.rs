@@ -1,4 +1,4 @@
-//! `sizeInfo` over Tandem's saved state (`NSDictionary+iTerm.m:44-68`, `:287-298`, `:359-383`): the
+//! `sizeInfo` over Termurion's saved state (`NSDictionary+iTerm.m:44-68`, `:287-298`, `:359-383`): the
 //! size and count of every keypath, never a value (P5). Written to `statesize.*.txt` while
 //! `LogRestorableStateSize` is on.
 

@@ -25,7 +25,7 @@ pub struct Plan {
     pub forget: Vec<u64>,
 }
 
-/// `saved` is each saved session's host key (None: it ran inside Tandem); `saved_instance`
+/// `saved` is each saved session's host key (None: it ran inside Termurion); `saved_instance`
 /// the host instance the state names; `instance` and `live` what the host says now.
 pub fn plan(saved: &[Option<HostKey>], saved_instance: Option<&str>, instance: &str, live: &[Live]) -> Plan {
     let mut out = Plan::default();

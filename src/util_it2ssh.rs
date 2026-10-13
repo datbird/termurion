@@ -19,7 +19,7 @@ pub const EVAL_CMD: &str = "'eval \"$(echo \"$0\")\"'";
 pub const NO_TOKEN: &str = "none";
 
 /// The environment variable naming the transport a pane was started with.
-pub const TRANSPORT_VAR: &str = "TANDEM_SSH_TRANSPORT";
+pub const TRANSPORT_VAR: &str = "TERMURION_SSH_TRANSPORT";
 
 pub const NEEDS_PROFILE: &str =
     "it2ssh: SSH integration needs a session from a Tandem SSH profile (Settings > Profiles > General > Command type: SSH); running plain ssh.";

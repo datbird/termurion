@@ -62,7 +62,7 @@ pub fn to_sel(s: &pb::SubSelection, width: i32, lost: i64) -> Option<Sel> {
 /// A GetSelection sub-selection (`H:3970-4015`) from a selection of type `ty` whose start
 /// and inclusive end are (buffer index, column): lines numbered from the first line ever
 /// (`lost` added), the end one past its last column (at most the width), not connected, and
-/// no column window (Tandem keeps none).
+/// no column window (Termurion keeps none).
 pub fn from_sel(ty: SelectionType, start: (i64, i32), end_inclusive: (i64, i32), lost: i64, width: i32) -> pb::SubSelection {
     use pb::SelectionMode as M;
     let coord = |x: i32, y: i64| Some(pb::Coord { x: Some(x), y: Some(lost + y) });

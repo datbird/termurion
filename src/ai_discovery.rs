@@ -319,7 +319,7 @@ struct Run {
 /// What a finished run found: the models, or a failure with the names path's text.
 type Fetched = Result<Vec<Found>, Option<String>>;
 
-/// The discovered models of every server Tandem asked, by bucket (`OC:22-125`). At most one
+/// The discovered models of every server Termurion asked, by bucket (`OC:22-125`). At most one
 /// refresh runs per bucket; another request joins it. Refreshes run on the loop's ticks: a
 /// configured server is asked when first seen, 300 s after a healthy answer, and 5 s after a
 /// failure, up to `MAX_RETRIES` automatic retries; after those, a read of its models asks again.
@@ -680,7 +680,7 @@ fn restored_model(d: &Value, endpoint: &str) -> Option<Model> {
     Some(m)
 }
 
-/// The cache file, `%APPDATA%\Tandem\ollama-models.json` beside `settings.toml` (Decision 8).
+/// The cache file, `%APPDATA%\Termurion\ollama-models.json` beside `settings.toml` (Decision 8).
 #[cfg(windows)]
 pub fn default_path() -> PathBuf {
     crate::globals::default_path().with_file_name("ollama-models.json")
@@ -958,7 +958,7 @@ mod tests {
 
     #[test]
     fn discovery_ignores_ai_proxy() {
-        let mut g = Globals::empty(&std::env::temp_dir().join("tandem-ai-discovery-test.toml"));
+        let mut g = Globals::empty(&std::env::temp_dir().join("termurion-ai-discovery-test.toml"));
         g.set("AiProxy", Value::String("proxy.test:8080".into()));
         let t: Table = r#"v = [{name="d", url="https://gpu.test/api/chat", dynamicModels=true}]"#.parse().unwrap();
         g.set(crate::ai_settings::MANUAL_MODELS, t["v"].clone());
@@ -1064,7 +1064,7 @@ mod tests {
 
     #[test]
     fn cache_persists_like_iterm2() {
-        let path = std::env::temp_dir().join(format!("tandem-ollama-models-test-{}.json", std::process::id()));
+        let path = std::env::temp_dir().join(format!("termurion-ollama-models-test-{}.json", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let auth = pairs(&[("Authorization", "Bearer t")]);
         let cfg = vec![(OLLAMA_ENDPOINT.to_string(), Vec::new()), (GPU.to_string(), auth.clone())];
@@ -1112,7 +1112,7 @@ mod tests {
 
     #[test]
     fn configs_follow_iterm2() {
-        let mut g = Globals::empty(&std::env::temp_dir().join("tandem-ai-discovery-test.toml"));
+        let mut g = Globals::empty(&std::env::temp_dir().join("termurion-ai-discovery-test.toml"));
         assert_eq!(configs(&g), [(OLLAMA_ENDPOINT.to_string(), Vec::new())]);
         let t: Table = r#"v = [{name="a", url="http://a/v1"}, {name="d", url="http://gpu:11434/api/chat", dynamicModels=true, customHeaders=[{name="X-A", value="1"}]}, {name="e", url="", dynamicModels=true}]"#.parse().unwrap();
         g.set(crate::ai_settings::MANUAL_MODELS, t["v"].clone());

@@ -59,7 +59,7 @@ impl App {
         bv.world.history.arm();
         bv.bar.nav_state.will_load(&url);
         if let Some(v) = &bv.view {
-            v.navigate_tandem(&url);
+            v.navigate_termurion(&url);
         }
     }
 
@@ -88,7 +88,7 @@ impl App {
         bv.world.history.arm();
         bv.bar.nav_state.will_load(&url);
         if let Some(v) = &bv.view {
-            v.navigate_tandem(&url);
+            v.navigate_termurion(&url);
         }
     }
 
@@ -240,8 +240,8 @@ mod tests {
         let done = &me[me.find("fn browser_restoration_done").unwrap()..me.find("pub(super) fn browser_load_own").unwrap()];
         assert!(done.contains("self.browser_load_own(pane, &url)") && !done.contains("load_gate("), "the deferred load loads as the setup's end would (final review I2)");
         let own = &me[me.find("pub(super) fn browser_load_own").unwrap()..me.find("pub(super) fn browser_nav_starting").unwrap()];
-        assert!(own.contains("browser_restore::own_load(") && own.contains("self.banners.set(") && own.contains("navigate_tandem"), "a refused own load shows a banner, never a blank");
-        assert!(finish.contains("self.browser_load_own(pane, &url)") && !finish.contains("navigate_tandem"), "one road for the pane's own load");
+        assert!(own.contains("browser_restore::own_load(") && own.contains("self.banners.set(") && own.contains("navigate_termurion"), "a refused own load shows a banner, never a blank");
+        assert!(finish.contains("self.browser_load_own(pane, &url)") && !finish.contains("navigate_termurion"), "one road for the pane's own load");
         assert!(me.contains("fn browser_restoring(&self) -> bool"));
     }
 

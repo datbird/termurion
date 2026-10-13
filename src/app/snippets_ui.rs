@@ -12,7 +12,7 @@ const SNIPPET_ID: &str = "snippet-send:";
 pub(super) const ACTION_ID: &str = "action-apply:";
 
 pub(super) fn snippets_path() -> std::path::PathBuf {
-    std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem").join("snippets.json")
+    std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Termurion").join("snippets.json")
 }
 
 /// The snippets file as it is now (a missing file is an empty list).

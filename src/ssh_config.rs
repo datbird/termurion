@@ -23,9 +23,9 @@ pub const DEST_LABEL: &str = "Destination folder on remote host:";
 pub const HELP_URL: &str = "https://gitlab.com/gnachman/iterm2/-/wikis/SSH-Integration";
 /// The button beside the command type (`PreferencePanel.xib:2107`).
 pub const CONFIGURE: &str = "Configure\u{2026}";
-/// Tandem's: iTerm2's sheet has no title.
+/// Termurion's: iTerm2's sheet has no title.
 pub const SHEET_TITLE: &str = "Configure SSH";
-/// Tandem's: a Windows file dialog picks files or a folder, not both.
+/// Termurion's: a Windows file dialog picks files or a folder, not both.
 pub const ADD_FILES: &str = "Files\u{2026}";
 pub const ADD_FOLDER: &str = "Folder\u{2026}";
 
@@ -198,7 +198,7 @@ mod tests {
         assert_eq!(env_text(&strings(&["A", "B"])), "A B");
         assert_eq!(ok_path(""), None);
         assert_eq!(ok_path("C:\\s.exe"), Some("C:\\s.exe".to_string()));
-        let dir = std::env::temp_dir().join(format!("tandem-ssh-config-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-ssh-config-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("x.EXE");
         let txt = dir.join("x.txt");

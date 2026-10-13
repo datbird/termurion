@@ -335,7 +335,7 @@ fn to_bytes(body: Map<String, Value>) -> Vec<u8> {
 
 impl Dialect for ChatCompletions {
     /// `ModernBodyRequestBuilder.body()` (`CO:36-67`), plus `parallel_tool_calls: false` with
-    /// tools to OpenAI's own host (m12b ruling: Tandem runs only the first call of an answer;
+    /// tools to OpenAI's own host (m12b ruling: Termurion runs only the first call of an answer;
     /// the field is OpenAI's, so every other host gets iTerm2's bytes, even one 12a files under
     /// the OpenAI vendor).
     fn body(&self, b: &Build) -> Result<Vec<u8>, String> {

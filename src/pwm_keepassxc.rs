@@ -183,7 +183,7 @@ fn login(stdin: &[u8], runner: &mut dyn Runner) -> Result<Vec<u8>, Failure> {
 }
 
 /// How long a listing reads entry details (one `show` call each, a key derivation every time;
-/// a call itself is cut at 60 s). Tandem kills the adapter at 180 s, so after this the remaining entries are listed by name
+/// a call itself is cut at 60 s). Termurion kills the adapter at 180 s, so after this the remaining entries are listed by name
 /// only (no user name, no OTP flag) with a warning, instead of the whole listing being lost.
 const DETAIL_BUDGET: Duration = Duration::from_secs(100);
 

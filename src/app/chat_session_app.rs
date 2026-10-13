@@ -70,7 +70,7 @@ pub(super) fn pane_gets_picker(terminal_pick: bool, browser_pane: bool, linkable
     if terminal_pick { !browser_pane } else { browser_pane && linkable }
 }
 
-/// Whether a browser pane may be linked to a chat: never Dev Null, never a Tandem, power or local
+/// Whether a browser pane may be linked to a chat: never Dev Null, never a Termurion, power or local
 /// page (`ai_browser::offerable`, the one rule the tools use too).
 pub(super) fn browser_pane_linkable(url: &str, dev_null: bool) -> bool {
     crate::ai_browser::offerable(url, dev_null)
@@ -242,12 +242,12 @@ impl App {
         Some((id, scene::session_picker_button(frame, rect, chat_buttons::PICK_REASON, fg, bg, cell, self.scale())))
     }
 
-    /// Whether the browser pane `pane` may be linked now (not Dev Null, not a Tandem or local page).
+    /// Whether the browser pane `pane` may be linked now (not Dev Null, not a Termurion or local page).
     fn browser_linkable(&self, pane: PaneId) -> bool {
         self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| browser_pane_linkable(&io.url, io.dev_null))
     }
 
-    /// The picker's button on a browser pane while a pick for a browser is open: drawn by Tandem in
+    /// The picker's button on a browser pane while a pick for a browser is open: drawn by Termurion in
     /// the toolbar strip (the web view covers the pane), replacing the address field, and only on a
     /// linkable pane. The label is a constant; no page title or address is drawn. The rectangle
     /// goes in the same `picker_hits` as a terminal pane's.
@@ -918,8 +918,8 @@ mod tests {
     }
 
     /// `SS:35-40`, `SV:1203-1210`: a terminal pick shows the button on terminal panes, a browser
-    /// pick on browser panes only, and a browser pane that is not linkable (Dev Null, a Tandem or
-    /// local page) never shows one. A browser pane's button is Tandem's, drawn in the toolbar strip
+    /// pick on browser panes only, and a browser pane that is not linkable (Dev Null, a Termurion or
+    /// local page) never shows one. A browser pane's button is Termurion's, drawn in the toolbar strip
     /// from `picker_in_toolbar`, and its press is the one `picker_press`.
     #[test]
     fn the_picker_cover_takes_the_strips_input() {

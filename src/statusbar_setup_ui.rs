@@ -309,7 +309,7 @@ impl StatusBarSetupWindow {
                             ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
                             for (i, c) in layout.components.iter().enumerate() {
                                 let info = statusbar::info_for(&c.class, &c.config, algorithm);
-                                // A class Tandem does not show yet (milestone 9i's five)
+                                // A class Termurion does not show yet (milestone 9i's five)
                                 // keeps its place under its class name.
                                 let unknown = short_class(&c.class);
                                 let exemplar = match info {
@@ -497,7 +497,7 @@ impl StatusBarSetupWindow {
     }
 }
 
-/// `iTermStatusBarFooComponent` as "Foo", for a class Tandem does not show yet.
+/// `iTermStatusBarFooComponent` as "Foo", for a class Termurion does not show yet.
 fn short_class(class: &str) -> String {
     let s = class.strip_prefix("iTermStatusBar").unwrap_or(class);
     s.strip_suffix("Component").unwrap_or(s).to_string()

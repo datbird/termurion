@@ -101,8 +101,6 @@ class TableTests(unittest.TestCase):
         # Keep rows the plan demands.
         keep_old = {r.old for r in rows if r.mode.startswith("keep")}
         for needed in [
-            "tandem workgroup approval key\\0v1",
-            "tandem autofill contact card\\0v1",
             "{6A1E8D3C-2B7F-4C9E-9D41-5F0B7A2C8E13}",
             "/mnt/c/Users/datbi/src/tandem",
             "in tandem",
@@ -278,7 +276,7 @@ class ClassificationTests(unittest.TestCase):
                 sel = self.core.resolve(self.table, path, text)
                 owner = [s for s in sel if s.start <= start and start + len(key) <= s.end]
                 self.assertEqual(len(owner), 1, (path, key))
-                self.assertEqual(owner[0].row.mode, "keep", (path, key))
+                self.assertEqual(owner[0].row.mode, "exact", (path, key))  # scope change: renamed, not kept
                 self.assertEqual((owner[0].start, owner[0].end), (start, start + len(key)), (path, key))
 
     def test_no_catchall_bare_rows_in_code(self):

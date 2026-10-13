@@ -1054,7 +1054,7 @@ mod tests {
 
     #[test]
     fn folders_list_sorted_capped_and_filtered() {
-        let root = std::env::temp_dir().join(format!("tandem-chat-input-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("termurion-chat-input-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("sub")).unwrap();
         for (name, body) in [("b.txt", "B"), ("a.txt", "A"), ("skip.exe", "X"), ("sub\\c.txt", "C"), ("sub\\d.txt", "D")] {
@@ -1124,7 +1124,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_junction_out_of_the_folder_is_skipped_and_reported() {
-        let root = std::env::temp_dir().join(format!("tandem-chat-links-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("termurion-chat-links-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (inner, outer) = (root.join("dropped"), root.join("elsewhere"));
         std::fs::create_dir_all(inner.join("real")).unwrap();
@@ -1247,7 +1247,7 @@ mod tests {
     #[test]
     fn a_failed_read_does_not_use_up_the_total() {
         use std::os::windows::fs::OpenOptionsExt;
-        let root = std::env::temp_dir().join(format!("tandem-chat-lock-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("termurion-chat-lock-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let locked = root.join("locked.txt");
@@ -1264,7 +1264,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_folder_link_back_to_its_parent_is_not_followed_again() {
-        let root = std::env::temp_dir().join(format!("tandem-chat-loop-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("termurion-chat-loop-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let top = root.join("d");
         std::fs::create_dir_all(top.join("a")).unwrap();

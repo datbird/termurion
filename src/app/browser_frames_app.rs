@@ -1,5 +1,5 @@
 //! The frame graph on the app side (milestone 13x2, Task 2): what `browser_frames::Frames` plans is
-//! evaluated in the Tandem world of the frame it names, and every answer comes back to the graph.
+//! evaluated in the Termurion world of the frame it names, and every answer comes back to the graph.
 //! Web content is untrusted: only a message of the isolated world is read, and nothing here runs a
 //! page-world script.
 
@@ -28,7 +28,7 @@ impl App {
         own
     }
 
-    /// Every graph script runs wrapped, in the Tandem world, and each answer is `graph_script_done`'s.
+    /// Every graph script runs wrapped, in the Termurion world, and each answer is `graph_script_done`'s.
     fn graph_run(&mut self, pane: PaneId, acts: Vec<Act>) {
         for act in acts {
             let token = act.token;
@@ -46,7 +46,7 @@ mod tests {
     }
 
     /// R13x23-2, C2: the graph arm returns before anything is parsed for a message that is not the
-    /// isolated world's, and Tandem evaluates only what `Frames` planned.
+    /// isolated world's, and Termurion evaluates only what `Frames` planned.
     #[test]
     fn graph_refuses_page_world() {
         let src = include_str!("browser_frames_app.rs");
@@ -54,7 +54,7 @@ mod tests {
         let f = &p[p.find("pub(super) fn browser_graph_message").unwrap()..p.find("pub(super) fn graph_script_done").unwrap()];
         assert!(f.find("World::Client").unwrap() < f.find(".handle(").unwrap(), "the world is checked before the message is read");
         assert!(f.contains("return;") && f.contains("self.client_open(pane)"));
-        // The one evaluation site runs the planned acts through the Tandem world, never the page's.
+        // The one evaluation site runs the planned acts through the Termurion world, never the page's.
         assert_eq!(p.matches("browser_eval_in_frame(").count(), 1);
         assert!(!p.contains("execute_script") && !p.contains("browser_eval(pane"));
         let router = include_str!("browser_scripts_app.rs");

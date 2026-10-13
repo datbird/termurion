@@ -184,7 +184,7 @@ impl App {
         }
     }
 
-    /// Quit and the last window's close: the sessions that end with Tandem are archived when
+    /// Quit and the last window's close: the sessions that end with Termurion are archived when
     /// `all` (iTerm2 saves archives synchronously on app quit, `PTYSession.swift:1709`), then
     /// the exit waits, at most `wait`, for the writer.
     pub(super) fn finish_archives(&mut self, all: bool, wait: Duration) {
@@ -281,7 +281,7 @@ mod tests {
     /// when the last is on disk.
     #[test]
     fn archives_are_written_one_at_a_time() {
-        let dir = std::env::temp_dir().join(format!("tandem-archive-seq-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-archive-seq-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("same.itermarchive");
         let done = Arc::new(Mutex::new(0usize));
@@ -317,7 +317,7 @@ mod tests {
     fn restore_reads_a_bounded_file() {
         let restore = body(production(), "    pub(super) fn restore_archive(");
         assert!(restore.contains("read_bounded(") && restore.contains("count_refusal("), "size and counts are checked before anything opens");
-        let dir = std::env::temp_dir().join(format!("tandem-archive-big-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-archive-big-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("a.itermarchive");
         std::fs::write(&f, b"0123456789").unwrap();
@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn the_writer_reports_back_and_never_probes() {
-        let dir = std::env::temp_dir().join(format!("tandem-archive-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-archive-{}", std::process::id()));
         let missing = dir.join("no").join("such").join("a.itermarchive");
         let out: Arc<Mutex<Vec<Result<(), String>>>> = Default::default();
         let o = out.clone();

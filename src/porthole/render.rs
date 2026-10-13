@@ -168,7 +168,7 @@ pub struct Theme {
     classes: std::collections::HashMap<String, (Option<Rgb>, bool, bool)>,
 }
 
-/// Tandem's two templates, iTerm2's class groups: `${name}` is a profile color.
+/// Termurion's two templates, iTerm2's class groups: `${name}` is a profile color.
 const DARK_CSS: &str = "
 .hljs { color: ${fg}; }
 .hljs-comment, .hljs-quote { color: ${cyan}; }

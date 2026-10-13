@@ -45,7 +45,7 @@ pub fn ensure_unique_guids(profiles: &mut [Profile]) {
 
 pub fn default_path() -> PathBuf {
     let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    base.join("Tandem").join("profiles.toml")
+    base.join("Termurion").join("profiles.toml")
 }
 
 impl Store {
@@ -276,7 +276,7 @@ impl Store {
 mod tests {
     #[test]
     fn session_guid_maps_to_its_saved_profile() {
-        let path = std::env::temp_dir().join(format!("tandem-store-map-{}.toml", std::process::id()));
+        let path = std::env::temp_dir().join(format!("termurion-store-map-{}.toml", std::process::id()));
         let mut st = Store::fresh(&path);
         let shared = st.profiles[0].guid();
         st.sessions.push(crate::session_profile::divorce(&st.profiles[0].clone(), "copy".into()));
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn a_session_copy_is_edited_in_place_and_marked() {
-        let mut st = Store::fresh(&std::env::temp_dir().join(format!("tandem-store-edit-{}.toml", std::process::id())));
+        let mut st = Store::fresh(&std::env::temp_dir().join(format!("termurion-store-edit-{}.toml", std::process::id())));
         let saved = st.profiles[0].guid();
         let copy = st.divorce(&saved);
         st.get_mut(&copy).expect("the copy is reachable for editing").set("Columns", toml::Value::Integer(131));
@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn sessions_are_not_saved() {
-        let path = std::env::temp_dir().join(format!("tandem-store-{}.toml", std::process::id()));
+        let path = std::env::temp_dir().join(format!("termurion-store-{}.toml", std::process::id()));
         let mut st = Store::fresh(&path);
         let shared = st.profiles[0].clone();
         let copy = crate::session_profile::divorce(&shared, "session-guid".into());
@@ -321,7 +321,7 @@ mod tests {
     use toml::Value;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("tandem-store-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-store-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("profiles.toml")
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn tmux_profile_is_made_once() {
-        let dir = std::env::temp_dir().join(format!("tandem-tmuxprof-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-tmuxprof-{}", std::process::id()));
         let mut s = Store::fresh(&dir.join("profiles.toml"));
         let (guid, made) = s.tmux_profile();
         assert!(made);

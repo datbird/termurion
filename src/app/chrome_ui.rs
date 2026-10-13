@@ -91,7 +91,7 @@ impl App {
     /// decides: the whole work area maximizes as Windows does, a vertical zoom spans the work
     /// area's height and keeps the frame before it. Its shortcut is a key Zoom, where
     /// MaxVertically alone decides; a click on the menu item is not, and Shift held inverts
-    /// MaxVertically. Tandem has no zoom button (the caption's maximize button stays Windows'
+    /// MaxVertically. Termurion has no zoom button (the caption's maximize button stays Windows'
     /// own). Full screen has nothing to zoom.
     pub(super) fn zoom_window(&mut self) {
         if self.full_screen() {

@@ -266,7 +266,7 @@ pub fn create_warning(names: &[String]) -> (String, String, Vec<&'static str>) {
     ("Add Another Hotkey Window Profile?".into(), text, buttons)
 }
 
-/// Whether Tandem keeps running with `regular` terminal windows and `hotkey` hotkey windows
+/// Whether Termurion keeps running with `regular` terminal windows and `hotkey` hotkey windows
 /// (shown or hidden): a made hotkey window keeps it alive, as in iTerm2.
 pub fn keeps_running(regular: usize, hotkey: usize) -> bool {
     regular + hotkey > 0
@@ -305,7 +305,7 @@ pub enum AppAct {
     OpenWindow,
 }
 
-/// iTerm2's app hotkey: Tandem in front hides it; otherwise it comes forward, with a new
+/// iTerm2's app hotkey: Termurion in front hides it; otherwise it comes forward, with a new
 /// window when it has none.
 pub fn app_press(active: bool, windows: usize) -> AppAct {
     match (active, windows) {
@@ -465,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hotkey_window_keeps_tandem_running() {
+    fn a_hotkey_window_keeps_termurion_running() {
         assert!(keeps_running(0, 1), "only a hidden hotkey window is left");
         assert!(keeps_running(1, 0));
         assert!(!keeps_running(0, 0));

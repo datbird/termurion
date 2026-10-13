@@ -829,7 +829,7 @@ impl App {
 }
 
 /// Menu item ids of the right-click menu's own items.
-pub(super) const CTX_ID: &str = "tandem.ctx.";
+pub(super) const CTX_ID: &str = "termurion.ctx.";
 
 pub(super) enum CtxItem {
     /// A Smart Selection action by index, and whether it is enabled (not in a remote pane, P10).
@@ -1077,28 +1077,28 @@ mod title_menu_tests {
     fn picks_act_on_the_menus_pane() {
         let (a, b): (PaneId, PaneId) = (1, 2);
         // Menu for B while A is focused: a provider pick and a Swap reach B only.
-        assert_eq!(ctx_pick("tandem.ctx.provider.u1", b, Some(a), true), CtxPick::Provider { pane: b, unique_id: "u1".into() });
-        assert_eq!(ctx_pick("tandem.ctx.swappane", b, Some(a), true), CtxPick::Swap(b));
+        assert_eq!(ctx_pick("termurion.ctx.provider.u1", b, Some(a), true), CtxPick::Provider { pane: b, unique_id: "u1".into() });
+        assert_eq!(ctx_pick("termurion.ctx.swappane", b, Some(a), true), CtxPick::Swap(b));
         // Every plain command of the menu (the move group among them) focuses B first.
         for id in ["Session > Move Session > Move Session to Split Pane", "Session > Move Session > Move Session to Tab", "Session > Move Session > Move Session to Window", "Edit > Copy"] {
-            let item = format!("tandem.ctx.cmd.{id}");
+            let item = format!("termurion.ctx.cmd.{id}");
             assert_eq!(ctx_pick(&item, b, Some(a), true), CtxPick::Command { id: id.into(), focus: Some(b), restore: Some(a) }, "{id}");
             // Already focused: nothing to move, nothing to give back.
             assert_eq!(ctx_pick(&item, b, Some(b), true), CtxPick::Command { id: id.into(), focus: None, restore: None });
         }
-        assert_eq!(ctx_pick("tandem.ctx.stopcoprocess", b, Some(a), true), CtxPick::Other);
-        assert_eq!(CtxItem::Command("Edit > Copy".into(), true).id(), "tandem.ctx.cmd.Edit > Copy");
+        assert_eq!(ctx_pick("termurion.ctx.stopcoprocess", b, Some(a), true), CtxPick::Other);
+        assert_eq!(CtxItem::Command("Edit > Copy".into(), true).id(), "termurion.ctx.cmd.Edit > Copy");
     }
 
     #[test]
     fn a_gone_menu_pane_does_nothing() {
         let (a, b): (PaneId, PaneId) = (1, 2);
         // The menu's pane closed before the pick arrived: no command runs on the focused pane.
-        assert_eq!(ctx_pick("tandem.ctx.cmd.Shell > Close", b, Some(a), false), CtxPick::Gone);
-        assert_eq!(ctx_pick("tandem.ctx.cmd.Edit > Paste", b, Some(a), false), CtxPick::Gone);
-        assert_eq!(ctx_pick("tandem.ctx.swappane", b, Some(a), false), CtxPick::Gone);
+        assert_eq!(ctx_pick("termurion.ctx.cmd.Shell > Close", b, Some(a), false), CtxPick::Gone);
+        assert_eq!(ctx_pick("termurion.ctx.cmd.Edit > Paste", b, Some(a), false), CtxPick::Gone);
+        assert_eq!(ctx_pick("termurion.ctx.swappane", b, Some(a), false), CtxPick::Gone);
         // A provider still resolves by id (P16).
-        assert_eq!(ctx_pick("tandem.ctx.provider.u1", b, Some(a), false), CtxPick::Provider { pane: b, unique_id: "u1".into() });
+        assert_eq!(ctx_pick("termurion.ctx.provider.u1", b, Some(a), false), CtxPick::Provider { pane: b, unique_id: "u1".into() });
     }
 
     #[test]
@@ -1125,7 +1125,7 @@ mod title_menu_tests {
         assert_eq!(ctx_extras(true), vec!["Stop Coprocess", "Toggle Broadcasting Input"]);
         // Swap With Session... is the menu's own slot.
         assert_eq!(swap_label(), "Swap With Session\u{2026}");
-        assert_eq!(CtxItem::SwapPane.id(), "tandem.ctx.swappane");
+        assert_eq!(CtxItem::SwapPane.id(), "termurion.ctx.swappane");
         assert!(CtxItem::SwapPane.enabled());
         // The pending item is built for the menu's pane even with no other item, so the
         // providers fill (P16, `m11c-rulings.txt:161`); which pane a pick reaches is

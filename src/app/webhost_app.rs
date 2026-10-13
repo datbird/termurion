@@ -340,7 +340,7 @@ impl App {
 
     /// A web view (`view`, a child of `parent`) was closed, remade or lost (final review I7, one helper
     /// for every drop site): when its window's page held the keyboard and no other view of that
-    /// window is known to have it, the hold ends, the 13u hook is told (Tandem's Win chords and
+    /// window is known to have it, the hold ends, the 13u hook is told (Termurion's Win chords and
     /// remaps act again in that window, never on the shell) and the window takes the keyboard back.
     pub(super) fn web_view_dropped(&mut self, view: ViewId, parent: isize) {
         // A profile write or read in flight on it is sent again on another view (13x6).
@@ -356,7 +356,7 @@ impl App {
     }
 
     /// Tells the 13u keyboard hook which window's web view holds the keyboard, so it passes keys on
-    /// instead of running Tandem's Win-chord commands on the terminal (security: Win+V must paste
+    /// instead of running Termurion's Win-chord commands on the terminal (security: Win+V must paste
     /// into the page, not the shell).
     pub(super) fn sync_web_keyboard(&self) {
         crate::winkeys::set_web_focus(self.web_focus_held.and_then(|w| self.window_hwnd(w)).unwrap_or(0));
@@ -450,7 +450,7 @@ impl App {
 
     /// A setting the host reads changed (`WebUserAgent`, `BrowserPluginPathHint`): the runtime is
     /// checked again on the next request. A new fixed-runtime folder takes effect for environments
-    /// made after it; one that already exists keeps its runtime until Tandem restarts.
+    /// made after it; one that already exists keeps its runtime until Termurion restarts.
     pub(super) fn web_settings_changed(&mut self) {
         self.browser_settings_changed();
         let now = (self.globals.string("WebUserAgent"), self.globals.string("BrowserPluginPathHint"));

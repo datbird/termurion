@@ -383,7 +383,7 @@ mod dnd_tests {
     /// never statted through, read or listed (invariant 5).
     #[test]
     fn dropped_links_and_devices_are_refused() {
-        let dir = std::env::temp_dir().join(format!("tandem-dnd-links-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-dnd-links-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let real = dir.join("real.txt");
         std::fs::write(&real, b"hello").unwrap();
@@ -416,7 +416,7 @@ mod dnd_tests {
         assert_eq!(read_dropped(std::path::Path::new("//host/share/a.txt")), None);
         let dir = std::env::temp_dir();
         assert_eq!(read_dropped(&dir), None, "a folder has no bytes");
-        let file = dir.join(format!("tandem-dnd-{}.txt", std::process::id()));
+        let file = dir.join(format!("termurion-dnd-{}.txt", std::process::id()));
         std::fs::write(&file, b"hello").unwrap();
         assert_eq!(read_dropped(&file).as_deref(), Some(&b"hello"[..]));
         std::fs::remove_file(&file).unwrap();

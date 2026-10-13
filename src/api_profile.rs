@@ -16,7 +16,7 @@ use pb::preferences_response::result::set_preference_result::Status as PrefStatu
 /// their own (`defaultValueMap`).
 const VARIANTS: [&str; 2] = [" (Light)", " (Dark)"];
 
-/// iTerm2's keys without a default (`keysWithoutDefaultValues`) that Tandem's schema does not
+/// iTerm2's keys without a default (`keysWithoutDefaultValues`) that Termurion's schema does not
 /// list; they answer only when the profile has them.
 const NO_DEFAULT: [&str; 4] = [GUID, ORIGINAL_GUID, "Special Font Config", "Dynamic Profile Filename"];
 
@@ -186,7 +186,7 @@ pub fn assignments(r: &pb::SetProfilePropertyRequest) -> Option<Vec<(String, Jso
 }
 
 /// The assignments as profile values when every one is legal for its key (`valueIsLegal`,
-/// Tandem's `prompted::valid`: a profile setting of the right type, never the Guid).
+/// Termurion's `prompted::valid`: a profile setting of the right type, never the Guid).
 pub fn legal(a: &[(String, Json)]) -> Option<Vec<(String, Value)>> {
     a.iter().map(|(k, j)| Some((k.clone(), crate::prompted::valid(k, j)?))).collect()
 }
@@ -261,7 +261,7 @@ pub enum PrefStep {
 pub const SET_COOKIE: &str = "SetCookie";
 
 /// Settings a script may read but never write (a Windows safety addition over iTerm2, which
-/// stores any key): the stored answers to Tandem's consent questions, which would let a
+/// stores any key): the stored answers to Termurion's consent questions, which would let a
 /// program's output (a remote host's too) read the clipboard, change profiles, open URLs,
 /// files and links, report variables or sync a tmux clipboard without asking, the silenced
 /// API warnings, the paths of programs the password manager runs, and the alternate mouse scroll switch and

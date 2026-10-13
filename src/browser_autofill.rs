@@ -69,26 +69,26 @@ pub(crate) const DETECTOR_GUARD: &str = "'use strict';\n    // Tandem: buttons o
 /// person confirms in a native Tandem window that names the page origin and each field type (I1; Task 3).
 /// Only visible, enabled fields are collected (`isFieldInteractable`). A click counts only when it is a person's (`isTrusted`) and
 /// the trusted pointer's point holds that very button (`elementFromPoint` on the shadow root), or,
-/// for a keyboard activation (`detail` 0), when that button has focus (13x5's `tandemReal`).
+/// for a keyboard activation (`detail` 0), when that button has focus (13x5's `termurionReal`).
 pub(crate) fn detector_patched(src: &str) -> Result<String, String> {
     let s = patch_once(src, "'use strict';", DETECTOR_GUARD)?;
     let s = patch_once(
         &s,
         "const fieldButtons = new WeakMap();",
-        "const fieldButtons = new WeakMap();\n    // Tandem: the buttons live in a closed shadow root the page cannot reach.\n    let tandemHost = null;\n    let tandemShadow = null;\n    function tandemRoot() {\n        if (!tandemShadow) {\n            tandemHost = document.createElement('div');\n            tandemHost.style.cssText = 'all: initial !important; display: block !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 0 !important; overflow: visible !important; z-index: 2147483647 !important; pointer-events: none !important;';\n            tandemShadow = tandemHost.attachShadow({mode: 'closed'});\n            const rule = document.createElement('style');\n            rule.textContent = 'button { pointer-events: auto !important; }';\n            tandemShadow.appendChild(rule);\n        }\n        if (!tandemHost.isConnected && document.body) { document.body.appendChild(tandemHost); }\n        return tandemShadow;\n    }\n    function tandemReal(e, btn) {\n        if (!e.isTrusted) return false;\n        const root = tandemRoot();\n        if (e.detail === 0) return root.activeElement === btn;\n        return root.elementFromPoint(e.clientX, e.clientY) === btn;\n    }",
+        "const fieldButtons = new WeakMap();\n    // Tandem: the buttons live in a closed shadow root the page cannot reach.\n    let termurionHost = null;\n    let termurionShadow = null;\n    function termurionRoot() {\n        if (!termurionShadow) {\n            termurionHost = document.createElement('div');\n            termurionHost.style.cssText = 'all: initial !important; display: block !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 0 !important; overflow: visible !important; z-index: 2147483647 !important; pointer-events: none !important;';\n            termurionShadow = termurionHost.attachShadow({mode: 'closed'});\n            const rule = document.createElement('style');\n            rule.textContent = 'button { pointer-events: auto !important; }';\n            termurionShadow.appendChild(rule);\n        }\n        if (!termurionHost.isConnected && document.body) { document.body.appendChild(termurionHost); }\n        return termurionShadow;\n    }\n    function termurionReal(e, btn) {\n        if (!e.isTrusted) return false;\n        const root = termurionRoot();\n        if (e.detail === 0) return root.activeElement === btn;\n        return root.elementFromPoint(e.clientX, e.clientY) === btn;\n    }",
     )?;
     let s = patch_once(
         &s,
         "btn.addEventListener('click', e => {",
-        "btn.addEventListener('click', e => {\n            // Tandem: act only on a person's click, never a page script's (R13x67-2; iTerm2 bug).\n            if (!e.isTrusted) return;\n            if (!tandemReal(e, btn)) return;",
+        "btn.addEventListener('click', e => {\n            // Tandem: act only on a person's click, never a page script's (R13x67-2; iTerm2 bug).\n            if (!e.isTrusted) return;\n            if (!termurionReal(e, btn)) return;",
     )?;
     // Only fields a person can see and use are collected (iTerm2 gathers every input of the form: hidden
     // ones would be filled by one lured click, I1).
     let s = patch_once(&s, "const type = detectFieldType(input);\n                    if (type) {", "const type = detectFieldType(input);\n                    if (type && isFieldInteractable(input)) {")?;
-    let s = patch_once(&s, "document.body.appendChild(btn);", "tandemRoot().appendChild(btn);")?;
-    let s = patch_once(&s, "document.body.appendChild(meas);", "tandemRoot().appendChild(meas);")?;
+    let s = patch_once(&s, "document.body.appendChild(btn);", "termurionRoot().appendChild(btn);")?;
+    let s = patch_once(&s, "document.body.appendChild(meas);", "termurionRoot().appendChild(meas);")?;
     let s = patch_once(&s, "document.body.removeChild(meas);", "meas.remove();")?;
-    patch_n(&s, "document.querySelectorAll('[data-iterm-autofill]')", "tandemRoot().querySelectorAll('[data-iterm-autofill]')", 4)
+    patch_n(&s, "document.querySelectorAll('[data-iterm-autofill]')", "termurionRoot().querySelectorAll('[data-iterm-autofill]')", 4)
 }
 
 /// The patched detector, or the reason it could not be made (no button script is injected then, never
@@ -309,8 +309,8 @@ pub fn fill_all_outcome(v: &Value) -> Option<(bool, i64)> {
 
 // --- The contact card at rest (B13) ---
 
-/// The card's file name, in `%LOCALAPPDATA%\Tandem` (machine-local). Not the settings folder
-/// (`%APPDATA%\Tandem`, which Export/Import All Settings and the roaming profile touch), and never
+/// The card's file name, in `%LOCALAPPDATA%\Termurion` (machine-local). Not the settings folder
+/// (`%APPDATA%\Termurion`, which Export/Import All Settings and the roaming profile touch), and never
 /// in the globals: the card is personal data and is never exported, imported or synced (B13).
 pub const CARD_FILE: &str = "autofill-contact.dat";
 /// A field's most characters (kept on save, load and in the editor; a larger file is no card).
@@ -320,7 +320,7 @@ const MAX_CARD_FILE: u64 = 64 * 1024;
 /// The entropy the card is protected with (as 13y1's approval key has its own): a blob made for one
 /// use never unprotects as the other.
 #[cfg(windows)]
-const CARD_ENTROPY: &[u8] = b"tandem autofill contact card\0v1";
+const CARD_ENTROPY: &[u8] = b"termurion autofill contact card\0v1";
 
 pub const CARD_TITLE: &str = "Autofill Contact Card";
 pub const CARD_TEXT: &str = "Tandem fills web forms from this card. It stays on this computer.";
@@ -342,7 +342,7 @@ pub const CARD_LABELS: [(&str, &str); 12] = [
 
 /// Where the card lives under the machine-local application data folder.
 pub fn card_path(local_appdata: &std::path::Path) -> std::path::PathBuf {
-    local_appdata.join("Tandem").join(CARD_FILE)
+    local_appdata.join("Termurion").join(CARD_FILE)
 }
 
 impl Card {
@@ -646,7 +646,7 @@ mod tests {
         assert!(CARD_LABELS.iter().map(|(k, _)| *k).eq(FIELD_TYPES.iter().copied()));
         let mut c = sample();
         assert_eq!(c.fields_mut().len(), CARD_LABELS.len());
-        assert_eq!(card_path(std::path::Path::new(r"C:\a")), std::path::Path::new(r"C:\a").join("Tandem").join("autofill-contact.dat"));
+        assert_eq!(card_path(std::path::Path::new(r"C:\a")), std::path::Path::new(r"C:\a").join("Termurion").join("autofill-contact.dat"));
         assert!(!format!("{:?}", sample()).contains("Alice"));
     }
 
@@ -682,7 +682,7 @@ mod tests {
 
     #[cfg(windows)]
     fn temp_card_dir() -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("tandem-card-{}", uuid::Uuid::new_v4()));
+        let d = std::env::temp_dir().join(format!("termurion-card-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -828,13 +828,13 @@ mod tests {
         assert!(between.contains("Tandem: act only on a person's click"), "the patch says whose fix it is");
         assert!(between.lines().all(|l| l.trim().is_empty() || l.trim_start().starts_with("//")), "the check is the first statement: {between:?}");
         let after = &d[to..];
-        assert!(after.contains("if (!tandemReal(e, btn)) return;"));
+        assert!(after.contains("if (!termurionReal(e, btn)) return;"));
         assert!(after.find("e.preventDefault();").is_some() && after.find("e.stopPropagation();").is_some());
-        assert!(after.find("tandemReal(e, btn)").unwrap() < after.find("e.preventDefault();").unwrap());
+        assert!(after.find("termurionReal(e, btn)").unwrap() < after.find("e.preventDefault();").unwrap());
         // The buttons live in a closed shadow root the page cannot reach.
         assert_eq!(d.matches("attachShadow({mode: 'closed'})").count(), 1);
         assert!(d.contains("root.elementFromPoint(e.clientX, e.clientY) === btn"));
-        assert!(d.contains("tandemRoot().appendChild(btn);") && d.contains("tandemRoot().appendChild(meas);"));
+        assert!(d.contains("termurionRoot().appendChild(btn);") && d.contains("termurionRoot().appendChild(meas);"));
         assert!(!d.contains("document.body.appendChild(btn)") && !d.contains("document.querySelectorAll('[data-iterm-autofill]')"));
         // The license text ships beside the copies and is not a script.
         assert_eq!(crate::browser_js::resource("LICENSE-iTerm2"), None);

@@ -184,7 +184,7 @@ mod tests {
             asked.set(asked.get() + 1);
             true
         };
-        let folder = Path::new(r"C:\Tandem\utilities");
+        let folder = Path::new(r"C:\Termurion\utilities");
         assert_eq!(profile_it2ssh(Some(folder), false, yes), None);
         assert_eq!(asked.get(), 0, "nothing is looked at before the conductor hook exists");
         assert_eq!(profile_it2ssh(None, true, yes), None, "a folder ensure refused is never probed");

@@ -5,9 +5,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// The Scripts folder's name under `%APPDATA%\Tandem` (`FM:248`).
+/// The Scripts folder's name under `%APPDATA%\Termurion` (`FM:248`).
 pub const SCRIPTS_DIR: &str = "Scripts";
-/// The folder under the Scripts folder whose scripts start with Tandem (`FM:270-276`).
+/// The folder under the Scripts folder whose scripts start with Termurion (`FM:270-276`).
 pub const AUTOLAUNCH_DIR: &str = "AutoLaunch";
 /// How long a scan runs before it asks whether to go on (`M:473`).
 pub const SCAN_LIMIT: Duration = Duration::from_secs(8);
@@ -123,18 +123,18 @@ pub fn ancestors_stay_local_with(path: &Path, read_link: &dyn Fn(&Path) -> Optio
 }
 
 /// Logged in the app-wide entry when AutoLaunch is skipped because its folder is reached
-/// through a link to a network path (Tandem's).
+/// through a link to a network path (Termurion's).
 pub fn autolaunch_not_local(folder: &Path) -> String {
     format!("AutoLaunch skipped: {} is reached through a link to a network path.\n", folder.display())
 }
 
 /// Logged in the app-wide entry when the Scripts folder is reached through a link to a
-/// network path: it is not made, watched, scanned or cleaned up (Tandem's).
+/// network path: it is not made, watched, scanned or cleaned up (Termurion's).
 pub fn scripts_folder_not_local(folder: &Path) -> String {
     format!("Scripts folder skipped: {} is reached through a link to a network path.\n", folder.display())
 }
 
-/// A path Tandem never touches as a file: a network path or a device path. `/` and `\` are
+/// A path Termurion never touches as a file: a network path or a device path. `/` and `\` are
 /// alike, as Windows reads them: any two leading separators (`\\host`, `//host`, `\/host`,
 /// `/\host`) name a share or a device (`\\?\UNC\`, `\\.\`), and the NT prefix `\??\`
 /// reaches the same. Only the long-path forms of a drive, `\\?\C:\` and `\??\C:\`, are
@@ -151,9 +151,9 @@ pub fn is_network_path(text: &str) -> bool {
     b.len() >= 2 && sep(b[0]) && sep(b[1])
 }
 
-/// `%APPDATA%\Tandem\Scripts`, iTerm2's `<Application Support>/iTerm2/Scripts`.
+/// `%APPDATA%\Termurion\Scripts`, iTerm2's `<Application Support>/iTerm2/Scripts`.
 pub fn default_folder(appdata: &Path) -> PathBuf {
-    appdata.join("Tandem").join(SCRIPTS_DIR)
+    appdata.join("Termurion").join(SCRIPTS_DIR)
 }
 
 /// `stringByExpandingTildeInPath`: a leading `~` alone or before a separator is the home folder.
@@ -443,7 +443,7 @@ mod tests {
     fn scripts_folder_follows_iterm2() {
         let appdata = Path::new(r"C:\Users\u\AppData\Roaming");
         let home = Path::new(r"C:\Users\u");
-        let default = PathBuf::from(r"C:\Users\u\AppData\Roaming\Tandem\Scripts");
+        let default = PathBuf::from(r"C:\Users\u\AppData\Roaming\Termurion\Scripts");
         assert_eq!(default_folder(appdata), default);
         let mut fs = FakeFs::default();
         fs.dirs.insert(PathBuf::from(r"D:\s"));
@@ -567,11 +567,11 @@ mod tests {
     fn roots_never_follow_network_links() {
         // The Scripts folder itself, or a folder above it, a link or junction to a share: the
         // scan lists nothing there.
-        let root = Path::new(r"C:\Users\u\AppData\Roaming\Tandem\Scripts");
+        let root = Path::new(r"C:\Users\u\AppData\Roaming\Termurion\Scripts");
         let mut fs = FakeFs::default();
         fs.file(root, "a.py");
         assert_eq!(all_scripts(&scan(root, &fs, &mut never(), &mut || false).tree), ["a.py"]);
-        for link in [r"C:\Users\u\AppData\Roaming\Tandem\Scripts", r"C:\Users\u\AppData"] {
+        for link in [r"C:\Users\u\AppData\Roaming\Termurion\Scripts", r"C:\Users\u\AppData"] {
             let mut fs = FakeFs::default();
             fs.file(root, "a.py");
             fs.links.insert(PathBuf::from(link), PathBuf::from(r"\\server\share"));

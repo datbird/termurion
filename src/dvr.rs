@@ -2,7 +2,7 @@
 //! session's screen. The byte ring emulates `DVRBuffer` exactly (positions and lengths
 //! only, so frames are evicted at the same moments iTerm2 evicts them), while the frames
 //! themselves hold alacritty rows: key frames every row, diff frames only the dirty ones.
-//! Byte accounting uses Tandem's cell: a line is `size_of::<Cell>() * (cols + 1)` bytes.
+//! Byte accounting uses Termurion's cell: a line is `size_of::<Cell>() * (cols + 1)` bytes.
 
 use std::collections::VecDeque;
 
@@ -20,7 +20,7 @@ pub fn line_bytes(cols: usize) -> u64 {
 }
 
 /// Bytes a key frame takes: every line, each with its 4-byte metadata length (the
-/// metadata payload counts 0; Tandem keeps it inside the row).
+/// metadata payload counts 0; Termurion keeps it inside the row).
 pub fn key_bytes(cols: usize, rows: usize) -> u64 {
     rows as u64 * (line_bytes(cols) + 4)
 }
@@ -187,7 +187,7 @@ impl Dvr {
         }
         let is_clean = |y: usize| clean.get(y).copied().unwrap_or(false);
         let clean_count = (0..height).filter(|y| is_clean(*y)).count();
-        // Tandem adds "something is stored": iTerm2 would write a diff with no key frame
+        // Termurion adds "something is stored": iTerm2 would write a diff with no key frame
         // under it (and assert when decoding it) after evicting every frame.
         let eligible = clean_count as f64 > height as f64 * CLEAN_SHARE
             && self.last.is_some()
@@ -344,7 +344,7 @@ impl Dvr {
 
     /// `loadDictionary:` (`D:176-213`, `B:110-143`): a read-only recorder, or None when the
     /// inner version is not 1 to 4, the capacity is 0, the buffer is missing (a missing
-    /// index is an empty recording), or (Tandem,
+    /// index is an empty recording), or (Termurion,
     /// which keeps rows instead of a byte store) an entry is missing or malformed: every
     /// key from `firstKey` up to `nextKey` needs an entry whose rows match its size, and
     /// the first must be a key frame. `begin` and `end` outside the store become 0, as

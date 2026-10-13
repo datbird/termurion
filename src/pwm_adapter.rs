@@ -943,7 +943,7 @@ mod tests {
         assert_eq!(adapter_file(Kind::OnePassword), None);
         assert_eq!(adapter_file(Kind::LastPass), None);
 
-        let dir = Path::new(r"C:\Program Files\Tandem");
+        let dir = Path::new(r"C:\Program Files\Termurion");
         assert_eq!(adapter_path(Kind::Keeper, dir), Some(dir.join("iterm2-keeper-adapter.exe")));
         assert_eq!(adapter_path(Kind::OnePassword, dir), None);
     }

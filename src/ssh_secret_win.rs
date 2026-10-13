@@ -1,4 +1,4 @@
-//! The origin secret pipe: `\\.\pipe\tandem-ssh-secrets-<SID>[-admin]` hands each client a
+//! The origin secret pipe: `\\.\pipe\termurion-ssh-secrets-<SID>[-admin]` hands each client a
 //! fresh secret (iTerm2's unix socket, `SS:31-73`), and `fetch` is it2ssh's side (`IS:44-56`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,7 +26,7 @@ impl Server {
         Server::start_on(&crate::winpipe::secret_pipe_name()?, secrets)
     }
 
-    /// Serves on `name`. Fails when the name is taken (another Tandem of this user serves it).
+    /// Serves on `name`. Fails when the name is taken (another Termurion of this user serves it).
     pub fn start_on(name: &str, secrets: Arc<Mutex<Secrets>>) -> Result<Server, String> {
         let mut listener = Listener::bind(name)?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -72,7 +72,7 @@ impl Drop for Server {
     }
 }
 
-/// A secret from this user's Tandem at this elevation. None when none serves one (iTerm2's
+/// A secret from this user's Termurion at this elevation. None when none serves one (iTerm2's
 /// "none" off macOS, `IS:44-56`).
 pub fn fetch(wait: Duration) -> Option<String> {
     fetch_from(&crate::winpipe::secret_pipe_name().ok()?, wait)
@@ -115,7 +115,7 @@ mod tests {
     fn secret_pipe_round_trip() {
         let pid = std::process::id();
         let s = Arc::new(Mutex::new(Secrets::default()));
-        let name = format!(r"\\.\pipe\tandem-ssh-secrets-test-{pid}");
+        let name = format!(r"\\.\pipe\termurion-ssh-secrets-test-{pid}");
         let server = Server::start_on(&name, s.clone()).unwrap();
         let first = fetch_from(&name, Duration::from_secs(2)).expect("a secret");
         let second = fetch_from(&name, Duration::from_secs(2)).expect("a second secret");
@@ -124,7 +124,7 @@ mod tests {
         assert!(s.lock().unwrap().check(&first));
         assert!(!s.lock().unwrap().check(&first), "a secret is used once");
         assert!(s.lock().unwrap().check(&second));
-        assert!(fetch_from(&format!(r"\\.\pipe\tandem-ssh-secrets-missing-{pid}"), Duration::from_millis(100)).is_none());
+        assert!(fetch_from(&format!(r"\\.\pipe\termurion-ssh-secrets-missing-{pid}"), Duration::from_millis(100)).is_none());
         drop(server);
         assert!(fetch_from(&name, Duration::from_millis(100)).is_none(), "nothing serves after the drop");
     }
@@ -146,7 +146,7 @@ mod tests {
         let pid = std::process::id();
         let replies: [&'static [u8]; 3] = [b"0123456789abcdef0123456789abcdef0", b"0123456789ABCDEF0123456789ABCDEF", b""];
         for (i, reply) in replies.into_iter().enumerate() {
-            let name = format!(r"\\.\pipe\tandem-ssh-secrets-refuse-{pid}-{i}");
+            let name = format!(r"\\.\pipe\termurion-ssh-secrets-refuse-{pid}-{i}");
             let (release, held) = std::sync::mpsc::channel();
             let server = fake_server(&name, reply, held);
             drop(release);
@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn fetch_gives_up_on_a_server_that_never_closes() {
-        let name = format!(r"\\.\pipe\tandem-ssh-secrets-silent-{}", std::process::id());
+        let name = format!(r"\\.\pipe\termurion-ssh-secrets-silent-{}", std::process::id());
         let (release, held) = std::sync::mpsc::channel();
         let server = fake_server(&name, b"", held);
         let start = std::time::Instant::now();

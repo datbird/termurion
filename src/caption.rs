@@ -1,6 +1,6 @@
 //! The caption area of a Minimal or Compact window (milestone 13e): the tab bar sits in the strip
 //! where the title bar was, with the window buttons at its right (Windows draws them nowhere
-//! else, so Tandem does). Pure geometry: the strip, its buttons, the room the tabs get, and what
+//! else, so Termurion does). Pure geometry: the strip, its buttons, the room the tabs get, and what
 //! a point of the client answers to `WM_NCHITTEST`. Sizes are pixels.
 
 pub use crate::layout::Rect;

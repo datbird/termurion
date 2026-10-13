@@ -3,7 +3,7 @@
 //!
 //! Derived from Unicode's `BidiMirroring.txt` (UCD), Unicode 15.1.0, through ICU's
 //! `u_charMirror` (Windows' `icu.dll`, which builds the property from that file) by the
-//! `generate_table` test below. Only pairs in the BMP are kept. This is Tandem's own table, not
+//! `generate_table` test below. Only pairs in the BMP are kept. This is Termurion's own table, not
 //! a copy of iTerm2's `sBidiMirroringPairs`; the tests check iTerm2's results against it.
 
 /// Code point and its Bidi_Mirroring_Glyph, sorted by code point.
@@ -482,7 +482,7 @@ mod tests {
         }
     }
 
-    /// Ruling 13m: the table is Tandem's own, derived from Unicode's BidiMirroring.txt, and
+    /// Ruling 13m: the table is Termurion's own, derived from Unicode's BidiMirroring.txt, and
     /// agrees with iTerm2's `iTermBidiMirroredCounterpart` results.
     #[test]
     fn mirror_table_matches_iterm2() {

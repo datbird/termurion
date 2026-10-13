@@ -578,11 +578,11 @@ pub const HANDLER_FAILED: &str = "URL Handler Command Failed";
 
 /// A private-use marker bound to `url` while the handler template is evaluated, so the URL
 /// never passes through the evaluator or the splitter.
-pub const URL_TOKEN: &str = "\u{E000}tandem-url\u{E000}";
+pub const URL_TOKEN: &str = "\u{E000}termurion-url\u{E000}";
 
 /// The marker bound to the template's `n`th session variable while it is evaluated.
 pub fn var_token(n: usize) -> String {
-    format!("\u{E000}tandem-var-{n}\u{E000}")
+    format!("\u{E000}termurion-var-{n}\u{E000}")
 }
 
 /// Why a URL handler command is not run.
@@ -1170,8 +1170,8 @@ mod tests {
 
     /// TWEAKS 6 review I4: the schemes Tandem owns (or does not offer) never reach the Windows handler.
     #[test]
-    fn tandems_own_schemes_never_reach_the_windows_handler() {
-        for u in ["telnet://h", "TELNET://h:23", "ssh://h", "x-man-page://1/ls", "iterm2:annotation?ann=A", "tandem://x"] {
+    fn termurions_own_schemes_never_reach_the_windows_handler() {
+        for u in ["telnet://h", "TELNET://h:23", "ssh://h", "x-man-page://1/ls", "iterm2:annotation?ann=A", "termurion://x"] {
             assert!(matches!(guard_open(u, false), Run::Blocked(_)), "{u}");
         }
         let Run::Blocked(why) = guard_open("telnet://h", false) else { panic!("refused") };
@@ -1201,7 +1201,7 @@ mod tests {
 
     /// A fresh folder with `files` in it (a trailing slash makes a folder).
     fn dir(name: &str, files: &[&str]) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("tandem-sem-{name}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termurion-sem-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         for f in files {
             let p = d.join(f);

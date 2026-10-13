@@ -152,7 +152,7 @@ mod tests {
     }
 
     fn store() -> Store {
-        Store::fresh(&std::env::temp_dir().join(format!("tandem-bonjour-{}.toml", std::process::id())))
+        Store::fresh(&std::env::temp_dir().join(format!("termurion-bonjour-{}.toml", std::process::id())))
     }
 
     #[test]
@@ -176,7 +176,7 @@ mod tests {
         assert_eq!(s.profiles.len(), 3);
         // The saved file never holds them.
         s.save().unwrap();
-        let back = Store::load(&std::env::temp_dir().join(format!("tandem-bonjour-{}.toml", std::process::id()))).unwrap();
+        let back = Store::load(&std::env::temp_dir().join(format!("termurion-bonjour-{}.toml", std::process::id()))).unwrap();
         assert_eq!(back.profiles.len(), 1);
         // An ftp goodbye of the same name, and an ssh goodbye from another address, keep the
         // ssh profile; the host's own goodbye removes the profile it made.
@@ -196,7 +196,7 @@ mod tests {
         assert!(remove_all(&mut s, &mut live));
         assert_eq!(s.profiles.iter().map(|p| p.name()).collect::<Vec<_>>(), vec!["Default", "kept"]);
         assert!(s.transient.is_empty() && live.is_empty());
-        let _ = std::fs::remove_file(std::env::temp_dir().join(format!("tandem-bonjour-{}.toml", std::process::id())));
+        let _ = std::fs::remove_file(std::env::temp_dir().join(format!("termurion-bonjour-{}.toml", std::process::id())));
     }
 
     #[test]

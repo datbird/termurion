@@ -13,7 +13,7 @@ use std::path::Path;
 pub const SCHEMES: [&str; 3] = ["ftp", "ssh", "telnet"];
 /// Windows' Default apps page for Tandem, opened when Windows keeps another handler (a UserChoice
 /// is hash protected: a program cannot set it, the person can).
-pub const DEFAULT_APPS_URI: &str = "ms-settings:defaultapps?registeredAppUser=Tandem";
+pub const DEFAULT_APPS_URI: &str = "ms-settings:defaultapps?registeredAppUser=Termurion";
 /// iTerm2's key for the table (`LS`); a globals value with no settings row.
 pub const HANDLERS_KEY: &str = "URLHandlersByGuid";
 
@@ -50,7 +50,7 @@ pub fn is_listed(scheme: &str) -> bool {
     SCHEMES.contains(&scheme)
 }
 
-/// The exe path inside a command written by `tandem_command`, None for any other shape.
+/// The exe path inside a command written by `termurion_command`, None for any other shape.
 pub fn command_argument_shape(command: &str) -> Option<String> {
     let rest = command.trim().strip_prefix('"')?;
     let (program, tail) = rest.split_once('"')?;
@@ -65,14 +65,14 @@ fn exe_ok(exe: &Path) -> bool {
 }
 
 fn progid(scheme: &str) -> String {
-    format!("Software\\Classes\\Tandem.{scheme}")
+    format!("Software\\Classes\\Termurion.{scheme}")
 }
 
-const CAPABILITIES: &str = "Software\\Tandem\\Capabilities";
-const ASSOCIATIONS: &str = "Software\\Tandem\\Capabilities\\URLAssociations";
+const CAPABILITIES: &str = "Software\\Termurion\\Capabilities";
+const ASSOCIATIONS: &str = "Software\\Termurion\\Capabilities\\URLAssociations";
 const REGISTERED_APPS: &str = "Software\\RegisteredApplications";
 /// Where the exe path each OK registered is kept, one value per scheme (Tandem's own key).
-const RECORDED: &str = "Software\\Tandem\\Registered";
+const RECORDED: &str = "Software\\Termurion\\Registered";
 
 /// Every value Tandem writes to be listed as a handler of `scheme` (key, name, value; `""` is a key's
 /// default): its ProgId, its capabilities and its RegisteredApplications entry. Empty for a scheme
@@ -87,11 +87,11 @@ pub fn registry_entries(exe: &Path, scheme: &str) -> Vec<(String, String, String
     vec![
         e(CAPABILITIES, "ApplicationName", "Tandem".into()),
         e(CAPABILITIES, "ApplicationDescription", "Tandem terminal".into()),
-        e(ASSOCIATIONS, scheme, format!("Tandem.{scheme}")),
-        e(REGISTERED_APPS, "Tandem", CAPABILITIES.into()),
+        e(ASSOCIATIONS, scheme, format!("Termurion.{scheme}")),
+        e(REGISTERED_APPS, "Termurion", CAPABILITIES.into()),
         e(&id, "", format!("URL:{scheme} Protocol")),
         e(&id, "URL Protocol", String::new()),
-        e(&format!("{id}\\shell\\open\\command"), "", tandem_command(exe)),
+        e(&format!("{id}\\shell\\open\\command"), "", termurion_command(exe)),
     ]
 }
 
@@ -119,20 +119,20 @@ pub fn unregister_with(r: &mut dyn crate::reg::Registry, scheme: &str, exe: &Pat
     r.delete_value(RECORDED, scheme)?;
     let class = format!("Software\\Classes\\{scheme}\\shell\\open\\command");
     if let Some(c) = r.get(&class, "") {
-        let ours = is_tandem_command(&c) || c.trim().eq_ignore_ascii_case(&tandem_command(exe));
+        let ours = is_termurion_command(&c) || c.trim().eq_ignore_ascii_case(&termurion_command(exe));
         if ours {
             r.delete_scheme_class(scheme)?;
         }
     }
     if !SCHEMES.iter().any(|s| r.get(ASSOCIATIONS, s).is_some()) {
-        r.delete_value(REGISTERED_APPS, "Tandem")?;
+        r.delete_value(REGISTERED_APPS, "Termurion")?;
         r.delete_tree(CAPABILITIES)?;
     }
     Ok(())
 }
 
-/// A command `tandem_command` wrote for some `termurion.exe`.
-fn is_tandem_command(command: &str) -> bool {
+/// A command `termurion_command` wrote for some `termurion.exe`.
+fn is_termurion_command(command: &str) -> bool {
     command_argument_shape(command).is_some_and(|p| Path::new(&p).file_name().is_some_and(|f| f.eq_ignore_ascii_case("termurion.exe")))
 }
 
@@ -143,11 +143,11 @@ fn is_tandem_command(command: &str) -> bool {
 /// Another live copy, a machine-wide registration and a binding imported with no OK recorded on this
 /// machine are never listed, so a repair takes nothing the person did not give.
 pub fn stale_schemes(table: &toml::Table, reg: &dyn SchemeRegistry, exe: &Path, gone: &dyn Fn(&Path) -> bool) -> Vec<String> {
-    let now = tandem_command(exe);
+    let now = termurion_command(exe);
     let stale = |s: &str| {
         let Some(recorded) = reg.recorded_exe(s) else { return false };
         let recorded = Path::new(&recorded);
-        let then = tandem_command(recorded);
+        let then = termurion_command(recorded);
         exe_ok(recorded) && then != now && reg.classes_command(s).is_some_and(|c| c.trim() == then) && gone(recorded)
     };
     SCHEMES.iter().filter(|s| guid_for(table, s).is_some()).filter(|s| stale(s)).map(|s| s.to_string()).collect()
@@ -213,7 +213,7 @@ pub trait SchemeRegistry {
     fn classes_command(&self, scheme: &str) -> Option<String>;
     /// Registers Tandem as a handler for the user (`HKCU` only). Runs only after the person's OK.
     fn register(&mut self, scheme: &str, exe: &Path) -> Result<(), String>;
-    /// The exe path the person's OK registered for `scheme` (`HKCU\Software\Tandem\Registered`, a
+    /// The exe path the person's OK registered for `scheme` (`HKCU\Software\Termurion\Registered`, a
     /// key no settings import carries), None when no OK on this machine did.
     fn recorded_exe(&self, _scheme: &str) -> Option<String> {
         None
@@ -227,13 +227,13 @@ pub trait SchemeRegistry {
 
 /// The protocol handler's command: the URL is one quoted argument (`termurion.exe` accepts only
 /// exactly `[exe, "--url", url]`).
-pub fn tandem_command(exe: &Path) -> String {
+pub fn termurion_command(exe: &Path) -> String {
     format!("\"{}\" --url \"%1\"", exe.display())
 }
 
 /// Whether Tandem is the effective handler: its command as written, the path case-insensitive.
 pub fn is_default(reg: &dyn SchemeRegistry, scheme: &str, exe: &Path) -> bool {
-    reg.handler_command(scheme).is_some_and(|c| c.trim().eq_ignore_ascii_case(&tandem_command(exe)))
+    reg.handler_command(scheme).is_some_and(|c| c.trim().eq_ignore_ascii_case(&termurion_command(exe)))
 }
 
 pub fn guid_for(table: &toml::Table, scheme: &str) -> Option<String> {
@@ -306,7 +306,7 @@ pub fn pick(table: &toml::Table, reg: &dyn SchemeRegistry, scheme: &str, guid: &
 fn ask_info(reg: &dyn SchemeRegistry, scheme: &str) -> String {
     let command = reg.handler_command(scheme);
     let classes = reg.classes_command(scheme);
-    let choice = reg.user_choice(scheme).filter(|c| !c.eq_ignore_ascii_case(&format!("Tandem.{scheme}")));
+    let choice = reg.user_choice(scheme).filter(|c| !c.eq_ignore_ascii_case(&format!("Termurion.{scheme}")));
     let name = reg.handler_name(scheme).filter(|n| !n.trim().is_empty());
     let effective_program = command.as_deref().map(command_program).filter(|p| !p.is_empty());
     let mut lines = Vec::new();
@@ -481,8 +481,8 @@ impl WinRegistry {
     /// Writes the protocol registration under `HKCU\<root>`: the ProgId `Tandem.<scheme>` first,
     /// then the scheme key, its command key last, so a failed write leaves no half handler.
     pub fn register_under(root: &str, scheme: &str, exe: &Path) -> Result<(), String> {
-        let command = tandem_command(exe);
-        let progid = format!("{root}\\Tandem.{scheme}");
+        let command = termurion_command(exe);
+        let progid = format!("{root}\\Termurion.{scheme}");
         win::set(&progid, None, &format!("URL:{scheme} Protocol"))?;
         win::set(&format!("{progid}\\shell\\open\\command"), None, &command)?;
         let key = format!("{root}\\{scheme}");
@@ -500,7 +500,7 @@ impl WinRegistry {
 
     /// Reads back what `register_under` wrote: (scheme default, scheme command, ProgId command).
     pub fn read_under(root: &str, scheme: &str) -> (Option<String>, Option<String>, Option<String>) {
-        (win::get(&format!("{root}\\{scheme}"), None), win::get(&format!("{root}\\{scheme}\\shell\\open\\command"), None), win::get(&format!("{root}\\Tandem.{scheme}\\shell\\open\\command"), None))
+        (win::get(&format!("{root}\\{scheme}"), None), win::get(&format!("{root}\\{scheme}\\shell\\open\\command"), None), win::get(&format!("{root}\\Termurion.{scheme}\\shell\\open\\command"), None))
     }
 
     /// Tells the shell the file and protocol associations changed, so Default apps lists Tandem
@@ -668,7 +668,7 @@ mod tests {
             self.registered.push((scheme.to_string(), exe.to_path_buf()));
             // Windows keeps a protected user choice over a new registration.
             if self.choice.is_none() {
-                self.command = Some(tandem_command(exe));
+                self.command = Some(termurion_command(exe));
             }
             Ok(())
         }
@@ -679,12 +679,12 @@ mod tests {
     }
 
     fn ours() -> Fake {
-        Fake { command: Some(tandem_command(&exe())), ..Fake::default() }
+        Fake { command: Some(termurion_command(&exe())), ..Fake::default() }
     }
 
     #[test]
     fn scheme_binding_follows_iterm2() {
-        assert_eq!(tandem_command(&exe()), "\"C:\\T\\termurion.exe\" --url \"%1\"");
+        assert_eq!(termurion_command(&exe()), "\"C:\\T\\termurion.exe\" --url \"%1\"");
         assert!(is_default(&ours(), "ssh", &exe()));
         let upper = Fake { command: Some("\"c:\\t\\TERMURION.EXE\" --url \"%1\"".into()), ..Fake::default() };
         assert!(is_default(&upper, "ssh", &exe()));
@@ -795,7 +795,7 @@ mod tests {
 
     #[test]
     fn globals_table_is_pruned_against_the_store() {
-        let path = std::env::temp_dir().join(format!("tandem-urlschemes-{}.toml", std::process::id()));
+        let path = std::env::temp_dir().join(format!("termurion-urlschemes-{}.toml", std::process::id()));
         let store = crate::store::Store::fresh(&path);
         let live = store.profiles[0].guid();
         let mut globals = crate::globals::Globals::empty(&path);
@@ -827,7 +827,7 @@ mod tests {
     #[test]
     fn registry_writes_under_hkcu() {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let root = format!("Software\\Tandem\\test-{}-{nanos}", std::process::id());
+        let root = format!("Software\\Termurion\\test-{}-{nanos}", std::process::id());
         // A previous program's leftovers under the keys Tandem writes.
         win::set(&format!("{root}\\ssh\\shell\\open\\command"), Some("DelegateExecute"), "{GUID}").unwrap();
         win::set(&format!("{root}\\ssh\\shell\\open\\ddeexec"), None, "[open]").unwrap();
@@ -842,7 +842,7 @@ mod tests {
         win::delete_tree(&root);
         assert_eq!(result, Ok(()));
         assert_eq!(leftovers, (None, false, None), "DelegateExecute, ddeexec and a default verb are cleared");
-        let command = tandem_command(&exe());
+        let command = termurion_command(&exe());
         assert_eq!(read, (Some("URL:ssh Protocol".to_string()), Some(command.clone()), Some(command)));
         assert_eq!(win::get(&root, None), None, "the throwaway key is gone");
     }
@@ -864,7 +864,7 @@ mod registration_tests {
         assert_eq!(SCHEMES, ["ftp", "ssh", "telnet"]);
         assert!(SCHEMES.windows(2).all(|w| w[0] < w[1]), "sorted as iTerm2's popup");
         assert!(SCHEMES.iter().all(|s| crate::url_launch::EXTERNAL_SCHEMES.contains(s)), "only what a link can open");
-        assert_eq!(DEFAULT_APPS_URI, "ms-settings:defaultapps?registeredAppUser=Tandem");
+        assert_eq!(DEFAULT_APPS_URI, "ms-settings:defaultapps?registeredAppUser=Termurion");
         assert_eq!(LABEL, "URL schemes:");
     }
 
@@ -872,15 +872,15 @@ mod registration_tests {
     fn registration_follows_windows_entries() {
         let entries = registry_entries(&exe(), "ssh");
         let has = |k: &str, n: &str, v: &str| entries.iter().any(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str()) == (k, n, v));
-        assert!(has("Software\\Classes\\Tandem.ssh", "", "URL:ssh Protocol"));
-        assert!(has("Software\\Classes\\Tandem.ssh", "URL Protocol", ""));
-        assert!(has("Software\\Classes\\Tandem.ssh\\shell\\open\\command", "", "\"C:\\T\\termurion.exe\" --url \"%1\""));
-        assert!(has("Software\\Tandem\\Capabilities", "ApplicationName", "Tandem"));
-        assert!(has("Software\\Tandem\\Capabilities\\URLAssociations", "ssh", "Tandem.ssh"));
-        assert!(has("Software\\RegisteredApplications", "Tandem", "Software\\Tandem\\Capabilities"));
+        assert!(has("Software\\Classes\\Termurion.ssh", "", "URL:ssh Protocol"));
+        assert!(has("Software\\Classes\\Termurion.ssh", "URL Protocol", ""));
+        assert!(has("Software\\Classes\\Termurion.ssh\\shell\\open\\command", "", "\"C:\\T\\termurion.exe\" --url \"%1\""));
+        assert!(has("Software\\Termurion\\Capabilities", "ApplicationName", "Tandem"));
+        assert!(has("Software\\Termurion\\Capabilities\\URLAssociations", "ssh", "Termurion.ssh"));
+        assert!(has("Software\\RegisteredApplications", "Termurion", "Software\\Termurion\\Capabilities"));
         // Every key is Tandem's own: the ProgId, its software key and its RegisteredApplications value.
         assert!(entries.iter().all(|(k, _, _)| crate::reg::deletable(k) || k == "Software\\RegisteredApplications"));
-        assert_eq!(command_argument_shape(&tandem_command(&exe())), Some(r"C:\T\termurion.exe".to_string()));
+        assert_eq!(command_argument_shape(&termurion_command(&exe())), Some(r"C:\T\termurion.exe".to_string()));
         // Applied twice to a fake: the second pass writes nothing (idempotent).
         let mut r = FakeRegistry::default();
         assert_eq!(register_with(&mut r, "ssh", &exe()), Ok(entries.len()));
@@ -891,7 +891,7 @@ mod registration_tests {
     #[test]
     fn a_system_scheme_is_never_registered() {
         let mut r = FakeRegistry::default();
-        for s in ["http", "https", "file", "mailto", "ms-settings", "", "ssh\\x", "ssh/..", "ftp ", "Tandem.ssh"] {
+        for s in ["http", "https", "file", "mailto", "ms-settings", "", "ssh\\x", "ssh/..", "ftp ", "Termurion.ssh"] {
             assert!(registry_entries(&exe(), s).is_empty(), "{s:?}");
             assert!(register_with(&mut r, s, &exe()).is_err(), "{s:?}");
             assert!(unregister_with(&mut r, s, &exe()).is_err(), "{s:?}");
@@ -908,30 +908,30 @@ mod registration_tests {
     }
 
     #[test]
-    fn unregistering_removes_only_what_tandem_wrote() {
+    fn unregistering_removes_only_what_termurion_wrote() {
         let mut r = FakeRegistry::default();
         register_with(&mut r, "ssh", &exe()).unwrap();
         register_with(&mut r, "telnet", &exe()).unwrap();
         // Someone else's keys beside Tandem's.
         r.set("Software\\Classes\\http\\shell\\open\\command", "", "firefox.exe %1").unwrap();
-        r.set("Software\\Classes\\Tandemx", "", "x").unwrap();
+        r.set("Software\\Classes\\Termurionx", "", "x").unwrap();
         r.set("Software\\RegisteredApplications", "Other", "Software\\Other\\Capabilities").unwrap();
         // The scheme key Tandem took after the question holds Tandem's command; another program's stays.
-        r.set("Software\\Classes\\ssh\\shell\\open\\command", "", &tandem_command(&exe())).unwrap();
+        r.set("Software\\Classes\\ssh\\shell\\open\\command", "", &termurion_command(&exe())).unwrap();
         r.set("Software\\Classes\\telnet\\shell\\open\\command", "", "putty.exe %1").unwrap();
         unregister_with(&mut r, "ssh", &exe()).unwrap();
-        assert!(r.get("Software\\Classes\\Tandem.ssh\\shell\\open\\command", "").is_none());
-        assert!(r.get("Software\\Tandem\\Capabilities\\URLAssociations", "ssh").is_none());
+        assert!(r.get("Software\\Classes\\Termurion.ssh\\shell\\open\\command", "").is_none());
+        assert!(r.get("Software\\Termurion\\Capabilities\\URLAssociations", "ssh").is_none());
         assert!(r.get("Software\\Classes\\ssh\\shell\\open\\command", "").is_none(), "Tandem's own scheme key goes");
-        assert!(r.get("Software\\Tandem\\Capabilities\\URLAssociations", "telnet").is_some(), "another scheme stays");
-        assert!(r.get("Software\\RegisteredApplications", "Tandem").is_some(), "still needed by telnet");
+        assert!(r.get("Software\\Termurion\\Capabilities\\URLAssociations", "telnet").is_some(), "another scheme stays");
+        assert!(r.get("Software\\RegisteredApplications", "Termurion").is_some(), "still needed by telnet");
         unregister_with(&mut r, "telnet", &exe()).unwrap();
         assert_eq!(r.get("Software\\Classes\\telnet\\shell\\open\\command", "").as_deref(), Some("putty.exe %1"), "another program's entry is never touched");
-        assert!(r.get("Software\\RegisteredApplications", "Tandem").is_none(), "the last scheme removes the listing");
-        assert!(r.get("Software\\Tandem\\Capabilities", "ApplicationName").is_none());
+        assert!(r.get("Software\\RegisteredApplications", "Termurion").is_none(), "the last scheme removes the listing");
+        assert!(r.get("Software\\Termurion\\Capabilities", "ApplicationName").is_none());
         assert_eq!(r.get("Software\\RegisteredApplications", "Other").as_deref(), Some("Software\\Other\\Capabilities"));
         assert_eq!(r.get("Software\\Classes\\http\\shell\\open\\command", "").as_deref(), Some("firefox.exe %1"));
-        assert_eq!(r.get("Software\\Classes\\Tandemx", "").as_deref(), Some("x"));
+        assert_eq!(r.get("Software\\Classes\\Termurionx", "").as_deref(), Some("x"));
         // The fake refuses a delete outside Tandem's keys as the real writer does.
         assert!(r.delete_value("Software\\Classes\\http\\shell\\open\\command", "").is_err());
         assert!(r.delete_value("Software\\RegisteredApplications", "Other").is_err());
@@ -964,8 +964,8 @@ mod registration_tests {
         }
         fn register(&mut self, scheme: &str, exe: &Path) -> Result<(), String> {
             self.registered.push(scheme.to_string());
-            self.command = Some(tandem_command(exe));
-            self.classes = Some(tandem_command(exe));
+            self.command = Some(termurion_command(exe));
+            self.classes = Some(termurion_command(exe));
             Ok(())
         }
         fn recorded_exe(&self, _: &str) -> Option<String> {
@@ -994,7 +994,7 @@ mod registration_tests {
         let alive = |_: &Path| false;
         // The person's OK registered D:\Old, HKCU still holds it, and D:\Old is gone: rewritten,
         // and the record follows the new path.
-        let mut moved = FakeScheme { command: Some(tandem_command(&old)), classes: Some(tandem_command(&old)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
+        let mut moved = FakeScheme { command: Some(termurion_command(&old)), classes: Some(termurion_command(&old)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
         assert_eq!(stale_schemes(&t, &moved, &exe(), &gone), vec!["ssh".to_string()]);
         assert_eq!(asked.borrow().as_slice(), [old.clone()], "only the recorded path is probed");
         assert_eq!(repair(&t, &mut moved, &exe(), &gone), vec!["ssh".to_string()]);
@@ -1002,28 +1002,28 @@ mod registration_tests {
         assert_eq!(moved.recorded.as_deref(), Some(r"C:\T\termurion.exe"));
         assert!(stale_schemes(&t, &moved, &exe(), &gone).is_empty(), "now current");
         // Two live copies: the other copy still exists, so its registration stays.
-        let mut live = FakeScheme { command: Some(tandem_command(&old)), classes: Some(tandem_command(&old)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
+        let mut live = FakeScheme { command: Some(termurion_command(&old)), classes: Some(termurion_command(&old)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
         assert!(repair(&t, &mut live, &exe(), &alive).is_empty());
         assert!(live.registered.is_empty() && live.recorded.as_deref() == Some(old_s.as_str()));
         // A machine-wide (HKLM) Tandem registration: the effective handler is Tandem's old path but
         // HKCU holds nothing, so nothing is written.
-        let mut hklm = FakeScheme { command: Some(tandem_command(&old)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
+        let mut hklm = FakeScheme { command: Some(termurion_command(&old)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
         assert!(repair(&t, &mut hklm, &exe(), &gone).is_empty());
         assert!(hklm.registered.is_empty());
         // An imported table (bound, HKCU holds a Tandem command) with no OK recorded on this machine.
-        let mut imported = FakeScheme { command: Some(tandem_command(&old)), classes: Some(tandem_command(&old)), ..FakeScheme::default() };
+        let mut imported = FakeScheme { command: Some(termurion_command(&old)), classes: Some(termurion_command(&old)), ..FakeScheme::default() };
         assert!(repair(&t, &mut imported, &exe(), &gone).is_empty());
         assert!(imported.registered.is_empty());
         // HKCU holds another Tandem path than the recorded one (or a look-alike): not what the OK wrote.
-        let other_tandem = PathBuf::from(r"E:\Else\termurion.exe");
-        let mut differs = FakeScheme { classes: Some(tandem_command(&other_tandem)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
+        let other_termurion = PathBuf::from(r"E:\Else\termurion.exe");
+        let mut differs = FakeScheme { classes: Some(termurion_command(&other_termurion)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
         assert!(repair(&t, &mut differs, &exe(), &gone).is_empty());
         for cmd in ["\"D:\\Old\\termurion.exe\" --url \"%1\" --x", "putty.exe %1", ""] {
             let mut f = FakeScheme { classes: Some(cmd.into()), recorded: Some(old_s.clone()), ..FakeScheme::default() };
             assert!(repair(&t, &mut f, &exe(), &gone).is_empty(), "{cmd}");
         }
         // An unbound scheme, or a binding for a scheme Tandem does not list, is never repaired.
-        let full = || FakeScheme { classes: Some(tandem_command(&old)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
+        let full = || FakeScheme { classes: Some(termurion_command(&old)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
         assert!(stale_schemes(&toml::Table::new(), &full(), &exe(), &gone).is_empty());
         let mut odd = toml::Table::new();
         bind(&mut odd, "http", "G1");
@@ -1043,7 +1043,7 @@ mod registration_tests {
     fn row_items_follow_iterm2() {
         let mut t = toml::Table::new();
         bind(&mut t, "ssh", "G1");
-        let reg = FakeScheme { command: Some(tandem_command(&exe())), ..FakeScheme::default() };
+        let reg = FakeScheme { command: Some(termurion_command(&exe())), ..FakeScheme::default() };
         let items = row_items(&t, &reg, "G1", &exe());
         assert_eq!(items[0], (SELECT.to_string(), false));
         assert_eq!(items[1..], [("ftp".to_string(), false), ("ssh".to_string(), true), ("telnet".to_string(), false)]);

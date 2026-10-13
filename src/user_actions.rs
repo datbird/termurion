@@ -97,7 +97,7 @@ pub fn shows_apply_mode(action: i64) -> bool {
     matches!(action, 63 | 11 | 38 | 76 | 12 | 35 | 10 | 37 | 40 | 36 | 73 | 60 | 41 | 42)
 }
 
-/// Actions Tandem runs once per target session.
+/// Actions Termurion runs once per target session.
 pub fn fans_out(action: i64) -> bool {
     matches!(action, 10 | 11 | 12 | 35 | 36 | 37 | 38 | 40 | 41 | 42 | 60 | 63 | 73 | 76)
 }

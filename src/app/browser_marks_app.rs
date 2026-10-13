@@ -3,7 +3,7 @@
 //! the page's point, the stored mark, the app-wide cache. Adding is only ever a person's action:
 //! no page message reaches `browser_add_named_mark`. What the page answers (the centre, the XPath)
 //! is validated and bounded before anything is stored, a page that moved on since the request
-//! cannot receive the mark (the navigation epoch), and Tandem's own `iterm2-about:` pages take none.
+//! cannot receive the mark (the navigation epoch), and Termurion's own `iterm2-about:` pages take none.
 //! The decisions are pure functions in `browser_marks`; this file applies them.
 
 use super::*;
@@ -24,7 +24,7 @@ pub(super) enum MarkPrompt {
     /// made (bound to that page), None for a person's request from the menus, the tool or Open Quickly
     /// (any known mark, on any page, as iTerm2).
     Rename { guid: String, epoch: Option<u64> },
-    /// A delete confirm for the stored mark `guid` (a Tandem window outside the page, B2); `epoch` as above.
+    /// A delete confirm for the stored mark `guid` (a Termurion window outside the page, B2); `epoch` as above.
     Delete { guid: String, epoch: Option<u64> },
 }
 
@@ -58,7 +58,7 @@ pub(super) fn add_request(path: AddPath, url: &str, method: &str, at: Option<(f6
     marks::gate_before_prompt(path, url, Some(method)).is_none().then_some(MarkPrompt::Add { at, epoch })
 }
 
-/// Whether a stored mark may be made for `url` now: not one of Tandem's pages, and not a URL the
+/// Whether a stored mark may be made for `url` now: not one of Termurion's pages, and not a URL the
 /// host cut at its cap (`cap_url` leaves up to three bytes off a multi-byte character).
 fn url_markable(url: &str) -> bool {
     !marks::is_local_page(url) && url.len() + 4 <= marks::MAX_URL
@@ -75,7 +75,7 @@ pub(super) fn mark_window_refocused(guard: &mut Option<crate::prompt_ui::InputGu
 impl App {
     /// A person asked for a named mark on browser pane `pane` (`BVC:1401-1425`). Nothing opens here: the
     /// request is queued and `about_to_wait` opens the window (review I2). A request the path's gate
-    /// refuses does nothing (Tandem's menu items are enabled once, Decision).
+    /// refuses does nothing (Termurion's menu items are enabled once, Decision).
     pub(super) fn browser_add_named_mark(&mut self, pane: PaneId, at: Option<(f64, f64)>, path: AddPath) {
         let Some(bv) = self.browser_views.get(&pane) else { return };
         let Some(io) = self.panes.get(&pane).and_then(|p| p.browser_io()) else { return };
@@ -158,7 +158,7 @@ impl App {
 
 
     /// Whether a rename or delete of `guid` may still act: this pane's page shows the mark, and it is
-    /// the page (epoch) the window was opened for. Refuses a mark Tandem does not know.
+    /// the page (epoch) the window was opened for. Refuses a mark Termurion does not know.
     fn mark_edit_valid(&self, pane: PaneId, guid: &str, epoch: Option<u64>) -> bool {
         let Some(bv) = self.browser_views.get(&pane) else { return false };
         let Some(io) = self.panes.get(&pane).and_then(|p| p.browser_io()) else { return false };
@@ -248,7 +248,7 @@ impl App {
     }
 
     /// Whether pane `pane` still shows the page the request began on and may take a mark: the
-    /// navigation epoch is the same, the known method is GET or unknown, the page is not Tandem's own.
+    /// navigation epoch is the same, the known method is GET or unknown, the page is not Termurion's own.
     fn mark_request_current(&self, pane: PaneId, epoch: u64) -> bool {
         let Some(bv) = self.browser_views.get(&pane) else { return false };
         let Some(io) = self.panes.get(&pane).and_then(|p| p.browser_io()) else { return false };
@@ -345,7 +345,7 @@ impl App {
         self.browser_views.get(&pane).map(|b| b.marks_page.secret.clone()).unwrap_or_default()
     }
 
-    /// The pane's page URL and store, for a page that may show marks (not Tandem's own: B5), when its
+    /// The pane's page URL and store, for a page that may show marks (not Termurion's own: B5), when its
     /// isolated world is open.
     fn marks_page(&self, pane: PaneId) -> Option<(String, bool)> {
         if !self.client_open(pane) {
@@ -470,7 +470,7 @@ impl App {
     /// The annotation box's request (`MESSAGE_HANDLER`, `NMM:228-252`, changed: B2). Only the isolated
     /// world's main frame is heard, with the pane's marks secret, naming a mark this pane's page shows,
     /// at most once a second. The box asks and carries nothing else: the name is typed and a delete is
-    /// confirmed in a Tandem window outside the page (Task 5, `browser_mark_requested`).
+    /// confirmed in a Termurion window outside the page (Task 5, `browser_mark_requested`).
     pub(super) fn marks_message(&mut self, pane: PaneId, r: &Routed) {
         if !self.client_open(pane) || !marks::message_accepted(r.world, r.frame, &r.source) {
             return;
@@ -531,7 +531,7 @@ impl App {
     // --- Reveal, rename, remove (Task 5) ---
 
     /// Reveals mark `guid` in pane `pane` (`BVC:577-589`, `NMM:183-195`): on the same page it scrolls at
-    /// once, on another it loads the mark's URL (through the load gate, then Tandem's own navigation)
+    /// once, on another it loads the mark's URL (through the load gate, then Termurion's own navigation)
     /// and scrolls when that very navigation finishes (B9).
     pub(super) fn browser_reveal_named_mark(&mut self, pane: PaneId, guid: &str) {
         let Some(io) = self.panes.get(&pane).and_then(|p| p.browser_io()) else { return };
@@ -702,7 +702,7 @@ mod tests {
         assert_eq!(add_request(AddPath::Menu, "about:blank", "POST", None, 5), None);
         assert_eq!(add_request(AddPath::Menu, "https://a/", "POST", None, 5), None);
         assert_eq!(add_request(AddPath::Menu, "https://a/", "GET", None, 5), Some(MarkPrompt::Add { at: None, epoch: 5 }));
-        // Tandem's own pages carry no marks, by any path (B5).
+        // Termurion's own pages carry no marks, by any path (B5).
         assert_eq!(add_request(AddPath::Tool, "iterm2-about:history", "GET", None, 5), None);
         // A refused add after OK: a known non-GET method.
         assert!(marks::gate_on_add(Some("POST")).is_some());
@@ -865,7 +865,7 @@ mod tests {
         assert!(dismiss.contains("is_page_edit()"), "a navigation leaves a person's window");
     }
 
-    /// Source shape (B1, B2, B9): the rename and delete happen in Tandem windows outside the page, the
+    /// Source shape (B1, B2, B9): the rename and delete happen in Termurion windows outside the page, the
     /// page's request only queues them, every answer is checked again against the mark and the page,
     /// a navigation or a closing pane dismisses them, and a reveal is gated and bound to its navigation.
     #[test]

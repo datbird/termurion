@@ -37,7 +37,7 @@ pub(super) struct TmuxGw {
     pub(super) client: String,
     /// The tmux session: windows, panes, and the attach.
     pub(super) ctl: crate::tmux_controller::Controller,
-    /// The tmux pane Tandem last told tmux (or tmux told Tandem) is selected.
+    /// The tmux pane Termurion last told tmux (or tmux told Termurion) is selected.
     pub(super) selected: Option<u32>,
     /// When the pause monitor last ran.
     pub(super) pause_tick: Option<Instant>,
@@ -45,9 +45,9 @@ pub(super) struct TmuxGw {
     pub(super) auto_buried: bool,
     /// The attach's windows opened: bury the gateway once they are windows.
     pub(super) bury_pending: bool,
-    /// Each tmux window's tab size in cells, as Tandem last laid it out.
+    /// Each tmux window's tab size in cells, as Termurion last laid it out.
     pub(super) tab_sizes: HashMap<u32, (u32, u32)>,
-    /// tmux pane id to (Tandem pane, tmux window id).
+    /// tmux pane id to (Termurion pane, tmux window id).
     pub(super) panes: HashMap<u32, (PaneId, u32)>,
     /// Each window's set-titles string, once tmux sent one.
     pub(super) window_titles: HashMap<u32, String>,
@@ -99,7 +99,7 @@ impl App {
         let name = crate::tmux_windows::client_name(shell.user.as_deref(), shell.host.as_deref(), &title);
         let Some(p) = self.panes.get_mut(&pane) else { return };
         p.gateway = true;
-        // A bare ^C first: a fake start cannot make Tandem type a command into a shell.
+        // A bare ^C first: a fake start cannot make Termurion type a command into a shell.
         p.reply(&[3]);
         for line in BANNER {
             p.own_mut().print_message(line);

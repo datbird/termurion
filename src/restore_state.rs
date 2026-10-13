@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn atomic_write_replaces() {
-        let dir = std::env::temp_dir().join(format!("tandem-state-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-state-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("state");
         write_atomic(&path, b"one").unwrap();

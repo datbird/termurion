@@ -355,7 +355,7 @@ impl Window {
                         }
                     }
                 });
-                // Tandem does not download fonts (Decision): the button is there, disabled.
+                // Termurion does not download fonts (Decision): the button is there, disabled.
                 ui.add_enabled(false, egui::Button::new(INSTALL_NERD)).on_disabled_hover_text(font_table::NERD_DISABLED);
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {

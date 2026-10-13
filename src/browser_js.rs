@@ -73,7 +73,7 @@ pub fn resource(name: &str) -> Option<&'static str> {
         "monitor-selection.js" => include_str!("../resources/browser/monitor-selection.js"),
         "pointer-gate.js" => include_str!("../resources/browser/pointer-gate.js"),
         "selection-gesture.js" => include_str!("../resources/browser/selection-gesture.js"),
-        "tandem-cloak.js" => include_str!("../resources/browser/tandem-cloak.js"),
+        "termurion-cloak.js" => include_str!("../resources/browser/termurion-cloak.js"),
         "view-source.html" => include_str!("../resources/browser/view-source.html"),
         "welcome-page.html" => include_str!("../resources/browser/welcome-page.html"),
         "welcome-page.js" => include_str!("../resources/browser/welcome-page.js"),
@@ -221,7 +221,7 @@ fn is_ident(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b >= 0x80
 }
 
-/// `window.webkit` and `webkit.messageHandlers` become the closure-local `__tandemWebkit`, at
+/// `window.webkit` and `webkit.messageHandlers` become the closure-local `__termurionWebkit`, at
 /// identifier boundaries only: not after `.` or an identifier character, not before one, so
 /// `window.webkitAudioContext`, strings and properties are untouched.
 fn rewrite_bridge(code: &str) -> String {
@@ -235,7 +235,7 @@ fn rewrite_bridge(code: &str) -> String {
             let bare = !window && b[i..].starts_with(b"webkit") && (b[i + 6..].starts_with(b".messageHandlers") || b[i + 6..].starts_with(b"?.messageHandlers"));
             if window || bare {
                 out.push_str(&code[last..i]);
-                out.push_str("__tandemWebkit");
+                out.push_str("__termurionWebkit");
                 i += if window { 13 } else { 6 };
                 last = i;
                 continue;
@@ -247,8 +247,8 @@ fn rewrite_bridge(code: &str) -> String {
     out
 }
 
-const PAGE_CAPTURE: &str = "const __tandemPost = (window.chrome && window.chrome.webview) ? window.chrome.webview.postMessage.bind(window.chrome.webview) : null;";
-const CLIENT_CAPTURE: &str = "const __tandemPost = globalThis.__tandemClient;";
+const PAGE_CAPTURE: &str = "const __termurionPost = (window.chrome && window.chrome.webview) ? window.chrome.webview.postMessage.bind(window.chrome.webview) : null;";
+const CLIENT_CAPTURE: &str = "const __termurionPost = globalThis.__termurionClient;";
 
 /// B2 (13x3): the find engine posts every match of a page in one message, which a long page pushes
 /// past the bridge's limits (the count would never update). For the find handler only, the Client
@@ -259,7 +259,7 @@ const CLIENT_CAPTURE: &str = "const __tandemPost = globalThis.__tandemClient;";
 /// string inside the `Runtime.bindingCalled` event, a quote or backslash 2 bytes, a unit outside
 /// printable ASCII 6 (`\uXXXX`), the rest 1. That weight also bounds the decoded UTF-8 size. The
 /// copied find scripts are not edited.
-const CLIENT_CAP: &str = "function (name, body) { if (name === 'iTerm2Trigger') { return __tandemTriggerCap(body); } if (name !== 'iTermCustomFind' || !body || typeof body !== 'object' || !body.data || typeof body.data !== 'object') { return body; } const ids = Array.isArray(body.data.matchIdentifiers) ? body.data.matchIdentifiers : null; const ctx = Array.isArray(body.data.contexts) ? body.data.contexts : null; if (!ids && !ctx) { return body; } const cut = function (s) { if (typeof s !== 'string') { return s; } if (typeof s.toWellFormed === 'function') { s = s.toWellFormed(); } if (s.length <= 200) { return s; } const c = s.charCodeAt(199); return s.slice(0, c >= 0xD800 && c <= 0xDBFF ? 199 : 200); }; const build = function (n) { const data = Object.assign({}, body.data); if (ids) { data.matchIdentifiers = ids.slice(0, n).map(function (m) { return Object.assign({}, m, {text: cut(m && m.text)}); }); } if (ctx) { data.contexts = ctx.slice(0, n).map(function (c) { return Object.assign({}, c, {contextBefore: cut(c && c.contextBefore), contextAfter: cut(c && c.contextAfter)}); }); } return Object.assign({}, body, {data: data}); }; const weigh = function (o) { const s = JSON.stringify({h: name, b: o}); let w = 0; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); w += (c === 34 || c === 92) ? 2 : (c >= 32 && c <= 126) ? 1 : 6; } return w; }; let n = Math.max(ids ? ids.length : 0, ctx ? ctx.length : 0); let out = build(n); let size = weigh(out); while (size > 60000 && n > 0) { const next = Math.floor(n * 60000 / size * 0.9); n = next < n ? next : n - 1; out = build(n); size = weigh(out); } return out; }";
+const CLIENT_CAP: &str = "function (name, body) { if (name === 'iTerm2Trigger') { return __termurionTriggerCap(body); } if (name !== 'iTermCustomFind' || !body || typeof body !== 'object' || !body.data || typeof body.data !== 'object') { return body; } const ids = Array.isArray(body.data.matchIdentifiers) ? body.data.matchIdentifiers : null; const ctx = Array.isArray(body.data.contexts) ? body.data.contexts : null; if (!ids && !ctx) { return body; } const cut = function (s) { if (typeof s !== 'string') { return s; } if (typeof s.toWellFormed === 'function') { s = s.toWellFormed(); } if (s.length <= 200) { return s; } const c = s.charCodeAt(199); return s.slice(0, c >= 0xD800 && c <= 0xDBFF ? 199 : 200); }; const build = function (n) { const data = Object.assign({}, body.data); if (ids) { data.matchIdentifiers = ids.slice(0, n).map(function (m) { return Object.assign({}, m, {text: cut(m && m.text)}); }); } if (ctx) { data.contexts = ctx.slice(0, n).map(function (c) { return Object.assign({}, c, {contextBefore: cut(c && c.contextBefore), contextAfter: cut(c && c.contextAfter)}); }); } return Object.assign({}, body, {data: data}); }; const weigh = function (o) { const s = JSON.stringify({h: name, b: o}); let w = 0; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); w += (c === 34 || c === 92) ? 2 : (c >= 32 && c <= 126) ? 1 : 6; } return w; }; let n = Math.max(ids ? ids.length : 0, ctx ? ctx.length : 0); let out = build(n); let size = weigh(out); while (size > 60000 && n > 0) { const next = Math.floor(n * 60000 / size * 0.9); n = next < n ? next : n - 1; out = build(n); size = weigh(out); } return out; }";
 
 /// B8 (13x5 Task 9): a trigger match event is JSON inside a JSON string, and one page can match
 /// thousands of times. For the trigger handler only, the Client bridge keeps the first 64 matches, cuts
@@ -275,8 +275,8 @@ pub const CAP_BUDGET: usize = 60000;
 /// The closure-local `webkit` object: a Proxy answering `{postMessage}` for any handler name.
 fn bridge_object(world: World) -> String {
     match world {
-        World::Client => "const __tandemTriggerCap = __TCAP__;\nconst __tandemCap = __CAP__;\nconst __tandemWebkit = { messageHandlers: new Proxy({}, { get: function (_t, n) { const name = String(n); return { postMessage: function (body) { body = __tandemCap(name, body); if (typeof __tandemPost === 'function') { __tandemPost(JSON.stringify({h: name, b: body})); } } }; } }) };".replace("__CAP__", CLIENT_CAP).replace("__TCAP__", TRIGGER_CAP),
-        World::Page => "const __tandemWebkit = { messageHandlers: new Proxy({}, { get: function (_t, n) { const name = String(n); return { postMessage: function (body) { if (__tandemPost) { __tandemPost({h: name, b: body}); } } }; } }) };".to_string(),
+        World::Client => "const __termurionTriggerCap = __TCAP__;\nconst __termurionCap = __CAP__;\nconst __termurionWebkit = { messageHandlers: new Proxy({}, { get: function (_t, n) { const name = String(n); return { postMessage: function (body) { body = __termurionCap(name, body); if (typeof __termurionPost === 'function') { __termurionPost(JSON.stringify({h: name, b: body})); } } }; } }) };".replace("__CAP__", CLIENT_CAP).replace("__TCAP__", TRIGGER_CAP),
+        World::Page => "const __termurionWebkit = { messageHandlers: new Proxy({}, { get: function (_t, n) { const name = String(n); return { postMessage: function (body) { if (__termurionPost) { __termurionPost({h: name, b: body}); } } }; } }) };".to_string(),
     }
 }
 
@@ -310,9 +310,9 @@ pub fn wrap(script: &UserScript) -> String {
             s.push('\n');
         }
         Inject::DocumentEnd => {
-            s.push_str("const __tandemRun = function () {\n");
+            s.push_str("const __termurionRun = function () {\n");
             s.push_str(&body);
-            s.push_str("\n};\nif (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', __tandemRun, {once: true}); } else { __tandemRun(); }\n");
+            s.push_str("\n};\nif (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', __termurionRun, {once: true}); } else { __termurionRun(); }\n");
         }
     }
     s.push_str("})();");
@@ -375,7 +375,7 @@ pub const CONSOLE_HANDLER: &str = "iTerm2ConsoleLog";
 pub const EDITING_HANDLER: &str = "iTerm2EditingDetector";
 pub const SELECTION_HANDLER: &str = "iTermSelectionMonitor";
 /// Tandem's own: the person used the pointer or keyboard (`selection-gesture.js`).
-pub const SELECTION_GESTURE_HANDLER: &str = "TandemSelectionGesture";
+pub const SELECTION_GESTURE_HANDLER: &str = "TermurionSelectionGesture";
 /// The longest selection Tandem stores or copies (B10).
 pub const MAX_SELECTION: usize = 1024 * 1024;
 
@@ -392,7 +392,7 @@ pub fn always_on_scripts(secret: &str, dom_secret: &str, client_ok: bool, debug:
     let load = |name: &str, subs: &[(&str, &str)]| fill_template(resource(name).unwrap_or_default(), subs);
     let log_errors = if debug { resource("log-errors.js").unwrap_or_default() } else { "" };
     let console = load("console-log.js", &[("LOG_ERRORS", log_errors)]);
-    let mut v = vec![script("tandem-cloak", load("tandem-cloak.js", &[]), World::Page), script("console-log", console.clone(), World::Page)];
+    let mut v = vec![script("termurion-cloak", load("termurion-cloak.js", &[]), World::Page), script("console-log", console.clone(), World::Page)];
     if client_ok {
         // The isolated world's console copy carries graph discovery's debug lines: debug builds only
         // (the app counts console lines and never reads them, so a release build gains nothing).
@@ -558,7 +558,7 @@ pub fn js_string(text: &str) -> String {
 
 fn identifier_ok(name: &str) -> bool {
     let b = name.as_bytes();
-    !b.is_empty() && !b.starts_with(b"__tandem") && (b[0].is_ascii_alphabetic() || b[0] == b'_' || b[0] == b'$') && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'$')
+    !b.is_empty() && !b.starts_with(b"__termurion") && (b[0].is_ascii_alphabetic() || b[0] == b'_' || b[0] == b'$') && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'$')
 }
 
 /// iTerm2's `callAsyncJavaScript` (`BWV:140-149`): each argument a local constant, the body awaited.
@@ -829,20 +829,20 @@ mod tests {
         let code = "window.webkit.messageHandlers.iTermHoverLink.postMessage({a: 1})";
         let c = wrap(&script(code, World::Client));
         assert!(!c.contains("window.webkit"), "{c}");
-        assert!(c.starts_with("(function () {\nconst __tandemPost = globalThis.__tandemClient;\n"), "the binding is captured before the body: {c}");
-        assert!(c.contains("__tandemPost(JSON.stringify({h: name, b: body}))"), "{c}");
+        assert!(c.starts_with("(function () {\nconst __termurionPost = globalThis.__termurionClient;\n"), "the binding is captured before the body: {c}");
+        assert!(c.contains("__termurionPost(JSON.stringify({h: name, b: body}))"), "{c}");
         assert!(!c.to_ascii_lowercase().contains("secret"), "no secret field in the envelope");
-        assert!(c.contains("__tandemWebkit.messageHandlers.iTermHoverLink.postMessage({a: 1})"));
+        assert!(c.contains("__termurionWebkit.messageHandlers.iTermHoverLink.postMessage({a: 1})"));
         let p = wrap(&script(code, World::Page));
-        assert!(p.starts_with("(function () {\nconst __tandemPost = (window.chrome && window.chrome.webview) ? window.chrome.webview.postMessage.bind(window.chrome.webview) : null;\n"), "{p}");
-        assert!(p.contains("__tandemPost({h: name, b: body})") && !p.contains("JSON.stringify({h"), "{p}");
-        assert!(p.contains("if (__tandemPost)"), "a null post is a no-op");
+        assert!(p.starts_with("(function () {\nconst __termurionPost = (window.chrome && window.chrome.webview) ? window.chrome.webview.postMessage.bind(window.chrome.webview) : null;\n"), "{p}");
+        assert!(p.contains("__termurionPost({h: name, b: body})") && !p.contains("JSON.stringify({h"), "{p}");
+        assert!(p.contains("if (__termurionPost)"), "a null post is a no-op");
 
         for (src, want) in [
-            ("webkit.messageHandlers.x.postMessage(1)", "__tandemWebkit.messageHandlers.x.postMessage(1)"),
-            ("window.webkit?.messageHandlers?.x?.postMessage({a: 1})", "__tandemWebkit?.messageHandlers?.x?.postMessage({a: 1})"),
-            ("if (window.webkit && window.webkit.messageHandlers) {}", "if (__tandemWebkit && __tandemWebkit.messageHandlers) {}"),
-            ("webkit?.messageHandlers.x", "__tandemWebkit?.messageHandlers.x"),
+            ("webkit.messageHandlers.x.postMessage(1)", "__termurionWebkit.messageHandlers.x.postMessage(1)"),
+            ("window.webkit?.messageHandlers?.x?.postMessage({a: 1})", "__termurionWebkit?.messageHandlers?.x?.postMessage({a: 1})"),
+            ("if (window.webkit && window.webkit.messageHandlers) {}", "if (__termurionWebkit && __termurionWebkit.messageHandlers) {}"),
+            ("webkit?.messageHandlers.x", "__termurionWebkit?.messageHandlers.x"),
         ] {
             assert!(wrap(&script(src, World::Client)).contains(want), "{src}");
         }
@@ -851,7 +851,7 @@ mod tests {
             let w = wrap(&script(keep, World::Client));
             assert!(w.contains(keep), "{keep} was changed: {w}");
         }
-        assert!(!wrap(&script("RealWAC = window.webkitAudioContext", World::Client)).contains("RealWAC = __tandem"));
+        assert!(!wrap(&script("RealWAC = window.webkitAudioContext", World::Client)).contains("RealWAC = __termurion"));
         // Main frame only, and document end.
         let mut s = script("run();", World::Client);
         s.main_frame_only = true;
@@ -860,7 +860,7 @@ mod tests {
         assert!(!wrap(&s).contains("window.top"));
         s.inject = Inject::DocumentEnd;
         let e = wrap(&s);
-        assert!(e.contains("document.readyState === 'loading'") && e.contains("DOMContentLoaded") && e.contains("__tandemRun()"), "{e}");
+        assert!(e.contains("document.readyState === 'loading'") && e.contains("DOMContentLoaded") && e.contains("__termurionRun()"), "{e}");
         let start = wrap(&script("run();", World::Client));
         assert!(!start.contains("DOMContentLoaded"));
         // Two wrapped scripts never collide when they share one global (each is its own function).
@@ -873,13 +873,13 @@ mod tests {
     #[test]
     fn the_client_bridge_caps_find_results() {
         let c = wrap(&script("window.webkit.messageHandlers.iTermCustomFind.postMessage({a: 1})", World::Client));
-        assert!(c.contains("const __tandemCap = function (name, body)"), "{c}");
+        assert!(c.contains("const __termurionCap = function (name, body)"), "{c}");
         assert!(c.contains("name !== 'iTermCustomFind'"), "only the find handler is capped: {c}");
-        assert!(c.contains("body = __tandemCap(name, body);"), "applied before the post: {c}");
+        assert!(c.contains("body = __termurionCap(name, body);"), "applied before the post: {c}");
         assert!(c.contains(&format!("size > {CAP_BUDGET}")), "the byte budget: {c}");
         assert!(!c.to_ascii_lowercase().contains("secret"), "the cap copies the body whole and names no secret");
         // The page-world bridge (local pages) is not touched.
-        assert!(!wrap(&script("x", World::Page)).contains("__tandemCap"));
+        assert!(!wrap(&script("x", World::Page)).contains("__termurionCap"));
         assert!(CAP_BUDGET + 4096 < crate::webhost::MAX_MESSAGE + crate::webhost::MAX_URL && CAP_BUDGET < crate::webhost::MAX_MESSAGE, "the budget leaves room for the event's own fields");
         // A surrogate pair is never split at the cut, and a lone one is made well-formed.
         assert!(c.contains("c >= 0xD800 && c <= 0xDBFF ? 199 : 200") && c.contains("s.toWellFormed()"), "{c}");
@@ -937,11 +937,11 @@ mod tests {
     #[test]
     fn the_client_bridge_caps_trigger_events() {
         let c = wrap(&script("window.webkit.messageHandlers.iTerm2Trigger.postMessage({a: 1})", World::Client));
-        assert!(c.contains("if (name === 'iTerm2Trigger') { return __tandemTriggerCap(body); }"), "{c}");
+        assert!(c.contains("if (name === 'iTerm2Trigger') { return __termurionTriggerCap(body); }"), "{c}");
         assert!(c.contains("ev.matches.slice(0, 64)") && c.contains("slice(0, 100)") && c.contains("weigh(out) > 60000"), "{c}");
-        assert!(c.find("const __tandemTriggerCap").unwrap() < c.find("const __tandemCap").unwrap());
+        assert!(c.find("const __termurionTriggerCap").unwrap() < c.find("const __termurionCap").unwrap());
         assert!(!TRIGGER_CAP.to_ascii_lowercase().contains("secret"), "the cap copies the body whole");
-        assert!(!wrap(&script("x", World::Page)).contains("__tandemTriggerCap"));
+        assert!(!wrap(&script("x", World::Page)).contains("__termurionTriggerCap"));
     }
 
     #[test]
@@ -951,8 +951,8 @@ mod tests {
         assert!(s.main_frame_only);
         let w = wrap(&s);
         assert!(w.contains("location.protocol === 'iterm2-about:'") && w.contains("Object.defineProperty(window, 'webkit'"), "{w}");
-        assert!(w.contains("value: __tandemWebkit") && w.contains("configurable: false"), "{w}");
-        assert!(w.contains("__tandemPost({h: name, b: body})"), "the same bridge text, posting {{h, b}}");
+        assert!(w.contains("value: __termurionWebkit") && w.contains("configurable: false"), "{w}");
+        assert!(w.contains("__termurionPost({h: name, b: body})"), "the same bridge text, posting {{h, b}}");
         assert!(!w.contains("secret"));
     }
 
@@ -1015,15 +1015,15 @@ mod tests {
         assert_eq!(call_js("return 1;", &serde_json::Value::Null).unwrap(), "(async () => { return 1; })()");
         let s = call_js("return s;", &json!({"s": "x\"y\\z"})).unwrap();
         assert!(s.contains(r#"const s = "x\"y\\z";"#), "{s}");
-        for bad in ["a b", "1a", "a-b", "", "a;b", "__tandemPost", "a.b"] {
+        for bad in ["a b", "1a", "a-b", "", "a;b", "__termurionPost", "a.b"] {
             assert_eq!(call_js("return 1;", &json!({ bad: 1 })), Err("bad argument name".into()), "{bad}");
         }
         assert_eq!(call_js("return 1;", &json!([1])), Err("bad argument name".into()));
         // A body that posts gets the Client bridge, the binding captured at the top of the expression.
         for body in ["window.webkit?.messageHandlers?.x?.postMessage({a: 1}); return 1;", "window.webkit.messageHandlers.x.postMessage({a: 1}); return 1;", "webkit.messageHandlers.x.postMessage({a: 1}); return 1;"] {
             let e = call_js(body, &json!({"a": 1})).unwrap();
-            assert!(e.starts_with("(async () => { const __tandemPost = globalThis.__tandemClient;"), "{e}");
-            assert!(e.contains("__tandemPost(JSON.stringify({h: name, b: body}))") && !e.contains("window.webkit"), "{e}");
+            assert!(e.starts_with("(async () => { const __termurionPost = globalThis.__termurionClient;"), "{e}");
+            assert!(e.contains("__termurionPost(JSON.stringify({h: name, b: body}))") && !e.contains("window.webkit"), "{e}");
             assert!(!e.to_ascii_lowercase().contains("secret"));
         }
     }
@@ -1034,7 +1034,7 @@ mod tests {
         assert_eq!(page_call_script("return 1;", &serde_json::Value::Null).unwrap(), "(function() {\nreturn 1;\n})()");
         assert_eq!(page_call_script("return 1;", &json!({"a": 1})), Err("page calls take no arguments".into()));
         // No bridge, no secret: the body goes in as written.
-        assert!(!page_call_script("window.webkit.x", &json!({})).unwrap().contains("__tandem"));
+        assert!(!page_call_script("window.webkit.x", &json!({})).unwrap().contains("__termurion"));
     }
 
     #[test]
@@ -1127,7 +1127,7 @@ mod tests {
         assert_eq!(
             ids,
             vec![
-                ("tandem-cloak", World::Page, st, false),
+                ("termurion-cloak", World::Page, st, false),
                 ("console-log", World::Page, st, false),
                 ("GraphDiscovery", World::Client, st, false),
                 ("monitor-selection", World::Client, st, false),
@@ -1138,7 +1138,7 @@ mod tests {
             ]
         );
         // The cloak is the first of the page world's scripts.
-        assert_eq!(list.iter().find(|s| s.world == World::Page).unwrap().id, "tandem-cloak");
+        assert_eq!(list.iter().find(|s| s.world == World::Page).unwrap().id, "termurion-cloak");
         // Secrets: the view's in the selection scripts, the separate DOM one in the editing detector,
         // neither in a page script, and no template key is left over.
         let code = |id: &str| list.iter().find(|s| s.id == id).unwrap().code.clone();
@@ -1160,12 +1160,12 @@ mod tests {
         // Without the isolated world no Client script is offered, never moved to the page world.
         let none = always_on_scripts("S", "D", false, false);
         assert!(none.iter().all(|s| s.world == World::Page));
-        assert_eq!(none.iter().map(|s| s.id).collect::<Vec<_>>(), vec!["tandem-cloak", "console-log", "local-page-bridge"]);
+        assert_eq!(none.iter().map(|s| s.id).collect::<Vec<_>>(), vec!["termurion-cloak", "console-log", "local-page-bridge"]);
         // The cloak removes only the page-world channel, only in a challenge frame.
-        let cloak = code("tandem-cloak");
+        let cloak = code("termurion-cloak");
         assert!(cloak.contains("delete window.chrome.webview") && cloak.contains("hcaptcha") && !cloak.contains("webkit"));
         // Every listener of a Tandem script checks isTrusted first (P26).
-        for name in ["selection-gesture.js", "tandem-cloak.js", "pointer-gate.js", "broadcast-input.js"] {
+        for name in ["selection-gesture.js", "termurion-cloak.js", "pointer-gate.js", "broadcast-input.js"] {
             let text = resource(name).unwrap();
             assert!(text.contains("Tandem's own script"), "{name} says it is Tandem's");
             let mut at = 0;

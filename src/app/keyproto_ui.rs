@@ -7,7 +7,7 @@ use super::*;
 use crate::keyproto::{self, KeyMode, Kind, Modifier};
 
 impl App {
-    /// Remap modifiers globally is off: Tandem remaps only the keys it receives
+    /// Remap modifiers globally is off: Termurion remaps only the keys it receives
     /// (`iTermApplication.m:252-285`), and Windows' own chords see the physical keys.
     pub(super) fn remap_in_app_on(&self) -> bool {
         !self.globals.bool("RemapModifiersGlobally")
@@ -42,7 +42,7 @@ impl App {
     }
 
     /// The Cmd chord a key press makes with the shortcut key's own modifiers (Ctrl+Shift+D is
-    /// Cmd+D), when Tandem has a command, mapping or shortcut for it. Anything else is not a
+    /// Cmd+D), when Termurion has a command, mapping or shortcut for it. Anything else is not a
     /// shortcut and goes on to the terminal with the keys as pressed, whatever key reporting the
     /// program asked for: iTerm2's menu key equivalents come before the terminal's key handler
     /// too (`PTYTextView.m:731`), so a bound shortcut is never sent to the program.
@@ -150,7 +150,7 @@ impl App {
         if pressed {
             return false;
         }
-        // Only keys that went to the program report their release; a Tandem shortcut's key
+        // Only keys that went to the program report their release; a Termurion shortcut's key
         // does not.
         let Some(pane) = self.sent_keys.release(ev.physical_key) else { return true };
         let Some(kb) = self.panes.get(&pane).map(|p| p.own().keyboard()) else { return true };

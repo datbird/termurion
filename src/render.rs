@@ -281,7 +281,7 @@ const MAX_FACES: usize = 512;
 /// The names `resolve_family` and `has_family` remember before they start over.
 const LOOKUP_CAP: usize = 4096;
 
-/// The ids glyphon caches Tandem's custom glyphs by. Its cache key is only the id, the size and
+/// The ids glyphon caches Termurion's custom glyphs by. Its cache key is only the id, the size and
 /// the subpixel bin, and every `TextArea` here draws at scale 1, so the device scale (which sets
 /// a stroke's thickness) is part of the id: a character at another scale is another glyph, and a
 /// mask is never reused across a DPI change. The rasterizer maps an id back to its pair.
@@ -1334,7 +1334,7 @@ impl Renderer {
                 // shaper's own features: nothing can ligate there and Arabic keeps its forms.
                 let start = if terminal && (s.ligatures > 0 || s.text.is_ascii()) { start.font_features(fonts::features(s.ligatures)) } else { start };
                 // Terminal text carries its mask mode in the glyph cache key (`from_bits_retain`
-                // keeps Tandem's bits), so each mode is cached apart and filtered in glyphon.
+                // keeps Termurion's bits), so each mode is cached apart and filtered in glyphon.
                 let start = if terminal { start.cache_key_flags(CacheKeyFlags::from_bits_retain(fonts::MaskMode::from_code(s.mask).flags())) } else { start };
                 let attrs = start
                     .color(Color::rgb(s.color.r, s.color.g, s.color.b))

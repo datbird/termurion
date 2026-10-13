@@ -435,7 +435,7 @@ mod tests {
     }
 
     fn empty() -> Globals {
-        Globals::empty(&std::env::temp_dir().join("tandem-ai-model-test.toml"))
+        Globals::empty(&std::env::temp_dir().join("termurion-ai-model-test.toml"))
     }
 
     fn globals_with(configs: &str) -> Globals {

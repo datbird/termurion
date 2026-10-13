@@ -1371,7 +1371,7 @@ impl App {
     }
 
     /// Password prompt detection (`PTYSession.m:7657-7682`): the job watcher (local panes)
-    /// and tandem-host (hosted panes) debounce real samples of each console; a session whose
+    /// and termurion-host (hosted panes) debounce real samples of each console; a session whose
     /// state changed goes to `password_input_changed`. A new sample wakes the window, so
     /// nothing waits here.
     fn tick_password_input(&mut self) {
@@ -2434,7 +2434,7 @@ impl Ctx {
     fn lastpass_asker(&self) -> Sender<crate::pwm_run::Ask> {
         let (ask, asks) = mpsc::channel::<crate::pwm_run::Ask>();
         let mut prompt = self.master_prompt();
-        let _ = std::thread::Builder::new().name("tandem-lpass-ask".into()).spawn(move || {
+        let _ = std::thread::Builder::new().name("termurion-lpass-ask".into()).spawn(move || {
             for ask in asks {
                 // An ask whose request already ended (timed out, canceled or the command
                 // failed) is skipped: nobody is waiting, and a stale prompt would teach the
@@ -2480,7 +2480,7 @@ impl Worker {
     fn start(notify: Notify, scope: Scope) -> Worker {
         let (tx, jobs) = mpsc::channel::<Job>();
         let (out, rx) = mpsc::channel::<Reply>();
-        let _ = std::thread::Builder::new().name("tandem-pwm".into()).spawn(move || {
+        let _ = std::thread::Builder::new().name("termurion-pwm".into()).spawn(move || {
             let ctx = Ctx { scope, out: out.clone(), notify: notify.clone(), current: Arc::new(Mutex::new(None)), picked: Arc::new(Mutex::new(None)) };
             let mut slot: Option<(Config, Box<dyn Source>)> = None;
             for job in jobs {

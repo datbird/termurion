@@ -198,28 +198,28 @@ scope = ['Cargo.toml','README.md','crates/*/TANDEM-PATCHES.md']
 reason = 'Task 2: patch-notes file renamed with the crate'
 
 [[row]]
-group = 'K'
+group = 'B'
 old = 'tandem workgroup approval key\0v1'
-new = 'tandem workgroup approval key\0v1'
-mode = 'keep'
+new = 'termurion workgroup approval key\0v1'
+mode = 'exact'
 scope = ['**']
-reason = 'DPAPI entropy for the workgroup approval key; part of the seal, bytes must not change'
+reason = 'scope change: no existing data to keep, renamed with the product'
 
 [[row]]
-group = 'K'
+group = 'B'
 old = 'tandem autofill contact card\0v1'
-new = 'tandem autofill contact card\0v1'
-mode = 'keep'
+new = 'termurion autofill contact card\0v1'
+mode = 'exact'
 scope = ['**']
-reason = 'DPAPI entropy for the autofill contact card; part of the seal, bytes must not change'
+reason = 'scope change: no existing data to keep, renamed with the product'
 
 [[row]]
-group = 'K'
+group = 'B'
 old = 'tandem workgroup approval'
-new = 'tandem workgroup approval'
-mode = 'keep'
+new = 'termurion workgroup approval'
+mode = 'exact'
 scope = ['**']
-reason = 'HMAC domain string of workgroup_restore::seal (b"tandem workgroup approval\0"); existing launch-state approvals verify against it, so it also stays'
+reason = 'scope change: no existing data to keep, renamed with the product'
 
 [[row]]
 group = 'K'
@@ -1349,92 +1349,92 @@ scope = ['docs/**', 'README.md', 'progress.md']
 reason = 'prose in living docs: the bare name is the product name; code paths never get a bare row'
 
 [[row]]
-group = 'K'
+group = 'B'
 old = 'Tandem Contents'
-new = 'Tandem Contents'
-mode = 'keep'
+new = 'Termurion Contents'
+mode = 'exact'
 scope = ['src/arrangement.rs']
-reason = 'KEEP: key in saved arrangements and window state (plist-compatible); renaming orphans every saved arrangement. Never renamed.'
+reason = 'scope change: no existing data to keep, renamed with the product'
 
 [[row]]
-group = 'K'
+group = 'B'
 old = 'Tandem Session Reference'
-new = 'Tandem Session Reference'
-mode = 'keep'
+new = 'Termurion Session Reference'
+mode = 'exact'
 scope = ['src/arrangement.rs']
-reason = 'KEEP: key in saved arrangements and window state (plist-compatible); renaming orphans every saved arrangement. Never renamed.'
+reason = 'scope change: no existing data to keep, renamed with the product'
 
 [[row]]
-group = 'K'
+group = 'B'
 old = 'Tandem Adopt Reference'
-new = 'Tandem Adopt Reference'
-mode = 'keep'
+new = 'Termurion Adopt Reference'
+mode = 'exact'
 scope = ['src/arrangement.rs']
-reason = 'KEEP: key in saved arrangements and window state (plist-compatible); renaming orphans every saved arrangement. Never renamed.'
+reason = 'scope change: no existing data to keep, renamed with the product'
 
 [[row]]
-group = 'K'
+group = 'B'
 old = 'Tandem Stable Session ID'
-new = 'Tandem Stable Session ID'
-mode = 'keep'
+new = 'Termurion Stable Session ID'
+mode = 'exact'
 scope = ['src/arrangement.rs']
-reason = 'KEEP: key in saved arrangements and window state (plist-compatible); renaming orphans every saved arrangement. Never renamed.'
+reason = 'scope change: no existing data to keep, renamed with the product'
 
 [[row]]
-group = 'K'
+group = 'B'
 old = 'Tandem Adopt Stable Session ID'
-new = 'Tandem Adopt Stable Session ID'
-mode = 'keep'
+new = 'Termurion Adopt Stable Session ID'
+mode = 'exact'
 scope = ['src/arrangement.rs']
-reason = 'KEEP: key in saved arrangements and window state (plist-compatible); renaming orphans every saved arrangement. Never renamed.'
+reason = 'scope change: no existing data to keep, renamed with the product'
 
 [[row]]
-group = 'K'
+group = 'B'
 old = 'Tandem Styled Contents'
-new = 'Tandem Styled Contents'
-mode = 'keep'
+new = 'Termurion Styled Contents'
+mode = 'exact'
 scope = ['src/arrangement.rs']
-reason = 'KEEP: key in saved arrangements and window state (plist-compatible); renaming orphans every saved arrangement. Never renamed.'
+reason = 'scope change: no existing data to keep, renamed with the product'
 
 [[row]]
-group = 'K'
+group = 'B'
 old = 'Tandem Banner'
-new = 'Tandem Banner'
-mode = 'keep'
+new = 'Termurion Banner'
+mode = 'exact'
 scope = ['src/arrangement.rs']
-reason = 'KEEP: key in saved arrangements and window state (plist-compatible); renaming orphans every saved arrangement. Never renamed.'
+reason = 'scope change: no existing data to keep, renamed with the product'
 
 [[row]]
-group = 'K'
+group = 'B'
 old = 'Tandem Cursor'
-new = 'Tandem Cursor'
-mode = 'keep'
+new = 'Termurion Cursor'
+mode = 'exact'
 scope = ['src/arrangement.rs']
-reason = 'KEEP: key in saved arrangements and window state (plist-compatible); renaming orphans every saved arrangement. Never renamed.'
+reason = 'scope change: no existing data to keep, renamed with the product'
 
 [[row]]
-group = 'K'
+group = 'B'
 old = 'Tandem Attach'
-new = 'Tandem Attach'
-mode = 'keep'
+new = 'Termurion Attach'
+mode = 'exact'
 scope = ['src/arrangement.rs', 'src/workgroup_restore.rs']
-reason = 'KEEP: key in saved arrangements and window state (plist-compatible); renaming orphans every saved arrangement. Never renamed.'
+reason = 'scope change: no existing data to keep, renamed with the product'
 
 [[row]]
-group = 'K'
+group = 'B'
 old = 'Tandem Idle'
-new = 'Tandem Idle'
-mode = 'keep'
+new = 'Termurion Idle'
+mode = 'exact'
 scope = ['src/arrangement.rs']
-reason = 'KEEP: key in saved arrangements and window state (plist-compatible); renaming orphans every saved arrangement. Never renamed.'
+reason = 'scope change: no existing data to keep, renamed with the product'
 
 [[row]]
-group = 'K'
+group = 'B'
 old = 'Tandem Virtual Desktop'
-new = 'Tandem Virtual Desktop'
-mode = 'keep'
+new = 'Termurion Virtual Desktop'
+mode = 'exact'
 scope = ['src/desktops.rs']
-reason = 'KEEP: key in the saved virtual-desktop state; renaming orphans saved state. Never renamed.'
+reason = 'scope change: no existing data to keep, renamed with the product'
 
 [[row]]
 group = 'B'
@@ -8087,3 +8087,204 @@ mode = 'exact'
 scope = ['scripts/xt']
 reason = 'script or tool text: becomes Termurion; file-level row, every hit in this file was reviewed'
 
+
+# lane: data
+[[row]]
+group = 'B'
+old = 'Tandem.{scheme}'
+new = 'Termurion.{scheme}'
+mode = 'exact'
+scope = ['src/url_schemes.rs']
+reason = 'ProgId written into URLAssociations and compared with the UserChoice (Termurion.<scheme>)'
+
+[[row]]
+group = 'B'
+old = 'registeredAppUser=Tandem'
+new = 'registeredAppUser=Termurion'
+mode = 'exact'
+scope = ['src/url_schemes.rs']
+reason = 'Default Apps deep link names the RegisteredApplications value, which is Termurion'
+
+[[row]]
+group = 'B'
+old = '.Tandem.{}'
+new = '.Termurion.{}'
+mode = 'exact'
+scope = ['src/app/files_ui.rs']
+reason = 'hidden probe file name (the stale sweep also knows the legacy .Tandem. prefix)'
+
+[[row]]
+group = 'B'
+old = '.tandem-{}.tmp'
+new = '.termurion-{}.tmp'
+mode = 'exact'
+scope = ['src/claude_code.rs']
+reason = 'temp name beside settings.json'
+
+[[row]]
+group = 'C'
+old = 'Files/Tandem/cc-status.exe'
+new = 'Files/Termurion/cc-status.exe'
+mode = 'exact'
+scope = ['src/claude_code.rs']
+reason = 'hook command path literal (test fixture)'
+
+[[row]]
+group = 'C'
+old = 'tandem-{face}'
+new = 'termurion-{face}'
+mode = 'exact'
+scope = ['src/open_quickly_ui.rs']
+reason = 'egui font data key'
+
+[[row]]
+group = 'C'
+old = 'tandem-{tag}-{}'
+new = 'termurion-{tag}-{}'
+mode = 'exact'
+scope = ['src/app/scripts_app.rs']
+reason = 'temp folder name'
+
+[[row]]
+group = 'C'
+old = 'Tandem\Replay'
+new = 'Termurion\Replay'
+mode = 'exact'
+scope = ['src/web_replay.rs']
+reason = 'data folder path asserted by its test'
+
+[[row]]
+group = 'C'
+old = 'share/Tandem'
+new = 'share/Termurion'
+mode = 'exact'
+scope = ['src/utilities.rs']
+reason = 'path literal in a test'
+
+[[row]]
+group = 'C'
+old = 'new("Tandem")'
+new = 'new("Termurion")'
+mode = 'exact'
+scope = ['src/chat_store.rs']
+reason = 'data folder name asserted by its test'
+
+[[row]]
+group = 'C'
+old = 'contains("Tandem")'
+new = 'contains("Termurion")'
+mode = 'exact'
+scope = ['src/browser_db.rs']
+reason = 'data folder name asserted by its test'
+
+[[row]]
+group = 'A'
+old = 'Tandem'
+new = 'Termurion'
+mode = 'exact'
+scope = ['resources/browser/termurion-cloak.js']
+reason = 'the file moved from tandem-cloak.js (git mv); the same file-level row as before, for its new path'
+
+[[row]]
+group = 'A'
+old = 'Tandem'
+new = 'Termurion'
+mode = 'exact'
+scope = ['resources/shell_integration/termurion_shell_integration.ps1']
+reason = '(moved file, new path) text the person can read (window title, message, tooltip, default name, doc comment in code): becomes Termurion; file-level row, every hit in this file was reviewed'
+
+[[row]]
+group = 'B'
+old = '__TandemAid'
+new = '__TermurionAid'
+mode = 'exact'
+scope = ['resources/shell_integration/termurion_shell_integration.ps1']
+reason = '(moved file, new path) runtime identifier (JS global, CSS class, world name, protocol or registry-ish name): new name; no legacy alias needed unless alias=true'
+
+[[row]]
+group = 'B'
+old = '__TandemCount'
+new = '__TermurionCount'
+mode = 'exact'
+scope = ['resources/shell_integration/termurion_shell_integration.ps1']
+reason = '(moved file, new path) runtime identifier (JS global, CSS class, world name, protocol or registry-ish name): new name; no legacy alias needed unless alias=true'
+
+[[row]]
+group = 'B'
+old = '__TandemFirst'
+new = '__TermurionFirst'
+mode = 'exact'
+scope = ['resources/shell_integration/termurion_shell_integration.ps1']
+reason = '(moved file, new path) runtime identifier (JS global, CSS class, world name, protocol or registry-ish name): new name; no legacy alias needed unless alias=true'
+
+[[row]]
+group = 'B'
+old = '__TandemHistory'
+new = '__TermurionHistory'
+mode = 'exact'
+scope = ['resources/shell_integration/termurion_shell_integration.ps1']
+reason = '(moved file, new path) runtime identifier (JS global, CSS class, world name, protocol or registry-ish name): new name; no legacy alias needed unless alias=true'
+
+[[row]]
+group = 'B'
+old = '__TandemLocation'
+new = '__TermurionLocation'
+mode = 'exact'
+scope = ['resources/shell_integration/termurion_shell_integration.ps1']
+reason = '(moved file, new path) runtime identifier (JS global, CSS class, world name, protocol or registry-ish name): new name; no legacy alias needed unless alias=true'
+
+[[row]]
+group = 'B'
+old = '__TandemMachineId'
+new = '__TermurionMachineId'
+mode = 'exact'
+scope = ['resources/shell_integration/termurion_shell_integration.ps1']
+reason = '(moved file, new path) runtime identifier (JS global, CSS class, world name, protocol or registry-ish name): new name; no legacy alias needed unless alias=true'
+
+[[row]]
+group = 'B'
+old = '__TandemOriginalPrompt'
+new = '__TermurionOriginalPrompt'
+mode = 'exact'
+scope = ['resources/shell_integration/termurion_shell_integration.ps1']
+reason = '(moved file, new path) runtime identifier (JS global, CSS class, world name, protocol or registry-ish name): new name; no legacy alias needed unless alias=true'
+
+[[row]]
+group = 'B'
+old = '__TandemOriginalPrompt.Invoke'
+new = '__TermurionOriginalPrompt.Invoke'
+mode = 'exact'
+scope = ['resources/shell_integration/termurion_shell_integration.ps1']
+reason = '(moved file, new path) runtime identifier (JS global, CSS class, world name, protocol or registry-ish name): new name; no legacy alias needed unless alias=true'
+
+[[row]]
+group = 'B'
+old = '__TandemOriginalReadLine'
+new = '__TermurionOriginalReadLine'
+mode = 'exact'
+scope = ['resources/shell_integration/termurion_shell_integration.ps1']
+reason = '(moved file, new path) runtime identifier (JS global, CSS class, world name, protocol or registry-ish name): new name; no legacy alias needed unless alias=true'
+
+[[row]]
+group = 'B'
+old = '__TandemOsc'
+new = '__TermurionOsc'
+mode = 'exact'
+scope = ['resources/shell_integration/termurion_shell_integration.ps1']
+reason = '(moved file, new path) runtime identifier (JS global, CSS class, world name, protocol or registry-ish name): new name; no legacy alias needed unless alias=true'
+
+[[row]]
+group = 'B'
+old = '__TandemRan'
+new = '__TermurionRan'
+mode = 'exact'
+scope = ['resources/shell_integration/termurion_shell_integration.ps1']
+reason = '(moved file, new path) runtime identifier (JS global, CSS class, world name, protocol or registry-ish name): new name; no legacy alias needed unless alias=true'
+
+[[row]]
+group = 'B'
+old = '__TandemSalt'
+new = '__TermurionSalt'
+mode = 'exact'
+scope = ['resources/shell_integration/termurion_shell_integration.ps1']
+reason = '(moved file, new path) runtime identifier (JS global, CSS class, world name, protocol or registry-ish name): new name; no legacy alias needed unless alias=true'

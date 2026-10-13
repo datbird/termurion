@@ -18,7 +18,7 @@ pub const LOCK_NAME: &str = "chatdb-lock";
 pub const OPEN_FAILED_HEADING: &str = "Error";
 pub const OPEN_FAILED: &str = "AI Chat could not open because of a problem loading the database. Verify there is only one instance of Tandem running.";
 
-/// `%APPDATA%\Tandem\chatdb.sqlite`, beside the settings file.
+/// `%APPDATA%\Termurion\chatdb.sqlite`, beside the settings file.
 pub fn default_path() -> PathBuf {
     crate::globals::default_path().with_file_name(FILE_NAME)
 }
@@ -1017,7 +1017,7 @@ mod tests {
     #[test]
     fn corrupt_database_does_not_open() {
         // Removed when dropped, a failed assertion included.
-        let dir = crate::util_cli::TempDir::new("tandem-chatdb-corrupt");
+        let dir = crate::util_cli::TempDir::new("termurion-chatdb-corrupt");
         let path = dir.join(FILE_NAME);
         let garbage: Vec<u8> = (0..8192u32).map(|i| (i * 7 % 251) as u8).collect();
         std::fs::write(&path, &garbage).unwrap();
@@ -1082,7 +1082,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn lock_follows_iterm2() {
-        let dir = crate::util_cli::TempDir::new("tandem-chatdb-lock");
+        let dir = crate::util_cli::TempDir::new("termurion-chatdb-lock");
         let path = dir.join("sub").join(FILE_NAME);
         let lock = dir.join("sub").join(LOCK_NAME);
         let first = Store::open(&path, &lock).unwrap();
@@ -1094,6 +1094,6 @@ mod tests {
         assert_eq!(Store::open(&path, &lock).unwrap().chats().unwrap().len(), 1);
         assert_eq!(OPEN_FAILED_HEADING, "Error");
         assert_eq!(OPEN_FAILED, "AI Chat could not open because of a problem loading the database. Verify there is only one instance of Tandem running.");
-        assert!(default_path().ends_with(std::path::Path::new("Tandem").join("chatdb.sqlite")));
+        assert!(default_path().ends_with(std::path::Path::new("Termurion").join("chatdb.sqlite")));
     }
 }

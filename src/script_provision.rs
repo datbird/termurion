@@ -1,5 +1,5 @@
 //! Provisioning Python environments for API scripts (iTerm2's `iTermUvProvisioner`): installing
-//! Tandem's pinned uv (its SHA-256 checked before it is unpacked), building a shared or a
+//! Termurion's pinned uv (its SHA-256 checked before it is unpacked), building a shared or a
 //! script's own environment aside and swapping it into place, the update check, and the gate
 //! that keeps a download from happening without a person asking. Every step goes through a
 //! `Runner`, so the order is tested without running or downloading anything; `RealRunner`
@@ -25,7 +25,7 @@ pub const BUILD_TIMEOUT: Duration = Duration::from_secs(3600);
 /// minor it was built as, so a later launch finds it without asking uv (`UV:835-866`).
 const REMAPS: &str = ".remaps";
 
-/// One program run: the program, its arguments, and variables added to Tandem's environment.
+/// One program run: the program, its arguments, and variables added to Termurion's environment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Step {
     pub program: PathBuf,
@@ -402,10 +402,10 @@ pub fn system_tool_in(system: Option<&Path>, name: &str, is_file: &dyn Fn(&Path)
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Runs provisioning for real: every program hidden (`CREATE_NO_WINDOW`), stdin empty, stdout
-/// and stderr on one pipe, Tandem's environment cleaned by `child_env` plus the step's
+/// and stderr on one pipe, Termurion's environment cleaned by `child_env` plus the step's
 /// variables. Each run is in its own Job Object that ends every process it started: when the
 /// program ends (so nothing it left behind holds the output pipe), when it runs past
-/// `timeout`, and when Tandem quits (the job closes with it). Each output line goes to `lines`.
+/// `timeout`, and when Termurion quits (the job closes with it). Each output line goes to `lines`.
 #[cfg(windows)]
 pub struct RealRunner {
     pub lines: std::sync::mpsc::Sender<String>,
@@ -541,7 +541,7 @@ fn duration_text(d: Duration) -> String {
     if d == BUILD_TIMEOUT { "an hour".to_string() } else { format!("{} seconds", d.as_secs()) }
 }
 
-/// The System32 folder from `GetSystemDirectoryW` (not Tandem's environment), None when it
+/// The System32 folder from `GetSystemDirectoryW` (not Termurion's environment), None when it
 /// cannot be read.
 #[cfg(windows)]
 pub fn system_directory() -> Option<PathBuf> {
@@ -559,7 +559,7 @@ impl RealRunner {
     }
 
     /// A Windows tool from System32 (curl.exe, tar.exe), found with `GetSystemDirectoryW`
-    /// (not Tandem's environment), so a program of the same name on PATH is never run
+    /// (not Termurion's environment), so a program of the same name on PATH is never run
     /// instead; an error naming it when System32 lacks it (`system_tool_in`).
     pub(crate) fn system_tool(name: &str) -> Result<PathBuf, String> {
         system_tool_in(system_directory().as_deref(), name, &|p: &Path| p.is_file())
@@ -1282,9 +1282,9 @@ mod tests {
         let err = r.run(&fail).unwrap_err();
         assert!(err.contains("status 3"), "{err}");
         // The step's variables reach the program.
-        let env = Step { program: p("cmd.exe"), args: s(&["/c", "echo %TANDEM_T%"]), env: vec![("TANDEM_T".into(), "yes".into())] };
+        let env = Step { program: p("cmd.exe"), args: s(&["/c", "echo %TERMURION_T%"]), env: vec![("TERMURION_T".into(), "yes".into())] };
         assert_eq!(r.run(&env), Ok("yes\r\n".to_string()));
-        let tmp = std::env::temp_dir().join(format!("tandem-sha-{}.txt", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("termurion-sha-{}.txt", std::process::id()));
         std::fs::write(&tmp, "abc").unwrap();
         let sum = r.sha256(&tmp);
         let _ = std::fs::remove_file(&tmp);

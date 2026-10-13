@@ -19,8 +19,8 @@ pub struct Pattern {
 }
 
 /// The new-format storage key: an array of `{pattern, notify}` tables (`SPS:14`). iTerm2
-/// stores this as JSON data; Tandem's globals are TOML, so it is a TOML array of tables
-/// instead (ruling: no other storage format exists in Tandem's globals).
+/// stores this as JSON data; Termurion's globals are TOML, so it is a TOML array of tables
+/// instead (ruling: no other storage format exists in Termurion's globals).
 pub const PATTERNS_KEY: &str = "StatusPriorityEntries";
 /// The legacy key: a plain array of pattern strings, migrated once (`SPS:13`).
 pub const LEGACY_KEY: &str = "StatusPriorities";
@@ -121,7 +121,7 @@ pub struct StatusRow {
 
 /// Sorts rows the way `ToolStatus.Status` orders (`TS:38-52`): un-snoozed before snoozed
 /// regardless of priority or recency, then by priority, then older `changed` first, then by
-/// pane (iTerm2 breaks a full tie on session id; a pane id is Tandem's stand-in).
+/// pane (iTerm2 breaks a full tie on session id; a pane id is Termurion's stand-in).
 pub fn sort_rows(rows: &mut [StatusRow]) {
     rows.sort_by(|a, b| a.snoozed.cmp(&b.snoozed).then(a.priority.cmp(&b.priority)).then(a.changed.cmp(&b.changed)).then(a.pane.cmp(&b.pane)));
 }

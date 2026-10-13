@@ -53,7 +53,7 @@ fn writable_folder(dir: &std::path::Path) -> bool {
     if !dir.is_absolute() || !crate::localfs::is_dir(&d) {
         return false;
     }
-    let probe = dir.join(format!(".Tandem.{}", uuid::Uuid::new_v4().to_string().to_uppercase()));
+    let probe = dir.join(format!(".Termurion.{}", uuid::Uuid::new_v4().to_string().to_uppercase()));
     let Some(p) = crate::localfs::judge(&probe) else { return false };
     let made = crate::localfs::open_custom(&p, |o| {
         o.write(true).create_new(true);

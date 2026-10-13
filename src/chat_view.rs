@@ -71,7 +71,7 @@ pub const FILE_GLYPH: char = '\u{E8A5}';
 pub const COPY_GLYPH: char = '\u{E8C8}';
 pub const CODE_INTERPRETER: &str = "Code Interpreter";
 /// Under `%TEMP%` (ruling R12cd-6).
-pub const ATTACHMENTS_DIR: &str = "TandemChatAttachments";
+pub const ATTACHMENTS_DIR: &str = "TermurionChatAttachments";
 /// A code attachment's file name (`CVC:2207`).
 pub const CODE_FILE: &str = "code.txt";
 pub const REVEAL_TITLE: &str = "Reveal in Explorer";
@@ -990,7 +990,7 @@ mod tests {
     #[test]
     fn junction_cannot_escape() {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let base = std::env::temp_dir().join(format!("tandem-junction-{}-{stamp}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("termurion-junction-{}-{stamp}", std::process::id()));
         let (root, outside) = (base.join("root"), base.join("outside"));
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::create_dir_all(&root).unwrap();

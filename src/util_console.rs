@@ -492,13 +492,13 @@ mod tests {
         code
     }
 
-    /// The child half of the ConPTY tests: `TANDEM_UTILITY_CHILD` holds, in hex, a name and
+    /// The child half of the ConPTY tests: `TERMURION_UTILITY_CHILD` holds, in hex, a name and
     /// its arguments separated by U+001F; runs that probe or utility over the real console and
     /// exits with its code (so libtest's summary never decides it).
     #[test]
     #[ignore]
     fn utility_child() {
-        let Ok(hexed) = std::env::var("TANDEM_UTILITY_CHILD") else {
+        let Ok(hexed) = std::env::var("TERMURION_UTILITY_CHILD") else {
             return;
         };
         let value = String::from_utf8(unhex(&hexed)).unwrap();
@@ -529,7 +529,7 @@ mod tests {
     ) -> (Option<u32>, Vec<u8>, Screen) {
         let exe = std::env::current_exe().unwrap();
         let cmdline = format!(
-            "cmd.exe /c set \"TANDEM_UTILITY_CHILD={}\"&& \"{}\" --exact util_console::tests::utility_child --ignored --nocapture --test-threads=1",
+            "cmd.exe /c set \"TERMURION_UTILITY_CHILD={}\"&& \"{}\" --exact util_console::tests::utility_child --ignored --nocapture --test-threads=1",
             hex(child.join("\u{1f}").as_bytes()),
             exe.display()
         );
@@ -674,7 +674,7 @@ mod tests {
 
     /// The query utilities through the shipped ConPTY: the screen answers it2check's
     /// `CSI 1337 n` and `CSI 5 n` itself; ReportVariable and RequestUpload are answered as
-    /// Tandem's window does. Each child puts the console modes back.
+    /// Termurion's window does. Each child puts the console modes back.
     #[test]
     fn queries_through_conpty() {
         use crate::prompted::{UPLOAD_OK, upload_archive, upload_lines, variable_reply};
@@ -701,7 +701,7 @@ mod tests {
         assert!(screen.text().lines().any(|l| l.split_whitespace().any(|w| w == "Default")), "{:?}", screen.text());
         restored(&screen, "it2getvar");
 
-        let root = std::env::temp_dir().join(format!("tandem-it2ul-conpty-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("termurion-it2ul-conpty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (from, to) = (root.join("from"), root.join("to dir"));
         std::fs::create_dir_all(&from).unwrap();
@@ -759,7 +759,7 @@ mod tests {
 
     /// A measurement (final review, finding 4): iTerm2's own it2check (`it2check` at
     /// `64791fc`, kept as `tests/fixtures/iterm2/it2check`) under Git Bash in the shipped
-    /// ConPTY, the screen answering as Tandem's pane does; then the raw bytes bash reads
+    /// ConPTY, the screen answering as Termurion's pane does; then the raw bytes bash reads
     /// after `CSI 1337 n` and `CSI 5 n`, as hex. WSL's bash the same way when it is installed.
     /// Run by hand with
     /// `cargo test --lib util_console::tests::iterm2_it2check_through_conpty -- --ignored --nocapture`.
@@ -770,7 +770,7 @@ mod tests {
         // `stty raw min 0 time 10`: dd ends one second after the last byte.
         const READ_REPLY: &str =
             r"stty -echo raw min 0 time 10; printf '\033[1337n\033[5n'; x=$(dd bs=1 count=64 2>/dev/null | od -An -tx1 | tr -d ' \n'); stty sane; echo GOT $x";
-        let script = std::env::temp_dir().join(format!("tandem-it2check-{}", std::process::id()));
+        let script = std::env::temp_dir().join(format!("termurion-it2check-{}", std::process::id()));
         std::fs::write(&script, std::fs::read("tests/fixtures/iterm2/it2check").unwrap()).unwrap();
         let script_fwd = script.to_string_lossy().replace('\\', "/");
         let mut shells: Vec<(&str, String, String)> = Vec::new();

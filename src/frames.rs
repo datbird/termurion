@@ -7,7 +7,7 @@ pub use crate::layout::Rect;
 pub const NORMAL: i64 = 0;
 pub const FULL_SCREEN: i64 = 1;
 pub const TOP_PERCENT: i64 = 2;
-/// macOS's native full screen; Tandem opens it as Full Screen.
+/// macOS's native full screen; Termurion opens it as Full Screen.
 pub const LION_FULL_SCREEN: i64 = 4;
 pub const BOTTOM_PERCENT: i64 = 5;
 pub const LEFT_PERCENT: i64 = 6;
@@ -17,7 +17,7 @@ pub const TOP_CELLS: i64 = 9;
 pub const LEFT_CELLS: i64 = 10;
 pub const RIGHT_CELLS: i64 = 11;
 pub const NO_TITLE_BAR: i64 = 12;
-/// A floating panel in iTerm2 (scripting and the command line only); Tandem's is a Normal
+/// A floating panel in iTerm2 (scripting and the command line only); Termurion's is a Normal
 /// window on top of the others without a taskbar button.
 pub const ACCESSORY: i64 = 14;
 pub const MAXIMIZED: i64 = 15;

@@ -1,6 +1,6 @@
 //! The app side of browser autofill (milestone 13x7): the contact card editor window and the fill
 //! flow. A press in the page (or Session > Open Autocomplete) only REQUESTS. Nothing fills until the
-//! person presses Fill in a native Tandem question (`pwm.confirms`, `ConfirmKind::Autofill`) that
+//! person presses Fill in a native Termurion question (`pwm.confirms`, `ConfirmKind::Autofill`) that
 //! names the page origin and each field type, and the fill is bound to that exact origin and
 //! navigation epoch: a navigation or origin change before the answer, or before a queued field runs,
 //! drops it. Never over http. Every write goes through `browser_autofill::write_call` in the main
@@ -349,7 +349,7 @@ mod tests {
 
     /// Merge with 13x6 (as R13x6-M2): the navigation epoch a fill is bound to moves only for a
     /// navigation that passed `nav_verdict` and the permission sync gate. A parked navigation is no
-    /// navigation (no `Starting`, the epoch and the waiting request stay); its release is Tandem's
+    /// navigation (no `Starting`, the epoch and the waiting request stay); its release is Termurion's
     /// own load, a new NavigationStarting, and moves the epoch then.
     #[test]
     fn the_epoch_moves_only_for_a_navigation_that_passed_the_gate() {

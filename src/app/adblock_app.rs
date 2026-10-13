@@ -72,11 +72,11 @@ fn unix_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
-/// The folder the saved list lives in: `<LOCALAPPDATA>\Tandem`, judged (a cache, so machine-local
+/// The folder the saved list lives in: `<LOCALAPPDATA>\Termurion`, judged (a cache, so machine-local
 /// like the browser database, P10).
 fn data_dir() -> std::io::Result<LocalPath> {
     let base = webhost_win::local_appdata().ok_or_else(localfs::refused)?;
-    let dir = localfs::judge_io(base.join("Tandem"))?;
+    let dir = localfs::judge_io(base.join("Termurion"))?;
     localfs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -232,7 +232,7 @@ impl App {
         }
         crate::rlog!("adblock: downloading the list");
         let req = HttpRequest { method: "GET", url: url.to_string(), headers: Vec::new(), body: Vec::new(), stream: false };
-        // The system proxy, not the browser's (Decision): the list is Tandem's own request.
+        // The system proxy, not the browser's (Decision): the list is Termurion's own request.
         let options = Options { idle: Duration::from_secs(30), proxy: Proxy::System };
         // The 8 MiB cap is the transport's while the body streams in, and a total time bounds a
         // server that drips (P14); a stuck update ends and a later check starts another.
@@ -434,7 +434,7 @@ mod tests {
     use super::*;
 
     fn dir(name: &str) -> LocalPath {
-        let p = std::env::temp_dir().join(format!("tandem-adblock-{name}-{}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("termurion-adblock-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         localfs::judge(&p).expect("the temp folder is local")
@@ -531,7 +531,7 @@ mod tests {
         assert!(tick.contains("self.adblock.judged.set(0)"));
     }
 
-    /// A request for Tandem's own scheme keeps its answer first; everything else is the blocker's.
+    /// A request for Termurion's own scheme keeps its answer first; everything else is the blocker's.
     #[test]
     fn local_pages_keep_their_answer() {
         let src = include_str!("browser_db_app.rs");

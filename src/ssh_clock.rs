@@ -23,7 +23,7 @@ const OFFSET_MAX: f64 = 100.0 * 365.25 * 86400.0;
 const ZONE_MAX: i32 = 24 * 3600;
 
 /// What the remote told the Clock: how far its clock is ahead of ours, its zone's name, and
-/// its UTC offset in seconds when it said (Tandem's third value, a Decision).
+/// its UTC offset in seconds when it said (Termurion's third value, a Decision).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Offset {
     pub offset: f64,
@@ -44,7 +44,7 @@ pub fn monotonic(now: Instant) -> f64 {
 }
 
 /// The remote's clock script (`CD:619-630`) for a local wall clock reading; it returns three
-/// lines: the difference, the zone name (iTerm2's two) and the UTC offset (Tandem's third).
+/// lines: the difference, the zone name (iTerm2's two) and the UTC offset (Termurion's third).
 pub fn script(local_now: f64) -> String {
     format!(
         "import time\nfrom datetime import datetime, timezone\n\ntz = time.tzname[time.daylight and time.localtime().tm_isdst]\ndelta = time.time() - {local_now}\nreturn f\"{{delta}}\\n{{tz}}\\n{{time.localtime().tm_gmtoff}}\""

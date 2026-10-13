@@ -325,40 +325,40 @@ pub fn proxy_ui_script(enabled: bool, host: &str, port: i64) -> String {
 // --- The copied page, adapted at load time (R13x3-1/-2 pattern) ---
 
 /// The copy stays byte-identical on disk. The nonce policy forbids its bare `<script>` and every
-/// inline `onclick` and `onchange`, which become `data-tandem-action` and `data-tandem-change`
+/// inline `onclick` and `onchange`, which become `data-termurion-action` and `data-termurion-change`
 /// attributes one delegated listener reads (trusted events only). The extension rows are built from
 /// an untrusted manifest: the name, description and version go in by `textContent` and the id by a
 /// data attribute, never through `innerHTML` or an inline handler (preflight B2). (name, iTerm2's
 /// text, Tandem's text)
 pub const PATCHES: [(&str, &str, &str); 25] = [
     ("SCRIPT", "    <script>\n        function clearCookies() {", "    <script nonce=\"{{NONCE}}\">\n        function clearCookies() {"),
-    ("TANDEM", "    </script>\n</body>", "    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TANDEM_SCRIPT}}\n    </script>\n</body>"),
-    ("CLEAR_COOKIES", "onclick=\"clearCookies()\"", "data-tandem-action=\"clearCookies\""),
-    ("CLEAR_DATA", "onclick=\"clearAllData()\"", "data-tandem-action=\"clearAllData\""),
-    ("PERMISSIONS", "onclick=\"openPermissions()\"", "data-tandem-action=\"openPermissions\""),
-    ("PASSWORDS", "onclick=\"openPasswordManager()\"", "data-tandem-action=\"openPasswordManager\""),
-    ("ADBLOCK_UPDATE", "onclick=\"forceAdblockUpdate()\"", "data-tandem-action=\"forceAdblockUpdate\""),
-    ("EXT_SECTION", "onclick=\"toggleExtensionsSection()\"", "data-tandem-action=\"toggleExtensionsSection\""),
-    ("EXT_REVEAL", "onclick=\"revealExtensionsDirectory()\"", "data-tandem-action=\"revealExtensionsDirectory\""),
-    ("LINK_SELECT", "onchange=\"updateLinkOpeningPreference()\"", "data-tandem-change=\"updateLinkOpeningPreference\""),
-    ("ENGINE_SELECT", "onchange=\"updateSearchEngine()\"", "data-tandem-change=\"updateSearchEngine\""),
-    ("CUSTOM_SEARCH", "onchange=\"updateCustomSearchURL(this.value)\"", "data-tandem-change=\"updateCustomSearchURL\""),
-    ("CUSTOM_SUGGEST", "onchange=\"updateCustomSuggestURL(this.value)\"", "data-tandem-change=\"updateCustomSuggestURL\""),
-    ("ADBLOCK_TOGGLE", "onchange=\"toggleAdblock(this.checked)\"", "data-tandem-change=\"toggleAdblock\""),
-    ("ADBLOCK_URL", "onchange=\"updateAdblockURL(this.value)\"", "data-tandem-change=\"updateAdblockURL\""),
-    ("PROXY_TOGGLE", "onchange=\"toggleProxy(this.checked)\"", "data-tandem-change=\"toggleProxy\""),
-    ("PROXY_HOST", "onchange=\"updateProxyHost(this.value)\"", "data-tandem-change=\"updateProxyHost\""),
-    ("PROXY_PORT", "onchange=\"updateProxyPort(this.value)\"", "data-tandem-change=\"updateProxyPort\""),
+    ("TANDEM", "    </script>\n</body>", "    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TERMURION_SCRIPT}}\n    </script>\n</body>"),
+    ("CLEAR_COOKIES", "onclick=\"clearCookies()\"", "data-termurion-action=\"clearCookies\""),
+    ("CLEAR_DATA", "onclick=\"clearAllData()\"", "data-termurion-action=\"clearAllData\""),
+    ("PERMISSIONS", "onclick=\"openPermissions()\"", "data-termurion-action=\"openPermissions\""),
+    ("PASSWORDS", "onclick=\"openPasswordManager()\"", "data-termurion-action=\"openPasswordManager\""),
+    ("ADBLOCK_UPDATE", "onclick=\"forceAdblockUpdate()\"", "data-termurion-action=\"forceAdblockUpdate\""),
+    ("EXT_SECTION", "onclick=\"toggleExtensionsSection()\"", "data-termurion-action=\"toggleExtensionsSection\""),
+    ("EXT_REVEAL", "onclick=\"revealExtensionsDirectory()\"", "data-termurion-action=\"revealExtensionsDirectory\""),
+    ("LINK_SELECT", "onchange=\"updateLinkOpeningPreference()\"", "data-termurion-change=\"updateLinkOpeningPreference\""),
+    ("ENGINE_SELECT", "onchange=\"updateSearchEngine()\"", "data-termurion-change=\"updateSearchEngine\""),
+    ("CUSTOM_SEARCH", "onchange=\"updateCustomSearchURL(this.value)\"", "data-termurion-change=\"updateCustomSearchURL\""),
+    ("CUSTOM_SUGGEST", "onchange=\"updateCustomSuggestURL(this.value)\"", "data-termurion-change=\"updateCustomSuggestURL\""),
+    ("ADBLOCK_TOGGLE", "onchange=\"toggleAdblock(this.checked)\"", "data-termurion-change=\"toggleAdblock\""),
+    ("ADBLOCK_URL", "onchange=\"updateAdblockURL(this.value)\"", "data-termurion-change=\"updateAdblockURL\""),
+    ("PROXY_TOGGLE", "onchange=\"toggleProxy(this.checked)\"", "data-termurion-change=\"toggleProxy\""),
+    ("PROXY_HOST", "onchange=\"updateProxyHost(this.value)\"", "data-termurion-change=\"updateProxyHost\""),
+    ("PROXY_PORT", "onchange=\"updateProxyPort(this.value)\"", "data-termurion-change=\"updateProxyPort\""),
     // Tandem's addition (Task 10): the one way to load an extension is a folder the person picks.
-    ("EXT_CHOOSE", "Reveal in Finder</button>", "Reveal in Finder</button>\n                        <button class=\"button small\" data-tandem-action=\"chooseExtensionFolder\">Choose Folder\u{2026}</button>"),
-    ("EXT_NAME", "<h4>${extension.name}</h4>", "<h4 data-tandem-text=\"name\"></h4>"),
-    ("EXT_DESCRIPTION", "<p>${description}</p>", "<p data-tandem-text=\"description\"></p>"),
-    ("EXT_TOGGLE", "onchange=\"toggleExtension('${extension.id}', this.checked)\"", "data-tandem-change=\"toggleExtension\""),
-    ("EXT_VERSION", "<span>Version ${version}</span>", "<span data-tandem-text=\"version\"></span>"),
+    ("EXT_CHOOSE", "Reveal in Finder</button>", "Reveal in Finder</button>\n                        <button class=\"button small\" data-termurion-action=\"chooseExtensionFolder\">Choose Folder\u{2026}</button>"),
+    ("EXT_NAME", "<h4>${extension.name}</h4>", "<h4 data-termurion-text=\"name\"></h4>"),
+    ("EXT_DESCRIPTION", "<p>${description}</p>", "<p data-termurion-text=\"description\"></p>"),
+    ("EXT_TOGGLE", "onchange=\"toggleExtension('${extension.id}', this.checked)\"", "data-termurion-change=\"toggleExtension\""),
+    ("EXT_VERSION", "<span>Version ${version}</span>", "<span data-termurion-text=\"version\"></span>"),
     (
         "EXT_FILL",
         "container.appendChild(extensionBox);",
-        "for (const [k, v] of [['name', extension.name], ['description', description], ['version', 'Version ' + version]]) {\n                    extensionBox.querySelector('[data-tandem-text=\"' + k + '\"]').textContent = String(v);\n                }\n                extensionBox.querySelector('input[type=\"checkbox\"]').dataset.extensionId = String(extension.id);\n                container.appendChild(extensionBox);",
+        "for (const [k, v] of [['name', extension.name], ['description', description], ['version', 'Version ' + version]]) {\n                    extensionBox.querySelector('[data-termurion-text=\"' + k + '\"]').textContent = String(v);\n                }\n                extensionBox.querySelector('input[type=\"checkbox\"]').dataset.extensionId = String(extension.id);\n                container.appendChild(extensionBox);",
     ),
     ("EXT_FINDER", "Reveal in Finder", "Reveal in Explorer"),
 ];
@@ -367,14 +367,14 @@ pub const PATCHES: [(&str, &str, &str); 25] = [
 /// made up (`isTrusted` false) does nothing, so a setting changes only by the person's own click or
 /// edit on the page's own control; the page's own functions then post the message. Nothing here
 /// builds markup.
-pub const TANDEM_SCRIPT: &str = "function chooseExtensionFolder() {
+pub const TERMURION_SCRIPT: &str = "function chooseExtensionFolder() {
             window.webkit.messageHandlers['iterm2-about:settings'].postMessage({action: 'chooseExtensionFolder', sessionSecret: sessionSecret});
         }
         document.addEventListener('click', function (e) {
             if (!e.isTrusted || !e.target || !e.target.closest) { return; }
-            var el = e.target.closest('[data-tandem-action]');
+            var el = e.target.closest('[data-termurion-action]');
             if (!el || el.disabled) { return; }
-            switch (el.getAttribute('data-tandem-action')) {
+            switch (el.getAttribute('data-termurion-action')) {
             case 'clearCookies': clearCookies(); break;
             case 'clearAllData': clearAllData(); break;
             case 'openPermissions': openPermissions(); break;
@@ -387,9 +387,9 @@ pub const TANDEM_SCRIPT: &str = "function chooseExtensionFolder() {
         });
         document.addEventListener('change', function (e) {
             if (!e.isTrusted || !e.target || !e.target.closest) { return; }
-            var el = e.target.closest('[data-tandem-change]');
+            var el = e.target.closest('[data-termurion-change]');
             if (!el) { return; }
-            switch (el.getAttribute('data-tandem-change')) {
+            switch (el.getAttribute('data-termurion-change')) {
             case 'updateLinkOpeningPreference': updateLinkOpeningPreference(); break;
             case 'updateSearchEngine': updateSearchEngine(); break;
             case 'updateCustomSearchURL': updateCustomSearchURL(el.value); break;
@@ -412,7 +412,7 @@ pub fn document(state: &PageState, nonce: &str) -> Option<String> {
             let subs = substitutions(state, "");
             let mut refs: Vec<(&str, &str)> = subs.iter().map(|(k, v)| (*k, v.as_str())).collect();
             refs.push(("NONCE", nonce));
-            refs.push(("TANDEM_SCRIPT", TANDEM_SCRIPT));
+            refs.push(("TERMURION_SCRIPT", TERMURION_SCRIPT));
             Some(crate::browser_pages::page(&html, &refs))
         }
         Err(e) => {

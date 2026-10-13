@@ -56,7 +56,7 @@ pub struct Facts<'a> {
     /// it2ssh (`PS:3247-3252`, `PS:3548`).
     pub ssh_path: Option<&'a str>,
     /// The label of the SSH transport a pane started on other than ConPTY
-    /// (`ssh_transport::label`), set as `TANDEM_SSH_TRANSPORT` for it2ssh.
+    /// (`ssh_transport::label`), set as `TERMURION_SSH_TRANSPORT` for it2ssh.
     pub ssh_transport: Option<&'a str>,
 }
 
@@ -78,7 +78,7 @@ pub const LC_TERMINAL: &str = "iTerm2";
 /// cookie), `ITERM_SESSION_ID`, `TERM_SESSION_ID`, `ITERM_PROFILE`, then iTerm2's own
 /// (`PS:3332-3359`): `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `COLORTERM`, `TERM_FEATURES`,
 /// `LC_TERMINAL` and `LC_TERMINAL_VERSION` with `lc_terminal`, and `PATH` when given; then
-/// Tandem's `SSH` and `TANDEM_SSH_TRANSPORT` when given.
+/// Tandem's `SSH` and `TERMURION_SSH_TRANSPORT` when given.
 pub fn vars(f: &Facts) -> Vec<String> {
     use crate::reports::ITERM2_VERSION;
     let id = session_id(f.window, f.tab, f.pane, f.id);
@@ -104,7 +104,7 @@ pub fn vars(f: &Facts) -> Vec<String> {
         v.push(format!("SSH={p}"));
     }
     if let Some(t) = f.ssh_transport {
-        v.push(format!("TANDEM_SSH_TRANSPORT={t}"));
+        v.push(format!("TERMURION_SSH_TRANSPORT={t}"));
     }
     v
 }
@@ -349,12 +349,12 @@ mod tests {
         let features = "F";
         let none = Facts { window: 0, tab: 0, pane: 0, id: "1", profile_name: "P", cookie: None, term_features: features, lc_terminal: false, path: None, ssh_path: None, ssh_transport: None };
         let base = vars(&none);
-        assert!(!base.iter().any(|v| v.starts_with("SSH=") || v.starts_with("TANDEM_SSH_TRANSPORT=")), "neither without them");
+        assert!(!base.iter().any(|v| v.starts_with("SSH=") || v.starts_with("TERMURION_SSH_TRANSPORT=")), "neither without them");
         let with_path = vars(&Facts { ssh_path: Some(r"C:\ssh\ssh.exe"), ..none });
         assert_eq!(with_path[..base.len()], base[..]);
         assert_eq!(with_path[base.len()..], ["SSH=C:\\ssh\\ssh.exe"]);
         let with_transport = vars(&Facts { ssh_transport: Some("pipes"), ..none });
-        assert_eq!(with_transport[base.len()..], ["TANDEM_SSH_TRANSPORT=pipes"]);
+        assert_eq!(with_transport[base.len()..], ["TERMURION_SSH_TRANSPORT=pipes"]);
     }
 
     #[test]
@@ -444,11 +444,11 @@ mod tests {
         let full = Posix {
             colorfgbg: Some("15;0".into()),
             locale: vec![("LANG".into(), "en_US.UTF-8".into())],
-            terminfo: Some(r"C:\A\Tandem\terminfo".into()),
+            terminfo: Some(r"C:\A\Termurion\terminfo".into()),
             inherited_wslenv: None,
             wsl_term: false,
         };
-        assert_eq!(posix_vars(&full), ["COLORFGBG=15;0", "LANG=en_US.UTF-8", r"TERMINFO_DIRS=C:\A\Tandem\terminfo", "WSLENV=COLORFGBG:LANG:TERMINFO_DIRS/p"]);
+        assert_eq!(posix_vars(&full), ["COLORFGBG=15;0", "LANG=en_US.UTF-8", r"TERMINFO_DIRS=C:\A\Termurion\terminfo", "WSLENV=COLORFGBG:LANG:TERMINFO_DIRS/p"]);
         assert_eq!(posix_vars(&Posix::default()), Vec::<String>::new());
         let lc = Posix { locale: vec![("LC_CTYPE".into(), "UTF-8".into())], ..Posix::default() };
         assert_eq!(posix_vars(&lc), ["LC_CTYPE=UTF-8", "WSLENV=LC_CTYPE"]);
@@ -469,7 +469,7 @@ mod tests {
         let full = Posix {
             colorfgbg: Some("15;0".into()),
             locale: vec![("LANG".into(), "en_US.UTF-8".into())],
-            terminfo: Some(r"C:\A\Tandem\terminfo".into()),
+            terminfo: Some(r"C:\A\Termurion\terminfo".into()),
             inherited_wslenv: None,
             wsl_term: true,
         };

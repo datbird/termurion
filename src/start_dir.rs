@@ -244,7 +244,7 @@ pub fn unavailable_text(dir: &str) -> String {
     format!("The directory \u{201c}{dir}\u{201d} is unavailable. Started in home directory instead.")
 }
 
-/// Tandem's: a start folder on a network location (or reached through a link or a drive letter onto
+/// Termurion's: a start folder on a network location (or reached through a link or a drive letter onto
 /// one) is never handed to CreateProcess, which would open it.
 pub fn network_text(dir: &str) -> String {
     format!("The directory \u{201c}{dir}\u{201d} is on a network location. Started in home directory instead.")

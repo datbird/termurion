@@ -6,7 +6,7 @@ use super::*;
 use crate::session_end::{self as se, EndAction, Exit, Message, Outcome, TmuxAfter};
 use super::scripts_alerts::{Ask, Then};
 
-/// The bar that lists programs an exited shell left running (13q P8; Tandem's own).
+/// The bar that lists programs an exited shell left running (13q P8; Termurion's own).
 pub(super) const SURVIVORS_BAR: &str = "session-end-survivors";
 
 /// The panes whose end is new: exited and not yet handled. Each end is handled once.

@@ -1,4 +1,4 @@
-//! The session host's protocol: length-prefixed frames between Tandem and tandem-host, and
+//! The session host's protocol: length-prefixed frames between Tandem and termurion-host, and
 //! the per-session output ring the host keeps so a UI can reattach where it left off.
 
 use std::collections::VecDeque;

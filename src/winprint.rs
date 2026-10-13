@@ -16,7 +16,7 @@ use windows_sys::Win32::UI::Controls::Dialogs::{
 
 use crate::styled_copy::Row;
 
-/// The printer, paper, and margins chosen in Page Setup, kept while Tandem runs (as
+/// The printer, paper, and margins chosen in Page Setup, kept while Termurion runs (as
 /// iTerm2's shared print info is).
 pub struct Setup {
     dev_mode: *mut core::ffi::c_void,

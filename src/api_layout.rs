@@ -96,7 +96,7 @@ fn chain_len<T>(tree: &Tree<T>, axis: Axis) -> usize {
     }
 }
 
-/// SetTabLayout's sizes (`TAB:setSizesFromSplitTreeNode:`) as Tandem's split ratios: for each
+/// SetTabLayout's sizes (`TAB:setSizesFromSplitTreeNode:`) as Termurion's split ratios: for each
 /// binary split of `tree`, by its path from the root (true is the second side), the share of
 /// the requested cells its first side takes along its axis (widths for a side-by-side split),
 /// in tree order. `req` must be `tree` as `api_model::node_of` flattens it (isomorphic); a

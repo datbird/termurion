@@ -564,7 +564,7 @@ mod tests {
     }
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("tandem-prefs-ui-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-prefs-ui-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -819,7 +819,7 @@ mod tests {
         write_snapshot(&remote(), &file, &|_| None).unwrap();
         assert_eq!(Snapshot::parse(&std::fs::read_to_string(&file).unwrap()), Some(remote()));
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "the temporary file is renamed");
-        assert!(write_snapshot(&remote(), Path::new(r"\\host\share\tandem-settings.toml"), &|_| None).is_err());
+        assert!(write_snapshot(&remote(), Path::new(r"\\host\share\termurion-settings.toml"), &|_| None).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -864,7 +864,7 @@ mod tests {
     /// A snapshot loaded from a custom folder or URL never brings a network start folder in.
     #[test]
     fn a_loaded_snapshot_loses_network_folders() {
-        let dir = std::env::temp_dir().join(format!("tandem-prefs-unc-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-prefs-unc-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (mut g, mut store) = local(&dir, "x");
         let profile = map(&[("Guid", Value::String("g1".into())), ("Name", Value::String("R".into())), ("Working Directory", Value::String(" \\\\evil\\share".into())), ("AWDS Tab Directory", Value::String("D:\\ok".into()))]);
@@ -891,7 +891,7 @@ mod tests {
     /// list (the snapshot never holds them); a Guid the snapshot also holds goes to the snapshot.
     #[test]
     fn a_loaded_snapshot_keeps_the_running_dynamic_profiles() {
-        let dir = std::env::temp_dir().join(format!("tandem-prefs-keepdyn-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-prefs-keepdyn-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (mut g, mut store) = local(&dir, "x");
         for guid in ["dyn1", "clash"] {
@@ -913,7 +913,7 @@ mod tests {
     #[test]
     fn a_loaded_snapshot_marks_its_workgroups_imported() {
         use crate::workgroup::{self as wg, Source};
-        let dir = std::env::temp_dir().join(format!("tandem-prefs-wg-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-prefs-wg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (mut g, mut store) = local(&dir, "x");
         let mut m = wg::Model::default();
@@ -939,7 +939,7 @@ mod tests {
     /// Profiles loader's marks in (they would keep a profile out of profiles.toml).
     #[test]
     fn a_loaded_snapshot_loses_the_dynamic_marks() {
-        let dir = std::env::temp_dir().join(format!("tandem-prefs-dyn-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-prefs-dyn-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (mut g, mut store) = local(&dir, "x");
         let mut values = vec![("Guid", Value::String("g1".into())), ("Name", Value::String("R".into()))];
@@ -959,7 +959,7 @@ mod tests {
     /// A loaded snapshot's custom color presets are bounded and sanitized as Settings writes are.
     #[test]
     fn a_loaded_snapshot_bounds_custom_color_presets() {
-        let dir = std::env::temp_dir().join(format!("tandem-prefs-presets-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-prefs-presets-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (mut g, mut store) = local(&dir, "x");
         let color = Value::Table(map(&[("r", Value::Float(0.1)), ("g", Value::Float(0.2)), ("b", Value::Float(0.3))]).into_iter().collect());
@@ -982,7 +982,7 @@ mod tests {
     /// Task 4 ruling: and no network log, archive, icon or background image path either.
     #[test]
     fn a_loaded_snapshot_loses_every_network_path() {
-        let dir = std::env::temp_dir().join(format!("tandem-prefs-unc2-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-prefs-unc2-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (mut g, mut store) = local(&dir, "x");
         let keys = ["Log Directory", "Archive Directory", "Custom Icon Path", "Background Image Location", "Background Image Folder Location"];

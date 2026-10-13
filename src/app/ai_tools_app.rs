@@ -12,10 +12,10 @@ use crate::broadcast::Write;
 use crate::layout::PaneId;
 
 /// The answer to a call that reached no arm (only a browser call can, before milestone 13
-/// adds its runner). Tandem's text.
+/// adds its runner). Termurion's text.
 pub(super) const NOT_AVAILABLE: &str = "This function is not available.";
 
-/// The answer of a writing tool whose session is gone. Tandem's text.
+/// The answer of a writing tool whose session is gone. Termurion's text.
 pub(super) const NO_SESSION: &str = "Error: that session is no longer open.";
 
 /// The chat's notice for a finished Get-Help (`PS:848`).
@@ -57,7 +57,7 @@ impl App {
         let vars = self.variables_with(pane, false);
         let var = |k: &str| vars.session.get(k).cloned();
         f.at_prompt = s.at_prompt() == Some(true);
-        // Tandem's typed command already ends at the cursor (Decision).
+        // Termurion's typed command already ends at the cursor (Decision).
         f.typed = s.typed_command();
         f.typed_to_cursor = f.typed.clone();
         f.last_command = s.last_command_mark().map(|m| m.command.clone()).filter(|c| !c.is_empty());

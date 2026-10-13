@@ -177,7 +177,7 @@ pub fn auth_headers(url: &str, api: Api, key: &str) -> Vec<(String, String)> {
 /// The names of the headers of `auth_headers` that carry the key, sorted; derived with a
 /// sentinel key as iTerm2 does, so it cannot drift from what goes on the wire.
 pub fn credential_header_names(url: &str, api: Api) -> Vec<String> {
-    const SENTINEL: &str = "TandemCredentialProbe";
+    const SENTINEL: &str = "TermurionCredentialProbe";
     let mut names: Vec<String> = auth_headers(url, api, SENTINEL).into_iter().filter(|(_, v)| v.contains(SENTINEL)).map(|(n, _)| n).collect();
     names.sort();
     names

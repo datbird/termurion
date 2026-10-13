@@ -63,7 +63,7 @@ impl App {
     ///
     /// Beyond iTerm2: the first hop's text becomes a local command line and every hop's text
     /// reaches the eval of the host above, so the hops are `Conductor::reconnect_hops`: only
-    /// those Tandem's own token vouched for (the first hook), and only through the one
+    /// those Termurion's own token vouched for (the first hook), and only through the one
     /// validator (ruling, final review I1). Any other chain (a hook a program printed) or a
     /// refused hop gets an ordinary new session.
     pub(super) fn duplicate_session(&mut self) {
@@ -99,7 +99,7 @@ impl App {
 
     /// The profile a split of `pane` starts with (`PS:2915-2953`): with a conductor, the
     /// saved profile made an SSH one to the innermost host (`Identity::command_line`); else the
-    /// pane's saved profile, as before. Only an innermost conductor Tandem's own token vouched
+    /// pane's saved profile, as before. Only an innermost conductor Termurion's own token vouched
     /// for names the host (`Conductor::split_identity`); a nested or restored one gives the
     /// saved profile.
     pub(super) fn ssh_split_profile(&mut self, pane: PaneId) -> Option<String> {

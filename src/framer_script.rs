@@ -7,7 +7,7 @@ pub const FRAMER: &str = include_str!("../resources/ssh/framer.py");
 pub const SUB: &str = "#{SUB}";
 
 /// The text `execFramer` sends (`CD:2044-2063`): `#{SUB}` becomes `DEPTH=<depth>`. iTerm2
-/// adds `VERBOSE=1` only for debug logging; Tandem never does.
+/// adds `VERBOSE=1` only for debug logging; Termurion never does.
 pub fn framer_code(depth: i32) -> String {
     FRAMER.replace(SUB, &format!("DEPTH={depth}"))
 }

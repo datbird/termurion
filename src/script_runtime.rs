@@ -25,9 +25,9 @@ pub const MARKER: &str = "python-runtime.json";
 /// A full environment's metadata file (`CFG:17-53`).
 pub const SETUP_CFG: &str = "setup.cfg";
 
-/// Tandem's uv folder: `%APPDATA%\Tandem\uv` (`UV:132-141`).
+/// Tandem's uv folder: `%APPDATA%\Termurion\uv` (`UV:132-141`).
 pub fn uv_dir(appdata: &Path) -> PathBuf {
-    appdata.join("Tandem").join("uv")
+    appdata.join("Termurion").join("uv")
 }
 
 /// Tandem's own uv (`UV:143-146`).
@@ -710,12 +710,12 @@ mod tests {
     #[test]
     fn layout_follows_windows() {
         let uv = uv_dir(Path::new(r"C:\A"));
-        assert_eq!(uv, PathBuf::from(r"C:\A\Tandem\uv"));
-        assert_eq!(uv_exe(&uv), PathBuf::from(r"C:\A\Tandem\uv\bin\uv.exe"));
-        assert_eq!(python_install_dir(&uv), PathBuf::from(r"C:\A\Tandem\uv\python"));
-        assert_eq!(cache_dir(&uv), PathBuf::from(r"C:\A\Tandem\uv\cache"));
-        assert_eq!(venvs_dir(&uv), PathBuf::from(r"C:\A\Tandem\uv\venvs"));
-        assert_eq!(shared_venv(&uv, "3.12"), PathBuf::from(r"C:\A\Tandem\uv\venvs\3.12"));
+        assert_eq!(uv, PathBuf::from(r"C:\A\Termurion\uv"));
+        assert_eq!(uv_exe(&uv), PathBuf::from(r"C:\A\Termurion\uv\bin\uv.exe"));
+        assert_eq!(python_install_dir(&uv), PathBuf::from(r"C:\A\Termurion\uv\python"));
+        assert_eq!(cache_dir(&uv), PathBuf::from(r"C:\A\Termurion\uv\cache"));
+        assert_eq!(venvs_dir(&uv), PathBuf::from(r"C:\A\Termurion\uv\venvs"));
+        assert_eq!(shared_venv(&uv, "3.12"), PathBuf::from(r"C:\A\Termurion\uv\venvs\3.12"));
         assert_eq!(venv_python(Path::new(r"C:\v")), PathBuf::from(r"C:\v\Scripts\python.exe"));
         assert_eq!(certifi_path(Path::new(r"C:\v")), PathBuf::from(r"C:\v\Lib\site-packages\certifi\cacert.pem"));
         assert_eq!((DEFAULT_PYTHON, SAFE_FALLBACK, VENV_DIR, MARKER, SETUP_CFG), ("3.12", "3.9", ".venv", "python-runtime.json", "setup.cfg"));

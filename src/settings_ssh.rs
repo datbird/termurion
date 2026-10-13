@@ -47,7 +47,7 @@ fn browse_dir(path_text: &str) -> std::path::PathBuf {
 
 /// `browse_dir` with the folder test passed in. Only an absolute local folder is looked at
 /// (`prompted::local_path_ok`, a verbatim `\\?\C:\` path in its plain form): a relative, rooted
-/// or drive-relative one would resolve against Tandem's working directory, which can be a
+/// or drive-relative one would resolve against Termurion's working directory, which can be a
 /// share. A network or device folder, or one reached through a link to a network path
 /// (`util_cli::may_open`), is never looked at either: the field can come from an import or a
 /// settings folder, and probing `\\host` sends credentials.
@@ -226,7 +226,7 @@ mod tests {
         assert_eq!(browse_dir_with("C:\\Tools\\ssh.exe", &|_| false), std::path::PathBuf::from(SSH_FOLDER));
     }
 
-    /// A relative, rooted or drive-relative folder would be resolved against Tandem's working
+    /// A relative, rooted or drive-relative folder would be resolved against Termurion's working
     /// directory (which can be a share), so only an absolute local folder is ever looked at.
     #[test]
     fn browse_looks_only_at_an_absolute_local_folder() {

@@ -797,9 +797,9 @@ pub(super) enum ImageId {
 /// the size (`iTermCacheableImage imageAtPath:ofSize:`, 16 by 16).
 const ICON_FILE_PX: u32 = 32;
 
-/// `%APPDATA%\Tandem`, where the user's icon maps and PNGs live (iTerm2's Application Support).
+/// `%APPDATA%\Termurion`, where the user's icon maps and PNGs live (iTerm2's Application Support).
 fn icon_dir() -> PathBuf {
-    std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem")
+    std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Termurion")
 }
 
 /// A user file's bytes; None when it is absent, unreadable, not a regular file, larger than
@@ -1058,7 +1058,7 @@ mod tests {
 
     #[test]
     fn tab_icon_files_follow_iterm2() {
-        let dir = std::env::temp_dir().join(format!("tandem-tab-icons-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-tab-icons-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let save = |name: &str, side: u32| {
             let path = dir.join(name);

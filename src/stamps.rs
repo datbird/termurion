@@ -119,7 +119,7 @@ pub fn month_day_year(p: &Parts) -> String {
 /// `desiredRightExtraForProfile:session:`).
 pub const ADJACENT_POINTS: f32 = 100.0;
 
-/// How a pane shows its timestamps (the "Timestamps Style" values in Tandem's schema).
+/// How a pane shows its timestamps (the "Timestamps Style" values in Termurion's schema).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     /// 1: over the text.

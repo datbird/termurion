@@ -72,7 +72,7 @@ fn repeats(pending: &[&After], after: &After) -> bool {
     path(after).is_some_and(|p| pending.iter().any(|a| path(a).as_ref() == Some(&p)))
 }
 
-/// Tandem's uv folder, `%APPDATA%\Tandem\uv`.
+/// Termurion's uv folder, `%APPDATA%\Termurion\uv`.
 pub(super) fn uv_dir() -> PathBuf {
     let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
     rt::uv_dir(&appdata)
@@ -117,7 +117,7 @@ fn python_backend(argv: &[String]) -> Option<Backend> {
     (minor.contains('.') && rt::numeric_version(&minor)).then(|| Backend::Python { argv: vec![program.clone()], minor })
 }
 
-/// What builds environments: Tandem's uv when installed, else the first installed Python by
+/// What builds environments: Termurion's uv when installed, else the first installed Python by
 /// it2api's candidates (11e's `python_candidates`). Probing a Python runs it, so off the UI
 /// thread only (`ensure_environment` probes on a thread of its own).
 pub(super) fn find_backend() -> Option<Backend> {
@@ -187,7 +187,7 @@ impl App {
             }
             return;
         }
-        // Tandem's uv answers at once; an installed Python is probed off the UI thread.
+        // Termurion's uv answers at once; an installed Python is probed off the UI thread.
         let uv = rt::uv_exe(&dir);
         if uv.is_file() {
             return self.ask_for_environment(Some(Backend::Uv(uv)), target, requested, dependencies, after);

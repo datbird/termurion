@@ -178,7 +178,7 @@ pub enum Front {
     /// A Tandem terminal window.
     Terminal,
     /// A Tandem window that is not a terminal: a dialog, Settings, a chat or approval window.
-    OtherTandem,
+    OtherTermurion,
     /// Another application.
     Elsewhere,
 }
@@ -194,7 +194,7 @@ pub fn ffm_may_act(enter: Enter, front: Front, password_prompt: bool, approval_p
     match enter {
         Enter::Nothing => false,
         Enter::MakeKey => front == Front::Terminal,
-        Enter::Steal => front != Front::OtherTandem,
+        Enter::Steal => front != Front::OtherTermurion,
     }
 }
 
@@ -585,7 +585,7 @@ mod tests {
     /// B5, review fix 1: every overlay kind, enumerated, is a hit when it is in the list; the
     /// kinds that sit outside the terminal rectangle are named with the reason.
     #[test]
-    fn each_overlay_kind_is_a_tandem_hit() {
+    fn each_overlay_kind_is_a_termurion_hit() {
         assert!(Overlay::ALL.len() >= 12);
         for kind in Overlay::ALL {
             let mut ui = UiRects::default();
@@ -680,13 +680,13 @@ mod tests {
     fn focus_follows_mouse_never_steals_from_a_prompt() {
         let ok = |e, front, pw, ap| ffm_may_act(e, front, pw, ap, false);
         assert!(ok(Enter::MakeKey, Front::Terminal, false, false));
-        assert!(!ok(Enter::MakeKey, Front::OtherTandem, false, false), "a dialog, settings or chat window is in front");
+        assert!(!ok(Enter::MakeKey, Front::OtherTermurion, false, false), "a dialog, settings or chat window is in front");
         assert!(!ok(Enter::MakeKey, Front::Terminal, true, false), "a password prompt holds focus");
         assert!(!ok(Enter::MakeKey, Front::Terminal, false, true), "an approval is waiting");
         assert!(!ok(Enter::MakeKey, Front::Elsewhere, false, false), "MakeKey is only for an active Tandem");
         assert!(ok(Enter::Steal, Front::Elsewhere, false, false), "the opt-in steals from another app");
         assert!(!ok(Enter::Steal, Front::Elsewhere, true, false));
-        assert!(!ok(Enter::Steal, Front::OtherTandem, false, false));
+        assert!(!ok(Enter::Steal, Front::OtherTermurion, false, false));
         assert!(!ok(Enter::Nothing, Front::Terminal, false, false));
     }
     /// 13k seam: an IME composition holds focus follows mouse back whatever the enter says.

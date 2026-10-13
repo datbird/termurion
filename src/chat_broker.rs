@@ -285,7 +285,7 @@ impl Broker {
         let content = match (text, &target.content, &m.content) {
             (Some(t), Content::PlainText { .. }, _) => Content::PlainText { text: t.to_string(), context: None },
             (Some(t), _, _) => Content::Markdown(t.to_string()),
-            // iTerm2 stops here ("Server-sent attachments are not yet supported"); Tandem starts
+            // iTerm2 stops here ("Server-sent attachments are not yet supported"); Termurion starts
             // the new message with the attachment (Decision).
             (None, _, Content::AppendAttachment { attachment, .. }) => Content::Multipart { parts: vec![Subpart::Attachment(attachment.clone())], vector_store_id: None },
             (None, _, _) => return None,

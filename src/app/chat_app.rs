@@ -974,7 +974,7 @@ mod tests {
 
     #[test]
     fn a_squelched_publish_settles_its_unit() {
-        let dir = crate::util_cli::TempDir::new("tandem-chatdb-squelch");
+        let dir = crate::util_cli::TempDir::new("termurion-chatdb-squelch");
         let (path, lock) = (dir.join(crate::chat_store::FILE_NAME), dir.join(crate::chat_store::LOCK_NAME));
         let (mut broker, mut overrides) = (Broker::new(), Overrides::default());
         broker.add_processor(Box::new(|m: Message, _: &str, _: bool| match &m.content {

@@ -26,7 +26,7 @@ pub(super) const ENABLE_KEY: &str = "EnableAPIServer";
 pub(super) const AUTH_KEY: &str = "API Authentication Method";
 pub(super) const SET_COOKIE_KEY: &str = crate::api_profile::SET_COOKIE;
 
-/// The alert when the server could not start (Tandem's own texts).
+/// The alert when the server could not start (Termurion's own texts).
 pub const START_FAILED_HEADING: &str = "Could Not Start the Python API";
 
 /// "The Python API could not start: ..." and, when another process listens on the port, its
@@ -257,7 +257,7 @@ fn noauth_now() -> (AllowAll, Option<api_auth::NoauthFile>) {
 
 /// Writes the allow-all file as iTerm2 does (`H:538-560`): the contents go to a new temporary
 /// file beside it, then moved over the path, so a link at the path is replaced, never written
-/// through. With `set_owner` (an elevated Tandem, whose files are otherwise owned by
+/// through. With `set_owner` (an elevated Termurion, whose files are otherwise owned by
 /// Administrators, which the check reads as no file) the temporary file is given the user as
 /// its owner first.
 pub(super) fn write_noauth_file(path: &str, set_owner: bool) -> Result<(), String> {
@@ -1434,10 +1434,10 @@ mod tests {
 
     #[test]
     fn allow_all_file_is_written_as_the_package_reads_it() {
-        let dir = std::env::temp_dir().join(format!("tandem-noauth-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-noauth-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = format!("{}/Library/Application Support/iTerm2/disable-automation-auth", dir.display());
-        // The owner step (an elevated Tandem's) works for a normal one too.
+        // The owner step (an elevated Termurion's) works for a normal one too.
         write_noauth_file(&path, true).unwrap();
         let file = read_noauth_file(&path).unwrap();
         assert!(file.owner_is_user);

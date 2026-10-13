@@ -447,7 +447,7 @@ mod tests {
 
     /// A fresh folder for one test: `a.png` holds "PNGDATA", `notes.txt` "hello\n".
     fn fixture(test: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("tandem-util-files-{test}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-util-files-{test}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.png"), b"PNGDATA").unwrap();
@@ -796,7 +796,7 @@ mod tests {
     }
 
     #[test]
-    fn files_reach_tandem() {
+    fn files_reach_termurion() {
         let dir = fixture("reach");
         std::fs::write(dir.join("pic.png"), png_2x2()).unwrap();
         for (term, args) in [(None, &["pic.png"][..]), (Some("tmux-256color"), &["pic.png"][..]), (None, &["-l", "pic.png"][..])] {

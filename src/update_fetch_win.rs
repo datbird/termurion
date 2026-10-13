@@ -67,7 +67,7 @@ fn outcome(code: Option<i32>, stdout: &[u8], stderr: &[u8], too_big: bool) -> Fe
     }
 }
 
-/// Tandem's environment for curl: the variables that choose its trust store or its config are
+/// Termurion's environment for curl: the variables that choose its trust store or its config are
 /// dropped (P2), and SSLKEYLOGFILE (it would write the session keys to a file); proxies stay curl's own.
 fn curl_env(vars: impl IntoIterator<Item = (String, String)>) -> Vec<(String, String)> {
     const DROPPED: [&str; 6] = ["CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_HOME", "CURL_SSL_BACKEND", "SSLKEYLOGFILE"];

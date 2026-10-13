@@ -16,8 +16,8 @@ pub const CLSID_CONHOST: &str = "{B23D10C0-E52E-411E-9D5B-C09FDF709C7D}";
 pub const CLSID_WT_CONSOLE: &str = "{2EACA947-7F5F-4CFA-BA87-8F7FBEEFBE69}";
 pub const CLSID_WT_TERMINAL: &str = "{E12CFF52-A866-4C77-9A90-F570A7AA2C6B}";
 /// Tandem's own terminal class, fixed.
-pub const CLSID_TANDEM_TERMINAL: &str = "{6A1E8D3C-2B7F-4C9E-9D41-5F0B7A2C8E13}";
-pub const SAVED_KEY: &str = r"Software\Tandem\PreviousDefaultTerminal";
+pub const CLSID_TERMURION_TERMINAL: &str = "{6A1E8D3C-2B7F-4C9E-9D41-5F0B7A2C8E13}";
+pub const SAVED_KEY: &str = r"Software\Termurion\PreviousDefaultTerminal";
 
 /// The two delegation values: the console host's class and the terminal's.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,7 +36,7 @@ pub fn pack_missing_text() -> &'static str {
 
 /// The registry key of Tandem's COM class (the one tree `unmake` deletes).
 pub fn class_key() -> String {
-    format!(r"Software\Classes\CLSID\{CLSID_TANDEM_TERMINAL}")
+    format!(r"Software\Classes\CLSID\{CLSID_TERMURION_TERMINAL}")
 }
 
 fn value_or_default(r: &dyn Registry, key: &str, name: &str) -> String {
@@ -48,13 +48,13 @@ pub fn current(r: &dyn Registry) -> Pair {
     Pair { console: value_or_default(r, STARTUP_KEY, CONSOLE_VALUE), terminal: value_or_default(r, STARTUP_KEY, TERMINAL_VALUE) }
 }
 
-pub fn is_tandem(p: &Pair) -> bool {
-    p.terminal.eq_ignore_ascii_case(CLSID_TANDEM_TERMINAL)
+pub fn is_termurion(p: &Pair) -> bool {
+    p.terminal.eq_ignore_ascii_case(CLSID_TERMURION_TERMINAL)
 }
 
 /// `AD:481-482`: the menu item is enabled while Tandem is not already the default.
 pub fn make_enabled(r: &dyn Registry) -> bool {
-    !is_tandem(&current(r))
+    !is_termurion(&current(r))
 }
 
 fn entry(k: &str, n: &str, v: &str) -> (String, String, String) {
@@ -63,13 +63,13 @@ fn entry(k: &str, n: &str, v: &str) -> (String, String, String) {
 
 /// The COM class and the pair that hands consoles to it: Windows Terminal's console host with
 /// Tandem's terminal class. Per user (`HKCU`) only.
-pub fn make_tandem_entries(exe: &Path) -> Vec<(String, String, String)> {
+pub fn make_termurion_entries(exe: &Path) -> Vec<(String, String, String)> {
     let key = class_key();
     vec![
-        entry(&key, "", "Tandem Terminal Handoff"),
+        entry(&key, "", "Termurion Terminal Handoff"),
         entry(&format!(r"{key}\LocalServer32"), "", &server_value(exe)),
         entry(STARTUP_KEY, CONSOLE_VALUE, CLSID_WT_CONSOLE),
-        entry(STARTUP_KEY, TERMINAL_VALUE, CLSID_TANDEM_TERMINAL),
+        entry(STARTUP_KEY, TERMINAL_VALUE, CLSID_TERMURION_TERMINAL),
     ]
 }
 
@@ -98,7 +98,7 @@ fn server_exe(value: &str) -> Option<std::path::PathBuf> {
 pub fn server_repair(r: &dyn Registry, exe: &Path, gone: &dyn Fn(&Path) -> bool) -> Vec<(String, String, String)> {
     let key = format!(r"{}\LocalServer32", class_key());
     let now = server_value(exe);
-    let Some(value) = r.get(&key, "").filter(|_| is_tandem(&current(r))) else { return Vec::new() };
+    let Some(value) = r.get(&key, "").filter(|_| is_termurion(&current(r))) else { return Vec::new() };
     let Some(recorded) = server_exe(&value) else { return Vec::new() };
     let same = recorded.to_string_lossy().eq_ignore_ascii_case(&exe.to_string_lossy());
     let stale = if same { value != now } else { gone(&recorded) };
@@ -135,7 +135,7 @@ pub fn saved(r: &dyn Registry) -> Option<Pair> {
 
 /// The old pair is never overwritten while the current pair is already Tandem's.
 pub fn should_save(current: &Pair) -> bool {
-    !is_tandem(current)
+    !is_termurion(current)
 }
 
 /// Windows Terminal's `wt.exe` alias is in `windows_apps`. The alias is an app-execution link,
@@ -275,9 +275,9 @@ pub enum EmbeddingStart {
 /// What an `-Embedding` start does: it runs only while Tandem is the default terminal with its
 /// own conpty.dll and no Tandem of this user already answers on the launch pipe (it never
 /// forwards anything: COM starts it only to take one handoff).
-pub fn embedding_start(pair_is_tandem: bool, pack_present: bool, running: &crate::url_launch::Handed) -> EmbeddingStart {
+pub fn embedding_start(pair_is_termurion: bool, pack_present: bool, running: &crate::url_launch::Handed) -> EmbeddingStart {
     use crate::url_launch::Handed;
-    if !pair_is_tandem {
+    if !pair_is_termurion {
         return EmbeddingStart::Exit("Tandem is not the default terminal");
     }
     if !pack_present {
@@ -333,16 +333,16 @@ mod tests {
         let mut r = FakeRegistry::default();
         assert_eq!(current(&r), pair(CLSID_DEFAULT, CLSID_DEFAULT));
         assert!(make_enabled(&r));
-        apply(&mut r, &make_tandem_entries(Path::new(r"C:\T\termurion.exe"))).unwrap();
-        assert_eq!(current(&r), pair(CLSID_WT_CONSOLE, CLSID_TANDEM_TERMINAL));
-        assert!(is_tandem(&current(&r)));
+        apply(&mut r, &make_termurion_entries(Path::new(r"C:\T\termurion.exe"))).unwrap();
+        assert_eq!(current(&r), pair(CLSID_WT_CONSOLE, CLSID_TERMURION_TERMINAL));
+        assert!(is_termurion(&current(&r)));
         assert!(!make_enabled(&r));
         let mut r = FakeRegistry::default();
         apply(&mut r, &restore_entries(None)).unwrap();
         assert_eq!(current(&r), pair(CLSID_DEFAULT, CLSID_DEFAULT));
         apply(&mut r, &restore_entries(Some(pair(CLSID_CONHOST, CLSID_CONHOST)))).unwrap();
         assert_eq!(current(&r), pair(CLSID_CONHOST, CLSID_CONHOST));
-        let dir = std::env::temp_dir().join(format!("tandem-wt-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-wt-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert!(!console_host_present(&dir));
         std::fs::write(dir.join("wt.exe"), b"").unwrap();
@@ -357,7 +357,7 @@ mod tests {
         let now = current(&r);
         apply(&mut r, &save_entries(&now)).unwrap();
         assert_eq!(saved(&r), Some(pair(CLSID_CONHOST, CLSID_CONHOST)));
-        apply(&mut r, &make_tandem_entries(Path::new(r"C:\T\termurion.exe"))).unwrap();
+        apply(&mut r, &make_termurion_entries(Path::new(r"C:\T\termurion.exe"))).unwrap();
         // Already Tandem's: nothing is saved over the old pair.
         assert!(should_save(&pair(CLSID_CONHOST, CLSID_CONHOST)));
         assert!(!should_save(&current(&r)));
@@ -378,14 +378,14 @@ mod tests {
 
     #[test]
     fn registration_follows_com() {
-        let e = make_tandem_entries(Path::new(r"C:\T\termurion.exe"));
+        let e = make_termurion_entries(Path::new(r"C:\T\termurion.exe"));
         let t = |k: &str, n: &str, v: &str| (k.to_string(), n.to_string(), v.to_string());
         let key = r"Software\Classes\CLSID\{6A1E8D3C-2B7F-4C9E-9D41-5F0B7A2C8E13}";
-        assert!(e.contains(&t(key, "", "Tandem Terminal Handoff")));
+        assert!(e.contains(&t(key, "", "Termurion Terminal Handoff")));
         // COM appends ` -Embedding` itself (LocalServer32 doc): the value is the quoted exe only.
         assert!(e.contains(&t(&format!(r"{key}\LocalServer32"), "", "\"C:\\T\\termurion.exe\"")));
         assert!(e.contains(&t(STARTUP_KEY, CONSOLE_VALUE, CLSID_WT_CONSOLE)));
-        assert!(e.contains(&t(STARTUP_KEY, TERMINAL_VALUE, CLSID_TANDEM_TERMINAL)));
+        assert!(e.contains(&t(STARTUP_KEY, TERMINAL_VALUE, CLSID_TERMURION_TERMINAL)));
         assert_eq!(NEEDS_WT_HEADING, "Windows Terminal Required");
         assert!(NEEDS_WT_TEXT.starts_with("Windows hands console programs") && NEEDS_WT_TEXT.ends_with("choose this again."));
         // HKCU only: no entry is outside the three allowed places.
@@ -459,7 +459,7 @@ mod tests {
         let new = Path::new(r"D:\New\termurion.exe");
         let server = format!(r"{}\LocalServer32", class_key());
         let mut r = FakeRegistry::default();
-        apply(&mut r, &make_tandem_entries(old)).unwrap();
+        apply(&mut r, &make_termurion_entries(old)).unwrap();
         assert!(server_repair(&r, new, &|_| false).is_empty(), "another live copy keeps its registration");
         let asked = std::cell::RefCell::new(Vec::new());
         let gone = |p: &Path| {
@@ -477,12 +477,12 @@ mod tests {
         assert_eq!(server_repair(&r, new, &|_| false), vec![(server.clone(), String::new(), server_value(new))]);
         // Not the default terminal any more: nothing is touched.
         let mut r = FakeRegistry::default();
-        apply(&mut r, &make_tandem_entries(old)).unwrap();
+        apply(&mut r, &make_termurion_entries(old)).unwrap();
         apply(&mut r, &restore_entries(None)).unwrap();
         assert!(server_repair(&r, new, &|_| true).is_empty());
         // A value that is not the shape Tandem writes is never rewritten, and its path never probed.
         let mut r = FakeRegistry::default();
-        apply(&mut r, &make_tandem_entries(old)).unwrap();
+        apply(&mut r, &make_termurion_entries(old)).unwrap();
         for v in ["", "C:\\Old\\termurion.exe", "\"C:\\Old\\termurion.exe\" /other", "\"relative\\termurion.exe\"", "\"\\\\host\\s\\termurion.exe\" x"] {
             r.set(&server, "", v).unwrap();
             let asked = std::cell::Cell::new(false);
@@ -576,8 +576,8 @@ mod tests {
     #[test]
     fn the_command_line_com_makes_is_an_embedding_start() {
         let cwd = Path::new(r"C:\");
-        let exe = Path::new(r"C:\Program Files\Tandem\termurion.exe");
-        let value = make_tandem_entries(exe).into_iter().find(|(k, _, _)| k.ends_with(r"\LocalServer32")).unwrap().2;
+        let exe = Path::new(r"C:\Program Files\Termurion\termurion.exe");
+        let value = make_termurion_entries(exe).into_iter().find(|(k, _, _)| k.ends_with(r"\LocalServer32")).unwrap().2;
         let com_line = format!("{value} -Embedding");
         let argv = crate::semantic::split_command_line(&com_line);
         assert_eq!(argv[0], exe.to_string_lossy());
@@ -591,9 +591,9 @@ mod tests {
     }
 
     #[test]
-    fn embedding_with_a_running_tandem_exits() {
+    fn embedding_with_a_running_termurion_exits() {
         use crate::url_launch::Handed;
-        let run = |tandem, pack, h| embedding_start(tandem, pack, &h);
+        let run = |termurion, pack, h| embedding_start(termurion, pack, &h);
         assert_eq!(run(true, true, Handed::NoServer), EmbeddingStart::Run);
         assert_eq!(run(true, true, Handed::OtherOwner("x".into())), EmbeddingStart::Run);
         assert!(matches!(run(true, true, Handed::Taken), EmbeddingStart::Exit(_)));

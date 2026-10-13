@@ -1,6 +1,6 @@
 //! Hotkey windows in the window: registering the profiles' hotkeys, a press showing or
 //! hiding a profile's dedicated window (with its siblings), the slide, auto-hide when focus
-//! leaves, reopen when Tandem is active again, Pin Hotkey Window, and focus going back to
+//! leaves, reopen when Termurion is active again, Pin Hotkey Window, and focus going back to
 //! the app that was in front.
 
 use std::time::{Duration, Instant};
@@ -81,8 +81,8 @@ pub(super) fn set_window_alpha(hwnd: isize, alpha: f32) -> bool {
     }
 }
 
-/// A window of Tandem is in front.
-pub(super) fn tandem_in_front() -> bool {
+/// A window of Termurion is in front.
+pub(super) fn termurion_in_front() -> bool {
     ours(foreground())
 }
 
@@ -248,7 +248,7 @@ impl App {
         if ids.contains(&APP_HOTKEY) {
             self.app_hotkey_pressed();
         }
-        // The palette alone comes forward; Tandem follows only when a row is committed.
+        // The palette alone comes forward; Termurion follows only when a row is committed.
         if ids.contains(&OPEN_QUICKLY_HOTKEY) {
             self.open_quickly(event_loop);
         }
@@ -594,7 +594,7 @@ impl App {
     }
 
     /// The current hotkey window lost focus: an auto-hiding one hides unless focus went to
-    /// one of Tandem's own non-terminal windows (Settings, a dialog) or to a sibling.
+    /// one of Termurion's own non-terminal windows (Settings, a dialog) or to a sibling.
     pub(super) fn hotkey_focus_lost(&mut self) {
         let guid = match &self.hotkey {
             Some(h) if h.shown && h.roll.is_none() => h.guid.clone(),
@@ -638,7 +638,7 @@ impl App {
         self.gpu.as_ref().and_then(of).or_else(|| self.windows.parked().find_map(|(_, s)| s.gpu.as_ref().and_then(of)))
     }
 
-    /// Tandem became active again: hotkey windows that hid because another app took focus
+    /// Termurion became active again: hotkey windows that hid because another app took focus
     /// come back when their profile says so (Reopen on activation).
     pub(super) fn hotkey_reactivated(&mut self) {
         let back = self.current_window();
@@ -685,8 +685,8 @@ impl App {
         }
     }
 
-    /// Puts a window on top of Tandem's others and makes it the current one without
-    /// activating Tandem, as iTerm2's `makeKeyAndOrderFront:` orders a window front within the
+    /// Puts a window on top of Termurion's others and makes it the current one without
+    /// activating Termurion, as iTerm2's `makeKeyAndOrderFront:` orders a window front within the
     /// app (Activate's `order_window_front`, `H:3072-3079`); a minimized window is restored
     /// without activation. A hidden hotkey window shows the way its hotkey shows it.
     pub(super) fn order_front(&mut self, id: WindowId) {
@@ -737,7 +737,7 @@ impl App {
     fn app_hotkey_pressed(&mut self) {
         let hotkeys = self.hotkey_windows();
         let regular: Vec<WindowId> = self.registry.order().into_iter().filter_map(|k| self.window_id_of_key(k)).filter(|w| !hotkeys.contains(w)).collect();
-        match hotkey::app_press(tandem_in_front(), regular.len()) {
+        match hotkey::app_press(termurion_in_front(), regular.len()) {
             hotkey::AppAct::HideAll => {
                 self.app_hidden.clear();
                 for w in regular {
@@ -783,7 +783,7 @@ mod tests {
     #[test]
     fn window_alpha_adds_and_removes_the_layered_style() {
         unsafe {
-            let class: Vec<u16> = "TandemAlphaTest\0".encode_utf16().collect();
+            let class: Vec<u16> = "TermurionAlphaTest\0".encode_utf16().collect();
             RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(DefWindowProcW), lpszClassName: class.as_ptr(), ..std::mem::zeroed() });
             // A tool window that is never shown, off every monitor.
             let h = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, class.as_ptr(), class.as_ptr(), WS_POPUP, -30000, -30000, 16, 16, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());

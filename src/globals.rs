@@ -1,4 +1,4 @@
-//! Tandem's global settings: iTerm2's user defaults that are not part of a profile.
+//! Termurion's global settings: iTerm2's user defaults that are not part of a profile.
 //! One TOML file, only changed values written. Schema: schema/global.toml.
 
 use std::collections::BTreeMap;
@@ -128,7 +128,7 @@ struct FileFormat {
 
 pub fn default_path() -> PathBuf {
     let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    base.join("Tandem").join("settings.toml")
+    base.join("Termurion").join("settings.toml")
 }
 
 /// Keys whose presence means something even at the default: "AI Safety Check" chosen by the
@@ -344,7 +344,7 @@ mod tests {
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("tandem-globals-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-globals-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("settings.toml")

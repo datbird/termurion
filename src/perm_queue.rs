@@ -19,7 +19,7 @@ pub const WRITE_TRIES: u8 = 3;
 /// How many reads the start-up sync makes before it gives up until the next view of the store.
 pub const SYNC_TRIES: u8 = 3;
 
-/// The start-up sync of a store: its profile agrees with the Tandem table only once a COMPLETE
+/// The start-up sync of a store: its profile agrees with the Termurion table only once a COMPLETE
 /// read's plan has landed. Until then it fails closed (no page loads, `App::browser_sync_gate`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Sync {

@@ -478,7 +478,7 @@ struct Budget {
     nest: usize,
 }
 
-/// What may start a primary expression, in Tandem's order.
+/// What may start a primary expression, in Termurion's order.
 const PRIMARY: [&str; 9] = ["(", "!", "-", "Number", "true", "false", "Identifier", "OptionalPath", "SwiftyString"];
 /// What may follow a complete operand.
 const FOLLOW: [&str; 13] = ["*", "/", "+", "-", "<", ">", "<=", ">=", "==", "!=", "&&", "||", "?"];

@@ -43,7 +43,7 @@ pub enum Attention {
     Once,
     /// Flash the pane.
     Flash,
-    /// Flash the taskbar button until Tandem comes to the front.
+    /// Flash the taskbar button until Termurion comes to the front.
     Start,
     /// Stop flashing.
     Stop,
@@ -180,7 +180,7 @@ impl KeyLabels {
     }
 }
 
-/// What Tandem can do, for the Capabilities report.
+/// What Termurion can do, for the Capabilities report.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Features {
     pub clipboard_writable: bool,
@@ -201,7 +201,7 @@ pub fn session_features(clipboard_writable: bool, set_version: u8, profile_versi
     Features { clipboard_writable, ambiguous_wide, unicode_version: if set_version == 0 { profile_version } else { set_version } }
 }
 
-/// `Capabilities=` codes in iTerm2's order, for Tandem's features.
+/// `Capabilities=` codes in iTerm2's order, for Termurion's features.
 pub fn capabilities(f: Features) -> String {
     let mut out = String::from("T3");
     if f.clipboard_writable {

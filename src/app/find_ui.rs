@@ -264,9 +264,9 @@ pub(super) fn beep() {
 }
 
 /// Menu item ids of the find bar's mode menu.
-const MODE_ID: &str = "tandem.findmode.";
+const MODE_ID: &str = "termurion.findmode.";
 /// The status bar Search Tool's "Erase Search History" item.
-const ERASE_ID: &str = "tandem.finderase";
+const ERASE_ID: &str = "termurion.finderase";
 
 pub(super) fn to_point(screen: &crate::screen::Screen, p: Pos) -> Point {
     let history = screen.term().grid().history_size() as i32;
@@ -937,7 +937,7 @@ impl App {
     /// A pick from the mode menu. Returns false for other menu ids.
     pub(super) fn find_mode_picked(&mut self, id: &str) -> bool {
         // `eraseSearchHistory`: iTerm2 clears the search history and the find pasteboard
-        // every session shares; Tandem's stand-in is each pane's kept query, so every
+        // every session shares; Termurion's stand-in is each pane's kept query, so every
         // pane's goes. A pane filtering keeps its filter (iTerm2's filter is its own field).
         if id == ERASE_ID {
             let now = Instant::now();

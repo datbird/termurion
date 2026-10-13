@@ -305,7 +305,7 @@ mod tests {
 
     /// A fresh folder under the temp folder (removed by the caller).
     fn temp(name: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!("tandem-fileserve-{name}-{}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("termurion-fileserve-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         p

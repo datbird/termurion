@@ -596,7 +596,7 @@ impl App {
 
     /// Keys while a panel has the keyboard: Enter by Task 7's rules, the rest through the editor as
     /// the Notes tool routes them (Ctrl chords, Paste from the clipboard); Escape gives the keyboard
-    /// back to the terminal; Win chords are not taken (they stay Tandem's).
+    /// back to the terminal; Win chords are not taken (they stay Termurion's).
     pub(super) fn inline_key(&mut self, ev: &KeyEvent) -> bool {
         let Some(pane) = self.focused_id() else { return false };
         if !self.inline.get(&pane).is_some_and(|s| s.keys && s.binding.visible && s.view.is_some()) {

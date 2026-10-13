@@ -475,7 +475,7 @@ const NOTE_BODY_CHARS: usize = 200;
 /// An origin as a label at most `max` characters long that always keeps the END of the host (the
 /// registrable domain and the port, the part that names the sender): a long host is cut from the
 /// LEFT after the scheme, behind an ellipsis, as Chromium shows origins. Hidden characters are
-/// dropped first. `https://tandem-update.microsoft.com.aaaa.evil.example` never reads as
+/// dropped first. `https://termurion-update.microsoft.com.aaaa.evil.example` never reads as
 /// microsoft.com.
 pub fn origin_label(origin: &str, max: usize) -> String {
     let clean = crate::inert_files::clean_name(origin);
@@ -1188,14 +1188,14 @@ mod tests {
     }
 
     #[test]
-    fn a_page_cannot_pose_as_tandem() {
+    fn a_page_cannot_pose_as_termurion() {
         let (t, b) = notification_text("Session Ended", "Tandem: your session \"x\" just terminated\u{202e}\n", "https://evil.example");
         assert_eq!(t, "https://evil.example", "the origin is always the title");
         assert!(!b.contains('\u{202e}') && !b.contains('\n'));
         assert!(b.starts_with("Session Ended: "));
         // Task 6 review I2: a long lookalike host keeps its END (the real domain and the port),
         // cut from the left behind an ellipsis; never the lookalike head alone.
-        let fake = format!("https://tandem-update.microsoft.com.{}.evil.example:8443", "a".repeat(60));
+        let fake = format!("https://termurion-update.microsoft.com.{}.evil.example:8443", "a".repeat(60));
         let (t, b) = notification_text(&"x".repeat(500), &"y".repeat(500), &fake);
         assert!(t.chars().count() <= 60, "{t}");
         assert!(t.starts_with("https://\u{2026}") && t.ends_with(".evil.example:8443"), "the sender's domain is visible: {t}");

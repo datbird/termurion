@@ -89,7 +89,7 @@ impl App {
     /// failed last. A cancelled load shows nothing (`BM:1342-1345`), nor does a `file:` failure (Task 3's
     /// page), an `iterm2-file:` one (`BM:1382`; an `iterm2-ssh:` failure does get the page) or a failure of a
     /// local page. The page's text comes from `pending_error`, set here from the failure and the URL
-    /// the NavigationStarting named; the load is Tandem's own (`navigate_tandem`), so it passes the one
+    /// the NavigationStarting named; the load is Tandem's own (`navigate_termurion`), so it passes the one
     /// verdict as Tandem's load and its document request is the pane's.
     pub(super) fn browser_load_failed(&mut self, pane: PaneId, url: &str, status: i32, http: i32) {
         let failure = browser_pages::failure_of(status);
@@ -119,7 +119,7 @@ impl App {
         bv.last_failed = Some(url.to_string());
         bv.pending_error = Some(html);
         if let Some(v) = bv.view.as_ref() {
-            v.navigate_tandem(browser_pages::ERROR_URL);
+            v.navigate_termurion(browser_pages::ERROR_URL);
         }
     }
 
@@ -152,7 +152,7 @@ impl App {
     /// (WebView2's `Source`, kept in `BrowserIo.url`) is that page, so a web page, a frame or a page
     /// that navigated away changes nothing and is answered nothing. A setting changes through the
     /// owners the Settings window uses (`Globals::set` then `apply_edit`, `set_session_values`,
-    /// `remarry`); the page's own click handler is trusted-only (`TANDEM_SCRIPT`). Nothing is logged.
+    /// `remarry`); the page's own click handler is trusted-only (`TERMURION_SCRIPT`). Nothing is logged.
     pub(super) fn browser_onboarding_message(&mut self, pane: PaneId, source: &str, action: crate::browser_onboarding::Action) {
         use crate::browser_onboarding as ob;
         let url = self.panes.get(&pane).and_then(|p| p.browser_io()).map(|io| io.url.clone()).unwrap_or_default();
@@ -546,7 +546,7 @@ impl App {
         if let Some(url) = target {
             bv.last_failed = None;
             if let Some(v) = bv.view.as_ref() {
-                v.navigate_tandem(&url);
+                v.navigate_termurion(&url);
             }
             return;
         }
@@ -561,7 +561,7 @@ impl App {
         bv.last_failed = Some(uri.to_string());
         bv.pending_error = Some(html);
         if let Some(v) = bv.view.as_ref() {
-            v.navigate_tandem(browser_pages::ERROR_URL);
+            v.navigate_termurion(browser_pages::ERROR_URL);
         }
     }
 }
@@ -620,7 +620,7 @@ mod tests {
         for (id, code, main) in [("autofillHandler", d, true), ("passwordManager", b, false)] {
             let w = crate::browser_js::wrap(&crate::browser_js::UserScript { id, code, inject: crate::browser_js::Inject::DocumentEnd, main_frame_only: main, world: crate::browser_js::World::Client });
             let file = w.find("if (location.protocol === 'iterm2-file:' || location.protocol === 'iterm2-ssh:') return;").unwrap();
-            assert!(file < w.find("__tandemWebkit").unwrap() && file < w.find("location.protocol !== 'https:'").unwrap(), "{id}");
+            assert!(file < w.find("__termurionWebkit").unwrap() && file < w.find("location.protocol !== 'https:'").unwrap(), "{id}");
         }
         // A fill or a password write is refused on any page that is not https.
         for url in ["iterm2-file:///C:/x/a.html", "iterm2-ssh://box/f.html", "iterm2-about:error", "iterm2-about:welcome", "file:///C:/a.html"] {
@@ -686,7 +686,7 @@ mod tests {
         assert!(app.contains("Event::FileRedirect { uri, .. } => self.browser_file_redirect(pane, uri),"));
         let r = &p[p.find("pub(super) fn browser_file_redirect").unwrap()..];
         let r = &r[..r.find("\n    }\n").unwrap()];
-        assert!(r.contains("iterm2_file_url(uri)") && r.contains("file_path_of(u).is_ok()") && r.contains("navigate_tandem(&url)") && r.contains("invalid_path_text(&shown)") && r.contains("error_burst.allow("));
+        assert!(r.contains("iterm2_file_url(uri)") && r.contains("file_path_of(u).is_ok()") && r.contains("navigate_termurion(&url)") && r.contains("invalid_path_text(&shown)") && r.contains("error_burst.allow("));
     }
 
     /// The error page's content is this pane's state: the answer is built in one place, takes
@@ -703,7 +703,7 @@ mod tests {
         assert!(f.contains("browser_pages::server_answered(http)") && f.contains("failure == browser_pages::Failure::Cancelled") && f.contains("\"file\" | browser_pages::FILE_SCHEME | browser_pages::ABOUT"), "iterm2-ssh is not excluded");
         assert!(f.contains("!blocked && browser_pages::server_answered(http)") && f.contains("bv.last_failed = None;") && f.contains("bv.blocked_url.take()"), "a server answer ends the earlier failure; a blocked document shows Tandem's page");
         assert!(!f.contains("SSH_SCHEME"));
-        assert!(f.contains("should_show_error(Some(url), bv.last_failed.as_deref())") && f.contains("error_burst.allow(") && f.contains("navigate_tandem(browser_pages::ERROR_URL)"));
+        assert!(f.contains("should_show_error(Some(url), bv.last_failed.as_deref())") && f.contains("error_burst.allow(") && f.contains("navigate_termurion(browser_pages::ERROR_URL)"));
         let app = include_str!("browser_app.rs");
         let prod_app = &app[..app.find("#[cfg(test)]").unwrap()];
         let arm = &prod_app[prod_app.find("Event::Navigated { ok, nav, .. } => {").unwrap()..prod_app.find("Event::History { back, forward, .. } =>").unwrap()];

@@ -1952,7 +1952,7 @@ mod tests {
     }
 
     fn temp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("tandem-git-{name}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termurion-git-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d

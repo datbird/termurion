@@ -10,13 +10,13 @@ use crate::ssh_args::Identity;
 /// request with one body, so the file is buffered whole.
 pub const PAGE_CAP: u64 = crate::file_serve::MAX_FILE;
 
-/// Tandem's text for a file over the cap.
+/// Termurion's text for a file over the cap.
 pub const TOO_LARGE: &str = "The file is larger than 64 MB and cannot be shown.";
 
-/// Tandem's text for a folder (the single-stream download would zip it).
+/// Termurion's text for a folder (the single-stream download would zip it).
 pub const NOT_A_FILE: &str = "Only a file can be shown.";
 
-/// Tandem's text for a page asking for more files than may be fetched at once.
+/// Termurion's text for a page asking for more files than may be fetched at once.
 pub const TOO_MANY: &str = "Too many files are being fetched for this page.";
 
 /// Remote files one browser view may have in flight, and all views together (a page of one hundred
@@ -220,7 +220,7 @@ fn respond(status: u16, mime: &str, body: Vec<u8>, headers: Vec<(String, String)
     crate::webhost::Answer::Respond { status, mime: mime.to_string(), body, headers }
 }
 
-/// The page that waits where a remote file would be: Tandem's own text, 200 (as iTerm2's failed
+/// The page that waits where a remote file would be: Termurion's own text, 200 (as iTerm2's failed
 /// scheme task shows a page, `BM:1382`), with no script (`browser_pages::scriptless_page`) under the
 /// one no-script policy of the scheme (R13x8-NS).
 pub fn page_answer(html: String) -> crate::webhost::Answer {
@@ -238,7 +238,7 @@ pub fn body_answer(job: PageJob) -> crate::webhost::Answer {
     crate::file_serve::file_answer(std::path::Path::new(&job.path), job.document, job.mime, job.body)
 }
 
-/// Whether `url` is a well-formed view URL Tandem itself made (the one gate the first load of a View
+/// Whether `url` is a well-formed view URL Termurion itself made (the one gate the first load of a View
 /// tab passes): `iterm2-ssh://<host><path>` with no user and no port.
 pub fn view_url_ok(url: &str) -> bool {
     matches!(parse(url), Some((_, None, None, _))) && url.len() <= 8192
@@ -377,7 +377,7 @@ mod tests {
         assert!(matches!(on_done(&mut jobs, 3, &Err("No such file".into())), Step::Error { token: 30, text, .. } if text == "No such file"));
         jobs.insert(4, job(40));
         assert!(matches!(on_unzip(&mut jobs, 4), Step::Error { cancel: true, .. }));
-        // Every Tandem-made answer is 200, sandboxed, nosniff; the error text is escaped.
+        // Every Termurion-made answer is 200, sandboxed, nosniff; the error text is escaped.
         for a in [error_answer("a <b>failed</b>", "iterm2-ssh://box/a"), page_answer(no_conductor_page(Some("box")))] {
             let h = headers_of(&a);
             let crate::webhost::Answer::Respond { status, body, .. } = &a else { panic!() };
@@ -386,7 +386,7 @@ mod tests {
             assert!(h.iter().any(|(k, v)| k == "X-Content-Type-Options" && v == "nosniff"));
             assert!(!String::from_utf8_lossy(body).contains("<b>failed"));
         }
-        // R13x8-NS: Tandem's own pages at an `iterm2-ssh:` URL get the same no-script policy, so they hold
+        // R13x8-NS: Termurion's own pages at an `iterm2-ssh:` URL get the same no-script policy, so they hold
         // no script; Try Again is a link to the page itself (a reload the verdict allows), which needs none.
         for a in [error_answer("x", "iterm2-ssh://box/a"), page_answer(no_conductor_page(Some("box")))] {
             assert_eq!(headers_of(&a), crate::browser_pages::file_headers());

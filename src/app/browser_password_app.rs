@@ -2,7 +2,7 @@
 //! password manager, Task 6) binds the person's pick to the page with `browser_pw_page` and hands the
 //! password over as a `Secret`; this file queues it, probes the focused field, writes it and drops it.
 //!
-//! Security: the write is a constant script in Tandem's isolated world with typed arguments
+//! Security: the write is a constant script in Termurion's isolated world with typed arguments
 //! (`browser_password::write_call`), run through `browser_js_call_secret` (the call text is a `Secret`
 //! wiped on drop). It runs in the main frame only (no frame-targeted runner is used here), only on an
 //! https page whose exact origin and navigation epoch are the ones bound at pick time (checked when the

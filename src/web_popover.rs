@@ -568,7 +568,7 @@ mod tests {
         unsafe {
             let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
         }
-        let class: Vec<u16> = "TandemPopoverSourceTest\0".encode_utf16().collect();
+        let class: Vec<u16> = "TermurionPopoverSourceTest\0".encode_utf16().collect();
         // SAFETY: a never-shown window of this thread, destroyed below.
         let hwnd = unsafe {
             let wc = WNDCLASSW { lpfnWndProc: Some(DefWindowProcW), lpszClassName: class.as_ptr(), ..std::mem::zeroed() };
@@ -576,7 +576,7 @@ mod tests {
             CreateWindowExW(0, class.as_ptr(), std::ptr::null(), WS_POPUP, 0, 0, 200, 200, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null())
         };
         assert!(!hwnd.is_null());
-        let folder = std::env::temp_dir().join(format!("tandem-popsrc-{}", std::process::id()));
+        let folder = std::env::temp_dir().join(format!("termurion-popsrc-{}", std::process::id()));
         let (tx, rx) = mpsc::channel::<Posted>();
         let pump = |secs: u64, on: &mut dyn FnMut(&Event) -> bool| -> bool {
             let end = Instant::now() + Duration::from_secs(secs);
@@ -609,7 +609,7 @@ mod tests {
         let view = WebView::create(&env, hwnd as isize, 1, (0, 0, 200, 200), html_setup(), tx);
         assert!(pump(20, &mut |e| matches!(e, Event::Created(1))), "Created");
         let mut doc = popover_document("<script>iterm2Invoke('f()','cb')</script>").unwrap();
-        view.navigate_tandem(doc.url());
+        view.navigate_termurion(doc.url());
         let mut sources: Vec<String> = Vec::new();
         let mut message_source = None;
         pump(10, &mut |e| {

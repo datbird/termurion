@@ -133,7 +133,7 @@ mod tests {
         let me = include_str!("ssh_page_app.rs");
         let answered = between(me, "pub(super) fn ssh_view_answered", "/// Answers the deferred request");
         assert!(answered.contains("0 => self.ssh_download(") && answered.contains("self.open_ssh_view(") && answered.contains("self.browser_allowed()"));
-        // The tab opens through the browser's own open path, whose first load is Tandem's own.
+        // The tab opens through the browser's own open path, whose first load is Termurion's own.
         let browser = include_str!("browser_app.rs");
         let open = between(browser, "pub(super) fn open_ssh_view(", "pub(super) fn open_link_split");
         assert!(open.contains("ssh_page::view_url_ok(") && open.contains("self.ssh_view_url = Some(") && open.contains("self.open_in_browser_pane("));

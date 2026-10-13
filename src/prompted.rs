@@ -127,7 +127,7 @@ pub fn set_profile_decision(prevent: Option<bool>) -> Decision {
     }
 }
 
-/// A path from a program that Tandem may touch: a local absolute path (`C:\...`). Network
+/// A path from a program that Termurion may touch: a local absolute path (`C:\...`). Network
 /// and device paths (`\\server\share`, `//host`, `/\host`, `\\?\`, `\??\UNC\`) are
 /// refused before any file is opened, since opening one sends the user's Windows
 /// credentials to that server. Only a drive letter start passes, so every `network_path`
@@ -150,7 +150,7 @@ pub fn network_path(path: &str) -> bool {
     crate::scripts::is_network_path(path) || long_form
 }
 
-/// A ReportVariable name Tandem will look up or ask about: letters, digits, `_`, and `.`.
+/// A ReportVariable name Termurion will look up or ask about: letters, digits, `_`, and `.`.
 pub fn variable_name_ok(name: &str) -> bool {
     !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.')
 }
@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn upload_archive_and_lines() {
-        let dir = std::env::temp_dir().join(format!("tandem-up-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-up-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("a.txt"), b"alpha").unwrap();
@@ -510,7 +510,7 @@ mod tests {
     #[test]
     fn folder_uploads_follow_iterm2() {
         // iTerm2 names entries "./<path>" relative to the base; the tar crate drops the "./".
-        let dir = std::env::temp_dir().join(format!("tandem-up-folders-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-up-folders-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("top").join("a").join("deep")).unwrap();
         std::fs::create_dir_all(dir.join("top").join("b")).unwrap();

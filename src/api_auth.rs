@@ -471,7 +471,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn allow_all_reader_follows_windows() {
-        let dir = std::env::temp_dir().join(format!("tandem-noauth-{}", fresh_key()));
+        let dir = std::env::temp_dir().join(format!("termurion-noauth-{}", fresh_key()));
         std::fs::create_dir_all(&dir).unwrap();
         let at = |name: &str| dir.join(name).to_string_lossy().into_owned();
 

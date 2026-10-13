@@ -1064,7 +1064,7 @@ mod tests {
         assert!(t.keys().all(|n| name_ok(n)) && !t.contains_key("A nan") && !t.contains_key("not a table"));
         assert_eq!(custom(&g).len(), MAX_CUSTOM);
         // Globals::load: the settings file.
-        let dir = std::env::temp_dir().join(format!("tandem-cp-load-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-cp-load-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.toml");
         let mut file = toml::Table::new();
@@ -1119,7 +1119,7 @@ mod tests {
 
     #[test]
     fn read_file_is_bounded() {
-        let dir = std::env::temp_dir().join(format!("tandem-cp-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-cp-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let ok = dir.join("ok.itermcolors");
         std::fs::write(&ok, itermcolors_with(&entry("Ansi 0 Color", "0.1", "0.2", "0.3"))).unwrap();

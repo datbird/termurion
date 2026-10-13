@@ -626,7 +626,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn listing_entries_are_judged_when_they_are_links() {
-        let base = std::env::temp_dir().join(format!("tandem-entries-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("termurion-entries-{}", std::process::id()));
         std::fs::create_dir_all(base.join("plain")).unwrap();
         std::fs::write(base.join("f.txt"), b"x").unwrap();
         let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(base.join("j")).arg(base.join("plain")).output().unwrap();
@@ -796,7 +796,7 @@ mod tests {
     const GATE: &[&str] = &["localfs.rs", "netpath.rs"];
 
     /// Raw probes that may stay, by file and function, with how many there are: Tandem's own config
-    /// and data paths (under `%APPDATA%\Tandem`, its runtime and staging folders, its own exe and the
+    /// and data paths (under `%APPDATA%\Termurion`, its runtime and staging folders, its own exe and the
     /// files shipped beside it, the temp folder it made), Windows' own folders, and PATH lookups. A
     /// new raw probe in a listed function changes its count and fails too.
     const OWN: &[(&str, &str, usize, &str)] = &[
@@ -813,10 +813,10 @@ mod tests {
         ("pwm_run.rs", "resolve_in", 1, "a PATH folder of the person's own environment, searched for the password manager CLI (bw.cmd) to start; nothing is read from it"),
         ("app/claude_code_app.rs", "install_hook", 1, "the hook exe beside Tandem's own exe"),
         ("app/coprocess_ui.rs", "coprocess_bar", 1, "a file Tandem names in the temp folder for the coprocess's errors"),
-        ("app/jumplist_ui.rs", "delete_orphans", 2, "Tandem's own Recents folder under %APPDATA%\\Tandem (the list and its .itermtab files, exact uuid names only)"),
-        ("app/jumplist_ui.rs", "read_list", 1, "Tandem's own Recents folder under %APPDATA%\\Tandem (recents.json and removed.json, bounded reads)"),
-        ("app/jumplist_ui.rs", "store_removed", 2, "Tandem's own Recents folder under %APPDATA%\\Tandem (removed.json)"),
-        ("app/jumplist_ui.rs", "store_recents", 3, "Tandem's own Recents folder under %APPDATA%\\Tandem (the list and its .itermtab files, exact uuid names only)"),
+        ("app/jumplist_ui.rs", "delete_orphans", 2, "Tandem's own Recents folder under %APPDATA%\\Termurion (the list and its .itermtab files, exact uuid names only)"),
+        ("app/jumplist_ui.rs", "read_list", 1, "Tandem's own Recents folder under %APPDATA%\\Termurion (recents.json and removed.json, bounded reads)"),
+        ("app/jumplist_ui.rs", "store_removed", 2, "Tandem's own Recents folder under %APPDATA%\\Termurion (removed.json)"),
+        ("app/jumplist_ui.rs", "store_recents", 3, "Tandem's own Recents folder under %APPDATA%\\Termurion (the list and its .itermtab files, exact uuid names only)"),
         ("app/history_ui.rs", "history", 1, "Tandem's own paste history file"),
         ("app/history_ui.rs", "remember_paste", 1, "Tandem's own paste history file"),
         ("app/menu.rs", "ensure_pwsh_script", 2, "Tandem's own PowerShell integration script under %APPDATA% / %LOCALAPPDATA%"),
@@ -838,7 +838,7 @@ mod tests {
         ("app/scripts_app.rs", "export_one", 1, "the Desktop known folder, a free name for the export"),
         ("app/scripts_app.rs", "export_script_to", 3, "Tandem's Scripts folder (scripts_folder judges a custom one on every call), its staging and environment folders"),
         ("app/scripts_app.rs", "extract_bytes", 2, "Tandem's Scripts folder (scripts_folder judges a custom one on every call), its staging and environment folders"),
-        ("app/scripts_app.rs", "sweep_reveals", 1, "the temporary folder, listed only for Tandem's own tandem-its-* folders, which remove_path deletes without following a link"),
+        ("app/scripts_app.rs", "sweep_reveals", 1, "the temporary folder, listed only for Tandem's own termurion-its-* folders, which remove_path deletes without following a link"),
         ("app/scripts_app.rs", "finish_new_script", 1, "Tandem's Scripts folder (scripts_folder judges a custom one on every call), its staging and environment folders"),
         ("app/scripts_app.rs", "import_environment_ready", 1, "Tandem's Scripts folder (scripts_folder judges a custom one on every call), its staging and environment folders"),
         ("app/scripts_app.rs", "import_install", 2, "Tandem's Scripts folder (scripts_folder judges a custom one on every call), its staging and environment folders"),
@@ -882,11 +882,11 @@ mod tests {
         ("globals.rs", "load", 1, "Tandem's own settings file"),
         ("globals.rs", "save", 3, "Tandem's own settings file"),
         ("host.rs", "log", 1, "Tandem's own log file"),
-        ("notes.rs", "ensure_loaded", 1, "Tandem's own notes file under %APPDATA%\\Tandem"),
-        ("notes.rs", "file_exists", 1, "Tandem's own notes file under %APPDATA%\\Tandem"),
-        ("notes.rs", "flush", 1, "Tandem's own notes file under %APPDATA%\\Tandem"),
-        ("notes.rs", "stat_token", 1, "Tandem's own notes file under %APPDATA%\\Tandem"),
-        ("notes.rs", "write", 7, "Tandem's own notes file under %APPDATA%\\Tandem"),
+        ("notes.rs", "ensure_loaded", 1, "Tandem's own notes file under %APPDATA%\\Termurion"),
+        ("notes.rs", "file_exists", 1, "Tandem's own notes file under %APPDATA%\\Termurion"),
+        ("notes.rs", "flush", 1, "Tandem's own notes file under %APPDATA%\\Termurion"),
+        ("notes.rs", "stat_token", 1, "Tandem's own notes file under %APPDATA%\\Termurion"),
+        ("notes.rs", "write", 7, "Tandem's own notes file under %APPDATA%\\Termurion"),
         ("open_quickly_ui.rs", "system_fonts", 1, "Windows' own Fonts folder"),
         ("probe.rs", "win_console_mouse", 1, "the test helper exe beside Tandem's own exe"),
         ("pty.rs", "console_mode_unless", 1, "the console device CONIN$, not a path"),
@@ -911,13 +911,13 @@ mod tests {
         ("statusbar_setup_ui.rs", "add_symbol_font", 1, "Windows' own Fonts folder (constant paths)"),
         ("store.rs", "load", 1, "Tandem's own profiles file"),
         ("store.rs", "save", 3, "Tandem's own profiles file"),
-        ("terminfo.rs", "ensure", 3, "Tandem's own terminfo folder under %APPDATA%\\Tandem"),
+        ("terminfo.rs", "ensure", 3, "Tandem's own terminfo folder under %APPDATA%\\Termurion"),
         ("util_console.rs", "open_console", 1, "the console devices CONIN$ and CONOUT$, not paths"),
-        ("utilities.rs", "ensure", 5, "Tandem's own utilities folder under %APPDATA%\\Tandem"),
-        ("utilities.rs", "refresh", 6, "Tandem's own utilities folder under %APPDATA%\\Tandem"),
+        ("utilities.rs", "ensure", 5, "Tandem's own utilities folder under %APPDATA%\\Termurion"),
+        ("utilities.rs", "refresh", 6, "Tandem's own utilities folder under %APPDATA%\\Termurion"),
         ("app/semantic_ui.rs", "shell_open", 1, "URL targets only: semantic::shell_url refuses a path, a drive path, a network path and a file: link before ShellExecuteW; a file opens only through localfs::open_with_shell with a LocalPath"),
         ("app/semantic_ui.rs", "shell_open_scheme", 1, "URL targets only: link_scheme::scheme_of and screen judge it again (a path has no scheme, file: is on the blocked list) before ShellExecuteW"),
-        ("utilities.rs", "stamp", 1, "Tandem's own utilities folder under %APPDATA%\\Tandem"),
+        ("utilities.rs", "stamp", 1, "Tandem's own utilities folder under %APPDATA%\\Termurion"),
         ("winpipe.rs", "connect_owned", 1, "a named pipe, not a file path"),
     ];
 

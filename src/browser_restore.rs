@@ -157,11 +157,11 @@ pub fn load_gate(url: &str) -> Option<String> {
 
 /// Whether a pane's own load (the profile's Initial URL, a restored page already judged by
 /// `load_gate` at start, or the person's own) goes: the verdict the guarded NavigationStarting gives
-/// a load Tandem started (`webhost::nav_verdict` with `by_tandem`), so a deferred load after a
+/// a load Tandem started (`webhost::nav_verdict` with `by_termurion`), so a deferred load after a
 /// relaunch loads exactly what the same pane loads outside one (final review I2). `file_ok` is the
 /// one path judge for a `file:` URL. None: refused (the caller says so, never a silent blank).
 pub fn own_load(url: &str, file_ok: &dyn Fn(&str) -> bool) -> Option<String> {
-    let info = crate::webhost::NavInfo { target: url, source: None, user: false, redirect: false, by_tandem: true, by_model: false };
+    let info = crate::webhost::NavInfo { target: url, source: None, user: false, redirect: false, by_termurion: true, by_model: false };
     let policy = crate::webhost::NavPolicy { guard_local_schemes: true, allowed_schemes: None, local_root: None };
     crate::webhost::nav_verdict(&info, &policy, file_ok).then(|| url.to_string())
 }
@@ -176,14 +176,14 @@ pub struct ParkedFrom {
 }
 
 /// Whether a parked page navigation may load now: a web page (http or https) only, and the verdict
-/// the handler gave it, with its ORIGINAL initiator (`by_tandem` false), is still yes. A `file:`,
+/// the handler gave it, with its ORIGINAL initiator (`by_termurion` false), is still yes. A `file:`,
 /// `iterm2-file:`, `iterm2-ssh:`, `data:` or any other scheme never passes, so parking cannot
 /// launder a page's choice into a load Tandem started. None: dropped.
 pub fn parked_load(url: &str, from: &ParkedFrom, file_ok: &dyn Fn(&str) -> bool) -> Option<String> {
     if !matches!(crate::webhost::scheme_of(url).as_str(), "http" | "https") {
         return None;
     }
-    let info = crate::webhost::NavInfo { target: url, source: from.source.as_deref(), user: from.user, redirect: from.redirect, by_tandem: false, by_model: false };
+    let info = crate::webhost::NavInfo { target: url, source: from.source.as_deref(), user: from.user, redirect: from.redirect, by_termurion: false, by_model: false };
     let policy = crate::webhost::NavPolicy { guard_local_schemes: true, allowed_schemes: None, local_root: None };
     crate::webhost::nav_verdict(&info, &policy, file_ok).then(|| url.to_string())
 }

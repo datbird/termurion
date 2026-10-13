@@ -82,7 +82,7 @@ fn load_shipped(dir: &Path) -> Result<Api, String> {
         let resize = get("ConptyResizePseudoConsole")?;
         let close = get("ConptyClosePseudoConsole")?;
         let clear = get("ConptyClearPseudoConsole")?;
-        // Older shipped copies may lack the pack: Tandem then cannot be the default terminal.
+        // Older shipped copies may lack the pack: Termurion then cannot be the default terminal.
         let pack = get("ConptyPackPseudoConsole").ok();
         type Raw = unsafe extern "system" fn() -> isize;
         Ok(Api {
@@ -106,7 +106,7 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("tandem-test-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

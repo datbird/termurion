@@ -70,7 +70,7 @@ pub fn restore_target(b: &Buried, window_open: bool, tab_open: bool) -> Restore 
 }
 
 /// A hidden tmux window in the Buried Sessions menu: iTerm2's "prefix client - name" (iTerm2
-/// separates them with a long dash; Tandem's text uses a hyphen).
+/// separates them with a long dash; Termurion's text uses a hyphen).
 pub fn hidden_window_title(prefix: &str, client: &str, name: &str) -> String {
     let client = client.trim();
     let client = if client.is_empty() { "tmux" } else { client };

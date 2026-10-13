@@ -40,7 +40,7 @@ pub(super) fn conductor_keys(c: &crate::conductor::Conductor) -> Vec<(String, Va
 /// What a saved session gives back of its conductors: the JSON, the dcs id and the parser tree,
 /// only when the pane re-attaches to its hosted session (`attach`; a fresh restore has no ssh
 /// process any more). The saved text is untrusted: a size past the caps, an id with controls,
-/// a tree Tandem would not have saved or a conductor that does not read gives None.
+/// a tree Termurion would not have saved or a conductor that does not read gives None.
 pub(super) fn conductor_restore(attach: bool, v: &Value) -> Option<(String, String, crate::ssh_recovery::Tree)> {
     use crate::ssh_recovery::{CONDUCTOR_KEY, DCS_ID_KEY, TREE_KEY};
     if !attach {
@@ -601,7 +601,7 @@ impl App {
 
     /// A restored session that starts nothing (a buried member of a foreign restore, a Code Review or
     /// Diff session with no program, a session saved held idle): an idle pane, held, so the session
-    /// Tandem saves for it keeps it idle until the person starts it (13y2 final review I1).
+    /// Termurion saves for it keeps it idle until the person starts it (13y2 final review I1).
     fn start_held_idle_pane(&mut self, rect: Rect, guid: Option<&str>) -> Option<PaneId> {
         let id = self.start_idle_pane(rect, guid)?;
         if let Some(p) = self.panes.get_mut(&id) {
@@ -1148,7 +1148,7 @@ mod tests {
     fn arrangement_keeps_pins_and_groups() {
         let g = TabGroup { id: "G-1".into(), name: "Build".into(), color: tab_groups::PALETTE[1], collapsed: false };
         let root = || Value::Table(Default::default());
-        // Saved in the order grouped, plain, pinned (an order Tandem never keeps, as a file
+        // Saved in the order grouped, plain, pinned (an order Termurion never keeps, as a file
         // from elsewhere may hold).
         let saved = [arrangement::tab(root(), false, None, false, Some(&g)), arrangement::tab(root(), true, None, false, None), arrangement::tab(root(), false, None, true, None)];
         let back: Vec<(bool, Option<TabGroup>)> = saved.iter().map(arrangement::tab_pin_group).collect();
@@ -1268,7 +1268,7 @@ mod tests {
         assert_eq!(tree, c.tree());
         assert!(crate::conductor::Conductor::from_json(&json).is_some());
         assert_eq!(conductor_restore(false, &v), None);
-        // A missing key, a tree that is not one Tandem saved, or text of no sane size is refused.
+        // A missing key, a tree that is not one Termurion saved, or text of no sane size is refused.
         for key in [CONDUCTOR_KEY, DCS_ID_KEY, TREE_KEY] {
             let mut t = v.as_table().unwrap().clone();
             t.remove(key);

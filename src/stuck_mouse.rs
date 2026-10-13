@@ -1,4 +1,4 @@
-//! iTerm2's stuck mouse reporting detection (pure): after Tandem writes a mouse report, a
+//! iTerm2's stuck mouse reporting detection (pure): after Termurion writes a mouse report, a
 //! shell that is no longer the program (it exited, or ssh died) echoes the report's printable
 //! tail back as text. The tail of the reports written in the last 100 ms is remembered and
 //! looked for in the output (`PTYSession.m:14033-14120`). The offer itself is 13b's host-change

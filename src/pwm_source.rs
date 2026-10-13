@@ -12,14 +12,14 @@ pub const SOURCE_KEY: &str = "NoSyncPasswordManagerDataSourceName";
 
 /// Credential Manager targets are `SERVICE/<account><SEP><user>` (iTerm2's keychain service is
 /// "iTerm2", its items keyed by `account + SEP + user`).
-pub const SERVICE: &str = "Tandem";
+pub const SERVICE: &str = "Termurion";
 
 /// The browser password manager's source choice key (iTerm2's
 /// `NoSyncPasswordManagerDataSourceName` plus "Browser", `PDS:28-30`): a separate store.
 pub const SOURCE_KEY_BROWSER: &str = "NoSyncPasswordManagerDataSourceNameBrowser";
 
 /// The browser scope's Credential Manager service (iTerm2's "iTerm2-Browser", `KDS:237-244`).
-pub const SERVICE_BROWSER: &str = "Tandem-Browser";
+pub const SERVICE_BROWSER: &str = "Termurion-Browser";
 
 /// Which password manager a source serves: the terminal's, or the browser's (iTerm2's
 /// `PasswordManagerDataSourceProvider(browser:)`). The two never share accounts.
@@ -199,7 +199,7 @@ pub fn password_failed(message: &str) -> String {
     format!("Could not get password. Credential Manager query failed: {message}")
 }
 
-/// The Credential Manager target for an account: `Tandem/<account><SEP><user>`. iTerm2's
+/// The Credential Manager target for an account: `Termurion/<account><SEP><user>`. iTerm2's
 /// modern add always joins with the separator, so an empty user leaves it trailing.
 pub fn target_name(account: &str, user: &str) -> String {
     target_name_in(Scope::Terminal, account, user)
@@ -211,7 +211,7 @@ pub fn target_name_in(scope: Scope, account: &str, user: &str) -> String {
 }
 
 /// The account a Credential Manager target names, or `None` when it is not one of Tandem's.
-/// The part after `Tandem/` splits at the first separator into account and user; with no
+/// The part after `Termurion/` splits at the first separator into account and user; with no
 /// separator it is iTerm2's one-part legacy item, the whole part the account and the user
 /// empty. The display string is that part unchanged (iTerm2's `displayString`, the keychain
 /// account name) and the id is the whole target.
@@ -244,18 +244,18 @@ mod tests {
         assert_eq!(Scope::Browser.source_key(), "NoSyncPasswordManagerDataSourceNameBrowser");
         assert_eq!(Scope::Terminal.source_key(), SOURCE_KEY);
         let t = target_name_in(Scope::Browser, "https://x.y (R)", "me");
-        assert_eq!(t, "Tandem-Browser/https://x.y (R)\u{2002}\u{2014}\u{2002}me");
+        assert_eq!(t, "Termurion-Browser/https://x.y (R)\u{2002}\u{2014}\u{2002}me");
         let a = parse_target_in(Scope::Browser, &t).unwrap();
         assert_eq!((a.account_name.as_str(), a.user_name.as_str()), ("https://x.y (R)", "me"));
         assert!(parse_target_in(Scope::Terminal, &t).is_none());
-        assert!(parse_target_in(Scope::Browser, "Tandem/a").is_none());
+        assert!(parse_target_in(Scope::Browser, "Termurion/a").is_none());
         assert!(parse_target(&target_name("a", "b")).is_some());
     }
 
     #[test]
     fn credman_names_follow_iterm2() {
         let t = target_name("github", "me");
-        assert_eq!(t, "Tandem/github\u{2002}\u{2014}\u{2002}me");
+        assert_eq!(t, "Termurion/github\u{2002}\u{2014}\u{2002}me");
         let a = parse_target(&t).expect("a Tandem target");
         assert_eq!(a.account_name, "github");
         assert_eq!(a.user_name, "me");
@@ -264,14 +264,14 @@ mod tests {
         assert!(!a.has_otp && !a.send_otp && a.source_label.is_none());
 
         // iTerm2's one-part legacy item: the whole name is the account, the user is empty.
-        let solo = parse_target("Tandem/solo").expect("a Tandem target");
+        let solo = parse_target("Termurion/solo").expect("a Tandem target");
         assert_eq!(solo.account_name, "solo");
         assert_eq!(solo.user_name, "");
         assert_eq!(solo.display, "solo");
-        assert_eq!(solo.id, "Tandem/solo");
+        assert_eq!(solo.id, "Termurion/solo");
 
         assert!(parse_target("Other/x").is_none());
-        assert!(parse_target("Tandemx/y").is_none());
+        assert!(parse_target("Termurionx/y").is_none());
 
         // iTerm2's modern add with no user keeps the separator; it round-trips to an empty user.
         let no_user = target_name("a", "");
@@ -281,7 +281,7 @@ mod tests {
         assert_eq!(a.display, format!("a{SEP}"));
 
         // The first separator splits, as iTerm2's range(of:).
-        let two = parse_target(&format!("Tandem/x{SEP}y{SEP}z")).expect("a Tandem target");
+        let two = parse_target(&format!("Termurion/x{SEP}y{SEP}z")).expect("a Tandem target");
         assert_eq!((two.account_name.as_str(), two.user_name.as_str()), ("x", &*format!("y{SEP}z")));
 
         assert_eq!(Kind::from_stored("Keychain"), Kind::CredentialManager);

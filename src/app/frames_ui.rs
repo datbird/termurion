@@ -1,6 +1,6 @@
 //! The display pacer (13l): iTerm2 draws a session's output on an update timer whose period is
 //! its update cadence (`iTermUpdateCadenceController`), at once for a typed echo, and every
-//! other redraw request (keys, the mouse, resizes, bars, the cursor) draws immediately. Tandem
+//! other redraw request (keys, the mouse, resizes, bars, the cursor) draws immediately. Termurion
 //! asks a window to draw after pane output only when its `Pacer` says a frame is due, and wakes
 //! at the due time otherwise.
 
@@ -160,7 +160,7 @@ impl App {
         }
     }
 
-    /// GPU Renderer Availability: Tandem always draws on the GPU, so it says enabled and names
+    /// GPU Renderer Availability: Termurion always draws on the GPU, so it says enabled and names
     /// the adapter and backend this window draws on.
     pub(super) fn gpu_renderer_availability(&mut self) {
         use crate::perf_stats as ps;

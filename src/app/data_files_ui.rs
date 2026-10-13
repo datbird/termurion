@@ -46,7 +46,7 @@ impl Set {
     }
 }
 
-/// `%APPDATA%\Tandem`, where the local copies live.
+/// `%APPDATA%\Termurion`, where the local copies live.
 pub(super) fn local_dir() -> PathBuf {
     super::snippets_ui::snippets_path().parent().map(Path::to_path_buf).unwrap_or_default()
 }
@@ -443,7 +443,7 @@ mod tests {
     use super::*;
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("tandem-data-sync-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-data-sync-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

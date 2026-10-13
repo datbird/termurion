@@ -250,7 +250,7 @@ mod tests {
         use std::os::windows::process::CommandExt;
         let out = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "dll::tests::harden_child", "--ignored", "--test-threads=1", "--nocapture"])
-            .env("TANDEM_DLL_CHILD", "1")
+            .env("TERMURION_DLL_CHILD", "1")
             .creation_flags(0x0800_0000)
             .output()
             .unwrap();
@@ -263,7 +263,7 @@ mod tests {
     #[test]
     #[ignore]
     fn harden_child() {
-        if std::env::var_os("TANDEM_DLL_CHILD").is_none() {
+        if std::env::var_os("TERMURION_DLL_CHILD").is_none() {
             return;
         }
         assert!(super::harden_process());
@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn loads_follow_the_search_flags() {
         assert!(super::load_system("kernel32.dll").is_some());
-        assert!(super::load_system("tandem-no-such-dll.dll").is_none());
+        assert!(super::load_system("termurion-no-such-dll.dll").is_none());
         let err = super::load_bundled(Path::new("conpty.dll")).unwrap_err();
         assert!(err.contains("not an absolute path"), "{err}");
         // The shipped conpty.dll loads by full path.

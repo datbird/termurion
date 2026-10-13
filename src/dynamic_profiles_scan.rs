@@ -185,7 +185,7 @@ mod tests {
     impl TempDir {
         fn new(tag: &str) -> TempDir {
             let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-            let dir = std::env::temp_dir().join(format!("tandem-dynscan-{tag}-{}-{nanos}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("termurion-dynscan-{tag}-{}-{nanos}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             TempDir(dir)
         }

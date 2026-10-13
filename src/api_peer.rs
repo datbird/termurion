@@ -36,9 +36,9 @@ pub struct Token {
     pub restricted: bool,
 }
 
-/// Whether the peer's token may drive Tandem's: the same user (iTerm2's euid compare), not
+/// Whether the peer's token may drive Termurion's: the same user (iTerm2's euid compare), not
 /// sandboxed (an AppContainer or a restricted token), at the same elevation and the same
-/// integrity level, so no less trusted process can type into Tandem's shells.
+/// integrity level, so no less trusted process can type into Termurion's shells.
 pub fn judge(theirs: &Token, mine: &Token) -> Result<(), String> {
     if theirs.sid != mine.sid {
         return Err(other_user(&theirs.sid, &mine.sid));
@@ -68,7 +68,7 @@ pub struct Peer {
 }
 
 /// `judge`, and the same Windows session (an unreadable one is another). The one rule for every
-/// local caller that may drive Tandem: the launch pipe's server and the console handoff's caller.
+/// local caller that may drive Termurion: the launch pipe's server and the console handoff's caller.
 pub fn judge_peer(theirs: &Peer, mine: &Peer) -> Result<(), String> {
     judge(&theirs.token, &mine.token)?;
     match (theirs.session, mine.session) {
@@ -98,7 +98,7 @@ fn same(a: SocketAddr, b: SocketAddr) -> bool {
 }
 
 /// The pid owning the connection that reached `local` from `peer`: the row whose local end is
-/// the peer's address and whose remote end is ours. The table also holds Tandem's own row for
+/// the peer's address and whose remote end is ours. The table also holds Termurion's own row for
 /// the same connection (local = ours), which never names the peer. Rows owned by pid 0 (ends
 /// in TIME_WAIT, owned by nobody) are skipped; matches with two different owners give None.
 pub fn owner(rows: &[Row], peer: SocketAddr, local: SocketAddr) -> Option<u32> {
@@ -118,7 +118,7 @@ pub fn listener(rows: &[Row], port: u16) -> Option<u32> {
     rows.iter().find(|r| r.pid != 0 && r.local.port() == port).map(|r| r.pid)
 }
 
-/// The text naming a process, for "port in use" (Tandem's own).
+/// The text naming a process, for "port in use" (Termurion's own).
 pub fn process_label(name: Option<&str>, pid: u32) -> String {
     match name {
         Some(n) => format!("{n} (pid {pid})"),
@@ -256,7 +256,7 @@ mod tests {
         for (client, server) in [("127.0.0.1:50000", "127.0.0.1:1912"), ("[::1]:50000", "[::1]:1912")] {
             let rows = [Row { local: a(client), remote: a(server), pid: 42 }, Row { local: a(server), remote: a(client), pid: 7 }];
             assert_eq!(owner(&rows, a(client), a(server)), Some(42));
-            // Tandem's own row alone never names the peer.
+            // Termurion's own row alone never names the peer.
             assert_eq!(owner(&rows[1..], a(client), a(server)), None);
             assert_eq!(owner(&[], a(client), a(server)), None);
             let other = client.replace("50000", "50001");

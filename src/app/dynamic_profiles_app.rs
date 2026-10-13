@@ -295,7 +295,7 @@ pub(super) fn rewrite(fs: &Fs, folder: &Path, name: &str, stamp: &Stamp, guid: &
         return Outcome::Refused("its file could not be written".into());
     }
     let (Some(file_name), Some(parent)) = (path.file_name().map(|n| n.to_string_lossy().to_string()), path.parent()) else { return Outcome::Refused("its file has no name".into()) };
-    let tmp_name = format!(".{file_name}.tandem-tmp");
+    let tmp_name = format!(".{file_name}.termurion-tmp");
     let tmp = parent.join(&tmp_name);
     let mut made = (fs.write_new)(&tmp, &out);
     if matches!(&made, Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists) {
@@ -600,13 +600,13 @@ mod tests {
         SWEEP.call_once(|| {
             for e in std::fs::read_dir(&base).into_iter().flatten().flatten() {
                 let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age.as_secs() > 3600);
-                if old && e.file_name().to_string_lossy().starts_with("tandem-dynapp-") {
+                if old && e.file_name().to_string_lossy().starts_with("termurion-dynapp-") {
                     let _ = std::fs::remove_dir_all(e.path());
                 }
             }
         });
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-        let dir = base.join(format!("tandem-dynapp-{tag}-{}-{nanos}", std::process::id()));
+        let dir = base.join(format!("termurion-dynapp-{tag}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -739,7 +739,7 @@ mod tests {
     }
 
     fn leftovers(dir: &Path) -> Vec<String> {
-        std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.contains("tandem-tmp")).collect()
+        std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.contains("termurion-tmp")).collect()
     }
 
     #[test]
@@ -907,7 +907,7 @@ mod tests {
         let seen = std::cell::RefCell::new(String::new());
         let fs = Fs { write_new: &|t: &Path, b: &[u8]| { *seen.borrow_mut() = t.file_name().unwrap().to_string_lossy().to_string(); std::fs::write(t, b) }, ..real() };
         assert!(matches!(rewrite(&fs, &dir, "a.json", &stamp, "G", &rename_it), Outcome::Wrote(_)));
-        assert!(seen.borrow().starts_with('.') && seen.borrow().ends_with(".tandem-tmp"), "{}", seen.borrow());
+        assert!(seen.borrow().starts_with('.') && seen.borrow().ends_with(".termurion-tmp"), "{}", seen.borrow());
         // A stale temporary file of an earlier crash does not block the write.
         std::fs::write(dir.join(seen.borrow().as_str()), "stale").unwrap();
         let stamp = stamp_of_file(&p);

@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn rows_survive_a_second_open_of_one_file() {
-        let dir = std::env::temp_dir().join(format!("tandem-perms-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("termurion-perms-{}", uuid::Uuid::new_v4()));
         let file = dir.join("browserdb-u.sqlite");
         {
             let db = Db::open(&file).unwrap();

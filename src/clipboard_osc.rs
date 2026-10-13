@@ -268,7 +268,7 @@ mod tests {
         s.feed(b"\x1b]1337;CopyToClipboard=\x07text\x1b]1337;EndC");
         s.feed(b"opy\x07");
         assert_eq!(s.take_requests(), vec![Request::ClipboardWrite("text".into())]);
-        // A sequence Tandem does not act on, split across reads, is part of the text.
+        // A sequence Termurion does not act on, split across reads, is part of the text.
         s.feed(b"\x1b]1337;CopyToClipboard=\x07a\x1b[3");
         s.feed(b"1mb\x1b]1337;End");
         s.feed(b"C");

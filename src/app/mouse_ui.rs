@@ -90,7 +90,7 @@ impl App {
     /// 118-158`), never at a password prompt (Tandem's own guard), never over one of Tandem's
     /// overlays (the one list), never while composing (13k).
     pub(super) fn ffm_pane_focus(&mut self, id: PaneId, at: (f32, f32)) {
-        if !mouse::ffm_pane_may_focus(self.focused, !self.orch_waits.is_empty(), self.focused_password_prompt(), self.ffm_composing()) || self.tandem_ui_at(at.0, at.1) {
+        if !mouse::ffm_pane_may_focus(self.focused, !self.orch_waits.is_empty(), self.focused_password_prompt(), self.ffm_composing()) || self.termurion_ui_at(at.0, at.1) {
             return;
         }
         if self.globals.bool("FocusFollowsMouse") && self.tabs.get(self.active).is_some_and(|t| t.focused != id) {
@@ -140,7 +140,7 @@ impl App {
         } else if self.is_terminal_hwnd(front) {
             mouse::Front::Terminal
         } else {
-            mouse::Front::OtherTandem
+            mouse::Front::OtherTermurion
         }
     }
 
@@ -184,7 +184,7 @@ impl App {
     /// are the rectangles their draw code recorded in `overlay_drawn` (never recomputed here);
     /// portholes, block pills, session pickers, AI indicators and the focused pane's find bar
     /// are read from the lists their draws fill. A new overlay records its rectangle from its
-    /// draw; `tandem_ui_at` and the report gate read only this list.
+    /// draw; `termurion_ui_at` and the report gate read only this list.
     fn ui_rects(&self) -> mouse::UiRects {
         use mouse::Overlay;
         let mut ui = mouse::UiRects::default();
@@ -231,7 +231,7 @@ impl App {
 
     /// What is under the pointer, for the shape (`PTYTextView+ARC.m:728-771`): the divider and
     /// side bar handle resize shapes first (Tandem's), then `pointer_shape::choose`'s inputs.
-    /// Overlays are the one list (`tandem_ui_at`) and the program's claim is `report_gate`.
+    /// Overlays are the one list (`termurion_ui_at`) and the program's claim is `report_gate`.
     fn pointer_over(&self) -> Result<crate::pointer_shape::Over, crate::pointer_shape::Shape> {
         use crate::pointer_shape::{Over, Shape};
         let (x, y) = self.cursor;
@@ -251,7 +251,7 @@ impl App {
         if matches!(self.drag, Drag::Scrollbar { .. }) || self.scrollbar_at(x, y).is_some() {
             return Err(Shape::Arrow);
         }
-        let mut o = Over { rect_mods: self.mods.ctrl && self.mods.alt, action_with_win: self.hover_hand && self.pointer_mods().cmd && !self.pointer_mods().alt, button: self.tandem_ui_at(x, y), ..Over::default() };
+        let mut o = Over { rect_mods: self.mods.ctrl && self.mods.alt, action_with_win: self.hover_hand && self.pointer_mods().cmd && !self.pointer_mods().alt, button: self.termurion_ui_at(x, y), ..Over::default() };
         if let Some((id, rect)) = self.pane_at(x, y) {
             o.terminal = true;
             let (col, row, _) = self.cell_at(id, rect, x, y);
@@ -333,7 +333,7 @@ impl App {
 
     /// The point is on one of Tandem's overlays inside a pane: no program ever sees a click,
     /// drag or hover there, whatever the button (B5).
-    pub(super) fn tandem_ui_at(&self, x: f32, y: f32) -> bool {
+    pub(super) fn termurion_ui_at(&self, x: f32, y: f32) -> bool {
         self.ui_rects().hit(x, y) || self.inline_button_at(x, y)
     }
 
@@ -356,7 +356,7 @@ impl App {
             wheel: profile.bool("Mouse Reporting allow mouse wheel"),
             horizontal: self.globals.bool("ReportHorizontalScrollEvents"),
             first_mouse_blocks: self.first_mouse_down && !self.globals.bool("ReportOnFirstMouse"),
-            ui_over: !matches!(kind, mouse::Kind::Drag) && (self.tandem_ui_at(x, y) || self.scrollbar_at(x, y).is_some()),
+            ui_over: !matches!(kind, mouse::Kind::Drag) && (self.termurion_ui_at(x, y) || self.scrollbar_at(x, y).is_some()),
             view_focused: self.focused && self.tabs.get(self.active).is_some_and(|t| t.focused == pane),
         };
         mouse::should_report(self.modes(pane), mods, kind, gates)
@@ -614,7 +614,7 @@ mod tests {
     #[test]
     fn the_pointer_shape_reads_the_one_overlay_list_and_the_gate() {
         let b = body(UI, "pointer_over");
-        for needle in ["tandem_ui_at(", "report_gate(", "divider_at(", "fold_at_point(", ".image()", "self.hover"] {
+        for needle in ["termurion_ui_at(", "report_gate(", "divider_at(", "fold_at_point(", ".image()", "self.hover"] {
             assert!(b.contains(needle), "{needle}");
         }
         assert!(!b.contains("app_owns_mouse("), "the gate decides, not a private copy");
@@ -695,7 +695,7 @@ mod tests {
     #[test]
     fn the_wheel_over_an_overlay_reaches_no_program() {
         let b = body(MOD, "wheel");
-        let ui = b.find("tandem_ui_at(").expect("wheel asks the overlay list");
+        let ui = b.find("termurion_ui_at(").expect("wheel asks the overlay list");
         assert!(b.find("porthole_wheel(").unwrap() < ui && ui < b.find("route_wheel(").unwrap());
     }
 
@@ -732,13 +732,13 @@ mod tests {
     #[test]
     fn overlays_are_swallowed_before_the_pane_section() {
         let b = body(MOD, "mouse_press");
-        let swallow = b.find("tandem_ui_at(").expect("mouse_press swallows presses on overlays");
+        let swallow = b.find("termurion_ui_at(").expect("mouse_press swallows presses on overlays");
         let pane = b.find("let Some((id, rect)) = self.pane_at").unwrap();
         assert!(swallow < pane);
     }
 
     #[test]
-    fn tandem_ui_at_reads_every_overlay_list() {
+    fn termurion_ui_at_reads_every_overlay_list() {
         let b = body(UI, "ui_rects");
         let recorded = [crate::mouse::Overlay::InfoBar, crate::mouse::Overlay::Completion, crate::mouse::Overlay::Composer, crate::mouse::Overlay::ComposerPopup, crate::mouse::Overlay::Toast, crate::mouse::Overlay::Banner, crate::mouse::Overlay::PaneMove, crate::mouse::Overlay::CommandInfo];
         let frame = body(MOD, "build_frame");
@@ -753,15 +753,15 @@ mod tests {
         for needle in ["overlay_drawn", "porthole_hits", "block_buttons", "picker_hits", "chat_indicator_hits", "find_bar_rect", "find_mode_rect"] {
             assert!(b.contains(needle), "{needle} is not read");
         }
-        assert!(body(UI, "tandem_ui_at").contains("inline_button_at"), "inline buttons too");
-        assert!(!body(UI, "tandem_ui_at").contains("completion") && !body(UI, "tandem_ui_at").contains("composer"), "no per-site special cases");
+        assert!(body(UI, "termurion_ui_at").contains("inline_button_at"), "inline buttons too");
+        assert!(!body(UI, "termurion_ui_at").contains("completion") && !body(UI, "termurion_ui_at").contains("composer"), "no per-site special cases");
     }
 
     /// Review fix 1: the overlay under the pointer holds every kind of event but a drag's end.
     #[test]
     fn the_gate_asks_the_overlay_list_for_every_kind() {
         let b = body(UI, "report_gate_with");
-        assert!(b.contains("!matches!(kind, mouse::Kind::Drag)") && b.contains("self.tandem_ui_at(x, y)"));
+        assert!(b.contains("!matches!(kind, mouse::Kind::Drag)") && b.contains("self.termurion_ui_at(x, y)"));
         assert!(!b.contains("Kind::Click | mouse::Kind::Hover"));
     }
 
@@ -776,7 +776,7 @@ mod tests {
     /// The `body` helper stops at the nearer next method, private or `pub(super)`.
     #[test]
     fn body_stops_at_the_nearest_method() {
-        let b = body(UI, "tandem_ui_at");
+        let b = body(UI, "termurion_ui_at");
         assert!(!b.contains("fn report_gate_with"), "{b}");
     }
 
@@ -854,11 +854,11 @@ mod tests {
         let frame = body(MOD, "build_frame");
         assert!(frame.contains("draw_scrollbar("), "drawn in each pane's turn, so popups drawn later cut it");
         let press = body(MOD, "mouse_press");
-        let (ui, bar, pane) = (press.find("self.tandem_ui_at("), press.find("self.scroll_press("), press.find("self.pane_at("));
+        let (ui, bar, pane) = (press.find("self.termurion_ui_at("), press.find("self.scroll_press("), press.find("self.pane_at("));
         assert!(ui < bar && bar < pane, "after Tandem's own overlays, before the program or the selection");
         assert!(press[ui.unwrap()..bar.unwrap()].contains("self.bar_press_only_activates("), "the click that activates a window only activates it, on the bar too");
         let wheel = body(MOD, "wheel");
-        let (ui, bar, pane) = (wheel.find("self.tandem_ui_at("), wheel.find("self.scroll_wheel("), wheel.find("self.pane_at("));
+        let (ui, bar, pane) = (wheel.find("self.termurion_ui_at("), wheel.find("self.scroll_wheel("), wheel.find("self.pane_at("));
         assert!(ui < bar && bar < pane, "the wheel over the bar scrolls the pane, never a report");
         assert!(body(UI, "report_gate_with").contains("self.scrollbar_at("), "an any-motion hover over the bar is not the program's");
         assert!(body(MOD, "mouse_move").contains("self.scroll_drag_to("), "the thumb follows the pointer");
@@ -1019,7 +1019,7 @@ mod tests {
     fn pinch_runs_after_the_ui_wheel_handlers() {
         let b = body(MOD, "wheel");
         let ui = b.find("self.porthole_wheel(").expect("the UI handlers");
-        let held = b.find("self.tandem_ui_at(").expect("the overlay hold");
+        let held = b.find("self.termurion_ui_at(").expect("the overlay hold");
         let pane = b.find("self.pane_at(x, y)").expect("pane_at");
         let pinch = b.find("self.pinch(").expect("pinch is called from wheel");
         assert!(ui < pinch && held < pinch, "never over a bar or an overlay");
@@ -1036,7 +1036,7 @@ mod tests {
     #[test]
     fn activation_edge_is_the_app_active_edge() {
         let b = body(MOD, "about_to_wait");
-        let edge = b.find("let active = hotkey_ui::tandem_in_front()").unwrap();
+        let edge = b.find("let active = hotkey_ui::termurion_in_front()").unwrap();
         let set = b.find("self.app_active = active").unwrap();
         let (up, down) = (b.find("self.ffm_became_active()").expect("rising edge"), b.find("self.ffm_became_inactive()").expect("falling edge"));
         assert!(edge < up && up < set && edge < down && down < set, "both before the flag is overwritten");
@@ -1070,14 +1070,14 @@ mod tests {
         assert!(arm.contains("ffm_entered = true"));
         let mv = body(MOD, "mouse_move");
         let at = mv.find("self.ffm_enter()").expect("mouse_move decides");
-        assert!(mv[..at].contains("pane_at(x, y)") && mv[..at].contains("tandem_ui_at(x, y)") && mv[..at].contains("ffm_entered"));
+        assert!(mv[..at].contains("pane_at(x, y)") && mv[..at].contains("termurion_ui_at(x, y)") && mv[..at].contains("ffm_entered"));
         assert!(body(UI, "ffm_enter").contains("self.ffm_entered = false"), "one decision per entry");
     }
 
     #[test]
     fn hovering_an_overlay_never_moves_focus() {
         let b = body(UI, "ffm_pane_focus");
-        assert!(b.contains("tandem_ui_at("), "the one overlay list");
+        assert!(b.contains("termurion_ui_at("), "the one overlay list");
         assert!(b.contains("ffm_composing()"), "the 13k seam");
         assert!(body(UI, "focus_pane_at_screen").contains("ffm_pane_focus(id, "));
     }

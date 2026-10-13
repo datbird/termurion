@@ -438,7 +438,7 @@ impl ChatWindow {
         let input_state = &mut self.input;
         self.host.paint(|ui| {
             let icons = crate::settings_keys::has_icon_font(ui.ctx());
-            // Ctrl+W closes, as every other egui window of Tandem does.
+            // Ctrl+W closes, as every other egui window of Termurion does.
             if ui.input(|i| i.key_pressed(egui::Key::W) && i.modifiers.command) {
                 out.push(ChatEvent::Close);
             }

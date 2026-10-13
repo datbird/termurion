@@ -79,7 +79,7 @@ impl App {
         self.undo.push(entry, deadline);
     }
 
-    /// The last window closed and Tandem stays resident: what the close in progress captured ends
+    /// The last window closed and Termurion stays resident: what the close in progress captured ends
     /// with it, logs first (the shells are killed next), so nothing dead or orphaned reaches the Undo
     /// Close stack and the tray's Undo Close never restores it.
     pub(super) fn end_capture(&mut self) {

@@ -38,7 +38,7 @@ pub const NOT_FOUND_HTML: &str = "";
 
 /// The glyph spans' rule, appended to the common CSS wherever a page gets it (inlined by `page`,
 /// or served as `iterm-browser-common.css`).
-pub const GLYPH_CSS: &str = "\n.tandem-glyph { font-family: \"Segoe Fluent Icons\"; font-style: normal; }\n";
+pub const GLYPH_CSS: &str = "\n.termurion-glyph { font-family: \"Segoe Fluent Icons\"; font-style: normal; }\n";
 
 /// iTerm2's emoji and the Segoe Fluent Icons glyph each becomes (the m12 "UI glyphs" ruling). A key
 /// ends in U+FE0F where iTerm2's text does; one without it takes a following U+FE0F with it. The
@@ -81,7 +81,7 @@ fn css_content(before: &str, after: &str) -> bool {
 
 /// iTerm2's emoji in a template become Segoe Fluent Icons glyphs, scanned once: a CSS
 /// `content: "<emoji>";` keeps the glyph as the content and gains the icon font, any other emoji
-/// becomes a `tandem-glyph` span. Only template and included text goes through here, never a
+/// becomes a `termurion-glyph` span. Only template and included text goes through here, never a
 /// substituted value.
 pub fn glyph_page(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
@@ -101,7 +101,7 @@ pub fn glyph_page(html: &str) -> String {
                     out.push_str(" font-family: \"Segoe Fluent Icons\";");
                     i += taken + semi;
                 } else {
-                    out.push_str("<span class=\"tandem-glyph\">");
+                    out.push_str("<span class=\"termurion-glyph\">");
                     out.push(glyph);
                     out.push_str("</span>");
                     i += taken;
@@ -336,8 +336,8 @@ fn retry_target(url: &str) -> bool {
 /// text, Tandem's text)
 pub const ERROR_PATCHES: [(&str, &str, &str); 4] = [
     ("SCRIPT", "    <script>\n        function retryLoad() {", "    <script nonce=\"{{NONCE}}\">\n        function retryLoad() {"),
-    ("BUTTON", "<button class=\"button retry-button\" onclick=\"retryLoad()\">", "<button class=\"button retry-button\" id=\"tandem-retry\">"),
-    ("LISTENER", "        // Add keyboard support\n", "        document.getElementById('tandem-retry').addEventListener('click', function(event) {\n            if (event.isTrusted) { retryLoad(); }\n        });\n\n        // Add keyboard support\n"),
+    ("BUTTON", "<button class=\"button retry-button\" onclick=\"retryLoad()\">", "<button class=\"button retry-button\" id=\"termurion-retry\">"),
+    ("LISTENER", "        // Add keyboard support\n", "        document.getElementById('termurion-retry').addEventListener('click', function(event) {\n            if (event.isTrusted) { retryLoad(); }\n        });\n\n        // Add keyboard support\n"),
     ("KEYS", "if (event.key === 'Enter' || event.key === ' ') {", "if (event.isTrusted && (event.key === 'Enter' || event.key === ' ')) {"),
 ];
 
@@ -855,25 +855,25 @@ pub fn document(name: &str, nonce: &str) -> Option<(String, &'static str)> {
 /// so they are adapted at load time (R13x3-1/-2 pattern, the 13x4 view-source precedent): each
 /// target must be found exactly once or no page is served. (name, iTerm2's text, Tandem's text)
 pub const HTML_PATCHES: [(&str, &str, &str); 4] = [
-    ("SCRIPT", "    <script>\n        {{PERMISSIONS_SCRIPT}}\n    </script>\n", "    <script nonce=\"{{NONCE}}\">\n        {{PERMISSIONS_SCRIPT}}\n    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TANDEM_SCRIPT}}\n    </script>\n"),
-    ("CLEAR_ALL", "onclick=\"clearAllPermissions()\"", "data-tandem-action=\"clearAll\""),
-    ("CLEAR_SEARCH", "onclick=\"clearSearch()\"", "data-tandem-action=\"clearSearch\""),
+    ("SCRIPT", "    <script>\n        {{PERMISSIONS_SCRIPT}}\n    </script>\n", "    <script nonce=\"{{NONCE}}\">\n        {{PERMISSIONS_SCRIPT}}\n    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TERMURION_SCRIPT}}\n    </script>\n"),
+    ("CLEAR_ALL", "onclick=\"clearAllPermissions()\"", "data-termurion-action=\"clearAll\""),
+    ("CLEAR_SEARCH", "onclick=\"clearSearch()\"", "data-termurion-action=\"clearSearch\""),
     // The page's own load handler already listens to this button's click.
     ("LOAD_MORE", "onclick=\"loadMore()\" ", ""),
 ];
 pub const JS_PATCHES: [(&str, &str, &str); 2] = [
-    ("REVOKE_ALL", "onclick=\"revokeAllPermissions('${escapeAttribute(origin)}')\"", "data-tandem-action=\"revokeAll\""),
-    ("REVOKE", "onclick=\"revokePermission('${escapeAttribute(permission.origin)}', '${escapeAttribute(permission.permissionType)}')\"", "data-tandem-action=\"revoke\""),
+    ("REVOKE_ALL", "onclick=\"revokeAllPermissions('${escapeAttribute(origin)}')\"", "data-termurion-action=\"revokeAll\""),
+    ("REVOKE", "onclick=\"revokePermission('${escapeAttribute(permission.origin)}', '${escapeAttribute(permission.permissionType)}')\"", "data-termurion-action=\"revoke\""),
 ];
 
 /// Tandem's own script for the page: one delegated click listener. It ignores a click a script
 /// made up (`isTrusted`), and reads the origin and type from attributes the page set with
 /// `setAttribute`, never from markup built from data. The page's own functions still ask `confirm()`.
-pub const TANDEM_SCRIPT: &str = "document.addEventListener('click', function (e) {
+pub const TERMURION_SCRIPT: &str = "document.addEventListener('click', function (e) {
             if (!e.isTrusted || !e.target || !e.target.closest) { return; }
-            var el = e.target.closest('[data-tandem-action]');
+            var el = e.target.closest('[data-termurion-action]');
             if (!el) { return; }
-            var act = el.getAttribute('data-tandem-action');
+            var act = el.getAttribute('data-termurion-action');
             var entry = el.closest('.permission-entry');
             var section = el.closest('.origin-section');
             if (act === 'revoke' && entry) {
@@ -893,7 +893,7 @@ fn permissions_document(nonce: &str) -> Option<String> {
     use crate::view_source::apply_patches;
     let patched = apply_patches(resource("permissions-page.html")?, &HTML_PATCHES).and_then(|h| apply_patches(resource("permissions-page.js").unwrap_or_default(), &JS_PATCHES).map(|j| (h, j)));
     match patched {
-        Ok((html, js)) => Some(fill_template(&html, &[("NONCE", nonce), ("PERMISSIONS_SCRIPT", &js), ("TANDEM_SCRIPT", TANDEM_SCRIPT)])),
+        Ok((html, js)) => Some(fill_template(&html, &[("NONCE", nonce), ("PERMISSIONS_SCRIPT", &js), ("TERMURION_SCRIPT", TERMURION_SCRIPT)])),
         Err(e) => {
             crate::rlog!("{}", crate::dlog::name(&e));
             None
@@ -1613,11 +1613,11 @@ mod permissions_tests {
         let broken_js = js.replace("revokeAllPermissions('${escapeAttribute(origin)}')", "revokeAllPermissions('${origin}')");
         assert!(crate::view_source::apply_patches(&broken_js, &JS_PATCHES).is_err());
         let patched = crate::view_source::apply_patches(js, &JS_PATCHES).unwrap();
-        assert!(!patched.contains("onclick=") && patched.contains("data-tandem-action=\"revoke\"") && patched.contains("data-tandem-action=\"revokeAll\""));
+        assert!(!patched.contains("onclick=") && patched.contains("data-termurion-action=\"revoke\"") && patched.contains("data-termurion-action=\"revokeAll\""));
         // The delegated listener ignores a click a script made up and reads its data from attributes
         // the page set with setAttribute, never from markup.
-        assert!(TANDEM_SCRIPT.contains("e.isTrusted") && TANDEM_SCRIPT.contains("closest("));
-        assert!(!TANDEM_SCRIPT.contains("innerHTML") && !TANDEM_SCRIPT.contains("eval("));
+        assert!(TERMURION_SCRIPT.contains("e.isTrusted") && TERMURION_SCRIPT.contains("closest("));
+        assert!(!TERMURION_SCRIPT.contains("innerHTML") && !TERMURION_SCRIPT.contains("eval("));
     }
 
     #[test]
@@ -1715,24 +1715,24 @@ mod plumbing_tests {
 
     #[test]
     fn glyph_page_follows_the_ui_glyph_ruling() {
-        assert_eq!(glyph_page("<h3>\u{1F512} /dev/null Mode Active</h3>"), "<h3><span class=\"tandem-glyph\">\u{E72E}</span> /dev/null Mode Active</h3>");
+        assert_eq!(glyph_page("<h3>\u{1F512} /dev/null Mode Active</h3>"), "<h3><span class=\"termurion-glyph\">\u{E72E}</span> /dev/null Mode Active</h3>");
         assert_eq!(glyph_page("a::before { content: \"\u{1F4C1}\"; }"), "a::before { content: \"\u{E8B7}\"; font-family: \"Segoe Fluent Icons\"; }");
-        assert_eq!(glyph_page("\u{26A0}\u{FE0F}"), "<span class=\"tandem-glyph\">\u{E7BA}</span>");
+        assert_eq!(glyph_page("\u{26A0}\u{FE0F}"), "<span class=\"termurion-glyph\">\u{E7BA}</span>");
         for kept in ["\u{26A0}", "\u{2713}", "\u{2630}"] {
             assert_eq!(glyph_page(kept), kept);
         }
         for (emoji, glyph) in GLYPHS {
             let out = glyph_page(&format!("<b>{emoji}</b>"));
-            assert_eq!(out, format!("<b><span class=\"tandem-glyph\">{glyph}</span></b>"), "{emoji:?}");
+            assert_eq!(out, format!("<b><span class=\"termurion-glyph\">{glyph}</span></b>"), "{emoji:?}");
         }
         // A selector after an emoji whose entry has none goes with it.
-        assert_eq!(glyph_page("\u{1F512}\u{FE0F}"), "<span class=\"tandem-glyph\">\u{E72E}</span>");
+        assert_eq!(glyph_page("\u{1F512}\u{FE0F}"), "<span class=\"termurion-glyph\">\u{E72E}</span>");
         assert!(page("{{COMMON_CSS}}x", &[]).starts_with(crate::browser_js::resource("iterm-browser-common.css").unwrap()));
         assert!(page("<style>{{INCLUDE:file-page.css}}</style>", &[]).contains(".directory-content"));
         assert_eq!(page("{{A}}", &[("A", "b")]), "b");
-        assert!(GLYPH_CSS.contains("font-family: \"Segoe Fluent Icons\"") && GLYPH_CSS.contains(".tandem-glyph"));
-        assert!(document("iterm-browser-common.css", "n").unwrap().0.contains(".tandem-glyph"));
-        assert!(page("{{COMMON_CSS}}", &[]).contains(".tandem-glyph"), "a page that inlines the common CSS draws its glyph spans");
+        assert!(GLYPH_CSS.contains("font-family: \"Segoe Fluent Icons\"") && GLYPH_CSS.contains(".termurion-glyph"));
+        assert!(document("iterm-browser-common.css", "n").unwrap().0.contains(".termurion-glyph"));
+        assert!(page("{{COMMON_CSS}}", &[]).contains(".termurion-glyph"), "a page that inlines the common CSS draws its glyph spans");
         assert_eq!(page("<p>{{U}}</p>", &[("U", "\u{1F512}")]), "<p>\u{1F512}</p>", "a substituted value is never rewritten");
         // The CSS content of an included file is rewritten, too.
         let css = page("{{INCLUDE:file-page.css}}", &[]);
@@ -1757,7 +1757,7 @@ mod plumbing_tests {
             assert_eq!((status, mime.as_str()), (200, "text/html; charset=utf-8"));
             assert!(headers.iter().any(|(k, v)| k == "Content-Security-Policy" && v.contains("frame-ancestors 'none'") && v.contains("script-src 'nonce-")));
             assert!(!body.contains("onclick") && !body.contains("<script") && !body.contains("{{") && !body.contains('\u{1F310}') && !body.contains('\u{2728}'), "{name}");
-            assert!(body.contains("class=\"tandem-glyph\""));
+            assert!(body.contains("class=\"termurion-glyph\""));
         }
         // The copies hold iTerm2's text; the changes are load-time, exactly once, and fail closed.
         let raw = crate::browser_js::resource("onboarding-intro.html").unwrap();
@@ -2057,7 +2057,7 @@ mod file_page_tests {
         }
         assert!(!html.contains(".git"), "hidden entries are skipped");
         assert!(html.contains("<title>d</title>") && html.contains("<p class=\"directory-path\">C:\\d</p>"));
-        assert!(html.contains("<span class=\"tandem-glyph\">\u{E8B7}</span>") && !html.contains('\u{1F4C1}'), "the folder glyph, not the emoji");
+        assert!(html.contains("<span class=\"termurion-glyph\">\u{E8B7}</span>") && !html.contains('\u{1F4C1}'), "the folder glyph, not the emoji");
         // A name is text, never markup; a hidden or bidi character is dropped from what is shown.
         let hostile = directory_page(Path::new(r"C:\d"), &[e("<x>&", false, false), e("a\u{202e}b\u{200b}", false, false), e("\"onmouseover=\"x", false, false), e("{{TITLE}}", false, false)]);
         assert!(hostile.contains("&lt;x&gt;&amp;") && !hostile.contains("<x>"));

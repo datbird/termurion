@@ -148,7 +148,7 @@ mod win {
     use std::sync::{mpsc, Arc, Mutex};
     use std::time::Instant;
 
-    /// No console flashes for a CLI Tandem spawns on the user's behalf.
+    /// No console flashes for a CLI Termurion spawns on the user's behalf.
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     /// How often a timed-out wait polls the child (`git_run_win.rs` uses the same idea with a
     /// Job Object; a plain `op`/`lpass` invocation never spawns children of its own, so a
@@ -503,7 +503,7 @@ mod win {
         /// A folder with `inner.bat` (pings `pings` times, then writes the marker) and `outer.bat`
         /// (starts inner by its full path, detached from the pipes, then pings `outer_pings`).
         fn tree(tag: &str, pings: u32, outer_pings: u32) -> (std::path::PathBuf, std::path::PathBuf) {
-            let dir = std::env::temp_dir().join(format!("tandem-pwm-{tag}-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("termurion-pwm-{tag}-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             let marker = dir.join("marker.txt");
             let inner = dir.join("inner.bat");
@@ -579,7 +579,7 @@ mod win {
 
         #[test]
         fn a_bare_name_is_found_with_its_extension() {
-            let dir = std::env::temp_dir().join(format!("tandem-pwm-ext-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("termurion-pwm-ext-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("kxfake.cmd"), "@echo off\r\n").unwrap();
             let found = resolve_in("kxfake", dir.as_os_str(), ".COM;.EXE;.CMD").unwrap();
@@ -605,10 +605,10 @@ mod win {
             let name = format!("kxplant{}", std::process::id());
             let planted = std::path::PathBuf::from(format!("{name}.cmd"));
             std::fs::write(&planted, "@echo off\r\n").unwrap();
-            let rel = format!("tandem-pwm-rel-{}", std::process::id());
+            let rel = format!("termurion-pwm-rel-{}", std::process::id());
             std::fs::create_dir_all(&rel).unwrap();
             std::fs::write(std::path::Path::new(&rel).join(format!("{name}.cmd")), "@echo off\r\n").unwrap();
-            let real = std::env::temp_dir().join(format!("tandem-pwm-abs-{}", std::process::id()));
+            let real = std::env::temp_dir().join(format!("termurion-pwm-abs-{}", std::process::id()));
             std::fs::create_dir_all(&real).unwrap();
             std::fs::write(real.join(format!("{name}.cmd")), "@echo off\r\n").unwrap();
             let abs = real.to_string_lossy().into_owned();
@@ -680,7 +680,7 @@ mod tests {
         use std::sync::mpsc;
 
         fn script(name: &str, body: &str) -> (std::path::PathBuf, String) {
-            let dir = std::env::temp_dir().join(format!("tandem-pwm-run-{name}-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("termurion-pwm-run-{name}-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             let file = dir.join("t.cmd");
             std::fs::write(&file, body).unwrap();

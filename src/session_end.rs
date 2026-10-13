@@ -70,7 +70,7 @@ pub enum Outcome {
 }
 
 /// `brokenPipeWithError:` (`PS:4747-4822`). `sessionShouldAutoClose` is always true here
-/// (Decision: Tandem has no split drag a close could break).
+/// (Decision: Termurion has no split drag a close could break).
 pub fn after_exit(e: Exit, suppress_offer: bool) -> (Message, Outcome) {
     if e.short_lived_single_use {
         // iTerm2 never restarts a single-use session (`PS:4785-4795`).
@@ -121,7 +121,7 @@ pub fn restart_due(now: Instant, pending: &HashMap<crate::layout::PaneId, Instan
     (due, next)
 }
 
-/// Tandem's bound on the Restart action (13q P11; iTerm2 has none): at most this many timed
+/// Termurion's bound on the Restart action (13q P11; iTerm2 has none): at most this many timed
 /// restarts of one pane within `STORM_WINDOW`.
 pub const STORM_LIMIT: usize = 5;
 pub const STORM_WINDOW: Duration = Duration::from_secs(10);

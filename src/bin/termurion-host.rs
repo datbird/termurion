@@ -1,4 +1,4 @@
-//! The session host: runs Tandem's shells so they outlive a crashed Tandem.
+//! The session host: runs Termurion's shells so they outlive a crashed Termurion.
 #![windows_subsystem = "windows"]
 
 fn main() {

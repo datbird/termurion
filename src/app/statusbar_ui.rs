@@ -67,7 +67,7 @@ pub(super) enum Piece {
     /// `iTermStatusBarFixedSpacerComponent`: a fixed amount of space.
     Spacer,
     /// `iTermStatusBarPlaceholderComponent`, shown alone when a layout has no component
-    /// Tandem knows.
+    /// Termurion knows.
     Placeholder,
     /// A content component (milestone 9h).
     Content(Kind),
@@ -109,7 +109,7 @@ fn placeholder_content() -> Content {
 }
 
 impl Piece {
-    /// The piece for a layout component's class; None for a class Tandem does not show (a
+    /// The piece for a layout component's class; None for a class Termurion does not show (a
     /// content class it does not place, or one it does not know): kept in the profile,
     /// skipped on screen.
     pub(super) fn of(class: &str) -> Option<Piece> {
@@ -389,7 +389,7 @@ impl App {
 
     /// The layout the session's bar shows, and whether it is the tmux one: a tmux pane of a
     /// 2.9 or later server shows tmux's status lines with `UseTmuxStatusBar` on or an empty
-    /// profile layout (`PTYSession.m:10077-10091`). Tandem computes it when drawing; it is
+    /// profile layout (`PTYSession.m:10077-10091`). Termurion computes it when drawing; it is
     /// never written to a profile.
     pub(super) fn bar_layout(&self, pane: PaneId) -> (Layout, bool) {
         let layout = self.status_layout(pane);
@@ -418,7 +418,7 @@ impl App {
         BADGE_FONT_PT * self.scale() / term_px
     }
 
-    /// Lays out one bar (`VC:156-198`): the layout's components Tandem knows, with the
+    /// Lays out one bar (`VC:156-198`): the layout's components Termurion knows, with the
     /// temporary ones (`VC:248-293`), or the placeholder when there are none, by the
     /// layout's algorithm. Find with no Search Tool in the layout puts a temporary one
     /// first; with one, it becomes mandatory (`SessionView.m:778-800`). A slow paste's

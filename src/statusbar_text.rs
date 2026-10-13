@@ -47,7 +47,7 @@ pub fn widest(widths: &[(String, f32)]) -> f32 {
 /// `byTruncatingComposedCharactersInCenter:` (`STR:1876-1890`). `numberToOmit` composed
 /// characters removed from the center, replaced with a single U+2026; `None` when `s` is
 /// too short to omit that many and still leave two characters on each side of the ellipsis
-/// (`length < numberToOmit + 2`). Tandem uses `char`s where iTerm2 uses composed characters
+/// (`length < numberToOmit + 2`). Termurion uses `char`s where iTerm2 uses composed characters
 /// (grapheme clusters); every test string here is single-scalar ASCII, so they agree.
 fn truncate_center(s: &str, number_to_omit: usize) -> Option<String> {
     let chars: Vec<char> = s.chars().collect();
@@ -144,7 +144,7 @@ pub fn host_variants(name: &str) -> Vec<String> {
 /// `iTermStatusBarWorkingDirectoryComponent`'s `stringByCompressingString:` (`VAR:~330-
 /// 345`): splits on the path separator, finds the FIRST component longer than one
 /// character (forward search, unlike Host's reverse one), and replaces it with just its
-/// first character. iTerm2 always splits on `/`; Tandem's paths are backslash, so this
+/// first character. iTerm2 always splits on `/`; Termurion's paths are backslash, so this
 /// splits on `\` when the string has one and falls back to `/` otherwise (a raw display
 /// string built from a forward-slash path, e.g. one already using `/`, still compresses).
 fn dir_compress(source: &str) -> Option<String> {

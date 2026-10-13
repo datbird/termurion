@@ -552,27 +552,27 @@ pub fn folder_for(session: &Value, ssh: bool) -> Folder {
     }
 }
 
-pub const CONTENTS_KEY: &str = "Tandem Contents";
+pub const CONTENTS_KEY: &str = "Termurion Contents";
 /// Session restoration only: the pane's own chat reference (`Pane::session_guid`), under a key
 /// of its own. Never "Session GUID": Repair and Assign Profile match sessions by that.
-pub const SESSION_REF_KEY: &str = "Tandem Session Reference";
+pub const SESSION_REF_KEY: &str = "Termurion Session Reference";
 /// Set on a session while the launch restores it: the saved reference it may adopt. The
 /// persisted `SESSION_REF_KEY` becomes this only when the saved windows are read at launch, but
 /// the marker is data and a file can hold it: what keeps an arrangement, a file or a duplicate
 /// from handing a pane someone else's reference is `reference_for`, which reads it only when the
 /// caller says the table is the launch's own restoration.
-pub const ADOPT_REF_KEY: &str = "Tandem Adopt Reference";
+pub const ADOPT_REF_KEY: &str = "Termurion Adopt Reference";
 /// Session restoration only: the pane's stable id (`Pane::stable_id`), which a model names the
 /// session by. Written only by `Contents::restoring` snapshots; never in an arrangement or file.
-pub const STABLE_ID_KEY: &str = "Tandem Stable Session ID";
+pub const STABLE_ID_KEY: &str = "Termurion Stable Session ID";
 /// The launch's marker for the saved stable id (as `ADOPT_REF_KEY` is for the reference).
-pub const ADOPT_STABLE_KEY: &str = "Tandem Adopt Stable Session ID";
+pub const ADOPT_STABLE_KEY: &str = "Termurion Adopt Stable Session ID";
 /// Session restoration's contents: styled text (SGR sequences only).
-pub const STYLED_KEY: &str = "Tandem Styled Contents";
+pub const STYLED_KEY: &str = "Termurion Styled Contents";
 /// Set on a session while it is restored: the banner line to draw under its contents.
-pub const BANNER_KEY: &str = "Tandem Banner";
+pub const BANNER_KEY: &str = "Termurion Banner";
 /// Session restoration: where the cursor was on the screen (`{Row, Column}`).
-pub const CURSOR_KEY: &str = "Tandem Cursor";
+pub const CURSOR_KEY: &str = "Termurion Cursor";
 
 /// A window that is a profile's hotkey window (iTerm2's keys).
 pub const HOTKEY_WINDOW_KEY: &str = "Is Hotkey Window";
@@ -591,12 +591,12 @@ pub fn saved_cursor(session: &Value) -> Option<(usize, usize)> {
 }
 
 /// Set on a session while it is restored: the host session to take over (`{Id, Pid, Since}`).
-pub const ATTACH_KEY: &str = "Tandem Attach";
+pub const ATTACH_KEY: &str = "Termurion Attach";
 
 /// Not iTerm2's: a session that a restore built idle and that nobody has started since (13y2 final
 /// review I1). Its profile may be a delivered arrangement's copy with a command, so every later restore
 /// builds it idle again, whatever file it comes back from, until the person starts it.
-pub const IDLE_KEY: &str = "Tandem Idle";
+pub const IDLE_KEY: &str = "Termurion Idle";
 
 /// Marks a session table as held idle (`IDLE_KEY`).
 pub fn mark_idle(session: &mut Value) {
@@ -947,21 +947,21 @@ mod tests {
         let plain = session(80, 24, Table::new(), "s", Some(r"C:\src"));
         assert_eq!(folder_for(&plain, false), Folder::Previous(r"C:\src".into()), "the profile's rule decides, with this as the previous folder");
         let mut with = plain.clone();
-        with.as_table_mut().unwrap().insert("Tandem Contents".into(), Value::String("x".into()));
+        with.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
         assert_eq!(folder_for(&with, false), Folder::Forced(r"C:\src".into()), "contents force the folder");
         assert_eq!(folder_for(&session(80, 24, Table::new(), "s", None), false), Folder::None);
         // A folder that is not a Windows path (WSL, MSYS, a remote host's) cannot be a Windows
         // shell's folder: contents never force it, so no "does not exist" banner follows.
         let mut unix = session(80, 24, Table::new(), "s", Some("/home/rob/src"));
-        unix.as_table_mut().unwrap().insert("Tandem Contents".into(), Value::String("x".into()));
+        unix.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
         assert_eq!(folder_for(&unix, false), Folder::Previous("/home/rob/src".into()));
         // The OSC 7 form and "~" are forced as the Windows paths they name, so an existing one
         // is not reported as missing.
         let mut osc7 = session(80, 24, Table::new(), "s", Some("/D:/x"));
-        osc7.as_table_mut().unwrap().insert("Tandem Contents".into(), Value::String("x".into()));
+        osc7.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
         assert_eq!(folder_for(&osc7, false), Folder::Forced(r"D:\x".into()));
         let mut tilde = session(80, 24, Table::new(), "s", Some("~/www"));
-        tilde.as_table_mut().unwrap().insert("Tandem Contents".into(), Value::String("x".into()));
+        tilde.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
         assert_eq!(folder_for(&tilde, false), Folder::Forced(crate::profile::home().join("www").display().to_string()));
         assert_eq!(folder_for(&session(80, 24, Table::new(), "s", Some("/D:/x")), false), Folder::Previous(r"D:\x".into()));
         assert_eq!(contents(&with), Some("x"));
@@ -972,12 +972,12 @@ mod tests {
     #[test]
     fn an_ssh_sessions_home_is_remote() {
         let mut tilde = session(80, 24, Table::new(), "s", Some("~/www"));
-        tilde.as_table_mut().unwrap().insert("Tandem Contents".into(), Value::String("x".into()));
+        tilde.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
         assert_eq!(folder_for(&tilde, true), Folder::Previous("~/www".into()));
         assert_eq!(folder_for(&session(80, 24, Table::new(), "s", Some("~")), true), Folder::Previous("~".into()));
         // A drive-letter folder is still this machine's.
         let mut local = session(80, 24, Table::new(), "s", Some(r"C:\src"));
-        local.as_table_mut().unwrap().insert("Tandem Contents".into(), Value::String("x".into()));
+        local.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
         assert_eq!(folder_for(&local, true), Folder::Forced(r"C:\src".into()));
     }
 

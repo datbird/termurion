@@ -194,7 +194,7 @@ impl Io {
     pub fn set_paused(&self, paused: bool) {
         match self {
             // A pause waits out a console mode read in flight, so none runs on a paused console
-            // (the job watcher checks the pause under `CONSOLE`), as tandem-host does.
+            // (the job watcher checks the pause under `CONSOLE`), as termurion-host does.
             Io::Local(p) if paused => p.pause_after_reads(),
             Io::Local(p) => p.set_paused(false),
             Io::Hosted(p) => p.set_paused(paused),
@@ -369,7 +369,7 @@ pub struct Pane {
     /// password manager opening and closing, a password being entered.
     pub no_focus_reports: u32,
     /// The shell's console at a password prompt, debounced over real samples (the job watcher
-    /// for a local pane, tandem-host for a hosted one): the key cursor, the click on it, and
+    /// for a local pane, termurion-host for a hosted one): the key cursor, the click on it, and
     /// the automatic opening follow it. The live session's state, whatever view shows.
     pub password_input: bool,
     /// The raw prompt state (echo off, or the conductor's report), whatever the "Show key at
@@ -1985,7 +1985,7 @@ impl Pane {
         }
     }
 
-    /// Send Signal's Ctrl+C (or Ctrl+Break) to a hosted pane's console, through tandem-host;
+    /// Send Signal's Ctrl+C (or Ctrl+Break) to a hosted pane's console, through termurion-host;
     /// None for other panes (a local pane's goes from Tandem).
     pub fn hosted_signal(&self, ctrl_break: bool) -> Option<Result<(), String>> {
         match &self.pty {
@@ -1994,7 +1994,7 @@ impl Pane {
         }
     }
 
-    /// A hosted pane's password prompt state as tandem-host last said; None for other panes.
+    /// A hosted pane's password prompt state as termurion-host last said; None for other panes.
     pub fn hosted_password_input(&self) -> Option<bool> {
         match &self.pty {
             Some(Io::Hosted(p)) => Some(p.password_input()),
@@ -3766,14 +3766,14 @@ mod tests {
 
     #[test]
     fn ended_pane_keeps_its_screen() {
-        let mut p = start("cmd.exe /c echo tandem-end");
+        let mut p = start("cmd.exe /c echo termurion-end");
         assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
         // The rest of the output may still be on its way.
-        assert!(pump_until(&mut p, |p| p.screen.all_text().contains("tandem-end")), "{:?}", p.screen.all_text());
+        assert!(pump_until(&mut p, |p| p.screen.all_text().contains("termurion-end")), "{:?}", p.screen.all_text());
         assert_eq!(p.exited, Some(0));
         p.own_mut().append_end_message("Session Ended", "");
         let text = p.screen.all_text();
-        assert!(text.contains("tandem-end"), "{text:?}");
+        assert!(text.contains("termurion-end"), "{text:?}");
         assert!(text.contains(" Session Ended "), "{text:?}");
     }
 
@@ -4115,7 +4115,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn injected_powershell_emits_marks() {
-        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/shell_integration/tandem_shell_integration.ps1");
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/shell_integration/termurion_shell_integration.ps1");
         let cmd = crate::shell_inject::inject("powershell.exe -NoProfile -NoLogo", &script).expect("a PowerShell line is injected");
         assert!(!cmd.contains("Set-ExecutionPolicy"), "{cmd}");
         let mut p = start(&cmd);
@@ -4130,7 +4130,7 @@ mod tests {
 
     #[test]
     fn the_pwsh_script_emits_prompt_marks() {
-        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/shell_integration/tandem_shell_integration.ps1");
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/shell_integration/termurion_shell_integration.ps1");
         // Windows PowerShell 5.1 is on every Windows machine, and is the older of the two
         // PowerShells the script supports.
         let cmd = format!("powershell.exe -NoProfile -NoLogo -Command \". '{}'; prompt; Start-Sleep -Milliseconds 300\"", script.display());
@@ -4166,7 +4166,7 @@ mod tests {
 
     #[test]
     fn the_pwsh_script_keeps_the_prompt_state() {
-        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/shell_integration/tandem_shell_integration.ps1");
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/shell_integration/termurion_shell_integration.ps1");
         // A prompt that shows the last status, as starship and oh-my-posh do; a failed
         // command; then the prompt drawn twice with no command between (PSReadLine's
         // InvokePrompt does that).

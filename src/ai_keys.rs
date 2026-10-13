@@ -1,4 +1,4 @@
-//! AI API keys, one per vendor, kept in Windows Credential Manager under `TandemAI/<provider>`
+//! AI API keys, one per vendor, kept in Windows Credential Manager under `TermurionAI/<provider>`
 //! (ruling 3), a prefix the password manager neither enumerates nor parses. Ports iTerm2's key
 //! cache (`AITermControllerObjC.swift:100-339`): a vendor's key is read once and cached for the
 //! session, a hard read error is not cached, a key is trimmed before it is stored, an empty key
@@ -12,11 +12,11 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 /// The Credential Manager target prefix of every AI key.
-pub const TARGET_PREFIX: &str = "TandemAI/";
+pub const TARGET_PREFIX: &str = "TermurionAI/";
 /// The comment written on every AI key credential (shown in Control Panel).
 pub const COMMENT: &str = "Tandem AI API key";
 
-/// The credential's target: `TandemAI/` and the provider name.
+/// The credential's target: `TermurionAI/` and the provider name.
 pub fn target(v: Vendor) -> String {
     format!("{TARGET_PREFIX}{}", v.provider_name())
 }
@@ -28,7 +28,7 @@ pub fn account(v: Vendor) -> String {
         Vendor::Llama => "Llama",
         _ => v.provider_name(),
     };
-    format!("{name} API Key for Tandem")
+    format!("{name} API Key for Termurion")
 }
 
 /// The key as stored: trimmed of whitespace and line ends, None when nothing is left
@@ -214,12 +214,12 @@ mod tests {
     #[test]
     fn key_targets_stay_out_of_the_password_manager() {
         let want = [
-            (Vendor::OpenAI, "TandemAI/OpenAI"),
-            (Vendor::Anthropic, "TandemAI/Anthropic"),
-            (Vendor::Gemini, "TandemAI/Gemini"),
-            (Vendor::DeepSeek, "TandemAI/DeepSeek"),
-            (Vendor::Llama, "TandemAI/Ollama"),
-            (Vendor::Apple, "TandemAI/Apple Intelligence"),
+            (Vendor::OpenAI, "TermurionAI/OpenAI"),
+            (Vendor::Anthropic, "TermurionAI/Anthropic"),
+            (Vendor::Gemini, "TermurionAI/Gemini"),
+            (Vendor::DeepSeek, "TermurionAI/DeepSeek"),
+            (Vendor::Llama, "TermurionAI/Ollama"),
+            (Vendor::Apple, "TermurionAI/Apple Intelligence"),
         ];
         for (v, t) in want {
             let got = target(v);
@@ -228,12 +228,12 @@ mod tests {
             assert!(pwm_source::parse_target(&got).is_none(), "{got}");
             assert!(!got.starts_with(&format!("{}/", pwm_source::SERVICE)), "{got}");
         }
-        assert_eq!(account(Vendor::OpenAI), "OpenAI API Key for Tandem");
-        assert_eq!(account(Vendor::Anthropic), "Anthropic API Key for Tandem");
-        assert_eq!(account(Vendor::Gemini), "Gemini API Key for Tandem");
-        assert_eq!(account(Vendor::DeepSeek), "DeepSeek API Key for Tandem");
-        assert_eq!(account(Vendor::Llama), "Llama API Key for Tandem");
-        assert_eq!(account(Vendor::Apple), "Apple Intelligence API Key for Tandem");
+        assert_eq!(account(Vendor::OpenAI), "OpenAI API Key for Termurion");
+        assert_eq!(account(Vendor::Anthropic), "Anthropic API Key for Termurion");
+        assert_eq!(account(Vendor::Gemini), "Gemini API Key for Termurion");
+        assert_eq!(account(Vendor::DeepSeek), "DeepSeek API Key for Termurion");
+        assert_eq!(account(Vendor::Llama), "Llama API Key for Termurion");
+        assert_eq!(account(Vendor::Apple), "Apple Intelligence API Key for Termurion");
         assert!(!format!("{:?}", Secret::new("sk-ant-1".into())).contains("sk-ant-1"));
         assert_eq!(COMMENT, "Tandem AI API key");
     }
@@ -243,15 +243,15 @@ mod tests {
         let mut s = FakeStore::default();
         let mut k = Keys::default();
         assert!(k.set(Vendor::Anthropic, &Secret::new("  sk-ant-1 \n".into()), &mut s).is_ok());
-        assert_eq!(s.log, vec![("write", "TandemAI/Anthropic".to_string(), "Anthropic API Key for Tandem".to_string())]);
-        assert!(is(&s.map.get("TandemAI/Anthropic").map(Secret::duplicate), "sk-ant-1"));
+        assert_eq!(s.log, vec![("write", "TermurionAI/Anthropic".to_string(), "Anthropic API Key for Termurion".to_string())]);
+        assert!(is(&s.map.get("TermurionAI/Anthropic").map(Secret::duplicate), "sk-ant-1"));
         assert!(is(&k.get(Vendor::Anthropic, &mut s), "sk-ant-1"));
         assert_eq!(reads(&s), 0);
 
         s.log.clear();
         assert!(k.set(Vendor::Anthropic, &Secret::new("   ".into()), &mut s).is_ok());
-        assert_eq!(s.log, vec![("delete", "TandemAI/Anthropic".to_string(), String::new())]);
-        assert!(!s.map.contains_key("TandemAI/Anthropic"));
+        assert_eq!(s.log, vec![("delete", "TermurionAI/Anthropic".to_string(), String::new())]);
+        assert!(!s.map.contains_key("TermurionAI/Anthropic"));
         assert!(!k.is_set(Vendor::Anthropic, &mut s));
         assert!(k.get(Vendor::Anthropic, &mut s).is_none());
         assert_eq!(reads(&s), 0);
@@ -259,16 +259,16 @@ mod tests {
         // One write: iTerm2's second (legacy account) write names the same item.
         s.log.clear();
         assert!(k.set(Vendor::OpenAI, &Secret::new("k".into()), &mut s).is_ok());
-        assert_eq!(s.log, vec![("write", "TandemAI/OpenAI".to_string(), "OpenAI API Key for Tandem".to_string())]);
+        assert_eq!(s.log, vec![("write", "TermurionAI/OpenAI".to_string(), "OpenAI API Key for Termurion".to_string())]);
 
         // A fresh cache reads once.
         let mut s = FakeStore::default();
-        s.map.insert("TandemAI/Gemini".into(), Secret::new("g".into()));
+        s.map.insert("TermurionAI/Gemini".into(), Secret::new("g".into()));
         let mut k = Keys::default();
         assert!(is(&k.get(Vendor::Gemini, &mut s), "g"));
         assert!(is(&k.get(Vendor::Gemini, &mut s), "g"));
         assert!(k.is_set(Vendor::Gemini, &mut s));
-        assert_eq!(s.log, vec![("read", "TandemAI/Gemini".to_string(), String::new())]);
+        assert_eq!(s.log, vec![("read", "TermurionAI/Gemini".to_string(), String::new())]);
 
         // A failed write is returned, and the new key is still cached for the session.
         let mut s = FakeStore { write_error: Some("boom".into()), ..Default::default() };
@@ -297,7 +297,7 @@ mod tests {
         assert_eq!(reads(&s), 3);
         // A key stored as whitespace reads as no key (iTerm2's keyIsEmpty), and that is cached.
         let mut s = FakeStore::default();
-        s.map.insert("TandemAI/OpenAI".into(), Secret::new(" \n".into()));
+        s.map.insert("TermurionAI/OpenAI".into(), Secret::new(" \n".into()));
         let mut k = Keys::default();
         assert!(!k.is_set(Vendor::OpenAI, &mut s));
         assert!(k.get(Vendor::OpenAI, &mut s).is_none());
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn the_system_store_is_empty_off_windows() {
         let mut s = system_store();
-        assert!(matches!(s.read("TandemAI/OpenAI"), Ok(None)));
-        assert_eq!(s.write("TandemAI/OpenAI", "u", &Secret::new("k".into())), Err("Credential Manager is only on Windows.".to_string()));
+        assert!(matches!(s.read("TermurionAI/OpenAI"), Ok(None)));
+        assert_eq!(s.write("TermurionAI/OpenAI", "u", &Secret::new("k".into())), Err("Credential Manager is only on Windows.".to_string()));
     }
 }

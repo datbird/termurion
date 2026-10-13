@@ -484,7 +484,7 @@ mod tests {
     fn keystrokes_follow_iterm2() {
         let k = key_from(&Keystroke::new('a' as u32, CONTROL | SHIFT, Some(0), 'A' as u32), Action::KeyDown);
         assert_eq!(k, Key { characters: Some("A".into()), ignoring: Some("a".into()), modifiers: vec![M::Control as i32, M::Shift as i32], keycode: 0, action: Action::KeyDown as i32, keycode_known: true });
-        // An arrow: Numpad (Tandem sets it as iTerm2 does) then Function, in iTerm2's order.
+        // An arrow: Numpad (Termurion sets it as iTerm2 does) then Function, in iTerm2's order.
         let k = key_from(&Keystroke::new(0xF702, 0, Some(0x7B), 0xF702), Action::KeyDown);
         assert_eq!(k.modifiers, [M::Numpad as i32, M::Function as i32]);
         assert_eq!(k.keycode, 0x7B);

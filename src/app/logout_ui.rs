@@ -168,7 +168,7 @@ unsafe extern "system" fn close_one(hwnd: HWND, _: LPARAM) -> windows_sys::Win32
     1
 }
 
-/// Raises the block reason on `hwnd` (Windows shows why Tandem holds the shutdown); a reason
+/// Raises the block reason on `hwnd` (Windows shows why Termurion holds the shutdown); a reason
 /// standing on another window comes down first.
 pub(super) fn raise_block(hwnd: isize) {
     let reason: Vec<u16> = crate::resident::BLOCK_REASON.encode_utf16().chain(Some(0)).collect();

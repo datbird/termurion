@@ -46,8 +46,8 @@ const BUTTON_GUARD: &str = "'use strict';\n    // Tandem: no button on a page th
 /// click counts only when it is a person's (`isTrusted`) and the pointer's point holds that very button
 /// (`elementFromPoint` on the root), or, for a keyboard activation, when the button has focus. The
 /// autofill button is another closed root: its host is the one other max z-index element at the spot
-/// (`tandemShift`), so this button steps aside by its own width, as iTerm2's does for a visible one.
-const BUTTON_ROOT: &str = "let btn = null;\n    // Tandem: the button lives in a closed shadow root the page cannot reach; its label is generated content.\n    let tandemHost = null;\n    let tandemShadow = null;\n    function tandemRoot() {\n        if (!tandemShadow) {\n            tandemHost = document.createElement('div');\n            tandemHost.style.cssText = 'all: initial !important; display: block !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 0 !important; overflow: visible !important; z-index: 2147483647 !important; pointer-events: none !important;';\n            tandemShadow = tandemHost.attachShadow({mode: 'closed'});\n            const rule = document.createElement('style');\n            rule.textContent = 'button { pointer-events: auto !important; } [data-tandem-glyph]::after { content: attr(data-tandem-glyph); }';\n            tandemShadow.appendChild(rule);\n        }\n        if (!tandemHost.isConnected && document.body) { document.body.appendChild(tandemHost); }\n        return tandemShadow;\n    }\n    function tandemReal(e, button) {\n        if (!e.isTrusted) return false;\n        const root = tandemRoot();\n        if (e.detail === 0) return root.activeElement === button;\n        return root.elementFromPoint(e.clientX, e.clientY) === button;\n    }\n    function tandemShift(samples, side) {\n        for (const {x, y} of samples) {\n            for (const el of document.elementsFromPoint(x, y)) {\n                if (el === tandemHost || el === activeField) continue;\n                if (parseInt(getComputedStyle(el).zIndex) === 2147483647) return side + 5;\n            }\n        }\n        return 0;\n    }";
+/// (`termurionShift`), so this button steps aside by its own width, as iTerm2's does for a visible one.
+const BUTTON_ROOT: &str = "let btn = null;\n    // Tandem: the button lives in a closed shadow root the page cannot reach; its label is generated content.\n    let termurionHost = null;\n    let termurionShadow = null;\n    function termurionRoot() {\n        if (!termurionShadow) {\n            termurionHost = document.createElement('div');\n            termurionHost.style.cssText = 'all: initial !important; display: block !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 0 !important; overflow: visible !important; z-index: 2147483647 !important; pointer-events: none !important;';\n            termurionShadow = termurionHost.attachShadow({mode: 'closed'});\n            const rule = document.createElement('style');\n            rule.textContent = 'button { pointer-events: auto !important; } [data-termurion-glyph]::after { content: attr(data-termurion-glyph); }';\n            termurionShadow.appendChild(rule);\n        }\n        if (!termurionHost.isConnected && document.body) { document.body.appendChild(termurionHost); }\n        return termurionShadow;\n    }\n    function termurionReal(e, button) {\n        if (!e.isTrusted) return false;\n        const root = termurionRoot();\n        if (e.detail === 0) return root.activeElement === button;\n        return root.elementFromPoint(e.clientX, e.clientY) === button;\n    }\n    function termurionShift(samples, side) {\n        for (const {x, y} of samples) {\n            for (const el of document.elementsFromPoint(x, y)) {\n                if (el === termurionHost || el === activeField) continue;\n                if (parseInt(getComputedStyle(el).zIndex) === 2147483647) return side + 5;\n            }\n        }\n        return 0;\n    }";
 
 /// `password-button.js` with Tandem's patches, every one exact once and fail closed (the copy in
 /// `resources/` stays iTerm2's, byte for byte; a copy that changed makes no button script, never a
@@ -60,14 +60,14 @@ pub fn button_patched(src: &str) -> Result<String, String> {
     let s = patch_once(
         &s,
         "btn.addEventListener('click', e => {\n            e.preventDefault();",
-        &format!("btn.addEventListener('click', e => {{\n            // Tandem: act only on a person's click, never a page script's (R13x67-2; iTerm2 bug).\n            {TRUSTED_CHECK}\n            if (!tandemReal(e, btn)) return;\n            e.preventDefault();"),
+        &format!("btn.addEventListener('click', e => {{\n            // Tandem: act only on a person's click, never a page script's (R13x67-2; iTerm2 bug).\n            {TRUSTED_CHECK}\n            if (!termurionReal(e, btn)) return;\n            e.preventDefault();"),
     )?;
-    let s = patch_once(&s, "document.body.appendChild(btn);", "tandemRoot().appendChild(btn);")?;
-    let s = patch_once(&s, "btn.textContent = emoji;", "btn.setAttribute('data-tandem-glyph', emoji);")?;
-    let s = patch_once(&s, "meas.textContent = emoji;", "meas.setAttribute('data-tandem-glyph', emoji);")?;
-    let s = patch_once(&s, "document.body.appendChild(meas);", "tandemRoot().appendChild(meas);")?;
+    let s = patch_once(&s, "document.body.appendChild(btn);", "termurionRoot().appendChild(btn);")?;
+    let s = patch_once(&s, "btn.textContent = emoji;", "btn.setAttribute('data-termurion-glyph', emoji);")?;
+    let s = patch_once(&s, "meas.textContent = emoji;", "meas.setAttribute('data-termurion-glyph', emoji);")?;
+    let s = patch_once(&s, "document.body.appendChild(meas);", "termurionRoot().appendChild(meas);")?;
     let s = patch_once(&s, "document.body.removeChild(meas);", "meas.remove();")?;
-    patch_once(&s, "let newLeft = baseLeft;", "let newLeft = baseLeft - tandemShift(samples, side);")
+    patch_once(&s, "let newLeft = baseLeft;", "let newLeft = baseLeft - termurionShift(samples, side);")
 }
 
 /// The patched button script, or the reason it could not be made.
@@ -372,15 +372,15 @@ mod tests {
         let body = &b[at..];
         let lines: Vec<&str> = body.lines().skip(1).map(str::trim).filter(|l| !l.starts_with("//")).collect();
         assert_eq!(lines[0], TRUSTED_CHECK, "first statement of the handler");
-        assert_eq!(lines[1], "if (!tandemReal(e, btn)) return;", "then a real press on the button");
+        assert_eq!(lines[1], "if (!termurionReal(e, btn)) return;", "then a real press on the button");
         assert_eq!(lines[2], "e.preventDefault();");
         // A closed shadow root; the button is never a child of the page.
         assert_eq!(b.matches("attachShadow({mode: 'closed'})").count(), 1);
-        assert_eq!(b.matches("tandemRoot().appendChild(btn);").count(), 1);
+        assert_eq!(b.matches("termurionRoot().appendChild(btn);").count(), 1);
         assert!(!b.contains("document.body.appendChild(btn)") && !b.contains("document.body.appendChild(meas)"));
         // The label is generated content: no text node holds it (window.find / select-all read none).
-        assert!(!b.contains("textContent = emoji") && b.contains("[data-tandem-glyph]::after { content: attr(data-tandem-glyph); }"));
-        assert!(b.contains("btn.setAttribute('data-tandem-glyph', emoji);") && b.contains("meas.setAttribute('data-tandem-glyph', emoji);"));
+        assert!(!b.contains("textContent = emoji") && b.contains("[data-termurion-glyph]::after { content: attr(data-termurion-glyph); }"));
+        assert!(b.contains("btn.setAttribute('data-termurion-glyph', emoji);") && b.contains("meas.setAttribute('data-termurion-glyph', emoji);"));
         // The press posts one thing: a type, the view's secret, a field name and the next password id.
         assert_eq!(b.matches("postMessage(").count(), 1);
         // https only, and no frame of another origin; the guard is the script's first statement.

@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 pub const DATA_DIR: &str = "Data";
 
 /// iTerm2's `snippets.plist`, `notes.rtfd`, `graphic_colors.json` and `graphic_icons.json`, with
-/// Tandem's own file names for the first two; each relative to `%APPDATA%\Tandem` locally and to
+/// Tandem's own file names for the first two; each relative to `%APPDATA%\Termurion` locally and to
 /// `<folder>\Data` remotely. Custom icon images are not synced.
 pub const ALLOWLIST: [&str; 4] = ["snippets.json", "notes.txt", crate::tab_icons::COLORS_FILE, crate::tab_icons::ICONS_FILE];
 

@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn it2api_entry_needs_python() {
         // Through `util_cli::run`'s arm: no Python on PATH prints `no_python()`, exit 1.
-        let mut h = Harness { env: [("PATH".to_string(), r"C:\tandem-no-such-folder".to_string())].into(), ..Default::default() };
+        let mut h = Harness { env: [("PATH".to_string(), r"C:\termurion-no-such-folder".to_string())].into(), ..Default::default() };
         assert_eq!(h.run("it2api", &["list-sessions"]), 1);
         assert_eq!(String::from_utf8(h.err.clone()).unwrap(), no_python());
         assert!(h.out.is_empty() && h.runs.is_empty());
@@ -276,7 +276,7 @@ mod tests {
                 return;
             }
         };
-        let dir = crate::util_cli::TempDir::new("tandem-it2api");
+        let dir = crate::util_cli::TempDir::new("termurion-it2api");
         let file = dir.join("it2api.py");
         std::fs::write(&file, script()).unwrap();
 

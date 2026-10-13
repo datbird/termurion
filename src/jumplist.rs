@@ -26,7 +26,7 @@ pub const MAX_TAB_FILE: usize = 4 * 1024;
 /// Removed Jump List items kept (the newest).
 pub const MAX_REMOVED: usize = 256;
 
-/// One Jump List item: the title shown and the arguments Tandem's own exe is started with.
+/// One Jump List item: the title shown and the arguments Termurion's own exe is started with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Link {
     pub title: String,

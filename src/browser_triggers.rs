@@ -188,8 +188,8 @@ pub fn user_script(secret: &str) -> Result<String, String> {
     let s = patch_once(src, "function walkNodes(node) {", "function walkNodes(node) {\n                if (fullText.length >= 1048576) { return; }")?;
     // The cap counts per text node too: one huge text node (a log, one `<pre>`) is cut at the append.
     let s = patch_once(&s, "fullText += node.textContent;", "fullText += node.textContent.slice(0, Math.max(0, 1048576 - fullText.length));")?;
-    let s = patch_once(&s, "const matches = [];", "const matches = [];\n        const tandemDeadline = Date.now() + 250;")?;
-    let s = patch_once(&s, "while ((contentMatch = globalContentRegex.exec(fullText)) !== null) {", "while (matches.length < 64 && Date.now() < tandemDeadline && (contentMatch = globalContentRegex.exec(fullText)) !== null) {")?;
+    let s = patch_once(&s, "const matches = [];", "const matches = [];\n        const termurionDeadline = Date.now() + 250;")?;
+    let s = patch_once(&s, "while ((contentMatch = globalContentRegex.exec(fullText)) !== null) {", "while (matches.length < 64 && Date.now() < termurionDeadline && (contentMatch = globalContentRegex.exec(fullText)) !== null) {")?;
     let s = patch_once(&s, "storedMatches[matchId] = matchData;", "if (matchIdCounter <= 4096) { storedMatches[matchId] = matchData; }")?;
     Ok(browser_js::fill_template(&s, &[("SECRET", secret)]))
 }
@@ -436,7 +436,7 @@ pub fn effect(t: &Trigger, m: &Match, param: &str, workgroups: &[(String, String
 // --- The pane's gate ---
 
 /// Whether a trigger message may be acted on (B5): from the isolated world (the transport says so), from
-/// the main frame, and neither the message's source nor the pane's page is one of Tandem's own
+/// the main frame, and neither the message's source nor the pane's page is one of Termurion's own
 /// `iterm2-about:` pages (their text is chosen by hostile sites, and the page world there holds the
 /// local-page bridge). A Client source is the context's origin, and Chromium gives an `iterm2-about:`
 /// document an opaque one ("://", probe run 2026-10-10b), so `page_url` (the pane's URL) is what
@@ -445,7 +445,7 @@ pub fn accepted(world: browser_js::World, frame: Option<u64>, source: &str, page
     world == browser_js::World::Client && frame.is_none() && !crate::browser::local_source_ok(source) && !crate::browser::local_source_ok(page_url)
 }
 
-/// Whether the list may be sent to the page showing now after a profile edit: never to one of Tandem's
+/// Whether the list may be sent to the page showing now after a profile edit: never to one of Termurion's
 /// own `iterm2-about:` pages (B5; the same rule as `accepted`, for the resend path).
 pub fn resend_allowed(page_url: &str) -> bool {
     !crate::browser::local_source_ok(page_url)
@@ -579,12 +579,12 @@ mod tests {
     #[test]
     fn the_trigger_script_patches_are_exact_once() {
         let u = user_script("x").unwrap();
-        for needle in ["fullText.length >= 1048576", "node.textContent.slice(0, Math.max(0, 1048576 - fullText.length))", "const tandemDeadline = Date.now() + 250;", "matches.length < 64 && Date.now() < tandemDeadline", "if (matchIdCounter <= 4096) { storedMatches[matchId] = matchData; }"] {
+        for needle in ["fullText.length >= 1048576", "node.textContent.slice(0, Math.max(0, 1048576 - fullText.length))", "const termurionDeadline = Date.now() + 250;", "matches.length < 64 && Date.now() < termurionDeadline", "if (matchIdCounter <= 4096) { storedMatches[matchId] = matchData; }"] {
             assert_eq!(u.matches(needle).count(), 1, "{needle}");
         }
         // The copy on disk is iTerm2's: none of the patches is in it.
         let raw = include_str!("../resources/browser/triggers.js");
-        assert!(!raw.contains("tandemDeadline") && !raw.contains("1048576"));
+        assert!(!raw.contains("termurionDeadline") && !raw.contains("1048576"));
         // A moved target fails closed.
         assert!(patch_once("function walkNodes(node) {function walkNodes(node) {", "function walkNodes(node) {", "x").is_err());
     }

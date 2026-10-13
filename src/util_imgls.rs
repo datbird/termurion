@@ -14,7 +14,7 @@ use crate::util_osc::b64;
 /// The script's single black pixel PNG, already base64 (`get_black_pixel_image`).
 pub const BLACK_PIXEL: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIW2NgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg==";
 
-/// The one way Tandem measures images (its own decoder), the name `--method` matches.
+/// The one way Termurion measures images (its own decoder), the name `--method` matches.
 pub const METHOD: &str = "image";
 
 /// The options as `get_options` leaves them. `dimensions` and `unknown` are the script's
@@ -1595,7 +1595,7 @@ mod tests {
     fn win_fs_follows_perl_stat() {
         use crate::util_cli::Harness;
         use std::io::Read;
-        let dir = std::env::temp_dir().join(format!("tandem-imgls-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-imgls-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         image::RgbImage::new(2, 2).save(dir.join("a.png")).unwrap();

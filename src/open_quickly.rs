@@ -379,7 +379,7 @@ pub struct Sources {
     pub profiles: Vec<(String, String, bool)>,
     pub default_profile: String,
     /// Whether the current session's profile can be switched to another profile at all
-    /// (iTerm2 filters candidates by matching `profileType`; Tandem's profiles carry no type
+    /// (iTerm2 filters candidates by matching `profileType`; Termurion's profiles carry no type
     /// yet, so the app collapses that filter to this one gate).
     pub current_profile_type_ok: bool,
     /// The current session's profile type (`browser::profile_type`) and each profile's, by guid:
@@ -485,7 +485,7 @@ const WINDOW_MULT: f64 = 0.08;
 const COLOR_PRESET_MULT: f64 = 0.095;
 
 /// What a command restricts the search to (`supportsSessionLocation` and friends). Color
-/// presets and bookmarks have no Tandem source (milestone 13, and never), so their commands
+/// presets and bookmarks have no Termurion source (milestone 13, and never), so their commands
 /// support nothing here; their tips still show.
 struct Supports {
     session_location: bool,

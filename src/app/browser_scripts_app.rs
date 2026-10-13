@@ -326,7 +326,7 @@ impl App {
                 Check::Reload => {
                     bv.world.reload_wait = true;
                     if let Some(v) = &bv.view {
-                        v.navigate_tandem("about:blank");
+                        v.navigate_termurion("about:blank");
                     }
                     return;
                 }
@@ -1239,7 +1239,7 @@ mod tests {
         let show = &show[..show.find("\n    }\n").unwrap()];
         assert!(show.find("browser_reset_world(").unwrap() < show.find("WebView::create(").unwrap(), "a new view starts with a new world");
         assert!(show.find("browser_world_start(").unwrap() > show.find("WebView::create(").unwrap());
-        assert!(!show.contains("navigate_tandem"), "the pending URL loads when the world's setup is over");
+        assert!(!show.contains("navigate_termurion"), "the pending URL loads when the world's setup is over");
     }
 
     /// Final review minor 10: a view whose world ends Unavailable gets new secrets, so a value that
@@ -1284,7 +1284,7 @@ mod tests {
         let app = include_str!("browser_app.rs");
         let app = &app[..app.find("#[cfg(test)]").unwrap()];
         let nav = &app[app.find("fn browser_navigate").unwrap()..app.find("pub(super) fn browser_suggest").unwrap()];
-        assert!(nav.contains("defer_load(") && nav.find("defer_load(").unwrap() < nav.find("navigate_tandem").unwrap());
+        assert!(nav.contains("defer_load(") && nav.find("defer_load(").unwrap() < nav.find("navigate_termurion").unwrap());
         let btn = &app[app.find("fn browser_button").unwrap()..];
         let btn = &btn[..btn.find("Button::Menu =>").unwrap()];
         assert!(btn.contains("world.setup.is_some()"), "back, forward and reload wait for the world too");

@@ -13,7 +13,7 @@ pub fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
-/// The text of a reply nobody could decode (Tandem's; iTerm2's description is not a sentence).
+/// The text of a reply nobody could decode (Termurion's; iTerm2's description is not a sentence).
 pub const GARBAGE: &str = "Server returned garbage";
 
 /// The most reply bytes a fetch holds (P8): a chunk is 4096 bytes at most, about 5.5 KiB of base64.
@@ -229,7 +229,7 @@ impl FileError {
 }
 
 /// `EP:11-26`: below 0 the connection closed (an abort, a cancel or the command timeout),
-/// above 0 the file was not found whatever errno the remote sent. `OVERRUN_STATUS` is Tandem's
+/// above 0 the file was not found whatever errno the remote sent. `OVERRUN_STATUS` is Termurion's
 /// own (a reply past its cap).
 pub fn check(status: i32) -> Result<(), FileError> {
     match status {
@@ -362,7 +362,7 @@ pub fn click_route(remote: bool, link: Option<&str>) -> ClickRoute {
 }
 
 /// Whether a Smart Selection action may run for a match in a pane: in a remote pane only the
-/// actions that stay in Tandem (send the text back, copy it); open, run and coprocess never do.
+/// actions that stay in Termurion (send the text back, copy it); open, run and coprocess never do.
 pub fn remote_action_allowed(remote: bool, action: &str) -> bool {
     !remote || matches!(action, "sendText:" | "copy:")
 }

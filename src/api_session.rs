@@ -36,7 +36,7 @@ impl Snapshot {
 
     /// iTerm2's `sessionForAPIIdentifier:includeBuriedSessions:YES` (`H:1615-1634`): "active"
     /// is the current window's focused session; any other id is compared as the session's
-    /// GUID string, which in Tandem is the pane id in decimal, so "07" or "+7" name nothing.
+    /// GUID string, which in Termurion is the pane id in decimal, so "07" or "+7" name nothing.
     /// Buried sessions are found.
     pub fn pane(&self, id: &str) -> Option<u64> {
         if id == ACTIVE {

@@ -1,6 +1,6 @@
 //! Browser extensions (milestone 13x8, Task 10). Pure rules: where the extension folders live, which
 //! of them WebView2 is told about, the manifest summary the person approves and the settings page
-//! shows, and the approvals Tandem keeps. A manifest is untrusted input: it is parsed in this process
+//! shows, and the approvals Termurion keeps. A manifest is untrusted input: it is parsed in this process
 //! with a size cap and a depth cap, every text goes through `inert_files::display_text` and is cut,
 //! and nothing here reads a file except `read_folder_manifest` (bounded, regular files only).
 //! Loading is never automatic: only a folder the person chose, whose manifest hash the person
@@ -42,11 +42,11 @@ pub fn create_failed(e: &str) -> String {
     format!("Failed to create extensions directory: {}", crate::inert_files::display_text(e, 200, false))
 }
 
-/// The extensions root: the profile's value, else `<APPDATA>\Tandem\BrowserExtensions` (`IPP:1656-1666`).
+/// The extensions root: the profile's value, else `<APPDATA>\Termurion\BrowserExtensions` (`IPP:1656-1666`).
 pub fn root(profile_value: Option<&str>, appdata: &Path) -> PathBuf {
     match profile_value.map(str::trim).filter(|v| !v.is_empty()) {
         Some(v) => PathBuf::from(v),
-        None => appdata.join("Tandem").join("BrowserExtensions"),
+        None => appdata.join("Termurion").join("BrowserExtensions"),
     }
 }
 
@@ -286,7 +286,7 @@ pub fn folder_key(folder: &Path) -> String {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Approval {
-    /// Always `STORE`: every Tandem browser profile shares one WebView2 profile (one extension list),
+    /// Always `STORE`: every Termurion browser profile shares one WebView2 profile (one extension list),
     /// so an approval belongs to that shared browser data (13x8 Task 10 review I1). The field keeps
     /// its name so a file written earlier still parses; such a record no longer matches and is dropped
     /// at the next sync (the extension is removed until it is approved again).
@@ -406,9 +406,9 @@ mod tests {
 
     #[test]
     fn extension_folders_follow_iterm2() {
-        assert_eq!(root(None, Path::new(r"C:\Users\u\AppData\Roaming")), PathBuf::from(r"C:\Users\u\AppData\Roaming\Tandem\BrowserExtensions"));
+        assert_eq!(root(None, Path::new(r"C:\Users\u\AppData\Roaming")), PathBuf::from(r"C:\Users\u\AppData\Roaming\Termurion\BrowserExtensions"));
         assert_eq!(root(Some(r"D:\ext"), Path::new(r"C:\x")), PathBuf::from(r"D:\ext"));
-        assert_eq!(root(Some("  "), Path::new(r"C:\x")), PathBuf::from(r"C:\x\Tandem\BrowserExtensions"));
+        assert_eq!(root(Some("  "), Path::new(r"C:\x")), PathBuf::from(r"C:\x\Termurion\BrowserExtensions"));
         assert_eq!(folders(&pairs(&[("a", true), ("b.txt", false), ("c", true)])), s(&["a", "c"]));
         let many: Vec<(String, bool)> = (0..200).map(|i| (format!("d{i}"), true)).collect();
         assert_eq!(folders(&many).len(), MAX_FOLDERS);
@@ -562,7 +562,7 @@ mod tests {
         assert!(Approvals::parse(&format!("{}{}", " ".repeat(MAX_APPROVALS_BYTES), many.to_json())).list.is_empty(), "too big");
     }
 
-    /// 13x8 Task 10 review I1: every Tandem browser profile shares one WebView2 profile, so an approval
+    /// 13x8 Task 10 review I1: every Termurion browser profile shares one WebView2 profile, so an approval
     /// belongs to that shared browser data and says so; whether it is on is shared too.
     #[test]
     fn an_approval_is_for_the_shared_browser_data() {
@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     fn a_folder_manifest_is_read_with_a_limit() {
-        let base = std::env::temp_dir().join(format!("tandem-ext-test-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("termurion-ext-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let ok = base.join("ok");
         let big = base.join("big");

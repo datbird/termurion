@@ -311,7 +311,7 @@ pub struct PromptFacts {
 /// GetPrompt's answer (`PS:22532-22574`): PROMPT_UNAVAILABLE with no mark; else the ranges
 /// that are set (output ending at the cursor), the command, the directory, FINISHED with the
 /// exit status once there is a code, RUNNING once output began, else EDITING, and the id.
-/// No excluded subranges: Tandem keeps none.
+/// No excluded subranges: Termurion keeps none.
 pub fn prompt_response(f: Option<&PromptFacts>) -> pb::GetPromptResponse {
     use pb::get_prompt_response::{State, Status};
     let Some(f) = f else { return pb::GetPromptResponse { status: Some(Status::PromptUnavailable as i32), ..Default::default() } };

@@ -180,7 +180,7 @@ pub fn tray_failures_after(failures: u32, ok: bool) -> u32 {
     }
 }
 
-/// Tandem's logo (docs/assets/tandem-logo.svg) as `size` x `size` RGBA pixels for the tray: the
+/// Tandem's logo (docs/assets/termurion-logo.svg) as `size` x `size` RGBA pixels for the tray: the
 /// blue card behind, the dark terminal card in front with its border, the prompt chevron and
 /// cursor bar. 3x3 supersampled; clear outside the cards.
 pub fn tray_icon_rgba(size: u32) -> Vec<u8> {

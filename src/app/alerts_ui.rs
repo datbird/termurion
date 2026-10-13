@@ -65,7 +65,7 @@ impl App {
         }
     }
 
-    /// A click on a notification: Tandem comes forward on the session it named, or on the
+    /// A click on a notification: Termurion comes forward on the session it named, or on the
     /// Script Console entry of the script that failed.
     pub(super) fn reveal_notified(&mut self) {
         if crate::dlog::same_notice(self.last_notified_debug, crate::notify::shown_count()) {

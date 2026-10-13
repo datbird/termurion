@@ -15,7 +15,7 @@ use windows_sys::Win32::System::Threading::{GetExitCodeProcess, GetProcessTimes,
 use crate::proctree::{self, Job, Proc};
 use crate::toolbelt_tools::SignalWay;
 
-/// How often the watcher looks while Tandem is in front, and while it is not (iTerm2's
+/// How often the watcher looks while Termurion is in front, and while it is not (iTerm2's
 /// process cache rates).
 pub const FAST: Duration = Duration::from_millis(500);
 pub const SLOW: Duration = Duration::from_secs(5);
@@ -294,7 +294,7 @@ struct Shared {
     /// `detectPasswordInputDebounce`): each local shell's console input mode is read at every
     /// look. None: off, nothing is attached to.
     read_debounce: Option<f64>,
-    /// The shells whose consoles Tandem owns (local panes; tandem-host reads its own), each
+    /// The shells whose consoles Termurion owns (local panes; termurion-host reads its own), each
     /// with its pane's pause flag: a paused console is never read.
     consoles: HashMap<u32, Arc<std::sync::atomic::AtomicBool>>,
     /// Each local shell's samples, debounced. A console whose mode could not be read is not
@@ -451,7 +451,7 @@ impl JobWatch {
         self.lock().tree_gen
     }
 
-    /// A local pane's shell: Tandem owns its console (and every close of it), so the watcher
+    /// A local pane's shell: Termurion owns its console (and every close of it), so the watcher
     /// may read its input mode while `paused` (its pane's pause flag) is clear. A hosted
     /// shell's console is never attached to here.
     pub fn watch_console(&self, shell: u32, paused: Arc<std::sync::atomic::AtomicBool>) {
@@ -485,7 +485,7 @@ impl JobWatch {
         self.lock().fast_updates = on;
     }
 
-    /// Tandem in front: look every 0.5 s; else every 5 s.
+    /// Termurion in front: look every 0.5 s; else every 5 s.
     pub fn set_fast(&self, fast: bool) {
         self.lock().fast = fast;
     }
@@ -522,7 +522,7 @@ pub enum Sent {
 /// since): `Terminate(code)` opens the process for termination and ends it with that exit
 /// code; `CtrlC` and `CtrlBreak` are console events sent to the whole console `pid` runs on,
 /// from a thread that attaches to it for the moment. Only for a console this process owns
-/// the closes of (a local pane): a hosted pane's goes through tandem-host. `stop` is the
+/// the closes of (a local pane): a hosted pane's goes through termurion-host. `stop` is the
 /// pane's pause flag: a console paused (for an inline file's question or Undo Close) is
 /// never attached to.
 pub fn signal_process(pid: u32, created: Option<u64>, way: SignalWay, stop: Arc<std::sync::atomic::AtomicBool>) -> Result<Sent, String> {

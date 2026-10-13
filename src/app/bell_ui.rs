@@ -56,7 +56,7 @@ impl App {
         self.redraw();
     }
 
-    /// Whether the user is looking at this pane (Tandem in front, its tab shown, focused).
+    /// Whether the user is looking at this pane (Termurion in front, its tab shown, focused).
     pub(super) fn looking_at(&self, pane: PaneId) -> bool {
         self.focused && self.tabs.get(self.active).is_some_and(|t| t.focused == pane)
     }
@@ -84,7 +84,7 @@ impl App {
             }
             self.redraw();
         }
-        // The taskbar: every bell of the burst that was not ignored counts while Tandem is in the
+        // The taskbar: every bell of the burst that was not ignored counts while Termurion is in the
         // background (quelled ones too, `PTYSession.m:19083-19116`), and a shown effect or a
         // counted bell flashes the button when `BounceOnInactiveBell` is on.
         let mut notified = ring.effects.is_some();
@@ -95,7 +95,7 @@ impl App {
             }
         }
         if crate::bell_badge::bounce(notified, self.app_active, self.globals.bool("BounceOnInactiveBell")) {
-            // Until Tandem is in front (`NSCriticalRequest`); the one limiter holds the rate.
+            // Until Termurion is in front (`NSCriticalRequest`); the one limiter holds the rate.
             self.flash_taskbar(true);
         }
         if ring.offer {
@@ -206,7 +206,7 @@ mod tests {
         assert!(m.contains("let badge_due = self.tick_badge();") && m.contains("self.attention_due, badge_due,"), "a held-back badge change wakes the loop");
         assert!(body(m, "pub(crate) fn teardown_process()", "\n}\n").contains("taskbar_win::clear_all"));
         assert!(body(m, "pub(super) fn select_tab", "\n    }\n").contains("tab_selected"));
-        assert!(body(m, "let active = hotkey_ui::tandem_in_front();", "self.hotkey_reactivated()").contains("became_active"));
+        assert!(body(m, "let active = hotkey_ui::termurion_in_front();", "self.hotkey_reactivated()").contains("became_active"));
         assert!(include_str!("alerts_ui.rs").contains("bell_badge::is_waiting"));
         assert!(include_str!("marks_ui.rs").contains("taskbar_win::play_named") && include_str!("marks_ui.rs").contains("sound_for"));
     }

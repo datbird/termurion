@@ -128,7 +128,7 @@ impl Look {
             1 => CursorShape::Beam,
             _ => CursorShape::Block,
         };
-        // alacritty_terminal keeps at most 100,000 lines; that is Tandem's "unlimited".
+        // alacritty_terminal keeps at most 100,000 lines; that is Termurion's "unlimited".
         let scrollback = if p.bool("Unlimited Scrollback") { 100_000 } else { p.int("Scrollback Lines").clamp(0, 100_000) as usize };
         Look {
             cursor_shape,
@@ -178,7 +178,7 @@ fn config(look: Look) -> Config {
     Config {
         scrolling_history: look.scrollback,
         kitty_keyboard: look.app_key_modes,
-        // Tandem applies iTerm2's clipboard policy to OSC 52 itself.
+        // Termurion applies iTerm2's clipboard policy to OSC 52 itself.
         osc52: alacritty_terminal::term::Osc52::Disabled,
         default_cursor_style: CursorStyle { shape: look.cursor_shape, blinking: look.cursor_blink },
         ..Config::default()
@@ -270,7 +270,7 @@ pub struct Screen {
     pub kitty: crate::kitty::Kitty,
     /// Answers the terminal owes the program (kitty graphics), sent with `feed`'s reply.
     pub replies: Vec<u8>,
-    /// Caps on what output may make Tandem keep.
+    /// Caps on what output may make Termurion keep.
     pub limits: Limits,
     /// Annotations, by id.
     pub notes: crate::annotations::Notes,
@@ -309,7 +309,7 @@ pub struct Screen {
     pub(crate) copy: crate::clipboard_osc::Copy,
     pub(crate) capture: Option<Vec<u8>>,
     /// The start of an escape sequence split across reads during a capture: dropped if it
-    /// turns out to be one Tandem acts on, else added to the capture.
+    /// turns out to be one Termurion acts on, else added to the capture.
     capture_hold: Vec<u8>,
     /// An escape-sequence print job collecting text (`CSI 5 i` to `CSI 4 i`); bounded by
     /// `limits.copy` and by time, ended by RIS, a prompt mark and a command end (B8).
@@ -410,7 +410,7 @@ pub struct Screen {
     composer_alt: bool,
     /// `Term::printed` when the running command's output started (`marks.rs`).
     pub(crate) printed_at_output: u64,
-    /// Instant Replay: the rows and cursor of the last capture, so a line Tandem edited
+    /// Instant Replay: the rows and cursor of the last capture, so a line Termurion edited
     /// outside alacritty's damage (image tiles, trigger highlights, folds) is still dirty,
     /// and the cursor line alacritty always damages is dirty only when it changed.
     replay_rows: Vec<Row<Cell>>,
@@ -1369,7 +1369,7 @@ impl Screen {
                     reply.extend(self.feed_raw(bsu));
                 }
                 osc => {
-                    // What Tandem does for an event acts on the screen as the bytes before it
+                    // What Termurion does for an event acts on the screen as the bytes before it
                     // left it, so a synchronized update in progress is drawn first.
                     if self.sync_deadline().is_some() {
                         reply.extend(self.flush_sync());
@@ -3316,7 +3316,7 @@ mod tests {
     }
 
     /// Security: only the grid's own draw and the pointer mapping ask for an order. Tab bars,
-    /// title bars, status bars, find bars and popups never reorder Tandem's own text.
+    /// title bars, status bars, find bars and popups never reorder Termurion's own text.
     #[test]
     fn chrome_is_never_reordered() {
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {

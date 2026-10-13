@@ -408,7 +408,7 @@ impl App {
     /// (`before`) then leaves the group collapsed and the window's selection as it was
     /// (`tab_drag::keep_collapsed`).
     /// A tab holding a loaded recording never moves, and a window under Lock Layout takes no
-    /// tab. A tmux tab moves whole; its session hears which tmux windows share each Tandem
+    /// tab. A tmux tab moves whole; its session hears which tmux windows share each Termurion
     /// window (`saveAffinities`), as the API's ReorderTabs does.
     fn drop_in_window(&mut self, from: usize, window: u64, slot: usize, join: Option<String>, before: Option<u64>) {
         if self.tabs.get(from).is_none_or(|t| self.holds_recording(t)) {

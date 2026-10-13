@@ -1258,7 +1258,7 @@ mod tests {
 
     impl H {
         fn new() -> H {
-            let mut g = Globals::empty(&std::env::temp_dir().join("tandem-chat-engine-test.toml"));
+            let mut g = Globals::empty(&std::env::temp_dir().join("termurion-chat-engine-test.toml"));
             g.set(ENABLE_AI, T::Boolean(true));
             crate::ai_gate::grant(&mut g, "api.openai.com");
             H {

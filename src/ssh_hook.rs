@@ -15,7 +15,7 @@ pub const START: &[u8] = b"\x1bP2000p";
 /// framer found mid-stream (`T:2742-2759`).
 const OSC134: &[u8] = b"\x1b]134;";
 
-/// The longest OSC 134 the hook waits for outside a parser (Tandem's, F27): the longest
+/// The longest OSC 134 the hook waits for outside a parser (Termurion's, F27): the longest
 /// recovery line is a saved value of `ssh_recovery::VALUE_MAX`. A longer one is output.
 const RECOVERY_LINE_MAX: usize = crate::ssh_recovery::VALUE_MAX + 4096;
 
@@ -40,7 +40,7 @@ pub enum Out {
 /// each.
 pub const MAX_CHILDREN: usize = 256;
 
-/// The deepest a hook nests (Tandem's guard, iTerm2 has none): a remote's cat'd nested DCS
+/// The deepest a hook nests (Termurion's guard, iTerm2 has none): a remote's cat'd nested DCS
 /// 2000p and `%output` could otherwise recurse thousands of levels in one block and overflow
 /// the stack. A hook deeper than this never hooks: what it is given is plain output.
 pub const MAX_DEPTH: i32 = 8;
@@ -52,13 +52,13 @@ const LEVELS: usize = MAX_DEPTH as usize + 1;
 /// OSC or `%output` block), all hooks at that depth together.
 pub const MAX_PENDING: usize = 16 * 1024 * 1024;
 
-/// Why the hook let go past `MAX_PENDING` (Tandem's).
+/// Why the hook let go past `MAX_PENDING` (Termurion's).
 pub const TOO_MUCH_PENDING: &str = "SSH integration stopped: the remote host sent too much unfinished output";
 
-/// Why the hook let go past `MAX_CHILDREN` (Tandem's).
+/// Why the hook let go past `MAX_CHILDREN` (Termurion's).
 pub const TOO_MANY_PROCESSES: &str = "SSH integration stopped: the remote host started too many processes";
 
-/// Why the conductor ends when its parser lets go without saying so (Tandem's): a cap, an
+/// Why the conductor ends when its parser lets go without saying so (Termurion's): a cap, an
 /// unknown word, output that is not a reply. Without it the pane would go on framing keys
 /// into a session whose output is no longer read.
 pub const LOST_OUTPUT: &str = "SSH integration lost the remote's output";
@@ -181,7 +181,7 @@ struct Child {
     _slot: Slot,
 }
 
-/// The hook tree's rules (Tandem's guards around `VP:181-275`):
+/// The hook tree's rules (Termurion's guards around `VP:181-275`):
 /// - A hook at depth d reads the output of one remote process of the hook at d - 1; hooks
 ///   past `MAX_DEPTH` never hook.
 /// - At most one hook per depth owns a conductor: the one whose parser read an init line, on
@@ -1547,7 +1547,7 @@ mod tests {
     fn recovery_needs_an_ssh_session() {
         use crate::ssh_fixtures::osc134;
         // F27: a hook nobody allowed (a plain local pane) shows the OSC as it does today, so a
-        // hostile file cannot make Tandem type into the local shell.
+        // hostile file cannot make Termurion type into the local shell.
         let mut h = hook();
         let bytes = osc134("%output 1 2 -1 0");
         assert_eq!(h.feed(&bytes), vec![s(&bytes)]);

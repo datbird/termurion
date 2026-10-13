@@ -1,5 +1,5 @@
 //! The View Source page in a browser pane (milestone 13x4, Task 6): the answer to a request for
-//! `iterm2-about:source`. The page is Tandem's HTML under `browser_pages`' per-response nonce
+//! `iterm2-about:source`. The page is Termurion's HTML under `browser_pages`' per-response nonce
 //! policy; the source in it is a web page's text, escaped by `view_source`. The page posts nothing
 //! (`browser_pages::route` knows no `source` page), so it has no use of the bridge.
 
@@ -122,7 +122,7 @@ mod tests {
         for bad in ["JAVASCRIPT:alert(1)", "javascript:alert(1)", " javascript:alert(1)", "data:text/html,<b>x</b>", "vbscript:x", "file:///C:/Windows/win.ini", "\tjava\nscript:alert(1)"] {
             assert!(!matches!(nav_gate_tab(bad), NavGate::Navigate(_)), "{bad:?} opened a tab");
         }
-        assert!(matches!(nav_gate_tab("https://tandem.test/a"), NavGate::Navigate(_)));
+        assert!(matches!(nav_gate_tab("https://termurion.test/a"), NavGate::Navigate(_)));
         let app = include_str!("browser_app.rs");
         let app = &app[..app.find("#[cfg(test)]").unwrap()];
         let nw = &app[app.find("Event::NewWindow { url, .. } =>").unwrap()..app.find("Event::ExternalUri").unwrap()];

@@ -102,10 +102,10 @@ impl App {
         }
     }
 
-    /// Hidden while another app is in front, back when Tandem is (`hidesOnDeactivate`); the
-    /// Cockpit's own window counts as Tandem's.
+    /// Hidden while another app is in front, back when Termurion is (`hidesOnDeactivate`); the
+    /// Cockpit's own window counts as Termurion's.
     pub(super) fn cockpit_follows_app(&mut self) {
-        let in_front = super::hotkey_ui::tandem_in_front();
+        let in_front = super::hotkey_ui::termurion_in_front();
         if let Some(w) = self.cockpit.as_mut() {
             w.set_shown(in_front);
         }

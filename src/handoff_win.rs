@@ -27,7 +27,7 @@ use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcess
 use crate::conpty::{CloseFn, PackFn};
 use crate::default_term::{Args, Gate, Refusal, vet};
 
-/// `CLSID_TANDEM_TERMINAL` as a GUID.
+/// `CLSID_TERMURION_TERMINAL` as a GUID.
 const CLASS: GUID = GUID::from_u128(0x6A1E8D3C_2B7F_4C9E_9D41_5F0B7A2C8E13);
 
 #[interface("6F23DA90-15C5-4203-9DB0-64E73F1B1B00")]
@@ -331,7 +331,7 @@ pub struct Server {
 }
 
 impl Server {
-    /// Registers `CLSID_TANDEM_TERMINAL` from a dedicated multithreaded-apartment thread, so
+    /// Registers `CLSID_TERMURION_TERMINAL` from a dedicated multithreaded-apartment thread, so
     /// calls arrive on COM's RPC threads and never through winit's message loop. `send` gets
     /// every good handoff; `close` is the api's `ConptyClosePseudoConsole`.
     pub fn register(send: Box<dyn Fn(Handoff) + Send + Sync>, pack: PackFn, close: CloseFn) -> Result<Server, String> {
@@ -472,7 +472,7 @@ mod tests {
     fn the_interface_and_class_ids_are_windows_terminals() {
         assert_eq!(ITerminalHandoff3::IID, GUID::from_u128(0x6F23DA90_15C5_4203_9DB0_64E73F1B1B00));
         assert_eq!(CLASS, GUID::from_u128(0x6A1E8D3C_2B7F_4C9E_9D41_5F0B7A2C8E13));
-        assert_eq!(format!("{{{CLASS:?}}}"), crate::default_term::CLSID_TANDEM_TERMINAL);
+        assert_eq!(format!("{{{CLASS:?}}}"), crate::default_term::CLSID_TERMURION_TERMINAL);
     }
 
     fn pipe() -> (Own, Own) {
@@ -487,7 +487,7 @@ mod tests {
     fn handles_are_typed_before_use() {
         let (r, _w) = pipe();
         assert!(check_file(&r).is_ok());
-        let path = std::env::temp_dir().join(format!("tandem-handoff-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("termurion-handoff-{}", std::process::id()));
         std::fs::write(&path, b"x").unwrap();
         let f = std::fs::File::open(&path).unwrap();
         use std::os::windows::io::AsRawHandle;

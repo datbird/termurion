@@ -22,7 +22,7 @@ const ICON_WIDTH: f32 = 17.0;
 
 /// What kind of framework component an `Item` stands in for. Only the Spring and the
 /// Fixed-size Spacer get special treatment in the algorithms (see `statusbar::SPRING_CLASS`
-/// and `SPACER_CLASS`); everything else, including a class Tandem does not know yet, is
+/// and `SPACER_CLASS`); everything else, including a class Termurion does not know yet, is
 /// `Normal`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ItemKind {

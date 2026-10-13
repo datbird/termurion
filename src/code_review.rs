@@ -538,7 +538,7 @@ mod tests {
     const REVIEW: &str = "claude \\(codeReviewPrompt) --append-system-prompt-file '\\(codeReviewSystemPromptFile)' --settings '\\(iterm2.appBundlePath)/Contents/Resources/code-review-settings.txt'";
 
     fn argv(prompt: &str) -> Result<ReviewArgv, String> {
-        review_argv(REVIEW, prompt, Path::new(r"C:\T\p.txt"), Path::new(r"C:\Tandem\resources"), "HEAD")
+        review_argv(REVIEW, prompt, Path::new(r"C:\T\p.txt"), Path::new(r"C:\Termurion\resources"), "HEAD")
     }
 
     /// Review Focus 6 (B5): the command is an argument vector, and the texts are iTerm2's.
@@ -548,7 +548,7 @@ mod tests {
         let review = claude.sessions.iter().find(|s| s.mode == Mode::CodeReview).expect("the Claude Code workgroup has a review member");
         assert_eq!(review.command, REVIEW, "the command the template ships");
         let r = argv("check tests").unwrap();
-        assert_eq!(r.argv, ["claude", "check tests", "--append-system-prompt-file", r"C:\T\p.txt", "--settings", r"C:\Tandem\resources\code-review-settings.txt"]);
+        assert_eq!(r.argv, ["claude", "check tests", "--append-system-prompt-file", r"C:\T\p.txt", "--settings", r"C:\Termurion\resources\code-review-settings.txt"]);
         assert!(!r.cut);
         assert_eq!(
             (TITLE, START, MENU_HEADER, SAVE_AS_NEW, MANAGE, SAVE_TITLE, SAVE_TEXT, NAME_PLACEHOLDER),
@@ -621,7 +621,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn review_temp_file_is_made_owner_only() {
-        let base = std::env::temp_dir().join(format!("tandem-review-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("termurion-review-{}", std::process::id()));
         let dir = crate::localfs::LocalPath::judge(&base).or_else(|| {
             std::fs::create_dir_all(&base).ok()?;
             crate::localfs::LocalPath::judge(&base)
@@ -817,7 +817,7 @@ mod tests {
     /// read is stable (a replaced uuid is the same each time).
     #[test]
     fn saved_prompts_are_bounded_at_every_read() {
-        let mut g = crate::globals::Globals::empty(&std::env::temp_dir().join("tandem-cr-bounds-never-saved.toml"));
+        let mut g = crate::globals::Globals::empty(&std::env::temp_dir().join("termurion-cr-bounds-never-saved.toml"));
         let many: Vec<SavedPrompt> = (0..200)
             .map(|i| SavedPrompt {
                 uuid: if i == 1 { "bad".into() } else { format!("{i:08X}-0000-0000-0000-000000000000") },

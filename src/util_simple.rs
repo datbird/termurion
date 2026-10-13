@@ -405,7 +405,7 @@ mod tests {
 
     /// A fresh folder for one test: `notes.txt` holds "hello\n", `big.bin` 100 bytes.
     fn fixture(test: &str) -> TempDir {
-        let dir = TempDir::new(&format!("tandem-util-simple-{test}"));
+        let dir = TempDir::new(&format!("termurion-util-simple-{test}"));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("notes.txt"), b"hello\n").unwrap();
         std::fs::write(dir.join("big.bin"), [b'x'; 100]).unwrap();
@@ -599,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn setters_reach_tandem() {
+    fn setters_reach_termurion() {
         let dir = fixture("reach");
         for term in [None, Some("tmux-256color"), Some("screen")] {
             let mut h = harness(&dir, term);

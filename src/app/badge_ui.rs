@@ -108,7 +108,7 @@ mod tests {
     use toml::Value;
 
     fn globals(name: &str) -> Globals {
-        Globals::empty(&std::env::temp_dir().join(format!("tandem-badge-{name}.toml")))
+        Globals::empty(&std::env::temp_dir().join(format!("termurion-badge-{name}.toml")))
     }
 
     /// 13w Task 8 (`PP:1594-1624`): a profile's own badge size wins, key by key; every other

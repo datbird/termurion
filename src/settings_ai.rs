@@ -1820,7 +1820,7 @@ mod tests {
         let mut cache = Keys::default();
         assert_eq!(
             save_keys(&d, &mut cache, &mut FailingStore).as_deref(),
-            Some("Could not save the OpenAI API key: denied TandemAI/OpenAI\nCould not save the Gemini API key: denied TandemAI/Gemini"),
+            Some("Could not save the OpenAI API key: denied TermurionAI/OpenAI\nCould not save the Gemini API key: denied TermurionAI/Gemini"),
             "every failed vendor is reported, not only the last"
         );
         assert!(cache.is_set(Vendor::OpenAI, &mut FailingStore), "the key stays for the session");

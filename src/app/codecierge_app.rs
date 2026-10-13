@@ -208,7 +208,7 @@ impl App {
 
     /// What a `write` knows of the pane's shell (final residual ruling): `ai_shell_of`'s kind
     /// and the detector's answer, the launch program, the job tree, and whether a framing
-    /// conductor's chain was vouched for by Tandem's origin token.
+    /// conductor's chain was vouched for by Termurion's origin token.
     fn codecierge_write_shell(&self, pane: PaneId) -> cc::WriteShell {
         let (kind, host_is_local, _) = self.ai_shell_of(pane);
         let name = self.variables_with(pane, false).session.get("shell").cloned();
@@ -244,7 +244,7 @@ impl App {
             }
             return;
         };
-        // The one shell detector decides the kind; a write types only where Tandem knows a
+        // The one shell detector decides the kind; a write types only where Termurion knows a
         // POSIX shell reads it (final residual ruling).
         let shell = self.codecierge_write_shell(pane);
         let Some(s) = self.codecierge.get(guid) else { return };

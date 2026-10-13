@@ -109,7 +109,7 @@ pub fn saved_remote_directory(saved: &str) -> Option<String> {
     Some(saved).filter(|d| d.starts_with(['/', '~'])).and_then(clean_directory)
 }
 
-/// Whether a host or user name may go into a command line Tandem runs locally: made of the
+/// Whether a host or user name may go into a command line Termurion runs locally: made of the
 /// characters real names use, and not starting with `-` (ssh would read it as an option, such
 /// as `-oProxyCommand=...`).
 pub fn identity_is_safe(id: &Identity) -> bool {

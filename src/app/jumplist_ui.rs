@@ -1,6 +1,6 @@
 //! The Jump List and the recent profiles behind it (m13v1 Task 6): the taskbar button's Jump List
 //! is iTerm2's dock menu, rebuilt from the profiles, the arrangements and the recents; a recent is
-//! `%APPDATA%\Tandem\Recents\<uuid>.itermtab` (`ProfileDocument.swift`). Every Jump List entry
+//! `%APPDATA%\Termurion\Recents\<uuid>.itermtab` (`ProfileDocument.swift`). Every Jump List entry
 //! starts Tandem's own exe with arguments `launch::parse` accepts, so a click goes through the
 //! launch pipe and its checks. The COM writer is injected into the pure rebuild loop; a test build
 //! never writes the real Jump List.
@@ -20,10 +20,10 @@ const LIST_FILE: &str = "recents.json";
 /// The Jump List items the person removed (`jumplist::Removed`), next to the recents list.
 const REMOVED_FILE: &str = "removed.json";
 
-/// `%APPDATA%\Tandem\Recents`, judged first (final review item 16): a redirected AppData or a
+/// `%APPDATA%\Termurion\Recents`, judged first (final review item 16): a redirected AppData or a
 /// junction to a share is never read or made; the recents are skipped then, with one log line.
 fn recents_dir() -> Option<PathBuf> {
-    let dir = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem").join("Recents");
+    let dir = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Termurion").join("Recents");
     let judged = crate::localfs::judge(&dir).map(crate::localfs::LocalPath::into_path_buf);
     if judged.is_none() {
         static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

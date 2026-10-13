@@ -96,17 +96,17 @@ pub fn remove_element_body(x: f64, y: f64) -> Result<String, String> {
 
 /// Readability's article text, whitespace collapsed (`RMM:35-61`); needs the loaders to have run.
 pub fn plain_text_body() -> String {
-    expression_body(&fill_template(file("extract-plain-text.js"), &[("TANDEM_UI", TANDEM_UI)]))
+    expression_body(&fill_template(file("extract-plain-text.js"), &[("TERMURION_UI", TERMURION_UI)]))
 }
 
 /// What Tandem's injecting scripts add to a page (the injecting scripts are upstream's, so this
 /// list names what they create): removed from the clone both readers use, so none of it (a mark
-/// name, a find bubble) reaches a model. The one list; both scripts take it as `{{TANDEM_UI}}`.
-pub const TANDEM_UI: &str = r#"#iterm-mark-annotations, .iterm-mark-annotation, .find-nav-bubble, #find-nav-styles, #iterm2-autofill-highlight-style, #iterm-copy-mode-cursor, button[aria-label="Open Password Manager"], button[aria-label^="Autofill "], [data-tandem-ui]"#;
+/// name, a find bubble) reaches a model. The one list; both scripts take it as `{{TERMURION_UI}}`.
+pub const TERMURION_UI: &str = r#"#iterm-mark-annotations, .iterm-mark-annotation, .find-nav-bubble, #find-nav-styles, #iterm2-autofill-highlight-style, #iterm-copy-mode-cursor, button[aria-label="Open Password Manager"], button[aria-label^="Autofill "], [data-termurion-ui]"#;
 
 /// The page as markdown (`RMM:63-68`), chrome (nav, footer, aside, header) dropped when asked.
 pub fn markdown_body(skip_chrome: bool) -> String {
-    expression_body(&fill_template(file("convert-to-markdown.js"), &[("SKIP_CHROME", if skip_chrome { "true" } else { "false" }), ("TANDEM_UI", TANDEM_UI)]))
+    expression_body(&fill_template(file("convert-to-markdown.js"), &[("SKIP_CHROME", if skip_chrome { "true" } else { "false" }), ("TERMURION_UI", TERMURION_UI)]))
 }
 
 /// A markdown script's answer (`RMM:67`): a string is itself, anything else is "No content found on page".
@@ -300,7 +300,7 @@ mod tests {
     /// reaches the model: the converter's clone drops each node the injecting scripts create, and
     /// every selector names something a script really creates.
     #[test]
-    fn the_markdown_reader_drops_tandem_ui() {
+    fn the_markdown_reader_drops_termurion_ui() {
         let conv = file("convert-to-markdown.js");
         let created: [(&str, &str, &str); 7] = [
             ("#iterm-mark-annotations", "show-named-mark-annotations.js", "iterm-mark-annotations"),
@@ -312,25 +312,25 @@ mod tests {
             ("button[aria-label^=\"Autofill \"]", "autofill-detector.js", "Autofill ${fieldType}"),
         ];
         for (sel, script, needle) in created {
-            assert!(TANDEM_UI.contains(sel), "{sel}");
+            assert!(TERMURION_UI.contains(sel), "{sel}");
             assert!(file(script).contains(needle), "{script} creates {needle}");
         }
-        assert!(TANDEM_UI.contains("#iterm-copy-mode-cursor") && file("copy-mode-cursor.js").contains("iterm-copy-mode-cursor") && TANDEM_UI.contains("[data-tandem-ui]"));
+        assert!(TERMURION_UI.contains("#iterm-copy-mode-cursor") && file("copy-mode-cursor.js").contains("iterm-copy-mode-cursor") && TERMURION_UI.contains("[data-termurion-ui]"));
         // Task 8 re-review minor: the list is spliced into a single-quoted JS string.
-        assert!(!TANDEM_UI.contains(['\'', '\\']), "no quote or backslash in the selector list");
+        assert!(!TERMURION_UI.contains(['\'', '\\']), "no quote or backslash in the selector list");
         // Both readers fill the one list in, and neither carries a copy of it.
         let plain = file("extract-plain-text.js");
         for script in [conv, plain] {
-            assert!(script.contains("querySelectorAll('{{TANDEM_UI}}')") && !script.contains("iterm-mark-annotation"));
+            assert!(script.contains("querySelectorAll('{{TERMURION_UI}}')") && !script.contains("iterm-mark-annotation"));
         }
         for body in [plain_text_body(), markdown_body(true), markdown_body(false)] {
-            assert!(body.contains(TANDEM_UI) && !body.contains("{{"));
+            assert!(body.contains(TERMURION_UI) && !body.contains("{{"));
         }
-        assert!(plain.find("{{TANDEM_UI}}").unwrap() < plain.find("new Readability(").unwrap());
+        assert!(plain.find("{{TERMURION_UI}}").unwrap() < plain.find("new Readability(").unwrap());
         // The removal runs before the markdown is made from the clone.
-        assert!(conv.find("{{TANDEM_UI}}").unwrap() < conv.find("service.turndown(").unwrap());
+        assert!(conv.find("{{TERMURION_UI}}").unwrap() < conv.find("service.turndown(").unwrap());
         // The injecting scripts stay upstream's: no Tandem marker patched into them.
-        assert!(!file("show-named-mark-annotations.js").contains("data-tandem-ui"));
+        assert!(!file("show-named-mark-annotations.js").contains("data-termurion-ui"));
     }
 
     #[test]
@@ -404,7 +404,7 @@ mod tests {
         let [d0, d1] = distraction_bodies();
         let bodies = [l0, l1, enter_reader_body(), exit_reader_body(), d0, d1, exit_distraction_body(), remove_element_body(1.0, 2.0).unwrap(), plain_text_body(), markdown_body(true), markdown_body(false)];
         for (i, b) in bodies.iter().enumerate() {
-            for bad in ["__tandemResult", "sessionSecret", "chrome.webview", "__tandemPost"] {
+            for bad in ["__termurionResult", "sessionSecret", "chrome.webview", "__termurionPost"] {
                 assert!(!b.contains(bad), "body {i} holds {bad}");
             }
         }
@@ -470,7 +470,7 @@ mod tests {
         }
         assert!(md.ends_with("})(true)\n)") && !md.contains("{{"));
         assert!(markdown_body(false).ends_with("})(false)\n)"));
-        assert_eq!(plain_text_body(), expression_body(&include_str!("../resources/browser/extract-plain-text.js").replace("{{TANDEM_UI}}", TANDEM_UI)));
+        assert_eq!(plain_text_body(), expression_body(&include_str!("../resources/browser/extract-plain-text.js").replace("{{TERMURION_UI}}", TERMURION_UI)));
         assert_eq!(markdown_answer(&serde_json::json!("x")), "x");
         assert_eq!(markdown_answer(&serde_json::json!(null)), NO_CONTENT);
         assert_eq!(markdown_answer(&serde_json::json!(3)), NO_CONTENT);

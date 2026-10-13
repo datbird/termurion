@@ -71,7 +71,7 @@ pub struct RemoteCommand {
     pub llm_message: Value,
     pub call: Call,
     /// Tandem's (final review I1): for a browser call, the host its pane showed when the approval
-    /// was asked (`ai_browser::Site::host`), written as `tandemSite`; None for every other call.
+    /// was asked (`ai_browser::Site::host`), written as `termurionSite`; None for every other call.
     pub site: Option<String>,
 }
 
@@ -287,12 +287,12 @@ impl<'a> Body<'a> {
 }
 
 fn command_value(rc: &RemoteCommand) -> Value {
-    obj([("llmMessage", Some(rc.llm_message.clone())), ("content", Some(rc.call.encode())), ("tandemSite", rc.site.clone().map(Value::String))])
+    obj([("llmMessage", Some(rc.llm_message.clone())), ("content", Some(rc.call.encode())), ("termurionSite", rc.site.clone().map(Value::String))])
 }
 
 fn command_of(v: &Value) -> Option<RemoteCommand> {
     let body = Body::of(v)?;
-    Some(RemoteCommand { llm_message: body.get("llmMessage")?.clone(), call: Call::decode(body.get("content")?)?, site: body.opt_string("tandemSite")? })
+    Some(RemoteCommand { llm_message: body.get("llmMessage")?.clone(), call: Call::decode(body.get("content")?)?, site: body.opt_string("termurionSite")? })
 }
 
 fn action_value(action: &ClientLocal) -> Value {
@@ -963,7 +963,7 @@ mod tests {
         }
     }
 
-    /// Final review I1: a browser request keeps the site it was asked about (`tandemSite`), and a
+    /// Final review I1: a browser request keeps the site it was asked about (`termurionSite`), and a
     /// request without one is written as before.
     #[test]
     fn a_browser_request_keeps_its_site() {
@@ -972,7 +972,7 @@ mod tests {
         assert_eq!(decode_content(&encode_content(&c)), c);
         assert!(rc.consent_text().contains("a\\.test"), "{}", rc.consent_text());
         let plain = Content::RemoteCommandRequest { payload: Payload::Classic(RemoteCommand::of(json!({}), Call::GetUrl)), safe: None };
-        assert!(!encode_content(&plain).contains("tandemSite"));
+        assert!(!encode_content(&plain).contains("termurionSite"));
         assert_eq!(RemoteCommand::of(json!({}), Call::GetUrl).consent_text(), Call::GetUrl.consent_description());
     }
 }

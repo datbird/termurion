@@ -40,7 +40,7 @@ const DEFAULT_TIMEOUT: f64 = 4.0;
 pub(super) const TIMEOUT_BAR: &str = "statusbar:git-timeout";
 pub(super) const SEND_BAR: &str = "statusbar:git-send";
 pub(super) const DEBUG_BAR: &str = "statusbar:git-debug";
-/// A menu command refused because its folder is gone (Tandem's own; OK only).
+/// A menu command refused because its folder is gone (Termurion's own; OK only).
 pub(super) const GONE_BAR: &str = "statusbar:git-gone";
 /// The git menu's item ids after `statusbar:`.
 const MENU_ID: &str = "git:";
@@ -347,7 +347,7 @@ impl GitWorker {
         let alive = Alive { live: self.live.clone(), notify: self.notify.clone(), tx: self.tx.clone(), job: q.job.clone(), id };
         let (runner, tx, job) = (self.runner.clone(), self.tx.clone(), q.job.clone());
         let search = q.search;
-        let spawned = std::thread::Builder::new().name("tandem-git".into()).spawn(move || {
+        let spawned = std::thread::Builder::new().name("termurion-git".into()).spawn(move || {
             let _alive = alive;
             let git = gs::git_program(&search);
             let output = match (&job, git) {
@@ -1028,7 +1028,7 @@ mod tests {
     }
 
     fn repos(name: &str, n: usize) -> Vec<String> {
-        let root = std::env::temp_dir().join(format!("tandem-git-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("termurion-git-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         (0..n)
             .map(|i| {
@@ -1039,13 +1039,13 @@ mod tests {
             .collect()
     }
 
-    /// The single-use window runs the wrapper beside Tandem with the git and its arguments
+    /// The single-use window runs the wrapper beside Termurion with the git and its arguments
     /// (a `-` branch as its ref); the info bars' buttons read as iTerm2's; Debug Info reads
     /// as `GIT:513-536`.
     #[test]
     fn single_use_windows_follow_iterm2() {
         let push = GitCommand::Push("main".into());
-        assert_eq!(single_use_command(Path::new("C:\\Program Files\\Tandem"), Path::new("git"), &push), "\"C:\\Program Files\\Tandem\\termurion-git.exe\" git push origin main");
+        assert_eq!(single_use_command(Path::new("C:\\Program Files\\Termurion"), Path::new("git"), &push), "\"C:\\Program Files\\Termurion\\termurion-git.exe\" git push origin main");
         assert_eq!(
             single_use_command(Path::new("C:\\T"), Path::new("C:\\Git\\cmd\\git.exe"), &GitCommand::Checkout("-x".into())),
             "C:\\T\\termurion-git.exe C:\\Git\\cmd\\git.exe checkout refs/heads/-x"

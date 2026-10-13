@@ -182,7 +182,7 @@ impl App {
         sources.browser = self.quickly_browser_sources(&typed);
         let Some(q) = self.open_quickly.as_mut() else { return };
         // The whole query, when it is a call or a call sequence (`OQM:916-923`), in the
-        // current session's scope, else the app's (`OQM:950-1003`). Tandem's call parser
+        // current session's scope, else the app's (`OQM:950-1003`). Termurion's call parser
         // reads no scope, so the parse in the app's scope iTerm2 falls back to answers as the
         // first did: the scope is the session's whenever there is one.
         sources.invocation = crate::expr::parse_calls(q.window.query()).ok().map(|_| q.window.query().to_string());
@@ -288,7 +288,7 @@ impl App {
             }
         }
 
-        // Every menu command Tandem runs, then the Scripts menu's script items.
+        // Every menu command Termurion runs, then the Scripts menu's script items.
         s.menu_items = crate::menus::shown_items()
             .filter(|i| !i.separator && !i.submenu && !i.selector.is_empty() && crate::commands::status(i) == crate::commands::Status::Done)
             .map(|i| (i.id(), crate::menus::shown_label(i.label()), i.path[..i.path.len().saturating_sub(1)].to_vec(), i.alternate))
@@ -433,7 +433,7 @@ impl App {
     }
 
     /// Opens a row (`openSelectedRow`), then closes the palette; a tip instead puts its command
-    /// in the field and stays open. Committing brings Tandem forward.
+    /// in the field and stays open. Committing brings Termurion forward.
     pub(super) fn quickly_activate(&mut self, item: &Item, alt: bool, event_loop: &ActiveEventLoop) {
         if let ItemKind::Tip(c) = &item.kind {
             if let Some(q) = self.open_quickly.as_mut() {

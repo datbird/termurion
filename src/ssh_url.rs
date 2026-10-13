@@ -1,5 +1,5 @@
 //! The ssh: URL rule (m14e Task 1; iTerm2 `iTermSessionLauncher.m` `toSshTo:`, `NSStringITerm.m`
-//! `sanitizedUsername`/`sanitizedHostname`). An ssh: URL comes from outside Tandem, so it is hostile
+//! `sanitizedUsername`/`sanitizedHostname`). An ssh: URL comes from outside Termurion, so it is hostile
 //! input that becomes an ssh command line: every word taken from it must pass iTerm2's check AND the
 //! 14c allowlist grammar (`ssh_jumps::{user_is_safe, host_is_safe, port_is_safe}`, one validator,
 //! no copy), and the only other words are generated here (`-l`, `-p`, `-t`, the cd word).
@@ -653,7 +653,7 @@ mod tests {
 
     #[test]
     fn settings_read_the_four_rows() {
-        let dir = std::env::temp_dir().join(format!("tandem-ssh-url-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-ssh-url-{}", std::process::id()));
         let mut g = crate::globals::Globals::empty(&dir.join("g.toml"));
         assert_eq!(Settings::from_globals(&g), Settings { integration: false, scheme_path: "ssh".into(), valid_user_chars: "_-+.".into(), support_path: true, ftp_path: "ftp".into(), telnet_path: "telnet".into() });
         g.set("SshIntegrationForURLs", Value::Boolean(true));

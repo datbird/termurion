@@ -35,7 +35,7 @@ pub trait Http {
     fn pause(&mut self, d: Duration);
 }
 
-// Timeouts. iTerm2's long request is 300 s; Tandem's adapter is killed at 180 s (pwm_adapter
+// Timeouts. iTerm2's long request is 300 s; Termurion's adapter is killed at 180 s (pwm_adapter
 // `LONG_TIMEOUT`), so the longest wait here is shorter, and a read stays under its 30 s.
 const LONG_REQUEST: Duration = Duration::from_secs(150);
 const VALIDATION_REQUEST: Duration = Duration::from_secs(120);

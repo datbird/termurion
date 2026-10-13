@@ -79,11 +79,11 @@ pub enum FileType {
 }
 
 /// The folder `DynamicProfilesPath` names (`~` is the home folder), else
-/// `%APPDATA%\Tandem\DynamicProfiles`.
+/// `%APPDATA%\Termurion\DynamicProfiles`.
 pub fn folder(custom: &str, appdata: &Path, home: &Path) -> PathBuf {
     let custom = custom.trim();
     if custom.is_empty() {
-        return appdata.join("Tandem").join("DynamicProfiles");
+        return appdata.join("Termurion").join("DynamicProfiles");
     }
     if let Some(rest) = custom.strip_prefix('~') {
         if rest.is_empty() {
@@ -935,7 +935,7 @@ mod tests {
 
         let appdata = Path::new("C:\\Users\\me\\AppData\\Roaming");
         let home = Path::new("C:\\Users\\me");
-        assert_eq!(folder_of("", appdata, home), appdata.join("Tandem").join("DynamicProfiles"));
+        assert_eq!(folder_of("", appdata, home), appdata.join("Termurion").join("DynamicProfiles"));
         assert_eq!(folder_of("~\\dp", appdata, home), home.join("dp"));
         assert_eq!(folder_of("~", appdata, home), home);
         assert_eq!(folder_of("D:\\profiles", appdata, home), PathBuf::from("D:\\profiles"));
@@ -1452,7 +1452,7 @@ mod tests {
 
     #[test]
     fn dynamic_listing_walks_the_folder_and_never_follows_a_link() {
-        let root = std::env::temp_dir().join(format!("tandem-dp-list-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("termurion-dp-list-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("sub").join("deeper")).unwrap();
         std::fs::write(root.join("a.json"), b"{}").unwrap();

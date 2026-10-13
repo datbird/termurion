@@ -48,13 +48,13 @@ pub(super) const CHECKS: [(&str, &str); 5] = [
 ];
 
 /// Menu ids of a browser session's marks: this prefix and the mark's guid.
-pub(super) const BROWSER_MARK_ID: &str = "tandem.browsermark.";
+pub(super) const BROWSER_MARK_ID: &str = "termurion.browsermark.";
 
 /// Most browser marks Edit > Named Marks lists (the cache can hold a million).
 const BROWSER_MENU_MARKS: usize = 200;
 
 /// Edit > Named Marks for a browser session: each cached mark's guid and menu text, cache order kept
-/// (`AD:4310-4316`), "Unnamed Mark" for an empty name, names cleaned by Tandem's sanitizer and capped.
+/// (`AD:4310-4316`), "Unnamed Mark" for an empty name, names cleaned by Termurion's sanitizer and capped.
 pub(super) fn browser_mark_items(marks: &[crate::browser_marks::Mark]) -> Vec<(String, String)> {
     marks
         .iter()
@@ -81,7 +81,7 @@ pub(super) fn named_marks(marks: &[(i32, crate::marks::Mark)]) -> Vec<(u32, Stri
 }
 
 /// Menu item ids of Edit > Named Marks.
-pub(super) const NAMED_MARK_ID: &str = "tandem.namedmark.";
+pub(super) const NAMED_MARK_ID: &str = "termurion.namedmark.";
 
 /// The display offset that puts grid line `line` at the top of the view (or centers it).
 pub(super) fn offset_for(line: i32, rows: usize, history: usize, center: bool) -> usize {

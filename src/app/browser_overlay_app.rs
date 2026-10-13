@@ -356,7 +356,7 @@ mod tests {
     /// The overlay is Tandem's: never inside the page, never the page's text unmade inert, never
     /// focused, and the real pointer decides (P14).
     #[test]
-    fn overlays_are_tandems_own() {
+    fn overlays_are_termurions_own() {
         let p = prod();
         let hover = &p[p.find("fn browser_hover_now").unwrap()..p.find("fn browser_tip_open").unwrap()];
         assert!(hover.contains("pointer_now()") && hover.contains("pointer_in(") && hover.contains("display_url(&url)") && include_str!("../browser_tip.rs").contains("fit_measured(&text, room"));

@@ -1094,7 +1094,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn export_writes_owner_only_and_replaces() {
-        let dir = std::env::temp_dir().join(format!("tandem-export-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-export-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = crate::localfs::LocalPath::judge(dir.join("t.it2triggers")).expect("a local path");
         write_export(&file, "[1]").unwrap();

@@ -27,7 +27,7 @@ pub const ADD_TEXT: &str = "What dependency would you like to add?";
 /// The pip command question (`DE:369-411`); persistent in iTerm2, so never silenced.
 pub const RUN_HEADING: &str = "Run this Command?";
 pub const RUN_ID: &str = "DependencyEditorPip3Confirmation";
-/// What the question adds for a command that downloads (Tandem's: every download names its
+/// What the question adds for a command that downloads (Termurion's: every download names its
 /// source): pypi.org, or the index the command's environment names (`configured_index`).
 pub fn source_note(index: Option<&str>) -> String {
     format!("\n\nPackages come from {}.", index.unwrap_or("pypi.org"))
@@ -90,7 +90,7 @@ pub fn version_in_pip_show(output: &str) -> Option<String> {
 }
 
 /// The program, arguments and added variables of a pip command against the environment
-/// `venv` (`DE:369-392`): through Tandem's uv with the provisioning variables, or with the
+/// `venv` (`DE:369-392`): through Termurion's uv with the provisioning variables, or with the
 /// environment's own Python.
 pub fn pip_command(backend: &Backend, venv: &Path, pip_args: &[String]) -> (PathBuf, Vec<String>, Vec<(String, String)>) {
     let python = rt::venv_python(venv);
@@ -219,7 +219,7 @@ pub fn version_choices(minors: &[String], current: &str) -> Vec<String> {
     out
 }
 
-/// What runs pip for an environment, from its marker (no probe): Tandem's uv for one uv
+/// What runs pip for an environment, from its marker (no probe): Termurion's uv for one uv
 /// built, else the environment's own Python.
 pub fn marker_backend(marker: &rt::Marker, uv_exe: &Path, venv: &Path) -> Backend {
     if marker.backend == "uv" {

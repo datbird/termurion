@@ -833,7 +833,7 @@ mod tests {
 
     #[test]
     fn the_proxy_values_are_bounded_at_the_write_point() {
-        let dir = std::env::temp_dir().join(format!("tandem-adblock-g-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-adblock-g-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let mut g = crate::globals::Globals::empty(&dir.join("settings.toml"));
         for bad in ["127.0.0.1 --renderer-cmd-prefix=calc.exe", "a\"b", &"a".repeat(300)] {

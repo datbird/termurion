@@ -150,7 +150,7 @@ pub fn default_name(url: &str) -> String {
     if host.is_empty() { "page".to_string() } else { sanitize_with(host, false) }
 }
 
-/// The saved name of a resource (`PSV:234-250`). The extension follows Tandem's MIME table when a
+/// The saved name of a resource (`PSV:234-250`). The extension follows Termurion's MIME table when a
 /// MIME is known and the page's own extension is missing or would run; a MIME that maps to a
 /// runnable extension is saved as `bin`.
 pub fn base_filename(url: &str, mime: Option<&str>) -> String {
@@ -444,7 +444,7 @@ pub const CLONE_EXPR: &str = r####"(function() {
 
 const PLACEHOLDER: &str = "new Map(URL_MAPPING_PLACEHOLDER)";
 
-/// The text of a refused destination (Tandem's, the no-UNC invariant).
+/// The text of a refused destination (Termurion's, the no-UNC invariant).
 pub const NETWORK_TEXT: &str = "Network locations are not supported for Save Page As.";
 
 /// Whether the folder the person named may be written: the judge's rule for the path and for every
@@ -921,7 +921,7 @@ mod tests {
     /// The production door itself, with the real drives (Task 10 review minor 8).
     #[test]
     fn the_real_destination_refuses_shares() {
-        let ok = std::env::temp_dir().join(format!("tandem-dest-{}", std::process::id())).join("www.ex.com");
+        let ok = std::env::temp_dir().join(format!("termurion-dest-{}", std::process::id())).join("www.ex.com");
         assert!(destination(&ok).is_ok(), "{ok:?}");
         for bad in [r"\\h\s\x", "//h/s/x", r"\\?\UNC\h\s\x", r"\\.\UNC\h\s\x", r"\\h\s"] {
             assert_eq!(destination(Path::new(bad)).err(), Some(NETWORK_TEXT.to_string()), "{bad}");
@@ -1287,7 +1287,7 @@ mod tests {
             assert!(!b.starts_with("return //"), "{b}");
             assert!(!b.contains("return // Recursively extract"));
             assert!(b.starts_with("return (\n"), "{b}");
-            for bad in ["__tandemResult", "sessionSecret", "chrome.webview"] {
+            for bad in ["__termurionResult", "sessionSecret", "chrome.webview"] {
                 assert!(!b.contains(bad), "{bad}");
             }
         }

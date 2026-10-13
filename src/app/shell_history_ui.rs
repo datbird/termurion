@@ -28,7 +28,7 @@ pub(super) struct Fed {
 const ABOUT: &str = "shell-integration-about";
 
 fn store_path() -> std::path::PathBuf {
-    std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem").join("shell_history.json")
+    std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Termurion").join("shell_history.json")
 }
 
 fn unix(t: std::time::SystemTime) -> f64 {

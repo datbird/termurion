@@ -107,7 +107,7 @@ impl App {
     }
 
     /// One `iTerm2Trigger` message from a page. Heard only from the isolated world's main frame, from a
-    /// proven world, never for one of Tandem's own pages; the secret is checked by `message_of`.
+    /// proven world, never for one of Termurion's own pages; the secret is checked by `message_of`.
     pub(super) fn browser_trigger_message(&mut self, pane: PaneId, r: &Routed) {
         if !self.client_open(pane) {
             return;

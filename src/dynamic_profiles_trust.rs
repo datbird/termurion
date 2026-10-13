@@ -316,7 +316,7 @@ mod tests {
     #[test]
     fn dynamic_open_reads_through_one_handle() {
         let base = std::path::PathBuf::from(std::env::var_os("APPDATA").expect("APPDATA"));
-        let dir = base.join(format!("tandem-dp-open-{}", std::process::id()));
+        let dir = base.join(format!("termurion-dp-open-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("a.json");
@@ -353,7 +353,7 @@ mod tests {
         // Under %APPDATA%, whose access list is the person's own (a temp folder may carry extra
         // entries a sandbox adds).
         let base = std::path::PathBuf::from(std::env::var_os("APPDATA").expect("APPDATA"));
-        let dir = base.join(format!("tandem-dp-trust-{}", std::process::id()));
+        let dir = base.join(format!("termurion-dp-trust-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("a.json");

@@ -4,10 +4,10 @@
 //! sender.
 //!
 //! Security (preflight B1, accepted): both methods are in `browser_world::ALLOWED` (the one list the
-//! app and the host read), but they are host-initiated reads only. Tandem's Rust code calls them; no
+//! app and the host read), but they are host-initiated reads only. Termurion's Rust code calls them; no
 //! page or isolated-world script can trigger them, name their arguments or receive a raw result: a
 //! page message never reaches a DevTools sender, the `frameId` and `url` of a content read come from
-//! Tandem's own resource tree read, and every reply is page-derived data, size-capped here.
+//! Termurion's own resource tree read, and every reply is page-derived data, size-capped here.
 
 use serde_json::{Value, json};
 
@@ -43,7 +43,7 @@ pub fn allowed(method: &str) -> bool {
 }
 
 /// Why `devtools_read` would not send this call, or None. The method is on the list, and the
-/// arguments have exactly the shape Tandem builds: `{}` for the tree, `{frameId, url}` (two strings)
+/// arguments have exactly the shape Termurion builds: `{}` for the tree, `{frameId, url}` (two strings)
 /// for a content read.
 pub fn refusal(method: &str, params: &Value) -> Option<&'static str> {
     if !allowed(method) {
@@ -252,7 +252,7 @@ mod tests {
         assert_eq!(main_frame(&json!({})), None);
     }
 
-    /// B1: only the two reads, with the arguments Tandem builds.
+    /// B1: only the two reads, with the arguments Termurion builds.
     #[test]
     fn only_host_built_reads_are_sent() {
         assert_eq!(refusal("Page.getResourceTree", &json!({})), None);

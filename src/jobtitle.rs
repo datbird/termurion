@@ -22,7 +22,7 @@ pub const AI: u32 = 1 << 12;
 /// user, working directory, command line or terminal size.
 pub const BROWSER_HIDDEN: u32 = JOB | PWD | TTY | USER | HOST | COMMAND_LINE | SIZE;
 
-/// Separates the title's parts (iTerm2 uses an em dash; Tandem's text uses none).
+/// Separates the title's parts (iTerm2 uses an em dash; Termurion's text uses none).
 const SEP: &str = " - ";
 
 /// What a title can show.

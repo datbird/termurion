@@ -143,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn wrapped_sequences_reach_tandem() {
+    fn wrapped_sequences_reach_termurion() {
         for term in [None, Some("tmux-256color")] {
             let mut s = Screen::new(80, 24);
             s.feed(seq(term, "1337;RequestAttention=once").as_bytes());

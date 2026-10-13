@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn downloads_get_unique_names() {
-        let d = std::env::temp_dir().join(format!("tandem-dl-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termurion-dl-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         assert_eq!(unique_path(&d, "a.txt"), d.join("a.txt"));
@@ -477,7 +477,7 @@ mod tests {
 
     #[test]
     fn download_names_cannot_hide_their_type() {
-        let d = std::env::temp_dir().join(format!("tandem-dl2-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termurion-dl2-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         assert_eq!(unique_path(&d, "invoice\u{202e}fdp.exe"), d.join("invoicefdp.exe.download"));
         // A high-risk type is kept as bytes but never as its type (the door refuses it).
@@ -500,7 +500,7 @@ mod tests {
 
     #[test]
     fn a_download_named_for_the_shell_is_refused() {
-        let d = std::env::temp_dir().join(format!("tandem-dlref-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termurion-dlref-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         for bad in ["x.url", "X.LNK", "a.library-ms", "desktop.ini", "x.url. ", r"..\evil.scf"] {
             assert!(save(&d, bad, b"[InternetShortcut]").is_err(), "{bad:?}");
@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn saved_downloads_are_marked_as_from_the_internet() {
-        let d = std::env::temp_dir().join(format!("tandem-dl3-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("termurion-dl3-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let p = save(&d, "x.bin", b"hi").unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"hi");

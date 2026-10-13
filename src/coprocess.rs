@@ -145,7 +145,7 @@ pub enum Refusal {
     Quiet,
     /// The trigger's announcement with Silence Warning.
     TriggerWarning,
-    /// A banner (iTerm2 replaces the running one here and orphans it; Tandem refuses).
+    /// A banner (iTerm2 replaces the running one here and orphans it; Termurion refuses).
     Banner,
 }
 

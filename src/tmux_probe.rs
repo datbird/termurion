@@ -1,4 +1,4 @@
-//! The tmux control-mode probe: runs a real `tmux -CC` (WSL) through Tandem's ConPTY and
+//! The tmux control-mode probe: runs a real `tmux -CC` (WSL) through Termurion's ConPTY and
 //! records the raw bytes, so the protocol code is tested against what ConPTY really delivers.
 //! Run by hand: `cargo test --lib tmux_probe -- --ignored`; it writes tests/fixtures/tmux/.
 
@@ -10,7 +10,7 @@ mod tests {
 
     fn capture(source: Source, name: &str) {
         let api = conpty::load(&source).unwrap();
-        let p = spawn(&api, "wsl.exe -e tmux -L tandem-probe -f /dev/null -CC new-session", 80, 24).unwrap();
+        let p = spawn(&api, "wsl.exe -e tmux -L termurion-probe -f /dev/null -CC new-session", 80, 24).unwrap();
         let mut all = Vec::new();
         let step = |p: &crate::pty::Pty, needle: &[u8], all: &mut Vec<u8>| match p.read_until(needle, Duration::from_secs(20)) {
             Ok(b) => all.extend(b),
@@ -43,7 +43,7 @@ mod tests {
     /// Two splits and the window's layout: `%layout-change` lines and a list-windows reply.
     fn capture_layout(name: &str) {
         let api = conpty::load(&Source::Shipped(dev_vendor_dir())).unwrap();
-        let p = spawn(&api, "wsl.exe -e tmux -L tandem-layout -f /dev/null -CC new-session", 80, 24).unwrap();
+        let p = spawn(&api, "wsl.exe -e tmux -L termurion-layout -f /dev/null -CC new-session", 80, 24).unwrap();
         let mut all = Vec::new();
         let step = |p: &crate::pty::Pty, needle: &[u8], all: &mut Vec<u8>| match p.read_until(needle, Duration::from_secs(20)) {
             Ok(b) => all.extend(b),

@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 /// What a second `termurion.exe` asks the running one to do. A closed set: none names a command, a
-/// directory or an environment to run (P3); a profile or arrangement is looked up in Tandem's own
+/// directory or an environment to run (P3); a profile or arrangement is looked up in Termurion's own
 /// store by the app (P22).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
@@ -17,7 +17,7 @@ pub enum Request {
     NewWindow { guid: Option<String> },
     NewTab { guid: Option<String> },
     Arrangement { name: String },
-    /// COM starting Tandem to take a console hand-off: handled by this process, never forwarded.
+    /// COM starting Termurion to take a console hand-off: handled by this process, never forwarded.
     Embedding,
 }
 
@@ -34,13 +34,13 @@ pub const MAX_NAME: usize = 1024;
 /// A profile guid, in characters.
 pub const MAX_GUID: usize = 64;
 
-/// A request is forwarded to a running Tandem unless it is the COM start.
+/// A request is forwarded to a running Termurion unless it is the COM start.
 pub fn forwardable(r: &Request) -> bool {
     !matches!(r, Request::Embedding)
 }
 
 /// `forwardable` for a process start: the relaunch after Import All Settings (`WAIT_PID_VAR`)
-/// waited for the old Tandem to end and must run, never hand its request to the one it replaced (B2).
+/// waited for the old Termurion to end and must run, never hand its request to the one it replaced (B2).
 pub fn forwardable_start(r: &Request, relaunch: bool) -> bool {
     forwardable(r) && !relaunch
 }
@@ -103,7 +103,7 @@ pub fn parse(args: &[String], cwd: &Path) -> Result<Request, String> {
         crate::url_launch::UrlArg::None => {}
     }
     // COM appends `-Embedding` to the registered command; a value that already ended in it (an
-    // older Tandem's registration) gives it twice, which is still the one COM start.
+    // older Termurion's registration) gives it twice, which is still the one COM start.
     if args.iter().any(|a| is_embedding(a)) {
         return if args.len() <= 2 && args.iter().all(|a| is_embedding(a)) { Ok(Request::Embedding) } else { usage() };
     }

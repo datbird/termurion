@@ -36,7 +36,7 @@ pub(super) const MIRROR_TIMEOUT: Duration = Duration::from_secs(30);
 /// Ruling P15's spawn cap: per chat, per minute and alive at once.
 pub(super) const SPAWNS_PER_MINUTE: usize = 4;
 pub(super) const SPAWNS_LIVE: usize = 16;
-/// The most wheel notches one scroll_wheel sends (Tandem's bound on a model's number).
+/// The most wheel notches one scroll_wheel sends (Termurion's bound on a model's number).
 pub(super) const MAX_NOTCHES: i64 = 200;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -579,7 +579,7 @@ impl App {
             ot::Claim::Denied => Some(done(Self::claim_refusal(mirror_guid))),
             ot::Claim::Ask => {
                 let shown = self.orch_scope_name(scope);
-                // Task 9 review I1: a browser session's bubble is Tandem's text naming the action and
+                // Task 9 review I1: a browser session's bubble is Termurion's text naming the action and
                 // the site it shows (never keystrokes, never the page title).
                 let text = match self.orch_scope_browser_url(scope) {
                     Some(url) => {
@@ -1066,7 +1066,7 @@ impl App {
         let Ok(pane) = self.orch_resolve(&guid) else { return done(ot::no_session(&guid)) };
         let category = call.category();
         // B5: a browser mirror takes the same path as a direct call after the person's claim:
-        // the wrong kind and an unoffered pane (Dev Null, a Tandem or local page) answer before
+        // the wrong kind and an unoffered pane (Dev Null, a Termurion or local page) answer before
         // any claim bubble; the one dispatcher then gates, binds, fences, caps and rate limits.
         let is_browser = category.is_browser();
         if let Some(o) = crate::ai_browser::kind_refusal(is_browser, self.is_browser_pane(pane)) {
@@ -1566,7 +1566,7 @@ mod tests {
             assert!(body(c, tool).contains("self.claim_scope_of(pane)"), "{tool}");
         }
         assert!(body(c, "fn orch_mirror(").contains("self.claim_scope_of(pane)"));
-        // Task 9 review I1: a browser pane is claimed on its own, with Tandem's text naming the
+        // Task 9 review I1: a browser pane is claimed on its own, with Termurion's text naming the
         // action and the site; the page title never names it.
         let wc_scope = body_of(app, "pub(super) fn claim_scope_of(");
         assert!(wc_scope.contains("session_claim_scope(") && wc_scope.contains("self.is_browser_pane(pane)"), "{wc_scope}");

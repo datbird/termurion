@@ -901,7 +901,7 @@ impl App {
     /// A script component on a bar (`RPC:351-385`): its entry, after starting an evaluation
     /// when `Component::needs_start` says so. The invocation (`script_statusbar::invocation`,
     /// the newest registration of its unique id) runs in the session's scope with `__knobs`
-    /// (the knob values' JSON) in a frame, side effects off (a Tandem ruling: iTerm2 allows
+    /// (the knob values' JSON) in a frame, side effects off (a Termurion ruling: iTerm2 allows
     /// them, `RPC:373`, but a component comes from profile data), with the registration's timeout
     /// else none. None when the configuration holds no registration (iTerm2 makes no
     /// component, `RPC:172-183`). With it, the component's identifier, the texts it shows (an

@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn bad_images_fall_back() {
-        let dir = std::env::temp_dir().join(format!("tandem-bg-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-bg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert!(load(&dir.join("missing.png")).is_none());
         std::fs::write(dir.join("corrupt.png"), b"\x89PNG not really").unwrap();

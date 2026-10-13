@@ -54,7 +54,7 @@ pub(super) fn store_check_time(g: &mut Globals, now: f64) {
     g.set(update::LAST_CHECK_KEY, toml::Value::Float(now));
 }
 
-/// Whether Tandem ran before (`SUHasLaunchedBefore`); this launch is marked either way.
+/// Whether Termurion ran before (`SUHasLaunchedBefore`); this launch is marked either way.
 pub(super) fn launched_before(g: &mut Globals) -> bool {
     let before = g.raw(update::LAUNCHED_KEY).and_then(|v| v.as_bool()) == Some(true);
     if !before {
@@ -69,13 +69,13 @@ pub(super) fn permission_ask() -> Ask {
 }
 
 /// Whether a view waits instead of opening (the 13v1 merge): an automatic check's notice never
-/// opens while Tandem is resident (only the notification area icon shows); it opens when a window
+/// opens while Termurion is resident (only the notification area icon shows); it opens when a window
 /// wakes. A manual check (the menu or the tray's Check For Updates) shows at once.
 pub(super) fn notice_waits(resident: bool, manual: bool) -> bool {
     resident && !manual
 }
 
-/// A deadline as the idle loop sees it (the 13v1 merge, P12 of 13v1): a resident Tandem wakes for
+/// A deadline as the idle loop sees it (the 13v1 merge, P12 of 13v1): a resident Termurion wakes for
 /// no update or tip timer; the overdue one runs at the first pass after a window wakes.
 pub(super) fn idle_due(due: Option<Instant>, resident: bool) -> Option<Instant> {
     due.filter(|_| !resident)
@@ -378,7 +378,7 @@ mod tests {
     }
 
     /// The 13v1 merge (S8 d, 13v1 P12): an automatic check's notice waits while resident (a manual
-    /// check from the tray shows at once), and a resident Tandem wakes for no update or tip timer.
+    /// check from the tray shows at once), and a resident Termurion wakes for no update or tip timer.
     #[test]
     fn no_update_notice_or_timer_wake_while_resident() {
         assert!(notice_waits(true, false), "an automatic notice waits while resident");

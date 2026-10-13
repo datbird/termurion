@@ -1,6 +1,6 @@
 //! iTerm2's Force keyboard (`InputSourceForcer.swift`), done the Windows way: while a window of
-//! this process is in front, the chosen keyboard layout is activated for Tandem's own input
-//! thread; the person's layout is remembered at activation and restored when Tandem is no longer
+//! this process is in front, the chosen keyboard layout is activated for Termurion's own input
+//! thread; the person's layout is remembered at activation and restored when Termurion is no longer
 //! in front and at exit. The decisions are pure; the Win32 side only lists and activates layouts.
 
 use crate::globals::Globals;
@@ -32,11 +32,11 @@ pub struct Forcer {
     system: Option<String>,
     active: bool,
     changed_since_active: bool,
-    /// Tandem has changed the layout and not yet put the person's back.
+    /// Termurion has changed the layout and not yet put the person's back.
     forced: bool,
 }
 
-/// Whether Tandem as an app became active (Some(true)) or resigned (Some(false)): a move between
+/// Whether Termurion as an app became active (Some(true)) or resigned (Some(false)): a move between
 /// two of its own windows changes nothing (iTerm2 keys on app activation).
 pub fn activation_change(was_any: bool, now_any: bool) -> Option<bool> {
     (was_any != now_any).then_some(now_any)
@@ -76,7 +76,7 @@ impl Forcer {
         }
     }
 
-    /// The person's layout comes back, when Tandem changed it.
+    /// The person's layout comes back, when Termurion changed it.
     fn restore(&mut self) -> Step {
         match (self.forced, self.system.clone()) {
             (true, Some(id)) => {
@@ -87,7 +87,7 @@ impl Forcer {
         }
     }
 
-    /// Tandem came to the front; `current` is the person's layout.
+    /// Termurion came to the front; `current` is the person's layout.
     pub fn became_active(&mut self, prefs: &Prefs, current: &str) -> Step {
         // Once per session leaves its layout in place after a resign: then `current` is the forced
         // one, and the person's layout stays the one to put back.
@@ -99,17 +99,17 @@ impl Forcer {
         if !prefs.force || prefs.once { Step::Nothing } else { self.force(prefs) }
     }
 
-    /// Tandem is no longer in front.
+    /// Termurion is no longer in front.
     pub fn resigned(&mut self, prefs: &Prefs) -> Step {
         if !prefs.force {
             return Step::Nothing;
         }
         self.active = false;
-        // Once per session leaves the layout in place (until Tandem ends).
+        // Once per session leaves the layout in place (until Termurion ends).
         if prefs.once { Step::Nothing } else { self.restore() }
     }
 
-    /// The person changed the layout while Tandem is in front: forced again, once.
+    /// The person changed the layout while Termurion is in front: forced again, once.
     pub fn layout_changed(&mut self, prefs: &Prefs) -> Step {
         if !self.active || !prefs.force || prefs.once || self.changed_since_active {
             return Step::Nothing;
@@ -138,17 +138,17 @@ impl Forcer {
         (step, false)
     }
 
-    /// Whether Tandem is in front as far as the forcer knows.
+    /// Whether Termurion is in front as far as the forcer knows.
     pub fn is_active(&self) -> bool {
         self.active
     }
 
-    /// The person's layout while Tandem has changed it (what a panic must put back).
+    /// The person's layout while Termurion has changed it (what a panic must put back).
     pub fn to_restore(&self) -> Option<String> {
         if self.forced { self.system.clone() } else { None }
     }
 
-    /// Tandem is ending: the person's layout comes back whatever the mode.
+    /// Termurion is ending: the person's layout comes back whatever the mode.
     pub fn exiting(&mut self) -> Step {
         self.active = false;
         self.restore()
@@ -179,7 +179,7 @@ pub fn layouts_cached() -> Vec<(String, String)> {
     list
 }
 
-/// The layout id of Tandem's own input now (the person's, before anything is forced).
+/// The layout id of Termurion's own input now (the person's, before anything is forced).
 pub fn current() -> String {
     #[cfg(windows)]
     return win::current();
@@ -187,11 +187,11 @@ pub fn current() -> String {
     String::new()
 }
 
-/// Activates the installed layout with this id from Tandem's input thread (the UI thread). Under
+/// Activates the installed layout with this id from Termurion's input thread (the UI thread). Under
 /// Windows' default input mode (one input method for every app) this changes the desktop's
 /// layout, other apps' included, until it is restored: on resign and at exit, so with "Only force
-/// once per session" it stays for other apps until Tandem exits. With "Let me use a different
-/// input method for each app window" it is Tandem's alone. An id not installed logs and does
+/// once per session" it stays for other apps until Termurion exits. With "Let me use a different
+/// input method for each app window" it is Termurion's alone. An id not installed logs and does
 /// nothing (`InputSourceForcer.swift:180-199`).
 pub fn activate(id: &str) -> bool {
     #[cfg(windows)]
@@ -203,7 +203,7 @@ pub fn activate(id: &str) -> bool {
     }
 }
 
-/// The layout the person had, kept for a panic: the hook puts it back (set while Tandem has changed it).
+/// The layout the person had, kept for a panic: the hook puts it back (set while Termurion has changed it).
 #[cfg(windows)]
 static PANIC_RESTORE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
@@ -409,7 +409,7 @@ mod tests {
         f.resigned(&p);
         f.became_active(&p, "00000409");
         assert_eq!(f.layout_changed(&p), act("00000407"));
-        // Not while Tandem is not in front.
+        // Not while Termurion is not in front.
         let mut f = Forcer::default();
         assert_eq!(f.layout_changed(&p), Step::Nothing);
     }
@@ -421,7 +421,7 @@ mod tests {
         f.became_active(&prefs(false, false, "00000407"), "00000409");
         // Turning Force keyboard on while active forces at once.
         assert_eq!(f.prefs_changed(&p), act("00000407"));
-        // Turning it off puts the person's layout back (Tandem changed it).
+        // Turning it off puts the person's layout back (Termurion changed it).
         assert_eq!(f.prefs_changed(&prefs(false, false, "00000407")), act("00000409"));
         assert_eq!(f.prefs_changed(&prefs(false, false, "00000407")), Step::Nothing);
         // Once per session does not sustain.
@@ -462,7 +462,7 @@ mod tests {
 
     #[test]
     fn activation_follows_the_process() {
-        // Terminal window to Settings: Tandem stays in front, no step.
+        // Terminal window to Settings: Termurion stays in front, no step.
         assert_eq!(activation_change(true, true), None);
         assert_eq!(activation_change(false, false), None);
         assert_eq!(activation_change(false, true), Some(true));

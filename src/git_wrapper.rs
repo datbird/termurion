@@ -86,11 +86,11 @@ mod tests {
         assert_eq!(failure(&[]), "\x1b]1337;Disinter\x1b\\\r\n\x1b[7mAn error occurred while running 'git  '.\x1b[m\r\nYou may safely close this window.\r\n");
 
         let git = Path::new("C:\\Program Files\\Git\\cmd\\git.exe");
-        let wrapper = Path::new("C:\\Tandem\\termurion-git.exe");
-        assert_eq!(command_line(wrapper, Path::new("git"), &s(&["push", "origin", "main"])), "C:\\Tandem\\termurion-git.exe git push origin main");
+        let wrapper = Path::new("C:\\Termurion\\termurion-git.exe");
+        assert_eq!(command_line(wrapper, Path::new("git"), &s(&["push", "origin", "main"])), "C:\\Termurion\\termurion-git.exe git push origin main");
         assert_eq!(
             command_line(wrapper, git, &s(&["checkout", "my branch", "say \"hi\"", "a\\b", "", "tail\\ x\\"])),
-            "C:\\Tandem\\termurion-git.exe \"C:\\Program Files\\Git\\cmd\\git.exe\" checkout \"my branch\" \"say \\\"hi\\\"\" a\\b \"\" \"tail\\ x\\\\\""
+            "C:\\Termurion\\termurion-git.exe \"C:\\Program Files\\Git\\cmd\\git.exe\" checkout \"my branch\" \"say \\\"hi\\\"\" a\\b \"\" \"tail\\ x\\\\\""
         );
         assert_eq!(command_line(Path::new("C:\\My Apps\\termurion-git.exe"), Path::new("git"), &s(&["a\\\"b"])), "\"C:\\My Apps\\termurion-git.exe\" git \"a\\\\\\\"b\"");
     }

@@ -199,7 +199,7 @@ pub fn items(ctx: &Ctx, built: &Built, search_engine: Option<&str>, multiple_ses
     out
 }
 
-/// An item's text: iTerm2's, with "Tandem" and the Windows words where they differ. A helper's or a
+/// An item's text: iTerm2's, with "Termurion" and the Windows words where they differ. A helper's or a
 /// Smart Selection action's title is the text the caller gave (made inert in `entries`).
 pub fn title(item: Item, ctx: &Ctx, search_engine: Option<&str>) -> String {
     match item {

@@ -307,7 +307,7 @@ impl App {
     }
 
     /// An annotation link was clicked (`PSS:216-234`): scrolls to the note and opens it as Next
-    /// Annotation does (Tandem has no highlight flash). Acts only for an id this app placed, on
+    /// Annotation does (Termurion has no highlight flash). Acts only for an id this app placed, on
     /// the pane the link's session names (ruling P9).
     pub(super) fn reveal_ai_annotation(&mut self, session: &str, id: &str, event_loop: &ActiveEventLoop) {
         let Some(&(pane, note)) = self.ai_annotations.get(id) else { return };

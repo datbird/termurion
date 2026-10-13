@@ -338,7 +338,7 @@ impl BatteryMeter {
 }
 
 /// `NSDateFormatterExtras.m:125-136`, English separator only (no locale support here since
-/// Tandem has no non-English UI yet).
+/// Termurion has no non-English UI yet).
 pub fn duration_string(seconds: f64) -> String {
     let total_seconds = seconds as i64; // C `int` truncates toward zero.
     let minutes = total_seconds / 60;

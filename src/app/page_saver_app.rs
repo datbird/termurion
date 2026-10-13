@@ -321,7 +321,7 @@ impl Saving {
             (Some(Waiting::Attributes), Ok(_)) => self.job.on_attributes_added(),
             (Some(Waiting::Html), Ok(v)) => self.job.on_html(v.as_str().map(str::to_string)),
             // A page-world exception's text is the page's to choose: never shown, and only its size
-            // is logged (page text stays out of the log). The alert says Tandem's fixed text (Task 10
+            // is logged (page text stays out of the log). The alert says Termurion's fixed text (Task 10
             // review minor 2).
             (Some(Waiting::Extract | Waiting::Attributes | Waiting::Html), Err(e)) => {
                 crate::rlog!("save page as: a saver script failed (an error of {} bytes)", e.len());
@@ -554,7 +554,7 @@ mod tests {
     }
 
     fn temp_root(tag: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("tandem-psave-{}-{tag}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("termurion-psave-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         root
@@ -584,7 +584,7 @@ mod tests {
         fn new(folder: PathBuf, answers: Vec<Result<Value, String>>) -> Harness {
             let mut seam = ScriptSeam::default();
             seam.answers.extend(answers);
-            Harness { s: Saving::new(folder, "https://tandem.test/".into(), 7, 1), seam, reveals: Vec::new(), fails: Vec::new(), epoch: 7, ops: Vec::new(), hold: false, held: Vec::new(), unmarkable: false, hold_writes: false }
+            Harness { s: Saving::new(folder, "https://termurion.test/".into(), 7, 1), seam, reveals: Vec::new(), fails: Vec::new(), epoch: 7, ops: Vec::new(), hold: false, held: Vec::new(), unmarkable: false, hold_writes: false }
         }
 
         fn go(&mut self) {
@@ -644,8 +644,8 @@ mod tests {
     }
 
     fn tree() -> Value {
-        json!({"frameTree": {"frame": {"id": "F1", "url": "https://tandem.test/", "mimeType": "text/html"},
-            "resources": [{"url": "https://tandem.test/i.png", "mimeType": "image/png"}]}})
+        json!({"frameTree": {"frame": {"id": "F1", "url": "https://termurion.test/", "mimeType": "text/html"},
+            "resources": [{"url": "https://termurion.test/i.png", "mimeType": "image/png"}]}})
     }
 
     fn png() -> Value {
@@ -664,7 +664,7 @@ mod tests {
     fn save_flow_follows_iterm2() {
         let root = temp_root("flow");
         let folder = root.join("site");
-        let urls = json!(["https://tandem.test/i.png", "https://tandem.test/gone.png"]);
+        let urls = json!(["https://termurion.test/i.png", "https://termurion.test/gone.png"]);
         let mut h = Harness::new(folder.clone(), vec![Ok(urls), Ok(tree()), Ok(png()), Ok(Value::Null), Ok(json!("<html>hi</html>"))]);
         h.go();
         assert!(h.fails.is_empty(), "{:?}", h.fails);
@@ -679,7 +679,7 @@ mod tests {
         assert_eq!(calls.len(), 5, "{calls:?}");
         assert!(calls[0].starts_with("Page ") && calls[3].starts_with("Page ") && calls[4].starts_with("Page "));
         assert_eq!(calls[1], "DevTools Page.getResourceTree {}");
-        assert!(h.seam.calls[2].2.contains(r#""frameId":"F1""#) && h.seam.calls[2].2.contains("https://tandem.test/i.png"));
+        assert!(h.seam.calls[2].2.contains(r#""frameId":"F1""#) && h.seam.calls[2].2.contains("https://termurion.test/i.png"));
         // No saver body holds a view secret (page world: no bridge, no secret).
         let secret = crate::browser_js::new_secret();
         for (_, r, body) in &h.seam.calls {
@@ -718,7 +718,7 @@ mod tests {
     fn write_failures_follow_iterm2() {
         let root2 = temp_root("writes2");
         let folder2 = root2.join("site");
-        let mut h2 = Harness::new(folder2.clone(), vec![Ok(json!(["https://tandem.test/i.png"])), Ok(tree()), Ok(png()), Ok(Value::Null), Ok(json!("<p>ok</p>"))]);
+        let mut h2 = Harness::new(folder2.clone(), vec![Ok(json!(["https://termurion.test/i.png"])), Ok(tree()), Ok(png()), Ok(Value::Null), Ok(json!("<p>ok</p>"))]);
         h2.hold = true;
         h2.go();
         let extract = h2.held.pop().unwrap();
@@ -754,7 +754,7 @@ mod tests {
     fn a_navigation_aborts_the_save() {
         let root = temp_root("nav");
         let folder = root.join("site");
-        let mut h = Harness::new(folder.clone(), vec![Ok(json!(["https://tandem.test/i.png"])), Ok(tree()), Ok(png())]);
+        let mut h = Harness::new(folder.clone(), vec![Ok(json!(["https://termurion.test/i.png"])), Ok(tree()), Ok(png())]);
         h.hold = true;
         h.go();
         let extract = h.held.pop().unwrap();
@@ -775,7 +775,7 @@ mod tests {
     fn cancel_writes_nothing_more() {
         let root = temp_root("cancel");
         let folder = root.join("site");
-        let mut h = Harness::new(folder.clone(), vec![Ok(json!(["https://tandem.test/i.png"]))]);
+        let mut h = Harness::new(folder.clone(), vec![Ok(json!(["https://termurion.test/i.png"]))]);
         h.hold = true;
         h.go();
         let _extract = h.held.pop().unwrap();
@@ -785,7 +785,7 @@ mod tests {
         assert!(!folder.exists());
         assert!(h.s.over && h.fails.is_empty() && h.reveals.is_empty());
         // A late answer of the page does nothing.
-        assert!(h.s.page_answer(Ok(json!(["https://tandem.test/i.png"])), 7).is_empty());
+        assert!(h.s.page_answer(Ok(json!(["https://termurion.test/i.png"])), 7).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -796,7 +796,7 @@ mod tests {
     fn cancel_with_writes_queued_leaves_nothing() {
         let root = temp_root("cancelq");
         let folder = root.join("site");
-        let urls = json!(["https://tandem.test/i.png"]);
+        let urls = json!(["https://termurion.test/i.png"]);
         let mut h = Harness::new(folder.clone(), vec![Ok(urls), Ok(tree()), Ok(png())]);
         h.hold_writes = true;
         h.go();
@@ -823,7 +823,7 @@ mod tests {
         let reply = json!({"content": base64::engine::general_purpose::STANDARD.encode(&big), "base64Encoded": true});
         assert!(crate::devtools::reply_weight(&reply) > crate::devtools::MAX_RESOURCE, "the reply is over View Source's cap");
         assert!(crate::devtools::reply_weight(&reply) <= page_saver::MAX_REPLY_BYTES);
-        let urls = json!(["https://tandem.test/i.png"]);
+        let urls = json!(["https://termurion.test/i.png"]);
         let mut h = Harness::new(folder.clone(), vec![Ok(urls), Ok(tree()), Ok(reply), Ok(Value::Null), Ok(json!("<html>hi</html>"))]);
         h.go();
         assert!(h.fails.is_empty(), "{:?}", h.fails);
@@ -832,7 +832,7 @@ mod tests {
         let folder2 = root.join("site2");
         let over = vec![7u8; page_saver::MAX_RESOURCE_BYTES as usize + 1];
         let reply = json!({"content": base64::engine::general_purpose::STANDARD.encode(&over), "base64Encoded": true});
-        let mut h = Harness::new(folder2.clone(), vec![Ok(json!(["https://tandem.test/i.png"])), Ok(tree()), Ok(reply), Ok(Value::Null), Ok(json!("<html>hi</html>"))]);
+        let mut h = Harness::new(folder2.clone(), vec![Ok(json!(["https://termurion.test/i.png"])), Ok(tree()), Ok(reply), Ok(Value::Null), Ok(json!("<html>hi</html>"))]);
         h.go();
         assert!(h.fails.is_empty(), "{:?}", h.fails);
         assert!(!folder2.join("resources").join("i.png").exists(), "over MAX_RESOURCE_BYTES is skipped");
@@ -866,7 +866,7 @@ mod tests {
     fn a_cancel_while_a_folder_is_made_leaves_no_folder() {
         let root = temp_root("cancelmk");
         let folder = root.join("site");
-        let mut s = Saving::new(folder.clone(), "https://tandem.test/".into(), 7, 1);
+        let mut s = Saving::new(folder.clone(), "https://termurion.test/".into(), 7, 1);
         let first = s.begin(7);
         let made: Vec<FileOp> = first.into_iter().filter_map(|a| if let Act::File(op) = a { Some(op) } else { None }).collect();
         assert!(matches!(made.as_slice(), [FileOp { kind: FileKind::MakeDir, .. }]), "{made:?}");
@@ -879,7 +879,7 @@ mod tests {
         assert!(listing(&root).is_empty(), "the cancelled save left {:?}", listing(&root));
         // A folder that was there before is never removed: the same race against an existing one.
         std::fs::create_dir(&folder).unwrap();
-        let mut s = Saving::new(folder.clone(), "https://tandem.test/".into(), 7, 2);
+        let mut s = Saving::new(folder.clone(), "https://termurion.test/".into(), 7, 2);
         let first = s.begin(7);
         let (tx, rx) = std::sync::mpsc::channel::<FileOp>();
         for a in first {
@@ -905,7 +905,7 @@ mod tests {
     fn a_failure_while_a_folder_is_made_leaves_no_folder() {
         let root = temp_root("failmk");
         let folder = root.join("site");
-        let mut s = Saving::new(folder.clone(), "https://tandem.test/".into(), 7, 1);
+        let mut s = Saving::new(folder.clone(), "https://termurion.test/".into(), 7, 1);
         let ops = |acts: Vec<Act>| -> Vec<FileOp> { acts.into_iter().filter_map(|a| if let Act::File(op) = a { Some(op) } else { None }).collect() };
         // One worker for the whole save, as the app has: it makes `site` too.
         let (tx, rx) = std::sync::mpsc::channel::<FileOp>();
@@ -983,10 +983,10 @@ mod tests {
     fn the_alert_shows_sanitized_text_and_the_door_refuses_types() {
         let root = temp_root("door");
         let folder = root.join("site");
-        let t = json!({"frameTree": {"frame": {"id": "F1", "url": "https://tandem.test/", "mimeType": "text/html"},
-            "resources": [{"url": "https://tandem.test/a.url", "mimeType": "application/octet-stream"}, {"url": "https://tandem.test/desktop.ini", "mimeType": "text/plain"}, {"url": "https://tandem.test/s.scf", "mimeType": "text/plain"}]}});
+        let t = json!({"frameTree": {"frame": {"id": "F1", "url": "https://termurion.test/", "mimeType": "text/html"},
+            "resources": [{"url": "https://termurion.test/a.url", "mimeType": "application/octet-stream"}, {"url": "https://termurion.test/desktop.ini", "mimeType": "text/plain"}, {"url": "https://termurion.test/s.scf", "mimeType": "text/plain"}]}});
         let body = json!({"content": "x", "base64Encoded": false});
-        let urls = json!(["https://tandem.test/a.url", "https://tandem.test/desktop.ini", "https://tandem.test/s.scf"]);
+        let urls = json!(["https://termurion.test/a.url", "https://termurion.test/desktop.ini", "https://termurion.test/s.scf"]);
         let mut h = Harness::new(folder.clone(), vec![Ok(urls), Ok(t), Ok(body.clone()), Ok(body.clone()), Ok(body), Ok(Value::Null), Ok(json!("<p>"))]);
         h.go();
         assert!(h.fails.is_empty(), "{:?}", h.fails);
@@ -1009,7 +1009,7 @@ mod tests {
     fn an_unmarkable_drive_fails_the_save() {
         let root = temp_root("unmarked");
         let folder = root.join("site");
-        let mut h = Harness::new(folder.clone(), vec![Ok(json!(["https://tandem.test/i.png"])), Ok(tree()), Ok(png()), Ok(Value::Null), Ok(json!("<p>ok</p>"))]);
+        let mut h = Harness::new(folder.clone(), vec![Ok(json!(["https://termurion.test/i.png"])), Ok(tree()), Ok(png()), Ok(Value::Null), Ok(json!("<p>ok</p>"))]);
         h.unmarkable = true;
         h.go();
         assert_eq!(h.fails, vec![page_saver::save_failed_text(crate::inert_files::UNMARKABLE)]);
@@ -1037,7 +1037,7 @@ mod tests {
         let d = FileDone { kind: FileKind::Write, path: folder.join("index.html"), err: Some("index error".into()), unmarked: false };
         let acts = s.file_done(d, 1);
         assert_eq!(acts.last(), Some(&Act::Fail(page_saver::save_failed_text("Failed to save file: index error"))), "{acts:?}");
-        // A page-world exception (a hostile page can choose its message) shows Tandem's fixed text.
+        // A page-world exception (a hostile page can choose its message) shows Termurion's fixed text.
         let root = temp_root("pageerr");
         let mut h = Harness::new(root.join("site"), vec![Err("Uncaught Error: Your files are encrypted, call 555".into())]);
         h.go();
@@ -1051,14 +1051,14 @@ mod tests {
     fn every_saved_file_is_marked() {
         let root = temp_root("zone");
         let folder = root.join("site");
-        let mut h = Harness::new(folder.clone(), vec![Ok(json!(["https://tandem.test/i.png"])), Ok(tree()), Ok(png()), Ok(Value::Null), Ok(json!("<p>ok</p>"))]);
+        let mut h = Harness::new(folder.clone(), vec![Ok(json!(["https://termurion.test/i.png"])), Ok(tree()), Ok(png()), Ok(Value::Null), Ok(json!("<p>ok</p>"))]);
         h.go();
         assert_eq!(h.reveals.len(), 1);
         for f in [folder.join("index.html"), folder.join("resources").join("i.png")] {
             let stream = format!("{}:Zone.Identifier", f.display());
             let text = crate::localfs::read_to_string(&crate::localfs::judge_io(&stream).unwrap()).unwrap_or_else(|e| panic!("{f:?}: {e}"));
             assert_eq!(crate::inert_files::zone_of(&text), Some(3), "{f:?}");
-            assert!(text.contains("HostUrl=https://tandem.test/\r\n"), "{text:?}");
+            assert!(text.contains("HostUrl=https://termurion.test/\r\n"), "{text:?}");
         }
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1069,9 +1069,9 @@ mod tests {
     fn a_huge_url_list_is_capped() {
         let root = temp_root("cap");
         let folder = root.join("site");
-        let urls: Vec<String> = (0..5000).map(|i| format!("https://tandem.test/r{i}.png")).collect();
+        let urls: Vec<String> = (0..5000).map(|i| format!("https://termurion.test/r{i}.png")).collect();
         let resources: Vec<Value> = urls.iter().map(|u| json!({"url": u, "mimeType": "image/png"})).collect();
-        let t = json!({"frameTree": {"frame": {"id": "F1", "url": "https://tandem.test/", "mimeType": "text/html"}, "resources": resources}});
+        let t = json!({"frameTree": {"frame": {"id": "F1", "url": "https://termurion.test/", "mimeType": "text/html"}, "resources": resources}});
         let mut answers = vec![Ok(json!(urls)), Ok(t)];
         for _ in 0..2000 {
             answers.push(Ok(json!({"content": "x", "base64Encoded": false})));

@@ -289,7 +289,7 @@ impl Gateway {
                 self.disconnected = true;
                 ev.push(Event::Exit);
             }
-            // %noop, %pane-mode-changed, and notifications Tandem does not know are logged only.
+            // %noop, %pane-mode-changed, and notifications Termurion does not know are logged only.
             Ok(Note::Other(_)) => {}
             Ok(n) => ev.push(Event::Note(n)),
         }

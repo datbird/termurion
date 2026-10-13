@@ -2,7 +2,7 @@
 //! `waitForTask:`, `L:941-1012`): hidden, stdin empty, stdout and stderr on one pipe, in a Job
 //! Object so Terminate and an API stop end the script and whatever it started. When the script
 //! ends by itself the job is handed back (`into_job`), so its helpers keep running as in iTerm2
-//! until they end or Tandem quits.
+//! until they end or Termurion quits.
 
 use std::collections::VecDeque;
 use std::path::Path;
@@ -51,7 +51,7 @@ pub struct ScriptProcess {
 }
 
 impl ScriptProcess {
-    /// Starts `program` with `args`, exactly `env` as its environment and `cwd` (None: Tandem's
+    /// Starts `program` with `args`, exactly `env` as its environment and `cwd` (None: Termurion's
     /// own). `notify` wakes the app when output waits and at the end.
     pub fn start(program: &Path, args: &[String], env: &[(String, String)], cwd: Option<&Path>, notify: Notify) -> Result<ScriptProcess, String> {
         use std::io::Read;
@@ -250,7 +250,7 @@ mod tests {
         assert!(total >= 400 * 40 && pieces > 1, "{total} bytes in {pieces} pieces");
         assert!(woke.load(std::sync::atomic::Ordering::SeqCst) >= 1);
 
-        let mut p = ScriptProcess::start(Path::new("cmd.exe"), &args(&["/c", "echo %TANDEM_T%"]), &env_with(&[("TANDEM_T", "1")]), None, quiet).unwrap();
+        let mut p = ScriptProcess::start(Path::new("cmd.exe"), &args(&["/c", "echo %TERMURION_T%"]), &env_with(&[("TERMURION_T", "1")]), None, quiet).unwrap();
         let (out, code) = run_out(&mut p, Duration::from_secs(20));
         assert_eq!((out.trim(), code), ("1", Some(0)));
     }
@@ -284,7 +284,7 @@ mod tests {
                 return;
             }
         };
-        let dir = std::env::temp_dir().join(format!("tandem-stock-script-{me}"));
+        let dir = std::env::temp_dir().join(format!("termurion-stock-script-{me}"));
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("count_windows.py");
         std::fs::write(&script, "import iterm2\n\nasync def main(c):\n    print(len((await iterm2.async_get_app(c)).windows))\n\niterm2.run_until_complete(main)\n").unwrap();

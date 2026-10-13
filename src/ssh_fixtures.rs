@@ -1,5 +1,5 @@
 //! Recorded-stream builders for the SSH tests (milestone 14c): byte for byte the formats
-//! framer.py and conductor.sh print, and the ones Tandem's `conductor::encode` writes. Test
+//! framer.py and conductor.sh print, and the ones Termurion's `conductor::encode` writes. Test
 //! only: nothing here starts ssh, a shell, Python or a socket.
 
 use base64::Engine;

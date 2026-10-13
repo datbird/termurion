@@ -338,7 +338,7 @@ mod tests {
     /// R13vw-5: `.itermcolors` goes through 13t's reader, duplicate check and `add_custom`.
     #[test]
     fn color_files_import_through_13t() {
-        let dir = std::env::temp_dir().join(format!("tandem-open-colors-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-open-colors-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut g = Globals::empty(&dir.join("globals.toml"));
         let bytes = two_colors();

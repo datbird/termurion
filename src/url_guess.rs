@@ -27,7 +27,7 @@ pub struct CharSet {
 }
 
 /// `NCS:466-478`: the configured characters, letters and digits, `'` `-` `.` `:` (the IDN
-/// additions), less the exclusions. Tandem takes every Unicode letter and digit for the IDN ranges.
+/// additions), less the exclusions. Termurion takes every Unicode letter and digit for the IDN ranges.
 pub fn url(chars: &str, exclusions: &str) -> CharSet {
     CharSet { extra: chars.chars().collect(), excluded: exclusions.chars().collect(), blanks: false }
 }

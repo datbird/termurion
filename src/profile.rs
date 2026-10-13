@@ -126,7 +126,7 @@ impl Profile {
     }
 
     /// The TERM the profile reports. iTerm2 seeds "xterm-256color" into every profile it makes,
-    /// so a profile with no stored type (one made before Tandem had the key) reads that, not the
+    /// so a profile with no stored type (one made before Termurion had the key) reads that, not the
     /// schema's "xterm" fallback.
     pub fn terminal_type(&self) -> String {
         match self.values.get("Terminal Type") {
@@ -308,7 +308,7 @@ pub fn is_ssh(p: &Profile) -> bool {
     p.string("Custom Command") == "SSH"
 }
 
-/// Whether an SSH profile runs through Tandem's `it2ssh` (`AB:893-926`): SSH with a non-blank
+/// Whether an SSH profile runs through Termurion's `it2ssh` (`AB:893-926`): SSH with a non-blank
 /// Command, SSH Integration on, and `it2ssh` usable.
 pub fn ssh_integrated(p: &Profile, it2ssh: Option<&std::path::Path>) -> bool {
     is_ssh(p) && !p.string("Command").trim().is_empty() && crate::ssh_config::from_profile(p).ssh_integration && it2ssh.is_some()
@@ -405,7 +405,7 @@ mod tests {
     use super::*;
     use crate::palette::rgb;
 
-    /// `NSFont+iTerm.m:32-47` with Tandem's drawn range (pre-flight P2: 4 to 128, not 2 to 200).
+    /// `NSFont+iTerm.m:32-47` with Termurion's drawn range (pre-flight P2: 4 to 128, not 2 to 200).
     #[test]
     fn grown_fonts_follow_iterm2() {
         assert_eq!(grow_font_value("Consolas 12", 1.0), "Consolas 13");

@@ -1,5 +1,5 @@
 //! The kitty graphics protocol: `ESC _ G <keys> ; <base64 payload> ESC \`. iTerm2 carries
-//! transmit, display, delete, and query (animation is answered but not run); so does Tandem.
+//! transmit, display, delete, and query (animation is answered but not run); so does Termurion.
 
 use std::collections::HashMap;
 
@@ -30,7 +30,7 @@ pub const BUDGET: usize = 320 << 20;
 pub struct Kitty {
     /// By kitty image id: the decoded picture (width, height, RGBA) and when it came.
     pub images: HashMap<u32, (u32, u32, std::sync::Arc<Vec<u8>>, u64)>,
-    /// Image number (I) to the id Tandem gave it.
+    /// Image number (I) to the id Termurion gave it.
     pub numbers: HashMap<u32, u32>,
     /// Placements: kitty image id, placement id, and the image store id showing it.
     pub placements: Vec<(u32, u32, u32)>,
@@ -77,7 +77,7 @@ fn bad_file() -> String {
     "EBADF:Cannot use the file".into()
 }
 
-/// A file a program asked Tandem to read: only a regular local file (no share, device, or
+/// A file a program asked Termurion to read: only a regular local file (no share, device, or
 /// folder); a temporary file (`t=t`) only in the temp folder with kitty's marker in its
 /// name, deleted after reading.
 fn read_file(raw: &[u8], temporary: bool) -> Option<Vec<u8>> {
@@ -454,7 +454,7 @@ mod tests {
     #[test]
     fn file_media_refuse_what_they_should() {
         let tmp = std::env::temp_dir();
-        let d = tmp.join(format!("tandem-kitty-{}", std::process::id()));
+        let d = tmp.join(format!("termurion-kitty-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let mut s = Screen::new(20, 6);
         let path = |p: &std::path::Path| p.to_string_lossy().into_owned();

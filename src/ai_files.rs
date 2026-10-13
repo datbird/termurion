@@ -29,7 +29,7 @@ pub const UPLOAD_UNSUPPORTED_PROVIDER: &str = "File upload is not supported with
 pub const ADD_UNSUPPORTED_PROVIDER: &str = "Adding to vector store is not supported with this LLM provider";
 pub const STORE_NOT_ENABLED: &str = "The vector store has not been enabled in settings";
 pub const NO_STORE_PROVIDER: &str = "No vector store is available for this LLM provider.";
-/// Tandem's refusal for a model whose own host is not api.openai.com (Decision: iTerm2 sends
+/// Termurion's refusal for a model whose own host is not api.openai.com (Decision: iTerm2 sends
 /// that model's key, custom headers or Azure api-key to OpenAI along with the file).
 pub const OPENAI_MODELS_ONLY: &str = "Files can be sent to OpenAI only with a model at api.openai.com, so that another server\u{2019}s key or headers never reach OpenAI.";
 

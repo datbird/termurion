@@ -1,6 +1,6 @@
 //! The bundled AI model catalog: iTerm2's `ai-models.json`, decoded fail-safe as
 //! `AITerm/AIModelCatalog.swift` does, with the default, recommended and economy models. Pure;
-//! Tandem never downloads a newer catalog (ruling 6).
+//! Termurion never downloads a newer catalog (ruling 6).
 
 use crate::ai_settings::{Api, Vendor};
 use serde::Deserialize;

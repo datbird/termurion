@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 pub const CONDUCTOR_KEY: &str = "Conductor";
 pub const DCS_ID_KEY: &str = "Conductor DCS ID";
 pub const TREE_KEY: &str = "Conductor Parser Tree";
-/// Tandem's (F27): the session is or was an ssh session, so a reattached pane may recover in
+/// Termurion's (F27): the session is or was an ssh session, so a reattached pane may recover in
 /// band. Saved with the host key.
 pub const SESSION_KEY: &str = "SSH Session";
 
@@ -19,7 +19,7 @@ pub const SESSION_KEY: &str = "SSH Session";
 pub const RECOVERING: &str = "Recovering ssh connection\u{2026}";
 pub const RECOVERED: &str = "ssh connection recovered!";
 
-/// The most nodes and the longest id a saved tree may hold (Tandem's): a state file is read
+/// The most nodes and the longest id a saved tree may hold (Termurion's): a state file is read
 /// as untrusted, and each node makes a hook.
 pub const TREE_MAX_NODES: usize = 64;
 const ID_MAX: usize = 256;
@@ -52,7 +52,7 @@ impl Tree {
         Some(())
     }
 
-    /// Whether the tree is one Tandem would have saved: no negative pid, ids of a sane length,
+    /// Whether the tree is one Termurion would have saved: no negative pid, ids of a sane length,
     /// at most `TREE_MAX_NODES` nodes and one level per possible hook.
     pub fn valid(&self) -> bool {
         self.walk(0, &mut 0).is_some()
@@ -87,7 +87,7 @@ pub struct RecoveryInfo {
 impl RecoveryInfo {
     /// One `:recovery: <key> <value>` line's key and value (`CD:2775-2800`). False for a line
     /// iTerm2 skips: a missing value, an unknown key, a number that is not one, a login that is
-    /// not a pid (Tandem: a pid is above 0, since the autopoll and notification pseudo pids
+    /// not a pid (Termurion: a pid is above 0, since the autopoll and notification pseudo pids
     /// and 0 name no process), or a value past `VALUE_MAX`.
     pub fn set(&mut self, key: &str, value: &str) -> bool {
         if value.len() > VALUE_MAX {
@@ -185,7 +185,7 @@ mod tests {
     fn a_saved_tree_is_checked() {
         assert!(chain_tree(&[(Some(100), "D0".into()), (Some(200), "D1".into())]).valid());
         assert!(Tree::default().valid());
-        // A negative pid, a long id, too many levels or too many nodes is not a tree Tandem saved.
+        // A negative pid, a long id, too many levels or too many nodes is not a tree Termurion saved.
         assert!(!t(vec![(-5, "D", Tree::default())]).valid());
         assert!(!t(vec![(1, &"x".repeat(300), Tree::default())]).valid());
         let mut deep = Tree::default();

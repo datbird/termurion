@@ -129,7 +129,7 @@ impl App {
         self.stop_debug_logging(false);
     }
 
-    /// What the header and the footer say (`DL:98-150`): Tandem's version, the machine, the
+    /// What the header and the footer say (`DL:98-150`): Termurion's version, the machine, the
     /// monitors, Windows and the windows with counts. No title, folder, command or user name (P3).
     pub(super) fn debug_facts(&self) -> dlog::Facts {
         let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);

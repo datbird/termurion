@@ -382,13 +382,13 @@ impl Batch {
 /// scripts, never `.bat`, `.cmd`, `.exe` and the like.
 pub const SUPPORTED_TYPES: [&str; 14] = [".command", ".tool", ".sh", ".zsh", ".csh", ".pl", ".bash", ".ps1", ".its", ".itermtab", ".itermcolors", ".itr", ".iterm2arrangement", ".it2triggers"];
 
-pub const APPLICATION_KEY: &str = "Software\\Classes\\Applications\\tandem.exe";
+pub const APPLICATION_KEY: &str = "Software\\Classes\\Applications\\termurion.exe";
 
 /// The registry entries (key, value name, value) that make Tandem an "Open with" choice for one
 /// user. Never a default association.
 pub fn open_with_entries(exe: &Path) -> Vec<(String, String, String)> {
     let mut v = vec![
-        (APPLICATION_KEY.to_string(), "FriendlyAppName".to_string(), "Tandem".to_string()),
+        (APPLICATION_KEY.to_string(), "FriendlyAppName".to_string(), "Termurion".to_string()),
         (format!("{APPLICATION_KEY}\\shell\\open\\command"), String::new(), format!("\"{}\" \"%1\"", exe.display())),
     ];
     for ext in SUPPORTED_TYPES {
@@ -613,11 +613,11 @@ mod tests {
     }
 
     #[test]
-    fn open_with_entries_name_only_tandem() {
-        let entries = open_with_entries(Path::new("C:\\Tandem\\termurion.exe"));
-        assert!(entries.iter().all(|(k, _, _)| k.starts_with("Software\\Classes\\Applications\\tandem.exe")), "{entries:?}");
+    fn open_with_entries_name_only_termurion() {
+        let entries = open_with_entries(Path::new("C:\\Termurion\\termurion.exe"));
+        assert!(entries.iter().all(|(k, _, _)| k.starts_with("Software\\Classes\\Applications\\termurion.exe")), "{entries:?}");
         let get = |k: &str, n: &str| entries.iter().find(|(kk, nn, _)| kk.ends_with(k) && nn == n).map(|(_, _, v)| v.as_str());
-        assert_eq!(get("shell\\open\\command", ""), Some("\"C:\\Tandem\\termurion.exe\" \"%1\""));
+        assert_eq!(get("shell\\open\\command", ""), Some("\"C:\\Termurion\\termurion.exe\" \"%1\""));
         for ext in [".its", ".itermtab", ".itermcolors", ".itr", ".iterm2arrangement", ".it2triggers", ".command", ".tool", ".sh", ".zsh", ".csh", ".pl", ".ps1", ".bash"] {
             assert_eq!(get("SupportedTypes", ext), Some(""), "{ext}");
         }

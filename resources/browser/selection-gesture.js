@@ -21,7 +21,7 @@
                 return;
             }
             w.count += 1;
-            window.webkit.messageHandlers.TandemSelectionGesture.postMessage({ t: "gesture", phase: phase, sessionSecret: "{{SECRET}}" });
+            window.webkit.messageHandlers.TermurionSelectionGesture.postMessage({ t: "gesture", phase: phase, sessionSecret: "{{SECRET}}" });
         }
         function on(type, phase) {
             window.addEventListener(type, function (e) { if (!e.isTrusted) { return; } if (e.repeat) { return; } send(phase); }, true);

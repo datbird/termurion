@@ -618,7 +618,7 @@ mod tests {
 
     #[test]
     fn wheel_arrows_broadcast_but_wheel_reports_stay_local() {
-        // 13j: Tandem can now tell the two apart (m7f kept both local before).
+        // 13j: Termurion can now tell the two apart (m7f kept both local before).
         let b = Broadcast { raw: Mode::AllPanes, ..Default::default() };
         let v = View { tabs: vec![TabView { broadcasting: true, panes: vec![7, 8] }], current_tab: 0, current: 7, exited: BTreeSet::new() };
         let none = BTreeSet::new();

@@ -6,7 +6,7 @@ use super::*;
 use crate::offscreen::{self, Facts};
 
 /// The pane and line of the band under (`x`, `y`), if any. `covered` is whether something of
-/// Tandem's (an info bar, the find bar, an indicator) is drawn over the point: it keeps its press.
+/// Termurion's (an info bar, the find bar, an indicator) is drawn over the point: it keeps its press.
 fn hit(hits: &[(PaneId, Rect, i32)], covered: &dyn Fn(f32, f32) -> bool, x: f32, y: f32) -> Option<(PaneId, i32)> {
     if covered(x, y) {
         return None;
@@ -39,7 +39,7 @@ impl App {
         }
     }
 
-    /// Draws pane `id`'s band when the rules allow it, around `holes` (Tandem's own surfaces
+    /// Draws pane `id`'s band when the rules allow it, around `holes` (Termurion's own surfaces
     /// drawn over the pane's top). Answers the band's visible pieces and the line it shows,
     /// which the frame keeps as this window's hits.
     pub(super) fn draw_offscreen(&self, frame: &mut Frame, id: PaneId, rect: Rect, cell: (f32, f32), holes: &[Rect]) -> Vec<(Rect, i32)> {
@@ -79,7 +79,7 @@ impl App {
 
     /// A left press inside a band reveals its command at the top of the pane and is consumed.
     pub(super) fn offscreen_click(&mut self, x: f32, y: f32) -> bool {
-        let covered = |x: f32, y: f32| self.tandem_ui_at(x, y);
+        let covered = |x: f32, y: f32| self.termurion_ui_at(x, y);
         let Some((id, line)) = hit(&self.offscreen_hits, &covered, x, y) else { return false };
         self.show_line(id, line, false);
         self.redraw();
@@ -106,7 +106,7 @@ mod tests {
     /// Task 6 review 1: a point under an info bar, the find bar or an indicator belongs to
     /// that surface, not to the band drawn beneath it.
     #[test]
-    fn band_hit_area_excludes_tandem_surfaces() {
+    fn band_hit_area_excludes_termurion_surfaces() {
         let hits = [(1, Rect { x: 0.0, y: 0.0, w: 100.0, h: 32.0 }, -60)];
         let info_bar = |x: f32, y: f32| Rect { x: 0.0, y: 0.0, w: 100.0, h: 12.0 }.contains(x, y);
         assert_eq!(hit(&hits, &info_bar, 50.0, 5.0), None, "the info bar's strip");
@@ -122,7 +122,7 @@ mod tests {
         assert!(!click_allowed(false, 3));
     }
 
-    /// Task 6 review 1: the band's press runs after every Tandem surface that can sit over it
+    /// Task 6 review 1: the band's press runs after every Termurion surface that can sit over it
     /// (indicators, panels, inline buttons, info bar, porthole, block pills, the divider, title
     /// bars, find bar, the one overlay list) and before the scrollbar and the pane.
     #[test]
@@ -131,7 +131,7 @@ mod tests {
         let press = m.split("fn mouse_press(").nth(1).unwrap();
         let at = |needle: &str| press.find(needle).unwrap_or_else(|| panic!("{needle} missing"));
         let band = at("self.offscreen_click(x, y)");
-        for before in ["self.chat_indicator_press(x, y)", "self.clip_press(x, y, event_loop)", "self.inline_press(button, x, y, event_loop)", "self.info_bar_press(x, y, event_loop)", "self.porthole_press(x, y)", "self.block_press(x, y)", "self.divider_at(x, y)", "self.find_press(x, y)", "self.tandem_ui_at(x, y)"] {
+        for before in ["self.chat_indicator_press(x, y)", "self.clip_press(x, y, event_loop)", "self.inline_press(button, x, y, event_loop)", "self.info_bar_press(x, y, event_loop)", "self.porthole_press(x, y)", "self.block_press(x, y)", "self.divider_at(x, y)", "self.find_press(x, y)", "self.termurion_ui_at(x, y)"] {
             assert!(at(before) < band, "{before} must come first");
         }
         assert!(band < at("self.bar_press_only_activates(first, x, y)"), "the band is above the scrollbar");
@@ -146,7 +146,7 @@ mod tests {
         assert!(slot.contains("swap(&mut self.offscreen_hits, &mut s.offscreen_hits)"));
         assert_eq!(slot.matches("offscreen_hits: Vec::new()").count(), 2, "WinSlot::new and new_empty");
         let m = include_str!("mod.rs");
-        // Task 6 review 2: drawn once every Tandem surface is, around their rectangles.
+        // Task 6 review 2: drawn once every Termurion surface is, around their rectangles.
         let build = &m[m.find("fn build_frame(&mut self)").unwrap()..];
         let band = build.find("self.draw_offscreen(&mut frame, id, rect, cell, &holes)").unwrap();
         for before in ["self.draw_info_bar(&mut frame, id, rect, cell)", "self.draw_portholes(&mut frame, id, rect, cell)", "self.draw_coprocess_indicator(", "scene::find_bar(&mut frame", "self.draw_composer(&mut frame", "self.draw_completion(&mut frame", "mouse::Overlay::Toast", "mouse::Overlay::Banner"] {

@@ -176,8 +176,8 @@ pub fn defaults_key(key: &str) -> String {
     }
 }
 
-/// The key with its first letter lower-case: how Tandem spelled an Advanced key before the
-/// 13y2 rename sweep, which a settings plist written by that Tandem may still hold.
+/// The key with its first letter lower-case: how Termurion spelled an Advanced key before the
+/// 13y2 rename sweep, which a settings plist written by that Termurion may still hold.
 fn lower_first(key: &str) -> String {
     let mut chars = key.chars();
     match chars.next() {
@@ -187,9 +187,9 @@ fn lower_first(key: &str) -> String {
 }
 
 /// The global settings (iTerm2 user defaults) in a com.googlecode.iterm2.plist, for the
-/// keys Tandem's global schema knows. Other keys are left out. A schema key spelled with a
+/// keys Termurion's global schema knows. Other keys are left out. A schema key spelled with a
 /// lower-case first letter is also found under iTerm2's capitalized defaults key, and a
-/// capitalized schema key under its lower-case spelling (Tandem before the 13y2 rename); the
+/// capitalized schema key under its lower-case spelling (Termurion before the 13y2 rename); the
 /// schema spelling wins when a file holds both. The settings that stand between a person and an AI
 /// request (`ai_settings::guards_consent`) never come, even from a hand-edited plist: a person
 /// opts in again on Windows (Review Focus 3, ruling I5).
@@ -253,7 +253,7 @@ const RIGHT_CONTROL: i64 = 12;
 /// (`HKM:34-73`), a single hotkey window (`Hotkey` and `HotKeyTogglesWindow`) moves to the
 /// profile `HotKeyBookmark` names (`HKM:252-278`) and the app hotkey is cleared; the migrated
 /// flag is set either way. A dynamic hotkey profile and the children warning are not migrated
-/// (Tandem's dynamic profiles import once).
+/// (Termurion's dynamic profiles import once).
 pub fn migrate_legacy(values: &mut Vec<(String, Value)>, legacy: &Legacy, profiles: &mut [Profile]) {
     fn get<'a>(values: &'a [(String, Value)], key: &str) -> Option<&'a Value> {
         values.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v)
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn plist_keys_match_either_spelling() {
         for (name, spelling) in [("cap", "DisableTopRightIndicators"), ("low", "disableTopRightIndicators")] { // old key on purpose
-            let path = std::env::temp_dir().join(format!("tandem-import-spell-{name}-{}.plist", std::process::id()));
+            let path = std::env::temp_dir().join(format!("termurion-import-spell-{name}-{}.plist", std::process::id()));
             std::fs::write(&path, format!(r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict><key>{spelling}</key><true/></dict></plist>"#)).unwrap();
             let got = globals_from_file(&path).unwrap();
@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn imports_global_keys_only() {
-        let path = std::env::temp_dir().join(format!("tandem-import-globals-{}.plist", std::process::id()));
+        let path = std::env::temp_dir().join(format!("termurion-import-globals-{}.plist", std::process::id()));
         std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
   <key>GlobalKeyMap</key><dict><key>0x61-0x100000</key><dict><key>Action</key><integer>13</integer><key>Text</key><string></string></dict></dict>
@@ -480,7 +480,7 @@ mod tests {
     /// `PREF:145`, `:174-176`, `:216`, defaults `PREF:848`, `:873-875`, `:914`.
     #[test]
     fn legacy_keys_read_from_the_plist() {
-        let path = std::env::temp_dir().join(format!("tandem-import-legacy-{}.plist", std::process::id()));
+        let path = std::env::temp_dir().join(format!("termurion-import-legacy-{}.plist", std::process::id()));
         std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
   <key>Control</key><integer>2</integer>
@@ -506,7 +506,7 @@ mod tests {
         assert_eq!(defaults_key("NoSyncDisableOpenURL"), "NoSyncDisableOpenURL");
         assert_eq!(defaults_key(""), "");
         let dir = std::env::temp_dir();
-        let path = dir.join(format!("tandem-import-defaults-keys-{}.plist", std::process::id()));
+        let path = dir.join(format!("termurion-import-defaults-keys-{}.plist", std::process::id()));
         std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
   <key>TmuxTitlePrefix</key><string>x </string>
@@ -516,7 +516,7 @@ mod tests {
         assert!(got.contains(&("TmuxTitlePrefix".to_string(), Value::String("x ".into()))), "{got:?}");
         assert!(got.contains(&("NoSyncDisableOpenURL".to_string(), Value::Boolean(true))), "{got:?}");
         // Both spellings present: iTerm2's (the schema key) wins.
-        let both = dir.join(format!("tandem-import-defaults-keys-both-{}.plist", std::process::id()));
+        let both = dir.join(format!("termurion-import-defaults-keys-both-{}.plist", std::process::id()));
         std::fs::write(&both, r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
   <key>tmuxTitlePrefix</key><string>lower</string>
@@ -533,7 +533,7 @@ mod tests {
     /// value must not get past it either). The task that converts them sets the mark.
     #[test]
     fn a_plist_never_brings_workgroup_keys() {
-        let path = std::env::temp_dir().join(format!("tandem-import-wg-{}.plist", std::process::id()));
+        let path = std::env::temp_dir().join(format!("termurion-import-wg-{}.plist", std::process::id()));
         std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
   <key>Workgroups</key><string>[]</string>
@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn legacy_import_never_brings_the_ai_consent_switches() {
         use crate::ai_settings as ai;
-        let path = std::env::temp_dir().join(format!("tandem-import-ai-legacy-{}.plist", std::process::id()));
+        let path = std::env::temp_dir().join(format!("termurion-import-ai-legacy-{}.plist", std::process::id()));
         let mut body = String::from("<key>Control</key><integer>2</integer><key>FocusFollowsMouse</key><true/>");
         for key in [ai::ADMIN, ai::ENABLE_AI, ai::AI_COMPLETIONS] {
             body += &format!("<key>{}</key><{}/>", defaults_key(key), if key == ai::ADMIN { "false" } else { "true" });
@@ -573,7 +573,7 @@ mod tests {
 
     #[test]
     fn ai_consent_is_never_imported() {
-        let path = std::env::temp_dir().join(format!("tandem-import-ai-{}.plist", std::process::id()));
+        let path = std::env::temp_dir().join(format!("termurion-import-ai-{}.plist", std::process::id()));
         std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
   <key>EnableAI</key><true/>

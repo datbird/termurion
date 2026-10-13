@@ -174,7 +174,7 @@ pub enum Down {
     Bound,
     /// The app gets the press.
     Report,
-    /// Tandem's own handling: selection for left, the context menu for right.
+    /// Termurion's own handling: selection for left, the context menu for right.
     Native,
 }
 

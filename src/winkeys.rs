@@ -158,7 +158,7 @@ static HOOK: OnceLock<Hook> = OnceLock::new();
 /// Tandem's terminal windows.
 static WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
-fn is_tandem(hwnd: isize) -> bool {
+fn is_termurion(hwnd: isize) -> bool {
     locked(&WINDOWS).contains(&hwnd)
 }
 
@@ -173,13 +173,13 @@ pub fn set_web_focus(hwnd: isize) {
 /// Whether the terminal has the keyboard: `foreground` is a Tandem window and no web view of it holds
 /// the focus. A page owns the keyboard (as in iTerm2), so Tandem's Win-chord commands and remaps
 /// stay out of it; only the registered global hotkeys still act.
-fn terminal_has_keyboard(foreground_is_tandem: bool, foreground: isize, web_focus: isize) -> bool {
-    foreground_is_tandem && !(web_focus != 0 && web_focus == foreground)
+fn terminal_has_keyboard(foreground_is_termurion: bool, foreground: isize, web_focus: isize) -> bool {
+    foreground_is_termurion && !(web_focus != 0 && web_focus == foreground)
 }
 
 /// `terminal_has_keyboard` for the window in front now: the one predicate the hook and the remapper ask.
-fn tandem_has_keyboard(foreground: isize) -> bool {
-    terminal_has_keyboard(is_tandem(foreground), foreground, WEB_FOCUS.load(Ordering::Acquire))
+fn termurion_has_keyboard(foreground: isize) -> bool {
+    terminal_has_keyboard(is_termurion(foreground), foreground, WEB_FOCUS.load(Ordering::Acquire))
 }
 
 /// A terminal window closed.
@@ -411,7 +411,7 @@ fn read_tags(t: &RwLock<Tags>) -> Tags {
 fn remap(h: &Hook, kb: &KBDLLHOOKSTRUCT, down: bool) -> bool {
     let vk = kb.vkCode as u16;
     let fg = unsafe { GetForegroundWindow() } as isize;
-    let focused = tandem_has_keyboard(fg) || fg == SETTINGS.load(Ordering::Relaxed);
+    let focused = termurion_has_keyboard(fg) || fg == SETTINGS.load(Ordering::Relaxed);
     let tags = read_tags(&h.tags);
     let mut r = locked(&h.remapper);
     if let crate::remap::Verdict::Replace(keys) = r.on_key(vk, kb.scanCode, down, focused, &tags, REMAP_GLOBAL.load(Ordering::Relaxed)) {
@@ -518,7 +518,7 @@ unsafe fn hook_body(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
                     // Remapping off and a Win side remapped away: that key is read in the app as its
                     // target, so it makes no Win chord here (`APP:252-285`).
                     win_held: crate::remap::win_chord_held(&read_tags(&h.tags), REMAP_GLOBAL.load(Ordering::Relaxed), held(VK_LWIN as i32), held(VK_RWIN as i32)),
-                    focused: tandem_has_keyboard(fg) || recording || pwm || chat || cockpit,
+                    focused: termurion_has_keyboard(fg) || recording || pwm || chat || cockpit,
                     shift: held(0x10),
                     alt: held(0x12),
                     ctrl: held(0x11),
@@ -563,7 +563,7 @@ pub fn install(
     }
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
-        .name("tandem-winkeys".into())
+        .name("termurion-winkeys".into())
         .spawn(move || {
             let h = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), std::ptr::null_mut(), 0) };
             if h.is_null() {
@@ -990,11 +990,11 @@ mod tests {
         let src = include_str!("winkeys.rs");
         let hook = &src[src.find("unsafe fn hook_body").unwrap()..];
         let hook = &hook[..hook.find("\n}\n").unwrap()];
-        assert!(hook.contains("tandem_has_keyboard(fg)"), "the Win-chord gate uses the predicate");
-        assert!(!hook.contains("is_tandem(fg)"), "no second foreground test beside it");
+        assert!(hook.contains("termurion_has_keyboard(fg)"), "the Win-chord gate uses the predicate");
+        assert!(!hook.contains("is_termurion(fg)"), "no second foreground test beside it");
         assert!(hook.find("global_hotkeys(kb, down)").unwrap() < hook.find("remap(h, kb, down)").unwrap());
         let remap = &src[src.find("fn remap(h: &Hook").unwrap()..];
-        assert!(remap[..remap.find("\n}\n").unwrap()].contains("tandem_has_keyboard(fg)"));
+        assert!(remap[..remap.find("\n}\n").unwrap()].contains("termurion_has_keyboard(fg)"));
     }
 
     #[test]
@@ -1145,7 +1145,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_focused_tandem_window_takes_win_chords() {
+    fn only_the_focused_termurion_window_takes_win_chords() {
         let mut g = Gate::default();
         assert_eq!(g.on_key(KeyEvent { focused: false, ..key(0x44, true) }, &all), Verdict::Pass);
     }
@@ -1251,12 +1251,12 @@ mod tests {
         add_chat_window(92);
         add_cockpit_window(93);
         locked(&WINDOWS).push(94);
-        assert!(is_pwm(91) && is_chat(92) && is_cockpit(93) && is_tandem(94));
+        assert!(is_pwm(91) && is_chat(92) && is_cockpit(93) && is_termurion(94));
         remove_pwm_window(91);
         remove_chat_window(92);
         remove_cockpit_window(93);
         remove_window(94);
-        assert!(!is_pwm(91) && !is_chat(92) && !is_cockpit(93) && !is_tandem(94));
+        assert!(!is_pwm(91) && !is_chat(92) && !is_cockpit(93) && !is_termurion(94));
         // A key press reads the hotkeys through the poison (empty chords: nothing registers for real).
         *locked(&GLOBAL) = Some(Global::default());
         assert_eq!(global_hotkeys(&kb(0x41), true), HookVerdict::Continue);

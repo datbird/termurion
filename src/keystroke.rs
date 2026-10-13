@@ -242,7 +242,7 @@ pub fn mac_modifier_keycode(code: KeyCode) -> Option<u16> {
     })
 }
 
-/// The Tandem key for a winit key, with `text` for keys winit does not name.
+/// The Termurion key for a winit key, with `text` for keys winit does not name.
 pub fn key_of(key: &WKey, text: Option<&str>) -> Option<Key> {
     Some(match key {
         WKey::Named(n) => match n {

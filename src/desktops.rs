@@ -7,7 +7,7 @@ use toml::Value;
 pub type DesktopId = u128;
 
 /// The saved-state key a window table carries (never an arrangement).
-pub const STATE_KEY: &str = "Tandem Virtual Desktop";
+pub const STATE_KEY: &str = "Termurion Virtual Desktop";
 /// The global setting that turns the restore on.
 pub const RESTORE_KEY: &str = "RestoreWindowsToSameSpaces";
 /// Explorer's own registry key (undocumented, read only).
@@ -75,7 +75,7 @@ pub fn restore_target(saved: Option<&str>, desktops: &[DesktopId]) -> Option<Des
 }
 
 /// The row is enabled only under the system restore policy: no default arrangement and not
-/// hotkey-only (`GP:3496-3506`; Tandem has no "close windows when quitting" switch).
+/// hotkey-only (`GP:3496-3506`; Termurion has no "close windows when quitting" switch).
 pub fn restore_row_enabled(open_arrangement: bool, open_no_windows: bool) -> bool {
     !open_arrangement && !open_no_windows
 }
@@ -221,7 +221,7 @@ pub mod win {
             unsafe { self.vdm.IsWindowOnCurrentVirtualDesktop(hwnd(hwnd_)) }.ok().map(|b| b.as_bool())
         }
 
-        /// Moves one of Tandem's own windows (the shell refuses foreign ones).
+        /// Moves one of Termurion's own windows (the shell refuses foreign ones).
         pub fn move_window(&self, hwnd_: isize, id: DesktopId) -> Result<(), String> {
             let g = GUID::from_u128(id);
             unsafe { self.vdm.MoveWindowToDesktop(hwnd(hwnd_), &g) }.map_err(|e| e.to_string())

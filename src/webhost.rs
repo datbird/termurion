@@ -131,7 +131,7 @@ impl Store {
     }
 }
 
-/// `<LOCALAPPDATA>\Tandem\WebView2\<Default|Browser|DevNull>`. `BrowserDevNull`'s name is the base
+/// `<LOCALAPPDATA>\Termurion\WebView2\<Default|Browser|DevNull>`. `BrowserDevNull`'s name is the base
 /// the per-run folders live beside; the folder an environment really uses is `dev_null_folder`.
 pub fn data_folder(local_appdata: &Path, store: Store) -> PathBuf {
     let name = match store {
@@ -139,12 +139,12 @@ pub fn data_folder(local_appdata: &Path, store: Store) -> PathBuf {
         Store::Browser => "Browser",
         Store::BrowserDevNull => "DevNull",
     };
-    local_appdata.join("Tandem").join("WebView2").join(name)
+    local_appdata.join("Termurion").join("WebView2").join(name)
 }
 
 /// The folder every per-run Dev Null folder lives in.
 pub fn tmp_folder(local_appdata: &Path) -> PathBuf {
-    local_appdata.join("Tandem").join("WebView2").join("Tmp")
+    local_appdata.join("Termurion").join("WebView2").join("Tmp")
 }
 
 /// `Tmp\DevNull-<pid>-<hex8>` (preflight P4): fresh for each run, so nothing a Dev Null view stored
@@ -188,7 +188,7 @@ pub struct EnvOptions {
 /// Negotiate 407 is still answered by the engine with the person's Windows credentials (Chromium's
 /// allowlist passes every proxy), and `--auth-schemes` is ignored by this runtime, so no browser
 /// argument removes the schemes. Recorded as a residual for Robert (R13x710-1).
-pub const INTEGRATED_AUTH_ARG: &str = "--auth-server-allowlist=tandem-no-integrated-auth.invalid";
+pub const INTEGRATED_AUTH_ARG: &str = "--auth-server-allowlist=termurion-no-integrated-auth.invalid";
 
 /// `AdditionalBrowserArguments` as the environment is made: `args` (the proxy's, already checked by
 /// `adblock::proxy_args_ok`) and the integrated-authentication allowlist.
@@ -307,9 +307,9 @@ pub enum Event {
     /// A main-frame navigation was cancelled because the store's profile permissions are not
     /// synced yet (13x6, the one gate in the NavigationStarting handler): `url` is its TARGET, which
     /// the app loads once the sync lands. Never dropped.
-    /// `by_tandem`, `user`, `redirect` and `source` are how the handler judged it (the app judges the
+    /// `by_termurion`, `user`, `redirect` and `source` are how the handler judged it (the app judges the
     /// release again with them, never as Tandem's own); `history` is a back or forward step.
-    Parked { view: ViewId, url: String, user: bool, redirect: bool, by_tandem: bool, history: bool, source: Option<String> },
+    Parked { view: ViewId, url: String, user: bool, redirect: bool, by_termurion: bool, history: bool, source: Option<String> },
     /// A DevTools protocol event the view subscribed to (`devtools_subscribe`); `session` is the
     /// child session that raised it, None for the view's own target. Never trusted as Tandem's:
     /// `browser_world::Contexts` decides what a context is.
@@ -762,15 +762,15 @@ pub enum GateAct {
 /// Tandem and must never launder a page's choice. Tandem's own about:blank and Tandem's own
 /// `iterm2-about:` pages (they use no web permission) pass; a URL over the cap is never parked
 /// truncated. No gate (popovers, tools) is always open.
-pub fn nav_gate(gate: Option<bool>, uri: &str, by_tandem: bool, over_long: bool) -> GateAct {
+pub fn nav_gate(gate: Option<bool>, uri: &str, by_termurion: bool, over_long: bool) -> GateAct {
     if gate != Some(false) {
         return GateAct::Open;
     }
     let scheme = scheme_of(uri);
-    if scheme == "iterm2-about" || (by_tandem && uri.eq_ignore_ascii_case("about:blank")) {
+    if scheme == "iterm2-about" || (by_termurion && uri.eq_ignore_ascii_case("about:blank")) {
         return GateAct::Open;
     }
-    if over_long || !(by_tandem || matches!(scheme.as_str(), "http" | "https")) {
+    if over_long || !(by_termurion || matches!(scheme.as_str(), "http" | "https")) {
         return GateAct::Cancel;
     }
     GateAct::Park
@@ -815,7 +815,7 @@ fn local_scheme(s: &str) -> bool {
 /// Tandem page (`iterm2-about:`) or an extension's own page (`chrome-extension:`). The nav judge's
 /// atoms are `power_page` and `local_scheme`; the AI browser tools never offer, read or drive such a
 /// page (`ai_browser::offerable`, `ai_browser::Page::open`). Schemes compare ignoring ASCII case.
-pub fn tandem_or_local_page(url: &str) -> bool {
+pub fn termurion_or_local_page(url: &str) -> bool {
     let s = scheme_of(url.trim_start_matches(|c: char| c <= ' '));
     power_page(url) || local_scheme(&s) || matches!(s.as_str(), "iterm2-about" | "chrome-extension")
 }
@@ -930,7 +930,7 @@ fn private_v6(a: std::net::Ipv6Addr) -> bool {
 ///   verbatim form: `file_url_local`) is refused for every source and initiator;
 /// - a redirect to `file:`, `iterm2-file:` or `iterm2-ssh:` is refused;
 /// - a redirect onto a power page is refused, and a web page's `file:` link is refused;
-/// - a navigation Tandem started (`navigate_tandem`) is allowed;
+/// - a navigation Tandem started (`navigate_termurion`) is allowed;
 /// - a page on `iterm2-file:` or `iterm2-ssh:` may navigate nowhere but a reload of itself and a
 ///   listing's click inside its root, whatever WebView2's user-initiated flag says (R13x8-P2);
 /// - a navigation the person started (as WebView2 reports it) is allowed;
@@ -938,8 +938,8 @@ fn private_v6(a: std::net::Ipv6Addr) -> bool {
 ///   source, or from a folder listing to an entry inside the committed root (`listing_click_ok`; a
 ///   served file and an ssh page navigate to no local page, except a reload of themselves);
 /// - everything else is allowed. Schemes compare ignoring ASCII case.
-pub fn navigation_allowed(source: Option<&str>, target: &str, user: bool, redirect: bool, by_tandem: bool, file_ok: bool) -> bool {
-    navigation_allowed_in(source, target, user, redirect, by_tandem, file_ok, None)
+pub fn navigation_allowed(source: Option<&str>, target: &str, user: bool, redirect: bool, by_termurion: bool, file_ok: bool) -> bool {
+    navigation_allowed_in(source, target, user, redirect, by_termurion, file_ok, None)
 }
 
 /// Whether `url` is a page of the file or ssh scheme (`iterm2-file:` / `iterm2-ssh:`).
@@ -972,7 +972,7 @@ pub fn listing_click_ok(source: &str, target: &str, root: Option<&crate::browser
     tp == bound.trim_end_matches('/') || tp.starts_with(&bound)
 }
 
-pub fn navigation_allowed_in(source: Option<&str>, target: &str, user: bool, redirect: bool, by_tandem: bool, file_ok: bool, root: Option<&crate::browser_pages::PageRoot>) -> bool {
+pub fn navigation_allowed_in(source: Option<&str>, target: &str, user: bool, redirect: bool, by_termurion: bool, file_ok: bool, root: Option<&crate::browser_pages::PageRoot>) -> bool {
     let t = scheme_of(target);
     if t == "file" && !file_ok {
         return false;
@@ -980,14 +980,14 @@ pub fn navigation_allowed_in(source: Option<&str>, target: &str, user: bool, red
     let s = source.map(scheme_of).unwrap_or_default();
     // A web page's `file:` link (a click included) starts nothing, here in the one judge, not only at
     // the `file:` redirect after it (13x8 final review M2, R13x8-5).
-    if t == "file" && !by_tandem && !matches!(s.as_str(), "" | "iterm2-about" | "iterm2-file" | "iterm2-ssh") {
+    if t == "file" && !by_termurion && !matches!(s.as_str(), "" | "iterm2-about" | "iterm2-file" | "iterm2-ssh") {
         return false;
     }
     // A `file:` link in a local page becomes an `iterm2-file:` page at the redirect, so the rule judges
     // the FINAL target, not the typed scheme (13x8 Task 9 re-review I1 r1). A `file:` URL that cannot
     // become one (UNC, no drive) goes nowhere from a local page.
     let mapped;
-    let (target, t) = if t == "file" && !by_tandem && source.is_some_and(local_page) {
+    let (target, t) = if t == "file" && !by_termurion && source.is_some_and(local_page) {
         match iterm2_file_url(target) {
             Some(m) => {
                 mapped = m;
@@ -1002,7 +1002,7 @@ pub fn navigation_allowed_in(source: Option<&str>, target: &str, user: bool, red
         return false;
     }
     // A reload of the page itself (Try Again, F5) goes on, whoever asks.
-    if !by_tandem && source.is_some_and(|src| local_page(src) && bare(src) == bare(target)) {
+    if !by_termurion && source.is_some_and(|src| local_page(src) && bare(src) == bare(target)) {
         return true;
     }
     // A page that acts with power (settings, onboarding steps) is opened by Tandem, by the person
@@ -1010,19 +1010,19 @@ pub fn navigation_allowed_in(source: Option<&str>, target: &str, user: bool, red
     // a script or a redirect (preflight B5, 13x8 Task 5). A redirect never lands on one, whatever page
     // the navigation left: Tandem's own pages never redirect, so a 302 there is a server's (final
     // review I1; the source is still the old page while a redirect is judged).
-    if !by_tandem && power_page(target) {
+    if !by_termurion && power_page(target) {
         return !redirect && (s == "iterm2-about" || (s.is_empty() && user));
     }
     // A page of the web cannot start a file or ssh page, not even by a click the person is tricked
     // into (preflight B5): only Tandem, or the local pages themselves (a listing's links).
-    if user && !by_tandem && matches!(t.as_str(), "iterm2-file" | "iterm2-ssh") {
+    if user && !by_termurion && matches!(t.as_str(), "iterm2-file" | "iterm2-ssh") {
         return match s.as_str() {
             "iterm2-about" => true,
             "iterm2-file" | "iterm2-ssh" => source.is_some_and(|src| listing_click_ok(src, target, root)),
             _ => false,
         };
     }
-    if by_tandem {
+    if by_termurion {
         return true;
     }
     // A file or ssh page leaves for no other page, click or not: WebView2 reports a script's
@@ -1049,8 +1049,8 @@ pub const OLD_RUNTIME_TEXT: &str = "This WebView2 runtime is too old; update Mic
 /// preflight B5): Tandem's own load, or a source that is not a web page (an `iterm2-about:` or
 /// `iterm2-file:` page, or no source at all). A person's click on a link of a WEB page is refused: a
 /// clickjacked click must not make Tandem list or read a local path.
-pub fn file_redirect_allowed(source: Option<&str>, by_tandem: bool) -> bool {
-    if by_tandem {
+pub fn file_redirect_allowed(source: Option<&str>, by_termurion: bool) -> bool {
+    if by_termurion {
         return true;
     }
     match source.map(scheme_of).as_deref() {
@@ -1164,11 +1164,11 @@ pub fn local_page_exit_refused(top: &str, target: &str, allowed_main: Option<&st
 }
 
 /// The source a main-frame navigation is judged from: the view's current page, except for a redirect
-/// of Tandem's own load (`tandem_chain`: the same navigation id `navigate_tandem` started), which is
+/// of Tandem's own load (`termurion_chain`: the same navigation id `navigate_termurion` started), which is
 /// judged as from no page (the address bar), so a Tandem load from a file page that the server
 /// redirects goes on (R13x8-P2) while a redirect onto a power or local page is still refused.
-pub fn redirect_source(source: Option<&str>, tandem_chain: bool) -> Option<&str> {
-    if tandem_chain { None } else { source }
+pub fn redirect_source(source: Option<&str>, termurion_chain: bool) -> Option<&str> {
+    if termurion_chain { None } else { source }
 }
 
 /// The HTTP status a main-frame `NavigationCompleted` reports: WebView2's own `HttpStatusCode`, or,
@@ -1578,8 +1578,8 @@ pub struct NavInfo<'a> {
     pub source: Option<&'a str>,
     pub user: bool,
     pub redirect: bool,
-    /// Tandem's own load (`navigate_tandem`).
-    pub by_tandem: bool,
+    /// Tandem's own load (`navigate_termurion`).
+    pub by_termurion: bool,
     /// A model's load (`navigate_model`) or a redirect of it (13x AI browser tools, final review I3).
     pub by_model: bool,
 }
@@ -1606,7 +1606,7 @@ pub fn nav_verdict(info: &NavInfo, policy: &NavPolicy, file_ok: &dyn Fn(&str) ->
         return false;
     }
     if let Some(list) = &policy.allowed_schemes {
-        if !info.by_tandem && !scheme_ok(info.target, list) {
+        if !info.by_termurion && !scheme_ok(info.target, list) {
             return false;
         }
     }
@@ -1614,13 +1614,13 @@ pub fn nav_verdict(info: &NavInfo, policy: &NavPolicy, file_ok: &dyn Fn(&str) ->
         return true;
     }
     let file_ok = scheme_of(info.target) == "file" && file_ok(info.target);
-    navigation_allowed_in(info.source, info.target, info.user, info.redirect, info.by_tandem, file_ok, policy.local_root.as_ref())
+    navigation_allowed_in(info.source, info.target, info.user, info.redirect, info.by_termurion, file_ok, policy.local_root.as_ref())
 }
 
 /// Whether a refused navigation is offered to the app: a person's own click on a link (not a
 /// script's navigation, not a redirect, not Tandem's load) that the view's policy cancelled.
 pub fn refused_click(info: &NavInfo, allowed: bool) -> bool {
-    !allowed && info.user && !info.redirect && !info.by_tandem
+    !allowed && info.user && !info.redirect && !info.by_termurion
 }
 
 // --- Focus (Task 1a) ---
@@ -1743,7 +1743,7 @@ pub fn focus_tick(
 }
 
 /// The fixed Tandem-only host that program and model content is served under (never resolvable).
-pub const LOCAL_HOST: &str = "tandem-local.invalid";
+pub const LOCAL_HOST: &str = "termurion-local.invalid";
 
 /// One document Tandem serves to a view itself: a script's popover HTML or the icon wrapper page.
 /// The class rule (Task 4 fix 1) replaces `NavigateToString` for program and model content: the view
@@ -1774,7 +1774,7 @@ impl LocalDoc {
         LocalDoc { url, html, csp: csp.to_string(), seen: false, navigated: false }
     }
 
-    /// The URL to navigate to (`WebView::navigate_tandem`).
+    /// The URL to navigate to (`WebView::navigate_termurion`).
     pub fn url(&self) -> &str {
         &self.url
     }
@@ -1957,7 +1957,7 @@ mod tests {
     fn local_documents_get_their_policy_as_a_header() {
         let hostile = "<!-- --!><img src=\"https://x.test/p\"><!DOCTYPE html><script>fetch('https://x.test')</script><!--";
         let d = LocalDoc::new(hostile.to_string(), "default-src 'none'");
-        assert!(d.url().starts_with("https://") && d.url().contains(".tandem-local.invalid/") && d.url().ends_with("/doc"), "{}", d.url());
+        assert!(d.url().starts_with("https://") && d.url().contains(".termurion-local.invalid/") && d.url().ends_with("/doc"), "{}", d.url());
         assert_ne!(d.url(), LocalDoc::new(String::new(), "").url(), "a random path per document");
         let Answer::Respond { status, mime, body, headers } = d.answer(d.url()) else { panic!("the document is served") };
         assert_eq!((status, mime.as_str()), (200, "text/html; charset=utf-8"));
@@ -1967,7 +1967,7 @@ mod tests {
         assert_eq!(h("X-Content-Type-Options"), Some("nosniff"));
         assert_eq!(h("Cache-Control"), Some("no-store"));
         // Every other request of the view is refused (403); data and blob images cannot reach anything.
-        for other in ["https://tandem-local.invalid/other/doc", &d.url().replace("/doc", "/other"), "https://x.test/p", "http://127.0.0.1/", "file:///C:/x", "https://tandem-local.invalid/", &format!("{}x", d.url())] {
+        for other in ["https://termurion-local.invalid/other/doc", &d.url().replace("/doc", "/other"), "https://x.test/p", "http://127.0.0.1/", "file:///C:/x", "https://termurion-local.invalid/", &format!("{}x", d.url())] {
             assert_eq!(d.answer(other), Answer::Block, "{other}");
         }
         assert_eq!(d.answer("data:image/png;base64,AAAA"), Answer::Continue);
@@ -2043,7 +2043,7 @@ mod tests {
         let ua = g.string("WebUserAgent");
         assert!(!ua.contains(['\r', '\n']) && ua.chars().count() == 512, "{}", ua.len());
         // A file loaded with a bad value is bounded too.
-        let dir = std::env::temp_dir().join(format!("tandem-hint-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-hint-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let file = dir.join("g.toml");
         std::fs::write(&file, format!("BrowserPluginPathHint = \"C:\\\\{}\"\n", "a".repeat(400))).unwrap();
@@ -2055,7 +2055,7 @@ mod tests {
     #[test]
     fn folders_and_options_follow_windows() {
         let base = Path::new(r"C:\Users\u\AppData\Local");
-        assert_eq!(data_folder(base, Store::Default), PathBuf::from(r"C:\Users\u\AppData\Local\Tandem\WebView2\Default"));
+        assert_eq!(data_folder(base, Store::Default), PathBuf::from(r"C:\Users\u\AppData\Local\Termurion\WebView2\Default"));
         assert!(data_folder(base, Store::Browser).ends_with("Browser"));
         assert!(data_folder(base, Store::BrowserDevNull).ends_with("DevNull"));
         assert_eq!(EnvOptions::default().args, "");
@@ -2081,7 +2081,7 @@ mod tests {
     fn dev_null_folders_are_per_run() {
         let base = Path::new(r"C:\L");
         let f = dev_null_folder(base, 4242, 0xdead_beef);
-        assert_eq!(f, PathBuf::from(r"C:\L\Tandem\WebView2\Tmp\DevNull-4242-deadbeef"));
+        assert_eq!(f, PathBuf::from(r"C:\L\Termurion\WebView2\Tmp\DevNull-4242-deadbeef"));
         assert_eq!(dev_null_pid("DevNull-4242-deadbeef"), Some(4242));
         for bad in ["DevNull-x-deadbeef", "DevNull-1-dead", "DevNull--deadbeef", "Other-1-deadbeef", "DevNull-1-deadbeeg", "DevNull-1"] {
             assert_eq!(dev_null_pid(bad), None, "{bad}");
@@ -2183,7 +2183,7 @@ mod tests {
     }
 
     #[test]
-    fn a_redirect_of_tandems_own_load_is_judged_from_no_page() {
+    fn a_redirect_of_termurions_own_load_is_judged_from_no_page() {
         // A Tandem load from a file page that a server redirects (http to https) goes on; a redirect of
         // it onto a power page or a local page still does not.
         let n = |s: Option<&str>, t: &str| navigation_allowed(s, t, false, true, false, true);
@@ -2271,12 +2271,12 @@ mod tests {
         assert!(!power_page("iterm2-about:settingsx") && !power_page("iterm2-about:onboarding-intro") && !power_page("https://a/settings"));
         // Seam S5: one predicate for "not a web page", built from the judge's own atoms.
         for u in ["iterm2-about:settings", "ITERM2-ABOUT:history", "iterm2-file:///C:/T/", "iterm2-ssh://box/a", "file:///C:/x", "FILE:///C:/x", " file:///C:/x", "chrome-extension://abcdefghijklmnopabcdefghijklmnop/p.html", "Chrome-Extension://a/b"] {
-            assert!(tandem_or_local_page(u), "{u}");
+            assert!(termurion_or_local_page(u), "{u}");
         }
         for u in ["https://a/", "http://127.0.0.1:1/", "about:blank", "https://a/iterm2-about:settings", ""] {
-            assert!(!tandem_or_local_page(u), "{u}");
+            assert!(!termurion_or_local_page(u), "{u}");
         }
-        assert!(["iterm2-about:settings", "iterm2-about:downloads#x"].iter().all(|u| power_page(u) && tandem_or_local_page(u)), "every power page is one");
+        assert!(["iterm2-about:settings", "iterm2-about:downloads#x"].iter().all(|u| power_page(u) && termurion_or_local_page(u)), "every power page is one");
         // 13x AI browser tools B6: a model's load is a guarded `navigate` (not Tandem's, not the
         // person's), so a redirect or script from the page it loaded lands on no power or local page.
         for t in ["iterm2-about:settings", "iterm2-about:downloads", "iterm2-file:///C:/Users/", "iterm2-ssh://box/etc", "file:///C:/x"] {
@@ -2455,8 +2455,8 @@ mod tests {
     #[test]
     fn console_lines_do_not_starve_real_messages() {
         let console_page = || Event::Message { view: 1, json: r#"{"h":"iTerm2ConsoleLog","b":{"msg":"x","level":"log"}}"#.into(), source: String::new() };
-        let console_client = || Event::DevTools { view: 1, session: None, name: BINDING_EVENT.into(), json: r#"{"name":"tandemBinding","payload":"{\"h\":\"iTerm2ConsoleLog\",\"b\":{\"msg\":\"x\",\"level\":\"debug\"}}","executionContextId":3}"#.into() };
-        let register = || Event::DevTools { view: 1, session: None, name: BINDING_EVENT.into(), json: r#"{"name":"tandemBinding","payload":"{\"h\":\"iTerm2GraphDiscovery\",\"b\":{\"type\":\"REGISTER_FRAME\"}}","executionContextId":3}"#.into() };
+        let console_client = || Event::DevTools { view: 1, session: None, name: BINDING_EVENT.into(), json: r#"{"name":"termurionBinding","payload":"{\"h\":\"iTerm2ConsoleLog\",\"b\":{\"msg\":\"x\",\"level\":\"debug\"}}","executionContextId":3}"#.into() };
+        let register = || Event::DevTools { view: 1, session: None, name: BINDING_EVENT.into(), json: r#"{"name":"termurionBinding","payload":"{\"h\":\"iTerm2GraphDiscovery\",\"b\":{\"type\":\"REGISTER_FRAME\"}}","executionContextId":3}"#.into() };
         let page_message = || Event::Message { view: 1, json: r#"{"h":"x","b":1}"#.into(), source: String::new() };
         assert!(console_page().is_console() && console_client().is_console());
         assert!(!register().is_console() && !page_message().is_console());
@@ -2639,7 +2639,7 @@ mod tests {
     fn a_model_load_never_reaches_a_private_host() {
         let policy = NavPolicy { guard_local_schemes: true, ..Default::default() };
         let yes = |_: &str| true;
-        let nav = |target, redirect, by_model| NavInfo { target, source: Some("https://a.example/"), user: true, redirect, by_tandem: false, by_model };
+        let nav = |target, redirect, by_model| NavInfo { target, source: Some("https://a.example/"), user: true, redirect, by_termurion: false, by_model };
         assert!(!nav_verdict(&nav("http://192.168.1.1/admin", false, true), &policy, &yes), "the load itself");
         assert!(!nav_verdict(&nav("http://127.0.0.1:631/", true, true), &policy, &yes), "a redirect of it");
         assert!(nav_verdict(&nav("https://b.example/", true, true), &policy, &yes), "a public redirect goes on");
@@ -2654,7 +2654,7 @@ mod tests {
     /// neither is a navigation Tandem itself made.
     #[test]
     fn a_refused_click_is_offered_to_the_app() {
-        let info = |user: bool, by_tandem: bool| NavInfo { target: "https://a.example/", source: None, user, redirect: false, by_tandem, by_model: false };
+        let info = |user: bool, by_termurion: bool| NavInfo { target: "https://a.example/", source: None, user, redirect: false, by_termurion, by_model: false };
         assert!(refused_click(&info(true, false), false));
         assert!(!refused_click(&info(false, false), false), "a script's navigation");
         assert!(!refused_click(&info(true, true), false), "Tandem's own load");
@@ -2669,7 +2669,7 @@ mod tests {
         assert_eq!(nav_gate(Some(false), "https://a.example/", false, true), GateAct::Cancel, "never parked truncated");
         assert_eq!(nav_gate(Some(true), "https://a.example/", false, false), GateAct::Open);
         assert_eq!(nav_gate(None, "https://a.example/", false, false), GateAct::Open);
-        let parked = Event::Parked { view: 4, url: "https://a.example/".into(), user: false, redirect: false, by_tandem: false, history: false, source: None };
+        let parked = Event::Parked { view: 4, url: "https://a.example/".into(), user: false, redirect: false, by_termurion: false, history: false, source: None };
         assert_eq!((parked.view(), parked.droppable(), parked.weight()), (4, false, 18), "a parked target is never dropped");
         let ev = Event::Refused { view: 3, url: "https://a.example/".into(), user: true };
         assert_eq!(ev.view(), 3);
@@ -2720,7 +2720,7 @@ mod tests {
 
     #[test]
     fn nav_verdict_guard_cancels_local_navigations_from_a_page() {
-        let from_page = |target| NavInfo { target, source: Some("https://example.test/"), user: false, redirect: false, by_tandem: false, by_model: false };
+        let from_page = |target| NavInfo { target, source: Some("https://example.test/"), user: false, redirect: false, by_termurion: false, by_model: false };
         let yes = |_: &str| true;
         let guarded = NavPolicy { guard_local_schemes: true, allowed_schemes: None, local_root: None };
         let open = NavPolicy::default();
@@ -2730,15 +2730,15 @@ mod tests {
         }
         assert!(nav_verdict(&from_page("https://example.test/next"), &guarded, &yes));
         // A file target that the path judge refuses is cancelled even for a person's click.
-        let click = NavInfo { target: "file://server/share/x", source: None, user: true, redirect: false, by_tandem: false, by_model: false };
+        let click = NavInfo { target: "file://server/share/x", source: None, user: true, redirect: false, by_termurion: false, by_model: false };
         assert!(!nav_verdict(&click, &guarded, &|_| false));
         // A redirect into a local scheme is cancelled even for Tandem's own load.
-        let redirected = NavInfo { target: "file:///C:/x", source: None, user: false, redirect: true, by_tandem: true, by_model: false };
+        let redirected = NavInfo { target: "file:///C:/x", source: None, user: false, redirect: true, by_termurion: true, by_model: false };
         assert!(!nav_verdict(&redirected, &guarded, &yes));
         // The scheme list cancels what it does not name, except Tandem's own load.
         let only_https = NavPolicy { guard_local_schemes: true, allowed_schemes: Some(vec!["https".into()]), local_root: None };
         assert!(!nav_verdict(&from_page("http://example.test/"), &only_https, &yes));
-        let own = NavInfo { target: "http://tandem.test/", source: None, user: false, redirect: false, by_tandem: true, by_model: false };
+        let own = NavInfo { target: "http://termurion.test/", source: None, user: false, redirect: false, by_termurion: true, by_model: false };
         assert!(nav_verdict(&own, &only_https, &yes));
     }
 
@@ -2844,7 +2844,7 @@ mod tests {
         assert!(!n("iterm2-file:///C:/T/", "iterm2-file:///C:/", true, None));
         // The same through the handler's own entry point.
         let policy = NavPolicy { guard_local_schemes: true, allowed_schemes: None, local_root: Some(root.clone()) };
-        let info = |source, target| NavInfo { target, source: Some(source), user: true, redirect: false, by_tandem: false, by_model: false };
+        let info = |source, target| NavInfo { target, source: Some(source), user: true, redirect: false, by_termurion: false, by_model: false };
         assert!(nav_verdict(&info("iterm2-file:///C:/T/", "iterm2-file:///C:/T/x"), &policy, &|_| true));
         assert!(!nav_verdict(&info("iterm2-file:///C:/T/", "iterm2-file:///C:/"), &policy, &|_| true));
     }

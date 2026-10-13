@@ -567,7 +567,7 @@ impl App {
     }
 
     /// The forms of every Reload shortcut with Win in it, for the keyboard hook (Win+R is Windows's
-    /// unless Tandem takes it first).
+    /// unless Termurion takes it first).
     pub(super) fn toolbar_route_keys(&self) -> std::collections::HashSet<String> {
         let mut keys = std::collections::HashSet::new();
         for inst in self.workgroups.values() {
@@ -585,7 +585,7 @@ impl App {
         keys
     }
 
-    /// The keys a browser member's key gate hands to Tandem (13x2 seam S3): the custom shortcuts of the
+    /// The keys a browser member's key gate hands to Termurion (13x2 seam S3): the custom shortcuts of the
     /// peer group `pane` shows, then its toolbar's own, the lists `peer_shortcut` and
     /// `workgroup_toolbar_shortcut` match. Win chords are the keyboard hook's and never reach a gate.
     pub(super) fn workgroup_gate_keys(&self, pane: PaneId) -> Vec<crate::workgroup::Shortcut> {
@@ -848,7 +848,7 @@ mod tests {
         let keys = include_str!("../browser_keys.rs");
         assert!(keys.contains("key_owner(bar, address, workgroup, copy, mapped)"));
         // S4, narrowed to iTerm2 (merge review I1, MovePaneController.m:71-133, :315): a move, swap or
-        // break-out is refused only for Lock Layout and the session's own lock (and Tandem's recording
+        // break-out is refused only for Lock Layout and the session's own lock (and Termurion's recording
         // and tmux rules). A member in a layout moves like any pane; the one member guard is for a pane
         // in no layout (a hidden peer, reachable only by id), in the pick, the drop target and every
         // break-out.

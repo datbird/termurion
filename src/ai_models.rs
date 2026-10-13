@@ -141,7 +141,7 @@ fn new_id() -> String {
     uuid::Uuid::new_v4().hyphenated().to_string().to_uppercase()
 }
 
-/// One configured manual model (`G:43-64`). Keys Tandem does not know stay in `extra` so a round
+/// One configured manual model (`G:43-64`). Keys Termurion does not know stay in `extra` so a round
 /// trip through Settings keeps them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ManualModel {
@@ -553,7 +553,7 @@ pub const ECONOMY: &str = "Economy";
 pub const TOGGLE_ECONOMY: &str = "Toggle Economy Model. A cheaper model used for frequent background jobs like command-safety checks and screen-idle detection.";
 /// Marks the economy row, where iTerm2 draws a leaf described as "Economy model".
 pub const ECONOMY_MARK: &str = "Economy model";
-/// iTerm2's names for a model whose name is not a string (`G:398-400`, `G:3833`); Tandem's
+/// iTerm2's names for a model whose name is not a string (`G:398-400`, `G:3833`); Termurion's
 /// reader drops such an entry, so neither is shown. An empty name stays empty, as in iTerm2.
 pub const UNTITLED: &str = "Untitled model";
 pub const MANUAL_MODEL: &str = "Manual model";

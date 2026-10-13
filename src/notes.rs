@@ -1,7 +1,7 @@
 //! The Notes tool's store, pure rules: its two modes and when a change to the global note is
 //! written (iTerm2's `Toolbelt/ToolNotes.m`, `TN`), and the global note's file with iTerm2's
 //! rules for never losing it (`GlobalNote`, plain `std::fs`). The editor is `text_edit`; the app
-//! owns the path under `%APPDATA%\Tandem`, the session note on the Pane and the drawing.
+//! owns the path under `%APPDATA%\Termurion`, the session note on the Pane and the drawing.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -18,8 +18,8 @@ pub enum Mode {
 /// The mode control's segments, in order (`TN:94`).
 pub const MODES: [(Mode, &str); 2] = [(Mode::Global, "Global"), (Mode::Session, "Session")];
 
-/// The global note's file, plain UTF-8 text beside Tandem's other files (iTerm2 keeps
-/// `notes.rtfd`; ruling: Tandem's editor is plain text only).
+/// The global note's file, plain UTF-8 text beside Termurion's other files (iTerm2 keeps
+/// `notes.rtfd`; ruling: Termurion's editor is plain text only).
 pub const FILE_NAME: &str = "notes.txt";
 
 /// A global note this long or longer is written on a trailing debounce instead of on every
@@ -225,7 +225,7 @@ impl GlobalNote {
         self.write_retrying(now)
     }
 
-    /// Writes a pending change now (Tandem is quitting). A file that still cannot be read is
+    /// Writes a pending change now (Termurion is quitting). A file that still cannot be read is
     /// left alone, and typing over its emptied view is kept aside in `notes-discarded.txt`, as
     /// an adopting write keeps it: no later retry will save it.
     pub fn flush(&mut self) -> Result<Wrote, String> {
@@ -362,8 +362,8 @@ mod tests {
     /// and writes leave no temporary file.
     #[test]
     fn global_note_never_loses_the_file() {
-        let dir = std::env::temp_dir().join(format!("tandem-notes-{}-{}", std::process::id(), SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())));
-        let path = dir.join("Tandem").join(FILE_NAME);
+        let dir = std::env::temp_dir().join(format!("termurion-notes-{}-{}", std::process::id(), SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())));
+        let path = dir.join("Termurion").join(FILE_NAME);
         let now = Instant::now();
 
         // No file: empty, and an empty note writes nothing.

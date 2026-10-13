@@ -102,7 +102,7 @@ fn without_password(text: &str) -> String {
 }
 
 /// The change an external URL makes: Ok(None) for a scheme that changes nothing (iTerm2's
-/// `x-man-page`, which Tandem does not offer, and every other scheme), and for ssh the 14e rule.
+/// `x-man-page`, which Termurion does not offer, and every other scheme), and for ssh the 14e rule.
 pub fn change_for(url: &str, s: &Settings) -> Result<Option<Change>, UrlError> {
     let Some(scheme) = scheme_of(url) else { return Ok(None) };
     if !crate::url_launch::url_ok(url) {
@@ -201,7 +201,7 @@ mod tests {
         assert_eq!(command("ftp://bob@h/x").as_deref(), Ok("ftp ftp://bob@h/x"), "a user alone stays");
         assert_eq!(command("ftp://h/a@b:c").as_deref(), Ok("ftp ftp://h/a@b:c"), "an @ in the path is not userinfo");
         // No saved or serialized form of the session copy holds it either.
-        let profile = crate::store::Store::fresh(&std::env::temp_dir().join(format!("tandem-ftp-pw-{}.toml", std::process::id()))).profiles[0].clone();
+        let profile = crate::store::Store::fresh(&std::env::temp_dir().join(format!("termurion-ftp-pw-{}.toml", std::process::id()))).profiles[0].clone();
         for url in ["ftp://bob:secret@h/x", "telnet://bob:secret@h:23"] {
             let changed = crate::ssh_url::profile_for_url(&profile, url, &settings()).unwrap().unwrap();
             assert!(!format!("{changed:?}").contains("secret"), "{url}");

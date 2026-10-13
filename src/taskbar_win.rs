@@ -49,7 +49,7 @@ static JOBS: OnceLock<Option<Sender<Job>>> = OnceLock::new();
 fn jobs() -> Option<&'static Sender<Job>> {
     JOBS.get_or_init(|| {
         let (tx, rx) = channel::<Job>();
-        std::thread::Builder::new().name("tandem-taskbar".into()).spawn(move || worker(rx)).ok().map(|_| tx)
+        std::thread::Builder::new().name("termurion-taskbar".into()).spawn(move || worker(rx)).ok().map(|_| tx)
     })
     .as_ref()
 }
@@ -201,7 +201,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 /// Hears `TaskbarButtonCreated` on a window (once; a window made again on a new handle gets it again).
 pub fn watch(hwnd: isize) {
     let message = created_message();
-    // SAFETY: a live window of this process. An elevated Tandem would otherwise never hear the
+    // SAFETY: a live window of this process. An elevated Termurion would otherwise never hear the
     // message from Explorer (a lower integrity process) after Explorer restarts, and the badge would
     // be lost.
     unsafe { ChangeWindowMessageFilterEx(hwnd as HWND, message, MSGFLT_ALLOW, std::ptr::null_mut()) };

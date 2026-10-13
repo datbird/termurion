@@ -31,7 +31,7 @@ pub const PENDING: &str = "pending";
 /// Not iTerm2's: the person's answer for an import's commands, sealed to this install (`seal`): the
 /// HMAC, under the install's own key, of the workgroup id and the digest of the commands answered for
 /// (`run::Approved`). A restored import runs its commands only while they are still those, and only
-/// when the seal comes from Tandem's own launch state (the Task 9 review: a plain digest is computable
+/// when the seal comes from Termurion's own launch state (the Task 9 review: a plain digest is computable
 /// by whoever holds the workgroup).
 pub const APPROVAL: &str = "approvalDigest";
 
@@ -45,7 +45,7 @@ pub const KEY_LEN: usize = 32;
 /// Where a restore read its descriptor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
-    /// Launch-time window restoration: the state Tandem itself wrote at quit.
+    /// Launch-time window restoration: the state Termurion itself wrote at quit.
     Launch,
     /// A saved arrangement by name. Arrangements travel through remote prefs and imports, so an
     /// approval found there is never the person's answer: every import asks.
@@ -74,7 +74,7 @@ pub struct Child {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Descriptor {
     pub workgroup_id: String,
-    /// Empty when the file held none or one Tandem would not have minted.
+    /// Empty when the file held none or one Termurion would not have minted.
     pub instance_id: String,
     pub git_base: String,
     pub leader_id: String,
@@ -95,7 +95,7 @@ const MAX_DEPTH: usize = 32;
 const MAX_TEXT: usize = 128;
 const MAX_NAME: usize = 128;
 
-/// The text bytes of `v` when it is an arrangement Tandem could have saved: a table, within the depth,
+/// The text bytes of `v` when it is an arrangement Termurion could have saved: a table, within the depth,
 /// node and byte limits (an iterative walk, so a hostile depth cannot overflow the stack).
 fn arrangement_size(v: &Value) -> Option<usize> {
     if !v.is_table() {
@@ -126,7 +126,7 @@ fn arrangement_size(v: &Value) -> Option<usize> {
     Some(bytes)
 }
 
-/// A GUID Tandem could have minted or iTerm2 wrote: letters, digits, dashes and underscores.
+/// A GUID Termurion could have minted or iTerm2 wrote: letters, digits, dashes and underscores.
 fn guid_ok(s: &str) -> bool {
     (1..=MAX_TEXT).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
@@ -190,7 +190,7 @@ impl Descriptor {
     }
 
     /// Reads a saved descriptor. None without a workgroup, leader and anchor id (`WRC:reconstruct`'s
-    /// first guard). Every other field is judged and a bad one is dropped alone: an instance id Tandem
+    /// first guard). Every other field is judged and a bad one is dropped alone: an instance id Termurion
     /// would not mint reads as none, a base that is not usable as HEAD, a member or child that does
     /// not fit is skipped, counts are capped at `MAX_SESSIONS`.
     pub fn from_value(v: &Value) -> Option<Descriptor> {
@@ -304,7 +304,7 @@ pub fn foreign_restore(named: bool, launch: bool, state_imported: bool) -> bool 
 /// A Code Review or Diff session with no program to take back is restored as an idle session: its last
 /// output stays and nothing runs until the person starts it. A shell would be a stray one. When the
 /// overlay was showing (`anchorPending`) there was no program at all, and the overlay comes back instead
-/// (iTerm2 relaunches its shell under the overlay; Tandem has no shell to put under it). `had_program`
+/// (iTerm2 relaunches its shell under the overlay; Termurion has no shell to put under it). `had_program`
 /// is a program that came back from the session host: nothing to inhibit then.
 pub fn inhibit_relaunch(d: &Descriptor, anchor_mode: Mode, had_program: bool) -> bool {
     let program = had_program && !d.anchor_pending;
@@ -343,7 +343,7 @@ impl Inhibit {
 }
 
 /// The instance id a restored instance takes (`WC:adopt`): the saved one, unless it is taken or not
-/// one Tandem mints (the file's word), then a fresh one.
+/// one Termurion mints (the file's word), then a fresh one.
 pub fn resolve_instance_id(saved: &str, taken: &dyn Fn(&str) -> bool) -> String {
     if crate::workgroup_run::valid_instance_id(saved) && !taken(saved) {
         return saved.to_string();
@@ -548,7 +548,7 @@ pub fn next_step(f: &Facts) -> Step {
 /// HMAC-SHA256 under the install's key over both, each length-prefixed, as lowercase hex. Only this
 /// install can make it, so no file from elsewhere can carry an answer the person never gave here.
 pub fn seal(key: &[u8], workgroup_id: &str, digest: &str) -> String {
-    let mut msg = b"tandem workgroup approval\0".to_vec();
+    let mut msg = b"termurion workgroup approval\0".to_vec();
     for part in [workgroup_id, digest] {
         msg.extend((part.len() as u64).to_le_bytes());
         msg.extend(part.as_bytes());
@@ -562,7 +562,7 @@ fn same(a: &str, b: &str) -> bool {
 }
 
 /// Whether adopting asks the person again: the person's own workgroup never; an import runs its
-/// commands unasked only from Tandem's own launch state (`Origin::Launch`) whose approval is this
+/// commands unasked only from Termurion's own launch state (`Origin::Launch`) whose approval is this
 /// install's seal (`key`) of the commands it would run now, with its members' profiles as `profiles`
 /// resolves them now. A named arrangement, a missing key, a
 /// plain digest or a seal from another install all ask (the trust ruling and the Task 9 review).
@@ -577,7 +577,7 @@ pub fn needs_question(source: Source, d: &Descriptor, w: &Workgroup, origin: Ori
 /// The entropy the key is protected with: DPAPI unprotects it only with these bytes too, so a blob
 /// another program protected for this user is no key either.
 #[cfg(windows)]
-const KEY_ENTROPY: &[u8] = b"tandem workgroup approval key\0v1";
+const KEY_ENTROPY: &[u8] = b"termurion workgroup approval key\0v1";
 
 /// DPAPI (`CryptProtectData`, this user's scope, no UI) over `data` with `KEY_ENTROPY`, or the
 /// reverse. None on any failure.
@@ -621,7 +621,7 @@ pub fn protect_key(key: &[u8; KEY_LEN]) -> Option<Vec<u8>> {
     dpapi(key, true)
 }
 
-/// The key a key file's bytes hold, when this user's DPAPI unprotects them with Tandem's entropy
+/// The key a key file's bytes hold, when this user's DPAPI unprotects them with Termurion's entropy
 /// into exactly a key. Plain bytes, another user's or another install's blob: None.
 #[cfg(windows)]
 pub fn unprotect_key(blob: &[u8]) -> Option<[u8; KEY_LEN]> {
@@ -629,14 +629,14 @@ pub fn unprotect_key(blob: &[u8]) -> Option<[u8; KEY_LEN]> {
     plain.as_slice().try_into().ok()
 }
 
-/// The install's approval key in `dir` (Tandem's settings folder), made when absent. The file holds
+/// The install's approval key in `dir` (Termurion's settings folder), made when absent. The file holds
 /// the key protected with DPAPI for this user (`protect_key`) and is read only when it is this
 /// user's own owner-only file (`localfs::is_owner_only`), never through a link. So no file copied
 /// in (an archive's, through any name) can be a key: one that is not owner-only or does not
-/// unprotect is removed (through the handle that judged it, never a file another Tandem put there
+/// unprotect is removed (through the handle that judged it, never a file another Termurion put there
 /// since) and a fresh key made, so every earlier approval asks again (Task 9 findings r2). A new
 /// key is written whole to an owner-only temporary file and then given the name only if no other
-/// Tandem gave it one first (then that key is read), so no reader ever sees half a key. None when
+/// Termurion gave it one first (then that key is read), so no reader ever sees half a key. None when
 /// the folder or file cannot be used: then nothing restores unasked.
 #[cfg(windows)]
 pub fn key_in(dir: &std::path::Path) -> Option<[u8; KEY_LEN]> {
@@ -660,7 +660,7 @@ pub fn key_in(dir: &std::path::Path) -> Option<[u8; KEY_LEN]> {
         }
         Ok(key)
     };
-    // Another Tandem holding the file open for writing (32, a sharing violation) or removing it (5,
+    // Another Termurion holding the file open for writing (32, a sharing violation) or removing it (5,
     // delete-pending until its handle closes) is waited for, up to about a second.
     let busy = |e: &std::io::Error| matches!(e.raw_os_error(), Some(32) | Some(5));
     for _ in 0..50 {
@@ -687,9 +687,9 @@ pub fn key_in(dir: &std::path::Path) -> Option<[u8; KEY_LEN]> {
         let _ = localfs::remove_unfollowed(&temp);
         match named {
             Ok(()) => return Some(k),
-            // Another copy of Tandem named its key first: read that one.
+            // Another copy of Termurion named its key first: read that one.
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            // The name is still delete-pending under another Tandem's handle: try again.
+            // The name is still delete-pending under another Termurion's handle: try again.
             Err(e) if busy(&e) => {
                 std::thread::sleep(std::time::Duration::from_millis(20));
                 continue;
@@ -701,7 +701,7 @@ pub fn key_in(dir: &std::path::Path) -> Option<[u8; KEY_LEN]> {
 }
 
 /// Removes the open file (opened with DELETE access): the very file that was judged, whatever has
-/// the name by then. POSIX semantics first, so the name is free at once (another Tandem starting now
+/// the name by then. POSIX semantics first, so the name is free at once (another Termurion starting now
 /// makes its key instead of meeting a delete-pending name); where the volume has none (FAT, older
 /// Windows), the classic mark that removes it when its handles close (`key_in` then waits).
 #[cfg(windows)]
@@ -749,8 +749,8 @@ mod tests {
     }
 
     /// 13y2 final review I1: a member a foreign restore built idle keeps the arrangement's profile copy
-    /// (with its Command) in the session Tandem saves. The session carries the idle mark, so every later
-    /// restore (the launch state, which counts as Tandem's own, a named arrangement, an Import All) keeps
+    /// (with its Command) in the session Termurion saves. The session carries the idle mark, so every later
+    /// restore (the launch state, which counts as Termurion's own, a named arrangement, an Import All) keeps
     /// it idle until the person starts it; a session saved without the mark behaves as before.
     #[test]
     fn a_member_restored_idle_stays_idle_at_every_later_restore() {
@@ -759,7 +759,7 @@ mod tests {
         crafted.insert("Command".into(), Value::String("calc.exe".into()));
         crafted.insert("Custom Command".into(), Value::String("Yes".into()));
         let mut saved = Value::Table(crafted);
-        // The named restore built it idle (13y1 M6); Tandem's save writes the mark with it.
+        // The named restore built it idle (13y1 M6); Termurion's save writes the mark with it.
         assert!(Inhibit::of(None, None, member_inhibits(Mode::Regular, foreign_restore(true, false, false))).with(false));
         crate::arrangement::mark_idle(&mut saved);
         let held = crate::arrangement::held_idle(&saved);
@@ -773,7 +773,7 @@ mod tests {
         let d = descriptor();
         assert!(Inhibit::of(Some(&d), Some(Mode::Regular), false).held(held).with(false));
         assert!(Inhibit::of(None, None, false).held(held).with(false), "a plain session with the mark");
-        // The person's own state from before the mark: a member Tandem created starts its shell.
+        // The person's own state from before the mark: a member Termurion created starts its shell.
         let old = Value::Table(Table::new());
         assert!(!crate::arrangement::held_idle(&old));
         assert!(!Inhibit::of(None, None, member_inhibits(Mode::Regular, foreign_restore(false, true, false))).held(crate::arrangement::held_idle(&old)).with(false));
@@ -865,7 +865,7 @@ mod tests {
         assert_eq!(with(&|t| { t.insert(WORKGROUP_ID.into(), Value::Integer(3)); }), None);
         assert_eq!(with(&|t| { t.insert(LEADER_ID.into(), Value::String("a b".into())); }), None);
         assert_eq!(with(&|t| { t.insert(ANCHOR_ID.into(), Value::String("x".repeat(129))); }), None);
-        // An instance id Tandem would not have minted is dropped (a fresh one is minted at adoption).
+        // An instance id Termurion would not have minted is dropped (a fresh one is minted at adoption).
         let d = with(&|t| { t.insert(INSTANCE_ID.into(), Value::String("wg-../..".into())); }).unwrap();
         assert_eq!(d.instance_id, "");
         // A base that is an option or holds a control reads as HEAD.
@@ -931,7 +931,7 @@ mod tests {
         assert!(kids.member_guids.len() <= 2 * crate::workgroup::MAX_SESSIONS);
     }
 
-    /// `WC:adopt`: the saved id, a fresh one when it is taken or not one Tandem makes.
+    /// `WC:adopt`: the saved id, a fresh one when it is taken or not one Termurion makes.
     #[test]
     fn instance_ids_follow_iterm2() {
         let saved = "wg-0F1C2A3B-0000-4000-8000-000000000001";
@@ -1042,7 +1042,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn the_approval_key_is_made_once_and_owner_only() {
-        let dir = std::env::temp_dir().join(format!("tandem-wg-key-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-wg-key-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let first = key_in(&dir).expect("made");
         assert_eq!(key_in(&dir), Some(first), "read back, not made again");
@@ -1057,14 +1057,14 @@ mod tests {
     }
 
     /// Task 9 findings r2 (Critical): a key file that came from anywhere but this install's own
-    /// protect call is no key. Plain bytes (an archive's, an older Tandem's) do not unprotect, and
+    /// protect call is no key. Plain bytes (an archive's, an older Termurion's) do not unprotect, and
     /// the install's own protected bytes in a file without the owner-only DACL (copied in) are not
     /// read: each time a fresh owner-only key replaces the file, so every earlier approval asks.
     #[cfg(windows)]
     #[test]
     fn a_key_file_copied_in_is_no_key() {
         use std::io::Write;
-        let dir = std::env::temp_dir().join(format!("tandem-wg-key-copied-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-wg-key-copied-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = crate::localfs::LocalPath::judge(&dir).unwrap().unfollowed(KEY_FILE).unwrap();
@@ -1086,17 +1086,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Task 9 re-review r2, new minor 1: a second Tandem that starts while another is removing a bad
+    /// Task 9 re-review r2, new minor 1: a second Termurion that starts while another is removing a bad
     /// key (the file is delete-pending until that one's handle closes) still gets a key for its run.
     #[cfg(windows)]
     #[test]
-    fn a_key_being_removed_by_another_tandem_is_waited_for() {
+    fn a_key_being_removed_by_another_termurion_is_waited_for() {
         use std::os::windows::fs::OpenOptionsExt;
-        let dir = std::env::temp_dir().join(format!("tandem-wg-key-pending-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-wg-key-pending-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(KEY_FILE), b"not a key").unwrap();
-        // The other Tandem judged the file and marks it for removal through its handle (as `key_in`
+        // The other Termurion judged the file and marks it for removal through its handle (as `key_in`
         // does, classic disposition), and holds the handle a moment.
         let other = std::fs::OpenOptions::new().access_mode(windows_sys::Win32::Foundation::GENERIC_READ | 0x0001_0000).share_mode(1).open(dir.join(KEY_FILE)).unwrap();
         let info = windows_sys::Win32::Storage::FileSystem::FILE_DISPOSITION_INFO { DeleteFile: 1 };
@@ -1115,13 +1115,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Task 9 findings r2 (minor): copies of Tandem starting together all end with the one key on
+    /// Task 9 findings r2 (minor): copies of Termurion starting together all end with the one key on
     /// disk: a key is named only whole and only when no other has the name.
     #[cfg(windows)]
     #[test]
-    fn tandems_starting_together_share_one_key() {
+    fn termurions_starting_together_share_one_key() {
         for round in 0..10 {
-            let dir = std::env::temp_dir().join(format!("tandem-wg-key-race-{}-{round}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("termurion-wg-key-race-{}-{round}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             let got: Vec<Option<[u8; KEY_LEN]>> = std::thread::scope(|s| {
                 let handles: Vec<_> = (0..6).map(|_| s.spawn(|| key_in(&dir))).collect();
@@ -1135,7 +1135,7 @@ mod tests {
         }
     }
 
-    /// Task 9 findings r2 (Critical): the key is DPAPI-protected for this user with Tandem's own
+    /// Task 9 findings r2 (Critical): the key is DPAPI-protected for this user with Termurion's own
     /// entropy, so the same bytes protected without it (or by anyone else) do not unprotect.
     #[cfg(windows)]
     #[test]
@@ -1206,10 +1206,10 @@ mod tests {
         assert_eq!(embedded(&anchor).len(), 2);
         assert_eq!(embedded(&anchor)[0].get("Name").and_then(Value::as_str), Some("chat"));
         for (i, m) in embedded_mut(&mut anchor).into_iter().enumerate() {
-            m.insert("Tandem Attach".into(), Value::Integer(i as i64));
+            m.insert("Termurion Attach".into(), Value::Integer(i as i64));
         }
         let d = Descriptor::from_value(anchor.get(crate::arrangement::WORKGROUP_KEY).unwrap()).unwrap();
-        assert_eq!(d.members[1].arrangement.get("Tandem Attach").and_then(Value::as_integer), Some(1));
+        assert_eq!(d.members[1].arrangement.get("Termurion Attach").and_then(Value::as_integer), Some(1));
         // A session with no descriptor, or a broken one, has none.
         assert!(embedded(&Table::new()).is_empty());
         let mut broken = Table::new();

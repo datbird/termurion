@@ -448,7 +448,7 @@ pub fn kitty_modifier(key: Modifier, mods: Mods, sides: Sides, bucky: Bucky, kin
 }
 
 /// iTerm2's raw key reporting: `OSC 1337 ; d|u ; flags ; hex(text) ; key code ;
-/// hex(base) BEL`, with Windows virtual key codes. Tandem does not tell the left and
+/// hex(base) BEL`, with Windows virtual key codes. Termurion does not tell the left and
 /// right modifiers apart, so both count as the left one.
 pub fn raw(ev: &KeyEvent) -> Vec<u8> {
     let dir = if ev.kind == Kind::Release { 'u' } else { 'd' };

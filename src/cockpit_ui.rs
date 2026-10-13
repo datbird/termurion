@@ -299,8 +299,8 @@ impl CockpitWindow {
         self.host.request_redraw();
     }
 
-    /// Hidden while no window of Tandem is in front (`hidesOnDeactivate`, `CX:26`); it comes
-    /// back without taking the focus from the window Tandem returned to.
+    /// Hidden while no window of Termurion is in front (`hidesOnDeactivate`, `CX:26`); it comes
+    /// back without taking the focus from the window Termurion returned to.
     pub fn set_shown(&mut self, on: bool) {
         if on == self.shown {
             return;
@@ -368,7 +368,7 @@ impl CockpitWindow {
         self.painted = now;
         let Self { host, last_query, dismissed, .. } = self;
         host.paint(|ui| {
-            // Ctrl+W closes, as every other egui window of Tandem does.
+            // Ctrl+W closes, as every other egui window of Termurion does.
             if ui.input(|i| i.key_pressed(egui::Key::W) && i.modifiers.command) {
                 acts.push(Act::Closed);
             }

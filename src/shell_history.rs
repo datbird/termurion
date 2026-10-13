@@ -390,7 +390,7 @@ mod tests {
         assert_eq!(insertable_dir("/C:/a b", Some("cmd")), "\"C:\\a b\"");
         assert_eq!(insertable_dir("/home/me/My Docs", Some("bash")), "/home/me/My\\ Docs");
         assert_eq!(insertable_dir("/tmp/a\nb", None), "/tmp/a\\\nb", "POSIX: newlines escaped too");
-        let dir = std::env::temp_dir().join(format!("tandem-write-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-write-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("h.json");
         write_whole(&f, "one").unwrap();

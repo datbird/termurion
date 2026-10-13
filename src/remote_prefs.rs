@@ -2,7 +2,7 @@
 //! settings file is, which keys travel through it, the file itself, when the quit question runs, and
 //! the curl arguments for a URL. The app side is `src/app/prefs_ui.rs`.
 //!
-//! The file is `tandem-settings.toml`: `default` (the default profile's Guid), `[[profile]]` tables in
+//! The file is `termurion-settings.toml`: `default` (the default profile's Guid), `[[profile]]` tables in
 //! `profiles.toml`'s form and a `[settings]` table in `settings.toml`'s form, holding syncable keys
 //! only. iTerm2 keeps both in one plist; Tandem keeps them in two files and joins them here.
 
@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use toml::Value;
 
 /// iTerm2's `<bundle id>.plist` (`RP:134-142`).
-pub const PREFS_FILE: &str = "tandem-settings.toml";
+pub const PREFS_FILE: &str = "termurion-settings.toml";
 /// `kPreferenceKeyLoadPrefsFromCustomFolder` (`PREF:52`).
 pub const LOAD_KEY: &str = "LoadPrefsFromCustomFolder";
 /// `kPreferenceKeyCustomFolder` (`PREF:67`).
@@ -47,7 +47,7 @@ pub const OVERWRITE: &str = "Overwrite";
 pub const CANNOT_COPY_URL: &str = "Settings cannot be copied to a URL.";
 /// Tandem's: iTerm2 names its plist's path here.
 pub const CANNOT_COPY_URL_DETAIL: &str =
-    "To make it available, save the settings to a folder with Save Now and then manually copy tandem-settings.toml to your hosting provider.";
+    "To make it available, save the settings to a folder with Save Now and then manually copy termurion-settings.toml to your hosting provider.";
 pub const FAILED_COPY: &str = "Failed to copy settings to custom directory.";
 pub const COPY: &str = "Copy";
 pub const LOSE_CHANGES: &str = "Lose Changes";
@@ -110,7 +110,7 @@ pub fn expanded(text: &str, home: &Path) -> String {
 }
 
 /// `prefsFilenameWithBaseDir:` (`RP:134-142`): the base itself when it names an existing `.toml`
-/// file (iTerm2's `.plist`), else `tandem-settings.toml` inside it.
+/// file (iTerm2's `.plist`), else `termurion-settings.toml` inside it.
 pub fn prefs_file(base: &Path, exists: &dyn Fn(&Path) -> bool) -> PathBuf {
     let named = base.extension().is_some_and(|e| e.eq_ignore_ascii_case("toml"));
     if named && exists(base) {
@@ -356,13 +356,13 @@ mod tests {
         assert_eq!(expanded("~\\s", home), r"C:\Users\u\s");
         assert_eq!(expanded("https://h/~p", home), "https://h/~p");
         let none = |_: &Path| false;
-        assert_eq!(prefs_file(Path::new(r"D:\s"), &none), Path::new(r"D:\s\tandem-settings.toml"));
+        assert_eq!(prefs_file(Path::new(r"D:\s"), &none), Path::new(r"D:\s\termurion-settings.toml"));
         let mine = |p: &Path| p == Path::new(r"D:\s\mine.toml");
         assert_eq!(prefs_file(Path::new(r"D:\s\mine.toml"), &mine), Path::new(r"D:\s\mine.toml"));
-        assert_eq!(prefs_file(Path::new(r"D:\s\mine.toml"), &none), Path::new(r"D:\s\mine.toml\tandem-settings.toml"));
+        assert_eq!(prefs_file(Path::new(r"D:\s\mine.toml"), &none), Path::new(r"D:\s\mine.toml\termurion-settings.toml"));
         // Only a named .toml file counts (iTerm2's .plist).
         let txt = |p: &Path| p == Path::new(r"D:\s\mine.txt");
-        assert_eq!(prefs_file(Path::new(r"D:\s\mine.txt"), &txt), Path::new(r"D:\s\mine.txt\tandem-settings.toml"));
+        assert_eq!(prefs_file(Path::new(r"D:\s\mine.txt"), &txt), Path::new(r"D:\s\mine.txt\termurion-settings.toml"));
         let always = |_: &Path| true;
         let no_link = |_: &Path| None;
         assert!(location_valid("https://h/p", home, &no_link, &none));
@@ -396,7 +396,7 @@ mod tests {
         assert!(!location_valid(r"D:\s\sub", home, &to_share, &never), "a folder under the link");
         assert!(!location_valid(r"D:\s\mine.toml", home, &to_share, &never));
         assert!(!local_folder(Path::new(r"D:\s"), &to_share));
-        assert!(!local_folder(Path::new(r"D:\s\tandem-settings.toml"), &to_share));
+        assert!(!local_folder(Path::new(r"D:\s\termurion-settings.toml"), &to_share));
         assert!(!local_folder(Path::new(r"\\h\s"), &|_| None));
         // A link to a local folder, and a plain folder, stay usable.
         let to_local = |p: &Path| (p == Path::new(r"D:\s")).then(|| PathBuf::from(r"E:\t"));
@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn writable_probes_and_cleans_up() {
-        let dir = std::env::temp_dir().join(format!("tandem-remote-prefs-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-remote-prefs-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert!(writable(&dir));
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "the probe file is removed");
@@ -533,7 +533,7 @@ mod tests {
     fn texts_follow_iterm2() {
         assert_eq!(http_failed("boom"), "HTTP request failed: boom");
         assert_eq!(http_failed(""), "HTTP request failed: unknown error");
-        assert_eq!(missing_file(r"D:\s\tandem-settings.toml"), "Missing or malformed file at \u{201c}D:\\s\\tandem-settings.toml\u{201d}");
+        assert_eq!(missing_file(r"D:\s\termurion-settings.toml"), "Missing or malformed file at \u{201c}D:\\s\\termurion-settings.toml\u{201d}");
         assert_eq!(remote_changed(r"D:\s"), "Settings at D:\\s changed since Tandem started. Overwrite it?");
         assert_eq!(tried_to_copy("a", "b"), "Tried to copy a to b");
         assert_eq!(settings_changed(r"D:\s"), "Settings have changed. Copy them to D:\\s?");
@@ -588,7 +588,7 @@ mod tests {
                 "Failed to load settings from custom directory. Falling back to local copy.",
                 "Overwrite",
                 "Settings cannot be copied to a URL.",
-                "To make it available, save the settings to a folder with Save Now and then manually copy tandem-settings.toml to your hosting provider.",
+                "To make it available, save the settings to a folder with Save Now and then manually copy termurion-settings.toml to your hosting provider.",
                 "Failed to copy settings to custom directory.",
                 "Copy",
                 "Lose Changes",
@@ -612,7 +612,7 @@ mod tests {
         assert_eq!(
             (PREFS_FILE, LOAD_KEY, FOLDER_KEY, HAVE_SELECTION_KEY, SELECTION_KEY, PROMPT_URL_KEY, TIMEOUT_KEY),
             (
-                "tandem-settings.toml",
+                "termurion-settings.toml",
                 "LoadPrefsFromCustomFolder",
                 "PrefsCustomFolder",
                 "NoSyncNeverRemindPrefsChangesLostForFile",

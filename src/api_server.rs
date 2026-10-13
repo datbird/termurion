@@ -62,7 +62,7 @@ const CHUNK: usize = 16 * 1024;
 pub(crate) const MAX_CONNECTIONS: usize = 32;
 pub(crate) const MAX_UNAUTHORIZED: usize = 8;
 
-/// The reason logged when a cap refuses a connection (Tandem's own text).
+/// The reason logged when a cap refuses a connection (Termurion's own text).
 pub(crate) const TOO_MANY: &str = "Too many Python API connections";
 
 /// The largest message and frame a client may send. iTerm2 has no cap (`iTermWebSocketFrame.m:
@@ -1536,7 +1536,7 @@ mod tests {
     }
 
     /// The stock `iterm2` package, unmodified, connects on port 1912 with a session cookie and
-    /// builds its App from Tandem's answers (the fixture model through `route` and `answer`).
+    /// builds its App from Termurion's answers (the fixture model through `route` and `answer`).
     /// Run with `scripts/xt test --lib stock_iterm2 -- --ignored`.
     #[test]
     #[ignore]
@@ -1561,7 +1561,7 @@ mod tests {
                 return;
             }
         };
-        let dir = std::env::temp_dir().join(format!("tandem-stock-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-stock-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("stock_get_app.py");
         std::fs::write(&script, "import iterm2\n\nasync def main(connection):\n    print(len((await iterm2.async_get_app(connection)).windows))\n\niterm2.run_until_complete(main)\n").unwrap();

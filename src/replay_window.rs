@@ -111,7 +111,7 @@ impl ReplayWindow {
         self.set_shown(true);
     }
 
-    /// Hidden while Tandem is not the active app (`hidesOnDeactivate`).
+    /// Hidden while Termurion is not the active app (`hidesOnDeactivate`).
     pub fn set_shown(&mut self, on: bool) {
         if on == self.shown {
             return;

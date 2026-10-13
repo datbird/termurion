@@ -49,7 +49,7 @@ pub fn with_conductor(local_debounced: bool, conductor: bool) -> bool {
 /// One console's samples, debounced: a run of samples that say "prompt" counts once a
 /// sample at least the debounce after the run's first one still says so (so a script's brief
 /// echo off is not a prompt, however the samples fall); any other sample ends it at once.
-/// The watcher (local panes) and tandem-host (hosted panes) keep one per shell and feed it
+/// The watcher (local panes) and termurion-host (hosted panes) keep one per shell and feed it
 /// each real reading, so a recheck never re-reads an old sample.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Debounce {

@@ -1,4 +1,4 @@
-//! What `async_get_app` reads: a pure snapshot of Tandem's windows, tabs, sessions, focus and
+//! What `async_get_app` reads: a pure snapshot of Termurion's windows, tabs, sessions, focus and
 //! broadcast domains; iTerm2's ListSessions (`H:2372-2433`, `TAB:6083-6122`), Focus
 //! (`H:3338-3380`) and GetBroadcastDomains (`H:1455-1478`, `H:3598-3608`) answers built from
 //! it; and the difference of two snapshots as NEW_SESSION, TERMINATE_SESSION, LAYOUT_CHANGE,
@@ -54,7 +54,7 @@ pub struct ApiWindow {
 }
 
 /// Everything the three answers and the notifications read. Windows are in number order.
-/// `key_window` is the terminal window with the keyboard while Tandem is the active app;
+/// `key_window` is the terminal window with the keyboard while Termurion is the active app;
 /// `current_window` is the terminal window used last.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Model {
@@ -160,7 +160,7 @@ pub fn split_node(n: &ApiNode) -> pb::SplitTreeNode {
 
 /// iTerm2's ListSessions (`H:2372-2433`): windows with id, frame, number and selected tab;
 /// tabs with id, split tree, active session, `tmux_window_id` always set, the connection only
-/// for tmux tabs, minimized sessions; buried sessions. No tab group fields (Tandem has no tab
+/// for tmux tabs, minimized sessions; buried sessions. No tab group fields (Termurion has no tab
 /// groups).
 pub fn list_sessions(m: &Model) -> pb::ListSessionsResponse {
     use pb::list_sessions_response::{Tab, Window};
@@ -313,7 +313,7 @@ fn shape(m: &Model) -> Model {
     }
 }
 
-/// Who has the keyboard: a terminal window, another of Tandem's windows, or no one.
+/// Who has the keyboard: a terminal window, another of Termurion's windows, or no one.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Key<'a> {
     Terminal(&'a str),
@@ -331,7 +331,7 @@ fn key_of(m: &Model) -> Key<'_> {
 
 /// The focus changes, in iTerm2's notification terms (`H:1000-1068`): the app becoming or
 /// resigning active; a terminal window resigning key, then one becoming key (or, when another
-/// of Tandem's windows took the keyboard, the current terminal window as IS_CURRENT); then per
+/// of Termurion's windows took the keyboard, the current terminal window as IS_CURRENT); then per
 /// window a new selected tab, and per tab a new active session.
 fn focus_changes(old: &Model, new: &Model) -> Vec<pb::FocusChangedNotification> {
     let mut out = Vec::new();
@@ -422,7 +422,7 @@ pub fn fixture_session(id: PaneId) -> ApiSession {
     ApiSession { id: id.to_string(), frame: Some((i * 10, 0, 100, 50)), grid: Some((80 + i, 24)), title: format!("s{id}") }
 }
 
-/// The tests' Tandem: window "pty-A" number 0 with tabs 5 (panes 1 | (2 / 3), pane 2 active,
+/// The tests' Termurion: window "pty-A" number 0 with tabs 5 (panes 1 | (2 / 3), pane 2 active,
 /// broadcasting) and 6 (pane 4 in tmux window @2 of client "gw"), tab 5 selected; window
 /// "pty-B" number 1 with tab 9 (pane 7); pane 8 buried. "pty-A" is key and current.
 #[cfg(test)]
@@ -591,10 +591,10 @@ mod tests {
         let tail = [tab("5"), sess("2"), sess("4"), tab("9"), sess("7")];
         let expect = |head: Vec<pb::FocusChangedNotification>| head.into_iter().chain(tail.iter().cloned()).collect::<Vec<_>>();
         assert_eq!(focus(&m).notifications, expect(vec![app_active(true), win(TerminalWindowBecameKey, Some("pty-A"))]));
-        // Another of Tandem's windows has the keyboard: the current terminal window.
+        // Another of Termurion's windows has the keyboard: the current terminal window.
         let other = Model { key_window: None, ..m.clone() };
         assert_eq!(focus(&other).notifications, expect(vec![app_active(true), win(TerminalWindowIsCurrent, Some("pty-A"))]));
-        // Tandem inactive: iTerm2 still names the current terminal window as current
+        // Termurion inactive: iTerm2 still names the current terminal window as current
         // (`H:3346-3355`: RESIGNED_KEY only when there is no current terminal).
         let inactive = Model { app_active: false, key_window: None, ..m.clone() };
         assert_eq!(focus(&inactive).notifications, expect(vec![app_active(false), win(TerminalWindowIsCurrent, Some("pty-A"))]));
@@ -734,7 +734,7 @@ mod tests {
         let inactive = Model { app_active: false, key_window: None, ..old.clone() };
         assert_eq!(changes(&old, &inactive).focus, [app_active(false), win(TerminalWindowResignedKey, Some("pty-A"))]);
         assert_eq!(changes(&inactive, &old).focus, [app_active(true), win(TerminalWindowBecameKey, Some("pty-A"))]);
-        // Another of Tandem's windows taking the keyboard: A resigns, A is current.
+        // Another of Termurion's windows taking the keyboard: A resigns, A is current.
         let other = Model { key_window: None, ..old.clone() };
         assert_eq!(changes(&old, &other).focus, [win(TerminalWindowResignedKey, Some("pty-A")), win(TerminalWindowIsCurrent, Some("pty-A"))]);
         // A domain change.

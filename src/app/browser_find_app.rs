@@ -1,4 +1,4 @@
-//! The find bar and the find menu on a browser pane (milestone 13x3, Task 4). The bar is Tandem's
+//! The find bar and the find menu on a browser pane (milestone 13x3, Task 4). The bar is Termurion's
 //! own (`find_ui::FindState`, drawn in a strip above the page); the search is iTerm2's JS engine in
 //! the isolated world, reached through `browser_js_call`, one command at a time. Everything a page
 //! says arrives as a Client-world message and only the model reads it.
@@ -91,7 +91,7 @@ pub(super) fn page_takes_keyboard(address_keys: &mut bool, f: Option<&mut FindSt
     }
 }
 
-/// Whether a focus change may hand the keyboard to the page: only when no Tandem field has it.
+/// Whether a focus change may hand the keyboard to the page: only when no Termurion field has it.
 pub(super) fn page_may_focus(address_keys: bool, find_typing: bool) -> bool {
     !address_keys && !find_typing
 }
@@ -115,7 +115,7 @@ impl App {
         self.finds.get(&pane).is_some_and(|f| f.open && f.typing)
     }
 
-    /// Whether the page may be given the keyboard now (no Tandem field has it).
+    /// Whether the page may be given the keyboard now (no Termurion field has it).
     pub(super) fn browser_page_may_focus(&self, pane: PaneId) -> bool {
         page_may_focus(self.browser_views.get(&pane).is_some_and(|b| b.bar.keys), self.browser_find_typing(pane))
     }
@@ -268,7 +268,7 @@ impl App {
     }
 
     /// Use Selection for Find (`BVC:778-791`): the page's selection, read by the one capped reader in
-    /// Tandem's world, becomes the shared find string whatever the sync setting says.
+    /// Termurion's world, becomes the shared find string whatever the sync setting says.
     pub(super) fn browser_use_selection(&mut self, pane: PaneId) {
         self.browser_read_selection(
             pane,
@@ -321,7 +321,7 @@ impl App {
     }
 
     /// A Find Globally search reaches every browser pane (`GSEC:443-455`): a page with the find
-    /// script (checked in the Tandem world, `FM:423-426`) clears and starts its global search; the
+    /// script (checked in the Termurion world, `FM:423-426`) clears and starts its global search; the
     /// others contribute nothing. An answer for an older search is dropped.
     pub(super) fn browser_global_start(&mut self, query: &str) {
         let generation = self.global_generation;
@@ -764,7 +764,7 @@ mod tests {
     }
 
     /// B6: one hand-over for the keyboard. The bar takes it with the address field's own
-    /// `focus_window` (never a second `SetFocus`), the page is not given focus while a Tandem field
+    /// `focus_window` (never a second `SetFocus`), the page is not given focus while a Termurion field
     /// has it, and every path that gives a field the keyboard uses the exclusion functions.
     #[test]
     fn keyboard_hand_over_has_one_path() {
@@ -790,7 +790,7 @@ mod tests {
     }
 
     /// The bar, the menu and the page's answers reach the engine one way: data arguments to the main
-    /// frame's Tandem world, a Client message read only by the model, nothing built into a script.
+    /// frame's Termurion world, a Client message read only by the model, nothing built into a script.
     #[test]
     fn find_wiring_follows_iterm2() {
         let me = prod(include_str!("browser_find_app.rs"));

@@ -132,7 +132,7 @@ pub fn raw_strokes(style: Style, underline_y: f32, cell_bottom: f32, thickness: 
 }
 
 /// `raw_strokes` on whole device pixels (round half up, at least one pixel thick): iTerm2
-/// anti-aliases a half pixel, Tandem's quad pipeline does not.
+/// anti-aliases a half pixel, Termurion's quad pipeline does not.
 pub fn strokes(style: Style, underline_y: f32, cell_bottom: f32, thickness: f32, scale: f32) -> Vec<Stroke> {
     raw_strokes(style, underline_y, cell_bottom, thickness, scale).into_iter().map(snap).collect()
 }

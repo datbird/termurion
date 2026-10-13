@@ -23,11 +23,11 @@ const REVEAL_KEY: &str = "RevealExportedSettingsAndData";
 /// `dryRunEraseAllSettingsAndData` (`ASM:559`).
 const DRY_RUN_KEY: &str = "DryRunEraseAllSettingsAndData";
 /// The variable naming the process a relaunched Tandem waits for (`IE:898-911`).
-pub(super) const WAIT_PID_VAR: &str = "TANDEM_WAIT_PID";
+pub(super) const WAIT_PID_VAR: &str = "TERMURION_WAIT_PID";
 
 /// Where the export reads from.
 struct Sources<'a> {
-    /// `%APPDATA%\Tandem`.
+    /// `%APPDATA%\Termurion`.
     app_support: &'a Path,
     /// The Scripts folder; None when it is on a network path (never read).
     scripts: Option<&'a Path>,
@@ -184,11 +184,11 @@ fn export_into(out: &Path, src: &Sources) -> Result<(), ExportError> {
     result
 }
 
-/// Where the staged script zips wait in `%APPDATA%\Tandem` for the app to import them.
+/// Where the staged script zips wait in `%APPDATA%\Termurion` for the app to import them.
 pub(super) const IMPORT_SCRIPTS_DIR: &str = ".import-scripts";
 
-/// `%APPDATA%\Tandem`, the folder holding the settings.
-fn appdata_tandem() -> PathBuf {
+/// `%APPDATA%\Termurion`, the folder holding the settings.
+fn appdata_termurion() -> PathBuf {
     let settings = crate::globals::default_path();
     settings.parent().unwrap_or(&settings).to_path_buf()
 }
@@ -209,7 +209,7 @@ fn staged_links(staging: &Path) -> Result<(), String> {
 
 /// The first entry under `dir` whose name Windows may read as another entry (`se::aliased`: a
 /// trailing dot or space, a stream, a device name, an 8.3 short name), walked without following
-/// anything (Task 9 findings r2: such a name could reach a protected file of `%APPDATA%\Tandem`).
+/// anything (Task 9 findings r2: such a name could reach a protected file of `%APPDATA%\Termurion`).
 fn alias_entry(dir: &Path) -> Option<PathBuf> {
     for (name, stat) in super::scripts_app::stage_entries(dir) {
         let path = dir.join(&name);
@@ -230,7 +230,7 @@ fn alias_entry(dir: &Path) -> Option<PathBuf> {
 /// rule every Tandem extraction uses: plain files and folders only, no link of any kind, no name
 /// that leaves the folder or that Windows reads as another, Task 9 findings r3; no tar.exe, so no
 /// second parser and no reopen by path, final findings r2) into a fresh
-/// `<temp>\.tandem-import-<uuid>`, refused when it holds a link after all (`staged_links`), then
+/// `<temp>\.termurion-import-<uuid>`, refused when it holds a link after all (`staged_links`), then
 /// the marker in `appdata` naming it. On a failure nothing is left behind.
 fn stage_import(file: &Path, temp: &Path, appdata: &Path) -> Result<(), String> {
     // The archive came from outside: judged before it is read (as a script zip is), read once.
@@ -287,8 +287,8 @@ fn stage_scripts(from: &Path, to: &Path) -> Vec<PathBuf> {
 /// changes; a staging folder that now holds a link (`staged_links`) is removed unapplied.
 /// Returns the zips for the app to import once it runs. The Python Runtimes entity installs
 /// nothing: each script is provisioned on its first launch (`IE:788-793`, under uv).
-pub(super) fn finish_import(appdata_tandem: &Path) -> Vec<PathBuf> {
-    let marker = appdata_tandem.join(se::MARKER);
+pub(super) fn finish_import(appdata_termurion: &Path) -> Vec<PathBuf> {
+    let marker = appdata_termurion.join(se::MARKER);
     let text = std::fs::read_to_string(&marker).ok();
     let staging = match se::pending(text.as_deref(), &|p| crate::localfs::is_local_dir(p)) {
         Pending::None => return Vec::new(),
@@ -306,17 +306,17 @@ pub(super) fn finish_import(appdata_tandem: &Path) -> Vec<PathBuf> {
         let _ = std::fs::remove_dir_all(&staging);
         return Vec::new();
     }
-    apply_user_defaults(&staging.join(Entity::UserDefaults.key()).join(se::USER_DEFAULTS_FILE), appdata_tandem);
+    apply_user_defaults(&staging.join(Entity::UserDefaults.key()).join(se::USER_DEFAULTS_FILE), appdata_termurion);
     let support = staging.join(Entity::AppSupport.key());
     if support.is_dir() && !is_reparse(&support) {
         let carries_state = support.join("state").is_file() && !is_reparse(&support.join("state"));
-        let _ = copy_contents(&support, appdata_tandem, true);
+        let _ = copy_contents(&support, appdata_termurion, true);
         // An imported state is another person's or machine's document: its restore starts no hidden member.
         if carries_state {
-            let _ = std::fs::write(appdata_tandem.join(se::STATE_IMPORTED), b"");
+            let _ = std::fs::write(appdata_termurion.join(se::STATE_IMPORTED), b"");
         }
     }
-    let zips = stage_scripts(&staging.join(Entity::Scripts.key()), &appdata_tandem.join(IMPORT_SCRIPTS_DIR));
+    let zips = stage_scripts(&staging.join(Entity::Scripts.key()), &appdata_termurion.join(IMPORT_SCRIPTS_DIR));
     let _ = std::fs::remove_dir_all(&staging);
     zips
 }
@@ -411,7 +411,7 @@ impl App {
     /// start, then Tandem quits (no quit confirmation; sessions are kept as after any quit) and
     /// starts again. A failure says "Problem Importing" with the reason.
     pub(super) fn import_confirmed(&mut self, file: PathBuf) {
-        match stage_import(&file, &std::env::temp_dir(), &appdata_tandem()) {
+        match stage_import(&file, &std::env::temp_dir(), &appdata_termurion()) {
             Ok(()) => self.relaunch_due = true,
             Err(e) => self.alert_ok(se::PROBLEM_IMPORTING, e, Then::Nothing),
         }
@@ -473,14 +473,14 @@ impl App {
     /// The second button of the confirmation (`Eraser`, `IE:224-329`): the Scripts folder is
     /// resolved first as the one Tandem uses (`scripts_folder`, iTerm2's `scriptsPath`; its
     /// settings are erased with the rest; one on, or reached through a link to, a network path
-    /// is left alone), then the list of every entry of `%APPDATA%\Tandem`
+    /// is left alone), then the list of every entry of `%APPDATA%\Termurion`
     /// and of that folder. A dry run logs each path and says so; otherwise the host's shells
     /// end, every path goes (links as links) and Tandem exits at once, saving nothing (iTerm2's
     /// `_exit(0)`). Credential Manager entries are not touched.
     pub(super) fn erase_confirmed(&mut self, dry_run: bool) {
         let scripts = se::scripts_to_erase(self.scripts_folder()).filter(|s| crate::scripts::ancestors_stay_local(s, &crate::netpath::read_reparse));
-        let tandem = appdata_tandem();
-        let listed = all_entries(&tandem).map_err(|e| format!("{}: {e}", tandem.display())).and_then(|own| {
+        let termurion = appdata_termurion();
+        let listed = all_entries(&termurion).map_err(|e| format!("{}: {e}", termurion.display())).and_then(|own| {
             let scripts = match &scripts {
                 Some(s) => Some((s.as_path(), all_entries(s).map_err(|e| format!("{}: {e}", s.display()))?)),
                 None => None,
@@ -506,7 +506,7 @@ impl App {
         std::process::exit(0);
     }
 
-    /// Writes the archive at `out`: the settings and profiles as they are now, `%APPDATA%\Tandem`
+    /// Writes the archive at `out`: the settings and profiles as they are now, `%APPDATA%\Termurion`
     /// and the Scripts folder. A Scripts folder on a network path is not read.
     pub(super) fn export_to(&mut self, out: &Path) -> Result<(), ExportError> {
         self.flush_notes();
@@ -525,7 +525,7 @@ mod tests {
     use super::*;
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("tandem-export-test-{name}-{}", crate::api_auth::fresh_key()));
+        let dir = std::env::temp_dir().join(format!("termurion-export-test-{name}-{}", crate::api_auth::fresh_key()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -545,7 +545,7 @@ mod tests {
     #[test]
     fn export_writes_the_archive() {
         let root = temp("archive");
-        let appdata = root.join("Tandem");
+        let appdata = root.join("Termurion");
         std::fs::create_dir_all(appdata.join("Scripts")).unwrap();
         std::fs::write(appdata.join("settings.toml"), "[settings]\nFocusFollowsMouse = true\nNoSyncX = true\n").unwrap();
         std::fs::write(appdata.join("profiles.toml"), "default = \"g\"\n").unwrap();
@@ -553,7 +553,7 @@ mod tests {
         std::fs::write(appdata.join("host.log"), "log").unwrap();
         std::fs::write(appdata.join(crate::workgroup_restore::KEY_FILE), [1u8; 32]).unwrap();
         let snap = user_defaults(&appdata);
-        let out = root.join("Tandem State.tandemexport");
+        let out = root.join("Tandem State.termurionexport");
         let scripts = appdata.join("Scripts");
         export_into(&out, &Sources { app_support: &appdata, scripts: Some(&scripts), user_defaults: &snap, local: &|_| true }).unwrap();
         assert!(out.is_file());
@@ -583,7 +583,7 @@ mod tests {
     #[test]
     fn export_carries_scripts_and_folders() {
         let root = temp("scripts");
-        let appdata = root.join("Tandem");
+        let appdata = root.join("Termurion");
         let scripts = appdata.join("Scripts");
         std::fs::create_dir_all(scripts.join("AutoLaunch")).unwrap();
         std::fs::create_dir_all(scripts.join("plain")).unwrap();
@@ -600,7 +600,7 @@ mod tests {
         std::fs::write(full.join(rt::MARKER), "{}").unwrap();
         std::fs::write(full.join(r"Full\Full.py"), "print(4)\n").unwrap();
         let snap = user_defaults(&appdata);
-        let out = root.join("out.tandemexport");
+        let out = root.join("out.termurionexport");
         export_into(&out, &Sources { app_support: &appdata, scripts: Some(&scripts), user_defaults: &snap, local: &|_| true }).unwrap();
 
         let x = root.join("x");
@@ -625,7 +625,7 @@ mod tests {
     #[test]
     fn export_skips_scripts_that_are_not_local() {
         let root = temp("links");
-        let appdata = root.join("Tandem");
+        let appdata = root.join("Termurion");
         let scripts = appdata.join("Scripts");
         std::fs::create_dir_all(scripts.join("AutoLaunch")).unwrap();
         std::fs::write(scripts.join("kept.py"), "print(1)\n").unwrap();
@@ -643,7 +643,7 @@ mod tests {
             asked.borrow_mut().push(p.to_path_buf());
             p != remote && p != far && p != auto
         };
-        let out = root.join("out.tandemexport");
+        let out = root.join("out.termurionexport");
         export_into(&out, &Sources { app_support: &appdata, scripts: Some(&scripts), user_defaults: &snap, local: &local }).unwrap();
         assert!(asked.borrow().contains(&auto), "AutoLaunch is checked before it is listed");
 
@@ -660,13 +660,13 @@ mod tests {
     #[test]
     fn finish_import_applies_once() {
         let root = temp("finish");
-        let tandem = root.join("Tandem");
-        std::fs::create_dir_all(&tandem).unwrap();
+        let termurion = root.join("Termurion");
+        std::fs::create_dir_all(&termurion).unwrap();
         // The final review's Important 1: a custom settings folder is turned off by the import
         // (`IE:836-852`), so the next load does not replace what was imported.
         let local_settings = "[settings]\nFocusFollowsMouse = false\nNoSyncX = true\nLoadPrefsFromCustomFolder = true\nPrefsCustomFolder = 'D:\\s'\n";
-        std::fs::write(tandem.join("settings.toml"), local_settings).unwrap();
-        std::fs::write(tandem.join("snippets.json"), "old").unwrap();
+        std::fs::write(termurion.join("settings.toml"), local_settings).unwrap();
+        std::fs::write(termurion.join("snippets.json"), "old").unwrap();
         let staging = se::staging_dir(&root, "U");
         std::fs::create_dir_all(staging.join("user-defaults")).unwrap();
         std::fs::create_dir_all(staging.join("app-support")).unwrap();
@@ -676,36 +676,36 @@ mod tests {
         std::fs::write(staging.join(r"user-defaults\UserDefaults.toml"), snap.to_toml()).unwrap();
         std::fs::write(staging.join(r"app-support\snippets.json"), "[]").unwrap();
         std::fs::write(staging.join(r"scripts\script U.zip"), "zip").unwrap();
-        std::fs::write(tandem.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
+        std::fs::write(termurion.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
 
-        let zips = finish_import(&tandem);
-        assert_eq!(zips, [tandem.join(IMPORT_SCRIPTS_DIR).join("script U.zip")]);
+        let zips = finish_import(&termurion);
+        assert_eq!(zips, [termurion.join(IMPORT_SCRIPTS_DIR).join("script U.zip")]);
         assert_eq!(std::fs::read_to_string(&zips[0]).unwrap(), "zip");
-        let g = crate::globals::Globals::load(&tandem.join("settings.toml")).unwrap();
+        let g = crate::globals::Globals::load(&termurion.join("settings.toml")).unwrap();
         assert_eq!(g.values.get("FocusFollowsMouse"), Some(&toml::Value::Boolean(true)));
         assert_eq!(g.values.get("NoSyncX"), Some(&toml::Value::Boolean(true)), "a key that does not sync stays");
         assert!(!g.bool(crate::remote_prefs::LOAD_KEY), "loading from a custom folder is off");
         assert!(!g.values.contains_key(crate::remote_prefs::FOLDER_KEY), "the custom folder is unset");
-        let store = crate::store::Store::load(&tandem.join("profiles.toml")).unwrap();
+        let store = crate::store::Store::load(&termurion.join("profiles.toml")).unwrap();
         let names: Vec<String> = store.profiles.iter().map(|p| p.name()).collect();
         assert_eq!(names, ["Imported"]);
         assert_eq!(store.default_guid, "gi");
-        assert_eq!(std::fs::read_to_string(tandem.join("snippets.json")).unwrap(), "[]");
-        assert!(!tandem.join(se::MARKER).exists());
+        assert_eq!(std::fs::read_to_string(termurion.join("snippets.json")).unwrap(), "[]");
+        assert!(!termurion.join(se::MARKER).exists());
         assert!(!staging.exists());
 
         // A second start does nothing.
-        std::fs::write(tandem.join("snippets.json"), "later").unwrap();
-        assert!(finish_import(&tandem).is_empty());
-        assert_eq!(std::fs::read_to_string(tandem.join("snippets.json")).unwrap(), "later");
+        std::fs::write(termurion.join("snippets.json"), "later").unwrap();
+        assert!(finish_import(&termurion).is_empty());
+        assert_eq!(std::fs::read_to_string(termurion.join("snippets.json")).unwrap(), "later");
 
         // A marker naming a folder that is gone is removed and nothing changes.
-        let before = std::fs::read_to_string(tandem.join("settings.toml")).unwrap();
-        std::fs::write(tandem.join(se::MARKER), se::staging_dir(&root, "gone").to_string_lossy().as_bytes()).unwrap();
-        assert!(finish_import(&tandem).is_empty());
-        assert!(!tandem.join(se::MARKER).exists());
-        assert_eq!(std::fs::read_to_string(tandem.join("settings.toml")).unwrap(), before);
-        assert_eq!(std::fs::read_to_string(tandem.join("snippets.json")).unwrap(), "later");
+        let before = std::fs::read_to_string(termurion.join("settings.toml")).unwrap();
+        std::fs::write(termurion.join(se::MARKER), se::staging_dir(&root, "gone").to_string_lossy().as_bytes()).unwrap();
+        assert!(finish_import(&termurion).is_empty());
+        assert!(!termurion.join(se::MARKER).exists());
+        assert_eq!(std::fs::read_to_string(termurion.join("settings.toml")).unwrap(), before);
+        assert_eq!(std::fs::read_to_string(termurion.join("snippets.json")).unwrap(), "later");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -716,22 +716,22 @@ mod tests {
     #[test]
     fn finish_import_marks_an_imported_state() {
         let root = temp("finish-state");
-        let tandem = root.join("Tandem");
-        std::fs::create_dir_all(&tandem).unwrap();
+        let termurion = root.join("Termurion");
+        std::fs::create_dir_all(&termurion).unwrap();
         let staging = se::staging_dir(&root, "S");
         std::fs::create_dir_all(staging.join("app-support")).unwrap();
         std::fs::write(staging.join(r"app-support\state"), "x").unwrap();
-        std::fs::write(tandem.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
-        finish_import(&tandem);
-        assert!(tandem.join(se::STATE_IMPORTED).exists(), "the state came from an import");
+        std::fs::write(termurion.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
+        finish_import(&termurion);
+        assert!(termurion.join(se::STATE_IMPORTED).exists(), "the state came from an import");
         assert!(se::excluded(se::STATE_IMPORTED), "and the mark is never exported");
-        let _ = std::fs::remove_file(tandem.join(se::STATE_IMPORTED));
+        let _ = std::fs::remove_file(termurion.join(se::STATE_IMPORTED));
         let staging = se::staging_dir(&root, "T");
         std::fs::create_dir_all(staging.join("app-support")).unwrap();
         std::fs::write(staging.join(r"app-support\snippets.json"), "[]").unwrap();
-        std::fs::write(tandem.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
-        finish_import(&tandem);
-        assert!(!tandem.join(se::STATE_IMPORTED).exists(), "no state, no mark");
+        std::fs::write(termurion.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
+        finish_import(&termurion);
+        assert!(!termurion.join(se::STATE_IMPORTED).exists(), "no state, no mark");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -739,10 +739,10 @@ mod tests {
     fn finish_import_keeps_the_ai_consent_switches() {
         use crate::ai_settings as ai;
         let root = temp("ai");
-        let tandem = root.join("Tandem");
-        std::fs::create_dir_all(&tandem).unwrap();
+        let termurion = root.join("Termurion");
+        std::fs::create_dir_all(&termurion).unwrap();
         let kept = ai::PERMISSIONS[1].0;
-        std::fs::write(tandem.join("settings.toml"), format!("[settings]\n{kept} = 2\n")).unwrap();
+        std::fs::write(termurion.join("settings.toml"), format!("[settings]\n{kept} = 2\n")).unwrap();
         let staging = se::staging_dir(&root, "A");
         std::fs::create_dir_all(staging.join("user-defaults")).unwrap();
         let mut settings: std::collections::BTreeMap<String, toml::Value> = [("FocusFollowsMouse".to_string(), toml::Value::Boolean(true))].into();
@@ -754,9 +754,9 @@ mod tests {
         }
         let snap = Snapshot { settings, ..Default::default() };
         std::fs::write(staging.join(r"user-defaults\UserDefaults.toml"), snap.to_toml()).unwrap();
-        std::fs::write(tandem.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
-        finish_import(&tandem);
-        let g = crate::globals::Globals::load(&tandem.join("settings.toml")).unwrap();
+        std::fs::write(termurion.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
+        finish_import(&termurion);
+        let g = crate::globals::Globals::load(&termurion.join("settings.toml")).unwrap();
         assert_eq!(g.values.get("FocusFollowsMouse"), Some(&toml::Value::Boolean(true)), "the import applied");
         for key in [ai::ADMIN, ai::ENABLE_AI, ai::AI_COMPLETIONS] {
             assert!(!g.values.contains_key(key), "{key} came from the import");
@@ -773,9 +773,9 @@ mod tests {
     #[test]
     fn finish_import_keeps_what_export_leaves_out() {
         let root = temp("keep");
-        let tandem = root.join("Tandem");
-        std::fs::create_dir_all(&tandem).unwrap();
-        std::fs::write(tandem.join("profiles.toml"), "").unwrap();
+        let termurion = root.join("Termurion");
+        std::fs::create_dir_all(&termurion).unwrap();
+        std::fs::write(termurion.join("profiles.toml"), "").unwrap();
         let staging = se::staging_dir(&root, "K");
         let support = staging.join("app-support");
         std::fs::create_dir_all(support.join(r"state")).unwrap();
@@ -783,14 +783,14 @@ mod tests {
             std::fs::write(support.join(name), "from the archive").unwrap();
         }
         std::fs::write(support.join(r"state\s.json"), "{}").unwrap();
-        std::fs::write(tandem.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
-        assert!(finish_import(&tandem).is_empty());
-        assert!(!tandem.join("python-api-consent").exists());
-        assert!(!tandem.join("settings.toml").exists());
-        assert!(!tandem.join(".hidden").exists());
-        assert!(!tandem.join(crate::workgroup_restore::KEY_FILE).exists(), "an archive never brings the approval key");
-        assert_eq!(std::fs::read_to_string(tandem.join("profiles.toml")).unwrap(), "");
-        assert!(tandem.join(r"state\s.json").is_file());
+        std::fs::write(termurion.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
+        assert!(finish_import(&termurion).is_empty());
+        assert!(!termurion.join("python-api-consent").exists());
+        assert!(!termurion.join("settings.toml").exists());
+        assert!(!termurion.join(".hidden").exists());
+        assert!(!termurion.join(crate::workgroup_restore::KEY_FILE).exists(), "an archive never brings the approval key");
+        assert_eq!(std::fs::read_to_string(termurion.join("profiles.toml")).unwrap(), "");
+        assert!(termurion.join(r"state\s.json").is_file());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -812,15 +812,15 @@ mod tests {
             (n > 0 && name != p.file_name()?.to_string_lossy()).then_some(name)
         };
         let root = temp("alias");
-        let tandem = root.join("Tandem");
-        std::fs::create_dir_all(&tandem).unwrap();
+        let termurion = root.join("Termurion");
+        std::fs::create_dir_all(&termurion).unwrap();
         let files = [crate::workgroup_restore::KEY_FILE, "python-api-consent", "settings.toml", "profiles.toml", "host.log"];
         let dirs = ["Scripts", "uv", IMPORT_SCRIPTS_DIR];
         for f in files {
-            std::fs::write(tandem.join(f), format!("ours: {f}")).unwrap();
+            std::fs::write(termurion.join(f), format!("ours: {f}")).unwrap();
         }
         for d in dirs {
-            std::fs::create_dir_all(tandem.join(d)).unwrap();
+            std::fs::create_dir_all(termurion.join(d)).unwrap();
         }
         // (the staged name, whether it is a folder, whether the archive also holds the excluded name itself)
         let mut cases: Vec<(String, bool, bool)> = Vec::new();
@@ -828,11 +828,11 @@ mod tests {
             for tail in [".", " ", ". ", " ."] {
                 cases.push((format!("{f}{tail}"), false, true));
             }
-            match short_name(&tandem.join(f)) {
+            match short_name(&termurion.join(f)) {
                 Some(s) => {
                     // The final-path check sees through the alias by itself too.
-                    assert_eq!(final_name(&tandem.join(&s)).as_deref(), Some(f), "{s}");
-                    assert!(!importable("anything", &tandem.join(&s), false), "{s}");
+                    assert_eq!(final_name(&termurion.join(&s)).as_deref(), Some(f), "{s}");
+                    assert!(!importable("anything", &termurion.join(&s), false), "{s}");
                     cases.push((s, false, false));
                 }
                 None => eprintln!("no 8.3 name for {f} on this volume"),
@@ -841,12 +841,12 @@ mod tests {
         for d in dirs {
             cases.push((format!("{d}."), true, false));
             cases.push((format!("{d} "), true, false));
-            if let Some(s) = short_name(&tandem.join(d)) {
+            if let Some(s) = short_name(&termurion.join(d)) {
                 cases.push((s, true, false));
             }
         }
         cases.push(("\u{17f}cripts".into(), true, false));
-        let before = entries(&tandem).into_iter().map(|(n, _)| n).collect::<Vec<_>>();
+        let before = entries(&termurion).into_iter().map(|(n, _)| n).collect::<Vec<_>>();
         assert!(cases.iter().any(|(n, _, _)| n.contains('~')), "8.3 names are on for this volume: {cases:?}");
         for (i, (name, dir, literal)) in cases.iter().enumerate() {
             let staging = se::staging_dir(&root, &format!("A{i}"));
@@ -863,21 +863,21 @@ mod tests {
                 std::fs::write(support.join(plain), "from the archive").unwrap();
             }
             std::fs::write(support.join("notes.txt"), "kept").unwrap();
-            std::fs::write(tandem.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
-            assert!(finish_import(&tandem).is_empty());
+            std::fs::write(termurion.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
+            assert!(finish_import(&termurion).is_empty());
             for f in files {
-                assert_eq!(std::fs::read_to_string(tandem.join(f)).unwrap(), format!("ours: {f}"), "{name:?} reached {f}");
+                assert_eq!(std::fs::read_to_string(termurion.join(f)).unwrap(), format!("ours: {f}"), "{name:?} reached {f}");
             }
             for d in dirs {
-                assert!(entries(&tandem.join(d)).is_empty(), "{name:?} reached {d}");
+                assert!(entries(&termurion.join(d)).is_empty(), "{name:?} reached {d}");
             }
             if se::aliased(name) {
-                assert!(!tandem.join("notes.txt").exists(), "{name:?}: an archive holding an alias is refused whole");
+                assert!(!termurion.join("notes.txt").exists(), "{name:?}: an archive holding an alias is refused whole");
             } else {
-                assert_eq!(std::fs::read_to_string(tandem.join("notes.txt")).unwrap(), "kept", "{name:?}: the rest is still imported");
-                std::fs::remove_file(tandem.join("notes.txt")).unwrap();
+                assert_eq!(std::fs::read_to_string(termurion.join("notes.txt")).unwrap(), "kept", "{name:?}: the rest is still imported");
+                std::fs::remove_file(termurion.join("notes.txt")).unwrap();
             }
-            assert_eq!(entries(&tandem).into_iter().map(|(n, _)| n).collect::<Vec<_>>(), before, "{name:?} made a new entry");
+            assert_eq!(entries(&termurion).into_iter().map(|(n, _)| n).collect::<Vec<_>>(), before, "{name:?} made a new entry");
         }
         let _ = std::fs::remove_dir_all(verbatim(&root));
     }
@@ -908,7 +908,7 @@ mod tests {
                 if follow {
                     blocks.extend(tar_entry(name, b'0', b"PWNED", ""));
                 }
-                let file = root.join("evil.tandemexport");
+                let file = root.join("evil.termurionexport");
                 std::fs::write(&file, tgz(&blocks)).unwrap();
                 let got = stage_import(&file, &temp_dir, &to);
                 let after = std::fs::read_to_string(&canary).unwrap_or_default();
@@ -922,12 +922,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Task 9 re-review r2, new minor 2: an existing entry of `%APPDATA%\Tandem` that is itself a
+    /// Task 9 re-review r2, new minor 2: an existing entry of `%APPDATA%\Termurion` that is itself a
     /// link or junction is never written through: the import skips it.
     #[test]
     fn import_never_writes_through_a_link_at_the_destination() {
         let root = temp("destlink");
-        let (to, outside) = (root.join("Tandem"), root.join("Outside"));
+        let (to, outside) = (root.join("Termurion"), root.join("Outside"));
         std::fs::create_dir_all(&to).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
         let made = std::process::Command::new("cmd.exe").args(["/d", "/c", "mklink", "/J"]).arg(to.join("notes")).arg(&outside).output().unwrap();
@@ -954,7 +954,7 @@ mod tests {
         std::fs::create_dir_all(src.join("app-support")).unwrap();
         std::fs::write(src.join(r"app-support\a.txt"), "a").unwrap();
         std::fs::hard_link(src.join(r"app-support\a.txt"), src.join(r"app-support\b.txt")).unwrap();
-        let out = root.join("linked.tandemexport");
+        let out = root.join("linked.termurionexport");
         tar(&["-czf", &out.to_string_lossy(), "-C", &src.to_string_lossy(), "app-support"]);
         let (to, temp_dir) = (root.join("To"), root.join("Temp"));
         std::fs::create_dir_all(&temp_dir).unwrap();
@@ -1002,7 +1002,7 @@ mod tests {
         std::fs::write(from.join(&long), "[2]").unwrap();
         std::fs::write(scripts.join(r"AutoLaunch\auto.py"), "print(1)\n").unwrap();
         let snap = user_defaults(&from);
-        let out = root.join("x.tandemexport");
+        let out = root.join("x.termurionexport");
         export_into(&out, &Sources { app_support: &from, scripts: Some(&scripts), user_defaults: &snap, local: &|_| true }).unwrap();
 
         let (to, temp_dir) = (root.join("To"), root.join("Temp"));
@@ -1019,7 +1019,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(to.join(&long)).unwrap(), "[2]");
         assert!(entries(&temp_dir).is_empty(), "the staging folder is gone");
 
-        let bad = root.join("bad.tandemexport");
+        let bad = root.join("bad.termurionexport");
         std::fs::write(&bad, "not an archive").unwrap();
         let other = root.join("Other");
         assert!(stage_import(&bad, &temp_dir, &other).is_err());
@@ -1077,7 +1077,7 @@ mod tests {
             let mut second = tar_entry("app-support/a.txt", b'0', &hidden[..512], "");
             edit(&mut second);
             let blocks = [tar_entry("user-defaults/", b'5', b"", ""), second].concat();
-            let file = root.join(format!("{what}.tandemexport"));
+            let file = root.join(format!("{what}.termurionexport"));
             std::fs::write(&file, tgz(&blocks)).unwrap();
             let got = stage_import(&file, &temp_dir, &to);
             let names = tree_names(&temp_dir);
@@ -1103,7 +1103,7 @@ mod tests {
         let (to, temp_dir) = (root.join("To"), root.join("Temp"));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let blocks = [tar_entry("BZh91AY&SY", b'0', b"plain", ""), tar_entry("user-defaults/", b'5', b"", "")].concat();
-        let file = root.join("magic.tandemexport");
+        let file = root.join("magic.termurionexport");
         std::fs::write(&file, tgz(&blocks)).unwrap();
         let got = stage_import(&file, &temp_dir, &to);
         assert_eq!(got, Ok(()), "the checked archive is the extracted one");
@@ -1124,7 +1124,7 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
         let good = tgz(&[tar_entry("user-defaults/", b'5', b"", ""), tar_entry("app-support/a.txt", b'0', b"a", "")].concat());
         let evil = tgz(&[tar_entry("user-defaults/", b'5', b"", ""), tar_entry("app-support/swapped.url", b'0', b"a", "")].concat());
-        let file = root.join("swap.tandemexport");
+        let file = root.join("swap.termurionexport");
         std::fs::write(&file, &good).unwrap();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let writer = {

@@ -52,7 +52,7 @@ fn facts_of(profile: &crate::profile::Profile) -> (f64, bool) {
 
 impl App {
     /// The current window's Use Transparency toggle (iTerm2's `useTransparency`). It does not mean some
-    /// session is see-through: a window whose profiles all have Transparency 0 can answer true. Tandem has
+    /// session is see-through: a window whose profiles all have Transparency 0 can answer true. Termurion has
     /// no native full screen, so iTerm2's Lion check never applies.
     pub(super) fn window_uses_transparency(&self) -> bool {
         self.win_transparency.on

@@ -27,10 +27,10 @@ pub(super) enum Dialog {
 }
 
 /// The most identifiers `set_status_bar_component_unread_count` keeps, app-wide and per
-/// session (Tandem's bound; iTerm2 keeps every one). Session entries go with their session.
+/// session (Termurion's bound; iTerm2 keeps every one). Session entries go with their session.
 pub(super) const MAX_UNREAD_IDS: usize = 64;
 
-/// The failure of a dialog dropped from a full queue (Tandem's; iTerm2 shows every one).
+/// The failure of a dialog dropped from a full queue (Termurion's; iTerm2 shows every one).
 pub(super) const DIALOG_DROPPED: &str = "Too many dialogs were waiting, so this one was not shown.";
 
 /// The dialog showing.

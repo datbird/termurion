@@ -73,8 +73,8 @@ pub const BLOCKED: &[(&str, &str)] = &[
 
 /// Schemes Tandem owns or deliberately does not offer: never handed to whatever Windows registered
 /// (TWEAKS 6 review I4). ftp, ssh and telnet are `url_schemes::SCHEMES` (Tandem's own, bound per
-/// profile); `x-man-page` is macOS only; `iterm2` is the app's internal link scheme; `tandem` is Tandem's own.
-pub const OWN: &[&str] = &["ftp", "ssh", "telnet", "x-man-page", "iterm2", "tandem"];
+/// profile); `x-man-page` is macOS only; `iterm2` is the app's internal link scheme; `termurion` is Tandem's own.
+pub const OWN: &[&str] = &["ftp", "ssh", "telnet", "x-man-page", "iterm2", "termurion"];
 
 /// Programs that read their argument as script, or that run what they are given: a scheme whose handler
 /// is one is refused. Compared by file name stem, lowercase, after the path is resolved.
@@ -434,7 +434,7 @@ mod tests {
             assert!(!crate::remote_prefs::syncable(key), "{key} syncs");
             assert!(!crate::ai_settings::toggle_allowed(key), "{key} toggles");
         }
-        let dir = std::env::temp_dir().join(format!("tandem-linkscheme-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-linkscheme-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("p.plist");
         std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>

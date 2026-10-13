@@ -935,7 +935,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_write_follows_tandem() {
+    fn typed_write_follows_termurion() {
         let typed = |name: &str, contents: &str| write_plan(&posix(), name, contents);
         let parts = |a: &str, b: &str| WritePlan::Typed(vec![a.into(), b.into(), "\u{4}".into()]);
         assert_eq!(typed("a.txt", "hi"), parts("cat > 'a.txt'\r", "hi\r"));

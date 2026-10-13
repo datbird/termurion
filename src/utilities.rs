@@ -180,7 +180,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn utilities_folder_follows_the_exe() {
-        let dir = std::env::temp_dir().join(format!("tandem-utilities-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-utilities-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let folder = dir.join(FOLDER);
@@ -298,27 +298,27 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn network_and_relative_folders_are_refused() {
-        for p in ["\\\\nohost.invalid\\share\\Tandem", "//nohost.invalid/share/Tandem", "\\\\?\\UNC\\nohost.invalid\\share\\Tandem", "\\\\?\\GLOBALROOT\\Device\\Mup\\nohost.invalid\\s"] {
+        for p in ["\\\\nohost.invalid\\share\\Termurion", "//nohost.invalid/share/Termurion", "\\\\?\\UNC\\nohost.invalid\\share\\Termurion", "\\\\?\\GLOBALROOT\\Device\\Mup\\nohost.invalid\\s"] {
             let t = std::time::Instant::now();
             let e = ensure(Path::new(p)).unwrap_err();
             assert!(e.contains("network folder"), "{p}: {e}");
             assert!(t.elapsed() < std::time::Duration::from_millis(500), "{p}: nothing probed");
         }
-        for p in ["", "rel-tandem", "\\rooted-tandem", "C:rel-tandem"] {
+        for p in ["", "rel-termurion", "\\rooted-termurion", "C:rel-termurion"] {
             let e = ensure(Path::new(p)).unwrap_err();
             assert!(e.contains("not a local folder"), "{p}: {e}");
         }
-        assert!(!Path::new("rel-tandem").exists() && !Path::new("utilities").exists(), "nothing made in the working folder");
+        assert!(!Path::new("rel-termurion").exists() && !Path::new("utilities").exists(), "nothing made in the working folder");
 
         // A verbatim local folder works, in its plain form.
-        let (dir, _) = with_program("tandem-utilities-verbatim", "where.exe");
+        let (dir, _) = with_program("termurion-utilities-verbatim", "where.exe");
         let verbatim = std::path::PathBuf::from(format!("\\\\?\\{}", dir.display()));
         let done = ensure(&verbatim).unwrap();
         assert_eq!(done.folder, dir.join(FOLDER));
         assert!(done.failed.is_empty());
 
         // A file named utilities: the folder cannot be made, and the file is left alone.
-        let (dir, _) = with_program("tandem-utilities-file", "where.exe");
+        let (dir, _) = with_program("termurion-utilities-file", "where.exe");
         std::fs::write(dir.join(FOLDER), "mine").unwrap();
         assert!(ensure(&dir).is_err());
         assert_eq!(std::fs::read_to_string(dir.join(FOLDER)).unwrap(), "mine");
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn refresh_failures_are_reported() {
         use std::os::windows::fs::OpenOptionsExt;
-        let (dir, from) = with_program("tandem-utilities-held", "PING.EXE");
+        let (dir, from) = with_program("termurion-utilities-held", "PING.EXE");
         let folder = ensure(&dir).unwrap().folder;
 
         // A running utility is replaced (renamed aside when it cannot be removed); a file held

@@ -1358,7 +1358,7 @@ mod tests {
 
     #[test]
     fn wire_reads_the_globals() {
-        let g = Globals::empty(&std::env::temp_dir().join("tandem-ai-turn-test.toml"));
+        let g = Globals::empty(&std::env::temp_dir().join("termurion-ai-turn-test.toml"));
         assert_eq!(Wire::from_globals(&g), wire());
     }
 

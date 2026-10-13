@@ -11,7 +11,7 @@
 //! A layout dictionary looks like `{"components": [{"class": <ObjC name>, "configuration":
 //! {"knobs": {...}, "layout advanced configuration dictionary value": {...}}}, ...],
 //! "advanced configuration": {...}}`. iTerm2 drops a component with no `configuration`; an
-//! unknown class is kept in the file (there so a round trip through Tandem does not lose
+//! unknown class is kept in the file (there so a round trip through Termurion does not lose
 //! it) and skipped on screen by Task 3.
 
 use std::borrow::Cow;
@@ -140,8 +140,8 @@ pub struct Info {
 /// One component of a layout: its class and configuration. `knobs` is the component's
 /// current knob values; `config` is the whole `"configuration"` dictionary as loaded
 /// (knobs plus whatever else it carries, such as the injected advanced-configuration
-/// copy, or a key from a future Tandem or iTerm2 version), kept so a component of a class
-/// Tandem does not know round-trips through the profile untouched.
+/// copy, or a key from a future Termurion or iTerm2 version), kept so a component of a class
+/// Termurion does not know round-trips through the profile untouched.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Component {
     pub class: String,
@@ -453,7 +453,7 @@ pub fn info(class: &str) -> Option<Info> {
 }
 
 /// The knob descriptors `statusBarComponentKnobs` returns, in order, for a class this
-/// milestone knows. A class not here yet (the 9i content components, or one Tandem truly
+/// milestone knows. A class not here yet (the 9i content components, or one Termurion truly
 /// does not recognize) returns no knobs: it has no Configure sheet, only Hide. A script
 /// component's are its registration's (from `config`, the newest registration of its
 /// unique id first) then its class's (`script_statusbar::knobs`).
@@ -723,8 +723,8 @@ mod tests {
         // A component missing "configuration" is dropped ("Missing configuration for %@").
         let no_config = table(&[("class", Value::String("iTermStatusBarHostnameComponent".into()))]);
 
-        // A class Tandem does not know is kept, with its knobs and an unrecognized key
-        // inside "configuration" (e.g. a future component or Tandem release's own key).
+        // A class Termurion does not know is kept, with its knobs and an unrecognized key
+        // inside "configuration" (e.g. a future component or Termurion release's own key).
         let unknown_config = table(&[
             ("knobs", Value::Table(table(&[(BASE_PRIORITY_KEY, Value::Float(3.0))]))),
             ("future component key", Value::String("kept".into())),

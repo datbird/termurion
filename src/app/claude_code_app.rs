@@ -1,4 +1,4 @@
-//! The Claude Code integration in the app (Tandem > Install, Reinstall and Uninstall Claude
+//! The Claude Code integration in the app (Termurion > Install, Reinstall and Uninstall Claude
 //! Code Integration): the setup window and its steps, the hook install and removal, the four
 //! questions (every one closes to its safe answer, P10), the health monitor that runs once
 //! per launch (`HM`) and the announcement bar at three Claude sessions (`CWT`, `NAG`). The
@@ -58,18 +58,18 @@ fn cookie_ask() -> Ask {
 }
 
 impl App {
-    /// The cookie setting and whether Tandem turned it on.
+    /// The cookie setting and whether Termurion turned it on.
     fn claude_cookie(&self) -> cc::CookieState {
-        cc::CookieState { on: self.globals.bool(super::api_ui::SET_COOKIE_KEY), by_tandem: self.globals.bool(cc::COOKIE_BY_KEY) }
+        cc::CookieState { on: self.globals.bool(super::api_ui::SET_COOKIE_KEY), by_termurion: self.globals.bool(cc::COOKIE_BY_KEY) }
     }
 
     fn claude_set_cookie(&mut self, state: cc::CookieState) {
         self.globals.set(super::api_ui::SET_COOKIE_KEY, toml::Value::Boolean(state.on));
-        self.globals.set(cc::COOKIE_BY_KEY, toml::Value::Boolean(state.by_tandem));
+        self.globals.set(cc::COOKIE_BY_KEY, toml::Value::Boolean(state.by_termurion));
         self.save_globals();
     }
 
-    /// Turns the cookie back off when Tandem is the one who turned it on (a person's own
+    /// Turns the cookie back off when Termurion is the one who turned it on (a person's own
     /// setting is never touched): the Disable answer, and a setup closed before the hook is in.
     fn claude_revert_cookie(&mut self) {
         let now = self.claude_cookie();
@@ -78,7 +78,7 @@ impl App {
         }
     }
 
-    /// Claude Code's settings.json: `CLAUDE_CONFIG_DIR` from Tandem's own environment, else the
+    /// Claude Code's settings.json: `CLAUDE_CONFIG_DIR` from Termurion's own environment, else the
     /// profile folder's `.claude`. (Returns the folder and the file.)
     fn claude_paths(&self) -> Result<(PathBuf, PathBuf), String> {
         let profile = std::env::var_os("USERPROFILE").map(PathBuf::from).filter(|p| !p.as_os_str().is_empty()).ok_or_else(|| cc::NO_PROFILE.to_string())?;
@@ -183,7 +183,7 @@ impl App {
                 }
                 OnboardAct::Closed => {
                     self.cc_onboarding = None;
-                    // A setup left before the hook went in leaves nothing Tandem turned on.
+                    // A setup left before the hook went in leaves nothing Termurion turned on.
                     if !self.globals.bool(cc::HOOKS_KEY) {
                         self.claude_revert_cookie();
                     }
@@ -314,7 +314,7 @@ impl App {
     pub(super) fn claude_disable_api(&mut self) {
         self.set_api_enabled(false);
         self.sync_api_server();
-        // The cookie Tandem turned on for the hook goes with the API; the person's own stays.
+        // The cookie Termurion turned on for the hook goes with the API; the person's own stays.
         self.claude_revert_cookie();
     }
 
@@ -406,14 +406,14 @@ impl App {
 }
 
 impl App {
-    /// The workgroup the installer adds is in Tandem's workgroups (`workgroupAlreadyInstalled`).
+    /// The workgroup the installer adds is in Termurion's workgroups (`workgroupAlreadyInstalled`).
     fn claude_workgroup_installed(&self) -> bool {
         self.workgroup_model.get(crate::workgroup::claude_code::WORKGROUP).is_some()
     }
 
     /// Install Workgroup (`installWorkgroupIfNeeded`): adds the Claude Code workgroup unless one with
     /// its id is there. A copy the person edited, or an import's, is never replaced. Nothing is added
-    /// over a saved list Tandem could not read (the add would replace it).
+    /// over a saved list Termurion could not read (the add would replace it).
     pub(super) fn install_workgroup(&mut self) -> Result<(), String> {
         if self.claude_workgroup_installed() {
             return Ok(());
@@ -424,7 +424,7 @@ impl App {
         if self.workgroup_model.workgroups.len() >= crate::workgroup::MAX_WORKGROUPS {
             return Err("There are too many workgroups to add another. Remove one in Settings > Arrangements > Workgroups first.".into());
         }
-        // Tandem's own constant, added by the person's click: theirs, as the menu's New Workgroup is.
+        // Termurion's own constant, added by the person's click: theirs, as the menu's New Workgroup is.
         self.workgroup_model.add(crate::workgroup::claude_code::config());
         self.workgroup_model.save(&mut self.globals);
         if !self.claude_workgroup_installed() {

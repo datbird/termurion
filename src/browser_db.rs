@@ -95,10 +95,10 @@ pub struct TopSite {
     pub visits: i64,
 }
 
-/// `<LOCALAPPDATA>\Tandem\browserdb-<user>.sqlite` (P10: machine-local, WAL on a roaming profile
+/// `<LOCALAPPDATA>\Termurion\browserdb-<user>.sqlite` (P10: machine-local, WAL on a roaming profile
 /// corrupts and would sync history across machines; iTerm2's name, `BD:15-26`).
 pub fn path(local_appdata: &Path, user: &str) -> PathBuf {
-    local_appdata.join("Tandem").join(format!("browserdb-{user}.sqlite"))
+    local_appdata.join("Termurion").join(format!("browserdb-{user}.sqlite"))
 }
 
 /// Deletes the database file and its journals (Clear All Data, `BD:147-167`); a file already gone is
@@ -617,7 +617,7 @@ mod tests {
         );
         let p = path(Path::new("C:\\Users\\a\\AppData\\Local"), crate::browser::USER_ID);
         assert!(p.to_string_lossy().ends_with("browserdb-AC0E9812-7F88-478B-B361-5526082EDDB3.sqlite"), "{p:?}");
-        assert!(p.to_string_lossy().contains("Tandem"));
+        assert!(p.to_string_lossy().contains("Termurion"));
     }
 
     #[test]
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn the_file_is_judged_owner_only_and_replaced_when_corrupt() {
-        let dir = std::env::temp_dir().join(format!("tandem-bdb-{}", uuid::Uuid::new_v4().simple()));
+        let dir = std::env::temp_dir().join(format!("termurion-bdb-{}", uuid::Uuid::new_v4().simple()));
         let file = path(&dir, "u");
         let db = Db::open(&file).unwrap();
         db.record_visit("https://a.test/", Some("A"), None, None, 0, 1);
@@ -750,7 +750,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn erase_removes_the_database_files() {
-        let dir = std::env::temp_dir().join(format!("tandem-erase-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-erase-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("browserdb-x.sqlite");
         for suffix in ["", "-journal", "-wal", "-shm"] {

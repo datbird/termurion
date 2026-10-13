@@ -154,7 +154,7 @@ impl Fill {
 /// The macOS title bar material behind the Light tab bar (`PSMYosemiteTabStyle tabBarColor`,
 /// `YOS:1164-1169`).
 pub const LIGHT_MATERIAL: Rgb = rgb(225, 225, 225);
-/// Tandem's fixed color behind the Dark tab bar (its former active tab color).
+/// Termurion's fixed color behind the Dark tab bar (its former active tab color).
 pub const DARK_MATERIAL: Rgb = rgb(0x3a, 0x3a, 0x3a);
 /// `windowBackgroundColor` in the light appearance (Light High Contrast's selected tab).
 const WINDOW_BACKGROUND: Rgb = rgb(236, 236, 236);

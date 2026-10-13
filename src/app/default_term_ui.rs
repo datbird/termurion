@@ -38,7 +38,7 @@ impl App {
             if dt::should_save(&now) {
                 apply(&mut r, &dt::save_entries(&now))?;
             }
-            apply(&mut r, &dt::make_tandem_entries(&exe))
+            apply(&mut r, &dt::make_termurion_entries(&exe))
         })();
         match result {
             Ok(_) => self.banners.set("default-terminal", "Tandem is now the default terminal.".to_string()),
@@ -54,7 +54,7 @@ impl App {
     pub(super) fn unmake_default_terminal(&mut self) {
         let mut r = HkcuRegistry;
         let now = dt::current(&r);
-        if dt::is_tandem(&now) {
+        if dt::is_termurion(&now) {
             let saved = dt::saved(&r);
             if let Err(e) = apply(&mut r, &dt::restore_entries(saved)) {
                 self.banners.set("default-terminal", format!("Could not restore the default terminal: {e}"));
@@ -81,7 +81,7 @@ impl App {
 
     /// The handoff class is registered exactly while Tandem is the default and has the pack.
     pub(super) fn sync_handoff_server(&mut self) {
-        let want = self.api.pack.is_some() && dt::is_tandem(&dt::current(&HkcuRegistry));
+        let want = self.api.pack.is_some() && dt::is_termurion(&dt::current(&HkcuRegistry));
         match (want, self.handoff.is_some()) {
             (true, false) => {
                 let (Some(pack), close) = (self.api.pack, self.api.close) else { return };
@@ -225,7 +225,7 @@ impl App {
     }
 
     /// The pane a handed-off console becomes: its packed pseudoconsole, resized to the pane, titled
-    /// with the startup title until the program sets one. It is never hosted in tandem-host.
+    /// with the startup title until the program sets one. It is never hosted in termurion-host.
     pub(super) fn pane_from_handoff(&mut self, id: PaneId, p: Profile, mut h: Handoff, cols: u16, rows: u16) -> Result<(Pane, Profile), String> {
         let title = std::mem::take(&mut h.title);
         let (hpc, input, output, client, live) = h.take();
@@ -281,7 +281,7 @@ mod tests {
     fn the_handoff_class_follows_the_default_and_the_pack() {
         let me = include_str!("default_term_ui.rs");
         let sync = me.split("fn sync_handoff_server").nth(1).unwrap().split("\n    }\n").next().unwrap();
-        assert!(sync.contains("self.api.pack.is_some() && dt::is_tandem("));
+        assert!(sync.contains("self.api.pack.is_some() && dt::is_termurion("));
         let m = include_str!("mod.rs");
         let teardown = m.split("pub(crate) fn teardown_process()").nth(1).unwrap().split("\n}").next().unwrap();
         assert!(teardown.contains("handoff_win::begin_closing()"));

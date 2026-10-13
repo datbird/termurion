@@ -2,7 +2,7 @@
 //! `iTermGraphicSource` (`GS`) picks it. A profile's Icon is None, Automatic (the running
 //! command's built-in icon from iTerm2's MIT icon set, tinted, else the command's first letter
 //! in a colored circle) or Custom (an image file). The icon maps are iTerm2's bundled
-//! `graphic_icons.json` and `graphic_colors.json` with the user's copies in `%APPDATA%\Tandem`
+//! `graphic_icons.json` and `graphic_colors.json` with the user's copies in `%APPDATA%\Termurion`
 //! merged over them (`GS:83-200`).
 
 use std::collections::HashMap;
@@ -16,7 +16,7 @@ pub const NONE: i64 = 0;
 pub const AUTOMATIC: i64 = 1;
 pub const CUSTOM: i64 = 2;
 
-/// The user's icon map and color map in `%APPDATA%\Tandem` (`iTermRemoteDataFileSync`
+/// The user's icon map and color map in `%APPDATA%\Termurion` (`iTermRemoteDataFileSync`
 /// `graphicIconsName`, `graphicColorsName`; 13y2 syncs them).
 pub const ICONS_FILE: &str = "graphic_icons.json";
 pub const COLORS_FILE: &str = "graphic_colors.json";

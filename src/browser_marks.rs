@@ -220,8 +220,8 @@ pub(crate) fn patch_once(src: &str, from: &str, to: &str) -> Result<String, Stri
 /// for a keyboard activation (`detail` 0), when that button has focus. All patches are exact-once and
 /// fail closed.
 pub(crate) fn trust_patched(src: &str) -> Result<String, String> {
-    let s = patch_once(src, "deleteButton.addEventListener('click', function(e) {", "deleteButton.addEventListener('click', function(e) { if (!tandemReal(e, deleteButton)) { return; }")?;
-    let s = patch_once(&s, "saveButton.addEventListener('click', function(e) {", "saveButton.addEventListener('click', function(e) { if (!tandemReal(e, saveButton)) { return; }")?;
+    let s = patch_once(src, "deleteButton.addEventListener('click', function(e) {", "deleteButton.addEventListener('click', function(e) { if (!termurionReal(e, deleteButton)) { return; }")?;
+    let s = patch_once(&s, "saveButton.addEventListener('click', function(e) {", "saveButton.addEventListener('click', function(e) { if (!termurionReal(e, saveButton)) { return; }")?;
     // Requests only: no name leaves the page, nothing is removed or renamed in it.
     let s = patch_once(&s, "delete: true,", "requestDelete: true,")?;
     let s = patch_once(&s, "name: input.value,", "requestRename: true,")?;
@@ -234,26 +234,26 @@ pub(crate) fn trust_patched(src: &str) -> Result<String, String> {
     // The name is drawn, never page text (R13x5-43): `window.find` and a select-all read text nodes
     // inside a closed shadow root; generated content (the `::before` rule `shadow_patched` adds) is
     // neither found nor selected.
-    let s = patch_once(&s, "collapsedView.textContent = mark.name;", "collapsedView.setAttribute('data-tandem-name', mark.name);")?;
-    let s = patch_once(&s, "markTitle.textContent = mark.name;", "markTitle.setAttribute('data-tandem-name', mark.name);")?;
+    let s = patch_once(&s, "collapsedView.textContent = mark.name;", "collapsedView.setAttribute('data-termurion-name', mark.name);")?;
+    let s = patch_once(&s, "markTitle.textContent = mark.name;", "markTitle.setAttribute('data-termurion-name', mark.name);")?;
     let s = patch_once(&s, "input.value = mark.name || '';", "input.value = '';")?;
     shadow_patched(&s)
 }
 
-/// The annotations live in a closed shadow root under a host Tandem keeps (`window.tandemMarkHost`,
+/// The annotations live in a closed shadow root under a host Tandem keeps (`window.termurionMarkHost`,
 /// the isolated world's window, which a page cannot see) and styles inline with `!important` after
 /// `all: initial`, so page CSS cannot move, hide-by-containing-block or restyle it. The root is
-/// `window.tandemMarkRoot` for `update-mark-positions.js`. The previous box is removed by that
-/// reference, never by a page-controlled id. `tandemReal` is the real-button test.
+/// `window.termurionMarkRoot` for `update-mark-positions.js`. The previous box is removed by that
+/// reference, never by a page-controlled id. `termurionReal` is the real-button test.
 fn shadow_patched(src: &str) -> Result<String, String> {
     let s = patch_once(
         src,
         "var container = document.createElement('div');",
-        "var host = document.createElement('div');\n    host.style.cssText = 'all: initial !important; display: block !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 0 !important; overflow: visible !important; z-index: 2147483647 !important; pointer-events: none !important;';\n    var shadow = host.attachShadow({mode: 'closed'});\n    var tandemNames = document.createElement('style');\n    tandemNames.textContent = '[data-tandem-name]::before { content: attr(data-tandem-name) !important; }';\n    shadow.appendChild(tandemNames);\n    window.tandemMarkRoot = shadow;\n    window.tandemMarkHost = host;\n    function tandemReal(e, button) {\n        if (!e.isTrusted) { return false; }\n        if (e.detail === 0) { return shadow.activeElement === button; }\n        return shadow.elementFromPoint(e.clientX, e.clientY) === button;\n    }\n    var container = document.createElement('div');",
+        "var host = document.createElement('div');\n    host.style.cssText = 'all: initial !important; display: block !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 0 !important; overflow: visible !important; z-index: 2147483647 !important; pointer-events: none !important;';\n    var shadow = host.attachShadow({mode: 'closed'});\n    var termurionNames = document.createElement('style');\n    termurionNames.textContent = '[data-termurion-name]::before { content: attr(data-termurion-name) !important; }';\n    shadow.appendChild(termurionNames);\n    window.termurionMarkRoot = shadow;\n    window.termurionMarkHost = host;\n    function termurionReal(e, button) {\n        if (!e.isTrusted) { return false; }\n        if (e.detail === 0) { return shadow.activeElement === button; }\n        return shadow.elementFromPoint(e.clientX, e.clientY) === button;\n    }\n    var container = document.createElement('div');",
     )?;
     let s = patch_once(&s, "container.id = 'iterm-mark-annotations';", "")?;
-    let s = patch_once(&s, "document.getElementById('iterm-mark-annotations')", "window.tandemMarkHost")?;
-    let s = patch_once(&s, "existingContainer.remove();", "existingContainer.remove();\n        window.tandemMarkHost = null;\n        window.tandemMarkRoot = null;")?;
+    let s = patch_once(&s, "document.getElementById('iterm-mark-annotations')", "window.termurionMarkHost")?;
+    let s = patch_once(&s, "existingContainer.remove();", "existingContainer.remove();\n        window.termurionMarkHost = null;\n        window.termurionMarkRoot = null;")?;
     patch_once(&s, "document.body.appendChild(container);", "shadow.appendChild(container);\n        document.body.appendChild(host);")
 }
 
@@ -262,7 +262,7 @@ fn positions_patched(src: &str) -> Result<String, String> {
     patch_once(
         src,
         "document.querySelectorAll('.iterm-mark-annotation[data-mark-guid]')",
-        "(window.tandemMarkRoot ? window.tandemMarkRoot.querySelectorAll('.iterm-mark-annotation[data-mark-guid]') : [])",
+        "(window.termurionMarkRoot ? window.termurionMarkRoot.querySelectorAll('.iterm-mark-annotation[data-mark-guid]') : [])",
     )
 }
 
@@ -313,7 +313,7 @@ pub fn show_call(marks: &[Value], secret: &str) -> Option<Call> {
 /// an empty list, `NMM:480-483`, so its own removal never runs): by Tandem's reference to the host,
 /// never a lookup in the page.
 pub fn clear_call() -> Call {
-    Call { body: "if (window.tandemMarkHost) { window.tandemMarkHost.remove(); }\nwindow.tandemMarkHost = null;\nwindow.tandemMarkRoot = null;\nreturn true;".into(), args: json!({}) }
+    Call { body: "if (window.termurionMarkHost) { window.termurionMarkHost.remove(); }\nwindow.termurionMarkHost = null;\nwindow.termurionMarkRoot = null;\nreturn true;".into(), args: json!({}) }
 }
 
 /// `update-mark-positions` (`NMM:509-515`). Rule (task-1 review): the layout monitor must be
@@ -938,7 +938,7 @@ mod tests {
         let u = update_positions_script("s").unwrap();
         assert!(u.contains("var secret = \"s\"") && u.contains("locateMark") && !u.contains("{{"));
         assert!(u.starts_with("return (function"));
-        assert!(u.contains("window.tandemMarkRoot ? window.tandemMarkRoot.querySelectorAll") && !u.contains("document.querySelectorAll('.iterm-mark-annotation"), "the annotations are read from the shadow root");
+        assert!(u.contains("window.termurionMarkRoot ? window.termurionMarkRoot.querySelectorAll") && !u.contains("document.querySelectorAll('.iterm-mark-annotation"), "the annotations are read from the shadow root");
         assert_eq!(LAYOUT_MONITOR_JS, resource("layout-change-monitor.js").unwrap(), "one copy of the file");
         assert!(positions_patched("nothing").is_err());
         let tricky = update_positions_script("a\"b").unwrap();
@@ -954,7 +954,7 @@ mod tests {
     fn annotation_buttons_only_request() {
         let shown = show_call(&[json!({"name":"n","guid":"g"})], "s").unwrap().body;
         assert_eq!(shown.matches("e.isTrusted").count(), 1, "the real-button test");
-        assert_eq!(shown.matches("tandemReal(e, ").count(), 3, "the definition, Delete and Rename");
+        assert_eq!(shown.matches("termurionReal(e, ").count(), 3, "the definition, Delete and Rename");
         assert_eq!(shown.matches("attachShadow({mode: 'closed'})").count(), 1, "the box is in a closed shadow root");
         assert!(shown.contains("shadow.elementFromPoint(e.clientX, e.clientY) === button") && shown.contains("shadow.appendChild(container)"));
         // Requests only: no name leaves the page, nothing is removed in it, the input takes no key.
@@ -964,7 +964,7 @@ mod tests {
         // The host is styled inline, important, after `all: initial`; the old box goes by Tandem's reference.
         assert!(shown.contains("host.style.cssText = 'all: initial !important;") && shown.contains("position: absolute !important") && shown.contains("height: 0 !important"));
         assert!(shown.contains("document.body.appendChild(host)") && !shown.contains("getElementById") && !shown.contains("iterm-mark-annotations"));
-        assert!(shown.contains("var existingContainer = window.tandemMarkHost;") && shown.contains("window.tandemMarkRoot = null;"));
+        assert!(shown.contains("var existingContainer = window.termurionMarkHost;") && shown.contains("window.termurionMarkRoot = null;"));
         // The patch fails closed: a target that moved or repeats is an error, not a silent skip.
         let src = crate::browser_js::resource("show-named-mark-annotations.js").unwrap();
         assert!(trust_patched(src).is_ok());
@@ -984,9 +984,9 @@ mod tests {
     fn annotation_names_are_not_page_text() {
         let shown = show_call(&[json!({"name":"n","guid":"g"})], "s").unwrap().body;
         assert!(!shown.contains("textContent = mark.name"), "no text node holds the name");
-        assert_eq!(shown.matches("setAttribute('data-tandem-name', mark.name)").count(), 2, "the collapsed view and the title");
-        assert_eq!(shown.matches("[data-tandem-name]::before { content: attr(data-tandem-name) !important; }").count(), 1);
-        assert!(shown.find("shadow.appendChild(tandemNames)").unwrap() < shown.find("shadow.appendChild(container)").unwrap(), "the rule lives in the closed root");
+        assert_eq!(shown.matches("setAttribute('data-termurion-name', mark.name)").count(), 2, "the collapsed view and the title");
+        assert_eq!(shown.matches("[data-termurion-name]::before { content: attr(data-termurion-name) !important; }").count(), 1);
+        assert!(shown.find("shadow.appendChild(termurionNames)").unwrap() < shown.find("shadow.appendChild(container)").unwrap(), "the rule lives in the closed root");
         assert!(shown.contains("input.value = '';") && !shown.contains("input.value = mark.name"), "the hidden input holds no name either");
         let src = crate::browser_js::resource("show-named-mark-annotations.js").unwrap();
         for target in ["collapsedView.textContent = mark.name;", "markTitle.textContent = mark.name;", "input.value = mark.name || '';"] {
@@ -1139,9 +1139,9 @@ mod tests {
 
     #[test]
     fn marks_messages_are_bounded_and_isolated() {
-        assert!(message_accepted(World::Client, None, "tandem-client"));
+        assert!(message_accepted(World::Client, None, "termurion-client"));
         assert!(!message_accepted(World::Page, None, "https://a.b"), "the page world never");
-        assert!(!message_accepted(World::Client, Some(4), "tandem-client"), "a subframe never");
+        assert!(!message_accepted(World::Client, Some(4), "termurion-client"), "a subframe never");
         assert!(!message_accepted(World::Client, None, "iterm2-about:history"), "Tandem's pages never");
         let t = std::time::Instant::now();
         let mut s = PageState::new("S".into());

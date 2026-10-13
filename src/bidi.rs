@@ -2,7 +2,7 @@
 //! per screen line, not per wrapped paragraph).
 //!
 //! Pure: a row's cells in, a permutation of exactly those cells out. Nothing here knows about
-//! panes, Tandem's own text or any other row, so a program's text can only ever reorder within
+//! panes, Termurion's own text or any other row, so a program's text can only ever reorder within
 //! its own line. Safety rules (preflight P9, P10):
 //! - The explicit embedding, override and isolate controls (U+202A to U+202E, U+2066 to U+2069)
 //!   are left out of the text the algorithm sees, so a program cannot reverse a line with RLO.

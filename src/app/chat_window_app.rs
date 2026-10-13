@@ -389,9 +389,9 @@ impl App {
     }
 
     /// "Ask AI\u{2026}" (`BVC:1035-1046`, `PSB:127-134`): the person's pick in the browser toolbar menu.
-    /// The page text comes from `browser_page_content`, the one reader (Tandem's isolated world, a
+    /// The page text comes from `browser_page_content`, the one reader (Termurion's isolated world, a
     /// constant script, answered for the page of its epoch), and is page-derived: capped and fenced by
-    /// `ai_browser::ask_ai_body`. Dev Null and Tandem, local or extension pages are refused (the item is
+    /// `ai_browser::ask_ai_body`. Dev Null and Termurion, local or extension pages are refused (the item is
     /// disabled for them; this checks again). The chat is created unlinked and linked by `link_chat`.
     /// A page with no text does nothing; the log names the pane only.
     pub(super) fn ask_ai_about_page(&mut self, pane: PaneId, event_loop: &ActiveEventLoop) {
@@ -1081,7 +1081,7 @@ impl App {
             Ok((path, name)) => {
                 let text = path.to_string_lossy().to_string();
                 if open && chat_view::openable(&name) {
-                    // Tandem's own attachment file, still opened only as a judged path.
+                    // Termurion's own attachment file, still opened only as a judged path.
                     let opened = crate::localfs::judge_io(&path).and_then(|p| crate::localfs::open_with_shell(&p, None, false));
                     if let Err(e) = opened {
                         self.banners.set("action", format!("Could not open {text}: {e}"));
@@ -1910,7 +1910,7 @@ mod tests {
         for title in ["..\\a/b:c", "https://a.example/x?y"] {
             let (name, bytes, mime) = crate::ai_browser::ask_ai_attachment(title, "x");
             assert_eq!((bytes.as_slice(), mime), (&b"x"[..], "text/plain"));
-            let root = std::env::temp_dir().join(format!("tandem-askai-{}-{}", std::process::id(), name.len()));
+            let root = std::env::temp_dir().join(format!("termurion-askai-{}-{}", std::process::id(), name.len()));
             std::fs::create_dir_all(&root).unwrap();
             let path = crate::chat_view::materialize(&root, "CHAT", "ci_1", &name, &bytes).expect("a cleaned name is written");
             let count = |d: &std::path::Path| std::fs::read_dir(d).map(|r| r.count()).unwrap_or(0);

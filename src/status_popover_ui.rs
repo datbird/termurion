@@ -329,7 +329,7 @@ impl InfoPopover {
 }
 
 /// The popover a script opens from its status bar component (StatusBarComponentRequest,
-/// `BASE:363-389`): iTerm2 shows the HTML in a web view; Tandem shows its text
+/// `BASE:363-389`): iTerm2 shows the HTML in a web view; Termurion shows its text
 /// (`script_statusbar::html_text`), selectable and scrolling, in a content area of the
 /// requested size. It closes when it loses focus (a semitransient popover) or on Esc.
 pub struct TextPopover {

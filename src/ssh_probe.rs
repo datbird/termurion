@@ -7,7 +7,7 @@ use crate::ssh_transport::{ORDER, Transport, conpty_flags};
 /// The probe's own sshd, inside WSL, on 127.0.0.1 only.
 pub const SSHD_PORT: u16 = 22990;
 /// The probe's folder inside WSL (keys, config, pid file, log, remote.sh).
-pub const WSL_DIR: &str = "/tmp/tandem-ssh-probe";
+pub const WSL_DIR: &str = "/tmp/termurion-ssh-probe";
 
 /// A DCS 2000p line as conductor.sh prints it (`print_dcs`): raw, ending in a bare LF.
 pub const DCS_LINE: &[u8] = b"\x1bP2000pnone 1234512345 NDZBYQ== - LXAgMjIyMiB1c2VyQGhvc3Qg\n";
@@ -126,7 +126,7 @@ EOF
 }
 
 /// Stops the probe's sshd from its pid file and removes `WSL_DIR`.
-pub const SSHD_STOP: &str = "if [ -f /tmp/tandem-ssh-probe/sshd.pid ]; then kill \"$(cat /tmp/tandem-ssh-probe/sshd.pid)\" 2>/dev/null || true; fi; rm -rf /tmp/tandem-ssh-probe";
+pub const SSHD_STOP: &str = "if [ -f /tmp/termurion-ssh-probe/sshd.pid ]; then kill \"$(cat /tmp/termurion-ssh-probe/sshd.pid)\" 2>/dev/null || true; fi; rm -rf /tmp/termurion-ssh-probe";
 
 /// Finds the two programs the probe needs inside WSL; installs nothing.
 pub const PRECHECK: &str = "command -v /usr/sbin/sshd; command -v ssh-keygen";
@@ -440,10 +440,10 @@ mod tests {
 
     #[test]
     fn ssh_args_follow_the_probe() {
-        let remote: Vec<String> = vec!["sh".into(), "/tmp/tandem-ssh-probe/remote.sh".into()];
+        let remote: Vec<String> = vec!["sh".into(), "/tmp/termurion-ssh-probe/remote.sh".into()];
         let want: Vec<String> = [
             "-F", "NUL", "-i", r"C:\T\k", "-p", "22990", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=NUL", "-o", "IdentitiesOnly=yes", "-o",
-            "BatchMode=yes", "-o", "LogLevel=ERROR", "-t", "-t", "rob@127.0.0.1", "sh", "/tmp/tandem-ssh-probe/remote.sh",
+            "BatchMode=yes", "-o", "LogLevel=ERROR", "-t", "-t", "rob@127.0.0.1", "sh", "/tmp/termurion-ssh-probe/remote.sh",
         ]
         .map(String::from)
         .to_vec();
@@ -462,7 +462,7 @@ mod tests {
             "StrictModes no",
             "PasswordAuthentication no",
             "AllowUsers rob",
-            "/usr/sbin/sshd -f /tmp/tandem-ssh-probe/sshd_config -E /tmp/tandem-ssh-probe/sshd.log",
+            "/usr/sbin/sshd -f /tmp/termurion-ssh-probe/sshd_config -E /tmp/termurion-ssh-probe/sshd.log",
         ] {
             assert!(setup.contains(part), "{part:?} in {setup}");
         }

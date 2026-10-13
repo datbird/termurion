@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 /// The `aiChatRawWireLogging` help (ruling 10: it says what the code does).
-pub const HELP: &str = "Log raw AI API requests and responses to disk.\nWrites every byte sent to and received from the AI vendor (request headers, body, streaming chunks, final response, errors, and timing) to %APPDATA%\\Tandem\\AIChatWire\\. One log file per app launch; rotate or delete it yourself when done. Every header value except known non-secret ones (such as Content-Type, Accept, User-Agent and anthropic-version), and keys that appear in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters); prompt and response content is logged verbatim. Off by default; turn on only while reproducing an issue and delete the files when finished.";
+pub const HELP: &str = "Log raw AI API requests and responses to disk.\nWrites every byte sent to and received from the AI vendor (request headers, body, streaming chunks, final response, errors, and timing) to %APPDATA%\\Termurion\\AIChatWire\\. One log file per app launch; rotate or delete it yourself when done. Every header value except known non-secret ones (such as Content-Type, Accept, User-Agent and anthropic-version), and keys that appear in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters); prompt and response content is logged verbatim. Off by default; turn on only while reproducing an issue and delete the files when finished.";
 
 /// Credential headers whose value may start with a scheme ("Bearer") the log keeps
 /// (`WL:239-241`, plus Proxy-Authorization), lowercased.
@@ -243,7 +243,7 @@ pub fn now_millis() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
-/// The per-launch wire log file under `%APPDATA%\Tandem\AIChatWire\`, opened on the first record
+/// The per-launch wire log file under `%APPDATA%\Termurion\AIChatWire\`, opened on the first record
 /// written while the setting is on; a failure to open disables it for the launch (`WL:157-189`).
 #[cfg(windows)]
 pub struct WireLog {
@@ -458,7 +458,7 @@ mod tests {
         let row = crate::schema::find_global("AiChatRawWireLogging").expect("12a's row");
         assert_eq!(row.help, HELP);
         assert!(HELP.contains("fingerprints"));
-        assert!(HELP.contains("%APPDATA%\\Tandem\\AIChatWire"));
+        assert!(HELP.contains("%APPDATA%\\Termurion\\AIChatWire"));
         assert!(HELP.contains("Every header value except known non-secret ones"), "says every other header is hidden");
         for name in ["Content-Type", "Accept", "User-Agent", "anthropic-version"] {
             assert!(SAFE_HEADERS.contains(&name.to_ascii_lowercase().as_str()), "the help's examples are logged: {name}");
@@ -468,7 +468,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn wire_log_opens_one_file_on_the_first_record() {
-        let dir = std::env::temp_dir().join(format!("tandem-wire-log-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-wire-log-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut log = WireLog::in_dir(dir.clone());
         log.log(false, "off\n");
@@ -485,7 +485,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
 
         // A folder that cannot be made disables the log for the launch.
-        let blocker = std::env::temp_dir().join(format!("tandem-wire-log-block-{}", std::process::id()));
+        let blocker = std::env::temp_dir().join(format!("termurion-wire-log-block-{}", std::process::id()));
         std::fs::write(&blocker, b"x").unwrap();
         let mut blocked = WireLog::in_dir(blocker.join("AIChatWire"));
         blocked.log(true, "one\n");

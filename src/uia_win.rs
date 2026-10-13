@@ -506,7 +506,7 @@ impl IRawElementProviderSimple_Impl for PaneProvider_Impl {
                 UIA_NamePropertyId if p.label.is_some() => VARIANT::from(p.label.as_deref().unwrap_or_default()),
                 UIA_ControlTypePropertyId => VARIANT::from(UIA_TextControlTypeId.0),
                 UIA_NamePropertyId => VARIANT::from("shell"),
-                UIA_AutomationIdPropertyId => VARIANT::from(format!("TandemPane{}", p.id).as_str()),
+                UIA_AutomationIdPropertyId => VARIANT::from(format!("TermurionPane{}", p.id).as_str()),
                 UIA_HasKeyboardFocusPropertyId => VARIANT::from(p.focused),
                 UIA_IsKeyboardFocusablePropertyId | UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId | UIA_IsEnabledPropertyId => VARIANT::from(true),
                 UIA_FrameworkIdPropertyId => VARIANT::from("Tandem"),
@@ -967,8 +967,8 @@ impl Host {
                 let _ = match e {
                     access::Event::TextChanged => UiaRaiseAutomationEvent(&p, UIA_Text_TextChangedEventId),
                     access::Event::SelectionChanged => UiaRaiseAutomationEvent(&p, UIA_Text_TextSelectionChangedEventId),
-                    access::Event::Announce(s) => UiaRaiseNotificationEvent(&p, NotificationKind_Other, NotificationProcessing_ImportantAll, &text(s), &BSTR::from("TandemOutput")),
-                    access::Event::AnnounceDeleted(s) => UiaRaiseNotificationEvent(&p, NotificationKind_ItemRemoved, NotificationProcessing_ImportantAll, &text(s), &BSTR::from("TandemDeleted")),
+                    access::Event::Announce(s) => UiaRaiseNotificationEvent(&p, NotificationKind_Other, NotificationProcessing_ImportantAll, &text(s), &BSTR::from("TermurionOutput")),
+                    access::Event::AnnounceDeleted(s) => UiaRaiseNotificationEvent(&p, NotificationKind_ItemRemoved, NotificationProcessing_ImportantAll, &text(s), &BSTR::from("TermurionDeleted")),
                 };
             }
         }));

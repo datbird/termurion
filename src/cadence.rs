@@ -10,7 +10,7 @@ use crate::globals::Globals;
 /// A visible, busy session at a low byte rate: 60 frames a second (`activeUpdateCadence` and
 /// `maximumFrameRate`, 60).
 pub const FAST_GAP: Duration = Duration::from_millis(16);
-/// A visible session receiving at least `THROUGHPUT_LIMIT` bytes a second. Tandem draws on
+/// A visible session receiving at least `THROUGHPUT_LIMIT` bytes a second. Termurion draws on
 /// the GPU like iTerm2's default Metal path, so this is `metalSlowFrameRate` (30 fps,
 /// `iTermAdvancedSettingsModel.m:570`), not the non-Metal `slowFrameRate` (15).
 pub const SLOW_GAP: Duration = Duration::from_nanos(1_000_000_000 / 30);

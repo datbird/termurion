@@ -147,7 +147,7 @@ pub fn download_path_ok(downloads: &Path, path: &Path) -> bool {
 }
 
 /// The hidden file WebView2 writes while a download runs: ends in `.download`, so it is inert at
-/// every step, and `ssh_local::sweep_stale` finds it if Tandem dies.
+/// every step, and `ssh_local::sweep_stale` finds it if Termurion dies.
 pub fn temp_path(dir: &Path, uuid: &str) -> PathBuf {
     dir.join(format!("{}{}", crate::ssh_local::temp_name(uuid), crate::inert_files::NEUTRAL_SUFFIX))
 }
@@ -268,7 +268,7 @@ mod tests {
     use super::*;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("tandem-dl-{tag}-{}", uuid::Uuid::new_v4().simple()));
+        let d = std::env::temp_dir().join(format!("termurion-dl-{tag}-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&d).unwrap();
         d
     }

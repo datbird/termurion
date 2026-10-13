@@ -63,7 +63,7 @@ pub fn entry(secs: i64, micros: u32, file: &str, line: u32, module: &str, thread
 
 /// What goes to the debug output with `LogToSyslog`: the prefix only, never the text (`DL:411-419`).
 pub fn syslog_prefix(secs: i64, micros: u32, file: &str, line: u32, module: &str) -> String {
-    format!("TandemDebugLog: {secs}.{micros:06} {file}:{line} ({module}): ")
+    format!("TermurionDebugLog: {secs}.{micros:06} {file}:{line} ({module}): ")
 }
 
 /// A value that cannot carry a secret: only these are accepted as arguments of `dlog!`.
@@ -644,14 +644,14 @@ macro_rules! rlog {
 
 /// The folders a log may go in, best first: `%TEMP%` when the judge accepts it (a share is never
 /// one: the log holds window facts and the connection would send the person's hash), then
-/// `%LOCALAPPDATA%\Tandem\Logs`.
+/// `%LOCALAPPDATA%\Termurion\Logs`.
 #[cfg(windows)]
 pub fn log_dirs_with(env: &dyn Fn(&str) -> Option<String>) -> Vec<localfs::LocalPath> {
     let mut out = Vec::new();
     if let Some(t) = env("TEMP").filter(|t| !t.is_empty()).and_then(localfs::LocalPath::judge) {
         out.push(t);
     }
-    let logs = env("LOCALAPPDATA").filter(|t| !t.is_empty()).and_then(localfs::LocalPath::judge).and_then(|b| b.join("Tandem")).and_then(|b| b.join("Logs"));
+    let logs = env("LOCALAPPDATA").filter(|t| !t.is_empty()).and_then(localfs::LocalPath::judge).and_then(|b| b.join("Termurion")).and_then(|b| b.join("Logs"));
     if let Some(logs) = logs {
         let _ = localfs::create_dir_all(&logs);
         out.push(logs);
@@ -871,7 +871,7 @@ mod tests {
     #[test]
     fn log_entries_follow_iterm2() {
         assert_eq!(entry(1700000000, 42, "bell_ui.rs", 33, "termurion::app::bell_ui", "main", "Beep"), "1700000000.000042 bell_ui.rs:33 (termurion::app::bell_ui) main: Beep\n");
-        assert_eq!(syslog_prefix(1700000000, 42, "bell_ui.rs", 33, "termurion::app::bell_ui"), "TandemDebugLog: 1700000000.000042 bell_ui.rs:33 (termurion::app::bell_ui): ");
+        assert_eq!(syslog_prefix(1700000000, 42, "bell_ui.rs", 33, "termurion::app::bell_ui"), "TermurionDebugLog: 1700000000.000042 bell_ui.rs:33 (termurion::app::bell_ui): ");
         let mut log = Log::default();
         assert!(!log.is_on());
         log.append("dropped\n");
@@ -1351,13 +1351,13 @@ mod tests {
     #[test]
     fn temp_on_a_share_falls_back() {
         let local = std::env::temp_dir();
-        std::fs::create_dir_all(local.join("TandemDlogTest")).unwrap();
+        std::fs::create_dir_all(local.join("TermurionDlogTest")).unwrap();
         let env = |share: bool| {
             let local = local.clone();
             move |k: &str| match k {
                 "TEMP" if share => Some(r"\\srv\share\tmp".to_string()),
                 "TEMP" => Some(local.to_string_lossy().to_string()),
-                "LOCALAPPDATA" => Some(local.join("TandemDlogTest").to_string_lossy().to_string()),
+                "LOCALAPPDATA" => Some(local.join("TermurionDlogTest").to_string_lossy().to_string()),
                 _ => None,
             }
         };
@@ -1365,12 +1365,12 @@ mod tests {
         assert_eq!(dirs[0], local, "a local TEMP is the first choice");
         let dirs: Vec<PathBuf> = log_dirs_with(&env(true)).into_iter().map(|d| d.into_path_buf()).collect();
         assert!(dirs.iter().all(|d| !d.to_string_lossy().starts_with(r"\\")), "a share is never a candidate: {dirs:?}");
-        assert!(dirs.first().is_some_and(|d| d.ends_with(r"TandemDlogTest\Tandem\Logs")), "Local AppData is the fallback: {dirs:?}");
+        assert!(dirs.first().is_some_and(|d| d.ends_with(r"TermurionDlogTest\Termurion\Logs")), "Local AppData is the fallback: {dirs:?}");
     }
 
     #[cfg(windows)]
     fn scratch(tag: &str) -> localfs::LocalPath {
-        let dir = std::env::temp_dir().join(format!("tandem-dlog-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-dlog-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         localfs::LocalPath::judge(&dir).expect("a temp folder is local")

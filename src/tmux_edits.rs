@@ -1,4 +1,4 @@
-//! Commands for changes made in Tandem (iTerm2's TmuxController edits and
+//! Commands for changes made in Termurion (iTerm2's TmuxController edits and
 //! iTermInitialDirectory+Tmux), exactly as iTerm2 writes them.
 
 /// tmux resizes a pane from a side: R and L for a vertical divider, D and U for a

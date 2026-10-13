@@ -724,7 +724,7 @@ mod tests {
         assert!(p.response(3, 200).is_empty(), "another URL is not the retry");
     }
 
-    /// 13x7 meets 13x8: a local page (Tandem's own, a file, an ssh file, the error page) never raises a
+    /// 13x7 meets 13x8: a local page (Termurion's own, a file, an ssh file, the error page) never raises a
     /// sign-in. Whatever the engine says, a challenge for a local scheme is cancelled on the spot: no
     /// prompt, no lookup, no picker.
     #[test]

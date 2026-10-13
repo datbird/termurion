@@ -863,7 +863,7 @@ mod tests {
 
     #[test]
     fn closing_settings_restores_a_preview() {
-        let mut store = crate::store::Store::fresh(&std::env::temp_dir().join(format!("tandem-presets-{}.toml", std::process::id())));
+        let mut store = crate::store::Store::fresh(&std::env::temp_dir().join(format!("termurion-presets-{}.toml", std::process::id())));
         let guid = store.default_guid.clone();
         let before = store.get(&guid).unwrap().values.clone();
         let mut st = State::new(false);
@@ -878,7 +878,7 @@ mod tests {
 
     #[test]
     fn a_preview_is_put_back_when_its_header_is_gone() {
-        let mut store = crate::store::Store::fresh(&std::env::temp_dir().join(format!("tandem-presets-strand-{}.toml", std::process::id())));
+        let mut store = crate::store::Store::fresh(&std::env::temp_dir().join(format!("termurion-presets-strand-{}.toml", std::process::id())));
         let guid = store.default_guid.clone();
         let before = store.get(&guid).unwrap().values.clone();
         let mut st = State::new(false);

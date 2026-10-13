@@ -1,6 +1,6 @@
 //! The allowlisted DevTools reads (milestone 13x4 Task 5). `devtools_read` is the one door View
 //! Source and Save Page As use for `Page.getResourceTree` and `Page.getResourceContent`; it is called
-//! by Tandem's own Rust code only, with arguments from Tandem's own resource tree read, and what comes
+//! by Termurion's own Rust code only, with arguments from Termurion's own resource tree read, and what comes
 //! back is page-derived data (size-capped; see `crate::devtools`).
 
 use super::browser_scripts_app::JsDone;
@@ -9,7 +9,7 @@ use serde_json::Value;
 
 impl App {
     /// A host-initiated read. Refused (`done(Err("devtools method not allowed"))`, nothing sent) for
-    /// any other method or any arguments Tandem would not build; a reply over `cap` (bytes of its JSON
+    /// any other method or any arguments Termurion would not build; a reply over `cap` (bytes of its JSON
     /// text: `devtools::MAX_RESOURCE` for View Source and the tree, `page_saver::MAX_REPLY_BYTES` for
     /// a saved resource) is an error. `done` always runs, also when the pane or page is gone (the
     /// runner answers it).
@@ -102,7 +102,7 @@ mod tests {
                 }
             }
         }
-        // No script text (a body Tandem evaluates) names a read either.
+        // No script text (a body Termurion evaluates) names a read either.
         for (name, src) in &files {
             if name != "devtools_read_app.rs" {
                 assert!(!src.contains("\"Page.getResource") || matches!(name.as_str(), "view_source_app.rs" | "page_saver_app.rs"), "{name} names a read method");

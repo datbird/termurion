@@ -31,7 +31,7 @@ use crate::ssh_transport::Transport;
 
 /// One console attach at a time (Send Signal's events, password prompt mode reads, the write
 /// side), and never across a pseudoconsole close: `Pty::drop` holds the read side, because
-/// closing a pseudoconsole ends every process attached to it, and Tandem (or tandem-host) must
+/// closing a pseudoconsole ends every process attached to it, and Termurion (or termurion-host) must
 /// never be one then. Closes share the read side, so they still run side by side.
 pub(crate) static CONSOLE: std::sync::RwLock<()> = std::sync::RwLock::new(());
 
@@ -125,11 +125,11 @@ pub(crate) fn attached_unless<T>(pid: u32, stop: &std::sync::atomic::AtomicBool,
 /// The input mode of the console `pid` runs on (`ENABLE_ECHO_INPUT`, `ENABLE_LINE_INPUT`, ...):
 /// attached for the moment, `CONIN$` opened, read and closed. Never while a console event is
 /// being sent or a pseudoconsole is closing (all hold `CONSOLE`). Only for a console this
-/// process owns the closes of: Tandem reads its local panes, tandem-host its own sessions.
+/// process owns the closes of: Termurion reads its local panes, termurion-host its own sessions.
 ///
 /// There is no timeout: a console whose OpenConsole hangs (its output pipe full and not
-/// read) would hold this, and `CONSOLE` with it, for good. Tandem never reads a pane it
-/// paused, and tandem-host skips paused sessions (`console_mode_unless`).
+/// read) would hold this, and `CONSOLE` with it, for good. Termurion never reads a pane it
+/// paused, and termurion-host skips paused sessions (`console_mode_unless`).
 pub fn console_mode(pid: u32) -> Result<u32, String> {
     console_mode_unless(pid, &std::sync::atomic::AtomicBool::new(false))
 }
@@ -255,7 +255,7 @@ fn assemble(api: &Api, hpc: HPCON, input: HANDLE, output: HANDLE, process: HANDL
 
 /// The `Pty` of a console a console host handed over (the default-terminal handoff): `hpc` is the
 /// packed pseudoconsole (`ConptyPackPseudoConsole`), `input` our write end and `output` our read
-/// end of the two pipes, `client` the client process. Tandem owns all four from here: a failure
+/// end of the two pipes, `client` the client process. Termurion owns all four from here: a failure
 /// closes them (the pseudoconsole through the api).
 pub fn from_handoff(api: &Api, hpc: HPCON, input: HANDLE, output: HANDLE, client: HANDLE, notify: Notify) -> Result<Pty, String> {
     assemble(api, hpc, input, output, client, notify)
@@ -371,7 +371,7 @@ unsafe fn start(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[
 
 /// The working folder CreateProcessW opens for the child: judged like any probe. One the judge
 /// refuses (a share, a mapped or SUBST drive onto one, a link to one) is replaced by the home
-/// folder when that passes, else the child inherits Tandem's own.
+/// folder when that passes, else the child inherits Termurion's own.
 fn working_folder(cwd: Option<&std::path::Path>) -> Option<crate::localfs::LocalPath> {
     let cwd = cwd?;
     crate::localfs::LocalPath::judge(cwd).or_else(|| std::env::var_os("USERPROFILE").and_then(crate::localfs::LocalPath::judge))
@@ -826,13 +826,13 @@ pub(crate) mod tests {
     }
 
     /// The child half of `a_close_never_happens_while_attached`: started detached (no console
-    /// of its own, as the GUI and tandem-host run), it reads a shell's console mode in a loop
+    /// of its own, as the GUI and termurion-host run), it reads a shell's console mode in a loop
     /// on one thread while the pty closes on another. A close that landed inside an attach
     /// would end this process.
     #[test]
     #[ignore]
     fn close_while_reading_child() {
-        if std::env::var_os("TANDEM_CLOSE_CHILD").is_none() {
+        if std::env::var_os("TERMURION_CLOSE_CHILD").is_none() {
             return;
         }
         let api = conpty::load(&Source::Shipped(dev_vendor_dir())).unwrap();
@@ -883,7 +883,7 @@ pub(crate) mod tests {
     #[test]
     #[ignore]
     fn measure_password_prompt_modes_child() {
-        if std::env::var_os("TANDEM_MEASURE_CHILD").is_none() {
+        if std::env::var_os("TERMURION_MEASURE_CHILD").is_none() {
             return;
         }
         let api = conpty::load(&Source::Shipped(dev_vendor_dir())).unwrap();
@@ -926,7 +926,7 @@ pub(crate) mod tests {
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "pty::tests::measure_password_prompt_modes_child", "--ignored", "--nocapture", "--test-threads=1"])
-            .env("TANDEM_MEASURE_CHILD", "1")
+            .env("TERMURION_MEASURE_CHILD", "1")
             .creation_flags(DETACHED_PROCESS)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -979,7 +979,7 @@ pub(crate) mod tests {
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "pty::tests::close_while_reading_child", "--ignored", "--test-threads=1"])
-            .env("TANDEM_CLOSE_CHILD", "1")
+            .env("TERMURION_CLOSE_CHILD", "1")
             .creation_flags(DETACHED_PROCESS)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -1005,8 +1005,8 @@ pub(crate) mod tests {
     #[test]
     fn runs_a_command_and_reads_output() {
         for api in apis() {
-            let p = spawn(&api, "cmd.exe /c echo tandem-ok", 80, 24).unwrap();
-            p.read_until(b"tandem-ok", secs(10))
+            let p = spawn(&api, "cmd.exe /c echo termurion-ok", 80, 24).unwrap();
+            p.read_until(b"termurion-ok", secs(10))
                 .unwrap_or_else(|got| panic!("{}: got {:?}", api.source.label(), text(&got)));
             assert_eq!(p.wait_exit(secs(10)), Some(0), "{}", api.source.label());
         }
@@ -1161,7 +1161,7 @@ pub(crate) mod tests {
         assert!(text(&got).contains("[%ITERM_SESSION_ID%]"), "{:?}", text(&got));
 
         // The utilities folder on PATH (`utilities::path_with`) and iTerm2's TERM_PROGRAM.
-        let dir = std::env::temp_dir().join(format!("tandem-env-path-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-env-path-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("probe.cmd"), "").unwrap();
@@ -1240,8 +1240,8 @@ pub(crate) mod tests {
 
     #[test]
     fn pipes_pty_runs_a_child() {
-        let p = pipes("cmd.exe /d /c echo tandem-pipes");
-        p.read_until(b"tandem-pipes", secs(10)).unwrap_or_else(|got| panic!("{:?}", text(&got)));
+        let p = pipes("cmd.exe /d /c echo termurion-pipes");
+        p.read_until(b"termurion-pipes", secs(10)).unwrap_or_else(|got| panic!("{:?}", text(&got)));
         assert_eq!(p.wait_exit(secs(10)), Some(0));
         assert_eq!(p.resize(100, 30), Ok(()));
         assert_eq!(p.clear(), Ok(()));

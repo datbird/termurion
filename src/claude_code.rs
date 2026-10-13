@@ -164,18 +164,18 @@ pub const COOKIE_BY_KEY: &str = "NoSyncClaudeCodeTurnedOnCookie";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CookieState {
     pub on: bool,
-    pub by_tandem: bool,
+    pub by_termurion: bool,
 }
 
 impl CookieState {
     /// The person said Enable: on, and Tandem's own only when it was off.
     pub fn enabled(self) -> CookieState {
-        if self.on { self } else { CookieState { on: true, by_tandem: true } }
+        if self.on { self } else { CookieState { on: true, by_termurion: true } }
     }
 
     /// Undo what Tandem did, and only that: a setting the person made is left as it is.
     pub fn reverted(self) -> CookieState {
-        if self.by_tandem { CookieState { on: false, by_tandem: false } } else { self }
+        if self.by_termurion { CookieState { on: false, by_termurion: false } } else { self }
     }
 }
 
@@ -559,7 +559,7 @@ pub fn watcher_enabled(off: bool, status_tool_last_use: f64, status_tool_visible
 /// The backup kept beside a settings file before a change.
 fn backup_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
-    name.push(".tandem-backup");
+    name.push(".termurion-backup");
     path.with_file_name(name)
 }
 
@@ -574,7 +574,7 @@ fn write_replacing(path: &Path, text: &str, backup: bool) -> std::io::Result<()>
         localfs::copy(&local, &judge_io(backup_path(path))?)?;
     }
     let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
-    name.push(format!(".tandem-{}.tmp", std::process::id()));
+    name.push(format!(".termurion-{}.tmp", std::process::id()));
     let temp = judge_io(path.with_file_name(name))?;
     let written = (|| {
         let mut f = localfs::create(&temp)?;
@@ -654,14 +654,14 @@ mod tests {
     use super::*;
     use std::io::ErrorKind;
 
-    const CMD: &str = "\"C:/Program Files/Tandem/cc-status.exe\"";
+    const CMD: &str = "\"C:/Program Files/Termurion/cc-status.exe\"";
 
     fn parse(t: &str) -> Value {
         serde_json::from_str(t).expect("valid JSON")
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("tandem-cc-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-cc-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -691,9 +691,9 @@ mod tests {
         assert_eq!(config_dir(Some(r"\\host\share\cc"), home), PathBuf::from(r"C:\Users\u\.claude"));
         assert_eq!(config_dir(Some("cc"), home), PathBuf::from(r"C:\Users\u\.claude"));
         assert_eq!(settings_path(Path::new(r"D:\cc")), PathBuf::from(r"D:\cc\settings.json"));
-        let exe = Path::new(r"C:\Program Files\Tandem\cc-status.exe");
+        let exe = Path::new(r"C:\Program Files\Termurion\cc-status.exe");
         assert_eq!(hook_command(exe), CMD);
-        assert_eq!(command_path(CMD), "C:/Program Files/Tandem/cc-status.exe");
+        assert_eq!(command_path(CMD), "C:/Program Files/Termurion/cc-status.exe");
         for yes in [CMD, r"C:\T\cc-status.exe", "/Users/u/.iterm2/cc-status", "\"x/CC-STATUS.EXE\""] {
             assert!(is_cc_status(yes), "{yes}");
         }
@@ -798,7 +798,7 @@ mod tests {
         assert_eq!(v["hooks"]["Stop"][0]["hooks"][0]["timeout"], 5);
         assert_eq!(entries(&v, "SessionEnd"), [CMD]);
         // The original is kept beside it.
-        assert_eq!(std::fs::read_to_string(dir.join("settings.json.tandem-backup")).unwrap(), original);
+        assert_eq!(std::fs::read_to_string(dir.join("settings.json.termurion-backup")).unwrap(), original);
         // A second install changes nothing and writes nothing.
         let after = std::fs::read(&path).unwrap();
         assert_eq!(install_to(&path, CMD), Ok(false));
@@ -815,7 +815,7 @@ mod tests {
         // Nothing of Tandem's is left behind but the backup.
         let mut names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
         names.sort();
-        assert_eq!(names, ["settings.json", "settings.json.tandem-backup"]);
+        assert_eq!(names, ["settings.json", "settings.json.termurion-backup"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -827,7 +827,7 @@ mod tests {
         assert!(!path.exists());
         assert_eq!(install_to(&path, CMD), Ok(true));
         assert!(sorted(&parse(&std::fs::read_to_string(&path).unwrap())));
-        assert!(!path.with_file_name("settings.json.tandem-backup").exists(), "nothing to back up");
+        assert!(!path.with_file_name("settings.json.termurion-backup").exists(), "nothing to back up");
         // Stripping what Tandem alone put there leaves a file with no hooks.
         assert_eq!(uninstall_from(&path), Ok(()));
         assert_eq!(parse(&std::fs::read_to_string(&path).unwrap()), serde_json::json!({}));
@@ -870,7 +870,7 @@ mod tests {
             seen.borrow_mut().push(p.to_string());
             true
         }));
-        assert!(seen.borrow().iter().all(|p| p == "C:/Program Files/Tandem/cc-status.exe"), "the check gets the path, not the quoted command");
+        assert!(seen.borrow().iter().all(|p| p == "C:/Program Files/Termurion/cc-status.exe"), "the check gets the path, not the quoted command");
         let only_stop = r#"{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "\"C:/T/cc-status.exe\""}]}]}}"#;
         assert!(any_hook(Some(only_stop)));
         assert!(!any_hook(Some(r#"{"hooks": {"Stop": [{"hooks": [{"command": "other"}]}]}}"#)));
@@ -1045,18 +1045,18 @@ mod tests {
     /// Fix round 1: Tandem turns the cookie on only on the person's OK, remembers that it did,
     /// and turns it back off only if it did.
     #[test]
-    fn the_cookie_is_turned_off_only_if_tandem_turned_it_on() {
-        let off = CookieState { on: false, by_tandem: false };
+    fn the_cookie_is_turned_off_only_if_termurion_turned_it_on() {
+        let off = CookieState { on: false, by_termurion: false };
         // Cancel does nothing: the state is simply never changed.
         let on = off.enabled();
-        assert_eq!(on, CookieState { on: true, by_tandem: true });
+        assert_eq!(on, CookieState { on: true, by_termurion: true });
         assert_eq!(on.reverted(), off);
         // The person's own setting is never claimed or reverted.
-        let theirs = CookieState { on: true, by_tandem: false };
+        let theirs = CookieState { on: true, by_termurion: false };
         assert_eq!(theirs.enabled(), theirs);
         assert_eq!(theirs.reverted(), theirs);
         // The person switched it off themselves meanwhile: the marker goes, nothing turns on.
-        assert_eq!(CookieState { on: false, by_tandem: true }.reverted(), off);
+        assert_eq!(CookieState { on: false, by_termurion: true }.reverted(), off);
         assert_eq!(on.enabled(), on);
     }
 
@@ -1073,7 +1073,7 @@ mod tests {
         g.set(key, toml::Value::Boolean(false));
         g.set(key, toml::Value::Boolean(true));
         assert!(!g.bool(COOKIE_BY_KEY), "off and on again by someone else: no longer Tandem's");
-        let state = CookieState { on: g.bool(key), by_tandem: g.bool(COOKIE_BY_KEY) };
+        let state = CookieState { on: g.bool(key), by_termurion: g.bool(COOKIE_BY_KEY) };
         assert_eq!(state.reverted(), state, "Uninstall leaves the person's setting on");
         assert!(!Step::EnableCookie.description().contains("the hook cannot report"), "Cancel does not let setup go on");
     }

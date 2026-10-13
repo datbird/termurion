@@ -1,6 +1,6 @@
-//! THE extractor: every archive Tandem unpacks from outside (Import All's gzip tar, a script zip, a
+//! THE extractor: every archive Termurion unpacks from outside (Import All's gzip tar, a script zip, a
 //! remote folder's zip) is read once into memory, checked whole by `zip_check`'s walk, and then
-//! written by Tandem from the same bytes through the same walk (final findings r2, the class fix:
+//! written by Termurion from the same bytes through the same walk (final findings r2, the class fix:
 //! no tar.exe, so no second parser, no reopen by path, no filter guessed). Only plain files and
 //! folders are written, each a new item under `to` (`create_new`: nothing that is there already is
 //! replaced or followed), and a file gets exactly the bytes its entry claims.
@@ -87,7 +87,7 @@ mod tests {
     use crate::zip_check::tests::{dir, file, tar_entry, tgz as gz, zip as make_zip};
 
     fn fresh(name: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("tandem-extract-{name}-{}", uuid::Uuid::new_v4()));
+        let d = std::env::temp_dir().join(format!("termurion-extract-{name}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&d).unwrap();
         d
     }

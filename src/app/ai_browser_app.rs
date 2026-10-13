@@ -5,7 +5,7 @@
 //!
 //! Task 4: the runner. `Calls` is App-free (it returns the `Act`s the App then performs), so the
 //! whole state machine is tested without a window. A load is started ONLY through the guarded
-//! `WebView::navigate` (never Tandem's own `navigate_tandem`), so `webhost::navigation_allowed`
+//! `WebView::navigate` (never Tandem's own `navigate_termurion`), so `webhost::navigation_allowed`
 //! judges it and every redirect; page text is read only through `browser_page_markdown(_with)`
 //! (the isolated world) and reaches the model only as a `Page` answer. Arguments (URLs, queries) and
 //! page text are never logged.
@@ -904,7 +904,7 @@ mod tests {
         assert!(!p.contains("pending_url"), "a model's URL never waits in pending_url (I1)");
         let start = &p[p.find("pub(super) fn ai_browser_starting").unwrap()..p.find("pub(super) fn ai_browser_navigated").unwrap()];
         assert!(start.contains("world.setup.is_some()") && start.contains("view.is_none()"), "setup navigations are Tandem's own (I1)");
-        assert!(!p.contains("navigate_tandem") && !p.contains("defer_load") && !p.contains("browser_navigate("), "a model's URL never takes Tandem's own load");
+        assert!(!p.contains("navigate_termurion") && !p.contains("defer_load") && !p.contains("browser_navigate("), "a model's URL never takes Tandem's own load");
         assert_eq!(p.matches("v.navigate_model(url)").count(), 1, "the guarded navigation, marked as the model's (final review I3)");
         assert_eq!(p.matches("browser_page_markdown_with(").count(), 1);
         for banned in ["browser_page_call", "browser_devtools", "execute_script", "password", "autofill", "cookie", "log::", "dlog"] {

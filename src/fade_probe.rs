@@ -1,5 +1,5 @@
 //! 13u Task 9 Step 0: does a layered window (`WS_EX_LAYERED`, `LWA_ALPHA`) still present and
-//! read back correctly through the wgpu swap chain Tandem uses? Ignored by default: it makes a
+//! read back correctly through the wgpu swap chain Termurion uses? Ignored by default: it makes a
 //! real (off screen, tool, never activated) window, so it runs only on request:
 //! `scripts/xt test --lib fade_probe -- --ignored --nocapture`.
 //!
@@ -21,7 +21,7 @@ const COLOR: [f32; 4] = [0.8, 0.4, 0.2, 1.0];
 
 fn make_window() -> HWND {
     unsafe {
-        let class: Vec<u16> = "TandemFadeProbe\0".encode_utf16().collect();
+        let class: Vec<u16> = "TermurionFadeProbe\0".encode_utf16().collect();
         let wc = WNDCLASSW { lpfnWndProc: Some(DefWindowProcW), lpszClassName: class.as_ptr(), ..std::mem::zeroed() };
         RegisterClassW(&wc);
         let h = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, class.as_ptr(), class.as_ptr(), WS_POPUP, -30000, -30000, SIZE, SIZE, 0 as _, 0 as _, 0 as _, null());

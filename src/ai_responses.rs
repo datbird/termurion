@@ -275,7 +275,7 @@ impl Dialect for Responses {
         }
         body.insert("stream".into(), json!(b.stream));
         body.insert("tool_choice".into(), json!(if tools.is_empty() { "none" } else { "auto" }));
-        // Tandem runs only the first call of an answer, so the model must not ask for several
+        // Termurion runs only the first call of an answer, so the model must not ask for several
         // (a second call left unanswered makes the continuation invalid; m12b ruling). The
         // field is OpenAI's: every other host gets iTerm2's bytes, decided by the host the
         // request goes to (12a files an unknown host's manual model under the OpenAI vendor).

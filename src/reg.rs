@@ -17,7 +17,7 @@ pub trait Registry {
 
 /// Whether a value may be deleted: inside a tree Tandem made, or its one `RegisteredApplications` entry.
 pub fn value_deletable(key: &str, name: &str) -> bool {
-    deletable(key) || (key.trim_matches('\\').eq_ignore_ascii_case("Software\\RegisteredApplications") && name.eq_ignore_ascii_case("Tandem"))
+    deletable(key) || (key.trim_matches('\\').eq_ignore_ascii_case("Software\\RegisteredApplications") && name.eq_ignore_ascii_case("Termurion"))
 }
 
 /// Whether `key` is a tree Tandem made and may delete: Tandem's own software key, its protocol
@@ -29,7 +29,7 @@ pub fn deletable(key: &str) -> bool {
         return false;
     }
     let under = |root: &str| k == root || k.starts_with(&format!("{root}\\"));
-    under("software\\tandem") || under(&format!("software\\classes\\clsid\\{}", crate::default_term::CLSID_TANDEM_TERMINAL.to_ascii_lowercase())) || under("software\\classes\\applications\\tandem.exe") || k.strip_prefix("software\\classes\\tandem.").is_some_and(|rest| !rest.is_empty() && !rest.starts_with('\\'))
+    under("software\\termurion") || under(&format!("software\\classes\\clsid\\{}", crate::default_term::CLSID_TERMURION_TERMINAL.to_ascii_lowercase())) || under("software\\classes\\applications\\termurion.exe") || k.strip_prefix("software\\classes\\termurion.").is_some_and(|rest| !rest.is_empty() && !rest.starts_with('\\'))
 }
 
 /// Writes only the entries that differ from what is there; returns how many were written.
@@ -152,31 +152,31 @@ mod tests {
     #[test]
     fn registry_apply_writes_only_changes() {
         let mut r = FakeRegistry::default();
-        r.set("Software\\Classes\\Applications\\tandem.exe", "FriendlyAppName", "Tandem").unwrap();
+        r.set("Software\\Classes\\Applications\\termurion.exe", "FriendlyAppName", "Termurion").unwrap();
         let entries = vec![
-            entry("Software\\Classes\\Applications\\tandem.exe", "FriendlyAppName", "Tandem"),
-            entry("Software\\Classes\\Applications\\tandem.exe\\SupportedTypes", ".ps1", ""),
-            entry("Software\\Classes\\Applications\\tandem.exe\\shell\\open\\command", "", "\"C:\\t.exe\" \"%1\""),
+            entry("Software\\Classes\\Applications\\termurion.exe", "FriendlyAppName", "Termurion"),
+            entry("Software\\Classes\\Applications\\termurion.exe\\SupportedTypes", ".ps1", ""),
+            entry("Software\\Classes\\Applications\\termurion.exe\\shell\\open\\command", "", "\"C:\\t.exe\" \"%1\""),
         ];
         assert_eq!(apply(&mut r, &entries).unwrap(), 2);
         assert_eq!(apply(&mut r, &entries).unwrap(), 0);
-        assert_eq!(r.get("SOFTWARE\\classes\\applications\\TANDEM.EXE", "FriendlyAppName").as_deref(), Some("Tandem"), "key compare is case-insensitive");
-        assert_eq!(r.get("Software\\Classes\\Applications\\tandem.exe\\SupportedTypes", ".ps1").as_deref(), Some(""));
+        assert_eq!(r.get("SOFTWARE\\classes\\applications\\TERMURION.EXE", "FriendlyAppName").as_deref(), Some("Termurion"), "key compare is case-insensitive");
+        assert_eq!(r.get("Software\\Classes\\Applications\\termurion.exe\\SupportedTypes", ".ps1").as_deref(), Some(""));
     }
 
     /// P9: a tree is deleted only under Tandem's own keys; the fake refuses as the real one does.
     #[test]
-    fn registry_deletes_only_tandems_keys() {
+    fn registry_deletes_only_termurions_keys() {
         let mut r = FakeRegistry::default();
-        for k in ["Software\\Classes\\ssh", "Software\\Classes\\http", "Console", "Software\\Tandem\\Capabilities", "Software\\Classes\\Applications\\tandem.exe\\shell"] {
+        for k in ["Software\\Classes\\ssh", "Software\\Classes\\http", "Console", "Software\\Termurion\\Capabilities", "Software\\Classes\\Applications\\termurion.exe\\shell"] {
             r.set(k, "x", "1").unwrap();
         }
-        for bad in ["Software\\Classes\\ssh", "Software\\Classes\\http", "Console", "", "Software", "Software\\Classes", "Software\\Tandemx", "Software\\Classes\\Tandemx\\..\\ssh"] {
+        for bad in ["Software\\Classes\\ssh", "Software\\Classes\\http", "Console", "", "Software", "Software\\Classes", "Software\\Termurionx", "Software\\Classes\\Termurionx\\..\\ssh"] {
             assert!(r.delete_tree(bad).is_err(), "{bad:?}");
         }
         assert_eq!(r.values.len(), 5);
-        r.delete_tree("Software\\Tandem").unwrap();
-        r.delete_tree("Software\\Classes\\Applications\\tandem.exe").unwrap();
+        r.delete_tree("Software\\Termurion").unwrap();
+        r.delete_tree("Software\\Classes\\Applications\\termurion.exe").unwrap();
         assert_eq!(r.values.len(), 3);
     }
 }

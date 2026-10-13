@@ -1,6 +1,6 @@
 //! Renders one model-made SVG to a 128 pixel PNG in a hidden WebView2 (milestone 13x, Task 4).
 //! Windows only, and one of the two files that touch COM. The SVG is untrusted: `svg_icon::check`
-//! judges it first, the view is InPrivate with scripting only in Tandem's own wrapper page (the SVG
+//! judges it first, the view is InPrivate with scripting only in Termurion's own wrapper page (the SVG
 //! is a base64 `<img>`, so no script inside it ever runs), a content policy of `default-src 'none'`,
 //! no navigation, a filter that blocks every request that would reach a network or a disk, and a
 //! 5 second limit. The renderer is WebView2's sandboxed process, which stands for iTerm2's sandboxed
@@ -48,7 +48,7 @@ pub fn setup() -> ViewSetup {
 }
 
 fn make_window() -> Result<HWND, String> {
-    let class: Vec<u16> = "TandemSvgRaster\0".encode_utf16().collect();
+    let class: Vec<u16> = "TermurionSvgRaster\0".encode_utf16().collect();
     let side = svg_icon::SIDE as i32;
     // SAFETY: plain Win32 calls on this thread with a NUL-terminated class name that outlives them;
     // registering the class twice fails harmlessly.
@@ -86,9 +86,9 @@ impl Rasterizer {
         let view = WebView::create(env, hwnd as isize, id, (0, 0, side, side), setup(), sink);
         // Visible before the capture, so the renderer does not treat the page as occluded.
         view.set_visible(true);
-        // Served by the host's one function on Tandem's own origin (never NavigateToString).
+        // Served by the host's one function on Termurion's own origin (never NavigateToString).
         let doc = svg_icon::wrapper_doc(svg);
-        view.navigate_tandem(doc.url());
+        view.navigate_termurion(doc.url());
         Ok(Rasterizer { hwnd: hwnd as isize, view: Some(view), id, started: Instant::now(), doc, stage: Stage::Loading })
     }
 
@@ -200,7 +200,7 @@ mod tests {
         let me = include_str!("svg_raster_win.rs");
         let prod = &me[..me.find("#[cfg(test)]\nmod tests").unwrap()];
         assert_eq!(prod.matches(".navigate_to_string(").count(), 0);
-        assert!(prod.contains("svg_icon::wrapper_doc(") && prod.contains("navigate_tandem(doc.url())"));
+        assert!(prod.contains("svg_icon::wrapper_doc(") && prod.contains("navigate_termurion(doc.url())"));
         assert!(!prod.contains("Handler::create") && !prod.contains("winit"));
         let check = prod.find("svg_icon::check(").expect("the candidate is judged");
         assert!(check < prod.find("make_window()?").unwrap() && check < prod.find("WebView::create(").unwrap());
@@ -260,7 +260,7 @@ mod tests {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         }
-        let folder = std::env::temp_dir().join(format!("tandem-svg-{}", std::process::id()));
+        let folder = std::env::temp_dir().join(format!("termurion-svg-{}", std::process::id()));
         let (tx, rx) = mpsc::channel::<Posted>();
         let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
         let c2 = cell.clone();

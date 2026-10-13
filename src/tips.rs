@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn stored_state_reads_bounded() {
         use toml::Value;
-        let dir = std::env::temp_dir().join("tandem-tips-state-test");
+        let dir = std::env::temp_dir().join("termurion-tips-state-test");
         let mut g = crate::globals::Globals::empty(&dir.join("settings.toml"));
         assert_eq!(permission_of(&g), None);
         assert!(seen_of(&g).is_empty());

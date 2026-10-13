@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// iTerm2's bundled utilities that Tandem ports, sorted. `it2` is the Swift program's two clipping verbs only (13y1 Task 7).
+/// iTerm2's bundled utilities that Termurion ports, sorted. `it2` is the Swift program's two clipping verbs only (13y1 Task 7).
 pub const NAMES: [&str; 18] = [
     "imgcat",
     "imgls",
@@ -141,8 +141,8 @@ pub struct Io<'a> {
     pub run: &'a mut dyn FnMut(&Cmd) -> Result<Output, String>,
     /// `builtin command -V <name>` succeeds (the scripts' `check_dependency`).
     pub have: &'a dyn Fn(&str) -> bool,
-    /// An SSH origin secret from Tandem's secret pipe (`ssh_secret_win::fetch`); None when
-    /// no Tandem of this user answers.
+    /// An SSH origin secret from Termurion's secret pipe (`ssh_secret_win::fetch`); None when
+    /// no Termurion of this user answers.
     pub secret: &'a mut dyn FnMut() -> Option<String>,
     /// `command env`: every environment variable, in the process's order.
     pub env_all: &'a dyn Fn() -> Vec<(String, String)>,
@@ -250,7 +250,7 @@ pub fn run(name: &str, args: &[String], io: &mut Io) -> i32 {
 /// takes a reply's `ESC [ I` (as in `ESC [ ITERM2 ...`) for a focus report.
 pub const FOCUS_IN: &[u8] = b"\x1b[I";
 
-/// How Tandem's `CSI 1337 n` answer starts once ConPTY has swallowed its `ESC [ I`.
+/// How Termurion's `CSI 1337 n` answer starts once ConPTY has swallowed its `ESC [ I`.
 pub const SWALLOWED_REPLY: &[u8] = b"TERM2 ";
 
 /// The shipped ConPTY asks the terminal for focus reports in its own start-up handshake and
@@ -513,7 +513,7 @@ mod tests {
         for p in ["\\\\host\\s\\x", "//host/s/x", "/\\host\\s", "\\/host/s", "\\\\?\\UNC\\host\\s", "\\\\.\\pipe\\x", "\\??\\UNC\\host\\s"] {
             assert!(!may_open(Path::new(p)), "{p}");
         }
-        let dir = std::env::temp_dir().join(format!("tandem-util-cli-open-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-util-cli-open-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         assert!(may_open(&dir.join("a.txt")), "a local path that is not there yet");
@@ -544,7 +544,7 @@ mod tests {
     fn path_folders_are_local() {
         use std::cell::RefCell;
         use std::path::Path;
-        let dir = std::env::temp_dir().join(format!("tandem-util-cli-path-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-util-cli-path-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let net = dir.join("net");

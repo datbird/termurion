@@ -207,7 +207,7 @@ pub enum LostPipe {
     /// Every request went to the running Tandem: this process ends.
     Handed,
     /// A hand-over was refused (a holder that may be Tandem did not answer), or nothing was a
-    /// Start: this process ends, so two Tandems never run.
+    /// Start: this process ends, so two Termurions never run.
     Refused,
     /// The holder is not Tandem (every kept request was a Start), or a handed-off console waits to be
     /// shown: this one runs, without the pipe.
@@ -460,7 +460,7 @@ mod tests {
     /// Fix r1 Important: a second full Tandem starts only when none of this user runs (or
     /// another user holds the pipe); a busy or failed hand-over retries, then ends refused.
     #[test]
-    fn a_busy_hand_over_never_starts_a_second_tandem() {
+    fn a_busy_hand_over_never_starts_a_second_termurion() {
         let busy = || Handed::Failed("the pipe stayed busy".into());
         let (mut f, calls) = sequence(vec![busy(), busy(), busy(), busy()]);
         assert!(matches!(hand_over(&mut f, 3, &|| {}), AfterHand::Refuse(_)));
@@ -594,12 +594,12 @@ mod tests {
     /// Review r1 Important 1: a pipe server is Tandem only when its token passes the peer rule
     /// and its image is this Tandem's own program.
     #[test]
-    fn the_server_must_be_tandem() {
+    fn the_server_must_be_termurion() {
         const S: Option<u32> = Some(1);
         use crate::api_peer::{Token, HIGH_RID, LOW_RID, MEDIUM_RID};
         let mine = Token { sid: "S-1-5-21-1".into(), elevated: false, integrity: MEDIUM_RID, app_container: false, restricted: false };
-        let exe = r"C:\Tandem\termurion.exe";
-        assert_eq!(server_verdict(&mine, &mine, Some(r"c:\tandem\TERMURION.EXE"), S, S, exe), Ok(()), "same token, same image, case ignored");
+        let exe = r"C:\Termurion\termurion.exe";
+        assert_eq!(server_verdict(&mine, &mine, Some(r"c:\termurion\TERMURION.EXE"), S, S, exe), Ok(()), "same token, same image, case ignored");
         let low = Token { integrity: LOW_RID, ..mine.clone() };
         assert!(server_verdict(&low, &mine, Some(exe), S, S, exe).is_err(), "a low-integrity squatter");
         let high = Token { integrity: HIGH_RID, elevated: true, ..mine.clone() };
@@ -636,7 +636,7 @@ mod tests {
         /// Review r1 Important 1: a holder the verifier refuses is never sent a request, and the
         /// answer is `OtherOwner` (this Tandem then runs), not a hang or a hand-over.
         #[test]
-        fn a_server_that_is_not_tandem_gets_no_request() {
+        fn a_server_that_is_not_termurion_gets_no_request() {
             let name = test_name("squatter");
             let rx = listening_all(&name, Duration::from_secs(2));
             let granted = std::cell::Cell::new(false);

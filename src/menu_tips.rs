@@ -109,7 +109,7 @@ pub const TIPS: &[MenuTip] = &[
     MenuTip { identifier: "GPU Renderer Availability", text: "Checks whether the GPU Renderer is currently being used in the active session. This is sometimes useful for debugging." },
     MenuTip { identifier: "Secure Keyboard Entry", text: "Secure Keyboard Entry prevents other programs from intercepting your keystrokes in the terminal. However, it also breaks some functionality: other programs cannot activate their windows while this is enabled. For example, the open command will still open an app, but it won\u{2019}t be activated." },
     MenuTip { identifier: "Install Shell Integration", text: "Shell Integration consists of shell scripts that run when you log in. They inform Tandem of where your shell prompt is. This enables dozens of useful features such as command history, directory history, AI features, and more." },
-    MenuTip { identifier: "Toggle Debug Logging", text: "Debug logs are saved in memory while this setting is enabled and written to %TEMP%\\debuglog.txt (%LOCALAPPDATA%\\Tandem\\Logs\\debuglog.txt when %TEMP% is not a local folder) when you turn it off. Memory use is capped at about 200MB; if the log grows past that, the oldest entries are discarded so the most recent activity is always kept." },
+    MenuTip { identifier: "Toggle Debug Logging", text: "Debug logs are saved in memory while this setting is enabled and written to %TEMP%\\debuglog.txt (%LOCALAPPDATA%\\Termurion\\Logs\\debuglog.txt when %TEMP% is not a local folder) when you turn it off. Memory use is capped at about 200MB; if the log grows past that, the oldest entries are discarded so the most recent activity is always kept." },
     MenuTip { identifier: "Broadcast Input.Broadcast Input to All Panes in All Tabs", text: "When enabled, anything you type in this window is sent to all sessions in this window." },
     MenuTip { identifier: "Broadcast Input.Broadcast Input to All Panes in Current Tab", text: "When enabled, anything you type in this tab is sent to all sessions in this tab." },
     MenuTip { identifier: "Broadcast Input.Toggle Broadcast Input to Current Session", text: "Adds or removes this session from the set of sessions in this window that have broadcast enabled. When you type in a session with broadcast enabled, the keystrokes are sent to all other sessions in the same window that have broadcast enabled." },
@@ -229,7 +229,7 @@ mod tests {
     fn debug_log_tip_names_the_real_file() {
         let tip = tip_for("Toggle Debug Logging").unwrap();
         assert!(tip.contains(&format!("%TEMP%\\{}", crate::dlog::FILE_NAME)), "{tip}");
-        assert!(tip.contains("%LOCALAPPDATA%\\Tandem\\Logs"), "{tip}");
+        assert!(tip.contains("%LOCALAPPDATA%\\Termurion\\Logs"), "{tip}");
         #[cfg(windows)]
         {
             let temp = std::env::temp_dir();
@@ -241,7 +241,7 @@ mod tests {
                 _ => None,
             });
             assert_eq!(dirs.first().map(|d| d.path().to_path_buf()), Some(temp.clone()), "a local TEMP is the first folder");
-            let fallback = std::path::Path::new(&local).join("Tandem").join("Logs");
+            let fallback = std::path::Path::new(&local).join("Termurion").join("Logs");
             assert_eq!(dirs.last().map(|d| d.path().to_path_buf()), Some(fallback.clone()));
             let no_temp = crate::dlog::log_dirs_with(&|k| (k == "LOCALAPPDATA").then(|| local.clone()));
             assert_eq!(no_temp.iter().map(|d| d.path().to_path_buf()).collect::<Vec<_>>(), [fallback]);

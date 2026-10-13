@@ -1,4 +1,4 @@
-//! tmux windows as Tandem tabs: what the controller's actions do to panes, tabs, and
+//! tmux windows as Termurion tabs: what the controller's actions do to panes, tabs, and
 //! windows (iTerm2's TmuxWindowOpener and PTYSession's tmux window handlers).
 
 use super::*;
@@ -296,7 +296,7 @@ impl App {
         self.tmux_status.retain(|(g, _), _| tmux.contains_key(g));
     }
 
-    /// Saves which tmux windows share each Tandem window (iTerm2's saveAffinities), and
+    /// Saves which tmux windows share each Termurion window (iTerm2's saveAffinities), and
     /// the windows' state: size, origin, tab titles, and buried tabs.
     pub(super) fn tmux_save_affinities(&mut self, gw: PaneId) {
         let mut groups = Vec::new();
@@ -352,10 +352,10 @@ impl App {
     }
 
     /// Move Session to Window or to Tab on a tmux pane: tmux's break-pane moves it, and the
-    /// new tmux window opens in a new Tandem window or beside its old one. True when it was
+    /// new tmux window opens in a new Termurion window or beside its old one. True when it was
     /// a tmux pane (of a tab with other panes).
     /// A new window opens at `at` when given (a title bar drop, P20), else a little right of and
-    /// below this one. `beside`: the tmux window of the destination Tandem window the tab goes
+    /// below this one. `beside`: the tmux window of the destination Termurion window the tab goes
     /// next to (a drop on another window's tab bar, `PseudoTerminal.m:8651-8659`); None keeps
     /// the pane's own window.
     pub(super) fn tmux_break(&mut self, pane: PaneId, to_tab: bool, at: Option<(i32, i32)>, beside: Option<u32>) -> bool {
@@ -372,7 +372,7 @@ impl App {
         true
     }
 
-    /// A tmux window that opened in a new Tandem window takes its saved size and place.
+    /// A tmux window that opened in a new Termurion window takes its saved size and place.
     pub(super) fn tmux_apply_geometry(&mut self) {
         let Some(tab) = self.tabs.iter().map(|t| t.id).find(|id| self.tmux_geometry.contains_key(id)) else { return };
         let Some((origin, size)) = self.tmux_geometry.remove(&tab) else { return };
@@ -454,14 +454,14 @@ impl App {
         }
     }
 
-    /// Close Window with tmux tabs, after Tandem's own confirmation: the question first.
+    /// Close Window with tmux tabs, after Termurion's own confirmation: the question first.
     /// True when it took over the close.
     pub(super) fn tmux_close_window(&mut self) -> bool {
         let Some(anchor) = self.tabs.iter().find(|t| self.tmux_of(t.focused).is_some()).map(|t| t.focused) else { return false };
         self.tmux_close_window_question(anchor, None, true)
     }
 
-    /// The tmux windows in this Tandem window, by session (`gw`, or every session).
+    /// The tmux windows in this Termurion window, by session (`gw`, or every session).
     fn tmux_scope(&self, gw: Option<PaneId>) -> Vec<(PaneId, Vec<u32>)> {
         let mut out: Vec<(PaneId, Vec<u32>)> = Vec::new();
         for (g, _, w) in self.tabs.iter().filter_map(|t| self.tmux_of(t.focused)) {
@@ -707,7 +707,7 @@ impl App {
         false
     }
 
-    /// The Tandem panes of a tmux window, first to last.
+    /// The Termurion panes of a tmux window, first to last.
     fn tmux_window_panes(&self, gw: PaneId, window: u32) -> Vec<PaneId> {
         let Some(t) = self.tmux.get(&gw) else { return Vec::new() };
         let mut v: Vec<(u32, PaneId)> = t.panes.iter().filter(|(_, (_, w))| *w == window).map(|(p, (id, _))| (*p, *id)).collect();
@@ -810,7 +810,7 @@ impl App {
         }
         self.next_tab_id += 1;
         // What was saved about this window: the tab's title and colors, its place, and the
-        // Tandem window's size and origin.
+        // Termurion window's size and origin.
         let tmux_panes: Vec<u32> = panes.iter().map(|p| p.pane).collect();
         let restore = self.tmux.get_mut(&gw).map(|t| t.ctl.restore_of(window.id, &tmux_panes)).unwrap_or_default();
         let variable = self.tmux.get(&gw).is_some_and(|t| t.ctl.variable_sizes());
@@ -834,7 +834,7 @@ impl App {
         let origin = restore.origin.filter(|_| !self.globals.bool("DisableTmuxWindowPositionRestoration"));
         let tab_index = restore.tab_index;
         let tab_id = tab.id;
-        // A window hidden from a Tandem window that is still open goes back there, even
+        // A window hidden from a Termurion window that is still open goes back there, even
         // when no tmux tab is left in it.
         let home = restore.terminal.as_deref().and_then(|t| t.strip_prefix("pty-")).and_then(|k| k.parse::<u64>().ok()).and_then(|k| {
             if self.windows.current() == Some(k) {
@@ -900,14 +900,14 @@ impl App {
 
     #[allow(clippy::too_many_arguments)]
     fn tmux_relayout(&mut self, gw: PaneId, window: u32, node: Node, added: Vec<PaneOpen>, removed: Vec<u32>, kept: Vec<u32>, event_loop: &ActiveEventLoop) {
-        let tandem = |app: &App, p: u32| app.tmux.get(&gw).and_then(|t| t.panes.get(&p)).map(|(id, _)| *id).filter(|id| app.panes.contains_key(id));
-        let gone: Vec<PaneId> = removed.iter().filter_map(|p| tandem(self, *p)).collect();
+        let termurion = |app: &App, p: u32| app.tmux.get(&gw).and_then(|t| t.panes.get(&p)).map(|(id, _)| *id).filter(|id| app.panes.contains_key(id));
+        let gone: Vec<PaneId> = removed.iter().filter_map(|p| termurion(self, *p)).collect();
         // The tab is found through a pane it already shows, first in layout order.
-        let kept_ids: Vec<PaneId> = kept.iter().filter_map(|p| tandem(self, *p)).collect();
+        let kept_ids: Vec<PaneId> = kept.iter().filter_map(|p| termurion(self, *p)).collect();
         for p in &added {
             self.tmux_pane(gw, window, p);
         }
-        let ids: HashMap<u32, PaneId> = tmux_layout::panes(&node).into_iter().filter_map(|p| tandem(self, p).map(|id| (p, id))).collect();
+        let ids: HashMap<u32, PaneId> = tmux_layout::panes(&node).into_iter().filter_map(|p| termurion(self, p).map(|id| (p, id))).collect();
         // The kept panes take tmux's new sizes.
         for (p, w, h) in tmux_layout::sizes(&node) {
             if let Some(pane) = ids.get(&p).and_then(|id| self.panes.get_mut(id)) {
@@ -923,7 +923,7 @@ impl App {
                     t.layout = layout;
                     t.tmux_node = Some(node.clone());
                 }),
-                // Tandem shows none of this window's panes any more: it opens as a new tab.
+                // Termurion shows none of this window's panes any more: it opens as a new tab.
                 None => {
                     let focused = layout.panes()[0];
                     let mut tab = Tab::new(self.next_tab_id, layout, focused);
@@ -1042,7 +1042,7 @@ impl App {
         }
     }
 
-    /// A tmux window hidden by Tandem: which Tandem window and tab it came from.
+    /// A tmux window hidden by Termurion: which Termurion window and tab it came from.
     pub(super) fn tmux_note_burial(&mut self, gw: PaneId, window: u32) {
         let Some(index) = self.tabs.iter().position(|t| self.tmux_of(t.focused).is_some_and(|(g, _, w)| g == gw && w == window)) else { return };
         let Some(key) = self.windows.current() else { return };
@@ -1314,7 +1314,7 @@ impl App {
         self.tmux_held_events.push((gw, events));
     }
 
-    /// A tmux pane closed in Tandem: the controller forgets it (tmux keeps it until 8c sends
+    /// A tmux pane closed in Termurion: the controller forgets it (tmux keeps it until 8c sends
     /// kill-pane), so the next layout that names it opens it again.
     pub(super) fn tmux_pane_closed(&mut self, id: PaneId) {
         let Some((gw, pane)) = self.panes.get(&id).and_then(|p| p.tmux_io()).map(|io| (io.gateway, io.pane)) else { return };

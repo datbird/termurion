@@ -583,7 +583,7 @@ mod tests {
             "How long to wait when trying to attach to the session host at startup when restoring windows (in seconds)?"
         );
         // The Windows folder stands in for iTerm2's ~/.config/iterm2.
-        assert_eq!(text("PreferredBaseDir").1, "Folder for config files. There must not be a space in the path.\nIf empty, then %APPDATA%\\Tandem will be the default location.");
+        assert_eq!(text("PreferredBaseDir").1, "Folder for config files. There must not be a space in the path.\nIf empty, then %APPDATA%\\Termurion will be the default location.");
     }
 
     #[test]

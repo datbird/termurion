@@ -2251,7 +2251,7 @@ struct BindDialog {
 }
 
 fn binding_dialog_id() -> egui::Id {
-    egui::Id::new("tandem-binding-dialog")
+    egui::Id::new("termurion-binding-dialog")
 }
 
 fn binding_dialog_open(ctx: &egui::Context, guid: &str, key: &str, text: &str) {
@@ -2481,7 +2481,7 @@ mod tests {
         let profile = Profile::new("P");
         let before = profile.values.clone();
         let mut table = toml::Table::new();
-        let ours = Reg(Some(us::tandem_command(&exe)));
+        let ours = Reg(Some(us::termurion_command(&exe)));
         assert_eq!(url_scheme_toggled(&mut table, &ours, "ssh", "G1", &exe), us::Pick::Bind);
         assert_eq!(table.get("ssh").and_then(|v| v.as_str()), Some("G1"));
         assert_eq!(table.len(), 1);
@@ -2897,7 +2897,7 @@ mod tests {
     }
 
     #[test]
-    fn underline_and_flicker_helps_follow_tandem() {
+    fn underline_and_flicker_helps_follow_termurion() {
         let help = |k: &str| crate::schema::find(k).unwrap().help.clone();
         assert_eq!(help("Use Underline Color"), "Draws underlines in the Underline Color instead of the text color (an app's SGR 58 color still wins).");
         assert_eq!(help("Reduce Flicker"), "While a program hides the cursor, keep showing the screen as it was for up to 0.2 seconds so half-drawn updates are not seen.");
@@ -2954,7 +2954,7 @@ mod tests {
     /// previewed; any other edit puts a stale preview back before it is applied and saved.
     #[test]
     fn a_stale_preview_never_reaches_a_save() {
-        let mut store = Store::fresh(&std::env::temp_dir().join(format!("tandem-gate-{}.toml", std::process::id())));
+        let mut store = Store::fresh(&std::env::temp_dir().join(format!("termurion-gate-{}.toml", std::process::id())));
         let guid = store.default_guid.clone();
         let before = store.get(&guid).unwrap().values.clone();
         let mut st = crate::settings_presets::State::new(false);
@@ -2978,7 +2978,7 @@ mod tests {
     /// a trigger, a key action, a direct save), not only the saves an edit starts.
     #[test]
     fn a_save_with_a_live_preview_writes_the_original_colors() {
-        let path = std::env::temp_dir().join(format!("tandem-save-{}.toml", std::process::id()));
+        let path = std::env::temp_dir().join(format!("termurion-save-{}.toml", std::process::id()));
         let mut store = Store::fresh(&path);
         let guid = store.default_guid.clone();
         let before = store.get(&guid).unwrap().values.clone();

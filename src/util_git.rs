@@ -225,7 +225,7 @@ mod tests {
 
         // Through `it2git`: the git found on PATH runs in the working folder, never wrapped,
         // each line guarded as the poller's (a repository whose config names programs).
-        let tmp = TempDir::new("tandem-util-git");
+        let tmp = TempDir::new("termurion-util-git");
         let dir = tmp.to_path_buf();
         std::fs::write(dir.join("git.exe"), b"").unwrap();
         std::fs::create_dir_all(dir.join(".git")).unwrap();
@@ -339,7 +339,7 @@ mod tests {
             eprintln!("MEASURED: no git on PATH; it2git_follows_the_script pins the guarded lines");
             return;
         };
-        let tmp = TempDir::new("tandem-util-git-hooks");
+        let tmp = TempDir::new("termurion-util-git-hooks");
         let dir = tmp.to_path_buf();
         let plain = |args: &[&str]| {
             let ok = Command::new(&git).args(args).current_dir(&dir).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap().success();
@@ -401,7 +401,7 @@ mod tests {
             eprintln!("MEASURED: no git on PATH; it2git_follows_the_script pins the diff line");
             return;
         };
-        let tmp = TempDir::new("tandem-util-git-submodule");
+        let tmp = TempDir::new("termurion-util-git-submodule");
         let root = tmp.to_path_buf();
         let (dir, lib) = (root.join("main"), root.join("lib"));
         std::fs::create_dir_all(&dir).unwrap();

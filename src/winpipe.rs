@@ -295,25 +295,25 @@ pub fn own_token_facts() -> Result<crate::api_peer::Token, String> {
     }
 }
 
-/// `\\.\pipe\tandem-host-<user SID>`.
+/// `\\.\pipe\termurion-host-<user SID>`.
 pub fn host_pipe_name() -> Result<String, String> {
     // An elevated Tandem has its own host: normal and elevated shells never mix.
-    Ok(format!(r"\\.\pipe\tandem-host-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))
+    Ok(format!(r"\\.\pipe\termurion-host-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))
 }
 
-/// `\\.\pipe\tandem-ssh-secrets-<user SID>`, plus `-admin` when elevated: the origin secrets
+/// `\\.\pipe\termurion-ssh-secrets-<user SID>`, plus `-admin` when elevated: the origin secrets
 /// it2ssh fetches.
 pub fn secret_pipe_name() -> Result<String, String> {
     // As the host pipe: an elevated Tandem's secrets are its own.
-    Ok(format!(r"\\.\pipe\tandem-ssh-secrets-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))
+    Ok(format!(r"\\.\pipe\termurion-ssh-secrets-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))
 }
 
-/// `\\.\pipe\tandem-url-<user SID>`, plus `-admin` when elevated: the pipe a second `termurion.exe
+/// `\\.\pipe\termurion-url-<user SID>`, plus `-admin` when elevated: the pipe a second `termurion.exe
 /// --url` hands an ssh: URL to (m14e). It is also the one channel for every other request of a
 /// second `termurion.exe` (`launch::Request`, m13v1): there is no second app pipe.
 pub fn url_pipe_name() -> Result<String, String> {
     // As the host pipe: an elevated Tandem's URLs are its own, never a normal one's.
-    Ok(format!(r"\\.\pipe\tandem-url-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))
+    Ok(format!(r"\\.\pipe\termurion-url-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))
 }
 
 /// The security descriptor of every pipe instance: a DACL that lets only `sid` in, and a
@@ -633,7 +633,7 @@ pub(crate) mod tests {
 
     pub(crate) fn test_name(what: &str) -> String {
         static N: AtomicUsize = AtomicUsize::new(0);
-        format!(r"\\.\pipe\tandem-test-{what}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed))
+        format!(r"\\.\pipe\termurion-test-{what}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed))
     }
 
     fn pair() -> (Pipe, Pipe) {
@@ -713,7 +713,7 @@ pub(crate) mod tests {
     fn url_pipe_name_follows_the_host_pipe() {
         let sid = user_sid().unwrap();
         let admin = elevated().unwrap();
-        assert_eq!(url_pipe_name().unwrap(), format!(r"\\.\pipe\tandem-url-{sid}{}", if admin { "-admin" } else { "" }));
+        assert_eq!(url_pipe_name().unwrap(), format!(r"\\.\pipe\termurion-url-{sid}{}", if admin { "-admin" } else { "" }));
     }
 
     #[test]
@@ -736,7 +736,7 @@ pub(crate) mod tests {
     #[test]
     fn the_host_runs_as_us() {
         assert!(user_sid().unwrap().starts_with("S-1-5-"));
-        assert!(host_pipe_name().unwrap().starts_with(r"\\.\pipe\tandem-host-S-1-5-"));
+        assert!(host_pipe_name().unwrap().starts_with(r"\\.\pipe\termurion-host-S-1-5-"));
         let (_server, client) = pair();
         client.server_is_this_user().unwrap();
     }
@@ -744,12 +744,12 @@ pub(crate) mod tests {
     #[test]
     fn secret_pipe_name_follows_the_host_pipe() {
         let name = secret_pipe_name().unwrap();
-        assert!(name.starts_with(r"\\.\pipe\tandem-ssh-secrets-S-1-"));
+        assert!(name.starts_with(r"\\.\pipe\termurion-ssh-secrets-S-1-"));
         let sid = user_sid().unwrap();
         let admin = elevated().unwrap();
         let bare = name.strip_suffix("-admin").filter(|_| admin).unwrap_or(&name);
         assert!(bare.ends_with(&sid), "the name ends with the user SID");
-        assert_eq!(name, format!(r"\\.\pipe\tandem-ssh-secrets-{sid}{}", if admin { "-admin" } else { "" }));
+        assert_eq!(name, format!(r"\\.\pipe\termurion-ssh-secrets-{sid}{}", if admin { "-admin" } else { "" }));
     }
 
     /// Every pipe carries a mandatory label: medium with no-read-up when not elevated (a

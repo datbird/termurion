@@ -36,7 +36,7 @@ pub static FILES: [Embedded; 7] = [
 
 /// The local folder every embedded file is said to live in, as iTerm2's flat bundle
 /// Resources hold all seven side by side.
-const RESOURCES: &str = "tandem-resources";
+const RESOURCES: &str = "termurion-resources";
 
 /// shellSupportsInjection (`CD:2083-2098`), given the shell's last path component and the
 /// version lines getshell reported.
@@ -279,7 +279,7 @@ pub fn tweak_destination(dest: &str) -> String {
 }
 
 /// A Files to Copy local path with a leading `~` meaning `local_home` (iTerm2's
-/// expandingTildeInPath; Tandem's home is the local profile folder).
+/// expandingTildeInPath; Termurion's home is the local profile folder).
 pub fn expand_local_tilde(path: &str, local_home: &Path) -> PathBuf {
     if path == "~" {
         return local_home.to_path_buf();
@@ -402,7 +402,7 @@ impl TarJob {
             }
         }
         // iTerm2 builds a relative path here and relies on its working directory being "/"
-        // (`TJ:111`); Tandem makes it absolute.
+        // (`TJ:111`); Termurion makes it absolute.
         // Every destination has "/" and a name, so it holds at least two components.
         let first = &destinations[0];
         let drop = all_sources[0].len().saturating_sub(source_prefix_count);
@@ -826,7 +826,7 @@ mod tests {
 
         // iTerm2's "/" counts 2 (TJ:79), so files at the roots of two drives would share a job
         // whose local base is "/" and unpack under a folder named for the drive (bug B16):
-        // Tandem gives each drive its own job. Two files at one drive's root still share one.
+        // Termurion gives each drive its own job. Two files at one drive's root still share one.
         let jobs = group(&[disk(r"C:\x", "/$HOME"), disk(r"D:\y", "/$HOME")]);
         assert_eq!(jobs.len(), 2);
         assert_eq!((jobs[0].0.local_base.clone(), jobs[0].0.destination.as_str()), (s(&["/", "C:"]), "/$HOME"));
@@ -863,7 +863,7 @@ mod tests {
         let want: Vec<(String, u32, Vec<u8>)> = FILES[..6].iter().map(|f| (f.name.to_string(), 0o644, f.bytes.to_vec())).collect();
         assert_eq!(got, want);
 
-        let dir = std::env::temp_dir().join(format!("tandem-ssh-inject-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-ssh-inject-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::fs::write(dir.join("bin").join("a"), b"alpha").unwrap();
@@ -902,7 +902,7 @@ mod tests {
     #[test]
     fn tarball_caps_hold() {
         assert_eq!((MAX_JOB_BYTES, MAX_JOB_ENTRIES), (64 << 20, 10_000));
-        let dir = std::env::temp_dir().join(format!("tandem-ssh-caps-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-ssh-caps-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         for name in ["a", "b", "c"] {

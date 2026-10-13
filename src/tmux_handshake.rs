@@ -177,7 +177,7 @@ impl Handshake {
                         if option == "aggressive-resize" && value == "on" {
                             steps.push(Step::Abort(
                                 "Unsupported tmux option".into(),
-                                "The \u{201c}aggressive-resize\u{201d} option is turned on in tmux. It is not compatible with the Tandem-tmux integration. Please disable it and try again.".into(),
+                                "The \u{201c}aggressive-resize\u{201d} option is turned on in tmux. It is not compatible with the Termurion-tmux integration. Please disable it and try again.".into(),
                             ));
                             return steps;
                         }

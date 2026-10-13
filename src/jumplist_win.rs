@@ -1,6 +1,6 @@
 //! The Jump List committed through COM (m13v1 Task 6): `ICustomDestinationList` for Tasks and the
 //! custom categories, `IApplicationDestinations` for the "Remove Recent Profiles" clear. Each link
-//! is an `IShellLinkW` to Tandem's own exe with `jumplist::args_string`'s arguments and
+//! is an `IShellLinkW` to Termurion's own exe with `jumplist::args_string`'s arguments and
 //! `PKEY_Title` set. Nothing here runs in a test: the app side hands `commit` to the pure
 //! `jumplist` code as an injected writer.
 
@@ -159,7 +159,7 @@ impl Drop for ComInit {
     }
 }
 
-/// Clears the destinations Windows keeps for Tandem (`IApplicationDestinations`).
+/// Clears the destinations Windows keeps for Termurion (`IApplicationDestinations`).
 pub fn clear_recent_destinations() -> Result<(), String> {
     let _com = ComInit::new();
     let all: IApplicationDestinations = unsafe { CoCreateInstance(&ApplicationDestinations, None, CLSCTX_INPROC_SERVER) }.map_err(|e| format!("Jump List: {e}"))?;

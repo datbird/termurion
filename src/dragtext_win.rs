@@ -1,4 +1,4 @@
-//! Dragging selected text out of Tandem: an OLE drag source offering CF_UNICODETEXT.
+//! Dragging selected text out of Termurion: an OLE drag source offering CF_UNICODETEXT.
 //! `ole32.dll` is a load-time import of the `windows` crate (a KnownDLL), not a runtime load.
 
 use windows::core::{implement, Result, BOOL, HRESULT};

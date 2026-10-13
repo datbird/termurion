@@ -16,7 +16,7 @@ fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
-/// A URL the history keeps: a web page (http or https). Tandem's own pages are not history
+/// A URL the history keeps: a web page (http or https). Termurion's own pages are not history
 /// (`recordVisit` skips `about:`), and a `file:` path is not recorded.
 fn recordable(url: &str) -> bool {
     matches!(crate::webhost::scheme_of(url).as_str(), "http" | "https")
@@ -132,7 +132,7 @@ impl App {
 
     /// A request for an `iterm2-about:` URL: the page under the policy, or a 404 (P8).
     pub(super) fn browser_local_request(&mut self, pane: PaneId, token: u64, url: &str, context: i32, top_url: &str) {
-        // Tandem's own scheme keeps its answer; every other request is the ad blocker's to judge.
+        // Termurion's own scheme keeps its answer; every other request is the ad blocker's to judge.
         let scheme = crate::webhost::scheme_of(url);
         // A file or ssh page is answered by its own owner, under the sandbox policy (13x8).
         if matches!(scheme.as_str(), browser_pages::FILE_SCHEME | browser_pages::SSH_SCHEME) {
@@ -143,7 +143,7 @@ impl App {
         let answer: Answer = if let Some(source) = source {
             source
         } else if scheme == "iterm2-about" { browser_pages::answer(url, context, top_url) } else { self.adblock_answer(url, context, top_url) };
-        // The main document the blocker refused: remembered, so its failed load shows Tandem's page.
+        // The main document the blocker refused: remembered, so its failed load shows Termurion's page.
         if matches!(answer, Answer::Block) && context == browser_pages::CONTEXT_DOCUMENT {
             if let Some(bv) = self.browser_views.get_mut(&pane) {
                 bv.blocked_url = Some(url.to_string());
@@ -269,7 +269,7 @@ mod tests {
         assert!(q.contains("ItemKind::Bookmark(u) | ItemKind::Visited(u) | ItemKind::Url(u) => self.quickly_open_url(u)"));
     }
 
-    /// The history is not recorded for Tandem's own pages or file paths, and the database opens only
+    /// The history is not recorded for Termurion's own pages or file paths, and the database opens only
     /// from the judged local application data folder.
     #[test]
     fn history_records_web_pages_only() {

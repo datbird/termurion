@@ -563,7 +563,7 @@ mod tests {
         assert_eq!(parse_proxy(":8080"), Proxy::System);
         assert_eq!(parse_proxy("proxy.test:"), Proxy::System);
 
-        let mut g = Globals::empty(&std::env::temp_dir().join("tandem-ai-transport-test.toml"));
+        let mut g = Globals::empty(&std::env::temp_dir().join("termurion-ai-transport-test.toml"));
         assert_eq!(options_from(&g), Options { idle: Duration::from_secs(1200), proxy: Proxy::System });
         g.set("AI Timeout", Value::Float(2.5));
         assert_eq!(options_from(&g).idle, Duration::from_millis(2500));

@@ -1400,7 +1400,7 @@ pub const OPEN_WEB_TEXT: &str = "Tandem can display web pages! Would you like to
 pub const OPEN_FILE_TEXT: &str = "Tandem can display files like this in its built-in web browser! Would you like to open this link in Tandem?";
 pub const USE_DEFAULT_BROWSER: &str = "Use Default Browser";
 pub const USE_DEFAULT_APP: &str = "Use Default App";
-pub const OPEN_IN_TANDEM: &str = "Open in Tandem";
+pub const OPEN_IN_TERMURION: &str = "Open in Tandem";
 pub const UPSELL_HEADING: &str = "WebView2 Runtime Required";
 pub const UPSELL_TEXT: &str = "Tandem can display web pages! But first you must install the WebView2 Runtime.";
 pub const DOWNLOAD: &str = "Download";
@@ -1480,7 +1480,7 @@ pub fn open_link_spec(file: bool) -> crate::warnings::Spec {
         kind: crate::warnings::Kind::Permanent,
         heading: OPEN_HEADING.to_string(),
         text: if file { OPEN_FILE_TEXT } else { OPEN_WEB_TEXT }.to_string(),
-        labels: vec![if file { USE_DEFAULT_APP } else { USE_DEFAULT_BROWSER }.to_string(), OPEN_IN_TANDEM.to_string(), crate::api_auth::CANCEL.to_string()],
+        labels: vec![if file { USE_DEFAULT_APP } else { USE_DEFAULT_BROWSER }.to_string(), OPEN_IN_TERMURION.to_string(), crate::api_auth::CANCEL.to_string()],
         cancel: Some(2),
         never_remember: Vec::new(),
     }
@@ -2453,7 +2453,7 @@ mod tests {
     fn upsell_follows_iterm2() {
         assert_eq!(UPSELL_HEADING, "WebView2 Runtime Required");
         assert_eq!(UPSELL_TEXT, "Tandem can display web pages! But first you must install the WebView2 Runtime.");
-        assert_eq!((OPEN_HEADING, OPEN_IN_TANDEM, USE_DEFAULT_BROWSER, USE_DEFAULT_APP), ("Open in Tandem?", "Open in Tandem", "Use Default Browser", "Use Default App"));
+        assert_eq!((OPEN_HEADING, OPEN_IN_TERMURION, USE_DEFAULT_BROWSER, USE_DEFAULT_APP), ("Open in Tandem?", "Open in Tandem", "Use Default Browser", "Use Default App"));
         assert_eq!(OPEN_WEB_TEXT, "Tandem can display web pages! Would you like to open this link in Tandem?");
         assert_eq!(OPEN_FILE_TEXT, "Tandem can display files like this in its built-in web browser! Would you like to open this link in Tandem?");
         assert_eq!((DOWNLOAD, USE_SYSTEM_BROWSER), ("Download", "Use System Browser"));

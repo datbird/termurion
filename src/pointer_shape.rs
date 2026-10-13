@@ -1,7 +1,7 @@
-//! The pointer shape over the terminal (`PTYTextView+ARC.m:728-771`) and the I-beams Tandem
+//! The pointer shape over the terminal (`PTYTextView+ARC.m:728-771`) and the I-beams Termurion
 //! draws itself (iTerm2's `IBarCursor*.png` are GPL-2.0 and are not copied).
 
-/// A pointer shape. The first five are iTerm2's; the two resize shapes are Tandem's own for the
+/// A pointer shape. The first five are iTerm2's; the two resize shapes are Termurion's own for the
 /// side bar handle and the split dividers (`RTV:1886`), decided outside `choose`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shape {
@@ -51,7 +51,7 @@ pub fn from_x11(name: &str) -> Option<Shape> {
 /// What is under the pointer, as `PTYTextView+ARC.m:728-771` asks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Over {
-    /// Tandem's block selection chord (Ctrl+Alt; Win+Alt in iTerm2).
+    /// Termurion's block selection chord (Ctrl+Alt; Win+Alt in iTerm2).
     pub rect_mods: bool,
     /// A Win-click target is under the pointer (Win held, Alt not).
     pub action_with_win: bool,
@@ -59,7 +59,7 @@ pub struct Over {
     pub image: bool,
     /// The program would receive a click here (`mouseReportingAllowedForEvent` and tracking on).
     pub reporting: bool,
-    /// One of Tandem's buttons or overlays.
+    /// One of Termurion's buttons or overlays.
     pub button: bool,
     /// A fold's summary line.
     pub fold: bool,

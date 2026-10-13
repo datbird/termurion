@@ -648,12 +648,12 @@ struct Inner {
     /// The last main document response (`register_main_responses`): its navigation id and status, for
     /// a failed load whose HttpStatusCode is 0 (`webhost::completed_http`, a 204).
     main_response: Option<(u64, i32)>,
-    /// The URI of the navigation `navigate_tandem` started, until the first NavigationStarting
+    /// The URI of the navigation `navigate_termurion` started, until the first NavigationStarting
     /// that matches takes it (or 30 s pass): preflight P19.
-    tandem_uri: Option<(String, Instant)>,
-    /// The navigation id Tandem's own load took (`by_tandem`), so its redirects are judged as from no
+    termurion_uri: Option<(String, Instant)>,
+    /// The navigation id Tandem's own load took (`by_termurion`), so its redirects are judged as from no
     /// page (`webhost::redirect_source`, R13x8-P2).
-    tandem_nav: Option<u64>,
+    termurion_nav: Option<u64>,
     /// When `navigate_model` started a model's load: the first main-frame NavigationStarting that is
     /// not a redirect and not Tandem's own after it (within 30 s) is the model's (13x AI final review I3).
     model_load: Option<Instant>,
@@ -744,8 +744,8 @@ impl WebView {
             nav_uris: VecDeque::new(),
             last_main_nav: None,
             main_response: None,
-            tandem_uri: None,
-            tandem_nav: None,
+            termurion_uri: None,
+            termurion_nav: None,
             model_load: None,
             model_nav: None,
             new_windows: webhost::NewWindowLimiter::default(),
@@ -851,10 +851,10 @@ impl WebView {
     }
 
     /// A navigation Tandem itself starts (never for a URL from a page, a link or a model): the
-    /// URL is remembered so the guarded NavigationStarting passes `by_tandem` for exactly that
+    /// URL is remembered so the guarded NavigationStarting passes `by_termurion` for exactly that
     /// URI, once.
-    pub fn navigate_tandem(&self, url: &str) {
-        self.inner.borrow_mut().tandem_uri = Some((url.to_string(), Instant::now()));
+    pub fn navigate_termurion(&self, url: &str) {
+        self.inner.borrow_mut().termurion_uri = Some((url.to_string(), Instant::now()));
         self.navigate(url);
     }
 
@@ -2024,7 +2024,7 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
         if let Ok(a3) = args.cast::<ICoreWebView2NavigationStartingEventArgs3>() {
             let _ = unsafe { a3.NavigationKind(&mut kind) };
         }
-        let (policy, by_tandem, tandem_chain, by_model) = {
+        let (policy, by_termurion, termurion_chain, by_model) = {
             let mut i = inner.borrow_mut();
             let (capped, _) = webhost::cap_url(&uri);
             i.nav_uris.push_back((nav, capped));
@@ -2032,32 +2032,32 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
                 i.nav_uris.pop_front();
             }
             // Tandem's own load: consumed by the first matching NavigationStarting (P19).
-            let mut by_tandem = false;
-            if let Some((url, at)) = i.tandem_uri.clone() {
+            let mut by_termurion = false;
+            if let Some((url, at)) = i.termurion_uri.clone() {
                 if at.elapsed() > Duration::from_secs(30) {
-                    i.tandem_uri = None;
+                    i.termurion_uri = None;
                 } else if webhost::same_navigation_uri(&url, &uri) {
-                    i.tandem_uri = None;
-                    by_tandem = true;
+                    i.termurion_uri = None;
+                    by_termurion = true;
                 }
             }
-            if by_tandem {
-                i.tandem_nav = Some(nav);
+            if by_termurion {
+                i.termurion_nav = Some(nav);
             } else if !redirect {
-                i.tandem_nav = None;
+                i.termurion_nav = None;
             }
-            let tandem_chain = redirect && i.tandem_nav == Some(nav);
+            let termurion_chain = redirect && i.termurion_nav == Some(nav);
             // A model's load: the first new navigation after `navigate_model`, then its redirects.
             if !redirect {
-                let model = !by_tandem && i.model_load.take().is_some_and(|at| at.elapsed() <= Duration::from_secs(30));
+                let model = !by_termurion && i.model_load.take().is_some_and(|at| at.elapsed() <= Duration::from_secs(30));
                 i.model_nav = model.then_some(nav);
             }
             let by_model = i.model_nav == Some(nav);
-            (webhost::NavPolicy { guard_local_schemes: i.setup.guard_local_schemes, allowed_schemes: i.setup.allowed_schemes.clone(), local_root: i.poster.gate.local_root() }, by_tandem, tandem_chain, by_model)
+            (webhost::NavPolicy { guard_local_schemes: i.setup.guard_local_schemes, allowed_schemes: i.setup.allowed_schemes.clone(), local_root: i.poster.gate.local_root() }, by_termurion, termurion_chain, by_model)
         };
         // The one verdict (webhost::nav_verdict): scheme list, then the local-scheme guard.
         let source = sender.as_ref().and_then(source_of);
-        let info = webhost::NavInfo { target: &uri, source: webhost::redirect_source(source.as_deref(), tandem_chain), user, redirect, by_tandem, by_model };
+        let info = webhost::NavInfo { target: &uri, source: webhost::redirect_source(source.as_deref(), termurion_chain), user, redirect, by_termurion, by_model };
         // A history step never lands on a power page, whoever started it (Tandem loads it fresh instead).
         let allowed = !webhost::history_refused(kind.0, &uri) && webhost::nav_verdict(&info, &policy, &|u| webhost::file_url_local(u, &local_judge));
         if !allowed {
@@ -2078,7 +2078,7 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
         // grant would work with no question). Cancelled; a web page's TARGET is posted with how it
         // was judged, for the app to judge again and load after the sync (`nav_gate`).
         let gate = i.setup.nav_gate.as_ref().map(|g| g.load(std::sync::atomic::Ordering::SeqCst));
-        match webhost::nav_gate(gate, &uri, by_tandem, webhost::cap_url(&uri).1) {
+        match webhost::nav_gate(gate, &uri, by_termurion, webhost::cap_url(&uri).1) {
             webhost::GateAct::Open => {}
             webhost::GateAct::Cancel => {
                 let _ = unsafe { args.SetCancel(true) };
@@ -2086,7 +2086,7 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
             }
             webhost::GateAct::Park => {
                 let _ = unsafe { args.SetCancel(true) };
-                i.poster.post(Event::Parked { view: i.id, url: webhost::cap_url(&uri).0, user, redirect, by_tandem, history: kind.0 == 1, source });
+                i.poster.post(Event::Parked { view: i.id, url: webhost::cap_url(&uri).0, user, redirect, by_termurion, history: kind.0 == 1, source });
                 return Ok(());
             }
         }
@@ -2096,7 +2096,7 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
         if i.setup.redirect_file_urls && webhost::scheme_of(&uri) == "file" {
             let _ = unsafe { args.SetCancel(true) };
             let (capped, over) = webhost::cap_url(&uri);
-            if !over && webhost::file_redirect_allowed(source.as_deref(), by_tandem) {
+            if !over && webhost::file_redirect_allowed(source.as_deref(), by_termurion) {
                 i.poster.post(Event::FileRedirect { view: i.id, uri: capped });
             }
             return Ok(());
@@ -3086,7 +3086,7 @@ mod tests {
         assert!(f.contains("hostile_page(&body, \"g\")") && !f.contains("hostile_page(&body, &secret)"), "a fixed wrong guess");
         let c = body("find_forged_click_cannot_reach_the_client");
         assert!(c.contains("FORGING_CHILD") && c.contains("__pwned"), "from the child frame, with a marker");
-        assert!(this.contains("const FORGING_CHILD: &str = \"https://b.tandem-probe.invalid/") && this.contains("const PAGE: &str = \"https://probe.tandem-probe.invalid/\""), "the child is of another origin");
+        assert!(this.contains("const FORGING_CHILD: &str = \"https://b.termurion-probe.invalid/") && this.contains("const PAGE: &str = \"https://probe.termurion-probe.invalid/\""), "the child is of another origin");
         assert!(f.contains("FORGING_CHILD") && f.contains("frames[0].postMessage({forge: 'click'"), "the B7 forgeries come from the child too");
         assert!(c.contains("p.eval(Some(k)") && c.contains("probePwned"), "the marker and the Client message are checked");
         let s = include_str!("../scripts/probe-desktop.ps1");
@@ -3194,7 +3194,7 @@ mod tests {
     fn no_string_navigation_remains() {
         let src = include_str!("webhost_win.rs");
         let live = src.split("#[cfg(test)]\nmod tests").next().unwrap();
-        assert!(!live.contains("NavigateToString") && !live.contains("tandem_data") && !live.contains("fn navigate_to_string"));
+        assert!(!live.contains("NavigateToString") && !live.contains("termurion_data") && !live.contains("fn navigate_to_string"));
     }
 
     /// Final review I6: the favicon is WebView2's own (FaviconChanged, then GetFavicon as PNG; Tandem
@@ -3257,7 +3257,7 @@ mod tests {
         let code = this.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
         assert_eq!(code.matches("webhost::nav_verdict(").count(), 1);
         // 13x AI final review I3: a model's load and its redirects reach the verdict as the model's.
-        assert!(code.contains("redirect, by_tandem, by_model };") && code.contains("i.model_nav = model.then_some(nav);") && code.contains("let by_model = i.model_nav == Some(nav);"));
+        assert!(code.contains("redirect, by_termurion, by_model };") && code.contains("i.model_nav = model.then_some(nav);") && code.contains("let by_model = i.model_nav == Some(nav);"));
         assert!(!code.contains("navigation_allowed("), "the handler judges through nav_verdict only");
     }
 
@@ -3283,7 +3283,7 @@ mod tests {
     /// repaired on a worker thread, and this call fails so the UI thread never waits for it.
     #[test]
     fn the_owner_only_acl_is_set_once() {
-        let base = std::env::temp_dir().join(format!("tandem-wv2-acl-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("termurion-wv2-acl-{}", std::process::id()));
         let folder = base.join("a").join("Default");
         let calls = || PROTECTED.lock().unwrap().iter().filter(|p| p.starts_with(&base)).count();
         prepare_folder(&folder).unwrap();
@@ -3358,7 +3358,7 @@ mod tests {
     /// Preflight P3: the folder is made owner-only and protected.
     #[test]
     fn folders_are_made_owner_only() {
-        let base = std::env::temp_dir().join(format!("tandem-wv2-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("termurion-wv2-{}", std::process::id()));
         let folder = base.join("a").join("Default");
         prepare_folder(&folder).unwrap();
         let lp = crate::localfs::LocalPath::judge(&folder).unwrap();
@@ -3438,12 +3438,12 @@ mod tests {
         unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
             unsafe { DefWindowProcW(h, m, w, l) }
         }
-        let class = windows::core::w!("TandemWebView2Test");
+        let class = windows::core::w!("TermurionWebView2Test");
         let wc = WNDCLASSW { lpfnWndProc: Some(proc), lpszClassName: class, ..Default::default() };
         unsafe { RegisterClassW(&wc) };
-        let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE(0), class, windows::core::w!("tandem-wv2-test"), WS_OVERLAPPEDWINDOW, 0, 0, 200, 200, None, None, None, None) }.expect("a window");
+        let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE(0), class, windows::core::w!("termurion-wv2-test"), WS_OVERLAPPEDWINDOW, 0, 0, 200, 200, None, None, None, None) }.expect("a window");
         assert!(unsafe { IsWindow(Some(hwnd)) }.as_bool());
-        let folder = std::env::temp_dir().join(format!("tandem-wv2-ui-{}", std::process::id()));
+        let folder = std::env::temp_dir().join(format!("termurion-wv2-ui-{}", std::process::id()));
         let (tx, rx) = mpsc::channel::<Posted>();
         let env_cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
         let cell = env_cell.clone();
@@ -3453,11 +3453,11 @@ mod tests {
             pump_until(&rx, 1, |_| false);
         }
         let env = env_cell.borrow_mut().take().expect("an environment within 20 s").expect("the environment");
-        let setup = ViewSetup { guard_local_schemes: true, web_message: true, resource_filters: vec!["https://tandem.test/*".into()], ..Default::default() };
+        let setup = ViewSetup { guard_local_schemes: true, web_message: true, resource_filters: vec!["https://termurion.test/*".into()], ..Default::default() };
         let view = WebView::create(&env, hwnd.0 as isize, 1, (0, 0, 200, 200), setup, tx.clone());
         assert!(pump_until(&rx, 20, |e| matches!(e, Event::Created(1))).is_some(), "Created");
         // Tandem's own page, served from memory (no NavigateToString: final review Minor 3).
-        view.navigate_tandem("https://tandem.test/t");
+        view.navigate_termurion("https://termurion.test/t");
         let Some(Event::Request { token, .. }) = pump_until(&rx, 10, |e| matches!(e, Event::Request { view: 1, .. })) else { panic!("a request for the page") };
         view.answer_request(token, Answer::Respond { status: 200, mime: "text/html".into(), body: b"<title>t</title><body>x</body>".to_vec(), headers: vec![] });
         let title = pump_until(&rx, 10, |e| matches!(e, Event::Title(1, t) if t == "t"));
@@ -3468,15 +3468,15 @@ mod tests {
         view.execute_script("location.href = 'file:///C:/Windows/'; 0", 8);
         assert!(pump_until(&rx, 5, |e| matches!(e, Event::Navigated { url, .. } if url.starts_with("file:"))).is_none(), "no navigation to file:");
         // A navigation answered from memory finishes with its URL and a non-zero id.
-        let view2 = WebView::create(&env, hwnd.0 as isize, 2, (0, 0, 200, 200), ViewSetup { resource_filters: vec!["https://tandem.test/*".into()], guard_local_schemes: true, ..Default::default() }, tx.clone());
+        let view2 = WebView::create(&env, hwnd.0 as isize, 2, (0, 0, 200, 200), ViewSetup { resource_filters: vec!["https://termurion.test/*".into()], guard_local_schemes: true, ..Default::default() }, tx.clone());
         assert!(pump_until(&rx, 20, |e| matches!(e, Event::Created(2))).is_some());
-        view2.navigate_tandem("https://tandem.test/page");
-        let req = pump_until(&rx, 10, |e| matches!(e, Event::Request { view: 2, url, .. } if url.starts_with("https://tandem.test/page")));
+        view2.navigate_termurion("https://termurion.test/page");
+        let req = pump_until(&rx, 10, |e| matches!(e, Event::Request { view: 2, url, .. } if url.starts_with("https://termurion.test/page")));
         let Some(Event::Request { token, .. }) = req else { panic!("a request for the page") };
         view2.answer_request(token, Answer::Respond { status: 200, mime: "text/html".into(), body: b"<title>mem</title>".to_vec(), headers: vec![] });
         let done = pump_until(&rx, 10, |e| matches!(e, Event::Navigated { view: 2, .. }));
         match done {
-            Some(Event::Navigated { ok, url, nav, .. }) => assert!(ok && nav != 0 && url.starts_with("https://tandem.test/page"), "{ok} {url} {nav}"),
+            Some(Event::Navigated { ok, url, nav, .. }) => assert!(ok && nav != 0 && url.starts_with("https://termurion.test/page"), "{ok} {url} {nav}"),
             other => panic!("Navigated: {other:?}"),
         }
         drop(view);
@@ -3511,11 +3511,11 @@ mod tests {
         unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
             unsafe { DefWindowProcW(h, m, w, l) }
         }
-        let class = windows::core::w!("TandemWebView2MethodTest");
+        let class = windows::core::w!("TermurionWebView2MethodTest");
         let wc = WNDCLASSW { lpfnWndProc: Some(proc), lpszClassName: class, ..Default::default() };
         unsafe { RegisterClassW(&wc) };
-        let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE(0), class, windows::core::w!("tandem-wv2-method"), WS_OVERLAPPEDWINDOW, 0, 0, 200, 200, None, None, None, None) }.expect("a window");
-        let folder = std::env::temp_dir().join(format!("tandem-wv2-method-{}", std::process::id()));
+        let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE(0), class, windows::core::w!("termurion-wv2-method"), WS_OVERLAPPEDWINDOW, 0, 0, 200, 200, None, None, None, None) }.expect("a window");
+        let folder = std::env::temp_dir().join(format!("termurion-wv2-method-{}", std::process::id()));
         let (tx, rx) = mpsc::channel::<Posted>();
         let env_cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
         let cell = env_cell.clone();
@@ -3525,7 +3525,7 @@ mod tests {
             pump_until(&rx, 1, |_| false);
         }
         let env = env_cell.borrow_mut().take().expect("an environment within 20 s").expect("the environment");
-        let setup = ViewSetup { guard_local_schemes: true, resource_filters: vec!["https://tandem.test/*".into()], track_document_method: true, ..Default::default() };
+        let setup = ViewSetup { guard_local_schemes: true, resource_filters: vec!["https://termurion.test/*".into()], track_document_method: true, ..Default::default() };
         let view = WebView::create(&env, hwnd.0 as isize, 1, (0, 0, 200, 200), setup, tx.clone());
         assert!(pump_until(&rx, 20, |e| matches!(e, Event::Created(1))).is_some(), "Created");
         let page = b"<title>m</title><a id=l href='/next'>next</a><form method=post action='/post'><input name=a value=b></form>".to_vec();
@@ -3562,15 +3562,15 @@ mod tests {
             }
             (methods, urls)
         };
-        view.navigate_tandem("https://tandem.test/start");
+        view.navigate_termurion("https://termurion.test/start");
         let (first, _) = serve(None, 0);
         assert_eq!(first.first().map(|f| f.1.as_str()), Some("GET"), "the first load reports GET");
         let _ = pump_until(&rx, 10, |e| matches!(e, Event::Navigated { view: 1, .. }));
         view.execute_script("document.forms[0].submit()", 1);
-        let (posted, urls) = serve(Some(("https://tandem.test/post", &post_page)), 3);
+        let (posted, urls) = serve(Some(("https://termurion.test/post", &post_page)), 3);
         assert_eq!(posted.first().map(|f| f.1.as_str()), Some("POST"), "a form submit reports POST: {posted:?}");
         // The control: the iframe really loaded the same URL (two requests for /post).
-        assert_eq!(urls.iter().filter(|u| u.as_str() == "https://tandem.test/post").count(), 2, "the iframe loaded the page's own URL: {urls:?}");
+        assert_eq!(urls.iter().filter(|u| u.as_str() == "https://termurion.test/post").count(), 2, "the iframe loaded the page's own URL: {urls:?}");
         // Whatever the iframe's request reported, the app's state keeps the main document's POST.
         let nav = posted[0].0;
         assert!(posted.iter().all(|(n, _)| *n == nav), "one navigation: {posted:?}");
@@ -3617,11 +3617,11 @@ mod tests {
         unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
             unsafe { DefWindowProcW(h, m, w, l) }
         }
-        let class = windows::core::w!("TandemMenuTest");
+        let class = windows::core::w!("TermurionMenuTest");
         let wc = WNDCLASSW { lpfnWndProc: Some(proc), lpszClassName: class, ..Default::default() };
         unsafe { RegisterClassW(&wc) };
-        let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE(0), class, windows::core::w!("tandem-menu-test"), WS_OVERLAPPEDWINDOW, 0, 0, 300, 300, None, None, None, None) }.expect("a window");
-        let folder = std::env::temp_dir().join(format!("tandem-wv2-menu-{}", std::process::id()));
+        let hwnd = unsafe { CreateWindowExW(WINDOW_EX_STYLE(0), class, windows::core::w!("termurion-menu-test"), WS_OVERLAPPEDWINDOW, 0, 0, 300, 300, None, None, None, None) }.expect("a window");
+        let folder = std::env::temp_dir().join(format!("termurion-wv2-menu-{}", std::process::id()));
         let (tx, rx) = mpsc::channel::<Posted>();
         let env_cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
         let cell = env_cell.clone();
@@ -3631,10 +3631,10 @@ mod tests {
             pump_until(&rx, 1, |_| false);
         }
         let env = env_cell.borrow_mut().take().expect("an environment within 20 s").expect("the environment");
-        let setup = ViewSetup { guard_local_schemes: true, context_menu: true, resource_filters: vec!["https://tandem.invalid/*".into()], ..Default::default() };
+        let setup = ViewSetup { guard_local_schemes: true, context_menu: true, resource_filters: vec!["https://termurion.invalid/*".into()], ..Default::default() };
         let view = WebView::create(&env, hwnd.0 as isize, 1, (0, 0, 300, 300), setup, tx.clone());
         assert!(pump_until(&rx, 20, |e| matches!(e, Event::Created(1))).is_some(), "Created");
-        view.navigate_tandem("https://tandem.invalid/m");
+        view.navigate_termurion("https://termurion.invalid/m");
         let Some(Event::Request { token, .. }) = pump_until(&rx, 10, |e| matches!(e, Event::Request { view: 1, .. })) else { panic!("a request for the page") };
         view.answer_request(token, Answer::Respond { status: 200, mime: "text/html".into(), body: b"<body style='margin:0'>hello</body>".to_vec(), headers: vec![] });
         assert!(pump_until(&rx, 10, |e| matches!(e, Event::Navigated { view: 1, .. })).is_some());
@@ -3758,7 +3758,7 @@ mod probe {
     post({ h: 'iTermSelectionMonitor', b: { selection: 'x', sessionSecret: '{{GUESS}}' } });
     post({ handler: 'iterm2-about:history', body: { action: 'clearAllHistory' } });
     const r = {};
-    try { r.client = typeof window.__tandemClient; } catch (e) { r.client = 'threw'; }
+    try { r.client = typeof window.__termurionClient; } catch (e) { r.client = 'threw'; }
     try { r.webkit = typeof (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.probeEcho && window.webkit.messageHandlers.probeEcho.postMessage({})); } catch (e) { r.webkit = 'threw'; }
     window.postMessage({ namespace: 'IFRAME_GRAPH_DISCOVERY', type: 'CHILD_REPORT', requestId: 'r', payload: { graph: {} } }, '*');
     return out(r);
@@ -3969,12 +3969,12 @@ mod probe {
             unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
                 unsafe { DefWindowProcW(h, m, w, l) }
             }
-            let class = windows::core::w!("TandemWorldProbe");
+            let class = windows::core::w!("TermurionWorldProbe");
             let wc = WNDCLASSW { lpfnWndProc: Some(proc), lpszClassName: class, ..Default::default() };
             unsafe { RegisterClassW(&wc) };
             // Created, never shown: nothing appears on the desktop.
-            let hwnd = unsafe { CreateWindowExW(WS_EX_TOOLWINDOW, class, windows::core::w!("tandem-world-probe"), WS_OVERLAPPEDWINDOW, 0, 0, 400, 300, None, None, None, None) }.expect("a window");
-            let folder = std::env::temp_dir().join(format!("tandem-probe-{}-{}", std::process::id(), hex32()));
+            let hwnd = unsafe { CreateWindowExW(WS_EX_TOOLWINDOW, class, windows::core::w!("termurion-world-probe"), WS_OVERLAPPEDWINDOW, 0, 0, 400, 300, None, None, None, None) }.expect("a window");
+            let folder = std::env::temp_dir().join(format!("termurion-probe-{}-{}", std::process::id(), hex32()));
             let (tx, rx) = mpsc::channel::<Posted>();
             let mut p = Probe {
                 hwnd,
@@ -4132,7 +4132,7 @@ mod probe {
         /// contexts the probe holds and the host's event order, for a failure to be read).
         fn try_load(&mut self, url: &str) -> Result<(), String> {
             let n = self.navigated.len();
-            self.view().navigate_tandem(url);
+            self.view().navigate_termurion(url);
             if !self.wait(15, |p| p.navigated.len() > n) {
                 return Err(format!("Navigated within 15 s: {:?}", self.order));
             }
@@ -4457,7 +4457,7 @@ mod probe {
         }
     }
 
-    const PAGE: &str = "https://probe.tandem-probe.invalid/";
+    const PAGE: &str = "https://probe.termurion-probe.invalid/";
 
     /// The echo as the app evaluates a posting body in the Tandem world (`browser_js_call`, `call_js`):
     /// the world has no global `window.webkit` (Task 1's bridge is closure-local, so the page can never
@@ -4521,8 +4521,8 @@ mod probe {
         assert_eq!(HOSTILE.matches("    return out(r);\n").count(), 2, "both forgeries answer through out()");
         assert!(HOSTILE.contains("counts = Object.create(null)"));
         let e = echo("abc");
-        assert!(!e.contains("window.webkit") && e.contains("const __tandemPost = globalThis.__tandemClient;"), "{e}");
-        assert!(e.contains("__tandemWebkit.messageHandlers.probeEcho.postMessage({v: 1, sessionSecret: \"abc\"});"), "{e}");
+        assert!(!e.contains("window.webkit") && e.contains("const __termurionPost = globalThis.__termurionClient;"), "{e}");
+        assert!(e.contains("__termurionWebkit.messageHandlers.probeEcho.postMessage({v: 1, sessionSecret: \"abc\"});"), "{e}");
     }
 
     #[test]
@@ -4536,14 +4536,14 @@ mod probe {
         let Some(mut p) = Probe::start(&[(PAGE, hostile_page(body, "g"))], client_sources(&secret, false)) else { return };
         p.load(PAGE);
         assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the child frame has a world, so its reports are posted");
-        assert_eq!(p.eval(None, "typeof globalThis.__tandemClient"), Ok(json!("function")), "the world is live: the binding");
+        assert_eq!(p.eval(None, "typeof globalThis.__termurionClient"), Ok(json!("function")), "the world is live: the binding");
         assert_eq!(p.eval(None, "typeof window.iTermHoverLinkHandler"), Ok(json!("object")), "the world is live: hover");
         assert_eq!(p.eval(None, "typeof window[Symbol.for('iTermGraphDiscovery')]"), Ok(json!("object")), "the world is live: graph discovery");
         p.eval(None, &clear_hover(&secret)).expect("clearHover");
         p.eval(None, &echo(&secret)).expect("the echo");
         assert!(p.wait(5, |p| !p.clients("probeEcho").is_empty()), "the echo reaches the router");
         // The page's own world sees none of it.
-        assert_eq!(p.page_eval("typeof window.__tandemClient"), Ok("\"undefined\"".into()));
+        assert_eq!(p.page_eval("typeof window.__termurionClient"), Ok("\"undefined\"".into()));
         assert_eq!(p.page_eval("typeof window.iTermHoverLinkHandler"), Ok("\"undefined\"".into()));
         assert_eq!(p.page_eval("typeof window[Symbol.for('iTermGraphDiscovery')]"), Ok("\"undefined\"".into()));
         p.settle(500);
@@ -4708,7 +4708,7 @@ mod probe {
     #[ignore]
     fn probe_world_reaches_every_frame() {
         let secret = hex32();
-        let (top, child) = ("https://a.tandem-probe.invalid/", "https://b.tandem-probe.invalid/child.html");
+        let (top, child) = ("https://a.termurion-probe.invalid/", "https://b.termurion-probe.invalid/child.html");
         let nested = "&lt;iframe srcdoc=&quot;&amp;lt;p&amp;gt;nested&amp;lt;/p&amp;gt;&quot;&gt;&lt;/iframe&gt;&lt;p&gt;mid&lt;/p&gt;";
         let top_page = format!(
             "<!doctype html><html><head><title>top</title></head><body><iframe srcdoc=\"{nested}\"></iframe><iframe src=\"{child}\"></iframe><script>\n\
@@ -4814,7 +4814,7 @@ mod probe {
              setTimeout(function () {{ const f = document.createElement('iframe'); f.srcdoc = '<p>late</p>'; document.body.appendChild(f); }}, 300);\n\
              </script><iframe srcdoc=\"{nested}\"></iframe></body></html>"
         );
-        let url = "https://a.tandem-probe.invalid/";
+        let url = "https://a.termurion-probe.invalid/";
         let sources = vec![wrapped("window.addEventListener('load', function () { window.webkit.messageHandlers.x.postMessage({a: 1}); });")];
         let Some(mut p) = Probe::start(&[(url, page_html)], sources) else { return };
         p.view().watch_frames();
@@ -5179,7 +5179,7 @@ mod probe {
         assert_eq!(p.page_eval("document.querySelectorAll('.iterm-mark-annotation').length"), Ok("0".into()));
         assert_eq!(p.page_eval("document.getElementById('iterm-mark-annotations') === null"), Ok("true".into()), "the host carries no id a page could use");
         assert_eq!(p.page_eval("document.body.lastElementChild.shadowRoot === null"), Ok("true".into()), "the root is closed");
-        assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor + typeof window.tandemMarkRoot + typeof window.tandemMarkHost"), Ok("\"undefinedundefinedundefined\"".into()));
+        assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor + typeof window.termurionMarkRoot + typeof window.termurionMarkHost"), Ok("\"undefinedundefinedundefined\"".into()));
         assert_eq!(p.page_eval("document.body.innerText.includes('first')"), Ok("false".into()), "the name is not in the page's text");
         assert_eq!(p.page_eval("window.find('first')"), Ok("false".into()), "nor findable by the page");
         // A select-all in the page world (R13x5-6, R13x5-42, checklist A): neither the Selection API's
@@ -5195,13 +5195,13 @@ mod probe {
         p.page_eval("var d = document.createElement('div'); d.id = 'iterm-mark-annotations'; document.body.prepend(d); 0").expect("decoy");
         assert_eq!(marks_run(&mut p, &show), Ok(json!(true)));
         assert_eq!(p.page_eval("document.getElementById('iterm-mark-annotations') !== null"), Ok("true".into()), "the page's own element stays");
-        assert_eq!(marks_body(&mut p, "return window.tandemMarkRoot.querySelectorAll('.iterm-mark-annotation').length"), Ok(json!(1)), "one box: the old host went by Tandem's reference");
-        assert_eq!(marks_body(&mut p, "return window.tandemMarkRoot.querySelectorAll('.iterm-mark-annotation button').length"), Ok(json!(3)));
+        assert_eq!(marks_body(&mut p, "return window.termurionMarkRoot.querySelectorAll('.iterm-mark-annotation').length"), Ok(json!(1)), "one box: the old host went by Tandem's reference");
+        assert_eq!(marks_body(&mut p, "return window.termurionMarkRoot.querySelectorAll('.iterm-mark-annotation button').length"), Ok(json!(3)));
         // The isolated world's own synthetic clicks are untrusted too.
-        marks_body(&mut p, "window.tandemMarkRoot.querySelectorAll('button').forEach(b => b.click()); return true").expect("clicks");
+        marks_body(&mut p, "window.termurionMarkRoot.querySelectorAll('button').forEach(b => b.click()); return true").expect("clicks");
         p.settle(300);
         assert!(p.clients(bm::MESSAGE_HANDLER).is_empty(), "an untrusted Delete or Save posts nothing");
-        assert_eq!(marks_body(&mut p, "return window.tandemMarkRoot.querySelectorAll('.iterm-mark-annotation').length"), Ok(json!(1)), "and removes nothing");
+        assert_eq!(marks_body(&mut p, "return window.termurionMarkRoot.querySelectorAll('.iterm-mark-annotation').length"), Ok(json!(1)), "and removes nothing");
         // The layout monitor (running already); positions now answer.
         assert_eq!(p.page_eval("typeof window.iTermLayoutChangeMonitor"), Ok("\"undefined\"".into()), "the monitor lives in the isolated world only");
         assert_eq!(marks_body(&mut p, &bm::update_positions_script("sec").expect("the script")).map(|v| v.is_array()), Ok(true));
@@ -5247,7 +5247,7 @@ mod probe {
         let loc = bm::Location { xpath: "//p".into(), offset_y: 0, scroll_y: 0, text_fragment: None, y: 1 };
         let show = bm::show_call(&[loc.js_dict(Some("x"), "g1")], "mark-secret").expect("a call");
         assert_eq!(marks_run(&mut p, &show), Ok(json!(true)));
-        marks_body(&mut p, "window.tandemMarkRoot.querySelectorAll('button').forEach(b => b.click()); return true").expect("clicks");
+        marks_body(&mut p, "window.termurionMarkRoot.querySelectorAll('button').forEach(b => b.click()); return true").expect("clicks");
         p.settle(300);
         assert!(p.clients(bm::MESSAGE_HANDLER).is_empty(), "an untrusted press requests nothing");
         p.finish();
@@ -5258,9 +5258,9 @@ mod probe {
         format!("<!doctype html><html><head><title>t</title>{head}</head><body>{body}</body></html>")
     }
 
-    /// A trigger list holding one enabled Page Content Highlight (URL `tandem-probe`, content `regex`).
+    /// A trigger list holding one enabled Page Content Highlight (URL `termurion-probe`, content `regex`).
     fn trigger_list(regex: &str) -> Vec<crate::triggers::Trigger> {
-        let mut t = crate::triggers::Trigger { regex: "tandem-probe\\.invalid".into(), action: "iTerm2SharedARC.HighlightBrowserTrigger".into(), parameter: "#ff0000;".into(), instant: false, enabled: true, name: String::new(), job: String::new(), match_type: 2, extra: toml::Table::new() };
+        let mut t = crate::triggers::Trigger { regex: "termurion-probe\\.invalid".into(), action: "iTerm2SharedARC.HighlightBrowserTrigger".into(), parameter: "#ff0000;".into(), instant: false, enabled: true, name: String::new(), job: String::new(), match_type: 2, extra: toml::Table::new() };
         t.extra.insert("contentregex".into(), regex.into());
         vec![t]
     }
@@ -5383,7 +5383,7 @@ mod probe {
         let loc = bm::Location { xpath: "//p[1]".into(), offset_y: 0, scroll_y: 0, text_fragment: None, y: 1 };
         let show = bm::show_call(&[loc.js_dict(Some("m"), "g1")], "MARKS-SECRET-13x5").expect("a call");
         marks_run(&mut p, &show).expect("annotations");
-        marks_body(&mut p, "window.tandemMarkRoot.querySelectorAll('button').forEach(b => b.click()); return true").expect("clicks");
+        marks_body(&mut p, "window.termurionMarkRoot.querySelectorAll('button').forEach(b => b.click()); return true").expect("clicks");
         p.settle(500);
         // Tandem's code runs in the isolated world, which has its own `Function.prototype` and
         // `chrome.webview`, so the spy normally reports nothing. The proof it is alive and posting is the
@@ -5406,7 +5406,7 @@ mod probe {
     #[test]
     #[ignore]
     fn reader_article_handlers_stay_in_the_page_world() {
-        let probe = "window.__hits = (window.__hits || []).concat([[typeof window.iTermReaderMode, typeof window.Readability, typeof window.__tandemClient, (window.chrome && window.chrome.webview) ? (() => { try { window.chrome.webview.postMessage({handler: 'readerMode', body: {action: 'distractionRemovalEntered'}}); } catch (e) {} return 'webview'; })() : 'none']])";
+        let probe = "window.__hits = (window.__hits || []).concat([[typeof window.iTermReaderMode, typeof window.Readability, typeof window.__termurionClient, (window.chrome && window.chrome.webview) ? (() => { try { window.chrome.webview.postMessage({handler: 'readerMode', body: {action: 'distractionRemovalEntered'}}); } catch (e) {} return 'webview'; })() : 'none']])";
         let handler = probe.replace('"', "&quot;");
         // The image path is served (a non-image body, so the decode fails and onerror still fires).
         let img = format!("<p><img src=\"{PAGE}x\" onerror=\"{handler}\"><a href=\"javascript:{handler}\">link</a></p>");
@@ -5509,7 +5509,7 @@ mod probe {
         let log = p.page_eval("window.__spy.join('\\n')").expect("the spy log");
         assert!(log.contains("spy-alive"), "the spy is alive (a log that cannot fail proves nothing): {log}");
         assert!(!log.contains("postMessage not replaceable"), "the spy replaced postMessage: {log}");
-        for bad in [canary.as_str(), "__tandemResult", "sessionSecret", "__tandemPost"] {
+        for bad in [canary.as_str(), "__termurionResult", "sessionSecret", "__termurionPost"] {
             assert!(!log.contains(bad), "the page saw {bad}");
         }
         p.settle(300);
@@ -5523,7 +5523,7 @@ mod probe {
     fn markdown_is_turndowns() {
         let page = "<!doctype html><html><body><nav>Menu</nav><main><h1>Title</h1><p>a <b>b</b></p><img src=\"x.png\"><pre><code>let x;</code></pre></main><footer>F</footer></body></html>";
         // The page's image is served too (probe run 2026-10-10: an unserved x.png failed `finish`).
-        let Some(mut p) = Probe::start(&[(PAGE, page.to_string()), ("https://probe.tandem-probe.invalid/x.png", "x".to_string())], Vec::new()) else { return };
+        let Some(mut p) = Probe::start(&[(PAGE, page.to_string()), ("https://probe.termurion-probe.invalid/x.png", "x".to_string())], Vec::new()) else { return };
         p.load(PAGE);
         let skip = reader_run(&mut p, &crate::browser_reader::markdown_body(true)).expect("the markdown");
         let skip = skip.as_str().expect("a string").to_string();
@@ -5600,7 +5600,7 @@ mod probe {
     #[test]
     #[ignore]
     fn devtools_reads_a_page() {
-        const TEST_PAGE: &str = "https://tandem.test/";
+        const TEST_PAGE: &str = "https://termurion.test/";
         let html = "<!doctype html><html><head><title>t</title></head><body>served from memory</body></html>";
         let Some(mut p) = Probe::start(&[(TEST_PAGE, html.to_string())], Vec::new()) else { return };
         p.load(&format!("{TEST_PAGE}#frag"));
@@ -5636,13 +5636,13 @@ mod probe {
     }
 
     /// 13x4 Task 7: View Source shows the page as it was served, not as a script changed it. A page
-    /// answered from memory at `https://tandem.test/`, its DOM changed afterwards: the cached read has
+    /// answered from memory at `https://termurion.test/`, its DOM changed afterwards: the cached read has
     /// the original paragraph, the DOM read the change; the source page built from the cached text
     /// holds the original in `.source-code` and the page URL in `.url`. Needs the console session.
     #[test]
     #[ignore]
     fn view_source_reads_the_original() {
-        const TEST_PAGE: &str = "https://tandem.test/";
+        const TEST_PAGE: &str = "https://termurion.test/";
         let html = "<html><head><title>T</title></head><body><p class=\"k\">x</p></body></html>";
         let Some(mut p) = Probe::start(&[(TEST_PAGE, html.to_string())], Vec::new()) else { return };
         p.load(TEST_PAGE);
@@ -5659,7 +5659,7 @@ mod probe {
         p.settle(500);
         let text = p.page_string("document.querySelector('.source-code').textContent").expect("the text");
         assert!(text.contains("<p class=\"k\">x</p>"), "{text}");
-        assert_eq!(p.page_string("String(document.querySelector('p.url').textContent)"), Ok("https://tandem.test/".into()));
+        assert_eq!(p.page_string("String(document.querySelector('p.url').textContent)"), Ok("https://termurion.test/".into()));
         p.finish();
     }
 
@@ -5671,22 +5671,22 @@ mod probe {
     #[test]
     #[ignore]
     fn view_source_arming_facts() {
-        const TEST_PAGE: &str = "https://tandem.test/";
-        const FRAME_PAGE: &str = "https://tandem.test/f";
+        const TEST_PAGE: &str = "https://termurion.test/";
+        const FRAME_PAGE: &str = "https://termurion.test/f";
         const SOURCE: &str = "iterm2-about:source";
         let pages = [(TEST_PAGE, "<html><body><p>x</p></body></html>".to_string()), (FRAME_PAGE, "<html><body>frame</body></html>".to_string()), (SOURCE, "<html><body><p id=\"s\">SOURCE-SHOWN</p></body></html>".to_string())];
         // One world script, as the app always has (its canary): with none, Chromium made no named
         // world for the document after the iterm2-about round trip (probe run 2026-10-10b: no new
         // isolated context; the binding alone does not make the world). A browser pane never runs
         // without one, so the load after the source page must have the world back.
-        let Some(mut p) = Probe::start_full(&pages, vec![wrapped("window.__tandemProbeWorld = 1;")], false, &["iterm2-about"]) else { return };
+        let Some(mut p) = Probe::start_full(&pages, vec![wrapped("window.__termurionProbeWorld = 1;")], false, &["iterm2-about"]) else { return };
         // The facts below need no Tandem world; whether each load has one is recorded and asserted
         // last, so one run shows every fact (probe run 2026-10-10 stopped at a load).
         let first = p.try_load(TEST_PAGE);
         // The main frame: Starting first, then the document Request, and the page shows.
         p.order.clear();
         let n = p.navigated.len();
-        p.view().navigate_tandem(SOURCE);
+        p.view().navigate_termurion(SOURCE);
         assert!(p.wait(15, |p| p.navigated.len() > n), "Navigated within 15 s: {:?}", p.order);
         let at = |p: &Probe, what: &str| p.order.iter().position(|o| o == what);
         let (s, r) = (at(&p, &format!("starting {SOURCE}")), at(&p, &format!("request {} {SOURCE}", crate::browser_pages::CONTEXT_DOCUMENT)));
@@ -5725,7 +5725,7 @@ mod probe {
         // Probe run 2026-10-10b: given as a probe source it lands in the isolated world, so the
         // page's own `window.webkit` was undefined and its post threw (the click itself arrived).
         let setup = ViewSetup { guard_local_schemes: true, web_message: true, scripts: vec![crate::browser_pages::shim_js()], resource_filters: vec!["*".into()], ..Default::default() };
-        let Some(mut p) = Probe::start_setup(&pages, vec![wrapped("window.__tandemProbeWorld = 1;")], &["iterm2-about"], setup) else { return };
+        let Some(mut p) = Probe::start_setup(&pages, vec![wrapped("window.__termurionProbeWorld = 1;")], &["iterm2-about"], setup) else { return };
         assert_eq!(p.try_load(PAGE), Ok(()));
         // Positive control: with the bridge in place the page's own load request is posted.
         assert!(p.wait(5, |p| p.routed.iter().any(|r| r.via == Via::Page && r.body.contains("loadPermissions"))), "the page's loadPermissions reached the host: {:?}", p.routed.iter().map(|r| r.body.chars().take(80).collect::<String>()).collect::<Vec<_>>());
@@ -5771,7 +5771,7 @@ mod probe {
     fn view_source_shows_the_page() {
         let raw = "<a href=\"JAVASCRIPT:window.__pwn=1\">j</a> <img src=x onerror=\"window.__pwn=1\"> </script><script nonce=\"FAKE\">window.__pwn=1</script> <a href=\"http://x.test/ onmouseover=window.__pwn=1\">h</a> <a href=\"/rel?a=1\">r</a> <a href=\"data:text/html,<b>\">d</a> {{NONCE}}";
         let css = crate::browser_js::resource("iterm-browser-common.css").unwrap_or_default();
-        let html = crate::view_source::page(raw, "https://tandem.test/orig?x='1'&y=\\", css, "REALNONCE").expect("the page");
+        let html = crate::view_source::page(raw, "https://termurion.test/orig?x='1'&y=\\", css, "REALNONCE").expect("the page");
         let Some(mut p) = Probe::start(&[(PAGE, html)], Vec::new()) else { return };
         p.load(PAGE);
         p.settle(500);
@@ -5783,14 +5783,14 @@ mod probe {
         let links = p.page_eval("JSON.stringify([...document.querySelectorAll('a.source-link')].map(a => a.getAttribute('href')))").expect("links");
         let links: Vec<String> = serde_json::from_str::<String>(&links).ok().and_then(|s| serde_json::from_str(&s).ok()).expect("a list of links");
         assert!(!links.is_empty() && links.iter().all(|l| l.starts_with("http://") || l.starts_with("https://")), "only web links: {links:?}");
-        assert!(links.iter().any(|l| l == "https://tandem.test/rel?a=1"), "a relative link resolves against the viewed page: {links:?}");
+        assert!(links.iter().any(|l| l == "https://termurion.test/rel?a=1"), "a relative link resolves against the viewed page: {links:?}");
         assert!(links.iter().all(|l| !l.contains(' ')), "no link holds a space: {links:?}");
-        assert_eq!(p.page_string("String(document.querySelector('p.url').textContent)"), Ok("https://tandem.test/orig?x='1'&y=\\".into()), "the visible URL");
+        assert_eq!(p.page_string("String(document.querySelector('p.url').textContent)"), Ok("https://termurion.test/orig?x='1'&y=\\".into()), "the visible URL");
         p.finish();
     }
 
     /// 13x4 Task 10 (R13x45-2): Save Page As writes a folder. A page answered from memory at
-    /// `https://tandem.test/` references `s.css` (which has `url(bg.svg)`) and `i.svg`; the real saver
+    /// `https://termurion.test/` references `s.css` (which has `url(bg.svg)`) and `i.svg`; the real saver
     /// scripts run in the page world, the resources are read from the page's own loaded copy through
     /// the two DevTools reads, and the job's steps are carried out as the app does (create-new through
     /// `inert_files::write_new_checked`, `localfs::create_dir`). The folder holds an `index.html` whose
@@ -5802,15 +5802,15 @@ mod probe {
     #[ignore]
     fn save_page_writes_a_folder() {
         use crate::page_saver::{Job, Step};
-        const TEST_PAGE: &str = "https://tandem.test/";
+        const TEST_PAGE: &str = "https://termurion.test/";
         let html = "<html><head><title>T</title><link rel=\"stylesheet\" href=\"s.css\"></head><body><img src=\"i.svg\"><p>hi</p></body></html>";
         const SVG_I: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"2\" height=\"2\"><desc>IMAGE-I</desc></svg>";
         const SVG_BG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"2\" height=\"2\"><desc>IMAGE-BG</desc></svg>";
-        let pages = [(TEST_PAGE, html.to_string()), ("https://tandem.test/s.css", "body { background: url(bg.svg); }".to_string()), ("https://tandem.test/i.svg", SVG_I.to_string()), ("https://tandem.test/bg.svg", SVG_BG.to_string())];
+        let pages = [(TEST_PAGE, html.to_string()), ("https://termurion.test/s.css", "body { background: url(bg.svg); }".to_string()), ("https://termurion.test/i.svg", SVG_I.to_string()), ("https://termurion.test/bg.svg", SVG_BG.to_string())];
         let Some(mut p) = Probe::start(&pages, Vec::new()) else { return };
         p.load(TEST_PAGE);
         p.settle(800);
-        let root = std::env::temp_dir().join(format!("tandem-save-probe-{}", hex32()));
+        let root = std::env::temp_dir().join(format!("termurion-save-probe-{}", hex32()));
         std::fs::create_dir_all(&root).expect("a temp root");
         let folder = root.join("site");
         let mut job = Job::new(folder.clone());
@@ -5986,7 +5986,7 @@ mod probe {
 
     /// The cross-origin child of the find forgery probes: it posts what its parent tells it to as
     /// find's own window messages, so the forgeries come from a frame of another origin.
-    const FORGING_CHILD: &str = "https://b.tandem-probe.invalid/child.html";
+    const FORGING_CHILD: &str = "https://b.termurion-probe.invalid/child.html";
     const FORGING_CHILD_HTML: &str = r#"<!doctype html><html><head><title>child</title></head><body><p>alpha in a child</p><script>
 window.addEventListener('message', function (e) {
   const d = e.data;
@@ -6216,7 +6216,7 @@ window.addEventListener('message', function (e) {
     #[test]
     #[ignore]
     fn find_forged_click_cannot_reach_the_client() {
-        const PAYLOAD: &str = "0) || (globalThis.__pwned = 1, globalThis.__tandemClient && globalThis.__tandemClient(JSON.stringify({h: 'probePwned', b: {}})), 0) || (0";
+        const PAYLOAD: &str = "0) || (globalThis.__pwned = 1, globalThis.__termurionClient && globalThis.__termurionClient(JSON.stringify({h: 'probePwned', b: {}})), 0) || (0";
         let secret = hex32();
         let body = format!("<p>alpha beta alpha</p><iframe src=\"{FORGING_CHILD}\"></iframe>");
         let Some(mut p) = Probe::start(&[(PAGE, hostile_page(&body, "g")), (FORGING_CHILD, FORGING_CHILD_HTML.to_string())], find_sources(&secret)) else { return };
@@ -6445,7 +6445,7 @@ window.addEventListener('message', function (e) {
   window.iTerm2CopyMode = mine;
   window.__mine = mine;
   // Every global that looks like a key switch: replaced by a recorder, in the page's world.
-  for (const k of ['__tandemCopyModeKeys', 'tandemCopyModeKeys', 'copyModeKeys', 'iTerm2CopyModeKeys']) {
+  for (const k of ['__termurionCopyModeKeys', 'termurionCopyModeKeys', 'copyModeKeys', 'iTerm2CopyModeKeys']) {
     window[k] = function () { leak(k, Array.prototype.slice.call(arguments).join(',')); };
   }
   for (const k of Object.getOwnPropertyNames(window)) {
@@ -6562,8 +6562,8 @@ window.addEventListener('message', function (e) {
 
     // --- 13x6 Task 3: permissions, notifications and audio (runtime facts the bindings cannot confirm) ---
 
-    const PERM_HOST: &str = "https://perm.tandem-probe.invalid";
-    const PERM_PAGE: &str = "https://perm.tandem-probe.invalid/";
+    const PERM_HOST: &str = "https://perm.termurion-probe.invalid";
+    const PERM_PAGE: &str = "https://perm.termurion-probe.invalid/";
 
     /// A page that asks for notification permission on demand (`ask()`), recording the answer.
     fn perm_page(extra: &str) -> String {
@@ -6666,7 +6666,7 @@ window.addEventListener('message', function (e) {
     fn saved_grant_is_live_before_the_promise_resolves() {
         use crate::browser_perms::STATE_ALLOW;
         use crate::webhost::PermAnswer;
-        const OTHER: &str = "https://other.tandem-probe.invalid/";
+        const OTHER: &str = "https://other.termurion-probe.invalid/";
         let then = "<script>function go() { return Notification.requestPermission().then(function () { new Notification('T'); }); }</script>";
         let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, perm_page(then)), (OTHER, perm_page(then))], Vec::new(), false, &[], true) else { return };
         p.load(PERM_PAGE);
@@ -6696,7 +6696,7 @@ window.addEventListener('message', function (e) {
         p.view().read_permission_states();
         let reads = p.state_reads.len();
         assert!(p.wait(10, |p| p.state_reads.len() > reads), "PermissionStates within 10 s");
-        assert!(p.state_reads[reads].iter().all(|(k, o, _)| !(*k == 4 && o.starts_with("https://other.tandem-probe.invalid"))), "an unsaved answer leaves nothing in the profile: {:?}", p.state_reads[reads]);
+        assert!(p.state_reads[reads].iter().all(|(k, o, _)| !(*k == 4 && o.starts_with("https://other.termurion-probe.invalid"))), "an unsaved answer leaves nothing in the profile: {:?}", p.state_reads[reads]);
         p.load(OTHER);
         assert_eq!(p.page_string("Notification.permission"), Ok("default".into()), "a reload of the unsaved origin sees the default");
         p.finish();
@@ -6790,7 +6790,7 @@ window.addEventListener('message', function (e) {
     #[ignore]
     fn revocation_reload_sweep_reads_the_frames_origins() {
         use crate::browser_perms::{check_iframe_origins_js, frame_origins, page_uses_origin, sweep_reloads};
-        const FRAME: &str = "https://frame.tandem-probe.invalid/";
+        const FRAME: &str = "https://frame.termurion-probe.invalid/";
         let hostile = perm_page(&format!("<iframe src=\"{FRAME}\"></iframe><script>performance.getEntriesByType = function () {{ return []; }}; Object.defineProperty(window.location, 'origin', {{get: function () {{ return 'https://forged.invalid'; }}}});</script>"));
         let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, hostile), (FRAME, "<!doctype html><title>f</title>".to_string())], Vec::new(), false, &[], true) else { return };
         p.load(PERM_PAGE);
@@ -6800,28 +6800,28 @@ window.addEventListener('message', function (e) {
         let got = p.eval(None, &expr).expect("the sweep runs in the isolated world");
         let list = frame_origins(&got).expect("a bounded array of strings");
         assert!(list.len() <= 256);
-        assert!(list.iter().any(|o| o == "https://frame.tandem-probe.invalid"), "the cross-origin iframe is listed: {list:?}");
-        assert!(page_uses_origin(PERM_PAGE, Some(&list), "https://frame.tandem-probe.invalid"), "a match reloads");
-        assert!(!page_uses_origin(PERM_PAGE, Some(&list), "https://other.tandem-probe.invalid"), "no match, no reload");
-        assert!(!page_uses_origin("https://c.d/", None, "https://frame.tandem-probe.invalid"), "a failed script compares the main origin only");
+        assert!(list.iter().any(|o| o == "https://frame.termurion-probe.invalid"), "the cross-origin iframe is listed: {list:?}");
+        assert!(page_uses_origin(PERM_PAGE, Some(&list), "https://frame.termurion-probe.invalid"), "a match reloads");
+        assert!(!page_uses_origin(PERM_PAGE, Some(&list), "https://other.termurion-probe.invalid"), "no match, no reload");
+        assert!(!page_uses_origin("https://c.d/", None, "https://frame.termurion-probe.invalid"), "a failed script compares the main origin only");
         // 5000 performance entries that are not resources: the answer keeps its shape and its frame.
         p.page_eval("for (var i = 0; i < 5000; i++) { performance.mark('m' + i); } 1").expect("marks");
         let again = p.eval(None, &expr).expect("still answers");
         let kept = frame_origins(&again);
-        assert!(kept.as_ref().is_some_and(|l| l.iter().any(|o| o == "https://frame.tandem-probe.invalid")), "marks add no origin and the frame stays listed: {kept:?}");
+        assert!(kept.as_ref().is_some_and(|l| l.iter().any(|o| o == "https://frame.termurion-probe.invalid")), "marks add no origin and the frame stays listed: {kept:?}");
         // Task 5 fix: 300 distinct resource origins (images the probe answers 404) push the answer over
         // the cap; it then reloads the pane (fail closed), never reads as "this origin is not used".
         // The page raises its resource timing buffer first (the default 250 would keep it under the cap).
-        p.page_eval("performance.setResourceTimingBufferSize(1000); for (var i = 0; i < 300; i++) { var im = new Image(); im.src = 'https://h' + i + '.tandem-probe.invalid/x.png'; } 1").expect("images");
+        p.page_eval("performance.setResourceTimingBufferSize(1000); for (var i = 0; i < 300; i++) { var im = new Image(); im.src = 'https://h' + i + '.termurion-probe.invalid/x.png'; } 1").expect("images");
         p.settle(1500);
         let crowd = p.eval(None, &expr).expect("still answers");
-        let other = "https://other.tandem-probe.invalid";
+        let other = "https://other.termurion-probe.invalid";
         assert!(frame_origins(&crowd).is_none(), "over 256 origins is unacceptable: {}", crowd.as_array().map_or(0, Vec::len));
         assert!(sweep_reloads(PERM_PAGE, Ok(&crowd), other), "an oversized answer reloads even for an origin it does not name");
-        assert!(sweep_reloads(PERM_PAGE, Ok(&crowd), "https://frame.tandem-probe.invalid"), "the iframe's origin still reloads");
+        assert!(sweep_reloads(PERM_PAGE, Ok(&crowd), "https://frame.termurion-probe.invalid"), "the iframe's origin still reloads");
         // The 300 images are answered 404 on purpose (probe run 2026-10-10 failed only here): exactly
         // those leave the not-served list; anything else still fails `finish`.
-        let crowd_url = |u: &String| u.strip_prefix("https://h").and_then(|r| r.strip_suffix(".tandem-probe.invalid/x.png")).is_some_and(|n| n.parse::<u32>().is_ok_and(|n| n < 300));
+        let crowd_url = |u: &String| u.strip_prefix("https://h").and_then(|r| r.strip_suffix(".termurion-probe.invalid/x.png")).is_some_and(|n| n.parse::<u32>().is_ok_and(|n| n < 300));
         p.not_served.retain(|u| !crowd_url(u));
         p.finish();
     }
@@ -6884,14 +6884,14 @@ window.addEventListener('message', function (e) {
         let setup = ViewSetup { guard_local_schemes: true, fail_cert_errors: true, ..Default::default() };
         let Some(mut p) = Probe::start_setup(&[], Vec::new(), &[], setup) else { return };
         let n = p.navigated.len();
-        p.view().navigate_tandem(&url);
+        p.view().navigate_termurion(&url);
         assert!(p.wait(10, |p| p.navigated.len() > n), "Navigated within 10 s: {:?}", p.order);
         println!("probe: refused port ok={} status={} http={} log={:?}", p.navigated[n].1, p.statuses[n].1, p.https[n], p.auth_log);
         assert_eq!(p.navigated[n], (url.clone(), false), "a failed load, with the URL asked for");
         let status = p.statuses[n].1;
         // Control: a name that cannot resolve.
         let n2 = p.navigated.len();
-        p.view().navigate_tandem("http://nohost.tandem-probe.invalid/");
+        p.view().navigate_termurion("http://nohost.termurion-probe.invalid/");
         assert!(p.wait(15, |p| p.navigated.len() > n2), "Navigated within 15 s: {:?}", p.order);
         println!("probe: unresolvable ok={} status={} http={}", p.navigated[n2].1, p.statuses[n2].1, p.https[n2]);
         // Probe run 2026-10-11b: this runtime reports a refused connection as WebErrorStatus 0 (unknown),
@@ -6913,7 +6913,7 @@ window.addEventListener('message', function (e) {
     #[test]
     #[ignore]
     fn file_pages_cannot_read_or_send() {
-        let t = std::env::temp_dir().join(format!("tandem-filepage-{}", hex32()));
+        let t = std::env::temp_dir().join(format!("termurion-filepage-{}", hex32()));
         std::fs::create_dir_all(t.join("site")).expect("site");
         std::fs::create_dir_all(t.join("other")).expect("other");
         std::fs::write(t.join("other").join("secret.txt"), "s3cret").expect("secret");
@@ -6937,7 +6937,7 @@ window.addEventListener('message', function (e) {
         p.file_root = crate::browser_pages::page_root(&page);
         let (verdicts_before, exits_before) = (VERDICT_REFUSALS.lock().map(|l| l.len()).unwrap_or(0), EXIT_REFUSALS.lock().map(|l| l.len()).unwrap_or(0));
         let n = p.navigated.len();
-        p.view().navigate_tandem(&page);
+        p.view().navigate_termurion(&page);
         assert!(p.wait(15, |p| p.navigated.len() > n), "Navigated within 15 s: {:?}", p.order);
         // Well past the script's 300 ms timer: a navigation it started would have been judged by now.
         p.settle(2000);
@@ -6971,15 +6971,15 @@ window.addEventListener('message', function (e) {
     }
 
     /// R13x8-NS, last-gate review 6 (the positive control of the exit guard): Tandem's own loads leave a
-    /// file page for the web. From a served file page, `navigate_tandem` (the address bar, a bookmark,
+    /// file page for the web. From a served file page, `navigate_termurion` (the address bar, a bookmark,
     /// a menu action) to a 127.0.0.1 listener lands, and so does one the server redirects (302 to
     /// another path); the exit guard answers neither 403 and the verdict refuses neither. Needs the
     /// console session.
     #[test]
     #[ignore]
-    fn tandem_loads_leave_a_file_page_for_the_web() {
+    fn termurion_loads_leave_a_file_page_for_the_web() {
         use std::io::{Read, Write};
-        let t = std::env::temp_dir().join(format!("tandem-fileexit-{}", hex32()));
+        let t = std::env::temp_dir().join(format!("termurion-fileexit-{}", hex32()));
         std::fs::create_dir_all(&t).expect("folder");
         std::fs::write(t.join("f.html"), "<title>f</title><p>file</p>").expect("page");
         let page = crate::browser_pages::file_url_of(&t.join("f.html"), false);
@@ -7026,11 +7026,11 @@ window.addEventListener('message', function (e) {
         let base = format!("http://127.0.0.1:{port}");
         for (load, lands) in [(format!("{base}/ok"), format!("{base}/ok")), (format!("{base}/hop"), format!("{base}/landing"))] {
             let n = p.navigated.len();
-            p.view().navigate_tandem(&page);
+            p.view().navigate_termurion(&page);
             assert!(p.wait(15, |p| p.navigated.len() > n && p.source().as_deref() == Some(page.as_str())), "the file page loaded: {:?}", p.order);
             let (verdicts_before, exits_before) = (VERDICT_REFUSALS.lock().map(|l| l.len()).unwrap_or(0), EXIT_REFUSALS.lock().map(|l| l.len()).unwrap_or(0));
             let n = p.navigated.len();
-            p.view().navigate_tandem(&load);
+            p.view().navigate_termurion(&load);
             let landed = p.wait(15, |p| p.navigated.len() > n && p.source().as_deref() == Some(lands.as_str()));
             let verdicts: Vec<(String, bool)> = VERDICT_REFUSALS.lock().map(|l| l[verdicts_before.min(l.len())..].to_vec()).unwrap_or_default();
             let exits: Vec<String> = EXIT_REFUSALS.lock().map(|l| l[exits_before.min(l.len())..].to_vec()).unwrap_or_default();
@@ -7059,7 +7059,7 @@ window.addEventListener('message', function (e) {
         let Some(mut p) = Probe::start_setup(&[], Vec::new(), &["iterm2-ssh", "iterm2-about"], setup) else { return };
         p.ssh_body = Some(b"<title>kept</title><script>document.title='RAN'</script>hello".to_vec());
         let n = p.navigated.len();
-        p.view().navigate_tandem("iterm2-ssh://box/a.txt");
+        p.view().navigate_termurion("iterm2-ssh://box/a.txt");
         assert!(p.wait(15, |p| p.navigated.len() > n), "Navigated within 15 s: {:?}", p.order);
         assert!(p.navigated[n].1, "the page loaded: {:?}", p.navigated);
         p.settle(500);
@@ -7072,7 +7072,7 @@ window.addEventListener('message', function (e) {
         p.ssh_body = None;
         p.hold_ssh = true;
         let n = p.order.len();
-        p.view().navigate_tandem("iterm2-ssh://box/b.txt");
+        p.view().navigate_termurion("iterm2-ssh://box/b.txt");
         let arrived = p.wait(15, |p| p.order.iter().skip(n).any(|o| o.starts_with("request ") && o.contains("iterm2-ssh://box/b.txt")));
         // The deferral of the held request is in the view's table; dropping the view completes and empties it.
         let inner = p.view().inner.clone();
@@ -7135,7 +7135,7 @@ window.addEventListener('message', function (e) {
         };
         for (path, port_of, answered) in [("/404", port, true), ("/empty404", port, true), ("/503", port, true), ("/dead", dead, false), ("/302dead", port, false)] {
             let n = p.navigated.len();
-            p.view().navigate_tandem(&format!("http://127.0.0.1:{port_of}{path}"));
+            p.view().navigate_termurion(&format!("http://127.0.0.1:{port_of}{path}"));
             assert!(p.wait(15, |p| p.navigated.len() > n), "Navigated within 15 s for {path}: {:?}", p.order);
             let (ok, http) = (p.navigated[n].1, p.https[n]);
             println!("probe: {path} ok={ok} http={http} status={}", p.statuses[n].1);
@@ -7143,7 +7143,7 @@ window.addEventListener('message', function (e) {
         }
         // A 204 keeps the page: no navigation completes, or it is not a failure the error page would cover.
         let n = p.navigated.len();
-        p.view().navigate_tandem(&format!("http://127.0.0.1:{port}/204"));
+        p.view().navigate_termurion(&format!("http://127.0.0.1:{port}/204"));
         let came = p.wait(4, |p| p.navigated.len() > n);
         println!("probe: /204 navigated={came} log={:?}", p.auth_log);
         if came {
@@ -7193,8 +7193,8 @@ window.addEventListener('message', function (e) {
                 let _ = c.write_all(reply.as_bytes());
             }
         });
-        const TANDEM_PAGE: &str = "iterm2-about:bookmarks";
-        let pages = [(TANDEM_PAGE, "<title>t</title>".to_string()), ("iterm2-about:settings", "<title>SETTINGS</title>".to_string())];
+        const TERMURION_PAGE: &str = "iterm2-about:bookmarks";
+        let pages = [(TERMURION_PAGE, "<title>t</title>".to_string()), ("iterm2-about:settings", "<title>SETTINGS</title>".to_string())];
         let setup = ViewSetup { guard_local_schemes: true, web_message: true, resource_filters: vec!["iterm2-about:*".into()], ..Default::default() };
         let Some(mut p) = Probe::start_setup(&pages, Vec::new(), &["iterm2-about"], setup) else {
             stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -7202,9 +7202,9 @@ window.addEventListener('message', function (e) {
             return;
         };
         let base = format!("http://127.0.0.1:{port}");
-        for from in [TANDEM_PAGE.to_string(), format!("{base}/page")] {
+        for from in [TERMURION_PAGE.to_string(), format!("{base}/page")] {
             let n = p.navigated.len();
-            p.view().navigate_tandem(&from);
+            p.view().navigate_termurion(&from);
             assert!(p.wait(15, |p| p.navigated.len() > n && p.source().as_deref() == Some(from.as_str())), "{from} loaded: {:?}", p.order);
             // The control: the page's own navigation through a 302 to the web lands.
             let landing = format!("{base}/landing");
@@ -7212,7 +7212,7 @@ window.addEventListener('message', function (e) {
             assert!(p.wait(15, |p| p.source().as_deref() == Some(landing.as_str())), "from {from}: the redirect to the web landed: {:?} / {:?}", p.source(), p.order);
             // Back on the page, the same navigation through a 302 to the settings page.
             let n = p.navigated.len();
-            p.view().navigate_tandem(&from);
+            p.view().navigate_termurion(&from);
             assert!(p.wait(15, |p| p.navigated.len() > n && p.source().as_deref() == Some(from.as_str())), "{from} loaded again: {:?}", p.order);
             let before = hits.lock().map(|l| l.iter().filter(|h| *h == "/r").count()).unwrap_or(0);
             let refused_before = VERDICT_REFUSALS.lock().map(|l| l.len()).unwrap_or(0);
@@ -7265,7 +7265,7 @@ window.addEventListener('message', function (e) {
         println!("probe: the registration answered {got:?}; the refusal answered 403 to {refused:?}");
         assert!(got.as_deref().is_ok_and(|c| c.starts_with("denied:")), "the worker never installs: {got:?}");
         assert!(got.as_deref().is_ok_and(|c| c.contains("(403)")), "the registration failed on the refusal's 403: {got:?}");
-        assert!(refused.iter().any(|u| u == "https://perm.tandem-probe.invalid/sw.js"), "the refusal itself answered the script fetch (not a DNS failure): {refused:?} / {got:?}");
+        assert!(refused.iter().any(|u| u == "https://perm.termurion-probe.invalid/sw.js"), "the refusal itself answered the script fetch (not a DNS failure): {refused:?} / {got:?}");
         p.settle(1000);
         assert!(p.notes.is_empty(), "no notification at all: {:?}", p.notes);
         assert!(!p.order.iter().any(|o| o.ends_with("/sw.js")), "the script fetch never reached the app's handler: {:?}", p.order);
@@ -7283,8 +7283,8 @@ window.addEventListener('message', function (e) {
     #[test]
     #[ignore]
     fn a_frame_request_names_the_top_page_and_an_undelegated_frame_asks_nothing() {
-        const CHILD: &str = "https://child.tandem-probe.invalid/c.html";
-        const OTHER: &str = "https://other.tandem-probe.invalid/";
+        const CHILD: &str = "https://child.termurion-probe.invalid/c.html";
+        const OTHER: &str = "https://other.termurion-probe.invalid/";
         let page = perm_page(&format!("<iframe allow=\"geolocation\" src=\"{CHILD}\"></iframe>"));
         let undelegated = perm_page(&format!("<iframe src=\"{CHILD}\"></iframe>"));
         let child = "<!doctype html><script>window.__g = 'pending'; navigator.geolocation.getCurrentPosition(function () { window.__g = 'ok'; }, function (e) { window.__g = 'denied:' + e.code; });</script>".to_string();
@@ -7322,7 +7322,7 @@ window.addEventListener('message', function (e) {
     #[test]
     #[ignore]
     fn same_document_navigation_starts_nothing() {
-        let other = "https://perm.tandem-probe.invalid/other";
+        let other = "https://perm.termurion-probe.invalid/other";
         let Some(mut p) = Probe::start_perms(&[(PERM_PAGE, perm_page("")), (other, perm_page(""))], Vec::new(), false, &[], true) else { return };
         p.load(PERM_PAGE);
         let starts = |p: &Probe| p.order.iter().filter(|o| o.starts_with("starting ")).count();
@@ -7407,7 +7407,7 @@ window.addEventListener('message', function (e) {
     }
 
     /// 13x AI browser tools Task 4: the pure answer functions over the real markdown script, with
-    /// the loads started through the GUARDED `navigate` (never `navigate_tandem`). A 127.0.0.1
+    /// the loads started through the GUARDED `navigate` (never `navigate_termurion`). A 127.0.0.1
     /// listener serves `/a` and `/b` only. The secret checks can fail: each removed node (a `[hidden]`
     /// element, a password-autocomplete textarea, a Tandem mark annotation) has a twin without the
     /// marking that must reach the text. A model may not read a 127.0.0.1 page (final review I3), so
@@ -7508,11 +7508,11 @@ window.addEventListener('message', function (e) {
                 let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"f.bin\"\r\nContent-Length: 10\r\nConnection: close\r\n\r\n0123456789");
             }
         });
-        let dir = std::env::temp_dir().join(format!("tandem-dl-probe-{}", uuid::Uuid::new_v4().simple()));
+        let dir = std::env::temp_dir().join(format!("termurion-dl-probe-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
         let setup = ViewSetup { guard_local_schemes: true, web_message: true, downloads: true, ..Default::default() };
         let Some(mut p) = Probe::start_setup(&[], Vec::new(), &[], setup) else { return };
-        p.view().navigate_tandem(&format!("http://127.0.0.1:{port}/f.bin"));
+        p.view().navigate_termurion(&format!("http://127.0.0.1:{port}/f.bin"));
         assert!(p.wait(20, |p| !p.downloads.is_empty()), "DownloadStarting arrives: {:?}", p.order);
         let (token, url) = p.downloads[0].clone();
         assert!(url.ends_with("/f.bin"), "{url}");
@@ -7555,7 +7555,7 @@ window.addEventListener('message', function (e) {
                 let _ = s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
             }
         });
-        let dir = std::env::temp_dir().join(format!("tandem-ext-probe-{}", uuid::Uuid::new_v4().simple()));
+        let dir = std::env::temp_dir().join(format!("termurion-ext-probe-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("manifest.json"), r#"{"manifest_version":3,"name":"Probe","version":"1.0","content_scripts":[{"matches":["http://127.0.0.1/*"],"js":["c.js"],"run_at":"document_start"}]}"#).unwrap();
         std::fs::write(dir.join("c.js"), "document.addEventListener('DOMContentLoaded', function () { document.title = 'ext'; });").unwrap();
@@ -7571,13 +7571,13 @@ window.addEventListener('message', function (e) {
             Err(e) => panic!("the extension was refused: {e}"),
         };
         let url = format!("http://127.0.0.1:{port}/p");
-        p.view().navigate_tandem(&url);
+        p.view().navigate_termurion(&url);
         assert!(p.page_becomes(20, "document.title", false, "ext"), "the content script ran: {:?}", p.page_string("document.title"));
         p.view().set_extension_enabled(&id, false);
         let n = p.ext_lists.len();
         assert!(p.wait(20, |p| p.ext_lists.len() > n), "the list follows the change");
         assert!(p.ext_lists.last().unwrap().iter().any(|(i, _, on)| *i == id && !on), "listed and disabled: {:?}", p.ext_lists.last());
-        p.view().navigate_tandem(&format!("http://127.0.0.1:{port}/q"));
+        p.view().navigate_termurion(&format!("http://127.0.0.1:{port}/q"));
         p.settle(2500);
         assert_eq!(p.page_string("document.title"), Ok("page".to_string()), "a disabled extension does not run");
         p.view().remove_extension(&id);
@@ -7618,7 +7618,7 @@ window.addEventListener('message', function (e) {
         let mut server = AuthServer::start("Authorization: Basic dTpw", "401 Unauthorized", "WWW-Authenticate: Basic realm=\"T\"");
         let Some(mut p) = Probe::start_setup(&[], Vec::new(), &[], auth_setup()) else { return server.stop() };
         let url = format!("http://127.0.0.1:{}/", server.port);
-        p.view().navigate_tandem(&url);
+        p.view().navigate_termurion(&url);
         assert!(p.wait(20, |p| !p.auths.is_empty()), "the challenge arrives: {:?}", p.order);
         let (token, uri, challenge) = p.auths[0].clone();
         assert!(challenge.contains("realm=\"T\""), "{challenge}");
@@ -7660,7 +7660,7 @@ window.addEventListener('message', function (e) {
         // A fragment on another path is the same document request: its response is posted too (the
         // engine sends the accepted credential ahead, so this one is not challenged).
         let n = p.responses.len();
-        p.view().navigate_tandem(&format!("{url}other#frag"));
+        p.view().navigate_termurion(&format!("{url}other#frag"));
         assert!(drive_auth(&mut p, 20, Some(("u", "p")), |p| p.responses.len() > n && p.responses.last().is_some_and(|r| r.1 == 200)), "the fragment navigation's response: {:?}", p.responses);
         // A Cancel. The engine keeps the accepted credential for that space and sends it ahead of any
         // challenge (probe run 2026-10-11c: /cancel on the same server got 200 with no challenge), so
@@ -7669,7 +7669,7 @@ window.addEventListener('message', function (e) {
         let mut other = AuthServer::start("Authorization: Basic dTpw", "401 Unauthorized", "WWW-Authenticate: Basic realm=\"C\"");
         p.auths.clear();
         let mark = p.auth_log.len();
-        p.view().navigate_tandem(&format!("http://127.0.0.1:{}/cancel", other.port));
+        p.view().navigate_termurion(&format!("http://127.0.0.1:{}/cancel", other.port));
         assert!(p.wait(20, |p| !p.auths.is_empty()), "the second origin is challenged: {:?}", &p.auth_log[mark..]);
         let (t, ..) = p.auths.remove(0);
         p.view().answer_basic_auth(t, None);
@@ -7693,7 +7693,7 @@ window.addEventListener('message', function (e) {
         let mut setup = auth_setup();
         setup.basic_auth = false;
         let Some(mut p) = Probe::start_setup(&[], Vec::new(), &[], setup) else { return server.stop() };
-        p.view().navigate_tandem(&format!("http://127.0.0.1:{}/", server.port));
+        p.view().navigate_termurion(&format!("http://127.0.0.1:{}/", server.port));
         assert!(p.wait(20, |p| !p.finished.is_empty()), "the navigation ends without a prompt: {:?}", p.order);
         assert!(p.auths.is_empty(), "nothing was posted");
         assert!(p.responses.iter().any(|r| r.1 == 401), "{:?}", p.responses);
@@ -7711,7 +7711,7 @@ window.addEventListener('message', function (e) {
     #[test]
     #[ignore]
     fn integrated_auth_is_never_sent_by_itself() {
-        const ALLOWLIST: &str = "--auth-server-allowlist=tandem-no-integrated-auth.invalid";
+        const ALLOWLIST: &str = "--auth-server-allowlist=termurion-no-integrated-auth.invalid";
         const SCHEMES: &str = "--auth-schemes=basic,digest";
         let configs: [(&str, Option<&str>); 4] = [("control", Some("")), ("allowlist", Some(ALLOWLIST)), ("schemes", Some(SCHEMES)), ("tandem", None)];
         let integrated = |seen: &[String]| seen.iter().any(|l| l.contains(": NTLM\"") || l.contains(": Negotiate\""));
@@ -7736,7 +7736,7 @@ window.addEventListener('message', function (e) {
                         return server.stop();
                     };
                     let url = if proxy { "http://example.invalid/".to_string() } else { format!("http://localhost:{}/", server.port) };
-                    p.view().navigate_tandem(&url);
+                    p.view().navigate_termurion(&url);
                     // Long enough for an automatic exchange to reach the server, or the request to end.
                     p.wait(10, |p| !p.auths.is_empty() || !p.finished.is_empty());
                     p.settle(1500);
@@ -7780,7 +7780,7 @@ window.addEventListener('message', function (e) {
         let mut proxy = AuthServer::start("Proxy-Authorization: Basic", "407 Proxy Authentication Required", "Proxy-Authenticate: Basic realm=\"P\"");
         let args = crate::adblock::proxy_args(true, "127.0.0.1", proxy.port as i64);
         let Some(mut p) = Probe::start_args(&[], Vec::new(), &[], auth_setup(), &args) else { return proxy.stop() };
-        p.view().navigate_tandem("http://example.invalid/");
+        p.view().navigate_termurion("http://example.invalid/");
         assert!(p.wait(20, |p| !p.auths.is_empty()), "the proxy's challenge arrives: {:?}", p.order);
         let (token, uri, challenge) = p.auths[0].clone();
         println!("proxy challenge: uri {uri} challenge {challenge}");

@@ -6,7 +6,7 @@ use std::ops::Range;
 use crate::layout::Rect;
 
 /// iTerm2's default cap on one image's height in pixels (and `cap^2 / 5` pixels in all);
-/// `ScreenshotMaxPixelHeight` changes it (R3: Tandem used to ignore the setting).
+/// `ScreenshotMaxPixelHeight` changes it (R3: Termurion used to ignore the setting).
 pub const DEFAULT_MAX_PX: usize = 30000;
 
 /// The setting's key.

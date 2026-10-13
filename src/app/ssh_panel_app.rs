@@ -14,9 +14,9 @@ use crate::ssh_panel::{self as model, DoubleClick, Op, Panel, Request};
 use crate::ssh_panel_ui::{PanelEvent, SshPanelWindow};
 
 /// The prefix of a batch's folder in `%TEMP%` (P12; swept at launch with the other leftovers, P24).
-pub(super) const BATCH_PREFIX: &str = "Tandem-";
+pub(super) const BATCH_PREFIX: &str = "Termurion-";
 
-/// The folder a Download Files batch writes into: `%TEMP%\Tandem-<UUID>`, new and empty, made
+/// The folder a Download Files batch writes into: `%TEMP%\Termurion-<UUID>`, new and empty, made
 /// with `create_dir` (P12) so it never adopts a folder, a junction or a file that was already
 /// there. A remote-chosen name therefore can never replace another program's file in `%TEMP%`.
 pub(super) fn make_batch_folder(temp_root: &Path, uuid: &str) -> std::io::Result<PathBuf> {
@@ -545,7 +545,7 @@ mod tests {
 
     #[test]
     fn later_item_of_one_name_replaces_the_earlier() {
-        let root = std::env::temp_dir().join(format!("tandem-batch-last-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("termurion-batch-last-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         // A folder item, then a later folder item of the same name: only the later one's files.
@@ -589,19 +589,19 @@ mod tests {
 
     #[test]
     fn batch_folder_is_fresh() {
-        // P12: a new `Tandem-<UUID>` folder under the temp root, made with create_dir.
-        let root = std::env::temp_dir().join(format!("tandem-batch-{}", std::process::id()));
+        // P12: a new `Termurion-<UUID>` folder under the temp root, made with create_dir.
+        let root = std::env::temp_dir().join(format!("termurion-batch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let f = make_batch_folder(&root, "U1").unwrap();
-        assert_eq!(f, root.join("Tandem-U1"));
+        assert_eq!(f, root.join("Termurion-U1"));
         assert!(f.is_dir() && std::fs::read_dir(&f).unwrap().next().is_none());
         assert_ne!(f, root, "never the temp root itself");
         // The items go inside it.
         assert_eq!(batch_dest(&f, &remote("/h/a.txt", false)).parent(), Some(f.as_path()));
         // One that exists already is never adopted: a folder (maybe a planted junction) or a file.
         assert!(make_batch_folder(&root, "U1").is_err());
-        std::fs::write(root.join("Tandem-U2"), b"x").unwrap();
+        std::fs::write(root.join("Termurion-U2"), b"x").unwrap();
         assert!(make_batch_folder(&root, "U2").is_err());
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -1,7 +1,7 @@
 //! iTerm2's compiled terminfo entries (`Resources/terminfo`, 46 files), embedded so a WSL
 //! session can find them through `TERMINFO_DIRS` (`PS:3360`). Linux ncurses reads the
 //! first-letter layout (`x/xterm-256color`); iTerm2's copy uses Darwin's hex directories.
-//! The files are written once per run under `%APPDATA%\Tandem\terminfo`.
+//! The files are written once per run under `%APPDATA%\Termurion\terminfo`.
 
 /// Each entry's path relative to the terminfo folder, and its compiled bytes.
 pub const FILES: &[(&str, &[u8])] = &[
@@ -62,7 +62,7 @@ pub fn layout_path(name: &str) -> String {
     }
 }
 
-/// Writes every entry missing or different under `appdata\Tandem\terminfo` and returns that
+/// Writes every entry missing or different under `appdata\Termurion\terminfo` and returns that
 /// folder; a file already identical is left alone. A UNC `appdata` is refused (never written
 /// from the UI thread; `session_env::appdata_local` is the one rule for it).
 #[cfg(windows)]
@@ -70,7 +70,7 @@ pub fn ensure(appdata: &std::path::Path) -> std::io::Result<std::path::PathBuf> 
     if crate::session_env::is_unc(&appdata.to_string_lossy()) {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "the roaming folder is a network path"));
     }
-    let dir = appdata.join("Tandem").join("terminfo");
+    let dir = appdata.join("Termurion").join("terminfo");
     for (path, bytes) in FILES {
         let file = dir.join(path);
         if std::fs::read(&file).is_ok_and(|have| have == *bytes) {
@@ -108,10 +108,10 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn ensure_writes_and_repairs() {
-        let root = std::env::temp_dir().join(format!("tandem-terminfo-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("termurion-terminfo-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let dir = ensure(&root).unwrap();
-        assert_eq!(dir, root.join("Tandem").join("terminfo"));
+        assert_eq!(dir, root.join("Termurion").join("terminfo"));
         for (path, bytes) in FILES {
             assert_eq!(std::fs::read(dir.join(path)).unwrap(), *bytes, "{path}");
         }

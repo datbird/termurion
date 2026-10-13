@@ -852,7 +852,7 @@ impl Screen {
 
     /// The prompt and command ranges of the prompt marks in view, as (kind, start, end) in cells
     /// from the top of the view: kind 0 the prompt (the mark's row start to `prompt_end`), 1 the
-    /// command (`command_range`). Tandem records no excluded subranges. Debug overlay only.
+    /// command (`command_range`). Termurion records no excluded subranges. Debug overlay only.
     pub fn prompt_range_spans(&self) -> Vec<(u8, (i32, usize), (i32, usize))> {
         let offset = self.term.grid().display_offset() as i32;
         let view = |p: Point| (p.line.0 + offset, p.column.0);

@@ -129,10 +129,10 @@ pub fn redirect_document(completed: bool, nonce: &str) -> Option<String> {
 pub const SETUP_PATCHES: [(&str, &str, &str); 7] = [
     ("TITLE", "<title>iTerm2 Browser - Setup</title>", "<title>Tandem Browser - Setup</title>"),
     ("SCRIPT", "    <script>\n        const sessionSecret = '{{SECRET}}';", "    <script nonce=\"{{NONCE}}\">\n        const sessionSecret = '{{SECRET}}';"),
-    ("TANDEM", "    </script>\n</head>", "    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TANDEM_SCRIPT}}\n    </script>\n</head>"),
-    ("ADBLOCK", "onclick=\"enableAdBlocker()\"", "data-tandem-action=\"enableAdBlocker\""),
-    ("REPLAY", "onclick=\"enableInstantReplay()\"", "data-tandem-action=\"enableInstantReplay\""),
-    ("FINISH", "onclick=\"finishSetup()\"", "data-tandem-action=\"finishSetup\""),
+    ("TANDEM", "    </script>\n</head>", "    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TERMURION_SCRIPT}}\n    </script>\n</head>"),
+    ("ADBLOCK", "onclick=\"enableAdBlocker()\"", "data-termurion-action=\"enableAdBlocker\""),
+    ("REPLAY", "onclick=\"enableInstantReplay()\"", "data-termurion-action=\"enableInstantReplay\""),
+    ("FINISH", "onclick=\"finishSetup()\"", "data-termurion-action=\"finishSetup\""),
     // Completion is host-driven: Tandem completes, then loads the welcome page, so a lost race between
     // the message and the page's own navigation cannot send the welcome redirect round again.
     ("FINISH_NAV", "            // Navigate to a blank welcome page\n            window.location.href = 'iterm2-about:welcome';\n", ""),
@@ -141,9 +141,9 @@ pub const SETUP_PATCHES: [(&str, &str, &str); 7] = [
 pub const PROFILE_PATCHES: [(&str, &str, &str); 6] = [
     ("TITLE", "<title>iTerm2 Browser - Create Profile</title>", "<title>Tandem Browser - Create Profile</title>"),
     ("SCRIPT", "    <script>\n        const sessionSecret = '{{SECRET}}';", "    <script nonce=\"{{NONCE}}\">\n        const sessionSecret = '{{SECRET}}';"),
-    ("TANDEM", "    </script>\n</head>", "    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TANDEM_SCRIPT}}\n    </script>\n</head>"),
-    ("CREATE", "onclick=\"createBrowserProfile()\"", "data-tandem-action=\"createBrowserProfile\""),
-    ("CONTINUE", "onclick=\"continueToSetup()\"", "data-tandem-action=\"continueToSetup\""),
+    ("TANDEM", "    </script>\n</head>", "    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TERMURION_SCRIPT}}\n    </script>\n</head>"),
+    ("CREATE", "onclick=\"createBrowserProfile()\"", "data-termurion-action=\"createBrowserProfile\""),
+    ("CONTINUE", "onclick=\"continueToSetup()\"", "data-termurion-action=\"continueToSetup\""),
     // Host-driven too: the switch is handled, then Tandem loads the setup page.
     ("CONTINUE_NAV", "            // Navigate to setup page\n            window.location.href = 'iterm2-about:onboarding-setup';\n", ""),
 ];
@@ -151,11 +151,11 @@ pub const PROFILE_PATCHES: [(&str, &str, &str); 6] = [
 /// Tandem's own script for both pages: one delegated listener. A click a script made up
 /// (`isTrusted` false) does nothing, so a setting changes only by a click of the person on the page's
 /// own button; the page's own functions then post the message.
-pub const TANDEM_SCRIPT: &str = "document.addEventListener('click', function (e) {
+pub const TERMURION_SCRIPT: &str = "document.addEventListener('click', function (e) {
             if (!e.isTrusted || !e.target || !e.target.closest) { return; }
-            var el = e.target.closest('[data-tandem-action]');
+            var el = e.target.closest('[data-termurion-action]');
             if (!el || el.disabled) { return; }
-            switch (el.getAttribute('data-tandem-action')) {
+            switch (el.getAttribute('data-termurion-action')) {
             case 'enableAdBlocker': enableAdBlocker(); break;
             case 'enableInstantReplay': enableInstantReplay(); break;
             case 'finishSetup': finishSetup(); break;
@@ -175,7 +175,7 @@ pub fn document(name: &str, nonce: &str) -> Option<String> {
     };
     match crate::view_source::apply_patches(resource(file)?, patches) {
         // `SECRET` stays iTerm2's slot but holds nothing: the host decides by the source.
-        Ok(html) => Some(crate::browser_pages::page(&html, &[("NONCE", nonce), ("SECRET", ""), ("TANDEM_SCRIPT", TANDEM_SCRIPT)])),
+        Ok(html) => Some(crate::browser_pages::page(&html, &[("NONCE", nonce), ("SECRET", ""), ("TERMURION_SCRIPT", TERMURION_SCRIPT)])),
         Err(e) => {
             crate::rlog!("{}", crate::dlog::name(&e));
             None
@@ -337,7 +337,7 @@ mod tests {
     }
 
     fn store() -> Store {
-        let dir = std::env::temp_dir().join(format!("tandem-onb-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("termurion-onb-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         Store::load(&dir.join("profiles.toml")).unwrap()
     }

@@ -1,4 +1,4 @@
-//! Powerline symbols drawn by Tandem (iTerm2's `iTermBoxDrawingBezierCurveFactory`, Powerline
+//! Powerline symbols drawn by Termurion (iTerm2's `iTermBoxDrawingBezierCurveFactory`, Powerline
 //! half): which code points are drawn, which are double width, and the shape of each as pieces
 //! in cell units, written by hand from the geometry. Nothing is read from a file: every shape is
 //! built here, rasterized with the box pipeline (`boxdraw::rasterize`).
@@ -82,7 +82,7 @@ pub fn is_core(c: u32) -> bool {
     CORE.iter().any(|(a, b)| (*a..=*b).contains(&c))
 }
 
-/// Whether Tandem draws `c` as Powerline: the core always, the extended table with `extended_on`.
+/// Whether Termurion draws `c` as Powerline: the core always, the extended table with `extended_on`.
 pub fn drawn(c: u32, extended_on: bool) -> bool {
     is_core(c) || extended(c, extended_on).is_some()
 }

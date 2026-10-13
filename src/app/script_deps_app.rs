@@ -121,7 +121,7 @@ fn edit_setup_cfg(container: &Path, f: impl FnOnce(Vec<String>) -> Vec<String>) 
     std::fs::write(&path, out).map_err(|e| format!("Could not write {}: {e}", path.display()))
 }
 
-/// The variables the pip command's window gets: Tandem's own with the command's over them
+/// The variables the pip command's window gets: Termurion's own with the command's over them
 /// (`open_pending_deps_run`; the session's own variables name no index).
 fn window_env(env: &[(String, String)]) -> Vec<(String, String)> {
     let inherited = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect();

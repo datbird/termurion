@@ -1,5 +1,5 @@
 //! The AI prompts of Settings > General > AI > Prompts: iTerm2's default texts (bundled
-//! under `resources/ai/prompts/`, "iTerm2" read as "Tandem"), the required-variable warning
+//! under `resources/ai/prompts/`, "iTerm2" read as "Termurion"), the required-variable warning
 //! and the template evaluator.
 
 /// The prompts the Prompts sub-tab edits (`PH:101-111`, raw 0 to 9).

@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::pointer::{self, Down, Mods, Prefs};
 
 /// The handler name of the gate script's messages.
-pub const GATE_HANDLER: &str = "tandemPointer";
+pub const GATE_HANDLER: &str = "termurionPointer";
 
 /// The most a coordinate of a press may be (page pixels); a larger value is not a press.
 const MAX_COORD: f64 = 10_000_000.0;
@@ -165,7 +165,7 @@ pub fn press_of(body: &Value) -> Option<Press> {
 /// the preference of that name.
 pub fn gate_update(keys: &[String], four_click_smart: bool, focus_on_right_or_middle: bool) -> String {
     let list = serde_json::to_string(keys).unwrap_or_else(|_| "[]".into());
-    format!("__tandemGate = Object.freeze({{keys: {list}, fourClick: {four_click_smart}, focus: {focus_on_right_or_middle}}});")
+    format!("__termurionGate = Object.freeze({{keys: {list}, fourClick: {four_click_smart}, focus: {focus_on_right_or_middle}}});")
 }
 
 /// `pointer-gate.js` (Tandem's), with its `{{SECRET}}` key.
@@ -344,7 +344,7 @@ mod tests {
         assert_eq!(first_url_of(&json!([])), None);
         // The expression a live world is given, and the key the page side builds.
         let e = gate_update(&["Button,2,1,,".to_string(), "Button,1,1,^,".to_string()], true, false);
-        assert!(e.starts_with("__tandemGate = Object.freeze({keys: [\"Button,2,1,,\",\"Button,1,1,^,\"], fourClick: true, focus: false});"), "{e}");
+        assert!(e.starts_with("__termurionGate = Object.freeze({keys: [\"Button,2,1,,\",\"Button,1,1,^,\"], fourClick: true, focus: false});"), "{e}");
         assert!(gate_update(&[], false, true).contains("fourClick: false, focus: true"));
         assert_eq!(js_press_key(2, 1, &Mods { ctrl: true, ..NONE }), "Button,2,1,^,");
         assert_eq!(js_press_key(2, 1, &Mods { ctrl: true, ..NONE }), pointer::key(2, 1, Mods { ctrl: true, ..NONE }));
@@ -359,7 +359,7 @@ mod tests {
             assert!(s.contains(&format!("\"{ev}\"")), "{ev}");
         }
         // The table is read at press time from the world-local object, never baked into the script.
-        assert!(s.contains("__tandemGate") && !s.contains("{{KEYS}}") && !s.contains("{{FOCUS}}"));
+        assert!(s.contains("__termurionGate") && !s.contains("{{KEYS}}") && !s.contains("{{FOCUS}}"));
         // iTerm2's rules for the four-click and the Win-click.
         assert!(s.contains("smartAction") && s.contains("\"smart\""));
         // The wire: a press never reports itself as the page's.

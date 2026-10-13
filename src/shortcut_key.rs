@@ -140,7 +140,7 @@ impl ShortcutKey {
         if c.cmd && self != ShortcutKey::Win && self.reachable(c) {
             return true;
         }
-        crate::menus::reaches_tandem(c)
+        crate::menus::reaches_termurion(c)
     }
 
     /// How a menu shows a chord: the real keys.

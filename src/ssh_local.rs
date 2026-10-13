@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use crate::localfs;
 
 /// A download's own hidden file or folder; the person never sees it.
-pub const TEMP_PREFIX: &str = ".Tandem.";
+pub const TEMP_PREFIX: &str = ".Termurion.";
 
 pub fn temp_name(uuid: &str) -> String {
     format!("{TEMP_PREFIX}{uuid}")
@@ -375,7 +375,7 @@ pub fn free_space(dir: &Path) -> Result<u64, String> {
 /// A stale temp: a `.Tandem.` file or folder, or a `Tandem-<UUID>` batch folder, untouched for
 /// more than a day (a crash mid-download leaves one; P24).
 pub fn is_stale_temp(name: &str, is_dir: bool, age_secs: u64) -> bool {
-    let ours = name.starts_with(TEMP_PREFIX) || (is_dir && name.strip_prefix("Tandem-").is_some_and(|u| uuid::Uuid::try_parse(u).is_ok()));
+    let ours = name.starts_with(TEMP_PREFIX) || (is_dir && name.strip_prefix("Termurion-").is_some_and(|u| uuid::Uuid::try_parse(u).is_ok()));
     ours && age_secs > 24 * 3600
 }
 
@@ -503,13 +503,13 @@ mod tests {
     #[test]
     fn stale_temps_are_swept() {
         let day = 24 * 3600;
-        assert!(is_stale_temp(".Tandem.ABC", false, day + 1) && is_stale_temp(".Tandem.ABC", true, day + 1));
-        assert!(!is_stale_temp(".Tandem.ABC", false, day), "a day old exactly is kept");
-        assert!(!is_stale_temp("a.txt", false, 10 * day) && !is_stale_temp(".Tandemx", false, 0));
+        assert!(is_stale_temp(".Termurion.ABC", false, day + 1) && is_stale_temp(".Termurion.ABC", true, day + 1));
+        assert!(!is_stale_temp(".Termurion.ABC", false, day), "a day old exactly is kept");
+        assert!(!is_stale_temp("a.txt", false, 10 * day) && !is_stale_temp(".Termurionx", false, 0));
         let u = "0f8fad5b-d9cb-469f-a165-70867728950e";
-        assert!(is_stale_temp(&format!("Tandem-{u}"), true, 2 * day));
-        assert!(!is_stale_temp(&format!("Tandem-{u}"), false, 2 * day), "a batch is a folder");
-        assert!(!is_stale_temp("Tandem-notes", true, 2 * day));
+        assert!(is_stale_temp(&format!("Termurion-{u}"), true, 2 * day));
+        assert!(!is_stale_temp(&format!("Termurion-{u}"), false, 2 * day), "a batch is a folder");
+        assert!(!is_stale_temp("Termurion-notes", true, 2 * day));
     }
 
     // The hostile archives of the pure check also stop `unzip` before anything is written.
@@ -533,7 +533,7 @@ mod tests {
 
         fn fresh(tag: &str) -> PathBuf {
             static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            let p = std::env::temp_dir().join(format!("tandem-sshlocal-{tag}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
+            let p = std::env::temp_dir().join(format!("termurion-sshlocal-{tag}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
             let _ = std::fs::remove_dir_all(&p);
             std::fs::create_dir_all(&p).unwrap();
             p
@@ -547,7 +547,7 @@ mod tests {
         #[test]
         fn finish_follows_iterm2() {
             let d = fresh("finish");
-            let temp = d.join(".Tandem.U");
+            let temp = d.join(".Termurion.U");
             std::fs::write(&temp, "abc").unwrap();
             let a = d.join("a.txt");
             assert_eq!(finish(&temp, &a, "ssh://h/a.txt"), Ok(a.clone()));
@@ -570,7 +570,7 @@ mod tests {
         fn a_refused_final_name_is_not_written() {
             let d = fresh("refuse");
             for name in ["x.url", "x.lnk", "desktop.ini", "x.theme"] {
-                let temp = d.join(".Tandem.R");
+                let temp = d.join(".Termurion.R");
                 std::fs::write(&temp, "[InternetShortcut]").unwrap();
                 assert_eq!(finish(&temp, &d.join(name), "ssh://h/x"), Err(NOT_ALLOWED.to_string()), "{name}");
                 assert!(!temp.exists() && !d.join(name).exists(), "{name}");
@@ -725,16 +725,16 @@ mod tests {
         fn old_temps_are_removed_from_a_folder() {
             let t = fresh("sweep");
             let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 3600);
-            let stale = t.join(".Tandem.OLD");
+            let stale = t.join(".Termurion.OLD");
             std::fs::write(&stale, "x").unwrap();
             std::fs::File::options().write(true).open(&stale).unwrap().set_modified(old).unwrap();
-            let young = t.join(".Tandem.NEW");
+            let young = t.join(".Termurion.NEW");
             std::fs::write(&young, "x").unwrap();
             let other = t.join("keep.txt");
             std::fs::write(&other, "x").unwrap();
             std::fs::File::options().write(true).open(&other).unwrap().set_modified(old).unwrap();
             sweep_stale(&t, std::time::SystemTime::now());
-            assert_eq!(listing(&t), [".Tandem.NEW", "keep.txt"]);
+            assert_eq!(listing(&t), [".Termurion.NEW", "keep.txt"]);
             let _ = std::fs::remove_dir_all(&t);
         }
     }

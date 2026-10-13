@@ -86,7 +86,7 @@ impl Command {
             Command::FramerReset1 => "reset".into(),
             Command::FramerReset2(code) => lines(&["reset2", code]),
             Command::FramerAutopoll => "autopoll".into(),
-            // iTerm2 walks a dictionary (any order); Tandem keeps the order given.
+            // iTerm2 walks a dictionary (any order); Termurion keeps the order given.
             Command::FramerSave(pairs) => std::iter::once("save".to_string()).chain(pairs.iter().map(|(k, v)| format!("{k}={v}"))).collect::<Vec<_>>().join("\n"),
             Command::FramerGetenv(name) => lines(&["getenv", name]),
             Command::FramerExecPythonStatements(statements) => lines(&["runpy", &b64(statements.as_bytes())]),
@@ -184,11 +184,11 @@ impl Command {
     }
 }
 
-/// How long a timed command may go without a begin, a line or its end (Tandem's; iTerm2
+/// How long a timed command may go without a begin, a line or its end (Termurion's; iTerm2
 /// waits forever, ruling 2), and how long a setup stalled in ground may wait.
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Why a recovery that never finished fails (Tandem's).
+/// Why a recovery that never finished fails (Termurion's).
 pub const RECOVERY_TIMEOUT: &str = "The ssh connection could not be recovered: the remote did not finish answering";
 
 /// Seconds added per square MiB of a command's encoded bytes. conductor.sh reads a command
@@ -217,7 +217,7 @@ fn due_at(t: Instant, timeout: Duration) -> Option<Instant> {
 /// The first line of the abort text (`PS:25594`).
 pub const SETUP_ERROR: &str = "An error occurred while setting up the SSH environment:";
 
-/// The failure text for a command the remote stopped answering for `timeout` (Tandem's),
+/// The failure text for a command the remote stopped answering for `timeout` (Termurion's),
 /// built from its description so a tarball never lands on the screen, and a setenv value
 /// never does.
 pub fn timeout_text(cmd: &Command, timeout: Duration) -> String {
@@ -372,7 +372,7 @@ pub struct Setup {
     pub initial_directory: Option<String>,
     pub inject: bool,
     pub parsed: ParsedArgs,
-    /// Whether the hook's origin token was Tandem's own (the first hop of a session Tandem
+    /// Whether the hook's origin token was Termurion's own (the first hop of a session Termurion
     /// started): only such a chain's first hop is text the person typed.
     pub local_origin: bool,
 }
@@ -410,7 +410,7 @@ pub enum Handler {
     Reset { code: String, lines: Vec<String> },
     /// A framer `file` request (`handleFile`, `CD:2273-2291`): every reply line is kept (up
     /// to the request's cap) and the end completes it with them joined with "" and the
-    /// status; an abort or a cancel completes it with ("", -1). `id` is Tandem's.
+    /// status; an abort or a cancel completes it with ("", -1). `id` is Termurion's.
     File { id: u64, lines: Vec<String> },
 }
 
@@ -534,15 +534,15 @@ pub fn python_version(output: &str) -> Option<(u32, u32)> {
     Some((groups[1].parse().unwrap_or(0), groups[2].parse().unwrap_or(0)))
 }
 
-/// What getshell and pythonversion keep of a reply, in bytes and lines (Tandem's: iTerm2 keeps
+/// What getshell and pythonversion keep of a reply, in bytes and lines (Termurion's: iTerm2 keeps
 /// it all). The remote is not trusted, and the shell and version sit in the first lines; past
 /// either limit the step fails.
 pub const GETSHELL_LIMIT: (usize, usize) = (64 * 1024, 256);
 pub const PYTHON_LIMIT: (usize, usize) = (4 * 1024, 64);
-/// The login reply is a pid, or a short failure text (Tandem's).
+/// The login reply is a pid, or a short failure text (Termurion's).
 pub const LOGIN_LIMIT: (usize, usize) = (REPLY_MAX, 64);
 
-/// The failure text for a reply past its limit (Tandem's).
+/// The failure text for a reply past its limit (Termurion's).
 pub fn reply_too_long(cmd: &Command) -> String {
     format!("{}: The reply is too long", cmd.string_value())
 }
@@ -608,7 +608,7 @@ pub fn hook_banner(sshargs: &str) -> String {
 }
 
 /// The most characters of a remote-sized text (the hook banner, a failure reason naming the
-/// remote's ssh args) Tandem shows (Tandem's: iTerm2 shows it all, up to its 1 MiB DCS cap).
+/// remote's ssh args) Termurion shows (Termurion's: iTerm2 shows it all, up to its 1 MiB DCS cap).
 pub const MAX_SHOWN: usize = 1024;
 
 /// `text` cut to `MAX_SHOWN` characters, with an ellipsis when cut.
@@ -660,10 +660,10 @@ pub enum Route {
 }
 
 /// handlesKeystrokes gives Conductor (`PS:4278-4293`, `PS:4411-4432`), queueWrites gives
-/// Held (`PS:4191-4197`). Where iTerm2 then writes to the pty, Tandem first looks outward:
+/// Held (`PS:4191-4197`). Where iTerm2 then writes to the pty, Termurion first looks outward:
 /// while an ancestor's framer reads the pty (a level 1 hop inside a framed session, a nested
 /// exit before its EndSSH, a cat'd hook that unhooked, or a hop that frames under an unhooked
-/// parent), the nearest one, the current conductor first, sends the bytes (Tandem-side guard:
+/// parent), the nearest one, the current conductor first, sends the bytes (Termurion-side guard:
 /// iTerm2 types them into framer.py's stdin). Direct only with none.
 pub fn route(c: Option<&Conductor>) -> Route {
     let Some(c) = c else { return Route::Direct };
@@ -702,7 +702,7 @@ pub struct Conductor {
     /// Set by `exec_framer` (14c, `conductor_framer.rs`).
     pub(crate) framer_version: Option<u8>,
     /// The `%it2` frames this conductor owns, the newest 16, each cut at `IT2_ENTRY_MAX`.
-    /// Nothing reads them: the it2 proxy is n/a (ruling 3) and Tandem never sends `it2listen`.
+    /// Nothing reads them: the it2 proxy is n/a (ruling 3) and Termurion never sends `it2listen`.
     pub it2_inbox: Vec<String>,
     /// The remote's `uname` output, trimmed (`CD:1912-1917`).
     pub uname: Option<String>,
@@ -979,7 +979,7 @@ impl Conductor {
     /// (`CD:3039-3058`: the parent's `sendKeys`): a parent whose framer runs sends them to its
     /// framed shell; any other hands them to its own parent, and the outermost writes them raw
     /// (`_queueWrites` cleared, never held). iTerm2 writes them raw at the first unframed
-    /// parent, into the framer of any framing one above it (Tandem-side guard, see `route`).
+    /// parent, into the framer of any framing one above it (Termurion-side guard, see `route`).
     fn write_through(&mut self, bytes: Vec<u8>) {
         if self.frames_keys() {
             self.send_keys(&bytes);
@@ -1099,7 +1099,7 @@ impl Conductor {
     }
 
     /// queueWrites (`CD:656-670`): the session holds its writes while this is true. Only
-    /// `write()` clears iTerm2's own flag, and Tandem's writes are never held, so the flag
+    /// `write()` clears iTerm2's own flag, and Termurion's writes are never held, so the flag
     /// is the state; a conductor under an unhooked parent never holds writes.
     pub fn queue_writes(&self) -> bool {
         !self.unhooked() && self.parent.as_ref().is_none_or(|p| p.queue_writes())
@@ -1262,7 +1262,7 @@ impl Conductor {
         self.transition = saved;
     }
 
-    /// handleCommandBegin (`CD:2468-2472`): iTerm2 only logs it; Tandem's command clock
+    /// handleCommandBegin (`CD:2468-2472`): iTerm2 only logs it; Termurion's command clock
     /// restarts. A begin from a deeper framed conductor is its parent's, as a line.
     pub fn handle_begin(&mut self, id: &str, depth: i32) {
         if depth != self.depth && self.framing() {
@@ -1427,7 +1427,7 @@ impl Conductor {
             // A nested setup under an unhooked parent holds no writes, but the pane's DCS hook
             // still takes its output (final review Minor 1): it is timed as well.
             State::Ground => (!self.framing()).then_some(COMMAND_TIMEOUT),
-            // Tandem's: a remote that begins a recovery and stops is failed, not waited on.
+            // Termurion's: a remote that begins a recovery and stops is failed, not waited on.
             State::Recovery(_) => Some(COMMAND_TIMEOUT),
             State::Unhooked | State::Recovered => None,
         };
@@ -1594,12 +1594,12 @@ fn silence_file(context: &mut Context, told: &[u64]) {
     }
 }
 
-/// The most a restored conductor's JSON may hold (Tandem's): the state file is read as
+/// The most a restored conductor's JSON may hold (Termurion's): the state file is read as
 /// untrusted, and one conductor's saved strings are each a few KiB at most.
 pub const JSON_MAX: usize = 1024 * 1024;
 
 /// The most conductors one saved chain may hold (a chain deeper than the hooks nest is not one
-/// Tandem saved).
+/// Termurion saved).
 const CHAIN_MAX: usize = 16;
 
 /// A saved id (a dcs id, a client unique id) is a token, not a document.
@@ -1630,7 +1630,7 @@ struct Saved {
 }
 
 impl Saved {
-    /// Whether every value is one Tandem would have saved: text of a sane size with no control
+    /// Whether every value is one Termurion would have saved: text of a sane size with no control
     /// characters, ids that are short, a pid that names a process.
     fn sane(&self) -> bool {
         let text = |s: &str| s.len() <= crate::ssh_recovery::VALUE_MAX && !s.chars().any(char::is_control);
@@ -2151,7 +2151,7 @@ mod tests {
 
     #[test]
     fn routes_never_bypass_a_framing_ancestor() {
-        // Tandem-side guard: while an ancestor's framer runs, the nearest one sends.
+        // Termurion-side guard: while an ancestor's framer runs, the nearest one sends.
         let framing = || {
             let mut c = root();
             c.framed_pid = Some(1);
@@ -2539,7 +2539,7 @@ mod tests {
     #[test]
     fn getshell_skips_error_lines() {
         // iTerm2 bug B15: conductor.sh calls an undefined using_passwd, and the shell's error
-        // comes first in getshell's reply; Tandem takes the first line that starts a shell and
+        // comes first in getshell's reply; Termurion takes the first line that starts a shell and
         // home pair of absolute paths.
         let mut c = started(zsh_injected());
         reply(&mut c, &["sh: 160: using_passwd: not found\n/bin/zsh\n/home/user\n"], 0);
@@ -2804,7 +2804,7 @@ mod tests {
 
     #[test]
     fn payload_order_follows_iterm2() {
-        let home = std::env::temp_dir().join(format!("tandem-conductor-payloads-{}", std::process::id()));
+        let home = std::env::temp_dir().join(format!("termurion-conductor-payloads-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         std::fs::write(home.join(".vimrc"), b"set nu\n").unwrap();
@@ -2873,7 +2873,7 @@ mod tests {
 
     #[test]
     fn skipped_files_reach_the_pane() {
-        let missing = std::env::temp_dir().join(format!("tandem-conductor-missing-{}", std::process::id())).join("nothing.txt");
+        let missing = std::env::temp_dir().join(format!("termurion-conductor-missing-{}", std::process::id())).join("nothing.txt");
         let mut c = Conductor::new(setup("A"), None, "U");
         c.add_path(&missing.to_string_lossy(), "~/", Path::new("C:\\"));
         c.start();
@@ -2958,7 +2958,7 @@ mod tests {
 
     #[test]
     fn level_one_follows_iterm2() {
-        let dir = std::env::temp_dir().join(format!("tandem-conductor-level1-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-conductor-level1-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let hello = dir.join("hello.txt");

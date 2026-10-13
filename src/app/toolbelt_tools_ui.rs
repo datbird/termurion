@@ -1351,7 +1351,7 @@ impl App {
                 let shown = self.tool_shown(tool);
                 if let Shown::BrowserMarks(marks) = &*shown {
                     // Each selected mark goes at once, as iTerm2's tool removes them (`TNM:185-190`); a
-                    // person's click in Tandem's own list, so no page is involved.
+                    // person's click in Termurion's own list, so no page is involved.
                     let Some(pane) = self.focused_id().filter(|&id| self.is_browser_pane(id)) else { return };
                     let guids: Vec<String> = rows.iter().filter_map(|&r| marks.get(r).map(|(g, _)| g.clone())).collect();
                     for guid in guids {
@@ -1628,7 +1628,7 @@ fn drop_slot(shown: &Shown, rows: &[Rect], y: f32) -> Option<usize> {
 const BROWSER_TOOL_MARKS: usize = 2000;
 
 /// The Named Marks tool's rows for a browser session: guid and text, cache order kept (`TNM:128-140`),
-/// "(Unnamed)" for an empty name (`TNM:163`), names cleaned by Tandem's sanitizer and capped.
+/// "(Unnamed)" for an empty name (`TNM:163`), names cleaned by Termurion's sanitizer and capped.
 fn browser_mark_rows(marks: &[crate::browser_marks::Mark]) -> Vec<(String, String)> {
     marks
         .iter()

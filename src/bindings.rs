@@ -358,7 +358,7 @@ pub fn type_help(key: &str) -> Option<&'static str> {
 }
 
 /// The dialog's background help (`EBV:131-168`), with its example variable and environment
-/// variable; "iTerm2" is "Tandem". Plain text: the markdown's headings and code are kept as
+/// variable; "iTerm2" is "Termurion". Plain text: the markdown's headings and code are kept as
 /// lines.
 pub fn background_help(example_user_var: &str, example_env_var: &str) -> String {
     format!(

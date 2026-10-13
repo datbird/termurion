@@ -41,7 +41,7 @@ pub fn chroma_hue(center: (f32, f32), radius: f32, p: (f32, f32)) -> (f32, f32) 
 }
 
 /// The color a drag to (chroma, hue) makes of `from`: a and b from the new chroma and hue, the
-/// lightness kept. Tandem stores sRGB, so a spot beyond the sRGB gamut gets the most chroma that
+/// lightness kept. Termurion stores sRGB, so a spot beyond the sRGB gamut gets the most chroma that
 /// fits at that lightness and hue (iTerm2 keeps the wider P3 color).
 pub fn dragged(from: Rgb, chroma: f32, hue: f32) -> Rgb {
     let l = lab_of(from).l;

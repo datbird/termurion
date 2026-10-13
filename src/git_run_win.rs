@@ -94,7 +94,7 @@ fn quote_arg(a: &str) -> String {
     out
 }
 
-/// The child's environment block: Tandem's, less `GIT_ENV_REMOVED` (any case, as Windows
+/// The child's environment block: Termurion's, less `GIT_ENV_REMOVED` (any case, as Windows
 /// names are), with `GIT_ENV` set; sorted as Windows keeps it.
 fn env_block(vars: impl IntoIterator<Item = (OsString, OsString)>) -> Vec<u16> {
     let named = |k: &OsStr, n: &str| k.to_string_lossy().eq_ignore_ascii_case(n);

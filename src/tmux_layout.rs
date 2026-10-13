@@ -1,6 +1,6 @@
 //! tmux window layouts (iTerm2's TmuxLayoutParser and the checksum of
 //! iTermTmuxLayoutBuilder): `csum,WxH,X,Y` followed by a pane id, `{...}` (side by side),
-//! or `[...]` (stacked). Tandem's `Layout` is binary, so an n-ary split becomes nested
+//! or `[...]` (stacked). Termurion's `Layout` is binary, so an n-ary split becomes nested
 //! splits whose ratios come from tmux's cell counts.
 
 use std::collections::HashMap;
@@ -169,7 +169,7 @@ pub fn border_status(node: Node, top: bool, bottom: bool, window_h: u32) -> Node
 }
 
 /// What a window of this layout draws in pixels at `cell` (width, height): tmux's own cells, a
-/// divider counting as one cell as tmux counts it (Tandem's gap sits inside that cell).
+/// divider counting as one cell as tmux counts it (Termurion's gap sits inside that cell).
 pub fn natural_size(node: &Node, cell: (f32, f32), _gap: f32) -> (f32, f32) {
     (node.w() as f32 * cell.0, node.h() as f32 * cell.1)
 }
@@ -231,7 +231,7 @@ pub fn sizes(node: &Node) -> Vec<(u32, u32, u32)> {
     }
 }
 
-/// Tandem's layout: each n-ary split nests to the right, and each ratio is the first
+/// Termurion's layout: each n-ary split nests to the right, and each ratio is the first
 /// child's cells over the cells both sides share (tmux's one-cell divider is the gap).
 pub fn to_layout(node: &Node, ids: &HashMap<u32, PaneId>) -> Option<Layout> {
     fn go(n: &Node, ids: &HashMap<u32, PaneId>) -> Option<Tree<PaneId>> {
@@ -328,7 +328,7 @@ mod tests {
         let Tree::Split { ratio, b, .. } = to_layout(&three, &ids).unwrap().tree() else { panic!() };
         assert!((ratio - 20.0 / 79.0).abs() < 1e-6, "{ratio}");
         assert!(matches!(*b, Tree::Split { ratio, .. } if (ratio - 0.5).abs() < 1e-6));
-        // A pane Tandem has no id for: no layout.
+        // A pane Termurion has no id for: no layout.
         assert!(to_layout(&node, &HashMap::new()).is_none());
         // pane-border-status top: the top panes lose a row.
         let top = border_status(node.clone(), true, false, 24);

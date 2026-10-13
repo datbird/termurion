@@ -2,8 +2,8 @@
 //! `PTYSession.m`), plus the one place a sound name is judged (B2). Pure: the clock, the registry
 //! and the file system are given by the caller.
 //!
-//! The count is the bells rung while no Tandem window is active plus the sessions whose status
-//! is the highest-priority pattern (waiting), until Tandem is active or their tab is selected.
+//! The count is the bells rung while no Termurion window is active plus the sessions whose status
+//! is the highest-priority pattern (waiting), until Termurion is active or their tab is selected.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -21,7 +21,7 @@ pub struct Badge {
 const MAX_WAITING: usize = 4096;
 
 impl Badge {
-    /// A bell rang: counted only while the key is on and no Tandem window is active
+    /// A bell rang: counted only while the key is on and no Termurion window is active
     /// (`incrementBellCount`). True when it was counted.
     pub fn bell(&mut self, enabled: bool, active: bool) -> bool {
         if !enabled || active {
@@ -31,13 +31,13 @@ impl Badge {
         true
     }
 
-    /// A Tandem window became key or was restored (`resetBellCount`).
+    /// A Termurion window became key or was restored (`resetBellCount`).
     pub fn reset_bells(&mut self) {
         self.bells = 0;
     }
 
     /// A session's status changed: it is waiting when its status is the highest-priority
-    /// pattern; counted only while Tandem is not active, and leaving always removes it
+    /// pattern; counted only while Termurion is not active, and leaving always removes it
     /// (`sessionDidEnterWaiting`, `sessionDidLeaveWaiting`).
     pub fn waiting(&mut self, session: &str, is_waiting: bool, active: bool) {
         if !is_waiting {
@@ -54,7 +54,7 @@ impl Badge {
         }
     }
 
-    /// Tandem came to the front: the waiting sessions clear, the bells keep (`applicationDidBecomeActive`).
+    /// Termurion came to the front: the waiting sessions clear, the bells keep (`applicationDidBecomeActive`).
     pub fn became_active(&mut self) {
         self.waiting.clear();
     }
@@ -81,7 +81,7 @@ pub fn is_waiting(status: Option<&str>, priorities: &[&str]) -> bool {
 }
 
 /// Whether the taskbar button flashes for a bell (`PTYSession.m:19114`): something was shown or
-/// counted, no Tandem window is active, and `BounceOnInactiveBell` is on.
+/// counted, no Termurion window is active, and `BounceOnInactiveBell` is on.
 pub fn bounce(notified: bool, active: bool, on: bool) -> bool {
     notified && !active && on
 }
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn accept_file_wants_a_local_small_wav() {
-        let dir = std::env::temp_dir().join(format!("tandem-sound-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-sound-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let wav = dir.join("ok.wav");
         std::fs::write(&wav, b"RIFF").unwrap();

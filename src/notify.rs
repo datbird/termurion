@@ -119,7 +119,7 @@ fn window() -> Result<HWND, String> {
     if w != 0 {
         return Ok(w as HWND);
     }
-    let class: Vec<u16> = "TandemNotifications\0".encode_utf16().collect();
+    let class: Vec<u16> = "TermurionNotifications\0".encode_utf16().collect();
     unsafe {
         let module = GetModuleHandleW(std::ptr::null());
         let wc = WNDCLASSW { lpfnWndProc: Some(proc), hInstance: module, lpszClassName: class.as_ptr(), ..std::mem::zeroed() };

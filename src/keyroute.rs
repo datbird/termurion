@@ -467,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn stock_global_win_arrows_stay_tandems() {
+    fn stock_global_win_arrows_stay_termurions() {
         let e = toml::Table::new();
         let stock = crate::globals::keymaps::factory_global().clone();
         let s = respecting(&ctx(&e, &stock));
@@ -477,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn natural_text_editing_win_arrows_stay_tandems() {
+    fn natural_text_editing_win_arrows_stay_termurions() {
         let e = toml::Table::new();
         // The shipped preset, picked in a profile's Keys, is entries verbatim: Tandem's own.
         let natural = &crate::globals::keymaps::presets().iter().find(|(n, _)| n == "Natural Text Editing").expect("the preset").1;

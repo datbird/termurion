@@ -1,5 +1,5 @@
 //! Sixel graphics: `ESC P <params> q <data> ESC \`, decoded to RGBA. iTerm2 hands sixel to
-//! libsixel; Tandem decodes it here. Pixels come out opaque, as iTerm2 flattens them.
+//! libsixel; Termurion decodes it here. Pixels come out opaque, as iTerm2 flattens them.
 
 /// Larger images are refused.
 pub const MAX_SIDE: usize = crate::images::MAX_SIDE as usize;

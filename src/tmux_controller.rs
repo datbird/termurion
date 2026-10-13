@@ -1748,7 +1748,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pane_closed_in_tandem_comes_back_with_the_next_layout() {
+    fn a_pane_closed_in_termurion_comes_back_with_the_next_layout() {
         let mut r = opened();
         r.sent();
         r.lines(&["%layout-change @0 8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1} x *"]);

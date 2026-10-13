@@ -1,4 +1,4 @@
-// tandem-cloak.js
+// termurion-cloak.js
 // Tandem's own script (not from iTerm2). It runs first in the page world, as iTerm2's
 // cloak-page-world.js does. In frames that belong to known captcha and fingerprinting endpoints
 // (Cloudflare Turnstile, hCaptcha, Arkose/FunCaptcha, reCAPTCHA) it removes window.chrome.webview,

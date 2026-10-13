@@ -16,7 +16,7 @@ pub const COMMANDS: u32 = 1 << 8;
 pub const REMOVE_NEWLINES: u32 = 1 << 9;
 pub const REGEX: u32 = 1 << 10;
 pub const NO_WARNINGS: u32 = 1 << 11;
-/// Tandem's: a plain paste (the menu, keys, clicks, drops), the only kind the tabs question
+/// Termurion's: a plain paste (the menu, keys, clicks, drops), the only kind the tabs question
 /// is for (iTerm2 asks it in pasteString:flags: only).
 pub const PLAIN: u32 = 1 << 12;
 
@@ -129,7 +129,7 @@ fn backslashed(t: &str, which: impl Fn(char) -> bool) -> String {
 
 /// ESC [200~ ... ESC [201~; `per_line`: each line on its own, its newline outside.
 pub fn bracket(text: &str, per_line: bool) -> String {
-    // No ESC inside, so the text cannot end its own bracket (Tandem keeps this guard).
+    // No ESC inside, so the text cannot end its own bracket (Termurion keeps this guard).
     let wrap = |s: &str| format!("\x1b[200~{}\x1b[201~", s.replace('\x1b', ""));
     if !per_line {
         return wrap(text);

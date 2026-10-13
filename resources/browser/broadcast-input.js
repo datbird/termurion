@@ -31,7 +31,7 @@
             }
             win.count += 1;
             body.sessionSecret = SECRET;
-            window.webkit.messageHandlers.tandemBroadcastInput.postMessage(body);
+            window.webkit.messageHandlers.termurionBroadcastInput.postMessage(body);
         }
         // The check shared with the receiving side (Tandem's world; a page cannot replace its builtins).
         {{FIELD_CHECK}}
@@ -41,10 +41,10 @@
         function secret(e) {
             try {
                 const t = e.composedPath ? e.composedPath()[0] : e.target;
-                if (t && t.nodeType === 1 && tandemSecretField(t, SENSITIVE)) {
+                if (t && t.nodeType === 1 && termurionSecretField(t, SENSITIVE)) {
                     return true;
                 }
-                return tandemSecretField(tandemDeepest(), SENSITIVE);
+                return termurionSecretField(termurionDeepest(), SENSITIVE);
             } catch (x) {
                 return true;
             }

@@ -36,7 +36,7 @@
     // names): never in what the model reads. The injecting scripts are upstream's, so this list
     // names what they create.
     clone
-        .querySelectorAll('{{TANDEM_UI}}')
+        .querySelectorAll('{{TERMURION_UI}}')
         .forEach(e => e.remove());
     // Never the value of a secret field (the AI browser tools hand this markdown to a model).
     clone

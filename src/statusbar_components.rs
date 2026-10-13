@@ -150,7 +150,7 @@ const ALL: [Kind; 22] = [
 
 impl Kind {
     /// The kind for a layout component's class; None for a class this module does not
-    /// know (a 9i class, the framework's own, or one Tandem truly does not recognize).
+    /// know (a 9i class, the framework's own, or one Termurion truly does not recognize).
     pub fn of(class: &str) -> Option<Kind> {
         Some(match class {
             BATTERY_CLASS => Kind::Battery,
@@ -478,7 +478,7 @@ pub fn trigger_menu_title(action_title: &str, regex: &str) -> String {
     format!("{title} \u{2014} {regex}")
 }
 
-/// `statusBarComponentExemplarWithBackgroundColor:textColor:` for a content class Tandem
+/// `statusBarComponentExemplarWithBackgroundColor:textColor:` for a content class Termurion
 /// knows; None for one it does not (the framework's own classes), or whose exemplar never
 /// varies (the five 9i classes, `static_exemplar`), so the caller (`statusbar::exemplar`)
 /// falls back to that class's static `Info::exemplar`. `clock_text` is the Clock's own

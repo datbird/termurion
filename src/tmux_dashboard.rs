@@ -8,7 +8,7 @@ pub struct SessionRow {
     pub name: String,
 }
 
-/// A window row: its id, name, and whether it shows in Tandem.
+/// A window row: its id, name, and whether it shows in Termurion.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowRow {
     pub id: u32,

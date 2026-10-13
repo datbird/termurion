@@ -373,7 +373,7 @@ impl App {
     }
 
     /// Closes a window by its Registry key, undoable like Close Window. Without `force`,
-    /// Tandem's confirmation and then tmux's question (which then carries the close out);
+    /// Termurion's confirmation and then tmux's question (which then carries the close out);
     /// false when the person declined.
     pub(super) fn api_close_window(&mut self, key: u64, force: bool, event_loop: &ActiveEventLoop) -> bool {
         let Some(id) = self.window_id_of_key(key) else { return false };
@@ -394,7 +394,7 @@ impl App {
 
     /// Closes a tab by its id, undoable like Close Tab. Without `force`, Lock Layout refuses
     /// it, then tmux's question for a tmux tab (which then carries the close out), else
-    /// Tandem's confirmation; false when refused or declined.
+    /// Termurion's confirmation; false when refused or declined.
     pub(super) fn api_close_tab(&mut self, tab: u64, force: bool, event_loop: &ActiveEventLoop) -> bool {
         let Some(k) = self.registry.order().into_iter().find(|k| self.window_tabs(*k).is_some_and(|(tabs, _)| tabs.iter().any(|t| t.id == tab))) else { return false };
         if !self.window_id_of_key(k).is_some_and(|w| self.enter(w)) {
@@ -418,7 +418,7 @@ impl App {
 
     /// Closes a session, undoable like Close Session (alone in its tab it closes as the tab).
     /// The caller restores a buried one first (`CloseStep::Session::unbury`); a session in no
-    /// window is not closed. Without `force`, Lock Layout refuses it, else Tandem's
+    /// window is not closed. Without `force`, Lock Layout refuses it, else Termurion's
     /// confirmation; false when refused or declined.
     pub(super) fn api_close_session(&mut self, pane: PaneId, force: bool, event_loop: &ActiveEventLoop) -> bool {
         if !self.enter_pane_window(pane) {
@@ -537,7 +537,7 @@ impl App {
                 }
                 let pane = self.tabs.last()?.focused;
                 if select {
-                    // In front within Tandem, never activating it (iTerm2's CreateTab sets
+                    // In front within Termurion, never activating it (iTerm2's CreateTab sets
                     // canActivate NO and makes the window key only, `H:2489-2498`).
                     self.order_front(w);
                 } else {
@@ -1500,7 +1500,7 @@ impl App {
         }
     }
 
-    /// For a tmux pane, whether its tmux window is hidden (how Tandem and iTerm2 bury a tmux
+    /// For a tmux pane, whether its tmux window is hidden (how Termurion and iTerm2 bury a tmux
     /// session); None for any other session.
     fn api_tmux_hidden(&self, pane: PaneId) -> Option<bool> {
         let (gw, _, window) = self.tmux_of(pane)?;

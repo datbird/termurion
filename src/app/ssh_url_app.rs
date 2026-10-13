@@ -92,12 +92,12 @@ pub(super) fn forget_hotkey_url(urls: &mut HashMap<String, String>, window: &sup
 }
 
 impl App {
-    /// The profile `ssh` is bound to, when Tandem is the default handler (iTerm2's `profileForScheme`).
+    /// The profile `ssh` is bound to, when Termurion is the default handler (iTerm2's `profileForScheme`).
     pub(super) fn bound_ssh_profile(&self) -> Option<String> {
         self.bound_profile("ssh")
     }
 
-    /// The profile `scheme` (ssh, telnet or ftp) is bound to, when Tandem is its default handler.
+    /// The profile `scheme` (ssh, telnet or ftp) is bound to, when Termurion is its default handler.
     pub(super) fn bound_profile(&self, scheme: &str) -> Option<String> {
         let exe = std::env::current_exe().ok()?;
         let table = self.globals.table(crate::url_schemes::HANDLERS_KEY);
@@ -106,7 +106,7 @@ impl App {
 
     /// The profile an ssh:, telnet: or ftp: URL opens in and where (iTerm2's `getUrl`): the scheme's
     /// bound profile, else the default; a profile with a hotkey window opens it there. None when
-    /// Tandem does not handle the scheme.
+    /// Termurion does not handle the scheme.
     fn url_route(&self, url: &str) -> Option<(String, UrlHome)> {
         let default = self.store.default_profile().guid();
         let bound = crate::url_open::scheme_of(url).and_then(|scheme| self.bound_profile(scheme));
@@ -116,10 +116,10 @@ impl App {
         Some((guid, home))
     }
 
-    /// An ssh:, telnet: or ftp: URL for Tandem to open (iTerm2's `getUrl`, `AD:2311-2322`): in the
+    /// An ssh:, telnet: or ftp: URL for Termurion to open (iTerm2's `getUrl`, `AD:2311-2322`): in the
     /// profile's hotkey window when it has one (shown, with a tab in it; made, with the URL as
-    /// its first session), else a tab. False when Tandem does not handle it (another scheme).
-    pub(super) fn open_url_in_tandem(&mut self, url: &str) -> bool {
+    /// its first session), else a tab. False when Termurion does not handle it (another scheme).
+    pub(super) fn open_url_in_termurion(&mut self, url: &str) -> bool {
         let Some((guid, home)) = self.url_route(url) else { return false };
         match home {
             UrlHome::Tab => self.open_ssh_url(url, Some(guid)),
@@ -213,7 +213,7 @@ impl App {
         let Some(text) = crate::url_launch::open_banner(url) else { return };
         // A hotkey window brings itself forward; the normal window must not cover it.
         let hotkey = self.url_route(url).is_some_and(|(_, home)| home != UrlHome::Tab);
-        if self.open_url_in_tandem(url) {
+        if self.open_url_in_termurion(url) {
             self.banners.set("ssh-url", text);
             if !hotkey {
                 self.bring_forward();
@@ -274,7 +274,7 @@ mod tests {
         assert_eq!(url_home(true, false), UrlHome::HotkeyNew);
     }
 
-    /// The wiring: the route is decided in `open_url_in_tandem`, the hotkey window is shown, and
+    /// The wiring: the route is decided in `open_url_in_termurion`, the hotkey window is shown, and
     /// the window made for it opens the URL as its first session.
     #[test]
     fn the_hotkey_route_is_wired() {
@@ -311,7 +311,7 @@ mod tests {
         let plan = body.find("semantic::plan(").unwrap();
         assert!(route < hook && hook < plan, "click_route, then the ssh hook, then semantic::plan");
         let prompted = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("app").join("prompted_ui.rs")).unwrap();
-        assert!(!prompted.contains("open_url_in_tandem") && !prompted.contains("ssh_url_app"), "P5: App::open_url is unchanged");
+        assert!(!prompted.contains("open_url_in_termurion") && !prompted.contains("ssh_url_app"), "P5: App::open_url is unchanged");
     }
 }
 

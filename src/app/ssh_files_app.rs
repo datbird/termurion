@@ -1,5 +1,5 @@
 //! File requests over a pane's framing conductor (milestone 14d): each is sent with an id
-//! Tandem chose, remembered with what is waiting for it, and routed when its reply comes
+//! Termurion chose, remembered with what is waiting for it, and routed when its reply comes
 //! (`CD:1953-1960`, `CD:2273-2291`). Later tasks add the waiters that need the transfer
 //! engine, the panel, suggestions and search; this is the one dispatch point (`ssh_route`).
 
@@ -309,7 +309,7 @@ impl App {
 
     /// The Win-click's last phase (`UF:879-899`): the Smart Selection match at the click through
     /// `scpPathForFile`, downloaded when the pane's conductor can transfer. False when nothing
-    /// was started (iTerm2 would use scp, which Tandem does not have).
+    /// was started (iTerm2 would use scp, which Termurion does not have).
     pub(super) fn secure_copy_at(&mut self, pane: PaneId, point: alacritty_terminal::index::Point) -> bool {
         let Some(c) = self.clicked(pane, point) else { return false };
         // The first component of the match (`components.firstObject`).
@@ -329,7 +329,7 @@ impl App {
     }
 
     /// The scp path of `file` for the pane's current host, user and directory (`scpPathForFile`;
-    /// Tandem keeps no per-line host). `""` is the working directory itself. None when the pane
+    /// Termurion keeps no per-line host). `""` is the working directory itself. None when the pane
     /// reports no host, user or directory, or its host is this machine.
     pub(super) fn scp_path_for(&self, pane: PaneId, file: &str) -> Option<ScpPath> {
         let shell = &self.panes.get(&pane)?.own().shell;
@@ -346,7 +346,7 @@ impl App {
     /// Alt-drop (`TV:5210-5271`): with Alt held over a session whose conductor can take the
     /// files, asks "OK to copy ... to ...?" and uploads on OK. False when it is not an upload
     /// (Alt up, no framing conductor, or a host the conductor is not): the paths paste as
-    /// before (iTerm2 would use scp, which Tandem does not have).
+    /// before (iTerm2 would use scp, which Termurion does not have).
     pub(super) fn ssh_drop(&mut self, pane: PaneId, files: Vec<String>) -> bool {
         // The Alt read, as everywhere (`GetKeyState(0x12)`).
         if unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x12) } >= 0 {
@@ -623,7 +623,7 @@ impl App {
 
     /// A search notification (`CD:2681-2698`): its result goes to the panel when its id is the
     /// current search's, and every one is acknowledged, or the remote stops after 16 (`F:1088`).
-    /// The id the remote sent is acknowledged only when it is the current search's or one Tandem
+    /// The id the remote sent is acknowledged only when it is the current search's or one Termurion
     /// started (P18); a result past the panel's cap is acknowledged and dropped. A result that
     /// arrives with 16 acks of its search still out is dropped unacknowledged (and counted): a
     /// conforming framer never sends it, and a flood never grows the conductor's queue.

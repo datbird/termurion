@@ -798,7 +798,7 @@ mod tests {
         assert!(q.contains("NavGate::Navigate(_) =>") && q.contains("NavGate::Open(_) => {}"), "a pointer click never opens a local file");
         let tick = &p[at("pub(super) fn browser_next_tick")..at("// --- Broadcast between browser panes (Task 8) ---")];
         assert!(tick.contains("self.browser_page_open(pane, &url, how, event_loop)") && tick.contains("self.browser_smart_action(") && tick.contains("run_pointer_action(&b, pane, (0, 0), event_loop)"));
-        for banned in ["Command::new(", "execute_with(", "guard_open(", "shell_open(", "open_url_in_browser(", "navigate_tandem("] {
+        for banned in ["Command::new(", "execute_with(", "guard_open(", "shell_open(", "open_url_in_browser(", "navigate_termurion("] {
             assert!(!p.contains(banned), "{banned}");
         }
         // Jump to Selection scrolls the page (`BVC:295-311`); the find menu hands a browser pane to it.

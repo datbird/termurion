@@ -119,7 +119,7 @@ pub fn main_path(kind: &Kind) -> PathBuf {
     }
 }
 
-/// A script's environment (`L:855-920`, and the wrapper's `PYTHONUNBUFFERED`): `base` (Tandem's
+/// A script's environment (`L:855-920`, and the wrapper's `PYTHONUNBUFFERED`): `base` (Termurion's
 /// own) without `PYTHONPATH` and a stale `IT2_SUITE` (names ignoring case, as Windows
 /// does), plus the cookie, the key, unbuffered UTF-8 output and the venv's certifi roots when
 /// they exist. `HOME` and `SHELL` are not set (Decision). Never logged: it holds the cookie.

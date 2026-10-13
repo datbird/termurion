@@ -433,7 +433,7 @@ pub(super) fn reload_plan(panes: &[(PaneId, String)], origin: &str) -> Vec<(Pane
 pub(super) struct ParkedBy {
     pub user: bool,
     pub redirect: bool,
-    pub by_tandem: bool,
+    pub by_termurion: bool,
     pub history: bool,
     pub source: Option<String>,
 }
@@ -913,7 +913,7 @@ impl App {
     /// sync lands (`browser_release_waiting_loads`). A cancelled history step leaves no expectation.
     pub(super) fn browser_navigation_parked(&mut self, pane: PaneId, url: &str, from: ParkedBy) {
         let dev_null = self.pane_dev_null(pane);
-        let person = from.by_tandem || from.user || from.history;
+        let person = from.by_termurion || from.user || from.history;
         if let Some(bv) = self.browser_views.get_mut(&pane) {
             // A web page's navigation never replaces what the person is waiting for.
             let waiting_for_person = bv.world.restore_load.is_some() && bv.world.restore_from.is_none();
@@ -922,7 +922,7 @@ impl App {
                 bv.bar.transition = None;
                 bv.world.restore_load = Some(url.to_string());
                 // Tandem's own load keeps its own judgment; a page's is judged again as the page's.
-                bv.world.restore_from = (!from.by_tandem).then_some(crate::browser_restore::ParkedFrom { user: from.user, redirect: from.redirect, source: from.source });
+                bv.world.restore_from = (!from.by_termurion).then_some(crate::browser_restore::ParkedFrom { user: from.user, redirect: from.redirect, source: from.source });
             }
         }
         // A sync that gave up starts over, for a person's act only (a page cannot keep it retrying).
@@ -955,7 +955,7 @@ impl App {
                 bv.world.restore_load = Some(url);
             }
             if let Some(v) = &bv.view {
-                v.navigate_tandem("about:blank");
+                v.navigate_termurion("about:blank");
             }
         }
         // A sync that gave up starts over.
@@ -1669,12 +1669,12 @@ mod tests {
         let rs = include_str!("browser_restore_app.rs");
         let own = &rs[rs.find("pub(super) fn browser_load_own").unwrap()..rs.find("pub(super) fn browser_nav_starting").unwrap()];
         let gate = own.find("page_may_load(self.browser_restoring(), self.perm_synced(pane))").expect("the one road for a pane's own load is gated");
-        assert!(gate < own.find("navigate_tandem").unwrap() && own[gate..].contains("restore_load = Some("), "it waits, never loads");
+        assert!(gate < own.find("navigate_termurion").unwrap() && own[gate..].contains("restore_load = Some("), "it waits, never loads");
         let done = &rs[rs.find("fn browser_release_waiting_loads").unwrap()..rs.find("pub(super) fn browser_load_own").unwrap()];
         assert!(done.contains("restore_load.take()") && done.contains("self.browser_load_own(pane, &url)"));
         let app = include_str!("browser_app.rs");
         let nav = &app[app.find("pub(super) fn browser_navigate(").unwrap()..app.find("pub(super) fn browser_suggest").unwrap()];
-        assert!(nav.contains("let synced = self.perm_synced(pane);") && nav.find("if !synced").unwrap() < nav.find("navigate_tandem").unwrap(), "a typed page waits too");
+        assert!(nav.contains("let synced = self.perm_synced(pane);") && nav.find("if !synced").unwrap() < nav.find("navigate_termurion").unwrap(), "a typed page waits too");
         let me = include_str!("browser_perms_app.rs");
         assert!(me.contains("Out::Synced => self.browser_release_waiting_loads(Some(dev_null))"), "the sync's end loads what waits");
     }
@@ -1739,17 +1739,17 @@ mod tests {
         let host = include_str!("../webhost_win.rs");
         let h = &host[host.find("fn starting_handler(").unwrap()..host.find("fn register_navigation_rest(").unwrap()];
         let verdict = h.find("webhost::nav_verdict(").unwrap();
-        let gate = h.find("webhost::nav_gate(gate, &uri, by_tandem, webhost::cap_url(&uri).1)").unwrap();
+        let gate = h.find("webhost::nav_gate(gate, &uri, by_termurion, webhost::cap_url(&uri).1)").unwrap();
         assert!(verdict < gate, "r3: the gate runs AFTER the verdict, so a refused navigation is never parked");
         assert!(h[gate..].contains("Event::Parked { view: i.id") && h[gate..].contains("SetCancel(true)"));
-        assert!(h[gate..].contains("user, redirect, by_tandem") && h[gate..].contains("source }"), "how it was judged travels with the target");
+        assert!(h[gate..].contains("user, redirect, by_termurion") && h[gate..].contains("source }"), "how it was judged travels with the target");
         assert!(h[..gate].contains("if frame {"), "the subframe branch returns before the main-frame gate");
         let me = include_str!("browser_perms_app.rs");
         let prod = me.split("\n#[cfg(test)]\nmod tests").next().unwrap();
         let p = &prod[prod.find("pub(super) fn browser_navigation_parked(").unwrap()..prod.find("/// Blanks the pane").unwrap()];
-        assert!(p.contains("restore_load = Some(url.to_string())") && !p.contains("about:blank") && !p.contains("navigate_tandem"), "the target is kept, no blank entry");
+        assert!(p.contains("restore_load = Some(url.to_string())") && !p.contains("about:blank") && !p.contains("navigate_termurion"), "the target is kept, no blank entry");
         let app = include_str!("browser_app.rs");
-        assert!(app.contains("Event::Parked { url, user, redirect, by_tandem, history, source, .. } => {") && app.contains("self.browser_navigation_parked(pane, url, super::browser_perms_app::ParkedBy"));
+        assert!(app.contains("Event::Parked { url, user, redirect, by_termurion, history, source, .. } => {") && app.contains("self.browser_navigation_parked(pane, url, super::browser_perms_app::ParkedBy"));
         let rel = include_str!("browser_restore_app.rs");
         let rel = rel.split("\n#[cfg(test)]\nmod tests").next().unwrap();
         assert!(rel.contains("Some(from) => self.browser_load_parked(pane, &url, &from)"), "a page's parked target is judged again as the page's");

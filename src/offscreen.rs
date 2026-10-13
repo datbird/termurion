@@ -9,7 +9,7 @@ use crate::palette::Rgb;
 /// `TDH:70`).
 pub const PADDING: f32 = 8.0;
 
-/// One prompt mark and the facts the rules need, in Tandem's line numbering (negative into
+/// One prompt mark and the facts the rules need, in Termurion's line numbering (negative into
 /// history).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PromptFacts {
@@ -98,7 +98,7 @@ pub fn band_rect(pane: Rect, cell: (f32, f32), scale: f32) -> Rect {
     Rect { h: cell.1 + 2.0 * PADDING * scale, ..pane }
 }
 
-/// The parts of `band` left when `holes` (Tandem's own surfaces drawn over the pane's top: the
+/// The parts of `band` left when `holes` (Termurion's own surfaces drawn over the pane's top: the
 /// info bar, find bar, indicators, portholes) are taken out: the band yields to them.
 pub fn band_pieces(band: Rect, holes: &[Rect]) -> Vec<Rect> {
     let mut pieces = vec![band];
@@ -259,7 +259,7 @@ mod tests {
         assert!(near(fill, [0.915, 0.915, 0.915, 0.5]), "{fill:?}");
         assert!(near(outline, [0.5, 0.5, 0.5, 1.0]), "{outline:?}");
     }
-    /// Task 6 review 2: the band is drawn around Tandem's surfaces, never under them.
+    /// Task 6 review 2: the band is drawn around Termurion's surfaces, never under them.
     #[test]
     fn band_pieces_leave_the_holes_out() {
         let band = Rect { x: 0.0, y: 0.0, w: 100.0, h: 32.0 };

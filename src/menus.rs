@@ -73,7 +73,7 @@ const SHIFTED: [(char, char); 21] = [
 ];
 
 /// Items iTerm2 removes from the menu (`AD:402-419`): Capture GPU Frame in release builds, and
-/// Check Settings Control Truncation unless built for development (Tandem's Settings wrap text,
+/// Check Settings Control Truncation unless built for development (Termurion's Settings wrap text,
 /// so it is never built, R5). The one rule every menu copy and list of menu actions applies.
 pub fn hidden_in_menu(selector: &str, debug_build: bool) -> bool {
     match selector {
@@ -140,7 +140,7 @@ impl Item {
     }
 }
 
-/// A menu title as Tandem shows it (the menu bar, Open Quickly): iTerm2's with "Finder" as
+/// A menu title as Termurion shows it (the menu bar, Open Quickly): iTerm2's with "Finder" as
 /// "Explorer" (Decision). The schema keeps iTerm2's titles, which menu ids are made of.
 pub fn shown_label(label: &str) -> String {
     label.replace("Finder", "Explorer")
@@ -204,9 +204,9 @@ pub fn items_for(chord: &Chord) -> Vec<&'static Item> {
 }
 
 /// "Win+Shift+D": how Windows menus show a chord.
-/// Windows keeps Win+L (Lock) with any other modifiers, so such a chord never reaches Tandem
+/// Windows keeps Win+L (Lock) with any other modifiers, so such a chord never reaches Termurion
 /// and the menu does not show it.
-pub fn reaches_tandem(c: &Chord) -> bool {
+pub fn reaches_termurion(c: &Chord) -> bool {
     !(c.cmd && c.key == ChordKey::Char('l'))
 }
 
@@ -395,8 +395,8 @@ mod tests {
     #[test]
     fn win_l_chords_stay_with_windows() {
         let l = Chord { key: ChordKey::Char('l'), cmd: true, alt: false, shift: true, ctrl: false };
-        assert!(!reaches_tandem(&l));
-        assert!(reaches_tandem(&Chord { key: ChordKey::Char('k'), ..l }));
-        assert!(reaches_tandem(&Chord { cmd: false, ..l }));
+        assert!(!reaches_termurion(&l));
+        assert!(reaches_termurion(&Chord { key: ChordKey::Char('k'), ..l }));
+        assert!(reaches_termurion(&Chord { cmd: false, ..l }));
     }
 }

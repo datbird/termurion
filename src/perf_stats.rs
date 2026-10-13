@@ -1,4 +1,4 @@
-//! iTerm2's GPU renderer statistics Tandem shows: the FPS meter's moving average and text
+//! iTerm2's GPU renderer statistics Termurion shows: the FPS meter's moving average and text
 //! (`iTermMetalDriver.m:1800-1807`). Pure, so the rules are tested here.
 
 /// The meter's text color, magenta (`iTermMetalPerFrameState.m:2531-2552`).
@@ -55,7 +55,7 @@ pub fn gpu_text(adapter: Option<(&str, &str)>) -> String {
     }
 }
 
-/// Tandem's second paragraph: the adapter the window draws on.
+/// Termurion's second paragraph: the adapter the window draws on.
 pub fn gpu_adapter_line(name: &str, backend: &str) -> String {
     format!("Adapter: {name} ({backend})")
 }

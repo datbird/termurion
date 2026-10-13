@@ -207,7 +207,7 @@ mod tests {
         assert_eq!(d.state, State::MouseDown);
     }
 
-    /// The announcement's words (`NC:497-526`), Cmd-C read as Tandem's Copy.
+    /// The announcement's words (`NC:497-526`), Cmd-C read as Termurion's Copy.
     #[test]
     fn texts_follow_iterm2() {
         assert_eq!(TEXT, "Looks like you\u{2019}re trying to copy to the pasteboard, but mouse reporting has prevented making a selection. Disable mouse reporting?");

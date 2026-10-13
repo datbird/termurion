@@ -756,7 +756,7 @@ pub mod presets {
         diff.display_name = "Diff".into();
         diff.mode = Mode::Diff;
         let mut review = blank_session(review_id, Some(&root_id), Kind::Peer);
-        // Task 7 binds `\(iterm2.appBundlePath)/Contents/Resources` to Tandem's resources folder (Decision).
+        // Task 7 binds `\(iterm2.appBundlePath)/Contents/Resources` to Termurion's resources folder (Decision).
         review.command = "claude \\(codeReviewPrompt) --append-system-prompt-file '\\(codeReviewSystemPromptFile)' --settings '\\(iterm2.appBundlePath)/Contents/Resources/code-review-settings.txt'".into();
         review.toolbar_items = vec![ToolbarItem::ModeSwitcher, ToolbarItem::Reload(Some(NavigationShortcuts::reload_default())), ToolbarItem::AutoSendClippingsWhenIdle];
         review.display_name = "Code Review".into();
@@ -1691,7 +1691,7 @@ mod tests {
         let mut s = session("r", None, Kind::Root);
         s.command = "x\u{0}y".into();
         let evil = encode(&[wg("evil", vec![s]), simple("fine")]);
-        let path = std::env::temp_dir().join(format!("tandem-wg-bound-{}.toml", std::process::id()));
+        let path = std::env::temp_dir().join(format!("termurion-wg-bound-{}.toml", std::process::id()));
         std::fs::write(&path, toml::to_string(&toml::toml! { [settings] Workgroups = evil }).unwrap()).unwrap();
         let loaded = Globals::load(&path).unwrap();
         let _ = std::fs::remove_file(&path);

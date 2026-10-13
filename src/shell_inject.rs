@@ -1,9 +1,9 @@
 //! Loading PowerShell shell integration automatically (iTerm2's `ShellIntegrationInjection`,
-//! `SII:81-129`, `SII:238-243`). Tandem's shells with an integration script are PowerShell
+//! `SII:81-129`, `SII:238-243`). Termurion's shells with an integration script are PowerShell
 //! (`powershell`, `pwsh`): the injection appends `-NoExit -Command` with an
 //! `Invoke-Expression` of the script's text, which runs after the user's `$PROFILE` (so the
 //! script's guard and its capture of `prompt` work) and is not a script file, so the
-//! execution policy never applies and is never changed. A command line Tandem cannot extend
+//! execution policy never applies and is never changed. A command line Termurion cannot extend
 //! safely is left alone (iTerm2 leaves a shell it cannot inject alone).
 
 use std::path::{Path, PathBuf};
@@ -77,7 +77,7 @@ fn prefix_of(name: &str, words: &[&str]) -> bool {
 /// Whether the command line already runs something (or cannot take a second command):
 /// `-Command`, `-File`, `-EncodedCommand`, `-NoExit` (any unambiguous prefix PowerShell
 /// accepts, and the one-letter forms `-c`, `-f`, `-e`, `-ec`), or a positional script. A
-/// command Tandem cannot extend is left alone, as iTerm2 leaves a shell it cannot inject
+/// command Termurion cannot extend is left alone, as iTerm2 leaves a shell it cannot inject
 /// (Decision).
 pub fn args_block(cmdline: &str) -> bool {
     let mut args = tokens(cmdline).into_iter().skip(1).map(|a| a.to_lowercase());
@@ -121,10 +121,10 @@ pub fn inject(cmdline: &str, script: &Path) -> Option<String> {
     Some(format!("{} -NoExit -Command \"Invoke-Expression ([IO.File]::ReadAllText('{quoted}'))\"", cmdline.trim_end()))
 }
 
-/// Where Tandem keeps the script: `<appdata>\Tandem\shell_integration\
-/// tandem_shell_integration.ps1`, the install menu's path.
+/// Where Termurion keeps the script: `<appdata>\Termurion\shell_integration\
+/// termurion_shell_integration.ps1`, the install menu's path.
 pub fn script_path(appdata: &Path) -> PathBuf {
-    appdata.join("Tandem").join("shell_integration").join("tandem_shell_integration.ps1")
+    appdata.join("Termurion").join("shell_integration").join("termurion_shell_integration.ps1")
 }
 
 #[cfg(test)]
@@ -170,12 +170,12 @@ mod tests {
 
     #[test]
     fn injection_command_line_is_quoted() {
-        let script = Path::new(r"C:\Users\o'brien\AppData\Roaming\Tandem\shell_integration\tandem_shell_integration.ps1");
+        let script = Path::new(r"C:\Users\o'brien\AppData\Roaming\Termurion\shell_integration\termurion_shell_integration.ps1");
         assert_eq!(
             inject("pwsh.exe -NoLogo", script).as_deref(),
-            Some(r#"pwsh.exe -NoLogo -NoExit -Command "Invoke-Expression ([IO.File]::ReadAllText('C:\Users\o''brien\AppData\Roaming\Tandem\shell_integration\tandem_shell_integration.ps1'))""#)
+            Some(r#"pwsh.exe -NoLogo -NoExit -Command "Invoke-Expression ([IO.File]::ReadAllText('C:\Users\o''brien\AppData\Roaming\Termurion\shell_integration\termurion_shell_integration.ps1'))""#)
         );
-        assert_eq!(script_path(Path::new(r"C:\A")), PathBuf::from(r"C:\A").join("Tandem").join("shell_integration").join("tandem_shell_integration.ps1"));
+        assert_eq!(script_path(Path::new(r"C:\A")), PathBuf::from(r"C:\A").join("Termurion").join("shell_integration").join("termurion_shell_integration.ps1"));
         // B6: PowerShell reads U+2018..U+201B as single quotes too: every one is doubled.
         let typo = Path::new("C:\\Users\\O\u{2019}Brien\\x\u{2018}\u{201a}\u{201b}.ps1");
         assert_eq!(

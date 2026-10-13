@@ -24,7 +24,7 @@ pub fn face_key_for(p: &Profile, scale: f32, resolve: &dyn Fn(&str) -> String) -
     (key.ascii_ligatures, key.non_ascii_ligatures) = (p.bool("ASCII Ligatures"), p.bool("Non-ASCII Ligatures"));
     // ASCII Anti Aliased, Non-ASCII Anti Aliased and Thin Strokes decide how the pane's glyph masks are drawn.
     (key.ascii_aa, key.non_ascii_aa, key.thin) = (p.bool("ASCII Anti Aliased"), p.bool("Non-ASCII Anti Aliased"), p.int("Thin Strokes").clamp(0, 4) as u8);
-    // Draw Powerline Glyphs chooses whether the pane's Powerline symbols are Tandem's.
+    // Draw Powerline Glyphs chooses whether the pane's Powerline symbols are Termurion's.
     key.powerline = p.bool("Draw Powerline Glyphs");
     // Special Font Config: the table itself, normalized, so two spellings are one face and a value
     // that does not parse or is out of bounds (a file, the API) is no table (`font_table::Config::parse`).

@@ -74,7 +74,7 @@ mod tests {
     /// P8: a dynamic profile never takes part in a multi-profile open, a single pick opens.
     #[test]
     fn a_crowd_leaves_dynamic_profiles_out() {
-        let mut s = crate::store::Store::fresh(&std::env::temp_dir().join(format!("tandem-crowd-{}.toml", std::process::id())));
+        let mut s = crate::store::Store::fresh(&std::env::temp_dir().join(format!("termurion-crowd-{}.toml", std::process::id())));
         let saved = s.profiles[0].guid();
         let mut d = crate::profile::Profile::new("dyn");
         d.set("Is Dynamic Profile", toml::Value::Boolean(true));

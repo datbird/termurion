@@ -1,4 +1,4 @@
-//! THE judge of every path from outside before Tandem probes it, and which paths Semantic History
+//! THE judge of every path from outside before Termurion probes it, and which paths Semantic History
 //! may probe (`NFM:17-70`, `SHC:86`). Any probe of a path on a share (`is_dir`, `metadata`, an open,
 //! a folder listing) connects to it and sends the person's NTLM hash, so a path is judged with no
 //! I/O on the network, in this order:
@@ -13,7 +13,7 @@
 //! 4. every folder from the root down, then the leaf, reads its reparse DATA with the reparse
 //!    point itself opened (`FILE_FLAG_OPEN_REPARSE_POINT`, nothing followed) on components already
 //!    found local; a link's target is judged again from step 1 (root first) before anything below
-//!    the link is read, and a reparse point Tandem cannot read is refused.
+//!    the link is read, and a reparse point Termurion cannot read is refused.
 //! Semantic History's ignore list and `EnableSemanticHistoryOnNetworkMounts` add to this (mapped
 //! drives allowed only when the setting says so); a UNC path is never touched at all.
 
@@ -154,7 +154,7 @@ pub fn real_drives() -> Arc<dyn Drives + Send + Sync> {
     }
 }
 
-/// What a reparse point Tandem cannot read, or one whose tag may send an open elsewhere (HSM, DFS,
+/// What a reparse point Termurion cannot read, or one whose tag may send an open elsewhere (HSM, DFS,
 /// a third-party filter), is answered as: a link to a network path, so the judge refuses it.
 pub const UNREADABLE_LINK: &str = r"\\?\UNC\unreadable-reparse-point";
 
@@ -234,7 +234,7 @@ enum Reparse {
     Opaque,
 }
 
-/// The reparse tags Tandem knows: the two link tags, and the ones whose data stays local (dedup,
+/// The reparse tags Termurion knows: the two link tags, and the ones whose data stays local (dedup,
 /// compression, cloud placeholders and their sync root, app execution aliases, projected folders,
 /// container layers, WSL special files). Every other tag is opaque.
 fn reparse_kind(tag: u32) -> Reparse {
@@ -439,7 +439,7 @@ fn letter_kind(target: Option<String>) -> Letter {
 }
 
 /// THE judge of every path that comes from outside (a file or folder another program named, a
-/// document, saved state, a setting) before Tandem calls `is_dir`, `exists`, `metadata` or opens it
+/// document, saved state, a setting) before Termurion calls `is_dir`, `exists`, `metadata` or opens it
 /// (even `is_dir` on a share path connects to it). Steps 1-4 of the module comment; nothing is read
 /// on the network and nothing below a link is read before the link itself.
 pub fn judge(path: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>, drives: &dyn Drives) -> bool {
@@ -931,7 +931,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn the_real_reader_reads_a_junction_without_following_it() {
-        let base = std::env::temp_dir().join(format!("tandem-reparse-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("termurion-reparse-{}", std::process::id()));
         let target = base.join("target");
         let link = base.join("link");
         std::fs::create_dir_all(&target).unwrap();

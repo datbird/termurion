@@ -79,7 +79,7 @@ impl Motion {
 }
 
 /// Whether a window style fades while it shows and hides (every style: iTerm2 fades traditional
-/// full screen too, `PHK:747-757`; only Lion full screen asserts, and Tandem has none).
+/// full screen too, `PHK:747-757`; only Lion full screen asserts, and Termurion has none).
 pub fn fades(_style: i64) -> bool {
     true
 }

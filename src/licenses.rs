@@ -16,8 +16,8 @@ pub fn text() -> &'static str {
 /// The file name Open Source Licenses opens.
 pub const FILE_NAME: &str = "Tandem Licenses.txt";
 
-/// Writes the list to `dir\Tandem Licenses.txt` and returns the path (P17): the folder is
-/// Tandem's own (`%LOCALAPPDATA%\Tandem`), not the predictable temp folder; the text goes to a
+/// Writes the list to `dir\Termurion Licenses.txt` and returns the path (P17): the folder is
+/// Tandem's own (`%LOCALAPPDATA%\Termurion`), not the predictable temp folder; the text goes to a
 /// fresh temp file in it (`create_new`, never through an existing link) and is renamed over the
 /// final name; a link at the final name is refused.
 pub fn write_to(dir: &crate::localfs::LocalPath, text: &str) -> std::io::Result<crate::localfs::LocalPath> {
@@ -54,7 +54,7 @@ mod tests {
     /// pid) does not stop the file from being written.
     #[test]
     fn a_stale_temp_file_does_not_block_the_write() {
-        let dir = std::env::temp_dir().join(format!("tandem-licenses-stale-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-licenses-stale-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(format!("{FILE_NAME}.{}.tmp", std::process::id())), "left over").unwrap();
@@ -68,7 +68,7 @@ mod tests {
 
     #[test]
     fn the_list_file_is_written_whole_and_replaced() {
-        let dir = std::env::temp_dir().join(format!("tandem-licenses-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-licenses-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let judged = crate::localfs::LocalPath::judge(&dir).unwrap();
         let p = write_to(&judged, "first").unwrap();
@@ -134,7 +134,7 @@ mod tests {
         ("ColorPresets.plist", Cover::Root),
         ("tips.toml", Cover::Root),
         ("code-review-settings.txt", Cover::Root),
-        ("shell_integration/tandem_shell_integration.ps1", Cover::Own("Tandem's own PowerShell script")),
+        ("shell_integration/termurion_shell_integration.ps1", Cover::Own("Tandem's own PowerShell script")),
     ];
 
     fn is_notice(name: &str) -> bool {

@@ -8,7 +8,7 @@ use crate::paste_history::{self, History};
 use crate::list_popup_ui::{ListPopup, PopupEvent};
 
 pub(super) fn history_path() -> std::path::PathBuf {
-    std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem").join("pbhistory.json")
+    std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Termurion").join("pbhistory.json")
 }
 
 fn unix_now() -> f64 {

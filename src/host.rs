@@ -1,4 +1,4 @@
-//! tandem-host: runs every shell in its own ConPTY and keeps it alive when Tandem is not
+//! termurion-host: runs every shell in its own ConPTY and keeps it alive when Tandem is not
 //! attached, so a crashed or force-quit Tandem can reattach (iTerm2's job servers). It serves
 //! one Tandem at a time over the per-user pipe, keeps each session's last output in a ring,
 //! and exits once no Tandem is attached and no session is left.
@@ -682,15 +682,15 @@ pub(crate) mod tests {
     }
 
     /// The child half of `a_signal_goes_through_the_host`: detached (no console, as
-    /// tandem-host runs), so the host can attach to its session's console.
+    /// termurion-host runs), so the host can attach to its session's console.
     #[test]
     #[ignore]
     fn signal_child() {
-        if std::env::var_os("TANDEM_SIGNAL_CHILD").is_none() {
+        if std::env::var_os("TERMURION_SIGNAL_CHILD").is_none() {
             return;
         }
         // This process ignores Ctrl+C (a console-subsystem test process is not asked by the
-        // handler the host installs; tandem-host is a windows-subsystem one). Its sessions
+        // handler the host installs; termurion-host is a windows-subsystem one). Its sessions
         // inherit that, so the session's program takes Ctrl+C back first.
         unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 1) };
         let (name, _host) = start_host(Duration::from_secs(1));
@@ -712,7 +712,7 @@ pub(crate) mod tests {
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "host::tests::signal_child", "--ignored", "--test-threads=1"])
-            .env("TANDEM_SIGNAL_CHILD", "1")
+            .env("TERMURION_SIGNAL_CHILD", "1")
             .creation_flags(DETACHED_PROCESS)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -751,8 +751,8 @@ pub(crate) mod tests {
             Msg::Welcome { version, .. } => Some(*version),
             _ => None,
         }), 1);
-        let id = old.launch("cmd.exe /d /c echo old-tandem");
-        old.output_until(id, "old-tandem");
+        let id = old.launch("cmd.exe /d /c echo old-termurion");
+        old.output_until(id, "old-termurion");
         old.close();
         std::thread::sleep(Duration::from_millis(300));
         // A version 2 Tandem asks for prompt readings; the stream stays whole.
@@ -763,8 +763,8 @@ pub(crate) mod tests {
             _ => None,
         }), 2);
         new.send(&Msg::WatchPrompts { debounce_ms: Some(200) });
-        let id = new.launch("cmd.exe /d /c echo new-tandem");
-        new.output_until(id, "new-tandem");
+        let id = new.launch("cmd.exe /d /c echo new-termurion");
+        new.output_until(id, "new-termurion");
         new.send(&Msg::WatchPrompts { debounce_ms: None });
         new.close();
         std::thread::sleep(Duration::from_millis(300));

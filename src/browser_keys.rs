@@ -376,7 +376,7 @@ pub fn plan(act: &KeyAct, own: &str, f: &Facts) -> Vec<Do> {
 // --- Broadcast between browser panes (Task 8) ---
 
 /// The handler of Tandem's broadcast script (`broadcast-input.js`, Client world).
-pub const BROADCAST_HANDLER: &str = "tandemBroadcastInput";
+pub const BROADCAST_HANDLER: &str = "termurionBroadcastInput";
 
 /// The longest text one broadcast event carries (a page's own paste limit).
 pub const MAX_BROADCAST_TEXT: usize = 1_048_576;
@@ -582,7 +582,7 @@ pub const RECEIVING_STALE_SECS: u64 = 5;
 /// (this world cannot see inside it), or when anything fails. Only a plain `false` lets a replay go.
 pub fn guard_body() -> String {
     let sel = serde_json::to_string(&crate::web_replay::sensitive_selector()).unwrap_or_default();
-    format!("try {{ const SEL = {sel}; {FIELD_CHECK_JS} return tandemSecretField(tandemDeepest(), SEL); }} catch (e) {{ return true; }}")
+    format!("try {{ const SEL = {sel}; {FIELD_CHECK_JS} return termurionSecretField(termurionDeepest(), SEL); }} catch (e) {{ return true; }}")
 }
 
 /// What the secret check knows of one element (the Rust statement of `FIELD_CHECK_JS`, for tests).
@@ -617,12 +617,12 @@ pub fn field_is_secret(f: &FieldFacts) -> bool {
 }
 
 /// The check both sides run in Tandem's isolated world (a page cannot replace its builtins): the
-/// element focused through open shadow roots, judged by `tandemSecretField` (the selector the caller
+/// element focused through open shadow roots, judged by `termurionSecretField` (the selector the caller
 /// holds as `SEL`, a masked computed style, the autocomplete tokens, the field type, and fail closed
 /// for anything not itself an editable).
-pub const FIELD_CHECK_JS: &str = "function tandemDeepest() { let a = document.activeElement; \
+pub const FIELD_CHECK_JS: &str = "function termurionDeepest() { let a = document.activeElement; \
 for (let i = 0; i < 32 && a; i++) { if (a.shadowRoot && a.shadowRoot.activeElement) { a = a.shadowRoot.activeElement; } else { break; } } return a; } \
-function tandemSecretField(a, SEL) { \
+function termurionSecretField(a, SEL) { \
 if (!a || a.nodeType !== 1) { return true; } \
 const tag = a.tagName; \
 if (tag === 'BODY' || tag === 'HTML') { return false; } \
@@ -1003,7 +1003,7 @@ mod tests {
             let e = BroadcastEvent::Key { key: "Tab".into(), code: "Tab".into(), key_code: 9, mods };
             assert_eq!(replay_calls(&e)[1].1["modifiers"], want, "{mods}");
         }
-        assert_eq!(BROADCAST_HANDLER, "tandemBroadcastInput");
+        assert_eq!(BROADCAST_HANDLER, "termurionBroadcastInput");
     }
 
     fn peer(browser: bool, dev_null: bool) -> Option<Peer> {
@@ -1057,7 +1057,7 @@ mod tests {
     fn broadcast_script_follows_the_rules() {
         let js = resource("broadcast-input.js").unwrap();
         assert!(js.contains("Tandem's own script"));
-        assert!(js.contains("tandemBroadcastInput") && js.contains("{{SECRET}}") && js.contains("{{SELECTOR}}"));
+        assert!(js.contains("termurionBroadcastInput") && js.contains("{{SECRET}}") && js.contains("{{SELECTOR}}"));
         // Every listener checks isTrusted first (P26), and a field that holds a secret sends nothing (P18).
         let mut at = 0;
         let mut listeners = 0;
@@ -1068,7 +1068,7 @@ mod tests {
             at += i + 1;
         }
         assert_eq!(listeners, 2, "beforeinput and keydown");
-        assert!(js.contains("tandemSecretField(t, SENSITIVE)") && js.contains("composedPath"));
+        assert!(js.contains("termurionSecretField(t, SENSITIVE)") && js.contains("composedPath"));
         assert!(!js.contains("insertLineBreak"), "Enter travels as its key only: a line break in a textarea is made by the replayed Enter, never a second time by an insert");
         for t in ["insertText", "insertFromPaste"] {
             assert!(js.contains(t), "{t}");
@@ -1112,9 +1112,9 @@ mod tests {
         }
         assert!(js.is_ascii());
         let made = user_script("S1").code;
-        assert!(made.contains("webkitTextSecurity") && made.contains("tandemSecretField(") && made.contains("tandemDeepest()") && !made.contains("{{"));
+        assert!(made.contains("webkitTextSecurity") && made.contains("termurionSecretField(") && made.contains("termurionDeepest()") && !made.contains("{{"));
         let g = guard_body();
-        assert!(g.contains("webkitTextSecurity") && g.contains("tandemSecretField(tandemDeepest(), SEL)") && g.contains("catch (e) { return true; }"));
+        assert!(g.contains("webkitTextSecurity") && g.contains("termurionSecretField(termurionDeepest(), SEL)") && g.contains("catch (e) { return true; }"));
         let src = resource("broadcast-input.js").unwrap();
         assert!(src.contains("{{FIELD_CHECK}}"));
     }

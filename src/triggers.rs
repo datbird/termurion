@@ -3,7 +3,7 @@
 
 use crate::semantic::CmdPiece;
 
-/// One trigger as a profile stores it (iTerm2's keys), with keys Tandem does not use kept.
+/// One trigger as a profile stores it (iTerm2's keys), with keys Termurion does not use kept.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Trigger {
     pub regex: String,
@@ -248,7 +248,7 @@ pub fn css_color(stored: &str) -> Option<String> {
 /// (`ExitWorkgroupTrigger.leaderOnlyParamKey`).
 pub const LEADER_ONLY_KEY: &str = "leaderOnly";
 
-/// The longest workgroup id a trigger's parameter may hold: ids are Tandem's own uuids or
+/// The longest workgroup id a trigger's parameter may hold: ids are Termurion's own uuids or
 /// `builtin.` names, so anything longer is not one.
 pub const MAX_WORKGROUP_ID: usize = 128;
 
@@ -392,7 +392,7 @@ pub const IMPORT_ENABLED: &[&str] = &[
     "StopTrigger",
 ];
 
-/// The classes that change what Tandem does or trusts (commands, typed text, injected escape
+/// The classes that change what Termurion does or trusts (commands, typed text, injected escape
 /// sequences, held keystrokes, workgroups, the reported folder, host and user, user variables,
 /// settings, scripts). An imported trigger of these is stored turned off until the person enables it.
 pub const IMPORT_OFF: &[&str] = &[
@@ -616,7 +616,7 @@ fn depth_ok(v: &toml::Value, depth: usize) -> bool {
 
 /// A stored `Triggers` value as every reader may see it, made at the one write point
 /// (`Profile::set`, `Profile::from_values`): at most `MAX_TRIGGERS` tables, each with a text
-/// action (an action Tandem lacks is kept, as `parse_list` keeps it), a pattern of at most `MAX_PATTERN` characters, a parameter of at most
+/// action (an action Termurion lacks is kept, as `parse_list` keeps it), a pattern of at most `MAX_PATTERN` characters, a parameter of at most
 /// `MAX_PARAMETER` bytes and bounded depth. Anything that is not a list is dropped.
 pub fn clean(v: &toml::Value) -> toml::Value {
     let ok = |t: &toml::Table| {
@@ -857,7 +857,7 @@ mod tests {
     }
 
     /// A stored list with an entry that is not a table, a numeric popup parameter, an
-    /// integer `disabled` and a key Tandem does not know.
+    /// integer `disabled` and a key Termurion does not know.
     fn odd_list() -> toml::Value {
         let v: toml::Value = toml::from_str(r#"list = [{ regex = "a", action = "BounceTrigger", parameter = 1, disabled = 1, extra = "x" }, "junk", { regex = "b", action = "BellTrigger" }]"#).unwrap();
         v["list"].clone()

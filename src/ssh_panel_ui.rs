@@ -28,7 +28,7 @@ pub enum PanelEvent {
     GoTo(String),
     /// A path typed, to be expanded (`~`, relative, `..`) and gone to.
     GoToTyped(String),
-    /// Go to Folder's text changed: its completions are wanted (Tandem's).
+    /// Go to Folder's text changed: its completions are wanted (Termurion's).
     Complete(String),
     Search(String),
     Sort(Column),

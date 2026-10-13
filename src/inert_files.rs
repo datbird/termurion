@@ -1,4 +1,4 @@
-//! Files Tandem writes from a name someone else chose (a chat attachment, a tool's created file)
+//! Files Termurion writes from a name someone else chose (a chat attachment, a tool's created file)
 //! and then shows in Explorer: Explorer reads some types just to list them (an icon location, a
 //! library's folders), so a model-named `x.url` could make Windows contact a UNC host with the
 //! person's credentials without anything being opened. One rule for every such writer: refuse
@@ -170,7 +170,7 @@ pub fn is_hidden(c: char) -> bool {
     c.is_control() || bidi || unseen || format || cf
 }
 
-/// THE sanitizer for text a program supplied and Tandem shows (badge text, alert text, host
+/// THE sanitizer for text a program supplied and Termurion shows (badge text, alert text, host
 /// names, and any later display of program text): `is_hidden` characters removed (a newline kept
 /// when `keep_newline`), then at most `max` characters. Do not write another removal set.
 pub fn display_text(s: &str, max: usize, keep_newline: bool) -> String {
@@ -350,7 +350,7 @@ mod tests {
     /// ruling): a remote program's `x.exe` is never written as `x.exe` by any caller.
     #[test]
     fn the_door_refuses_high_risk_types() {
-        let dir = std::env::temp_dir().join(format!("tandem-door-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-door-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for bad in [
@@ -427,7 +427,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_written_file_carries_the_mark() {
-        let dir = std::env::temp_dir().join(format!("tandem-inert-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-inert-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("a.txt");
         write_marked(&p, b"hi").unwrap();
@@ -463,7 +463,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_strict_mark_fails_when_it_cannot_be_written() {
-        let dir = std::env::temp_dir().join(format!("tandem-strict-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-strict-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("a.txt");
@@ -502,7 +502,7 @@ mod tests {
     /// hold, and a written file carries the Mark of the Web (the real stream, on Windows).
     #[test]
     fn write_new_checked_never_overwrites_and_marks() {
-        let dir = std::env::temp_dir().join(format!("tandem-new-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-new-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("a.txt");
@@ -529,7 +529,7 @@ mod tests {
     /// and the error says so; a written file records the page it came from (`HostUrl`).
     #[test]
     fn a_mark_failure_is_a_failed_write() {
-        let dir = std::env::temp_dir().join(format!("tandem-unmarked-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-unmarked-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("a.png");

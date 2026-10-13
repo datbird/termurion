@@ -207,10 +207,10 @@ fn config_hostname(text: &str, host: &str) -> Option<String> {
     None
 }
 
-/// iTerm2's search order (`iTermSSHHelpers.m:17-37`) in Windows' places: Tandem's own
+/// iTerm2's search order (`iTermSSHHelpers.m:17-37`) in Windows' places: Termurion's own
 /// ssh_config, the user's, then the system's.
 pub fn config_paths(appdata: &Path, profile_dir: &Path, program_data: &Path) -> Vec<PathBuf> {
-    vec![appdata.join("Tandem").join("ssh_config"), profile_dir.join(".ssh").join("config"), program_data.join("ssh").join("ssh_config")]
+    vec![appdata.join("Termurion").join("ssh_config"), profile_dir.join(".ssh").join("config"), program_data.join("ssh").join("ssh_config")]
 }
 
 /// Who and where an ssh session is (`SSHIdentity.swift`).
@@ -568,7 +568,7 @@ mod tests {
         assert_eq!(c.hostname("b"), "first-b");
         assert_eq!(c.hostname("a"), "second");
 
-        let dir = std::env::temp_dir().join(format!("tandem-ssh-args-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-ssh-args-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let real = dir.join("config");
         std::fs::write(&real, "Host z\n HostName zed\n").unwrap();
@@ -578,7 +578,7 @@ mod tests {
 
         let paths = config_paths(Path::new(r"C:\A"), Path::new(r"C:\U"), Path::new(r"C:\P"));
         assert_eq!(paths, vec![
-            Path::new(r"C:\A").join("Tandem").join("ssh_config"),
+            Path::new(r"C:\A").join("Termurion").join("ssh_config"),
             Path::new(r"C:\U").join(".ssh").join("config"),
             Path::new(r"C:\P").join("ssh").join("ssh_config"),
         ]);

@@ -5,7 +5,7 @@
 //!
 //! Carve-out: these offers are announcements, not `iTermWarning`s. Always and Never write a
 //! plain optional bool, never `warnings::Spec` or the Suppressed Alerts catalog, so they are
-//! not listed in Tandem > Suppressed Alerts (as in iTerm2); the Advanced pane's Unspecified
+//! not listed in Termurion > Suppressed Alerts (as in iTerm2); the Advanced pane's Unspecified
 //! asks again. The Capture Output announcements are the same kind of exception.
 
 use super::*;

@@ -1,5 +1,5 @@
-//! Claude Code's status hook for Tandem (milestone 12f), the Windows port of iTerm2's
-//! `cc-status`: reads one hook event from stdin and reports it to Tandem. A console program.
+//! Claude Code's status hook for Termurion (milestone 12f), the Windows port of iTerm2's
+//! `cc-status`: reads one hook event from stdin and reports it to Termurion. A console program.
 
 fn main() {
     #[cfg(windows)]

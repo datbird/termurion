@@ -344,14 +344,14 @@ mod tests {
     fn powershell_and_rust_agree() {
         // The script's function is cut out of the resource and run alone: loading the whole
         // script needs a console host (prompt, PSReadLine). No registry value, no network.
-        let script = include_str!("../resources/shell_integration/tandem_shell_integration.ps1");
-        let start = script.find("function global:Get-TandemMachineIdHash").expect("the hash function");
+        let script = include_str!("../resources/shell_integration/termurion_shell_integration.ps1");
+        let start = script.find("function global:Get-TermurionMachineIdHash").expect("the hash function");
         let end = start + script[start..].find("\n}\n").expect("its end") + 3;
         let body = &script[start..end];
         let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
         let exe = format!("{root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
         let out = std::process::Command::new(exe)
-            .args(["-NoProfile", "-NonInteractive", "-Command", &format!("{body}\nGet-TandemMachineIdHash '1234-ab:7'")])
+            .args(["-NoProfile", "-NonInteractive", "-Command", &format!("{body}\nGet-TermurionMachineIdHash '1234-ab:7'")])
             .output()
             .expect("powershell runs");
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -370,11 +370,11 @@ mod tests {
     /// R3: the script sent `1:` with no value, which iTerm2's rule reads as "not this machine".
     #[test]
     fn resources_ps1_computes_the_identity() {
-        let script = include_str!("../resources/shell_integration/tandem_shell_integration.ps1");
+        let script = include_str!("../resources/shell_integration/termurion_shell_integration.ps1");
         assert!(script.contains("iterm2-osc7-machine-id") && script.contains("HMACSHA256"));
         assert!(script.contains("MachineGuid") && script.contains("BootId") && script.contains("Get-ItemPropertyValue"));
         assert!(!script.contains("machineID=1:\")"), "the empty value is gone");
-        assert!(script.contains("?machineID=$global:__TandemMachineId"));
+        assert!(script.contains("?machineID=$global:__TermurionMachineId"));
         assert!(script.contains("'0:'"), "identity unavailable is 0:");
         assert!(!script.contains("Invoke-WebRequest") && !script.contains("Invoke-RestMethod"));
     }

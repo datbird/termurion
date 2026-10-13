@@ -116,7 +116,7 @@ impl Parser {
     /// `role(_:)` (`CP:87-125`): while no word has been flushed yet, everything (including
     /// its own whitespace and quote and paren characters) reads as `Command` - only the
     /// first word gets the command role, but that role covers its own surrounding
-    /// whitespace too (a kept iTerm2 trait, not a Tandem bug).
+    /// whitespace too (a kept iTerm2 trait, not a Termurion bug).
     fn role_of(&self, c: u16) -> Role {
         if self.components.is_empty() {
             return Role::Command;
@@ -204,7 +204,7 @@ impl Parser {
     /// carrying the role of that expanded (or literal) character; the in-quote fallbacks
     /// ("determined by testing with bash") add a leading backslash for text fidelity, though
     /// (a Task 4 simplification) only the last character written at this index keeps its
-    /// role, since a Tandem role array holds one role per raw input index, not per output
+    /// role, since a Termurion role array holds one role per raw input index, not per output
     /// character.
     fn handle_escaped(&mut self, c: u16, j: usize) {
         self.is_first_char_of_word = false;

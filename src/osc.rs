@@ -32,7 +32,7 @@ fn cut_at_cap(buf: &[u8]) -> bool {
     buf.starts_with(b"52;")
 }
 
-/// OSC payload prefixes Tandem acts on.
+/// OSC payload prefixes Termurion acts on.
 const WANTED: [&[u8]; 8] = [b"133;", b"7;", b"1337;", b"52;", b"21337;", b"9;", b"72;", b"22;"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,7 +166,7 @@ impl Csi {
         Some(Osc::Held(held))
     }
 
-    /// The query this control sequence asks, if Tandem answers it.
+    /// The query this control sequence asks, if Termurion answers it.
     fn query(&self) -> Option<Osc> {
         use crate::reports::Query;
         if self.ignore {
@@ -264,7 +264,7 @@ fn could_be_wanted(buf: &[u8]) -> bool {
 }
 
 impl Scanner {
-    /// Back between sequences, as after Tandem wrote an ESC of its own that cancelled the one
+    /// Back between sequences, as after Termurion wrote an ESC of its own that cancelled the one
     /// the program left open. The armed state stays.
     pub fn restart(&mut self) {
         *self = Scanner { cup_armed: self.cup_armed, ..Scanner::default() };

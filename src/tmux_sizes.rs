@@ -1,4 +1,4 @@
-//! tmux sizes from Tandem (iTerm2's TmuxController window sizing): in fixed-size mode one
+//! tmux sizes from Termurion (iTerm2's TmuxController window sizing): in fixed-size mode one
 //! client size for every window (the smallest tmux tab), set with `@iterm2_size` and
 //! `refresh-client -C`, then a short list-windows for the new layouts; in variable-size mode
 //! (tmux 2.9 and later) one size per window.

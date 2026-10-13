@@ -37,7 +37,7 @@ pub fn folder_on(host: &str) -> String {
     format!("Folder on {host}")
 }
 
-/// What a request that cannot be sent says (`SEX:14-27`, with the host: Tandem's, "The
+/// What a request that cannot be sent says (`SEX:14-27`, with the host: Termurion's, "The
 /// connection to <host> was lost.").
 pub fn connection_lost(host: &str) -> String {
     format!("The connection to {host} was lost.")
@@ -47,9 +47,9 @@ pub fn connection_lost(host: &str) -> String {
 pub const LIST_MAX: usize = 100_000;
 /// The most search results the panel keeps (P18; Task 8 fills them).
 pub const SEARCH_MAX: usize = 10_000;
-/// The notice that goes with a truncated search (Tandem's).
+/// The notice that goes with a truncated search (Termurion's).
 pub const SEARCH_TRUNCATED: &str = "Only the first 10000 results are shown.";
-/// The notice that goes with a truncated listing (Tandem's).
+/// The notice that goes with a truncated listing (Termurion's).
 pub const TRUNCATED: &str = "Only the first 100000 items are shown.";
 
 /// What a request asks, and what to do with its answer.

@@ -38,7 +38,7 @@ pub const PENDING_LIMIT: Duration = Duration::from_secs(5);
 pub const SENSITIVE_AUTOCOMPLETE: &[&str] = &["current-password", "new-password", "one-time-code", "cc-number", "cc-csc"];
 
 /// The top document's flag the sensitive mark script keeps (a getter a page cannot redefine).
-pub const SENSITIVE_FLAG: &str = "__tandemReplaySensitive";
+pub const SENSITIVE_FLAG: &str = "__termurionReplaySensitive";
 
 /// The one CSS selector of a sensitive field: a password input, or an input whose `autocomplete`
 /// holds one of `SENSITIVE_AUTOCOMPLETE` as a whole token, in any case.
@@ -88,7 +88,7 @@ watch(document);document.addEventListener('DOMContentLoaded',function(){{scan(do
 /// above, in any frame), or while a visible password field is in the top document; also true when
 /// the mark script is not there or anything fails (fail closed). Only a plain `false` lets a
 /// capture through.
-pub const PROBE_JS: &str = "(function(){try{if(window.__tandemReplaySensitive!==false)return true;var a=document.querySelectorAll('input[type=password]');for(var i=0;i<a.length;i++){var r=a[i].getBoundingClientRect();if(r.width>0&&r.height>0)return true}return false}catch(e){return true}})()";
+pub const PROBE_JS: &str = "(function(){try{if(window.__termurionReplaySensitive!==false)return true;var a=document.querySelectorAll('input[type=password]');for(var i=0;i<a.length;i++){var r=a[i].getBoundingClientRect();if(r.width>0&&r.height>0)return true}return false}catch(e){return true}})()";
 
 /// Whether the probe's answer lets the capture go on: only a plain `false`.
 pub fn probe_allows(answer: &Result<String, String>) -> bool {
@@ -97,7 +97,7 @@ pub fn probe_allows(answer: &Result<String, String>) -> bool {
 
 /// The folder a saved movie goes to (P16): Tandem's own, swept at the next launch and at exit.
 pub fn replay_folder(local_appdata: &std::path::Path) -> std::path::PathBuf {
-    local_appdata.join("Tandem").join("Replay")
+    local_appdata.join("Termurion").join("Replay")
 }
 
 /// `Could not create movie: %@` (`BVC:277-285`).
@@ -561,7 +561,7 @@ mod tests {
         assert!(PROBE_JS.contains("type=password"));
         assert_ne!(PROBE_TOKEN, CAPTURE_TOKEN);
         let f = replay_folder(std::path::Path::new(r"C:\Users\a\AppData\Local"));
-        assert!(f.ends_with(r"Tandem\Replay"), "{f:?}");
+        assert!(f.ends_with(r"Termurion\Replay"), "{f:?}");
     }
 
     /// Final review I1: one script in every frame marks the page sensitive while a password,

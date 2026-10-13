@@ -753,11 +753,11 @@ impl App {
 
 // --- Files ---
 
-/// `%LOCALAPPDATA%\Tandem\tmp`, judged and made; the files an earlier run left are swept once per process.
+/// `%LOCALAPPDATA%\Termurion\tmp`, judged and made; the files an earlier run left are swept once per process.
 fn review_tmp_dir() -> Option<crate::localfs::LocalPath> {
     static SWEPT: std::sync::Once = std::sync::Once::new();
     let local = std::env::var("LOCALAPPDATA").ok().filter(|t| !t.is_empty())?;
-    let dir = crate::localfs::LocalPath::judge(local)?.join("Tandem")?.join("tmp")?;
+    let dir = crate::localfs::LocalPath::judge(local)?.join("Termurion")?.join("tmp")?;
     crate::localfs::create_dir_all(&dir).ok()?;
     SWEPT.call_once(|| cr::sweep(&dir));
     Some(dir)

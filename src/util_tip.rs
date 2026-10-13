@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(rc_path(&env(&[("XDG_DATA_HOME", "~\\x"), ("USERPROFILE", "C:\\U")])), PathBuf::from("C:\\U\\x\\.it2totd"));
 
         // The utility: tip 0, then tip 1, the index saved with no newline.
-        let tmp = crate::util_cli::TempDir::new("tandem-util-tip");
+        let tmp = crate::util_cli::TempDir::new("termurion-util-tip");
         let dir = tmp.to_path_buf();
         let mut h = Harness { cwd: dir.clone(), ..Default::default() };
         h.env.insert("XDG_DATA_HOME".into(), dir.display().to_string());

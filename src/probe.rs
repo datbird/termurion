@@ -174,7 +174,7 @@ fn wsl(args: &[&str]) -> Result<String, String> {
 
 /// A click in vim moves the cursor. vim then writes the cursor position to a file.
 fn vim_click(api: &Api) -> Result<String, String> {
-    wsl(&["rm", "-f", "/tmp/tandem_vim_pos"])?;
+    wsl(&["rm", "-f", "/tmp/termurion_vim_pos"])?;
     let file = wsl_path(&repo_dir().join("probe").join("vim_target.txt"));
     let mut s = Session::start(
         api,
@@ -189,9 +189,9 @@ fn vim_click(api: &Api) -> Result<String, String> {
     // Column 4, row 2 (0-based) is line 3, column 5 in vim.
     press_release(&s, modes, 4, 2)?;
     std::thread::sleep(Duration::from_millis(300));
-    s.send(b":call writefile([line('.') . ',' . col('.')], '/tmp/tandem_vim_pos')\r:qa!\r")?;
+    s.send(b":call writefile([line('.') . ',' . col('.')], '/tmp/termurion_vim_pos')\r:qa!\r")?;
     s.pty.wait_exit(Duration::from_secs(5)).ok_or("vim did not exit")?;
-    let pos = wsl(&["cat", "/tmp/tandem_vim_pos"])?;
+    let pos = wsl(&["cat", "/tmp/termurion_vim_pos"])?;
     if pos.trim() == "3,5" {
         Ok(format!("cursor moved to 3,5; modes {modes:?}"))
     } else {
@@ -202,10 +202,10 @@ fn vim_click(api: &Api) -> Result<String, String> {
 /// With tmux mouse on, a wheel-up over a pane enters copy mode.
 fn tmux_wheel(api: &Api) -> Result<String, String> {
     // The probe uses its own tmux socket. No server running is the normal case here.
-    let _ = wsl(&["tmux", "-L", "tandemprobe", "kill-server"]);
+    let _ = wsl(&["tmux", "-L", "termurionprobe", "kill-server"]);
     let mut s = Session::start(
         api,
-        &format!("wsl.exe -d {DISTRO} -e tmux -L tandemprobe -f /dev/null new-session -s probe ; set -g mouse on"),
+        &format!("wsl.exe -d {DISTRO} -e tmux -L termurionprobe -f /dev/null new-session -s probe ; set -g mouse on"),
     )?;
     let on = s.pump_until(Duration::from_secs(10), |sc| sc.mouse_modes().tracking != Tracking::Off);
     let modes = s.screen.mouse_modes();
@@ -217,7 +217,7 @@ fn tmux_wheel(api: &Api) -> Result<String, String> {
         let end = Instant::now() + Duration::from_secs(3);
         let mut in_mode = String::new();
         while Instant::now() < end {
-            in_mode = wsl(&["tmux", "-L", "tandemprobe", "display", "-p", "-t", "probe", "#{pane_in_mode}"])?;
+            in_mode = wsl(&["tmux", "-L", "termurionprobe", "display", "-p", "-t", "probe", "#{pane_in_mode}"])?;
             if in_mode.trim() == "1" {
                 break;
             }
@@ -229,7 +229,7 @@ fn tmux_wheel(api: &Api) -> Result<String, String> {
             Err(format!("pane_in_mode is {:?} after the wheel; modes {modes:?}", in_mode.trim()))
         }
     };
-    let _ = wsl(&["tmux", "-L", "tandemprobe", "kill-server"]);
+    let _ = wsl(&["tmux", "-L", "termurionprobe", "kill-server"]);
     result
 }
 

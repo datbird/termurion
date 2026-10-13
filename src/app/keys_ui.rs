@@ -1,7 +1,7 @@
 //! Force keyboard (`InputSourceForcer.swift`): the app side of `input_locale`. The layout is
 //! forced while a window of this process is in front (the `app_active` edge, a process test, so
 //! a move between a terminal and Settings changes nothing) and the person's comes back when
-//! Tandem is no longer in front and at exit. `ActivateKeyboardLayout` runs here, on the UI thread.
+//! Termurion is no longer in front and at exit. `ActivateKeyboardLayout` runs here, on the UI thread.
 
 use super::App;
 use crate::input_locale::{self, Prefs, Step};
@@ -20,7 +20,7 @@ impl App {
         self.locale_seen = input_locale::current();
     }
 
-    /// The app became active or resigned: `was` and `now` are "a window of Tandem is in front".
+    /// The app became active or resigned: `was` and `now` are "a window of Termurion is in front".
     pub(super) fn locale_focus(&mut self, was: bool, now: bool) {
         let Some(active) = input_locale::activation_change(was, now) else { return };
         let prefs = self.locale_prefs();
@@ -35,7 +35,7 @@ impl App {
         self.locale_run(step);
     }
 
-    /// The person changed the layout while Tandem is in front: it is forced again, once. Runs with
+    /// The person changed the layout while Termurion is in front: it is forced again, once. Runs with
     /// the event loop's own passes; nothing wakes for it.
     pub(super) fn locale_tick(&mut self) {
         if !self.locale.is_active() {

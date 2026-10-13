@@ -3,7 +3,7 @@
 //!
 //! - A folder is only ever one the person chose in the native folder picker (`browser_extensions_choose`
 //!   writes the root key) and only after the person approved THAT folder's manifest, for THIS saved
-//!   profile, in a native Tandem window that lists the manifest's permissions and sites
+//!   profile, in a native Termurion window that lists the manifest's permissions and sites
 //!   (`Then::BrowserExtension`, the guarded `ConfirmWindow`). The approval is bound to a hash of the
 //!   manifest, so a changed manifest asks again. An import, a sync, a page or a URL can write the profile
 //!   keys but cannot make an approval: the approvals file is written only by `approve_in_worker`.
@@ -12,7 +12,7 @@
 //!   never asks a question; only choosing a folder does.
 //! - Folders and manifests are read on workers (never on the UI thread), bounded, and never from a
 //!   network path.
-//! - One owner removes an extension: `browser_extension_remove` asks WebView2 and drops Tandem's records
+//! - One owner removes an extension: `browser_extension_remove` asks WebView2 and drops Termurion's records
 //!   (approval id, active id, this run's folder map) together.
 //! Nothing is logged but counts; names and paths never reach a log line. App-wide state only (never in
 //! `swap_live`): the persistent store is the one extension profile.
@@ -90,7 +90,7 @@ pub(super) struct Extensions {
 
 fn data_dir() -> std::io::Result<LocalPath> {
     let base = webhost_win::local_appdata().ok_or_else(localfs::refused)?;
-    let dir = localfs::judge_io(base.join("Tandem"))?;
+    let dir = localfs::judge_io(base.join("Termurion"))?;
     localfs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -124,7 +124,7 @@ fn edit_approvals(change: impl FnOnce(&mut Approvals)) -> bool {
 }
 
 /// What the shared browser data should run: every approved folder whose manifest still hashes to what
-/// was approved (wherever it is: approvals are for the shared WebView2 profile, not for a Tandem
+/// was approved (wherever it is: approvals are for the shared WebView2 profile, not for a Termurion
 /// profile), plus the folders under `root` (or `root` itself when it holds a manifest) with their
 /// manifests, which may be new. A pane with no root still gets the approved set, so a sync from any
 /// pane leaves no orphan running. The bool is whether the root could be read at all. Worker code.
@@ -175,7 +175,7 @@ impl App {
         self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| !io.dev_null) && self.browser_views.get(&pane).is_some_and(|b| b.view.is_some())
     }
 
-    /// What an approval belongs to: the shared browser data, the same for every Tandem browser profile
+    /// What an approval belongs to: the shared browser data, the same for every Termurion browser profile
     /// (they share one WebView2 profile, so one extension list).
     fn browser_ext_profile(&self, pane: PaneId) -> Option<String> {
         self.panes.get(&pane)?;
@@ -388,7 +388,7 @@ impl App {
         }
     }
 
-    /// THE removal: WebView2 forgets the extension, and Tandem's approval, active id and folder map
+    /// THE removal: WebView2 forgets the extension, and Termurion's approval, active id and folder map
     /// entry go in the same call.
     pub(super) fn browser_extension_remove(&mut self, pane: PaneId, id: &str) {
         if !be::valid_id(id) {

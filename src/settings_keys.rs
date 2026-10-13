@@ -1372,7 +1372,7 @@ pub fn row_enabled_with(g: &Globals, key: &str, both_gpu_kinds: bool) -> bool {
 
 /// The key under which a window's egui memory notes that `add_icon_font` found the font.
 fn icon_font_id() -> egui::Id {
-    egui::Id::new("tandem-settings-icons")
+    egui::Id::new("termurion-settings-icons")
 }
 
 pub(crate) fn icon_family() -> egui::FontFamily {
@@ -1386,7 +1386,7 @@ pub fn add_icon_font(ctx: &egui::Context) {
     use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
     let dir = std::path::PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into())).join("Fonts");
     let Some(bytes) = ["SegoeIcons.ttf", "segmdl2.ttf"].iter().find_map(|f| std::fs::read(dir.join(f)).ok()) else { return };
-    ctx.add_font(FontInsert::new("tandem-icons", egui::FontData::from_owned(bytes), vec![InsertFontFamily { family: icon_family(), priority: FontPriority::Highest }]));
+    ctx.add_font(FontInsert::new("termurion-icons", egui::FontData::from_owned(bytes), vec![InsertFontFamily { family: icon_family(), priority: FontPriority::Highest }]));
     ctx.data_mut(|d| d.insert_temp(icon_font_id(), true));
 }
 
@@ -1403,12 +1403,12 @@ pub fn has_icon_font(ctx: &egui::Context) -> bool {
 
 /// Where a window's egui memory notes a custom scripts folder typed and not yet applied.
 fn folder_pending_id() -> egui::Id {
-    egui::Id::new("tandem-scripts-folder-pending")
+    egui::Id::new("termurion-scripts-folder-pending")
 }
 
 /// Where a window's egui memory keeps the last folder text checked and whether it was valid.
 fn folder_valid_id() -> egui::Id {
-    egui::Id::new("tandem-scripts-folder-valid")
+    egui::Id::new("termurion-scripts-folder-valid")
 }
 
 /// Whether the custom scripts folder's text was typed and not yet applied (iTerm2's
@@ -1562,7 +1562,7 @@ pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &m
                 changed |= c;
                 // Preferring the other kind of GPU takes a restart (`GP:2089`); the banner stays for the window.
                 if s.key == "preferIntegratedGPU" {
-                    let id = egui::Id::new("tandem-gpu-restart");
+                    let id = egui::Id::new("termurion-gpu-restart");
                     if c {
                         ui.ctx().data_mut(|d| d.insert_temp(id, true));
                     }
@@ -1603,7 +1603,7 @@ pub enum PrefsAction {
 /// Where a window's egui memory keeps the last settings location checked and whether it was
 /// valid (the check writes a probe file, so it runs when the text changes, not every frame).
 fn prefs_valid_id() -> egui::Id {
-    egui::Id::new("tandem-prefs-folder-valid")
+    egui::Id::new("termurion-prefs-folder-valid")
 }
 
 /// Whether the Save changes popup, its label and Save Now take input (`GP:4239-4244`): the
@@ -1634,7 +1634,7 @@ fn choose_prefs_folder(g: &mut Globals) -> Option<String> {
 pub fn prefs_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path) -> PrefsAction {
     use crate::remote_prefs as rp;
     let mut action = PrefsAction::None;
-    egui::Grid::new("tandem-prefs-rows").num_columns(2).show(ui, |ui| {
+    egui::Grid::new("termurion-prefs-rows").num_columns(2).show(ui, |ui| {
         ui.label(rp::EXTERNAL_SETTINGS);
         ui.vertical(|ui| action = custom_folder_rows(ui, g, home));
         ui.end_row();
@@ -2265,7 +2265,7 @@ mod tests {
         }
         assert_eq!(
             row("PrefsCustomFolder").help,
-            "The folder (or http:// or https:// URL) holding tandem-settings.toml. Network paths are not supported."
+            "The folder (or http:// or https:// URL) holding termurion-settings.toml. Network paths are not supported."
         );
         // The rows sit before "Save copy/paste and command history to disk" (Task 8's order).
         let general: Vec<&str> = schema::global().iter().filter(|s| s.tab == "General" && s.section == "Settings").map(|s| s.key.as_str()).collect();
@@ -2397,7 +2397,7 @@ mod tests {
                 Kind::String,
                 Value::String(String::new()),
                 "Path to folder with dynamic profiles.",
-                "\nWhen empty, %APPDATA%\\Tandem\\DynamicProfiles will be used. You must restart Tandem after modifying this setting.",
+                "\nWhen empty, %APPDATA%\\Termurion\\DynamicProfiles will be used. You must restart Tandem after modifying this setting.",
             ),
             (
                 "DynamicProfilesNotificationLatency",
@@ -2634,7 +2634,7 @@ mod tests {
         assert_eq!((custom.tab.as_str(), custom.section.as_str(), custom.label.as_str()), ("General", "Python API", "Custom folder for Python API scripts"));
         assert_eq!(custom.kind, Kind::String);
         assert_eq!(custom.default, Some(Value::String(String::new())));
-        let help = "Tandem looks for Python API scripts in this folder instead of %APPDATA%\\Tandem\\Scripts. It must exist and have no spaces in its path. Network paths are not supported.";
+        let help = "Tandem looks for Python API scripts in this folder instead of %APPDATA%\\Termurion\\Scripts. It must exist and have no spaces in its path. Network paths are not supported.";
         assert_eq!((use_custom.help.as_str(), custom.help.as_str()), (help, help));
         // The field follows the checkbox (`GP:2152-2154`).
         let mut g = Globals::empty(std::path::Path::new("scripts-rows-test.toml"));
@@ -2766,7 +2766,7 @@ mod tests {
             assert_eq!(row.label.as_str(), help.lines().next().unwrap(), "{key}");
         }
         // The rules read the four rows, the General one included.
-        let mut g = Globals::empty(&std::env::temp_dir().join("tandem-bidi-rows.toml"));
+        let mut g = Globals::empty(&std::env::temp_dir().join("termurion-bidi-rows.toml"));
         assert_eq!(Rules::from_globals(&g), Rules { enabled: true, detect_direction: false, right_justify: true, off_in_alternate: false });
         g.set("Bidi", Value::Boolean(false));
         g.set("DetectParagraphDirection", Value::Boolean(true));
@@ -3031,7 +3031,7 @@ mod tests {
         assert_eq!(base.default, Some(Value::String(String::new())));
         let label = "Folder for config files. There must not be a space in the path.";
         assert_eq!(base.label, label);
-        assert_eq!(base.help, format!("{label}\nIf empty, then %APPDATA%\\Tandem will be the default location."));
+        assert_eq!(base.help, format!("{label}\nIf empty, then %APPDATA%\\Termurion will be the default location."));
     }
 
     /// `PP:1096-1121`, `PBVC:902-909`: "Show indicators for non-default values" is
@@ -3846,7 +3846,7 @@ mod tests {
                 "Debugging",
                 Kind::Bool,
                 Value::Boolean(false),
-                "Log raw AI API requests and responses to disk.\nWrites every byte sent to and received from the AI vendor (request headers, body, streaming chunks, final response, errors, and timing) to %APPDATA%\\Tandem\\AIChatWire\\. One log file per app launch; rotate or delete it yourself when done. Every header value except known non-secret ones (such as Content-Type, Accept, User-Agent and anthropic-version), and keys that appear in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters); prompt and response content is logged verbatim. Off by default; turn on only while reproducing an issue and delete the files when finished.".into(),
+                "Log raw AI API requests and responses to disk.\nWrites every byte sent to and received from the AI vendor (request headers, body, streaming chunks, final response, errors, and timing) to %APPDATA%\\Termurion\\AIChatWire\\. One log file per app launch; rotate or delete it yourself when done. Every header value except known non-secret ones (such as Content-Type, Accept, User-Agent and anthropic-version), and keys that appear in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters); prompt and response content is logged verbatim. Off by default; turn on only while reproducing an issue and delete the files when finished.".into(),
             ),
             (
                 "UnameCommand",

@@ -255,7 +255,7 @@ mod tests {
     /// Steps (0) to (4): preflight, the user, the sshd and its check, the client key, remote.sh.
     /// Returns the cleanup guard, the key's path and the user.
     fn setup() -> (Cleanup, String, String) {
-        let temp = std::env::temp_dir().join("tandem-ssh-probe");
+        let temp = std::env::temp_dir().join("termurion-ssh-probe");
         let mut cleanup = Cleanup { temp: temp.clone(), keepalive: None };
 
         // (0) Preflight: nothing is installed; any miss is BLOCKED.
@@ -326,7 +326,7 @@ mod tests {
         use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
         use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND};
         use windows_sys::Win32::System::Pipes::{CreateNamedPipeW, PIPE_TYPE_BYTE, PIPE_WAIT};
-        let name: Vec<u16> = format!("\\\\.\\pipe\\tandem-ssh-probe-{}-{overlapped}-{inbound}", std::process::id()).encode_utf16().chain(Some(0)).collect();
+        let name: Vec<u16> = format!("\\\\.\\pipe\\termurion-ssh-probe-{}-{overlapped}-{inbound}", std::process::id()).encode_utf16().chain(Some(0)).collect();
         unsafe {
             let server = CreateNamedPipeW(name.as_ptr(), if inbound { PIPE_ACCESS_INBOUND } else { PIPE_ACCESS_OUTBOUND }, PIPE_TYPE_BYTE | PIPE_WAIT, 1, 65536, 65536, 0, std::ptr::null());
             assert_ne!(server, INVALID_HANDLE_VALUE, "CreateNamedPipeW");
@@ -527,7 +527,7 @@ mod tests {
         drop(cleanup);
     }
 
-    // ---- Resize probe (Robert: can Tandem size the remote pty through ssh.exe's hidden console?)
+    // ---- Resize probe (Robert: can Termurion size the remote pty through ssh.exe's hidden console?)
 
     /// The remote for the resize probe: reports its starting size, then for 8 s reports every
     /// SIGWINCH with the new size, then runs remote.sh (the byte-exact checks).
@@ -539,7 +539,7 @@ mod tests {
             "printf '\\033]134;:start %s\\033\\\\' \"$(stty size)\"",
             "i=0; while [ $i -lt 80 ]; do sleep 0.1 & wait $!; i=$((i+1)); done",
             "trap - WINCH",
-            "exec sh /tmp/tandem-ssh-probe/remote.sh",
+            "exec sh /tmp/termurion-ssh-probe/remote.sh",
         ]
         .join("\n")
             + "\n"
@@ -816,7 +816,7 @@ mod tests {
     #[test]
     #[ignore]
     fn resize_probe_child() {
-        let (Ok(key), Ok(user)) = (std::env::var("TANDEM_RESIZE_KEY"), std::env::var("TANDEM_RESIZE_USER")) else { return };
+        let (Ok(key), Ok(user)) = (std::env::var("TERMURION_RESIZE_KEY"), std::env::var("TERMURION_RESIZE_USER")) else { return };
         const CREATE_NEW_CONSOLE: u32 = 0x10;
         resize_variant("no-window-baseline", &key, &user, CREATE_NO_WINDOW, None, Sizing::None);
         resize_variant("new-console-countchars-attach", &key, &user, CREATE_NEW_CONSOLE, Some((100, 30)), Sizing::Attach);
@@ -837,8 +837,8 @@ mod tests {
         assert!(ok(&wrote), "resize.sh was not written");
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "ssh_probe_win::tests::resize_probe_child", "--ignored", "--nocapture", "--test-threads=1"])
-            .env("TANDEM_RESIZE_KEY", &key)
-            .env("TANDEM_RESIZE_USER", &user)
+            .env("TERMURION_RESIZE_KEY", &key)
+            .env("TERMURION_RESIZE_USER", &user)
             .creation_flags(DETACHED_PROCESS)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

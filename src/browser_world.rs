@@ -1,9 +1,9 @@
-//! Tandem's isolated JavaScript world (milestone 13x2, Task 0): pure. iTerm2 runs its page
+//! Termurion's isolated JavaScript world (milestone 13x2, Task 0): pure. iTerm2 runs its page
 //! scripts in `.defaultClient`, a WebKit content world that shares the DOM with the page and
 //! nothing else. WebView2 has no such API, but Chromium's DevTools protocol does: a named
 //! isolated world, a binding exposed to that world only, and the context events that say which
 //! world a call came from. This file holds the calls that set it up (in order), the table of
-//! contexts that decides whether a binding call is Tandem's, and the parameters of every later
+//! contexts that decides whether a binding call is Termurion's, and the parameters of every later
 //! call. Nothing here touches COM or a page.
 
 use std::collections::HashMap;
@@ -11,9 +11,9 @@ use std::collections::HashMap;
 use serde_json::{Value, json};
 
 /// The isolated world's name: the name its contexts carry (`.defaultClient` in iTerm2).
-pub const WORLD_NAME: &str = "tandem-client";
+pub const WORLD_NAME: &str = "termurion-client";
 /// The function the world's scripts call (`Runtime.addBinding`); it exists only in that world.
-pub const BINDING: &str = "__tandemClient";
+pub const BINDING: &str = "__termurionClient";
 /// The DevTools events a view subscribes to.
 pub const EVENTS: &[&str] = &[
     "Runtime.executionContextCreated",
@@ -53,7 +53,7 @@ pub fn setup_calls(client_sources: &[String]) -> Vec<Call> {
 }
 
 /// The same for a child session (an out-of-process frame); `Runtime.runIfWaitingForDebugger` is
-/// last, and is sent even when an earlier call failed (the frame then has no Tandem world).
+/// last, and is sent even when an earlier call failed (the frame then has no Termurion world).
 pub fn session_calls(client_sources: &[String]) -> Vec<Call> {
     let mut v = common(client_sources);
     v.push(("Runtime.runIfWaitingForDebugger", json!({})));
@@ -85,7 +85,7 @@ pub fn evaluate_params_secret(unique_context_id: &str, expression: &crate::pwm::
     out
 }
 
-/// The unique id of a `Runtime.executionContextCreated` event's context when it is Tandem's own
+/// The unique id of a `Runtime.executionContextCreated` event's context when it is Termurion's own
 /// isolated world (named so and of type "isolated"); None for any other context.
 pub fn isolated_unique(json: &str) -> Option<String> {
     let v = serde_json::from_str::<Value>(json).ok()?;
@@ -109,7 +109,7 @@ pub const MAX_SESSIONS: usize = 64;
 /// The call that lets an auto-attached target run (it waits for a debugger otherwise).
 pub const RESUME: &str = "Runtime.runIfWaitingForDebugger";
 
-/// Every DevTools method Tandem ever calls (P22): a new one is added here with its reviewer.
+/// Every DevTools method Termurion ever calls (P22): a new one is added here with its reviewer.
 pub const ALLOWED: &[&str] = &[
     "Page.enable",
     "Page.getFrameTree",
@@ -131,9 +131,9 @@ pub const ALLOWED: &[&str] = &[
     "Input.insertText",
     "Input.dispatchKeyEvent",
     "Input.dispatchMouseEvent",
-    // 13x4 Task 5, preflight B1 (reviewer: the controller): host-initiated READS only. Tandem's Rust
+    // 13x4 Task 5, preflight B1 (reviewer: the controller): host-initiated READS only. Termurion's Rust
     // code sends them through `App::devtools_read` (`devtools::refusal` is the narrower second gate,
-    // arguments from Tandem's own resource tree read); no page or isolated-world message reaches a
+    // arguments from Termurion's own resource tree read); no page or isolated-world message reaches a
     // DevTools sender, and every reply is size-capped page-derived data (`devtools::Budget`).
     "Page.getResourceTree",
     "Page.getResourceContent",
@@ -206,7 +206,7 @@ pub fn detach_params(session: &str) -> Value {
 }
 
 /// One child session's calls, one at a time: after a failed call only the resume still goes (the
-/// frame then has no Tandem world, but it is never left paused).
+/// frame then has no Termurion world, but it is never left paused).
 #[derive(Debug)]
 pub struct SessionSetup {
     session: String,
@@ -244,7 +244,7 @@ impl SessionSetup {
     }
 }
 
-/// Whether a view has a Tandem world.
+/// Whether a view has a Termurion world.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClientWorld {
     Setting,
@@ -275,9 +275,9 @@ pub struct Setup {
 
 /// The marker a Client source sets in the world the scripts really run in: seeing it only there
 /// proves `worldName` was honored.
-pub const CANARY: &str = "globalThis.__tandemCanary = 1;";
+pub const CANARY: &str = "globalThis.__termurionCanary = 1;";
 /// The expression both worlds answer: the binding's type and the marker's.
-pub const CHECK_EXPRESSION: &str = "typeof __tandemClient + '|' + typeof __tandemCanary";
+pub const CHECK_EXPRESSION: &str = "typeof __termurionClient + '|' + typeof __termurionCanary";
 
 /// One isolation check, run once every setup call has answered. The app runs it and answers with
 /// `Setup::checked`.
@@ -288,7 +288,7 @@ pub enum Check {
     Reload,
     /// Evaluate in the PAGE world (`ExecuteScript`): the answer is the JSON text of the value.
     Page(&'static str),
-    /// Evaluate in the main frame's Tandem world: the answer is the JSON text of the value.
+    /// Evaluate in the main frame's Termurion world: the answer is the JSON text of the value.
     World(&'static str),
 }
 
@@ -427,7 +427,7 @@ pub enum Offer {
 /// The most lifecycle events the host holds for the app at once (a page's Created and attached
 /// targets past it are dropped: inert, as past `MAX_CONTEXTS`).
 pub const MAX_HELD: usize = 1024;
-/// Tandem contexts the host remembers having passed (so their Destroyed is passed too).
+/// Termurion contexts the host remembers having passed (so their Destroyed is passed too).
 const MAX_PASSED: usize = 2 * MAX_CONTEXTS;
 /// Past this, even a Destroyed, Cleared or detach is dropped (each is bounded by what was passed;
 /// this is the last bound of the queue).
@@ -452,7 +452,7 @@ struct Held {
 /// The host's filter of a view's DevTools events (final review I4, the class "caps on every
 /// page-driven event"): with `Runtime.enable` on, a page that makes and removes frames or workers in
 /// a loop raises lifecycle events at will. The host keeps only what the app acts on (the
-/// `Contexts` rules, applied before the queue): a Created of a Tandem-world context, the Destroyed
+/// `Contexts` rules, applied before the queue): a Created of a Termurion-world context, the Destroyed
 /// of one it passed, Cleared, the main frame's navigation, attach and detach; every other event is
 /// dropped. What it keeps is held here, not queued: one wake is queued at a time and the app takes
 /// everything held when it drains it. A Created and its Destroyed that meet here cancel, a newer
@@ -461,7 +461,7 @@ struct Held {
 #[derive(Default, Debug)]
 pub struct EventFilter {
     held: std::collections::VecDeque<Held>,
-    /// Tandem contexts passed to the app and not yet told gone: (session, unique id) to numeric id.
+    /// Termurion contexts passed to the app and not yet told gone: (session, unique id) to numeric id.
     passed: HashMap<(Option<String>, String), i64>,
     /// A wake is queued and not yet taken.
     woken: bool,
@@ -557,7 +557,7 @@ impl EventFilter {
     }
 }
 
-/// A view's Tandem world is usable only when it is Ready and the main frame's context is known.
+/// A view's Termurion world is usable only when it is Ready and the main frame's context is known.
 pub fn world_usable(state: &ClientWorld, contexts: &Contexts) -> bool {
     *state == ClientWorld::Ready && contexts.context_for(None).is_some()
 }
@@ -571,7 +571,7 @@ struct Ctx {
     seq: u64,
 }
 
-/// The execution contexts that are Tandem's world, keyed by session and context id (ids are per
+/// The execution contexts that are Termurion's world, keyed by session and context id (ids are per
 /// session and die with their document).
 #[derive(Default, Debug)]
 pub struct Contexts {
@@ -681,7 +681,7 @@ impl Contexts {
         Some(k)
     }
 
-    /// The session and context id of a frame's Tandem world (None for the main frame's own).
+    /// The session and context id of a frame's Termurion world (None for the main frame's own).
     pub fn context_for(&self, frame: Option<u64>) -> Option<(Option<String>, i64)> {
         let name = match frame {
             None => self.main.as_deref()?,
@@ -690,7 +690,7 @@ impl Contexts {
         self.table.iter().filter(|(_, c)| c.frame == name).max_by_key(|(_, c)| c.seq).map(|((s, id), _)| (s.clone(), *id))
     }
 
-    /// The session and unique context id of a frame's Tandem world: what `Runtime.evaluate` names.
+    /// The session and unique context id of a frame's Termurion world: what `Runtime.evaluate` names.
     pub fn unique_for(&self, frame: Option<u64>) -> Option<(Option<String>, String)> {
         let name = match frame {
             None => self.main.as_deref()?,
@@ -699,7 +699,7 @@ impl Contexts {
         self.table.iter().filter(|(_, c)| c.frame == name).max_by_key(|(_, c)| c.seq).map(|((s, _), c)| (s.clone(), c.unique.clone()))
     }
 
-    /// The keys of the non-main frames that have a Tandem world.
+    /// The keys of the non-main frames that have a Termurion world.
     pub fn frames(&self) -> Vec<u64> {
         let mut v: Vec<u64> = self.table.values().filter_map(|c| self.keys.get(&c.frame).copied()).collect();
         v.sort_unstable();
@@ -708,7 +708,7 @@ impl Contexts {
     }
 
     /// `Runtime.bindingCalled`: Some((frame, origin, payload)) only for `BINDING` from a recorded
-    /// Tandem context of that session; every other call is None.
+    /// Termurion context of that session; every other call is None.
     pub fn binding_called(&mut self, session: Option<&str>, json: &str) -> Option<(Option<u64>, String, String)> {
         let v: Value = serde_json::from_str(json).ok()?;
         if v.get("name").and_then(Value::as_str) != Some(BINDING) {
@@ -787,17 +787,17 @@ mod tests {
             names(&calls),
             ["Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument", "Page.addScriptToEvaluateOnNewDocument", "Target.setAutoAttach", "Page.getFrameTree"]
         );
-        assert_eq!(calls[2].1, json!({"name": "__tandemClient", "executionContextName": "tandem-client"}));
+        assert_eq!(calls[2].1, json!({"name": "__termurionClient", "executionContextName": "termurion-client"}));
         assert!(calls[2].1.get("executionContextName").is_some(), "a binding without a context name is exposed to the page");
-        assert_eq!(calls[3].1, json!({"source": "A", "worldName": "tandem-client"}));
-        assert_eq!(calls[4].1, json!({"source": "B", "worldName": "tandem-client"}));
+        assert_eq!(calls[3].1, json!({"source": "A", "worldName": "termurion-client"}));
+        assert_eq!(calls[4].1, json!({"source": "B", "worldName": "termurion-client"}));
         assert!(calls[3].1.get("runImmediately").is_none());
         assert_eq!(calls[5].1, json!({"autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true}));
         let s = session_calls(&["A".into()]);
         assert_eq!(names(&s), ["Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument", "Target.setAutoAttach", "Runtime.runIfWaitingForDebugger"]);
         let (m, p) = create_world_call("F");
         assert_eq!(m, "Page.createIsolatedWorld");
-        assert_eq!(p, json!({"frameId": "F", "worldName": "tandem-client", "grantUniveralAccess": false}));
+        assert_eq!(p, json!({"frameId": "F", "worldName": "termurion-client", "grantUniveralAccess": false}));
         let e = evaluate_params("U5", "1");
         assert_eq!((e["uniqueContextId"].as_str(), e["awaitPromise"].as_bool(), e["returnByValue"].as_bool(), e["userGesture"].as_bool()), (Some("U5"), Some(true), Some(true), Some(false)));
         assert!(e.get("contextId").is_none(), "never the reusable numeric id");
@@ -813,14 +813,14 @@ mod tests {
         json!({"context": {"id": id, "origin": origin, "name": name, "uniqueId": format!("u{id}"), "auxData": {"frameId": frame, "isDefault": false, "type": kind}}}).to_string()
     }
 
-    /// B8: the reader resets on the main frame's new Tandem context, not on a child frame's.
+    /// B8: the reader resets on the main frame's new Termurion context, not on a child frame's.
     #[test]
     fn main_context_is_the_main_frames() {
         let mut c = Contexts::default();
-        assert!(!c.is_main_context(&created(3, "tandem-client", "isolated", "M", "https://a.invalid")), "no main frame known");
+        assert!(!c.is_main_context(&created(3, "termurion-client", "isolated", "M", "https://a.invalid")), "no main frame known");
         c.set_main_frame("M");
-        assert!(c.is_main_context(&created(3, "tandem-client", "isolated", "M", "https://a.invalid")));
-        assert!(!c.is_main_context(&created(4, "tandem-client", "isolated", "C", "https://a.invalid")));
+        assert!(c.is_main_context(&created(3, "termurion-client", "isolated", "M", "https://a.invalid")));
+        assert!(!c.is_main_context(&created(4, "termurion-client", "isolated", "C", "https://a.invalid")));
         assert!(!c.is_main_context("not json"));
     }
 
@@ -828,34 +828,34 @@ mod tests {
     fn contexts_follow_cdp() {
         let mut c = Contexts::default();
         c.set_main_frame("M");
-        c.created(None, &created(3, "tandem-client", "isolated", "M", "https://a.invalid"));
+        c.created(None, &created(3, "termurion-client", "isolated", "M", "https://a.invalid"));
         assert_eq!(c.context_for(None), Some((None, 3)));
         // A page cannot name its own world: a default context, or any other name, is ignored.
-        c.created(None, &created(4, "tandem-client", "default", "M", "https://evil.invalid"));
+        c.created(None, &created(4, "termurion-client", "default", "M", "https://evil.invalid"));
         c.created(None, &created(5, "other", "isolated", "M", "https://evil.invalid"));
         assert_eq!(c.context_for(None), Some((None, 3)));
         let k = c.frame_key(Some("S1"), "C").expect("a child frame has a key");
         assert_eq!(c.frame_key(Some("S1"), "C"), Some(k));
         assert_eq!(c.frame_key(None, "M"), None);
-        c.created(Some("S1"), &created(7, "tandem-client", "isolated", "C", "https://b.invalid"));
+        c.created(Some("S1"), &created(7, "termurion-client", "isolated", "C", "https://b.invalid"));
         assert_eq!(c.context_for(Some(k)), Some((Some("S1".into()), 7)));
         assert_eq!(c.frames(), vec![k]);
         let call = |name: &str, id: i64| json!({"name": name, "payload": "{}", "executionContextId": id}).to_string();
-        assert_eq!(c.binding_called(None, &call("__tandemClient", 3)), Some((None, "https://a.invalid".into(), "{}".into())));
-        assert_eq!(c.binding_called(Some("S1"), &call("__tandemClient", 7)), Some((Some(k), "https://b.invalid".into(), "{}".into())));
-        // The page's own contexts, an unknown id, another session's id and another name are not Tandem's.
-        assert_eq!(c.binding_called(None, &call("__tandemClient", 4)), None);
-        assert_eq!(c.binding_called(None, &call("__tandemClient", 5)), None);
-        assert_eq!(c.binding_called(None, &call("__tandemClient", 99)), None);
-        assert_eq!(c.binding_called(Some("S1"), &call("__tandemClient", 3)), None);
-        assert_eq!(c.binding_called(None, &call("__tandemClient", 7)), None);
+        assert_eq!(c.binding_called(None, &call("__termurionClient", 3)), Some((None, "https://a.invalid".into(), "{}".into())));
+        assert_eq!(c.binding_called(Some("S1"), &call("__termurionClient", 7)), Some((Some(k), "https://b.invalid".into(), "{}".into())));
+        // The page's own contexts, an unknown id, another session's id and another name are not Termurion's.
+        assert_eq!(c.binding_called(None, &call("__termurionClient", 4)), None);
+        assert_eq!(c.binding_called(None, &call("__termurionClient", 5)), None);
+        assert_eq!(c.binding_called(None, &call("__termurionClient", 99)), None);
+        assert_eq!(c.binding_called(Some("S1"), &call("__termurionClient", 3)), None);
+        assert_eq!(c.binding_called(None, &call("__termurionClient", 7)), None);
         assert_eq!(c.binding_called(None, &call("other", 3)), None);
         assert_eq!(c.binding_called(None, "garbage"), None);
-        assert_eq!(c.binding_called(None, &json!({"name": "__tandemClient", "executionContextId": 3}).to_string()), None);
+        assert_eq!(c.binding_called(None, &json!({"name": "__termurionClient", "executionContextId": 3}).to_string()), None);
         c.destroyed(None, &json!({"executionContextId": 3}).to_string());
         assert_eq!(c.context_for(None), None);
-        assert_eq!(c.binding_called(None, &call("__tandemClient", 3)), None);
-        c.created(None, &created(8, "tandem-client", "isolated", "M", "https://a.invalid"));
+        assert_eq!(c.binding_called(None, &call("__termurionClient", 3)), None);
+        c.created(None, &created(8, "termurion-client", "isolated", "M", "https://a.invalid"));
         assert_eq!(c.context_for(None), Some((None, 8)));
         c.cleared(None);
         assert_eq!(c.context_for(None), None);
@@ -865,7 +865,7 @@ mod tests {
         // The main frame is the one frame with no parent in the view's own target.
         c.navigated(Some("S1"), r#"{"frame":{"id":"Z"}}"#);
         c.navigated(None, r#"{"frame":{"id":"Q","parentId":"M"}}"#);
-        c.created(None, &created(9, "tandem-client", "isolated", "M", "o"));
+        c.created(None, &created(9, "termurion-client", "isolated", "M", "o"));
         assert_eq!(c.context_for(None), Some((None, 9)));
         c.navigated(None, r#"{"frame":{"id":"N"}}"#);
         assert_eq!(c.context_for(None), None);
@@ -878,7 +878,7 @@ mod tests {
     fn a_reused_id_never_picks_the_stale_context() {
         let mut c = Contexts::default();
         c.set_main_frame("M");
-        let made = |id: i64, unique: &str, frame: &str| json!({"context": {"id": id, "origin": "o", "name": "tandem-client", "uniqueId": unique, "auxData": {"frameId": frame, "type": "isolated"}}}).to_string();
+        let made = |id: i64, unique: &str, frame: &str| json!({"context": {"id": id, "origin": "o", "name": "termurion-client", "uniqueId": unique, "auxData": {"frameId": frame, "type": "isolated"}}}).to_string();
         c.created(None, &made(3, "OLD", "M"));
         // The old document's Destroyed was lost; the new renderer reuses id 3 and a lower id 2 is stale.
         c.created(None, &made(2, "STALE", "M"));
@@ -887,14 +887,14 @@ mod tests {
         // A late Destroyed that names the old unique id removes only the old one.
         c.destroyed(None, &json!({"executionContextId": 3, "executionContextUniqueId": "OLD"}).to_string());
         assert_eq!(c.unique_for(None), Some((None, "NEW".to_string())));
-        let call = json!({"name": "__tandemClient", "payload": "{}", "executionContextId": 3}).to_string();
+        let call = json!({"name": "__termurionClient", "payload": "{}", "executionContextId": 3}).to_string();
         assert!(c.binding_called(None, &call).is_some());
         c.destroyed(None, &json!({"executionContextId": 3, "executionContextUniqueId": "NEW"}).to_string());
         assert!(c.binding_called(None, &call).is_none());
         // A context with no unique id is never recorded.
         let mut d = Contexts::default();
         d.set_main_frame("M");
-        d.created(None, &json!({"context": {"id": 1, "origin": "o", "name": "tandem-client", "auxData": {"frameId": "M", "type": "isolated"}}}).to_string());
+        d.created(None, &json!({"context": {"id": 1, "origin": "o", "name": "termurion-client", "auxData": {"frameId": "M", "type": "isolated"}}}).to_string());
         assert!(d.is_empty());
     }
 
@@ -917,10 +917,10 @@ mod tests {
         }
         assert_eq!(queued, 0, "nothing the app ignores is queued");
         assert_eq!(f.held(), 0);
-        // 10,000 Tandem contexts made and gone between two drains: one wake, nothing left held.
+        // 10,000 Termurion contexts made and gone between two drains: one wake, nothing left held.
         let mut wakes = 0;
         for i in 0..10_000i64 {
-            let c = created(i, "tandem-client", "isolated", &format!("F{i}"), "https://evil.invalid");
+            let c = created(i, "termurion-client", "isolated", &format!("F{i}"), "https://evil.invalid");
             match f.offer(None, "Runtime.executionContextCreated", &c) {
                 Offer::Wake => wakes += 1,
                 Offer::Hold => {}
@@ -931,10 +931,10 @@ mod tests {
         assert_eq!(wakes, 1, "one wake at a time");
         assert!(f.held() <= 1, "a Created and its Destroyed cancel: {}", f.held());
         f.take();
-        // 10,000 live Tandem contexts: the filter holds at most its bound; the main frame's
+        // 10,000 live Termurion contexts: the filter holds at most its bound; the main frame's
         // navigation is kept (the latest only); a binding call is posted as it is.
         for i in 0..10_000i64 {
-            f.offer(None, "Runtime.executionContextCreated", &created(i, "tandem-client", "isolated", &format!("F{i}"), "https://evil.invalid"));
+            f.offer(None, "Runtime.executionContextCreated", &created(i, "termurion-client", "isolated", &format!("F{i}"), "https://evil.invalid"));
             f.offer(None, "Page.frameNavigated", &json!({"frame": {"id": "M"}}).to_string());
         }
         let held = f.take();
@@ -946,7 +946,7 @@ mod tests {
         assert_eq!(f.offer(None, "Target.attachedToTarget", r#"{"sessionId":"S"}"#), Offer::Hold);
         assert_eq!(f.offer(None, "Target.detachedFromTarget", r#"{"sessionId":"S"}"#), Offer::Hold);
         assert_eq!(f.take().len(), 3);
-        f.offer(None, "Runtime.executionContextCreated", &created(7, "tandem-client", "isolated", "M", "https://a.invalid"));
+        f.offer(None, "Runtime.executionContextCreated", &created(7, "termurion-client", "isolated", "M", "https://a.invalid"));
         f.take();
         assert_eq!(f.offer(None, "Runtime.executionContextDestroyed", r#"{"executionContextId":7,"executionContextUniqueId":"u7"}"#), Offer::Wake, "a context the app knows is told gone");
         assert_eq!(f.take().len(), 1);
@@ -976,13 +976,13 @@ mod tests {
     #[test]
     fn created_says_whether_it_recorded() {
         let mut c = Contexts::default();
-        assert!(c.created(None, &created(1, "tandem-client", "isolated", "M", "https://a.invalid")));
-        assert!(!c.created(None, &created(1, "tandem-client", "isolated", "M", "https://a.invalid")), "once per context");
+        assert!(c.created(None, &created(1, "termurion-client", "isolated", "M", "https://a.invalid")));
+        assert!(!c.created(None, &created(1, "termurion-client", "isolated", "M", "https://a.invalid")), "once per context");
         assert!(!c.created(None, &created(2, "", "default", "M", "https://a.invalid")), "a page's own context");
         assert!(!c.created(None, "not json"));
         let mut accepted = 1;
         for i in 10..10_010i64 {
-            accepted += usize::from(c.created(None, &created(i, "tandem-client", "isolated", &format!("F{i}"), "https://a.invalid")));
+            accepted += usize::from(c.created(None, &created(i, "termurion-client", "isolated", &format!("F{i}"), "https://a.invalid")));
         }
         assert_eq!(accepted, MAX_CONTEXTS, "a refused context is never reported recorded");
     }
@@ -991,7 +991,7 @@ mod tests {
     fn the_table_is_bounded() {
         let mut c = Contexts::default();
         for i in 0..(MAX_CONTEXTS as i64 + 50) {
-            c.created(None, &created(i, "tandem-client", "isolated", &format!("F{i}"), "https://x.invalid"));
+            c.created(None, &created(i, "termurion-client", "isolated", &format!("F{i}"), "https://x.invalid"));
         }
         assert!(c.len() <= MAX_CONTEXTS);
         for i in 0..(MAX_FRAME_KEYS as u32 + 50) {
@@ -1032,7 +1032,7 @@ mod tests {
         assert_eq!(*s.state(), ClientWorld::Ready);
         assert_eq!(s.main_frame(), Some("M"));
         assert_eq!(&sent[..8], &["Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument", "Page.addScriptToEvaluateOnNewDocument", "Target.setAutoAttach", "Page.getFrameTree", "Page.createIsolatedWorld"]);
-        assert_eq!(&sent[9..], &["Reload", "Page(\"typeof __tandemClient + '|' + typeof __tandemCanary\")", "World(\"typeof __tandemClient + '|' + typeof __tandemCanary\")"], "{sent:?}");
+        assert_eq!(&sent[9..], &["Reload", "Page(\"typeof __termurionClient + '|' + typeof __termurionCanary\")", "World(\"typeof __termurionClient + '|' + typeof __termurionCanary\")"], "{sent:?}");
         assert_eq!(sent.len(), 12, "{sent:?}");
 
         let mut f = Setup::new(&["A".into()]);
@@ -1186,7 +1186,7 @@ mod tests {
         let mut c = Contexts::default();
         c.set_main_frame("M");
         assert!(!world_usable(&ClientWorld::Ready, &c));
-        c.created(None, &created(3, "tandem-client", "isolated", "M", "o"));
+        c.created(None, &created(3, "termurion-client", "isolated", "M", "o"));
         assert!(world_usable(&ClientWorld::Ready, &c));
         assert!(!world_usable(&ClientWorld::Setting, &c));
         assert!(!world_usable(&ClientWorld::Unavailable("x".into()), &c));

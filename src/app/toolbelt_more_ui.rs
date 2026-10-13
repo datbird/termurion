@@ -241,9 +241,9 @@ fn status_lead(item: &StatusItem, dark: bool) -> Vec<(char, Rgb)> {
     lead
 }
 
-/// The global note's file: `<appdata>\Tandem\notes.txt` (`notes::FILE_NAME`).
+/// The global note's file: `<appdata>\Termurion\notes.txt` (`notes::FILE_NAME`).
 pub(super) fn notes_path(appdata: &Path) -> PathBuf {
-    appdata.join("Tandem").join(notes::FILE_NAME)
+    appdata.join("Termurion").join(notes::FILE_NAME)
 }
 
 /// Jobs' signal popup is as wide as the widest signal name needs (`SignalPicker sizeToFit`).
@@ -1309,7 +1309,7 @@ impl App {
             if console && consoled {
                 continue;
             }
-            // A hosted pane's console belongs to tandem-host, which sends the event: Tandem
+            // A hosted pane's console belongs to termurion-host, which sends the event: Tandem
             // never attaches to it. A pane closed for Undo Close still has its console.
             let pane = self.panes.values().chain(self.undo.iter().flat_map(|u| u.panes())).find(|p| p.shell_pid() == Some(req.shell));
             let hosted = if console { pane.and_then(|p| p.hosted_signal(req.way == SignalWay::CtrlBreak)) } else { None };
@@ -2423,7 +2423,7 @@ mod tests {
     #[test]
     fn note_file_round_trips() {
         let base = std::path::Path::new(r"C:\Users\me\AppData\Roaming");
-        assert_eq!(notes_path(base), base.join("Tandem").join("notes.txt"));
+        assert_eq!(notes_path(base), base.join("Termurion").join("notes.txt"));
         let text = "first line\nsecond \u{00e9}\ttab\n";
         assert_eq!(read_note(text.as_bytes()), text);
         // A byte order mark (Notepad's UTF-8) is dropped; only a leading one.

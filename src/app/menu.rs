@@ -823,7 +823,7 @@ impl App {
                 _ => {}
             },
             "openSourceLicenses:" => {
-                let dir = std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, std::path::PathBuf::from).join("Tandem");
+                let dir = std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, std::path::PathBuf::from).join("Termurion");
                 // The folder goes through the one path judge (a redirected LocalAppData on a share is refused).
                 match crate::localfs::judge_io(&dir).and_then(|d| crate::licenses::write_to(&d, crate::licenses::text())) {
                     Ok(path) => {
@@ -1617,27 +1617,27 @@ mod install_tests {
 
     #[test]
     fn the_pwsh_install_command_allows_scripts_and_quotes_the_path() {
-        let c = pwsh_install_command(std::path::Path::new(r"C:\Users\o'brien\$x\tandem_shell_integration.ps1"));
+        let c = pwsh_install_command(std::path::Path::new(r"C:\Users\o'brien\$x\termurion_shell_integration.ps1"));
         assert!(c.contains("(Get-ExecutionPolicy) -in 'Restricted','AllSigned'"), "{c}");
         assert!(c.contains("Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force"), "{c}");
-        assert!(c.contains(r"Add-Content $PROFILE '. ''C:\Users\o''''brien\$x\tandem_shell_integration.ps1'''"), "{c}");
+        assert!(c.contains(r"Add-Content $PROFILE '. ''C:\Users\o''''brien\$x\termurion_shell_integration.ps1'''"), "{c}");
         assert!(c.ends_with('\r'));
     }
 
     #[test]
     fn the_pwsh_install_command_adds_one_line_to_the_profile() {
-        let dir = std::env::temp_dir().join(format!("tandem-install-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-install-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let script = dir.join("tandem_shell_integration.ps1");
-        std::fs::write(&script, "$global:TandemLoaded = 1").unwrap();
+        let script = dir.join("termurion_shell_integration.ps1");
+        std::fs::write(&script, "$global:TermurionLoaded = 1").unwrap();
         let profile = dir.join("profile.ps1");
         let cmd = pwsh_install_command(&script).trim_end().to_string();
-        let run = format!("$PROFILE = '{}'; {cmd}; {cmd}; if ($global:TandemLoaded) {{ 'loaded' }}", profile.display());
+        let run = format!("$PROFILE = '{}'; {cmd}; {cmd}; if ($global:TermurionLoaded) {{ 'loaded' }}", profile.display());
         let out = std::process::Command::new("powershell.exe").args(["-NoProfile", "-NoLogo", "-Command", &run]).output().unwrap();
         assert!(String::from_utf8_lossy(&out.stdout).contains("loaded"), "{}", String::from_utf8_lossy(&out.stderr));
         let text = std::fs::read_to_string(&profile).unwrap();
-        assert_eq!(text.matches("tandem_shell_integration.ps1").count(), 1, "{text}");
+        assert_eq!(text.matches("termurion_shell_integration.ps1").count(), 1, "{text}");
     }
 
     #[test]
@@ -1716,11 +1716,11 @@ pub(super) fn pwsh_install_command(script: &std::path::Path) -> String {
     let path = q(&script.display().to_string());
     let line = q(&format!(". {path}"));
     format!(
-        "if ((Get-ExecutionPolicy) -in 'Restricted','AllSigned') {{ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force }}; if (!(Test-Path $PROFILE)) {{ New-Item -ItemType File -Force $PROFILE | Out-Null }}; if (!(Select-String -Quiet -SimpleMatch 'tandem_shell_integration.ps1' $PROFILE)) {{ Add-Content $PROFILE {line} }}; . {path}\r"
+        "if ((Get-ExecutionPolicy) -in 'Restricted','AllSigned') {{ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force }}; if (!(Test-Path $PROFILE)) {{ New-Item -ItemType File -Force $PROFILE | Out-Null }}; if (!(Select-String -Quiet -SimpleMatch 'termurion_shell_integration.ps1' $PROFILE)) {{ Add-Content $PROFILE {line} }}; . {path}\r"
     )
 }
 
-pub(super) const PWSH_SCRIPT: &str = include_str!("../../resources/shell_integration/tandem_shell_integration.ps1");
+pub(super) const PWSH_SCRIPT: &str = include_str!("../../resources/shell_integration/termurion_shell_integration.ps1");
 
 fn ask(text: &str) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW};

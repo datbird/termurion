@@ -1,4 +1,4 @@
-//! iTerm2's Remap Modifiers, done the Windows way: while a Tandem window is in front,
+//! iTerm2's Remap Modifiers, done the Windows way: while a Termurion window is in front,
 //! the keyboard hook swallows a remapped modifier and injects the key it stands for.
 //! These are the hook's decisions, kept apart from Win32 so they can be tested.
 
@@ -74,7 +74,7 @@ pub fn targets(tag: i64) -> Vec<u16> {
 }
 
 /// Whether the hook's Win-chord gate may treat Win as held: with Remap modifiers globally off, a
-/// Win key remapped to something else is not a Win for Tandem's menu chords (it reaches the window
+/// Win key remapped to something else is not a Win for Termurion's menu chords (it reaches the window
 /// and is read as its target, `APP:252-285`), so only a Win side still acting as Win counts.
 pub fn win_chord_held(tags: &Tags, global: bool, lwin: bool, rwin: bool) -> bool {
     // A side counts while it still acts as a Win key: its tag targets Left or Right Win (the
@@ -83,7 +83,7 @@ pub fn win_chord_held(tags: &Tags, global: bool, lwin: bool, rwin: bool) -> bool
     acts(lwin, tags.left_command) || acts(rwin, tags.right_command)
 }
 
-/// What Tandem itself reads when Remap modifiers globally is off (`iTermApplication.m:252-285`):
+/// What Termurion itself reads when Remap modifiers globally is off (`iTermApplication.m:252-285`):
 /// the physical modifiers, rewritten through the tags. Which Alt, Control and Win keys are down comes
 /// from `sides`; a modifier in `physical` with no side known counts as the left key. Shift is never
 /// remapped. Windows' AltGr (Right Alt with its fake Left Control) is left alone, as the hook does.
@@ -148,7 +148,7 @@ impl Remapper {
     }
 
     /// `global` is Remap modifiers globally: off, no new key is remapped (the hook injects nothing;
-    /// Tandem reads its own keys through `remap_in_app`). A key remapped before it went off still
+    /// Termurion reads its own keys through `remap_in_app`). A key remapped before it went off still
     /// comes up cleanly.
     pub fn on_key(&mut self, vk: u16, scan: u32, down: bool, focused: bool, tags: &Tags, global: bool) -> Verdict {
         // AltGr's fake Left Control is never ours, even while a real Left Control is remapped.
@@ -294,7 +294,7 @@ mod tests {
     fn a_key_held_before_focus_arrives_is_never_remapped() {
         let mut r = Remapper::default();
         assert_eq!(r.on_key(0x5B, 0x5B, true, false, &swapped(), true), Verdict::Pass);
-        // Auto-repeat after Tandem came to the front.
+        // Auto-repeat after Termurion came to the front.
         assert_eq!(r.on_key(0x5B, 0x5B, true, true, &swapped(), true), Verdict::Pass);
         assert_eq!(r.on_key(0x5B, 0x5B, false, true, &swapped(), true), Verdict::Pass);
     }
@@ -332,7 +332,7 @@ mod tests {
         let win_as_ctrl = Tags { left_command: 11, ..Tags::identity() };
         // Global on: the hook handles remapping itself; the gate sees the physical Win.
         assert!(win_chord_held(&win_as_ctrl, true, true, false));
-        // Off, Left Win as Control: it is not a Win for Tandem's menu chords.
+        // Off, Left Win as Control: it is not a Win for Termurion's menu chords.
         assert!(!win_chord_held(&win_as_ctrl, false, true, false));
         // The right Win still acts as Win.
         assert!(win_chord_held(&win_as_ctrl, false, true, true));

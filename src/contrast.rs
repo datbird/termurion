@@ -133,7 +133,7 @@ pub fn lerp_lab(t: f64, a: Lab, b: Lab) -> Lab {
 
 /// The harmonized 256-color table, indexes 16 to 255 (`MS:6119-6181`, from Jake Stewart's
 /// gist): the 6x6x6 cube interpolated in Lab between the background, the eight base colors
-/// and the foreground, then 24 grays from the background to the foreground. Tandem always
+/// and the foreground, then 24 grays from the background to the foreground. Termurion always
 /// converts back to sRGB (the P3 ruling).
 pub fn harmonized_256(base8: [Rgb; 8], bg: Rgb, fg: Rgb) -> [Rgb; 240] {
     let lab = |c: Rgb| lab_from_srgb([c.r as f64 / 255.0, c.g as f64 / 255.0, c.b as f64 / 255.0]);

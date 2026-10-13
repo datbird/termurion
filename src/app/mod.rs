@@ -755,7 +755,7 @@ pub struct App {
     /// ssh: URLs that arrived before the first window (app-wide, not in `swap_live`; m14e).
     pending_urls_at_start: Vec<String>,
     /// A launch URL waiting for the hotkey window of a profile to be made (guid to URL); the
-    /// window's first session takes it (`ssh_url_app::open_url_in_tandem`).
+    /// window's first session takes it (`ssh_url_app::open_url_in_termurion`).
     hotkey_urls: HashMap<String, String>,
     /// The launch pipe this Tandem serves, when it owns it (an idle `-Embedding` start stops it
     /// before it ends; otherwise it ends with the process).
@@ -1881,7 +1881,7 @@ pub fn run() {
     // A cookie in Tandem's own environment (Tandem started from a Tandem shell) must reach no
     // session and no child: only a cookie Tandem mints for a session is ever set.
     for name in crate::session_env::NEVER_INHERITED {
-        // SAFETY: the first thing Tandem does, before any thread (the event loop, tandem-host,
+        // SAFETY: the first thing Tandem does, before any thread (the event loop, termurion-host,
         // the API server) exists, so nothing reads the environment meanwhile.
         unsafe { std::env::remove_var(name) };
     }
@@ -1926,7 +1926,7 @@ pub fn run() {
         Ok(crate::launch::Request::Embedding) => {
             let exe = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_default();
             let pack = conpty::load(&Source::Shipped(exe)).is_ok_and(|a| a.pack.is_some());
-            let tandem = crate::default_term::is_tandem(&crate::default_term::current(&crate::reg::HkcuRegistry));
+            let tandem = crate::default_term::is_termurion(&crate::default_term::current(&crate::reg::HkcuRegistry));
             match crate::default_term::embedding_start(tandem, pack, &crate::url_launch::probe_running()) {
                 crate::default_term::EmbeddingStart::Run => embedding = true,
                 crate::default_term::EmbeddingStart::Exit(why) => return crate::host::log(&format!("embedding: not started: {why}")),
@@ -2138,7 +2138,7 @@ pub fn run() {
     jobs.set_ancestry_diagnostics(globals.bool("LogForegroundJobAncestryDiagnostics"));
     let side_bar_preferred = side_bar_default(&globals);
     let min_tab_drag = globals.int("MinimumTabDragDistance") as f32;
-    // Session restoration: shells run in tandem-host so they outlive Tandem (read once:
+    // Session restoration: shells run in termurion-host so they outlive Tandem (read once:
     // a change needs a restart, as in iTerm2).
     // A second Tandem (the host serves the first) neither restores nor saves windows: the
     // saved state belongs to the first.
@@ -4078,7 +4078,7 @@ impl App {
     /// the window's number, the tab it goes into, and iTerm2's pane number (the tab's session
     /// count less one once it is in the tab, `TAB:7435-7443`). The result holds a secret:
     /// never log it. A pane started on SSH transport `t` other than ConPTY is told which
-    /// (`TANDEM_SSH_TRANSPORT`, for it2ssh).
+    /// (`TERMURION_SSH_TRANSPORT`, for it2ssh).
     fn session_env(&mut self, id: PaneId, p: &Profile, t: crate::ssh_transport::Transport, cmd: &str) -> (Vec<String>, Option<String>) {
         let window = self.window_number();
         let counts: Vec<usize> = self.tabs.iter().map(|t| t.layout.panes().len()).collect();
@@ -5977,7 +5977,7 @@ impl App {
             return;
         }
         // Any button on one of Tandem's overlays inside a pane is Tandem's, never the program's (B5).
-        if self.tandem_ui_at(x, y) {
+        if self.termurion_ui_at(x, y) {
             return;
         }
         // The offscreen command line scrolls to its command (`PTYTextView.m:7885-7896`): after
@@ -6377,7 +6377,7 @@ impl App {
                 if let Some((id, _)) = self.pane_at(x, y) {
                     // The pointer reached a terminal pane (not chrome, not an overlay) after
                     // entering the window: the one moment focus follows mouse decides.
-                    if self.ffm_entered && !self.tandem_ui_at(x, y) {
+                    if self.ffm_entered && !self.termurion_ui_at(x, y) {
                         self.ffm_enter();
                     }
                     self.ffm_pane_focus(id, (x, y));
@@ -6418,7 +6418,7 @@ impl App {
         }
         let (x, y) = self.cursor;
         // A wheel over a Tandem overlay is not the program's: no report and no arrows.
-        if self.tandem_ui_at(x, y) {
+        if self.termurion_ui_at(x, y) {
             return;
         }
         // Over a scrollbar the wheel scrolls the pane, whatever the program asked for.
@@ -7374,7 +7374,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
         // A selection made or cleared at an idle prompt moves Explain Output's state.
         self.explain_follows();
-        let active = hotkey_ui::tandem_in_front();
+        let active = hotkey_ui::termurion_in_front();
         let edge = active != self.app_active;
         if active && !self.app_active {
             // Tandem is in front: the waiting sessions clear and the bells reset (`PT:4999`).
@@ -8591,7 +8591,7 @@ mod tests {
 
     #[test]
     fn terminfo_is_for_wsl_only() {
-        let dir = Some(r"C:\A\Tandem\terminfo");
+        let dir = Some(r"C:\A\Termurion\terminfo");
         let at = |cmd: &str| posix_for(cmd, dir, Some("15;0".into()), vec![("LANG".into(), "en_US.UTF-8".into())], Some("X/p".into()), true);
         assert_eq!(at("wsl.exe -d Ubuntu").terminfo.as_deref(), dir);
         assert_eq!(at(r#""C:\Windows\System32\wsl.exe""#).terminfo.as_deref(), dir);

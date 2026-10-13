@@ -33,7 +33,7 @@ pub const CUSTOM_HEADERS_ENABLED: &str = "AICustomHeadersEnabled";
 pub const CUSTOM_HEADERS: &str = "AICustomHeaders";
 pub const ZERO_DATA_RETENTION: &str = "AIZeroDataRetention";
 pub const MODEL_UPDATES: &str = "AIModelUpdatesEnabled";
-/// The hosts a person allowed requests to (Tandem's, ruling 1); not a schema row, so import
+/// The hosts a person allowed requests to (Termurion's, ruling 1); not a schema row, so import
 /// never brings it.
 pub const CONSENT: &str = "NoSyncAIRequestConsent";
 

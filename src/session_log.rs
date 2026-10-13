@@ -995,14 +995,14 @@ pub fn is_network_log_path(path: &Path) -> bool {
     crate::start_dir::network_value("Log Directory", &path.to_string_lossy())
 }
 
-/// The values Tandem itself sets for a log name (the profile's name, the creation time and the
+/// The values Termurion itself sets for a log name (the profile's name, the creation time and the
 /// ids): they keep their dots. Every other variable is set by a program (the title, OSC 7, user
 /// variables, a job name) and loses them.
 const OWN_VALUES: [&str; 5] = ["creationTimeString", "profileName", "termid", "iterm2.pid", "autoLogId"];
 
 /// A substituted value as one path segment (13p B4, applied to the write): separators, drive
 /// colons and controls become "_", so do the dots of a program's value (it can add no
-/// extension) and the leading or doubled dots of Tandem's own, so the value can neither move the
+/// extension) and the leading or doubled dots of Termurion's own, so the value can neither move the
 /// folder nor name a parent.
 fn path_segment(value: &str, keep_dots: bool) -> String {
     let mut out: String = value.chars().map(|c| if matches!(c, '/' | '\\' | ':') || c.is_control() || (c == '.' && !keep_dots) { '_' } else { c }).collect();
@@ -1019,7 +1019,7 @@ fn path_segment(value: &str, keep_dots: bool) -> String {
 /// safe and joined to the folder (empty and "~" are the home folder). A network folder is only
 /// the person's own when they typed it in the template; one that came out of an interpolated
 /// value or the home folder is refused, and so is a folder that is not absolute (it would be
-/// joined to Tandem's working folder).
+/// joined to Termurion's working folder).
 pub fn auto_log_path(raw_dir: &str, name_template: &str, lookup: &dyn Fn(&str) -> Option<String>, home: &Path) -> Result<PathBuf, String> {
     // An unclosed `\(` evaluates as text; the person is told instead.
     crate::interp::check(raw_dir)?;
@@ -1112,7 +1112,7 @@ mod tests {
     }
 
     fn temp_path(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("tandem-session-log-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-session-log-{}-{name}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         dir.join("log.txt")
     }
@@ -1587,7 +1587,7 @@ mod tests {
         assert!(auto_log_path(" \\\\srv\\logs ", "a.log", &lookup_for(&[]), home).is_err());
         assert!(auto_log_path(" \\(path)", "a.log", &lookup_for(&[("path", "x\u{1}y")]), home).is_err(), "a control character in an expanded folder is refused");
         assert!(is_network_log_path(&join_log_path(" \\\\srv\\logs", "a.log", home)));
-        // A relative folder would land in Tandem's working folder.
+        // A relative folder would land in Termurion's working folder.
         assert!(auto_log_path("logs", "a.log", &lookup_for(&[]), home).is_err());
         assert!(auto_log_path("D:logs", "a.log", &lookup_for(&[]), home).is_err());
         assert!(!is_network_log_path(Path::new(r"D:\logs\a.log")));
@@ -1607,7 +1607,7 @@ mod tests {
         let pairs = [("session.name", "x.bat")];
         let p = auto_log_path("D:/logs", "\\(session.name)", &lookup_for(&pairs), home).unwrap();
         assert!(p.extension().is_none_or(|e| !e.eq_ignore_ascii_case("bat")), "{p:?}");
-        // What Tandem itself sets keeps its dots (`termid` is "w0t0p0.3").
+        // What Termurion itself sets keeps its dots (`termid` is "w0t0p0.3").
         let pairs = [("termid", "w0t0p0.3"), ("profileName", "A/B")];
         let p = auto_log_path("D:/logs", "\\(termid).\\(profileName).log", &lookup_for(&pairs), home).unwrap();
         assert_eq!(p, PathBuf::from("D:/logs").join("w0t0p0.3.A_B.log"));
@@ -1661,7 +1661,7 @@ mod tests {
         assert_eq!(folder_action(Path::new(r"\\srv\logs"), true, &boom), FolderAction::Open);
         assert_eq!(folder_action(Path::new("//srv/logs"), true, &boom), FolderAction::Open);
         let there = std::env::temp_dir();
-        let missing = there.join("tandem-no-such-log-folder-13q");
+        let missing = there.join("termurion-no-such-log-folder-13q");
         assert_eq!(folder_action(&missing, false, &|d| d.is_dir()), FolderAction::AskCreate);
         assert_eq!(folder_action(&there, false, &|d| d.is_dir()), FolderAction::Open);
         assert_eq!(style_prompt(Style::Html), "Last used: HTML");

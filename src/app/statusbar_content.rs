@@ -218,7 +218,7 @@ fn knob_str(c: &Component, kind: Kind, key: &str) -> Option<String> {
 }
 
 /// `JOB:109-149`: the deepest job first, then its parents up to and including the
-/// session's root process, unless that is `login`. Tandem's ancestors are the job and its
+/// session's root process, unless that is `login`. Termurion's ancestors are the job and its
 /// parents below the shell, deepest first (empty when the job is the shell itself), so the
 /// job's own name comes first, the ancestors after their first entry follow, and `root`
 /// (the shell's name) ends the chain. Empty before the window has seen the session's
@@ -309,7 +309,7 @@ fn trigger_list(p: Option<&crate::profile::Profile>) -> Vec<(usize, crate::trigg
 }
 
 /// The Triggers Menu's items (`PS:23172-23187`): (place in the stored list, title, on) for
-/// each trigger whose action Tandem knows; iTerm2 leaves out a trigger it cannot build.
+/// each trigger whose action Termurion knows; iTerm2 leaves out a trigger it cannot build.
 pub(super) fn trigger_items(list: &[(usize, crate::triggers::Trigger)]) -> Vec<(usize, String, bool)> {
     list.iter().filter_map(|(i, t)| crate::triggers::action_info(&t.action).map(|a| (*i, sbc::trigger_menu_title(a.title, &t.regex), t.enabled))).collect()
 }

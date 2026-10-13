@@ -1,6 +1,6 @@
 //! iTerm2's frame graph bookkeeping (milestone 13x2, Task 2; `iTermBrowserGraphDiscoveryHandler.swift`).
-//! `graph-discovery.js` runs only in Tandem's isolated world and tells native which frames exist;
-//! this module decides what Tandem evaluates and where. Web content is untrusted: a message that
+//! `graph-discovery.js` runs only in Termurion's isolated world and tells native which frames exist;
+//! this module decides what Termurion evaluates and where. Web content is untrusted: a message that
 //! is not the isolated world's makes nothing run and registers nothing, and only code a Client
 //! script supplied is ever evaluated, in frames registered from the Client world.
 
@@ -88,7 +88,7 @@ pub fn unwrap_result(value: &Value) -> Option<String> {
     serde_json::from_str::<Value>(s).ok().map(|v| v.to_string())
 }
 
-/// One evaluation Tandem makes in the Tandem world of `frame` (None is the main frame); `code` is
+/// One evaluation Termurion makes in the Termurion world of `frame` (None is the main frame); `code` is
 /// already wrapped. The answer comes back to `Frames::answered` under `token`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Act {
@@ -318,7 +318,7 @@ mod tests {
         assert_eq!(g.lookup("f0"), Some(Some(0)), "a known id stays with its frame");
     }
 
-    /// The whole flow, with no web view: what each message makes Tandem evaluate, and where.
+    /// The whole flow, with no web view: what each message makes Termurion evaluate, and where.
     #[test]
     fn graph_flow_follows_iterm2() {
         let mut g = Frames::default();
@@ -410,7 +410,7 @@ mod tests {
     }
 
     /// R13x23-2, C2: a page-world message, or any message while the world is not ready, makes
-    /// Tandem evaluate nothing and register nothing.
+    /// Termurion evaluate nothing and register nothing.
     #[test]
     fn graph_refuses_page_world() {
         let mut g = Frames::default();

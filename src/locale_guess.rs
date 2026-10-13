@@ -292,7 +292,7 @@ pub fn status(mode: Mode, custom: &str, f: &Facts, supported: &dyn Fn(&str) -> b
 
 pub const STATUS_NOT_SET: &str = "$LANG will not be set.";
 pub const STATUS_INVALID_ENCODING: &str = "Invalid encoding: neither $LC_CTYPE nor $LANG set.";
-// iTerm2's text for an LC_CTYPE that vanishes between two reads; Tandem reads it once, so
+// iTerm2's text for an LC_CTYPE that vanishes between two reads; Termurion reads it once, so
 // nothing shows it.
 #[allow(dead_code)]
 pub const STATUS_MISSING_CTYPE: &str = "Unexpectedly missing LC_CTYPE. Report a bug.";

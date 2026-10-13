@@ -745,8 +745,8 @@ impl App {
             }
             // Permissions, notifications and audio (13x6). A permission request is held for the tick's
             // flush (Task 4); until Tasks 6 and 7 a notification is released unshown.
-            Event::Parked { url, user, redirect, by_tandem, history, source, .. } => {
-                self.browser_navigation_parked(pane, url, super::browser_perms_app::ParkedBy { user: *user, redirect: *redirect, by_tandem: *by_tandem, history: *history, source: source.clone() })
+            Event::Parked { url, user, redirect, by_termurion, history, source, .. } => {
+                self.browser_navigation_parked(pane, url, super::browser_perms_app::ParkedBy { user: *user, redirect: *redirect, by_termurion: *by_termurion, history: *history, source: source.clone() })
             }
             Event::Permission { token, kind, uri, .. } => self.browser_permission_request(pane, *token, *kind, uri),
             Event::NotificationShown { token, origin, title, body, .. } => self.browser_notification(pane, *token, origin, title, body),
@@ -1430,7 +1430,7 @@ impl App {
         match browser::typed_route(&url) {
             browser::Typed::Navigate(u) => self.browser_navigate(pane, &u),
             browser::Typed::File(u) => {
-                let info = webhost::NavInfo { target: &u, source: None, user: true, redirect: false, by_tandem: false, by_model: false };
+                let info = webhost::NavInfo { target: &u, source: None, user: true, redirect: false, by_termurion: false, by_model: false };
                 let policy = webhost::NavPolicy { guard_local_schemes: true, allowed_schemes: None, local_root: None };
                 let judge = |p: &std::path::Path| crate::localfs::LocalPath::judge(p).is_some();
                 if webhost::nav_verdict(&info, &policy, &|t| webhost::file_url_local(t, &judge)) {
@@ -1467,7 +1467,7 @@ impl App {
                     // A sync that gave up starts over.
                     self.sync_permission_states(dev_null);
                 }
-                Some(v) => v.navigate_tandem(url),
+                Some(v) => v.navigate_termurion(url),
                 None => {
                     bv.pending_url = Some(url.to_string());
                     bv.stopped = false;
@@ -1874,7 +1874,7 @@ mod tests {
     /// Task 5 review I1 (redesign): Back, Forward and the history pick ask the pane's own record first and
     /// load a power or local target fresh; no flag or window exists for a page to take.
     #[test]
-    fn tandems_history_steps_never_land_on_a_power_page() {
+    fn termurions_history_steps_never_land_on_a_power_page() {
         let src = include_str!("browser_app.rs");
         let p = &src[..src.find("#[cfg(test)]").unwrap()];
         assert!(p.contains("Button::Back if self.browser_history_fresh(pane, -1) => {}") && p.contains("Button::Forward if self.browser_history_fresh(pane, 1) => {}"));
@@ -1882,7 +1882,7 @@ mod tests {
         let f = &p[p.find("pub(super) fn browser_history_fresh").unwrap()..p.find("fn browser_button(").unwrap()];
         assert!(f.contains("webhost::needs_fresh_load(&url)") && f.contains("self.browser_navigate(pane, &url)") && !f.contains("go_back") && !f.contains("history.go"));
         let win = include_str!("../webhost_win.rs");
-        assert!(!win.contains("tandem_history") && !win.contains("history_by_tandem"), "no flag a page could take");
+        assert!(!win.contains("termurion_history") && !win.contains("history_by_termurion"), "no flag a page could take");
         assert!(win.contains("!webhost::history_refused(kind.0, &uri) && webhost::nav_verdict("));
     }
 
@@ -2012,7 +2012,7 @@ mod tests {
             let s = browser_setup(dev_null, false, page.clone());
             assert!(s.web_message, "the local pages post messages; the host judges each by its source");
             assert_eq!(s.scripts, vec![page[0].clone(), crate::web_replay::sensitive_script()], "the bridge and the sensitive mark are the only injected scripts");
-            assert!(page[0].contains("location.protocol === 'iterm2-about:'") && !page[0].contains("globalThis.__tandemClient"), "a Page script never holds the Client binding");
+            assert!(page[0].contains("location.protocol === 'iterm2-about:'") && !page[0].contains("globalThis.__termurionClient"), "a Page script never holds the Client binding");
             assert!(!crate::web_replay::sensitive_script().contains("chrome.webview"), "the mark opens no host channel");
             assert_eq!(s.resource_filters, vec!["iterm2-about:*".to_string(), "iterm2-file:*".to_string(), "iterm2-ssh:*".to_string()], "only Tandem's own schemes are served");
             let on = browser_setup(dev_null, true, vec![]);
@@ -2031,7 +2031,7 @@ mod tests {
         assert!(submit.contains("typed_route") && submit.contains("nav_verdict") && submit.contains("file_url_local") && submit.contains("run_external"));
         assert!(!submit.contains(".navigate(") && !submit.contains("shell_open"));
         let nav = &prod[prod.find("fn browser_navigate").unwrap()..prod.find("pub(super) fn browser_suggest").unwrap()];
-        assert!(nav.contains("navigate_tandem") && !nav.contains(".navigate("));
+        assert!(nav.contains("navigate_termurion") && !nav.contains(".navigate("));
         let suggest = &prod[prod.find("pub(super) fn browser_suggest").unwrap()..prod.find("pub(super) fn browser_key").unwrap()];
         assert!(suggest.contains("browser::suggest_allowed(&query)"), "a URL may hold a password: never sent to the service");
         assert!(suggest.contains("Proxy::System") && suggest.contains("from_secs(5)"));

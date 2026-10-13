@@ -189,6 +189,6 @@ mod tests {
     fn one_channel_serves_every_request() {
         assert!(!std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("instance_win.rs").exists());
         let pipe = include_str!("../winpipe.rs");
-        assert!(!pipe.contains("tandem-app-"));
+        assert!(!pipe.contains("termurion-app-"));
     }
 }

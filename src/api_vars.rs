@@ -677,7 +677,7 @@ mod tests {
     #[test]
     fn all_unsubscribe_with_no_sessions_is_ok() {
         use pb::notification_response::Status as N;
-        // Tandem keeps "all" as one request, not per-object entries: made while no session
+        // Termurion keeps "all" as one request, not per-object entries: made while no session
         // exists, its unsubscribe finds it and answers OK. iTerm2 answers NOT_SUBSCRIBED here,
         // as it looks for per-session entries (m11b Task 4 ruling; only with no window open).
         let mut s = Subs::default();

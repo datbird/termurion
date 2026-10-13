@@ -12,7 +12,7 @@ use crate::copymode::{self, Action};
 /// The user script's identifier (`BM:347`).
 pub const SCRIPT_ID: &str = "CopyMode";
 /// Tandem's own handler for the keys script (not iTerm2's: iTerm2 reads keys natively, `BM:870-879`).
-pub const KEY_HANDLER: &str = "tandemCopyModeKey";
+pub const KEY_HANDLER: &str = "termurionCopyModeKey";
 
 /// The five files copied from `CopyMode/`; each is registered in `browser_js::resource`.
 pub const FILES: &[&str] = &["copy-mode.js", "copy-mode-util.js", "copy-mode-cursor.js", "copy-mode-cursor-movement.js", "copy-mode-impl.js"];
@@ -90,7 +90,7 @@ pub fn user_script(secret: &str) -> Result<UserScript, String> {
 
 /// Tandem's key listener, filled with the view's secret. A capture-phase `keydown` listener on
 /// `window`: an event that is not trusted is ignored first of all; while the world-local switch is on
-/// (only `window.__tandemCopyModeKeys(secret, on)` in this world sets it) every key without Win, and
+/// (only `window.__termurionCopyModeKeys(secret, on)` in this world sets it) every key without Win, and
 /// not part of an IME composition, is kept from the page and reported to `KEY_HANDLER`.
 const KEYS_JS: &str = r#"// Tandem's own script (not from iTerm2): the keys of copy mode in a web page.
 (function() {
@@ -110,7 +110,7 @@ const KEYS_JS: &str = r#"// Tandem's own script (not from iTerm2): the keys of c
                 return;
             }
             win.count += 1;
-            window.webkit.messageHandlers.tandemCopyModeKey.postMessage(body);
+            window.webkit.messageHandlers.termurionCopyModeKey.postMessage(body);
         }
         window.addEventListener('keydown', function(e) {
             if (!e.isTrusted) { return; }
@@ -133,7 +133,7 @@ const KEYS_JS: &str = r#"// Tandem's own script (not from iTerm2): the keys of c
             e.preventDefault();
             e.stopImmediatePropagation();
         }, true);
-        Object.defineProperty(window, '__tandemCopyModeKeys', {
+        Object.defineProperty(window, '__termurionCopyModeKeys', {
             value: function(secret, value) {
                 if (secret !== SECRET) { return; }
                 on = value === true;
@@ -149,7 +149,7 @@ pub fn keys_script(secret: &str) -> Result<UserScript, String> {
         return Err("the copy mode secret is not plain letters and digits".into());
     }
     let code = browser_js::fill_template(KEYS_JS, &[("SECRET", secret)]);
-    Ok(UserScript { id: "TandemCopyModeKeys", code, inject: Inject::DocumentStart, main_frame_only: false, world: World::Client })
+    Ok(UserScript { id: "TermurionCopyModeKeys", code, inject: Inject::DocumentStart, main_frame_only: false, world: World::Client })
 }
 
 /// Turns the key listener on or off in one Tandem world (the app runs it in every live world and in
@@ -158,7 +158,7 @@ pub fn keys_on_js(secret: &str, on: bool) -> String {
     if !plain(secret) {
         return String::new();
     }
-    format!("window.__tandemCopyModeKeys && window.__tandemCopyModeKeys('{secret}', {on});")
+    format!("window.__termurionCopyModeKeys && window.__termurionCopyModeKeys('{secret}', {on});")
 }
 
 /// The `Runtime.evaluate` parameters that tell a Tandem world made mid-session that copy mode is on
@@ -496,7 +496,7 @@ mod tests {
         }
         let k = keys_script("abc").unwrap().code;
         assert!(k.contains("if (secret !== SECRET) { return; }") && k.contains("const SECRET = \"abc\";"));
-        assert!(k.contains("Object.defineProperty(window, '__tandemCopyModeKeys'"), "not writable, not enumerable, no way to swap it");
+        assert!(k.contains("Object.defineProperty(window, '__termurionCopyModeKeys'"), "not writable, not enumerable, no way to swap it");
         assert!(!k.contains("localStorage") && !k.contains("document.cookie"));
     }
 }

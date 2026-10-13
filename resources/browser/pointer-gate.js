@@ -3,7 +3,7 @@
 // document start. WebView2 gives the host no mouse hook before the page, so a press a pointer
 // binding claims has to be taken here, synchronously, before the page's own handlers see it
 // (iTerm2 decides in the web view's mouseDown, `iTermBrowserWebView.swift:383-490`). Only the
-// presses in the table Tandem keeps in `__tandemGate` are taken: right, middle and other buttons
+// presses in the table Tandem keeps in `__termurionGate` are taken: right, middle and other buttons
 // that are bound, and plain Ctrl single left when it stands for a right click. Left clicks stay the
 // page's, except the fourth click (Smart Selection) and a single Win-click (the first action of the
 // best Smart Selection rule). Every listener ignores an event whose isTrusted is false: a page that
@@ -21,7 +21,7 @@
         const win = { start: 0, count: 0 };
 
         function table() {
-            const g = globalThis.__tandemGate;
+            const g = globalThis.__termurionGate;
             return g && Array.isArray(g.keys) ? g : null;
         }
         // At most 30 posts a second.
@@ -36,7 +36,7 @@
             }
             win.count += 1;
             body.sessionSecret = SECRET;
-            window.webkit.messageHandlers.tandemPointer.postMessage(body);
+            window.webkit.messageHandlers.termurionPointer.postMessage(body);
         }
         // iTerm2's button numbers: 0 left, 1 right, 2 middle, 3 and up as the page counts them.
         function buttonOf(js) {

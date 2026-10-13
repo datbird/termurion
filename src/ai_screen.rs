@@ -185,7 +185,7 @@ impl Screen {
                 Piece::Text(t, _) => {
                     image = None;
                     // A program printing the markup's own brackets cannot fake a token: they
-                    // read as plain angle brackets (Tandem; iTerm2 relies on their rarity).
+                    // read as plain angle brackets (Termurion; iTerm2 relies on their rarity).
                     out.extend(t.chars().map(|c| match c {
                         '\u{27E8}' => '<',
                         '\u{27E9}' => '>',
@@ -215,7 +215,7 @@ impl Screen {
     /// The session-bound `get_screen_contents` result (`PS:745-753`, `WI:304-337`):
     /// `{"screen_contents": {...}}` with the last `lines` of the main screen (None: 100;
     /// clamped 1 to 2000), or on the alternate screen its visible grid only as a snapshot.
-    /// `pending_action` is never sent (Tandem has no overlay); `changed` is
+    /// `pending_action` is never sent (Termurion has no overlay); `changed` is
     /// `screen_last_changed`, omitted when None.
     pub fn screen_contents(&self, lines: Option<i64>, kind: &str, changed: Option<String>) -> serde_json::Value {
         let alternate = self.term.mode().contains(TermMode::ALT_SCREEN);

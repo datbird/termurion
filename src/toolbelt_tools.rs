@@ -176,7 +176,7 @@ fn is_drive_component(s: &str) -> bool {
 /// `attributedStringForTableColumn:basedOnAttributedString:...`): a starred path starts
 /// `"\u{2605} /"`, else `"/"`; components join with `/`; a safe component abbreviates to its
 /// first character, tried left to right while the text is still too wide; the last component
-/// never shortens. A Windows drive path (Tandem stores these as `/C:/...`, `shell_history
+/// never shortens. A Windows drive path (Termurion stores these as `/C:/...`, `shell_history
 /// ::insertable_dir`) keeps its own form: joined with `\`, no leading `/`, and the drive
 /// component itself ("C:") is never abbreviated even when the tree marks it safe (it is
 /// usually the only child at the root, so it would otherwise always qualify).

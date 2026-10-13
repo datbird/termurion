@@ -345,7 +345,7 @@ mod tests {
     use super::*;
 
     /// Final review Minor 12 (B4): a tool page's external protocol or refused click is not dropped
-    /// silently: it goes through the one external handler (guard_open, else the notice "Tandem
+    /// silently: it goes through the one external handler (guard_open, else the notice "Termurion
     /// does not open <scheme>: links.").
     #[test]
     fn a_tool_page_external_link_gets_the_notice() {

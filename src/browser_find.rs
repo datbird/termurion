@@ -1,5 +1,5 @@
 //! Find on a web page (milestone 13x3, Task 1): iTerm2's `custom-find.js` and the commands it takes
-//! (`iTermBrowserFindManager.swift`). The script runs only in Tandem's isolated world; this module
+//! (`iTermBrowserFindManager.swift`). The script runs only in Termurion's isolated world; this module
 //! assembles it, names its four search modes and builds the JSON commands the app hands it. Pure:
 //! the page, the secret's use and every result are the app's and the next tasks' business.
 
@@ -15,7 +15,7 @@ pub const HANDLER: &str = "iTermCustomFind";
 pub const SCRIPT_ID: &str = "iTermCustomFind";
 
 /// The expression `browser_js_call` runs with the argument `command` (`FM:230`), in the main frame's
-/// Tandem world: the page's world has no `iTermCustomFind`.
+/// Termurion world: the page's world has no `iTermCustomFind`.
 pub const COMMAND_JS: &str = "return window.iTermCustomFind && await window.iTermCustomFind.handleCommand(command);";
 
 /// The thirteen files copied from `FindOnPage/` (`graph-discovery-api.js`, which `custom-find.js`
@@ -102,12 +102,12 @@ pub fn find_script(secret: &str) -> Result<String, String> {
 
 /// R13x3-1 (Task 1 review, critical): `importIframeGlobalClick` (`FE:665-673`) pastes the coordinates
 /// of an `iTermGlobalClick` window message, which any frame can forge, into the script it has run in
-/// that frame's Tandem world. Every value put into that script is typed where it is put: the two
+/// that frame's Termurion world. Every value put into that script is typed where it is put: the two
 /// coordinates are numbers or the click is dropped, the instance id a JSON string. The copied file is
 /// not edited; this text is replaced when the script is assembled, and only when it is found exactly
 /// once (an iTerm2 update that moved it fails closed: no find script).
 const CLICK_RAW: &str = "        const x = globalClickLocation.clickData.coordinates.x;\n        const y = globalClickLocation.clickData.coordinates.y;\n\n        const conversionScript = `\n            (function() {\n                if (window.iTermCustomFind && window.iTermCustomFind.handleClickInFrame) {\n                    return window.iTermCustomFind.handleClickInFrame(${x}, ${y}, '${this.instanceId}');";
-const CLICK_TYPED: &str = "        const __tandemAt = (globalClickLocation.clickData && globalClickLocation.clickData.coordinates) || {};\n        const x = Number(__tandemAt.x);\n        const y = Number(__tandemAt.y);\n        if (!Number.isFinite(x) || !Number.isFinite(y)) {\n            this.log('importGlobalClickLocation: refused a click without finite coordinates');\n            globalClickLocation = null;\n            return;\n        }\n\n        const conversionScript = `\n            (function() {\n                if (window.iTermCustomFind && window.iTermCustomFind.handleClickInFrame) {\n                    return window.iTermCustomFind.handleClickInFrame(${x}, ${y}, ${JSON.stringify(String(this.instanceId))});";
+const CLICK_TYPED: &str = "        const __termurionAt = (globalClickLocation.clickData && globalClickLocation.clickData.coordinates) || {};\n        const x = Number(__termurionAt.x);\n        const y = Number(__termurionAt.y);\n        if (!Number.isFinite(x) || !Number.isFinite(y)) {\n            this.log('importGlobalClickLocation: refused a click without finite coordinates');\n            globalClickLocation = null;\n            return;\n        }\n\n        const conversionScript = `\n            (function() {\n                if (window.iTermCustomFind && window.iTermCustomFind.handleClickInFrame) {\n                    return window.iTermCustomFind.handleClickInFrame(${x}, ${y}, ${JSON.stringify(String(this.instanceId))});";
 
 /// The find script with the global click typed (`CLICK_TYPED`); an error unless `CLICK_RAW` is in it
 /// exactly once.
@@ -136,7 +136,7 @@ fn type_nav_keys(script: &str) -> Result<String, String> {
 }
 
 /// Probe run 2026-10-09: find-nav's bubble script (`FN:419-567`), which evaluateInAll runs in each
-/// frame's Tandem world, reached the engine with `eval('getEngine')`. `getEngine` is local to
+/// frame's Termurion world, reached the engine with `eval('getEngine')`. `getEngine` is local to
 /// custom-find.js's IIFE, so from a script evaluated at the world's global scope it threw "getEngine
 /// is not defined" and no bubble was made (iTerm2's copy has the same text). The frame's own
 /// `window.iTermCustomFind` (find-api.js exposes `getEngine`) is the engine of the same IIFE. Same
@@ -606,10 +606,10 @@ pub fn is_find_family(selector: &str) -> bool {
     )
 }
 
-/// Whether the find handler takes `selector` when no session is focused (no window, Tandem
+/// Whether the find handler takes `selector` when no session is focused (no window, Termurion
 /// resident): only its own family, which does nothing then. Find Globally needs no session and
 /// goes on to its own handler. Every other command (Quit, New Window from the tray) must reach
-/// its own handler: claiming them dropped every tray pick while Tandem had no window.
+/// its own handler: claiming them dropped every tray pick while Termurion had no window.
 pub fn claims_without_session(selector: &str) -> bool {
     is_find_family(selector) && selector != "findGlobally:"
 }
@@ -824,7 +824,7 @@ mod tests {
         let s = find_script("abc").expect("the script assembles");
         assert_eq!(s.matches(CLICK_TYPED).count(), 1, "the typed text is in the script once");
         assert_eq!(s.matches("handleClickInFrame(${x}, ${y}, '${this.instanceId}')").count(), 0, "the raw interpolation is gone");
-        assert_eq!(s.matches("const x = Number(__tandemAt.x);").count(), 1);
+        assert_eq!(s.matches("const x = Number(__termurionAt.x);").count(), 1);
         assert!(s.contains("if (!Number.isFinite(x) || !Number.isFinite(y))"));
         // The copied file itself is unchanged and holds the target once.
         assert_eq!(browser_js::resource("find-engine.js").unwrap().matches(CLICK_RAW).count(), 1);
@@ -879,7 +879,7 @@ mod tests {
     /// Find URLs puts bubbles on the page and the person's keys pick one: find-nav ignores a key
     /// that is not trusted (the copied file is not edited; the assembled script is).
     /// Probe run 2026-10-09 (find_urls_show_bubbles: 0 bubbles): find-nav's bubble script, run in
-    /// each frame's Tandem world by evaluateInAll, reached the engine with `eval('getEngine')`, a
+    /// each frame's Termurion world by evaluateInAll, reached the engine with `eval('getEngine')`, a
     /// name local to custom-find.js's IIFE, so it threw "getEngine is not defined" and no bubble was
     /// made. The assembled script reaches it through the frame's own `window.iTermCustomFind`.
     #[test]

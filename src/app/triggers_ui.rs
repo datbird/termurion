@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn trigger_limits_follow_iterm2() {
-        let dir = std::env::temp_dir().join(format!("tandem-trigger-limits-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("termurion-trigger-limits-{}", std::process::id()));
         let mut g = crate::globals::Globals::empty(&dir.join("settings.toml"));
         assert_eq!(trigger_limits_from(&g), (Duration::from_secs(1), Duration::ZERO));
         g.set("AlertTriggerRateLimit", toml::Value::Float(f64::NAN));

@@ -115,7 +115,7 @@ pub(super) enum DragOutcome {
     Drop(PaneId, Half),
     /// Dropped on a window's tab bar (registry key, slot): a tab there (`PseudoTerminal.m:8648-8677`).
     NewTab(u64, usize),
-    /// Dropped outside every Tandem window (`MovePaneController.m:234-237`).
+    /// Dropped outside every Termurion window (`MovePaneController.m:234-237`).
     NewWindow,
     /// Dropped on itself, or on a window's other chrome.
     Nothing,
@@ -420,8 +420,8 @@ impl App {
         Some(out)
     }
 
-    /// The Tandem terminal window under the cursor and the cursor in its client pixels (P18:
-    /// matched only against Tandem's own windows, never by title or class).
+    /// The Termurion terminal window under the cursor and the cursor in its client pixels (P18:
+    /// matched only against Termurion's own windows, never by title or class).
     pub(super) fn terminal_window_at_cursor(&self) -> Option<(WindowId, (f32, f32))> {
         use windows_sys::Win32::Foundation::{HWND, POINT};
         use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
@@ -438,7 +438,7 @@ impl App {
     }
 
     /// A press on a title bar's pane moved: the drag begins at the threshold (a lone pane moves
-    /// the window instead, P6), then the hover follows the pointer over any Tandem window.
+    /// the window instead, P6), then the hover follows the pointer over any Termurion window.
     pub(super) fn title_drag_move(&mut self, pane: PaneId, from: (f32, f32), x: f32, y: f32) {
         let began = self.pane_move.as_ref().is_some_and(|pm| pm.drag && pm.source == pane);
         if !began {

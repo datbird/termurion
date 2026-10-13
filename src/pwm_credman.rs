@@ -1,9 +1,9 @@
 //! Windows Credential Manager as a password manager source (iTerm2's `KeychainPasswordDataSource`
 //! in Windows words). Accounts are the current user's generic credentials whose target starts
-//! with `Tandem/` (`pwm_source::target_name` and `parse_target` hold the naming); the password is
+//! with `Termurion/` (`pwm_source::target_name` and `parse_target` hold the naming); the password is
 //! the credential's blob as UTF-8. A blob is copied straight into a `Secret` and the copy Windows
 //! handed back is zeroed before `CredFree`. The generic-target functions (`write_generic`,
-//! `read_generic`, `delete_generic`) also serve the AI keys under `TandemAI/` (`ai_keys`), and
+//! `read_generic`, `delete_generic`) also serve the AI keys under `TermurionAI/` (`ai_keys`), and
 //! refuse any target outside Tandem's two prefixes before calling Windows. No test calls
 //! Credential Manager; the milestone's checklist covers that by hand.
 
@@ -26,8 +26,8 @@ fn last_error() -> String {
     std::io::Error::last_os_error().to_string()
 }
 
-/// The enumeration filter: every target named under the scope's service. `Tandem/*` never
-/// matches `Tandem-Browser/...`, so the two scopes do not mix.
+/// The enumeration filter: every target named under the scope's service. `Termurion/*` never
+/// matches `Termurion-Browser/...`, so the two scopes do not mix.
 fn filter(scope: Scope) -> Vec<u16> {
     wide(&format!("{}/*", scope.service()))
 }
@@ -78,9 +78,9 @@ fn target(scope: Scope, a: &Account) -> Result<&str, String> {
     }
 }
 
-/// The prefixes of every target Tandem owns: the password manager's `Tandem/` and
-/// `Tandem-Browser/` and the AI keys' `TandemAI/` (compared case-sensitively).
-const OWNED_PREFIXES: [&str; 3] = ["Tandem/", "Tandem-Browser/", "TandemAI/"];
+/// The prefixes of every target Tandem owns: the password manager's `Termurion/` and
+/// `Termurion-Browser/` and the AI keys' `TermurionAI/` (compared case-sensitively).
+const OWNED_PREFIXES: [&str; 3] = ["Termurion/", "Termurion-Browser/", "TermurionAI/"];
 
 /// Whether a target is one of Tandem's. The generic functions below refuse any other target
 /// before calling Windows, so nothing here ever touches another program's credential.
@@ -210,8 +210,8 @@ impl CredentialManager {
         CredentialManager::for_scope(Scope::Terminal)
     }
 
-    /// The Credential Manager source of one password manager scope (`Tandem/` or
-    /// `Tandem-Browser/` targets).
+    /// The Credential Manager source of one password manager scope (`Termurion/` or
+    /// `Termurion-Browser/` targets).
     pub fn for_scope(scope: Scope) -> CredentialManager {
         CredentialManager { scope }
     }
@@ -316,9 +316,9 @@ mod tests {
 
     #[test]
     fn names_decode_strictly_and_the_filter_follows_service() {
-        assert_eq!(filter(Scope::Terminal), wide("Tandem/*"));
-        let good = wide("Tandem/site/me");
-        assert_eq!(unsafe { from_wide(good.as_ptr()) }.as_deref(), Some("Tandem/site/me"));
+        assert_eq!(filter(Scope::Terminal), wide("Termurion/*"));
+        let good = wide("Termurion/site/me");
+        assert_eq!(unsafe { from_wide(good.as_ptr()) }.as_deref(), Some("Termurion/site/me"));
         // An unpaired surrogate: skipped, never shown as a row that names nothing.
         let bad = [0x54u16, 0xD800, 0x61, 0];
         assert_eq!(unsafe { from_wide(bad.as_ptr()) }, None);
@@ -326,21 +326,21 @@ mod tests {
 
     #[test]
     fn credman_scopes_do_not_mix() {
-        assert_eq!(filter(Scope::Browser), wide("Tandem-Browser/*"));
-        assert_eq!(filter(Scope::Terminal), wide("Tandem/*"));
-        let a = pwm_source::parse_target_in(Scope::Browser, "Tandem-Browser/https://x.y").unwrap();
+        assert_eq!(filter(Scope::Browser), wide("Termurion-Browser/*"));
+        assert_eq!(filter(Scope::Terminal), wide("Termurion/*"));
+        let a = pwm_source::parse_target_in(Scope::Browser, "Termurion-Browser/https://x.y").unwrap();
         assert!(target(Scope::Browser, &a).is_ok());
         assert!(target(Scope::Terminal, &a).is_err());
-        assert!(owned("Tandem-Browser/https://x.y"));
-        assert!(!owned("Tandem-Browse/x"));
+        assert!(owned("Termurion-Browser/https://x.y"));
+        assert!(!owned("Termurion-Browse/x"));
     }
 
     #[test]
     fn generic_targets_are_guarded() {
-        assert!(owned("TandemAI/OpenAI"));
-        assert!(owned("Tandem/site"));
-        assert!(!owned("TandemAIX/x"));
-        assert!(!owned("tandemai/x"));
+        assert!(owned("TermurionAI/OpenAI"));
+        assert!(owned("Termurion/site"));
+        assert!(!owned("TermurionAIX/x"));
+        assert!(!owned("termurionai/x"));
         assert!(!owned("Other/x"));
         // Each refusal returns before any Win32 call.
         let refused = Err("Not a Tandem credential.".to_string());
@@ -355,11 +355,11 @@ mod tests {
         // showing it.
         let long = Secret::new("k".repeat(CRED_MAX_CREDENTIAL_BLOB_SIZE as usize + 1));
         assert_eq!(
-            write_generic("Tandem/site/me", "me", &long, "c", "password"),
+            write_generic("Termurion/site/me", "me", &long, "c", "password"),
             Err("The password is too long for Windows Credential Manager (at most 2560 bytes).".to_string())
         );
         assert_eq!(
-            write_generic("TandemAI/OpenAI", "OpenAI API Key for Tandem", &long, "c", "API key"),
+            write_generic("TermurionAI/OpenAI", "OpenAI API Key for Termurion", &long, "c", "API key"),
             Err("The API key is too long for Windows Credential Manager (at most 2560 bytes).".to_string())
         );
     }

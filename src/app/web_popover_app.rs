@@ -172,7 +172,7 @@ impl App {
         match &kind {
             Kind::Html { html } => match web_popover::popover_document(html) {
                 Ok(doc) => {
-                    view.navigate_tandem(doc.url());
+                    view.navigate_termurion(doc.url());
                     served = Some(doc);
                 }
                 Err(_) => {
@@ -400,7 +400,7 @@ mod tests {
         let me = include_str!("web_popover_app.rs");
         let prod = &me[..me.find("#[cfg(test)]\nmod tests").unwrap()];
         assert_eq!(prod.matches(".navigate_to_string(").count(), 0);
-        assert!(prod.contains("navigate_tandem(doc.url())") && prod.contains("popover_document("));
+        assert!(prod.contains("navigate_termurion(doc.url())") && prod.contains("popover_document("));
         assert_eq!(prod.matches("WebView::create(").count(), 1);
         assert!(prod.contains("quick_look_setup(") && prod.contains("html_setup()"));
         assert!(prod.contains("quick_look_scheme_ok(") , "what 'Open in' reads back is judged again");

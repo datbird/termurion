@@ -1,5 +1,5 @@
 //! The in-app routes that replace iTerm2's `iterm2:` links for chats (`AppKit/
-//! iTermApplicationDelegate.m:2009-2135`, `PTYSession.m:237-247`). Tandem's routes are reached
+//! iTermApplicationDelegate.m:2009-2135`, `PTYSession.m:237-247`). Termurion's routes are reached
 //! only from its own indicator menu, a terminal command cell's reveal-mark link, an explanation
 //! response's annotation links and an explanation request's attached-content link, each checked
 //! against the message it is in, so they carry no token. Pure.

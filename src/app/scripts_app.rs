@@ -150,7 +150,7 @@ pub(super) fn script_menu_answer<'a>(identifier: &str, items: &'a [(PathBuf, cra
     items.iter().find(|(_, item)| item.identifier == identifier)
 }
 
-/// The menu id Tandem gives a script item (`SCRIPT_ID` and the item's identifier), which
+/// The menu id Termurion gives a script item (`SCRIPT_ID` and the item's identifier), which
 /// `script_picked` answers.
 pub(super) fn script_item_id(item: &crate::menus::Item) -> String {
     format!("{SCRIPT_ID}{}", item.identifier)
@@ -342,7 +342,7 @@ impl App {
             // A one-time cookie the script never used goes (using it removed it already).
             self.api_jar.lock().unwrap().remove(&p.cookie);
             // What the script started keeps running, as in iTerm2 (`L:960-1010` signals
-            // nothing); its job is kept until that ends, or Tandem quits.
+            // nothing); its job is kept until that ends, or Termurion quits.
             let job = p.into_job();
             if job.active_processes() > 0 {
                 self.script_jobs_left.push(job);
@@ -725,7 +725,7 @@ pub(super) struct Import {
     /// import.
     quiet: Option<bool>,
     /// `<Scripts>\.installing-<UUID>`: the archive is extracted here, on the Scripts folder's
-    /// volume, so the install is a rename; removed at the end, and at the next start if Tandem
+    /// volume, so the install is a rename; removed at the end, and at the next start if Termurion
     /// ended first.
     staging: PathBuf,
     /// The extraction's layout while it is extracted off the UI thread.
@@ -806,7 +806,7 @@ pub(super) use sa::stage_entries;
 
 /// The folders Reveal Contents extracts into, under the temporary folder; a start sweeps what an
 /// earlier run left.
-const ITS_REVEAL_PREFIX: &str = "tandem-its-";
+const ITS_REVEAL_PREFIX: &str = "termurion-its-";
 
 /// Reads and verifies the `.its` at `path` (off the UI thread): read once through the one door,
 /// refused above 256 MB, parsed and checked by `sigarchive`, the chain and signature by Windows.
@@ -841,7 +841,7 @@ fn mark_tree(dir: &Path) -> std::io::Result<()> {
 
 /// Extracts `zip` into `to` (`unzipURL:`) and reads its layout (off the UI thread). Nothing
 /// that could reach outside `to` gets through: the file is read once, and its bytes must be a zip
-/// whose every entry is a plain file or folder with a safe name (`zip_check`), written by Tandem's
+/// whose every entry is a plain file or folder with a safe name (`zip_check`), written by Termurion's
 /// own walk of those same bytes (`extract::zip`, never tar.exe); after, the extracted tree must hold
 /// no link, junction or other reparse point and no file with another hard link; the script's name
 /// must be safe; and a full environment's hidden entries (`.venv`, its build and swap folders) are
@@ -930,7 +930,7 @@ pub(super) fn export_script_to(path: &Path, zip: &Path, autolaunch: bool) -> Res
         let parent = path.parent().unwrap_or(path);
         return zip_to(zip, parent, &name);
     }
-    let temp = std::env::temp_dir().join(format!("tandem-export-{}", crate::api_auth::fresh_key()));
+    let temp = std::env::temp_dir().join(format!("termurion-export-{}", crate::api_auth::fresh_key()));
     let staged = temp.join(&name);
     // The one helper for a full environment's files: its `setup.cfg`, then the script copied
     // over the main it names (`<name>\<name>\<name>.py`, the script's own file name) byte for
@@ -1571,7 +1571,7 @@ mod tests {
     use crate::scripts::Node;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("tandem-{tag}-{}", crate::api_auth::fresh_key()));
+        let d = std::env::temp_dir().join(format!("termurion-{tag}-{}", crate::api_auth::fresh_key()));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -1790,7 +1790,7 @@ mod tests {
     /// environment's export writes metadata into its folder but not into the zip.
     #[test]
     fn export_round_trips_through_tar() {
-        let root = std::env::temp_dir().join(format!("tandem-archive-test-{}", crate::api_auth::fresh_key()));
+        let root = std::env::temp_dir().join(format!("termurion-archive-test-{}", crate::api_auth::fresh_key()));
         let (scripts, desktop) = (root.join("Scripts"), root.join("Desktop"));
         std::fs::create_dir_all(&scripts).unwrap();
         std::fs::create_dir_all(&desktop).unwrap();
@@ -1831,7 +1831,7 @@ mod tests {
 
     #[test]
     fn recovery_follows_iterm2() {
-        let root = std::env::temp_dir().join(format!("tandem-recover-test-{}", crate::api_auth::fresh_key()));
+        let root = std::env::temp_dir().join(format!("termurion-recover-test-{}", crate::api_auth::fresh_key()));
         std::fs::create_dir_all(root.join(".installing-X").join("tool")).unwrap();
         let uuid = crate::api_auth::fresh_key();
         // A backup whose script is back: removed. One whose script is gone: restored.

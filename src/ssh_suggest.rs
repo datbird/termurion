@@ -152,7 +152,7 @@ pub fn parse(content: &str) -> Vec<String> {
     parse_limited(content, crate::composer_suggest::FILES_TAB / LIMIT_DIVISOR)
 }
 
-/// A search id the remote may name, and Tandem may send back: `[A-Za-z0-9_-]{1,64}` (P18).
+/// A search id the remote may name, and Termurion may send back: `[A-Za-z0-9_-]{1,64}` (P18).
 pub fn valid_search_id(id: &str) -> bool {
     (1..=SEARCH_ID_MAX).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
@@ -205,7 +205,7 @@ impl AckWindow {
     }
 }
 
-/// Whether Tandem acknowledges a result of search `id`: only the current search or one Tandem
+/// Whether Termurion acknowledges a result of search `id`: only the current search or one Termurion
 /// started earlier, never an id the remote made up (P18).
 pub fn ack_allowed(id: &str, current: Option<&str>, issued: &[String]) -> bool {
     valid_search_id(id) && (current == Some(id) || issued.iter().any(|i| i == id))

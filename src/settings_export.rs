@@ -1,5 +1,5 @@
 //! Export All Settings and Data (iTerm2's `ImportExport.swift`, `IE`): the save panel's
-//! texts, the entities and their folders in the archive, which entries of `%APPDATA%\Tandem`
+//! texts, the entities and their folders in the archive, which entries of `%APPDATA%\Termurion`
 //! stay out, `PythonRuntimes.json`, the script zips' names, tar.exe's arguments and the
 //! failure texts; Import All's staging and the marker naming it for the next start; Erase
 //! All's list and texts. Pure.
@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 /// The archive's extension (`IE:22`, iTerm2's `itermexport`).
-pub const EXTENSION: &str = "tandemexport";
+pub const EXTENSION: &str = "termurionexport";
 /// The name the save panel suggests (`IE:23`).
-pub const DEFAULT_NAME: &str = "Tandem State.tandemexport";
+pub const DEFAULT_NAME: &str = "Tandem State.termurionexport";
 /// The save panel's title (`IE:24`).
 pub const PANEL_TITLE: &str = "Export Tandem Settings and Data";
 /// The save panel's file type (Tandem's; macOS names the content type itself).
@@ -53,7 +53,7 @@ impl Entity {
 /// The entities in iTerm2's order.
 pub const ENTITIES: [Entity; 4] = [Entity::PythonRuntimes, Entity::UserDefaults, Entity::AppSupport, Entity::Scripts];
 
-/// Entries of `%APPDATA%\Tandem` the Application Support entity leaves out (iTerm2's app-support
+/// Entries of `%APPDATA%\Termurion` the Application Support entity leaves out (iTerm2's app-support
 /// exclusions, `IE:410-424`, for Tandem's files): the settings and profiles (the User Defaults
 /// entity carries them), their temporary and recovered copies, the Scripts folder (the Scripts
 /// entity), uv's runtimes (provisioned again on first launch), the Python API consent marker
@@ -61,7 +61,7 @@ pub const ENTITIES: [Entity; 4] = [Entity::PythonRuntimes, Entity::UserDefaults,
 /// next start and the workgroup approval key (only this install may seal an approval, 13y1). Glob patterns on one name, at the top level only (`IE:1181`, `:1199`).
 pub const APP_SUPPORT_EXCLUDE: [&str; 11] = ["settings.toml", "profiles.toml", "*.tmp", "*.recovered", "Scripts", "uv", "python-api-consent", "host.log", "import-pending", STATE_IMPORTED, crate::workgroup_restore::KEY_FILE];
 
-/// The file in `%APPDATA%\Tandem` that says the `state` beside it came from an Import All (13y2): the next
+/// The file in `%APPDATA%\Termurion` that says the `state` beside it came from an Import All (13y2): the next
 /// launch restore starts no buried workgroup member of it (`workgroup_restore::foreign_restore`). Written by
 /// `finish_import`, removed when Tandem writes its own state, never exported.
 pub const STATE_IMPORTED: &str = "state-imported";
@@ -97,7 +97,7 @@ pub fn excluded(name: &str) -> bool {
 }
 
 /// Whether Import All never writes the entry `name` of the archive's Application Support (`top`:
-/// a direct entry of `%APPDATA%\Tandem`). At every level: a hidden name, and any name Windows
+/// a direct entry of `%APPDATA%\Termurion`). At every level: a hidden name, and any name Windows
 /// reads as another entry (`zip_check::bad_part`: a trailing dot or space, a ":" stream, a device
 /// name, a control character; or an 8.3 short name's "~" and digit), so no alias reaches a
 /// protected entry whatever the volume. At the top, the excluded names too, matched on the name
@@ -202,14 +202,14 @@ impl ExportError {
     }
 }
 
-/// The file in `%APPDATA%\Tandem` naming the extracted export the next start applies (iTerm2's
+/// The file in `%APPDATA%\Termurion` naming the extracted export the next start applies (iTerm2's
 /// `iTermUserDefaults.importPath`, `IE:112-120`).
 pub const MARKER: &str = "import-pending";
 
 /// The staging folder's name before its UUID (iTerm2's `~/.<UUID>`, `IE:95`).
-const STAGING_PREFIX: &str = ".tandem-import-";
+const STAGING_PREFIX: &str = ".termurion-import-";
 
-/// Where an import is extracted: `<temp>\.tandem-import-<uuid>`.
+/// Where an import is extracted: `<temp>\.termurion-import-<uuid>`.
 pub fn staging_dir(temp: &Path, uuid: &str) -> PathBuf {
     temp.join(format!("{STAGING_PREFIX}{uuid}"))
 }
@@ -273,7 +273,7 @@ pub fn erase_confirm_body() -> String {
         "\u{2022} Preferences (profiles, key bindings, arrangements, advanced settings)",
         "\u{2022} Saved windows and sessions",
         "\u{2022} Python API scripts and runtimes",
-        "\u{2022} The contents of %APPDATA%\\Tandem",
+        "\u{2022} The contents of %APPDATA%\\Termurion",
         "",
         "Items stored in Windows Credential Manager (such as the AI API key and Password Manager entries) are not erased and must be removed manually from Credential Manager if you want them gone too.",
         "",
@@ -292,11 +292,11 @@ pub fn scripts_to_erase(folder: PathBuf) -> Option<PathBuf> {
     (!crate::scripts::is_network_path(&folder.to_string_lossy())).then_some(folder)
 }
 
-/// What the erase removes, in order (`IE:255-329`): every entry of `%APPDATA%\Tandem`, then
+/// What the erase removes, in order (`IE:255-329`): every entry of `%APPDATA%\Termurion`, then
 /// every entry of the Scripts folder resolved first. Hidden entries are included and nothing
 /// is excluded (a clean slate).
-pub fn erase_list(appdata_tandem: &[PathBuf], scripts: Option<(&Path, Vec<PathBuf>)>) -> Vec<PathBuf> {
-    appdata_tandem.iter().cloned().chain(scripts.map(|(_, entries)| entries).unwrap_or_default()).collect()
+pub fn erase_list(appdata_termurion: &[PathBuf], scripts: Option<(&Path, Vec<PathBuf>)>) -> Vec<PathBuf> {
+    appdata_termurion.iter().cloned().chain(scripts.map(|(_, entries)| entries).unwrap_or_default()).collect()
 }
 
 /// The dry run's line for one path (`IE:228`).
@@ -381,10 +381,10 @@ mod tests {
 
     #[test]
     fn archive_follows_the_rule() {
-        let (out, temp) = (Path::new(r"C:\Users\u\Tandem State.tandemexport"), Path::new(r"C:\T\abc"));
+        let (out, temp) = (Path::new(r"C:\Users\u\Termurion State.termurionexport"), Path::new(r"C:\T\abc"));
         assert_eq!(
             archive_args(out, temp),
-            ["-czf", r"C:\Users\u\Tandem State.tandemexport", "-C", r"C:\T\abc", "python-runtimes", "user-defaults", "app-support", "scripts"]
+            ["-czf", r"C:\Users\u\Termurion State.termurionexport", "-C", r"C:\T\abc", "python-runtimes", "user-defaults", "app-support", "scripts"]
         );
         assert_eq!(script_zip_name(false, "U"), "script U.zip");
         assert_eq!(script_zip_name(true, "U"), "autolaunch U.zip");
@@ -408,28 +408,28 @@ mod tests {
             assert_eq!(e.message(), text);
         }
         assert_eq!(PROBLEM_EXPORTING, "Problem Exporting");
-        assert_eq!(DEFAULT_NAME, "Tandem State.tandemexport");
+        assert_eq!(DEFAULT_NAME, "Tandem State.termurionexport");
         assert_eq!(PANEL_TITLE, "Export Tandem Settings and Data");
-        assert_eq!(EXTENSION, "tandemexport");
+        assert_eq!(EXTENSION, "termurionexport");
         assert_eq!(FILTER_NAME, "Tandem Settings and Data");
     }
 
     #[test]
     fn pending_import_follows_iterm2() {
-        let staged = PathBuf::from(r"C:\T\.tandem-import-U");
-        let that = |p: &Path| p == Path::new(r"C:\T\.tandem-import-U");
+        let staged = PathBuf::from(r"C:\T\.termurion-import-U");
+        let that = |p: &Path| p == Path::new(r"C:\T\.termurion-import-U");
         assert_eq!(pending(None, &that), Pending::None);
-        assert_eq!(pending(Some(r"C:\T\.tandem-import-U"), &that), Pending::Apply(staged.clone()));
-        assert_eq!(pending(Some(r"C:\T\.tandem-import-U"), &|_| false), Pending::Stale, "the folder is gone");
+        assert_eq!(pending(Some(r"C:\T\.termurion-import-U"), &that), Pending::Apply(staged.clone()));
+        assert_eq!(pending(Some(r"C:\T\.termurion-import-U"), &|_| false), Pending::Stale, "the folder is gone");
         assert_eq!(pending(Some(""), &that), Pending::Stale);
         assert_eq!(staging_dir(Path::new(r"C:\T"), "U"), staged);
         // Beyond the plan: a trailing newline is ignored, and a marker naming a folder that is
         // not a staging folder, or a network path, is never applied (the folder is removed
         // afterwards).
-        assert_eq!(pending(Some("C:\\T\\.tandem-import-U\r\n"), &that), Pending::Apply(staged));
+        assert_eq!(pending(Some("C:\\T\\.termurion-import-U\r\n"), &that), Pending::Apply(staged));
         assert_eq!(pending(Some(r"C:\Users\u"), &|_| true), Pending::Stale);
-        assert_eq!(pending(Some(r"C:\T\.tandem-import-"), &|_| true), Pending::Stale);
-        assert_eq!(pending(Some(r"\\h\s\.tandem-import-U"), &|_| true), Pending::Stale);
+        assert_eq!(pending(Some(r"C:\T\.termurion-import-"), &|_| true), Pending::Stale);
+        assert_eq!(pending(Some(r"\\h\s\.termurion-import-U"), &|_| true), Pending::Stale);
     }
 
     #[test]
@@ -454,7 +454,7 @@ mod tests {
         }
         let fs = Dirs(&[r"E:\s", r"E:\My Files", r"C:\Users\John Smith\s"]);
         let (appdata, home) = (Path::new(r"C:\A"), Path::new(r"C:\Users\John Smith"));
-        let d = Some(PathBuf::from(r"C:\A\Tandem\Scripts"));
+        let d = Some(PathBuf::from(r"C:\A\Termurion\Scripts"));
         let erased = |on: bool, text: &str| scripts_to_erase(crate::scripts::scripts_folder(on, text, appdata, home, &fs));
         assert_eq!(erased(false, ""), d);
         assert_eq!(erased(true, r"E:\s"), Some(PathBuf::from(r"E:\s")));
@@ -464,7 +464,7 @@ mod tests {
             assert_eq!(erased(true, unused), d, "{unused}");
         }
         // A Scripts folder on a network path (a redirected %APPDATA%) is never erased.
-        assert_eq!(scripts_to_erase(PathBuf::from(r"\\h\s\Tandem\Scripts")), None);
+        assert_eq!(scripts_to_erase(PathBuf::from(r"\\h\s\Termurion\Scripts")), None);
         assert_eq!(scripts_to_erase(PathBuf::from("//h/s/Scripts")), None);
         let p = |s: &str| PathBuf::from(s);
         assert_eq!(
@@ -494,7 +494,7 @@ mod tests {
         assert_eq!((ERASE_CONFIRM_HEADING, ERASE_ACTION), ("Erase Everything?", "Erase Everything and Quit"));
         assert_eq!(
             erase_confirm_body(),
-            "The following will be erased and Tandem will quit immediately:\n\n\u{2022} Preferences (profiles, key bindings, arrangements, advanced settings)\n\u{2022} Saved windows and sessions\n\u{2022} Python API scripts and runtimes\n\u{2022} The contents of %APPDATA%\\Tandem\n\nItems stored in Windows Credential Manager (such as the AI API key and Password Manager entries) are not erased and must be removed manually from Credential Manager if you want them gone too.\n\nThis cannot be undone."
+            "The following will be erased and Tandem will quit immediately:\n\n\u{2022} Preferences (profiles, key bindings, arrangements, advanced settings)\n\u{2022} Saved windows and sessions\n\u{2022} Python API scripts and runtimes\n\u{2022} The contents of %APPDATA%\\Termurion\n\nItems stored in Windows Credential Manager (such as the AI API key and Password Manager entries) are not erased and must be removed manually from Credential Manager if you want them gone too.\n\nThis cannot be undone."
         );
         assert_eq!(DRY_RUN_DONE_HEADING, "Dry Run Complete");
         assert_eq!(
