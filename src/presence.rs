@@ -180,70 +180,39 @@ pub fn tray_failures_after(failures: u32, ok: bool) -> u32 {
     }
 }
 
-/// Termurion's logo (docs/assets/termurion/termurion-mark.svg, drawn here in code) as `size` x `size` RGBA pixels for the tray: the
-/// blue card behind, the dark terminal card in front with its border, the prompt chevron and
-/// cursor bar. 3x3 supersampled; clear outside the cards.
+/// The AppUserModelID of Termurion: the taskbar groups its windows and shows its icon under this id.
+pub const APP_USER_MODEL_ID: &str = "Termurion.Terminal";
+
+/// Sets the process AppUserModelID; before the first window. A refusal is ignored (the taskbar then
+/// groups by exe path, as it would have).
+#[cfg(windows)]
+pub fn set_app_user_model_id() {
+    let id: Vec<u16> = APP_USER_MODEL_ID.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: `id` is NUL-terminated and outlives the call.
+    unsafe { windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(id.as_ptr()) };
+}
+
+/// Termurion's icon (docs/assets/termurion/termurion-icon-*.png) as RGBA pixels: the 16 px art for
+/// `size` 16 and the 32 px art otherwise. Empty if the embedded art cannot be decoded.
 pub fn tray_icon_rgba(size: u32) -> Vec<u8> {
-    fn round_rect(x: f64, y: f64, (rx, ry, w, h, r): (f64, f64, f64, f64, f64)) -> f64 {
-        // Signed distance, negative inside.
-        let (cx, cy) = (rx + w / 2.0, ry + h / 2.0);
-        let (qx, qy) = ((x - cx).abs() - (w / 2.0 - r), (y - cy).abs() - (h / 2.0 - r));
-        qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r
-    }
-    fn segment(x: f64, y: f64, (ax, ay): (f64, f64), (bx, by): (f64, f64)) -> f64 {
-        let (dx, dy) = (bx - ax, by - ay);
-        let t = (((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
-        (x - (ax + t * dx)).hypot(y - (ay + t * dy))
-    }
-    let sample = |x: f64, y: f64| -> [f64; 4] {
-        // Back to front, in the logo's 160 unit space.
-        // Premultiplied colour, then alpha.
-        let mut out = [0.0; 4];
-        let mut put = |c: [f64; 3], a: f64| {
-            for i in 0..3 {
-                out[i] = c[i] * a + out[i] * (1.0 - a);
-            }
-            out[3] = a + out[3] * (1.0 - a);
-        };
-        let blue = [0x66 as f64, 0x78 as f64, 0xff as f64];
-        if round_rect(x, y, (14.0, 14.0, 104.0, 84.0, 16.0)) <= 0.0 {
-            put(blue, 0.9);
-        }
-        let front = (40.0, 52.0, 106.0, 94.0, 16.0);
-        if round_rect(x, y, front) <= 0.0 {
-            put(blue, 1.0);
-            if round_rect(x, y, (44.0, 56.0, 98.0, 86.0, 12.0)) <= 0.0 {
-                put([0x1d as f64, 0x24 as f64, 0x33 as f64], 1.0);
-            }
-        }
-        let prompt = [0x8f as f64, 0xb3 as f64, 0xff as f64];
-        if segment(x, y, (60.0, 94.0), (76.0, 106.0)).min(segment(x, y, (76.0, 106.0), (60.0, 118.0))) <= 5.0 || round_rect(x, y, (86.0, 113.0, 34.0, 7.0, 3.5)) <= 0.0 {
-            put(prompt, 1.0);
-        }
-        out
+    icon_rgba(size).0
+}
+
+/// The pixels and side of the art nearest `size`: 16, 32 or 48 px.
+pub fn icon_rgba(size: u32) -> (Vec<u8>, u32) {
+    let png: &[u8] = match size {
+        0..=16 => include_bytes!("../docs/assets/termurion/termurion-icon-16.png"),
+        17..=32 => include_bytes!("../docs/assets/termurion/termurion-icon-32.png"),
+        _ => include_bytes!("../docs/assets/termurion/termurion-icon-48.png"),
     };
-    let scale = 160.0 / f64::from(size);
-    let mut px = Vec::with_capacity((size * size * 4) as usize);
-    for j in 0..size {
-        for i in 0..size {
-            let mut acc = [0.0; 4];
-            for sj in 0..3 {
-                for si in 0..3 {
-                    let s = sample((f64::from(i) + (f64::from(si) + 0.5) / 3.0) * scale, (f64::from(j) + (f64::from(sj) + 0.5) / 3.0) * scale);
-                    for k in 0..3 {
-                        acc[k] += s[k];
-                    }
-                    acc[3] += s[3];
-                }
-            }
-            let a = acc[3] / 9.0;
-            for k in 0..3 {
-                px.push(if acc[3] > 0.0 { (acc[k] / acc[3]).round() as u8 } else { 0 });
-            }
-            px.push((a * 255.0).round() as u8);
+    match image::load_from_memory_with_format(png, image::ImageFormat::Png) {
+        Ok(img) => {
+            let rgba = img.into_rgba8();
+            let side = rgba.width();
+            (rgba.into_raw(), side)
         }
+        Err(_) => (Vec::new(), 0),
     }
-    px
 }
 
 /// What the reopen (a dock click with no preference handling it) does.
@@ -476,16 +445,15 @@ mod tests {
         assert_eq!(tray_add_order(true, false), &[TrayOp::Modify, TrayOp::Add], "already added");
     }
 
-    /// TWEAKS 8: the icon drawn for the tray is Termurion's (the logo), the right size, not blank.
+    /// TWEAKS 8: the icon for the tray is Termurion's art, the right size, not blank.
     #[test]
     fn tray_icon_is_the_logo() {
         let px = tray_icon_rgba(32);
         assert_eq!(px.len(), 32 * 32 * 4);
         assert_eq!(px[3], 0, "the corner is clear");
         let opaque = px.chunks(4).filter(|p| p[3] == 255).count();
-        assert!(opaque > 300, "the terminal card is drawn");
-        let light = px.chunks(4).filter(|p| p[3] == 255 && p[0] > 0x80 && p[1] > 0xa0).count();
-        assert!(light > 5, "the prompt is drawn");
+        assert!(opaque > 300, "the art is drawn");
+        assert_eq!(tray_icon_rgba(16).len(), 16 * 16 * 4, "the 16 px art for 16");
     }
 
     /// TWEAKS 8: the menu opens with a way to a window, and ends with Quit.

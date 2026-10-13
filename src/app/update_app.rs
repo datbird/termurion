@@ -264,7 +264,7 @@ mod tests {
         classify(Fetched::Status { code, body: body.into() })
     }
 
-    const ONE: &str = r#"[{"tag_name":"v9.9.9","name":"Nine","body":"notes nine","html_url":"https://github.com/datbird/tandem/releases/tag/v9.9.9","prerelease":false,"draft":false}]"#;
+    const ONE: &str = r#"[{"tag_name":"v9.9.9","name":"Nine","body":"notes nine","html_url":"https://github.com/datbird/termurion/releases/tag/v9.9.9","prerelease":false,"draft":false}]"#;
 
     #[test]
     fn manual_and_background_outcomes() {
@@ -319,7 +319,7 @@ mod tests {
             other => panic!("{url}: {other:?}"),
         };
         assert_eq!(opens(&format!("{page}/tag/v9.9.9")), format!("{page}/tag/v9.9.9"));
-        for bad in ["https://github.com.evil.example/datbird/tandem/releases", "https://github.com@evil/..", "http://github.com/datbird/tandem/releases", "file:///C:/Windows/System32/calc.exe", "\\\\evil\\share\\x.exe", "https://github.com/datbird/tandem/releases/a b", "https://github.com/datbird/tandem/releases/%2e%2e/x", "ms-msdt:/id", ""] {
+        for bad in ["https://github.com.evil.example/datbird/termurion/releases", "https://github.com@evil/..", "http://github.com/datbird/termurion/releases", "file:///C:/Windows/System32/calc.exe", "\\\\evil\\share\\x.exe", "https://github.com/datbird/termurion/releases/a b", "https://github.com/datbird/termurion/releases/%2e%2e/x", "ms-msdt:/id", ""] {
             assert_eq!(opens(bad), page, "{bad:?} opens the pinned page");
         }
     }

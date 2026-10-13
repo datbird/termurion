@@ -64,6 +64,8 @@ impl EguiHost {
         queue: &wgpu::Queue,
         attrs: winit::window::WindowAttributes,
     ) -> Result<EguiHost, String> {
+        let (rgba, side) = crate::presence::icon_rgba(48);
+        let attrs = attrs.with_window_icon(winit::window::Icon::from_rgba(rgba, side, side).ok());
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
         let caps = surface.get_capabilities(adapter);

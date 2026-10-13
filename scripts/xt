@@ -4,7 +4,7 @@
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 mount_root=/home/tbird/aiplayground/mount/extreme
-# Each checkout (the main one, or a git worktree such as tandem-11e) builds in its own folder on EXTREME,
+# Each checkout (the main one, or a git worktree such as termurion-11e) builds in its own folder on EXTREME,
 # named after the checkout, so parallel worktrees never overwrite each other's sources or target/.
 name="$(basename "$repo")"
 dest="$mount_root/c/Users/datbi/src/$name"
@@ -18,7 +18,7 @@ mkdir -p "$dest"
 # target/ and vendor/ live only on EXTREME, and excluded paths survive --delete.
 rsync -rt --delete --exclude target/ --exclude vendor/ --exclude .git/ --exclude .superpowers/ "$repo/" "$dest/"
 # vendor/ (the shipped ConPTY) lives only on EXTREME: a new worktree folder gets a copy from the main one.
-if [ "$name" != tandem ] && [ ! -d "$dest/vendor" ]; then
-    ssh extreme "Copy-Item -Recurse 'C:\\Users\\datbi\\src\\tandem\\vendor' '$win\\vendor'"
+if [ "$name" != termurion ] && [ ! -d "$dest/vendor" ]; then
+    ssh extreme "Copy-Item -Recurse 'C:\\Users\\datbi\\src\\termurion\\vendor' '$win\\vendor'"
 fi
 ssh extreme "cd '$win'; cargo $*; exit \$LASTEXITCODE"

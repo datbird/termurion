@@ -66,7 +66,7 @@ class Session:
         self.read = bytearray()
         self.written = bytearray()
         env = {"HOME": os.path.join(root, "home"), "PATH": os.path.join(root, "bin"),
-               "USER": "tandem-recorder", "SHELL": "/bin/sh", "TERM": "xterm"}
+               "USER": "termurion-recorder", "SHELL": "/bin/sh", "TERM": "xterm"}
         pid, fd = pty.fork()
         if pid == 0:
             os.chdir(env["HOME"])
@@ -134,7 +134,7 @@ def fake_python(version):
 
 
 def scenario(conductor, python, steps):
-    root = tempfile.mkdtemp(prefix="tandem-rec-")
+    root = tempfile.mkdtemp(prefix="termurion-rec-")
     try:
         os.mkdir(os.path.join(root, "home"))
         bindir = os.path.join(root, "bin")

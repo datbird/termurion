@@ -11,6 +11,8 @@ fn main() {
             panic!("Termurion must be built with crt-static (-C target-feature=+crt-static): see .cargo/config.toml");
         }
         println!("cargo:rustc-link-arg=/DEPENDENTLOADFLAG:0x800");
+        #[cfg(windows)]
+        embed_resource();
     }
     println!("cargo:rerun-if-changed=vendor/conpty");
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
@@ -161,4 +163,17 @@ fn write_licenses(out: &Path) {
     }
     text.push_str(&resource_notices(Path::new("resources")));
     std::fs::write(out.join("licenses.txt"), text).unwrap();
+}
+
+/// The exe icon and version resource: the Termurion art, and the names Explorer and the taskbar show.
+#[cfg(windows)]
+fn embed_resource() {
+    println!("cargo:rerun-if-changed=docs/assets/termurion/termurion.ico");
+    let mut res = winresource::WindowsResource::new();
+    res.set_icon("docs/assets/termurion/termurion.ico");
+    res.set("ProductName", "Termurion");
+    res.set("FileDescription", "Termurion");
+    res.set("InternalName", "termurion");
+    res.set("OriginalFilename", "termurion.exe");
+    res.compile().expect("compile the Windows resource (needs the Windows SDK rc.exe)");
 }

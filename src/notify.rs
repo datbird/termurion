@@ -63,17 +63,20 @@ pub fn on_taskbar_created(f: Box<dyn Fn() + Send + Sync>) {
     let _ = ON_TASKBAR.set(f);
 }
 
-/// Termurion's icon (the logo, drawn by `presence::tray_icon_rgba`), the generic application icon if
+/// Termurion's icon (the 32 px art from docs/assets/termurion, `presence::icon_rgba`), the generic application icon if
 /// Windows refuses to make it.
 fn icon() -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
     let h = ICON.load(Ordering::SeqCst);
     if h != 0 {
         return h as _;
     }
-    const SIZE: u32 = 32;
-    let bgra: Vec<u8> = crate::presence::tray_icon_rgba(SIZE).chunks(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
-    let mask = vec![0u8; (SIZE / 8 * SIZE) as usize];
-    let made = unsafe { CreateIcon(std::ptr::null_mut(), SIZE as i32, SIZE as i32, 1, 32, mask.as_ptr(), bgra.as_ptr()) };
+    let (rgba, size) = crate::presence::icon_rgba(32);
+    if rgba.is_empty() {
+        return unsafe { LoadIconW(std::ptr::null_mut(), IDI_APPLICATION) };
+    }
+    let bgra: Vec<u8> = rgba.chunks(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
+    let mask = vec![0u8; (size / 8 * size) as usize];
+    let made = unsafe { CreateIcon(std::ptr::null_mut(), size as i32, size as i32, 1, 32, mask.as_ptr(), bgra.as_ptr()) };
     if made.is_null() {
         return unsafe { LoadIconW(std::ptr::null_mut(), IDI_APPLICATION) };
     }

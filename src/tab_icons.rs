@@ -354,7 +354,7 @@ pub fn fallback_name(name: &str, argv0: Option<&str>, command_line: Option<&str>
 /// The ancestor walk ends at a login shell ("-" first) or at the host that owns the shells
 /// ("termurion-host", iTerm2's "iTermServer").
 pub fn stop_at(title: &str) -> bool {
-    title.starts_with('-') || ["termurion-host", "tandem-host"].iter().any(|n| title.get(..n.len()).is_some_and(|p| p.eq_ignore_ascii_case(n)))
+    title.starts_with('-') || title.get(.."termurion-host".len()).is_some_and(|p| p.eq_ignore_ascii_case("termurion-host"))
 }
 
 /// The lookup chain's tail (`GS:222-236`): each ancestor of the job (nearest first) up to 50,
@@ -485,7 +485,6 @@ mod tests {
         assert_eq!(resolve(&m, AUTOMATIC, "", &chain, Some("nosuch"), true, &|l| l != "git"), Icon::Letter("N".into(), letter_color("nosuch")));
         assert!(stop_at("-bash"));
         assert!(stop_at("termurion-host"));
-        assert!(stop_at("tandem-host"), "a host started before the rename still names itself so");
         assert!(!stop_at("bash"));
         let ancestors: Vec<String> = ["awk", "claude", "-bash", "git"].iter().map(|s| s.to_string()).collect();
         assert_eq!(ancestor_chain(&ancestors), vec![vec!["awk".to_string()], vec!["claude".to_string()]]);
