@@ -756,7 +756,8 @@ fn panel_modal(ctx: &egui::Context, p: &AccountPanel, f: &mut PanelFields, shaki
         });
         ui.add_space(10.0);
         let ok_on = p.ok_on(&f.name);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let bar = egui::vec2(ui.available_width(), ui.spacing().interact_size.y.max(24.0));
+        ui.allocate_ui_with_layout(bar, egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let ok = ui.add_enabled(ok_on, egui::Button::new(pwm::TITLE_OK).min_size(egui::vec2(53.0, 24.0))).clicked();
             let enter = top && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.is_none());
             if (ok || enter) && ok_on {
@@ -819,7 +820,8 @@ fn alert_modal(ctx: &egui::Context, a: &Alert, settings: &mut Option<(u64, Vec<S
         }
         ui.add_space(12.0);
         let mut chosen = None;
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let bar = egui::vec2(ui.available_width(), ui.spacing().interact_size.y.max(24.0));
+        ui.allocate_ui_with_layout(bar, egui::Layout::right_to_left(egui::Align::Center), |ui| {
             for (n, title) in a.buttons.iter().enumerate() {
                 if ui.add(egui::Button::new(title.as_str()).min_size(egui::vec2(76.0, 24.0))).clicked() {
                     chosen = Some(n);

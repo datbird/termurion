@@ -778,7 +778,7 @@ impl App {
             self.paste_into_find(id);
             return true;
         }
-        let Some(id) = self.focused_id() else { return true };
+        let Some(id) = self.focused_id() else { return crate::browser_find::claims_without_session(selector) };
         // The find family on a browser pane is the browser's (`browser_find::route`); the terminal's
         // arms below read a screen it does not have.
         if self.is_browser_pane(id) && crate::browser_find::is_find_family(selector) {

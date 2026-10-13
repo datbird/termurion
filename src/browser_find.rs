@@ -606,6 +606,14 @@ pub fn is_find_family(selector: &str) -> bool {
     )
 }
 
+/// Whether the find handler takes `selector` when no session is focused (no window, Tandem
+/// resident): only its own family, which does nothing then. Find Globally needs no session and
+/// goes on to its own handler. Every other command (Quit, New Window from the tray) must reach
+/// its own handler: claiming them dropped every tray pick while Tandem had no window.
+pub fn claims_without_session(selector: &str) -> bool {
+    is_find_family(selector) && selector != "findGlobally:"
+}
+
 /// The find family on a browser pane. Filter and Find Cursor are disabled for a browser session
 /// (`PT:14162-14175`); Select Matches, Zoom, Open Selection and Find All Smart Selection Matches
 /// are text-view actions the web view never gets. Use Selection for Find and Pick Result to Open
@@ -1272,5 +1280,14 @@ mod tests {
         o.push(vec![json!(5)]);
         o.reset();
         assert_eq!(o.answered(), None, "a new world has nothing queued");
+    }
+
+    /// With no session focused the find handler keeps only its own family; Quit and New Window
+    /// (the tray menu with no window open) and Find Globally go on.
+    #[test]
+    fn no_session_claims_only_the_find_family() {
+        assert!(claims_without_session("findNext:") && claims_without_session("performFindPanelAction:"));
+        assert!(!claims_without_session("terminate:") && !claims_without_session("newWindow:") && !claims_without_session("showPrefWindow:"));
+        assert!(!claims_without_session("findGlobally:"));
     }
 }

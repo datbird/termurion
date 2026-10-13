@@ -545,6 +545,8 @@ pub struct App {
     shortcuts: Option<labels_ui::Shortcuts>,
     /// The last pop-up menu, kept until its pick arrives.
     popup_menu: Option<muda::Menu>,
+    /// The last tray menu closed on a pick: the next menu event is that pick (logged to host.log).
+    tray_pick: bool,
     /// The open Tab Color picker: what it colors and the swatches it was built from, kept
     /// until its pick arrives. App-wide: the popup is modal, one at a time.
     color_pick: Option<(menu::ColorTarget, Vec<crate::palette::Rgb>)>,
@@ -2230,6 +2232,7 @@ pub fn run() {
         command_click: None,
         command_info: None,
         popup_menu: None,
+        tray_pick: false,
         color_pick: None,
         shortcuts: None,
         copy_modes: HashMap::new(),
@@ -7563,6 +7566,10 @@ impl ApplicationHandler<UserEvent> for App {
                 return self.run_chord(&c, event_loop);
             }
             UserEvent::Menu(id) => {
+                let traced = std::mem::take(&mut self.tray_pick);
+                if traced {
+                    crate::host::log(&format!("tray: pick {id} (last window {})", self.last_window.is_some()));
+                }
                 if let Some(w) = self.last_window {
                     self.enter(w);
                 }

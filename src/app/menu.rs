@@ -289,7 +289,10 @@ impl App {
                 self.banners.set("menu", format!("Menu item {}: {e}", item.id()));
             }
         }
-        if let Err(e) = unsafe { menu.init_for_hwnd_with_theme(hwnd, MenuTheme::Auto) } {
+        // The window's earlier bar (a resident window woken, a rebuild) comes off first: dropped
+        // after the new one is attached, muda takes the window's menu away, the new bar with it.
+        let earlier = self.menu_bar.take().map(|b| b.menu);
+        if let Err(e) = unsafe { replace_menu_bar(earlier, &menu, hwnd) } {
             self.banners.set("menu", format!("Could not attach the menu bar: {e}"));
         }
         // Tips beside highlighted items, after the delay `MenuTipDelay` sets (iTerm2 reads it per tip).
@@ -1259,7 +1262,10 @@ impl App {
     }
 
     fn quit(&mut self, event_loop: &ActiveEventLoop) {
-        if !self.prefs_exit_pending && self.confirm_close(close_ui::Closing::App) {
+        let pending = self.prefs_exit_pending;
+        let ok = !pending && self.confirm_close(close_ui::Closing::App);
+        crate::host::log(&format!("quit: settings question pending {pending}, confirmed {ok}"));
+        if ok {
             self.quit_confirmed(event_loop);
         }
     }
@@ -1290,7 +1296,9 @@ impl App {
         self.leave_host(keep);
         self.panes.clear();
         self.focus_order.clear();
-        if self.prefs_before_exit() {
+        let exits = self.prefs_before_exit();
+        crate::host::log(&format!("quit: exits now {exits}"));
+        if exits {
             self.catalog_flush();
             event_loop.exit();
         }
@@ -1430,6 +1438,78 @@ fn choose_color(hwnd: isize, initial: Option<crate::palette::Rgb>, swatches: &[c
     }
     let v = cc.rgbResult;
     Some(crate::palette::rgb(v as u8, (v >> 8) as u8, (v >> 16) as u8))
+}
+
+
+/// Attaches `menu` as `hwnd`'s menu bar after taking `earlier` (the window's bar so far) off it.
+/// The order matters: muda's drop of a menu clears the menu of every window it was on, so an
+/// earlier bar dropped after the new one is attached leaves the window with no menu bar.
+///
+/// # Safety
+/// `hwnd` is a live window of this thread.
+unsafe fn replace_menu_bar(earlier: Option<Menu>, menu: &Menu, hwnd: isize) -> muda::Result<()> {
+    if let Some(old) = earlier {
+        // Not on this window (another window's bar): its drop takes it off that one.
+        let _ = unsafe { old.remove_for_hwnd(hwnd) };
+        drop(old);
+    }
+    unsafe { menu.init_for_hwnd_with_theme(hwnd, MenuTheme::Auto) }
+}
+
+/// The resident wake's menu bar (TWEAKS 8 follow-up): a window that gets a second bar keeps it.
+#[cfg(test)]
+mod menu_bar_replace_tests {
+    use super::*;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, GetMenu};
+
+    fn window() -> isize {
+        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        // SAFETY: a hidden window of the system's STATIC class on this thread, destroyed by the test.
+        let w = unsafe { CreateWindowExW(0, class.as_ptr(), std::ptr::null(), 0, 0, 0, 10, 10, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null()) };
+        assert!(!w.is_null());
+        w as isize
+    }
+
+    fn bar() -> Menu {
+        let m = Menu::new();
+        let shell = Submenu::new("Shell", true);
+        shell.append(&MenuItem::new("New Window", true, None)).unwrap();
+        m.append(&shell).unwrap();
+        m
+    }
+
+    #[test]
+    fn a_second_bar_stays_on_the_window() {
+        let w = window();
+        let first = bar();
+        unsafe { first.init_for_hwnd(w) }.unwrap();
+        let second = bar();
+        unsafe { replace_menu_bar(Some(first), &second, w) }.unwrap();
+        assert!(!unsafe { GetMenu(w as _) }.is_null(), "the new bar is on the window after the old one is gone");
+        drop(second);
+        unsafe { DestroyWindow(w as _) };
+    }
+
+    /// The failure this guards against: attaching first and dropping the old bar after.
+    #[test]
+    fn dropping_the_old_bar_after_attaching_clears_the_window() {
+        let w = window();
+        let first = bar();
+        unsafe { first.init_for_hwnd(w) }.unwrap();
+        let second = bar();
+        unsafe { second.init_for_hwnd(w) }.unwrap();
+        drop(first);
+        assert!(unsafe { GetMenu(w as _) }.is_null(), "muda's drop takes the window's menu away");
+        drop(second);
+        unsafe { DestroyWindow(w as _) };
+    }
+
+    #[test]
+    fn install_menus_replaces_through_the_helper() {
+        let src = include_str!("menu.rs");
+        let body = src.split("pub(super) fn install_menus").nth(1).unwrap().split("muda::MenuEvent::set_event_handler").next().unwrap();
+        assert!(body.contains("replace_menu_bar(earlier, &menu, hwnd)") && !body.contains("menu.init_for_hwnd"));
+    }
 }
 
 #[cfg(test)]

@@ -539,7 +539,7 @@ fn knob_sheet(ctx: &egui::Context, s: &mut KnobSheet, profiles: &[(String, Strin
                         }
                     }
                     KnobKind::Text | KnobKind::Invocation => {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(&k.label));
+                        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), ui.spacing().interact_size.y), egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(&k.label));
                         let mut text = s.values[i].as_ref().and_then(Value::as_str).unwrap_or("").to_string();
                         let r = ui.add(egui::TextEdit::singleline(&mut text).hint_text(k.placeholder.clone().unwrap_or_default()).desired_width(260.0));
                         if r.changed() {
@@ -552,7 +552,7 @@ fn knob_sheet(ctx: &egui::Context, s: &mut KnobSheet, profiles: &[(String, Strin
                     }
                     // A text field and a stepper (`iTermStatusBarKnobNumericViewController`).
                     KnobKind::Double => {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(&k.label));
+                        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), ui.spacing().interact_size.y), egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(&k.label));
                         ui.horizontal(|ui| {
                             let r = ui.add(egui::TextEdit::singleline(&mut s.texts[i]).hint_text(k.placeholder.clone().unwrap_or_default()).desired_width(90.0));
                             if r.changed() {
@@ -574,13 +574,13 @@ fn knob_sheet(ctx: &egui::Context, s: &mut KnobSheet, profiles: &[(String, Strin
                         });
                     }
                     KnobKind::Color => {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(&k.label));
+                        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), ui.spacing().interact_size.y), egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(&k.label));
                         color_well(ui, &mut s.values[i], true);
                     }
                     // "Configure Action..." opens the key action editor without a key
                     // (`iTermStatusBarKnobActionViewController.m:40-58`).
                     KnobKind::Action => {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(&k.label));
+                        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), ui.spacing().interact_size.y), egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(&k.label));
                         ui.vertical(|ui| {
                             if ui.button("Configure Action...").clicked() {
                                 s.action_open[i] = !s.action_open[i];
@@ -702,7 +702,8 @@ fn advanced_sheet(ctx: &egui::Context, a: &mut AdvancedSheet) -> bool {
         ui.checkbox(&mut adv.remove_empty, "Remove components with empty values").on_hover_text(tight_tip);
         ui.checkbox(&mut adv.edge_separator, "Draw separator between status bar and terminal").on_hover_text("Draws a thin line between the status bar and the terminal content.");
         ui.separator();
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let bar = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+        ui.allocate_ui_with_layout(bar, egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("OK").clicked() {
                 done = true;
             }

@@ -273,7 +273,9 @@ impl App {
         }
         // A cloaked or background window still has to be foreground for the menu to close on a click away.
         unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd as HWND) };
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        let picked = unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        crate::host::log(&format!("tray: menu on {hwnd:#x} (notification window {}), picked {picked}", Some(hwnd) == crate::notify::window_handle()));
+        self.tray_pick = picked;
         // The pick arrives after the menu closes, so the menu lives until the next one.
         self.popup_menu = Some(menu);
     }

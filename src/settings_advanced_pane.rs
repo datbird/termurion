@@ -158,7 +158,10 @@ pub fn pinned_header(headers: &[(f32, f32)], top: f32) -> Option<(usize, f32)> {
 /// change should be saved.
 pub fn page(ui: &mut egui::Ui, g: &mut Globals, st: &mut AdvancedState) -> bool {
     let mut changed = false;
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    // One row high: an unbounded right-to-left layout takes the whole height left, which centred
+    // the search field and left the list no room (TWEAKS, Advanced pane blank).
+    let bar = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+    ui.allocate_ui_with_layout(bar, egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.checkbox(&mut st.only_non_default, advanced_pane::ONLY_NON_DEFAULT).on_hover_text(advanced_pane::ONLY_NON_DEFAULT_TIP);
         ui.add(egui::TextEdit::singleline(&mut st.query).hint_text(advanced_pane::SEARCH_HINT).desired_width(ui.available_width()));
     });
@@ -252,6 +255,34 @@ mod tests {
 
     fn row(key: &str) -> advanced_pane::Row {
         advanced_pane::rows().into_iter().find(|r| r.key == key).unwrap_or_else(|| panic!("{key}"))
+    }
+
+    /// The search row is one row high and the list shows under it (the Advanced pane drew only a
+    /// search field centred in an empty page).
+    #[test]
+    fn the_list_shows_under_the_search_row() {
+        let ctx = egui::Context::default();
+        let mut g = globals();
+        let mut st = AdvancedState::default();
+        let mut input = egui::RawInput::default();
+        input.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0)));
+        let mut out = ctx.run_ui(input, |ui| {
+            page(ui, &mut g, &mut st);
+        });
+        out.textures_delta.clear();
+        let texts: Vec<(String, f32)> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some((t.galley.job.text.clone(), t.pos.y)),
+                _ => None,
+            })
+            .collect();
+        let y_of = |want: &str| texts.iter().find(|(t, _)| t == want).map(|(_, y)| *y);
+        let hint = y_of(advanced_pane::SEARCH_HINT).expect("the search hint draws");
+        assert!(hint < 60.0, "the search row sits at the top, not centred (y {hint})");
+        let first = all_rows().first().expect("rows");
+        assert!(texts.iter().any(|(t, _)| t == first.category || t == first.label), "the first category or setting draws: {texts:?}");
     }
 
     #[test]

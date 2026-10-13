@@ -604,7 +604,8 @@ fn key_dialog(ctx: &egui::Context, d: &mut KeyDialog, error: &mut Option<String>
         // A key field keeps the focus on Return, which is still OK there.
         let fields: Vec<egui::Id> = (0..Vendor::KEY_ORDER.len()).map(|i| egui::Id::new(("ai-key", i))).collect();
         let (enter, escape) = modal_keys(ui, d.opened, &fields);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let bar = egui::vec2(ui.available_width(), ui.spacing().interact_size.y.max(24.0));
+        ui.allocate_ui_with_layout(bar, egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let ok = ui.add(egui::Button::new("OK").min_size(egui::vec2(76.0, 24.0))).clicked();
             let cancel = ui.add(egui::Button::new("Cancel").min_size(egui::vec2(76.0, 24.0))).clicked();
             if ok || enter {
@@ -854,7 +855,8 @@ fn probe_modal(ctx: &egui::Context, opened: u64) -> bool {
         ui.add(egui::Spinner::new().size(18.0));
         ui.add_space(8.0);
         let (enter, escape) = modal_keys(ui, opened, &[]);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let bar = egui::vec2(ui.available_width(), ui.spacing().interact_size.y.max(24.0));
+        ui.allocate_ui_with_layout(bar, egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.add(egui::Button::new(am::CANCEL).min_size(egui::vec2(76.0, 24.0))).clicked() || enter || escape {
                 cancel = true;
             }
@@ -916,7 +918,8 @@ fn notice_modal(ctx: &egui::Context, id: &str, heading: &str, text: &str, keys: 
         ui.add(egui::Label::new(text).wrap());
         ui.add_space(10.0);
         let (enter, escape) = enter_escape(ui);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let bar = egui::vec2(ui.available_width(), ui.spacing().interact_size.y.max(24.0));
+        ui.allocate_ui_with_layout(bar, egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.add(egui::Button::new("OK").min_size(egui::vec2(76.0, 24.0))).clicked() || (keys && (enter || escape)) {
                 done = true;
             }
@@ -1414,7 +1417,8 @@ fn help_modal(ctx: &egui::Context, opened: u64) -> bool {
         });
         ui.add_space(10.0);
         let (enter, escape) = modal_keys(ui, opened, &[]);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let bar = egui::vec2(ui.available_width(), ui.spacing().interact_size.y.max(24.0));
+        ui.allocate_ui_with_layout(bar, egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.add(egui::Button::new("OK").min_size(egui::vec2(76.0, 24.0))).clicked() || enter || escape {
                 done = true;
             }
@@ -1502,6 +1506,37 @@ mod tests {
     use crate::pwm::Secret;
     use std::path::Path;
     use toml::Value;
+
+    /// The notice's OK sits right under its text (a guard: a Modal sizes to its content, so the
+    /// bounded bar changes nothing visible here).
+    #[test]
+    fn the_notice_keeps_ok_under_its_text() {
+        let ctx = egui::Context::default();
+        let mut y = None;
+        for _ in 0..8 {
+            let mut input = egui::RawInput::default();
+            input.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0)));
+            let mut out = ctx.run_ui(input, |ui| {
+                notice_modal(ui.ctx(), "notice-test", "Heading", "Some words.", true);
+            });
+            out.textures_delta.clear();
+            let texts: Vec<(String, f32)> = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => Some((t.galley.job.text.clone(), t.pos.y)),
+                    _ => None,
+                })
+                .collect();
+            let find = |want: &str| texts.iter().find(|(t, _)| t == want).map(|(_, y)| *y);
+            if texts.is_empty() {
+                continue;
+            }
+            y = Some((find("Heading").unwrap_or_else(|| panic!("the heading draws: {texts:?}")), find("OK").expect("OK draws")));
+        }
+        let (heading, ok) = y.expect("the notice drew");
+        assert!(ok - heading < 120.0, "OK sits under the text, not centred in the screen (heading {heading}, OK {ok})");
+    }
 
     fn manual(name: &str, url: &str, api: i64) -> ManualModel {
         let mut t = toml::Table::new();

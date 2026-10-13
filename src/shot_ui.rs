@@ -222,21 +222,10 @@ impl ShotWindow {
                     }
                 });
                 ui.add_space(18.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Save").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        out = ShotEvent::Save;
-                    }
-                    if ui.button("Save As...").clicked() {
-                        out = ShotEvent::SaveAs;
-                    }
-                    let label = if copied { "Copied!" } else { "Copy to Clipboard" };
-                    if ui.add_enabled(*parts <= 1, egui::Button::new(label)).clicked() {
-                        out = ShotEvent::Copy;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        out = ShotEvent::Cancel;
-                    }
-                });
+                let pressed = button_row(ui, *parts, copied);
+                if pressed != ShotEvent::None {
+                    out = pressed;
+                }
             });
         });
         if copied {
@@ -244,6 +233,28 @@ impl ShotWindow {
         }
         out
     }
+}
+
+/// Save, Save As, Copy and Cancel along the bottom, the first at the right.
+fn button_row(ui: &mut egui::Ui, parts: usize, copied: bool) -> ShotEvent {
+    let mut out = ShotEvent::None;
+    let bar = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+    ui.allocate_ui_with_layout(bar, egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if ui.button("Save").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            out = ShotEvent::Save;
+        }
+        if ui.button("Save As...").clicked() {
+            out = ShotEvent::SaveAs;
+        }
+        let label = if copied { "Copied!" } else { "Copy to Clipboard" };
+        if ui.add_enabled(parts <= 1, egui::Button::new(label)).clicked() {
+            out = ShotEvent::Copy;
+        }
+        if ui.button("Cancel").clicked() {
+            out = ShotEvent::Cancel;
+        }
+    });
+    out
 }
 
 /// The minimap with the range drawn on it; dragging the ends or the middle moves the range.
@@ -301,4 +312,33 @@ fn minimap_view(ui: &mut egui::Ui, panel: &mut Panel, tex: Option<&egui::Texture
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The buttons sit at the top of the room they are given. `with_layout(right_to_left)` in a
+    /// vertical panel took the rest of its height and centred the row in it.
+    #[test]
+    fn the_button_row_sits_where_it_is_placed() {
+        let ctx = egui::Context::default();
+        let mut y = None;
+        for _ in 0..3 {
+            let mut input = egui::RawInput::default();
+            input.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 800.0)));
+            let mut out = ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    button_row(ui, 1, false);
+                });
+            });
+            out.textures_delta.clear();
+            y = out.shapes.iter().find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.job.text == "Save" => Some(t.pos.y),
+                _ => None,
+            });
+        }
+        let y = y.expect("Save draws");
+        assert!(y < 100.0, "the row hugs the top of its room, not the middle (y {y})");
+    }
 }

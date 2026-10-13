@@ -58,6 +58,16 @@ Each item says what is wrong, what it should do, and where it was seen.
    showed, so nothing told him Tandem was still running. Fix the tray: it must always appear
    while Tandem is resident (retry on failure and on TaskbarCreated after an Explorer restart),
    use the real Tandem icon, offer Quit, and log the result.
+   2026-10-12 desktop try: the icon was there but Windows 11 hid it under the ^ overflow (new
+   icons start hidden; Robert's EXTREME now shows it). Three bugs found and fixed the same day:
+   (a) every tray menu pick (Quit, New Window) did nothing while resident: the find handler
+   claimed every command when no session was focused (`browser_find::claims_without_session`);
+   (b) a window woken from resident lost its menu bar: the old muda menu was dropped after the
+   new one was attached, and muda's drop clears the window's menu (`replace_menu_bar`);
+   (c) Settings > Advanced was blank: an unbounded right-to-left row took the whole page
+   (same class fixed in shot_ui, pwm_ui, settings_ai, statusbar_setup_ui). host.log now logs
+   each tray menu, pick and quit step. Needs Robert's try: tray Quit and New Window, the menu
+   bar after a tray reopen, Settings > Advanced.
 
 ## In progress
 
