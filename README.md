@@ -165,7 +165,7 @@ flowchart LR
 
 - **Core.** `alacritty_terminal` 0.26 parses and stores the grid. Tandem carries a small set of
   patches for marks, row time, folds, image tiles, and blocks. Each patch is listed in
-  `crates/alacritty_terminal/TANDEM-PATCHES.md`.
+  `crates/alacritty_terminal/TERMURION-PATCHES.md`.
 - **ConPTY.** Tandem has its own ConPTY code. The shipped `conpty.dll` and `OpenConsole.exe` load
   from beside the exe, never from the inbox console host by accident.
 - **Safety.** Every program links the C runtime statically and loads its imports from System32
