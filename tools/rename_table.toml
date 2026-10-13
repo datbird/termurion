@@ -1,0 +1,1439 @@
+# m14r rename table (Task 1). Exact literals only, no regex.
+#
+# [[row]] fields: group (A user strings, B identifiers, C data paths, D code identifiers,
+#   E docs and scripts, F assets, K keep), old, new, mode (exact | word | keep), scope (globs), reason.
+# Resolution per line: the longest occurrence wins, a keep row wins ties, then the row listed first.
+# A hit (case-insensitive 'tandem') is MAPPED only when a winning row covers it.
+# Case variants are separate rows on purpose: a hit like 'TanDem' stays UNMAPPED.
+# [[path]] marks whole files: keep (never touched) or keep-history (historical record, not edited).
+# [[asset]] records the new art locations for later tasks (8: exe/window/tray icons, 10: docs).
+
+# ---- whole-file rules ----
+[[path]]
+glob = 'docs/superpowers/plans/**'
+mode = 'keep-history'
+reason = 'historical plans stay as written; README note added in Task 10'
+
+[[path]]
+glob = 'docs/superpowers/rulings/**'
+mode = 'keep-history'
+reason = 'historical rulings stay as written'
+
+[[path]]
+glob = 'tests/fixtures/tmux/*.bin'
+mode = 'keep'
+reason = 'recorded tmux bytes contain the old path'
+
+[[path]]
+glob = '**/LICENSE*'
+mode = 'keep'
+reason = 'license and third-party attribution text'
+
+[[path]]
+glob = '**/COPYING*'
+mode = 'keep'
+reason = 'third-party notices'
+
+[[path]]
+glob = 'tools/rename_*.py'
+mode = 'keep'
+reason = 'the rename tools name the old name by necessity'
+
+[[path]]
+glob = 'tools/test_rename_table.py'
+mode = 'keep'
+reason = 'the rename tool tests name the old name by necessity'
+
+[[path]]
+glob = 'tools/rename_table.toml'
+mode = 'keep'
+reason = 'the table itself'
+
+[[path]]
+glob = '.superpowers/sdd/tweaks/termurion-*'
+mode = 'keep'
+reason = 'rename audit records (preflight, gate, dry run)'
+
+# ---- new art locations (for Tasks 8 and 10) ----
+[[asset]]
+path = 'docs/assets/termurion/termurion-mark.svg'
+task = '10'
+reason = 'logo mark, README and docs'
+
+[[asset]]
+path = 'docs/assets/termurion/termurion-mark.png'
+task = '10'
+reason = 'logo mark raster'
+
+[[asset]]
+path = 'docs/assets/termurion/termurion-wordmark.svg'
+task = '10'
+reason = 'wordmark, README header'
+
+[[asset]]
+path = 'docs/assets/termurion/termurion-wordmark.png'
+task = '10'
+reason = 'wordmark raster'
+
+[[asset]]
+path = 'docs/assets/termurion/termurion-social.svg'
+task = '10'
+reason = 'social card'
+
+[[asset]]
+path = 'docs/assets/termurion/termurion-social.png'
+task = '10'
+reason = 'social card raster'
+
+[[asset]]
+path = 'docs/assets/termurion/termurion-icon-16.png'
+task = '8'
+reason = 'window and tray icon, 16 px'
+
+[[asset]]
+path = 'docs/assets/termurion/termurion-icon-32.png'
+task = '8'
+reason = 'window and tray icon, 32 px'
+
+[[asset]]
+path = 'docs/assets/termurion/termurion-icon-48.png'
+task = '8'
+reason = 'window icon, 48 px'
+
+[[asset]]
+path = 'docs/assets/termurion/termurion-icon-256.png'
+task = '8'
+reason = 'window icon, 256 px'
+
+[[asset]]
+path = 'docs/assets/termurion/termurion.ico'
+task = '8'
+reason = 'exe icon (build.rs resource), taskbar, installer shortcut'
+
+[[asset]]
+path = 'docs/assets/termurion/termurion-mark.svg'
+old = 'docs/assets/tandem-logo.svg'
+task = '10'
+reason = 'tandem-logo.svg is replaced by the termurion art; README image link updated'
+
+# ---- rows ----
+[[row]]
+group = 'K'
+old = 'tandem workgroup approval key\0v1'
+new = 'tandem workgroup approval key\0v1'
+mode = 'keep'
+scope = ['**']
+reason = 'DPAPI entropy for the workgroup approval key; part of the seal, bytes must not change'
+
+[[row]]
+group = 'K'
+old = 'tandem autofill contact card\0v1'
+new = 'tandem autofill contact card\0v1'
+mode = 'keep'
+scope = ['**']
+reason = 'DPAPI entropy for the autofill contact card; part of the seal, bytes must not change'
+
+[[row]]
+group = 'K'
+old = 'tandem workgroup approval'
+new = 'tandem workgroup approval'
+mode = 'keep'
+scope = ['**']
+reason = 'HMAC domain string of workgroup_restore::seal (b"tandem workgroup approval\0"); existing launch-state approvals verify against it, so it also stays'
+
+[[row]]
+group = 'K'
+old = '{6A1E8D3C-2B7F-4C9E-9D41-5F0B7A2C8E13}'
+new = '{6A1E8D3C-2B7F-4C9E-9D41-5F0B7A2C8E13}'
+mode = 'keep'
+scope = ['**']
+reason = 'default-terminal CLSID GUID; unchanged (only the Rust const name is renamed)'
+
+[[row]]
+group = 'K'
+old = '6A1E8D3C-2B7F-4C9E-9D41-5F0B7A2C8E13'
+new = '6A1E8D3C-2B7F-4C9E-9D41-5F0B7A2C8E13'
+mode = 'keep'
+scope = ['**']
+reason = 'default-terminal CLSID GUID without braces; unchanged'
+
+[[row]]
+group = 'K'
+old = '/mnt/c/Users/datbi/src/tandem'
+new = '/mnt/c/Users/datbi/src/tandem'
+mode = 'keep'
+scope = ['tests/fixtures/**']
+reason = 'recorded tmux fixture bytes contain this prompt path'
+
+[[row]]
+group = 'K'
+old = 'in tandem'
+new = 'in tandem'
+mode = 'keep'
+scope = ['**']
+reason = 'English phrase'
+
+[[row]]
+group = 'K'
+old = 'In tandem'
+new = 'In tandem'
+mode = 'keep'
+scope = ['**']
+reason = 'English phrase'
+
+[[row]]
+group = 'K'
+old = 'com.googlecode.iterm2'
+new = 'com.googlecode.iterm2'
+mode = 'keep'
+scope = ['**']
+reason = 'Non-goal: plist domain and defaults name'
+
+[[row]]
+group = 'K'
+old = '.itermtab'
+new = '.itermtab'
+mode = 'keep'
+scope = ['**']
+reason = 'Non-goal: profile document extension'
+
+[[row]]
+group = 'K'
+old = 'OSC 1337'
+new = 'OSC 1337'
+mode = 'keep'
+scope = ['**']
+reason = 'Non-goal: iTerm2 escape sequence family'
+
+[[row]]
+group = 'K'
+old = 'iTerm.app'
+new = 'iTerm.app'
+mode = 'keep'
+scope = ['**']
+reason = 'Non-goal: TERM_PROGRAM value'
+
+[[row]]
+group = 'K'
+old = 'iterm2'
+new = 'iterm2'
+mode = 'keep'
+scope = ['**']
+reason = 'Non-goal: Python API module and iterm2 identifiers'
+
+[[row]]
+group = 'K'
+old = 'it2api'
+new = 'it2api'
+mode = 'keep'
+scope = ['**']
+reason = 'Non-goal: it2* utility'
+
+[[row]]
+group = 'K'
+old = 'it2ssh'
+new = 'it2ssh'
+mode = 'keep'
+scope = ['**']
+reason = 'Non-goal: it2* utility'
+
+[[row]]
+group = 'K'
+old = 'it2tip'
+new = 'it2tip'
+mode = 'keep'
+scope = ['**']
+reason = 'Non-goal: it2* utility'
+
+[[row]]
+group = 'K'
+old = 'LICENSE-iTerm2'
+new = 'LICENSE-iTerm2'
+mode = 'keep'
+scope = ['**']
+reason = 'Non-goal: third-party license file name'
+
+[[row]]
+group = 'K'
+old = 'COPYING-iTerm2'
+new = 'COPYING-iTerm2'
+mode = 'keep'
+scope = ['**']
+reason = 'Non-goal: third-party notice file name'
+
+[[row]]
+group = 'K'
+old = 'iTerm2 source'
+new = 'iTerm2 source'
+mode = 'keep'
+scope = ['**']
+reason = 'Non-goal: parity docs reference iTerm2 source'
+
+[[row]]
+group = 'K'
+old = 'iTerm2-style'
+new = 'iTerm2-style'
+mode = 'keep'
+scope = ['**']
+reason = 'Non-goal: About text keeps the honest description'
+
+[[row]]
+group = 'K'
+old = 'showAbout:'
+new = 'showAbout:'
+mode = 'keep'
+scope = ['**']
+reason = 'Non-goal: menu command selector'
+
+[[row]]
+group = 'K'
+old = 'terminateApp:'
+new = 'terminateApp:'
+mode = 'keep'
+scope = ['**']
+reason = 'Non-goal: menu command selector'
+
+[[row]]
+group = 'B'
+old = 'tandem-'
+new = 'termurion-'
+mode = 'exact'
+scope = ['**']
+reason = 'hyphenated runtime names (temp files, css classes, context names): new name, old read as alias where a task says so'
+
+[[row]]
+group = 'B'
+old = 'tandem-host'
+new = 'termurion-host'
+mode = 'exact'
+scope = ['**']
+reason = 'host exe and host pipe name (changes together with launch pipes, Task 3)'
+
+[[row]]
+group = 'B'
+old = 'tandem-git'
+new = 'termurion-git'
+mode = 'exact'
+scope = ['**']
+reason = 'git wrapper exe name'
+
+[[row]]
+group = 'B'
+old = 'tandem-utils'
+new = 'termurion-utils'
+mode = 'exact'
+scope = ['**']
+reason = 'utilities exe name'
+
+[[row]]
+group = 'B'
+old = 'tandem-utilities'
+new = 'termurion-utilities'
+mode = 'exact'
+scope = ['**']
+reason = 'utilities folder/exe name'
+
+[[row]]
+group = 'B'
+old = 'tandem-ssh-probe'
+new = 'termurion-ssh-probe'
+mode = 'exact'
+scope = ['**']
+reason = 'ssh probe pipe prefix (Task 3)'
+
+[[row]]
+group = 'B'
+old = 'tandem-ssh-secrets'
+new = 'termurion-ssh-secrets'
+mode = 'exact'
+scope = ['**']
+reason = 'ssh secrets pipe prefix (Task 3)'
+
+[[row]]
+group = 'B'
+old = 'tandem-url'
+new = 'termurion-url'
+mode = 'exact'
+scope = ['**']
+reason = 'url launch pipe prefix (Task 3)'
+
+[[row]]
+group = 'B'
+old = 'tandem-bonjour'
+new = 'termurion-bonjour'
+mode = 'exact'
+scope = ['**']
+reason = 'bonjour pipe prefix (Task 3)'
+
+[[row]]
+group = 'B'
+old = 'tandem-settings'
+new = 'termurion-settings'
+mode = 'exact'
+scope = ['**']
+reason = 'settings staging file name'
+
+[[row]]
+group = 'B'
+old = 'tandem-import'
+new = 'termurion-import'
+mode = 'exact'
+scope = ['**']
+reason = 'import staging name'
+
+[[row]]
+group = 'B'
+old = 'tandem-tmp'
+new = 'termurion-tmp'
+mode = 'exact'
+scope = ['**']
+reason = 'temp sweep suffix (both names swept)'
+
+[[row]]
+group = 'B'
+old = 'tandem-backup'
+new = 'termurion-backup'
+mode = 'exact'
+scope = ['**']
+reason = 'settings.json.tandem-backup sweep (both names swept)'
+
+[[row]]
+group = 'B'
+old = 'tandem.exe'
+new = 'termurion.exe'
+mode = 'exact'
+scope = ['**']
+reason = 'exe name'
+
+[[row]]
+group = 'B'
+old = 'Tandem.lnk'
+new = 'Termurion.lnk'
+mode = 'exact'
+scope = ['**']
+reason = 'Desktop and Start Menu shortcut; old one removed by the installer'
+
+[[row]]
+group = 'B'
+old = 'tandemexport'
+new = 'termurionexport'
+mode = 'exact'
+scope = ['**']
+reason = 'settings export extension .tandemexport (old still imported)'
+
+[[row]]
+group = 'B'
+old = 'tandem.ctx'
+new = 'termurion.ctx'
+mode = 'exact'
+scope = ['**']
+reason = 'context-menu ids tandem.ctx.* (Task 3, with alias)'
+
+[[row]]
+group = 'B'
+old = 'tandem.findmode'
+new = 'termurion.findmode'
+mode = 'exact'
+scope = ['**']
+reason = 'find mode ids'
+
+[[row]]
+group = 'B'
+old = 'tandem.finderase'
+new = 'termurion.finderase'
+mode = 'exact'
+scope = ['**']
+reason = 'find erase id'
+
+[[row]]
+group = 'B'
+old = 'tandem.browsermark'
+new = 'termurion.browsermark'
+mode = 'exact'
+scope = ['**']
+reason = 'browser mark ids'
+
+[[row]]
+group = 'B'
+old = 'tandem.namedmark'
+new = 'termurion.namedmark'
+mode = 'exact'
+scope = ['**']
+reason = 'named mark ids'
+
+[[row]]
+group = 'B'
+old = 'tandem.join'
+new = 'termurion.join'
+mode = 'exact'
+scope = ['**']
+reason = 'Python API name: Task 3 wire_names_audit decides internal or wire'
+
+[[row]]
+group = 'B'
+old = 'tandem_command'
+new = 'termurion_command'
+mode = 'exact'
+scope = ['**']
+reason = 'Python API name: Task 3 wire_names_audit decides internal or wire'
+
+[[row]]
+group = 'B'
+old = 'by_tandem'
+new = 'by_termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'NavInfo field also used as a name: Task 3 wire_names_audit decides internal or wire'
+
+[[row]]
+group = 'B'
+old = 'tandem.test'
+new = 'termurion.test'
+mode = 'exact'
+scope = ['**']
+reason = 'browser internal origin //tandem.test/'
+
+[[row]]
+group = 'B'
+old = 'data-tandem'
+new = 'data-termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'injected page attributes data-tandem-*'
+
+[[row]]
+group = 'B'
+old = 'window.tandem'
+new = 'window.termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'injected page global'
+
+[[row]]
+group = 'B'
+old = 'messageHandlers.tandem'
+new = 'messageHandlers.termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'WebKit-style message handler name'
+
+[[row]]
+group = 'B'
+old = 'messageHandlers.Tandem'
+new = 'messageHandlers.Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'WebKit-style message handler name'
+
+[[row]]
+group = 'B'
+old = '__tandem'
+new = '__termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'injected JS globals (lower)'
+
+[[row]]
+group = 'B'
+old = '__Tandem'
+new = '__Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'injected JS globals (upper)'
+
+[[row]]
+group = 'B'
+old = 'Get-Tandem'
+new = 'Get-Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'PowerShell function in the shell integration script'
+
+[[row]]
+group = 'B'
+old = 'Tandem-Browser'
+new = 'Termurion-Browser'
+mode = 'exact'
+scope = ['**']
+reason = 'Credential Manager target and UA suffix (read both prefixes)'
+
+[[row]]
+group = 'B'
+old = 'TandemAI'
+new = 'TermurionAI'
+mode = 'exact'
+scope = ['**']
+reason = 'Credential Manager target prefix TandemAI/ (read both)'
+
+[[row]]
+group = 'B'
+old = 'TANDEM_'
+new = 'TERMURION_'
+mode = 'exact'
+scope = ['**']
+reason = 'environment variables TANDEM_* (read as aliases when TERMURION_* unset)'
+
+[[row]]
+group = 'B'
+old = 'Software\Tandem'
+new = 'Software\Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'registry root Software\Tandem (single backslash form)'
+
+[[row]]
+group = 'B'
+old = 'Software\\Tandem'
+new = 'Software\\Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'registry root, escaped backslashes in Rust strings'
+
+[[row]]
+group = 'B'
+old = 'Classes\Tandem'
+new = 'Classes\Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'ProgId under Software\Classes'
+
+[[row]]
+group = 'B'
+old = 'Classes\\Tandem'
+new = 'Classes\\Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'ProgId, escaped'
+
+[[row]]
+group = 'B'
+old = 'Applications\tandem'
+new = 'Applications\termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'Software\Classes\Applications\tandem.exe'
+
+[[row]]
+group = 'B'
+old = 'Applications\\tandem'
+new = 'Applications\\termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'Applications key, escaped'
+
+[[row]]
+group = 'B'
+old = 'Tandem.ssh'
+new = 'Termurion.ssh'
+mode = 'exact'
+scope = ['**']
+reason = 'ProgId Tandem.<scheme> (ssh)'
+
+[[row]]
+group = 'B'
+old = 'Tandem.http'
+new = 'Termurion.http'
+mode = 'exact'
+scope = ['**']
+reason = 'ProgId Tandem.<scheme> (http)'
+
+[[row]]
+group = 'B'
+old = 'Tandem.https'
+new = 'Termurion.https'
+mode = 'exact'
+scope = ['**']
+reason = 'ProgId Tandem.<scheme> (https)'
+
+[[row]]
+group = 'B'
+old = 'tandemMark'
+new = 'termurionMark'
+mode = 'exact'
+scope = ['**']
+reason = 'injected JS identifier (renamed on both sides in one commit)'
+
+[[row]]
+group = 'B'
+old = 'tandemReal'
+new = 'termurionReal'
+mode = 'exact'
+scope = ['**']
+reason = 'injected JS identifier (renamed on both sides in one commit)'
+
+[[row]]
+group = 'B'
+old = 'tandemHost'
+new = 'termurionHost'
+mode = 'exact'
+scope = ['**']
+reason = 'injected JS identifier (renamed on both sides in one commit)'
+
+[[row]]
+group = 'B'
+old = 'tandemRoot'
+new = 'termurionRoot'
+mode = 'exact'
+scope = ['**']
+reason = 'injected JS identifier (renamed on both sides in one commit)'
+
+[[row]]
+group = 'B'
+old = 'tandemShadow'
+new = 'termurionShadow'
+mode = 'exact'
+scope = ['**']
+reason = 'injected JS identifier (renamed on both sides in one commit)'
+
+[[row]]
+group = 'B'
+old = 'tandemSite'
+new = 'termurionSite'
+mode = 'exact'
+scope = ['**']
+reason = 'injected JS identifier (renamed on both sides in one commit)'
+
+[[row]]
+group = 'B'
+old = 'tandemDeepest'
+new = 'termurionDeepest'
+mode = 'exact'
+scope = ['**']
+reason = 'injected JS identifier (renamed on both sides in one commit)'
+
+[[row]]
+group = 'B'
+old = 'tandemDeadline'
+new = 'termurionDeadline'
+mode = 'exact'
+scope = ['**']
+reason = 'injected JS identifier (renamed on both sides in one commit)'
+
+[[row]]
+group = 'B'
+old = 'tandemNames'
+new = 'termurionNames'
+mode = 'exact'
+scope = ['**']
+reason = 'injected JS identifier (renamed on both sides in one commit)'
+
+[[row]]
+group = 'B'
+old = 'tandemBroadcastInput'
+new = 'termurionBroadcastInput'
+mode = 'exact'
+scope = ['**']
+reason = 'injected JS identifier (renamed on both sides in one commit)'
+
+[[row]]
+group = 'B'
+old = 'tandemShift'
+new = 'termurionShift'
+mode = 'exact'
+scope = ['**']
+reason = 'injected JS identifier (renamed on both sides in one commit)'
+
+[[row]]
+group = 'B'
+old = 'tandemPointer'
+new = 'termurionPointer'
+mode = 'exact'
+scope = ['**']
+reason = 'injected JS identifier (renamed on both sides in one commit)'
+
+[[row]]
+group = 'B'
+old = 'tandemCopyModeKey'
+new = 'termurionCopyModeKey'
+mode = 'exact'
+scope = ['**']
+reason = 'injected JS identifier (renamed on both sides in one commit)'
+
+[[row]]
+group = 'B'
+old = 'tandemBinding'
+new = 'termurionBinding'
+mode = 'exact'
+scope = ['**']
+reason = 'injected JS identifier (renamed on both sides in one commit)'
+
+[[row]]
+group = 'B'
+old = 'tandemSecretField'
+new = 'termurionSecretField'
+mode = 'exact'
+scope = ['**']
+reason = 'injected JS identifier (renamed on both sides in one commit)'
+
+[[row]]
+group = 'B'
+old = 'TandemMachineIdHash'
+new = 'TermurionMachineIdHash'
+mode = 'exact'
+scope = ['**']
+reason = 'shell integration function name'
+
+[[row]]
+group = 'B'
+old = 'TandemShellIntegration'
+new = 'TermurionShellIntegration'
+mode = 'exact'
+scope = ['**']
+reason = 'shell integration global'
+
+[[row]]
+group = 'C'
+old = '%APPDATA%\Tandem'
+new = '%APPDATA%\Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'data folder (migrated by copy, Task 5)'
+
+[[row]]
+group = 'C'
+old = '%LOCALAPPDATA%\Tandem'
+new = '%LOCALAPPDATA%\Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'data folder (migrated by copy, Task 5)'
+
+[[row]]
+group = 'C'
+old = '<APPDATA>\Tandem'
+new = '<APPDATA>\Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'data folder (migrated by copy, Task 5)'
+
+[[row]]
+group = 'C'
+old = '<LOCALAPPDATA>\Tandem'
+new = '<LOCALAPPDATA>\Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'data folder (migrated by copy, Task 5)'
+
+[[row]]
+group = 'C'
+old = '<appdata>\Tandem'
+new = '<appdata>\Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'data folder (migrated by copy, Task 5)'
+
+[[row]]
+group = 'C'
+old = '%APPDATA%\\Tandem'
+new = '%APPDATA%\\Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'data folder, escaped backslashes'
+
+[[row]]
+group = 'C'
+old = '%LOCALAPPDATA%\\Tandem'
+new = '%LOCALAPPDATA%\\Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'data folder, escaped backslashes'
+
+[[row]]
+group = 'C'
+old = 'Programs\Tandem'
+new = 'Programs\Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'install folder'
+
+[[row]]
+group = 'C'
+old = 'Programs\\Tandem'
+new = 'Programs\\Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'install folder, escaped'
+
+[[row]]
+group = 'C'
+old = '.join("Tandem")'
+new = '.join("Termurion")'
+mode = 'exact'
+scope = ['**']
+reason = 'data folder path component in Rust'
+
+[[row]]
+group = 'C'
+old = 'join("Tandem")'
+new = 'join("Termurion")'
+mode = 'exact'
+scope = ['**']
+reason = 'data folder path component in Rust'
+
+[[row]]
+group = 'C'
+old = 'tandem-probe'
+new = 'termurion-probe'
+mode = 'exact'
+scope = ['**']
+reason = 'probe task and folder names'
+
+[[row]]
+group = 'C'
+old = 'tandem-protogen'
+new = 'termurion-protogen'
+mode = 'exact'
+scope = ['**']
+reason = 'protogen temp names'
+
+[[row]]
+group = 'C'
+old = 'tandemprobe'
+new = 'termurionprobe'
+mode = 'exact'
+scope = ['**']
+reason = 'tmux socket name used by the probe'
+
+[[row]]
+group = 'C'
+old = 'tandem_vim_pos'
+new = 'termurion_vim_pos'
+mode = 'exact'
+scope = ['**']
+reason = 'probe temp file'
+
+[[row]]
+group = 'D'
+old = 'tandem_'
+new = 'termurion_'
+mode = 'exact'
+scope = ['**']
+reason = 'snake_case identifiers (fns, tests, files)'
+
+[[row]]
+group = 'D'
+old = '_tandem'
+new = '_termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'snake_case identifiers (suffix form)'
+
+[[row]]
+group = 'D'
+old = 'CLSID_TANDEM_TERMINAL'
+new = 'CLSID_TERMURION_TERMINAL'
+mode = 'exact'
+scope = ['**']
+reason = 'Rust const; GUID value unchanged'
+
+[[row]]
+group = 'D'
+old = 'OPEN_IN_TANDEM'
+new = 'OPEN_IN_TERMURION'
+mode = 'exact'
+scope = ['**']
+reason = 'const'
+
+[[row]]
+group = 'D'
+old = 'TandemDlogTest'
+new = 'TermurionDlogTest'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'TandemDebugLog'
+new = 'TermurionDebugLog'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'TandemChatAttachments'
+new = 'TermurionChatAttachments'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'TandemSelectionGesture'
+new = 'TermurionSelectionGesture'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'TandemWorldProbe'
+new = 'TermurionWorldProbe'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'TandemWebView2Test'
+new = 'TermurionWebView2Test'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'TandemWebView2MethodTest'
+new = 'TermurionWebView2MethodTest'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'TandemSvgRaster'
+new = 'TermurionSvgRaster'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'TandemPopoverSourceTest'
+new = 'TermurionPopoverSourceTest'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'TandemPane'
+new = 'TermurionPane'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'TandemOutput'
+new = 'TermurionOutput'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'TandemNotifications'
+new = 'TermurionNotifications'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'TandemMenuTest'
+new = 'TermurionMenuTest'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'TandemFadeProbe'
+new = 'TermurionFadeProbe'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'TandemDeleted'
+new = 'TermurionDeleted'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'TandemCredentialProbe'
+new = 'TermurionCredentialProbe'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'TandemCopyModeKeys'
+new = 'TermurionCopyModeKeys'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'TandemAlphaTest'
+new = 'TermurionAlphaTest'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'TandemLoaded'
+new = 'TermurionLoaded'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'D'
+old = 'OtherTandem'
+new = 'OtherTermurion'
+mode = 'exact'
+scope = ['**']
+reason = 'type, test or global identifier'
+
+[[row]]
+group = 'F'
+old = 'tandem-logo'
+new = 'termurion-logo'
+mode = 'exact'
+scope = ['**']
+reason = 'logo file name; replaced by docs/assets/termurion/* (see asset rows)'
+
+[[row]]
+group = 'F'
+old = 'tandem-cloak'
+new = 'termurion-cloak'
+mode = 'exact'
+scope = ['**']
+reason = 'resources/browser/tandem-cloak.js'
+
+[[row]]
+group = 'F'
+old = 'tandem_shell_integration'
+new = 'termurion_shell_integration'
+mode = 'exact'
+scope = ['**']
+reason = 'resources/shell_integration/tandem_shell_integration.ps1 (old name stays a legacy name the installer rewrites)'
+
+[[row]]
+group = 'F'
+old = 'TANDEM-PATCHES'
+new = 'TERMURION-PATCHES'
+mode = 'exact'
+scope = ['**']
+reason = 'crates/*/TANDEM-PATCHES.md'
+
+[[row]]
+group = 'F'
+old = '2026-09-23-tandem-design'
+new = '2026-09-23-termurion-design'
+mode = 'exact'
+scope = ['**']
+reason = 'spec file name (git mv, Task 10)'
+
+[[row]]
+group = 'D'
+old = 'tandem::'
+new = 'termurion::'
+mode = 'exact'
+scope = ['**']
+reason = 'crate path (use tandem::..., tandem::module::fn); renamed with the crate in Task 2'
+
+[[row]]
+group = 'E'
+old = 'datbird/tandem'
+new = 'datbird/termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'GitHub repo path (rename in Task 9; update.rs keeps the old URL as a fallback)'
+
+[[row]]
+group = 'E'
+old = 'gitrepos/tandem'
+new = 'gitrepos/termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'local clone path on sirtoolio and W541 (Task 9)'
+
+[[row]]
+group = 'E'
+old = 'src\tandem'
+new = 'src\termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'EXTREME checkout folder (Task 9), single backslash'
+
+[[row]]
+group = 'E'
+old = 'src\\tandem'
+new = 'src\\termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'EXTREME checkout folder (Task 9), escaped backslashes'
+
+[[row]]
+group = 'E'
+old = 'src\\\\tandem'
+new = 'src\\\\termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'EXTREME checkout folder (Task 9), doubly escaped'
+
+[[row]]
+group = 'E'
+old = 'src/tandem'
+new = 'src/termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'checkout folder with forward slash (WSL path form)'
+
+[[row]]
+group = 'E'
+old = 'tandem\target'
+new = 'termurion\target'
+mode = 'exact'
+scope = ['**']
+reason = 'EXTREME build output under the checkout'
+
+[[row]]
+group = 'B'
+old = 'TANDEM.EXE'
+new = 'TERMURION.EXE'
+mode = 'exact'
+scope = ['**']
+reason = 'exe name, upper case (registry tests)'
+
+[[row]]
+group = 'B'
+old = 'tandem.EXE'
+new = 'termurion.EXE'
+mode = 'exact'
+scope = ['**']
+reason = 'exe name, mixed case'
+
+[[row]]
+group = 'B'
+old = 'software\tandem'
+new = 'software\termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'registry root, lower case (tests)'
+
+[[row]]
+group = 'B'
+old = 'software\\tandem'
+new = 'software\\termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'registry root, lower case, escaped'
+
+[[row]]
+group = 'B'
+old = 'classes\tandem'
+new = 'classes\termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'ProgId, lower case'
+
+[[row]]
+group = 'B'
+old = 'classes\\tandem'
+new = 'classes\\termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'ProgId, lower case, escaped'
+
+[[row]]
+group = 'B'
+old = 'applications\tandem'
+new = 'applications\termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'Applications key, lower case'
+
+[[row]]
+group = 'B'
+old = 'applications\\tandem'
+new = 'applications\\termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'Applications key, lower case, escaped'
+
+[[row]]
+group = 'B'
+old = 'Tandem/'
+new = 'Termurion/'
+mode = 'exact'
+scope = ['src/pwm_source.rs', 'src/pwm_credman.rs', 'src/app/pwm_app.rs']
+reason = 'Credential Manager targets Tandem/<account> (read both prefixes)'
+
+[[row]]
+group = 'B'
+old = 'SERVICE: &str = "Tandem"'
+new = 'SERVICE: &str = "Termurion"'
+mode = 'exact'
+scope = ['src/pwm_source.rs']
+reason = 'Credential Manager service name'
+
+[[row]]
+group = 'C'
+old = '\Tandem'
+new = '\Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'data or install folder component (single backslash)'
+
+[[row]]
+group = 'C'
+old = '\\Tandem'
+new = '\\Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'data or install folder component (escaped)'
+
+[[row]]
+group = 'D'
+old = 'Tandem'
+new = 'Termurion'
+mode = 'exact'
+scope = ['crates/**']
+reason = 'patched crates: comments and patch markers'
+
+[[row]]
+group = 'D'
+old = 'tandem'
+new = 'termurion'
+mode = 'exact'
+scope = ['crates/**']
+reason = 'patched crates: comments and patch markers'
+
+[[row]]
+group = 'D'
+old = 'TANDEM'
+new = 'TERMURION'
+mode = 'exact'
+scope = ['crates/**']
+reason = 'patched crates: comments and patch markers'
+
+[[row]]
+group = 'A'
+old = 'Tandem'
+new = 'Termurion'
+mode = 'exact'
+scope = ['src/**']
+reason = 'prose, comments and strings in source'
+
+[[row]]
+group = 'A'
+old = 'tandem'
+new = 'termurion'
+mode = 'exact'
+scope = ['src/**']
+reason = 'prose, comments and strings in source'
+
+[[row]]
+group = 'A'
+old = 'TANDEM'
+new = 'TERMURION'
+mode = 'exact'
+scope = ['src/**']
+reason = 'prose, comments and strings in source'
+
+[[row]]
+group = 'A'
+old = 'Tandem'
+new = 'Termurion'
+mode = 'exact'
+scope = ['schema/**', 'resources/**']
+reason = 'schema help text and bundled resources'
+
+[[row]]
+group = 'A'
+old = 'tandem'
+new = 'termurion'
+mode = 'exact'
+scope = ['schema/**', 'resources/**']
+reason = 'schema help text and bundled resources'
+
+[[row]]
+group = 'A'
+old = 'TANDEM'
+new = 'TERMURION'
+mode = 'exact'
+scope = ['schema/**', 'resources/**']
+reason = 'schema help text and bundled resources'
+
+[[row]]
+group = 'D'
+old = 'Tandem'
+new = 'Termurion'
+mode = 'exact'
+scope = ['tests/**', 'Cargo.toml', 'Cargo.lock', 'build.rs']
+reason = 'tests and build files'
+
+[[row]]
+group = 'D'
+old = 'tandem'
+new = 'termurion'
+mode = 'exact'
+scope = ['tests/**', 'Cargo.toml', 'Cargo.lock', 'build.rs']
+reason = 'tests and build files'
+
+[[row]]
+group = 'D'
+old = 'TANDEM'
+new = 'TERMURION'
+mode = 'exact'
+scope = ['tests/**', 'Cargo.toml', 'Cargo.lock', 'build.rs']
+reason = 'tests and build files'
+
+[[row]]
+group = 'E'
+old = 'Tandem'
+new = 'Termurion'
+mode = 'exact'
+scope = ['docs/**', 'README.md', 'progress.md', 'scripts/**', 'tools/**']
+reason = 'docs and scripts'
+
+[[row]]
+group = 'E'
+old = 'tandem'
+new = 'termurion'
+mode = 'exact'
+scope = ['docs/**', 'README.md', 'progress.md', 'scripts/**', 'tools/**']
+reason = 'docs and scripts'
+
+[[row]]
+group = 'E'
+old = 'TANDEM'
+new = 'TERMURION'
+mode = 'exact'
+scope = ['docs/**', 'README.md', 'progress.md', 'scripts/**', 'tools/**']
+reason = 'docs and scripts'
+
+[[row]]
+group = 'E'
+old = 'Tandem'
+new = 'Termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'everything else'
+
+[[row]]
+group = 'E'
+old = 'tandem'
+new = 'termurion'
+mode = 'exact'
+scope = ['**']
+reason = 'everything else'
+
+[[row]]
+group = 'E'
+old = 'TANDEM'
+new = 'TERMURION'
+mode = 'exact'
+scope = ['**']
+reason = 'everything else'
+

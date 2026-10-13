@@ -1,0 +1,168 @@
+m14r rename dry run (read only; no file written by the tool)
+table: rename_table.toml
+
+total hits (case-insensitive 'tandem'): 11580
+matching lines: 9214
+files with hits: 809
+UNMAPPED outside keep and keep-history paths: 0
+
+per-group hits mapped by a rename row (A user strings, B identifiers, C data paths,
+D code identifiers, E docs and scripts, F assets, K keep rows):
+  A: 3035
+  B: 1692
+  C: 286
+  D: 486
+  E: 1442
+  F: 33
+  K: 4
+  whole-file keep paths: 240
+  keep-history paths:    4362
+
+per path rule:
+  keep               10  **/LICENSE*
+  keep-history     3054  docs/superpowers/plans/**
+  keep-history     1308  docs/superpowers/rulings/**
+  keep                6  tests/fixtures/tmux/*.bin
+  keep                3  tools/rename_*.py
+  keep              178  tools/rename_table.toml
+  keep               43  tools/test_rename_table.py
+
+per row (group, mode, old -> new, hits), most used first:
+  A exact   2952  Tandem -> Termurion
+  E exact   1281  Tandem -> Termurion
+  B exact    338  tandem.exe -> termurion.exe
+  B exact    256  tandem- -> termurion-
+  D exact    191  Tandem -> Termurion
+  B exact    146  tandem-host -> termurion-host
+  D exact    114  _tandem -> _termurion
+  E exact     98  tandem\target -> termurion\target
+  B exact     97  __tandem -> __termurion
+  D exact     90  tandem_ -> termurion_
+  C exact     85  %APPDATA%\Tandem -> %APPDATA%\Termurion
+  A exact     80  tandem -> termurion
+  B exact     80  tandem-git -> termurion-git
+  B exact     69  by_tandem -> by_termurion
+  B exact     68  TANDEM_ -> TERMURION_
+  B exact     61  data-tandem -> data-termurion
+  B exact     54  tandem.test -> termurion.test
+  B exact     46  tandem.join -> termurion.join
+  D exact     45  tandem:: -> termurion::
+  B exact     43  __Tandem -> __Termurion
+  B exact     42  tandem-utils -> termurion-utils
+  C exact     42  .join("Tandem") -> .join("Termurion")
+  C exact     42  \Tandem -> \Termurion
+  C exact     40  tandem-probe -> termurion-probe
+  E exact     39  datbird/tandem -> datbird/termurion
+  B exact     33  TandemAI -> TermurionAI
+  B exact     30  tandem_command -> termurion_command
+  C exact     27  %APPDATA%\\Tandem -> %APPDATA%\\Termurion
+  B exact     25  window.tandem -> window.termurion
+  B exact     24  tandem-settings -> termurion-settings
+  B exact     22  tandemexport -> termurionexport
+  C exact     22  %LOCALAPPDATA%\Tandem -> %LOCALAPPDATA%\Termurion
+  B exact     20  tandem-import -> termurion-import
+  B exact     18  Tandem/ -> Termurion/
+  F exact     17  tandem_shell_integration -> termurion_shell_integration
+  B exact     13  Software\\Tandem -> Software\\Termurion
+  B exact     13  Tandem-Browser -> Termurion-Browser
+  B exact     13  tandemHost -> termurionHost
+  B exact     13  tandemReal -> termurionReal
+  B exact     12  tandemRoot -> termurionRoot
+  E exact     12  tandem -> termurion
+  B exact     11  tandem-ssh-probe -> termurion-ssh-probe
+  B exact     11  tandem.ctx -> termurion.ctx
+  C exact     11  \\Tandem -> \\Termurion
+  B exact     10  tandem-ssh-secrets -> termurion-ssh-secrets
+  B exact     10  tandemShadow -> termurionShadow
+  D exact     10  CLSID_TANDEM_TERMINAL -> CLSID_TERMURION_TERMINAL
+  F exact     10  tandem-cloak -> termurion-cloak
+  B exact      9  Applications\\tandem -> Applications\\termurion
+  E exact      9  src\tandem -> src\termurion
+  B exact      8  Classes\\Tandem -> Classes\\Termurion
+  B exact      8  tandemCopyModeKey -> termurionCopyModeKey
+  B exact      8  tandemSecretField -> termurionSecretField
+  B exact      7  tandem-url -> termurion-url
+  B exact      6  tandem-backup -> termurion-backup
+  B exact      5  Software\Tandem -> Software\Termurion
+  B exact      5  tandemDeadline -> termurionDeadline
+  B exact      5  tandemDeepest -> termurionDeepest
+  B exact      5  tandemSite -> termurionSite
+  D exact      5  OtherTandem -> OtherTermurion
+  B exact      4  TandemMachineIdHash -> TermurionMachineIdHash
+  B exact      4  tandem-utilities -> termurion-utilities
+  B exact      4  tandemNames -> termurionNames
+  C exact      4  tandemprobe -> termurionprobe
+  F exact      4  TANDEM-PATCHES -> TERMURION-PATCHES
+  A exact      3  TANDEM -> TERMURION
+  B exact      3  TANDEM.EXE -> TERMURION.EXE
+  B exact      3  messageHandlers.tandem -> messageHandlers.termurion
+  B exact      3  tandem-bonjour -> termurion-bonjour
+  B exact      3  tandem-tmp -> termurion-tmp
+  B exact      3  tandemBroadcastInput -> termurionBroadcastInput
+  B exact      3  tandemShift -> termurionShift
+  C exact      3  <LOCALAPPDATA>\Tandem -> <LOCALAPPDATA>\Termurion
+  C exact      3  tandem_vim_pos -> termurion_vim_pos
+  D exact      3  OPEN_IN_TANDEM -> OPEN_IN_TERMURION
+  D exact      3  TandemChatAttachments -> TermurionChatAttachments
+  D exact      3  TandemDebugLog -> TermurionDebugLog
+  D exact      3  TandemDlogTest -> TermurionDlogTest
+  B exact      2  Tandem.ssh -> Termurion.ssh
+  B exact      2  TandemShellIntegration -> TermurionShellIntegration
+  B exact      2  tandemBinding -> termurionBinding
+  C exact      2  %LOCALAPPDATA%\\Tandem -> %LOCALAPPDATA%\\Termurion
+  C exact      2  <appdata>\Tandem -> <appdata>\Termurion
+  D exact      2  TandemLoaded -> TermurionLoaded
+  D exact      2  tandem -> termurion
+  F exact      2  tandem-logo -> termurion-logo
+  B exact      1  Classes\Tandem -> Classes\Termurion
+  B exact      1  SERVICE: &str = "Tandem" -> SERVICE: &str = "Termurion"
+  B exact      1  Tandem.lnk -> Termurion.lnk
+  B exact      1  applications\\tandem -> applications\\termurion
+  B exact      1  classes\\tandem -> classes\\termurion
+  B exact      1  messageHandlers.Tandem -> messageHandlers.Termurion
+  B exact      1  software\\tandem -> software\\termurion
+  B exact      1  tandem.browsermark -> termurion.browsermark
+  B exact      1  tandem.finderase -> termurion.finderase
+  B exact      1  tandem.findmode -> termurion.findmode
+  B exact      1  tandem.namedmark -> termurion.namedmark
+  B exact      1  tandemPointer -> termurionPointer
+  C exact      1  <APPDATA>\Tandem -> <APPDATA>\Termurion
+  C exact      1  Programs\Tandem -> Programs\Termurion
+  C exact      1  tandem-protogen -> termurion-protogen
+  D exact      1  TandemAlphaTest -> TermurionAlphaTest
+  D exact      1  TandemCopyModeKeys -> TermurionCopyModeKeys
+  D exact      1  TandemCredentialProbe -> TermurionCredentialProbe
+  D exact      1  TandemDeleted -> TermurionDeleted
+  D exact      1  TandemFadeProbe -> TermurionFadeProbe
+  D exact      1  TandemMenuTest -> TermurionMenuTest
+  D exact      1  TandemNotifications -> TermurionNotifications
+  D exact      1  TandemOutput -> TermurionOutput
+  D exact      1  TandemPane -> TermurionPane
+  D exact      1  TandemPopoverSourceTest -> TermurionPopoverSourceTest
+  D exact      1  TandemSelectionGesture -> TermurionSelectionGesture
+  D exact      1  TandemSvgRaster -> TermurionSvgRaster
+  D exact      1  TandemWebView2MethodTest -> TermurionWebView2MethodTest
+  D exact      1  TandemWebView2Test -> TermurionWebView2Test
+  D exact      1  TandemWorldProbe -> TermurionWorldProbe
+  E exact      1  gitrepos/tandem -> gitrepos/termurion
+  E exact      1  src/tandem -> src/termurion
+  E exact      1  src\\tandem -> src\\termurion
+  K keep       1  in tandem -> (keep)
+  K keep       1  tandem autofill contact card\0v1 -> (keep)
+  K keep       1  tandem workgroup approval -> (keep)
+  K keep       1  tandem workgroup approval key\0v1 -> (keep)
+
+file names that contain the name (renamed by git mv in their tasks): 11
+  crates/alacritty_terminal/TANDEM-PATCHES.md
+  crates/glyphon/TANDEM-PATCHES.md
+  crates/vte/TANDEM-PATCHES.md
+  docs/assets/tandem-logo.svg
+  docs/superpowers/specs/2026-09-23-tandem-design.md
+  resources/browser/tandem-cloak.js
+  resources/shell_integration/tandem_shell_integration.ps1
+  src/bin/tandem-git.rs
+  src/bin/tandem-host.rs
+  src/bin/tandem-utils.rs
+  src/bin/tandem.rs
+
+UNMAPPED hits outside keep-history paths: 0

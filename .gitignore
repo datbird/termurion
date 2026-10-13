@@ -1,3 +1,5 @@
 /target
 /vendor
 /.superpowers
+/.rename-backup/
+__pycache__/
