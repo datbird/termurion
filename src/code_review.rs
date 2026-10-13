@@ -240,7 +240,7 @@ fn expand_word(word: &str, prompt: &str, system_prompt_file: &Path, resources: &
                 None => rest = r,
             }
         } else {
-            return Err("A workgroup command uses an expression Tandem does not run here, so nothing started.".to_string());
+            return Err("A workgroup command uses an expression Termurion does not run here, so nothing started.".to_string());
         }
     }
     out.push_str(rest);
@@ -255,7 +255,7 @@ pub fn review_argv(template: &str, prompt: &str, system_prompt_file: &Path, reso
     let words = template_words(template);
     let Some(program) = words.first() else { return Err("This member has no command to run.".to_string()) };
     if program.contains("\\(") {
-        return Err("A workgroup command uses an expression Tandem does not run here, so nothing started.".to_string());
+        return Err("A workgroup command uses an expression Termurion does not run here, so nothing started.".to_string());
     }
     let (prompt, cut) = prepare_prompt(prompt)?;
     let mut argv = vec![program.clone()];
@@ -278,7 +278,7 @@ pub fn review_program(argv0: &str, resolve: &dyn Fn(&Path) -> Option<std::path::
     let program = resolve(Path::new(name)).ok_or("The review program was not found, so the review did not start.")?;
     crate::workgroup_run::refuse_git(Path::new(argv0), Some(&program))?;
     if crate::semantic::is_batch(&program) {
-        return Err("The review program is a batch file, which Tandem does not run for a review.".to_string());
+        return Err("The review program is a batch file, which Termurion does not run for a review.".to_string());
     }
     Ok(program)
 }
@@ -489,7 +489,7 @@ pub fn send_refusal(t: &SendTarget) -> Option<&'static str> {
         return Some("The main session is at a shell prompt (its coding agent is not running), so the review was not sent.");
     }
     if !t.agent {
-        return Some("The main session is not running the coding agent the review was started for (a coding agent Tandem knows by name, such as claude, codex, aider or gemini; behind wsl or ssh only shell integration can tell), so the review was not sent.");
+        return Some("The main session is not running the coding agent the review was started for (a coding agent Termurion knows by name, such as claude, codex, aider or gemini; behind wsl or ssh only shell integration can tell), so the review was not sent.");
     }
     if !t.bracketed {
         return Some("The main session has not asked for bracketed paste (a program that reads pasted text is not running there), so the review was not sent.");

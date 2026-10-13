@@ -690,7 +690,7 @@ impl Pty {
     /// output pipe never ends. End the child, then cancel the reader's blocked read until
     /// the reader exits. Returns false if it never does.
     fn force_reader_stop(&self, reader: &JoinHandle<()>) -> bool {
-        eprintln!("tandem: ConPTY ignored the close; ending the child");
+        eprintln!("termurion: ConPTY ignored the close; ending the child");
         unsafe { TerminateProcess(self.process, 1) };
         self.cancel_reader(reader)
     }
@@ -721,7 +721,7 @@ impl Pty {
         }
         if let Some(reader) = self.reader.take() {
             if self.reader_done.recv_timeout(CLOSE_WAIT).is_err() && !self.cancel_reader(&reader) {
-                eprintln!("tandem: the pipes reader did not stop; leaving it running");
+                eprintln!("termurion: the pipes reader did not stop; leaving it running");
                 unsafe { CloseHandle(self.process) };
                 return;
             }
@@ -748,7 +748,7 @@ impl Drop for Pty {
         self.writer.take();
         if let Some(reader) = self.reader.take() {
             if self.reader_done.recv_timeout(CLOSE_WAIT).is_err() && !self.force_reader_stop(&reader) {
-                eprintln!("tandem: the pty reader did not stop; leaving it running");
+                eprintln!("termurion: the pty reader did not stop; leaving it running");
                 unsafe { CloseHandle(self.process) };
                 return;
             }

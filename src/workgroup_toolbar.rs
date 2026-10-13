@@ -154,7 +154,7 @@ pub const USAGE_LOADING: &str = "AI usage\u{2026}";
 pub const USAGE_UNAVAILABLE: &str = "AI usage unavailable";
 pub const USAGE_NO_OUTPUT: &str = "No usage data";
 pub const USAGE_BAD_OUTPUT: &str = "Unreadable usage data";
-pub const USAGE_SCRIPT_MISSING: &str = "The AI usage helper is missing from Tandem. This is a bug.";
+pub const USAGE_SCRIPT_MISSING: &str = "The AI usage helper is missing from Termurion. This is a bug.";
 pub const USAGE_CLICK_FOR_DETAILS: &str = "(click for details)";
 /// The script's text when `claude` is not on the path.
 pub const NOT_FOUND: &str = "The Claude Code command-line tool (claude) was not found in your PATH.";
@@ -165,7 +165,7 @@ pub const OUTPUT_CAP: usize = 1024 * 1024;
 /// The least seconds between runs (`WUT`: `max(5, intervalSeconds)`).
 pub const MIN_INTERVAL: f64 = 5.0;
 /// Where a bug report goes.
-const ISSUES: &str = "https://github.com/datbird/tandem/issues/new";
+const ISSUES: &str = "https://github.com/datbird/termurion/issues/new";
 /// The report body a link carries, at most (`maxURLDescription`).
 const MAX_URL_BODY: usize = 2000;
 
@@ -256,7 +256,7 @@ pub fn parse_claude_usage(text: &str) -> UsageReport {
     }
     let diag = |t: &str| Some(t.lines().take(60).collect::<Vec<_>>().join("\n")).filter(|d| !d.is_empty());
     if text.contains("% used") || text.contains("Current session") || text.contains("Current week") {
-        return failure("Could not read the Claude usage report. Tandem may need to be updated.", true, diag(text));
+        return failure("Could not read the Claude usage report. Termurion may need to be updated.", true, diag(text));
     }
     if text.contains("API key") || text.contains("api key") || text.contains("ANTHROPIC_API_KEY") || text.contains("api_key") {
         return failure("AI usage needs a Claude subscription (Pro or Max); it isn\u{2019}t available for API-billing accounts.", false, None);
@@ -310,7 +310,7 @@ pub fn report_buttons() -> [&'static str; 2] {
 }
 
 /// The alert's text above the report (`WUT:541-570`).
-pub const REPORT_GUIDANCE: &str = "Tandem couldn\u{2019}t read the AI usage report. Updating Tandem to the latest version may fix this. If you\u{2019}re already up to date, click \u{201c}Report Bug\u{201d} to open a pre-filled report. The full details below are also copied to your clipboard.";
+pub const REPORT_GUIDANCE: &str = "Termurion couldn\u{2019}t read the AI usage report. Updating Termurion to the latest version may fix this. If you\u{2019}re already up to date, click \u{201c}Report Bug\u{201d} to open a pre-filled report. The full details below are also copied to your clipboard.";
 
 /// The clipboard text of a report, markdown like the AI Usage issue template (`WUT:572-600`).
 pub fn report_text(version: &str, r: &UsageReport, custom_command: bool) -> String {
@@ -322,7 +322,7 @@ pub fn report_text(version: &str, r: &UsageReport, custom_command: bool) -> Stri
         String::new(),
         "## Environment".to_string(),
         String::new(),
-        format!("- Tandem version: {version}"),
+        format!("- Termurion version: {version}"),
         format!("- Provider: {}", crate::workgroup::UsageProvider::AnthropicClaudeCode.display_name()),
         format!("- Custom command: {}", if custom_command { "yes" } else { "no (built in)" }),
     ];
@@ -453,7 +453,7 @@ mod tests {
         let none = parse_claude_usage("");
         assert_eq!((none.bars.len(), none.error.as_deref(), none.reportable), (0, Some("Claude Code produced no usage output."), Some(false)));
         let drift = parse_claude_usage("Current session: lots used\n");
-        assert_eq!((drift.error.as_deref(), drift.reportable), (Some("Could not read the Claude usage report. Tandem may need to be updated."), Some(true)));
+        assert_eq!((drift.error.as_deref(), drift.reportable), (Some("Could not read the Claude usage report. Termurion may need to be updated."), Some(true)));
         assert!(drift.diagnostic.as_deref().unwrap().contains("lots used"));
         let nope = parse_claude_usage("nope");
         assert_eq!((nope.error.as_deref(), nope.reportable), (Some("Could not read Claude usage. If this keeps happening, please report it."), Some(true)));
@@ -476,11 +476,11 @@ mod tests {
         let r = UsageReport { bars: Vec::new(), error: Some("It broke".into()), diagnostic: Some("raw\ntext".into()), reportable: Some(true) };
         let text = report_text("0.1.0", &r, false);
         assert!(text.starts_with("## What happened\n\nIt broke\n"));
-        assert!(text.contains("- Tandem version: 0.1.0") && text.contains("- Custom command: no (built in)"));
+        assert!(text.contains("- Termurion version: 0.1.0") && text.contains("- Custom command: no (built in)"));
         assert!(text.contains("## Diagnostic\n\n```\nraw\ntext\n```"));
         assert!(report_text("1", &r, true).contains("- Custom command: yes"));
         let url = bug_report_url("It broke", &"y".repeat(5000));
-        assert!(url.starts_with("https://github.com/datbird/tandem/issues/new?title=It%20broke&body="));
+        assert!(url.starts_with("https://github.com/datbird/termurion/issues/new?title=It%20broke&body="));
         assert!(url.len() < 4000 && !url.contains(' '), "the link carries a bounded, encoded body");
         assert_eq!(USAGE_CLICK_FOR_DETAILS, "(click for details)");
         assert_eq!(report_buttons(), ["Cancel", "Report Bug"]);

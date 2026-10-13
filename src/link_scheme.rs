@@ -1,5 +1,5 @@
 //! Other apps' link schemes in terminal links (`vscode:`, `slack:`; TWEAKS 6, Robert's ruling of
-//! 2026-10-12). iTerm2 opens any scheme; Tandem asks once per scheme: Always, Once or Never, with the
+//! 2026-10-12). iTerm2 opens any scheme; Termurion asks once per scheme: Always, Once or Never, with the
 //! name of the app Windows has registered for it (never text from the link). A fixed list of schemes
 //! is refused whatever the person chose, as is a scheme with no registered app or one whose app is a
 //! command interpreter. Pure: the registry lookup, the question and the launch are the App's.
@@ -28,7 +28,7 @@ pub const BLOCKED: &[(&str, &str)] = &[
     ("ms-cxh", "Cloud Experience Host: a shell namespace"),
     ("ms-cxh-full", "Cloud Experience Host: a shell namespace"),
     ("ms-settings", "only a lure to a security page from a terminal link"),
-    ("file", "a local or network file: Tandem's own file rules apply"),
+    ("file", "a local or network file: Termurion's own file rules apply"),
     ("javascript", "runs script"),
     ("vbscript", "runs script"),
     ("data", "carries its own content"),
@@ -68,12 +68,12 @@ pub const BLOCKED: &[(&str, &str)] = &[
     ("ms-outlook", "Office opens a remote item"),
     ("jnlp", "Java Web Start runs remote code"),
     ("jnlps", "Java Web Start runs remote code"),
-    ("microsoft-edge", "hands any URL, file: included, to Edge past Tandem's own browser gates"),
+    ("microsoft-edge", "hands any URL, file: included, to Edge past Termurion's own browser gates"),
 ];
 
-/// Schemes Tandem owns or deliberately does not offer: never handed to whatever Windows registered
-/// (TWEAKS 6 review I4). ftp, ssh and telnet are `url_schemes::SCHEMES` (Tandem's own, bound per
-/// profile); `x-man-page` is macOS only; `iterm2` is the app's internal link scheme; `tandem` is Tandem's own.
+/// Schemes Termurion owns or deliberately does not offer: never handed to whatever Windows registered
+/// (TWEAKS 6 review I4). ftp, ssh and telnet are `url_schemes::SCHEMES` (Termurion's own, bound per
+/// profile); `x-man-page` is macOS only; `iterm2` is the app's internal link scheme; `tandem` is Termurion's own.
 pub const OWN: &[&str] = &["ftp", "ssh", "telnet", "x-man-page", "iterm2", "tandem"];
 
 /// Programs that read their argument as script, or that run what they are given: a scheme whose handler
@@ -188,15 +188,15 @@ pub fn scheme_of(url: &str) -> Option<String> {
 
 /// Whether `scheme` (and `url`) can never open.
 pub fn screen(scheme: &str, url: &str) -> Result<(), String> {
-    let refuse = || Err(format!("Tandem never opens {scheme}: links."));
+    let refuse = || Err(format!("Termurion never opens {scheme}: links."));
     if BLOCKED.iter().any(|(s, _)| *s == scheme) {
         return refuse();
     }
     if OWN.contains(&scheme) {
-        return Err(format!("Tandem handles {scheme}: links itself and never hands them to another app."));
+        return Err(format!("Termurion handles {scheme}: links itself and never hands them to another app."));
     }
     if url.len() > MAX_URL || url.chars().any(char::is_control) {
-        return Err(format!("Tandem did not open this {scheme}: link (too long, or it holds a control character)."));
+        return Err(format!("Termurion did not open this {scheme}: link (too long, or it holds a control character)."));
     }
     Ok(())
 }
@@ -312,14 +312,14 @@ pub fn decide(url: &str, handler: &Handler, always: &str, never: &str) -> Plan {
 /// Never list first; the program's path is judged as text (a local `X:\` path) and by its drive type; only then
 /// is the file touched (long name, version info).
 pub fn plan(url: &str, src: &dyn HandlerInfo, always: &str, never: &str) -> Plan {
-    let Some(scheme) = scheme_of(url) else { return Plan::Refuse("Tandem opens only links here, not paths.".into()) };
+    let Some(scheme) = scheme_of(url) else { return Plan::Refuse("Termurion opens only links here, not paths.".into()) };
     if let Err(why) = screen(&scheme, url) {
         return Plan::Refuse(why);
     }
     if listed(never, &scheme) {
         return Plan::Refuse(format!("{scheme}: links are set to Never open (Settings > Advanced > Link schemes never opened)."));
     }
-    let refuse = |why: &str| Plan::Refuse(format!("Tandem does not open {scheme}: links: {why}."));
+    let refuse = |why: &str| Plan::Refuse(format!("Termurion does not open {scheme}: links: {why}."));
     if src.command().is_none() {
         return Plan::Refuse(format!("No app is registered for {scheme}: links."));
     }

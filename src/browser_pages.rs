@@ -1,6 +1,6 @@
 //! The `iterm2-about:` pages (milestone 13x, Task 7): iTerm2's welcome, history and bookmarks pages
 //! served from the binary and the closed set of messages they may send back. Everything here is
-//! pure: the app feeds it a request or a message and acts on the answer. A page is Tandem's HTML
+//! pure: the app feeds it a request or a message and acts on the answer. A page is Termurion's HTML
 //! but its DATA (titles, URLs) is a web page's, so the data is escaped by the pages' scripts and
 //! the host never trusts what a page says it is (B3, P8, P9): a message counts only from an
 //! `iterm2-about:` source (never because of its JSON), only from the page whose handler it names,
@@ -28,7 +28,7 @@ pub fn new_nonce() -> String {
 
 // --- Local pages' scheme names, templates, glyphs and the static pages (13x8 Task 1) ---
 
-/// The scheme of Tandem's own pages (`LPM:58-64`), and of the file and ssh pages.
+/// The scheme of Termurion's own pages (`LPM:58-64`), and of the file and ssh pages.
 pub const ABOUT: &str = "iterm2-about";
 pub const SSH_SCHEME: &str = "iterm2-ssh";
 pub const FILE_SCHEME: &str = "iterm2-file";
@@ -126,25 +126,25 @@ pub fn page(template: &str, subs: &[(&str, &str)]) -> String {
     fill_template(&glyph_page(&fill_template(&with_css, &[])), subs)
 }
 
-/// The copied intro page as served: iTerm2's file with Tandem's visible names, each target found
-/// exactly once or no page is served (R13x3-1/-2 pattern). (name, iTerm2's text, Tandem's text)
+/// The copied intro page as served: iTerm2's file with Termurion's visible names, each target found
+/// exactly once or no page is served (R13x3-1/-2 pattern). (name, iTerm2's text, Termurion's text)
 pub const INTRO_PATCHES: [(&str, &str, &str); 4] = [
-    ("TITLE", "<title>Welcome to iTerm2 Browser</title>", "<title>Welcome to Tandem Browser</title>"),
-    ("HEADING", "Meet the iTerm2 Browser", "Meet the Tandem Browser"),
-    ("PROFILES", "In iTerm2, profiles define", "In Tandem, profiles define"),
-    ("EXPERIENCE", "same iTerm2 experience", "same Tandem experience"),
+    ("TITLE", "<title>Welcome to iTerm2 Browser</title>", "<title>Welcome to Termurion Browser</title>"),
+    ("HEADING", "Meet the iTerm2 Browser", "Meet the Termurion Browser"),
+    ("PROFILES", "In iTerm2, profiles define", "In Termurion, profiles define"),
+    ("EXPERIENCE", "same iTerm2 experience", "same Termurion experience"),
 ];
 
 pub const FEATURES_PATCHES: [(&str, &str, &str); 5] = [
-    ("TITLE", "<title>iTerm2 Browser - Features</title>", "<title>Tandem Browser - Features</title>"),
-    ("SUPERPOWERS", "<strong>iTerm2 Superpowers:</strong>", "<strong>Tandem Superpowers:</strong>"),
-    ("PRODUCTIVITY", "bring iTerm2 features into the browser", "bring Tandem features into the browser"),
-    ("PASSWORDS", "Integrates with the iTerm2 password manager, Webkit adblock lists, and iTerm2\u{2019}s AI chat feature.", "Integrates with the Tandem password manager, Webkit adblock lists, and Tandem\u{2019}s AI chat feature."),
-    ("SECONDARY", "iTerm2 doesn\u{2019}t expect", "Tandem doesn\u{2019}t expect"),
+    ("TITLE", "<title>iTerm2 Browser - Features</title>", "<title>Termurion Browser - Features</title>"),
+    ("SUPERPOWERS", "<strong>iTerm2 Superpowers:</strong>", "<strong>Termurion Superpowers:</strong>"),
+    ("PRODUCTIVITY", "bring iTerm2 features into the browser", "bring Termurion features into the browser"),
+    ("PASSWORDS", "Integrates with the iTerm2 password manager, Webkit adblock lists, and iTerm2\u{2019}s AI chat feature.", "Integrates with the Termurion password manager, Webkit adblock lists, and Termurion\u{2019}s AI chat feature."),
+    ("SECONDARY", "iTerm2 doesn\u{2019}t expect", "Termurion doesn\u{2019}t expect"),
 ];
 
 /// The template of a static `iterm2-about:` page, patched, or None (iTerm2's debug-only pages
-/// answer None too: Tandem has no debug build of the browser, `SPH:170-187`).
+/// answer None too: Termurion has no debug build of the browser, `SPH:170-187`).
 pub fn static_page(url: &str) -> Option<String> {
     use crate::view_source::apply_patches;
     let (file, patches): (&str, Vec<_>) = match page_name(url)? {
@@ -163,7 +163,7 @@ pub fn static_page(url: &str) -> Option<String> {
 
 // --- The error page (13x8 Task 2; EH, EP, BM) ---
 
-/// The error page's URL (`EH:15`). Its content is never read from this URL: it is Tandem's state
+/// The error page's URL (`EH:15`). Its content is never read from this URL: it is Termurion's state
 /// for the pane that asked (`BrowserView.pending_error`), served by the app (`browser_error_answer`),
 /// so a web page that navigates here shows only the generic page.
 pub const ERROR_URL: &str = "iterm2-about:error";
@@ -197,7 +197,7 @@ pub fn failure_of(status: i32) -> Failure {
     }
 }
 
-/// Tandem's stand-in for Apple's `localizedDescription` (no Windows source for it).
+/// Termurion's stand-in for Apple's `localizedDescription` (no Windows source for it).
 pub fn describe(status: i32) -> &'static str {
     match status {
         1 => "The certificate's common name does not match the host name.",
@@ -223,7 +223,7 @@ pub fn describe(status: i32) -> &'static str {
 }
 
 /// The message HTML of a case: `<strong>` text `</strong><br/><br/>` detail (`EH:131-132`). The
-/// text is Tandem's own; the detail is escaped (it may be a caller's description).
+/// text is Termurion's own; the detail is escaped (it may be a caller's description).
 fn message_html(text: &str, detail: &str) -> String {
     format!("<strong>{text}</strong><br/><br/>{}", escape_slot(detail))
 }
@@ -234,7 +234,7 @@ fn escape_slot(s: &str) -> String {
 }
 
 /// Whether a failed navigation still got a server's answer (an HTTP status, `http` of
-/// `Event::Navigated`): its own page is shown, never Tandem's error page (Task 2 review I1;
+/// `Event::Navigated`): its own page is shown, never Termurion's error page (Task 2 review I1;
 /// iTerm2's `didFailProvisionalNavigation` never fires for an HTTP error response).
 pub fn server_answered(http: i32) -> bool {
     http >= 100
@@ -244,11 +244,11 @@ pub fn server_answered(http: i32) -> bool {
 pub fn error_texts(f: Failure) -> Option<(&'static str, String)> {
     Some(match f {
         Failure::Offline => ("No Internet Connection", message_html("Your computer appears to be offline. Check your internet connection and try again.", describe(11))),
-        Failure::HostNotFound => ("Server Not Found", message_html("Tandem can\u{2019}t find the server. Check that the web address is correct and try again.", describe(13))),
+        Failure::HostNotFound => ("Server Not Found", message_html("Termurion can\u{2019}t find the server. Check that the web address is correct and try again.", describe(13))),
         Failure::TimedOut => ("The Connection Timed Out", message_html("The server didn\u{2019}t respond in time. The site may be temporarily unavailable or overloaded.", describe(7))),
-        Failure::CannotConnect => ("Can\u{2019}t Connect to Server", message_html("Tandem can\u{2019}t establish a secure connection to the server. The server may be down or unreachable.", describe(12))),
+        Failure::CannotConnect => ("Can\u{2019}t Connect to Server", message_html("Termurion can\u{2019}t establish a secure connection to the server. The server may be down or unreachable.", describe(12))),
         Failure::ConnectionLost => ("Network Connection Lost", message_html("The network connection was lost. Check your internet connection and try again.", describe(10))),
-        Failure::TooManyRedirects => ("Too Many Redirects", message_html("Tandem can\u{2019}t open the page because the server redirected too many times.", describe(15))),
+        Failure::TooManyRedirects => ("Too Many Redirects", message_html("Termurion can\u{2019}t open the page because the server redirected too many times.", describe(15))),
         Failure::Certificate(n) => {
             let detail = match n {
                 1 => "The hostname does not match the certificate.",
@@ -256,7 +256,7 @@ pub fn error_texts(f: Failure) -> Option<(&'static str, String)> {
                 5 => "The presented chain is not valid (e.g., self-signed without trust).",
                 other => describe(other),
             };
-            ("Secure Connection Failed", message_html("Tandem can\u{2019}t verify the identity of the website. The connection may not be secure.", detail))
+            ("Secure Connection Failed", message_html("Termurion can\u{2019}t verify the identity of the website. The connection may not be secure.", detail))
         }
         Failure::Cancelled => return None,
         Failure::Other(n) => described(describe(n)),
@@ -325,7 +325,7 @@ fn js_single_quoted(s: &str) -> String {
     out
 }
 
-/// Whether the retry button may take the person to `url`: a scheme Tandem loads itself.
+/// Whether the retry button may take the person to `url`: a scheme Termurion loads itself.
 fn retry_target(url: &str) -> bool {
     url.len() <= RETRY_URL_MAX && matches!(crate::webhost::scheme_of(url).as_str(), "http" | "https" | "file" | "iterm2-ssh")
 }
@@ -333,7 +333,7 @@ fn retry_target(url: &str) -> bool {
 /// The copied template's load-time patches (R13x3-1/-2 pattern; each target exactly once, else no
 /// page): the script carries the response's nonce, the inline `onclick` becomes a listener that
 /// counts only a click the person made (`isTrusted`), and so does the key handler. (name, iTerm2's
-/// text, Tandem's text)
+/// text, Termurion's text)
 pub const ERROR_PATCHES: [(&str, &str, &str); 4] = [
     ("SCRIPT", "    <script>\n        function retryLoad() {", "    <script nonce=\"{{NONCE}}\">\n        function retryLoad() {"),
     ("BUTTON", "<button class=\"button retry-button\" onclick=\"retryLoad()\">", "<button class=\"button retry-button\" id=\"tandem-retry\">"),
@@ -341,7 +341,7 @@ pub const ERROR_PATCHES: [(&str, &str, &str); 4] = [
     ("KEYS", "if (event.key === 'Enter' || event.key === ' ') {", "if (event.isTrusted && (event.key === 'Enter' || event.key === ' ')) {"),
 ];
 
-/// The template filled (`EH:73-87`). The title and message are Tandem's text; the URL is escaped
+/// The template filled (`EH:73-87`). The title and message are Termurion's text; the URL is escaped
 /// for its HTML slot and for its script slot, `{` is escaped in both so no `{{` of a URL can be
 /// read as a slot, and the nonce is left as `{{NONCE}}` for `with_nonce`. An empty string when a
 /// patch missed (no page is served).
@@ -413,7 +413,7 @@ impl ErrorBurst {
 // --- File and ssh pages: what a page of those schemes may load (R13x8-1) ---
 
 /// The policy of every `iterm2-file:` and `iterm2-ssh:` response, whatever it holds (a file the person
-/// opened, a subresource, a listing, Tandem's own waiting and error pages, a 404): a sandbox with no
+/// opened, a subresource, a listing, Termurion's own waiting and error pages, a 404): a sandbox with no
 /// token (an opaque origin with no script, popup, form or top navigation) and no script at all
 /// (R13x8-NS, Robert 2026-10-11). Probe runs d and e showed a cancelled navigation still sends its
 /// request, and WebRTC and script-inserted DNS hints are governed by neither CSP nor the request filter,
@@ -554,11 +554,11 @@ pub fn page_request_allowed(pending: Option<(&PageRoot, &str)>, committed: Optio
 
 // --- File pages: the path an `iterm2-file:` URL names, and the pages made of it (13x8 Task 3) ---
 
-/// The Try Again of a Tandem page served with no script: a link to the page itself (`href=""`), a reload
+/// The Try Again of a Termurion page served with no script: a link to the page itself (`href=""`), a reload
 /// the verdict allows, styled as the button it replaces.
 pub const SCRIPTLESS_RETRY: &str = r#"<a class="button retry-button" href="" style="display:inline-block;text-decoration:none">Try Again</a>"#;
 
-/// A Tandem page (the error page, the ssh page's waiting page) as served at an `iterm2-file:` or
+/// A Termurion page (the error page, the ssh page's waiting page) as served at an `iterm2-file:` or
 /// `iterm2-ssh:` URL under `FILE_CSP` (R13x8-NS): its script blocks dropped, its Try Again button a
 /// link that needs none.
 pub fn scriptless_page(html: &str) -> String {
@@ -792,7 +792,7 @@ const SCHEME_PREFIX: &str = "iterm2-about:";
 pub enum Reply {
     /// Run in the page that asked (guarded: it does nothing if that page is gone).
     Script(String),
-    /// Load this URL in the pane (Tandem's own load).
+    /// Load this URL in the pane (Termurion's own load).
     Navigate(String),
     /// A change to the saved permissions, applied by the app through the one write queue (Task 9).
     Permission(PermissionOp),
@@ -853,7 +853,7 @@ pub fn document(name: &str, nonce: &str) -> Option<(String, &'static str)> {
 /// The copied permissions page stays byte-identical on disk. The nonce policy forbids its bare
 /// `<script>` and the inline `onclick` handlers (three in the HTML, two built from data in the JS),
 /// so they are adapted at load time (R13x3-1/-2 pattern, the 13x4 view-source precedent): each
-/// target must be found exactly once or no page is served. (name, iTerm2's text, Tandem's text)
+/// target must be found exactly once or no page is served. (name, iTerm2's text, Termurion's text)
 pub const HTML_PATCHES: [(&str, &str, &str); 4] = [
     ("SCRIPT", "    <script>\n        {{PERMISSIONS_SCRIPT}}\n    </script>\n", "    <script nonce=\"{{NONCE}}\">\n        {{PERMISSIONS_SCRIPT}}\n    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TANDEM_SCRIPT}}\n    </script>\n"),
     ("CLEAR_ALL", "onclick=\"clearAllPermissions()\"", "data-tandem-action=\"clearAll\""),
@@ -866,7 +866,7 @@ pub const JS_PATCHES: [(&str, &str, &str); 2] = [
     ("REVOKE", "onclick=\"revokePermission('${escapeAttribute(permission.origin)}', '${escapeAttribute(permission.permissionType)}')\"", "data-tandem-action=\"revoke\""),
 ];
 
-/// Tandem's own script for the page: one delegated click listener. It ignores a click a script
+/// Termurion's own script for the page: one delegated click listener. It ignores a click a script
 /// made up (`isTrusted`), and reads the origin and type from attributes the page set with
 /// `setAttribute`, never from markup built from data. The page's own functions still ask `confirm()`.
 pub const TANDEM_SCRIPT: &str = "document.addEventListener('click', function (e) {
@@ -1228,7 +1228,7 @@ mod tests {
         assert_eq!(document("iterm-browser-common.css", "n").unwrap().1, "text/css; charset=utf-8");
         assert!(document("settings", "n").is_none() && document("../x", "n").is_none());
         let welcome = document("welcome", "n").unwrap().0;
-        assert!(welcome.contains("Welcome to Tandem Browser") && !welcome.contains("iTerm2 Browser"));
+        assert!(welcome.contains("Welcome to Termurion Browser") && !welcome.contains("iTerm2 Browser"));
         assert!(!welcome.contains("sessionSecret = '{{") && welcome.contains("const sessionSecret = '';"), "no secret is served");
     }
 
@@ -1291,7 +1291,7 @@ mod tests {
     #[test]
     fn local_page_needs_a_local_top() {
         // An https page that fetches or embeds a local page's resource gets a 404; a document
-        // navigation (a person's click or Tandem's own load) and a local top are answered.
+        // navigation (a person's click or Termurion's own load) and a local top are answered.
         let img = 3;
         for ctx in [img, 2, 6, 7] {
             let Answer::Respond { status, .. } = answer("iterm2-about:history", ctx, "https://evil.test/") else { panic!() };
@@ -1742,9 +1742,9 @@ mod plumbing_tests {
     #[test]
     fn static_pages_follow_iterm2() {
         let intro = static_page("iterm2-about:onboarding-intro").unwrap();
-        assert!(intro.contains("Meet the Tandem Browser") && !intro.contains("iTerm2"));
+        assert!(intro.contains("Meet the Termurion Browser") && !intro.contains("iTerm2"));
         let features = static_page("iterm2-about:onboarding-features").unwrap();
-        assert!(!features.contains("iTerm2") && features.contains("Tandem"));
+        assert!(!features.contains("iTerm2") && features.contains("Termurion"));
         for none in ["iterm2-about:dev", "iterm2-about:notifications-demo", "iterm2-about:nope", "https://a/"] {
             assert!(static_page(none).is_none(), "{none}");
         }
@@ -1849,18 +1849,18 @@ mod error_tests {
         for (status, want) in [(13, Failure::HostNotFound), (7, Failure::TimedOut), (6, Failure::CannotConnect), (12, Failure::CannotConnect), (9, Failure::ConnectionLost), (10, Failure::ConnectionLost), (11, Failure::Offline), (15, Failure::TooManyRedirects), (1, Failure::Certificate(1)), (2, Failure::Certificate(2)), (3, Failure::Certificate(3)), (4, Failure::Certificate(4)), (5, Failure::Certificate(5)), (14, Failure::Cancelled), (16, Failure::Other(16)), (0, Failure::Other(0)), (17, Failure::Other(17))] {
             assert_eq!(failure_of(status), want, "{status}");
         }
-        assert_eq!(error_texts(Failure::HostNotFound), Some(("Server Not Found", "<strong>Tandem can\u{2019}t find the server. Check that the web address is correct and try again.</strong><br/><br/>The host name could not be resolved.".to_string())));
+        assert_eq!(error_texts(Failure::HostNotFound), Some(("Server Not Found", "<strong>Termurion can\u{2019}t find the server. Check that the web address is correct and try again.</strong><br/><br/>The host name could not be resolved.".to_string())));
         let (t, m) = error_texts(Failure::Offline).unwrap();
         assert!(t == "No Internet Connection" && m.contains("Your computer appears to be offline. Check your internet connection and try again."));
         assert_eq!(error_texts(Failure::TimedOut).unwrap().0, "The Connection Timed Out");
         let (t, m) = error_texts(Failure::CannotConnect).unwrap();
-        assert!(t == "Can\u{2019}t Connect to Server" && m.contains("Tandem can\u{2019}t establish a secure connection to the server. The server may be down or unreachable."));
+        assert!(t == "Can\u{2019}t Connect to Server" && m.contains("Termurion can\u{2019}t establish a secure connection to the server. The server may be down or unreachable."));
         assert_eq!(error_texts(Failure::ConnectionLost).unwrap().0, "Network Connection Lost");
         let (t, m) = error_texts(Failure::TooManyRedirects).unwrap();
-        assert!(t == "Too Many Redirects" && m.contains("Tandem can\u{2019}t open the page because the server redirected too many times."));
+        assert!(t == "Too Many Redirects" && m.contains("Termurion can\u{2019}t open the page because the server redirected too many times."));
         let (t, m) = error_texts(Failure::Certificate(2)).unwrap();
         assert_eq!(t, "Secure Connection Failed");
-        assert_eq!(m, "<strong>Tandem can\u{2019}t verify the identity of the website. The connection may not be secure.</strong><br/><br/>The certificate is expired.");
+        assert_eq!(m, "<strong>Termurion can\u{2019}t verify the identity of the website. The connection may not be secure.</strong><br/><br/>The certificate is expired.");
         assert!(error_texts(Failure::Certificate(1)).unwrap().1.ends_with("The hostname does not match the certificate."));
         assert!(error_texts(Failure::Certificate(5)).unwrap().1.ends_with("The presented chain is not valid (e.g., self-signed without trust)."));
         let (t, m) = error_texts(Failure::Other(16)).unwrap();
@@ -1956,7 +1956,7 @@ mod error_tests {
         let page = error_page(Failure::TimedOut, Some(&format!("https://a/{}", "p".repeat(RETRY_URL_MAX))));
         assert!(page.contains("const originalURL = '';"));
         let page = error_page(Failure::TimedOut, Some("javascript:alert(1)"));
-        assert!(page.contains("const originalURL = '';"), "only a scheme Tandem loads is retried");
+        assert!(page.contains("const originalURL = '';"), "only a scheme Termurion loads is retried");
     }
 }
 
@@ -2108,7 +2108,7 @@ mod file_page_tests {
         assert_eq!(get("X-Content-Type-Options"), "nosniff");
         assert_eq!(get("X-DNS-Prefetch-Control"), "off");
         assert_eq!(get("Referrer-Policy"), "no-referrer");
-        // Tandem's own pages at those URLs drop their scripts; an unclosed one is cut.
+        // Termurion's own pages at those URLs drop their scripts; an unclosed one is cut.
         assert_eq!(scriptless_page("a<script>x</script>b<script src=y>"), "ab");
         assert_eq!(scriptless_page(r#"<button class="button retry-button" id="r">Try Again</button>"#), SCRIPTLESS_RETRY);
     }

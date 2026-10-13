@@ -3,7 +3,7 @@
 //! is not a `swap_live` field; a view follows its pane when the pane changes windows). Pages are
 //! untrusted: the view is guarded by the one navigation verdict, gets no host objects and no
 //! bridge, permissions are denied by the host, and an external protocol is opened only through
-//! `guard_open`. Tandem keeps nothing of a page but its URL (an arrangement) and its title.
+//! `guard_open`. Termurion keeps nothing of a page but its URL (an arrangement) and its title.
 
 use super::*;
 use crate::browser::{self, BrowserIo, Button, Hit, Placed, Start, Suggestion};
@@ -58,14 +58,14 @@ pub(super) struct BrowserView {
     /// for every view made (`browser_reset_world`).
     pub(super) secret: String,
     /// A second per-view value that the page is assumed to read (a DOM message from a copied script's
-    /// child frame): never the view secret, only "this came from Tandem's detector".
+    /// child frame): never the view secret, only "this came from Termurion's detector".
     pub(super) dom_secret: String,
     /// Calls waiting for an answer, by token (`browser_scripts_app::JsDone`).
     pub(super) pending_js: HashMap<u64, super::browser_scripts_app::JsDone>,
     /// A larger answer cap for one call than the runner's default (`MAX_RESULT`), by token: Save
     /// Page As reads resources and the page's HTML up to its own stated caps (final review minor 2).
     pub(super) result_caps: HashMap<u64, usize>,
-    /// The frame keys that have a Tandem world, main frame excluded (`Contexts::frames`).
+    /// The frame keys that have a Termurion world, main frame excluded (`Contexts::frames`).
     pub(super) frames: Vec<u64>,
     /// WebView2's own frames, for page-world messages only.
     pub(super) page_frames: Vec<u64>,
@@ -75,7 +75,7 @@ pub(super) struct BrowserView {
     pub(super) contexts: crate::browser_world::Contexts,
     /// The `identifier`s `Page.addScriptToEvaluateOnNewDocument` answered.
     pub(super) world_scripts: Vec<String>,
-    /// The next token of a call Tandem makes on this view.
+    /// The next token of a call Termurion makes on this view.
     pub(super) next_token: u64,
     /// The world's setup, checks, sessions (`browser_scripts_app::WorldState`).
     pub(super) world: super::browser_scripts_app::WorldState,
@@ -212,15 +212,15 @@ fn decode_favicon(bytes: &[u8]) -> Option<(u64, std::sync::Arc<Vec<u8>>, (u32, u
     Some((hasher.finish(), std::sync::Arc::new(img.to_rgba8().into_raw()), (w, h)))
 }
 
-/// How a browser view is made: the browser's agent (the engine's with "Tandem" appended), developer
+/// How a browser view is made: the browser's agent (the engine's with "Termurion" appended), developer
 /// tools on, every navigation guarded, new windows posted, InPrivate for Dev Null Mode. The only
 /// bridge is the `iterm2-about:` pages' shim (it does nothing on any other page) and the filter
-/// that lets Tandem serve those pages; a message counts only for an `iterm2-about:` source
+/// that lets Termurion serve those pages; a message counts only for an `iterm2-about:` source
 /// (`browser_pages::route`). No host objects. The Instant Replay sensitive mark runs in every frame of
 /// every browser page (final review I1); a certificate error fails the load (`fail_cert_errors`, 13x8).
 pub(super) fn browser_setup(dev_null: bool, adblock: bool, page_scripts: Vec<String>) -> ViewSetup {
     // With ad blocking on, every request of the page is offered to the filter ("*"); `iterm2-about:`
-    // keeps its own answer first (`browser_local_request`). Off: only Tandem's own scheme.
+    // keeps its own answer first (`browser_local_request`). Off: only Termurion's own scheme.
     let mut filters = vec!["iterm2-about:*".to_string(), "iterm2-file:*".to_string(), "iterm2-ssh:*".to_string()];
     if adblock {
         filters.push("*".to_string());
@@ -679,13 +679,13 @@ impl App {
                 }
             }
             Event::ExternalUri { url, user, .. } | Event::Refused { url, user, .. } => self.run_external(url, *user),
-            // A `file:` page is Tandem's `iterm2-file:` page (13x8 Task 3).
+            // A `file:` page is Termurion's `iterm2-file:` page (13x8 Task 3).
             Event::FileRedirect { uri, .. } => self.browser_file_redirect(pane, uri),
             Event::DataCleared { ok, .. } => self.browser_data_cleared(pane, *ok),
             Event::Extensions { list, .. } => self.browser_extensions_listed(pane, list),
             Event::ExtensionAdded { folder, result, .. } => self.browser_extension_added(pane, folder, result),
             Event::DownloadStarting { .. } | Event::DownloadProgress { .. } | Event::DownloadDone { .. } | Event::DownloadRefused { .. } => self.browser_download_event(pane, e),
-            // A key the page did not take as its own: Tandem's Win chords and the address
+            // A key the page did not take as its own: Termurion's Win chords and the address
             // field's accelerators (Review: the page keeps every other key).
             Event::Key { vk, mods, taken, .. } => self.browser_accel_key(pane, *vk, *mods, *taken, event_loop),
             // A good start resets the remake budget (final review I5).
@@ -865,7 +865,7 @@ impl App {
         })
     }
 
-    /// The session indicators a browser pane shows, in iTerm2's order. Every fact is Tandem's own
+    /// The session indicators a browser pane shows, in iTerm2's order. Every fact is Termurion's own
     /// state (the tab, the broadcast model, copy mode, the globals); nothing a page says reaches
     /// it, so a page can neither fake nor hide one (13x6 Task 10, `PTYTextView.m:2325-2390`).
     pub(super) fn browser_indicators(&self, pane: PaneId) -> Vec<(char, scene::IndicatorKind)> {
@@ -888,7 +888,7 @@ impl App {
         scene::session_indicators(&facts, self.globals.bool("DisableTopRightIndicators"))
     }
 
-    /// A click on an indicator: Tandem's own help text in the one text popover below the glyph
+    /// A click on an indicator: Termurion's own help text in the one text popover below the glyph
     /// (360 by 80 points, links reduced to their labels). Nothing else happens.
     fn open_indicator_popover(&mut self, pane: PaneId, kind: scene::IndicatorKind, glyph: Rect, event_loop: &ActiveEventLoop) {
         let text = scene::plain_markdown(kind.help_markdown());
@@ -1093,11 +1093,11 @@ impl App {
                     browser::Security::NotSecure => "This page was not loaded over a secure connection.",
                     browser::Security::Failed => "This page did not load.",
                     browser::Security::File => "This page is a file on this computer.",
-                    browser::Security::Local => "This is one of Tandem's own pages.",
+                    browser::Security::Local => "This is one of Termurion's own pages.",
                 };
                 self.banners.set("action", text);
             }
-            // Only Tandem's own help popover opens: no page action, nothing from the page.
+            // Only Termurion's own help popover opens: no page action, nothing from the page.
             Hit::Status(i) => {
                 if let (Some((_, kind)), Some(r)) = (self.browser_indicators(pane).get(i).copied(), g.status.get(i).copied()) {
                     self.open_indicator_popover(pane, kind, r, event_loop);
@@ -1109,9 +1109,9 @@ impl App {
         true
     }
 
-    /// Tandem's own Back, Forward and history pick (13x8 Task 5 review I1, redesigned): when the pane's
+    /// Termurion's own Back, Forward and history pick (13x8 Task 5 review I1, redesigned): when the pane's
     /// record says the target entry is a power page or a local page, the history step is not taken; the
-    /// page is loaded as a fresh Tandem navigation (the path of typing it or opening it from the menu).
+    /// page is loaded as a fresh Termurion navigation (the path of typing it or opening it from the menu).
     /// A history step onto such a page is refused by the host whoever starts it, so no flag exists for a
     /// page to take. True when it was loaded this way.
     pub(super) fn browser_history_fresh(&mut self, pane: PaneId, steps: i32) -> bool {
@@ -1227,7 +1227,7 @@ impl App {
     }
 
     /// The site rows of the toolbar menu (Task 8): a disabled line naming the origin (punycode, the
-    /// end of the host kept), the saved permissions to reset, Unmute when Tandem muted the page.
+    /// end of the host kept), the saved permissions to reset, Unmute when Termurion muted the page.
     /// Records (pane, origin) in `perm_menu` for the pick. Empty when the page has no usable origin.
     fn browser_site_menu(&mut self, pane: PaneId, dev_null: bool) -> Vec<Option<(String, String, bool)>> {
         self.perm_menu = None;
@@ -1294,7 +1294,7 @@ impl App {
             return true;
         }
         match label {
-            // Tandem's own menu: the pick is the person's act and the only way in (no page can reach it).
+            // Termurion's own menu: the pick is the person's act and the only way in (no page can reach it).
             browser::ASK_AI_ID => return { self.ask_ai_about_page(pane, event_loop); true },
             "Reader Mode" | "Exit Reader Mode" => return { self.toggle_reader_mode(pane); true },
             "Remove Distractions" | "Exit Distraction Removal" => return { self.toggle_distraction_removal(pane); true },
@@ -1422,7 +1422,7 @@ impl App {
     }
 
     /// Return in the address field (or a picked row): the text becomes a URL or a search, and only
-    /// web pages and Tandem's own pages load directly; a `file:` URL passes the one navigation
+    /// web pages and Termurion's own pages load directly; a `file:` URL passes the one navigation
     /// verdict; every other scheme goes to the external-scheme handler.
     pub(super) fn browser_url_submit(&mut self, pane: PaneId, text: &str) {
         let template = browser::search_template(&self.globals.string("SearchCommand"));
@@ -1436,7 +1436,7 @@ impl App {
                 if webhost::nav_verdict(&info, &policy, &|t| webhost::file_url_local(t, &judge)) {
                     self.browser_navigate(pane, &u);
                 } else {
-                    self.banners.set("action", "Tandem will not open that file location.");
+                    self.banners.set("action", "Termurion will not open that file location.");
                 }
             }
             browser::Typed::External(u) => self.run_external(&u, true),
@@ -1444,7 +1444,7 @@ impl App {
         self.blur_url_bar(pane, true);
     }
 
-    /// Loads `url` in the pane's view (Tandem's own load: the person typed it).
+    /// Loads `url` in the pane's view (Termurion's own load: the person typed it).
     pub(super) fn browser_navigate(&mut self, pane: PaneId, url: &str) {
         // Before the store's permissions were synced no page loads (13x6): the URL waits.
         let synced = self.perm_synced(pane);
@@ -1624,7 +1624,7 @@ impl App {
         true
     }
 
-    /// A key the page reported (`Event::Key`): a Win chord Tandem has a command for runs, and the
+    /// A key the page reported (`Event::Key`): a Win chord Termurion has a command for runs, and the
     /// accelerators that focus the address field. The page keeps every other key.
     pub(super) fn browser_page_key(&mut self, pane: PaneId, vk: u32, mods: u8, event_loop: &ActiveEventLoop) -> bool {
         let (shift, ctrl, alt, win) = (mods & 1 != 0, mods & 2 != 0, mods & 4 != 0, mods & 8 != 0);
@@ -1716,7 +1716,7 @@ impl App {
         (on && found, found || !on)
     }
 
-    /// Whether a link would open in Tandem or ask to (the menu's split items, Shift+Win-click).
+    /// Whether a link would open in Termurion or ask to (the menu's split items, Shift+Win-click).
     pub(super) fn link_locally_openable(&self, url: &str) -> bool {
         let (allowed, runtime) = self.browser_gate();
         browser::conditionally_openable(url, allowed, runtime, self.saved_choice(browser::OPEN_LINKS_ID), self.saved_choice(browser::UPSELL_ID))
@@ -1755,7 +1755,7 @@ impl App {
     }
 
     /// The answer of the open-links ask: Use Default Browser (0) opens with the system, Open in
-    /// Tandem (1) in a pane, Cancel nothing. A file ask is never raised (no route for `file:`).
+    /// Termurion (1) in a pane, Cancel nothing. A file ask is never raised (no route for `file:`).
     pub(super) fn open_link_answered(&mut self, url: &str, style: browser::Style, background: bool, pane: Option<PaneId>, file: bool, index: usize) {
         match index {
             0 => self.open_link_system(url, background),
@@ -1782,7 +1782,7 @@ impl App {
 
     /// Shows `url` in a browser pane with the default browser profile (one is made, with Initial URL
     /// the link, when none exists, `iTermController.m:2036-2069`): a tab, a window, or a split beside
-    /// `near`. Tandem's own UI and `open_link` call it; it takes http, https and Tandem's local pages
+    /// `near`. Termurion's own UI and `open_link` call it; it takes http, https and Termurion's local pages
     /// only.
     pub(super) fn open_url_in_browser(&mut self, url: &str, style: browser::Style, near: Option<PaneId>) {
         let Some(url) = browser::normalize_url(url).filter(|u| matches!(webhost::scheme_of(u).as_str(), "http" | "https" | "iterm2-about")).and_then(|u| browser::saved_url(&u)) else {
@@ -1886,7 +1886,7 @@ mod tests {
         assert!(win.contains("!webhost::history_refused(kind.0, &uri) && webhost::nav_verdict("));
     }
 
-    /// Task 10: the indicators come from Tandem's own state only, the click opens only the help.
+    /// Task 10: the indicators come from Termurion's own state only, the click opens only the help.
     #[test]
     fn browser_indicators_follow_iterm2() {
         let src = include_str!("browser_app.rs");
@@ -2014,13 +2014,13 @@ mod tests {
             assert_eq!(s.scripts, vec![page[0].clone(), crate::web_replay::sensitive_script()], "the bridge and the sensitive mark are the only injected scripts");
             assert!(page[0].contains("location.protocol === 'iterm2-about:'") && !page[0].contains("globalThis.__tandemClient"), "a Page script never holds the Client binding");
             assert!(!crate::web_replay::sensitive_script().contains("chrome.webview"), "the mark opens no host channel");
-            assert_eq!(s.resource_filters, vec!["iterm2-about:*".to_string(), "iterm2-file:*".to_string(), "iterm2-ssh:*".to_string()], "only Tandem's own schemes are served");
+            assert_eq!(s.resource_filters, vec!["iterm2-about:*".to_string(), "iterm2-file:*".to_string(), "iterm2-ssh:*".to_string()], "only Termurion's own schemes are served");
             let on = browser_setup(dev_null, true, vec![]);
             assert_eq!(on.resource_filters, vec!["iterm2-about:*".to_string(), "iterm2-file:*".to_string(), "iterm2-ssh:*".to_string(), "*".to_string()], "ad blocking adds the catch-all filter");
         }
     }
 
-    /// A typed URL loads only through the one route: web and Tandem pages directly, `file:` through
+    /// A typed URL loads only through the one route: web and Termurion pages directly, `file:` through
     /// the navigation verdict, everything else through the external-scheme handler; the suggestion
     /// request never carries a URL.
     #[test]
@@ -2040,7 +2040,7 @@ mod tests {
         assert!(!draw.contains("frame.overlay"), "never text in the overlay");
     }
 
-    /// Opening a link: the browser pane gets only a cleaned http or https URL (or Tandem's own page
+    /// Opening a link: the browser pane gets only a cleaned http or https URL (or Termurion's own page
     /// from its own UI), the asks are 13b's and the old road stays for every other scheme.
     #[test]
     fn opening_links_follows_the_rules() {

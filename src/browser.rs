@@ -15,7 +15,7 @@ pub const DEFAULT_NAME: &str = "Web Browser";
 pub const USER_ID: &str = "AC0E9812-7F88-478B-B361-5526082EDDB3";
 /// The key of a session's table in an arrangement that holds the page's URL.
 pub const URL_KEY: &str = "Browser URL";
-/// The longest URL Tandem keeps or loads from a setting.
+/// The longest URL Termurion keeps or loads from a setting.
 pub const MAX_URL: usize = 2048;
 /// The longest session name a page's title gives.
 const TITLE_CHARS: usize = 200;
@@ -467,7 +467,7 @@ pub fn suggest_allowed(query: &str) -> bool {
     !(urlish && normalize_url(query).is_some())
 }
 
-/// Whether a message's source is one of Tandem's own `iterm2-about:` pages: the scheme, compared
+/// Whether a message's source is one of Termurion's own `iterm2-about:` pages: the scheme, compared
 /// ignoring ASCII case, and nothing else (a web page that holds a local page's name in its path or
 /// as a scheme prefix is not one). 13x2 calls this from `browser_js::local_page_ok`.
 pub fn local_source_ok(source: &str) -> bool {
@@ -555,7 +555,7 @@ pub struct ReaderMenu {
     pub distraction: bool,
     pub has_url: bool,
     /// Whether "Ask AI\u{2026}" is enabled: a page with a URL that tools may read (never Dev Null, never
-    /// a Tandem, local or extension page: `ai_browser::offerable`).
+    /// a Termurion, local or extension page: `ai_browser::offerable`).
     pub ask_ai: bool,
 }
 
@@ -685,7 +685,7 @@ pub fn punycode(label: &str) -> Option<String> {
 }
 
 /// A host with every non-ASCII label in its `xn--` form (as Chromium shows a host it will not
-/// trust in Unicode; Tandem shows every IDN so, Decision). Full width dots are dots.
+/// trust in Unicode; Termurion shows every IDN so, Decision). Full width dots are dots.
 fn ascii_host(host: &str) -> String {
     let host: String = host.chars().map(|c| if matches!(c, '\u{3002}' | '\u{FF0E}' | '\u{FF61}') { '.' } else { c }).collect();
     host.split('.').map(|label| if label.is_ascii() { label.to_string() } else { punycode(&label.to_lowercase()).map_or_else(|| label.to_string(), |p| format!("xn--{p}")) }).collect::<Vec<_>>().join(".")
@@ -975,7 +975,7 @@ fn embedded_url(shown: &str) -> Option<(&str, &str, &str)> {
 /// What the lock mark beside the address shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Security {
-    /// Tandem's own `iterm2-about:` page or a blank one; nothing else is Tandem's.
+    /// Termurion's own `iterm2-about:` page or a blank one; nothing else is Termurion's.
     Local,
     Secure,
     NotSecure,
@@ -999,16 +999,16 @@ pub fn security(url: &str, failed: bool) -> Security {
             let inner = url.split_once(':').map_or("", |(_, r)| r);
             if crate::webhost::scheme_of(inner) == "https" { Security::Secure } else { Security::NotSecure }
         }
-        // Tandem's own pages (and the blank one, and an empty address before any load).
+        // Termurion's own pages (and the blank one, and an empty address before any load).
         "iterm2-about" => Security::Local,
         "about" if url.trim().eq_ignore_ascii_case("about:blank") => Security::Local,
         "" if url.trim().is_empty() => Security::Local,
-        // data:, javascript:, other about: pages and every other scheme: not Tandem's, not secure.
+        // data:, javascript:, other about: pages and every other scheme: not Termurion's, not secure.
         _ => Security::NotSecure,
     }
 }
 
-/// How a typed URL is loaded: web pages and Tandem's own pages directly, a `file:` URL through the
+/// How a typed URL is loaded: web pages and Termurion's own pages directly, a `file:` URL through the
 /// navigation verdict (the path judge), anything else through the external-scheme handler.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Typed {
@@ -1275,7 +1275,7 @@ const NAV_MAX: usize = 100;
 const NAV_MENU: usize = 25;
 
 impl NavList {
-    /// A new committed URL: a step Tandem asked for lands on its entry, anything else is a new
+    /// A new committed URL: a step Termurion asked for lands on its entry, anything else is a new
     /// page after the current one.
     pub fn source(&mut self, url: &str) {
         if self.entries.is_empty() {
@@ -1309,12 +1309,12 @@ impl NavList {
         }
     }
 
-    /// The step Tandem expected was cancelled (a parked navigation): nothing is pending.
+    /// The step Termurion expected was cancelled (a parked navigation): nothing is pending.
     pub fn forget_expected(&mut self) {
         self.pending = None;
     }
 
-    /// Tandem is about to go `steps` entries (negative is back).
+    /// Termurion is about to go `steps` entries (negative is back).
     pub fn expect(&mut self, steps: i32) {
         self.pending = Some(steps);
     }
@@ -1388,21 +1388,21 @@ pub enum Open {
     System,
     /// A browser pane shows it.
     Local(Style),
-    /// Ask first: "Open in Tandem?" (`file`: the text about a file).
+    /// Ask first: "Open in Termurion?" (`file`: the text about a file).
     AskOpenInApp { file: bool },
     /// The WebView2 Runtime is missing: offer it.
     Upsell,
     Nothing,
 }
 
-pub const OPEN_HEADING: &str = "Open in Tandem?";
-pub const OPEN_WEB_TEXT: &str = "Tandem can display web pages! Would you like to open this link in Tandem?";
-pub const OPEN_FILE_TEXT: &str = "Tandem can display files like this in its built-in web browser! Would you like to open this link in Tandem?";
+pub const OPEN_HEADING: &str = "Open in Termurion?";
+pub const OPEN_WEB_TEXT: &str = "Termurion can display web pages! Would you like to open this link in Termurion?";
+pub const OPEN_FILE_TEXT: &str = "Termurion can display files like this in its built-in web browser! Would you like to open this link in Termurion?";
 pub const USE_DEFAULT_BROWSER: &str = "Use Default Browser";
 pub const USE_DEFAULT_APP: &str = "Use Default App";
-pub const OPEN_IN_TANDEM: &str = "Open in Tandem";
+pub const OPEN_IN_TANDEM: &str = "Open in Termurion";
 pub const UPSELL_HEADING: &str = "WebView2 Runtime Required";
-pub const UPSELL_TEXT: &str = "Tandem can display web pages! But first you must install the WebView2 Runtime.";
+pub const UPSELL_TEXT: &str = "Termurion can display web pages! But first you must install the WebView2 Runtime.";
 pub const DOWNLOAD: &str = "Download";
 pub const USE_SYSTEM_BROWSER: &str = "Use System Browser";
 /// Microsoft's own WebView2 page (Decision); opened only through `guard_open`.
@@ -1413,7 +1413,7 @@ pub const UPSELL_ID: &str = "NoSyncBrowserUpsell";
 
 /// Whether the browser may show a file with this extension (`it_localBrowserIsCompatibleWithFileURL`,
 /// `WS:57-83`): web formats, PDF and images. Never a runnable (iTerm2 lists JavaScript source;
-/// Tandem does not, P12) and never an alternate data stream.
+/// Termurion does not, P12) and never an alternate data stream.
 pub fn compatible_file(ext: &str) -> bool {
     let e = ext.strip_prefix('.').unwrap_or(ext).to_ascii_lowercase();
     matches!(e.as_str(), "html" | "htm" | "xhtml" | "xml" | "svg" | "css" | "pdf" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "heic")
@@ -1461,7 +1461,7 @@ pub fn open_decision(url: &str, style: Style, upsell: bool, allowed: bool, runti
     }
 }
 
-/// Whether `url` would open in Tandem or ask to (`it_urlIsConditionallyLocallyOpenable`, test-only
+/// Whether `url` would open in Termurion or ask to (`it_urlIsConditionallyLocallyOpenable`, test-only
 /// path of `WS:330-406`): the context menu's split items and Shift+Win-click.
 pub fn conditionally_openable(url: &str, allowed: bool, runtime: bool, saved_open_links: Option<i64>, saved_upsell: Option<i64>) -> bool {
     if web_link(url).is_none() {
@@ -1473,7 +1473,7 @@ pub fn conditionally_openable(url: &str, allowed: bool, runtime: bool, saved_ope
     saved_open_links != Some(0)
 }
 
-/// The warning for "open this link in Tandem?" (`WS:384-410`).
+/// The warning for "open this link in Termurion?" (`WS:384-410`).
 pub fn open_link_spec(file: bool) -> crate::warnings::Spec {
     crate::warnings::Spec {
         id: Some(if file { OPEN_FILE_LINKS_ID } else { OPEN_LINKS_ID }.to_string()),
@@ -1791,7 +1791,7 @@ mod tests {
     fn a_saved_url_is_sanitized_and_bounded() {
         assert_eq!(saved_url("https://a.test/p?q=1#f").as_deref(), Some("https://a.test/p?q=1#f"));
         assert_eq!(saved_url("iterm2-about:history").as_deref(), Some("iterm2-about:history"));
-        assert_eq!(saved_url("https://user:pw@a.test/x").as_deref(), Some("https://a.test/x"), "no credentials in Tandem's files");
+        assert_eq!(saved_url("https://user:pw@a.test/x").as_deref(), Some("https://a.test/x"), "no credentials in Termurion's files");
         assert_eq!(saved_url("https://a.test/\u{1}"), None);
         assert_eq!(saved_url("https://a.test/\u{202e}x"), None);
         assert_eq!(saved_url("javascript:alert(1)"), None);
@@ -2258,7 +2258,7 @@ mod tests {
         assert_eq!(security("file:///C:/x.html", false), Security::File);
         assert_eq!(security("", false), Security::Local);
         assert_eq!(security("HTTPS://A.TEST/", false), Security::Secure);
-        // Only Tandem's own page is Tandem's own; every other scheme shows its creator's state.
+        // Only Termurion's own page is Termurion's own; every other scheme shows its creator's state.
         assert_eq!(security("blob:https://evil.test/1234", false), Security::Secure, "a blob has its creator's origin");
         assert_eq!(security("blob:http://evil.test/1234", false), Security::NotSecure);
         assert_eq!(security("blob:null/1234", false), Security::NotSecure);
@@ -2268,7 +2268,7 @@ mod tests {
         assert_eq!(security("javascript:alert(1)", false), Security::NotSecure);
         assert_eq!(security("ms-msdt:id", false), Security::NotSecure);
         assert_eq!(security("ITERM2-ABOUT:history", false), Security::Local);
-        assert_eq!(security("blob:iterm2-about:history/1", false), Security::NotSecure, "a blob never claims Tandem's page");
+        assert_eq!(security("blob:iterm2-about:history/1", false), Security::NotSecure, "a blob never claims Termurion's page");
     }
 
     #[test]
@@ -2452,10 +2452,10 @@ mod tests {
     #[test]
     fn upsell_follows_iterm2() {
         assert_eq!(UPSELL_HEADING, "WebView2 Runtime Required");
-        assert_eq!(UPSELL_TEXT, "Tandem can display web pages! But first you must install the WebView2 Runtime.");
-        assert_eq!((OPEN_HEADING, OPEN_IN_TANDEM, USE_DEFAULT_BROWSER, USE_DEFAULT_APP), ("Open in Tandem?", "Open in Tandem", "Use Default Browser", "Use Default App"));
-        assert_eq!(OPEN_WEB_TEXT, "Tandem can display web pages! Would you like to open this link in Tandem?");
-        assert_eq!(OPEN_FILE_TEXT, "Tandem can display files like this in its built-in web browser! Would you like to open this link in Tandem?");
+        assert_eq!(UPSELL_TEXT, "Termurion can display web pages! But first you must install the WebView2 Runtime.");
+        assert_eq!((OPEN_HEADING, OPEN_IN_TANDEM, USE_DEFAULT_BROWSER, USE_DEFAULT_APP), ("Open in Termurion?", "Open in Termurion", "Use Default Browser", "Use Default App"));
+        assert_eq!(OPEN_WEB_TEXT, "Termurion can display web pages! Would you like to open this link in Termurion?");
+        assert_eq!(OPEN_FILE_TEXT, "Termurion can display files like this in its built-in web browser! Would you like to open this link in Termurion?");
         assert_eq!((DOWNLOAD, USE_SYSTEM_BROWSER), ("Download", "Use System Browser"));
         assert_eq!((OPEN_LINKS_ID, OPEN_FILE_LINKS_ID, UPSELL_ID), ("NoSyncOpenLinksInApp", "NoSyncOpenLinksInAppForFileURL", "NoSyncBrowserUpsell"));
         // Microsoft's own page and nothing else: https, the developer.microsoft.com host.
@@ -2468,13 +2468,13 @@ mod tests {
         let remembered: Vec<usize> = (0..3).filter(|i| u.rememberable(*i)).collect();
         assert_eq!(remembered, vec![1], "only Use System Browser is remembered (`GW:136-160`)");
         let o = open_link_spec(false);
-        assert_eq!((o.id.as_deref(), o.kind, o.heading.as_str(), o.text.as_str()), (Some("NoSyncOpenLinksInApp"), crate::warnings::Kind::Permanent, "Open in Tandem?", OPEN_WEB_TEXT));
-        assert_eq!(o.labels, vec!["Use Default Browser", "Open in Tandem", "Cancel"]);
+        assert_eq!((o.id.as_deref(), o.kind, o.heading.as_str(), o.text.as_str()), (Some("NoSyncOpenLinksInApp"), crate::warnings::Kind::Permanent, "Open in Termurion?", OPEN_WEB_TEXT));
+        assert_eq!(o.labels, vec!["Use Default Browser", "Open in Termurion", "Cancel"]);
         assert_eq!(o.cancel, Some(2));
         assert!(o.rememberable(0) && o.rememberable(1) && !o.rememberable(2));
         let f = open_link_spec(true);
         assert_eq!((f.id.as_deref(), f.text.as_str()), (Some("NoSyncOpenLinksInAppForFileURL"), OPEN_FILE_TEXT));
-        assert_eq!(f.labels, vec!["Use Default App", "Open in Tandem", "Cancel"]);
+        assert_eq!(f.labels, vec!["Use Default App", "Open in Termurion", "Cancel"]);
     }
 
     #[test]

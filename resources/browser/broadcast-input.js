@@ -1,9 +1,9 @@
 // broadcast-input.js
-// Tandem's own script (not from iTerm2). It runs in Tandem's isolated world, in the main frame, at
-// document start. It reports what the person types so Tandem can type the same into the other browser
+// Termurion's own script (not from iTerm2). It runs in Termurion's isolated world, in the main frame, at
+// document start. It reports what the person types so Termurion can type the same into the other browser
 // panes of the broadcast set (iTerm2 sends `insertText:` and `doCommandBySelector:` from the web view,
 // `iTermBrowserWebView.swift:1033-1047`): the text of each trusted beforeinput, and the editing keys.
-// Tandem decides whether anything is replayed; this script only reports. A synthetic event (isTrusted
+// Termurion decides whether anything is replayed; this script only reports. A synthetic event (isTrusted
 // false) reports nothing, and a field that holds a secret (a password, a one-time code, a card
 // number) reports nothing, neither text nor keys.
 
@@ -33,7 +33,7 @@
             body.sessionSecret = SECRET;
             window.webkit.messageHandlers.tandemBroadcastInput.postMessage(body);
         }
-        // The check shared with the receiving side (Tandem's world; a page cannot replace its builtins).
+        // The check shared with the receiving side (Termurion's world; a page cannot replace its builtins).
         {{FIELD_CHECK}}
         // True when the event's target (through shadow roots) or the focused element holds a secret
         // (a password, a masked field, a one-time code, a card) or is not itself a known editable (the

@@ -1,5 +1,5 @@
 //! Reader Mode and Remove Distractions in a browser pane (milestone 13x4). Task 1 holds the message
-//! handler only: the reader scripts run in Tandem's isolated world and post their state through the
+//! handler only: the reader scripts run in Termurion's isolated world and post their state through the
 //! `readerMode` handler, which arrives as a Client message from the world's binding and nowhere else.
 
 use super::browser_scripts_app::JsDone;
@@ -14,7 +14,7 @@ fn log_failure(f: Failure, e: &str) {
     log_failure_as(f, super::browser_scripts_app::failure_kind(e));
 }
 
-/// `log_failure` with the text to show already chosen: a kind, or Tandem's own error text.
+/// `log_failure` with the text to show already chosen: a kind, or Termurion's own error text.
 fn log_failure_as(f: Failure, what: &str) {
     let line = reader::failure_line(f, what);
     crate::rlog!("{}", crate::dlog::name(&line));
@@ -61,7 +61,7 @@ impl App {
         let [first, second] = match reader::loader_bodies() {
             Ok(b) => b,
             Err(e) => {
-                // Tandem's own text (a missing resource, a patch that did not apply), never the page's.
+                // Termurion's own text (a missing resource, a patch that did not apply), never the page's.
                 log_failure_as(Failure::Inject, &e);
                 return then(self, pane, Err(e));
             }
@@ -414,6 +414,6 @@ mod tests {
         let starting = between(r, "Event::Starting { redirect: false, .. } => {", "self.browser_copy_mode_set(pane, false)");
         assert!(starting.contains("self.reader_navigation_started(pane)"), "a navigation start");
         let created = between(r, "\"Runtime.executionContextCreated\" => {", "\"Runtime.executionContextDestroyed\"");
-        assert!(created.contains("bv.reader.reset()") && created.contains("is_main_context"), "the main frame's new Tandem context");
+        assert!(created.contains("bv.reader.reset()") && created.contains("is_main_context"), "the main frame's new Termurion context");
     }
 }

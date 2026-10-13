@@ -786,7 +786,7 @@ mod tests {
         let itself = p.clone();
         let open = open_with(move |q, o| {
             if q == itself {
-                o.trust = Err("it is a link (a symbolic link or junction), which Tandem does not follow".into());
+                o.trust = Err("it is a link (a symbolic link or junction), which Termurion does not follow".into());
             }
         });
         let fs = Fs { open: &open, ..real() };

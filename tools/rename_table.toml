@@ -8087,3 +8087,55 @@ mode = 'exact'
 scope = ['scripts/xt']
 reason = 'script or tool text: becomes Termurion; file-level row, every hit in this file was reviewed'
 
+
+# lane: text
+[[path]]
+glob = 'tests/rename_text.rs'
+mode = 'keep'
+reason = 'text-lane source scan: names the old name by necessity'
+
+[[path]]
+glob = 'tools/user_string_scan.txt'
+mode = 'keep'
+reason = 'allowlist of the scan: names the old name by necessity'
+
+[[row]]
+group = 'A'
+old = 'tandem.exe file.ps1'
+new = 'termurion.exe file.ps1'
+mode = 'exact'
+scope = ['schema/global.toml', 'src/settings_keys.rs']
+reason = 'help text for the script-open setting; both files must read the same (Task 6 note)'
+
+# Task 6 fallout: assertions that the OLD name is gone, and a zero-width test input, must keep it.
+[[row]]
+group = 'K'
+old = 'l.contains("tandem")), "an old name in Cargo.toml"'
+new = 'l.contains("tandem")), "an old name in Cargo.toml"'
+mode = 'keep'
+scope = ['src/dll.rs']
+reason = 'asserts the old name is absent from Cargo.toml'
+
+[[row]]
+group = 'K'
+old = 'n.starts_with("tandem")), "an old bin file is left'
+new = 'n.starts_with("tandem")), "an old bin file is left'
+mode = 'keep'
+scope = ['src/dll.rs']
+reason = 'asserts no old bin file is left'
+
+[[row]]
+group = 'K'
+old = '!toml.contains("tandem"), "a [[bin]] section still says tandem"'
+new = '!toml.contains("tandem"), "a [[bin]] section still says tandem"'
+mode = 'keep'
+scope = ['src/dll.rs']
+reason = 'asserts no [[bin]] keeps the old name'
+
+[[row]]
+group = 'K'
+old = 'assert_eq!(b, "Tandem: xy");'
+new = 'assert_eq!(b, "Tandem: xy");'
+mode = 'keep'
+scope = ['src/browser_perms.rs']
+reason = 'the test input is Ta<zero-width>ndem; the output is the plain word, not the product name'

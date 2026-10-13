@@ -1,4 +1,4 @@
-The Tandem-Claude Code integration is installed.
+The Termurion-Claude Code integration is installed.
 
 At the very beginning of any code review (before writing any new clippings), archive the existing clippings so previous round's findings are preserved as history but cleared from the live list:
 

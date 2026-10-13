@@ -95,7 +95,7 @@ pub fn probe_allows(answer: &Result<String, String>) -> bool {
     matches!(answer, Ok(s) if s.trim() == "false")
 }
 
-/// The folder a saved movie goes to (P16): Tandem's own, swept at the next launch and at exit.
+/// The folder a saved movie goes to (P16): Termurion's own, swept at the next launch and at exit.
 pub fn replay_folder(local_appdata: &std::path::Path) -> std::path::PathBuf {
     local_appdata.join("Tandem").join("Replay")
 }
@@ -561,7 +561,7 @@ mod tests {
         assert!(PROBE_JS.contains("type=password"));
         assert_ne!(PROBE_TOKEN, CAPTURE_TOKEN);
         let f = replay_folder(std::path::Path::new(r"C:\Users\a\AppData\Local"));
-        assert!(f.ends_with(r"Tandem\Replay"), "{f:?}");
+        assert!(f.ends_with(r"Termurion\Replay"), "{f:?}");
     }
 
     /// Final review I1: one script in every frame marks the page sensitive while a password,

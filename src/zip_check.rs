@@ -1,5 +1,5 @@
 //! An archive's safety check and the parse that extracts it: the one rule every extraction in
-//! Tandem uses. A zip (its first bytes a local header or an empty archive's end record, every
+//! Termurion uses. A zip (its first bytes a local header or an empty archive's end record, every
 //! entry of its central directory) or a gzip tar (every header, `check_tgz`) must name only plain
 //! files and folders inside the folder it is extracted into, refused whole otherwise. The walk
 //! that checks an archive is the walk `extract` writes from (final findings r2: one parser over
@@ -290,7 +290,7 @@ pub fn walk_zip(b: &[u8], limits: Limits, visit: Option<Visit>) -> Result<u64, S
             return Err(refused(&format!("\u{201c}{}\u{201d} is encrypted", text.escape_debug())));
         }
         if method != 0 && method != 8 {
-            return Err(refused(&format!("\u{201c}{}\u{201d} is compressed in a way Tandem does not read", text.escape_debug())));
+            return Err(refused(&format!("\u{201c}{}\u{201d} is compressed in a way Termurion does not read", text.escape_debug())));
         }
         let fields = check_extra(extra)?;
         // The ZIP64 field's values come in order, each only when its 32-bit field overflowed: the

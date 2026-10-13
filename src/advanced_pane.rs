@@ -144,7 +144,7 @@ pub fn matches(searchable: &str, query: &str) -> bool {
 }
 
 /// What the search reads: the description, the English category and the localized category
-/// (Tandem shows English, so the category appears twice as in iTerm2's English build).
+/// (Termurion shows English, so the category appears twice as in iTerm2's English build).
 pub fn searchable(row: &Row) -> String {
     format!("{} {} {}", row.description, row.category, row.category)
 }
@@ -538,7 +538,7 @@ mod tests {
     }
 
     /// Every Advanced row carries iTerm2's description (`iTermAdvancedSettingsModel.m`) with
-    /// "iTerm2" read as "Tandem": `label` is its first line and `help` the whole of it.
+    /// "iTerm2" read as "Termurion": `label` is its first line and `help` the whole of it.
     #[test]
     fn advanced_texts_follow_iterm2() {
         for s in schema::global().iter().filter(|s| s.tab == "Advanced") {
@@ -555,13 +555,13 @@ mod tests {
         assert_eq!(
             text("AnonymousTmuxWindowsOpenInCurrentWindow"),
             (
-                "Where should new tmux windows not created by Tandem open?",
-                "Where should new tmux windows not created by Tandem open?\n\u{201c}Focused window\u{201d} (the default) attaches the window as a tab of whichever Tandem window currently has keyboard focus. \u{201c}Topmost session window\u{201d} attaches it to the frontmost Tandem window that already shows a tab from this tmux session, regardless of focus."
+                "Where should new tmux windows not created by Termurion open?",
+                "Where should new tmux windows not created by Termurion open?\n\u{201c}Focused window\u{201d} (the default) attaches the window as a tab of whichever Termurion window currently has keyboard focus. \u{201c}Topmost session window\u{201d} attaches it to the frontmost Termurion window that already shows a tab from this tmux session, regardless of focus."
             )
         );
         assert_eq!(
             text("KillJobsInServersOnQuit"),
-            ("User-initiated Quit (Win+Q) of Tandem will kill all running jobs.", "User-initiated Quit (Win+Q) of Tandem will kill all running jobs.\nApplies only when session restoration is on.")
+            ("User-initiated Quit (Win+Q) of Termurion will kill all running jobs.", "User-initiated Quit (Win+Q) of Termurion will kill all running jobs.\nApplies only when session restoration is on.")
         );
         assert_eq!(
             text("FileDropCoprocess").1,
@@ -570,7 +570,7 @@ mod tests {
         assert_eq!(text("DisableTmuxWindowResizing"), ("Don't automatically resize tmux windows", "Don't automatically resize tmux windows"));
         // iTerm2's description ends in a newline with nothing after it.
         assert_eq!(text("PasteHistoryMaxOptions").1, "Number of entries to save in Paste History.\n");
-        // Where Tandem behaves differently on Windows, the help says what Tandem does.
+        // Where Termurion behaves differently on Windows, the help says what Termurion does.
         assert_eq!(
             text("GitSearchPath"),
             (

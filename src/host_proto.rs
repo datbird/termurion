@@ -1,4 +1,4 @@
-//! The session host's protocol: length-prefixed frames between Tandem and tandem-host, and
+//! The session host's protocol: length-prefixed frames between Termurion and tandem-host, and
 //! the per-session output ring the host keeps so a UI can reattach where it left off.
 
 use std::collections::VecDeque;
@@ -32,7 +32,7 @@ pub struct Live {
 pub enum Msg {
     Hello { version: u32 },
     Welcome { version: u32, host_pid: u32, instance: String, sessions: Vec<Live> },
-    /// `busy`: another Tandem is attached (this one is a second copy).
+    /// `busy`: another Termurion is attached (this one is a second copy).
     Refused { busy: bool, reason: String },
     Launch { tag: u64, cmdline: String, cwd: String, env: Vec<String>, cols: u16, rows: u16 },
     Launched { tag: u64, id: u64, pid: u32 },
@@ -53,17 +53,17 @@ pub enum Msg {
     Forget { id: u64 },
     Kill { id: u64 },
     KillAll,
-    /// Version 2, Tandem to the host: read each session's console input mode for password
+    /// Version 2, Termurion to the host: read each session's console input mode for password
     /// prompts, debounced by `debounce_ms`, or stop (None: nothing is attached to).
     WatchPrompts { debounce_ms: Option<u32> },
-    /// Version 2, the host to Tandem: a session's console reached (or left) a password prompt,
+    /// Version 2, the host to Termurion: a session's console reached (or left) a password prompt,
     /// debounced. A host that never sends it leaves every session "not at a prompt".
     PasswordInput { id: u64, on: bool },
-    /// Version 2, Tandem to the host: Send Signal's Ctrl+C (or Ctrl+Break) to a session's
+    /// Version 2, Termurion to the host: Send Signal's Ctrl+C (or Ctrl+Break) to a session's
     /// whole console. The host attaches (its consoles are its own to attach to).
     Signal { id: u64, ctrl_break: bool },
-    /// Version 4, Tandem to the host: `Launch` on a transport (`ssh_transport::wire`). Version 4
-    /// hosts understand it; a lower version never sees it (Tandem refuses the launch instead).
+    /// Version 4, Termurion to the host: `Launch` on a transport (`ssh_transport::wire`). Version 4
+    /// hosts understand it; a lower version never sees it (Termurion refuses the launch instead).
     LaunchWith { tag: u64, cmdline: String, cwd: String, env: Vec<String>, cols: u16, rows: u16, transport: u8 },
 }
 
@@ -335,7 +335,7 @@ mod tests {
         vec![
             Msg::Hello { version: 1 },
             Msg::Welcome { version: 1, host_pid: 42, instance: "abc".into(), sessions: vec![live.clone(), Live { exited: None, ..live }] },
-            Msg::Refused { busy: true, reason: "another Tandem is attached".into() },
+            Msg::Refused { busy: true, reason: "another Termurion is attached".into() },
             Msg::Launch { tag: 5, cmdline: "cmd.exe".into(), cwd: String::new(), env: vec!["A=1".into(), "B=".into()], cols: 100, rows: 30 },
             Msg::Launch { tag: 6, cmdline: "pwsh.exe".into(), cwd: r"C:\src".into(), env: vec!["A=1".into(), "B=2".into()], cols: 80, rows: 24 },
             Msg::Launched { tag: 5, id: 9, pid: 77 },

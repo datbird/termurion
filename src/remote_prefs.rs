@@ -4,7 +4,7 @@
 //!
 //! The file is `tandem-settings.toml`: `default` (the default profile's Guid), `[[profile]]` tables in
 //! `profiles.toml`'s form and a `[settings]` table in `settings.toml`'s form, holding syncable keys
-//! only. iTerm2 keeps both in one plist; Tandem keeps them in two files and joins them here.
+//! only. iTerm2 keeps both in one plist; Termurion keeps them in two files and joins them here.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -45,7 +45,7 @@ pub const DONT_LOAD: &str = "Don\u{2019}t Load Remote Settings";
 pub const FAILED_FOLDER: &str = "Failed to load settings from custom directory. Falling back to local copy.";
 pub const OVERWRITE: &str = "Overwrite";
 pub const CANNOT_COPY_URL: &str = "Settings cannot be copied to a URL.";
-/// Tandem's: iTerm2 names its plist's path here.
+/// Termurion's: iTerm2 names its plist's path here.
 pub const CANNOT_COPY_URL_DETAIL: &str =
     "To make it available, save the settings to a folder with Save Now and then manually copy tandem-settings.toml to your hosting provider.";
 pub const FAILED_COPY: &str = "Failed to copy settings to custom directory.";
@@ -80,7 +80,7 @@ pub fn missing_file(file: &str) -> String {
 }
 
 pub fn remote_changed(file: &str) -> String {
-    format!("Settings at {file} changed since Tandem started. Overwrite it?")
+    format!("Settings at {file} changed since Termurion started. Overwrite it?")
 }
 
 pub fn tried_to_copy(from: &str, to: &str) -> String {
@@ -166,7 +166,7 @@ pub fn writable(dir: &Path) -> bool {
 }
 
 /// `iTermRemotePreferencesKeyIsSyncable` (`RP:144-175`): whether a key travels through the file.
-/// Tandem also keeps the AI consent switches (`ai_settings::guards_consent`) local, so a custom
+/// Termurion also keeps the AI consent switches (`ai_settings::guards_consent`) local, so a custom
 /// folder, a URL or Import All never enables AI or answers its consent questions (ruling I5).
 pub fn syncable(key: &str) -> bool {
     const EXEMPT: [&str; 12] = [
@@ -534,7 +534,7 @@ mod tests {
         assert_eq!(http_failed("boom"), "HTTP request failed: boom");
         assert_eq!(http_failed(""), "HTTP request failed: unknown error");
         assert_eq!(missing_file(r"D:\s\tandem-settings.toml"), "Missing or malformed file at \u{201c}D:\\s\\tandem-settings.toml\u{201d}");
-        assert_eq!(remote_changed(r"D:\s"), "Settings at D:\\s changed since Tandem started. Overwrite it?");
+        assert_eq!(remote_changed(r"D:\s"), "Settings at D:\\s changed since Termurion started. Overwrite it?");
         assert_eq!(tried_to_copy("a", "b"), "Tried to copy a to b");
         assert_eq!(settings_changed(r"D:\s"), "Settings have changed. Copy them to D:\\s?");
         assert_eq!(

@@ -260,7 +260,7 @@ pub fn check(r: &Request, consume_cookie: &mut dyn FnMut(&str) -> bool, fresh_ke
     };
     if name == "python" && library_too_old(reported, MIN_PYTHON_LIBRARY) {
         return Err(Refusal::Unacceptable(format!(
-            "{TOO_OLD}. {name} library version reported as {}. Minimum supported by this version of Tandem is {}",
+            "{TOO_OLD}. {name} library version reported as {}. Minimum supported by this version of Termurion is {}",
             Decimal::parse(reported).map_or("NaN".to_string(), |d| d.to_string()),
             Decimal::parse(MIN_PYTHON_LIBRARY).map_or("NaN".to_string(), |d| d.to_string()),
         )));
@@ -360,7 +360,7 @@ pub fn status_response(code: u16) -> String {
         400 => "Bad Request",
         401 => "Unauthorized",
         406 => "Unacceptable (upgrade Python library)",
-        // Tandem's own: a connection cap (iTerm2 has none).
+        // Termurion's own: a connection cap (iTerm2 has none).
         503 => "Service Unavailable",
         _ => "Error",
     };
@@ -499,7 +499,7 @@ mod tests {
         assert_eq!(run(&with(lib, None)), Err(Refusal::BadRequest("The \u{201c}x-iterm2-library-version\u{201d} header was not set. You may need to update your Python runtime to a newer version.".into())));
         assert_eq!(run(&with(lib, Some("python"))), Err(Refusal::BadRequest("The \u{201c}x-iterm2-library-version\u{201d} header was malformed: \u{201d}python\u{201d}".into())));
         let old = run(&with(lib, Some("python 0.23")));
-        assert_eq!(old, Err(Refusal::Unacceptable("Library version too old. python library version reported as 0.23. Minimum supported by this version of Tandem is 0.24".into())));
+        assert_eq!(old, Err(Refusal::Unacceptable("Library version too old. python library version reported as 0.23. Minimum supported by this version of Termurion is 0.24".into())));
         assert_eq!(old.unwrap_err().code(), 406);
         for ok in ["python 0.3", "python 2.24", "python 0.24", "swift 0.1"] {
             assert!(run(&with(lib, Some(ok))).is_ok(), "{ok}");

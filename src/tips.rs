@@ -106,7 +106,7 @@ pub fn shown_recently(now: f64, last: f64, between: f64) -> bool {
 }
 
 /// What `tryToShowTip` does (`:136-160`). `Wait` tries again after the gap; `Never` does nothing
-/// until Tandem becomes active again, so an idle Tandem is never woken for it.
+/// until Termurion becomes active again, so an idle Termurion is never woken for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Try {
     Show,
@@ -242,7 +242,7 @@ mod tests {
         assert_eq!(first.title, "Tip of the Day");
         assert_eq!(
             first.body,
-            "This window shows the Tandem tip of the day. It\u{2019}ll appear every 24 hours to let you know about new features and hidden secrets. Hit \u{201c}More Options\u{201d} to view more tips or to stop getting them altogether."
+            "This window shows the Termurion tip of the day. It\u{2019}ll appear every 24 hours to let you know about new features and hidden secrets. Hit \u{201c}More Options\u{201d} to view more tips or to stop getting them altogether."
         );
         let by = |k: &str| all.iter().find(|t| t.key == k).unwrap_or_else(|| panic!("{k}"));
         assert!(by("0003").body.contains("Shift+Win+O"));
@@ -384,7 +384,7 @@ mod tests {
         assert!(by("0079").body.contains("Shift+Win+. to open the Composer"), "{}", by("0079").body);
     }
 
-    /// Review fix 3: every key chord a tip names is a real Tandem binding: a menu item's chord
+    /// Review fix 3: every key chord a tip names is a real Termurion binding: a menu item's chord
     /// (`menus::command_for`) or a composer key (`composer::action`). Mouse chords (click, drag)
     /// and a bare modifier ("Hold Alt+Win while") have no key to check.
     #[test]
@@ -433,7 +433,7 @@ mod tests {
                     k if k.chars().count() == 1 => menu(ChordKey::Char(k.chars().next().unwrap())),
                     _ => false,
                 };
-                assert!(real, "tip {} names {word:?}, which is not a Tandem binding", t.key);
+                assert!(real, "tip {} names {word:?}, which is not a Termurion binding", t.key);
                 checked += 1;
             }
         }
@@ -441,7 +441,7 @@ mod tests {
     }
 
     /// Review fix 1: no tip speaks in iTerm2's release numbers ("version 3", "New in 3.1"), and
-    /// the floating-over-full-screen tip is gone (Tandem has no Floating Window setting).
+    /// the floating-over-full-screen tip is gone (Termurion has no Floating Window setting).
     #[test]
     fn tips_name_no_iterm2_release() {
         for t in all() {
@@ -450,7 +450,7 @@ mod tests {
             }
         }
         let by = |k: &str| all().iter().find(|t| t.key == k);
-        assert_eq!(by("0000").map(|t| t.body.as_str()), Some("A big feature of Tandem is Shell Integration. Click \u{201c}Learn More\u{201d} for all the details."));
+        assert_eq!(by("0000").map(|t| t.body.as_str()), Some("A big feature of Termurion is Shell Integration. Click \u{201c}Learn More\u{201d} for all the details."));
         assert!(by("0068").is_none());
         assert!(by("0069").is_some_and(|t| t.body.starts_with("You can have multiple hotkey windows.")));
     }
@@ -465,7 +465,7 @@ mod tests {
             .collect()
     }
 
-    /// Review fix 2 (class): every menu path and Settings path a tip quotes exists in Tandem. A
+    /// Review fix 2 (class): every menu path and Settings path a tip quotes exists in Termurion. A
     /// menu path is an item of `schema/menus.toml` (iTerm2's trailing "..." left off, a placeholder
     /// for the person's own session allowed); a Settings path is a global or profile tab and then
     /// a section or a setting's label in it.
@@ -495,7 +495,7 @@ mod tests {
                 } else if roots.contains(first) {
                     let ok = menu_paths.iter().any(|m| m.as_slice() == path.iter().map(|p| strip(p)).collect::<Vec<_>>().as_slice())
                         || path.last().is_some_and(|l| PLACEHOLDERS.contains(&l.as_str()) && menu_paths.iter().any(|m| m.as_slice() == &path.iter().map(|p| strip(p)).collect::<Vec<_>>()[..path.len() - 1]));
-                    assert!(ok, "tip {}: {path:?} is not a Tandem menu item", tip.key);
+                    assert!(ok, "tip {}: {path:?} is not a Termurion menu item", tip.key);
                 }
                 checked += 1;
             }
@@ -504,7 +504,7 @@ mod tests {
     }
 
     /// Review fix 2: a tip that points at "Settings > Advanced" (or the bell) names a control that
-    /// exists, and the two tips that named controls Tandem lacks are reworded or gone.
+    /// exists, and the two tips that named controls Termurion lacks are reworded or gone.
     #[test]
     fn tips_name_controls_that_exist() {
         use crate::schema;
@@ -514,7 +514,7 @@ mod tests {
         // The bell is a profile setting, not an Advanced one (0032).
         assert!(schema::find("Flashing Bell").is_some_and(|s| s.tab == "Terminal" && s.section == "Notifications"));
         assert!(by("0032").is_some_and(|t| t.body.contains("Settings > Profiles > Terminal > Notifications")));
-        // Tandem has no setting to open every new tab next to the current one (0052).
+        // Termurion has no setting to open every new tab next to the current one (0052).
         assert!(by("0052").is_none());
         // The hotkey double-tap lives in the profile's Keys tab, section Hotkey Window (0070).
         assert!(by("0070").is_some_and(|t| t.body.contains("Settings > Profiles > Keys > Hotkey Window")));

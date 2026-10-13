@@ -15,12 +15,12 @@ pub fn vendored() -> &'static str {
     include_str!("../resources/utilities/it2api")
 }
 
-/// The script Tandem writes: `vendored()` with its two user texts naming iTerm2 (`:535`,
-/// `:659`) naming Tandem; the `iterm2` module name and its install text stay.
+/// The script Termurion writes: `vendored()` with its two user texts naming iTerm2 (`:535`,
+/// `:659`) naming Termurion; the `iterm2` module name and its install text stay.
 pub fn script() -> String {
     vendored()
-        .replacen("description='iTerm2 CLI'", "description='Tandem CLI'", 1)
-        .replacen("(represented as a tab in iTerm2)", "(represented as a tab in Tandem)", 1)
+        .replacen("description='iTerm2 CLI'", "description='Termurion CLI'", 1)
+        .replacen("(represented as a tab in iTerm2)", "(represented as a tab in Termurion)", 1)
 }
 
 /// The Pythons it2api may run, best first: the first `py.exe` on PATH as `py -3`, then each
@@ -65,7 +65,7 @@ pub fn no_python() -> String {
 pub fn no_script(dir: &Path) -> String {
     let file = crate::utilities::API_SCRIPT;
     let inside = dir.join(crate::utilities::FOLDER);
-    format!("it2api: {file} is not in {} or {}. Start Tandem once to write it.\n", dir.display(), inside.display())
+    format!("it2api: {file} is not in {} or {}. Start Termurion once to write it.\n", dir.display(), inside.display())
 }
 
 /// `it2api [arguments...]`: runs the script with the first Python found, the arguments after
@@ -119,8 +119,8 @@ mod tests {
         assert_eq!(old_lines.len(), new_lines.len());
         let changed: Vec<usize> = (0..old_lines.len()).filter(|&i| old_lines[i] != new_lines[i]).map(|i| i + 1).collect();
         assert_eq!(changed, vec![535, 659], "only the two texts naming iTerm2");
-        assert!(new.contains("description='Tandem CLI'"));
-        assert!(new.contains("(represented as a tab in Tandem)"));
+        assert!(new.contains("description='Termurion CLI'"));
+        assert!(new.contains("(represented as a tab in Termurion)"));
         assert!(!new.contains("iTerm2"));
         assert!(new.contains("import iterm2"));
         assert!(new.contains("The current version of Python doesn't have the 'iterm2' module installed. Please run:"));
@@ -228,7 +228,7 @@ mod tests {
         let venv = |r: &Path| r.join("target").join("api-venv").join("Scripts").join("python.exe");
         let mut candidates = vec![(venv(root), vec![])];
         if let Some(parent) = root.parent() {
-            candidates.push((venv(&parent.join("tandem")), vec![]));
+            candidates.push((venv(&parent.join("termurion")), vec![]));
         }
         candidates.push((PathBuf::from("py"), vec!["-3"]));
         candidates.into_iter().find(|(exe, args)| {

@@ -35,8 +35,8 @@ pub enum Outcome {
 
 pub const ENABLE_TOOL: &str = "request_orchestration_enable";
 
-/// `TP:139-159`, "iTerm2" as "Tandem".
-pub const ENABLE_DESCRIPTION: &str = "Ask the user to enable orchestration mode for this chat. Use this whenever the task requires interacting with the user's Tandem sessions and you don't currently have the tools to do it: sending text or keystrokes, running shell commands, reading on-screen output, controlling a running terminal program, watching a session for changes, or coordinating across multiple sessions (Code Review, Diff, Chat, etc.). This applies to single-session tasks as well as multi-session ones; if the user asks you to do something in their terminal and you have no way to act on a session, this is the tool to call. The user is prompted with a description of what orchestration grants and chooses to approve or decline. On approval, this chat switches to the orchestration tool surface (send_text, get_screen_contents, get_state, register_watch, etc.) starting with the next turn; the linked terminal or browser session, if any, is detached. Returns a string describing the outcome.";
+/// `TP:139-159`, "iTerm2" as "Termurion".
+pub const ENABLE_DESCRIPTION: &str = "Ask the user to enable orchestration mode for this chat. Use this whenever the task requires interacting with the user's Termurion sessions and you don't currently have the tools to do it: sending text or keystrokes, running shell commands, reading on-screen output, controlling a running terminal program, watching a session for changes, or coordinating across multiple sessions (Code Review, Diff, Chat, etc.). This applies to single-session tasks as well as multi-session ones; if the user asks you to do something in their terminal and you have no way to act on a session, this is the tool to call. The user is prompted with a description of what orchestration grants and chooses to approve or decline. On approval, this chat switches to the orchestration tool surface (send_text, get_screen_contents, get_state, register_watch, etc.) starting with the next turn; the linked terminal or browser session, if any, is detached. Returns a string describing the outcome.";
 
 pub const APPROVED: &str = "Orchestration is now active for the rest of this conversation. The orchestration toolset (send_text, get_state, list_workgroups, register_watch, start_code_review, etc.) is available to you now and you may call those tools in the continuation of this turn or any subsequent turn.";
 pub const DECLINED: &str = "User declined to enable orchestration.";
@@ -188,17 +188,17 @@ pub fn drop_chat_parks(parks: &mut Parks, chat: &str) -> Vec<String> {
     gone.into_iter().map(|(_, call)| call).collect()
 }
 
-/// `ChatAgent.swift:971-985`, "iTerm2" as "Tandem".
+/// `ChatAgent.swift:971-985`, "iTerm2" as "Termurion".
 pub const DISPLAY_POLICY: &str = concat!(
     "Terminal output display policy:",
     "\n",
-    "- Tandem displays raw terminal command output to the user as its own code block.",
+    "- Termurion displays raw terminal command output to the user as its own code block.",
     "\n",
     "- Do not repeat raw command output in prose, do not convert it into Markdown tables, and do not reformat listings such as ls, ps, df, netstat, or grep output.",
     "\n",
     "- After running a command, summarize only non-obvious findings or ask what to do next.",
     "\n",
-    "- Speak at the user\u{2019}s level: never expose internal identifiers or fields (session ids, workgroup ids, status_source, role_id) in prose. To point the user at a session, write its FULL @-prefixed id (Tandem renders it as the session\u{2019}s clickable name) or name it by role (\u{201c}the Code Review\u{201d}, \u{201c}your Chat\u{201d}); a partial or bare id is dead text, not a link, so never abbreviate one.",
+    "- Speak at the user\u{2019}s level: never expose internal identifiers or fields (session ids, workgroup ids, status_source, role_id) in prose. To point the user at a session, write its FULL @-prefixed id (Termurion renders it as the session\u{2019}s clickable name) or name it by role (\u{201c}the Code Review\u{201d}, \u{201c}your Chat\u{201d}); a partial or bare id is dead text, not a link, so never abbreviate one.",
     "\n",
     "- \u{201c}Workgroup\u{201d} is an internal grouping, not something the user named. Do not use the word \u{201c}workgroup\u{201d} or a wg-/workgroup_id with the user; refer to a session by its role, using the workgroup\u{2019}s human name only if you truly must disambiguate.",
     "\n",
@@ -441,7 +441,7 @@ mod tests {
     fn enable_follows_iterm2() {
         assert!(ENABLE_DESCRIPTION.starts_with("Ask the user to enable orchestration mode for this chat."));
         assert!(ENABLE_DESCRIPTION.ends_with("Returns a string describing the outcome."));
-        assert!(ENABLE_DESCRIPTION.contains("the user's Tandem sessions"));
+        assert!(ENABLE_DESCRIPTION.contains("the user's Termurion sessions"));
         assert!(!ENABLE_DESCRIPTION.contains("iTerm2"));
         assert_eq!(
             APPROVED,
@@ -462,7 +462,7 @@ mod tests {
     fn prompt_follows_iterm2() {
         assert_eq!(system_prompt("T"), format!("T\n\n{DISPLAY_POLICY}"));
         assert_eq!(system_prompt("  \n"), DISPLAY_POLICY);
-        assert!(DISPLAY_POLICY.starts_with("Terminal output display policy:\n- Tandem displays raw terminal command output"));
+        assert!(DISPLAY_POLICY.starts_with("Terminal output display policy:\n- Termurion displays raw terminal command output"));
         assert!(DISPLAY_POLICY.contains("the user\u{2019}s level") && DISPLAY_POLICY.contains("\u{201C}Workgroup\u{201D}"));
         assert!(!DISPLAY_POLICY.contains("iTerm2"));
         assert!(DISPLAY_POLICY.ends_with("If nothing new has happened since your last message, say nothing."));

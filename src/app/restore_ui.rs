@@ -41,7 +41,7 @@ impl App {
         }
     }
 
-    /// The same empty state without freezing later saves: Tandem stays resident and the next
+    /// The same empty state without freezing later saves: Termurion stays resident and the next
     /// window saves as usual (m13v1 Task 7, B7).
     pub(super) fn write_empty_state(&mut self) {
         if !self.state_frozen {
@@ -62,8 +62,8 @@ impl App {
         self.host.is_some() && crate::close_rules::keep_jobs(true, g.bool("RestoreWindowContents"), system_policy, g.bool("KillJobsInServersOnQuit"))
     }
 
-    /// Tandem is ending: with `keep`, every hosted shell stays in the host; otherwise the host
-    /// ends them all. Either way the frames reach the host before Tandem exits.
+    /// Termurion is ending: with `keep`, every hosted shell stays in the host; otherwise the host
+    /// ends them all. Either way the frames reach the host before Termurion exits.
     pub(super) fn leave_host(&mut self, keep: bool) {
         let Some(host) = self.host.take() else { return };
         if keep {
@@ -96,7 +96,7 @@ impl App {
             restore_state::write_atomic(&path, &bytes)
         });
         if result.is_ok() {
-            // Tandem's own state replaces an imported one.
+            // Termurion's own state replaces an imported one.
             let _ = std::fs::remove_file(Self::state_path().with_file_name(crate::settings_export::STATE_IMPORTED));
         }
         crate::rlog!("saving the windows for the next launch: {}", if result.is_ok() { "saved" } else { "failed" });
@@ -236,7 +236,7 @@ impl App {
             if let Some(pane) = self.panes.get_mut(&id) {
                 // A visible mark where output is missing, then a repaint.
                 let grays = restore_state::banner_grays(pane.screen.palette.bg);
-                pane.screen.feed_restored("", None, Some(("Output was cut short while Tandem was closed.", grays)));
+                pane.screen.feed_restored("", None, Some(("Output was cut short while Termurion was closed.", grays)));
                 pane.jiggle();
             }
         }
@@ -317,13 +317,13 @@ fn parse_host_key(v: &Value) -> Option<crate::reattach::HostKey> {
     Some(crate::reattach::HostKey { id: n("Id")? as u64, pid: u32::try_from(n("Pid")?).ok()?, offset: n("Offset")? as u64 })
 }
 
-/// A session's saved cookie ("Reusable Cookie", beside `HOST_KEY`), when it is one Tandem could
+/// A session's saved cookie ("Reusable Cookie", beside `HOST_KEY`), when it is one Termurion could
 /// have minted.
 pub(super) fn saved_cookie(session: &Value) -> Option<String> {
     session.get(crate::session_env::REUSABLE_COOKIE_KEY).and_then(|v| v.as_str()).filter(|c| crate::session_env::is_cookie(c)).map(str::to_string)
 }
 
-/// The stable id a session saved for the launch's restoration, canonical, when it is one Tandem
+/// The stable id a session saved for the launch's restoration, canonical, when it is one Termurion
 /// could have minted (the marker `arrangement::mark_adoptable` sets at launch).
 pub(super) fn stable_id_in(session: &Value) -> Option<String> {
     crate::arrangement::adoptable_stable_id(session)

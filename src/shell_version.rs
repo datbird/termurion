@@ -36,7 +36,7 @@ pub fn reported_shell<'a>(params: impl Iterator<Item = &'a str>) -> Option<&'a s
 /// Whether a report of `version` (None when it did not read as a number, which iTerm2's
 /// `integerValue` reads as 0) from `shell` (None when the report names none) suggests an
 /// upgrade: no shell, or older than the table's version for it. A shell no table names has
-/// latest 0 and never does, so Tandem's own PowerShell script ("pwsh", "powershell") is
+/// latest 0 and never does, so Termurion's own PowerShell script ("pwsh", "powershell") is
 /// never out of date.
 pub fn outdated(version: Option<u32>, shell: Option<&str>, critical_only: bool) -> bool {
     let table: &[(&str, i64)] = if critical_only { &CRITICAL } else { &LATEST };
@@ -107,7 +107,7 @@ mod tests {
         assert!(outdated(Some(21), Some("bash"), false));
         assert!(!outdated(Some(22), Some("bash"), false));
         assert!(!outdated(Some(1), Some("pwsh"), false), "a shell with no entry has latest 0");
-        assert!(!outdated(Some(1), Some("powershell"), true), "Tandem's own script never nags");
+        assert!(!outdated(Some(1), Some("powershell"), true), "Termurion's own script never nags");
         assert!(outdated(Some(1), None, true), "iTerm2 nags when no shell is named");
         assert!(outdated(None, None, true));
         assert!(outdated(None, None, false));

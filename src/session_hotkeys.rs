@@ -503,7 +503,7 @@ mod tests {
         assert_eq!(pick(&[], None, &[]), None);
         // The key window's active session is the first responder; the others are background.
         assert_eq!(focus_state(&[(false, Some(a)), (true, Some(b))]), (Some(b), vec![a]));
-        assert_eq!(focus_state(&[(false, Some(a)), (false, Some(b))]), (None, vec![a, b]), "Tandem not in front");
+        assert_eq!(focus_state(&[(false, Some(a)), (false, Some(b))]), (None, vec![a, b]), "Termurion not in front");
     }
 
     #[test]

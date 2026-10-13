@@ -50,7 +50,7 @@ pub(super) fn menu_text(item: &Item) -> String {
 }
 
 /// The accelerator text of an item: the real keys of its chord, or none when it has no chord
-/// that reaches Tandem. Menus show it after a tab, so a changed shortcut key swaps only that part.
+/// that reaches Termurion. Menus show it after a tab, so a changed shortcut key swaps only that part.
 pub(super) fn chord_text(item: &Item) -> Option<String> {
     let shortcut = crate::shortcut_key::mode();
     item.chord().filter(|c| shortcut.reaches(c)).map(|c| shortcut.label(&c))
@@ -158,7 +158,7 @@ pub(super) struct MenuBar {
     /// Edit > Engage Artificial Intelligence, enabled only while `GenerativeAIAllowed` is on
     /// (`PTA:169-171`; `sync_checks`).
     pub(super) engage_ai: Option<MenuItem>,
-    /// iTerm2 > Make Tandem Default Term, enabled while Tandem is not the default terminal (`AD:481-482`).
+    /// iTerm2 > Make Termurion Default Term, enabled while Termurion is not the default terminal (`AD:481-482`).
     pub(super) make_default: Option<MenuItem>,
     /// Edit > Explain Output with AI, enabled with a selection or a command mark in the focused
     /// pane (`PTA:172-174`; `sync_checks`).
@@ -169,7 +169,7 @@ pub(super) struct MenuBar {
     pub(super) ssh_disconnect: Option<MenuItem>,
     /// Shell > ssh > Download Files, enabled while any host is connected (`refresh_download_files_menu`, P21).
     pub(super) ssh_download_files: Option<MenuItem>,
-    /// Tandem > Install, Reinstall and Uninstall Claude Code Integration (`refresh_claude_menu`
+    /// Termurion > Install, Reinstall and Uninstall Claude Code Integration (`refresh_claude_menu`
     /// enables them by `claude_code::menu_enabled`; muda cannot hide an item).
     pub(super) claude_items: Option<[MenuItem; 3]>,
     /// iTerm2 > Suppressed Alerts, retitled with the count and time (`retitle_suppressed_menu`).
@@ -809,7 +809,7 @@ impl App {
             return self.relayout();
         }
         match item.selector.as_str() {
-            "showAbout:" => info_box(&format!("Tandem {}\nAn iTerm2-style terminal for Windows.", crate::update::current_version())),
+            "showAbout:" => info_box(&format!("Termurion {}\nAn iTerm2-style terminal for Windows.", crate::update::current_version())),
             "showPrefWindow:" => self.open_settings(event_loop, Mode::Settings),
             "checkForUpdatesFromMenu:" => self.check_for_updates(true),
             // Help pages and the license file: fixed targets, the page through the one guard.
@@ -1002,7 +1002,7 @@ impl App {
                 }
             }
             "closeCurrentSession:" => {
-                // Close counts as using Tandem (`AD:2728`): no grace period after it.
+                // Close counts as using Termurion (`AD:2728`): no grace period after it.
                 self.note_interaction();
                 if let Some(id) = self.focused_id().filter(|_| self.layout_allowed(crate::winmodel::LayoutOp::ClosePane)).filter(|id| self.confirm_close(close_ui::Closing::Session(*id))) {
                     self.close_session_undoable(id, event_loop);
@@ -1660,7 +1660,7 @@ mod install_tests {
 /// How Install Shell Integration sets up a shell.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Plan {
-    /// Tandem's PowerShell script, loaded from $PROFILE.
+    /// Termurion's PowerShell script, loaded from $PROFILE.
     Pwsh,
     /// iTerm2's own installer, for bash, zsh, and fish (WSL, Git Bash, ssh).
     Curl,
@@ -1681,8 +1681,8 @@ pub(super) fn curl_command(utilities: bool) -> &'static str {
     }
 }
 
-/// Tandem's box for `Plan::Curl`: "Also install iTerm2 Utilities?" as Yes/No/Cancel.
-const CURL_TEXT: &str = "Tandem will type iTerm2's installer into this session. It adds iTerm2's script to your shell's startup file.\n\nAlso install iTerm2 Utilities? Utilities include scripts to download files, display images inline, and more.\n\nYes types:\ncurl -L https://iterm2.com/shell_integration/install_shell_integration_and_utilities.sh | bash\n\nNo types:\ncurl -L https://iterm2.com/shell_integration/install_shell_integration.sh | bash";
+/// Termurion's box for `Plan::Curl`: "Also install iTerm2 Utilities?" as Yes/No/Cancel.
+const CURL_TEXT: &str = "Termurion will type iTerm2's installer into this session. It adds iTerm2's script to your shell's startup file.\n\nAlso install iTerm2 Utilities? Utilities include scripts to download files, display images inline, and more.\n\nYes types:\ncurl -L https://iterm2.com/shell_integration/install_shell_integration_and_utilities.sh | bash\n\nNo types:\ncurl -L https://iterm2.com/shell_integration/install_shell_integration.sh | bash";
 
 /// Yes, No or Cancel for `text`, the default button Yes when `yes_first`, else No: Some(true),
 /// Some(false), None.
@@ -1775,7 +1775,7 @@ impl App {
             Plan::Pwsh => {
                 let path = crate::shell_inject::script_path(&std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir));
                 let dir = path.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
-                if !ask(&format!("Tandem will save its PowerShell script to\n{}\nand add a line that loads it to your PowerShell profile ($PROFILE).\n\nIf PowerShell's execution policy blocks scripts (Restricted or AllSigned), Tandem also sets it to RemoteSigned for your user only. Continue?", path.display())) {
+                if !ask(&format!("Termurion will save its PowerShell script to\n{}\nand add a line that loads it to your PowerShell profile ($PROFILE).\n\nIf PowerShell's execution policy blocks scripts (Restricted or AllSigned), Termurion also sets it to RemoteSigned for your user only. Continue?", path.display())) {
                     return;
                 }
                 if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, PWSH_SCRIPT)) {
@@ -1794,7 +1794,7 @@ impl App {
 pub(super) fn info_box(text: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK, MessageBoxW};
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Tandem").as_ptr(), MB_OK | MB_ICONINFORMATION) };
+    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Termurion").as_ptr(), MB_OK | MB_ICONINFORMATION) };
 }
 
 /// The Window menu's window list (`PT:3069-3084`): (registry key, text, checked) for each
@@ -1843,7 +1843,7 @@ mod tests {
         assert!(super::tray_window_items(&[], None, false, 0).is_empty());
     }
     /// `AD:402-419`: release builds remove Capture GPU Frame; builds without `ITERM_DEBUG` (every
-    /// Tandem build) remove Check Settings Control Truncation.
+    /// Termurion build) remove Check Settings Control Truncation.
     #[test]
     fn debug_items_follow_iterm2() {
         assert!(crate::menus::hidden_in_menu("captureNextMetalFrame:", false));

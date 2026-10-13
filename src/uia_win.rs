@@ -5,7 +5,7 @@
 //!
 //! Threading: provider methods run on UI Automation's threads (free threaded) and read only
 //! the last `WindowSnapshot` the window thread published, an `Arc` replaced whole under a short
-//! mutex and never held across a COM call. Anything that changes Tandem (`Select`,
+//! mutex and never held across a COM call. Anything that changes Termurion (`Select`,
 //! `ScrollIntoView`) is handed to `send`, which posts it to the window thread. Events are raised
 //! from the window thread only. Every COM method body runs in `guard`: a panic inside an
 //! `extern "system"` method aborts the process, so it becomes `E_FAIL`. A pane that is no longer
@@ -77,7 +77,7 @@ pub struct WindowSnapshot {
     pub panes: Vec<PaneSnapshot>,
 }
 
-/// What a client asks of Tandem; posted to the window thread.
+/// What a client asks of Termurion; posted to the window thread.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
     Select { pane: u64, start: usize, end: usize },
@@ -395,7 +395,7 @@ impl IRawElementProviderSimple_Impl for RootProvider_Impl {
                 UIA_ControlTypePropertyId => VARIANT::from(UIA_PaneControlTypeId.0),
                 UIA_NamePropertyId => VARIANT::from(self.shared.snap()?.title.as_str()),
                 UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId | UIA_IsEnabledPropertyId => VARIANT::from(true),
-                UIA_FrameworkIdPropertyId => VARIANT::from("Tandem"),
+                UIA_FrameworkIdPropertyId => VARIANT::from("Termurion"),
                 _ => VARIANT::default(),
             })
         })
@@ -509,7 +509,7 @@ impl IRawElementProviderSimple_Impl for PaneProvider_Impl {
                 UIA_AutomationIdPropertyId => VARIANT::from(format!("TandemPane{}", p.id).as_str()),
                 UIA_HasKeyboardFocusPropertyId => VARIANT::from(p.focused),
                 UIA_IsKeyboardFocusablePropertyId | UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId | UIA_IsEnabledPropertyId => VARIANT::from(true),
-                UIA_FrameworkIdPropertyId => VARIANT::from("Tandem"),
+                UIA_FrameworkIdPropertyId => VARIANT::from("Termurion"),
                 _ => VARIANT::default(),
             })
         })
@@ -1050,7 +1050,7 @@ mod tests {
     }
 
     fn win_snap(panes: Vec<PaneSnapshot>) -> WindowSnapshot {
-        WindowSnapshot { title: "Tandem".into(), rect: (100, 200, 600, 600), panes }
+        WindowSnapshot { title: "Termurion".into(), rect: (100, 200, 600, 600), panes }
     }
 
     type Sent = Arc<Mutex<Vec<Request>>>;

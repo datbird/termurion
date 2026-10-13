@@ -2,7 +2,7 @@
 //! pane's corner (`SV:1320-1400`, `SV:1937-1976`, `HLH`), the "Copied" toast (`WVA:193-196`) and
 //! the helpers of the announcement bars. A child web view covers anything the scene draws, so the
 //! tip and the toast are one small undecorated, non-activating popup window drawn by egui; they
-//! are Tandem's own text and are never inside the page, which cannot restyle or forge them.
+//! are Termurion's own text and are never inside the page, which cannot restyle or forge them.
 //! Page-derived text (the URL) passes `browser::display_url` first, so the real host shows.
 
 use serde_json::Value;
@@ -50,7 +50,7 @@ pub fn hover_of(body: &Value) -> Option<Hover> {
 }
 
 /// What tells the page to forget its hovered link (`HLH:73-74`). Evaluated only in the main frame's
-/// Tandem world, never in the page world: the secret-checking handler lives there.
+/// Termurion world, never in the page world: the secret-checking handler lives there.
 pub fn clear_script(secret: &str) -> String {
     let secret: String = secret.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     format!("(function() {{window.iTermHoverLinkHandler?.clearHover('{secret}');}})();")
@@ -141,7 +141,7 @@ pub enum Step {
     Skip,
 }
 
-/// Windows are made at most this often (review I2: a page cannot make Tandem churn windows).
+/// Windows are made at most this often (review I2: a page cannot make Termurion churn windows).
 pub const MIN_CREATE_GAP: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// The one tip window's life: it is made once and then hidden and reused; only the pane going, the
@@ -242,7 +242,7 @@ pub struct TipWindow {
 impl TipWindow {
     #[allow(clippy::too_many_arguments)]
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, text: &str, at: R) -> Result<TipWindow, String> {
-        let attrs = crate::status_popover_ui::popover_attributes("Tandem Link", 10.0, 10.0).with_active(false).with_resizable(false).with_window_level(winit::window::WindowLevel::AlwaysOnTop);
+        let attrs = crate::status_popover_ui::popover_attributes("Termurion Link", 10.0, 10.0).with_active(false).with_resizable(false).with_window_level(winit::window::WindowLevel::AlwaysOnTop);
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
         crate::open_quickly_ui::install_fonts(host.ctx());
         host.follow_theme(None);

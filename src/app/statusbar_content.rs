@@ -1063,7 +1063,7 @@ mod tests {
         assert_eq!(dir_title(r"C:\src", true), "\u{2605} C:\\src");
         assert_eq!(dir_title(r"C:\src", false), r"C:\src");
         assert_eq!(folder_name(r"C:\Users\rob\src\"), "src");
-        assert_eq!(folder_name("/home/rob/tandem"), "tandem");
+        assert_eq!(folder_name("/home/rob/termurion"), "termurion");
         assert_eq!(folder_name(r"C:\"), "C:");
         assert_eq!(shown_path("/C:/Users/rob"), r"C:\Users\rob");
         assert_eq!(shown_path("/home/rob"), "/home/rob");

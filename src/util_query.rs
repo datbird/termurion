@@ -144,9 +144,9 @@ pub fn getvar_help() -> String {
         "",
         "Usage: it2getvar variable_name",
         "",
-        "Output value of the Tandem variable",
+        "Output value of the Termurion variable",
         "",
-        "See the Variables Reference for information about built-in Tandem variables:",
+        "See the Variables Reference for information about built-in Termurion variables:",
         "  -> https://iterm2.com/documentation-variables.html",
         "",
     ]
@@ -162,13 +162,13 @@ pub fn profile_help() -> String {
         "Usage: it2profile -s profile_name",
         "       it2profile -g",
         "",
-        "Change Tandem session profile on the fly",
+        "Change Termurion session profile on the fly",
         "",
         "Options:",
         "",
-        "    -s      Set current Tandem session profile to specified profile name",
+        "    -s      Set current Termurion session profile to specified profile name",
         "                empty string refers to profile marked as Default",
-        "    -g      Get current Tandem session profile name",
+        "    -g      Get current Termurion session profile name",
         "    -r      Reset to the session initial profile",
         "",
     ]
@@ -191,7 +191,7 @@ fn report_variable(io: &mut Io, body: &str) -> i32 {
             0
         }
         None => {
-            put(io.err, "ERROR: Failed to read response from Tandem\n");
+            put(io.err, "ERROR: Failed to read response from Termurion\n");
             2
         }
     }
@@ -299,7 +299,7 @@ pub fn read_stanza(next: &mut dyn FnMut() -> Option<u8>) -> String {
 /// tar's output on stderr; tar's code is the utility's.
 pub fn it2ul(args: &[String], io: &mut Io) -> i32 {
     let location = args.first().cloned().unwrap_or_else(|| io.cwd.to_string_lossy().into_owned());
-    // Tandem never lets a program open a network path for it (implementer rule).
+    // Termurion never lets a program open a network path for it (implementer rule).
     if !util_cli::may_open(&util_cli::join_local(&io.cwd, &location)) {
         put(io.err, &format!("Fatal error: {location}: network paths are not supported\n"));
         return 1;
@@ -546,7 +546,7 @@ mod tests {
 
         let mut h = console(b"");
         assert_eq!(h.run("it2getvar", &["user.x"]), 2);
-        assert_eq!(text(&h.err), "ERROR: Failed to read response from Tandem\n");
+        assert_eq!(text(&h.err), "ERROR: Failed to read response from Termurion\n");
         assert!(h.out.is_empty());
         assert!(h.tty.restored);
 
@@ -629,7 +629,7 @@ mod tests {
 
     #[test]
     fn query_texts_follow_the_scripts() {
-        let help = "\nUsage: it2getvar variable_name\n\nOutput value of the Tandem variable\n\nSee the Variables Reference for information about built-in Tandem variables:\n  -> https://iterm2.com/documentation-variables.html\n\n";
+        let help = "\nUsage: it2getvar variable_name\n\nOutput value of the Termurion variable\n\nSee the Variables Reference for information about built-in Termurion variables:\n  -> https://iterm2.com/documentation-variables.html\n\n";
         assert_eq!(getvar_help(), help);
         for (args, code, err) in [
             (&[][..], 0, help.to_string()),
@@ -648,9 +648,9 @@ mod tests {
         let help = profile_help();
         assert_eq!(
             help,
-            "\nUsage: it2profile -s profile_name\n       it2profile -g\n\nChange Tandem session profile on the fly\n\nOptions:\n\n    -s      Set current Tandem session profile to specified profile name\n                empty string refers to profile marked as Default\n    -g      Get current Tandem session profile name\n    -r      Reset to the session initial profile\n\n"
+            "\nUsage: it2profile -s profile_name\n       it2profile -g\n\nChange Termurion session profile on the fly\n\nOptions:\n\n    -s      Set current Termurion session profile to specified profile name\n                empty string refers to profile marked as Default\n    -g      Get current Termurion session profile name\n    -r      Reset to the session initial profile\n\n"
         );
-        assert!(help.contains("Change Tandem session profile on the fly") && !help.contains("iTerm2"));
+        assert!(help.contains("Change Termurion session profile on the fly") && !help.contains("iTerm2"));
         for (args, code, err) in [
             (&[][..], 0, help.clone()),
             (&["-h"][..], 0, help.clone()),

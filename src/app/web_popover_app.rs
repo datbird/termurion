@@ -55,7 +55,7 @@ pub(super) fn external_uri_run(url: &str, user: bool) -> ExternalRun {
     match crate::semantic::guard_open(url, false) {
         crate::semantic::Run::Open(t) => ExternalRun::Open(t),
         crate::semantic::Run::Blocked(why) => ExternalRun::Notice(why),
-        _ => ExternalRun::Notice(format!("Tandem does not open {}: links.", webhost::scheme_of(url))),
+        _ => ExternalRun::Notice(format!("Termurion does not open {}: links.", webhost::scheme_of(url))),
     }
 }
 
@@ -166,7 +166,7 @@ impl App {
         };
         let Some(env) = self.web_env(Store::Default) else { return };
         let view = WebView::create(env, hwnd, id, bounds, setup, sink);
-        // A script's HTML is served by the host's one function on Tandem's own origin, never loaded
+        // A script's HTML is served by the host's one function on Termurion's own origin, never loaded
         // with NavigateToString; Quick Look is the page the person pointed at.
         let mut served = None;
         match &kind {
@@ -336,7 +336,7 @@ mod tests {
         assert_eq!(external_uri_run("mailto:a@b.c", false), ExternalRun::Nothing, "only a person's gesture");
         for bad in ["ms-msdt:id", "search-ms:query=x", "ms-officecmd:x", "file:///C:/Windows/system32/calc.exe", "file://srv/share/x", "ssh://host"] {
             match external_uri_run(bad, true) {
-                ExternalRun::Notice(n) => assert!(n.contains("Tandem"), "{bad}: {n}"),
+                ExternalRun::Notice(n) => assert!(n.contains("Termurion"), "{bad}: {n}"),
                 other => panic!("{bad}: {other:?}"),
             }
         }

@@ -30,7 +30,7 @@ impl App {
                 p.screen.unfold(f);
             }
         } else if p.screen.fold(a, b).is_none() {
-            self.banners.set("action", "Tandem cannot fold the cursor's line, or while a full-screen app runs.");
+            self.banners.set("action", "Termurion cannot fold the cursor's line, or while a full-screen app runs.");
         }
     }
 
@@ -63,7 +63,7 @@ impl App {
             _ => None,
         };
         if p.screen.fold_as(first, last, caption).is_none() {
-            self.banners.set("action", "Tandem cannot fold while a full-screen app runs.");
+            self.banners.set("action", "Termurion cannot fold while a full-screen app runs.");
         }
     }
 

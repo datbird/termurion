@@ -1,8 +1,8 @@
 //! The View Source page (milestone 13x4, Task 6): iTerm2's source page generator
-//! (`ViewSource/view-source.html`, `SH` = its scheme handler) and the rule for when Tandem serves it.
+//! (`ViewSource/view-source.html`, `SH` = its scheme handler) and the rule for when Termurion serves it.
 //! Pure. The SOURCE is a web page's text and the URL is a web page's URL, so both ride the template
 //! as inert data: the source is HTML-escaped (and so can never open a tag, a script or an attribute
-//! in Tandem's `iterm2-about:` origin), the URL is escaped for the visible line and is a JSON string
+//! in Termurion's `iterm2-about:` origin), the URL is escaped for the visible line and is a JSON string
 //! (`<`, `>`, `&` as `\u` escapes) in the script, and the template is filled in ONE pass so a value
 //! that holds `{{NONCE}}`, `{{URL}}` or `</script>` is never read as a slot. The response also
 //! carries `browser_pages`' per-load nonce policy; the one script is the copied highlighter.
@@ -95,7 +95,7 @@ pub fn apply_patches(template: &str, patches: &[(&str, &str, &str)]) -> Result<S
 }
 
 /// The template as served: iTerm2's file (plus the nonce on its one script, the 13x precedent) with
-/// Tandem's load-time patches.
+/// Termurion's load-time patches.
 fn template() -> Result<String, String> {
     apply_patches(&resource("view-source.html").unwrap_or_default().replace(EMOJI, GLYPH_SPAN), &PATCHES)
 }
@@ -106,12 +106,12 @@ fn render(source_html: &str, url: &str, common_css: &str, nonce: &str) -> Option
 }
 
 /// The load-time patches of the copied template (R13x3-1/-2 pattern): each target must be found
-/// exactly once or no page is served. (name, iTerm2's text, Tandem's text)
+/// exactly once or no page is served. (name, iTerm2's text, Termurion's text)
 pub const PATCHES: [(&str, &str, &str); 5] = [
     ("URL_JSON", "            const currentURL = '{{URL}}';\n",
         "            const currentURL = {{URL_JSON}};\n"),
     ("RESOLVE", "            function resolveURL(url) {\n                try {\n                    return new URL(url, currentURL).href;\n                } catch (e) {\n                    return url;\n                }\n            }\n",
-        "            function resolveURL(url) {\n                // Tandem: only a parsed http(s) URL is made a link (the parser percent-encodes spaces\n                // and quotes, so no source text can add an attribute to the anchor), never the raw text.\n                try {\n                    const u = new URL(url, currentURL);\n                    return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null;\n                } catch (e) {\n                    return null;\n                }\n            }\n"),
+        "            function resolveURL(url) {\n                // Termurion: only a parsed http(s) URL is made a link (the parser percent-encodes spaces\n                // and quotes, so no source text can add an attribute to the anchor), never the raw text.\n                try {\n                    const u = new URL(url, currentURL);\n                    return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : null;\n                } catch (e) {\n                    return null;\n                }\n            }\n"),
     ("SITE_ESCAPED", "            html = html.replace(/(\\s(?:src|href|action|data|poster|background)=&quot;)([^&\"]+?)(&quot;)/gi, \n                (match, before, url, after) => {\n                    if (!url || url.trim() === '' || url === '#' || url.startsWith('javascript:') || url.startsWith('data:')) {\n                        return match;\n                    }\n                    \n                    const linkURL = url.startsWith('http') ? url : resolveURL(url);\n                    return `${before}<a href=\"${linkURL}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"source-link\">${url}</a>${after}`;\n",
         "            html = html.replace(/(\\s(?:src|href|action|data|poster|background)=&quot;)([^&\"]+?)(&quot;)/gi, \n                (match, before, url, after) => {\n                    if (!url || url.trim() === '' || url === '#' || url.startsWith('javascript:') || url.startsWith('data:')) {\n                        return match;\n                    }\n                    \n                    const linkURL = resolveURL(url);\n                    if (!linkURL) return match;\n                    return `${before}<a href=\"${linkURL}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"source-link\">${url}</a>${after}`;\n"),
     ("SITE_QUOTED", "            html = html.replace(/(\\s(?:src|href|action|data|poster|background)=\")([^\"]+?)(\")/gi, \n                (match, before, url, after) => {\n                    if (!url || url.trim() === '' || url === '#' || url.startsWith('javascript:') || url.startsWith('data:')) {\n                        return match;\n                    }\n                    \n                    const linkURL = url.startsWith('http') ? url : resolveURL(url);\n                    return `${before}<a href=\"${linkURL}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"source-link\">${url}</a>${after}`;\n",
@@ -129,7 +129,7 @@ pub fn page(raw: &str, url: &str, common_css: &str, nonce: &str) -> Option<Strin
     render(&escape_source(&raw[..end]), url, common_css, nonce)
 }
 
-/// Nothing is waiting (`SH:53-57`); iTerm2 leaves `{{URL}}` showing, Tandem shows an empty line.
+/// Nothing is waiting (`SH:53-57`); iTerm2 leaves `{{URL}}` showing, Termurion shows an empty line.
 pub fn fallback_page(common_css: &str, nonce: &str) -> Option<String> {
     render(NO_SOURCE, "", common_css, nonce)
 }
@@ -319,7 +319,7 @@ mod tests {
         assert!(!p.contains("<img"));
         assert_eq!(p.matches("<!--").count(), resource("view-source.html").unwrap().matches("<!--").count(), "no comment opener from the source");
         assert!(p.contains("{{NONCE}}{{URL}}") && p.contains("&lt;!--"));
-        assert_eq!(p.matches("nonce=\"").count(), 1, "only Tandem's nonce attribute exists");
+        assert_eq!(p.matches("nonce=\"").count(), 1, "only Termurion's nonce attribute exists");
         assert!(p.contains(&format!("<script nonce=\"{nonce}\">")));
         assert!(!p.contains("FAKE\">") && p.contains("&lt;script nonce=&quot;FAKE&quot;&gt;"), "the fake nonce is escaped text");
         assert!(p.contains("&lt;img src=x onerror=alert(1)&gt;"));
@@ -374,14 +374,14 @@ mod tests {
     }
 
     /// The copied file is iTerm2's but for the nonce on its script tag (the 13x precedent): every
-    /// Tandem change is a load-time patch (B6).
+    /// Termurion change is a load-time patch (B6).
     #[test]
     fn the_copied_template_is_iterm2s_but_for_the_nonce() {
         let t = resource("view-source.html").unwrap();
         assert_eq!(t.matches("<script nonce=\"{{NONCE}}\">").count(), 1);
         for (name, raw, typed) in PATCHES.iter() {
             assert_eq!(t.matches(raw).count(), 1, "{name}: iTerm2's text is in the file exactly once");
-            assert!(!t.contains(typed), "{name}: Tandem's text is not in the file");
+            assert!(!t.contains(typed), "{name}: Termurion's text is not in the file");
         }
         assert!(t.contains("const currentURL = '{{URL}}';") && !t.contains("{{URL_JSON}}"));
     }

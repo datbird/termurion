@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 /// How long a cookie lasts: a Single cookie authorizes one connection (`J:50-52`); a Session
-/// cookie authorizes any number until removed (Tandem's session cookies, a Decision; iTerm2's
+/// cookie authorizes any number until removed (Termurion's session cookies, a Decision; iTerm2's
 /// reusable cookies expire instead, `J:40-48`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CookieUse {
@@ -13,7 +13,7 @@ pub enum CookieUse {
     Session,
 }
 
-/// The cookies Tandem has handed out (`iTermWebSocketCookieJar`). Cookies are secrets: `Debug`
+/// The cookies Termurion has handed out (`iTermWebSocketCookieJar`). Cookies are secrets: `Debug`
 /// shows only how many there are, and a lookup compares every cookie in constant time.
 #[derive(Clone, Default)]
 pub struct Jar {
@@ -108,7 +108,7 @@ pub const NOAUTH_MAGIC: &str = "61DF88DC-3423-4823-B725-22570E01C027";
 /// The allow-all file's path exactly as the `iterm2` package builds it on Windows:
 /// `os.path.expanduser("~/Library/Application Support/iTerm2/disable-automation-auth")`, which is
 /// `USERPROFILE` followed by the rest with its forward slashes (`PY/auth.py:139-141`). The
-/// package's `IT2_SUITE` override is not followed: Tandem is always "iTerm2" to the package.
+/// package's `IT2_SUITE` override is not followed: Termurion is always "iTerm2" to the package.
 pub fn noauth_path(userprofile: &str) -> String {
     format!("{userprofile}/Library/Application Support/iTerm2/disable-automation-auth")
 }
@@ -125,7 +125,7 @@ pub fn noauth_contents(path: &str) -> String {
 pub enum AllowAll {
     /// No file, or not a plain file owned by the user: a cookie is required.
     None,
-    /// Exactly the expected contents: every program running as the user, at Tandem's elevation,
+    /// Exactly the expected contents: every program running as the user, at Termurion's elevation,
     /// may connect without a cookie.
     Valid,
     /// A plain file of the user's with any other size or contents, or one that cannot be read or
@@ -311,12 +311,12 @@ pub fn allow_all_step(now: AllowAll, want_allow_all: bool) -> AllowAllStep {
     }
 }
 
-// The alert texts (iTerm2's, with "iTerm2" replaced by "Tandem" and Mac words by Windows words).
+// The alert texts (iTerm2's, with "iTerm2" replaced by "Termurion" and Mac words by Windows words).
 pub const ENABLE_HEADING: &str = "Enable Python API?";
-pub const ENABLE_TEXT: &str = "The Python API allows scripts you run to control Tandem and access all its data.";
+pub const ENABLE_TEXT: &str = "The Python API allows scripts you run to control Termurion and access all its data.";
 pub const ENABLE_ID: &str = "NoSyncEnableAPIServer";
 pub const ALLOW_HEADING: &str = "Allow Python API Usage?";
-pub const ALLOW_TEXT: &str = "Another process is trying to use the Tandem API. The API allows a script to control Tandem and view and modify its contents. Allow the connection?";
+pub const ALLOW_TEXT: &str = "Another process is trying to use the Termurion API. The API allows a script to control Termurion and view and modify its contents. Allow the connection?";
 pub const NO_COOKIE_SUFFIX: &str =
     "\n\nAlthough you have chosen to allow connections automatically, this script has not presented a valid cookie.";
 pub const OK: &str = "OK";
@@ -345,7 +345,7 @@ pub const ALLOW_ALL_HEADING: &str = "Disable per-app authentication?";
 pub const ALLOW_ALL_TEXT: &str = "Do you want to allow all apps running on this machine to use the Python API?\n\nThis will disable the check for a cookie. Only programs running as you, at the same elevation, can connect.";
 pub const AUTH_URL: &str = "https://iterm2.com/python-api-auth.html";
 pub const RESET_HEADING: &str = "Python API Permissions Reset";
-pub const RESET_TEXT: &str = "The location of your user profile folder appears to have moved or the allow-all file's contents have changed unexpectedly. As a precaution, the authentication mechanism for Python API scripts for Tandem has been reverted to always require a cookie.";
+pub const RESET_TEXT: &str = "The location of your user profile folder appears to have moved or the allow-all file's contents have changed unexpectedly. As a precaution, the authentication mechanism for Python API scripts for Termurion has been reverted to always require a cookie.";
 pub const REVEAL_PREFERENCE: &str = "Reveal Preference";
 pub const RESET_ID: &str = "NoSyncAppSupportMoved";
 pub const CHANGE_FAILED_HEADING: &str = "Error changing API permissions setting";
@@ -579,12 +579,12 @@ mod tests {
     #[test]
     fn texts_follow_iterm2() {
         assert_eq!(ENABLE_HEADING, "Enable Python API?");
-        assert_eq!(ENABLE_TEXT, "The Python API allows scripts you run to control Tandem and access all its data.");
+        assert_eq!(ENABLE_TEXT, "The Python API allows scripts you run to control Termurion and access all its data.");
         assert_eq!(ENABLE_ID, "NoSyncEnableAPIServer");
         assert_eq!(ALLOW_HEADING, "Allow Python API Usage?");
         assert_eq!(
             ALLOW_TEXT,
-            "Another process is trying to use the Tandem API. The API allows a script to control Tandem and view and modify its contents. Allow the connection?"
+            "Another process is trying to use the Termurion API. The API allows a script to control Termurion and view and modify its contents. Allow the connection?"
         );
         assert_eq!(
             NO_COOKIE_SUFFIX,
@@ -619,7 +619,7 @@ mod tests {
         assert_eq!(RESET_HEADING, "Python API Permissions Reset");
         assert_eq!(
             RESET_TEXT,
-            "The location of your user profile folder appears to have moved or the allow-all file's contents have changed unexpectedly. As a precaution, the authentication mechanism for Python API scripts for Tandem has been reverted to always require a cookie."
+            "The location of your user profile folder appears to have moved or the allow-all file's contents have changed unexpectedly. As a precaution, the authentication mechanism for Python API scripts for Termurion has been reverted to always require a cookie."
         );
         assert_eq!(REVEAL_PREFERENCE, "Reveal Preference");
         assert_eq!(RESET_ID, "NoSyncAppSupportMoved");

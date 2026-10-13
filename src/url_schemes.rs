@@ -6,14 +6,14 @@
 
 use std::path::Path;
 
-/// The schemes the "URL schemes:" popup lists and Tandem may register for: iTerm2's
-/// `CFBundleURLTypes` narrowed to the ones a Tandem link opens (P8). http, https, mailto, news and
-/// the rest wait for a Browser profile: registering them would make Tandem a candidate default
+/// The schemes the "URL schemes:" popup lists and Termurion may register for: iTerm2's
+/// `CFBundleURLTypes` narrowed to the ones a Termurion link opens (P8). http, https, mailto, news and
+/// the rest wait for a Browser profile: registering them would make Termurion a candidate default
 /// browser or mail program whose handler opens an unrelated terminal tab.
 pub const SCHEMES: [&str; 3] = ["ftp", "ssh", "telnet"];
-/// Windows' Default apps page for Tandem, opened when Windows keeps another handler (a UserChoice
+/// Windows' Default apps page for Termurion, opened when Windows keeps another handler (a UserChoice
 /// is hash protected: a program cannot set it, the person can).
-pub const DEFAULT_APPS_URI: &str = "ms-settings:defaultapps?registeredAppUser=Tandem";
+pub const DEFAULT_APPS_URI: &str = "ms-settings:defaultapps?registeredAppUser=Termurion";
 /// iTerm2's key for the table (`LS`); a globals value with no settings row.
 pub const HANDLERS_KEY: &str = "URLHandlersByGuid";
 
@@ -22,30 +22,30 @@ pub const SELECT: &str = "Select URL Schemes\u{2026}";
 pub const NO_HANDLER: &str = "There is currently no handler.";
 
 pub fn not_default(scheme: &str) -> String {
-    format!("Tandem is not the default handler for {scheme}. Would you like to set Tandem as the default handler?")
+    format!("Termurion is not the default handler for {scheme}. Would you like to set Termurion as the default handler?")
 }
 
 const ANOTHER_PROGRAM: &str = "another program";
 
 pub fn replaces(program: &str) -> String {
-    format!("Tandem will replace this program's registration: {program}")
+    format!("Termurion will replace this program's registration: {program}")
 }
 
-/// Tandem's own: Windows keeps the user's choice, so Tandem's entry waits for the person.
+/// Termurion's own: Windows keeps the user's choice, so Termurion's entry waits for the person.
 pub fn not_effective(scheme: &str) -> String {
-    format!("Windows keeps another app as the handler for {scheme} links, so Tandem's entry will not take effect until you choose Tandem in Settings > Apps > Default apps.")
+    format!("Windows keeps another app as the handler for {scheme} links, so Termurion's entry will not take effect until you choose Termurion in Settings > Apps > Default apps.")
 }
 
 pub fn current_handler(name: &str) -> String {
     format!("The current handler is: {name}")
 }
 
-/// Tandem's own: shown when Windows' protected user choice keeps another app as the handler.
+/// Termurion's own: shown when Windows' protected user choice keeps another app as the handler.
 pub fn protected(scheme: &str) -> String {
-    format!("Windows keeps another app as the handler for {scheme} links. Choose Tandem for {scheme} in Settings > Apps > Default apps.")
+    format!("Windows keeps another app as the handler for {scheme} links. Choose Termurion for {scheme} in Settings > Apps > Default apps.")
 }
 
-/// Whether `scheme` is one Tandem lists (the one gate before any registry write or delete).
+/// Whether `scheme` is one Termurion lists (the one gate before any registry write or delete).
 pub fn is_listed(scheme: &str) -> bool {
     SCHEMES.contains(&scheme)
 }
@@ -71,12 +71,12 @@ fn progid(scheme: &str) -> String {
 const CAPABILITIES: &str = "Software\\Tandem\\Capabilities";
 const ASSOCIATIONS: &str = "Software\\Tandem\\Capabilities\\URLAssociations";
 const REGISTERED_APPS: &str = "Software\\RegisteredApplications";
-/// Where the exe path each OK registered is kept, one value per scheme (Tandem's own key).
+/// Where the exe path each OK registered is kept, one value per scheme (Termurion's own key).
 const RECORDED: &str = "Software\\Tandem\\Registered";
 
-/// Every value Tandem writes to be listed as a handler of `scheme` (key, name, value; `""` is a key's
+/// Every value Termurion writes to be listed as a handler of `scheme` (key, name, value; `""` is a key's
 /// default): its ProgId, its capabilities and its RegisteredApplications entry. Empty for a scheme
-/// Tandem does not list. The scheme key `Software\Classes\<scheme>` is not here: it is Tandem's only
+/// Termurion does not list. The scheme key `Software\Classes\<scheme>` is not here: it is Termurion's only
 /// after the person's OK (`WinRegistry::register_under`).
 pub fn registry_entries(exe: &Path, scheme: &str) -> Vec<(String, String, String)> {
     if !is_listed(scheme) || !exe_ok(exe) {
@@ -85,9 +85,9 @@ pub fn registry_entries(exe: &Path, scheme: &str) -> Vec<(String, String, String
     let e = |k: &str, n: &str, v: String| (k.to_string(), n.to_string(), v);
     let id = progid(scheme);
     vec![
-        e(CAPABILITIES, "ApplicationName", "Tandem".into()),
-        e(CAPABILITIES, "ApplicationDescription", "Tandem terminal".into()),
-        e(ASSOCIATIONS, scheme, format!("Tandem.{scheme}")),
+        e(CAPABILITIES, "ApplicationName", "Termurion".into()),
+        e(CAPABILITIES, "ApplicationDescription", "Termurion terminal".into()),
+        e(ASSOCIATIONS, scheme, format!("Termurion.{scheme}")),
         e(REGISTERED_APPS, "Tandem", CAPABILITIES.into()),
         e(&id, "", format!("URL:{scheme} Protocol")),
         e(&id, "URL Protocol", String::new()),
@@ -95,24 +95,24 @@ pub fn registry_entries(exe: &Path, scheme: &str) -> Vec<(String, String, String
     ]
 }
 
-/// Writes Tandem's own entries for `scheme` through the registry seam; the number written (0 when
-/// they are all there already). Refuses a scheme Tandem does not list and an exe path that could not
+/// Writes Termurion's own entries for `scheme` through the registry seam; the number written (0 when
+/// they are all there already). Refuses a scheme Termurion does not list and an exe path that could not
 /// sit inside the quoted command.
 pub fn register_with(r: &mut dyn crate::reg::Registry, scheme: &str, exe: &Path) -> Result<usize, String> {
     if !is_listed(scheme) {
-        return Err(format!("Tandem does not register for {scheme} links."));
+        return Err(format!("Termurion does not register for {scheme} links."));
     }
     if !exe_ok(exe) {
-        return Err("Tandem's own path cannot be registered.".to_string());
+        return Err("Termurion's own path cannot be registered.".to_string());
     }
     crate::reg::apply(r, &registry_entries(exe, scheme))
 }
 
-/// Takes back what `register_with` (and, when its command is Tandem's, the scheme key) wrote for
+/// Takes back what `register_with` (and, when its command is Termurion's, the scheme key) wrote for
 /// `scheme`; another program's keys are never touched. The listing goes with the last scheme.
 pub fn unregister_with(r: &mut dyn crate::reg::Registry, scheme: &str, exe: &Path) -> Result<(), String> {
     if !is_listed(scheme) {
-        return Err(format!("Tandem does not register for {scheme} links."));
+        return Err(format!("Termurion does not register for {scheme} links."));
     }
     r.delete_tree(&progid(scheme))?;
     r.delete_value(ASSOCIATIONS, scheme)?;
@@ -153,13 +153,13 @@ pub fn stale_schemes(table: &toml::Table, reg: &dyn SchemeRegistry, exe: &Path, 
     SCHEMES.iter().filter(|s| guid_for(table, s).is_some()).filter(|s| stale(s)).map(|s| s.to_string()).collect()
 }
 
-/// Rewrites Tandem's own entries for the schemes `stale_schemes` names and records the new path;
+/// Rewrites Termurion's own entries for the schemes `stale_schemes` names and records the new path;
 /// the ones repaired.
 pub fn repair(table: &toml::Table, reg: &mut dyn SchemeRegistry, exe: &Path, gone: &dyn Fn(&Path) -> bool) -> Vec<String> {
     stale_schemes(table, reg, exe, gone).into_iter().filter(|s| reg.register(s, exe).and_then(|()| reg.record_exe(s, exe)).is_ok()).collect()
 }
 
-/// Startup: rewrites Tandem's own registrations for the schemes the person bound when the exe moved.
+/// Startup: rewrites Termurion's own registrations for the schemes the person bound when the exe moved.
 /// Registers nothing new and never asks (it only restores what the person's earlier OK created).
 /// The recorded exe path is saved state, so it is judged before it is probed: a path the judge
 /// refuses counts as still there, and nothing is rewritten.
@@ -174,12 +174,12 @@ pub fn repair_at_start(globals: &crate::globals::Globals) {
 }
 
 /// The items of the "Select URL Schemes..." popup: the title unchecked, then each scheme checked
-/// when this profile is bound to it and Tandem is the default (`PGP:1045-1051`).
+/// when this profile is bound to it and Termurion is the default (`PGP:1045-1051`).
 pub fn row_items(table: &toml::Table, reg: &dyn SchemeRegistry, guid: &str, exe: &Path) -> Vec<(String, bool)> {
     std::iter::once((SELECT.to_string(), false)).chain(SCHEMES.iter().map(|s| (s.to_string(), handles(table, reg, s, guid, exe)))).collect()
 }
 
-/// What Windows says about a scheme's handler, and the one write Tandem makes.
+/// What Windows says about a scheme's handler, and the one write Termurion makes.
 pub trait SchemeRegistry {
     /// The effective handler's command line (`shell\open\command`), None when there is none.
     fn handler_command(&self, scheme: &str) -> Option<String>;
@@ -207,11 +207,11 @@ pub trait SchemeRegistry {
     }
     /// The ProgId of the protected user choice for the scheme (read only).
     fn user_choice(&self, scheme: &str) -> Option<String>;
-    /// The command of `HKCU\Software\Classes\<scheme>\shell\open\command`, the entry Tandem's OK
+    /// The command of `HKCU\Software\Classes\<scheme>\shell\open\command`, the entry Termurion's OK
     /// overwrites: None when there is no such entry, Some("") when it has no readable command
     /// (a `DelegateExecute` verb).
     fn classes_command(&self, scheme: &str) -> Option<String>;
-    /// Registers Tandem as a handler for the user (`HKCU` only). Runs only after the person's OK.
+    /// Registers Termurion as a handler for the user (`HKCU` only). Runs only after the person's OK.
     fn register(&mut self, scheme: &str, exe: &Path) -> Result<(), String>;
     /// The exe path the person's OK registered for `scheme` (`HKCU\Software\Tandem\Registered`, a
     /// key no settings import carries), None when no OK on this machine did.
@@ -231,7 +231,7 @@ pub fn tandem_command(exe: &Path) -> String {
     format!("\"{}\" --url \"%1\"", exe.display())
 }
 
-/// Whether Tandem is the effective handler: its command as written, the path case-insensitive.
+/// Whether Termurion is the effective handler: its command as written, the path case-insensitive.
 pub fn is_default(reg: &dyn SchemeRegistry, scheme: &str, exe: &Path) -> bool {
     reg.handler_command(scheme).is_some_and(|c| c.trim().eq_ignore_ascii_case(&tandem_command(exe)))
 }
@@ -244,13 +244,13 @@ pub fn bind(table: &mut toml::Table, scheme: &str, guid: &str) {
     table.insert(scheme.to_string(), toml::Value::String(guid.to_string()));
 }
 
-/// Unbinding only removes the entry (iTerm2 leaves the Launch Services handler); Tandem stays
+/// Unbinding only removes the entry (iTerm2 leaves the Launch Services handler); Termurion stays
 /// registered.
 pub fn unbind(table: &mut toml::Table, scheme: &str) {
     table.remove(scheme);
 }
 
-/// The profile a scheme opens, only while Tandem is the default handler and the profile exists
+/// The profile a scheme opens, only while Termurion is the default handler and the profile exists
 /// (`profileForScheme`).
 pub fn profile_for_scheme(table: &toml::Table, reg: &dyn SchemeRegistry, scheme: &str, exe: &Path, profile_exists: &dyn Fn(&str) -> bool) -> Option<String> {
     guid_for(table, scheme).filter(|g| is_default(reg, scheme, exe) && profile_exists(g))
@@ -265,7 +265,7 @@ pub fn prune(table: &mut toml::Table, profile_exists: &dyn Fn(&str) -> bool) -> 
     table.len() != before
 }
 
-/// The control's check: bound to this profile and Tandem is the default.
+/// The control's check: bound to this profile and Termurion is the default.
 pub fn handles(table: &toml::Table, reg: &dyn SchemeRegistry, scheme: &str, guid: &str, exe: &Path) -> bool {
     guid_for(table, scheme).as_deref() == Some(guid) && is_default(reg, scheme, exe)
 }
@@ -274,7 +274,7 @@ pub fn handles(table: &toml::Table, reg: &dyn SchemeRegistry, scheme: &str, guid
 pub enum Pick {
     Unbind,
     Bind,
-    /// Tandem is not the handler: ask (heading `text`, body `info`) before registering.
+    /// Termurion is not the handler: ask (heading `text`, body `info`) before registering.
     Ask { text: String, info: String },
 }
 
@@ -301,12 +301,12 @@ pub fn pick(table: &toml::Table, reg: &dyn SchemeRegistry, scheme: &str, guid: &
 /// The question's detail. Every handler the OK touches is named, so none is replaced unseen: the
 /// effective handler (friendly name, else its program, else "another program" when one exists
 /// whose command cannot be read), the `HKCU\Classes` entry the OK overwrites when it is another
-/// program, and, when Windows keeps a protected choice, that Tandem's entry will not take effect.
+/// program, and, when Windows keeps a protected choice, that Termurion's entry will not take effect.
 /// "No handler" only when there is none at all.
 fn ask_info(reg: &dyn SchemeRegistry, scheme: &str) -> String {
     let command = reg.handler_command(scheme);
     let classes = reg.classes_command(scheme);
-    let choice = reg.user_choice(scheme).filter(|c| !c.eq_ignore_ascii_case(&format!("Tandem.{scheme}")));
+    let choice = reg.user_choice(scheme).filter(|c| !c.eq_ignore_ascii_case(&format!("Termurion.{scheme}")));
     let name = reg.handler_name(scheme).filter(|n| !n.trim().is_empty());
     let effective_program = command.as_deref().map(command_program).filter(|p| !p.is_empty());
     let mut lines = Vec::new();
@@ -333,15 +333,15 @@ fn ask_info(reg: &dyn SchemeRegistry, scheme: &str) -> String {
     lines.join(" ")
 }
 
-/// The OK of the not-default question: registers, then binds only when Tandem really is the
+/// The OK of the not-default question: registers, then binds only when Termurion really is the
 /// default now. Err is the text to show (Windows kept another handler, or a write failed) and
 /// nothing is bound.
 pub fn register_and_bind(table: &mut toml::Table, reg: &mut dyn SchemeRegistry, scheme: &str, guid: &str, exe: &Path) -> Result<(), String> {
     if !is_listed(scheme) {
-        return Err(format!("Tandem does not register for {scheme} links."));
+        return Err(format!("Termurion does not register for {scheme} links."));
     }
-    reg.register(scheme, exe).map_err(|e| format!("Could not register Tandem for {scheme} links: {e}"))?;
-    reg.record_exe(scheme, exe).map_err(|e| format!("Could not register Tandem for {scheme} links: {e}"))?;
+    reg.register(scheme, exe).map_err(|e| format!("Could not register Termurion for {scheme} links: {e}"))?;
+    reg.record_exe(scheme, exe).map_err(|e| format!("Could not register Termurion for {scheme} links: {e}"))?;
     if !is_default(reg, scheme, exe) {
         return Err(protected(scheme));
     }
@@ -467,7 +467,7 @@ pub(crate) mod win {
         }
     }
 
-    /// Removes `HKCU\<subkey>` and everything under it: a key Tandem's own registration leaves
+    /// Removes `HKCU\<subkey>` and everything under it: a key Termurion's own registration leaves
     /// stale, and the tests' throwaway key.
     pub fn delete_tree(subkey: &str) {
         let key = wide(subkey);
@@ -478,7 +478,7 @@ pub(crate) mod win {
 
 #[cfg(windows)]
 impl WinRegistry {
-    /// Writes the protocol registration under `HKCU\<root>`: the ProgId `Tandem.<scheme>` first,
+    /// Writes the protocol registration under `HKCU\<root>`: the ProgId `Termurion.<scheme>` first,
     /// then the scheme key, its command key last, so a failed write leaves no half handler.
     pub fn register_under(root: &str, scheme: &str, exe: &Path) -> Result<(), String> {
         let command = tandem_command(exe);
@@ -503,7 +503,7 @@ impl WinRegistry {
         (win::get(&format!("{root}\\{scheme}"), None), win::get(&format!("{root}\\{scheme}\\shell\\open\\command"), None), win::get(&format!("{root}\\Tandem.{scheme}\\shell\\open\\command"), None))
     }
 
-    /// Tells the shell the file and protocol associations changed, so Default apps lists Tandem
+    /// Tells the shell the file and protocol associations changed, so Default apps lists Termurion
     /// (documented for every new handler registration).
     fn notify_assoc_changed() {
         use windows_sys::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
@@ -584,7 +584,7 @@ impl SchemeRegistry for WinRegistry {
 
     fn record_exe(&mut self, scheme: &str, exe: &Path) -> Result<(), String> {
         if !is_listed(scheme) || !exe_ok(exe) {
-            return Err(format!("Tandem does not register for {scheme} links."));
+            return Err(format!("Termurion does not register for {scheme} links."));
         }
         win::set(RECORDED, Some(scheme), &exe.to_string_lossy())
     }
@@ -721,7 +721,7 @@ mod tests {
         assert_eq!(
             pick(&t, &putty, "ssh", "G1", &exe()),
             Pick::Ask {
-                text: "Tandem is not the default handler for ssh. Would you like to set Tandem as the default handler?".into(),
+                text: "Termurion is not the default handler for ssh. Would you like to set Termurion as the default handler?".into(),
                 info: "The current handler is: PuTTY".into()
             }
         );
@@ -738,17 +738,17 @@ mod tests {
 
     #[test]
     fn registration_follows_windows() {
-        // OK registers, then binds because Tandem is now the handler.
+        // OK registers, then binds because Termurion is now the handler.
         let mut reg = Fake::default();
         let mut t = toml::Table::new();
         assert_eq!(register_and_bind(&mut t, &mut reg, "ssh", "G1", &exe()), Ok(()));
         assert_eq!(reg.registered, vec![("ssh".to_string(), exe())]);
         assert_eq!(guid_for(&t, "ssh").as_deref(), Some("G1"));
-        // Windows keeps another ProgId: reported with Tandem's text, nothing bound.
+        // Windows keeps another ProgId: reported with Termurion's text, nothing bound.
         let mut kept = Fake { command: Some("putty.exe %1".into()), choice: Some("PuTTY.ssh".into()), ..Fake::default() };
         let mut t = toml::Table::new();
         let err = register_and_bind(&mut t, &mut kept, "ssh", "G1", &exe()).unwrap_err();
-        assert_eq!(err, "Windows keeps another app as the handler for ssh links. Choose Tandem for ssh in Settings > Apps > Default apps.");
+        assert_eq!(err, "Windows keeps another app as the handler for ssh links. Choose Termurion for ssh in Settings > Apps > Default apps.");
         assert_eq!(err, protected("ssh"));
         assert!(!is_default(&kept, "ssh", &exe()));
         assert!(t.is_empty());
@@ -775,7 +775,7 @@ mod tests {
         let text = info(&two);
         assert!(text.contains("The current handler is: PuTTY"), "{text}");
         assert!(text.contains(&replaces("C:\\Tools\\sshx.exe")), "{text}");
-        // Protected: the same, and Tandem's entry will not take effect until chosen in Windows.
+        // Protected: the same, and Termurion's entry will not take effect until chosen in Windows.
         let kept = Fake { choice: Some("PuTTY.ssh".into()), ..two };
         let text = info(&kept);
         assert!(text.contains(&replaces("C:\\Tools\\sshx.exe")) && text.contains(&not_effective("ssh")), "{text}");
@@ -810,7 +810,7 @@ mod tests {
     }
 
     /// Final review: Windows documents SHChangeNotify(SHCNE_ASSOCCHANGED) after a handler is
-    /// registered, so the shell and Default apps see Tandem (the call is the last thing
+    /// registered, so the shell and Default apps see Termurion (the call is the last thing
     /// `register` does, after the protocol handler key).
     #[test]
     fn a_successful_register_tells_the_shell() {
@@ -828,7 +828,7 @@ mod tests {
     fn registry_writes_under_hkcu() {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let root = format!("Software\\Tandem\\test-{}-{nanos}", std::process::id());
-        // A previous program's leftovers under the keys Tandem writes.
+        // A previous program's leftovers under the keys Termurion writes.
         win::set(&format!("{root}\\ssh\\shell\\open\\command"), Some("DelegateExecute"), "{GUID}").unwrap();
         win::set(&format!("{root}\\ssh\\shell\\open\\ddeexec"), None, "[open]").unwrap();
         win::set(&format!("{root}\\ssh\\shell"), None, "other").unwrap();
@@ -860,11 +860,11 @@ mod registration_tests {
 
     #[test]
     fn schemes_follow_iterm2() {
-        // P8: iTerm2's list narrowed to the schemes Tandem opens; the rest wait for a Browser profile.
+        // P8: iTerm2's list narrowed to the schemes Termurion opens; the rest wait for a Browser profile.
         assert_eq!(SCHEMES, ["ftp", "ssh", "telnet"]);
         assert!(SCHEMES.windows(2).all(|w| w[0] < w[1]), "sorted as iTerm2's popup");
         assert!(SCHEMES.iter().all(|s| crate::url_launch::EXTERNAL_SCHEMES.contains(s)), "only what a link can open");
-        assert_eq!(DEFAULT_APPS_URI, "ms-settings:defaultapps?registeredAppUser=Tandem");
+        assert_eq!(DEFAULT_APPS_URI, "ms-settings:defaultapps?registeredAppUser=Termurion");
         assert_eq!(LABEL, "URL schemes:");
     }
 
@@ -875,10 +875,10 @@ mod registration_tests {
         assert!(has("Software\\Classes\\Tandem.ssh", "", "URL:ssh Protocol"));
         assert!(has("Software\\Classes\\Tandem.ssh", "URL Protocol", ""));
         assert!(has("Software\\Classes\\Tandem.ssh\\shell\\open\\command", "", "\"C:\\T\\termurion.exe\" --url \"%1\""));
-        assert!(has("Software\\Tandem\\Capabilities", "ApplicationName", "Tandem"));
+        assert!(has("Software\\Tandem\\Capabilities", "ApplicationName", "Termurion"));
         assert!(has("Software\\Tandem\\Capabilities\\URLAssociations", "ssh", "Tandem.ssh"));
         assert!(has("Software\\RegisteredApplications", "Tandem", "Software\\Tandem\\Capabilities"));
-        // Every key is Tandem's own: the ProgId, its software key and its RegisteredApplications value.
+        // Every key is Termurion's own: the ProgId, its software key and its RegisteredApplications value.
         assert!(entries.iter().all(|(k, _, _)| crate::reg::deletable(k) || k == "Software\\RegisteredApplications"));
         assert_eq!(command_argument_shape(&tandem_command(&exe())), Some(r"C:\T\termurion.exe".to_string()));
         // Applied twice to a fake: the second pass writes nothing (idempotent).
@@ -912,17 +912,17 @@ mod registration_tests {
         let mut r = FakeRegistry::default();
         register_with(&mut r, "ssh", &exe()).unwrap();
         register_with(&mut r, "telnet", &exe()).unwrap();
-        // Someone else's keys beside Tandem's.
+        // Someone else's keys beside Termurion's.
         r.set("Software\\Classes\\http\\shell\\open\\command", "", "firefox.exe %1").unwrap();
         r.set("Software\\Classes\\Tandemx", "", "x").unwrap();
         r.set("Software\\RegisteredApplications", "Other", "Software\\Other\\Capabilities").unwrap();
-        // The scheme key Tandem took after the question holds Tandem's command; another program's stays.
+        // The scheme key Termurion took after the question holds Termurion's command; another program's stays.
         r.set("Software\\Classes\\ssh\\shell\\open\\command", "", &tandem_command(&exe())).unwrap();
         r.set("Software\\Classes\\telnet\\shell\\open\\command", "", "putty.exe %1").unwrap();
         unregister_with(&mut r, "ssh", &exe()).unwrap();
         assert!(r.get("Software\\Classes\\Tandem.ssh\\shell\\open\\command", "").is_none());
         assert!(r.get("Software\\Tandem\\Capabilities\\URLAssociations", "ssh").is_none());
-        assert!(r.get("Software\\Classes\\ssh\\shell\\open\\command", "").is_none(), "Tandem's own scheme key goes");
+        assert!(r.get("Software\\Classes\\ssh\\shell\\open\\command", "").is_none(), "Termurion's own scheme key goes");
         assert!(r.get("Software\\Tandem\\Capabilities\\URLAssociations", "telnet").is_some(), "another scheme stays");
         assert!(r.get("Software\\RegisteredApplications", "Tandem").is_some(), "still needed by telnet");
         unregister_with(&mut r, "telnet", &exe()).unwrap();
@@ -932,7 +932,7 @@ mod registration_tests {
         assert_eq!(r.get("Software\\RegisteredApplications", "Other").as_deref(), Some("Software\\Other\\Capabilities"));
         assert_eq!(r.get("Software\\Classes\\http\\shell\\open\\command", "").as_deref(), Some("firefox.exe %1"));
         assert_eq!(r.get("Software\\Classes\\Tandemx", "").as_deref(), Some("x"));
-        // The fake refuses a delete outside Tandem's keys as the real writer does.
+        // The fake refuses a delete outside Termurion's keys as the real writer does.
         assert!(r.delete_value("Software\\Classes\\http\\shell\\open\\command", "").is_err());
         assert!(r.delete_value("Software\\RegisteredApplications", "Other").is_err());
         assert!(r.delete_scheme_class("http").is_err());
@@ -1005,16 +1005,16 @@ mod registration_tests {
         let mut live = FakeScheme { command: Some(tandem_command(&old)), classes: Some(tandem_command(&old)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
         assert!(repair(&t, &mut live, &exe(), &alive).is_empty());
         assert!(live.registered.is_empty() && live.recorded.as_deref() == Some(old_s.as_str()));
-        // A machine-wide (HKLM) Tandem registration: the effective handler is Tandem's old path but
+        // A machine-wide (HKLM) Termurion registration: the effective handler is Termurion's old path but
         // HKCU holds nothing, so nothing is written.
         let mut hklm = FakeScheme { command: Some(tandem_command(&old)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
         assert!(repair(&t, &mut hklm, &exe(), &gone).is_empty());
         assert!(hklm.registered.is_empty());
-        // An imported table (bound, HKCU holds a Tandem command) with no OK recorded on this machine.
+        // An imported table (bound, HKCU holds a Termurion command) with no OK recorded on this machine.
         let mut imported = FakeScheme { command: Some(tandem_command(&old)), classes: Some(tandem_command(&old)), ..FakeScheme::default() };
         assert!(repair(&t, &mut imported, &exe(), &gone).is_empty());
         assert!(imported.registered.is_empty());
-        // HKCU holds another Tandem path than the recorded one (or a look-alike): not what the OK wrote.
+        // HKCU holds another Termurion path than the recorded one (or a look-alike): not what the OK wrote.
         let other_tandem = PathBuf::from(r"E:\Else\termurion.exe");
         let mut differs = FakeScheme { classes: Some(tandem_command(&other_tandem)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
         assert!(repair(&t, &mut differs, &exe(), &gone).is_empty());
@@ -1022,7 +1022,7 @@ mod registration_tests {
             let mut f = FakeScheme { classes: Some(cmd.into()), recorded: Some(old_s.clone()), ..FakeScheme::default() };
             assert!(repair(&t, &mut f, &exe(), &gone).is_empty(), "{cmd}");
         }
-        // An unbound scheme, or a binding for a scheme Tandem does not list, is never repaired.
+        // An unbound scheme, or a binding for a scheme Termurion does not list, is never repaired.
         let full = || FakeScheme { classes: Some(tandem_command(&old)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
         assert!(stale_schemes(&toml::Table::new(), &full(), &exe(), &gone).is_empty());
         let mut odd = toml::Table::new();
@@ -1047,7 +1047,7 @@ mod registration_tests {
         let items = row_items(&t, &reg, "G1", &exe());
         assert_eq!(items[0], (SELECT.to_string(), false));
         assert_eq!(items[1..], [("ftp".to_string(), false), ("ssh".to_string(), true), ("telnet".to_string(), false)]);
-        // Bound but Tandem is not the default: unchecked.
+        // Bound but Termurion is not the default: unchecked.
         let off = row_items(&t, &FakeScheme::default(), "G1", &exe());
         assert!(off.iter().all(|(_, on)| !on));
         // Bound to another profile: unchecked for this one.

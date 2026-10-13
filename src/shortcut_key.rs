@@ -1,6 +1,6 @@
 //! The shortcut key: which Windows modifiers stand for iTerm2's Cmd (TWEAKS 9).
 //!
-//! Every Tandem shortcut, key mapping and menu item keeps iTerm2's Cmd notation (`Chord::cmd`,
+//! Every Termurion shortcut, key mapping and menu item keeps iTerm2's Cmd notation (`Chord::cmd`,
 //! the COMMAND flag in a key binding). This is the one place that says what Cmd is pressed as:
 //! Ctrl+Shift (the default), Win, or Ctrl+Alt. Cmd+Shift+X cannot be Ctrl+Shift+Shift+X, so the
 //! three modifiers Ctrl, Shift and Alt are shared out as three pairs: Cmd is the chosen pair,
@@ -14,7 +14,7 @@ use crate::mouse::Mods;
 
 /// The warning the settings page shows beside a choice, if it needs one.
 pub fn warning(m: ShortcutKey) -> Option<&'static str> {
-    (m == ShortcutKey::CtrlAlt).then_some("Ctrl+Alt is AltGr on many European keyboard layouts. Tandem leaves a key that types a character alone, but a shortcut on a key AltGr also uses can be hard to press. Ctrl+Shift avoids this.")
+    (m == ShortcutKey::CtrlAlt).then_some("Ctrl+Alt is AltGr on many European keyboard layouts. Termurion leaves a key that types a character alone, but a shortcut on a key AltGr also uses can be hard to press. Ctrl+Shift avoids this.")
 }
 
 /// The Keys setting: 0 Ctrl+Shift, 1 Win, 2 Ctrl+Alt.
@@ -36,7 +36,7 @@ pub struct Held {
 }
 
 /// What the hook and the key path read. Win until the app sets it from the setting, so code that
-/// runs before that (and the hook's own tests) behaves as Tandem always did.
+/// runs before that (and the hook's own tests) behaves as Termurion always did.
 static MODE: AtomicU8 = AtomicU8::new(1);
 
 pub fn mode() -> ShortcutKey {
@@ -122,7 +122,7 @@ impl ShortcutKey {
         self.press_as_cmd(phys, types_a_character).unwrap_or(phys)
     }
 
-    /// The Cmd chord a key press makes in a Tandem window that has no menu of its own (the
+    /// The Cmd chord a key press makes in a Termurion window that has no menu of its own (the
     /// password manager, AI Chat): the shortcut key's own modifiers with `key`. None in Win mode
     /// (the hook carries the Win chord) and when the press is no pair or is AltGr typing.
     pub fn window_chord(self, phys: Mods, types_a_character: bool, key: crate::menus::ChordKey) -> Option<Chord> {
@@ -135,7 +135,7 @@ impl ShortcutKey {
         !c.cmd || self == ShortcutKey::Win || self.held_for(c.shift, c.alt, c.ctrl).is_some()
     }
 
-    /// Whether the chord reaches Tandem: Windows keeps Win+L, but Ctrl+Shift+L is Tandem's.
+    /// Whether the chord reaches Termurion: Windows keeps Win+L, but Ctrl+Shift+L is Termurion's.
     pub fn reaches(self, c: &Chord) -> bool {
         if c.cmd && self != ShortcutKey::Win && self.reachable(c) {
             return true;

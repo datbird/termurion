@@ -29,7 +29,7 @@ pub const MAX_FONT_NAME: usize = 256;
 pub const MIN_POINT_SIZE: f64 = 4.0;
 pub const MAX_POINT_SIZE: f64 = 128.0;
 
-/// The editor's text for each refusal (`SpecialExceptions.Preview*`, Tandem's wording).
+/// The editor's text for each refusal (`SpecialExceptions.Preview*`, Termurion's wording).
 pub const ASCII_ERROR: &str = "Start must be at least U+80. ASCII doesn\u{2019}t support special exceptions.";
 pub const INVALID_RANGE: &str = "Invalid range.";
 pub const LIMIT_TOO_LARGE: &str = "End is higher than U+110000, the maximum Unicode code point.";
@@ -37,10 +37,10 @@ pub const RANGE_TAKEN: &str = "Range includes an already-assigned code point.";
 pub const INVALID_DESTINATION: &str = "Invalid destination";
 pub const NO_FONT: &str = "No font selected.";
 pub const TRUNCATED: &str = " [truncated]";
-pub const IMPORT_MALFORMED: &str = "This file is not well formed. Is it from a newer version of Tandem?";
-pub const IMPORT_NEWER: &str = "This file is from a newer version of Tandem and cannot be loaded.";
+pub const IMPORT_MALFORMED: &str = "This file is not well formed. Is it from a newer version of Termurion?";
+pub const IMPORT_NEWER: &str = "This file is from a newer version of Termurion and cannot be loaded.";
 pub const IMPORT_HEADING: &str = "Problem Importing Special Exceptions";
-pub const NERD_DISABLED: &str = "Downloading fonts is not available in Tandem.";
+pub const NERD_DISABLED: &str = "Downloading fonts is not available in Termurion.";
 
 /// The message for fonts an imported file names that are not installed.
 pub fn import_missing(fonts: &[String]) -> String {
@@ -149,7 +149,7 @@ impl Config {
     /// nothing below U+80. Where entries overlap the one that starts first wins (a tie, the one
     /// listed first) and a later entry keeps only what lies past it, its font run and destination
     /// moving together; an entry with nothing left goes. iTerm2's own lookup is undefined for an
-    /// overlap, so this is Tandem's rule (m13n-rulings.txt).
+    /// overlap, so this is Termurion's rule (m13n-rulings.txt).
     pub fn resolved(&self) -> Config {
         let mut entries: Vec<Entry> = self.entries.clone();
         entries.sort_by_key(|e| e.range().start);

@@ -10,7 +10,7 @@
 //! untrusted: pages get no host objects, every page-controlled value is capped before it is queued
 //! (`webhost::ViewGate`), navigations pass the one rule (`webhost::navigation_allowed`), external
 //! protocols are cancelled, permissions are denied, and downloads are left to WebView2's own
-//! defaults (Edge's download UI, which applies the Mark of the Web; Tandem registers no
+//! defaults (Edge's download UI, which applies the Mark of the Web; Termurion registers no
 //! download handler and never changes that).
 
 use std::cell::RefCell;
@@ -33,7 +33,7 @@ use windows::core::{BOOL, Interface, PCWSTR, PWSTR};
 use crate::browser_world;
 use crate::webhost::{self, Answer, EnvOptions, Event, Posted, Sink, Store, ViewGate, ViewId};
 
-/// Runs the body of a COM callback. A panic must never unwind into COM (that aborts Tandem with
+/// Runs the body of a COM callback. A panic must never unwind into COM (that aborts Termurion with
 /// every session, the 13u rule for callbacks): it becomes `E_FAIL`, so WebView2 ignores the event.
 fn guard(body: impl FnOnce() -> windows::core::Result<()>) -> windows::core::Result<()> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or_else(|_| Err(windows::Win32::Foundation::E_FAIL.into()))
@@ -133,7 +133,7 @@ pub fn foreground_root() -> Option<isize> {
     (!root.is_null()).then_some(root as isize)
 }
 
-/// Gives the keyboard back to a Tandem window from a web view (a pane change by keyboard).
+/// Gives the keyboard back to a Termurion window from a web view (a pane change by keyboard).
 pub fn focus_window(hwnd: isize) {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
     // SAFETY: a plain handle; a handle that is gone makes the call fail harmlessly.
@@ -243,7 +243,7 @@ pub fn protect_dir_owner_only(dir: &Path) -> Result<(), String> {
     }
 }
 
-/// Removes the loader's override variables from Tandem's own environment before the first
+/// Removes the loader's override variables from Termurion's own environment before the first
 /// environment is made (preflight P1): the loader lets them override the arguments, so an inherited
 /// one could point the runtime at a planted folder.
 pub fn scrub_env() {
@@ -502,7 +502,7 @@ pub struct ViewSetup {
     /// (`webhost::nav_parked`). None: always open.
     pub nav_gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// `WebUserAgent`'s setting: Some(setting) applies `webhost::user_agent(setting, engine)` (an
-    /// empty setting keeps the engine's agent with "Tandem" appended); None leaves the engine's own.
+    /// empty setting keeps the engine's agent with "Termurion" appended); None leaves the engine's own.
     pub user_agent: Option<String>,
     /// Scripts run at the start of every document, in every frame.
     pub scripts: Vec<String>,
@@ -534,7 +534,7 @@ pub struct ViewSetup {
     /// The page's right-click menu is the app's to decorate: `ContextMenuRequested` posts
     /// `Event::ContextMenu` and waits for `answer_context_menu` (browser panes).
     pub context_menu: bool,
-    /// The app decides this view's permissions (browser panes): a request Tandem asks about is
+    /// The app decides this view's permissions (browser panes): a request Termurion asks about is
     /// posted as `Event::Permission` and held until `answer_permission`; a page's notification
     /// is `Event::NotificationShown`; the audio state is `Event::AudioPlaying`. Off: every request
     /// is denied on the spot (tool views, popovers, Quick Look, the icon rasterizer).
@@ -578,7 +578,7 @@ struct PendingPerm {
 #[cfg(test)]
 thread_local! {
     /// A probe's control environment: the next `Env::create` on this thread uses exactly these
-    /// browser arguments (taken once), so a probe can show what the engine does WITHOUT Tandem's.
+    /// browser arguments (taken once), so a probe can show what the engine does WITHOUT Termurion's.
     static PROBE_CONTROL_ARGS: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
@@ -651,15 +651,15 @@ struct Inner {
     /// The URI of the navigation `navigate_tandem` started, until the first NavigationStarting
     /// that matches takes it (or 30 s pass): preflight P19.
     tandem_uri: Option<(String, Instant)>,
-    /// The navigation id Tandem's own load took (`by_tandem`), so its redirects are judged as from no
+    /// The navigation id Termurion's own load took (`by_tandem`), so its redirects are judged as from no
     /// page (`webhost::redirect_source`, R13x8-P2).
     tandem_nav: Option<u64>,
     /// When `navigate_model` started a model's load: the first main-frame NavigationStarting that is
-    /// not a redirect and not Tandem's own after it (within 30 s) is the model's (13x AI final review I3).
+    /// not a redirect and not Termurion's own after it (within 30 s) is the model's (13x AI final review I3).
     model_load: Option<Instant>,
     /// The navigation id the model's load took, so it and its redirects are judged as the model's.
     model_nav: Option<u64>,
-    /// Milliseconds (`webhost::now_ms`-style, since `START`) when Tandem started a Back or Forward.
+    /// Milliseconds (`webhost::now_ms`-style, since `START`) when Termurion started a Back or Forward.
     new_windows: webhost::NewWindowLimiter,
     pending: HashMap<u64, Pending>,
     next_token: u64,
@@ -703,11 +703,11 @@ struct Inner {
 /// What the app tells the view about a notification it holds (`notification_report`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoteReport {
-    /// Tandem showed it: `ReportShown`, the object stays held.
+    /// Termurion showed it: `ReportShown`, the object stays held.
     Shown,
     /// It was closed (by the person, or the app took it away): `ReportClosed`, then released.
     Closed,
-    /// Tandem will not show it: released without a report.
+    /// Termurion will not show it: released without a report.
     Release,
 }
 
@@ -850,7 +850,7 @@ impl WebView {
         self.navigate(url);
     }
 
-    /// A navigation Tandem itself starts (never for a URL from a page, a link or a model): the
+    /// A navigation Termurion itself starts (never for a URL from a page, a link or a model): the
     /// URL is remembered so the guarded NavigationStarting passes `by_tandem` for exactly that
     /// URI, once.
     pub fn navigate_tandem(&self, url: &str) {
@@ -1061,7 +1061,7 @@ impl WebView {
     }
 
     /// Runs `js` in the PAGE world of one frame (`ICoreWebView2Frame2::ExecuteScript`);
-    /// `Event::ScriptDone { token, .. }` answers. Never the Tandem world.
+    /// `Event::ScriptDone { token, .. }` answers. Never the Termurion world.
     pub fn execute_script_in_frame(&self, frame: u64, js: &str, token: u64) {
         let w = wide(js);
         let (poster, id, weak) = {
@@ -1286,7 +1286,7 @@ impl WebView {
     }
 
     /// Captures the page as a JPEG (`jpeg`) or a PNG, the same way: the encoding runs in the browser
-    /// process, not on Tandem's thread, and `Event::ScriptDone` carries the base64 bytes.
+    /// process, not on Termurion's thread, and `Event::ScriptDone` carries the base64 bytes.
     pub fn capture(&self, token: u64, jpeg: bool) {
         let (poster, id) = {
             let i = self.inner.borrow();
@@ -1887,7 +1887,7 @@ fn make_menu_item(env9: &ICoreWebView2Environment9, entry: &webhost::MenuEntry, 
 fn decorate_menu(args: &ICoreWebView2ContextMenuRequestedEventArgs, env: &Env, poster: &Poster, view: ViewId, token: u64, entries: &[webhost::MenuEntry]) -> windows::core::Result<()> {
     let env9 = env.env.cast::<ICoreWebView2Environment9>()?;
     let list = unsafe { args.MenuItems() }?;
-    // WebView2's own items without the ones Tandem replaces, then without stray separators.
+    // WebView2's own items without the ones Termurion replaces, then without stray separators.
     let count = |l: &ICoreWebView2ContextMenuItemCollection| {
         let mut n = 0u32;
         let _ = unsafe { l.Count(&mut n) };
@@ -2031,7 +2031,7 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
             while i.nav_uris.len() > MAX_NAV_URIS {
                 i.nav_uris.pop_front();
             }
-            // Tandem's own load: consumed by the first matching NavigationStarting (P19).
+            // Termurion's own load: consumed by the first matching NavigationStarting (P19).
             let mut by_tandem = false;
             if let Some((url, at)) = i.tandem_uri.clone() {
                 if at.elapsed() > Duration::from_secs(30) {
@@ -2058,7 +2058,7 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
         // The one verdict (webhost::nav_verdict): scheme list, then the local-scheme guard.
         let source = sender.as_ref().and_then(source_of);
         let info = webhost::NavInfo { target: &uri, source: webhost::redirect_source(source.as_deref(), tandem_chain), user, redirect, by_tandem, by_model };
-        // A history step never lands on a power page, whoever started it (Tandem loads it fresh instead).
+        // A history step never lands on a power page, whoever started it (Termurion loads it fresh instead).
         let allowed = !webhost::history_refused(kind.0, &uri) && webhost::nav_verdict(&info, &policy, &|u| webhost::file_url_local(u, &local_judge));
         if !allowed {
             let _ = unsafe { args.SetCancel(true) };
@@ -2090,7 +2090,7 @@ fn starting_handler(inner: &Rc<RefCell<Inner>>, frame: bool) -> ICoreWebView2Nav
                 return Ok(());
             }
         }
-        // A `file:` page is Tandem's own `iterm2-file:` page (13x8 Task 3), after the verdict and the sync
+        // A `file:` page is Termurion's own `iterm2-file:` page (13x8 Task 3), after the verdict and the sync
         // gate (preflight B5): cancelled here whatever happens, posted only when the source is not a
         // web page and the URL was not cut short (a cut URL names another path).
         if i.setup.redirect_file_urls && webhost::scheme_of(&uri) == "file" {
@@ -2283,7 +2283,7 @@ fn register_page_events(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token:
     })));
     unsafe { view.add_NewWindowRequested(&window, token) }?;
 
-    // The favicon (final review I6): WebView2 fetches it with the page (Tandem fetches nothing);
+    // The favicon (final review I6): WebView2 fetches it with the page (Termurion fetches nothing);
     // GetFavicon hands it over as PNG, read with the 256 KiB bound and posted only when it decodes
     // within 256 by 256 (B5: the cap is the host's, not the consumer's). A newer runtime only.
     let setup_favicon = inner.borrow().setup.favicon;
@@ -2475,7 +2475,7 @@ fn from_service_worker(args: &ICoreWebView2WebResourceRequestedEventArgs) -> boo
 
 fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, workers_refused: bool, token: &mut i64) -> windows::core::Result<()> {
     // Permissions are denied unless the person allows (pre-flight B3). A view the app decides for
-    // (`ViewSetup::permissions`) holds the requests Tandem asks about and denies the rest on the
+    // (`ViewSetup::permissions`) holds the requests Termurion asks about and denies the rest on the
     // spot; every other view denies everything.
     let ask = inner.borrow().setup.permissions;
     let events = view.cast::<ICoreWebView2_24>().is_ok();
@@ -2497,7 +2497,7 @@ fn register_policy(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, workers_ref
         }
         let mut kind = COREWEBVIEW2_PERMISSION_KIND(0);
         let _ = unsafe { args.PermissionKind(&mut kind) };
-        // Kinds Tandem never asks about (and any it does not know) stay denied.
+        // Kinds Termurion never asks about (and any it does not know) stay denied.
         if !matches!(crate::browser_perms::route_kind(kind.0), crate::browser_perms::KindRoute::Ask(_)) {
             return Ok(());
         }
@@ -2572,7 +2572,7 @@ fn register_controller_events(inner: &Rc<RefCell<Inner>>, ctrl: &ICoreWebView2Co
             unsafe { ctrl.add_LostFocus(&handler, token) }?;
         }
     }
-    // Every key with its modifiers; the app decides what a Tandem shortcut is (marking a key
+    // Every key with its modifiers; the app decides what a Termurion shortcut is (marking a key
     // handled needs a synchronous answer, which later plans add).
     let weak = Rc::downgrade(inner);
     let keys = AcceleratorKeyPressedEventHandler::create(Box::new(move |_sender, args| guard(|| {
@@ -2589,7 +2589,7 @@ fn register_controller_events(inner: &Rc<RefCell<Inner>>, ctrl: &ICoreWebView2Co
             (i.poster.clone(), i.id, i.key_gate.clone())
         };
         let mods = modifier_bits();
-        // The gate is read here, synchronously, and holds no App borrow: a key Tandem takes never
+        // The gate is read here, synchronously, and holds no App borrow: a key Termurion takes never
         // reaches the page.
         let taken = gate.takes(vk, mods);
         if taken {
@@ -2861,7 +2861,7 @@ fn start_download(p: &PendingDownload, id: u64, path: &Path, poster: &Poster, ow
             _ => return Ok(()),
         };
         // A runtime that wrote under another name than the one told (it made the name unique) leaves
-        // a file Tandem never judged: that is a failure, not a finished download.
+        // a file Termurion never judged: that is a failure, not a finished download.
         if result.is_ok() {
             let wrote = pwstr_out(|p| unsafe { op.ResultFilePath(p) }).unwrap_or_default();
             if !wrote.eq_ignore_ascii_case(&told.to_string_lossy()) {
@@ -3070,7 +3070,7 @@ mod tests {
 
     /// 13x3 Task 1 review I2: the find probes can fail. The forged-message probe runs with new
     /// windows on, turns navigation shortcuts on and keys at them, and passes a fixed wrong guess; the
-    /// forged-click probe posts from a cross-origin frame and checks the Tandem world for its marker.
+    /// forged-click probe posts from a cross-origin frame and checks the Termurion world for its marker.
     #[test]
     fn the_find_probes_can_fail() {
         let this = include_str!("webhost_win.rs");
@@ -3122,7 +3122,7 @@ mod tests {
         assert!(!refusal.contains("try_borrow"), "the refusal holds its own environment: a busy view never lets a worker request through");
     }
 
-    /// Pre-flight B3: every permission request is denied first, only the kinds Tandem asks about are
+    /// Pre-flight B3: every permission request is denied first, only the kinds Termurion asks about are
     /// held, a held one is limited, and a view going away refuses what it still holds.
     #[test]
     fn the_permission_handler_denies_first_and_holds_only_asked_kinds() {
@@ -3152,7 +3152,7 @@ mod tests {
         assert!(create[..120].contains("register_notifications") , "notifications only where the app decides");
     }
 
-    /// Preflight P5: no host object reaches a page, anywhere in Tandem.
+    /// Preflight P5: no host object reaches a page, anywhere in Termurion.
     #[test]
     fn no_host_objects_for_pages() {
         let this = include_str!("webhost_win.rs");
@@ -3188,7 +3188,7 @@ mod tests {
         assert_eq!(code.matches("message_post(&inner").count(), 2);
     }
 
-    /// Final review Minor 3: no `NavigateToString` and no "the next data: navigation is Tandem's"
+    /// Final review Minor 3: no `NavigateToString` and no "the next data: navigation is Termurion's"
     /// flag remain (program content is served by `LocalDoc`; the flag had no expiry).
     #[test]
     fn no_string_navigation_remains() {
@@ -3197,7 +3197,7 @@ mod tests {
         assert!(!live.contains("NavigateToString") && !live.contains("tandem_data") && !live.contains("fn navigate_to_string"));
     }
 
-    /// Final review I6: the favicon is WebView2's own (FaviconChanged, then GetFavicon as PNG; Tandem
+    /// Final review I6: the favicon is WebView2's own (FaviconChanged, then GetFavicon as PNG; Termurion
     /// fetches nothing), read with the 256 KiB bound and posted only when `favicon_ok` passes (B5
     /// caps in the host). Only views that ask for it (browser panes) register the handler.
     #[test]
@@ -3213,7 +3213,7 @@ mod tests {
         let post = events.find("Event::Favicon(").unwrap();
         // The completion handler (read, judge, post) is made before the call that runs it.
         assert!(read < ok && ok < post && post < get);
-        assert!(!live.contains("ai_transport") && !live.contains("WinHttp"), "no Tandem network fetch");
+        assert!(!live.contains("ai_transport") && !live.contains("WinHttp"), "no Termurion network fetch");
         let browser = include_str!("app/browser_app.rs");
         assert!(browser.contains("        favicon: true,"), "browser panes ask for it");
         assert!(!include_str!("app/tool_web_ui.rs").contains("favicon: true"));
@@ -3456,7 +3456,7 @@ mod tests {
         let setup = ViewSetup { guard_local_schemes: true, web_message: true, resource_filters: vec!["https://tandem.test/*".into()], ..Default::default() };
         let view = WebView::create(&env, hwnd.0 as isize, 1, (0, 0, 200, 200), setup, tx.clone());
         assert!(pump_until(&rx, 20, |e| matches!(e, Event::Created(1))).is_some(), "Created");
-        // Tandem's own page, served from memory (no NavigateToString: final review Minor 3).
+        // Termurion's own page, served from memory (no NavigateToString: final review Minor 3).
         view.navigate_tandem("https://tandem.test/t");
         let Some(Event::Request { token, .. }) = pump_until(&rx, 10, |e| matches!(e, Event::Request { view: 1, .. })) else { panic!("a request for the page") };
         view.answer_request(token, Answer::Respond { status: 200, mime: "text/html".into(), body: b"<title>t</title><body>x</body>".to_vec(), headers: vec![] });
@@ -3593,7 +3593,7 @@ mod tests {
         }
     }
 
-    /// 13x2 Task 3: a right-click's menu gets Tandem's items in order, and `saveAs` and `print` are
+    /// 13x2 Task 3: a right-click's menu gets Termurion's items in order, and `saveAs` and `print` are
     /// gone. A right click is synthesized with DevTools input; when WebView2 raises no
     /// `ContextMenuRequested` for synthesized input, the test prints that and passes. Run in a console
     /// session (see the probe module); never shown.
@@ -3851,7 +3851,7 @@ mod probe {
         /// Every DevTools call and every ExecuteScript the harness issued, with its text.
         log: Vec<String>,
         routed: Vec<Routed>,
-        /// `Runtime.bindingCalled` events `Contexts` did not accept as Tandem's.
+        /// `Runtime.bindingCalled` events `Contexts` did not accept as Termurion's.
         rejected_bindings: usize,
         attached: Vec<(String, String)>,
         navigated: Vec<(String, bool)>,
@@ -4088,7 +4088,7 @@ mod probe {
             self.answers.remove(&t).unwrap()
         }
 
-        /// `Runtime.evaluate` in a frame's Tandem world (None is the main frame).
+        /// `Runtime.evaluate` in a frame's Termurion world (None is the main frame).
         fn eval(&mut self, frame: Option<u64>, expr: &str) -> Result<Value, String> {
             self.eval_for(frame, expr, 10)
         }
@@ -4098,7 +4098,7 @@ mod probe {
         /// with the square of the matches (measured 2026-10-09 in Chromium: 500 in 2 s, 1000 in 6 s,
         /// 6000 not done in 4 minutes). iTerm2 awaits the same command (`FM:230`).
         fn eval_for(&mut self, frame: Option<u64>, expr: &str, secs: u64) -> Result<Value, String> {
-            let (session, unique) = self.contexts.unique_for(frame).ok_or("no Tandem context for that frame")?;
+            let (session, unique) = self.contexts.unique_for(frame).ok_or("no Termurion context for that frame")?;
             let r = self.call_wait_for(session.as_deref(), "Runtime.evaluate", &browser_world::evaluate_params(&unique, expr), secs)?;
             browser_world::evaluate_result(&r)
         }
@@ -4141,7 +4141,7 @@ mod probe {
             }
             if !self.wait(5, |p| browser_world::world_usable(p.setup.state(), &p.contexts)) {
                 let created: Vec<String> = self.created_json.iter().map(|(s, j)| format!("{s:?} {}", j.chars().take(240).collect::<String>())).collect();
-                return Err(format!("the main frame has a Tandem context after loading {url}: setup {:?}, contexts {:?}, navigated {:?}, created {created:?}", self.setup.state(), self.contexts, self.navigated));
+                return Err(format!("the main frame has a Termurion context after loading {url}: setup {:?}, contexts {:?}, navigated {:?}, created {created:?}", self.setup.state(), self.contexts, self.navigated));
             }
             Ok(())
         }
@@ -4278,7 +4278,7 @@ mod probe {
                         self.graph_run(acts);
                     } else if let Some(sid) = self.session_tokens.remove(&token) {
                         if json.is_err() {
-                            // The frame then has no Tandem world, but it is still resumed.
+                            // The frame then has no Termurion world, but it is still resumed.
                             if let Some(q) = self.sessions.get_mut(&sid) {
                                 let last = q.pop_back();
                                 q.clear();
@@ -4321,8 +4321,8 @@ mod probe {
             self.graph_run(acts);
         }
 
-        /// What the graph planned, evaluated as the app does (`graph_run`): in the Tandem world of the
-        /// frame it names, the answer back to the graph. A frame with no Tandem context gets nothing.
+        /// What the graph planned, evaluated as the app does (`graph_run`): in the Termurion world of the
+        /// frame it names, the answer back to the graph. A frame with no Termurion context gets nothing.
         fn graph_run(&mut self, acts: Vec<crate::browser_frames::Act>) {
             for act in acts {
                 let Some((session, unique)) = self.contexts.unique_for(act.frame) else { continue };
@@ -4426,7 +4426,7 @@ mod probe {
             }
         }
 
-        /// The point 12 px inside the right edge of element `id`, at its middle: where Tandem's in-page
+        /// The point 12 px inside the right edge of element `id`, at its middle: where Termurion's in-page
         /// buttons sit (5 px padding, a side of at least 14 px).
         fn button_spot(&mut self, id: &str) -> (f64, f64) {
             let r = self.page_string(&format!("(() => {{ const r = document.getElementById('{id}').getBoundingClientRect(); return JSON.stringify([r.right - 12, r.top + r.height / 2]); }})()")).expect("the field");
@@ -4459,7 +4459,7 @@ mod probe {
 
     const PAGE: &str = "https://probe.tandem-probe.invalid/";
 
-    /// The echo as the app evaluates a posting body in the Tandem world (`browser_js_call`, `call_js`):
+    /// The echo as the app evaluates a posting body in the Termurion world (`browser_js_call`, `call_js`):
     /// the world has no global `window.webkit` (Task 1's bridge is closure-local, so the page can never
     /// replace it), and `call_js` gives the body the same rewrite and binding capture `wrap` does.
     fn echo(secret: &str) -> String {
@@ -4489,7 +4489,7 @@ mod probe {
 
     /// The 2026-10-09 run: HOSTILE's own source names `sessionSecret` and its `html` recorder keeps
     /// the page's outerHTML, so the old check (the field name anywhere in the report) failed on every
-    /// run whatever Tandem did. The check now tells the page reading itself from a leak. Pure.
+    /// run whatever Termurion did. The check now tells the page reading itself from a leak. Pure.
     #[test]
     fn the_secret_check_tells_a_leak_from_the_page_itself() {
         assert!(HOSTILE.contains("'sessionSecret'") && HOSTILE.contains("rec('html', null, [document.documentElement.outerHTML])"), "the page records its own source");
@@ -4612,9 +4612,9 @@ mod probe {
         p.finish();
     }
 
-    /// The page cannot make Tandem evaluate anything in any frame. The harness runs the app's own
+    /// The page cannot make Termurion evaluate anything in any frame. The harness runs the app's own
     /// rule: the production `Frames` gets every Client message from the binding and every Page message
-    /// from the page, and evaluates what it plans in the Tandem world. The page forges `EVAL_IN_FRAME`
+    /// from the page, and evaluates what it plans in the Termurion world. The page forges `EVAL_IN_FRAME`
     /// from itself and from its child frame with every pair of ids it has, the world's real graph ids
     /// among them; nothing is planned for a Page message and no forged code is evaluated. The control:
     /// the world's own `evaluateInFrame` still answers, across frames, through the same path.
@@ -4627,7 +4627,7 @@ mod probe {
         p.graph = Some(crate::browser_frames::Frames::default());
         p.view().watch_frames();
         p.load(PAGE);
-        assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the iframe has a Tandem world");
+        assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the iframe has a Termurion world");
         let k = p.contexts.frames()[0];
         assert!(p.wait(10, |p| p.graph_ids().iter().any(|(f, _)| f.is_none()) && p.graph_ids().iter().any(|(f, _)| *f == Some(k))), "both frames registered with the graph: {:?}", p.graph_ids());
         let graph_ids: Vec<String> = p.graph_ids().into_iter().map(|(_, id)| id).collect();
@@ -4731,7 +4731,7 @@ mod probe {
         assert!(worker_ran, "a page's worker runs: {:?}", p.page_eval("String(window.__worker)"));
         let frames_ok = p.wait(15, |p| p.contexts.frames().len() == 4);
         let seen = format!("attached {:?}; frames {:?}; rejected {}", p.attached, p.contexts.frames(), p.rejected_bindings);
-        assert!(frames_ok, "every frame has a Tandem world: {seen}");
+        assert!(frames_ok, "every frame has a Termurion world: {seen}");
         assert!(p.wait(10, |p| {
             let mut f: Vec<Option<u64>> = p.clients("probeEcho").into_iter().map(|(f, _)| f).collect();
             f.sort();
@@ -4770,7 +4770,7 @@ mod probe {
     }
 
     /// Task 5: a pointer move over a link raises the hover script's `iTermHoverLink` message in
-    /// the Tandem world, routed as Client with the link's URL; both hosts are under `.invalid` so no
+    /// the Termurion world, routed as Client with the link's URL; both hosts are under `.invalid` so no
     /// preconnect can leave the machine. Needs the console session (skipped elsewhere, never a pass).
     #[test]
     #[ignore]
@@ -4797,7 +4797,7 @@ mod probe {
     }
 
     /// Review Focus 1 (I3, I8, M11): a copied script's `window.webkit` post reaches the router as the
-    /// Tandem world's, a page's own post as the page's, in every frame; a page that replaces
+    /// Termurion world's, a page's own post as the page's, in every frame; a page that replaces
     /// `window.chrome.webview.postMessage` sees nothing of the world's traffic; `window.webkit` is
     /// undefined for an https page; a local page's form from a web source is not a local page's; a
     /// call into the world answers. (An `iterm2-about:` page needs the registered scheme: the
@@ -4819,7 +4819,7 @@ mod probe {
         let Some(mut p) = Probe::start(&[(url, page_html)], sources) else { return };
         p.view().watch_frames();
         p.load(url);
-        // The Tandem world's message, from every frame, as the world's; the page's, as the page's.
+        // The Termurion world's message, from every frame, as the world's; the page's, as the page's.
         assert!(p.wait(15, |p| p.clients("x").len() >= 4), "the world posted from the page and its three frames: {:?}", p.clients("x"));
         for (_, body) in p.clients("x") {
             assert_eq!(body, json!({"a": 1}));
@@ -4919,7 +4919,7 @@ mod probe {
         "<!doctype html><html><body style=\"margin:0\"><form><input id=fn name=fname style=\"display:block;width:260px;height:30px\"><input id=em type=email style=\"display:block;width:260px;height:30px\"></form></body></html>".to_string()
     }
 
-    /// 13x7 Task 3: a page script's click on Tandem's button posts nothing and fills nothing (R13x67-2); a
+    /// 13x7 Task 3: a page script's click on Termurion's button posts nothing and fills nothing (R13x67-2); a
     /// real, trusted press posts exactly one request; and the confirmed fill (Task 1's `write_call`, the
     /// one writer, run the way `browser_js_call` runs it) puts the values in the form. Needs the console
     /// session.
@@ -5000,7 +5000,7 @@ mod probe {
         p.finish();
     }
 
-    /// 13x7 Task 5: the password writer in Tandem's world: a visible password field takes the password
+    /// 13x7 Task 5: the password writer in Termurion's world: a visible password field takes the password
     /// (typed argument, secret call text, as the app runs it), the page sees it only as that field's value, a
     /// text field, a hidden field and another origin take nothing, and no page global holds it. Needs the
     /// console session.
@@ -5042,7 +5042,7 @@ mod probe {
         p.finish();
     }
 
-    /// Task 7: the page's Smart Selection scripts in Tandem's world: the text around a point, the
+    /// Task 7: the page's Smart Selection scripts in Termurion's world: the text around a point, the
     /// matcher's counts, and the selection `select-text.js` makes. (`browser_smart_select` is these
     /// calls in order; the App has no test constructor.) Needs the console session.
     #[test]
@@ -5076,7 +5076,7 @@ mod probe {
 
     /// `article_page` with `head` markup first in the page's `<head>` (a hostile page's script).
     fn article_page_with_head(title: &str, extra_body: &str, head: &str) -> String {
-        let para = "Tandem reads the article text of a page and shows it alone, in a quiet column, so that a person can read it without the clutter around it. ";
+        let para = "Termurion reads the article text of a page and shows it alone, in a quiet column, so that a person can read it without the clutter around it. ";
         let body: String = (0..12).map(|i| format!("<p>Paragraph {i}. {para}{para}</p>")).collect();
         format!("<!doctype html><html><head>{head}<title>{title}</title></head><body><nav>menu</nav><article>{body}{extra_body}</article><footer>footer</footer></body></html>")
     }
@@ -5147,7 +5147,7 @@ mod probe {
     /// answers the XPath under a point; the navigate script finds a hostile XPath without breaking out
     /// (the value is a typed argument); the annotations show, a page's synthetic Delete and Save
     /// clicks post nothing (the box only ever REQUESTS a rename or delete; the name is typed and the
-    /// delete confirmed in a Tandem window, so no page-reachable press changes a mark); a page's own
+    /// delete confirmed in a Termurion window, so no page-reachable press changes a mark); a page's own
     /// element with the old container id survives a second show; page CSS cannot displace the host;
     /// the names are not in the page's text; the position update answers; the layout monitor
     /// starts only in the isolated world. A trusted press cannot be synthesized here. Needs the
@@ -5195,7 +5195,7 @@ mod probe {
         p.page_eval("var d = document.createElement('div'); d.id = 'iterm-mark-annotations'; document.body.prepend(d); 0").expect("decoy");
         assert_eq!(marks_run(&mut p, &show), Ok(json!(true)));
         assert_eq!(p.page_eval("document.getElementById('iterm-mark-annotations') !== null"), Ok("true".into()), "the page's own element stays");
-        assert_eq!(marks_body(&mut p, "return window.tandemMarkRoot.querySelectorAll('.iterm-mark-annotation').length"), Ok(json!(1)), "one box: the old host went by Tandem's reference");
+        assert_eq!(marks_body(&mut p, "return window.tandemMarkRoot.querySelectorAll('.iterm-mark-annotation').length"), Ok(json!(1)), "one box: the old host went by Termurion's reference");
         assert_eq!(marks_body(&mut p, "return window.tandemMarkRoot.querySelectorAll('.iterm-mark-annotation button').length"), Ok(json!(3)));
         // The isolated world's own synthetic clicks are untrusted too.
         marks_body(&mut p, "window.tandemMarkRoot.querySelectorAll('button').forEach(b => b.click()); return true").expect("clicks");
@@ -5385,23 +5385,23 @@ mod probe {
         marks_run(&mut p, &show).expect("annotations");
         marks_body(&mut p, "window.tandemMarkRoot.querySelectorAll('button').forEach(b => b.click()); return true").expect("clicks");
         p.settle(500);
-        // Tandem's code runs in the isolated world, which has its own `Function.prototype` and
+        // Termurion's code runs in the isolated world, which has its own `Function.prototype` and
         // `chrome.webview`, so the spy normally reports nothing. The proof it is alive and posting is the
         // page's own call, made last (the 13x4 precedent; a silent spy proves nothing).
-        assert!(!p.routed.iter().any(|r| r.via == Via::Page && r.body.contains("\"spy\"")), "Tandem called nothing the page replaced");
+        assert!(!p.routed.iter().any(|r| r.via == Via::Page && r.body.contains("\"spy\"")), "Termurion called nothing the page replaced");
         p.page_eval("window.chrome.webview.postMessage({control: 'spy-alive'}); 0").expect("the control post");
         assert!(p.wait(5, |p| p.routed.iter().any(|r| r.via == Via::Page && r.body.contains("\"spy\"") && r.body.contains("spy-alive"))), "the spy is alive: the page's own post went through it");
         for r in p.routed.iter().filter(|r| r.via == Via::Page) {
             assert!(!r.body.contains("TRIG-SECRET-13x5") && !r.body.contains("MARKS-SECRET-13x5"), "a page-world message holds a secret: {}", r.body);
         }
-        // Nothing Tandem wrote into the shared DOM holds either secret.
+        // Nothing Termurion wrote into the shared DOM holds either secret.
         assert_eq!(p.page_eval("document.documentElement.outerHTML.includes('SECRET-13x5')"), Ok("false".into()), "no secret in the page's DOM");
         assert_eq!(p.page_eval("typeof window.iTerm2Triggers + typeof window.iTermLayoutChangeMonitor"), Ok("\"undefinedundefined\"".into()));
         p.finish();
     }
 
     /// 13x4 Task 1 (B9): Readability keeps event-handler attributes, and the title goes in as markup;
-    /// both run in the PAGE world. From there the reader's objects, the Tandem bridge and the view's
+    /// both run in the PAGE world. From there the reader's objects, the Termurion bridge and the view's
     /// secrets are out of reach, and no Client message results. Needs the console session.
     #[test]
     #[ignore]
@@ -5680,7 +5680,7 @@ mod probe {
         // isolated context; the binding alone does not make the world). A browser pane never runs
         // without one, so the load after the source page must have the world back.
         let Some(mut p) = Probe::start_full(&pages, vec![wrapped("window.__tandemProbeWorld = 1;")], false, &["iterm2-about"]) else { return };
-        // The facts below need no Tandem world; whether each load has one is recorded and asserted
+        // The facts below need no Termurion world; whether each load has one is recorded and asserted
         // last, so one run shows every fact (probe run 2026-10-10 stopped at a load).
         let first = p.try_load(TEST_PAGE);
         // The main frame: Starting first, then the document Request, and the page shows.
@@ -5948,7 +5948,7 @@ mod probe {
         find_command(p, secret, "startFind", json!({"searchTerm": term, "contextLength": 10, "searchMode": "caseInsensitive"}))
     }
 
-    /// One find command as the app sends it (`COMMAND_JS` in the main frame's Tandem world).
+    /// One find command as the app sends it (`COMMAND_JS` in the main frame's Termurion world).
     fn find_command(p: &mut Probe, secret: &str, action: &str, extra: Value) -> Result<Value, String> {
         find_command_for(p, secret, action, extra, 10)
     }
@@ -5968,7 +5968,7 @@ mod probe {
     const CAP_WIDE: usize = 600;
     const CAP_FIND_SECS: u64 = 120;
 
-    /// How many navigation bubbles the main frame shows, read in the Tandem world.
+    /// How many navigation bubbles the main frame shows, read in the Termurion world.
     fn bubbles(p: &mut Probe) -> usize {
         p.eval(None, "document.querySelectorAll('[data-find-nav-bubble=\"true\"]').length").ok().and_then(|v| v.as_u64()).unwrap_or(0) as usize
     }
@@ -6009,7 +6009,7 @@ window.addEventListener('message', function (e) {
         let Some(mut p) = Probe::start(&[(PAGE, hostile_page(&body, "g"))], sources) else { return };
         p.graph = Some(crate::browser_frames::Frames::default());
         p.load(PAGE);
-        find_command_for(&mut p, &secret, "startFind", json!({"searchTerm": "word", "contextLength": 10, "searchMode": "caseInsensitive"}), CAP_FIND_SECS).expect("startFind runs in the Tandem world");
+        find_command_for(&mut p, &secret, "startFind", json!({"searchTerm": "word", "contextLength": 10, "searchMode": "caseInsensitive"}), CAP_FIND_SECS).expect("startFind runs in the Termurion world");
         assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated")), "a results message arrived: {:?}", p.log.last());
         let routed: Vec<&Routed> = p.routed.iter().filter(|r| r.via == Via::Client && r.client().is_some_and(|(h, _)| h == crate::browser_find::HANDLER)).collect();
         let big = routed.iter().find(|r| r.client().is_some_and(|(_, b)| b["action"] == "resultsUpdated")).expect("resultsUpdated");
@@ -6124,7 +6124,7 @@ window.addEventListener('message', function (e) {
         let Some(mut p) = Probe::start(&[(PAGE, page)], find_sources(&secret)) else { return };
         p.graph = Some(crate::browser_frames::Frames::default());
         p.load(PAGE);
-        find_command_for(&mut p, &secret, "startFind", json!({"searchTerm": "\u{691c}\u{7d22}", "contextLength": 40, "searchMode": "caseSensitive"}), CAP_FIND_SECS).expect("startFind runs in the Tandem world");
+        find_command_for(&mut p, &secret, "startFind", json!({"searchTerm": "\u{691c}\u{7d22}", "contextLength": 40, "searchMode": "caseSensitive"}), CAP_FIND_SECS).expect("startFind runs in the Termurion world");
         assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated" && b["data"]["totalMatches"] == CAP_WIDE)), "the full result arrived, its count whole");
         let (_, b) = p.clients(crate::browser_find::HANDLER).into_iter().find(|(_, b)| b["action"] == "resultsUpdated" && b["data"]["totalMatches"] == CAP_WIDE).unwrap();
         let ids = b["data"]["matchIdentifiers"].as_array().map_or(0, Vec::len);
@@ -6148,8 +6148,8 @@ window.addEventListener('message', function (e) {
         let Some(mut p) = Probe::start_with(&[(PAGE, hostile_page(&body, "g")), (FORGING_CHILD, FORGING_CHILD_HTML.to_string())], find_sources(&secret), true) else { return };
         p.graph = Some(crate::browser_frames::Frames::default());
         p.load(PAGE);
-        assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the child has a Tandem world");
-        find_start(&mut p, &secret, "https://x.invalid").expect("startFind runs in the Tandem world");
+        assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the child has a Termurion world");
+        find_start(&mut p, &secret, "https://x.invalid").expect("startFind runs in the Termurion world");
         assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated")), "a results message arrived");
         p.settle(1000);
         let before = p.clients(crate::browser_find::HANDLER).len();
@@ -6163,7 +6163,7 @@ window.addEventListener('message', function (e) {
         assert!(wait_bubbles(&mut p, 10, |n| n > 0), "the bubbles show");
         let label = p.eval(None, "document.querySelector('[data-find-nav-bubble=\"true\"]').textContent").expect("a bubble's label");
         let label = label.as_str().expect("a label").to_lowercase();
-        // Count the page-side window.open calls the Tandem world makes (find-engine opens a link with
+        // Count the page-side window.open calls the Termurion world makes (find-engine opens a link with
         // window.open): the host's limiter drops a non-user window silently, so `new_windows` alone
         // could not tell an accepted synthetic key from an ignored one.
         p.eval(None, "window.__opens = 0; (function () { const o = window.open; window.open = function () { window.__opens += 1; return o.apply(window, arguments); }; })(); 1").expect("the open counter");
@@ -6210,7 +6210,7 @@ window.addEventListener('message', function (e) {
 
     /// 13x3 Task 1 review C1 (R13x3-1): a cross-origin frame forges `iTermGlobalClick` with
     /// coordinates that are script text. The main frame's find script stores it and, at the next
-    /// find, builds the script it has evaluated in that frame's Tandem world: the text must never
+    /// find, builds the script it has evaluated in that frame's Termurion world: the text must never
     /// run there (no marker, no Client message, never in an evaluation). Control: a numeric forgery
     /// does reach the frame as `handleClickInFrame(5, 0, ...)`. Needs the console session.
     #[test]
@@ -6222,17 +6222,17 @@ window.addEventListener('message', function (e) {
         let Some(mut p) = Probe::start(&[(PAGE, hostile_page(&body, "g")), (FORGING_CHILD, FORGING_CHILD_HTML.to_string())], find_sources(&secret)) else { return };
         p.graph = Some(crate::browser_frames::Frames::default());
         p.load(PAGE);
-        assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the child has a Tandem world");
+        assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the child has a Termurion world");
         let k = p.contexts.frames()[0];
         p.page_eval(&format!("frames[0].postMessage({{forge: 'click', x: {}}}, '*'); 1", crate::browser_js::js_string(PAYLOAD))).expect("the forgery runs");
         p.settle(500);
-        find_start(&mut p, &secret, "alpha").expect("startFind runs in the Tandem world");
+        find_start(&mut p, &secret, "alpha").expect("startFind runs in the Termurion world");
         assert!(p.wait(20, |p| p.clients(crate::browser_find::HANDLER).iter().any(|(_, b)| b["action"] == "resultsUpdated")), "a results message arrived");
         p.settle(1500);
         assert!(p.clients("probePwned").is_empty(), "the forged text posted a Client message");
         assert!(p.log.iter().filter(|l| l.starts_with("Runtime.evaluate")).all(|l| !l.contains("__pwned")), "the forged text was evaluated");
-        assert_eq!(p.eval(Some(k), "typeof globalThis.__pwned"), Ok(json!("undefined")), "the child's Tandem world has no marker");
-        assert_eq!(p.eval(None, "typeof globalThis.__pwned"), Ok(json!("undefined")), "the main Tandem world has no marker");
+        assert_eq!(p.eval(Some(k), "typeof globalThis.__pwned"), Ok(json!("undefined")), "the child's Termurion world has no marker");
+        assert_eq!(p.eval(None, "typeof globalThis.__pwned"), Ok(json!("undefined")), "the main Termurion world has no marker");
         // Control: a numeric forgery is the path that is live, so the assertions above mean something.
         p.page_eval("frames[0].postMessage({forge: 'click', x: 5}, '*'); 1").expect("the numeric forgery runs");
         p.settle(500);
@@ -6252,14 +6252,14 @@ window.addEventListener('message', function (e) {
     }
 
     /// What `browser_copy_mode_set(pane, true)` does: the page's cursor on, then the key switch in
-    /// every live Tandem world (the main frame and each iframe's).
+    /// every live Termurion world (the main frame and each iframe's).
     fn copy_on(p: &mut Probe, secret: &str) {
         use crate::browser_copymode as cm;
-        p.eval(None, &cm::enable_js(secret)).expect("enable runs in the Tandem world");
+        p.eval(None, &cm::enable_js(secret)).expect("enable runs in the Termurion world");
         copy_keys_switch(p, secret, true);
     }
 
-    /// What `browser_world_update(pane, keys_on_js)` does: every live Tandem world gets the switch.
+    /// What `browser_world_update(pane, keys_on_js)` does: every live Termurion world gets the switch.
     fn copy_keys_switch(p: &mut Probe, secret: &str, on: bool) {
         let js = crate::browser_copymode::keys_on_js(secret, on);
         p.eval(None, &js).expect("the switch in the main frame");
@@ -6287,7 +6287,7 @@ window.addEventListener('message', function (e) {
     }
 
     /// A real key through the world's listener and the model, as `browser_copy_mode_key` and
-    /// `browser_copy_mode_apply` take it. The page-side steps run in the main frame's Tandem world;
+    /// `browser_copy_mode_apply` take it. The page-side steps run in the main frame's Termurion world;
     /// Copy and Leave are returned for the test to finish, as the app finishes them natively.
     fn copy_press(p: &mut Probe, m: &mut crate::browser_copymode::Model, secret: &str, c: char) -> crate::browser_copymode::Step {
         use crate::browser_copymode as cm;
@@ -6299,7 +6299,7 @@ window.addEventListener('message', function (e) {
         let name = cm::key_name(&key, ctrl, alt).expect("a named key");
         let step = m.key(&name, secret);
         if let cm::Step::Script(js) = &step {
-            p.eval(None, js).expect("the step runs in the Tandem world");
+            p.eval(None, js).expect("the step runs in the Termurion world");
         }
         step
     }
@@ -6475,7 +6475,7 @@ window.addEventListener('message', function (e) {
             assert!(!selection(&mut p).is_empty(), "y has a selection to copy");
             assert_eq!(p.page_eval("window.__leaks.length").as_deref(), Ok("0"), "the page's recorder was never called: {:?}", p.page_eval("window.__leaks.join(';')"));
             assert_eq!(p.page_eval("String(window.iTerm2CopyMode === window.__mine)").as_deref(), Ok("\"true\""), "the page world holds the page's own object");
-            assert_eq!(p.eval(None, "String(window.iTerm2CopyMode === window.__mine)"), Ok(json!("false")), "the Tandem world holds Tandem's");
+            assert_eq!(p.eval(None, "String(window.iTerm2CopyMode === window.__mine)"), Ok(json!("false")), "the Termurion world holds Termurion's");
             assert_eq!(p.eval(None, "typeof window.iTerm2CopyMode.getState"), Ok(json!("function")));
             let report = p.page_eval("window.__report()").expect("the page report");
             if let Some(leak) = page_saw_secret(&report, &secret) {
@@ -6490,7 +6490,7 @@ window.addEventListener('message', function (e) {
             let Some(mut p) = Probe::start(&[(PAGE, page)], vec![wrapped(GRAPH)]) else { return };
             p.load(PAGE);
             p.view().focus();
-            assert_eq!(p.eval(None, "typeof window.iTerm2CopyMode"), Ok(json!("undefined")), "no copy mode script in the Tandem world");
+            assert_eq!(p.eval(None, "typeof window.iTerm2CopyMode"), Ok(json!("undefined")), "no copy mode script in the Termurion world");
             let _ = &secret;
             // A state that differs if the page had started copy mode: the page's own keydown
             // listener sees the key (copy mode would have swallowed it), no cursor exists and
@@ -6522,7 +6522,7 @@ window.addEventListener('message', function (e) {
         let page = format!("<!doctype html><html><head><title>i</title></head><body><p>outer text</p><iframe id=\"f1\" srcdoc=\"{SRC}\"></iframe></body></html>");
         let Some(mut p) = Probe::start(&[(PAGE, page)], copy_sources(&secret)) else { return };
         p.load(PAGE);
-        assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the iframe has a Tandem world");
+        assert!(p.wait(10, |p| p.contexts.frames().len() == 1), "the iframe has a Termurion world");
         p.view().focus();
         copy_on(&mut p, &secret);
         p.page_eval("document.getElementById('f1').contentWindow.focus(); document.getElementById('f1').contentDocument.body.focus(); 1").expect("focus moves into the iframe");
@@ -6544,11 +6544,11 @@ window.addEventListener('message', function (e) {
         // An iframe added after copy mode started: its world takes keys once it is told.
         let seen_before = p.created_json.len();
         p.page_eval("const f = document.createElement('iframe'); f.id = 'f2'; f.srcdoc = '<body tabindex=0><p>late</p></body>'; document.body.appendChild(f); 1").expect("an iframe is added");
-        assert!(p.wait(10, |p| p.contexts.frames().len() == 2), "the new iframe has a Tandem world");
+        assert!(p.wait(10, |p| p.contexts.frames().len() == 2), "the new iframe has a Termurion world");
         // The app's own composition (`browser_copy_mode_new_context` calls the same function) for each
         // context the page made after copy mode started; the probe does not send keys_on_js itself.
         let late: Vec<(Option<String>, serde_json::Value)> = p.created_json[seen_before..].iter().filter_map(|(s, j)| cm::new_context_params(&secret, j).map(|v| (s.clone(), v))).collect();
-        assert!(!late.is_empty(), "the late iframe's Tandem world was announced");
+        assert!(!late.is_empty(), "the late iframe's Termurion world was announced");
         for (session, params) in &late {
             p.call_wait(session.as_deref(), "Runtime.evaluate", params).expect("the new context is told");
         }
@@ -6756,7 +6756,7 @@ window.addEventListener('message', function (e) {
         assert!(p.wait(10, |p| p.writes.contains(&(31, true))), "written: {:?}", p.writes);
         p.load(PERM_PAGE);
         assert_eq!(p.page_string("Notification.permission"), Ok("granted".into()), "the first page has the stale grant");
-        assert!(p.perm_reqs.is_empty(), "and nothing asked Tandem: {:?}", p.perm_reqs);
+        assert!(p.perm_reqs.is_empty(), "and nothing asked Termurion: {:?}", p.perm_reqs);
         p.view().set_permission_state(32, 4, PERM_HOST, STATE_DEFAULT);
         assert!(p.wait(10, |p| p.writes.contains(&(32, true))));
         p.load(PERM_PAGE);
@@ -6826,7 +6826,7 @@ window.addEventListener('message', function (e) {
         p.finish();
     }
 
-    /// Pre-flight B3: kinds Tandem never asks about are denied by the host and never posted, and the
+    /// Pre-flight B3: kinds Termurion never asks about are denied by the host and never posted, and the
     /// page sees the refusal.
     #[test]
     #[ignore]
@@ -6838,7 +6838,7 @@ window.addEventListener('message', function (e) {
         let got = p.page_string("window.__c");
         // A permission refusal, not any rejection (a MIDI "NotSupportedError" would pass otherwise).
         assert!(got.as_deref().is_ok_and(|c| c == "denied:NotAllowedError" || c == "denied:SecurityError"), "the MIDI request was refused by permission: {got:?}");
-        assert!(p.perm_reqs.is_empty(), "a kind Tandem does not ask about never reaches the app: {:?}", p.perm_reqs);
+        assert!(p.perm_reqs.is_empty(), "a kind Termurion does not ask about never reaches the app: {:?}", p.perm_reqs);
         assert_eq!(p.page_eval("1"), Ok("1".into()), "the view still answers");
         p.finish();
     }
@@ -6970,7 +6970,7 @@ window.addEventListener('message', function (e) {
         p.finish();
     }
 
-    /// R13x8-NS, last-gate review 6 (the positive control of the exit guard): Tandem's own loads leave a
+    /// R13x8-NS, last-gate review 6 (the positive control of the exit guard): Termurion's own loads leave a
     /// file page for the web. From a served file page, `navigate_tandem` (the address bar, a bookmark,
     /// a menu action) to a 127.0.0.1 listener lands, and so does one the server redirects (302 to
     /// another path); the exit guard answers neither 403 and the verdict refuses neither. Needs the
@@ -7037,7 +7037,7 @@ window.addEventListener('message', function (e) {
             println!("probe: {load} landed={landed} source={:?} title={:?} navigated={:?} https={:?} verdict refusals={verdicts:?} exit 403s={exits:?} hits={:?}", p.source(), p.title(), &p.navigated[n..], &p.https[n..], hits.lock().map(|l| l.clone()).unwrap_or_default());
             assert!(landed, "{load} landed on {lands}: {:?} / {:?}", p.source(), p.order);
             assert_eq!(p.title().as_deref(), Some("w"), "the server's page shows");
-            assert!(!exits.iter().any(|u| u.starts_with(&base)) && !verdicts.iter().any(|(u, _)| u.starts_with(&base)), "no refusal of Tandem's own load: {verdicts:?} / {exits:?}");
+            assert!(!exits.iter().any(|u| u.starts_with(&base)) && !verdicts.iter().any(|(u, _)| u.starts_with(&base)), "no refusal of Termurion's own load: {verdicts:?} / {exits:?}");
         }
         let seen = hits.lock().map(|l| l.clone()).unwrap_or_default();
         assert!(["/ok", "/hop", "/landing"].iter().all(|h| seen.iter().any(|s| s == h)), "the server answered each: {seen:?}");
@@ -7089,7 +7089,7 @@ window.addEventListener('message', function (e) {
     /// that did not, as the error page's rule (`server_answered`) reads it. A local listener serves a 404
     /// with a body, an empty 404, a 204 and a 503; a dead port is the network failure, and so is a 302 to
     /// the dead port (last-gate review 7: the hop's 302 is not the answer). A server that
-    /// answered has `http >= 100` (its own page shows); the network failure has `http` under 100 (Tandem's
+    /// answered has `http >= 100` (its own page shows); the network failure has `http` under 100 (Termurion's
     /// page shows); a 204 makes no navigation or one that is not an error. Needs the console session.
     #[test]
     #[ignore]
@@ -7157,7 +7157,7 @@ window.addEventListener('message', function (e) {
     }
 
     /// 13x8 final review I1: a server's 302 onto `iterm2-about:settings` is refused whether the navigation
-    /// left a Tandem page or a web page (the source is still the old page while a redirect is judged).
+    /// left a Termurion page or a web page (the source is still the old page while a redirect is judged).
     /// A local listener answers `/r` with a 302 to the settings page and `/hop` with a 302 to `/landing`
     /// (the positive control: a redirect to the web is followed). Needs the console session.
     #[test]
@@ -7243,7 +7243,7 @@ window.addEventListener('message', function (e) {
     /// served through one exact-URL filter that does not match `/sw.js`. For a granted origin (mirrored
     /// as the app does), the worker's script fetch is refused by `register_worker_refusal` itself (its
     /// test-only record names `/sw.js`: positive evidence, not a DNS failure on `.invalid`), the
-    /// registration fails, no registration exists, no notification reaches Tandem and nothing served
+    /// registration fails, no registration exists, no notification reaches Termurion and nothing served
     /// the script.
     #[test]
     #[ignore]
@@ -7279,7 +7279,7 @@ window.addEventListener('message', function (e) {
     /// request is the TOP page's, so WebView2 names the top page's URI (probe run 2026-10-10) and the
     /// grant Chromium then enforces is keyed by the top origin too. The prompt names the site the
     /// person is on, which chose to delegate (ruling R13x6-P3). A frame the top page did not
-    /// delegate to never reaches Tandem.
+    /// delegate to never reaches Termurion.
     #[test]
     #[ignore]
     fn a_frame_request_names_the_top_page_and_an_undelegated_frame_asks_nothing() {
@@ -7409,7 +7409,7 @@ window.addEventListener('message', function (e) {
     /// 13x AI browser tools Task 4: the pure answer functions over the real markdown script, with
     /// the loads started through the GUARDED `navigate` (never `navigate_tandem`). A 127.0.0.1
     /// listener serves `/a` and `/b` only. The secret checks can fail: each removed node (a `[hidden]`
-    /// element, a password-autocomplete textarea, a Tandem mark annotation) has a twin without the
+    /// element, a password-autocomplete textarea, a Termurion mark annotation) has a twin without the
     /// marking that must reach the text. A model may not read a 127.0.0.1 page (final review I3), so
     /// the answers are built over the real markdown under a public-looking URL. Needs the console
     /// session: run it through scripts/probe-desktop.ps1 as the checklist's Probe section says
@@ -7703,17 +7703,17 @@ window.addEventListener('message', function (e) {
 
     /// Task 10 review I2: the engine never answers an NTLM or Negotiate challenge with the person's
     /// Windows credentials by itself, from a site or from a proxy. Each case runs in a control
-    /// environment first (no Tandem argument: the engine's own behavior, which must send a credential
-    /// for the probe to be able to fail), then with candidate arguments, then with what Tandem ships
+    /// environment first (no Termurion argument: the engine's own behavior, which must send a credential
+    /// for the probe to be able to fail), then with candidate arguments, then with what Termurion ships
     /// (`webhost::browser_arguments`). The site is `localhost` (dotless: the intranet zone, where
     /// Windows allows automatic logon), the proxy a 407 from 127.0.0.1. What each server saw is
-    /// printed, and Tandem's environment must send no integrated credential anywhere.
+    /// printed, and Termurion's environment must send no integrated credential anywhere.
     #[test]
     #[ignore]
     fn integrated_auth_is_never_sent_by_itself() {
         const ALLOWLIST: &str = "--auth-server-allowlist=tandem-no-integrated-auth.invalid";
         const SCHEMES: &str = "--auth-schemes=basic,digest";
-        let configs: [(&str, Option<&str>); 4] = [("control", Some("")), ("allowlist", Some(ALLOWLIST)), ("schemes", Some(SCHEMES)), ("tandem", None)];
+        let configs: [(&str, Option<&str>); 4] = [("control", Some("")), ("allowlist", Some(ALLOWLIST)), ("schemes", Some(SCHEMES)), ("termurion", None)];
         let integrated = |seen: &[String]| seen.iter().any(|l| l.contains(": NTLM\"") || l.contains(": Negotiate\""));
         let mut table: Vec<(String, &str, &str, bool, usize, Vec<String>)> = Vec::new();
         for scheme in ["NTLM", "Negotiate"] {
@@ -7757,18 +7757,18 @@ window.addEventListener('message', function (e) {
         }
         for case in ["NTLM site", "Negotiate site"] {
             let control = table.iter().find(|r| r.0 == case && r.1 == "control").expect("ran");
-            let tandem = table.iter().find(|r| r.0 == case && r.1 == "tandem").expect("ran");
-            // The probe can fail: without Tandem's argument the engine signs in to the site by itself.
+            let termurion = table.iter().find(|r| r.0 == case && r.1 == "termurion").expect("ran");
+            // The probe can fail: without Termurion's argument the engine signs in to the site by itself.
             assert!(control.3, "{case}: the control environment sent no integrated credential, so the probe could not tell: {:?}", control.5);
-            assert!(!tandem.3, "{case}: Tandem's environment sent an integrated credential by itself: {:?}", tandem.5);
-            assert!(tandem.4 == 1, "{case}: the challenge reaches the app (prompt-only): {}", tandem.4);
+            assert!(!termurion.3, "{case}: Termurion's environment sent an integrated credential by itself: {:?}", termurion.5);
+            assert!(termurion.4 == 1, "{case}: the challenge reaches the app (prompt-only): {}", termurion.4);
         }
         // Residual (R13x710-1, probe run 2026-10-11b): a proxy's NTLM/Negotiate 407 is answered by the
         // engine itself in every environment (the allowlist passes proxies; `--auth-schemes` is
         // ignored). Printed, not asserted: no browser argument changes it.
         for case in ["NTLM proxy", "Negotiate proxy"] {
-            let tandem = table.iter().find(|r| r.0 == case && r.1 == "tandem").expect("ran");
-            println!("integrated auth RESIDUAL: {case}: Tandem's environment {}", if tandem.3 { "answers a proxy with Windows credentials by itself" } else { "sent nothing (the residual is gone: update R13x710-1)" });
+            let termurion = table.iter().find(|r| r.0 == case && r.1 == "termurion").expect("ran");
+            println!("integrated auth RESIDUAL: {case}: Termurion's environment {}", if termurion.3 { "answers a proxy with Windows credentials by itself" } else { "sent nothing (the residual is gone: update R13x710-1)" });
         }
     }
 

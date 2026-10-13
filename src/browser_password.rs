@@ -1,7 +1,7 @@
 //! The browser password writer's pure model (milestone 13x7, Task 5): iTerm2's four password scripts
 //! (copied byte for byte; the load-time patches here are exact and fail closed), the probe's
 //! classification, the exact-origin test between a stored account and the page, and the per-pane
-//! operation order. A password reaches a page only after the person picked a credential in Tandem's own
+//! operation order. A password reaches a page only after the person picked a credential in Termurion's own
 //! picker; the picker's caller binds the pick to the page's exact origin and navigation epoch
 //! (`PwPage`), and every operation is checked against that binding again when it runs and once more
 //! inside the page script. The password is a `pwm::Secret` from the source's reply until it has been
@@ -21,15 +21,15 @@ use crate::pwm::Secret;
 /// The typed argument that carries the text to write (a password, or a user name).
 pub const TEXT_ARG: &str = "textArg";
 
-/// What a refused password write tells the person (iTerm2 asks "Fill it anyway?"; Tandem never writes
+/// What a refused password write tells the person (iTerm2 asks "Fill it anyway?"; Termurion never writes
 /// a password into a field that is not a visible password field, Task 5 ruling).
-pub const NOT_PASSWORD_FIELD: &str = "The focused field is not a visible password field, so Tandem did not fill it.";
+pub const NOT_PASSWORD_FIELD: &str = "The focused field is not a visible password field, so Termurion did not fill it.";
 /// A write that could not run because the page moved on since the pick.
-pub const PAGE_CHANGED: &str = "The page changed, so Tandem did not fill it.";
+pub const PAGE_CHANGED: &str = "The page changed, so Termurion did not fill it.";
 /// A fill is refused on any page that is not https.
 /// A stored account for another site is never typed into this page.
-pub const WRONG_SITE: &str = "That password is for a different site, so Tandem did not fill it.";
-pub const HTTPS_ONLY: &str = "Tandem fills passwords only on secure (https) pages.";
+pub const WRONG_SITE: &str = "That password is for a different site, so Termurion did not fill it.";
+pub const HTTPS_ONLY: &str = "Termurion fills passwords only on secure (https) pages.";
 
 fn file(name: &str) -> &'static str {
     resource(name).expect("a copied password script is in the resource table")
@@ -38,7 +38,7 @@ fn file(name: &str) -> &'static str {
 /// The frame and page guard patched into `password-button.js`: no button on a page that is not https
 /// (this also leaves every `iterm2-*` page, `about:blank` and `data:` without one) and none in an
 /// iframe of another origin than the top page (a cross-origin parent throws on `window.top.location`).
-const BUTTON_GUARD: &str = "'use strict';\n    // Tandem: no button on a page that is not https, nor in an iframe of another origin.\n    if (location.protocol !== 'https:') return;\n    try { if (window.top !== window && window.top.location.origin !== window.location.origin) return; } catch (_) { return; }";
+const BUTTON_GUARD: &str = "'use strict';\n    // Termurion: no button on a page that is not https, nor in an iframe of another origin.\n    if (location.protocol !== 'https:') return;\n    try { if (window.top !== window && window.top.location.origin !== window.location.origin) return; } catch (_) { return; }";
 
 /// The closed shadow root (13x5's lesson, as Task 1 gave the autofill button): the button lives in a
 /// root only this world holds, under a host styled with `!important` inline rules; its label is
@@ -47,9 +47,9 @@ const BUTTON_GUARD: &str = "'use strict';\n    // Tandem: no button on a page th
 /// (`elementFromPoint` on the root), or, for a keyboard activation, when the button has focus. The
 /// autofill button is another closed root: its host is the one other max z-index element at the spot
 /// (`tandemShift`), so this button steps aside by its own width, as iTerm2's does for a visible one.
-const BUTTON_ROOT: &str = "let btn = null;\n    // Tandem: the button lives in a closed shadow root the page cannot reach; its label is generated content.\n    let tandemHost = null;\n    let tandemShadow = null;\n    function tandemRoot() {\n        if (!tandemShadow) {\n            tandemHost = document.createElement('div');\n            tandemHost.style.cssText = 'all: initial !important; display: block !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 0 !important; overflow: visible !important; z-index: 2147483647 !important; pointer-events: none !important;';\n            tandemShadow = tandemHost.attachShadow({mode: 'closed'});\n            const rule = document.createElement('style');\n            rule.textContent = 'button { pointer-events: auto !important; } [data-tandem-glyph]::after { content: attr(data-tandem-glyph); }';\n            tandemShadow.appendChild(rule);\n        }\n        if (!tandemHost.isConnected && document.body) { document.body.appendChild(tandemHost); }\n        return tandemShadow;\n    }\n    function tandemReal(e, button) {\n        if (!e.isTrusted) return false;\n        const root = tandemRoot();\n        if (e.detail === 0) return root.activeElement === button;\n        return root.elementFromPoint(e.clientX, e.clientY) === button;\n    }\n    function tandemShift(samples, side) {\n        for (const {x, y} of samples) {\n            for (const el of document.elementsFromPoint(x, y)) {\n                if (el === tandemHost || el === activeField) continue;\n                if (parseInt(getComputedStyle(el).zIndex) === 2147483647) return side + 5;\n            }\n        }\n        return 0;\n    }";
+const BUTTON_ROOT: &str = "let btn = null;\n    // Termurion: the button lives in a closed shadow root the page cannot reach; its label is generated content.\n    let tandemHost = null;\n    let tandemShadow = null;\n    function tandemRoot() {\n        if (!tandemShadow) {\n            tandemHost = document.createElement('div');\n            tandemHost.style.cssText = 'all: initial !important; display: block !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 0 !important; overflow: visible !important; z-index: 2147483647 !important; pointer-events: none !important;';\n            tandemShadow = tandemHost.attachShadow({mode: 'closed'});\n            const rule = document.createElement('style');\n            rule.textContent = 'button { pointer-events: auto !important; } [data-tandem-glyph]::after { content: attr(data-tandem-glyph); }';\n            tandemShadow.appendChild(rule);\n        }\n        if (!tandemHost.isConnected && document.body) { document.body.appendChild(tandemHost); }\n        return tandemShadow;\n    }\n    function tandemReal(e, button) {\n        if (!e.isTrusted) return false;\n        const root = tandemRoot();\n        if (e.detail === 0) return root.activeElement === button;\n        return root.elementFromPoint(e.clientX, e.clientY) === button;\n    }\n    function tandemShift(samples, side) {\n        for (const {x, y} of samples) {\n            for (const el of document.elementsFromPoint(x, y)) {\n                if (el === tandemHost || el === activeField) continue;\n                if (parseInt(getComputedStyle(el).zIndex) === 2147483647) return side + 5;\n            }\n        }\n        return 0;\n    }";
 
-/// `password-button.js` with Tandem's patches, every one exact once and fail closed (the copy in
+/// `password-button.js` with Termurion's patches, every one exact once and fail closed (the copy in
 /// `resources/` stays iTerm2's, byte for byte; a copy that changed makes no button script, never a
 /// half-patched one). See `BUTTON_ROOT` and `BUTTON_GUARD`. The click handler acts only on
 /// `event.isTrusted` (R13x67-2, an iTerm2 bug fixed) and a real press on the button, and then only
@@ -60,7 +60,7 @@ pub fn button_patched(src: &str) -> Result<String, String> {
     let s = patch_once(
         &s,
         "btn.addEventListener('click', e => {\n            e.preventDefault();",
-        &format!("btn.addEventListener('click', e => {{\n            // Tandem: act only on a person's click, never a page script's (R13x67-2; iTerm2 bug).\n            {TRUSTED_CHECK}\n            if (!tandemReal(e, btn)) return;\n            e.preventDefault();"),
+        &format!("btn.addEventListener('click', e => {{\n            // Termurion: act only on a person's click, never a page script's (R13x67-2; iTerm2 bug).\n            {TRUSTED_CHECK}\n            if (!tandemReal(e, btn)) return;\n            e.preventDefault();"),
     )?;
     let s = patch_once(&s, "document.body.appendChild(btn);", "tandemRoot().appendChild(btn);")?;
     let s = patch_once(&s, "btn.textContent = emoji;", "btn.setAttribute('data-tandem-glyph', emoji);")?;
@@ -78,7 +78,7 @@ pub fn button_js() -> Result<String, String> {
 /// The message handler the button posts to (`PMH:15`).
 pub const HANDLER: &str = "iTermOpenPasswordManager";
 
-/// The button script as injected (`PMH:31-35`): the view's secret in. Tandem's own hex, never page text.
+/// The button script as injected (`PMH:31-35`): the view's secret in. Termurion's own hex, never page text.
 /// None when a patch failed closed: no button, no request.
 pub fn button_script(secret: &str) -> Option<String> {
     button_js().ok().map(|js| fill_template(&js, &[("SECRET", secret)]))
@@ -335,9 +335,9 @@ mod tests {
         assert_eq!(a.args, json!({"originArg": "https://a.test", "requireArg": true, "focusNextArg": false}));
         assert_eq!(focus_call("https://a.test", "pw\"x</script>{{ID}}").args["idArg"], "pw\"x</script>{{ID}}");
         assert!(!focus_call("https://a.test", "x").body.contains("pw\""), "an id never reaches the body");
-        // Copied files carry no Tandem edit; the shipped button gets exactly one.
+        // Copied files carry no Termurion edit; the shipped button gets exactly one.
         for js in [focus_js(), probe_js(), write_js()] {
-            assert!(!js.contains("Tandem:"));
+            assert!(!js.contains("Termurion:"));
         }
     }
 
@@ -359,14 +359,14 @@ mod tests {
         let js = button_script("s").unwrap();
         assert!(js.contains("const sessionSecret = \"s\";") && js.contains("const handlerName   = 'iTermOpenPasswordManager';"));
         assert_eq!(HANDLER, "iTermOpenPasswordManager");
-        // The message carries no secret of Tandem's, no account and no user name: the request has no payload.
+        // The message carries no secret of Termurion's, no account and no user name: the request has no payload.
         assert!(!js.contains("{{"));
     }
 
     #[test]
     fn the_button_is_a_closed_trusted_request_only() {
         let b = button_js().unwrap();
-        // Everything Tandem added is the patches: a copy that lost any one of them is caught below.
+        // Everything Termurion added is the patches: a copy that lost any one of them is caught below.
         assert_eq!(b.matches(TRUSTED_CHECK).count(), 1);
         let at = b.find("btn.addEventListener('click', e => {").unwrap();
         let body = &b[at..];
@@ -386,11 +386,11 @@ mod tests {
         // https only, and no frame of another origin; the guard is the script's first statement.
         let g = b.find("location.protocol !== 'https:'").unwrap();
         assert!(g < b.find("let activeField").unwrap() && b.contains("window.top.location.origin !== window.location.origin"));
-        // The bridge is Tandem's: no `window.webkit` once wrapped.
+        // The bridge is Termurion's: no `window.webkit` once wrapped.
         let wrapped = crate::browser_js::wrap(&crate::browser_js::UserScript { id: "passwordManager", code: button_script("s").unwrap(), inject: crate::browser_js::Inject::DocumentEnd, main_frame_only: false, world: crate::browser_js::World::Client });
         assert!(!wrapped.contains("window.webkit"));
         // The copy is untouched.
-        assert!(!resource("password-button.js").unwrap().contains("Tandem"));
+        assert!(!resource("password-button.js").unwrap().contains("Termurion"));
     }
 
     /// Fail closed: a copy whose target moved (or doubled) makes no button script at all.

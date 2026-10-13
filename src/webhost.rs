@@ -14,7 +14,7 @@ use crate::layout::Rect;
 
 pub type ViewId = u64;
 
-/// The key gate's table (13x2 Task 6): `take(vk, mods)` says whether Tandem takes a key the page
+/// The key gate's table (13x2 Task 6): `take(vk, mods)` says whether Termurion takes a key the page
 /// raised. Read synchronously on the UI thread inside the COM handler, so it holds no App borrow; the
 /// app replaces `take` whenever the maps, the editing state or the bar change.
 pub struct KeyTable {
@@ -199,7 +199,7 @@ pub fn browser_arguments(args: &str) -> String {
 /// The user agent a web view gets (`WVW:127-150`): a set agent is used as written; an empty one
 /// keeps the engine's with the application name appended.
 pub fn user_agent(setting: &str, engine_default: &str) -> String {
-    if setting.is_empty() { format!("{engine_default} Tandem") } else { setting.to_string() }
+    if setting.is_empty() { format!("{engine_default} Termurion") } else { setting.to_string() }
 }
 
 /// What a right-click landed on (WebView2's `ICoreWebView2ContextMenuTarget` and the location, in
@@ -253,14 +253,14 @@ impl MenuTarget {
 /// One entry of the menu the app answers a `ContextMenu` event with (`WebView::answer_context_menu`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum MenuEntry {
-    /// A Tandem item; `icon_png` is an optional PNG (the color swatch).
+    /// A Termurion item; `icon_png` is an optional PNG (the color swatch).
     Custom { id: u32, label: String, enabled: bool, icon_png: Option<Vec<u8>> },
     Separator,
     /// Where WebView2's own items go.
     Native,
 }
 
-/// WebView2's own items Tandem replaces (their `Name`): iTerm2's menu has its own Save Page As and Print.
+/// WebView2's own items Termurion replaces (their `Name`): iTerm2's menu has its own Save Page As and Print.
 pub const REMOVED_NATIVE: &[&str] = &["saveAs", "print"];
 
 /// What a view tells the app. Open for extension: every consumer's `match` ends in `_ =>`.
@@ -284,7 +284,7 @@ pub enum Event {
     Message { view: ViewId, json: String, source: String },
     ScriptDone { view: ViewId, token: u64, json: Result<String, String> },
     NewWindow { view: ViewId, url: String },
-    /// A key the page raised; `taken` is the key gate's synchronous answer (Tandem took it and the
+    /// A key the page raised; `taken` is the key gate's synchronous answer (Termurion took it and the
     /// page never saw it).
     Key { view: ViewId, vk: u32, mods: u8, taken: bool },
     Focus(ViewId, bool),
@@ -299,7 +299,7 @@ pub enum Event {
     Refused { view: ViewId, url: String, user: bool },
     /// A main-frame navigation to a `file:` URL was cancelled because the view shows local files as
     /// `iterm2-file:` pages (`ViewSetup.redirect_file_urls`, 13x8 Task 3) and the one verdict, then
-    /// `file_redirect_allowed`, let it go. The app loads `iterm2_file_url(uri)` as Tandem's own load.
+    /// `file_redirect_allowed`, let it go. The app loads `iterm2_file_url(uri)` as Termurion's own load.
     FileRedirect { view: ViewId, uri: String },
     /// `WebView::clear_browsing_data` finished (13x8 Task 5); `ok` is whether the web view cleared it.
     /// Never dropped: the settings page waits on it.
@@ -308,10 +308,10 @@ pub enum Event {
     /// synced yet (13x6, the one gate in the NavigationStarting handler): `url` is its TARGET, which
     /// the app loads once the sync lands. Never dropped.
     /// `by_tandem`, `user`, `redirect` and `source` are how the handler judged it (the app judges the
-    /// release again with them, never as Tandem's own); `history` is a back or forward step.
+    /// release again with them, never as Termurion's own); `history` is a back or forward step.
     Parked { view: ViewId, url: String, user: bool, redirect: bool, by_tandem: bool, history: bool, source: Option<String> },
     /// A DevTools protocol event the view subscribed to (`devtools_subscribe`); `session` is the
-    /// child session that raised it, None for the view's own target. Never trusted as Tandem's:
+    /// child session that raised it, None for the view's own target. Never trusted as Termurion's:
     /// `browser_world::Contexts` decides what a context is.
     DevTools { view: ViewId, session: Option<String>, name: String, json: String },
     /// The view's `browser_world::EventFilter` holds lifecycle events: the app takes them with
@@ -336,7 +336,7 @@ pub enum Event {
     ContextMenu { view: ViewId, token: u64, target: MenuTarget },
     /// A custom item of the answered menu was chosen: `id` is the `MenuEntry::Custom` id.
     ContextMenuPicked { view: ViewId, token: u64, id: u32 },
-    /// A page asked for a permission Tandem asks about (`browser_perms::route_kind`); the view holds
+    /// A page asked for a permission Termurion asks about (`browser_perms::route_kind`); the view holds
     /// the request (a deferral) until `answer_permission(token, ..)`. `kind` is
     /// `COREWEBVIEW2_PERMISSION_KIND`, `uri` the requesting frame's URI. Every other kind, and a
     /// request over the limits (`PermissionLimiter`), is denied by the host and never posted.
@@ -352,7 +352,7 @@ pub enum Event {
     /// The answer to `read_permission_states`: kind, origin as WebView2 reports it, state. `complete`
     /// is false when the read failed, an item could not be read or the list was cut at
     /// `MAX_PERMISSION_STATES`: the start-up sync must then fail closed (revoke every profile
-    /// state the Tandem table does not hold), never treat the list as the whole profile.
+    /// state the Termurion table does not hold), never treat the list as the whole profile.
     PermissionStates { view: ViewId, states: Vec<(i32, String, i32)>, complete: bool, workers_cleared: bool },
     /// The completion of `set_permission_state(seq, ..)`: `ok` is false when the runtime cannot
     /// set the profile or the write failed. Always posted once per call while the view lives (the
@@ -402,13 +402,13 @@ pub const MAX_CHALLENGE: usize = 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PermAnswer {
     /// Refuse (`COREWEBVIEW2_PERMISSION_STATE_DENY`, nothing saved in the profile). There is no
-    /// "leave it to WebView2": that would be a grant nobody asked Tandem about (pre-flight B3).
+    /// "leave it to WebView2": that would be a grant nobody asked Termurion about (pre-flight B3).
     Deny,
     /// `state` is a `browser_perms::STATE_*`. WebView2 never stores a decision (`SavesInProfile` is
     /// always false). `saves` tells the APP to mirror an Allow of a notification or location
     /// request into the profile through its write queue (`perm_queue`) and to answer only once
     /// that write came back, so the page works at once; the host itself never writes the profile
-    /// on an answer. The Tandem table stays the only source; the start-up sync revokes whatever
+    /// on an answer. The Termurion table stays the only source; the start-up sync revokes whatever
     /// it does not hold as Granted. A Deny is never mirrored.
     State { state: i32, saves: bool },
 }
@@ -508,7 +508,7 @@ impl Event {
         if matches!(self, Event::AudioPlaying { .. } | Event::DownloadProgress { .. }) {
             return true;
         }
-        // A key Tandem took is already hidden from the page (`SetHandled(true)`): dropping it would
+        // A key Termurion took is already hidden from the page (`SetHandled(true)`): dropping it would
         // lose the press to both (final review minor 6). Only a person's key makes one.
         matches!(self, Event::Source(..) | Event::Title(..) | Event::Favicon(..) | Event::Message { .. } | Event::FrameMessage { .. } | Event::FrameCreated { .. } | Event::FrameGone { .. } | Event::NewWindow { .. } | Event::ExternalUri { .. } | Event::Refused { .. } | Event::Key { taken: false, .. } | Event::History { .. } | Event::Loading(..))
     }
@@ -757,9 +757,9 @@ pub enum GateAct {
 /// The permission sync gate of the one main-frame NavigationStarting handler (13x6), applied AFTER
 /// `nav_verdict` (a refused navigation is never parked): while the view's store is not synced
 /// (`gate` Some(false)) every allowed main-frame navigation is cancelled. Only a web page (http or
-/// https) of any initiator, or Tandem's own load, is parked; any other scheme (file:, iterm2-file:,
+/// https) of any initiator, or Termurion's own load, is parked; any other scheme (file:, iterm2-file:,
 /// iterm2-ssh:, data:, ...) is cancelled and forgotten, because a parked target is later loaded by
-/// Tandem and must never launder a page's choice. Tandem's own about:blank and Tandem's own
+/// Termurion and must never launder a page's choice. Termurion's own about:blank and Termurion's own
 /// `iterm2-about:` pages (they use no web permission) pass; a URL over the cap is never parked
 /// truncated. No gate (popovers, tools) is always open.
 pub fn nav_gate(gate: Option<bool>, uri: &str, by_tandem: bool, over_long: bool) -> GateAct {
@@ -785,7 +785,7 @@ pub fn frame_nav_cancelled(uri: &str) -> bool {
 
 /// How a custom scheme is registered (`ICoreWebView2CustomSchemeRegistration`; 13x8 review I4):
 /// the allowed origins and whether its URLs carry a host. None of them is secure-origin. `iterm2-file`
-/// pages link to folders and ".." (their own scheme) and may be opened from Tandem's pages;
+/// pages link to folders and ".." (their own scheme) and may be opened from Termurion's pages;
 /// `iterm2-ssh` URLs carry a host.
 pub fn scheme_registration(scheme: &str) -> (Vec<String>, bool) {
     let own = |other: &str| vec![format!("{other}:"), format!("{scheme}:")];
@@ -812,7 +812,7 @@ fn local_scheme(s: &str) -> bool {
 
 /// The one owner of "a page that is not the web's" (13x AI browser tools seam S5, B4): a power page
 /// (`power_page`), a local page (`local_scheme`: `file:`, `iterm2-file:`, `iterm2-ssh:`), any other
-/// Tandem page (`iterm2-about:`) or an extension's own page (`chrome-extension:`). The nav judge's
+/// Termurion page (`iterm2-about:`) or an extension's own page (`chrome-extension:`). The nav judge's
 /// atoms are `power_page` and `local_scheme`; the AI browser tools never offer, read or drive such a
 /// page (`ai_browser::offerable`, `ai_browser::Page::open`). Schemes compare ignoring ASCII case.
 pub fn tandem_or_local_page(url: &str) -> bool {
@@ -930,7 +930,7 @@ fn private_v6(a: std::net::Ipv6Addr) -> bool {
 ///   verbatim form: `file_url_local`) is refused for every source and initiator;
 /// - a redirect to `file:`, `iterm2-file:` or `iterm2-ssh:` is refused;
 /// - a redirect onto a power page is refused, and a web page's `file:` link is refused;
-/// - a navigation Tandem started (`navigate_tandem`) is allowed;
+/// - a navigation Termurion started (`navigate_tandem`) is allowed;
 /// - a page on `iterm2-file:` or `iterm2-ssh:` may navigate nowhere but a reload of itself and a
 ///   listing's click inside its root, whatever WebView2's user-initiated flag says (R13x8-P2);
 /// - a navigation the person started (as WebView2 reports it) is allowed;
@@ -952,7 +952,7 @@ fn bare(url: &str) -> &str {
     url.split('#').next().unwrap_or("")
 }
 
-/// A click on a Tandem-made folder LISTING (`iterm2-file:` whose path ends in `/`) may go to an entry of
+/// A click on a Termurion-made folder LISTING (`iterm2-file:` whose path ends in `/`) may go to an entry of
 /// the same scheme and authority, inside the committed `root` (else inside the listing's own folder), and
 /// nowhere else. A served file (remote or local content) and every `iterm2-ssh:` page may navigate to no
 /// local page at all; the caller allows a reload of the same URL first (13x8 Task 9 review I1).
@@ -1005,16 +1005,16 @@ pub fn navigation_allowed_in(source: Option<&str>, target: &str, user: bool, red
     if !by_tandem && source.is_some_and(|src| local_page(src) && bare(src) == bare(target)) {
         return true;
     }
-    // A page that acts with power (settings, onboarding steps) is opened by Tandem, by the person
-    // (no source: the address bar) or from a Tandem page, never from a web page, whether by a click,
+    // A page that acts with power (settings, onboarding steps) is opened by Termurion, by the person
+    // (no source: the address bar) or from a Termurion page, never from a web page, whether by a click,
     // a script or a redirect (preflight B5, 13x8 Task 5). A redirect never lands on one, whatever page
-    // the navigation left: Tandem's own pages never redirect, so a 302 there is a server's (final
+    // the navigation left: Termurion's own pages never redirect, so a 302 there is a server's (final
     // review I1; the source is still the old page while a redirect is judged).
     if !by_tandem && power_page(target) {
         return !redirect && (s == "iterm2-about" || (s.is_empty() && user));
     }
     // A page of the web cannot start a file or ssh page, not even by a click the person is tricked
-    // into (preflight B5): only Tandem, or the local pages themselves (a listing's links).
+    // into (preflight B5): only Termurion, or the local pages themselves (a listing's links).
     if user && !by_tandem && matches!(t.as_str(), "iterm2-file" | "iterm2-ssh") {
         return match s.as_str() {
             "iterm2-about" => true,
@@ -1046,9 +1046,9 @@ pub const OLD_RUNTIME_WHAT: &str = "certificate errors";
 pub const OLD_RUNTIME_TEXT: &str = "This WebView2 runtime is too old; update Microsoft Edge WebView2.";
 
 /// Whether a `file:` navigation the one verdict allowed may become an `iterm2-file:` page (13x8 Task 3,
-/// preflight B5): Tandem's own load, or a source that is not a web page (an `iterm2-about:` or
+/// preflight B5): Termurion's own load, or a source that is not a web page (an `iterm2-about:` or
 /// `iterm2-file:` page, or no source at all). A person's click on a link of a WEB page is refused: a
-/// clickjacked click must not make Tandem list or read a local path.
+/// clickjacked click must not make Termurion list or read a local path.
 pub fn file_redirect_allowed(source: Option<&str>, by_tandem: bool) -> bool {
     if by_tandem {
         return true;
@@ -1056,7 +1056,7 @@ pub fn file_redirect_allowed(source: Option<&str>, by_tandem: bool) -> bool {
     match source.map(scheme_of).as_deref() {
         None | Some("") => true,
         // An ssh page and a served file (path not ending in `/`) never start a local page, not even
-        // through `file:` (13x8 Task 9 re-review I1 r1); only a Tandem listing does.
+        // through `file:` (13x8 Task 9 re-review I1 r1); only a Termurion listing does.
         Some("iterm2-file") => source.and_then(crate::browser_pages::local_parts).is_some_and(|(_, _, path)| path.ends_with('/')),
         Some(s) => s == "iterm2-about",
     }
@@ -1164,8 +1164,8 @@ pub fn local_page_exit_refused(top: &str, target: &str, allowed_main: Option<&st
 }
 
 /// The source a main-frame navigation is judged from: the view's current page, except for a redirect
-/// of Tandem's own load (`tandem_chain`: the same navigation id `navigate_tandem` started), which is
-/// judged as from no page (the address bar), so a Tandem load from a file page that the server
+/// of Termurion's own load (`tandem_chain`: the same navigation id `navigate_tandem` started), which is
+/// judged as from no page (the address bar), so a Termurion load from a file page that the server
 /// redirects goes on (R13x8-P2) while a redirect onto a power or local page is still refused.
 pub fn redirect_source(source: Option<&str>, tandem_chain: bool) -> Option<&str> {
     if tandem_chain { None } else { source }
@@ -1177,7 +1177,7 @@ pub fn redirect_source(source: Option<&str>, tandem_chain: bool) -> Option<&str>
 /// (connection aborted) and HttpStatusCode 0 (probe run 2026-10-11b); the server answered, so the
 /// app shows no error page for it (`browser_pages::server_answered`). A 3xx, WebView2's own or the
 /// recorded one, is a redirect's hop, not the answer: a 302 to a dead host is a network failure with
-/// Tandem's error page, not a blank pane (last-gate review 7).
+/// Termurion's error page, not a blank pane (last-gate review 7).
 pub fn completed_http(http: i32, response: Option<(u64, i32)>, nav: u64) -> i32 {
     let hop = |status: i32| (300..400).contains(&status);
     // WebView2's own HttpStatusCode is the hop's 3xx when the redirect's target cannot be reached
@@ -1302,14 +1302,14 @@ pub const SOURCE_SERVICE_WORKER: i32 = 4;
 
 /// Ruling R13x6-SW (final review M5): WebView2 raises `NotificationReceived` on the view for
 /// non-persistent notifications only; a service worker's `showNotification` (a persistent one) goes
-/// to a profile event this SDK lacks and, unhandled, to WebView2's own toast, past Tandem's label,
+/// to a profile event this SDK lacks and, unhandled, to WebView2's own toast, past Termurion's label,
 /// limits and table. Service workers are therefore refused: every request a service worker makes, and
 /// the script fetch that would install one (sent with a `Service-Worker` header), gets a 403.
 pub fn refuse_worker_request(source_kinds: i32, service_worker_header: bool) -> bool {
     source_kinds & SOURCE_SERVICE_WORKER != 0 || service_worker_header
 }
 
-/// Notifications are asked about only when the view raises them to Tandem AND no service worker can
+/// Notifications are asked about only when the view raises them to Termurion AND no service worker can
 /// raise one past it (fail closed): new workers are refused (`refuse_worker_request`) and the
 /// registrations an older build let sites make were cleared from the profile (last-gate LG-1; such
 /// a worker starts from its cache with no fetch, so the refusal alone never reaches it).
@@ -1438,20 +1438,20 @@ pub fn scheme_ok(url: &str, allowed: &[String]) -> bool {
     !s.is_empty() && allowed.iter().any(|a| a.eq_ignore_ascii_case(&s))
 }
 
-/// Whether the URI WebView2 reports for a navigation is the one Tandem asked for: equal, or equal
+/// Whether the URI WebView2 reports for a navigation is the one Termurion asked for: equal, or equal
 /// once WebView2's own added `/` after a bare host is ignored (P19).
 /// The `NavigationKind` value of a history step (Back, Forward, `history.go`).
 pub const NAV_KIND_HISTORY: i32 = 1;
 
 /// A history step never lands on a power page, whoever started it and whatever the source (13x8 Task 5
-/// review I1, redesigned): no flag a page could take. Tandem's own Back, Forward and history pick look
+/// review I1, redesigned): no flag a page could take. Termurion's own Back, Forward and history pick look
 /// at the pane's record first and, for such a target, load the page fresh (`needs_fresh_load`).
 pub fn history_refused(kind: i32, target: &str) -> bool {
     kind == NAV_KIND_HISTORY && power_page(target)
 }
 
-/// Whether Tandem loads a history target as a fresh Tandem navigation instead of stepping to it: a
-/// power page or a local (`file:`, `iterm2-file:`, `iterm2-ssh:`) page, which only Tandem's own load
+/// Whether Termurion loads a history target as a fresh Termurion navigation instead of stepping to it: a
+/// power page or a local (`file:`, `iterm2-file:`, `iterm2-ssh:`) page, which only Termurion's own load
 /// may open.
 pub fn needs_fresh_load(target: &str) -> bool {
     power_page(target) || local_scheme(&scheme_of(target))
@@ -1578,7 +1578,7 @@ pub struct NavInfo<'a> {
     pub source: Option<&'a str>,
     pub user: bool,
     pub redirect: bool,
-    /// Tandem's own load (`navigate_tandem`).
+    /// Termurion's own load (`navigate_tandem`).
     pub by_tandem: bool,
     /// A model's load (`navigate_model`) or a redirect of it (13x AI browser tools, final review I3).
     pub by_model: bool,
@@ -1589,7 +1589,7 @@ pub struct NavInfo<'a> {
 pub struct NavPolicy {
     /// Every navigation passes `navigation_allowed` (every view sets it, preflight B4c).
     pub guard_local_schemes: bool,
-    /// Only these schemes may load (a Tandem load is exempt); None allows any the guard allows.
+    /// Only these schemes may load (a Termurion load is exempt); None allows any the guard allows.
     pub allowed_schemes: Option<Vec<String>>,
     /// The tree the person opened a file page in (set by the app at the commit): a click on a listing
     /// may go only inside it (13x8 Task 9 review I1).
@@ -1618,7 +1618,7 @@ pub fn nav_verdict(info: &NavInfo, policy: &NavPolicy, file_ok: &dyn Fn(&str) ->
 }
 
 /// Whether a refused navigation is offered to the app: a person's own click on a link (not a
-/// script's navigation, not a redirect, not Tandem's load) that the view's policy cancelled.
+/// script's navigation, not a redirect, not Termurion's load) that the view's policy cancelled.
 pub fn refused_click(info: &NavInfo, allowed: bool) -> bool {
     !allowed && info.user && !info.redirect && !info.by_tandem
 }
@@ -1742,10 +1742,10 @@ pub fn focus_tick(
     out
 }
 
-/// The fixed Tandem-only host that program and model content is served under (never resolvable).
+/// The fixed Termurion-only host that program and model content is served under (never resolvable).
 pub const LOCAL_HOST: &str = "tandem-local.invalid";
 
-/// One document Tandem serves to a view itself: a script's popover HTML or the icon wrapper page.
+/// One document Termurion serves to a view itself: a script's popover HTML or the icon wrapper page.
 /// The class rule (Task 4 fix 1) replaces `NavigateToString` for program and model content: the view
 /// navigates to this document's URL on `LOCAL_HOST`, the host's request filter hands every request
 /// of the view to `answer`, and the content policy travels as a response header, so no markup is
@@ -1937,7 +1937,7 @@ mod tests {
     }
 
     /// Class ruling (Task 4 fix 1): program and model content is served by one function on a fixed
-    /// Tandem-only origin, the policy is a response header, the markup is never parsed or changed.
+    /// Termurion-only origin, the policy is a response header, the markup is never parsed or changed.
     /// Task 5 fix r1 (isolation): each document is its own origin, so one script's popover cannot
     /// read another's localStorage, IndexedDB or cookies (the views share a persistent store).
     #[test]
@@ -2094,7 +2094,7 @@ mod tests {
 
     #[test]
     fn user_agent_follows_iterm2() {
-        assert_eq!(user_agent("", "Mozilla/5.0 (Windows NT 10.0) Edg/128"), "Mozilla/5.0 (Windows NT 10.0) Edg/128 Tandem");
+        assert_eq!(user_agent("", "Mozilla/5.0 (Windows NT 10.0) Edg/128"), "Mozilla/5.0 (Windows NT 10.0) Edg/128 Termurion");
         assert_eq!(user_agent("X/1", "ignored"), "X/1");
         let s = crate::schema::find_global("WebUserAgent").expect("WebUserAgent");
         assert_eq!(s.default, Some(toml::Value::String("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15".into())));
@@ -2158,14 +2158,14 @@ mod tests {
     fn history_never_lands_on_a_power_page() {
         for target in ["iterm2-about:settings", "ITERM2-ABOUT:Settings#x", "iterm2-about:onboarding-setup", "iterm2-about:downloads"] {
             assert!(history_refused(NAV_KIND_HISTORY, target), "{target}");
-            assert!(!history_refused(0, target), "a typed or Tandem load is the verdict's, not this rule's: {target}");
+            assert!(!history_refused(0, target), "a typed or Termurion load is the verdict's, not this rule's: {target}");
             assert!(needs_fresh_load(target));
         }
         assert!(!history_refused(NAV_KIND_HISTORY, "https://a.example/") && !needs_fresh_load("https://a.example/"));
         assert!(needs_fresh_load("iterm2-file:///C:/x") && needs_fresh_load("iterm2-ssh://h/x") && needs_fresh_load("file:///C:/x"));
         // A web page's script navigation to a power page stays refused by the verdict as before.
         assert!(!navigation_allowed(Some("https://evil.test/"), "iterm2-about:settings", false, false, false, true));
-        assert!(navigation_allowed(Some("https://evil.test/"), "iterm2-about:settings", false, false, true, true), "Tandem's own load");
+        assert!(navigation_allowed(Some("https://evil.test/"), "iterm2-about:settings", false, false, true, true), "Termurion's own load");
     }
 
     #[test]
@@ -2176,7 +2176,7 @@ mod tests {
         assert!(local_page_exit_refused(file, "http://127.0.0.1:1/nav?d=x", Some(file)));
         assert!(local_page_exit_refused("iterm2-ssh://box/a.html", "https://evil.test/", Some("iterm2-ssh://box/a.html")));
         assert!(local_page_exit_refused(file, "https://evil.test/", None));
-        assert!(!local_page_exit_refused(file, "https://a.test/x#f", Some("https://a.test/x")), "the navigation the verdict allowed (Tandem's load)");
+        assert!(!local_page_exit_refused(file, "https://a.test/x#f", Some("https://a.test/x")), "the navigation the verdict allowed (Termurion's load)");
         assert!(!local_page_exit_refused("https://a.test/", "https://evil.test/", Some("https://a.test/")), "a web page is not judged here");
         assert!(!local_page_exit_refused(file, "iterm2-file:///C:/T/b.html", Some(file)), "local schemes are the app's own answers");
         assert!(!local_page_exit_refused(file, "iterm2-about:error", Some(file)));
@@ -2184,7 +2184,7 @@ mod tests {
 
     #[test]
     fn a_redirect_of_tandems_own_load_is_judged_from_no_page() {
-        // A Tandem load from a file page that a server redirects (http to https) goes on; a redirect of
+        // A Termurion load from a file page that a server redirects (http to https) goes on; a redirect of
         // it onto a power page or a local page still does not.
         let n = |s: Option<&str>, t: &str| navigation_allowed(s, t, false, true, false, true);
         assert!(!n(Some("iterm2-file:///C:/T/a.html"), "https://a.test/"), "judged from the file page it is refused");
@@ -2203,7 +2203,7 @@ mod tests {
         assert_eq!(completed_http(0, None, 6), 0, "no response: a network failure");
         assert_eq!(completed_http(404, Some((6, 204)), 6), 404, "WebView2's own status wins");
         // Last-gate review 7: the 3xx hop of a redirect is no answer to the page; a 302 to a dead host is
-        // a network failure (Tandem's error page), not a blank pane.
+        // a network failure (Termurion's error page), not a blank pane.
         for hop in [301, 302, 303, 307, 308] {
             assert_eq!(completed_http(0, Some((6, hop)), 6), 0, "{hop}");
             // Probe run 2026-10-11f: WebView2's own HttpStatusCode is the hop's 302 when the redirect's
@@ -2215,13 +2215,13 @@ mod tests {
 
     #[test]
     fn navigation_guard_follows_the_rules() {
-        let n = |s: Option<&str>, t: &str, user, redirect, tandem| navigation_allowed(s, t, user, redirect, tandem, true);
+        let n = |s: Option<&str>, t: &str, user, redirect, termurion| navigation_allowed(s, t, user, redirect, termurion, true);
         assert!(!n(Some("https://evil.test/"), "iterm2-file:///C:/Users/u/.ssh/id_ed25519", false, false, false));
         // A click the person makes on a hostile page still starts nothing (B5); a local page's link does.
         assert!(!n(Some("https://evil.test/"), "iterm2-file:///C:/Users/u/.ssh/id_ed25519", true, false, false));
         assert!(!n(Some("https://evil.test/"), "iterm2-ssh://box/etc/shadow", true, false, false));
         assert!(!n(Some("about:blank"), "iterm2-file:///C:/", true, false, false));
-        assert!(n(Some("https://evil.test/"), "iterm2-file:///C:/Users/u/.ssh/id_ed25519", true, false, true), "Tandem's own load");
+        assert!(n(Some("https://evil.test/"), "iterm2-file:///C:/Users/u/.ssh/id_ed25519", true, false, true), "Termurion's own load");
         assert!(n(Some("iterm2-about:welcome"), "iterm2-file:///C:/", true, false, false));
         assert!(!n(Some("https://evil.test/"), "iterm2-ssh://box/dev/zero", false, false, false));
         assert!(!n(Some("https://evil.test/"), "file:///C:/Windows/", false, false, false));
@@ -2232,15 +2232,15 @@ mod tests {
         assert!(!n(Some("iterm2-ssh://box/a.html"), "https://evil.test/", false, false, false));
         assert!(!n(Some("https://a/"), "iterm2-file:///C:/x", true, true, false));
         assert!(!n(Some("https://a/"), "file:///C:/x", false, true, true));
-        // The settings and onboarding pages: not from a web page by any road; Tandem, the address bar and
-        // Tandem's own pages may.
+        // The settings and onboarding pages: not from a web page by any road; Termurion, the address bar and
+        // Termurion's own pages may.
         for t in ["iterm2-about:settings", "ITERM2-ABOUT:Settings#x", "iterm2-about:onboarding-setup", "iterm2-about:onboarding-profile?x"] {
             for (user, redirect) in [(true, false), (false, false), (false, true), (true, true)] {
                 assert!(!n(Some("https://evil.test/"), t, user, redirect, false), "{t} {user} {redirect}");
                 assert!(!n(Some("about:blank"), t, user, redirect, false));
                 assert!(!n(Some("iterm2-file:///C:/T/a.html"), t, user, redirect, false));
             }
-            assert!(n(Some("https://evil.test/"), t, true, false, true), "Tandem's own load");
+            assert!(n(Some("https://evil.test/"), t, true, false, true), "Termurion's own load");
             assert!(n(Some("iterm2-about:welcome"), t, true, false, false) && n(Some("iterm2-about:permissions"), t, false, false, false));
             assert!(n(None, t, true, false, false), "typed by the person");
             assert!(!n(None, t, false, false, false));
@@ -2260,7 +2260,7 @@ mod tests {
                 assert!(!n(Some(src), "https://evil.test/", user, redirect, false), "{src} {user} {redirect}");
                 assert!(!n(Some(src), "iterm2-about:history", user, redirect, false), "{src} {user} {redirect}");
             }
-            assert!(n(Some(src), "https://a/", true, false, true), "Tandem's own load");
+            assert!(n(Some(src), "https://a/", true, false, true), "Termurion's own load");
         }
         // Final review M2: a web page's file: link is refused by the one judge itself.
         for src in ["https://evil.test/", "about:blank", "data:text/html,x"] {
@@ -2277,7 +2277,7 @@ mod tests {
             assert!(!tandem_or_local_page(u), "{u}");
         }
         assert!(["iterm2-about:settings", "iterm2-about:downloads#x"].iter().all(|u| power_page(u) && tandem_or_local_page(u)), "every power page is one");
-        // 13x AI browser tools B6: a model's load is a guarded `navigate` (not Tandem's, not the
+        // 13x AI browser tools B6: a model's load is a guarded `navigate` (not Termurion's, not the
         // person's), so a redirect or script from the page it loaded lands on no power or local page.
         for t in ["iterm2-about:settings", "iterm2-about:downloads", "iterm2-file:///C:/Users/", "iterm2-ssh://box/etc", "file:///C:/x"] {
             assert!(!n(Some("https://model-loaded.test/"), t, false, true, false), "redirect {t}");
@@ -2290,9 +2290,9 @@ mod tests {
         assert!(n(Some("https://a/"), "https://b/", false, false, false));
         assert!(!n(Some("https://evil.test/"), "FILE:///C:/x", false, false, false));
         // B4: a file: target that is not file_ok is refused for every source and initiator.
-        for (user, redirect, tandem, source) in [(false, false, false, Some("iterm2-about:welcome")), (true, false, false, Some("https://a/")), (false, false, true, None), (true, false, true, Some("iterm2-about:history"))] {
-            assert!(!navigation_allowed(source, "file://srv/share/a", user, redirect, tandem, false), "{user} {tandem}");
-            assert!(!navigation_allowed(source, "FILE:///Z:/a", user, redirect, tandem, false));
+        for (user, redirect, termurion, source) in [(false, false, false, Some("iterm2-about:welcome")), (true, false, false, Some("https://a/")), (false, false, true, None), (true, false, true, Some("iterm2-about:history"))] {
+            assert!(!navigation_allowed(source, "file://srv/share/a", user, redirect, termurion, false), "{user} {termurion}");
+            assert!(!navigation_allowed(source, "FILE:///Z:/a", user, redirect, termurion, false));
         }
         assert!(navigation_allowed(Some("iterm2-about:welcome"), "FILE:///C:/ok", false, false, false, true));
         assert!(navigation_allowed(None, "file:///C:/ok", true, false, false, true));
@@ -2414,7 +2414,7 @@ mod tests {
         assert!(!Event::Request { view: 9, token: 1, url: String::new(), context: 0, top_url: String::new() }.droppable());
         assert!(!Event::ScriptDone { view: 1, token: 1, json: Ok("2".into()) }.droppable());
         assert!(Event::Message { view: 1, json: String::new(), source: String::new() }.droppable());
-        // Final review minor 6: a key Tandem took (`SetHandled(true)`: the page never sees it) is
+        // Final review minor 6: a key Termurion took (`SetHandled(true)`: the page never sees it) is
         // never dropped, or the press would be lost to both; a key the page kept may be.
         assert!(!Event::Key { view: 1, vk: 0x4a, mods: 3, taken: true }.droppable());
         assert!(Event::Key { view: 1, vk: 0x4a, mods: 0, taken: false }.droppable());
@@ -2634,7 +2634,7 @@ mod tests {
     }
 
     /// Final review I3: a model's load, and every redirect of it, may not reach a private host; the
-    /// person's own navigation and Tandem's are judged as before.
+    /// person's own navigation and Termurion's are judged as before.
     #[test]
     fn a_model_load_never_reaches_a_private_host() {
         let policy = NavPolicy { guard_local_schemes: true, ..Default::default() };
@@ -2651,21 +2651,21 @@ mod tests {
     /// fails when the guard is removed.
     /// Review fix (Task 3, Important 2): a link a person clicked that the view refused is offered to
     /// the app (which judges it with `guard_open`); a script's or a redirect's refusal is not, and
-    /// neither is a navigation Tandem itself made.
+    /// neither is a navigation Termurion itself made.
     #[test]
     fn a_refused_click_is_offered_to_the_app() {
         let info = |user: bool, by_tandem: bool| NavInfo { target: "https://a.example/", source: None, user, redirect: false, by_tandem, by_model: false };
         assert!(refused_click(&info(true, false), false));
         assert!(!refused_click(&info(false, false), false), "a script's navigation");
-        assert!(!refused_click(&info(true, true), false), "Tandem's own load");
+        assert!(!refused_click(&info(true, true), false), "Termurion's own load");
         assert!(!refused_click(&info(true, false), true), "an allowed navigation is not refused");
         let redirect = NavInfo { redirect: true, ..info(true, false) };
         assert!(!refused_click(&redirect, false), "a redirect is no click");
         assert_eq!(nav_gate(Some(false), "https://a.example/", false, false), GateAct::Park, "a page's navigation waits for the sync");
-        assert_eq!(nav_gate(Some(false), "https://a.example/", true, false), GateAct::Park, "so does a Tandem load that slipped past its call site");
-        assert_eq!(nav_gate(Some(false), "about:blank", true, false), GateAct::Open, "Tandem's own blank page is the parking spot");
-        assert_eq!(nav_gate(Some(false), "about:blank", false, false), GateAct::Cancel, "a page's blank is not Tandem's, and is not parked");
-        assert_eq!(nav_gate(Some(false), "iterm2-about:permissions", false, false), GateAct::Open, "Tandem's own pages use no web permission");
+        assert_eq!(nav_gate(Some(false), "https://a.example/", true, false), GateAct::Park, "so does a Termurion load that slipped past its call site");
+        assert_eq!(nav_gate(Some(false), "about:blank", true, false), GateAct::Open, "Termurion's own blank page is the parking spot");
+        assert_eq!(nav_gate(Some(false), "about:blank", false, false), GateAct::Cancel, "a page's blank is not Termurion's, and is not parked");
+        assert_eq!(nav_gate(Some(false), "iterm2-about:permissions", false, false), GateAct::Open, "Termurion's own pages use no web permission");
         assert_eq!(nav_gate(Some(false), "https://a.example/", false, true), GateAct::Cancel, "never parked truncated");
         assert_eq!(nav_gate(Some(true), "https://a.example/", false, false), GateAct::Open);
         assert_eq!(nav_gate(None, "https://a.example/", false, false), GateAct::Open);
@@ -2707,7 +2707,7 @@ mod tests {
         }
     }
 
-    /// 13x8 Task 3 (preflight B5): only Tandem's load or a local page's click becomes a file page; a
+    /// 13x8 Task 3 (preflight B5): only Termurion's load or a local page's click becomes a file page; a
     /// click on a link of a web page does not.
     #[test]
     fn a_web_page_cannot_start_a_file_page() {
@@ -2732,10 +2732,10 @@ mod tests {
         // A file target that the path judge refuses is cancelled even for a person's click.
         let click = NavInfo { target: "file://server/share/x", source: None, user: true, redirect: false, by_tandem: false, by_model: false };
         assert!(!nav_verdict(&click, &guarded, &|_| false));
-        // A redirect into a local scheme is cancelled even for Tandem's own load.
+        // A redirect into a local scheme is cancelled even for Termurion's own load.
         let redirected = NavInfo { target: "file:///C:/x", source: None, user: false, redirect: true, by_tandem: true, by_model: false };
         assert!(!nav_verdict(&redirected, &guarded, &yes));
-        // The scheme list cancels what it does not name, except Tandem's own load.
+        // The scheme list cancels what it does not name, except Termurion's own load.
         let only_https = NavPolicy { guard_local_schemes: true, allowed_schemes: Some(vec!["https".into()]), local_root: None };
         assert!(!nav_verdict(&from_page("http://example.test/"), &only_https, &yes));
         let own = NavInfo { target: "http://tandem.test/", source: None, user: false, redirect: false, by_tandem: true, by_model: false };
@@ -2839,7 +2839,7 @@ mod tests {
         assert!(file_redirect_allowed(Some("iterm2-file:///C:/T/"), false), "a listing may redirect");
         assert!(!file_redirect_allowed(Some("iterm2-file:///C:/T/a.html"), false), "a served file may not");
         assert!(!file_redirect_allowed(Some("iterm2-ssh://box/a.html"), false), "an ssh page may not");
-        assert!(file_redirect_allowed(Some("iterm2-ssh://box/a.html"), true), "Tandem's own load may");
+        assert!(file_redirect_allowed(Some("iterm2-ssh://box/a.html"), true), "Termurion's own load may");
         assert!(n("iterm2-file:///C:/T/", "iterm2-file:///C:/T/b.txt", true, None), "no root: inside the listing's own folder");
         assert!(!n("iterm2-file:///C:/T/", "iterm2-file:///C:/", true, None));
         // The same through the handler's own entry point.

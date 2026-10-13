@@ -1,6 +1,6 @@
 //! Copy mode on a web page (milestone 13x3, Task 8): iTerm2's page cursor (`copy-mode.js`) and the
 //! keys that drive it (`iTermBrowserCopyModeHandler.swift`, `iTermBrowserCopyModeState.swift`). The
-//! scripts run only in Tandem's isolated world. The keys are the terminal's: `copymode::action_for`
+//! scripts run only in Termurion's isolated world. The keys are the terminal's: `copymode::action_for`
 //! is the one table, this module maps its actions to the page's API. Pure: the app runs the steps.
 
 use serde_json::Value;
@@ -11,7 +11,7 @@ use crate::copymode::{self, Action};
 
 /// The user script's identifier (`BM:347`).
 pub const SCRIPT_ID: &str = "CopyMode";
-/// Tandem's own handler for the keys script (not iTerm2's: iTerm2 reads keys natively, `BM:870-879`).
+/// Termurion's own handler for the keys script (not iTerm2's: iTerm2 reads keys natively, `BM:870-879`).
 pub const KEY_HANDLER: &str = "tandemCopyModeKey";
 
 /// The five files copied from `CopyMode/`; each is registered in `browser_js::resource`.
@@ -24,13 +24,13 @@ pub const MAX_REPEAT: usize = 1000;
 /// The page stops selecting (Quit, `CPH:441-444`); the selection itself stays (`CMI:75-88`).
 pub const STOP_SELECTING_JS: &str = "window.iTerm2CopyMode.selecting = false;";
 
-/// What a key does to the page and to Tandem.
+/// What a key does to the page and to Termurion.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Step {
     Nothing,
-    /// A statement list for the main frame's Tandem world (`browser_js_call`).
+    /// A statement list for the main frame's Termurion world (`browser_js_call`).
     Script(String),
-    /// Copy the page's selection through Tandem's clipboard, then leave copy mode.
+    /// Copy the page's selection through Termurion's clipboard, then leave copy mode.
     Copy,
     Leave { stop_selecting: bool },
     /// Open the find bar.
@@ -73,7 +73,7 @@ pub fn script(secret: &str) -> Result<String, String> {
 /// the result there is unchanged (checked against Chromium with both behaviors). The copied file is
 /// not edited; the text must be found exactly once, or there is no copy mode script.
 const FORWARD_WORD_RAW: &str = "                // If we're still in a word, scan forward to find the actual boundary\n";
-const FORWARD_WORD_TYPED: &str = "                // Tandem (Windows): Chromium's Windows editing behavior moves forward by word to the\n                // start of the NEXT word, past the space between; macOS stops at the end of the current\n                // word (taken above). A landing after a character that is not a word character has\n                // already left the current word: it is the boundary, not a word to scan through.\n                if ((newNode !== textNode || newOffset > offset) && (newOffset === 0 ? newNode !== textNode : this.classifyCharacter(newNode.textContent[newOffset - 1], false) !== 'word')) {\n                    return { textNode: newNode, characterOffset: newOffset };\n                }\n\n                // If we're still in a word, scan forward to find the actual boundary\n";
+const FORWARD_WORD_TYPED: &str = "                // Termurion (Windows): Chromium's Windows editing behavior moves forward by word to the\n                // start of the NEXT word, past the space between; macOS stops at the end of the current\n                // word (taken above). A landing after a character that is not a word character has\n                // already left the current word: it is the boundary, not a word to scan through.\n                if ((newNode !== textNode || newOffset > offset) && (newOffset === 0 ? newNode !== textNode : this.classifyCharacter(newNode.textContent[newOffset - 1], false) !== 'word')) {\n                    return { textNode: newNode, characterOffset: newOffset };\n                }\n\n                // If we're still in a word, scan forward to find the actual boundary\n";
 
 fn type_forward_word(script: &str) -> Result<String, String> {
     match script.matches(FORWARD_WORD_RAW).count() {
@@ -88,11 +88,11 @@ pub fn user_script(secret: &str) -> Result<UserScript, String> {
     script(secret).map(|code| UserScript { id: SCRIPT_ID, code, inject: Inject::DocumentStart, main_frame_only: false, world: World::Client })
 }
 
-/// Tandem's key listener, filled with the view's secret. A capture-phase `keydown` listener on
+/// Termurion's key listener, filled with the view's secret. A capture-phase `keydown` listener on
 /// `window`: an event that is not trusted is ignored first of all; while the world-local switch is on
 /// (only `window.__tandemCopyModeKeys(secret, on)` in this world sets it) every key without Win, and
 /// not part of an IME composition, is kept from the page and reported to `KEY_HANDLER`.
-const KEYS_JS: &str = r#"// Tandem's own script (not from iTerm2): the keys of copy mode in a web page.
+const KEYS_JS: &str = r#"// Termurion's own script (not from iTerm2): the keys of copy mode in a web page.
 (function() {
     'use strict';
     try {
@@ -152,7 +152,7 @@ pub fn keys_script(secret: &str) -> Result<UserScript, String> {
     Ok(UserScript { id: "TandemCopyModeKeys", code, inject: Inject::DocumentStart, main_frame_only: false, world: World::Client })
 }
 
-/// Turns the key listener on or off in one Tandem world (the app runs it in every live world and in
+/// Turns the key listener on or off in one Termurion world (the app runs it in every live world and in
 /// each new one). Nothing when the secret is not plain: no script is built from it.
 pub fn keys_on_js(secret: &str, on: bool) -> String {
     if !plain(secret) {
@@ -161,9 +161,9 @@ pub fn keys_on_js(secret: &str, on: bool) -> String {
     format!("window.__tandemCopyModeKeys && window.__tandemCopyModeKeys('{secret}', {on});")
 }
 
-/// The `Runtime.evaluate` parameters that tell a Tandem world made mid-session that copy mode is on
+/// The `Runtime.evaluate` parameters that tell a Termurion world made mid-session that copy mode is on
 /// (`Runtime.executionContextCreated`'s JSON): the one composition the app sends for a late iframe
-/// and the probe sends for the same event. None for a context that is not Tandem's isolated world
+/// and the probe sends for the same event. None for a context that is not Termurion's isolated world
 /// or a secret that is not plain.
 pub fn new_context_params(secret: &str, context_json: &str) -> Option<serde_json::Value> {
     let js = keys_on_js(secret, true);
@@ -224,7 +224,7 @@ pub fn key_of(body: &Value) -> Option<(String, bool, bool)> {
     Some((key.to_string(), ctrl, alt))
 }
 
-/// The same names from a virtual key and Tandem's modifier bits (the key gate, which sees keys before
+/// The same names from a virtual key and Termurion's modifier bits (the key gate, which sees keys before
 /// the page): named keys by code, Ctrl with a letter as "C-x", else the character the layout types.
 pub fn key_name_vk(vk: u32, mods: u8) -> Option<String> {
     use crate::browser_keys::{ALT, CTRL, WIN};
@@ -336,16 +336,16 @@ mod tests {
         }
     }
 
-    /// The late-iframe switch (final wave): Tandem's isolated context gets the keys-on script by
+    /// The late-iframe switch (final wave): Termurion's isolated context gets the keys-on script by
     /// unique id; any other context, or a secret that is not plain, gets nothing.
     #[test]
     fn a_late_world_is_told_by_its_unique_id() {
         let ev = |name: &str, kind: &str| format!(r#"{{"context":{{"id":7,"name":"{name}","uniqueId":"u-9","auxData":{{"type":"{kind}"}}}}}}"#);
-        let p = new_context_params("abc", &ev(browser_world::WORLD_NAME, "isolated")).expect("Tandem's world");
+        let p = new_context_params("abc", &ev(browser_world::WORLD_NAME, "isolated")).expect("Termurion's world");
         assert_eq!(p["uniqueContextId"], "u-9");
         assert_eq!(p["expression"], keys_on_js("abc", true));
         assert!(new_context_params("abc", &ev("page", "default")).is_none(), "a page context");
-        assert!(new_context_params("abc", &ev(browser_world::WORLD_NAME, "default")).is_none(), "named like Tandem's but not isolated");
+        assert!(new_context_params("abc", &ev(browser_world::WORLD_NAME, "default")).is_none(), "named like Termurion's but not isolated");
         assert!(new_context_params("a'b", &ev(browser_world::WORLD_NAME, "isolated")).is_none(), "a secret that is not plain");
         assert!(new_context_params("abc", "not json").is_none());
     }
@@ -358,7 +358,7 @@ mod tests {
     #[test]
     fn forward_word_follows_iterm2_on_windows() {
         let s = script("abc").expect("the script assembles");
-        assert_eq!(s.matches("// Tandem (Windows): Chromium's Windows editing behavior moves forward by word").count(), 1);
+        assert_eq!(s.matches("// Termurion (Windows): Chromium's Windows editing behavior moves forward by word").count(), 1);
         assert!(s.contains("this.classifyCharacter(newNode.textContent[newOffset - 1], false) !== 'word'"));
         assert_eq!(s.matches(FORWARD_WORD_TYPED).count(), 1);
         assert_eq!(browser_js::resource("copy-mode-cursor-movement.js").unwrap().matches(FORWARD_WORD_RAW).count(), 1, "the copy is unchanged");

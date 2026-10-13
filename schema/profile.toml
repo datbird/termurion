@@ -1,4 +1,4 @@
-# Tandem profile setting schema
+# Termurion profile setting schema
 #
 # Machine-readable schema of every iTerm2 PROFILE setting, generated from a
 # read-only reference clone of gnachman/iTerm2 (sources/Settings/iTermProfilePreferences.m,
@@ -2047,7 +2047,7 @@ section = "Terminal Emulation"
 label = "Terminal Type (report as)"
 type = "string"
 default = "xterm-256color"
-default_note = "iTermProfilePreferences.m's fallback default is \"xterm\", but ITAddressBookMgr setDefaultsInBookmark: overwrites it to \"xterm-256color\" when seeding the stock Default profile. Tandem shows and reports xterm-256color for a profile with no stored value (13o ruling), so the editor and the reported TERM agree."
+default_note = "iTermProfilePreferences.m's fallback default is \"xterm\", but ITAddressBookMgr setDefaultsInBookmark: overwrites it to \"xterm-256color\" when seeding the stock Default profile. Termurion shows and reports xterm-256color for a profile with no stored value (13o ruling), so the editor and the reported TERM agree."
 help = "The TERM value the terminal reports to programs, e.g. xterm-256color."
 light_dark = false
 macos_only = false
@@ -2466,7 +2466,7 @@ section = ""
 label = "Jobs to Ignore"
 type = "list"
 default = ["ssh", "telnet", "plink"]
-default_note = "iTerm2 seeds rlogin, ssh, slogin, telnet into every profile; Tandem seeds the Windows remote-login programs. conhost and OpenConsole are always ignored."
+default_note = "iTerm2 seeds rlogin, ssh, slogin, telnet into every profile; Termurion seeds the Windows remote-login programs. conhost and OpenConsole are always ignored."
 help = "Job or process names that do not count as \"still running\" for the prompt-before-closing check (case does not matter, .exe is optional)."
 light_dark = false
 macos_only = false
@@ -3039,7 +3039,7 @@ label = "On notification area icon click:"
 type = "enum"
 default = 0
 choices = [ { value = 0, label = "Do Not Show" }, { value = 1, label = "Always Show" }, { value = 2, label = "Show If No Other Windows Open" } ]
-help = "What a left click on Tandem's notification area icon does for this hotkey window."
+help = "What a left click on Termurion's notification area icon does for this hotkey window."
 light_dark = false
 macos_only = false
 
@@ -3293,8 +3293,8 @@ mode = "browser"
 section = ""
 label = "Browser extensions root"
 type = "string"
-default_note = "No default value (NSNull); the folder is Tandem\\BrowserExtensions under the application data folder."
-help = "Root directory for browser extensions. Only a folder chosen in Tandem's folder picker and approved in its window is ever loaded. Not shown on the page."
+default_note = "No default value (NSNull); the folder is Termurion\\BrowserExtensions under the application data folder."
+help = "Root directory for browser extensions. Only a folder chosen in Termurion's folder picker and approved in its window is ever loaded. Not shown on the page."
 light_dark = false
 macos_only = false
 

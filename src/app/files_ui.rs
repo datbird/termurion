@@ -15,7 +15,7 @@ pub(super) fn size_text(n: usize) -> String {
 }
 
 /// The Downloads folder and why a setting was passed over: `DownloadsDirectory` when it is a
-/// local absolute folder Tandem can write, else Windows' Downloads folder (`FOLDERID_Downloads`,
+/// local absolute folder Termurion can write, else Windows' Downloads folder (`FOLDERID_Downloads`,
 /// where a redirection puts it) on the same terms, else the profile folder
 /// (`NSFileManager+iTerm.m:297-313`). A folder on a share is never used (the path judge): it
 /// would leak the person's credentials, and `DownloadsDirectory` can arrive in an imported
@@ -53,7 +53,7 @@ fn writable_folder(dir: &std::path::Path) -> bool {
     if !dir.is_absolute() || !crate::localfs::is_dir(&d) {
         return false;
     }
-    let probe = dir.join(format!(".Tandem.{}", uuid::Uuid::new_v4().to_string().to_uppercase()));
+    let probe = dir.join(format!(".Termurion.{}", uuid::Uuid::new_v4().to_string().to_uppercase()));
     let Some(p) = crate::localfs::judge(&probe) else { return false };
     let made = crate::localfs::open_custom(&p, |o| {
         o.write(true).create_new(true);
@@ -93,12 +93,12 @@ pub(super) fn downloads(override_path: &str) -> Downloads {
     // The setting is probed once: its answer serves the note and the choice.
     let override_ok = !override_path.is_empty() && writable_folder(std::path::Path::new(override_path));
     if !override_path.is_empty() && !override_ok {
-        notes.push("the Downloads folder in Settings is not a local folder Tandem can write");
+        notes.push("the Downloads folder in Settings is not a local folder Termurion can write");
     }
     let writable = |p: &std::path::Path| if !override_path.is_empty() && p == std::path::Path::new(override_path) { override_ok } else { writable_folder(p) };
     let chosen = crate::resident::downloads_dir(override_path, known.clone(), &writable);
     if chosen.is_none() && known.is_some() {
-        notes.push("Windows' Downloads folder is not a local folder Tandem can write");
+        notes.push("Windows' Downloads folder is not a local folder Termurion can write");
     }
     let dir = chosen.or_else(|| std::env::var_os("USERPROFILE").map(std::path::PathBuf::from));
     let note = (!notes.is_empty()).then(|| format!("Downloads go to {}: {}.", dir.as_ref().map_or("nowhere".to_string(), |d| d.display().to_string()), notes.join("; ")));
@@ -110,14 +110,14 @@ pub(super) fn downloads(override_path: &str) -> Downloads {
 pub(super) fn message(text: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONWARNING, MB_OK, MessageBoxW};
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Tandem").as_ptr(), MB_OK | MB_ICONWARNING) };
+    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Termurion").as_ptr(), MB_OK | MB_ICONWARNING) };
 }
 
 /// A yes/no question in a message box.
 pub(super) fn ask(text: &str) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW};
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Tandem").as_ptr(), MB_YESNO | MB_ICONQUESTION) == IDYES }
+    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Termurion").as_ptr(), MB_YESNO | MB_ICONQUESTION) == IDYES }
 }
 
 /// Larger than this, a download allowed by a remembered answer asks again

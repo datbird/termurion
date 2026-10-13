@@ -1,7 +1,7 @@
 //! it2ssh (milestone 14a): iTerm2's `OtherResources/Utilities/it2ssh` over 11e's `util_cli::Io`.
 //! It asks ssh for its usage to learn the options without a value, sorts the arguments into
 //! ssh's options and the host, sends the three handshake OSCs (Env, it2ssh, SendConductor)
-//! from the remote side through ssh's remote command, which then reads the conductor Tandem
+//! from the remote side through ssh's remote command, which then reads the conductor Termurion
 //! types, and after ssh ends prints EndSSH and waits for the blank line that answers it.
 
 use std::io::Write;
@@ -15,14 +15,14 @@ pub const DEFAULT_SSH: &str = "ssh";
 /// The remote `sh -c` script: it evaluates its `$0`, the sanitized command (`IS:41`).
 pub const EVAL_CMD: &str = "'eval \"$(echo \"$0\")\"'";
 
-/// The origin token when no Tandem answers (iTerm2 off macOS, `IS:55`).
+/// The origin token when no Termurion answers (iTerm2 off macOS, `IS:55`).
 pub const NO_TOKEN: &str = "none";
 
 /// The environment variable naming the transport a pane was started with.
 pub const TRANSPORT_VAR: &str = "TANDEM_SSH_TRANSPORT";
 
 pub const NEEDS_PROFILE: &str =
-    "it2ssh: SSH integration needs a session from a Tandem SSH profile (Settings > Profiles > General > Command type: SSH); running plain ssh.";
+    "it2ssh: SSH integration needs a session from a Termurion SSH profile (Settings > Profiles > General > Command type: SSH); running plain ssh.";
 
 /// bash 5.2's `printf "%q " "$@"` in a UTF-8 locale (`lib/sh/shquote.c`): each word quoted
 /// and followed by one space.
@@ -290,7 +290,7 @@ fn run_with(args: &[String], io: &mut Io) -> i32 {
     if let Err(e) = (io.run)(&c) {
         say(io.err, &format!("it2ssh: {e}"));
     }
-    // `IS:175-193`: echo and signals off, EndSSH, then wait for Tandem's `^C` line or a blank
+    // `IS:175-193`: echo and signals off, EndSSH, then wait for Termurion's `^C` line or a blank
     // one, so a conductor typed after ssh died never reaches the local shell.
     let console = io.tty.is_console();
     if console {
@@ -487,7 +487,7 @@ mod tests {
         assert_eq!(h.tty.modes, [Mode::Raw]);
         assert!(h.tty.restored);
 
-        // A secret from Tandem is the token.
+        // A secret from Termurion is the token.
         let secret = "0123456789abcdef0123456789abcdef".to_string();
         let mut h = ready_harness(&[base[0], base[1], (TRANSPORT_VAR, chosen)]);
         h.secrets = [Some(secret.clone())].into();
@@ -526,7 +526,7 @@ mod tests {
         assert_eq!(h.with_io(&mut |io| run_with(&args, io)), 0);
         assert_eq!(h.out, b"\x1b]1337;EndSSH=1234512345\x07");
 
-        // Not a session of a Tandem SSH profile (no transport, or another one): plain ssh.
+        // Not a session of a Termurion SSH profile (no transport, or another one): plain ssh.
         for transport in [None, Some("conpty")] {
             let mut env = vec![base[0], base[1]];
             if let Some(t) = transport {

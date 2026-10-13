@@ -13,8 +13,8 @@ pub(super) const BURIED_TMUX_ID: &str = "buried-tmux:";
 
 impl App {
     /// Buries a session (`PTYSession.m:15145`). Burying the last session of the last window hides the
-    /// window and Tandem stays resident with the session buried, as closing the last window does,
-    /// unless "Quit when all windows are closed" is on (Tandem would end, and the session with it).
+    /// window and Termurion stays resident with the session buried, as closing the last window does,
+    /// unless "Quit when all windows are closed" is on (Termurion would end, and the session with it).
     /// True when it was buried.
     pub(super) fn bury_pane(&mut self, id: PaneId) -> bool {
         // A workgroup member stays where the group put it (B2): a buried one would be in two places.
@@ -36,7 +36,7 @@ impl App {
         }
         let only = self.tabs.len() == 1 && self.tabs[0].layout.panes().len() == 1 && self.windows.parked().next().is_none() && self.pending_windows.is_empty();
         if only && self.globals.bool(QUIT_KEY) {
-            self.banners.set("bury", "The last session cannot be buried: Tandem quits when its last window closes (Settings > General > Closing).");
+            self.banners.set("bury", "The last session cannot be buried: Termurion quits when its last window closes (Settings > General > Closing).");
             return false;
         }
         let Some(t) = self.tabs.iter().position(|t| t.layout.panes().contains(&id)) else { return false };

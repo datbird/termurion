@@ -236,7 +236,7 @@ impl Panel {
 
 /// The default file name, from the local time.
 pub fn file_name(y: u16, mo: u16, d: u16, h: u16, mi: u16, s: u16) -> String {
-    format!("Tandem-Screenshot-{y:04}-{mo:02}-{d:02}-{h:02}-{mi:02}-{s:02}.png")
+    format!("Termurion-Screenshot-{y:04}-{mo:02}-{d:02}-{h:02}-{mi:02}-{s:02}.png")
 }
 
 /// Part `i` (1-based) of `n` of a screenshot saved as `base` (a name without `.png`).
@@ -428,8 +428,8 @@ mod tests {
 
     #[test]
     fn names_have_the_time() {
-        assert_eq!(file_name(2026, 9, 5, 1, 2, 3), "Tandem-Screenshot-2026-09-05-01-02-03.png");
-        assert_eq!(part_name("Tandem-Screenshot-x", 2, 3), "Tandem-Screenshot-x-part-2-of-3.png");
+        assert_eq!(file_name(2026, 9, 5, 1, 2, 3), "Termurion-Screenshot-2026-09-05-01-02-03.png");
+        assert_eq!(part_name("Termurion-Screenshot-x", 2, 3), "Termurion-Screenshot-x-part-2-of-3.png");
     }
 
     #[test]

@@ -447,7 +447,7 @@ enum ConfirmKind {
     Warning,
     /// An adapter's notice, OK with iTerm2's checkbox (`adapter_warning_spec`).
     Notice(crate::warnings::Spec),
-    /// A browser page's autofill press, asked in Tandem's own window (13x7): only Fill, pressed by
+    /// A browser page's autofill press, asked in Termurion's own window (13x7): only Fill, pressed by
     /// the person, runs it, and only on the page it was asked on.
     Autofill(PaneId, super::browser_autofill_app::AutofillAsk),
 }
@@ -2750,8 +2750,8 @@ mod win_auth {
     use windows_sys::Win32::Security::{LogonUserW, LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT};
     use windows_sys::Win32::System::Com::CoTaskMemFree;
 
-    pub(super) const CAPTION: &str = "Tandem";
-    pub(super) const MESSAGE: &str = "Tandem wants to open the password manager.";
+    pub(super) const CAPTION: &str = "Termurion";
+    pub(super) const MESSAGE: &str = "Termurion wants to open the password manager.";
     const ERROR_CANCELLED: u32 = 1223;
     const ERROR_LOGON_FAILURE: u32 = 1326;
 
@@ -2812,7 +2812,7 @@ mod win_auth {
     }
 
     /// Waits for a Windows Runtime operation, handling this thread's messages meanwhile, so
-    /// the Hello dialog works. Tandem's own windows are frozen until it returns: winit holds
+    /// the Hello dialog works. Termurion's own windows are frozen until it returns: winit holds
     /// every event while its handler is on the stack, so they neither repaint nor take input
     /// (as with the credential prompt and the file pickers; accepted, checklist "modal calls").
     fn wait<T: windows::core::RuntimeType + 'static>(op: &windows_future::IAsyncOperation<T>) -> Option<T> {
@@ -2974,8 +2974,8 @@ mod tests {
 
     #[test]
     fn authentication_texts_follow_iterm2() {
-        assert_eq!(win_auth::CAPTION, "Tandem");
-        assert_eq!(win_auth::MESSAGE, "Tandem wants to open the password manager.");
+        assert_eq!(win_auth::CAPTION, "Termurion");
+        assert_eq!(win_auth::MESSAGE, "Termurion wants to open the password manager.");
         assert_eq!(win_auth::reason(1326), "valid credentials weren't supplied.");
         assert_eq!(win_auth::reason(1223), "password entry was cancelled.");
         assert!(win_auth::reason(5).ends_with('.'));

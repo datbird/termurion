@@ -263,7 +263,7 @@ impl App {
         // The same guard as a Win-click: web and mail links open; others are refused. A remote
         // pane's text never opens a local file (P10).
         let run = if self.remote_text(pane) && !crate::semantic::web_link(url) {
-            crate::semantic::Run::Blocked(format!("Tandem does not open {url} for a remote host."))
+            crate::semantic::Run::Blocked(format!("Termurion does not open {url} for a remote host."))
         } else {
             crate::semantic::guard_open(url, false)
         };
@@ -463,7 +463,7 @@ impl App {
         };
         let title = match over.as_deref().filter(|t| !t.is_empty()) {
             Some(t) => t.to_string(),
-            None => front.map_or_else(|| "Tandem".to_string(), |f| self.window_title(f)),
+            None => front.map_or_else(|| "Termurion".to_string(), |f| self.window_title(f)),
         };
         v.window.insert("id", guid.clone());
         // iTerm2's window number variable counts from 1 (`PseudoTerminal.m:866`).

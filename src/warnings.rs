@@ -225,7 +225,7 @@ pub fn shortcuts(labels: &[String]) -> Vec<Option<(usize, char)>> {
 /// on (`iTermWarning.m:333-339`).
 pub fn remembered_text(text: &str, saved_label: &str) -> String {
     format!(
-        "{text}\n\nThis alert had a saved selection of \u{201c}{saved_label}\u{201d}. It is being shown because \u{201c}Always show alerts with remembered selections\u{201d} is turned on in Tandem > Suppressed Alerts."
+        "{text}\n\nThis alert had a saved selection of \u{201c}{saved_label}\u{201d}. It is being shown because \u{201c}Always show alerts with remembered selections\u{201d} is turned on in Termurion > Suppressed Alerts."
     )
 }
 
@@ -609,7 +609,7 @@ mod tests {
     fn texts_follow_iterm2() {
         assert_eq!(
             remembered_text("Body", "OK"),
-            "Body\n\nThis alert had a saved selection of \u{201c}OK\u{201d}. It is being shown because \u{201c}Always show alerts with remembered selections\u{201d} is turned on in Tandem > Suppressed Alerts."
+            "Body\n\nThis alert had a saved selection of \u{201c}OK\u{201d}. It is being shown because \u{201c}Always show alerts with remembered selections\u{201d} is turned on in Termurion > Suppressed Alerts."
         );
         assert_eq!(FORGET, "Permanently Forget Saved Selection");
         assert_eq!(DEFAULT_HEADING, "Warning");

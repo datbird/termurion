@@ -354,7 +354,7 @@ impl Response {
 
     /// The text between the first `<response>` and the first `</response>` after it once both
     /// have arrived, the pair cut out of `unparsed` (iTerm2 indexes the edited string with the
-    /// old positions, `XRM:100-112`; Tandem takes the intended text, Decision).
+    /// old positions, `XRM:100-112`; Termurion takes the intended text, Decision).
     fn take_main_response(&mut self) -> Option<String> {
         const OPEN: &str = "<response>";
         const CLOSE: &str = "</response>";
@@ -451,7 +451,7 @@ pub fn markdown(bullets: &[String], is_final: bool, any_annotations: bool, main:
 
 pub const MAX_LINES: i64 = 1000;
 pub const NO_CHAT_HEADING: &str = "Error";
-pub const NO_CHAT_TEXT: &str = "AI Chat could not be opened. Verify you only have one instance of Tandem running.";
+pub const NO_CHAT_TEXT: &str = "AI Chat could not be opened. Verify you only have one instance of Termurion running.";
 pub const COMMAND_OUTPUT: &str = "Command output";
 
 /// `selectionForOutputToExplainWithAI` (`PS:21211-21238`): the first line to read and whether the

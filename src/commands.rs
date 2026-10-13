@@ -1,4 +1,4 @@
-//! Which iTerm2 menu commands work in Tandem now, and which milestone brings the rest.
+//! Which iTerm2 menu commands work in Termurion now, and which milestone brings the rest.
 //! A command owned by a later milestone shows disabled; it never half-works.
 
 use crate::menus::{self, Chord, ChordKey, Item};
@@ -27,7 +27,7 @@ impl Status {
 /// to undo there, and Cut is never allowed.
 pub const DISABLED_IN_SESSION: &[&str] = &["undo:", "redo:", "cut:"];
 
-/// Commands iTerm2 disables while its Python runtime comes from uv, its default and Tandem's
+/// Commands iTerm2 disables while its Python runtime comes from uv, its default and Termurion's
 /// only way (`AD:454-462`): installing a hand-downloaded legacy runtime zip means nothing then.
 pub const DISABLED_UNDER_UV: &[&str] = &["installAlreadyDownloadedPythonRuntime:"];
 
@@ -102,7 +102,7 @@ const NOT_APPLICABLE: &[(&str, &str)] = &[
     ("toggleSecureInput:", "macOS Secure Keyboard Entry (EnableSecureEventInput); Windows has no equivalent mode."),
     (
         "installAlreadyDownloadedPythonRuntime:",
-        "Disabled, as iTerm2 does under its default uv setting; Tandem always provisions Python through uv.",
+        "Disabled, as iTerm2 does under its default uv setting; Termurion always provisions Python through uv.",
     ),
     (
         "toggleRemoteHostCanControlIterm2:",
@@ -110,13 +110,13 @@ const NOT_APPLICABLE: &[(&str, &str)] = &[
     ),
     (
         "debugCheckSettingsControlTruncation:",
-        "iTerm2 builds this only for development, and Tandem's Settings wrap their text rather than truncating it.",
+        "iTerm2 builds this only for development, and Termurion's Settings wrap their text rather than truncating it.",
     ),
 ];
 
 /// Capture GPU Frame exists only in debug builds (`AD:402-419`); a release build does not have it.
 #[cfg(not(debug_assertions))]
-const RELEASE_NOT_APPLICABLE: (&str, &str) = ("captureNextMetalFrame:", "Tandem builds this only for development; iTerm2's release builds remove it.");
+const RELEASE_NOT_APPLICABLE: (&str, &str) = ("captureNextMetalFrame:", "Termurion builds this only for development; iTerm2's release builds remove it.");
 
 /// Commands that work with a known difference for now.
 const PARTIAL: &[(&str, &str)] = &[

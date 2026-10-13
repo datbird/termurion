@@ -309,7 +309,7 @@ const fn number(label: &'static str, description: &'static str) -> Arg {
 
 /// Every tool in `allCases` order (`RC:141-168`), with `functionName`, `permissionCategory`,
 /// `functionDescription` and `argDescriptions` (`RemoteCommand.swift`), the arguments in their
-/// structs' declaration order. The texts are iTerm2's with "iTerm2" as "Tandem" and "Finder" as
+/// structs' declaration order. The texts are iTerm2's with "iTerm2" as "Termurion" and "Finder" as
 /// "Explorer".
 const TOOLS: [Tool; 26] = {
     use Category::*;
@@ -342,7 +342,7 @@ const TOOLS: [Tool; 26] = {
         Tool {
             name: "get_screen_contents",
             category: ViewContents,
-            description: "Returns the visible contents of this terminal session. For a normal shell the text is linear scrollback (real history; ask for more `lines` to see further back). For a full-screen application (vim, less, htop, a REPL, etc.) the text is only the current rendered screen: there is no scrollback or history beyond what is displayed. The result reports a `kind` field and an `is_snapshot` flag (true means do not assume any history is present) alongside the raw `text`. The text uses a few markup tokens (the angle brackets are U+27E8/U+27E9 and effectively never occur in real terminal output): \u{27E8}dim\u{27E9}\u{2026}\u{27E8}/dim\u{27E9} wraps faint/dimmed text (how shells and TUIs render inline suggestions and ghost completions); \u{27E8}cursor\u{27E9} marks the text cursor's position; \u{27E8}image\u{27E9} stands in for an inline image. These tokens are inserted by Tandem and are not literally present on the screen.",
+            description: "Returns the visible contents of this terminal session. For a normal shell the text is linear scrollback (real history; ask for more `lines` to see further back). For a full-screen application (vim, less, htop, a REPL, etc.) the text is only the current rendered screen: there is no scrollback or history beyond what is displayed. The result reports a `kind` field and an `is_snapshot` flag (true means do not assume any history is present) alongside the raw `text`. The text uses a few markup tokens (the angle brackets are U+27E8/U+27E9 and effectively never occur in real terminal output): \u{27E8}dim\u{27E9}\u{2026}\u{27E8}/dim\u{27E9} wraps faint/dimmed text (how shells and TUIs render inline suggestions and ghost completions); \u{27E8}cursor\u{27E9} marks the text cursor's position; \u{27E8}image\u{27E9} stands in for an inline image. These tokens are inserted by Termurion and are not literally present on the screen.",
             args: &[number(
                 "lines",
                 "Number of trailing lines to return when the visible screen is a normal shell (the primary screen). Use 0 for the default of 100. Ignored for a full-screen application, where only the current screen is available.",
@@ -729,7 +729,7 @@ mod tests {
         );
         assert_eq!(description("create_file"), Some("Creates a file containing a specified string on the user's computer and then reveals it in Explorer."));
         let screen = description("get_screen_contents").unwrap();
-        assert!(screen.ends_with("These tokens are inserted by Tandem and are not literally present on the screen."));
+        assert!(screen.ends_with("These tokens are inserted by Termurion and are not literally present on the screen."));
         assert!(screen.contains("\u{27E8}dim\u{27E9}\u{2026}\u{27E8}/dim\u{27E9}"));
         assert!(description("restart_session").unwrap().starts_with("Restarts this terminal session: terminates any running jobs"));
         assert_eq!(description("detect_ssh_session"), Some("Returns true if the user is SSH\u{2019}ed into a remote host."));

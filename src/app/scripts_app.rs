@@ -1571,7 +1571,7 @@ mod tests {
     use crate::scripts::Node;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("tandem-{tag}-{}", crate::api_auth::fresh_key()));
+        let d = std::env::temp_dir().join(format!("termurion-{tag}-{}", crate::api_auth::fresh_key()));
         std::fs::create_dir_all(&d).unwrap();
         d
     }

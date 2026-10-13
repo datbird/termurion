@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 /// `PS:334`: the key of a session's link target in an arrangement.
 pub const TARGET_KEY: &str = "Browser Target";
-/// The longest link target Tandem keeps (an arrangement file is another party's).
+/// The longest link target Termurion keeps (an arrangement file is another party's).
 pub const MAX_TARGET: usize = 256;
 /// `PS:5887-5891`: the page color is applied at most once in this long.
 pub const COLOR_INTERVAL: Duration = Duration::from_millis(250);
@@ -28,7 +28,7 @@ pub struct NavState {
 }
 
 impl NavState {
-    /// `willLoadURL`: Tandem is about to load `url` (a typed address, a restored page).
+    /// `willLoadURL`: Termurion is about to load `url` (a typed address, a restored page).
     pub fn will_load(&mut self, url: &str) {
         // A URL over the bound is never kept, so it is never matched as typed.
         self.requested = Some(url.to_string()).filter(|u| u.len() <= crate::browser::MAX_URL);
@@ -43,7 +43,7 @@ impl NavState {
             match kind {
                 0 => TRANSITION_RELOAD,
                 1 => TRANSITION_BACK_FORWARD,
-                // A new document: a load Tandem started for the requested URL is typed (`BNS:73-76`,
+                // A new document: a load Termurion started for the requested URL is typed (`BNS:73-76`,
                 // WebView2's canonical form of the text allowed); then a person's click is a link;
                 // anything else is other. The requested URL comes first: WebView2 reports
                 // `IsUserInitiated` for every load started through its API (final review I1), where
@@ -146,7 +146,7 @@ pub fn target_text(raw: &str) -> Option<String> {
     (kept == raw && raw.chars().count() <= MAX_TARGET && !raw.chars().any(char::is_control)).then(|| raw.to_string())
 }
 
-/// Whether a URL may be loaded by Tandem at restore time: only what the one navigation gate answers
+/// Whether a URL may be loaded by Termurion at restore time: only what the one navigation gate answers
 /// `Navigate` for (never a `file:`, `javascript:` or network path).
 pub fn load_gate(url: &str) -> Option<String> {
     match crate::browser_js::nav_gate(url) {
@@ -157,7 +157,7 @@ pub fn load_gate(url: &str) -> Option<String> {
 
 /// Whether a pane's own load (the profile's Initial URL, a restored page already judged by
 /// `load_gate` at start, or the person's own) goes: the verdict the guarded NavigationStarting gives
-/// a load Tandem started (`webhost::nav_verdict` with `by_tandem`), so a deferred load after a
+/// a load Termurion started (`webhost::nav_verdict` with `by_tandem`), so a deferred load after a
 /// relaunch loads exactly what the same pane loads outside one (final review I2). `file_ok` is the
 /// one path judge for a `file:` URL. None: refused (the caller says so, never a silent blank).
 pub fn own_load(url: &str, file_ok: &dyn Fn(&str) -> bool) -> Option<String> {
@@ -167,7 +167,7 @@ pub fn own_load(url: &str, file_ok: &dyn Fn(&str) -> bool) -> Option<String> {
 }
 
 /// How the one NavigationStarting handler judged a navigation it parked (13x6): the app judges the
-/// release again with exactly this, never as Tandem's own load.
+/// release again with exactly this, never as Termurion's own load.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParkedFrom {
     pub user: bool,
@@ -178,7 +178,7 @@ pub struct ParkedFrom {
 /// Whether a parked page navigation may load now: a web page (http or https) only, and the verdict
 /// the handler gave it, with its ORIGINAL initiator (`by_tandem` false), is still yes. A `file:`,
 /// `iterm2-file:`, `iterm2-ssh:`, `data:` or any other scheme never passes, so parking cannot
-/// launder a page's choice into a load Tandem started. None: dropped.
+/// launder a page's choice into a load Termurion started. None: dropped.
 pub fn parked_load(url: &str, from: &ParkedFrom, file_ok: &dyn Fn(&str) -> bool) -> Option<String> {
     if !matches!(crate::webhost::scheme_of(url).as_str(), "http" | "https") {
         return None;
@@ -200,11 +200,11 @@ mod tests {
         let mut n = NavState::default();
         n.will_load("https://a/");
         assert_eq!(n.starting("https://a/", 2, false, false), TRANSITION_TYPED, "BNS:73-76");
-        // Final review I1: WebView2 reports IsUserInitiated TRUE for a load Tandem started through
+        // Final review I1: WebView2 reports IsUserInitiated TRUE for a load Termurion started through
         // its API, so the requested URL is matched first (iTerm2 never calls loadURL a link), with
         // WebView2's canonical rewrite of the typed text allowed.
         n.will_load("https://a");
-        assert_eq!(n.starting("https://a/", 2, true, false), TRANSITION_TYPED, "Tandem's own load is typed though WebView2 says user");
+        assert_eq!(n.starting("https://a/", 2, true, false), TRANSITION_TYPED, "Termurion's own load is typed though WebView2 says user");
         n.will_load("https://a/");
         assert_eq!(n.starting("https://a/", 2, true, false), TRANSITION_TYPED);
         assert_eq!(n.last, Some(TRANSITION_TYPED));
@@ -229,7 +229,7 @@ mod tests {
     }
 
     /// Final review I2: a parked load of the pane's own (the profile's Initial URL) loads as it does
-    /// outside a relaunch: Tandem's own load through the one 13x verdict (a local `file:` and any
+    /// outside a relaunch: Termurion's own load through the one 13x verdict (a local `file:` and any
     /// `about:` page go; a network `file:` path never does).
     #[test]
     fn a_deferred_profile_url_loads_as_outside_a_relaunch() {
@@ -322,7 +322,7 @@ mod tests {
                 assert_eq!(parked_load(scheme_url, &from(user, redirect, source), &judge), None, "{scheme_url} user={user} redirect={redirect} source={source:?}");
             }
         }
-        // The gate itself parks none of them either: only http(s) or Tandem's own load waits.
+        // The gate itself parks none of them either: only http(s) or Termurion's own load waits.
         for u in ["file:///C:/x", "iterm2-file:C:/x", "iterm2-ssh://h", "data:text/html,x", "javascript:1"] {
             assert_eq!(crate::webhost::nav_gate(Some(false), u, false, false), crate::webhost::GateAct::Cancel, "{u}");
         }

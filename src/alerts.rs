@@ -15,7 +15,7 @@ pub enum AlertKind {
     /// A Post Notification trigger's message.
     Trigger(String),
     /// A granted site's web notification (13x6). Its text is the page's; `text` labels it with
-    /// the origin so it can never read as a Tandem message.
+    /// the origin so it can never read as a Termurion message.
     Web { origin: String, title: String, body: String },
 }
 
@@ -82,7 +82,7 @@ pub fn idle_code_due(last_output: Instant, last_sent: Option<Instant>, now: Inst
     now.saturating_duration_since(from) >= period
 }
 
-/// Whether the user sees a session: Tandem in front and the session's tab shown. A split
+/// Whether the user sees a session: Termurion in front and the session's tab shown. A split
 /// that is visible but not focused counts as seen.
 pub fn looked_at(front: bool, tab_shown: bool) -> bool {
     front && tab_shown
@@ -182,8 +182,8 @@ mod tests {
 
     #[test]
     fn a_visible_split_is_looked_at() {
-        assert!(looked_at(true, true), "Tandem in front, the pane's tab shown (focused or not)");
-        assert!(!looked_at(false, true), "Tandem in the background");
+        assert!(looked_at(true, true), "Termurion in front, the pane's tab shown (focused or not)");
+        assert!(!looked_at(false, true), "Termurion in the background");
         assert!(!looked_at(true, false), "another tab");
     }
 

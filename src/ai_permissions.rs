@@ -412,9 +412,9 @@ pub fn offered(allowed: &BTreeSet<Category>, browser_ok: bool) -> BTreeSet<Categ
     allowed.iter().copied().filter(|c| browser_ok || !c.is_browser()).collect()
 }
 
-/// A permission change whose chat row could not be written (Tandem's text; iTerm2 only logs
-/// it). The change still holds until Tandem quits.
-pub const NOT_SAVED: &str = "The permission change could not be saved. It applies until Tandem quits.";
+/// A permission change whose chat row could not be written (Termurion's text; iTerm2 only logs
+/// it). The change still holds until Termurion quits.
+pub const NOT_SAVED: &str = "The permission change could not be saved. It applies until Termurion quits.";
 
 /// A parked call's scope note (`ChatViewController.swift:2634`).
 pub const GRANT_SCOPE: &str = "*If you grant or deny permission, it affects only this chat conversation while linked to this particular terminal session. You can change permissions in the chat Info menu.*";

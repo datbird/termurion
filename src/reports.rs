@@ -6,10 +6,10 @@ use alacritty_terminal::grid::Dimensions;
 
 use crate::screen::Screen;
 
-/// Tandem's version, as XTVERSION reports it.
+/// Termurion's version, as XTVERSION reports it.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The iTerm2 version `CSI 1337 n` reports: the iTerm2 line Tandem follows. iTerm2 answers
+/// The iTerm2 version `CSI 1337 n` reports: the iTerm2 line Termurion follows. iTerm2 answers
 /// with its version uppercased (`VT100Output.m:922-927`), so it holds no "n" and does not
 /// start with "0"; it2check compares it with the script's ASCII order.
 pub const ITERM2_VERSION: &str = "3.7.0";
@@ -42,7 +42,7 @@ pub fn color_scheme(dark: bool) -> Vec<u8> {
 /// The answer to a query, or nothing.
 pub fn answer(screen: &Screen, q: &Query) -> Vec<u8> {
     match q {
-        Query::XtVersion => format!("\x1bP>|Tandem {VERSION}\x1b\\"),
+        Query::XtVersion => format!("\x1bP>|Termurion {VERSION}\x1b\\"),
         Query::ITerm2Version => format!("\x1b[ITERM2 {ITERM2_VERSION}n"),
         Query::Decrqss(pt) => match decrqss(screen, pt) {
             Some(p) => format!("\x1bP1$r{p}\x1b\\"),
@@ -59,7 +59,7 @@ pub fn answer(screen: &Screen, q: &Query) -> Vec<u8> {
 }
 
 /// DECRQSS: the setting's current value followed by its name, or None for a setting
-/// Tandem does not report.
+/// Termurion does not report.
 fn decrqss(screen: &Screen, pt: &[u8]) -> Option<String> {
     let term = screen.term();
     Some(match pt {
@@ -208,8 +208,8 @@ mod tests {
     fn xtversion_and_1337n() {
         let mut s = Screen::new(80, 24);
         let v = super::VERSION;
-        assert_eq!(ask(&mut s, b"\x1b[>q"), format!("\x1bP>|Tandem {v}\x1b\\"));
-        assert_eq!(ask(&mut s, b"\x1b[>0q"), format!("\x1bP>|Tandem {v}\x1b\\"));
+        assert_eq!(ask(&mut s, b"\x1b[>q"), format!("\x1bP>|Termurion {v}\x1b\\"));
+        assert_eq!(ask(&mut s, b"\x1b[>0q"), format!("\x1bP>|Termurion {v}\x1b\\"));
         assert_eq!(ask(&mut s, b"\x1b[1337n"), "\x1b[ITERM2 3.7.0n");
         // Split across reads.
         assert_eq!(ask(&mut s, b"\x1b[13"), "");

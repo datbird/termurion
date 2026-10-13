@@ -332,7 +332,7 @@ pub(super) enum NoteSource {
 /// "Cannot Notify on Termination" (`iTermJobTerminationMonitor.swift:143-149`).
 fn cannot_notify_text(name: &str, pid: u32) -> (&'static str, String) {
     let name = if name.is_empty() { "(unknown)" } else { name };
-    ("Cannot Notify on Termination", format!("Tandem cannot watch the job {name} with process ID {pid} because it has already terminated."))
+    ("Cannot Notify on Termination", format!("Termurion cannot watch the job {name} with process ID {pid} because it has already terminated."))
 }
 
 /// A key as the focused Notes editor reads it, with the Ctrl and Alt that `text_edit::takes`
@@ -1309,7 +1309,7 @@ impl App {
             if console && consoled {
                 continue;
             }
-            // A hosted pane's console belongs to tandem-host, which sends the event: Tandem
+            // A hosted pane's console belongs to tandem-host, which sends the event: Termurion
             // never attaches to it. A pane closed for Undo Close still has its console.
             let pane = self.panes.values().chain(self.undo.iter().flat_map(|u| u.panes())).find(|p| p.shell_pid() == Some(req.shell));
             let hosted = if console { pane.and_then(|p| p.hosted_signal(req.way == SignalWay::CtrlBreak)) } else { None };
@@ -1744,7 +1744,7 @@ impl App {
         scene::note_editor(frame, &d, cell, m.text_scale, scale);
     }
 
-    /// Writes the note now if a change is waiting (Tandem quits).
+    /// Writes the note now if a change is waiting (Termurion quits).
     pub(super) fn flush_notes(&mut self) {
         if let Err(e) = self.global_note.flush() {
             self.banners.set("notes", e);
@@ -2502,8 +2502,8 @@ mod tests {
 
     #[test]
     fn jobs_and_codecierge_texts_follow_iterm2() {
-        assert_eq!(cannot_notify_text("vim", 42), ("Cannot Notify on Termination", "Tandem cannot watch the job vim with process ID 42 because it has already terminated.".to_string()));
-        assert_eq!(cannot_notify_text("", 7).1, "Tandem cannot watch the job (unknown) with process ID 7 because it has already terminated.");
+        assert_eq!(cannot_notify_text("vim", 42), ("Cannot Notify on Termination", "Termurion cannot watch the job vim with process ID 42 because it has already terminated.".to_string()));
+        assert_eq!(cannot_notify_text("", 7).1, "Termurion cannot watch the job (unknown) with process ID 7 because it has already terminated.");
         assert_eq!(codecierge_button(CodeciergeState::AdminDisabled), ("Get Started", false));
         assert_eq!(codecierge_button(CodeciergeState::NeedsAi), ("Reveal Setting", true));
         assert_eq!(codecierge_button(CodeciergeState::Ready), ("Get Started", true));

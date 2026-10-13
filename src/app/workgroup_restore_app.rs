@@ -579,7 +579,7 @@ mod tests {
         &from[..from.find("\n    }\n").unwrap()]
     }
 
-    /// Task 9 review C1, path by path: an imported workgroup restored by any path but Tandem's own launch
+    /// Task 9 review C1, path by path: an imported workgroup restored by any path but Termurion's own launch
     /// state asks before anything runs, and the launch state's approval counts only as this install's
     /// seal. Each path is pinned to the origin it builds with, then the decision is checked for what
     /// that path can deliver: the plain digest (computable by whoever holds the workgroup) or another
@@ -710,11 +710,11 @@ mod tests {
         let restore = include_str!("restore_ui.rs");
         let prod = restore.split("#[cfg(test)]").next().unwrap();
         assert!(prod.contains("self.state_imported = path.with_file_name(crate::settings_export::STATE_IMPORTED).is_file()"), "the launch read notes the marker");
-        assert!(prod.contains("remove_file(Self::state_path().with_file_name(crate::settings_export::STATE_IMPORTED))"), "Tandem's own state replaces it");
+        assert!(prod.contains("remove_file(Self::state_path().with_file_name(crate::settings_export::STATE_IMPORTED))"), "Termurion's own state replaces it");
     }
 
     /// 13y2 final review I1: a crafted named arrangement's buried member restored idle, saved into
-    /// Tandem's own state and restored from it at the next launch, runs nothing. The pane built idle is
+    /// Termurion's own state and restored from it at the next launch, runs nothing. The pane built idle is
     /// held; its saved session carries the mark (with the arrangement's profile copy beside it); every
     /// restore reads the mark before deciding; a start by the person makes a fresh pane, not held.
     #[test]
@@ -740,9 +740,9 @@ mod tests {
         pane.held_idle = true;
         let mut saved = Value::Table(crafted);
         super::super::arrange_ui::save_idle_mark(&pane, &mut saved);
-        assert!(crate::arrangement::held_idle(&saved), "Tandem's own state keeps the member idle");
+        assert!(crate::arrangement::held_idle(&saved), "Termurion's own state keeps the member idle");
         assert!(body(arrange, "    fn session_value(").contains("save_idle_mark(p, &mut v)"));
-        // Reload: Tandem's own launch state, no Import All mark: still idle, nothing runs.
+        // Reload: Termurion's own launch state, no Import All mark: still idle, nothing runs.
         let launch = wr::Inhibit::of(None, None, wr::member_inhibits(Mode::Regular, wr::foreign_restore(false, true, false)));
         assert!(launch.held(crate::arrangement::held_idle(&saved)).with(false));
         // The person starts it: Restart makes a fresh pane, which is not held, so the mark goes.

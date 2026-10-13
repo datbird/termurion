@@ -1,4 +1,4 @@
-//! What Tandem keeps in the tmux session (iTerm2's session options: `@hidden` and
+//! What Termurion keeps in the tmux session (iTerm2's session options: `@hidden` and
 //! `@affinities`, hex with a prefix), and the questions for closing tmux tabs and windows.
 
 use std::collections::BTreeSet;
@@ -276,7 +276,7 @@ pub fn hidden_command(session: u32, hidden: &BTreeSet<u32>) -> String {
     format!("set -t ${session} @hidden \"{}\"", encode_option(&list.join(","), "i_"))
 }
 
-/// One Tandem window's tmux windows (in tab order), its name (`pty-...`), and whether it
+/// One Termurion window's tmux windows (in tab order), its name (`pty-...`), and whether it
 /// is full screen.
 pub struct Group {
     pub windows: Vec<u32>,
@@ -330,11 +330,11 @@ pub fn parse_close_win(id: &str) -> Option<(u64, bool)> {
     Some((gw.parse().ok()?, whole == "1"))
 }
 
-/// Attaching to a session this Tandem already shows (iTerm2's tmuxDoubleAttachForSessionGUID):
+/// Attaching to a session this Termurion already shows (iTerm2's tmuxDoubleAttachForSessionGUID):
 /// (heading, text, buttons); only OK when the other connection is gone.
 pub fn attach_warning(other: bool) -> (&'static str, &'static str, Vec<&'static str>) {
     let buttons = if other { vec!["OK", "Reveal", "Force Detach Other"] } else { vec!["OK"] };
-    ("Cannot Attach", "This instance of Tandem is already attached to this session", buttons)
+    ("Cannot Attach", "This instance of Termurion is already attached to this session", buttons)
 }
 
 #[cfg(test)]

@@ -127,9 +127,9 @@ pub fn ssh_url(user: Option<&str>, host: &str, path: &str) -> String {
 /// Where a download's bytes go: its own hidden temp file, never the final name (R14de-4).
 #[derive(Debug)]
 pub enum Place {
-    /// Win-click: `dir\.Tandem.<UUID>`, finished into `dir`.
+    /// Win-click: `dir\.Termurion.<UUID>`, finished into `dir`.
     Downloads { temp: PathBuf, dir: PathBuf },
-    /// Download Files: `%TEMP%\.Tandem.<UUID>` (the zip while the job is a folder), finished
+    /// Download Files: `%TEMP%\.Termurion.<UUID>` (the zip while the job is a folder), finished
     /// into `dest` by batch `batch` (Task 7).
     Temp { temp: PathBuf, dest: PathBuf, batch: u64 },
 }
@@ -195,7 +195,7 @@ pub fn tree_over(dir: &Path, cap: u64) -> std::io::Result<bool> {
     Ok(false)
 }
 
-/// The banner text (Tandem's): "Downloading a.txt from h: 25%", or the byte count with no total.
+/// The banner text (Termurion's): "Downloading a.txt from h: 25%", or the byte count with no total.
 pub fn progress_text(l: &Local) -> String {
     let (verb, prep) = if l.upload { ("Uploading", "to") } else { ("Downloading", "from") };
     match l.percent() {
@@ -345,7 +345,7 @@ pub fn mark_and_move_with(from: &Path, dest: &Path, host_url: &str, mark: &dyn F
 
 /// Unzips `zip` into `dest` (a folder download, `FT:150-172`): the file is read once and its
 /// bytes checked by `zip_check` (the whole archive is refused on any unsafe entry, before anything
-/// is written), the claimed total must fit on the drive, Tandem's own walk of those same bytes
+/// is written), the claimed total must fit on the drive, Termurion's own walk of those same bytes
 /// (`extract::zip`, never tar.exe: one parser, and each file gets exactly its claimed size, so no
 /// zip bomb can grow past the claim) writes it into a fresh empty folder beside `dest`, and
 /// `mark_and_move` moves the marked files into place. The fresh folder is removed on every path.
@@ -372,7 +372,7 @@ pub fn free_space(dir: &Path) -> Result<u64, String> {
     localfs::free_space(&localfs::judge_io(dir).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
 }
 
-/// A stale temp: a `.Tandem.` file or folder, or a `Tandem-<UUID>` batch folder, untouched for
+/// A stale temp: a `.Termurion.` file or folder, or a `Termurion-<UUID>` batch folder, untouched for
 /// more than a day (a crash mid-download leaves one; P24).
 pub fn is_stale_temp(name: &str, is_dir: bool, age_secs: u64) -> bool {
     let ours = name.starts_with(TEMP_PREFIX) || (is_dir && name.strip_prefix("Tandem-").is_some_and(|u| uuid::Uuid::try_parse(u).is_ok()));
@@ -659,7 +659,7 @@ mod tests {
                 assert!(f.exists() && has_mark_of_the_web(&f), "{}", f.display());
             }
             assert_eq!(std::fs::read_to_string(out.join("d").join("a.txt")).unwrap(), "a");
-            assert_eq!(listing(&t), before, "no .Tandem. folder is left beside the destination");
+            assert_eq!(listing(&t), before, "no .Termurion. folder is left beside the destination");
             // Not a zip: refused before anything is written.
             let bad = t.join("bad.zip");
             std::fs::write(&bad, "hello").unwrap();

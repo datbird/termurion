@@ -26,7 +26,7 @@ pub const COPY_VALUE: &str = "Copy Value";
 pub const COPY_PATH: &str = "Copy Path";
 /// The outline's root ("iTerm2") and the buried sessions' row
 /// (`iTermSessionTabWindowOutlineDelegate.m:151`, `:212`).
-pub const ROOT: &str = "Tandem";
+pub const ROOT: &str = "Termurion";
 pub const BURIED: &str = "Buried Sessions";
 /// A function whose connection has no Script Console entry
 /// (`iTermRegisteredFunctionsTableViewDelegate.m:69`).
@@ -302,7 +302,7 @@ mod tests {
         assert_eq!(
             outline(&input),
             vec![
-                row(0, "Tandem", Object::App),
+                row(0, "Termurion", Object::App),
                 row(1, "\u{E737} bash (pty-A)", Object::Window("pty-A".into())),
                 row(2, "\u{E8A5} Tab 1 (5)", Object::Tab(5)),
                 row(3, "\u{E756} bash (1)", Object::Session(1)),

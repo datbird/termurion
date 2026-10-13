@@ -4,7 +4,7 @@
 //! list a click opens (`PCH:94-150`) and what a pick writes (`PS.swift:1233-1242`).
 
 /// The refusal banner for text with a control character.
-pub const REFUSED: &str = "Tandem did not write this text to the terminal: it holds a control character.";
+pub const REFUSED: &str = "Termurion did not write this text to the terminal: it holds a control character.";
 
 /// `s` when it is safe to type into a terminal: no C0 control (CR, LF and ESC included), DEL,
 /// C1 control, bidirectional formatting or zero-width character.
@@ -42,7 +42,7 @@ pub fn shell_of(name: Option<&str>) -> Shell {
 }
 
 /// What a refusal of a network directory says.
-pub const NETWORK_REFUSED: &str = "Tandem did not write this path to the terminal: it is a network path.";
+pub const NETWORK_REFUSED: &str = "Termurion did not write this path to the terminal: it is a network path.";
 
 /// `dir` when it is not a network path (the one rule, `scripts::is_network_path`): writing one
 /// would send the person's credentials to whatever host it names.
@@ -63,7 +63,7 @@ pub fn launch_program(command: &str) -> Option<&str> {
 }
 
 /// What the union refusal says.
-pub const UNION_REFUSED: &str = "Tandem did not write this path to the terminal: it holds a character some shells would read.";
+pub const UNION_REFUSED: &str = "Termurion did not write this path to the terminal: it holds a character some shells would read.";
 
 /// A character special in some supported shell. The shell a pane runs is only what a program
 /// reported (OSC 1337, RemoteHost) or what it launched, so no name loosens this: a path is

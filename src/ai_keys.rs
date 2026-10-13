@@ -2,7 +2,7 @@
 //! (ruling 3), a prefix the password manager neither enumerates nor parses. Ports iTerm2's key
 //! cache (`AITermControllerObjC.swift:100-339`): a vendor's key is read once and cached for the
 //! session, a hard read error is not cached, a key is trimmed before it is stored, an empty key
-//! deletes, and the cache is updated before the store is written. Tandem never had iTerm2's
+//! deletes, and the cache is updated before the store is written. Termurion never had iTerm2's
 //! shared legacy account, so there is no adoption step. Pure but for `CredStore`; every test
 //! uses a fake store and fake keys.
 
@@ -14,14 +14,14 @@ use std::sync::{Mutex, OnceLock};
 /// The Credential Manager target prefix of every AI key.
 pub const TARGET_PREFIX: &str = "TandemAI/";
 /// The comment written on every AI key credential (shown in Control Panel).
-pub const COMMENT: &str = "Tandem AI API key";
+pub const COMMENT: &str = "Termurion AI API key";
 
 /// The credential's target: `TandemAI/` and the provider name.
 pub fn target(v: Vendor) -> String {
     format!("{TARGET_PREFIX}{}", v.provider_name())
 }
 
-/// The credential's user name, iTerm2's keychain account with "Tandem" for "iTerm2"
+/// The credential's user name, iTerm2's keychain account with "Termurion" for "iTerm2"
 /// (`KC:299-318`; Llama keeps iTerm2's "Llama").
 pub fn account(v: Vendor) -> String {
     let name = match v {
@@ -141,7 +141,7 @@ impl KeyStore for NoStore {
 }
 
 /// Windows Credential Manager, through `pwm_credman`'s generic-target functions (which refuse
-/// any target that is not Tandem's).
+/// any target that is not Termurion's).
 #[cfg(windows)]
 pub struct CredStore;
 
@@ -235,7 +235,7 @@ mod tests {
         assert_eq!(account(Vendor::Llama), "Llama API Key for Tandem");
         assert_eq!(account(Vendor::Apple), "Apple Intelligence API Key for Tandem");
         assert!(!format!("{:?}", Secret::new("sk-ant-1".into())).contains("sk-ant-1"));
-        assert_eq!(COMMENT, "Tandem AI API key");
+        assert_eq!(COMMENT, "Termurion AI API key");
     }
 
     #[test]

@@ -189,7 +189,7 @@ impl App {
             }
         });
         if started.is_err() {
-            self.banners.set("action", "Tandem could not start a worker to open this file.");
+            self.banners.set("action", "Termurion could not start a worker to open this file.");
         }
     }
 

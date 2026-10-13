@@ -124,7 +124,7 @@ pub fn press_from_chord(c: &Chord) -> Press {
     Press { stroke: Keystroke::new(ch, flags, None, ch), digit }
 }
 
-/// What the keyboard hook needs to decide, on its own thread, whether Tandem takes a
+/// What the keyboard hook needs to decide, on its own thread, whether Termurion takes a
 /// Win chord.
 #[derive(Clone, Default)]
 pub struct Snapshot {
@@ -133,11 +133,11 @@ pub struct Snapshot {
     leader: Option<Keystroke>,
     leader_on: bool,
     switch: [i64; 3],
-    /// A composer has the keyboard: its own Win chords (`composer::chord`) are Tandem's even
+    /// A composer has the keyboard: its own Win chords (`composer::chord`) are Termurion's even
     /// when nothing else binds them (Win+Y).
     pub composer: bool,
     /// The forms of mappings the person wrote or edited. A hit that is in `keys` but not here
-    /// is one of Tandem's stock global mappings (Win+Arrows, Win+Home): Tandem's own, never
+    /// is one of Termurion's stock global mappings (Win+Arrows, Win+Home): Termurion's own, never
     /// yielded to Windows.
     user: HashSet<String>,
     /// Respect shortcuts from Windows keyboard shortcuts (AllowSymbolicHotKeys): Win chords the
@@ -146,7 +146,7 @@ pub struct Snapshot {
     /// The keys (A-Z, 0-9) some saved profile's Shortcut claims for Ctrl+Win+<key>
     /// (`claimed_shortcuts`), rebuilt with the Profiles menu.
     pub profile_shortcuts: Vec<char>,
-    /// A workgroup has a peer group: Alt+Shift+Win+1..9 are Tandem's (13y1 Task 4).
+    /// A workgroup has a peer group: Alt+Shift+Win+1..9 are Termurion's (13y1 Task 4).
     pub peer_digits: bool,
     /// The forms of the peers' custom shortcuts that have Win in them.
     pub peer_keys: HashSet<String>,
@@ -168,7 +168,7 @@ impl Snapshot {
                     literal.extend([stroke.legacy(), stroke.modified_key()]);
                 }
                 if stroke.flags & COMMAND != 0 && !matches!(b.action, 22 | 24) {
-                    // Byte for byte Tandem's shipped global entry, or (in a profile) one of its key
+                    // Byte for byte Termurion's shipped global entry, or (in a profile) one of its key
                     // mapping presets' entries: not the person's mapping.
                     for form in [stroke.legacy(), stroke.modified_key()] {
                         if !is_stock {
@@ -192,13 +192,13 @@ impl Snapshot {
 
 /// Whether a Win chord goes to Windows instead of a key mapping (R3 under ruling R7: iTerm2's
 /// default "Respect shortcuts from System Settings" lets the system's shortcuts win). Only
-/// with the option on, only for a chord the shell keeps, and never when a Tandem menu command
-/// (or one of Tandem's own stock mappings) owns it.
+/// with the option on, only for a chord the shell keeps, and never when a Termurion menu command
+/// (or one of Termurion's own stock mappings) owns it.
 pub fn yields_to_system(respect: bool, shell_owned: bool, menu_command: bool) -> bool {
     respect && shell_owned && !menu_command
 }
 
-/// True when Tandem has something for this Win chord: the Leader, a number shortcut,
+/// True when Termurion has something for this Win chord: the Leader, a number shortcut,
 /// a key mapping, or a working menu command.
 pub fn win_chord_bound(s: &Snapshot, chord: &Chord) -> bool {
     chord_bound(s, chord, true)
@@ -217,7 +217,7 @@ pub fn chord_bound(s: &Snapshot, chord: &Chord, via_win: bool) -> bool {
     let mut typed = p.stroke.clone();
     typed.char_is_modified = true;
     let (a, b) = (p.stroke.legacy(), typed.modified_key());
-    // A workgroup's peer shortcuts are Tandem's, after a mapping and before a menu command.
+    // A workgroup's peer shortcuts are Termurion's, after a mapping and before a menu command.
     if (s.peer_digits && crate::workgroup_peers::chord_digit(chord).is_some()) || s.peer_keys.contains(&a) || s.peer_keys.contains(&b) {
         return true;
     }
@@ -226,7 +226,7 @@ pub fn chord_bound(s: &Snapshot, chord: &Chord, via_win: bool) -> bool {
     // `claimed_shortcuts` never holds a chord the shell keeps, so it never takes one from Windows.
     let profile = profile_chord(chord).is_some_and(|(k, _)| s.profile_shortcuts.contains(&k));
     if s.keys.contains(&a) || s.keys.contains(&b) {
-        // A stock mapping is Tandem's own, like a menu command.
+        // A stock mapping is Termurion's own, like a menu command.
         let stock_only = !s.user.contains(&a) && !s.user.contains(&b);
         return !yields_to_system(s.respect_system, via_win && crate::winkeys::shell_owned_chord(chord), menu || stock_only || profile);
     }
@@ -428,11 +428,11 @@ mod tests {
     #[test]
     fn symbolic_shortcuts_follow_the_option() {
         assert!(yields_to_system(true, true, false));
-        assert!(!yields_to_system(true, true, true), "a Tandem menu command still wins");
+        assert!(!yields_to_system(true, true, true), "a Termurion menu command still wins");
         assert!(!yields_to_system(false, true, false));
         assert!(!yields_to_system(true, false, false));
         let e = toml::Table::new();
-        // A key mapping on Win+B (the shell's; Win+E is also Tandem's Use Selection for Find, a
+        // A key mapping on Win+B (the shell's; Win+E is also Termurion's Use Selection for Find, a
         // menu command) yields to Windows only with the option on.
         let g = map("0x62-0x100000", 13);
         let win_b = win(ChordKey::Char('b'));
@@ -440,10 +440,10 @@ mod tests {
         assert!(win_chord_bound(&Snapshot::new(&ctx(&e, &g)), &win_b));
         // A profile mapping yields the same way.
         assert!(!win_chord_bound(&respecting(&ctx(&g, &e)), &win_b));
-        // A mapping on a chord Windows does not keep stays Tandem's: Win+N (a Tandem menu command
+        // A mapping on a chord Windows does not keep stays Termurion's: Win+N (a Termurion menu command
         // too) and Win+Y (nobody's).
         let win_n = map("0x6e-0x100000", 13);
-        assert!(crate::commands::command_for_chord(&win(ChordKey::Char('n'))).is_some(), "Win+N is a Tandem menu command");
+        assert!(crate::commands::command_for_chord(&win(ChordKey::Char('n'))).is_some(), "Win+N is a Termurion menu command");
         assert!(win_chord_bound(&respecting(&ctx(&win_n, &e)), &win(ChordKey::Char('n'))));
         let free = map("0x79-0x100000", 13); // Win+Y is nobody's
         assert!(win_chord_bound(&respecting(&ctx(&free, &e)), &win(ChordKey::Char('y'))));
@@ -452,14 +452,14 @@ mod tests {
         assert!(win_chord_bound(&respecting(&ctx(&t, &e)), &win(ChordKey::Char('t'))));
         assert!(win_chord_bound(&Snapshot::new(&ctx(&t, &e)), &win(ChordKey::Char('t'))));
         // Ctrl+Win+B is Windows' (wake the display): a mapping on it yields. Ctrl+Win+Left is
-        // Move Divider Left in Tandem, a menu command, so it stays Tandem's.
+        // Move Divider Left in Termurion, a menu command, so it stays Termurion's.
         let desk = map("0x62-0x140000", 13);
         let ctrl_win_b = Chord { ctrl: true, ..win(ChordKey::Char('b')) };
         let kept = map("0xf702-0x340000", 13);
         assert!(win_chord_bound(&respecting(&ctx(&e, &kept)), &Chord { ctrl: true, ..win(ChordKey::Left) }));
         assert!(!win_chord_bound(&respecting(&ctx(&e, &desk)), &ctrl_win_b));
         assert!(win_chord_bound(&Snapshot::new(&ctx(&e, &desk)), &ctrl_win_b));
-        // The Leader and number shortcuts are Tandem's own, not key mappings.
+        // The Leader and number shortcuts are Termurion's own, not key mappings.
         let mut c = ctx(&e, &e);
         c.leader_on = true;
         assert!(win_chord_bound(&respecting(&c), &win_b));
@@ -479,7 +479,7 @@ mod tests {
     #[test]
     fn natural_text_editing_win_arrows_stay_tandems() {
         let e = toml::Table::new();
-        // The shipped preset, picked in a profile's Keys, is entries verbatim: Tandem's own.
+        // The shipped preset, picked in a profile's Keys, is entries verbatim: Termurion's own.
         let natural = &crate::globals::keymaps::presets().iter().find(|(n, _)| n == "Natural Text Editing").expect("the preset").1;
         let s = respecting(&ctx(natural, &e));
         assert!(win_chord_bound(&s, &win(ChordKey::Left)));
@@ -588,7 +588,7 @@ mod tests {
         snap.respect_system = true;
         assert!(!win_chord_bound(&snap, &d), "option on: Windows takes it");
         // Even a snapshot that held 'D' (a path that skipped `claimed_shortcuts`) counts it as
-        // Tandem's own, like a menu command: the profile shortcut is never yielded.
+        // Termurion's own, like a menu command: the profile shortcut is never yielded.
         snap.profile_shortcuts = vec!['D'];
         assert!(win_chord_bound(&snap, &d));
     }
@@ -606,7 +606,7 @@ mod tests {
         }
     }
 
-    /// S2: the whole chain for a Ctrl+Win chord, in the order Tandem asks. The hook: a registered
+    /// S2: the whole chain for a Ctrl+Win chord, in the order Termurion asks. The hook: a registered
     /// global hotkey (hotkey windows, the app hotkey, session hotkeys) first, then a modifier
     /// remap, then the Win-chord gate (`win_chord_bound`). In the gate: a key mapping (the
     /// person's own yields to a shell chord while Respect Windows shortcuts is on; a stock
@@ -624,7 +624,7 @@ mod tests {
         assert!(gate.find("s.keys.contains").unwrap() < gate.find("menu || profile").unwrap(), "a key mapping before a menu command or profile shortcut");
         let e = toml::Table::new();
         let x = Chord { ctrl: true, ..win(ChordKey::Char('x')) };
-        // A mapping and a profile shortcut on the same Ctrl+Win chord: Tandem takes it with
+        // A mapping and a profile shortcut on the same Ctrl+Win chord: Termurion takes it with
         // Respect on or off (the profile shortcut counts as a menu command), and `route` runs
         // the mapping (13t P8: a mapping beats a profile shortcut).
         let mapped = map("0x78-0x140000", 13);

@@ -413,7 +413,7 @@ impl App {
         self.windows.parked().find(|(_, s)| s.replay_window.as_ref().is_some_and(|w| w.id() == panel)).and_then(|(_, s)| s.gpu.as_ref().map(|g| g.window.id()))
     }
 
-    /// Every window's Instant Replay panel hides while Tandem is not the active app
+    /// Every window's Instant Replay panel hides while Termurion is not the active app
     /// (`hidesOnDeactivate`, `IRX:23`).
     pub(super) fn replay_panels_follow_app(&mut self) {
         let fg = super::hotkey_ui::foreground();
@@ -592,7 +592,7 @@ impl App {
 
     fn open_window_with(&mut self, event_loop: &ActiveEventLoop, first: NewWindow) -> Result<WindowId, String> {
         let hotkey = matches!(first, NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..));
-        let mut attrs = Window::default_attributes().with_title("Tandem").with_inner_size(LogicalSize::new(1000.0, 650.0));
+        let mut attrs = Window::default_attributes().with_title("Termurion").with_inner_size(LogicalSize::new(1000.0, 650.0));
         if hotkey {
             // A hotkey window starts hidden and has no taskbar button (a Quake-style window).
             use winit::platform::windows::WindowAttributesExtWindows;
@@ -603,7 +603,7 @@ impl App {
         if matches!(&first, NewWindow::Tabs(ts) if ts.first().is_some_and(|t| self.background_windows.remove(&t.id))) {
             attrs = attrs.with_active(false);
         }
-        // A resident Tandem keeps one hidden, empty window with its GPU: the next window is that one (R3).
+        // A resident Termurion keeps one hidden, empty window with its GPU: the next window is that one (R3).
         let reused = self.resident;
         let mut kind = self.surface_kind_for(&first);
         let made = loop {
@@ -871,7 +871,7 @@ impl App {
         // next one into `live`.
         let next = self.windows.close_current(&mut live);
         self.swap_live(&mut live);
-        // A hotkey window, even hidden, keeps Tandem running (iTerm2).
+        // A hotkey window, even hidden, keeps Termurion running (iTerm2).
         let hotkeys = self.hotkey_windows().len();
         let regular = self.registry.order().len().saturating_sub(hotkeys);
         if next.is_none() || !crate::hotkey::keeps_running(regular, hotkeys) {
@@ -883,11 +883,11 @@ impl App {
     }
 
     /// Closes one window and its sessions (Cmd+Shift+W, the close box). The last window
-    /// closing ends Tandem.
+    /// closing ends Termurion.
     pub(super) fn close_window(&mut self, id: WindowId, event_loop: &ActiveEventLoop) {
         // A window the person closed ends the quit grace period (`PT:4775`).
         self.note_interaction();
-        // Tandem's own confirmation first, then tmux's question (iTerm2's order).
+        // Termurion's own confirmation first, then tmux's question (iTerm2's order).
         if !self.enter(id) || !self.confirm_close(close_ui::Closing::Window) || self.tmux_close_window() {
             return;
         }

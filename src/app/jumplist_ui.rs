@@ -1,7 +1,7 @@
 //! The Jump List and the recent profiles behind it (m13v1 Task 6): the taskbar button's Jump List
 //! is iTerm2's dock menu, rebuilt from the profiles, the arrangements and the recents; a recent is
 //! `%APPDATA%\Tandem\Recents\<uuid>.itermtab` (`ProfileDocument.swift`). Every Jump List entry
-//! starts Tandem's own exe with arguments `launch::parse` accepts, so a click goes through the
+//! starts Termurion's own exe with arguments `launch::parse` accepts, so a click goes through the
 //! launch pipe and its checks. The COM writer is injected into the pure rebuild loop; a test build
 //! never writes the real Jump List.
 
@@ -169,7 +169,7 @@ impl App {
         }
         if let (true, Some(dir)) = (tick.save_removed, recents_dir()) {
             if let Err(e) = store_removed(&dir, &self.jump_sync.removed) {
-                self.banners.set(BANNER, format!("Tandem could not save the removed Jump List items: {e}"));
+                self.banners.set(BANNER, format!("Termurion could not save the removed Jump List items: {e}"));
                 self.redraw();
             }
         }
@@ -190,15 +190,15 @@ impl App {
         match store_recents(&dir, &self.recents) {
             Ok(()) => delete_orphans(&dir, &self.recents),
             Err(e) => {
-                self.banners.set(BANNER, format!("Tandem could not save the recent profiles: {e}"));
+                self.banners.set(BANNER, format!("Termurion could not save the recent profiles: {e}"));
                 self.redraw();
             }
         }
         self.jump_list_due = true;
     }
 
-    /// "Remove Recent Profiles from Dock Menu" (`AD:3616-3618`): Tandem's list and the files
-    /// behind it go, and so do the destinations Windows keeps for Tandem; nothing else is touched.
+    /// "Remove Recent Profiles from Dock Menu" (`AD:3616-3618`): Termurion's list and the files
+    /// behind it go, and so do the destinations Windows keeps for Termurion; nothing else is touched.
     pub(super) fn remove_recent_profiles(&mut self) {
         self.recents_ready();
         self.recents.clear();
@@ -219,7 +219,7 @@ impl App {
     pub(super) fn open_profile_tab(&mut self, path: &Path) {
         let shown = crate::inert_files::shown_name(&path.to_string_lossy());
         let Some((guid, name)) = read_tab_file(path).and_then(|t| jumplist::parse_tab_file(&t)).filter(|(g, n)| g.chars().count() <= crate::launch::MAX_GUID && n.chars().count() <= crate::launch::MAX_NAME) else {
-            return self.outside_note(BANNER, format!("Tandem could not read \u{201c}{shown}\u{201d} as a profile shortcut."));
+            return self.outside_note(BANNER, format!("Termurion could not read \u{201c}{shown}\u{201d} as a profile shortcut."));
         };
         let profiles = &self.store.profiles;
         let name_of = |g: &str| profiles.iter().find(|p| p.guid() == g).map(|p| p.name());

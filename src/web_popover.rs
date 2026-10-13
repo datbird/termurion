@@ -3,7 +3,7 @@
 //! window holding a WebView2 child. The HTML a script supplies and the URL a person points at are
 //! untrusted: the HTML loads under a Content-Security-Policy that allows no network, nothing
 //! navigates after the first load (P6), the bridge is a closed set from the popover's own
-//! document (an exact URL on Tandem's own origin, `webhost::LocalDoc`), and Quick Look is an InPrivate view that may reach http and https only, through the
+//! document (an exact URL on Termurion's own origin, `webhost::LocalDoc`), and Quick Look is an InPrivate view that may reach http and https only, through the
 //! one navigation verdict (B4, P7).
 
 use std::time::{Duration, Instant};
@@ -126,7 +126,7 @@ pub fn popover_document(html: &str) -> Result<webhost::LocalDoc, &'static str> {
 
 /// The HTML popover's view: the bridge script, a message channel for it, no automatic windows, no
 /// developer tools, every request answered by the popover's `LocalDoc` (the document, or 403), and
-/// nothing may load after Tandem's own navigation to it (P6, B4). InPrivate: whatever the script
+/// nothing may load after Termurion's own navigation to it (P6, B4). InPrivate: whatever the script
 /// stores stays in memory and goes with the popover (each document has its own origin, so nothing
 /// on disk would ever be read again).
 pub fn html_setup() -> ViewSetup {
@@ -674,7 +674,7 @@ mod tests {
         assert!(h.web_message, "the bridge");
         assert!(h.guard_local_schemes);
         assert!(h.in_private, "storage a popover script writes lives in memory and goes with the popover (nothing on disk under a never reused origin)");
-        assert_eq!(h.allowed_schemes, Some(Vec::new()), "nothing loads but Tandem's own navigation to the served document");
+        assert_eq!(h.allowed_schemes, Some(Vec::new()), "nothing loads but Termurion's own navigation to the served document");
         assert!(!h.new_windows && !h.devtools);
         assert_eq!(h.scripts, vec![WEBRTC_OFF_JS.to_string(), crate::webhost::INVOKE_JS.to_string()]);
         assert_eq!(h.resource_filters, vec!["*".to_string()], "every request goes to the one serving function");

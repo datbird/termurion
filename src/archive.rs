@@ -15,7 +15,7 @@ pub const MENU_ID: &str = "archive:";
 pub const FAILED_TITLE: &str = "Archiving failed";
 
 /// What a session name with nothing in it is called (iTerm2's "iTerm2 Session", `PTV:1006-1022`).
-const DEFAULT_SESSION: &str = "Tandem Session";
+const DEFAULT_SESSION: &str = "Termurion Session";
 
 /// The longest session name taken, in UTF-16 units: the whole name stays under Windows' limit.
 const MAX_SESSION_NAME: usize = 100;
@@ -48,7 +48,7 @@ pub fn auto_file_name(p: &Parts, session_name: &str) -> String {
     crate::session_log::safe_file_name(&format!("{stamp} - {}.{EXTENSION}", clean_session(session_name)))
 }
 
-/// The save dialog's default name: "<session name>.itermarchive", else "Tandem Session"
+/// The save dialog's default name: "<session name>.itermarchive", else "Termurion Session"
 /// (`PTV:1006-1022`).
 pub fn save_name(session_name: &str) -> String {
     crate::session_log::safe_file_name(&format!("{}.{EXTENSION}", clean_session(session_name)))
@@ -188,8 +188,8 @@ mod tests {
         assert_eq!(auto_file_name(&parts(2026, 1, 5, 12, 8, 7), "x"), "1-5-26_12.08.07_PM - x.itermarchive", "noon is 12 PM");
         assert_eq!(auto_file_name(&parts(2026, 9, 27, 15, 4, 5), "a/b:c"), "9-27-26_3.04.05_PM - a_b_c.itermarchive");
         assert_eq!(save_name("bash"), "bash.itermarchive");
-        assert_eq!(save_name(""), "Tandem Session.itermarchive");
-        assert_eq!(save_name("   "), "Tandem Session.itermarchive");
+        assert_eq!(save_name(""), "Termurion Session.itermarchive");
+        assert_eq!(save_name("   "), "Termurion Session.itermarchive");
         assert_eq!(failed_text("C:\\a.itermarchive", "denied"), "Archiving to C:\\a.itermarchive failed: denied");
         assert_eq!(EXTENSION, "itermarchive");
         assert_eq!((ARCHIVE_KEY, RECENTS_KEY, MAX_RECENTS, RESTORED_BANNER, MENU_ID), ("Archive", "NoSyncRecentArchives", 10, "Archive Restored", "archive:"));

@@ -145,7 +145,7 @@ impl Location {
 }
 
 /// What the annotation box asked for. The box only REQUESTS (B2, class fix): the name is typed and
-/// a delete is confirmed in a Tandem window outside the page, which the page cannot see, cover or
+/// a delete is confirmed in a Termurion window outside the page, which the page cannot see, cover or
 /// type into. A forged or clickjacked press can at most open that window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Update {
@@ -213,7 +213,7 @@ pub(crate) fn patch_once(src: &str, from: &str, to: &str) -> Result<String, Stri
 /// task-1 re-review showed that any in-page control can be clickjacked and that the page sees the keys
 /// typed into the page). The name input is made a hidden field (it can take no key), "Save" becomes
 /// "Rename" and posts `requestRename`, "Delete" posts `requestDelete` and removes nothing: the name is
-/// typed and the delete confirmed in a Tandem window outside the web view. Defense in depth: the
+/// typed and the delete confirmed in a Termurion window outside the web view. Defense in depth: the
 /// box is built in a closed shadow root made in the isolated world under a host styled with
 /// `!important` inline rules, a handler ignores an untrusted event, and a press counts only when the
 /// trusted pointer event's point holds that very button (`elementFromPoint` on the shadow root) or,
@@ -240,7 +240,7 @@ pub(crate) fn trust_patched(src: &str) -> Result<String, String> {
     shadow_patched(&s)
 }
 
-/// The annotations live in a closed shadow root under a host Tandem keeps (`window.tandemMarkHost`,
+/// The annotations live in a closed shadow root under a host Termurion keeps (`window.tandemMarkHost`,
 /// the isolated world's window, which a page cannot see) and styles inline with `!important` after
 /// `all: initial`, so page CSS cannot move, hide-by-containing-block or restyle it. The root is
 /// `window.tandemMarkRoot` for `update-mark-positions.js`. The previous box is removed by that
@@ -310,7 +310,7 @@ pub fn show_call(marks: &[Value], secret: &str) -> Option<Call> {
 }
 
 /// The annotations taken off the page when no mark is left for it (the show script returns early on
-/// an empty list, `NMM:480-483`, so its own removal never runs): by Tandem's reference to the host,
+/// an empty list, `NMM:480-483`, so its own removal never runs): by Termurion's reference to the host,
 /// never a lookup in the page.
 pub fn clear_call() -> Call {
     Call { body: "if (window.tandemMarkHost) { window.tandemMarkHost.remove(); }\nwindow.tandemMarkHost = null;\nwindow.tandemMarkRoot = null;\nreturn true;".into(), args: json!({}) }
@@ -372,7 +372,7 @@ pub fn monitor_body() -> Option<String> {
 }
 
 /// Whether a page message of a Marks handler may be acted on: the isolated world's (the transport
-/// says so; a Page message never), the main frame's, and not from one of Tandem's own pages (B5).
+/// says so; a Page message never), the main frame's, and not from one of Termurion's own pages (B5).
 /// A Client source is the context's origin, which Chromium gives an `iterm2-about:` document as an
 /// opaque "://" (probe run 2026-10-10b), so the source half never names a local page; the rule is
 /// carried by the pane's URL (`marks_page` refuses a local page before any Marks message is read).
@@ -423,7 +423,7 @@ impl PageState {
     }
 
     /// A main-frame start (`redirect`: a hop of the navigation before it; `user`: the page's own
-    /// gesture). The first start Tandem made after the reveal armed is the reveal's own navigation;
+    /// gesture). The first start Termurion made after the reveal armed is the reveal's own navigation;
     /// a redirect hop of it moves the binding; any other start is a different navigation and ends
     /// the wait (B9).
     pub fn reveal_starting(&mut self, nav: u64, redirect: bool, user: bool) {
@@ -445,7 +445,7 @@ impl PageState {
         }
     }
 
-    /// A new document or Tandem context: its scripts, monitor included, are gone.
+    /// A new document or Termurion context: its scripts, monitor included, are gone.
     pub fn document_gone(&mut self) {
         self.monitor = false;
     }
@@ -463,7 +463,7 @@ impl PageState {
         Self::gate(&mut self.layout_at, now)
     }
 
-    /// A rename or delete request may act (the same bound; each opens a Tandem window).
+    /// A rename or delete request may act (the same bound; each opens a Termurion window).
     pub fn request_allowed(&mut self, now: std::time::Instant) -> bool {
         Self::gate(&mut self.request_at, now)
     }
@@ -496,14 +496,14 @@ enum Stage {
     Bound(u64),
 }
 
-/// Why an add is refused (`BVC:591-606`, `NMM:142-145`; `Local` is Tandem's: B5).
+/// Why an add is refused (`BVC:591-606`, `NMM:142-145`; `Local` is Termurion's: B5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// Not an http or https page (the Edit menu's gate).
     Scheme,
     /// A known method other than GET.
     Method,
-    /// An `iterm2-about:` page: Tandem's own pages carry no marks and no annotations (B5).
+    /// An `iterm2-about:` page: Termurion's own pages carry no marks and no annotations (B5).
     Local,
 }
 
@@ -520,7 +520,7 @@ fn scheme_lower(url: &str) -> String {
     url.split_once(':').map(|(s, _)| s.to_ascii_lowercase()).unwrap_or_default()
 }
 
-/// Whether `url` is one of Tandem's own pages (the privileged local-page bridge lives there, B5).
+/// Whether `url` is one of Termurion's own pages (the privileged local-page bridge lives there, B5).
 pub fn is_local_page(url: &str) -> bool {
     scheme_lower(url) == "iterm2-about"
 }
@@ -531,7 +531,7 @@ pub fn can_add(url: &str, method: Option<&str>) -> bool {
 }
 
 /// What stops the prompt from opening (review M11): the menu applies `can_add`; the context menu and
-/// the tool open it on any page (`BVC:1170-1188`, `BVC:1401-1425`) except Tandem's own.
+/// the tool open it on any page (`BVC:1170-1188`, `BVC:1401-1425`) except Termurion's own.
 pub fn gate_before_prompt(path: AddPath, url: &str, method: Option<&str>) -> Option<Refusal> {
     match path {
         AddPath::Menu => {
@@ -663,7 +663,7 @@ pub fn person_edit_valid(cache: &[Mark], guid: &str) -> bool {
     cache.iter().any(|m| m.guid == guid)
 }
 
-/// The stored name as the rename window starts it: Tandem's sanitizer, never page text.
+/// The stored name as the rename window starts it: Termurion's sanitizer, never page text.
 pub fn rename_text(stored: &str) -> String {
     crate::inert_files::display_text(stored, MAX_NAME, false)
 }
@@ -961,7 +961,7 @@ mod tests {
         assert!(shown.contains("requestDelete: true,") && shown.contains("requestRename: true,"));
         assert!(!shown.contains("input.value,") && !shown.contains("delete: true") && !shown.contains("annotation.remove()") && !shown.contains("mark.name = input.value"));
         assert!(shown.contains("input.type = 'hidden'") && shown.contains("saveButton.textContent = 'Rename'"));
-        // The host is styled inline, important, after `all: initial`; the old box goes by Tandem's reference.
+        // The host is styled inline, important, after `all: initial`; the old box goes by Termurion's reference.
         assert!(shown.contains("host.style.cssText = 'all: initial !important;") && shown.contains("position: absolute !important") && shown.contains("height: 0 !important"));
         assert!(shown.contains("document.body.appendChild(host)") && !shown.contains("getElementById") && !shown.contains("iterm-mark-annotations"));
         assert!(shown.contains("var existingContainer = window.tandemMarkHost;") && shown.contains("window.tandemMarkRoot = null;"));
@@ -1020,7 +1020,7 @@ mod tests {
         assert_eq!(gate_before_prompt(AddPath::Menu, "https://a", Some("GET")), None);
         assert_eq!(gate_before_prompt(AddPath::ContextMenu, "about:blank", Some("POST")), None);
         assert_eq!(gate_before_prompt(AddPath::Tool, "file:///c:/x", None), None);
-        // Tandem's own pages carry no marks, whichever way they are asked (B5).
+        // Termurion's own pages carry no marks, whichever way they are asked (B5).
         assert_eq!(gate_before_prompt(AddPath::ContextMenu, "iterm2-about:history", Some("GET")), Some(Refusal::Local));
         assert_eq!(gate_before_prompt(AddPath::Tool, "ITERM2-ABOUT:welcome", None), Some(Refusal::Local));
         assert_eq!(gate_on_add(None), None);
@@ -1142,7 +1142,7 @@ mod tests {
         assert!(message_accepted(World::Client, None, "tandem-client"));
         assert!(!message_accepted(World::Page, None, "https://a.b"), "the page world never");
         assert!(!message_accepted(World::Client, Some(4), "tandem-client"), "a subframe never");
-        assert!(!message_accepted(World::Client, None, "iterm2-about:history"), "Tandem's pages never");
+        assert!(!message_accepted(World::Client, None, "iterm2-about:history"), "Termurion's pages never");
         let t = std::time::Instant::now();
         let mut s = PageState::new("S".into());
         assert!(s.layout_allowed(t));

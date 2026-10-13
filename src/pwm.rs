@@ -202,7 +202,7 @@ pub const TITLE_ENTER_USER_NAME: &str = "Enter User Name";
 pub const TITLE_ENTER_USERNAME_AND_PASSWORD: &str = "Enter Username & Password";
 pub const TITLE_ENTER_PASSWORD: &str = "Enter Password";
 /// The Broadcast checkbox's title and the Enter User Name button's tooltip (iTerm2: Cmd+B and
-/// Cmd+U; Tandem's Win is iTerm2's Cmd).
+/// Cmd+U; Termurion's Win is iTerm2's Cmd).
 pub const TITLE_BROADCAST: &str = "Broadcast (Win+B)";
 pub const TOOLTIP_ENTER_USER_NAME: &str = "Win+U";
 
@@ -737,7 +737,7 @@ impl AccountPanel {
 }
 
 pub const HEADING_ARE_YOU_SURE: &str = "Are you sure?";
-pub const RESET_WARNING: &str = "This will erase Tandem\u{2019}s configuration settings for this password manager. The actual passwords will remain unaffected. You\u{2019}ll have to go through some setup steps to use it again. This action cannot be undone.";
+pub const RESET_WARNING: &str = "This will erase Termurion\u{2019}s configuration settings for this password manager. The actual passwords will remain unaffected. You\u{2019}ll have to go through some setup steps to use it again. This action cannot be undone.";
 pub const ALERT_COMMAND_FAILED: &str = "Command Failed";
 pub const ALERT_AN_ERROR_OCCURRED: &str = "An error occurred.";
 
@@ -1179,7 +1179,7 @@ mod tests {
         assert_eq!(Alert::save_failed("Denied.").text, "Denied.");
         let reset = Alert::reset();
         assert_eq!(reset.heading, "Are you sure?");
-        assert_eq!(reset.text, "This will erase Tandem\u{2019}s configuration settings for this password manager. The actual passwords will remain unaffected. You\u{2019}ll have to go through some setup steps to use it again. This action cannot be undone.");
+        assert_eq!(reset.text, "This will erase Termurion\u{2019}s configuration settings for this password manager. The actual passwords will remain unaffected. You\u{2019}ll have to go through some setup steps to use it again. This action cannot be undone.");
         assert_eq!(reset.buttons, vec!["OK", "Cancel"]);
         let field = Field { key: "master".to_string(), label: "Password".to_string(), placeholder: None, is_secret: true, note: None, persist_in_keychain: false };
         let settings = Alert::settings("KeePassXC", vec![(field, Secret::new("s3cret".to_string()))]);

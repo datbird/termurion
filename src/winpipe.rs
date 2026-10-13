@@ -297,14 +297,14 @@ pub fn own_token_facts() -> Result<crate::api_peer::Token, String> {
 
 /// `\\.\pipe\tandem-host-<user SID>`.
 pub fn host_pipe_name() -> Result<String, String> {
-    // An elevated Tandem has its own host: normal and elevated shells never mix.
+    // An elevated Termurion has its own host: normal and elevated shells never mix.
     Ok(format!(r"\\.\pipe\tandem-host-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))
 }
 
 /// `\\.\pipe\tandem-ssh-secrets-<user SID>`, plus `-admin` when elevated: the origin secrets
 /// it2ssh fetches.
 pub fn secret_pipe_name() -> Result<String, String> {
-    // As the host pipe: an elevated Tandem's secrets are its own.
+    // As the host pipe: an elevated Termurion's secrets are its own.
     Ok(format!(r"\\.\pipe\tandem-ssh-secrets-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))
 }
 
@@ -312,7 +312,7 @@ pub fn secret_pipe_name() -> Result<String, String> {
 /// --url` hands an ssh: URL to (m14e). It is also the one channel for every other request of a
 /// second `termurion.exe` (`launch::Request`, m13v1): there is no second app pipe.
 pub fn url_pipe_name() -> Result<String, String> {
-    // As the host pipe: an elevated Tandem's URLs are its own, never a normal one's.
+    // As the host pipe: an elevated Termurion's URLs are its own, never a normal one's.
     Ok(format!(r"\\.\pipe\tandem-url-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))
 }
 
@@ -604,7 +604,7 @@ impl Pipe {
             return Err(format!("the session host pipe is served by another user ({theirs})"));
         }
         if token_elevated(token.0)? != elevated()? {
-            return Err("the session host runs at another elevation than this Tandem".into());
+            return Err("the session host runs at another elevation than this Termurion".into());
         }
         Ok(())
     }
@@ -730,7 +730,7 @@ pub(crate) mod tests {
     #[test]
     fn pipe_names_follow_elevation() {
         let admin = elevated().unwrap();
-        assert_eq!(host_pipe_name().unwrap().ends_with("-admin"), admin, "an elevated Tandem never shares a host with a normal one");
+        assert_eq!(host_pipe_name().unwrap().ends_with("-admin"), admin, "an elevated Termurion never shares a host with a normal one");
     }
 
     #[test]

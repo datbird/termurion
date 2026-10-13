@@ -41,7 +41,7 @@ pub const SAFETY_TRANSCRIPT_CAP: usize = 15;
 pub const HISTORY_RESPONSE_ROOM: u32 = 512;
 pub const TUI_REASON: &str = "Interactive terminal application \u{2014} review the intended action before allowing input.";
 pub const NAG_HEADING: &str = "Enable Command Safety Checking?";
-pub const NAG_TEXT: &str = "Tandem can use AI to check the safety of commands suggested by your AI agent. Would you like to enable safety checking?\n\nWhen enabled, each proposed command will be sent to your configured AI provider for a safety check.";
+pub const NAG_TEXT: &str = "Termurion can use AI to check the safety of commands suggested by your AI agent. Would you like to enable safety checking?\n\nWhen enabled, each proposed command will be sent to your configured AI provider for a safety check.";
 pub const NO_MODEL: &str = "No AI model is configured to classify command safety.";
 pub const NO_CONSENT: &str = "The AI safety check could not run because requests to this model's host are not allowed.";
 /// The stored flag that the one-time nag was answered (a NoSync key with no schema row).
@@ -314,7 +314,7 @@ pub fn parse(reply: &str) -> Decision {
 /// The user's side of a chat as the classifier may see it (`SafetyTranscript.project`): user
 /// plain text, markdown and multipart text, and each tool request as (name, status line). Never
 /// assistant prose, terminal context or attachments. An orchestration (external) call has no
-/// Tandem name to show and is left out (12f).
+/// Termurion name to show and is left out (12f).
 pub fn project(messages: &[Message]) -> Vec<Entry> {
     let mut out = Vec::new();
     for m in messages {
@@ -563,7 +563,7 @@ mod tests {
     #[test]
     fn texts_follow_iterm2() {
         assert_eq!(NAG_HEADING, "Enable Command Safety Checking?");
-        assert_eq!(NAG_TEXT, "Tandem can use AI to check the safety of commands suggested by your AI agent. Would you like to enable safety checking?\n\nWhen enabled, each proposed command will be sent to your configured AI provider for a safety check.");
+        assert_eq!(NAG_TEXT, "Termurion can use AI to check the safety of commands suggested by your AI agent. Would you like to enable safety checking?\n\nWhen enabled, each proposed command will be sent to your configured AI provider for a safety check.");
         assert_eq!(NO_MODEL, "No AI model is configured to classify command safety.");
         assert_eq!(NO_CONSENT, "The AI safety check could not run because requests to this model's host are not allowed.");
         assert_eq!(NAG_KEY, "NoSyncAISafetyCheckNagComplete");

@@ -115,7 +115,7 @@ pub enum WaitResult {
     Cancel,
 }
 
-/// "Thinking..." with an indeterminate spinner and Cancel, titled "Tandem".
+/// "Thinking..." with an indeterminate spinner and Cancel, titled "Termurion".
 pub struct WaitWindow {
     host: EguiHost,
     message: String,
@@ -124,7 +124,7 @@ pub struct WaitWindow {
 
 impl WaitWindow {
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, message: &str) -> Result<WaitWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, "Tandem", 300.0, 110.0)?;
+        let host = EguiHost::open(event_loop, instance, adapter, device, queue, "Termurion", 300.0, 110.0)?;
         Ok(WaitWindow { host, message: message.to_string(), opened: None })
     }
 

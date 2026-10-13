@@ -7,11 +7,11 @@ use std::cmp::Ordering;
 use crate::globals::Globals;
 use crate::inert_files::{is_hidden, shown_name};
 
-/// The releases feed: GitHub's API for `datbird/tandem`, no token. While the repository is
+/// The releases feed: GitHub's API for `datbird/termurion`, no token. While the repository is
 /// private it answers 404, which reads as no update information (the 13v/13w ruling).
-pub const RELEASES_URL: &str = "https://api.github.com/repos/datbird/tandem/releases?per_page=30";
+pub const RELEASES_URL: &str = "https://api.github.com/repos/datbird/termurion/releases?per_page=30";
 /// The page Learn More opens when the feed names no better one (and the only host it may name).
-pub const RELEASE_PAGE: &str = "https://github.com/datbird/tandem/releases";
+pub const RELEASE_PAGE: &str = "https://github.com/datbird/termurion/releases";
 
 /// The stored keys (`SUUpdater.m`: `SUEnableAutomaticChecks`, `SUScheduledCheckInterval`,
 /// `SULastCheckTime`, `SUHasLaunchedBefore`, `SUSkippedVersion`).
@@ -150,7 +150,7 @@ pub struct Release {
     pub prerelease: bool,
 }
 
-/// `url` when it is on the pinned releases page (https, github.com, `datbird/tandem/releases`,
+/// `url` when it is on the pinned releases page (https, github.com, `datbird/termurion/releases`,
 /// then a path of plain characters with no dot segment), else None: the feed cannot name
 /// anything else to open (B4).
 pub fn release_url(url: &str) -> Option<&str> {
@@ -364,7 +364,7 @@ pub fn fetch_args(url: &str, version: &str, proto: &str) -> Vec<String> {
     for a in ["--proto-redir", "=https", "--max-redirs", "3", "--max-filesize", "2097152", "--max-time", "30", "--tlsv1.2", "--write-out", "\n%{http_code}", "-H", "Accept: application/vnd.github+json", "-H"] {
         args.push(a.to_string());
     }
-    args.push(format!("User-Agent: Tandem/{version}"));
+    args.push(format!("User-Agent: Termurion/{version}"));
     args.push(url.to_string());
     args
 }
@@ -418,7 +418,7 @@ pub fn classify(f: Fetched) -> FeedResult {
 
 pub const TITLE: &str = "Software Update";
 pub const CHECKING: &str = "Checking for updates\u{2026}";
-pub const UPDATE_HEADING: &str = "A new version of Tandem is available!";
+pub const UPDATE_HEADING: &str = "A new version of Termurion is available!";
 pub const RELEASE_NOTES: &str = "Release Notes:";
 pub const SKIP: &str = "Skip This Version";
 pub const REMIND: &str = "Remind Me Later";
@@ -432,20 +432,20 @@ pub const CHECK_AUTOMATICALLY: &str = "Check Automatically";
 pub const DONT_CHECK: &str = "Don\u{2019}t Check";
 
 pub fn permission_text() -> String {
-    "Should Tandem automatically check for updates? You can always check for updates manually from the Tandem menu.".to_string()
+    "Should Termurion automatically check for updates? You can always check for updates manually from the Termurion menu.".to_string()
 }
 
 /// Versions come from the feed: shown through `shown_name`.
 pub fn update_text(new: &str, current: &str) -> String {
     format!(
-        "Tandem {} is now available (you have {}). Would you like to learn more about this update on the web?",
+        "Termurion {} is now available (you have {}). Would you like to learn more about this update on the web?",
         shown_name(new),
         shown_name(current)
     )
 }
 
 pub fn up_to_date_text(newest: &str, running: Option<&str>) -> String {
-    let mut text = format!("Tandem {} is currently the newest version available.", shown_name(newest));
+    let mut text = format!("Termurion {} is currently the newest version available.", shown_name(newest));
     if let Some(running) = running {
         text.push_str(&format!("\n(You are currently running version {}.)", shown_name(running)));
     }
@@ -519,10 +519,10 @@ mod tests {
     }
 
     const FEED: &str = r#"[
-      {"tag_name":"v0.0.3","name":"Three","body":"notes three","html_url":"https://github.com/datbird/tandem/releases/tag/v0.0.3","prerelease":true,"draft":false},
-      {"tag_name":"v0.0.2","name":"Two","body":"notes two","html_url":"https://github.com/datbird/tandem/releases/tag/v0.0.2","prerelease":false,"draft":false},
-      {"tag_name":"v0.0.4","name":"Four","body":"draft","html_url":"https://github.com/datbird/tandem/releases/tag/v0.0.4","prerelease":false,"draft":true},
-      {"tag_name":"v0.0.1","name":"One","body":"notes one","html_url":"https://github.com/datbird/tandem/releases/tag/v0.0.1","prerelease":false,"draft":false}
+      {"tag_name":"v0.0.3","name":"Three","body":"notes three","html_url":"https://github.com/datbird/termurion/releases/tag/v0.0.3","prerelease":true,"draft":false},
+      {"tag_name":"v0.0.2","name":"Two","body":"notes two","html_url":"https://github.com/datbird/termurion/releases/tag/v0.0.2","prerelease":false,"draft":false},
+      {"tag_name":"v0.0.4","name":"Four","body":"draft","html_url":"https://github.com/datbird/termurion/releases/tag/v0.0.4","prerelease":false,"draft":true},
+      {"tag_name":"v0.0.1","name":"One","body":"notes one","html_url":"https://github.com/datbird/termurion/releases/tag/v0.0.1","prerelease":false,"draft":false}
     ]"#;
 
     #[test]
@@ -531,7 +531,7 @@ mod tests {
         assert_eq!(list.len(), 3, "the draft is dropped");
         assert_eq!(list[0].version, "0.0.3");
         assert_eq!(list[1].notes, "notes two");
-        assert_eq!(list[1].url, "https://github.com/datbird/tandem/releases/tag/v0.0.2");
+        assert_eq!(list[1].url, "https://github.com/datbird/termurion/releases/tag/v0.0.2");
         assert_eq!(newest(&list, false).unwrap().version, "0.0.2");
         assert_eq!(newest(&list, true).unwrap().version, "0.0.3");
         assert!(parse_releases("{}").is_err());
@@ -577,27 +577,27 @@ mod tests {
     #[test]
     fn learn_more_url_is_pinned() {
         for ok in [
-            "https://github.com/datbird/tandem/releases",
-            "https://github.com/datbird/tandem/releases/",
-            "https://github.com/datbird/tandem/releases/tag/v0.0.2",
-            "https://github.com/datbird/tandem/releases?x",
-            "https://github.com/datbird/tandem/releases#top",
+            "https://github.com/datbird/termurion/releases",
+            "https://github.com/datbird/termurion/releases/",
+            "https://github.com/datbird/termurion/releases/tag/v0.0.2",
+            "https://github.com/datbird/termurion/releases?x",
+            "https://github.com/datbird/termurion/releases#top",
         ] {
             assert_eq!(release_url(ok), Some(ok), "{ok}");
         }
         for bad in [
-            "https://github.com.evil.example/datbird/tandem/releases",
-            "https://github.com@evil/datbird/tandem/releases",
-            "https://github.com/datbird/tandem/releases@evil",
-            "https://github.com/datbird/tandem/releasesx",
-            "https://github.com/datbird/tandem/releases/../../x",
-            "https://github.com/datbird/tandem/releases/./x",
-            "https://github.com/datbird/tandem/releases/%2e%2e/x",
-            "https://github.com/datbird/tandem/releases/a b",
-            "https://github.com/datbird/tandem/releases/a\\b",
-            "https://github.com:444/datbird/tandem/releases",
-            "http://github.com/datbird/tandem/releases",
-            "HTTPS://github.com/datbird/tandem/releases",
+            "https://github.com.evil.example/datbird/termurion/releases",
+            "https://github.com@evil/datbird/termurion/releases",
+            "https://github.com/datbird/termurion/releases@evil",
+            "https://github.com/datbird/termurion/releasesx",
+            "https://github.com/datbird/termurion/releases/../../x",
+            "https://github.com/datbird/termurion/releases/./x",
+            "https://github.com/datbird/termurion/releases/%2e%2e/x",
+            "https://github.com/datbird/termurion/releases/a b",
+            "https://github.com/datbird/termurion/releases/a\\b",
+            "https://github.com:444/datbird/termurion/releases",
+            "http://github.com/datbird/termurion/releases",
+            "HTTPS://github.com/datbird/termurion/releases",
             "file:///C:/Windows/System32/calc.exe",
             "\\\\evil\\share\\x",
             "ms-msdt:/id",
@@ -745,33 +745,33 @@ mod tests {
         let args = fetch_args("U", "0.0.1", "=https");
         let want = [
             "-q", "--silent", "--show-error", "--proto", "=https", "--proto-redir", "=https", "--max-redirs", "3", "--max-filesize", "2097152", "--max-time", "30", "--tlsv1.2", "--write-out", "\n%{http_code}", "-H",
-            "Accept: application/vnd.github+json", "-H", "User-Agent: Tandem/0.0.1", "U",
+            "Accept: application/vnd.github+json", "-H", "User-Agent: Termurion/0.0.1", "U",
         ];
         assert_eq!(args, want);
         assert_eq!(args[0], "-q", "-q is first, or curl reads a .curlrc before it");
         for banned in ["--insecure", "-k", "--ssl-no-revoke", "-K", "-o", "-O", "--output", "--remote-name", "--config", "--fail", "-f"] {
             assert!(!args.iter().any(|a| a == banned), "{banned}");
         }
-        assert!(fetch_args("U", "0.0.1\nX: y", "=https").contains(&"User-Agent: Tandem/0.0.1Xy".to_string()), "no header can be added through the version");
+        assert!(fetch_args("U", "0.0.1\nX: y", "=https").contains(&"User-Agent: Termurion/0.0.1Xy".to_string()), "no header can be added through the version");
         assert_eq!(MAX_FEED, 2 * 1024 * 1024);
-        assert!(RELEASES_URL.starts_with("https://api.github.com/repos/datbird/tandem/releases?per_page=30"));
+        assert!(RELEASES_URL.starts_with("https://api.github.com/repos/datbird/termurion/releases?per_page=30"));
     }
 
     #[test]
     fn texts_follow_sparkle() {
         assert_eq!(CHECKING, "Checking for updates\u{2026}");
-        assert_eq!(UPDATE_HEADING, "A new version of Tandem is available!");
+        assert_eq!(UPDATE_HEADING, "A new version of Termurion is available!");
         assert_eq!(
             update_text("0.0.2", "0.0.1"),
-            "Tandem 0.0.2 is now available (you have 0.0.1). Would you like to learn more about this update on the web?"
+            "Termurion 0.0.2 is now available (you have 0.0.1). Would you like to learn more about this update on the web?"
         );
-        assert_eq!(up_to_date_text("0.0.2", None), "Tandem 0.0.2 is currently the newest version available.");
-        assert_eq!(up_to_date_text("0.0.2", Some("0.0.3")), "Tandem 0.0.2 is currently the newest version available.\n(You are currently running version 0.0.3.)");
+        assert_eq!(up_to_date_text("0.0.2", None), "Termurion 0.0.2 is currently the newest version available.");
+        assert_eq!(up_to_date_text("0.0.2", Some("0.0.3")), "Termurion 0.0.2 is currently the newest version available.\n(You are currently running version 0.0.3.)");
         assert_eq!(UP_TO_DATE_TITLE, "You\u{2019}re up-to-date!");
         assert_eq!(RETRIEVE_ERROR, "An error occurred in retrieving update information. Please try again later.");
         assert_eq!(PARSE_ERROR, "An error occurred while parsing the update feed.");
         assert_eq!(PERMISSION_TITLE, "Check for updates automatically?");
-        assert_eq!(permission_text(), "Should Tandem automatically check for updates? You can always check for updates manually from the Tandem menu.");
+        assert_eq!(permission_text(), "Should Termurion automatically check for updates? You can always check for updates manually from the Termurion menu.");
         assert_eq!((CHECK_AUTOMATICALLY, DONT_CHECK), ("Check Automatically", "Don\u{2019}t Check"));
         assert_eq!((SKIP, REMIND, LEARN_MORE, RELEASE_NOTES, TITLE, ERROR_TITLE), ("Skip This Version", "Remind Me Later", "Learn More\u{2026}", "Release Notes:", "Software Update", "Update Error!"));
         // Feed text shown to the person is sanitized.

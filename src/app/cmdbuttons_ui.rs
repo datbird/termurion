@@ -136,7 +136,7 @@ impl App {
             return self.banners.set("action", "This command has no output to fold.");
         };
         if p.screen.fold(a.line.0, b.line.0).is_none() {
-            self.banners.set("action", "Tandem cannot fold the cursor's line, or while a full-screen app runs.");
+            self.banners.set("action", "Termurion cannot fold the cursor's line, or while a full-screen app runs.");
         }
     }
 
@@ -151,14 +151,14 @@ impl App {
     }
 }
 
-/// The Save dialog's file name: the command's program name (`defaultCommand`), else "Tandem
+/// The Save dialog's file name: the command's program name (`defaultCommand`), else "Termurion
 /// Command", with only characters a file name may hold.
 fn save_name(command: &str) -> String {
     let program = command.split_whitespace().next().unwrap_or("");
     let base = program.rsplit(['\\', '/']).next().unwrap_or("");
     let stem: String = base.chars().filter(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-' | '+')).collect();
     let stem = stem.trim_matches('.');
-    format!("{}.txt", if stem.is_empty() { "Tandem Command" } else { stem })
+    format!("{}.txt", if stem.is_empty() { "Termurion Command" } else { stem })
 }
 
 #[cfg(test)]
@@ -187,9 +187,9 @@ mod tests {
     fn the_save_name_is_the_program() {
         assert_eq!(save_name("C:\\tools\\make all"), "make.txt");
         assert_eq!(save_name("./build.sh x"), "build.sh.txt");
-        assert_eq!(save_name(""), "Tandem Command.txt");
+        assert_eq!(save_name(""), "Termurion Command.txt");
         assert_eq!(save_name("a:b*c?"), "abc.txt");
-        assert_eq!(save_name("..\\.."), "Tandem Command.txt");
+        assert_eq!(save_name("..\\.."), "Termurion Command.txt");
     }
 
     /// B5: program text (the command, its output) is never typed into a terminal from here.

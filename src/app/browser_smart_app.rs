@@ -1,6 +1,6 @@
 //! Smart Selection actions from a page's menu (milestone 13x2, Task 4). Web content is untrusted:
 //! the selection reaches here as the menu's own snapshot (WebView2's bounded selection), an action
-//! runs only from the person's own pick on Tandem's menu, and every value a page's text puts into a
+//! runs only from the person's own pick on Termurion's menu, and every value a page's text puts into a
 //! command or a path goes through the one builder (`smartsel::parameter`, whose refusals are the
 //! 13p-r rules), then an ask that shows the whole text, then the terminal's own sinks. A URL opens
 //! only through `browser_page_open`; a program is revealed, never run (`open_file_run`).
@@ -10,7 +10,7 @@ use crate::browser_ctx::{self, SmartPlan};
 use crate::layout::PaneId;
 
 /// What nothing runs for when the text cannot be shown whole.
-pub(super) const TOO_LONG: &str = "Tandem did not run this: its text is too long or holds characters that cannot be shown, so it could not be shown in full first.";
+pub(super) const TOO_LONG: &str = "Termurion did not run this: its text is too long or holds characters that cannot be shown, so it could not be shown in full first.";
 
 impl App {
     /// The page's host (`BCM:217-224`): what `\h` means in a page's action; empty with none.

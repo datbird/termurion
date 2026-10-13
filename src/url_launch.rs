@@ -1,5 +1,5 @@
-//! Receiving ssh: URLs from outside Tandem (m14e Task 3): the command line a protocol handler
-//! passes, and the per-user pipe that hands a URL to a running Tandem. A URL here comes from a
+//! Receiving ssh: URLs from outside Termurion (m14e Task 3): the command line a protocol handler
+//! passes, and the per-user pipe that hands a URL to a running Termurion. A URL here comes from a
 //! browser or any program of the same user, so it is hostile input: one `url_ok` rule serves the
 //! command line and the pipe, and `ssh_url::parse` is the second gate before anything opens.
 //! The same pipe is the one channel for every request a second `termurion.exe` has (m13v1 Task 1:
@@ -27,7 +27,7 @@ pub enum UrlArg {
     Refused(String),
 }
 
-/// The schemes Tandem takes from outside (m13v1 P7): the one list for the command line, the pipe
+/// The schemes Termurion takes from outside (m13v1 P7): the one list for the command line, the pipe
 /// and every check after them. iTerm2's `x-man-page` is macOS only and is not offered.
 pub const EXTERNAL_SCHEMES: [&str; 3] = ["ssh", "telnet", "ftp"];
 
@@ -145,30 +145,30 @@ pub fn open_banner(url: &str) -> Option<String> {
     Some(format!("Opened {article} {scheme} link to {who}."))
 }
 
-/// What handing a URL to a running Tandem came to.
+/// What handing a URL to a running Termurion came to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Handed {
-    /// A running Tandem of this user took it.
+    /// A running Termurion of this user took it.
     Taken,
-    /// Nothing listens on the pipe: no Tandem of this user runs.
+    /// Nothing listens on the pipe: no Termurion of this user runs.
     NoServer,
-    /// Another user (or another elevation) serves or holds the pipe name: this Tandem must run.
+    /// Another user (or another elevation) serves or holds the pipe name: this Termurion must run.
     OtherOwner(String),
-    /// A Tandem may run but did not take it (the pipe stayed busy, a write failed).
+    /// A Termurion may run but did not take it (the pipe stayed busy, a write failed).
     Failed(String),
 }
 
-/// Whether the process serving the launch pipe is Tandem: its token passes the peer rule (same
+/// Whether the process serving the launch pipe is Termurion: its token passes the peer rule (same
 /// user, same elevation and integrity, no AppContainer or restricted token: `api_peer::judge`)
-/// and its image is this Tandem's own program (case ignored). Anything else, an unreadable image
-/// included, is not Tandem and is sent nothing.
+/// and its image is this Termurion's own program (case ignored). Anything else, an unreadable image
+/// included, is not Termurion and is sent nothing.
 pub fn server_verdict(theirs: &crate::api_peer::Token, mine: &crate::api_peer::Token, their_image: Option<&str>, their_session: Option<u32>, my_session: Option<u32>, my_image: &str) -> Result<(), String> {
-    // The one peer rule, with the same Windows session (a same-user Tandem of another session never takes a request).
+    // The one peer rule, with the same Windows session (a same-user Termurion of another session never takes a request).
     let peer = |token: &crate::api_peer::Token, session| crate::api_peer::Peer { token: token.clone(), session };
     crate::api_peer::judge_peer(&peer(theirs, their_session), &peer(mine, my_session)).map_err(|e| if e == crate::api_peer::OTHER_SESSION { "the launch pipe is held by a program of another session".to_string() } else { e })?;
     match their_image {
         Some(i) if i.eq_ignore_ascii_case(my_image) => Ok(()),
-        Some(_) => Err("the launch pipe is held by a program that is not this Tandem".into()),
+        Some(_) => Err("the launch pipe is held by a program that is not this Termurion".into()),
         None => Err("the program holding the launch pipe could not be identified".into()),
     }
 }
@@ -176,9 +176,9 @@ pub fn server_verdict(theirs: &crate::api_peer::Token, mine: &crate::api_peer::T
 /// What a URL launch does after the hand-over.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AfterHand {
-    /// The running Tandem has the URL: this process ends.
+    /// The running Termurion has the URL: this process ends.
     Exit,
-    /// No Tandem of this user runs: this one starts and opens the URL.
+    /// No Termurion of this user runs: this one starts and opens the URL.
     Start,
     /// This process ends without opening anything, with the reason to log.
     Refuse(String),
@@ -197,19 +197,19 @@ pub fn hand_over(attempt: &mut dyn FnMut() -> Handed, tries: usize, pause: &dyn 
             Handed::Failed(e) => why = e,
         }
     }
-    AfterHand::Refuse(format!("a running Tandem did not take the link ({why}); nothing opened"))
+    AfterHand::Refuse(format!("a running Termurion did not take the link ({why}); nothing opened"))
 }
 
-/// What a Tandem that cannot take its launch pipe does (13u S4): one rule for `run()` and for an
+/// What a Termurion that cannot take its launch pipe does (13u S4): one rule for `run()` and for an
 /// idle `-Embedding` process (round 5 race B).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LostPipe {
-    /// Every request went to the running Tandem: this process ends.
+    /// Every request went to the running Termurion: this process ends.
     Handed,
-    /// A hand-over was refused (a holder that may be Tandem did not answer), or nothing was a
+    /// A hand-over was refused (a holder that may be Termurion did not answer), or nothing was a
     /// Start: this process ends, so two Tandems never run.
     Refused,
-    /// The holder is not Tandem (every kept request was a Start), or a handed-off console waits to be
+    /// The holder is not Termurion (every kept request was a Start), or a handed-off console waits to be
     /// shown: this one runs, without the pipe.
     RunWithout,
 }
@@ -240,7 +240,7 @@ mod pipe {
     use super::*;
     use crate::winpipe;
 
-    /// Hands `request` to a running Tandem of this user, retrying a busy pipe briefly.
+    /// Hands `request` to a running Termurion of this user, retrying a busy pipe briefly.
     pub fn hand_to_running(request: &crate::launch::Request) -> AfterHand {
         let name = match winpipe::url_pipe_name() {
             Ok(n) => n,
@@ -249,14 +249,14 @@ mod pipe {
         let mut attempt = || {
             let handed = hand_request_on(&name, request, &allow_foreground);
             if let Handed::OtherOwner(e) = &handed {
-                crate::host::log(&format!("url: the link pipe is held by another owner, so this Tandem runs: {e}"));
+                crate::host::log(&format!("url: the link pipe is held by another owner, so this Termurion runs: {e}"));
             }
             handed
         };
         hand_over(&mut attempt, 3, &|| std::thread::sleep(Duration::from_millis(300)))
     }
 
-    /// Whether a Tandem of this user answers on the launch pipe, with nothing sent (an
+    /// Whether a Termurion of this user answers on the launch pipe, with nothing sent (an
     /// `-Embedding` start asks before it makes anything: B9).
     pub fn probe_running() -> Handed {
         match winpipe::url_pipe_name() {
@@ -285,7 +285,7 @@ mod pipe {
         }
     }
 
-    /// Lets the Tandem that serves the pipe (and only it) come forward (P16).
+    /// Lets the Termurion that serves the pipe (and only it) come forward (P16).
     fn allow_foreground(pid: u32) {
         unsafe { windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(pid) };
     }
@@ -306,9 +306,9 @@ mod pipe {
     }
 
     /// `hand_request_on` with the server check given: a holder `verify` refuses gets nothing, and
-    /// is `OtherOwner` (this Tandem runs without a listener, as when another user holds the name).
+    /// is `OtherOwner` (this Termurion runs without a listener, as when another user holds the name).
     pub fn hand_request_checked(name: &str, request: &crate::launch::Request, grant: &dyn Fn(u32), verify: &dyn Fn(u32) -> Result<(), String>) -> Handed {
-        let Some(message) = crate::launch::encode(request) else { return Handed::Failed("the request is not one Tandem accepts".into()) };
+        let Some(message) = crate::launch::encode(request) else { return Handed::Failed("the request is not one Termurion accepts".into()) };
         let pipe = match winpipe::connect_owned(name, Duration::from_secs(1)) {
             Ok(Some(p)) => p,
             Ok(None) => return Handed::NoServer,
@@ -330,13 +330,13 @@ mod pipe {
         if let Err(e) = pipe.write_all(&message) {
             return Handed::Failed(e);
         }
-        // The listener answers `ACK` when it has the request, then closes; a Tandem that does not
+        // The listener answers `ACK` when it has the request, then closes; a Termurion that does not
         // answer within 2 s is hung, not a taker. A close or a broken pipe without the ack is no
-        // taker either (a listener closing in that instant, round 5 item 6): this Tandem starts.
+        // taker either (a listener closing in that instant, round 5 item 6): this Termurion starts.
         let mut answer = [0u8; 1];
         match pipe.read_timeout(&mut answer, Duration::from_secs(2)) {
             Ok(Some(1)) if answer[0] == ACK => Handed::Taken,
-            Ok(None) => Handed::Failed("the running Tandem did not answer".into()),
+            Ok(None) => Handed::Failed("the running Termurion did not answer".into()),
             _ => Handed::NoServer,
         }
     }
@@ -457,7 +457,7 @@ mod tests {
         }, calls)
     }
 
-    /// Fix r1 Important: a second full Tandem starts only when none of this user runs (or
+    /// Fix r1 Important: a second full Termurion starts only when none of this user runs (or
     /// another user holds the pipe); a busy or failed hand-over retries, then ends refused.
     #[test]
     fn a_busy_hand_over_never_starts_a_second_tandem() {
@@ -469,7 +469,7 @@ mod tests {
         assert_eq!(hand_over(&mut f, 3, &|| {}), AfterHand::Exit);
         assert_eq!(calls.get(), 2);
         let (mut f, _) = sequence(vec![busy(), Handed::NoServer]);
-        assert_eq!(hand_over(&mut f, 3, &|| {}), AfterHand::Start, "the running Tandem ended meanwhile");
+        assert_eq!(hand_over(&mut f, 3, &|| {}), AfterHand::Start, "the running Termurion ended meanwhile");
         let (mut f, calls) = sequence(vec![Handed::NoServer]);
         assert_eq!(hand_over(&mut f, 3, &|| {}), AfterHand::Start);
         assert_eq!(calls.get(), 1);
@@ -490,7 +490,7 @@ mod tests {
         assert_eq!(lost_pipe(&[], false), LostPipe::Handed);
         assert_eq!(lost_pipe(&[Exit, refuse()], false), LostPipe::Refused);
         assert_eq!(lost_pipe(&[Start, refuse()], false), LostPipe::Refused, "one refused is enough");
-        assert_eq!(lost_pipe(&[Start, Exit], false), LostPipe::RunWithout, "a holder that is not Tandem");
+        assert_eq!(lost_pipe(&[Start, Exit], false), LostPipe::RunWithout, "a holder that is not Termurion");
         assert_eq!(lost_pipe(&[refuse()], true), LostPipe::RunWithout, "a console waits: it is shown");
         assert_eq!(lost_pipe(&[Exit], true), LostPipe::RunWithout);
     }
@@ -591,15 +591,15 @@ mod tests {
         assert!(open_banner(&long).unwrap().chars().count() < 400, "a long name is cut by shown_name");
     }
 
-    /// Review r1 Important 1: a pipe server is Tandem only when its token passes the peer rule
-    /// and its image is this Tandem's own program.
+    /// Review r1 Important 1: a pipe server is Termurion only when its token passes the peer rule
+    /// and its image is this Termurion's own program.
     #[test]
     fn the_server_must_be_tandem() {
         const S: Option<u32> = Some(1);
         use crate::api_peer::{Token, HIGH_RID, LOW_RID, MEDIUM_RID};
         let mine = Token { sid: "S-1-5-21-1".into(), elevated: false, integrity: MEDIUM_RID, app_container: false, restricted: false };
         let exe = r"C:\Tandem\termurion.exe";
-        assert_eq!(server_verdict(&mine, &mine, Some(r"c:\tandem\TERMURION.EXE"), S, S, exe), Ok(()), "same token, same image, case ignored");
+        assert_eq!(server_verdict(&mine, &mine, Some(r"c:\termurion\TERMURION.EXE"), S, S, exe), Ok(()), "same token, same image, case ignored");
         let low = Token { integrity: LOW_RID, ..mine.clone() };
         assert!(server_verdict(&low, &mine, Some(exe), S, S, exe).is_err(), "a low-integrity squatter");
         let high = Token { integrity: HIGH_RID, elevated: true, ..mine.clone() };
@@ -609,7 +609,7 @@ mod tests {
         assert!(server_verdict(&mine, &mine, Some(r"C:\Temp\evil.exe"), S, S, exe).is_err(), "another image");
         assert!(server_verdict(&mine, &mine, None, S, S, exe).is_err(), "an unreadable image is refused");
         // Review r1 residual: the server must run in this process's session.
-        assert!(server_verdict(&mine, &mine, Some(exe), Some(2), Some(1), exe).is_err(), "a same-user Tandem of another session");
+        assert!(server_verdict(&mine, &mine, Some(exe), Some(2), Some(1), exe).is_err(), "a same-user Termurion of another session");
         assert!(server_verdict(&mine, &mine, Some(exe), None, Some(1), exe).is_err(), "an unreadable session is refused");
         assert!(server_verdict(&mine, &mine, Some(exe), Some(1), None, exe).is_err());
         assert_eq!(server_verdict(&mine, &mine, Some(exe), Some(3), Some(3), exe), Ok(()));
@@ -634,15 +634,15 @@ mod tests {
         }
 
         /// Review r1 Important 1: a holder the verifier refuses is never sent a request, and the
-        /// answer is `OtherOwner` (this Tandem then runs), not a hang or a hand-over.
+        /// answer is `OtherOwner` (this Termurion then runs), not a hang or a hand-over.
         #[test]
         fn a_server_that_is_not_tandem_gets_no_request() {
             let name = test_name("squatter");
             let rx = listening_all(&name, Duration::from_secs(2));
             let granted = std::cell::Cell::new(false);
             let open = crate::launch::Request::Open { paths: vec![r"C:\w\a.ps1".into()] };
-            let handed = hand_request_checked(&name, &open, &|_| granted.set(true), &|_| Err("not Tandem".to_string()));
-            assert_eq!(handed, Handed::OtherOwner("not Tandem".into()));
+            let handed = hand_request_checked(&name, &open, &|_| granted.set(true), &|_| Err("not Termurion".to_string()));
+            assert_eq!(handed, Handed::OtherOwner("not Termurion".into()));
             assert!(!granted.get(), "no foreground right goes to a stranger");
             assert!(rx.recv_timeout(Duration::from_millis(500)).is_err(), "nothing was sent");
             assert_eq!(hand_request_on(&name, &open, &|_| {}), Handed::Taken, "the real check passes for this very program");
@@ -754,7 +754,7 @@ mod tests {
             assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), crate::launch::Request::Reopen);
         }
 
-        /// P16: the running Tandem's pid, never everyone, may take the foreground.
+        /// P16: the running Termurion's pid, never everyone, may take the foreground.
         #[test]
         fn the_server_pid_is_granted_the_foreground() {
             let name = test_name("url-pid");
@@ -770,7 +770,7 @@ mod tests {
         /// Round 5 item 6 (Task 1 minor 7): a request counts as taken only when the server says so with
         /// its ack byte. A server that reads it and closes without the ack (the microsecond window
         /// before a listener's close, or one that drops the request) is no taker: NoServer, so the
-        /// request is retried or this Tandem starts.
+        /// request is retried or this Termurion starts.
         #[test]
         fn a_close_without_the_ack_is_not_taken() {
             let name = test_name("launch-noack");

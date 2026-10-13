@@ -21,7 +21,7 @@ const SCRIPT: &str = include_str!("../resources/utilities/it2tip");
 pub const SCRIPT_SHA256: &str = "582555a80108ede97ebc088676370fc17033405a61b76853a06b47218d4c95ae";
 
 /// The script's `tips` list, parsed as JSON once its trailing commas are dropped, with
-/// "iTerm2" replaced by "Tandem" in titles and bodies.
+/// "iTerm2" replaced by "Termurion" in titles and bodies.
 pub fn tips() -> Vec<Tip> {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let start = SCRIPT.find("tips = [").expect("it2tip holds its tips") + "tips = ".len();
@@ -30,8 +30,8 @@ pub fn tips() -> Vec<Tip> {
     let list = RE.get_or_init(|| regex::Regex::new(r",(\s*[\]}])").expect("trailing comma regex")).replace_all(&list, "$1");
     let mut tips: Vec<Tip> = serde_json::from_str(&list).expect("it2tip's tips parse as JSON");
     for t in &mut tips {
-        t.title = t.title.replace("iTerm2", "Tandem");
-        t.body = t.body.replace("iTerm2", "Tandem");
+        t.title = t.title.replace("iTerm2", "Termurion");
+        t.body = t.body.replace("iTerm2", "Termurion");
     }
     tips
 }
@@ -49,7 +49,7 @@ fn osc(term: Option<&str>, args: &[&str]) -> String {
 
 /// `print_tip`: the title line, the body, and the link when the tip has one.
 pub fn tip_text(term: Option<&str>, t: &Tip) -> String {
-    let mut s = format!("Tandem tip - {}:\n{}\n", t.title, t.body);
+    let mut s = format!("Termurion tip - {}:\n{}\n", t.title, t.body);
     if let Some(url) = &t.url {
         s.push_str(&format!("Learn more: {}{url}{}\n", osc(term, &["8", "", url]), osc(term, &["8", "", ""])));
     }
@@ -150,18 +150,18 @@ mod tests {
         assert_eq!(all.len(), 123);
         assert_eq!(all.iter().filter(|t| t.url.is_some()).count(), 30);
         assert!(all.iter().all(|t| !t.title.contains("iTerm2") && !t.body.contains("iTerm2")));
-        let body = "The big new feature of Tandem version 3 is Shell Integration. Click \u{201c}Learn More\u{201d} for all the details.";
+        let body = "The big new feature of Termurion version 3 is Shell Integration. Click \u{201c}Learn More\u{201d} for all the details.";
         let url = "https://iterm2.com/shell_integration.html";
         assert_eq!(all[0], Tip { title: "Shell Integration".into(), body: body.into(), url: Some(url.into()) });
         assert_eq!(all[1].url, None);
         assert_eq!(all[122].title, "SSH File Browser");
 
-        let plain = format!("Tandem tip - Shell Integration:\n{body}\nLearn more: \x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\\n");
+        let plain = format!("Termurion tip - Shell Integration:\n{body}\nLearn more: \x1b]8;;{url}\x1b\\{url}\x1b]8;;\x1b\\\n");
         assert_eq!(tip_text(None, &all[0]), plain);
         assert_eq!(tip_text(Some("tmux-256color"), &all[0]), plain);
-        let wrapped = format!("Tandem tip - Shell Integration:\n{body}\nLearn more: \x1bPtmux;\x1b\x1b]8;;{url}\x07\x1b\\{url}\x1bPtmux;\x1b\x1b]8;;\x07\x1b\\\n");
+        let wrapped = format!("Termurion tip - Shell Integration:\n{body}\nLearn more: \x1bPtmux;\x1b\x1b]8;;{url}\x07\x1b\\{url}\x1bPtmux;\x1b\x1b]8;;\x07\x1b\\\n");
         assert_eq!(tip_text(Some("screen-256color"), &all[0]), wrapped);
-        assert_eq!(tip_text(Some("screen"), &all[1]), format!("Tandem tip - {}:\n{}\n", all[1].title, all[1].body));
+        assert_eq!(tip_text(Some("screen"), &all[1]), format!("Termurion tip - {}:\n{}\n", all[1].title, all[1].body));
 
         assert_eq!(next_index(None, false, 123), Some(0));
         assert_eq!(next_index(Some("5"), false, 123), Some(6));

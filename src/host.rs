@@ -1,7 +1,7 @@
-//! tandem-host: runs every shell in its own ConPTY and keeps it alive when Tandem is not
-//! attached, so a crashed or force-quit Tandem can reattach (iTerm2's job servers). It serves
-//! one Tandem at a time over the per-user pipe, keeps each session's last output in a ring,
-//! and exits once no Tandem is attached and no session is left.
+//! tandem-host: runs every shell in its own ConPTY and keeps it alive when Termurion is not
+//! attached, so a crashed or force-quit Termurion can reattach (iTerm2's job servers). It serves
+//! one Termurion at a time over the per-user pipe, keeps each session's last output in a ring,
+//! and exits once no Termurion is attached and no session is left.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, mpsc};
@@ -18,7 +18,7 @@ pub const RING: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
-    /// How long the host stays with no Tandem attached and no session.
+    /// How long the host stays with no Termurion attached and no session.
     pub grace: Duration,
 }
 
@@ -38,10 +38,10 @@ struct Session {
     cols: u16,
     rows: u16,
     exited: Option<u32>,
-    /// Its output goes to the attached Tandem.
+    /// Its output goes to the attached Termurion.
     attached: bool,
     pending: usize,
-    /// Its console's password prompt samples, debounced, while the attached Tandem asks.
+    /// Its console's password prompt samples, debounced, while the attached Termurion asks.
     prompt: crate::pwm_prompt::Debounce,
 }
 
@@ -58,7 +58,7 @@ struct Host {
     client: Option<Client>,
     /// Tells this host run from any other: session ids are only good within it.
     instance: String,
-    /// The attached Tandem asked for password prompt readings with this debounce (seconds).
+    /// The attached Termurion asked for password prompt readings with this debounce (seconds).
     prompt_debounce: Option<f64>,
 }
 
@@ -79,7 +79,7 @@ impl Host {
         out
     }
 
-    /// The sessions whose consoles the prompt watch reads: live ones a Tandem shows. Never
+    /// The sessions whose consoles the prompt watch reads: live ones a Termurion shows. Never
     /// one paused for Undo Close (or otherwise not attached): nothing drains its output, so
     /// once its pipe fills OpenConsole blocks every console call on it, and an attach there
     /// would hold `pty::CONSOLE` for good (and every later close with it). Each comes with its
@@ -95,8 +95,8 @@ impl Host {
         out
     }
 
-    /// Password prompt readings start over (a new request, or no Tandem to tell).
-    /// Returns a "not at a prompt" for each session that was at one, so a Tandem that keeps
+    /// Password prompt readings start over (a new request, or no Termurion to tell).
+    /// Returns a "not at a prompt" for each session that was at one, so a Termurion that keeps
     /// listening never holds a stale "at a prompt".
     fn watch_prompts(&mut self, debounce: Option<f64>) -> Vec<Msg> {
         self.prompt_debounce = debounce;
@@ -115,11 +115,11 @@ impl Host {
     }
 }
 
-/// How often the host reads its sessions' console input modes while Tandem asks (the job
+/// How often the host reads its sessions' console input modes while Termurion asks (the job
 /// watcher's rate in front).
 const PROMPT_EVERY: Duration = Duration::from_millis(500);
 
-/// Reads each live session's console input mode while the attached Tandem asks, and tells it
+/// Reads each live session's console input mode while the attached Termurion asks, and tells it
 /// when one reaches or leaves a password prompt. Only the host attaches to its own consoles:
 /// it owns every close of them, and `Pty::drop` holds `pty::CONSOLE`, so it is never attached
 /// while one closes (which would end the host and every shell with it).
@@ -210,7 +210,7 @@ pub fn run(pipe: &str, api: Api, opts: Options) -> Result<(), String> {
     }
 }
 
-/// Moves a session's new output into its ring and to the attached Tandem.
+/// Moves a session's new output into its ring and to the attached Termurion.
 fn pump(host: &Shared, id: u64) {
     let mut h = host.lock().unwrap();
     let Some(s) = h.sessions.get_mut(&id) else { return };
@@ -270,11 +270,11 @@ fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: Api, wake: mpsc::Sender<
                     handle(&host, m, &api, &wake);
                     continue;
                 }
-                // The first message must be Hello; only one Tandem at a time.
+                // The first message must be Hello; only one Termurion at a time.
                 let Msg::Hello { version } = m else { break 'read };
                 let mut h = host.lock().unwrap();
                 let refuse = if h.client.is_some() {
-                    Some((true, "another Tandem is attached to the session host".to_string()))
+                    Some((true, "another Termurion is attached to the session host".to_string()))
                 } else if !(MIN_VERSION..=VERSION).contains(&version) {
                     Some((false, format!("the session host speaks versions {MIN_VERSION} to {VERSION}, not {version}")))
                 } else {
@@ -285,7 +285,7 @@ fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: Api, wake: mpsc::Sender<
                     break 'read;
                 }
                 h.client = Some(Client { conn, out: out.clone(), version });
-                // A new Tandem starts with nothing at a prompt: nothing to tell it.
+                // A new Termurion starts with nothing at a prompt: nothing to tell it.
                 h.watch_prompts(None);
                 let welcome = Msg::Welcome { version, host_pid: std::process::id(), instance: h.instance.clone(), sessions: h.live() };
                 h.send(&welcome);
@@ -295,11 +295,11 @@ fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: Api, wake: mpsc::Sender<
         let mut h = host.lock().unwrap();
         if h.client.as_ref().is_some_and(|c| c.conn == conn) {
             h.client = None;
-            // No Tandem to tell.
+            // No Termurion to tell.
             h.watch_prompts(None);
             for s in h.sessions.values_mut() {
                 s.attached = false;
-                // A pane paused for Undo Close must not stay parked with no Tandem to resume
+                // A pane paused for Undo Close must not stay parked with no Termurion to resume
                 // it: the host keeps reading into the ring.
                 if let Some(p) = &s.pty {
                     p.set_paused(false);
@@ -339,7 +339,7 @@ fn launch(host: &Shared, api: &Api, wake: &mpsc::Sender<u64>, t: Transport, tag:
 fn handle(host: &Shared, m: Msg, api: &Api, wake: &mpsc::Sender<u64>) {
     match m {
         Msg::Launch { tag, cmdline, cwd, env, cols, rows } => launch(host, api, wake, Transport::Conpty, tag, cmdline, cwd, env, cols, rows),
-        // Only a version 4 Tandem sends it (`host_client::launch_transport`).
+        // Only a version 4 Termurion sends it (`host_client::launch_transport`).
         Msg::LaunchWith { tag, cmdline, cwd, env, cols, rows, transport } => match crate::ssh_transport::from_wire(transport) {
             Some(t) => launch(host, api, wake, t, tag, cmdline, cwd, env, cols, rows),
             None => host.lock().unwrap().send(&Msg::LaunchFailed { tag, error: format!("unknown transport {transport}") }),
@@ -401,7 +401,7 @@ fn handle(host: &Shared, m: Msg, api: &Api, wake: &mpsc::Sender<u64>) {
                 drop_later(p);
             }
         }
-        // Only a version 2 Tandem asks (a version 1 one never sends it).
+        // Only a version 2 Termurion asks (a version 1 one never sends it).
         Msg::WatchPrompts { debounce_ms } => {
             let mut h = host.lock().unwrap();
             if h.client.as_ref().is_some_and(|c| c.version >= 2) {
@@ -430,7 +430,7 @@ fn with_pty(host: &Shared, id: u64, f: impl FnOnce(&Pty) -> Result<(), String>) 
     }
 }
 
-/// `host.log` beside Tandem's settings.
+/// `host.log` beside Termurion's settings.
 pub fn log_path() -> std::path::PathBuf {
     crate::globals::default_path().with_file_name("host.log")
 }
@@ -666,7 +666,7 @@ pub(crate) mod tests {
         h.sessions.insert(2, session(true));
         h.sessions.insert(3, session(false));
         let ids = |h: &Host| h.prompt_targets().into_iter().map(|t| t.0).collect::<Vec<_>>();
-        assert_eq!(ids(&h), vec![1, 2], "a session no Tandem shows is not read");
+        assert_eq!(ids(&h), vec![1, 2], "a session no Termurion shows is not read");
         h.sessions[&2].pty.as_ref().unwrap().pause_after_reads();
         assert_eq!(ids(&h), vec![1], "a session paused for Undo Close is not read");
         // One paused after it was picked is refused without an attach.
@@ -744,7 +744,7 @@ pub(crate) mod tests {
     #[test]
     fn versions_one_to_three_are_spoken() {
         let (name, _host) = start_host(Duration::from_secs(1));
-        // An older Tandem: version 1, and nothing it does not know ever comes back.
+        // An older Termurion: version 1, and nothing it does not know ever comes back.
         let old = Conn::open(&name);
         old.send(&Msg::Hello { version: 1 });
         assert_eq!(old.wait(|m| match m {
@@ -755,7 +755,7 @@ pub(crate) mod tests {
         old.output_until(id, "old-tandem");
         old.close();
         std::thread::sleep(Duration::from_millis(300));
-        // A version 2 Tandem asks for prompt readings; the stream stays whole.
+        // A version 2 Termurion asks for prompt readings; the stream stays whole.
         let new = Conn::open(&name);
         new.send(&Msg::Hello { version: 2 });
         assert_eq!(new.wait(|m| match m {
@@ -811,7 +811,7 @@ pub(crate) mod tests {
         std::thread::sleep(Duration::from_secs(1));
         let c = Conn::open(&name);
         let live = c.hello();
-        assert_eq!(live.iter().find(|l| l.id == id).map(|l| l.exited), Some(Some(3)), "an ended session waits for Tandem");
+        assert_eq!(live.iter().find(|l| l.id == id).map(|l| l.exited), Some(Some(3)), "an ended session waits for Termurion");
         c.send(&Msg::Forget { id });
         std::thread::sleep(Duration::from_millis(200));
         c.close();

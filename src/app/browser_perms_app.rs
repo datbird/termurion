@@ -1,4 +1,4 @@
-//! Asking for a site's permission (milestone 13x6, Task 4). The prompt is a Tandem window, not
+//! Asking for a site's permission (milestone 13x6, Task 4). The prompt is a Termurion window, not
 //! part of the page (`scripts_alerts`, guarded: no default button, input ignored for a moment).
 //!
 //! The decisions are pure (`Asks`): requests drained in one tick are grouped, planned
@@ -450,7 +450,7 @@ pub(super) fn page_may_load(restoring: bool, synced: bool) -> bool {
 /// legacy grant from before 13x6 (clipboard read, MIDI, file access, window management) must not
 /// stand in the profile where a stored Allow could be honored with no request. It also shrinks a
 /// profile over the read's cap (`MAX_PERMISSION_STATES`) so a later read can be complete and the
-/// store's pages may load. The Tandem table holds none of those kinds as Granted.
+/// store's pages may load. The Termurion table holds none of those kinds as Granted.
 pub(super) fn shrink_for(states: &[(i32, String, i32)]) -> Vec<(i32, String, i32)> {
     let mut out: Vec<(i32, String, i32)> = Vec::new();
     for (kind, origin, state) in states {
@@ -712,7 +712,7 @@ impl App {
                 Out::Synced => self.browser_release_waiting_loads(Some(dev_null)),
                 Out::GaveUp => {
                     crate::dlog!("webhost: the profile permission sync gave up after {} tries; pages wait for the next view", crate::perm_queue::SYNC_TRIES);
-                    self.banners.set("window", "Browser pages are waiting: Tandem could not check this browser's site permissions. Open the page again to retry.");
+                    self.banners.set("window", "Browser pages are waiting: Termurion could not check this browser's site permissions. Open the page again to retry.");
                 }
             }
         }
@@ -888,7 +888,7 @@ impl App {
     }
 
     /// Every reload of a browser pane (a revoke's, the toolbar's, a recovery's) goes through the
-    /// sync gate, like a first navigation: while the store's profile may disagree with the Tandem
+    /// sync gate, like a first navigation: while the store's profile may disagree with the Termurion
     /// table (`page_may_load`), the page does not reload into a stale grant. It is parked and the
     /// pane goes blank until the sync lands (`Out::Synced` loads it); a sync that gives up leaves it
     /// blank with the banner (fail closed).
@@ -921,7 +921,7 @@ impl App {
                 bv.bar.nav.forget_expected();
                 bv.bar.transition = None;
                 bv.world.restore_load = Some(url.to_string());
-                // Tandem's own load keeps its own judgment; a page's is judged again as the page's.
+                // Termurion's own load keeps its own judgment; a page's is judged again as the page's.
                 bv.world.restore_from = (!from.by_tandem).then_some(crate::browser_restore::ParkedFrom { user: from.user, redirect: from.redirect, source: from.source });
             }
         }
@@ -1171,7 +1171,7 @@ impl App {
         self.browser_set_muted(pane, false);
     }
 
-    /// Whether Tandem muted the current page on a play event (`currentPageIsMuted`, `BM:590-592`).
+    /// Whether Termurion muted the current page on a play event (`currentPageIsMuted`, `BM:590-592`).
     pub(super) fn browser_page_muted(&self, pane: PaneId) -> bool {
         self.browser_views.get(&pane).is_some_and(|b| b.perms.audio.muted_by_us)
     }
@@ -1754,7 +1754,7 @@ mod tests {
         let rel = rel.split("\n#[cfg(test)]\nmod tests").next().unwrap();
         assert!(rel.contains("Some(from) => self.browser_load_parked(pane, &url, &from)"), "a page's parked target is judged again as the page's");
         let lp = &rel[rel.find("fn browser_load_parked").unwrap()..rel.find("pub(super) fn browser_load_own").unwrap()];
-        assert!(lp.contains("browser_restore::parked_load(") && !lp.contains("own_load("), "never judged as Tandem's own");
+        assert!(lp.contains("browser_restore::parked_load(") && !lp.contains("own_load("), "never judged as Termurion's own");
         assert!(prod.contains("let waiting_for_person") && prod.contains("if person {"), "a page cannot replace the person's target or restart the sync");
         assert!(app.contains("self.reload_browser_view_by_person(pane)"), "the toolbar Reload keeps the page");
         assert!(app.contains("setup.nav_gate = Some(gate)") && app.contains("self.perm_gate(io.dev_null)"), "every browser view reads its store's gate");

@@ -61,7 +61,7 @@ impl Client {
             req.headers_mut().insert(name, value);
         }
         // The server answers the upgrade only after the app's verdict; the read timeout bounds that wait.
-        let (ws, _) = tungstenite::client::client(req, stream).map_err(|_| "Tandem did not accept the connection".to_string())?;
+        let (ws, _) = tungstenite::client::client(req, stream).map_err(|_| "Termurion did not accept the connection".to_string())?;
         Ok(Client { ws, timeout, next_id: 1 })
     }
 }

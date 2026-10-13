@@ -613,7 +613,7 @@ impl Engine {
     }
 
     /// The fixed refusal for a browser call whose live pane is not offered the tools (Dev Null, a
-    /// Tandem, local or extension page: `ai_browser::offerable`); None for any other call.
+    /// Termurion, local or extension page: `ai_browser::offerable`); None for any other call.
     fn unoffered(cx: &Ctx, call: &Call, pane: Option<PaneId>) -> Option<Outcome> {
         let refused = call.category().is_browser() && pane.is_some_and(|p| !(cx.browser_offered)(p));
         refused.then(|| Outcome { model: crate::ai_browser::NOT_OFFERED.to_string(), notice: None })
@@ -2599,7 +2599,7 @@ mod tests {
         }
     }
 
-    /// Final review I1 (B2): a browser approval is Tandem's text naming the action and the site the
+    /// Final review I1 (B2): a browser approval is Termurion's text naming the action and the site the
     /// pane shows (never the page title); the park keeps that page's origin and epoch, and an answer
     /// after the pane moved (another site, or a new navigation on the same one) runs nothing and
     /// answers "page changed". Allow Once on the same page runs.
@@ -2620,7 +2620,7 @@ mod tests {
             h.say(&chat, "hi");
             let text = parked_text(&h, &chat);
             assert!(text.contains(want), "{tool}: {text}");
-            assert!(!text.contains("would like to write to"), "{tool}: Tandem's text, not iTerm2's: {text}");
+            assert!(!text.contains("would like to write to"), "{tool}: Termurion's text, not iTerm2's: {text}");
             let rid = h.park_ids(&chat)[0].clone();
             let fx = h.run(|cx| Engine::answer_request(cx, &chat, &rid, Choice::AllowOnce));
             assert_eq!(run_ids(&fx).len(), 1, "{tool}: same page runs: {fx:?}");

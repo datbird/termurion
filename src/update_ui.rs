@@ -202,10 +202,10 @@ mod tests {
     fn texts_follow_the_view() {
         let (heading, text) = heading_and_text(&View::UpToDate("0.0.5".into(), true), "0.0.9");
         assert_eq!(heading, "You\u{2019}re up-to-date!");
-        assert_eq!(text, "Tandem 0.0.5 is currently the newest version available.\n(You are currently running version 0.0.9.)");
+        assert_eq!(text, "Termurion 0.0.5 is currently the newest version available.\n(You are currently running version 0.0.9.)");
         let (heading, text) = heading_and_text(&View::Found(release()), "0.0.2");
-        assert_eq!(heading, "A new version of Tandem is available!");
-        assert!(text.starts_with("Tandem 9.9.9 is now available (you have 0.0.2)."));
+        assert_eq!(heading, "A new version of Termurion is available!");
+        assert!(text.starts_with("Termurion 9.9.9 is now available (you have 0.0.2)."));
         assert_eq!(heading_and_text(&View::Checking, "0.0.2").0, "Checking for updates\u{2026}");
         assert_eq!(heading_and_text(&View::Error(crate::update::RETRIEVE_ERROR.into()), "1").0, "Update Error!");
     }

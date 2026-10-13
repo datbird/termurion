@@ -242,7 +242,7 @@ pub fn initial(windows: Vec<Window>, hidden: &BTreeSet<u32>, aff: &mut Affinitie
 /// Where a tmux window opens (research 3.1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Place {
-    /// As a tab of the Tandem window that shows this tmux window.
+    /// As a tab of the Termurion window that shows this tmux window.
     WithSibling(u32),
     /// As a tab of the window that holds the gateway.
     GatewayWindow,
@@ -254,7 +254,7 @@ pub enum Place {
 }
 
 /// `open`: the tmux windows already showing; `prevent_tab`: the profile's "Prevent Opening
-/// in a Tab"; `anonymous`: made by `tmux new-window`, not by Tandem;
+/// in a Tab"; `anonymous`: made by `tmux new-window`, not by Termurion;
 /// `anonymous_location`: anonymousTmuxWindowsOpenInCurrentWindow (0 new, 1 focused, 2 topmost).
 pub fn place(window: u32, aff: &Affinities, open: &[u32], prevent_tab: bool, initial: bool, anonymous: bool, open_in: OpenIn, anonymous_location: i64) -> Place {
     if !prevent_tab {
@@ -302,7 +302,7 @@ pub fn window_title(title: &str, show_number: bool, include_client: bool, client
     }
 }
 
-/// A tmux pane took focus in Tandem (iTerm2's selectPane): none on exactly tmux 2.9.
+/// A tmux pane took focus in Termurion (iTerm2's selectPane): none on exactly tmux 2.9.
 pub fn select_pane_command(pane: u32, min: Option<f64>) -> Option<String> {
     (min != Some(2.9)).then(|| format!("select-pane -t \"%{pane}\""))
 }
@@ -411,7 +411,7 @@ mod tests {
         assert_eq!(place(5, &none, &[0], false, false, true, OpenIn::NativeWindows, 1), Place::Focused);
         assert_eq!(place(5, &none, &[0], false, false, true, OpenIn::NativeWindows, 2), Place::Topmost);
         assert_eq!(place(5, &none, &[0], false, false, true, OpenIn::NativeWindows, 0), Place::NewWindow);
-        assert_eq!(place(5, &none, &[0], false, false, false, OpenIn::NativeWindows, 1), Place::NewWindow, "Tandem made it");
+        assert_eq!(place(5, &none, &[0], false, false, false, OpenIn::NativeWindows, 1), Place::NewWindow, "Termurion made it");
     }
 
     #[test]

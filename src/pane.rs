@@ -64,7 +64,7 @@ impl InputBuffer {
     }
 }
 
-/// Where a pane's shell runs: in Tandem, in the session host (it outlives Tandem), or in
+/// Where a pane's shell runs: in Termurion, in the session host (it outlives Termurion), or in
 /// tmux (a pane of a tmux window, reached through its gateway).
 pub enum Io {
     Local(Pty),
@@ -175,7 +175,7 @@ impl Io {
         match self {
             Io::Local(p) => p.resize(cols, rows),
             Io::Hosted(p) => p.resize(cols, rows),
-            // tmux sets its panes' sizes (milestone 8c sends Tandem's).
+            // tmux sets its panes' sizes (milestone 8c sends Termurion's).
             Io::Tmux(_) => Ok(()),
             Io::Browser(_) => Ok(()),
         }
@@ -268,7 +268,7 @@ pub struct Pane {
     /// The Guid of the profile this pane runs.
     pub profile: String,
     /// The command line the pane started with (its profile's or an override), for the tab
-    /// tooltip; empty for a pane Tandem did not start a command in.
+    /// tooltip; empty for a pane Termurion did not start a command in.
     pub command: String,
     /// The pane's own screen while `screen` shows a Filter or Zoom view. Output keeps
     /// going here.
@@ -1007,7 +1007,7 @@ impl Pane {
 
     /// A tmux integration pane's `%output` (`tmux_pump`'s Output arm): pushed and read at
     /// once, since nothing else wakes the loop for it. True when the SSH hook found something
-    /// the app must run now (`App::ssh_pump_pane`): the conductor waits on Tandem.
+    /// the app must run now (`App::ssh_pump_pane`): the conductor waits on Termurion.
     pub fn tmux_output(&mut self, data: &[u8], answers_osc4: bool) -> bool {
         if let Some(io) = self.tmux_io() {
             io.answers_osc4.set(answers_osc4);
@@ -1151,10 +1151,10 @@ impl Pane {
     }
 
     /// The pane is an ssh session (F27): an OSC 134 outside the hook may now start an in-band
-    /// recovery, and the pane saves the fact. Called only when a hook Tandem's origin token
+    /// recovery, and the pane saves the fact. Called only when a hook Termurion's origin token
     /// vouched for hooks (`note_hook`) and for a restored pane that saved the fact; never from
     /// output alone (the it2ssh OSC, an unvouched hook, a restored conductor), so a hostile
-    /// file cannot make Tandem type into a shell that never ran a vouched ssh (ruling). The
+    /// file cannot make Termurion type into a shell that never ran a vouched ssh (ruling). The
     /// right ends when EndSSH empties the hop list (`end_ssh`, final review I2), so it does not
     /// hold at the local prompt after ssh exits either.
     pub fn note_ssh_session(&mut self) {
@@ -1169,7 +1169,7 @@ impl Pane {
         self.ssh.begin(crate::ssh_session::CONDUCTOR_READY);
     }
 
-    /// A conductor hooked; `vouched` is whether its hook carried Tandem's origin token. Only
+    /// A conductor hooked; `vouched` is whether its hook carried Termurion's origin token. Only
     /// a vouched one makes the pane an ssh session (F27, ruling).
     pub fn note_hook(&mut self, vouched: bool) {
         if vouched {
@@ -1325,7 +1325,7 @@ impl Pane {
         }
         let Some(c) = self.conductor.as_mut().filter(|c| c.depth() == depth) else { return };
         c.handle_unhook();
-        // Then routed as any write: to a framer above when one runs (Tandem-side guard: iTerm2's
+        // Then routed as any write: to a framer above when one runs (Termurion-side guard: iTerm2's
         // `writeData:` types them raw, `PS:20176-20180`).
         let held = self.take_ssh_held();
         self.send_routed(&held);
@@ -1343,7 +1343,7 @@ impl Pane {
         }
         self.own_mut().append_banner(crate::ssh_recovery::RECOVERING);
         // The it2 state of the conductor being recovered rides the shim (`PS:20307-20336`,
-        // `adoptIT2RecoveryStateFrom:`); Tandem's is the inbox kept for 14e (ruling 3).
+        // `adoptIT2RecoveryStateFrom:`); Termurion's is the inbox kept for 14e (ruling 3).
         let it2 = self.conductor.as_ref().map(|c| c.it2_inbox.clone()).unwrap_or_default();
         // A root-level recovery replaces every hop; the outermost one's id goes to the shim and
         // the recovered conductor, so it2ssh's EndSSH, which names it, still ends the session
@@ -1423,7 +1423,7 @@ impl Pane {
     /// The session's conductor chain from its saved state (`PS:2284-2298`), for a pane that
     /// re-attached to its hosted session: the conductors come from `json` (untrusted: false
     /// when it does not read), a hop and a registry entry for each framing one, the hook in
-    /// recovery mode with `tree`, and the framers reset at once (Tandem's hook swap is
+    /// recovery mode with `tree`, and the framers reset at once (Termurion's hook swap is
     /// synchronous, so iTerm2's boundary token is not needed). False, and nothing changed, when
     /// there is nothing usable to restore. The conductors are unvouched, so they give no right
     /// to recover in band: only the saved "SSH Session" flag does (F27, applied by the caller
@@ -1483,7 +1483,7 @@ impl Pane {
     /// conductor and its hop go. The conductor that aborted is the outermost one `fail` marked
     /// (a parent's abort reaches the pane through its child's effects), else the innermost;
     /// every conductor inside it goes first, innermost first, so its saved state is what
-    /// remains. Then Tandem's part: the DCS hook that owns its depth lets go, and every hook
+    /// remains. Then Termurion's part: the DCS hook that owns its depth lets go, and every hook
     /// under it, so later output shows (ruling 14b-3, iTerm2 bugs B4 and B13), while the hooks
     /// above keep parsing for their conductors (iTerm2 never force-unhooks the parser); the
     /// held writes (the raw `exec_login_shell` line among them) are dropped (iTerm2 strands
@@ -1520,7 +1520,7 @@ impl Pane {
     /// Whether a conductor hooked at `depth` sits at that depth in the pane's chain
     /// (`conductor::child_depth`). When not (a hook deeper or shallower than the conductors
     /// allow, or a second one at a framed conductor's own depth), the hook that read the init
-    /// line lets go and no conductor is made (Tandem's: iTerm2 chains it at the depth its
+    /// line lets go and no conductor is made (Termurion's: iTerm2 chains it at the depth its
     /// parent gives, and routing by depth then reaches the wrong conductor).
     pub fn ssh_init_fits(&mut self, depth: i32) -> bool {
         if crate::conductor::child_depth(self.conductor.as_deref()) == depth {
@@ -1971,7 +1971,7 @@ impl Pane {
         self.coprocess.as_ref().map_or(0, |c| c.dropped())
     }
 
-    /// Tandem owns this pane's console (a local ConPTY): only then may it attach to read it.
+    /// Termurion owns this pane's console (a local ConPTY): only then may it attach to read it.
     pub fn owns_console(&self) -> bool {
         matches!(self.pty, Some(Io::Local(_)))
     }
@@ -1986,7 +1986,7 @@ impl Pane {
     }
 
     /// Send Signal's Ctrl+C (or Ctrl+Break) to a hosted pane's console, through tandem-host;
-    /// None for other panes (a local pane's goes from Tandem).
+    /// None for other panes (a local pane's goes from Termurion).
     pub fn hosted_signal(&self, ctrl_break: bool) -> Option<Result<(), String>> {
         match &self.pty {
             Some(Io::Hosted(p)) => Some(p.signal(ctrl_break)),
@@ -2075,7 +2075,7 @@ impl Pane {
         !more || now >= due + END_DRAIN_CAP
     }
 
-    /// What the terminal answers the program (reports), and Tandem's own writes that iTerm2
+    /// What the terminal answers the program (reports), and Termurion's own writes that iTerm2
     /// makes with `broadcastAllowed:NO` (the idle code, upload answers, tmux commands, the
     /// conductor bootstrap): never held by Buffer Input nor the connecting queue
     /// (`PS:4364-4376`, `PS:4276-4294`), and routed as `writeTaskNoBroadcast` routes them
@@ -2499,7 +2499,7 @@ mod tests {
         p.input(b"ls\r");
         assert_eq!(p.tmux_io().unwrap().take_input(), b"ls\r", "typing waits for send-keys");
         assert!(p.tmux_io().unwrap().take_input().is_empty());
-        assert_eq!(p.shell_pid(), None, "tmux's process is not Tandem's");
+        assert_eq!(p.shell_pid(), None, "tmux's process is not Termurion's");
         assert!(!p.pump(), "nothing new");
         assert!(!p.resize(100, 50), "a tmux pane keeps tmux's size");
         p.set_tmux_size(30, 5);
@@ -2737,7 +2737,7 @@ mod tests {
         assert_eq!(u.tmux_io().unwrap().take_input(), "caf\u{e9}".as_bytes());
     }
 
-    /// Fix round 1 (Important 1): what the terminal answers and what Tandem itself writes
+    /// Fix round 1 (Important 1): what the terminal answers and what Termurion itself writes
     /// (`Pane::reply`) leaves as the bytes it was given, in every encoding; only typed text,
     /// pastes and the answerback are encoded, once.
     #[test]
@@ -4981,7 +4981,7 @@ mod tests {
     }
 
     /// What a live framer prints once it is told to recover: a stale block's header and end
-    /// first (Tandem restarted mid-stream), then the recovery lines.
+    /// first (Termurion restarted mid-stream), then the recovery lines.
     fn stale_then_recovery(login: i32) -> Vec<u8> {
         stale_then_recovery_of(login, "99")
     }
@@ -4995,7 +4995,7 @@ mod tests {
 
     /// Final review I2 (ruling): the right to recover in band ends when EndSSH empties the hop
     /// list, and nothing gives it back but a new vouched hook: a file `cat`ed at the local
-    /// prompt after ssh exited makes Tandem type nothing, and nothing is saved for a restart.
+    /// prompt after ssh exited makes Termurion type nothing, and nothing is saved for a restart.
     #[test]
     fn the_recovery_right_ends_with_the_last_hop() {
         let mut p = framed_root();
@@ -5040,7 +5040,7 @@ mod tests {
 
     #[test]
     fn a_plain_pane_never_recovers() {
-        // F27: a hostile file cat'd in a local pane, recovery lines and all, makes Tandem type
+        // F27: a hostile file cat'd in a local pane, recovery lines and all, makes Termurion type
         // nothing into the local shell.
         let mut p = Pane::tmux(5, 1, 3, 120, 10);
         let bytes = stale_then_recovery(4242);
@@ -5049,9 +5049,9 @@ mod tests {
         assert!(p.conductor.is_none() && !p.ssh_hook.active() && p.ssh.chain.hops.is_empty());
     }
 
-    /// F27 (ruling): only a hook Tandem's origin token vouched for gives a pane the right to
+    /// F27 (ruling): only a hook Termurion's origin token vouched for gives a pane the right to
     /// recover in band. A hostile file cat'd in a local pane, with an it2ssh OSC (not
-    /// trust-gated) and a fake DCS hook before the recovery block, makes Tandem type nothing,
+    /// trust-gated) and a fake DCS hook before the recovery block, makes Termurion type nothing,
     /// and the pane saves no right for after a restart; an unvouched conductor restored from a
     /// state file gets none either.
     #[test]
@@ -5226,7 +5226,7 @@ mod tests {
     }
 
     /// The it2 state of the conductor being recovered rides the shim into the recovered one
-    /// (`PS:20307-20342` `adoptIT2RecoveryStateFrom:`, `CD+IT2:485-509`): Tandem's is the
+    /// (`PS:20307-20342` `adoptIT2RecoveryStateFrom:`, `CD+IT2:485-509`): Termurion's is the
     /// inbox kept for 14e (ruling 3: nothing reads it yet).
     #[test]
     fn recovery_keeps_the_it2_state() {

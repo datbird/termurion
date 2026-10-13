@@ -505,7 +505,7 @@ mod tests {
         assert!(readable_path(Path::new(r"C:\ok\i.png"), &links));
         // Never a device, with or without an extension, in any folder or namespace: opening
         // one can block (m13d ruling).
-        for p in ["COM1", "con", "NUL", "aux.png", "PRN.json", "LPT1", "lpt9.txt", "COM1:", r"C:COM1", r"C:\x\NUL.png", r"C:\icons\CON\i.png", "CONIN$", r"\\.\COM1", r"\\.\PhysicalDrive0", r"\\?\C:\COM1.png", "C:/Users/me/AppData/Roaming/Tandem/com3.png", "nul .png"] {
+        for p in ["COM1", "con", "NUL", "aux.png", "PRN.json", "LPT1", "lpt9.txt", "COM1:", r"C:COM1", r"C:\x\NUL.png", r"C:\icons\CON\i.png", "CONIN$", r"\\.\COM1", r"\\.\PhysicalDrive0", r"\\?\C:\COM1.png", "C:/Users/me/AppData/Roaming/Termurion/com3.png", "nul .png"] {
             assert!(!readable_path(Path::new(p), &links), "{p}");
         }
         for p in [r"C:\icons\console.png", r"C:\icons\COM10.png", r"C:\icons\nully.png", r"C:\icons\my.con.png"] {

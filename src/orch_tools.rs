@@ -49,11 +49,11 @@ fn decl_of(name: &str, description: &str, parameters: Value) -> ToolDecl {
 }
 
 /// Ruling P2: nothing survives a launch, and Stop or leaving the mode cancels everything.
-const WATCH_PERSISTENCE: &str = "Watchers do not survive a Tandem restart, and pressing Stop, switching the chat's mode or turning AI features off cancels them (you get a notice after a restart); register again when you need one. Do NOT poll yourself.";
+const WATCH_PERSISTENCE: &str = "Watchers do not survive a Termurion restart, and pressing Stop, switching the chat's mode or turning AI features off cancels them (you get a notice after a restart); register again when you need one. Do NOT poll yourself.";
 
 /// `registerWatchDescription` (`TD:100-113`) without the phone clause.
 fn watch_description(target: &str, blocking: &str, form: &str, persistence: &str) -> String {
-    format!("Register an async watcher on {target}. Supply exactly ONE of target_state or condition. {blocking} When the watch fires, Tandem delivers a `<status_update>...</status_update>` message into the chat as a separate turn; treat that as a system event from Tandem (not a new user request) and act on it directly, messaging the user only when a step advances, a task finishes, or you need a decision (not on every event). {form} Watchers are de-duplicated on (session, target_state, condition): registering the same watch twice returns the existing watcher_id. If the goal is already satisfied at registration time, the watcher fires immediately. {persistence}")
+    format!("Register an async watcher on {target}. Supply exactly ONE of target_state or condition. {blocking} When the watch fires, Termurion delivers a `<status_update>...</status_update>` message into the chat as a separate turn; treat that as a system event from Termurion (not a new user request) and act on it directly, messaging the user only when a step advances, a task finishes, or you need a decision (not on every event). {form} Watchers are de-duplicated on (session, target_state, condition): registering the same watch twice returns the existing watcher_id. If the goal is already satisfied at registration time, the watcher fires immediately. {persistence}")
 }
 
 fn register_watch_description() -> String {
@@ -62,13 +62,13 @@ fn register_watch_description() -> String {
     watch_description("a session", blocking, form, WATCH_PERSISTENCE)
 }
 
-/// One orchestration tool's declaration (`TD:119-295`, "iTerm2" as "Tandem").
+/// One orchestration tool's declaration (`TD:119-295`, "iTerm2" as "Termurion").
 pub fn decl(name: &str) -> Option<ToolDecl> {
     let guid = || ("session_guid", string(SESSION_GUID));
     Some(match name {
-        "list_workgroups" => decl_of(name, "List all active workgroups and their member sessions. Each session reports its role within the workgroup, current status (idle/working/waiting), status_source, and kind (claude-code/shell/tui/other). status_source says how much to trust `status`: \u{201C}reported\u{201D} means the program announces its own status (accurate, and state watchers fire on exact transitions); \u{201C}inferred\u{201D} means Tandem is guessing from indicators, so `status` is unreliable (e.g. a program waiting at a splash screen looks \u{201C}idle\u{201D}). screen_last_changed says how long ago the session's screen last changed; use it to tell stale output from fresh activity. provenance (on workgroups and sessions) says who created them, e.g. a workgroup entered by a trigger in some session, or a session created by an agent in another chat; a workgroup whose provenance traces to a different chat belongs to that chat's work, so don't drive it unless asked. Standalone sessions appear as single-session workgroups with a synthetic ID prefixed \u{201C}session:\u{201D}.", empty()),
+        "list_workgroups" => decl_of(name, "List all active workgroups and their member sessions. Each session reports its role within the workgroup, current status (idle/working/waiting), status_source, and kind (claude-code/shell/tui/other). status_source says how much to trust `status`: \u{201C}reported\u{201D} means the program announces its own status (accurate, and state watchers fire on exact transitions); \u{201C}inferred\u{201D} means Termurion is guessing from indicators, so `status` is unreliable (e.g. a program waiting at a splash screen looks \u{201C}idle\u{201D}). screen_last_changed says how long ago the session's screen last changed; use it to tell stale output from fresh activity. provenance (on workgroups and sessions) says who created them, e.g. a workgroup entered by a trigger in some session, or a session created by an agent in another chat; a workgroup whose provenance traces to a different chat belongs to that chat's work, so don't drive it unless asked. Standalone sessions appear as single-session workgroups with a synthetic ID prefixed \u{201C}session:\u{201D}.", empty()),
         "get_state" => decl_of(name, "Get rich state for a single session, including the last cc-status detail message for Claude Code sessions. The status_source field says whether `status` is announced by the program itself (\u{201C}reported\u{201D}, trustworthy) or guessed from indicators (\u{201C}inferred\u{201D}, unreliable). screen_last_changed says how long ago the screen last changed, and provenance says who created the session when it wasn't the user.", object(&[guid()])),
-        "get_screen_contents" => decl_of(name, "Get the visible contents of a session. For Claude Code sessions, returns a synthesized view of recent hook events (assistant messages, tool calls). For shell sessions, returns scrollback. For TUI sessions, returns a snapshot of the rendered screen with is_snapshot=true; there is no history beyond what's currently displayed. The result includes a kind field so you know how to read the text.\n\nThe result also reports `screen` (\u{201C}primary\u{201D} or \u{201C}alternate\u{201D}) and `mouse_reporting` (bool). On the primary screen the returned text is linear scrollback (real history; ask for more `lines` to see more). On the alternate screen (full-screen apps like vim/less/htop, and Claude Code) ONLY the current grid is returned and is_snapshot is true: older content isn't in scrollback. To view content that scrolled off, if `screen` is \u{201C}alternate\u{201D} and `mouse_reporting` is true, use the scroll_wheel tool (direction=\u{201C}up\u{201D}) and then call get_screen_contents again.\n\nThe text uses a few markup tokens (the angle brackets are U+27E8/U+27E9 and effectively never occur in real terminal output):\n\u{27E8}dim\u{27E9}\u{2026}\u{27E8}/dim\u{27E9} wraps faint/dimmed text. This is how shells and TUIs render inline suggestions and ghost completions (zsh-autosuggestions, fish autosuggest, Claude Code's suggested reply, etc.). \n\u{27E8}cursor\u{27E9} marks the text cursor's position. \n\u{27E8}image\u{27E9} stands in for an inline image. These tokens are inserted by Tandem and are not literally present on the screen.", object(&[guid(), ("lines", nullable("integer", "Number of trailing lines to return for shell sessions. Use null for the default 100. Ignored for tui/claude-code kinds."))])),
+        "get_screen_contents" => decl_of(name, "Get the visible contents of a session. For Claude Code sessions, returns a synthesized view of recent hook events (assistant messages, tool calls). For shell sessions, returns scrollback. For TUI sessions, returns a snapshot of the rendered screen with is_snapshot=true; there is no history beyond what's currently displayed. The result includes a kind field so you know how to read the text.\n\nThe result also reports `screen` (\u{201C}primary\u{201D} or \u{201C}alternate\u{201D}) and `mouse_reporting` (bool). On the primary screen the returned text is linear scrollback (real history; ask for more `lines` to see more). On the alternate screen (full-screen apps like vim/less/htop, and Claude Code) ONLY the current grid is returned and is_snapshot is true: older content isn't in scrollback. To view content that scrolled off, if `screen` is \u{201C}alternate\u{201D} and `mouse_reporting` is true, use the scroll_wheel tool (direction=\u{201C}up\u{201D}) and then call get_screen_contents again.\n\nThe text uses a few markup tokens (the angle brackets are U+27E8/U+27E9 and effectively never occur in real terminal output):\n\u{27E8}dim\u{27E9}\u{2026}\u{27E8}/dim\u{27E9} wraps faint/dimmed text. This is how shells and TUIs render inline suggestions and ghost completions (zsh-autosuggestions, fish autosuggest, Claude Code's suggested reply, etc.). \n\u{27E8}cursor\u{27E9} marks the text cursor's position. \n\u{27E8}image\u{27E9} stands in for an inline image. These tokens are inserted by Termurion and are not literally present on the screen.", object(&[guid(), ("lines", nullable("integer", "Number of trailing lines to return for shell sessions. Use null for the default 100. Ignored for tui/claude-code kinds."))])),
         "scroll_wheel" => decl_of(
             name,
             "Send mouse scroll-wheel events to a session to reveal content that's off-screen. This is only useful when get_screen_contents reports screen=\u{201C}alternate\u{201D} (a full-screen app like Claude Code, vim, less, htop): on the alternate screen only the current grid is returned, and older content isn't in scrollback, so scrolling the app's own viewport is the only way to see it. REQUIRES the session to have mouse reporting enabled (get_screen_contents reports mouse_reporting=true); if it's off, this tool errors and does nothing. Workflow: call get_screen_contents, and if you need to see earlier content and screen=\u{201C}alternate\u{201D} with mouse_reporting=true, call scroll_wheel with direction=\u{201C}up\u{201D}, then call get_screen_contents again to read the now-revealed lines. Repeat to page further. Not every alternate-screen app honors the scroll wheel (some ignore it, some scroll a pane you didn't intend); if the screen doesn't change after scrolling, stop and tell the user rather than scrolling blindly. On the primary screen (screen=\u{201C}primary\u{201D}) you don't need this at all: just ask get_screen_contents for more lines.",
@@ -77,7 +77,7 @@ pub fn decl(name: &str) -> Option<ToolDecl> {
         "list_workgroup_clippings" => decl_of(name, "List the clippings posted to a workgroup. Clippings are structured snippets (type, title, detail) that the user or other agents have posted to the workgroup leader for shared reference. Optional type_filter limits to clippings of a particular type (e.g. \u{201C}Code Review Comment\u{201D}).", object(&[("workgroup_id", json!({"type": "string"})), ("type_filter", nullable("string", "Optional. Only return clippings whose type matches this string exactly. Use null for all types."))])),
         "send_text" => decl_of(
             name,
-            "Type text into a session as if the user typed it. By default appends a newline. The text supports a small backslash-escape vocabulary so you can send control keys and special characters: \\\\ for a literal backslash, \\n for newline, \\r for carriage return, \\t for tab, and \\uXXXX (four hex digits, JSON-style) for any Unicode scalar. Use this to drive control keys: \\u0003 for Ctrl-C (prefer the dedicated interrupt tool), \\u0004 for Ctrl-D / EOF, \\u001a for Ctrl-Z, \\u000c for Ctrl-L, \\u001b for Escape, etc. When sending a standalone control key, pass append_newline=false so you don't tack an Enter onto it. You may combine control bytes with text and a trailing newline in a single call (e.g. \\u001b:q\\n to quit vim). Tandem detects embedded control bytes and sends the payload as a raw keystroke stream rather than a bracketed paste, so the control bytes are interpreted by the target program rather than inserted as literal data. The return value `{\"ack\":{}}` only confirms that the bytes were transmitted; it does NOT confirm the program behaved as you expected. For interactive TUIs (vim, emacs, less, htop, fzf, etc.) always follow up with `get_screen_contents` to verify the effect before telling the user it worked. Requires the user to have approved this chat to control the workgroup; the user is prompted inline on the first send to an unclaimed workgroup.",
+            "Type text into a session as if the user typed it. By default appends a newline. The text supports a small backslash-escape vocabulary so you can send control keys and special characters: \\\\ for a literal backslash, \\n for newline, \\r for carriage return, \\t for tab, and \\uXXXX (four hex digits, JSON-style) for any Unicode scalar. Use this to drive control keys: \\u0003 for Ctrl-C (prefer the dedicated interrupt tool), \\u0004 for Ctrl-D / EOF, \\u001a for Ctrl-Z, \\u000c for Ctrl-L, \\u001b for Escape, etc. When sending a standalone control key, pass append_newline=false so you don't tack an Enter onto it. You may combine control bytes with text and a trailing newline in a single call (e.g. \\u001b:q\\n to quit vim). Termurion detects embedded control bytes and sends the payload as a raw keystroke stream rather than a bracketed paste, so the control bytes are interpreted by the target program rather than inserted as literal data. The return value `{\"ack\":{}}` only confirms that the bytes were transmitted; it does NOT confirm the program behaved as you expected. For interactive TUIs (vim, emacs, less, htop, fzf, etc.) always follow up with `get_screen_contents` to verify the effect before telling the user it worked. Requires the user to have approved this chat to control the workgroup; the user is prompted inline on the first send to an unclaimed workgroup.",
             object(&[guid(), ("text", json!({"type": "string"})), ("append_newline", nullable("boolean", "Whether to append a newline to the text. Use null for the default true. Set to false when sending control keys (e.g. \\u001b for Escape) by themselves."))]),
         ),
         "interrupt" => decl_of(name, "Send SIGINT to the foreground process of a session, equivalent to the user pressing Ctrl-C. Requires workgroup claim.", object(&[guid()])),
@@ -108,7 +108,7 @@ pub fn decl(name: &str) -> Option<ToolDecl> {
         ),
         "register_timer" => decl_of(
             name,
-            "Set an async timer that fires once at a wall-clock time. Supply exactly ONE of delay_seconds (fire this many seconds from now) or fire_at (an absolute ISO-8601 instant, e.g. \u{201C}2026-09-07T17:00:00-07:00\u{201D}). This call returns immediately and does NOT block your turn. When the timer fires, Tandem delivers a `<status_update reason=\u{201C}timerFired\u{201D}>...</status_update>` message into the chat as a separate turn; treat that as a system event from Tandem (not a new user request) and carry out whatever you scheduled. Put what you intend to do in note so you remember it when the timer fires (your own reasoning may be far up-thread by then). Use this instead of trying to sleep or busy-wait yourself, and do NOT poll the clock. Timers do not survive a Tandem restart, and pressing Stop, switching the chat's mode or turning AI features off cancels them. A timer reads nothing (no screen, no terminal state) and targets no session; to act on a session when it fires, use your normal tools in that follow-up turn.",
+            "Set an async timer that fires once at a wall-clock time. Supply exactly ONE of delay_seconds (fire this many seconds from now) or fire_at (an absolute ISO-8601 instant, e.g. \u{201C}2026-09-07T17:00:00-07:00\u{201D}). This call returns immediately and does NOT block your turn. When the timer fires, Termurion delivers a `<status_update reason=\u{201C}timerFired\u{201D}>...</status_update>` message into the chat as a separate turn; treat that as a system event from Termurion (not a new user request) and carry out whatever you scheduled. Put what you intend to do in note so you remember it when the timer fires (your own reasoning may be far up-thread by then). Use this instead of trying to sleep or busy-wait yourself, and do NOT poll the clock. Timers do not survive a Termurion restart, and pressing Stop, switching the chat's mode or turning AI features off cancels them. A timer reads nothing (no screen, no terminal state) and targets no session; to act on a session when it fires, use your normal tools in that follow-up turn.",
             object(&[("delay_seconds", nullable("number", "Seconds from now until the timer fires. Must be positive. Mutually exclusive with fire_at: set exactly one and null the other.")), ("fire_at", nullable("string", "Absolute time to fire, ISO 8601 with a timezone offset, e.g. \u{201C}2026-09-07T17:00:00-07:00\u{201D}. Must be in the future. Mutually exclusive with delay_seconds: set exactly one and null the other.")), ("note", nullable("string", "Optional reminder of what to do when the timer fires, echoed back to you verbatim. Use null if you don't need one."))]),
         ),
         "unregister_watch" => decl_of(name, "Cancel a registered watcher by its watcher_id (from register_watch or list_watches). No-op if the watcher has already fired or doesn't exist.", object(&[("watcher_id", json!({"type": "string"}))])),
@@ -578,7 +578,7 @@ pub fn session_claim_scope(instance: Option<&str>, browser: bool, stable_id: &st
     }
 }
 
-/// The claim bubble for a web browser session (Task 9 review I1, Tandem's text in place of
+/// The claim bubble for a web browser session (Task 9 review I1, Termurion's text in place of
 /// `DI:1640-1644`'s keystrokes): `action` is the call's approval text naming the action and the site
 /// (`ai_browser::approval_text`), then what the sticky claim allows.
 pub fn browser_claim_text(action: &str) -> String {
@@ -641,7 +641,7 @@ pub fn display_keystroke(s: &str) -> String {
     out
 }
 
-/// start_code_review on anything but the Code Review role (`DI:3168`); Tandem has no
+/// start_code_review on anything but the Code Review role (`DI:3168`); Termurion has no
 /// workgroups before milestone 13, so it is every target.
 pub fn not_code_review(role: &str, wg: &str) -> String {
     format!("Target {role} in {wg} is not the Code Review role. start_code_review only targets the Code Review role; use send_text if you want to type text into another role.")
@@ -666,10 +666,10 @@ pub fn no_profile(name: &str) -> String {
 /// `DI:3034-3037`.
 pub const NO_WINDOW_FOR_CURRENT: &str = "window=\u{201C}current\u{201D} splits the currently-focused terminal, but no terminal window is open. Use window=\u{201C}new\u{201D} or window=\u{201C}tab\u{201D} instead.";
 /// `DI:3062-3063`.
-pub const LAUNCH_FAILED: &str = "Tandem could not open a new session. The launch failed before the window was shown.";
-/// Tandem's: a start directory on another computer is never used (ruling P15).
+pub const LAUNCH_FAILED: &str = "Termurion could not open a new session. The launch failed before the window was shown.";
+/// Termurion's: a start directory on another computer is never used (ruling P15).
 pub const NETWORK_CWD: &str = "cwd must be a folder on this computer; network paths are not allowed.";
-/// Tandem's spawn cap (ruling P15).
+/// Termurion's spawn cap (ruling P15).
 pub const TOO_MANY_SPAWNS: &str = "This chat has started too many sessions; wait a minute or close some first.";
 /// The provenance of a session the agent started (`DI:3106-3114`).
 pub fn provenance(title: Option<&str>, chat: &str) -> String {
@@ -679,7 +679,7 @@ pub fn provenance(title: Option<&str>, chat: &str) -> String {
     }
 }
 
-/// Tandem's (ruling P8): a session that cannot be typed into now.
+/// Termurion's (ruling P8): a session that cannot be typed into now.
 pub fn not_typeable(guid: &str, why: &str) -> String {
     format!("Session {guid} cannot be controlled now: {why}.")
 }
@@ -757,7 +757,7 @@ mod tests {
         assert_eq!(session_claim_scope(None, false, "S3"), session_scope("S3"));
         // A workgroup's claim does not grant the browser member.
         assert_eq!(claim_needed(&["WG-1".to_string()], &session_claim_scope(Some("WG-1"), true, "S2"), &[]), Claim::Ask);
-        // The bubble names the action and the site in Tandem's words, never keystrokes.
+        // The bubble names the action and the site in Termurion's words, never keystrokes.
         let t = browser_claim_text("The AI agent would like to read the web page on a\\.test");
         assert!(t.starts_with("The AI agent would like to read the web page on a\\.test."), "{t}");
         assert!(t.contains("web browser session") && t.contains("load") && t.contains("search the web"), "{t}");
@@ -791,7 +791,7 @@ mod tests {
         assert_eq!(props(&s)["session_guid"]["type"], "string");
         assert_eq!(props(&s)["text"], json!({"type": "string"}));
         assert_eq!(props(&s)["append_newline"]["type"], json!(["boolean", "null"]));
-        assert!(s.description.starts_with("Type text into a session as if the user typed it.") && s.description.contains("Tandem detects embedded control bytes"));
+        assert!(s.description.starts_with("Type text into a session as if the user typed it.") && s.description.contains("Termurion detects embedded control bytes"));
         assert_eq!(props(&decl("scroll_wheel").unwrap())["direction"]["enum"], json!(["up", "down", null]));
         assert_eq!(props(&decl("start_session").unwrap())["window"]["enum"], json!(["new", "current", "tab", null]));
         let w = decl("register_watch").unwrap();
@@ -845,8 +845,8 @@ mod tests {
             let low = d.description.to_lowercase();
             assert!(!low.contains("persist across") && !low.contains("saved across") && !low.contains("resume when you next"), "{}: {}", d.name, d.description);
         }
-        assert!(decl("register_watch").unwrap().description.contains("do not survive a Tandem restart"));
-        assert!(decl("register_timer").unwrap().description.contains("do not survive a Tandem restart"));
+        assert!(decl("register_watch").unwrap().description.contains("do not survive a Termurion restart"));
+        assert!(decl("register_timer").unwrap().description.contains("do not survive a Termurion restart"));
     }
 
     #[test]

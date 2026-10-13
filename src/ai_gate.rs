@@ -21,7 +21,7 @@ pub enum Check {
     AdminOff,
     /// `EnableAI` is off.
     AiOff,
-    /// The model has nothing Tandem can send to (an imported Apple Intelligence vendor, an
+    /// The model has nothing Termurion can send to (an imported Apple Intelligence vendor, an
     /// out-of-range vendor, a manual model without a URL).
     NoEndpoint,
     /// The person has not allowed requests to this host yet.
@@ -161,7 +161,7 @@ pub const FEATURE_UNAVAILABLE: &str = "Feature Unavailable";
 pub const ADMIN_OFF: &str = "Generative AI features have been disabled. Check with your system administrator.";
 pub const MUST_ENABLE: &str = "You must enable AI features in settings before you can use this feature.";
 pub const REVEAL: &str = "Reveal";
-pub const NO_ENDPOINT: &str = "The selected AI model has no endpoint Tandem can reach. Choose another model in Settings > General > AI.";
+pub const NO_ENDPOINT: &str = "The selected AI model has no endpoint Termurion can reach. Choose another model in Settings > General > AI.";
 pub const ALLOW: &str = "Allow";
 const OK: &str = "OK";
 const CANCEL: &str = "Cancel";
@@ -172,7 +172,7 @@ pub fn consent_heading(provider: &str) -> String {
 
 pub fn consent_text(provider: &str, host: &str) -> String {
     format!(
-        "To use this feature, Tandem sends your request, and any terminal content you choose to share, to {provider} at {host}. You will always be prompted before terminal content is shared. Allow requests to {host}?"
+        "To use this feature, Termurion sends your request, and any terminal content you choose to share, to {provider} at {host}. You will always be prompted before terminal content is shared. Allow requests to {host}?"
     )
 }
 
@@ -321,7 +321,7 @@ mod tests {
             a,
             Alert {
                 heading: "Feature Unavailable".into(),
-                text: "The selected AI model has no endpoint Tandem can reach. Choose another model in Settings > General > AI.".into(),
+                text: "The selected AI model has no endpoint Termurion can reach. Choose another model in Settings > General > AI.".into(),
                 buttons: vec!["Reveal", "Cancel"],
                 silence: None,
                 then: Then::Reveal,
@@ -334,7 +334,7 @@ mod tests {
             a,
             Alert {
                 heading: "Send AI Requests to OpenAI?".into(),
-                text: "To use this feature, Tandem sends your request, and any terminal content you choose to share, to OpenAI at api.openai.com. You will always be prompted before terminal content is shared. Allow requests to api.openai.com?".into(),
+                text: "To use this feature, Termurion sends your request, and any terminal content you choose to share, to OpenAI at api.openai.com. You will always be prompted before terminal content is shared. Allow requests to api.openai.com?".into(),
                 buttons: vec!["Allow", "Cancel"],
                 silence: None,
                 then: Then::Grant("api.openai.com".into()),

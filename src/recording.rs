@@ -1,6 +1,6 @@
 //! Instant Replay recordings: the `.itr` file Session > Log > Export Recording writes and
 //! Import Recording reads (`Codecs/iTermRecordingCodec.m`, `RC`). iTerm2's file is a
-//! gzipped NSKeyedArchiver of `{ dvr, profile, version: 4 }`; Tandem's is the gzipped JSON
+//! gzipped NSKeyedArchiver of `{ dvr, profile, version: 4 }`; Termurion's is the gzipped JSON
 //! of the same dictionary, with the recorder as `Dvr::to_json` writes it.
 
 use std::io::{Read, Write};
@@ -156,7 +156,7 @@ pub fn load(bytes: &[u8]) -> Result<(Dvr, Map<String, Value>), LoadError> {
 }
 
 /// A load failure's warning (`RC:36-120`), each with OK only: its heading and its text.
-/// "iTerm2" in the text reads "Tandem".
+/// "iTerm2" in the text reads "Termurion".
 pub fn warning(e: &LoadError) -> (&'static str, String) {
     const CANT_LOAD: &str = "Can\u{2019}t Load Recording";
     match e {
@@ -166,7 +166,7 @@ pub fn warning(e: &LoadError) -> (&'static str, String) {
         }
         LoadError::Decompress => (WARNING, "Could not read the file: decompression failed.".into()),
         LoadError::Unarchive => (WARNING, "Could not read the file: unarchiving decompressed data failed.".into()),
-        LoadError::Version => (CANT_LOAD, "This recording is from a newer version of Tandem and cannot be replayed in this version.".into()),
+        LoadError::Version => (CANT_LOAD, "This recording is from a newer version of Termurion and cannot be replayed in this version.".into()),
         LoadError::Missing => (CANT_LOAD, "This recording could not be loaded because it is missing critical information.".into()),
         LoadError::Corrupt => ("Error Loading Recording", "The recording could not be loaded. It might be corrupted.".into()),
     }
@@ -305,7 +305,7 @@ mod tests {
         assert_eq!(decode(&file(json!({"version": 4, "dvr": bad, "profile": {}}))), Err(LoadError::Corrupt), "rows that do not match the size");
         assert!(decode(&serde_json::to_vec(&json!({"version": 1, "dvr": good, "profile": {}})).unwrap()).is_ok(), "versions 1 to 4, plain bytes too");
 
-        assert_eq!(warning(&LoadError::Version), ("Can\u{2019}t Load Recording", "This recording is from a newer version of Tandem and cannot be replayed in this version.".to_string()));
+        assert_eq!(warning(&LoadError::Version), ("Can\u{2019}t Load Recording", "This recording is from a newer version of Termurion and cannot be replayed in this version.".to_string()));
         assert_eq!(warning(&LoadError::Corrupt), ("Error Loading Recording", "The recording could not be loaded. It might be corrupted.".to_string()));
         assert_eq!(warning(&LoadError::Read("e".into())), ("Could not read the file: its envelope was malformed.", "e".to_string()));
         assert_eq!(warning(&LoadError::Read(String::new())).1, "Unknown error");

@@ -1,4 +1,4 @@
-//! Tandem as the Windows default terminal (m13v1 Task 5), the pure half: the delegation pair, the
+//! Termurion as the Windows default terminal (m13v1 Task 5), the pure half: the delegation pair, the
 //! COM registration entries, the texts, and the rules that judge a console handoff. The handoff
 //! is a COM call any local program can make, so every rule here is a refusal first.
 
@@ -15,7 +15,7 @@ pub const CLSID_DEFAULT: &str = "{00000000-0000-0000-0000-000000000000}";
 pub const CLSID_CONHOST: &str = "{B23D10C0-E52E-411E-9D5B-C09FDF709C7D}";
 pub const CLSID_WT_CONSOLE: &str = "{2EACA947-7F5F-4CFA-BA87-8F7FBEEFBE69}";
 pub const CLSID_WT_TERMINAL: &str = "{E12CFF52-A866-4C77-9A90-F570A7AA2C6B}";
-/// Tandem's own terminal class, fixed.
+/// Termurion's own terminal class, fixed.
 pub const CLSID_TANDEM_TERMINAL: &str = "{6A1E8D3C-2B7F-4C9E-9D41-5F0B7A2C8E13}";
 pub const SAVED_KEY: &str = r"Software\Tandem\PreviousDefaultTerminal";
 
@@ -31,10 +31,10 @@ pub const NEEDS_WT_TEXT: &str = "Windows hands console programs to a default ter
 pub const PACK_MISSING_HEADING: &str = "Default Terminal Unavailable";
 
 pub fn pack_missing_text() -> &'static str {
-    "Tandem can be the default terminal only with its own conpty.dll next to termurion.exe."
+    "Termurion can be the default terminal only with its own conpty.dll next to termurion.exe."
 }
 
-/// The registry key of Tandem's COM class (the one tree `unmake` deletes).
+/// The registry key of Termurion's COM class (the one tree `unmake` deletes).
 pub fn class_key() -> String {
     format!(r"Software\Classes\CLSID\{CLSID_TANDEM_TERMINAL}")
 }
@@ -52,7 +52,7 @@ pub fn is_tandem(p: &Pair) -> bool {
     p.terminal.eq_ignore_ascii_case(CLSID_TANDEM_TERMINAL)
 }
 
-/// `AD:481-482`: the menu item is enabled while Tandem is not already the default.
+/// `AD:481-482`: the menu item is enabled while Termurion is not already the default.
 pub fn make_enabled(r: &dyn Registry) -> bool {
     !is_tandem(&current(r))
 }
@@ -62,7 +62,7 @@ fn entry(k: &str, n: &str, v: &str) -> (String, String, String) {
 }
 
 /// The COM class and the pair that hands consoles to it: Windows Terminal's console host with
-/// Tandem's terminal class. Per user (`HKCU`) only.
+/// Termurion's terminal class. Per user (`HKCU`) only.
 pub fn make_tandem_entries(exe: &Path) -> Vec<(String, String, String)> {
     let key = class_key();
     vec![
@@ -79,8 +79,8 @@ pub fn server_value(exe: &Path) -> String {
     format!("\"{}\"", exe.display())
 }
 
-/// The exe a `LocalServer32` value Tandem wrote names: exactly `"<absolute path>"`, or an older
-/// Tandem's `"<absolute path>" -Embedding`. Any other shape is not Tandem's and is never touched.
+/// The exe a `LocalServer32` value Termurion wrote names: exactly `"<absolute path>"`, or an older
+/// Termurion's `"<absolute path>" -Embedding`. Any other shape is not Termurion's and is never touched.
 fn server_exe(value: &str) -> Option<std::path::PathBuf> {
     let inner = value.strip_prefix('"')?;
     let (path, rest) = inner.split_once('"')?;
@@ -90,10 +90,10 @@ fn server_exe(value: &str) -> Option<std::path::PathBuf> {
     (shape && plain && p.is_absolute()).then(|| p.to_path_buf())
 }
 
-/// P11 (Task 5 review, Important 2): the entry that points Tandem's handoff class at this exe again
-/// when it moved. Only while the delegation pair is Tandem's, only for the value of Tandem's own
-/// class in the shape Tandem writes, and only when the exe it names is not this one and `gone`
-/// says it no longer exists (the caller judges that path before probing it). An older Tandem's
+/// P11 (Task 5 review, Important 2): the entry that points Termurion's handoff class at this exe again
+/// when it moved. Only while the delegation pair is Termurion's, only for the value of Termurion's own
+/// class in the shape Termurion writes, and only when the exe it names is not this one and `gone`
+/// says it no longer exists (the caller judges that path before probing it). An older Termurion's
 /// value for this very exe (ending in its own ` -Embedding`) takes the plain form.
 pub fn server_repair(r: &dyn Registry, exe: &Path, gone: &dyn Fn(&Path) -> bool) -> Vec<(String, String, String)> {
     let key = format!(r"{}\LocalServer32", class_key());
@@ -133,7 +133,7 @@ pub fn saved(r: &dyn Registry) -> Option<Pair> {
     Some(Pair { console: r.get(SAVED_KEY, "Console")?, terminal: r.get(SAVED_KEY, "Terminal")? })
 }
 
-/// The old pair is never overwritten while the current pair is already Tandem's.
+/// The old pair is never overwritten while the current pair is already Termurion's.
 pub fn should_save(current: &Pair) -> bool {
     !is_tandem(current)
 }
@@ -144,7 +144,7 @@ pub fn console_host_present(windows_apps: &Path) -> bool {
     crate::localfs::judge(windows_apps.join("wt.exe")).is_some_and(|p| crate::localfs::lstat(&p).is_ok())
 }
 
-/// The alert to show instead of making Tandem the default (Windows Terminal first).
+/// The alert to show instead of making Termurion the default (Windows Terminal first).
 pub fn make_blocked(wt_present: bool, pack_present: bool) -> Option<&'static str> {
     if !wt_present {
         Some(NEEDS_WT_TEXT)
@@ -216,7 +216,7 @@ impl Gate {
 }
 
 /// Judges one call: the caller first (`api_peer::judge_peer`; a foreign caller costs no budget), then the pointers and
-/// handles, a closing Tandem, the live count and the rate. `Ok` spends one slot of the rate.
+/// handles, a closing Termurion, the live count and the rate. `Ok` spends one slot of the rate.
 pub fn vet(caller: Option<&crate::api_peer::Peer>, mine: &crate::api_peer::Peer, a: &Args, gate: &mut Gate, now: Instant, live: usize, closing: bool) -> Result<(), Refusal> {
     // The one peer rule: same user, session, elevation and integrity, not sandboxed (review I1).
     if !caller.is_some_and(|c| crate::api_peer::judge_peer(c, mine).is_ok()) {
@@ -272,20 +272,20 @@ pub enum EmbeddingStart {
     Exit(&'static str),
 }
 
-/// What an `-Embedding` start does: it runs only while Tandem is the default terminal with its
-/// own conpty.dll and no Tandem of this user already answers on the launch pipe (it never
+/// What an `-Embedding` start does: it runs only while Termurion is the default terminal with its
+/// own conpty.dll and no Termurion of this user already answers on the launch pipe (it never
 /// forwards anything: COM starts it only to take one handoff).
 pub fn embedding_start(pair_is_tandem: bool, pack_present: bool, running: &crate::url_launch::Handed) -> EmbeddingStart {
     use crate::url_launch::Handed;
     if !pair_is_tandem {
-        return EmbeddingStart::Exit("Tandem is not the default terminal");
+        return EmbeddingStart::Exit("Termurion is not the default terminal");
     }
     if !pack_present {
         return EmbeddingStart::Exit("no conpty.dll with ConptyPackPseudoConsole");
     }
     match running {
         Handed::NoServer | Handed::OtherOwner(_) => EmbeddingStart::Run,
-        Handed::Taken | Handed::Failed(_) => EmbeddingStart::Exit("a running Tandem answers on the launch pipe"),
+        Handed::Taken | Handed::Failed(_) => EmbeddingStart::Exit("a running Termurion answers on the launch pipe"),
     }
 }
 
@@ -358,11 +358,11 @@ mod tests {
         apply(&mut r, &save_entries(&now)).unwrap();
         assert_eq!(saved(&r), Some(pair(CLSID_CONHOST, CLSID_CONHOST)));
         apply(&mut r, &make_tandem_entries(Path::new(r"C:\T\termurion.exe"))).unwrap();
-        // Already Tandem's: nothing is saved over the old pair.
+        // Already Termurion's: nothing is saved over the old pair.
         assert!(should_save(&pair(CLSID_CONHOST, CLSID_CONHOST)));
         assert!(!should_save(&current(&r)));
         assert_eq!(saved(&r), Some(pair(CLSID_CONHOST, CLSID_CONHOST)));
-        // Only Tandem's own class tree is deleted (P9).
+        // Only Termurion's own class tree is deleted (P9).
         assert!(crate::reg::deletable(&class_key()));
         assert!(r.delete_tree(&class_key()).is_ok());
         assert!(r.delete_tree(r"Console\%%Startup").is_err());
@@ -420,9 +420,9 @@ mod tests {
     }
 
     /// Task 5 review, Important 1: the caller is judged by the one peer rule (`api_peer::judge_peer`):
-    /// the same user, session and integrity as Tandem, not elevated when Tandem is not, never
+    /// the same user, session and integrity as Termurion, not elevated when Termurion is not, never
     /// sandboxed. An elevated console host of the same split-token user is refused (its console would
-    /// be driven by a medium Tandem any medium program can reach), and so is one of another session.
+    /// be driven by a medium Termurion any medium program can reach), and so is one of another session.
     #[test]
     fn handoff_caller_matches_user_session_and_integrity() {
         use crate::api_peer::{HIGH_RID, LOW_RID, Peer, Token};
@@ -450,8 +450,8 @@ mod tests {
         assert!(hw.contains("winpipe::thread_peer()"), "the caller's token and session are read while impersonating");
     }
 
-    /// Task 5 review, Important 2 (P11): when Tandem's exe moved, startup rewrites only the
-    /// `LocalServer32` value of Tandem's own class, only while the pair is Tandem's, and only when the
+    /// Task 5 review, Important 2 (P11): when Termurion's exe moved, startup rewrites only the
+    /// `LocalServer32` value of Termurion's own class, only while the pair is Termurion's, and only when the
     /// recorded exe is gone (judged before it is probed, by the caller's `gone`).
     #[test]
     fn a_moved_exe_gets_its_handoff_server_repaired() {
@@ -472,7 +472,7 @@ mod tests {
         apply(&mut r, &fix).unwrap();
         assert_eq!(r.get(&server, "").as_deref(), Some(server_value(new).as_str()));
         assert!(server_repair(&r, new, &|_| true).is_empty(), "this exe's own value needs nothing");
-        // An older Tandem's value for this very exe (with its own -Embedding) takes the plain form.
+        // An older Termurion's value for this very exe (with its own -Embedding) takes the plain form.
         r.set(&server, "", &format!("{} -Embedding", server_value(new))).unwrap();
         assert_eq!(server_repair(&r, new, &|_| false), vec![(server.clone(), String::new(), server_value(new))]);
         // Not the default terminal any more: nothing is touched.
@@ -480,7 +480,7 @@ mod tests {
         apply(&mut r, &make_tandem_entries(old)).unwrap();
         apply(&mut r, &restore_entries(None)).unwrap();
         assert!(server_repair(&r, new, &|_| true).is_empty());
-        // A value that is not the shape Tandem writes is never rewritten, and its path never probed.
+        // A value that is not the shape Termurion writes is never rewritten, and its path never probed.
         let mut r = FakeRegistry::default();
         apply(&mut r, &make_tandem_entries(old)).unwrap();
         for v in ["", "C:\\Old\\termurion.exe", "\"C:\\Old\\termurion.exe\" /other", "\"relative\\termurion.exe\"", "\"\\\\host\\s\\termurion.exe\" x"] {
@@ -556,7 +556,7 @@ mod tests {
     fn a_handoff_while_closing_is_refused_cleanly() {
         let mut g = Gate::default();
         assert_eq!(vet(Some(&me()), &me(), &args(), &mut g, Instant::now(), 0, true), Err(Refusal::Closing));
-        assert_eq!(g.ignored(), 0, "a closing Tandem does not count the call as a flood");
+        assert_eq!(g.ignored(), 0, "a closing Termurion does not count the call as a flood");
     }
 
     #[test]

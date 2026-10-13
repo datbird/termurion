@@ -196,7 +196,7 @@ pub(super) enum Then {
     /// "Error Loading Settings": Don't Load Remote Settings (0) turns the setting off; Cancel
     /// (1) does nothing.
     PrefsLocationNotSet,
-    /// "Settings at ... changed since Tandem started. Overwrite it?": Overwrite (0) or Discard
+    /// "Settings at ... changed since Termurion started. Overwrite it?": Overwrite (0) or Discard
     /// Local Changes (1).
     PrefsOverwrite,
     /// "Warning" before Exclude from taskbar turns on: Exclude (0) turns it on and saves; Cancel (1) leaves it off.
@@ -209,7 +209,7 @@ pub(super) enum Then {
     /// Only the snippets, notes or icon customizations changed, at quit: Copy (0) or Lose Changes
     /// (1), which is never remembered.
     PrefsQuitData,
-    /// "Tandem can also keep your snippets ... Sync them too?" for a settings folder: Sync These
+    /// "Termurion can also keep your snippets ... Sync them too?" for a settings folder: Sync These
     /// Too (0) or Just Settings (1).
     DataConsent(std::path::PathBuf),
     /// Snippets, notes or icons changed on both sides: Use This PC's (0) or Use Settings
@@ -218,7 +218,7 @@ pub(super) enum Then {
     /// "Problem Exporting" after Export All Settings and Data failed: OK (0).
     ExportFailed,
     /// "Importing Settings and Data" for the archive picked: OK (0) stages it and restarts
-    /// Tandem; Cancel (1) does nothing.
+    /// Termurion; Cancel (1) does nothing.
     ImportConfirm(std::path::PathBuf),
     /// "Erase All Settings and Data": Export First (0), Skip Export (1) or Cancel (2).
     EraseExportFirst,
@@ -298,8 +298,8 @@ pub(super) enum Then {
     /// "Enable Session Cookies?": Enable (0) turns them on; Cancel (1) leaves them as they are.
     /// A closed window cancels.
     ClaudeCookie,
-    /// "Tandem is not the default handler for ssh. ...": OK (0) registers Tandem for the user
-    /// and binds the scheme to the profile `guid` once Windows reports Tandem as the handler;
+    /// "Termurion is not the default handler for ssh. ...": OK (0) registers Termurion for the user
+    /// and binds the scheme to the profile `guid` once Windows reports Termurion as the handler;
     /// Cancel (1) does nothing. A closed window cancels: a close never changes Windows.
     BindScheme { guid: String, scheme: String },
     /// "Open N sessions?" (P6): OK (0) opens the Profiles window's profiles as the way chosen;
@@ -333,7 +333,7 @@ pub(super) enum Then {
     /// "Dynamic Profiles Error": OK (0), View Log (1) shows the Dynamic Profiles console entry, and
     /// Reveal in Explorer (2, only with the file) selects the file of the first error.
     DynamicProfilesError(Option<std::path::PathBuf>),
-    /// "OK to run ...?" for a script opened with Tandem (Task 2): OK (0) opens the session that
+    /// "OK to run ...?" for a script opened with Termurion (Task 2): OK (0) opens the session that
     /// runs it; Cancel (1) does nothing. A closed window cancels; another process raises it, so
     /// it is capped (B6).
     RunOpenedFile(crate::open_file::Launch),
@@ -348,8 +348,8 @@ pub(super) enum Then {
     /// (B1, 13v1 P21): OK (0) goes on to the profile chooser, Cancel (1) imports nothing. A closed
     /// window cancels; another process raises it, so it is capped.
     TriggerImportMarked(Vec<toml::Table>),
-    /// "Open in Tandem?" for a web link a person clicked (`WS:384-410`): Use Default Browser (0)
-    /// opens it with the system, Open in Tandem (1) in a browser pane, Cancel nothing. The person's
+    /// "Open in Termurion?" for a web link a person clicked (`WS:384-410`): Use Default Browser (0)
+    /// opens it with the system, Open in Termurion (1) in a browser pane, Cancel nothing. The person's
     /// own click, so it is not capped. `file` is the file wording; no route raises it today.
     OpenLink { url: String, style: crate::browser::Style, background: bool, pane: Option<crate::layout::PaneId>, file: bool },
     /// "WebView2 Runtime Required" (`GW:136-160`): Download (0) opens Microsoft's page, Use System
@@ -519,14 +519,14 @@ impl App {
     }
 
     /// The question's OK: Windows is changed only here, only under HKCU, through the registry
-    /// seam; the scheme is bound only when Tandem then is the handler (else Tandem's text).
+    /// seam; the scheme is bound only when Termurion then is the handler (else Termurion's text).
     fn bind_scheme_confirmed(&mut self, guid: &str, scheme: &str) {
         if self.store.get(guid).is_none() {
             return self.banners.set("url-schemes", "That profile no longer exists, so nothing was registered.");
         }
         let exe = match std::env::current_exe() {
             Ok(exe) => exe,
-            Err(e) => return self.banners.set("url-schemes", format!("Could not find Tandem's own path to register it for {scheme} links: {e}")),
+            Err(e) => return self.banners.set("url-schemes", format!("Could not find Termurion's own path to register it for {scheme} links: {e}")),
         };
         let mut reg = crate::url_schemes::system();
         let mut table = self.globals.table(crate::url_schemes::HANDLERS_KEY);
@@ -536,8 +536,8 @@ impl App {
                 self.save_globals();
             }
             Err(e) => {
-                // Windows keeps the person's own choice (a UserChoice a program cannot set): Tandem's
-                // page in Default apps is where they pick Tandem.
+                // Windows keeps the person's own choice (a UserChoice a program cannot set): Termurion's
+                // page in Default apps is where they pick Termurion.
                 let opened = e == crate::url_schemes::protected(scheme) && super::semantic_ui::shell_open(crate::url_schemes::DEFAULT_APPS_URI, false).is_err();
                 self.banners.set("url-schemes", if opened { format!("{e} Windows could not open Default apps; open it from Settings.") } else { e })
             }

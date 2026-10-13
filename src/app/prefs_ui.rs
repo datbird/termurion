@@ -37,7 +37,7 @@ pub(super) enum Start {
 pub(super) enum SavePlan {
     /// "Settings cannot be copied to a URL."
     CannotCopyToUrl,
-    /// The file changed since Tandem loaded it: "Overwrite it?"
+    /// The file changed since Termurion loaded it: "Overwrite it?"
     AskOverwrite,
     Write,
 }
@@ -61,7 +61,7 @@ pub(super) fn launch_location_after(launch: Option<String>, now: &str) -> Option
 }
 
 /// Whether the exit waits: any alert showing or queued, so a question at quit, the failure
-/// to copy after it (`RP:376-386`) or any other alert is seen before Tandem ends.
+/// to copy after it (`RP:376-386`) or any other alert is seen before Termurion ends.
 pub(super) fn exit_waits(showing: Option<&Ask>, queued: &std::collections::VecDeque<Ask>) -> bool {
     showing.is_some() || !queued.is_empty()
 }
@@ -104,7 +104,7 @@ fn failed_url(url: &str, code: i32, error: &str) -> Ask {
     ask(rp::FAILED_URL, &rp::http_failed(error), &buttons, None, Kind::Persistent, Then::PrefsFailedUrl { url: url.to_string(), timed_out })
 }
 
-/// "Settings at ... changed since Tandem started. Overwrite it?" (`RP:338-347`), naming the
+/// "Settings at ... changed since Termurion started. Overwrite it?" (`RP:338-347`), naming the
 /// location as typed; it cannot be silenced.
 pub(super) fn overwrite_ask(text: &str) -> Ask {
     let buttons = [rp::OVERWRITE, rp::DISCARD_LOCAL];
@@ -178,7 +178,7 @@ fn start(g: &Globals, home: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>,
 
 /// `copyRemotePrefsToLocalUserDefaultsPreserving:` (`RP:1531-1551`): every local syncable
 /// setting goes and the snapshot's come; the profiles become the snapshot's (one new "Default"
-/// when it has none, as Tandem always has a profile).
+/// when it has none, as Termurion always has a profile).
 pub(super) fn apply_snapshot(snap: &Snapshot, g: &mut Globals, store: &mut Store) {
     let before = (g.string(crate::workgroup::KEY), g.string(crate::workgroup::KEY_IMPORTED));
     rp::apply(snap, &mut g.values);
@@ -469,9 +469,9 @@ impl App {
         self.prefs_launch_folder = launch_location_after(self.prefs_launch_folder.take(), &now);
     }
 
-    /// `applicationWillTerminate` (`RP:1646-1744`), the last step before Tandem ends. True: end
+    /// `applicationWillTerminate` (`RP:1646-1744`), the last step before Termurion ends. True: end
     /// now. False: the step saved (Automatically) or asked (When Quitting, Manually), and an
-    /// alert is showing or queued; `prefs_tick` ends Tandem once it and any alert after it are
+    /// alert is showing or queued; `prefs_tick` ends Termurion once it and any alert after it are
     /// answered. Only those two branches wait: the others (nothing to do, remembering or
     /// clearing the URL) end at once, whatever alerts are queued. Skipped, ending at once, when
     /// the location was edited this session (`iTermApplicationDelegate.m:1115-1117`).
@@ -588,7 +588,7 @@ mod tests {
         Snapshot { settings: map(&[("FocusFollowsMouse", Value::Boolean(true))]), default: "g1".into(), profiles: vec![profile] }
     }
 
-    /// 13y2 Task 9b review: a snapshot written by a Tandem before the rename sweep (old
+    /// 13y2 Task 9b review: a snapshot written by a Termurion before the rename sweep (old
     /// lower-case Advanced keys) lands under the capitalized keys.
     #[test]
     fn an_older_snapshot_with_old_keys_migrates() {
@@ -806,7 +806,7 @@ mod tests {
         assert_eq!(save_plan(false, true), SavePlan::AskOverwrite);
         assert_eq!(save_plan(false, false), SavePlan::Write);
         let ask = overwrite_ask(r"D:\s");
-        assert_eq!(ask.spec.text, "Settings at D:\\s changed since Tandem started. Overwrite it?");
+        assert_eq!(ask.spec.text, "Settings at D:\\s changed since Termurion started. Overwrite it?");
         assert_eq!(buttons(&ask), ["Overwrite", "Discard Local Changes"]);
         assert_eq!(ask.then, Then::PrefsOverwrite);
         assert!(ask.spec.id.is_none());

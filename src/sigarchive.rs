@@ -58,7 +58,7 @@ pub enum SigError {
 }
 
 pub const CORRUPT: &str = "This script archive is corrupt and cannot be installed.";
-pub const NOT_VALID: &str = "This is not a valid Tandem script archive.";
+pub const NOT_VALID: &str = "This is not a valid Termurion script archive.";
 pub const CONFIRM_HEADING: &str = "Confirm Installation";
 pub const REVEAL_CONTENTS: &str = "Reveal Contents";
 pub const CERT_NIL: &str = "Could not find certificate after verification (nil data)";
@@ -266,11 +266,11 @@ pub fn confirm_text(file: &str, author: Option<&str>) -> String {
 }
 
 /// Said under the confirmation (beyond iTerm2): the name is the certificate's own text, not an
-/// identity Tandem knows, so the certificate's fingerprint is shown to compare with the author's.
+/// identity Termurion knows, so the certificate's fingerprint is shown to compare with the author's.
 pub fn confirm_note(leaf: &[u8], issuer: Option<&str>) -> String {
     let issuer = issuer.map(|i| crate::inert_files::display_text(i, 128, false)).filter(|i| !i.trim().is_empty());
     format!(
-        "Tandem has not checked who this author is: the name comes from the certificate.\nCertificate issuer: {}\nCertificate fingerprint (SHA-256):\n{}",
+        "Termurion has not checked who this author is: the name comes from the certificate.\nCertificate issuer: {}\nCertificate fingerprint (SHA-256):\n{}",
         issuer.as_deref().unwrap_or("Unknown"),
         thumbprint(leaf)
     )
@@ -440,8 +440,8 @@ mod tests {
         assert!(confirm_note(b"abc", None).contains("Certificate issuer: Unknown\n"));
         assert_eq!(CORRUPT, "This script archive is corrupt and cannot be installed.");
         let x = crate::script_archive::trusted_autolaunch_text("x");
-        assert_eq!(x, "\u{201c}x\u{201d} would like to launch automatically when Tandem starts. Would you like to allow that?");
-        assert_eq!(crate::script_archive::explicit_autolaunch_text("x"), "\u{201c}x\u{201d} can launch automatically when Tandem starts. Would you like to allow that?");
+        assert_eq!(x, "\u{201c}x\u{201d} would like to launch automatically when Termurion starts. Would you like to allow that?");
+        assert_eq!(crate::script_archive::explicit_autolaunch_text("x"), "\u{201c}x\u{201d} can launch automatically when Termurion starts. Would you like to allow that?");
         assert_eq!((crate::script_archive::AUTOLAUNCH_HEADING, crate::script_archive::LAUNCH_AUTOMATICALLY, crate::script_archive::LAUNCH_MANUALLY), ("Allow Auto-Launch?", "Launch Automatically", "Lauch Manually"));
     }
 

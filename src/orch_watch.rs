@@ -58,7 +58,7 @@ pub struct Watcher {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_read_consented: Option<bool>,
     /// The chat's terminal link when the watcher was made (Task 11 fix round 1): it reads
-    /// only while the chat is still linked there. Tandem's own, never stored.
+    /// only while the chat is still linked there. Termurion's own, never stored.
     #[serde(skip)]
     pub linked: Option<String>,
 }
@@ -128,7 +128,7 @@ pub const UNKNOWN_STATE: &str = "target_state \u{201C}unknown\u{201D} is reporte
 pub const GUID_REQUIRED: &str = "session_guid is required. Copy it verbatim from a role in list_workgroups.";
 pub const NOT_LINKED: &str = "No session to watch: this chat is not linked to a terminal session.";
 pub const FOREIGN_SESSION: &str = "This chat can only watch the terminal session it is linked to, not another session. Omit session_guid.";
-/// Tandem's text (Decision): a screen watch needs a model to judge the screen.
+/// Termurion's text (Decision): a screen watch needs a model to judge the screen.
 pub const NO_WATCH_MODEL: &str = "No AI model is configured to watch a screen.";
 pub const TOO_MANY: &str = "Too many watches and timers are registered for this chat (the limit is 16). Unregister one first.";
 
@@ -137,7 +137,7 @@ pub const TIMER_WAKE: Duration = Duration::from_secs(60);
 pub const ESCALATE_AFTER: Duration = Duration::from_secs(300);
 pub const POLL_DEADLINE: Duration = Duration::from_secs(6 * 3600);
 pub const POLL_LINES: usize = 150;
-/// Tandem's bounds (ruling P9's rate limit): watchers and timers per chat, events a chat
+/// Termurion's bounds (ruling P9's rate limit): watchers and timers per chat, events a chat
 /// takes per minute, and events held while the rate or the gate waits.
 pub const MAX_WATCHERS: usize = 16;
 pub const EVENTS_PER_MINUTE: usize = 6;
@@ -191,7 +191,7 @@ pub fn verdict(reply: &str) -> Verdict {
 
 pub const RETRY_PROMPT: &str = "Reply with exactly one word and nothing else: REACHED or NOT_YET.";
 
-/// The judge's system message (`SWP:368-457`, "iTerm2" as "Tandem").
+/// The judge's system message (`SWP:368-457`, "iTerm2" as "Termurion").
 pub fn system_prompt(w: &Watcher) -> String {
     let target = if let Some(c) = &w.condition {
         format!("Your target is this plain-English condition, judged from the rendered screen:\n\n{c}\n\nConclude REACHED only when the screen positively shows the condition is satisfied. If the screen is ambiguous, or the condition describes something that has not visibly happened yet, answer NOT_YET. Do not reinterpret the condition as a generic idle/busy check; judge exactly what it says.")
@@ -202,7 +202,7 @@ pub fn system_prompt(w: &Watcher) -> String {
             State::Idle | State::Unknown => "Your target: the program has FINISHED its current work and is now idle at a ready input prompt, with no active progress bar, spinner, elapsed-time counter, or other activity indicator. While any activity indicator is present, or the screen is changing in a way that shows ongoing work, it is NOT_YET. Conclude REACHED only when the screen positively shows an idle ready prompt.".to_string(),
         }
     };
-    format!("You are a silent monitor inside Tandem. You are watching one terminal session that an automated orchestrator is driving. The program in it (often a coding agent or another interactive TUI) is being judged by reading its rendered screen.\n\nBackground on reading these screens: a program that is actively working almost always shows an activity indicator that changes between captures \u{2014} an animated spinner, an increasing elapsed-time counter, a progress bar, a \"Working\u{2026}/Thinking\u{2026}/esc to interrupt\" line, or streaming output. A program that is idle shows a ready input prompt and no such indicator. An unchanged or blank screen does NOT by itself prove the program is idle \u{2014} it may be computing silently (for example, sleeping or waiting on a subprocess). Judge from positive evidence on screen, not from the mere absence of change.\n\n{target}\n\nRespond with EXACTLY one word on the first line: REACHED if the target condition is satisfied, or NOT_YET if it is not. You may add a brief reason (12 words or fewer) on a second line. Output nothing else.")
+    format!("You are a silent monitor inside Termurion. You are watching one terminal session that an automated orchestrator is driving. The program in it (often a coding agent or another interactive TUI) is being judged by reading its rendered screen.\n\nBackground on reading these screens: a program that is actively working almost always shows an activity indicator that changes between captures \u{2014} an animated spinner, an increasing elapsed-time counter, a progress bar, a \"Working\u{2026}/Thinking\u{2026}/esc to interrupt\" line, or streaming output. A program that is idle shows a ready input prompt and no such indicator. An unchanged or blank screen does NOT by itself prove the program is idle \u{2014} it may be computing silently (for example, sleeping or waiting on a subprocess). Judge from positive evidence on screen, not from the mere absence of change.\n\n{target}\n\nRespond with EXACTLY one word on the first line: REACHED if the target condition is satisfied, or NOT_YET if it is not. You may add a brief reason (12 words or fewer) on a second line. Output nothing else.")
 }
 
 /// The judge's user message: the captures as (seconds since the watch began, text).
@@ -794,7 +794,7 @@ mod tests {
         let none = Watcher { linked: None, ..w() };
         assert!(link_holds(&none, None), "an orchestration chat's watcher with no link");
         assert!(!link_holds(&none, Some("A")), "a link made after it");
-        assert!(!records_json(&[a.clone()]).contains("\"A\""), "Tandem's own, never stored");
+        assert!(!records_json(&[a.clone()]).contains("\"A\""), "Termurion's own, never stored");
         assert_eq!(records(&records_json(&[a])), vec![w()]);
     }
 
@@ -848,7 +848,7 @@ mod tests {
     #[test]
     fn prompts_follow_iterm2() {
         let sys = system_prompt(&w());
-        assert!(sys.starts_with("You are a silent monitor inside Tandem. You are watching one terminal session that an automated orchestrator is driving."), "{sys}");
+        assert!(sys.starts_with("You are a silent monitor inside Termurion. You are watching one terminal session that an automated orchestrator is driving."), "{sys}");
         assert!(sys.contains("Your target: the program has FINISHED its current work"));
         assert!(!sys.contains("iTerm2"));
         assert!(sys.ends_with("Output nothing else."));
@@ -927,7 +927,7 @@ mod tests {
             v,
             json!({"_0": {"watcherID": "W1", "workgroupID": "session:ptys_0123456789ABW", "workgroupName": "vim", "roleID": "default", "roleName": "vim", "reason": "stateReached", "stateReached": "idle", "timestamp": 1_791_901_805.0 - SWIFT_EPOCH, "detail": "vim reached state 'idle'.", "screenLastChanged": "2 min ago"}})
         );
-        assert!(v["_0"].get("pushed").is_none(), "Tandem never sets pushed");
+        assert!(v["_0"].get("pushed").is_none(), "Termurion never sets pushed");
         let none = status_update_value(Reason::WatcherDropped, &w(), 0.0, "", "d", None);
         assert!(none["_0"].get("screenLastChanged").is_none());
         assert_eq!(status_text(&v).unwrap(), status_update(Reason::StateReached, &w(), "2026-10-13T14:30:05Z", "idle", Some("2 min ago"), "vim reached state 'idle'."));

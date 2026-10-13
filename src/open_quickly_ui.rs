@@ -258,7 +258,7 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
     let base = defs.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default();
     let mut have = |face: &str| -> Option<String> {
         let (_, bytes) = system_fonts().iter().find(|(f, _)| *f == face)?;
-        let name = format!("tandem-{face}");
+        let name = format!("termurion-{face}");
         defs.font_data.entry(name.clone()).or_insert_with(|| std::sync::Arc::new(egui::FontData::from_owned(bytes.clone())));
         Some(name)
     };

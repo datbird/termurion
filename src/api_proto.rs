@@ -11,12 +11,12 @@ use sha2::{Digest, Sha256};
 /// (`W:520-547`).
 pub const PROTOCOL_VERSION: &str = "1.19";
 
-/// The WebSocket subprotocol iTerm2 (and Tandem) speak.
+/// The WebSocket subprotocol iTerm2 (and Termurion) speak.
 pub const SUBPROTOCOL: &str = "api.iterm2.com";
 
 /// iTerm2's text for a request whose oneof it could not parse (`S:1040-1044`), "iTerm2" replaced
-/// by "Tandem".
-pub const MALFORMED: &str = "Invalid request. Upgrade Tandem to a newer version.";
+/// by "Termurion".
+pub const MALFORMED: &str = "Invalid request. Upgrade Termurion to a newer version.";
 
 /// Lowercase hex SHA-256 of the vendored `proto/api.proto`. `proto_is_vendored_unchanged` checks
 /// this against the file itself, so a forgotten regeneration after an edit fails the test suite.
