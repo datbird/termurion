@@ -4,8 +4,8 @@
 
 #[cfg(windows)]
 fn main() {
-    tandem::dll::harden_process();
-    use tandem::conpty::{self, Source, dev_vendor_dir};
+    termurion::dll::harden_process();
+    use termurion::conpty::{self, Source, dev_vendor_dir};
 
     let filter = std::env::args().nth(1).unwrap_or_default();
     let mut shipped_failed = false;
@@ -21,7 +21,7 @@ fn main() {
                 continue;
             }
         };
-        for o in tandem::probe::run_all(&api, &filter) {
+        for o in termurion::probe::run_all(&api, &filter) {
             let result = if o.pass { "pass" } else { "FAIL" };
             let detail = o.detail.replace('|', "/").replace('\n', " ");
             println!("| {} | {} | {result} | {detail} |", o.name, o.conpty);

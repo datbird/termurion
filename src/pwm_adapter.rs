@@ -7,7 +7,7 @@
 //! response or an `ErrorResponse` (`AP:124-177`).
 //!
 //! Tandem ships all three adapter executables (`src/bin/iterm2-*-adapter.rs`) beside
-//! `tandem.exe`; the wire types here derive both `Serialize` and `Deserialize` so the app and the
+//! `termurion.exe`; the wire types here derive both `Serialize` and `Deserialize` so the app and the
 //! executables share one definition. When an executable is missing, `available()` fails with
 //! "Adapter not found." and the window falls back to Credential Manager, as iTerm2 falls back
 //! when a source's own availability check fails (`P:600-668`).
@@ -351,7 +351,7 @@ impl AdapterError {
 
 // --- Locating a bundled adapter ---
 
-/// The executable Tandem looks for next to `tandem.exe` for each adapter-backed source; `None`
+/// The executable Tandem looks for next to `termurion.exe` for each adapter-backed source; `None`
 /// for a source that is not an adapter.
 pub fn adapter_file(kind: Kind) -> Option<&'static str> {
     match kind {

@@ -6,7 +6,7 @@
 //!
 //! Everything here runs on the UI thread (winit's thread is an STA and owns COM: this file never
 //! initializes or uninitializes it). The loader is webview2-com's static one (`WebView2LoaderStatic.lib`,
-//! linked into tandem.exe): there is no `WebView2Loader.dll` to ship, plant or miss. Web content is
+//! linked into termurion.exe): there is no `WebView2Loader.dll` to ship, plant or miss. Web content is
 //! untrusted: pages get no host objects, every page-controlled value is capped before it is queued
 //! (`webhost::ViewGate`), navigations pass the one rule (`webhost::navigation_allowed`), external
 //! protocols are cancelled, permissions are denied, and downloads are left to WebView2's own

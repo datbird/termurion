@@ -139,11 +139,11 @@ mod icu {
     }
 
     /// The word break iterator of Windows' `icu.dll` (1903 and later), resolved at run time so
-    /// `tandem.exe` still starts where the DLL or a name is missing.
+    /// `termurion.exe` still starts where the DLL or a name is missing.
     pub fn api() -> Option<&'static Api> {
         static API: OnceLock<Option<Api>> = OnceLock::new();
         API.get_or_init(|| unsafe {
-            // System32 only: a planted icu.dll beside tandem.exe or in the current folder never loads.
+            // System32 only: a planted icu.dll beside termurion.exe or in the current folder never loads.
             let module = crate::dll::load_system("icu.dll")?;
             let get = |n: &std::ffi::CStr| GetProcAddress(module, n.as_ptr().cast());
             Some(Api {

@@ -260,11 +260,11 @@ mod tests {
             assert!(!crate::url_launch::url_ok(bad), "{bad}");
         }
         let argv = |a: &[&str]| a.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
-        assert_eq!(crate::url_launch::url_argument(&argv(&["tandem.exe", "--url", "telnet://h"])), crate::url_launch::UrlArg::Url("telnet://h".into()));
-        assert_eq!(crate::url_launch::url_argument(&argv(&["tandem.exe", "--url", "ftp://h/x"])), crate::url_launch::UrlArg::Url("ftp://h/x".into()));
-        assert!(matches!(crate::url_launch::url_argument(&argv(&["tandem.exe", "--url", "telnet://h", "-x"])), crate::url_launch::UrlArg::Refused(_)));
-        assert!(matches!(crate::url_launch::url_argument(&argv(&["tandem.exe", "ftp://h"])), crate::url_launch::UrlArg::Refused(_)), "a bare url argument is still refused");
-        assert_eq!(crate::url_launch::url_argument(&argv(&["tandem.exe", "C:\\x.ps1"])), crate::url_launch::UrlArg::None);
+        assert_eq!(crate::url_launch::url_argument(&argv(&["termurion.exe", "--url", "telnet://h"])), crate::url_launch::UrlArg::Url("telnet://h".into()));
+        assert_eq!(crate::url_launch::url_argument(&argv(&["termurion.exe", "--url", "ftp://h/x"])), crate::url_launch::UrlArg::Url("ftp://h/x".into()));
+        assert!(matches!(crate::url_launch::url_argument(&argv(&["termurion.exe", "--url", "telnet://h", "-x"])), crate::url_launch::UrlArg::Refused(_)));
+        assert!(matches!(crate::url_launch::url_argument(&argv(&["termurion.exe", "ftp://h"])), crate::url_launch::UrlArg::Refused(_)), "a bare url argument is still refused");
+        assert_eq!(crate::url_launch::url_argument(&argv(&["termurion.exe", "C:\\x.ps1"])), crate::url_launch::UrlArg::None);
         // The pipe is the same rule.
         assert!(crate::url_launch::pipe_message("telnet://h").is_some() && crate::url_launch::pipe_message("ftp://h/x").is_some());
         assert!(crate::url_launch::pipe_message("http://h").is_none());

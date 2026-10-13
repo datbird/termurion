@@ -2477,7 +2477,7 @@ mod tests {
     #[test]
     fn url_schemes_control_stores_nothing_in_the_profile() {
         use crate::url_schemes as us;
-        let exe = std::path::PathBuf::from(r"C:\T\tandem.exe");
+        let exe = std::path::PathBuf::from(r"C:\T\termurion.exe");
         let profile = Profile::new("P");
         let before = profile.values.clone();
         let mut table = toml::Table::new();

@@ -3,7 +3,7 @@
 
 fn main() {
     #[cfg(windows)]
-    tandem::dll::harden_process();
+    termurion::dll::harden_process();
     #[cfg(windows)]
-    tandem::app::run();
+    termurion::app::run();
 }

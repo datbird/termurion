@@ -173,8 +173,8 @@ mod tests {
             let name = e.path().file_name().unwrap().to_string_lossy().to_string();
             let main_at = text.find("fn main()").unwrap_or_else(|| panic!("{name}: no main"));
             let body = &text[main_at..];
-            let harden = body.find("tandem::dll::harden_process()").unwrap_or_else(|| panic!("{name}: main never calls harden_process"));
-            let first_use = body.find("tandem::").unwrap();
+            let harden = body.find("termurion::dll::harden_process()").unwrap_or_else(|| panic!("{name}: main never calls harden_process"));
+            let first_use = body.find("termurion::").unwrap();
             assert_eq!(harden, first_use, "{name}: harden_process is not the first call into Tandem");
             // Nothing before it in main but the opening: no other statement ends with a semicolon.
             assert!(!body[..harden].contains(';'), "{name}: a statement runs before harden_process");
@@ -191,6 +191,33 @@ mod tests {
         assert!(b.contains("cargo:rustc-link-arg=/DEPENDENTLOADFLAG:0x800"));
         assert!(b.contains("CARGO_CFG_TARGET_FEATURE") && b.contains("crt-static") && b.contains("panic!"));
         assert!(b.contains("CARGO_CFG_TARGET_ENV") && b.contains("msvc"));
+    }
+
+    /// m14r Task 2: the package and the four programs carry the product name, and no `[[bin]]`
+    /// keeps the old one (the programs come from the file names in `src/bin`).
+    #[test]
+    fn crate_and_bins_are_renamed() {
+        let toml = include_str!("../Cargo.toml");
+        assert!(toml.lines().any(|l| l.trim() == "name = \"termurion\""), "package name");
+        assert!(!toml.lines().any(|l| l.trim().starts_with("name = ") && l.contains("tandem")), "an old name in Cargo.toml");
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("bin");
+        let names: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+        for want in ["termurion.rs", "termurion-host.rs", "termurion-git.rs", "termurion-utils.rs"] {
+            assert!(names.iter().any(|n| n == want), "{want} is missing from src/bin: {names:?}");
+        }
+        assert!(!names.iter().any(|n| n.starts_with("tandem")), "an old bin file is left: {names:?}");
+        assert!(!toml.contains("[[bin]]") || !toml.contains("tandem"), "a [[bin]] section still says tandem");
+    }
+
+    /// m14r Task 2: every program another program starts by file name is a Cargo bin of that name.
+    #[test]
+    fn spawned_exe_names_are_cargo_bins() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("bin");
+        for exe in [crate::host_client::HOST_EXE, crate::utilities::EXE, crate::git_wrapper::WRAPPER_EXE] {
+            let stem = exe.strip_suffix(".exe").expect("an exe name");
+            assert!(dir.join(format!("{stem}.rs")).is_file(), "{exe} has no src/bin/{stem}.rs");
+        }
+        assert_eq!(crate::util_cli::EXE_STEM, crate::utilities::EXE.trim_end_matches(".exe"));
     }
 
     /// Review minor: each failed call is reported, a success is silent.

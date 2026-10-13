@@ -213,7 +213,7 @@ mod tests {
         assert!(names.len() >= 7, "{names:?}");
         for n in names {
             match n {
-                "tandem.exe" | "tandem-host.exe" | "tandem-git.exe" | "tandem-utils.exe" | "cc-status.exe" => {}
+                "termurion.exe" | "termurion-host.exe" | "termurion-git.exe" | "termurion-utils.exe" | "cc-status.exe" => {}
                 "conpty.dll" | "OpenConsole.exe" => assert!(text().contains("resources/conpty/NOTICE.md"), "{n}"),
                 other => panic!("{other} is installed with no notice: add it to the list or declare it Tandem's own"),
             }

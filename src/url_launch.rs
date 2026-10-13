@@ -2,7 +2,7 @@
 //! passes, and the per-user pipe that hands a URL to a running Tandem. A URL here comes from a
 //! browser or any program of the same user, so it is hostile input: one `url_ok` rule serves the
 //! command line and the pipe, and `ssh_url::parse` is the second gate before anything opens.
-//! The same pipe is the one channel for every request a second `tandem.exe` has (m13v1 Task 1:
+//! The same pipe is the one channel for every request a second `termurion.exe` has (m13v1 Task 1:
 //! `launch::Request`); `launch::decode` is its only parser.
 
 use std::collections::VecDeque;
@@ -444,7 +444,7 @@ mod tests {
     use super::*;
 
     fn argv(parts: &[&str]) -> Vec<OsString> {
-        std::iter::once(r"C:\T\tandem.exe").chain(parts.iter().copied()).map(OsString::from).collect()
+        std::iter::once(r"C:\T\termurion.exe").chain(parts.iter().copied()).map(OsString::from).collect()
     }
 
     fn sequence(results: Vec<Handed>) -> (impl FnMut() -> Handed, std::rc::Rc<std::cell::Cell<usize>>) {
@@ -598,8 +598,8 @@ mod tests {
         const S: Option<u32> = Some(1);
         use crate::api_peer::{Token, HIGH_RID, LOW_RID, MEDIUM_RID};
         let mine = Token { sid: "S-1-5-21-1".into(), elevated: false, integrity: MEDIUM_RID, app_container: false, restricted: false };
-        let exe = r"C:\Tandem\tandem.exe";
-        assert_eq!(server_verdict(&mine, &mine, Some(r"c:\tandem\TANDEM.EXE"), S, S, exe), Ok(()), "same token, same image, case ignored");
+        let exe = r"C:\Tandem\termurion.exe";
+        assert_eq!(server_verdict(&mine, &mine, Some(r"c:\tandem\TERMURION.EXE"), S, S, exe), Ok(()), "same token, same image, case ignored");
         let low = Token { integrity: LOW_RID, ..mine.clone() };
         assert!(server_verdict(&low, &mine, Some(exe), S, S, exe).is_err(), "a low-integrity squatter");
         let high = Token { integrity: HIGH_RID, elevated: true, ..mine.clone() };

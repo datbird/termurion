@@ -614,10 +614,10 @@ mod tests {
 
     #[test]
     fn open_with_entries_name_only_tandem() {
-        let entries = open_with_entries(Path::new("C:\\Tandem\\tandem.exe"));
+        let entries = open_with_entries(Path::new("C:\\Tandem\\termurion.exe"));
         assert!(entries.iter().all(|(k, _, _)| k.starts_with("Software\\Classes\\Applications\\tandem.exe")), "{entries:?}");
         let get = |k: &str, n: &str| entries.iter().find(|(kk, nn, _)| kk.ends_with(k) && nn == n).map(|(_, _, v)| v.as_str());
-        assert_eq!(get("shell\\open\\command", ""), Some("\"C:\\Tandem\\tandem.exe\" \"%1\""));
+        assert_eq!(get("shell\\open\\command", ""), Some("\"C:\\Tandem\\termurion.exe\" \"%1\""));
         for ext in [".its", ".itermtab", ".itermcolors", ".itr", ".iterm2arrangement", ".it2triggers", ".command", ".tool", ".sh", ".zsh", ".csh", ".pl", ".ps1", ".bash"] {
             assert_eq!(get("SupportedTypes", ext), Some(""), "{ext}");
         }

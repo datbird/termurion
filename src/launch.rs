@@ -1,11 +1,11 @@
-//! The command line and the message a second `tandem.exe` hands to the running one (m13v1 Task 1).
+//! The command line and the message a second `termurion.exe` hands to the running one (m13v1 Task 1).
 //! Both are untrusted: the message arrives on a pipe any program of the same user can open, so
 //! `decode` is a strict parser of a closed set of kinds (never serde on foreign bytes) and a
 //! request names no command to run.
 
 use std::path::{Path, PathBuf};
 
-/// What a second `tandem.exe` asks the running one to do. A closed set: none names a command, a
+/// What a second `termurion.exe` asks the running one to do. A closed set: none names a command, a
 /// directory or an environment to run (P3); a profile or arrangement is looked up in Tandem's own
 /// store by the app (P22).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,7 +21,7 @@ pub enum Request {
     Embedding,
 }
 
-pub const USAGE: &str = "Usage: tandem.exe [--url URL | --new-window [GUID] | --new-tab [GUID] | --arrangement NAME | PATH...]";
+pub const USAGE: &str = "Usage: termurion.exe [--url URL | --new-window [GUID] | --new-tab [GUID] | --arrangement NAME | PATH...]";
 
 /// The whole message at most this long (P2); the 8 KiB URL cap stays inside `url_launch::url_ok`.
 pub const MAX_MESSAGE: usize = 16 * 1024;
@@ -96,7 +96,7 @@ pub fn parse(args: &[String], cwd: &Path) -> Result<Request, String> {
             _ => usage(),
         };
     }
-    let argv: Vec<std::ffi::OsString> = std::iter::once("tandem.exe".into()).chain(args.iter().map(std::ffi::OsString::from)).collect();
+    let argv: Vec<std::ffi::OsString> = std::iter::once("termurion.exe".into()).chain(args.iter().map(std::ffi::OsString::from)).collect();
     match crate::url_launch::url_argument(&argv) {
         crate::url_launch::UrlArg::Url(url) => return Ok(Request::Url { url }),
         crate::url_launch::UrlArg::Refused(_) => return usage(),
@@ -267,7 +267,7 @@ mod tests {
         for r in [Request::Reopen, Request::Open { paths: vec![] }, Request::Url { url: "ssh://h".into() }, Request::NewWindow { guid: None }, Request::NewTab { guid: None }, Request::Arrangement { name: "a".into() }] {
             assert!(forwardable(&r), "{r:?}");
         }
-        assert_eq!(USAGE, "Usage: tandem.exe [--url URL | --new-window [GUID] | --new-tab [GUID] | --arrangement NAME | PATH...]");
+        assert_eq!(USAGE, "Usage: termurion.exe [--url URL | --new-window [GUID] | --new-tab [GUID] | --arrangement NAME | PATH...]");
     }
 
     /// P24: `-Embedding` only alone; the Explorer drive-root quirk is repaired, any other quote refused.

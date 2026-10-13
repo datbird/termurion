@@ -118,6 +118,95 @@ reason = 'tandem-logo.svg is replaced by the termurion art; README image link up
 
 # ---- rows ----
 [[row]]
+group = 'T'
+old = 'in tandem::'
+new = 'in termurion::'
+mode = 'exact'
+scope = ['src/bin/probe.rs']
+reason = 'Task 2: the keep row for the English phrase "in tandem" also covers the code `for o in tandem::probe`; the longer row wins'
+
+# Group T = Task 2 only (crate path, exe file names, bin file names). Keep these rows before the B and D rows.
+[[row]]
+group = 'T'
+old = 'tandem::'
+new = 'termurion::'
+mode = 'exact'
+scope = ['src/**', 'scripts/**', 'Cargo.toml', 'build.rs']
+reason = 'Task 2: crate path or exe file name. Listed before groups B and D so it wins their ties; applied with --groups T so registry keys (Applications\\tandem.exe, Task 4) and pipes (Task 3) are left alone.'
+
+[[row]]
+group = 'T'
+old = 'tandem.exe'
+new = 'termurion.exe'
+mode = 'exact'
+scope = ['src/**', 'scripts/**', 'Cargo.toml', 'build.rs']
+reason = 'Task 2: crate path or exe file name. Listed before groups B and D so it wins their ties; applied with --groups T so registry keys (Applications\\tandem.exe, Task 4) and pipes (Task 3) are left alone.'
+
+[[row]]
+group = 'T'
+old = 'TANDEM.EXE'
+new = 'TERMURION.EXE'
+mode = 'exact'
+scope = ['src/**', 'scripts/**', 'Cargo.toml', 'build.rs']
+reason = 'Task 2: crate path or exe file name. Listed before groups B and D so it wins their ties; applied with --groups T so registry keys (Applications\\tandem.exe, Task 4) and pipes (Task 3) are left alone.'
+
+[[row]]
+group = 'T'
+old = 'tandem-host.exe'
+new = 'termurion-host.exe'
+mode = 'exact'
+scope = ['src/**', 'scripts/**', 'Cargo.toml', 'build.rs']
+reason = 'Task 2: crate path or exe file name. Listed before groups B and D so it wins their ties; applied with --groups T so registry keys (Applications\\tandem.exe, Task 4) and pipes (Task 3) are left alone.'
+
+[[row]]
+group = 'T'
+old = 'tandem-git.exe'
+new = 'termurion-git.exe'
+mode = 'exact'
+scope = ['src/**', 'scripts/**', 'Cargo.toml', 'build.rs']
+reason = 'Task 2: crate path or exe file name. Listed before groups B and D so it wins their ties; applied with --groups T so registry keys (Applications\\tandem.exe, Task 4) and pipes (Task 3) are left alone.'
+
+[[row]]
+group = 'T'
+old = 'tandem-utils.exe'
+new = 'termurion-utils.exe'
+mode = 'exact'
+scope = ['src/**', 'scripts/**', 'Cargo.toml', 'build.rs']
+reason = 'Task 2: crate path or exe file name. Listed before groups B and D so it wins their ties; applied with --groups T so registry keys (Applications\\tandem.exe, Task 4) and pipes (Task 3) are left alone.'
+
+[[row]]
+group = 'T'
+old = 'bin/tandem-git.rs'
+new = 'bin/termurion-git.rs'
+mode = 'exact'
+scope = ['src/**']
+reason = 'Task 2: source-scan test names the renamed bin file'
+
+[[row]]
+group = 'T'
+old = 'tandem-host'
+new = 'termurion-host'
+mode = 'exact'
+scope = ['src/tab_icons.rs','src/host_client.rs']
+reason = 'Task 2: host exe name as a window title / start error (not the pipe name, Task 3)'
+
+[[row]]
+group = 'T'
+old = 'tandem-utils'
+new = 'termurion-utils'
+mode = 'exact'
+scope = ['src/util_cli.rs','src/utilities.rs','src/app/semantic_ui.rs']
+reason = 'Task 2: utilities exe stem and its usage text'
+
+[[row]]
+group = 'T'
+old = 'TANDEM-PATCHES'
+new = 'TERMURION-PATCHES'
+mode = 'exact'
+scope = ['Cargo.toml','README.md','crates/*/TANDEM-PATCHES.md']
+reason = 'Task 2: patch-notes file renamed with the crate'
+
+[[row]]
 group = 'K'
 old = 'tandem workgroup approval key\0v1'
 new = 'tandem workgroup approval key\0v1'

@@ -1,7 +1,7 @@
 //! The utilities' real console (milestone 11e): `/dev/tty` as `CONIN$` / `CONOUT$`, VT
 //! output on for a console stdout, the scripts' `stty` modes with every changed mode put
 //! back on every exit (normal, Ctrl+C, panic), replies read as bytes from
-//! `ReadConsoleInputW`, the program runner, and `tandem-utils.exe`'s `real_main`.
+//! `ReadConsoleInputW`, the program runner, and `termurion-utils.exe`'s `real_main`.
 
 use std::collections::VecDeque;
 use std::io::{IsTerminal, Write};
@@ -388,7 +388,7 @@ fn with_console_io(f: &mut dyn FnMut(&mut Io) -> i32) -> i32 {
     code
 }
 
-/// `tandem-utils.exe`: picks the utility from the program's name or first argument, runs
+/// `termurion-utils.exe`: picks the utility from the program's name or first argument, runs
 /// it over the real console, and returns its exit code.
 pub fn real_main() -> i32 {
     let args: Vec<String> = std::env::args_os().map(|a| a.to_string_lossy().into_owned()).collect();

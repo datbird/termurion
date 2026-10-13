@@ -9,7 +9,7 @@ use crate::grid::{self, GridCell};
 use crate::index::Column;
 use crate::vte::ansi::{Color, Hyperlink as VteHyperlink, NamedColor};
 
-/// Tandem patch: the most zero-width characters (combining marks) one cell keeps.
+/// Termurion patch: the most zero-width characters (combining marks) one cell keeps.
 pub const MAX_ZEROWIDTH: usize = 16;
 
 bitflags! {
@@ -33,7 +33,7 @@ bitflags! {
         const UNDERCURL                 = 0b0001_0000_0000_0000;
         const DOTTED_UNDERLINE          = 0b0010_0000_0000_0000;
         const DASHED_UNDERLINE          = 0b0100_0000_0000_0000;
-        // Tandem patch: SGR 5 and 6 (blinking text).
+        // Termurion patch: SGR 5 and 6 (blinking text).
         const BLINK                     = 0b1000_0000_0000_0000;
         const ALL_UNDERLINES            = Self::UNDERLINE.bits() | Self::DOUBLE_UNDERLINE.bits()
                                         | Self::UNDERCURL.bits() | Self::DOTTED_UNDERLINE.bits()
@@ -131,11 +131,11 @@ pub struct CellExtra {
     zerowidth: Vec<char>,
     underline_color: Option<Color>,
     hyperlink: Option<Hyperlink>,
-    /// Tandem patch: the inline image tile this cell shows.
+    /// Termurion patch: the inline image tile this cell shows.
     image: Option<Tile>,
 }
 
-/// Tandem patch: which image a cell shows, and the cell's column and row in it.
+/// Termurion patch: which image a cell shows, and the cell's column and row in it.
 #[derive(Default, Debug, Clone, Copy, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Tile {
@@ -178,7 +178,7 @@ impl Cell {
     /// Write a new zerowidth character to this cell.
     #[inline]
     pub fn push_zerowidth(&mut self, character: char) {
-        // Tandem patch: a cell holds at most `MAX_ZEROWIDTH` marks (13o, patch 23), so REP of a
+        // Termurion patch: a cell holds at most `MAX_ZEROWIDTH` marks (13o, patch 23), so REP of a
         // zero-width character, or a stream of them, cannot grow one cell without bound.
         if self.extra.as_ref().is_some_and(|extra| extra.zerowidth.len() >= MAX_ZEROWIDTH) {
             return;
@@ -241,13 +241,13 @@ impl Cell {
         self.extra.as_ref()?.hyperlink.clone()
     }
 
-    /// Tandem patch: the image tile this cell shows.
+    /// Termurion patch: the image tile this cell shows.
     #[inline]
     pub fn image(&self) -> Option<Tile> {
         self.extra.as_ref()?.image
     }
 
-    /// Tandem patch: shows an image tile in this cell (None removes it).
+    /// Termurion patch: shows an image tile in this cell (None removes it).
     pub fn set_image(&mut self, tile: Option<Tile>) {
         let should_drop = tile.is_none()
             && self.extra.as_ref().is_none_or(|extra| {
@@ -277,7 +277,7 @@ impl GridCell for Cell {
                     | Flags::LEADING_WIDE_CHAR_SPACER,
             )
             && self.extra.as_ref().map(|extra| extra.zerowidth.is_empty()) != Some(false)
-            // Tandem patch: a cell showing an image tile is not empty.
+            // Termurion patch: a cell showing an image tile is not empty.
             && self.extra.as_ref().is_none_or(|extra| extra.image.is_none())
     }
 

@@ -506,14 +506,17 @@ impl Drop for HostedPty {
     }
 }
 
-/// Starts `tandem-host.exe` from `exe_dir`, detached from Tandem (its own process group,
+/// The session host program beside the app; `start_host_process` starts it by this file name.
+pub const HOST_EXE: &str = "termurion-host.exe";
+
+/// Starts `termurion-host.exe` from `exe_dir`, detached from Tandem (its own process group,
 /// out of Tandem's job when Windows allows), so it outlives Tandem.
 pub fn start_host_process(exe_dir: &Path) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-    let exe = exe_dir.join("tandem-host.exe");
+    let exe = exe_dir.join(HOST_EXE);
     let spawn = |flags: u32| {
         std::process::Command::new(&exe)
             .creation_flags(flags)
@@ -540,7 +543,7 @@ pub fn connect_or_start(exe_dir: &Path, wait: Duration) -> Result<(Client, Welco
             return Ok(c);
         }
         if std::time::Instant::now() >= end {
-            return Err(HostError::Failed(format!("tandem-host did not start within {} s", wait.as_secs_f64())));
+            return Err(HostError::Failed(format!("termurion-host did not start within {} s", wait.as_secs_f64())));
         }
         std::thread::sleep(Duration::from_millis(50));
     }

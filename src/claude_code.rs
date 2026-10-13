@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 
 /// The hook events, in iTerm2's order (`OB:1595`).
 pub const HOOK_EVENTS: [&str; 10] = ["UserPromptSubmit", "Stop", "StopFailure", "Notification", "PermissionRequest", "SessionEnd", "PreToolUse", "PostToolUse", "SessionStart", "SubagentStop"];
-/// The hook program, beside tandem.exe (`src/bin/cc-status.rs`).
+/// The hook program, beside termurion.exe (`src/bin/cc-status.rs`).
 pub const EXE: &str = "cc-status.exe";
 /// iTerm2's `NoSyncClaudeCodeIntegrationCompleted`.
 pub const COMPLETED_KEY: &str = "NoSyncClaudeCodeIntegrationCompleted";
@@ -81,7 +81,7 @@ pub fn not_json(path: &Path) -> String {
 /// `%USERPROFILE%` is not set, so Claude Code's folder cannot be found.
 pub const NO_PROFILE: &str = "Could not find your user folder (USERPROFILE is not set).";
 
-/// The hook program is not beside tandem.exe: a hook pointing at nothing would fail at every
+/// The hook program is not beside termurion.exe: a hook pointing at nothing would fail at every
 /// Claude Code event.
 pub fn missing_exe(exe: &Path) -> String {
     format!("{} was not found. Reinstall Tandem, then try again.", exe.display())

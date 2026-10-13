@@ -3,7 +3,7 @@
 
 fn main() {
     #[cfg(windows)]
-    tandem::dll::harden_process();
+    termurion::dll::harden_process();
     #[cfg(windows)]
-    std::process::exit(tandem::cc_status::real_main());
+    std::process::exit(termurion::cc_status::real_main());
 }

@@ -8,7 +8,7 @@ fn main() {
     // runtime is linked in (no vcruntime140.dll lookup before main).
     if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|v| v == "windows") && std::env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|v| v == "msvc") {
         if !std::env::var("CARGO_CFG_TARGET_FEATURE").is_ok_and(|v| v.split(',').any(|f| f == "crt-static")) {
-            panic!("Tandem must be built with crt-static (-C target-feature=+crt-static): see .cargo/config.toml");
+            panic!("Termurion must be built with crt-static (-C target-feature=+crt-static): see .cargo/config.toml");
         }
         println!("cargo:rustc-link-arg=/DEPENDENTLOADFLAG:0x800");
     }

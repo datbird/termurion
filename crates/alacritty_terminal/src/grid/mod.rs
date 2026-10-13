@@ -136,11 +136,11 @@ pub struct Grid<T> {
     /// Maximum number of lines in history.
     max_scroll_limit: usize,
 
-    /// Tandem patch: rows that have scrolled up off the top of this grid's screen, ever.
+    /// Termurion patch: rows that have scrolled up off the top of this grid's screen, ever.
     #[cfg_attr(feature = "serde", serde(default))]
     scrolled_off: u64,
 
-    /// Tandem patch: rows lost off the top of this grid's history, ever (a full history
+    /// Termurion patch: rows lost off the top of this grid's history, ever (a full history
     /// scrolling, a smaller history limit, a reflow past the limit). Clearing the history does
     /// not count, as in iTerm2's scrollback overflow.
     #[cfg_attr(feature = "serde", serde(default))]
@@ -167,7 +167,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let current_history_size = self.history_size();
         if current_history_size > history_size {
             self.raw.shrink_lines(current_history_size - history_size);
-            // Tandem patch: the oldest rows past the new limit are lost.
+            // Termurion patch: the oldest rows past the new limit are lost.
             self.dropped += (current_history_size - history_size) as u64;
         }
         self.display_offset = min(self.display_offset, history_size);
@@ -284,13 +284,13 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // Only rotate the entire history if the active region starts at the top.
         if region.start == 0 {
-            // Tandem patch: count rows that leave the top of the screen.
+            // Termurion patch: count rows that leave the top of the screen.
             self.scrolled_off += positions as u64;
 
             // Create scrollback for the new lines.
             let history = self.history_size();
             self.increase_scroll_limit(positions);
-            // Tandem patch: rows that found no room in the history are lost.
+            // Termurion patch: rows that found no room in the history are lost.
             self.dropped += (positions - (self.history_size() - history)) as u64;
 
             // Swap the lines fixed at the top to their target positions after rotation.
@@ -326,7 +326,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         }
     }
 
-    /// Tandem patch: moves lines of a region toward the top without saving any to history,
+    /// Termurion patch: moves lines of a region toward the top without saving any to history,
     /// even when the region starts at the top (Scrollback With Status Bar off).
     pub fn scroll_up_in_place<D>(&mut self, region: &Range<Line>, positions: usize)
     where
@@ -414,27 +414,27 @@ impl<T> Grid<T> {
         }
     }
 
-    /// Tandem patch: rows that have scrolled up off the top of the screen (numbering rows).
+    /// Termurion patch: rows that have scrolled up off the top of the screen (numbering rows).
     #[inline]
     pub fn scrolled_off(&self) -> u64 {
         self.scrolled_off
     }
 
-    /// Tandem patch: rows lost off the top of the history, ever. With the history size it
+    /// Termurion patch: rows lost off the top of the history, ever. With the history size it
     /// numbers lines as iTerm2's API does: the oldest kept line is `dropped()`.
     #[inline]
     pub fn dropped(&self) -> u64 {
         self.dropped
     }
 
-    /// Tandem patch: counts `count` rows lost off the top of the history (a reflow past the
+    /// Termurion patch: counts `count` rows lost off the top of the history (a reflow past the
     /// history limit).
     #[inline]
     pub(crate) fn add_dropped(&mut self, count: usize) {
         self.dropped += count as u64;
     }
 
-    /// Tandem patch: removes the history and returns its rows, oldest first (the alternate
+    /// Termurion patch: removes the history and returns its rows, oldest first (the alternate
     /// screen's lines when the program leaves it). The screen's rows stay put.
     pub fn take_history(&mut self) -> Vec<Row<T>> {
         let lines = self.lines;
@@ -447,7 +447,7 @@ impl<T> Grid<T> {
         history
     }
 
-    /// Tandem patch: puts `new` (oldest first) into the history above line 0, newer than every
+    /// Termurion patch: puts `new` (oldest first) into the history above line 0, newer than every
     /// row already there. The rows past the history limit are lost from the top and counted in
     /// `dropped`. `scrolled_off` stays as it is: the rows never scrolled off this screen's top,
     /// and everything numbered from it (triggers, prompt ranges) keeps the numbers of the rows
@@ -467,7 +467,7 @@ impl<T> Grid<T> {
         self.display_offset = min(self.display_offset, self.history_size());
     }
 
-    /// Tandem patch: how many lines of history the grid keeps at most.
+    /// Termurion patch: how many lines of history the grid keeps at most.
     #[inline]
     pub fn max_scroll_limit(&self) -> usize {
         self.max_scroll_limit

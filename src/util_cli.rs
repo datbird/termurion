@@ -1,4 +1,4 @@
-//! The utilities' dispatch (milestone 11e): the names `tandem-utils.exe` answers to, the
+//! The utilities' dispatch (milestone 11e): the names `termurion-utils.exe` answers to, the
 //! choice of utility from its own file name or its first argument, the `Io` context every
 //! utility takes (streams, the console as a `Tty`, environment, working folder, a random
 //! source and a command runner), the console input modes the scripts' `stty` calls stand
@@ -32,7 +32,7 @@ pub const NAMES: [&str; 18] = [
 ];
 
 /// The multi-call program's own file stem.
-pub const EXE_STEM: &str = "tandem-utils";
+pub const EXE_STEM: &str = "termurion-utils";
 
 /// The utility a program path names: its file stem (after the last `\` or `/`, ".exe"
 /// removed), compared without case.
@@ -44,7 +44,7 @@ pub fn name_of(argv0: &str) -> Option<&'static str> {
 }
 
 /// The utility to run and its arguments: the one the program's own name names, else (run
-/// as `tandem-utils`) the one its first argument names. Err is the usage text.
+/// as `termurion-utils`) the one its first argument names. Err is the usage text.
 pub fn pick(args: &[String]) -> Result<(&'static str, Vec<String>), String> {
     if let Some(name) = args.first().and_then(|a| name_of(a)) {
         return Ok((name, args[1..].to_vec()));
@@ -55,7 +55,7 @@ pub fn pick(args: &[String]) -> Result<(&'static str, Vec<String>), String> {
     }
 }
 
-/// What `tandem-utils` run by itself prints.
+/// What `termurion-utils` run by itself prints.
 pub fn multi_usage() -> String {
     format!("Usage: {EXE_STEM} <utility> [arguments...]\nUtilities: {}\n", NAMES.join(", "))
 }
@@ -451,13 +451,13 @@ mod tests {
         assert!(NAMES.contains(&"it2ssh") && NAMES.contains(&"it2"));
         assert_eq!(name_of("C:\\t\\utilities\\IMGCAT.EXE"), Some("imgcat"));
         assert_eq!(name_of("it2ul"), Some("it2ul"));
-        assert_eq!(name_of("tandem-utils.exe"), None);
-        assert_eq!(pick(&strings(&["C:\\t\\tandem-utils.exe", "it2check", "2.0"])), Ok(("it2check", strings(&["2.0"]))));
+        assert_eq!(name_of("termurion-utils.exe"), None);
+        assert_eq!(pick(&strings(&["C:\\t\\termurion-utils.exe", "it2check", "2.0"])), Ok(("it2check", strings(&["2.0"]))));
         assert_eq!(pick(&strings(&["imgcat.exe", "a.png"])), Ok(("imgcat", strings(&["a.png"]))));
-        assert_eq!(pick(&strings(&["tandem-utils.exe"])), Err(multi_usage()));
-        assert_eq!(pick(&strings(&["tandem-utils.exe", "it2ssh", "h"])), Ok(("it2ssh", strings(&["h"]))));
-        assert_eq!(pick(&strings(&["tandem-utils.exe", "it2", "session"])), Ok(("it2", strings(&["session"]))));
-        assert!(multi_usage().starts_with("Usage: tandem-utils <utility> [arguments...]\nUtilities: imgcat, imgls, "));
+        assert_eq!(pick(&strings(&["termurion-utils.exe"])), Err(multi_usage()));
+        assert_eq!(pick(&strings(&["termurion-utils.exe", "it2ssh", "h"])), Ok(("it2ssh", strings(&["h"]))));
+        assert_eq!(pick(&strings(&["termurion-utils.exe", "it2", "session"])), Ok(("it2", strings(&["session"]))));
+        assert!(multi_usage().starts_with("Usage: termurion-utils <utility> [arguments...]\nUtilities: imgcat, imgls, "));
         assert!(multi_usage().ends_with(", it2universion\n"));
     }
 

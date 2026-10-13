@@ -1,9 +1,12 @@
-//! The git wrapper's texts (milestone 9i, Task 4): `tandem-git.exe` (Task 6) is the Windows
+//! The git wrapper's texts (milestone 9i, Task 4): `termurion-git.exe` (Task 6) is the Windows
 //! port of iTerm2's `sources/iterm2_git_wrapper.sh`, which a git menu command's single-use
 //! window runs. It prints the banner, runs git, and on failure asks to be disinterred and
 //! waits. Lines end in CRLF (ConPTY). `command_line` builds the window's command.
 
 use std::path::Path;
+
+/// The wrapper program beside the app; the git menu starts it by this file name.
+pub const WRAPPER_EXE: &str = "termurion-git.exe";
 
 /// The wrapper's echo lines before git runs: the folder, the command, an empty line, an SGR
 /// reset, and the window title. Each echo joins its words with one space, as bash's does.
@@ -83,12 +86,12 @@ mod tests {
         assert_eq!(failure(&[]), "\x1b]1337;Disinter\x1b\\\r\n\x1b[7mAn error occurred while running 'git  '.\x1b[m\r\nYou may safely close this window.\r\n");
 
         let git = Path::new("C:\\Program Files\\Git\\cmd\\git.exe");
-        let wrapper = Path::new("C:\\Tandem\\tandem-git.exe");
-        assert_eq!(command_line(wrapper, Path::new("git"), &s(&["push", "origin", "main"])), "C:\\Tandem\\tandem-git.exe git push origin main");
+        let wrapper = Path::new("C:\\Tandem\\termurion-git.exe");
+        assert_eq!(command_line(wrapper, Path::new("git"), &s(&["push", "origin", "main"])), "C:\\Tandem\\termurion-git.exe git push origin main");
         assert_eq!(
             command_line(wrapper, git, &s(&["checkout", "my branch", "say \"hi\"", "a\\b", "", "tail\\ x\\"])),
-            "C:\\Tandem\\tandem-git.exe \"C:\\Program Files\\Git\\cmd\\git.exe\" checkout \"my branch\" \"say \\\"hi\\\"\" a\\b \"\" \"tail\\ x\\\\\""
+            "C:\\Tandem\\termurion-git.exe \"C:\\Program Files\\Git\\cmd\\git.exe\" checkout \"my branch\" \"say \\\"hi\\\"\" a\\b \"\" \"tail\\ x\\\\\""
         );
-        assert_eq!(command_line(Path::new("C:\\My Apps\\tandem-git.exe"), Path::new("git"), &s(&["a\\\"b"])), "\"C:\\My Apps\\tandem-git.exe\" git \"a\\\\\\\"b\"");
+        assert_eq!(command_line(Path::new("C:\\My Apps\\termurion-git.exe"), Path::new("git"), &s(&["a\\\"b"])), "\"C:\\My Apps\\termurion-git.exe\" git \"a\\\\\\\"b\"");
     }
 }

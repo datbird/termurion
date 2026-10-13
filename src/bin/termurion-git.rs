@@ -1,6 +1,6 @@
 //! The git menu's wrapper (milestone 9i): the Windows port of iTerm2's
 //! `sources/iterm2_git_wrapper.sh`. A git menu command's single-use window runs
-//! `tandem-git.exe <git> <arguments...>`: it prints the banner, runs git on this console,
+//! `termurion-git.exe <git> <arguments...>`: it prints the banner, runs git on this console,
 //! and exits 0 when git succeeds. Otherwise it asks to be disinterred, prints the error, and
 //! waits, so the window stays until it is closed. A console program (ConPTY runs it).
 
@@ -8,12 +8,12 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use tandem::git_state as gs;
-use tandem::git_wrapper;
+use termurion::git_state as gs;
+use termurion::git_wrapper;
 
 fn main() {
     #[cfg(windows)]
-    tandem::dll::harden_process();
+    termurion::dll::harden_process();
     let mut argv = std::env::args_os().skip(1);
     let program = argv.next().map_or_else(|| PathBuf::from("git"), PathBuf::from);
     let raw: Vec<OsString> = argv.collect();
@@ -36,15 +36,15 @@ fn main() {
 /// on PATH without looking in network folders, and any other program (the `gitSearchPath`
 /// folder's `git.exe`) must be on a local drive with no link on the way to a share.
 fn run(program: &Path, cwd: &Path, args: &[OsString]) -> bool {
-    use tandem::localfs::{self, LocalPath};
-    let Some(cwd) = Some(cwd).filter(|c| tandem::prompted::local_path_ok(&c.to_string_lossy())).and_then(LocalPath::judge) else {
+    use termurion::localfs::{self, LocalPath};
+    let Some(cwd) = Some(cwd).filter(|c| termurion::prompted::local_path_ok(&c.to_string_lossy())).and_then(LocalPath::judge) else {
         eprintln!("git does not run in a network folder.\r");
         return false;
     };
     let git = if program == Path::new("git") {
         gs::find_git(&std::env::var("PATH").unwrap_or_default(), &localfs::is_file)
     } else {
-        Some(program).filter(|p| tandem::prompted::local_path_ok(&p.to_string_lossy())).and_then(LocalPath::judge).filter(localfs::is_file).map(LocalPath::into_path_buf)
+        Some(program).filter(|p| termurion::prompted::local_path_ok(&p.to_string_lossy())).and_then(LocalPath::judge).filter(localfs::is_file).map(LocalPath::into_path_buf)
     };
     let Some(git) = git else {
         eprintln!("git.exe was not found in a folder on this computer.\r");

@@ -1316,7 +1316,7 @@ mod tests {
         ("app/tmux_ui.rs", "tmux_bar", "a fixed help page"),
         ("app/triggers_ui.rs", "trigger_request", "the user's own trigger rule (ruling)"),
         ("app/triggers_ui.rs", "start_command", "Run Command for the user's own trigger rule (ruling)"),
-        ("bin/tandem-git.rs", "run", "the git menu's wrapper: git with the menu's own command"),
+        ("bin/termurion-git.rs", "run", "the git menu's wrapper: git with the menu's own command"),
         ("git_run_win.rs", "start", "git for the status bar, Tandem's own arguments"),
         ("host_client.rs", "start_host_process", "starts Tandem's own session host"),
         ("probe.rs", "wsl", "`wsl.exe` with Tandem's own arguments"),
@@ -1329,7 +1329,7 @@ mod tests {
         ("app/tips_app.rs", "tip_learn_more", "a URL from the static tips, a fixed https page, through guard_open"),
         ("app/update_app.rs", "learn_more_target", "the pinned releases page (update::release_url) through guard_open"),
         ("app/update_app.rs", "learn_more", "opens what learn_more_target settled, the pinned releases page"),
-        ("util_console.rs", "run_command", "tandem-utils' program runner, run by the user at a prompt"),
+        ("util_console.rs", "run_command", "termurion-utils' program runner, run by the user at a prompt"),
     ];
 
     /// What may stand before `fn` in a declaration.

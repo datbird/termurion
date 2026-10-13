@@ -308,9 +308,9 @@ pub fn secret_pipe_name() -> Result<String, String> {
     Ok(format!(r"\\.\pipe\tandem-ssh-secrets-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))
 }
 
-/// `\\.\pipe\tandem-url-<user SID>`, plus `-admin` when elevated: the pipe a second `tandem.exe
+/// `\\.\pipe\tandem-url-<user SID>`, plus `-admin` when elevated: the pipe a second `termurion.exe
 /// --url` hands an ssh: URL to (m14e). It is also the one channel for every other request of a
-/// second `tandem.exe` (`launch::Request`, m13v1): there is no second app pipe.
+/// second `termurion.exe` (`launch::Request`, m13v1): there is no second app pipe.
 pub fn url_pipe_name() -> Result<String, String> {
     // As the host pipe: an elevated Tandem's URLs are its own, never a normal one's.
     Ok(format!(r"\\.\pipe\tandem-url-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))

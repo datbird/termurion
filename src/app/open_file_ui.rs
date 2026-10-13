@@ -1,4 +1,4 @@
-//! Opening files and folders handed over by another `tandem.exe` (m13v1 Task 2), after iTerm2's
+//! Opening files and folders handed over by another `termurion.exe` (m13v1 Task 2), after iTerm2's
 //! `application:openFile:` (`iTermApplicationDelegate.m:785-913`). Every path is another program's:
 //! it is checked on a worker (`open_file::inspect`: the one network rule, the link check, the
 //! stat, Mark of the Web), never on the event loop, and only then does a kind's arm run. Many

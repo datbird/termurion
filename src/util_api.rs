@@ -49,7 +49,7 @@ pub fn python_candidates(path_var: &str, is_file: &dyn Fn(&Path) -> bool) -> Vec
 }
 
 /// Where the script is: beside the program (`utilities\it2api.exe`), else in the
-/// `utilities` folder beside it (`tandem-utils.exe it2api` beside tandem.exe).
+/// `utilities` folder beside it (`termurion-utils.exe it2api` beside termurion.exe).
 pub fn script_path(own_dir: &Path, is_file: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
     let file = crate::utilities::API_SCRIPT;
     [own_dir.join(file), own_dir.join(crate::utilities::FOLDER).join(file)].into_iter().find(|p| is_file(p))

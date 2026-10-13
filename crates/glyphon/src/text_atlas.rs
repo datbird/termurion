@@ -154,12 +154,12 @@ impl InnerAtlas {
 
             let (image_data, width, height) = match cache_key {
                 GlyphonCacheKey::Text(cache_key) => {
-                    // Tandem patch 2: a glyph that no longer rasterizes is skipped (the
+                    // Termurion patch 2: a glyph that no longer rasterizes is skipped (the
                     // original unwraps and panics); the others are filtered like the first upload.
                     let Some(mut image) = cache.get_image_uncached(font_system, cache_key) else {
                         continue;
                     };
-                    // Tandem patch 1: filter the mask of an aliased or thin-stroke glyph.
+                    // Termurion patch 1: filter the mask of an aliased or thin-stroke glyph.
                     if matches!(image.content, cosmic_text::SwashContent::Mask) {
                         crate::filter_text_mask(cache_key.flags.bits(), &mut image.data);
                     }
@@ -339,7 +339,7 @@ impl TextAtlas {
         }
     }
 
-    /// Tandem patch 3: the side of the mask atlas texture in pixels (it doubles when it grows).
+    /// Termurion patch 3: the side of the mask atlas texture in pixels (it doubles when it grows).
     pub fn mask_size(&self) -> u32 {
         self.mask_atlas.size
     }

@@ -1,5 +1,5 @@
 [package]
-name = "tandem"
+name = "termurion"
 version = "0.0.1"
 edition = "2024"
 publish = false
@@ -36,7 +36,7 @@ tar = "0.4"
 toml = "1"
 # The Python API's cookies (16 random bytes each); already in the tree through uuid.
 getrandom = "0.4"
-# The Python API's WebSocket framing only; Tandem does its own HTTP (src/api_http.rs).
+# The Python API's WebSocket framing only; Termurion does its own HTTP (src/api_http.rs).
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 uuid = { version = "1", features = ["v4"] }
 wgpu = "30"
@@ -98,10 +98,10 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
-# alacritty_terminal with row marks (crates/alacritty_terminal/TANDEM-PATCHES.md).
+# alacritty_terminal with row marks (crates/alacritty_terminal/TERMURION-PATCHES.md).
 [patch.crates-io]
 alacritty_terminal = { path = "crates/alacritty_terminal" }
-# vte with a readable parser state (crates/vte/TANDEM-PATCHES.md).
+# vte with a readable parser state (crates/vte/TERMURION-PATCHES.md).
 vte = { path = "crates/vte" }
-# glyphon with a mask filter for aliased and thin text (crates/glyphon/TANDEM-PATCHES.md).
+# glyphon with a mask filter for aliased and thin text (crates/glyphon/TERMURION-PATCHES.md).
 glyphon = { path = "crates/glyphon" }

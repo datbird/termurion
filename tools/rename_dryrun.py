@@ -97,7 +97,7 @@ def render(rep, table_path, listing=False):
     w("")
     w("per-group hits mapped by a rename row (A user strings, B identifiers, C data paths,")
     w("D code identifiers, E docs and scripts, F assets, K keep rows):")
-    for g in "ABCDEFK":
+    for g in "ABCDEFKT":
         w("  %s: %d" % (g, rep.by_group.get(g, 0)))
     w("  whole-file keep paths: %d" % sum(n for (gl, m), n in rep.by_pathrule.items() if m == "keep"))
     w("  keep-history paths:    %d" % sum(n for (gl, m), n in rep.by_pathrule.items() if m == "keep-history"))

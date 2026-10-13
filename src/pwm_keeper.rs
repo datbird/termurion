@@ -1570,11 +1570,11 @@ mod tests {
     #[test]
     fn the_executable_uses_only_the_shared_framework() {
         let src = include_str!("bin/iterm2-keeper-adapter.rs");
-        assert!(src.contains("tandem::pwm_keeper"));
+        assert!(src.contains("termurion::pwm_keeper"));
         for line in src.lines().filter(|l| l.contains("println!")) {
             assert!(line.contains("runs on Windows only"), "{line}");
         }
-        for line in src.lines().filter(|l| l.contains("tandem::")) {
+        for line in src.lines().filter(|l| l.contains("termurion::")) {
             assert!(["pwm_adapter", "pwm_keeper", "dll::"].iter().any(|ok| line.contains(ok)), "{line}");
         }
         let me = include_str!("pwm_keeper.rs");

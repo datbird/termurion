@@ -131,9 +131,9 @@ pub fn unregister_with(r: &mut dyn crate::reg::Registry, scheme: &str, exe: &Pat
     Ok(())
 }
 
-/// A command `tandem_command` wrote for some `tandem.exe`.
+/// A command `tandem_command` wrote for some `termurion.exe`.
 fn is_tandem_command(command: &str) -> bool {
-    command_argument_shape(command).is_some_and(|p| Path::new(&p).file_name().is_some_and(|f| f.eq_ignore_ascii_case("tandem.exe")))
+    command_argument_shape(command).is_some_and(|p| Path::new(&p).file_name().is_some_and(|f| f.eq_ignore_ascii_case("termurion.exe")))
 }
 
 /// The bound schemes whose registration the person's OK wrote at a path that is gone (the exe
@@ -225,7 +225,7 @@ pub trait SchemeRegistry {
     }
 }
 
-/// The protocol handler's command: the URL is one quoted argument (`tandem.exe` accepts only
+/// The protocol handler's command: the URL is one quoted argument (`termurion.exe` accepts only
 /// exactly `[exe, "--url", url]`).
 pub fn tandem_command(exe: &Path) -> String {
     format!("\"{}\" --url \"%1\"", exe.display())
@@ -319,7 +319,7 @@ fn ask_info(reg: &dyn SchemeRegistry, scheme: &str) -> String {
     }
     if let Some(entry) = &classes {
         let program = command_program(entry);
-        let ours = Path::new(&program).file_name().is_some_and(|f| f.eq_ignore_ascii_case("tandem.exe"));
+        let ours = Path::new(&program).file_name().is_some_and(|f| f.eq_ignore_ascii_case("termurion.exe"));
         let same = effective_program.as_deref().is_some_and(|p| p.eq_ignore_ascii_case(&program));
         // An entry with no readable command is named only when another handler is named above.
         let hidden = program.is_empty() && effective_program.is_none() && name.is_none();
@@ -632,8 +632,8 @@ mod tests {
     /// the program part of the registered command).
     #[test]
     fn an_exe_path_with_a_percent_is_refused() {
-        assert!(exe_ok(Path::new(r"C:\T\tandem.exe")));
-        for bad in [r"C:\a%1b\tandem.exe", r"C:\%USERPROFILE%\tandem.exe", r"C:\T\tan%dem.exe"] {
+        assert!(exe_ok(Path::new(r"C:\T\termurion.exe")));
+        for bad in [r"C:\a%1b\termurion.exe", r"C:\%USERPROFILE%\termurion.exe", r"C:\T\tan%dem.exe"] {
             assert!(!exe_ok(Path::new(bad)), "{bad}");
         }
     }
@@ -675,7 +675,7 @@ mod tests {
     }
 
     fn exe() -> PathBuf {
-        PathBuf::from(r"C:\T\tandem.exe")
+        PathBuf::from(r"C:\T\termurion.exe")
     }
 
     fn ours() -> Fake {
@@ -684,9 +684,9 @@ mod tests {
 
     #[test]
     fn scheme_binding_follows_iterm2() {
-        assert_eq!(tandem_command(&exe()), "\"C:\\T\\tandem.exe\" --url \"%1\"");
+        assert_eq!(tandem_command(&exe()), "\"C:\\T\\termurion.exe\" --url \"%1\"");
         assert!(is_default(&ours(), "ssh", &exe()));
-        let upper = Fake { command: Some("\"c:\\t\\TANDEM.EXE\" --url \"%1\"".into()), ..Fake::default() };
+        let upper = Fake { command: Some("\"c:\\t\\TERMURION.EXE\" --url \"%1\"".into()), ..Fake::default() };
         assert!(is_default(&upper, "ssh", &exe()));
         assert!(!is_default(&Fake { command: Some("putty.exe %1".into()), ..Fake::default() }, "ssh", &exe()));
         assert!(!is_default(&Fake::default(), "ssh", &exe()));
@@ -855,7 +855,7 @@ mod registration_tests {
     use std::path::PathBuf;
 
     fn exe() -> PathBuf {
-        PathBuf::from(r"C:\T\tandem.exe")
+        PathBuf::from(r"C:\T\termurion.exe")
     }
 
     #[test]
@@ -874,13 +874,13 @@ mod registration_tests {
         let has = |k: &str, n: &str, v: &str| entries.iter().any(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str()) == (k, n, v));
         assert!(has("Software\\Classes\\Tandem.ssh", "", "URL:ssh Protocol"));
         assert!(has("Software\\Classes\\Tandem.ssh", "URL Protocol", ""));
-        assert!(has("Software\\Classes\\Tandem.ssh\\shell\\open\\command", "", "\"C:\\T\\tandem.exe\" --url \"%1\""));
+        assert!(has("Software\\Classes\\Tandem.ssh\\shell\\open\\command", "", "\"C:\\T\\termurion.exe\" --url \"%1\""));
         assert!(has("Software\\Tandem\\Capabilities", "ApplicationName", "Tandem"));
         assert!(has("Software\\Tandem\\Capabilities\\URLAssociations", "ssh", "Tandem.ssh"));
         assert!(has("Software\\RegisteredApplications", "Tandem", "Software\\Tandem\\Capabilities"));
         // Every key is Tandem's own: the ProgId, its software key and its RegisteredApplications value.
         assert!(entries.iter().all(|(k, _, _)| crate::reg::deletable(k) || k == "Software\\RegisteredApplications"));
-        assert_eq!(command_argument_shape(&tandem_command(&exe())), Some(r"C:\T\tandem.exe".to_string()));
+        assert_eq!(command_argument_shape(&tandem_command(&exe())), Some(r"C:\T\termurion.exe".to_string()));
         // Applied twice to a fake: the second pass writes nothing (idempotent).
         let mut r = FakeRegistry::default();
         assert_eq!(register_with(&mut r, "ssh", &exe()), Ok(entries.len()));
@@ -904,7 +904,7 @@ mod registration_tests {
         assert!(fake.registered.is_empty() && t.is_empty());
         // An exe path that could break out of the quoted command is refused.
         assert!(register_with(&mut r, "ssh", Path::new("C:\\T\\ta\"ndem.exe")).is_err());
-        assert!(register_with(&mut r, "ssh", Path::new("tandem.exe")).is_err(), "absolute paths only");
+        assert!(register_with(&mut r, "ssh", Path::new("termurion.exe")).is_err(), "absolute paths only");
     }
 
     #[test]
@@ -982,7 +982,7 @@ mod registration_tests {
     /// HKLM-only registration and a binding imported without an OK on this machine are left alone.
     #[test]
     fn a_moved_exe_is_repaired_only_for_what_the_ok_registered() {
-        let old = PathBuf::from(r"D:\Old\tandem.exe");
+        let old = PathBuf::from(r"D:\Old\termurion.exe");
         let old_s = old.to_string_lossy().into_owned();
         let mut t = toml::Table::new();
         bind(&mut t, "ssh", "G1");
@@ -999,7 +999,7 @@ mod registration_tests {
         assert_eq!(asked.borrow().as_slice(), [old.clone()], "only the recorded path is probed");
         assert_eq!(repair(&t, &mut moved, &exe(), &gone), vec!["ssh".to_string()]);
         assert_eq!(moved.registered, ["ssh"]);
-        assert_eq!(moved.recorded.as_deref(), Some(r"C:\T\tandem.exe"));
+        assert_eq!(moved.recorded.as_deref(), Some(r"C:\T\termurion.exe"));
         assert!(stale_schemes(&t, &moved, &exe(), &gone).is_empty(), "now current");
         // Two live copies: the other copy still exists, so its registration stays.
         let mut live = FakeScheme { command: Some(tandem_command(&old)), classes: Some(tandem_command(&old)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
@@ -1015,10 +1015,10 @@ mod registration_tests {
         assert!(repair(&t, &mut imported, &exe(), &gone).is_empty());
         assert!(imported.registered.is_empty());
         // HKCU holds another Tandem path than the recorded one (or a look-alike): not what the OK wrote.
-        let other_tandem = PathBuf::from(r"E:\Else\tandem.exe");
+        let other_tandem = PathBuf::from(r"E:\Else\termurion.exe");
         let mut differs = FakeScheme { classes: Some(tandem_command(&other_tandem)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
         assert!(repair(&t, &mut differs, &exe(), &gone).is_empty());
-        for cmd in ["\"D:\\Old\\tandem.exe\" --url \"%1\" --x", "putty.exe %1", ""] {
+        for cmd in ["\"D:\\Old\\termurion.exe\" --url \"%1\" --x", "putty.exe %1", ""] {
             let mut f = FakeScheme { classes: Some(cmd.into()), recorded: Some(old_s.clone()), ..FakeScheme::default() };
             assert!(repair(&t, &mut f, &exe(), &gone).is_empty(), "{cmd}");
         }
@@ -1036,7 +1036,7 @@ mod registration_tests {
         let mut reg = FakeScheme::default();
         let mut t = toml::Table::new();
         register_and_bind(&mut t, &mut reg, "ssh", "G1", &exe()).unwrap();
-        assert_eq!(reg.recorded.as_deref(), Some(r"C:\T\tandem.exe"));
+        assert_eq!(reg.recorded.as_deref(), Some(r"C:\T\termurion.exe"));
     }
 
     #[test]

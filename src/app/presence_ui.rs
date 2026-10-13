@@ -194,7 +194,7 @@ impl App {
     }
 
     /// iTerm2's dock click (`AD:946-952`): the icon's left click, and a second bare start of
-    /// `tandem.exe` (`launch::Request::Reopen`, which reaches here over the launch pipe).
+    /// `termurion.exe` (`launch::Request::Reopen`, which reaches here over the launch pipe).
     pub(super) fn dock_click_now(&mut self, event_loop: &ActiveEventLoop) {
         let states = self.terminal_window_states();
         let hotkeys = states.iter().filter(|(_, h, on)| *h == Some(true) && *on).count();

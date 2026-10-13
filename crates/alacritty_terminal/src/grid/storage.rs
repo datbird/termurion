@@ -143,7 +143,7 @@ impl<T> Storage<T> {
 
     /// Swap two rows.
     ///
-    /// Tandem patch: upstream copied four qwords, the size of an unpatched `Row<T>`; Tandem's
+    /// Termurion patch: upstream copied four qwords, the size of an unpatched `Row<T>`; Termurion's
     /// row slots make it larger, so the slots stayed behind (and debug builds panicked).
     pub fn swap(&mut self, a: Line, b: Line) {
         let a = self.compute_index(a);

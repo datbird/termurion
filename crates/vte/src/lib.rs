@@ -90,7 +90,7 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
         Default::default()
     }
 
-    /// Tandem patch: the state the parser is in now.
+    /// Termurion patch: the state the parser is in now.
     #[inline]
     pub fn state(&self) -> State {
         self.state
@@ -735,7 +735,7 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
     }
 }
 
-/// Tandem patch: the parser's state, readable by Tandem's output scanner so it can never
+/// Termurion patch: the parser's state, readable by Termurion's output scanner so it can never
 /// disagree with the parser about where a control sequence or string starts and ends.
 #[derive(PartialEq, Eq, Debug, Default, Copy, Clone)]
 pub enum State {

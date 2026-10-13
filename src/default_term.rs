@@ -31,7 +31,7 @@ pub const NEEDS_WT_TEXT: &str = "Windows hands console programs to a default ter
 pub const PACK_MISSING_HEADING: &str = "Default Terminal Unavailable";
 
 pub fn pack_missing_text() -> &'static str {
-    "Tandem can be the default terminal only with its own conpty.dll next to tandem.exe."
+    "Tandem can be the default terminal only with its own conpty.dll next to termurion.exe."
 }
 
 /// The registry key of Tandem's COM class (the one tree `unmake` deletes).
@@ -333,7 +333,7 @@ mod tests {
         let mut r = FakeRegistry::default();
         assert_eq!(current(&r), pair(CLSID_DEFAULT, CLSID_DEFAULT));
         assert!(make_enabled(&r));
-        apply(&mut r, &make_tandem_entries(Path::new(r"C:\T\tandem.exe"))).unwrap();
+        apply(&mut r, &make_tandem_entries(Path::new(r"C:\T\termurion.exe"))).unwrap();
         assert_eq!(current(&r), pair(CLSID_WT_CONSOLE, CLSID_TANDEM_TERMINAL));
         assert!(is_tandem(&current(&r)));
         assert!(!make_enabled(&r));
@@ -357,7 +357,7 @@ mod tests {
         let now = current(&r);
         apply(&mut r, &save_entries(&now)).unwrap();
         assert_eq!(saved(&r), Some(pair(CLSID_CONHOST, CLSID_CONHOST)));
-        apply(&mut r, &make_tandem_entries(Path::new(r"C:\T\tandem.exe"))).unwrap();
+        apply(&mut r, &make_tandem_entries(Path::new(r"C:\T\termurion.exe"))).unwrap();
         // Already Tandem's: nothing is saved over the old pair.
         assert!(should_save(&pair(CLSID_CONHOST, CLSID_CONHOST)));
         assert!(!should_save(&current(&r)));
@@ -378,12 +378,12 @@ mod tests {
 
     #[test]
     fn registration_follows_com() {
-        let e = make_tandem_entries(Path::new(r"C:\T\tandem.exe"));
+        let e = make_tandem_entries(Path::new(r"C:\T\termurion.exe"));
         let t = |k: &str, n: &str, v: &str| (k.to_string(), n.to_string(), v.to_string());
         let key = r"Software\Classes\CLSID\{6A1E8D3C-2B7F-4C9E-9D41-5F0B7A2C8E13}";
         assert!(e.contains(&t(key, "", "Tandem Terminal Handoff")));
         // COM appends ` -Embedding` itself (LocalServer32 doc): the value is the quoted exe only.
-        assert!(e.contains(&t(&format!(r"{key}\LocalServer32"), "", "\"C:\\T\\tandem.exe\"")));
+        assert!(e.contains(&t(&format!(r"{key}\LocalServer32"), "", "\"C:\\T\\termurion.exe\"")));
         assert!(e.contains(&t(STARTUP_KEY, CONSOLE_VALUE, CLSID_WT_CONSOLE)));
         assert!(e.contains(&t(STARTUP_KEY, TERMINAL_VALUE, CLSID_TANDEM_TERMINAL)));
         assert_eq!(NEEDS_WT_HEADING, "Windows Terminal Required");
@@ -455,8 +455,8 @@ mod tests {
     /// recorded exe is gone (judged before it is probed, by the caller's `gone`).
     #[test]
     fn a_moved_exe_gets_its_handoff_server_repaired() {
-        let old = Path::new(r"C:\Old\tandem.exe");
-        let new = Path::new(r"D:\New\tandem.exe");
+        let old = Path::new(r"C:\Old\termurion.exe");
+        let new = Path::new(r"D:\New\termurion.exe");
         let server = format!(r"{}\LocalServer32", class_key());
         let mut r = FakeRegistry::default();
         apply(&mut r, &make_tandem_entries(old)).unwrap();
@@ -483,7 +483,7 @@ mod tests {
         // A value that is not the shape Tandem writes is never rewritten, and its path never probed.
         let mut r = FakeRegistry::default();
         apply(&mut r, &make_tandem_entries(old)).unwrap();
-        for v in ["", "C:\\Old\\tandem.exe", "\"C:\\Old\\tandem.exe\" /other", "\"relative\\tandem.exe\"", "\"\\\\host\\s\\tandem.exe\" x"] {
+        for v in ["", "C:\\Old\\termurion.exe", "\"C:\\Old\\termurion.exe\" /other", "\"relative\\termurion.exe\"", "\"\\\\host\\s\\termurion.exe\" x"] {
             r.set(&server, "", v).unwrap();
             let asked = std::cell::Cell::new(false);
             assert!(server_repair(&r, new, &|_| { asked.set(true); true }).is_empty(), "{v}");
@@ -576,7 +576,7 @@ mod tests {
     #[test]
     fn the_command_line_com_makes_is_an_embedding_start() {
         let cwd = Path::new(r"C:\");
-        let exe = Path::new(r"C:\Program Files\Tandem\tandem.exe");
+        let exe = Path::new(r"C:\Program Files\Tandem\termurion.exe");
         let value = make_tandem_entries(exe).into_iter().find(|(k, _, _)| k.ends_with(r"\LocalServer32")).unwrap().2;
         let com_line = format!("{value} -Embedding");
         let argv = crate::semantic::split_command_line(&com_line);

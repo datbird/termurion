@@ -285,7 +285,7 @@ impl TextRenderer {
                             let mut image = system
                                 .cache
                                 .get_image_uncached(system.font_system, physical_glyph.cache_key)?;
-                            // Tandem patch 1: filter the mask of an aliased or thin-stroke glyph.
+                            // Termurion patch 1: filter the mask of an aliased or thin-stroke glyph.
                             if matches!(image.content, SwashContent::Mask) {
                                 crate::filter_text_mask(
                                     physical_glyph.cache_key.flags.bits(),

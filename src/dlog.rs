@@ -870,8 +870,8 @@ mod tests {
     /// `DL:395-461`: the entry, the system log prefix, and the on/off life of a log.
     #[test]
     fn log_entries_follow_iterm2() {
-        assert_eq!(entry(1700000000, 42, "bell_ui.rs", 33, "tandem::app::bell_ui", "main", "Beep"), "1700000000.000042 bell_ui.rs:33 (tandem::app::bell_ui) main: Beep\n");
-        assert_eq!(syslog_prefix(1700000000, 42, "bell_ui.rs", 33, "tandem::app::bell_ui"), "TandemDebugLog: 1700000000.000042 bell_ui.rs:33 (tandem::app::bell_ui): ");
+        assert_eq!(entry(1700000000, 42, "bell_ui.rs", 33, "termurion::app::bell_ui", "main", "Beep"), "1700000000.000042 bell_ui.rs:33 (termurion::app::bell_ui) main: Beep\n");
+        assert_eq!(syslog_prefix(1700000000, 42, "bell_ui.rs", 33, "termurion::app::bell_ui"), "TandemDebugLog: 1700000000.000042 bell_ui.rs:33 (termurion::app::bell_ui): ");
         let mut log = Log::default();
         assert!(!log.is_on());
         log.append("dropped\n");
@@ -1018,7 +1018,7 @@ mod tests {
         crate::dlog!("hello {}", 5u64);
         let (_, body, _) = stop().unwrap();
         assert!(body.contains(" dlog.rs:"), "the file name, not the path: {body}");
-        assert!(body.contains("(tandem::dlog::tests) "), "{body}");
+        assert!(body.contains("(termurion::dlog::tests) "), "{body}");
         assert!(body.ends_with(": hello 5\n"), "{body}");
         assert!(!is_on());
     }
@@ -1272,7 +1272,7 @@ mod tests {
     #[test]
     fn ring_follows_iterm2() {
         assert_eq!(RING_MAX, 10 * 1024 * 1024);
-        assert_eq!(ring_entry(1700000000, 42, "bell_ui.rs", 33, "tandem::app::bell_ui", "Beep"), "1700000000.000042 bell_ui.rs:33 (tandem::app::bell_ui): Beep\n");
+        assert_eq!(ring_entry(1700000000, 42, "bell_ui.rs", 33, "termurion::app::bell_ui", "Beep"), "1700000000.000042 bell_ui.rs:33 (termurion::app::bell_ui): Beep\n");
         let mut log = Log::with_caps(MAX_LOG, 30);
         for i in 0..5 {
             log.remember(&format!("line number{i}\n"));

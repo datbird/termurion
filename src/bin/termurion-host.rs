@@ -3,15 +3,15 @@
 
 fn main() {
     #[cfg(windows)]
-    tandem::dll::harden_process();
+    termurion::dll::harden_process();
     #[cfg(windows)]
     std::process::exit(run());
 }
 
 #[cfg(windows)]
 fn run() -> i32 {
-    use tandem::conpty::{self, Source};
-    use tandem::host;
+    use termurion::conpty::{self, Source};
+    use termurion::host;
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(std::path::PathBuf::from)).unwrap_or_default();
     let api = match conpty::load(&Source::Shipped(exe_dir)).or_else(|e| conpty::load(&Source::Inbox).map_err(|e2| format!("{e}; {e2}"))) {
         Ok(api) => api,
@@ -20,7 +20,7 @@ fn run() -> i32 {
             return 1;
         }
     };
-    let name = match tandem::winpipe::host_pipe_name() {
+    let name = match termurion::winpipe::host_pipe_name() {
         Ok(n) => n,
         Err(e) => {
             host::log(&e);

@@ -39,11 +39,11 @@ pub const MIN_COLUMNS: usize = 2;
 pub const MIN_SCREEN_LINES: usize = 1;
 
 /// Max size of the window title stack.
-// Tandem patch: xterm's depth (10), not 4096, and each entry is cut (`TITLE_STACK_MAX_BYTES`), so
+// Termurion patch: xterm's depth (10), not 4096, and each entry is cut (`TITLE_STACK_MAX_BYTES`), so
 // a program cannot hold gigabytes with `CSI 22 t` (13o, patch 22).
 const TITLE_STACK_MAX_DEPTH: usize = 10;
 
-/// Tandem patch: the longest title kept on the stack, in bytes (cut at a character boundary).
+/// Termurion patch: the longest title kept on the stack, in bytes (cut at a character boundary).
 const TITLE_STACK_MAX_BYTES: usize = 4096;
 
 /// Default semantic escape characters.
@@ -82,7 +82,7 @@ bitflags! {
         const REPORT_ALTERNATE_KEYS   = 1 << 20;
         const REPORT_ALL_KEYS_AS_ESC  = 1 << 21;
         const REPORT_ASSOCIATED_TEXT  = 1 << 22;
-        // Tandem patch: DECSET 1036 (a program asks Alt to send Esc+).
+        // Termurion patch: DECSET 1036 (a program asks Alt to send Esc+).
         const META_SENDS_ESCAPE       = 1 << 23;
         const MOUSE_MODE              = Self::MOUSE_REPORT_CLICK.bits() | Self::MOUSE_MOTION.bits() | Self::MOUSE_DRAG.bits();
         const KITTY_KEYBOARD_PROTOCOL = Self::DISAMBIGUATE_ESC_CODES.bits()
@@ -118,7 +118,7 @@ impl From<KeyboardModes> for TermMode {
 }
 
 impl Default for TermMode {
-    // Tandem patch: DECSET 1007 starts off, as iTerm2 (`VT100Terminal.m:399`); upstream had it on.
+    // Termurion patch: DECSET 1007 starts off, as iTerm2 (`VT100Terminal.m:399`); upstream had it on.
     fn default() -> TermMode {
         TermMode::SHOW_CURSOR
             | TermMode::LINE_WRAP
@@ -272,7 +272,7 @@ impl TermDamageState {
     }
 }
 
-/// Tandem patch: how `Term::input` measures a character (iTerm2's width rules). `width` gives
+/// Termurion patch: how `Term::input` measures a character (iTerm2's width rules). `width` gives
 /// the cells a character takes (None writes nothing, 0 rides on the previous cell); the rest
 /// are the switches `input` itself needs for U+200B, VS16 and regional indicator pairs.
 #[derive(Clone, Copy, Debug)]
@@ -300,10 +300,10 @@ pub struct Term<T> {
     /// Terminal focus controlling the cursor shape.
     pub is_focused: bool,
 
-    /// Tandem patch: the time written rows are stamped with (Unix seconds).
+    /// Termurion patch: the time written rows are stamped with (Unix seconds).
     pub stamp: u32,
 
-    /// Tandem patch: the OSC 1337 block written rows (and rows a line feed leaves) belong
+    /// Termurion patch: the OSC 1337 block written rows (and rows a line feed leaves) belong
     /// to; 0 for none.
     pub block: u32,
 
@@ -357,76 +357,76 @@ pub struct Term<T> {
     /// The stack for the keyboard modes.
     keyboard_mode_stack: Vec<KeyboardModes>,
 
-    /// Tandem: xterm's modifyOtherKeys level (0, 1, or 2), set when `kitty_keyboard` allows.
+    /// Termurion: xterm's modifyOtherKeys level (0, 1, or 2), set when `kitty_keyboard` allows.
     pub modify_other_keys: u8,
 
-    /// Tandem: the emulation level (100 to 500) device attributes report.
+    /// Termurion: the emulation level (100 to 500) device attributes report.
     pub emulation_level: u16,
 
-    /// Tandem: whether DA1 claims clipboard access (`52`), as iTerm2's policy decides.
+    /// Termurion: whether DA1 claims clipboard access (`52`), as iTerm2's policy decides.
     pub da1_clipboard: bool,
 
-    /// Tandem patch: whether DECSET 1007 may be set (the profile's Allow Alternate Mouse Scroll,
+    /// Termurion patch: whether DECSET 1007 may be set (the profile's Allow Alternate Mouse Scroll,
     /// `VT100Terminal.m:877-881`). A reset is always honored. Not a mode bit, so a reset keeps it.
     pub alternate_scroll_allowed: bool,
 
-    /// Tandem patch: the tab stop spacing (iTerm2's Default tab stop width), used by every new
+    /// Termurion patch: the tab stop spacing (iTerm2's Default tab stop width), used by every new
     /// stop list: a session's start, a reset and a wider grid.
     pub tab_width: usize,
 
-    /// Tandem patch: the version DA2 reports (iTerm2's xtermVersion).
+    /// Termurion patch: the version DA2 reports (iTerm2's xtermVersion).
     pub xterm_version: u32,
 
-    /// Tandem patch: whether color reports (OSC 4, 10 to 19) give 16 bits a channel; off gives 8
+    /// Termurion patch: whether color reports (OSC 4, 10 to 19) give 16 bits a channel; off gives 8
     /// (iTerm2's oscColorReport16Bits).
     pub color_report_16: bool,
 
-    /// Tandem patch: whether DECSET 1004 may be set (iTerm2's Focus Reporting key). A set is
+    /// Termurion patch: whether DECSET 1004 may be set (iTerm2's Focus Reporting key). A set is
     /// refused while false, and DECRQM then answers reset. A reset is always honored.
     pub focus_reporting_allowed: bool,
 
-    /// Tandem patch: DEC mode 2048 (in-band resize reports) is set. Tandem writes the report
+    /// Termurion patch: DEC mode 2048 (in-band resize reports) is set. Termurion writes the report
     /// after a resize; a reset (RIS, DECRST) clears it.
     pub resize_reports: bool,
 
-    /// Tandem patch: how many times RIS has run, for a holder that must react to a reset.
+    /// Termurion patch: how many times RIS has run, for a holder that must react to a reset.
     pub resets: u64,
 
-    /// Tandem patch: how many times the scrollback was cleared (`ClearMode::Saved`), for a
+    /// Termurion patch: how many times the scrollback was cleared (`ClearMode::Saved`), for a
     /// holder of row numbers that a clear shifts.
     pub history_clears: u64,
 
-    /// Tandem patch: a tab at the last column wraps to the next line (iTerm2's tabsWrapAround).
+    /// Termurion patch: a tab at the last column wraps to the next line (iTerm2's tabsWrapAround).
     pub tabs_wrap: bool,
 
-    /// Tandem patch: the longest OSC 8 URI `set_hyperlink` accepts (iTerm2's maxURLLength).
+    /// Termurion patch: the longest OSC 8 URI `set_hyperlink` accepts (iTerm2's maxURLLength).
     pub max_url_len: usize,
 
-    /// Tandem patch: whether the alternate screen keeps scrollback (iTerm2's Scrollback in
+    /// Termurion patch: whether the alternate screen keeps scrollback (iTerm2's Scrollback in
     /// Alternate Screen). Lines scrolled off its top are history, which moves into the main
     /// history when the program leaves. Change it with `set_alt_scrollback`.
     pub alt_scrollback: bool,
 
-    /// Tandem patch: whether ED 0 from the home cell in the alternate screen first scrolls the
+    /// Termurion patch: whether ED 0 from the home cell in the alternate screen first scrolls the
     /// screen into history (iTerm2's saveScrollBufferWhenClearing).
     pub save_screen_on_clear: bool,
 
-    /// Tandem patch: `(scrolled_off, rows)` for each time leaving the alternate screen spliced
+    /// Termurion patch: `(scrolled_off, rows)` for each time leaving the alternate screen spliced
     /// rows into the main history. Take them with `take_history_splices`.
     history_splices: Vec<(u64, usize)>,
 
-    /// Tandem patch: the width rule `input` follows (None keeps upstream's `c.width()`).
+    /// Termurion patch: the width rule `input` follows (None keeps upstream's `c.width()`).
     pub width_rule: Option<WidthRule>,
 
-    /// Tandem patch: characters written to the screen, ever. Tandem compares it between two
+    /// Termurion patch: characters written to the screen, ever. Termurion compares it between two
     /// points in the output ("has the program drawn anything since").
     pub printed: u64,
 
-    /// Tandem: whether a scroll region that starts at the top but stops above the bottom row
+    /// Termurion: whether a scroll region that starts at the top but stops above the bottom row
     /// saves the lines leaving it to scrollback (iTerm2's Scrollback With Status Bar).
     scrollback_with_region: bool,
 
-    /// Tandem patch: whether programs may change the cursor's blink (patch 17).
+    /// Termurion patch: whether programs may change the cursor's blink (patch 17).
     cursor_blink_change: bool,
 
     /// Currently inactive keyboard mode stack.
@@ -495,7 +495,7 @@ pub enum Osc52 {
 }
 
 impl<T> Term<T> {
-    /// Tandem patch: the saved titles (`CSI 22 t`), oldest first.
+    /// Termurion patch: the saved titles (`CSI 22 t`), oldest first.
     pub fn title_stack(&self) -> &[Option<String>] {
         &self.title_stack
     }
@@ -528,10 +528,10 @@ impl<T> Term<T> {
 
         let history_size = config.scrolling_history;
         let grid = Grid::new(num_lines, num_cols, history_size);
-        // Tandem patch: the alternate screen keeps history as the main screen does.
+        // Termurion patch: the alternate screen keeps history as the main screen does.
         let inactive_grid = Grid::new(num_lines, num_cols, history_size);
 
-        // Tandem patch: the stop spacing is a parameter (`Term.tab_width`).
+        // Termurion patch: the stop spacing is a parameter (`Term.tab_width`).
         let tabs = TabStops::new(grid.columns(), INITIAL_TABSTOPS);
 
         let scroll_region = Line(0)..Line(grid.screen_lines() as i32);
@@ -648,14 +648,14 @@ impl<T> Term<T> {
 
         self.event_proxy.send_event(title_event);
 
-        // Tandem patch: both screens' limits (the alternate one's is 0 without alt scrollback).
+        // Termurion patch: both screens' limits (the alternate one's is 0 without alt scrollback).
         self.update_history_limits();
 
         if self.config.kitty_keyboard != old_config.kitty_keyboard {
             self.keyboard_mode_stack = Vec::new();
             self.inactive_keyboard_mode_stack = Vec::new();
             self.mode.remove(TermMode::KITTY_KEYBOARD_PROTOCOL);
-            // Tandem: programs lose modifyOtherKeys with the setting, too.
+            // Termurion: programs lose modifyOtherKeys with the setting, too.
             self.modify_other_keys = 0;
         }
 
@@ -663,7 +663,7 @@ impl<T> Term<T> {
         self.mark_fully_damaged();
     }
 
-    /// Tandem patch: whether a tab stop is set at `column`.
+    /// Termurion patch: whether a tab stop is set at `column`.
     pub fn is_tab_stop(&self, column: Column) -> bool {
         self.tabs[column]
     }
@@ -673,11 +673,11 @@ impl<T> Term<T> {
         let selection_range = self.selection.as_ref().and_then(|s| s.to_range(self))?;
         let SelectionRange { start, end, .. } = selection_range;
 
-        // Tandem patch: a visual selection copies its runs, each line's in logical order.
+        // Termurion patch: a visual selection copies its runs, each line's in logical order.
         if let Some(sel) = self.selection.as_ref().filter(|s| !s.runs.is_empty()) {
             let mut res = String::new();
             let mut prev: Option<Line> = None;
-            // Tandem patch: never index a line above the buffer.
+            // Termurion patch: never index a line above the buffer.
             for (a, b) in sel.runs.iter().filter(|(a, _)| a.line >= self.topmost_line()) {
                 if let Some(p) = prev.filter(|p| *p != a.line) {
                     let last = self.last_column();
@@ -804,34 +804,34 @@ impl<T> Term<T> {
     }
 
     /// Access to the raw grid data structure.
-    /// Tandem: the scrolling region (top line, and the line past the bottom).
+    /// Termurion: the scrolling region (top line, and the line past the bottom).
     pub fn scroll_region(&self) -> &Range<Line> {
         &self.scroll_region
     }
 
-    /// Tandem patch: while off, programs change the cursor's shape but not its blink.
+    /// Termurion patch: while off, programs change the cursor's shape but not its blink.
     pub fn set_cursor_blink_change(&mut self, on: bool) {
         self.cursor_blink_change = on;
     }
 
-    /// Tandem patch: sets the tab stop spacing and resets every stop to it, as a new session
+    /// Termurion patch: sets the tab stop spacing and resets every stop to it, as a new session
     /// does (iTerm2's Default tab stop width, at least 1). Later resets and wider grids use it.
     pub fn set_tab_width(&mut self, width: usize) {
         self.tab_width = width.max(1);
         self.tabs = TabStops::new(self.columns(), self.tab_width);
     }
 
-    /// Tandem: sets whether a top scroll region above the bottom row saves to scrollback.
+    /// Termurion: sets whether a top scroll region above the bottom row saves to scrollback.
     pub fn set_scrollback_with_region(&mut self, on: bool) {
         self.scrollback_with_region = on;
     }
 
-    /// Tandem: turns DECSET 1007 off (an initial prompt mark, as iTerm2).
+    /// Termurion: turns DECSET 1007 off (an initial prompt mark, as iTerm2).
     pub fn clear_alternate_scroll(&mut self) {
         self.mode.remove(TermMode::ALTERNATE_SCROLL);
     }
 
-    /// Tandem: drops every program key reporting request (kitty flags on both screens,
+    /// Termurion: drops every program key reporting request (kitty flags on both screens,
     /// modifyOtherKeys).
     pub fn clear_keyboard_modes(&mut self) {
         self.keyboard_mode_stack.clear();
@@ -840,7 +840,7 @@ impl<T> Term<T> {
         self.mode &= !TermMode::KITTY_KEYBOARD_PROTOCOL;
     }
 
-    /// Tandem patch: the history limit of each screen from the config and `alt_scrollback`.
+    /// Termurion patch: the history limit of each screen from the config and `alt_scrollback`.
     fn update_history_limits(&mut self) {
         let primary = self.config.scrolling_history;
         let alt = if self.alt_scrollback { primary } else { 0 };
@@ -853,7 +853,7 @@ impl<T> Term<T> {
         }
     }
 
-    /// Tandem patch: turns scrollback in the alternate screen on or off. Off drops the
+    /// Termurion patch: turns scrollback in the alternate screen on or off. Off drops the
     /// alternate history kept so far.
     pub fn set_alt_scrollback(&mut self, on: bool) {
         self.alt_scrollback = on;
@@ -861,7 +861,7 @@ impl<T> Term<T> {
         self.mark_fully_damaged();
     }
 
-    /// Tandem patch: iTerm2's `scrollScreenIntoHistory`. The rows through the last non-empty
+    /// Termurion patch: iTerm2's `scrollScreenIntoHistory`. The rows through the last non-empty
     /// one scroll up off the screen into the history of the grid shown, whatever the scroll
     /// region; the cursor stays where it is.
     pub fn scroll_screen_into_history(&mut self) {
@@ -878,18 +878,18 @@ impl<T> Term<T> {
         self.scroll_region = region;
     }
 
-    /// Tandem patch: the history splices since the last call, oldest first. Absolute row
+    /// Termurion patch: the history splices since the last call, oldest first. Absolute row
     /// numbers (`scrolled_off` plus a line) below `.0` move down by `.1`.
     pub fn take_history_splices(&mut self) -> Vec<(u64, usize)> {
         mem::take(&mut self.history_splices)
     }
 
-    /// Tandem patch: the main screen's grid, also while the alternate screen is up.
+    /// Termurion patch: the main screen's grid, also while the alternate screen is up.
     pub fn primary_grid(&self) -> &Grid<Cell> {
         if self.mode.contains(TermMode::ALT_SCREEN) { &self.inactive_grid } else { &self.grid }
     }
 
-    /// Tandem patch: the main screen's grid, mutable.
+    /// Termurion patch: the main screen's grid, mutable.
     pub fn primary_grid_mut(&mut self) -> &mut Grid<Cell> {
         if self.mode.contains(TermMode::ALT_SCREEN) { &mut self.inactive_grid } else { &mut self.grid }
     }
@@ -934,10 +934,10 @@ impl<T> Term<T> {
             self.selection = None;
 
             // Recreate tabs list.
-            // Tandem patch: with the configured spacing.
+            // Termurion patch: with the configured spacing.
             self.tabs.resize(num_cols, self.tab_width);
         } else if let Some(selection) = self.selection.take() {
-            // Tandem patch: every line moved by `delta`, and the ones now outside the buffer
+            // Termurion patch: every line moved by `delta`, and the ones now outside the buffer
             // are gone; upstream's `rotate` clamped the hull onto other rows and kept runs and
             // the visual anchor on lines the grid no longer holds.
             let (topmost, bottommost) = (self.topmost_line(), self.bottommost_line());
@@ -976,14 +976,14 @@ impl<T> Term<T> {
 
             // Reset alternate screen contents.
             self.inactive_grid.reset_region(..);
-            // Tandem patch: and its history, from the last time.
+            // Termurion patch: and its history, from the last time.
             self.inactive_grid.clear_history();
         } else {
-            // Tandem patch: the alternate screen's history goes above the main history.
+            // Termurion patch: the alternate screen's history goes above the main history.
             let rows = self.grid.take_history();
             let by = rows.len();
             if by > 0 {
-                // Tandem patch: every absolute row number below the main grid's `scrolled_off`
+                // Termurion patch: every absolute row number below the main grid's `scrolled_off`
                 // named a history row, and `by` rows now sit after them.
                 let below = self.inactive_grid.scrolled_off();
                 match self.history_splices.last_mut() {
@@ -1024,7 +1024,7 @@ impl<T> Term<T> {
         let region = origin..self.scroll_region.end;
 
         // Scroll selection.
-        // Tandem patch: a scroll down never moves history (`Grid::scroll_down` swaps only the
+        // Termurion patch: a scroll down never moves history (`Grid::scroll_down` swaps only the
         // region's rows when there is any), so the selection on it stays put.
         self.selection =
             self.selection.take().and_then(|s| s.rotate_in_place(self, &region, -(lines as i32)));
@@ -1052,14 +1052,14 @@ impl<T> Term<T> {
 
         let region = origin..self.scroll_region.end;
 
-        // Tandem patch: with Scrollback With Status Bar off, a region that starts at the top
+        // Termurion patch: with Scrollback With Status Bar off, a region that starts at the top
         // but stops above the bottom row (an app's status line) scrolls like one below the top.
         let keep = !self.scrollback_with_region
             && region.start == 0
             && region.end < self.grid.screen_lines() as i32;
 
         // Scroll selection.
-        // Tandem patch: `keep` scrolls in place, so the selection does too.
+        // Termurion patch: `keep` scrolls in place, so the selection does too.
         self.selection = self.selection.take().and_then(|s| {
             if keep {
                 s.rotate_in_place(self, &region, lines as i32)
@@ -1073,7 +1073,7 @@ impl<T> Term<T> {
             self.grid.scroll_up(&region, lines);
         }
 
-        // Tandem patch: the scroll may have pushed the oldest history line out (a full
+        // Termurion patch: the scroll may have pushed the oldest history line out (a full
         // scrollback), or the alternate screen has none: visual runs and the drag anchor above
         // the buffer are dropped.
         let topmost = self.topmost_line();
@@ -1270,7 +1270,7 @@ impl<T> Term<T> {
         self.wrapline_always();
     }
 
-    /// Tandem patch: the wrap itself, whatever DECAWM says (a tab with `tabs_wrap` wraps even
+    /// Termurion patch: the wrap itself, whatever DECAWM says (a tab with `tabs_wrap` wraps even
     /// with auto-wrap off, iTerm2 `MS:2814-2817`).
     fn wrapline_always(&mut self)
     where
@@ -1301,7 +1301,7 @@ impl<T> Term<T> {
         let flags = self.grid.cursor.template.flags;
         let extra = self.grid.cursor.template.extra.clone();
 
-        // Tandem patch: the row remembers when it was last written.
+        // Termurion patch: the row remembers when it was last written.
         let line = self.grid.cursor.point.line;
         self.grid[line].time = self.stamp;
         if self.block != 0 {
@@ -1337,7 +1337,7 @@ impl<T> Term<T> {
         cursor_cell.extra = extra;
     }
 
-    /// Tandem patch: the column of the cell just before the cursor (the first half when that is
+    /// Termurion patch: the column of the cell just before the cursor (the first half when that is
     /// a wide character), None when the cursor sits at the left edge with nothing pending.
     fn previous_cell_column(&self) -> Option<Column> {
         let point = self.grid.cursor.point;
@@ -1351,7 +1351,7 @@ impl<T> Term<T> {
         Some(Column(column))
     }
 
-    /// Tandem patch: with insert mode on, shifts the cells from the cursor right by `width`.
+    /// Termurion patch: with insert mode on, shifts the cells from the cursor right by `width`.
     fn insert_shift(&mut self, width: usize) {
         let columns = self.columns();
         if self.mode.contains(TermMode::INSERT) && self.grid.cursor.point.column + width < columns {
@@ -1364,7 +1364,7 @@ impl<T> Term<T> {
         }
     }
 
-    /// Tandem patch: makes the narrow cell before the cursor two cells wide, as writing a wide
+    /// Termurion patch: makes the narrow cell before the cursor two cells wide, as writing a wide
     /// character there would: its spacer is written and the cursor moves one more column. A
     /// cell in the last column moves to the next row first when line wrap is on, and stays
     /// narrow when it is off.
@@ -1469,7 +1469,7 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline(never)]
     fn input(&mut self, c: char) {
         // Number of cells the char will occupy.
-        // Tandem patch: a width rule measures it (iTerm2's tables, U+200B, ambiguous width).
+        // Termurion patch: a width rule measures it (iTerm2's tables, U+200B, ambiguous width).
         let rule = self.width_rule;
         let width = match rule {
             Some(rule) => (rule.width)(c, &rule),
@@ -1479,10 +1479,10 @@ impl<T: EventListener> Handler for Term<T> {
             Some(width) => width,
             None => return,
         };
-        // Tandem patch: one more character written.
+        // Termurion patch: one more character written.
         self.printed = self.printed.wrapping_add(1);
 
-        // Tandem patch: the second regional indicator of a flag joins the first one's cell,
+        // Termurion patch: the second regional indicator of a flag joins the first one's cell,
         // and the pair is always two cells (iTerm2 `StringToScreenChars`).
         if rule.is_some() && is_regional_indicator(c) {
             if let Some(column) = self.previous_cell_column() {
@@ -1499,7 +1499,7 @@ impl<T: EventListener> Handler for Term<T> {
             }
         }
 
-        // Tandem patch: a pictograph after a ZWJ joins the cell before it (grapheme clusters,
+        // Termurion patch: a pictograph after a ZWJ joins the cell before it (grapheme clusters,
         // iTerm2 `StringToScreenChars`; `enumerateComposedCharacters` never splits a code point
         // preceded by a ZWJ). A skin tone modifier keeps its own cell (iTerm2's default
         // AggressiveBaseCharacterDetection), and the pictograph after a ZWJ that follows one
@@ -1534,7 +1534,7 @@ impl<T: EventListener> Handler for Term<T> {
 
             self.grid[line][column].push_zerowidth(c);
 
-            // Tandem patch: VS16 after a narrow emoji base widens it (iTerm2's Vs16Supported and
+            // Termurion patch: VS16 after a narrow emoji base widens it (iTerm2's Vs16Supported and
             // Vs16SupportedInPrimaryScreen; the primary-screen rule reads the screen itself).
             if c == '\u{FE0F}' {
                 if let Some(rule) = rule {
@@ -1723,7 +1723,7 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn identify_terminal(&mut self, intermediate: Option<char>) {
-        // Tandem patch: iTerm2's answers for each emulation level (VT100 to VT500).
+        // Termurion patch: iTerm2's answers for each emulation level (VT100 to VT500).
         let level = self.emulation_level;
         let text = match intermediate {
             None => String::from(match level {
@@ -1740,7 +1740,7 @@ impl<T: EventListener> Handler for Term<T> {
                     301..=400 => 41,
                     _ => 64,
                 };
-                // Tandem patch: the version is iTerm2's xtermVersion.
+                // Termurion patch: the version is iTerm2's xtermVersion.
                 format!("\x1b[>{vt};{};0c", self.xterm_version)
             },
             Some('=') if level >= 400 => String::from("\x1bP!|6954726D\x1b\\"),
@@ -1771,7 +1771,7 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Pushing `{mode:?}` keyboard mode into the stack");
 
         if self.keyboard_mode_stack.len() >= KEYBOARD_MODE_STACK_MAX_DEPTH {
-            // Tandem: upstream removed from the title stack here (a panic when it is empty).
+            // Termurion: upstream removed from the title stack here (a panic when it is empty).
             let removed = self.keyboard_mode_stack.remove(0);
             trace!(
                 "Removing '{removed:?}' from bottom of keyboard mode stack that exceeds its \
@@ -1861,7 +1861,7 @@ impl<T: EventListener> Handler for Term<T> {
     /// Insert tab at cursor position.
     #[inline]
     fn put_tab(&mut self, mut count: u16) {
-        // Tandem patch: a tab in the pending-wrap state does nothing (iTerm2: the next stop is
+        // Termurion patch: a tab in the pending-wrap state does nothing (iTerm2: the next stop is
         // not past the cursor, and `tabsWrapAround` is off by default).
         if self.grid.cursor.input_needs_wrap && !self.tabs_wrap {
             return;
@@ -1870,7 +1870,7 @@ impl<T: EventListener> Handler for Term<T> {
         while self.grid.cursor.point.column < self.columns() && count != 0 {
             count -= 1;
 
-            // Tandem patch: with `tabs_wrap`, a tab where the cursor cannot advance wraps the
+            // Termurion patch: with `tabs_wrap`, a tab where the cursor cannot advance wraps the
             // line (soft, with auto-wrap on or off) and goes to the first stop after column 0 (iTerm2 `appendTabAtCursor`).
             if self.tabs_wrap
                 && (self.grid.cursor.input_needs_wrap
@@ -1930,7 +1930,7 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn linefeed(&mut self) {
         trace!("Linefeed");
-        // Tandem patch: a line feed inside a block keeps the row it leaves (blank lines too).
+        // Termurion patch: a line feed inside a block keeps the row it leaves (blank lines too).
         if self.block != 0 {
             let line = self.grid.cursor.point.line;
             self.grid[line].block = self.block;
@@ -2189,7 +2189,7 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Requested write of escape sequence for color code {prefix}: color[{index}]");
 
         let terminator = terminator.to_owned();
-        // Tandem patch: 8-bit channels when the 16-bit reports are off (oscColorReport16Bits).
+        // Termurion patch: 8-bit channels when the 16-bit reports are off (oscColorReport16Bits).
         let wide = self.color_report_16;
         self.event_proxy.send_event(Event::ColorRequest(
             index,
@@ -2296,7 +2296,7 @@ impl<T: EventListener> Handler for Term<T> {
             },
             ansi::ClearMode::Below => {
                 let cursor = self.grid.cursor.point;
-                // Tandem patch: from the home cell of the alternate screen the screen is saved
+                // Termurion patch: from the home cell of the alternate screen the screen is saved
                 // first (screen clears with CSI H CSI J; `VT100ScreenMutableState.m:1729`).
                 if cursor.line == 0
                     && cursor.column == 0
@@ -2319,7 +2319,7 @@ impl<T: EventListener> Handler for Term<T> {
             },
             ansi::ClearMode::All => {
                 if self.mode.contains(TermMode::ALT_SCREEN) {
-                    // Tandem patch: iTerm2 always scrolls the alternate screen into its history
+                    // Termurion patch: iTerm2 always scrolls the alternate screen into its history
                     // before a full clear (`VT100ScreenMutableState.m:1712-1720`).
                     if self.alt_scrollback {
                         self.scroll_screen_into_history();
@@ -2379,11 +2379,11 @@ impl<T: EventListener> Handler for Term<T> {
         self.grid.reset();
         self.inactive_grid.reset();
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
-        // Tandem patch: a reset restores the configured spacing.
+        // Termurion patch: a reset restores the configured spacing.
         self.tabs = TabStops::new(self.columns(), self.tab_width);
         self.title_stack = Vec::new();
         self.title = None;
-        // Tandem patch: RIS turns DEC mode 2048 off.
+        // Termurion patch: RIS turns DEC mode 2048 off.
         self.resize_reports = false;
         self.resets += 1;
         self.selection = None;
@@ -2416,7 +2416,7 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn set_hyperlink(&mut self, hyperlink: Option<Hyperlink>) {
         trace!("Setting hyperlink: {hyperlink:?}");
-        // Tandem patch: a URI over the cap is refused before the template is touched, so it
+        // Termurion patch: a URI over the cap is refused before the template is touched, so it
         // neither starts nor ends a link (iTerm2's executeLink).
         if hyperlink.as_ref().is_some_and(|h| h.uri.len() > self.max_url_len) {
             return;
@@ -2472,7 +2472,7 @@ impl<T: EventListener> Handler for Term<T> {
             Attr::CancelHidden => cursor.template.flags.remove(Flags::HIDDEN),
             Attr::Strike => cursor.template.flags.insert(Flags::STRIKEOUT),
             Attr::CancelStrike => cursor.template.flags.remove(Flags::STRIKEOUT),
-            // Tandem patch: SGR 5 and 6 blink, SGR 25 stops (`Attr::Reset` clears it with the rest).
+            // Termurion patch: SGR 5 and 6 blink, SGR 25 stops (`Attr::Reset` clears it with the rest).
             Attr::BlinkSlow | Attr::BlinkFast => cursor.template.flags.insert(Flags::BLINK),
             Attr::CancelBlink => cursor.template.flags.remove(Flags::BLINK),
         }
@@ -2483,12 +2483,12 @@ impl<T: EventListener> Handler for Term<T> {
         let mode = match mode {
             PrivateMode::Named(mode) => mode,
             PrivateMode::Unknown(2048) => {
-                // Tandem patch: DEC mode 2048, in-band resize reports.
+                // Termurion patch: DEC mode 2048, in-band resize reports.
                 self.resize_reports = true;
                 return;
             },
             PrivateMode::Unknown(1036) => {
-                // Tandem patch: DECSET 1036, metaSendsEscape.
+                // Termurion patch: DECSET 1036, metaSendsEscape.
                 self.mode.insert(TermMode::META_SENDS_ESCAPE);
                 return;
             },
@@ -2524,7 +2524,7 @@ impl<T: EventListener> Handler for Term<T> {
                 self.mode.insert(TermMode::MOUSE_MOTION);
                 self.event_proxy.send_event(Event::MouseCursorDirty);
             },
-            // Tandem patch: refused when Focus Reporting is not allowed.
+            // Termurion patch: refused when Focus Reporting is not allowed.
             NamedPrivateMode::ReportFocusInOut => {
                 if self.focus_reporting_allowed {
                     self.mode.insert(TermMode::FOCUS_IN_OUT)
@@ -2540,7 +2540,7 @@ impl<T: EventListener> Handler for Term<T> {
                 self.mode.remove(TermMode::SGR_MOUSE);
                 self.mode.insert(TermMode::UTF8_MOUSE);
             },
-            // Tandem patch: refused when the profile does not allow alternate mouse scroll.
+            // Termurion patch: refused when the profile does not allow alternate mouse scroll.
             NamedPrivateMode::AlternateScroll => {
                 if self.alternate_scroll_allowed {
                     self.mode.insert(TermMode::ALTERNATE_SCROLL)
@@ -2552,7 +2552,7 @@ impl<T: EventListener> Handler for Term<T> {
                 self.goto(0, 0);
             },
             NamedPrivateMode::ColumnMode => self.deccolm(),
-            // Tandem patch: ignored unless programs may change the blink.
+            // Termurion patch: ignored unless programs may change the blink.
             NamedPrivateMode::BlinkingCursor if !self.cursor_blink_change => (),
             NamedPrivateMode::BlinkingCursor => {
                 let style = self.cursor_style.get_or_insert(self.config.default_cursor_style);
@@ -2568,12 +2568,12 @@ impl<T: EventListener> Handler for Term<T> {
         let mode = match mode {
             PrivateMode::Named(mode) => mode,
             PrivateMode::Unknown(2048) => {
-                // Tandem patch: DEC mode 2048, in-band resize reports.
+                // Termurion patch: DEC mode 2048, in-band resize reports.
                 self.resize_reports = false;
                 return;
             },
             PrivateMode::Unknown(1036) => {
-                // Tandem patch: DECSET 1036, metaSendsEscape.
+                // Termurion patch: DECSET 1036, metaSendsEscape.
                 self.mode.remove(TermMode::META_SENDS_ESCAPE);
                 return;
             },
@@ -2613,7 +2613,7 @@ impl<T: EventListener> Handler for Term<T> {
             NamedPrivateMode::LineWrap => self.mode.remove(TermMode::LINE_WRAP),
             NamedPrivateMode::Origin => self.mode.remove(TermMode::ORIGIN),
             NamedPrivateMode::ColumnMode => self.deccolm(),
-            // Tandem patch: ignored unless programs may change the blink.
+            // Termurion patch: ignored unless programs may change the blink.
             NamedPrivateMode::BlinkingCursor if !self.cursor_blink_change => (),
             NamedPrivateMode::BlinkingCursor => {
                 let style = self.cursor_style.get_or_insert(self.config.default_cursor_style);
@@ -2646,7 +2646,7 @@ impl<T: EventListener> Handler for Term<T> {
                 NamedPrivateMode::ReportAllMouseMotion => {
                     self.mode.contains(TermMode::MOUSE_MOTION).into()
                 },
-                // Tandem patch: a refused mode reads as reset.
+                // Termurion patch: a refused mode reads as reset.
                 NamedPrivateMode::ReportFocusInOut => {
                     (self.focus_reporting_allowed && self.mode.contains(TermMode::FOCUS_IN_OUT))
                         .into()
@@ -2668,9 +2668,9 @@ impl<T: EventListener> Handler for Term<T> {
                 NamedPrivateMode::SyncUpdate => ModeState::Reset,
                 NamedPrivateMode::ColumnMode => ModeState::NotSupported,
             },
-            // Tandem patch: DEC mode 2048 answers set or reset.
+            // Termurion patch: DEC mode 2048 answers set or reset.
             PrivateMode::Unknown(2048) => self.resize_reports.into(),
-            // Tandem patch: DECSET 1036 answers set or reset.
+            // Termurion patch: DECSET 1036 answers set or reset.
             PrivateMode::Unknown(1036) => self.mode.contains(TermMode::META_SENDS_ESCAPE).into(),
             PrivateMode::Unknown(_) => ModeState::NotSupported,
         };
@@ -2791,7 +2791,7 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn set_cursor_style(&mut self, style: Option<CursorStyle>) {
         trace!("Setting cursor style {style:?}");
-        // Tandem patch: without permission a program's style keeps the current blink; DECSCUSR 0
+        // Termurion patch: without permission a program's style keeps the current blink; DECSCUSR 0
         // (None) still restores the configured style.
         self.cursor_style = match style {
             Some(mut s) if !self.cursor_blink_change => {
@@ -2838,7 +2838,7 @@ impl<T: EventListener> Handler for Term<T> {
             );
         }
 
-        // Tandem patch: an entry is cut at `TITLE_STACK_MAX_BYTES`.
+        // Termurion patch: an entry is cut at `TITLE_STACK_MAX_BYTES`.
         let mut title = self.title.clone();
         if let Some(t) = &mut title {
             if t.len() > TITLE_STACK_MAX_BYTES {
@@ -2929,7 +2929,7 @@ struct TabStops {
 }
 
 impl TabStops {
-    /// Tandem patch: a stop every `width` columns (at least 1).
+    /// Termurion patch: a stop every `width` columns (at least 1).
     #[inline]
     fn new(columns: usize, width: usize) -> TabStops {
         let width = width.max(1);
@@ -2945,7 +2945,7 @@ impl TabStops {
     }
 
     /// Increase tabstop capacity.
-    // Tandem patch: `width` is the stop spacing (at least 1).
+    // Termurion patch: `width` is the stop spacing (at least 1).
     #[inline]
     fn resize(&mut self, columns: usize, width: usize) {
         let width = width.max(1);
@@ -3884,7 +3884,7 @@ mod tests {
         }
         assert_eq!(term.title_stack.len(), TITLE_STACK_MAX_DEPTH);
 
-        // Tandem patch: nor does it hold big titles (13o, patch 22).
+        // Termurion patch: nor does it hold big titles (13o, patch 22).
         term.set_title(Some("\u{e9}".repeat(1 << 19)));
         for _ in 0..4096 {
             term.push_title();

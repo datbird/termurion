@@ -23,34 +23,34 @@ pub struct Row<T> {
     /// since the last reset. All cells after this point are guaranteed to be equal.
     pub(crate) occ: usize,
 
-    /// Tandem patch: an application mark id on this row (0 for none). It moves with the row
+    /// Termurion patch: an application mark id on this row (0 for none). It moves with the row
     /// through scrolling and reflow, and a reset clears it.
     #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) mark: u32,
 
-    /// Tandem patch: a second mark id (manual marks), so a row can hold both kinds.
+    /// Termurion patch: a second mark id (manual marks), so a row can hold both kinds.
     #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) manual: u32,
 
-    /// Tandem patch: when the row was last written (Unix seconds, 0 for never).
+    /// Termurion patch: when the row was last written (Unix seconds, 0 for never).
     #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) time: u32,
 
-    /// Tandem patch: the fold this row stands for (0 for none).
+    /// Termurion patch: the fold this row stands for (0 for none).
     #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) fold: u32,
 
-    /// Tandem patch: the annotation that starts on this row (0 for none).
+    /// Termurion patch: the annotation that starts on this row (0 for none).
     #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) note: u32,
 
-    /// Tandem patch: the OSC 1337 block this row belongs to (0 for none).
+    /// Termurion patch: the OSC 1337 block this row belongs to (0 for none).
     pub(crate) block: u32,
 
-    /// Tandem patch: the key of the OSC 1337 buttons on this row (0 for none).
+    /// Termurion patch: the key of the OSC 1337 buttons on this row (0 for none).
     pub(crate) button: u32,
 
-    /// Tandem patch: the porthole this row is part of (0 for none).
+    /// Termurion patch: the porthole this row is part of (0 for none).
     pub(crate) porthole: u32,
 }
 
@@ -155,31 +155,31 @@ impl<T> Row<T> {
         Row { inner: vec, occ, mark: 0, manual: 0, time: 0, fold: 0, note: 0, block: 0, button: 0, porthole: 0 }
     }
 
-    /// Tandem patch: the mark id on this row, 0 for none.
+    /// Termurion patch: the mark id on this row, 0 for none.
     #[inline]
     pub fn mark(&self) -> u32 {
         self.mark
     }
 
-    /// Tandem patch: puts a mark id on this row (0 removes it).
+    /// Termurion patch: puts a mark id on this row (0 removes it).
     #[inline]
     pub fn set_mark(&mut self, mark: u32) {
         self.mark = mark;
     }
 
-    /// Tandem patch: the manual mark id on this row, 0 for none.
+    /// Termurion patch: the manual mark id on this row, 0 for none.
     #[inline]
     pub fn manual(&self) -> u32 {
         self.manual
     }
 
-    /// Tandem patch: puts a manual mark id on this row (0 removes it).
+    /// Termurion patch: puts a manual mark id on this row (0 removes it).
     #[inline]
     pub fn set_manual(&mut self, mark: u32) {
         self.manual = mark;
     }
 
-    /// Tandem patch: when the row was last written.
+    /// Termurion patch: when the row was last written.
     #[inline]
     pub fn time(&self) -> u32 {
         self.time
@@ -190,19 +190,19 @@ impl<T> Row<T> {
         self.time = time;
     }
 
-    /// Tandem patch: the OSC 1337 block this row belongs to.
+    /// Termurion patch: the OSC 1337 block this row belongs to.
     #[inline]
     pub fn block(&self) -> u32 {
         self.block
     }
 
-    /// Tandem patch: tags the row with an OSC 1337 block (a folded block's summary row).
+    /// Termurion patch: tags the row with an OSC 1337 block (a folded block's summary row).
     #[inline]
     pub fn set_block(&mut self, block: u32) {
         self.block = block;
     }
 
-    /// Tandem patch: the key of the OSC 1337 buttons on this row.
+    /// Termurion patch: the key of the OSC 1337 buttons on this row.
     #[inline]
     pub fn button(&self) -> u32 {
         self.button
@@ -213,7 +213,7 @@ impl<T> Row<T> {
         self.button = key;
     }
 
-    /// Tandem patch: the porthole this row is part of.
+    /// Termurion patch: the porthole this row is part of.
     #[inline]
     pub fn porthole(&self) -> u32 {
         self.porthole
@@ -224,7 +224,7 @@ impl<T> Row<T> {
         self.porthole = id;
     }
 
-    /// Tandem patch: the fold this row stands for.
+    /// Termurion patch: the fold this row stands for.
     #[inline]
     pub fn fold(&self) -> u32 {
         self.fold
@@ -235,7 +235,7 @@ impl<T> Row<T> {
         self.fold = fold;
     }
 
-    /// Tandem patch: the annotation that starts on this row.
+    /// Termurion patch: the annotation that starts on this row.
     #[inline]
     pub fn note(&self) -> u32 {
         self.note
@@ -246,7 +246,7 @@ impl<T> Row<T> {
         self.note = note;
     }
 
-    /// Tandem patch: a row merged into this one by reflow gives up its ids (where this
+    /// Termurion patch: a row merged into this one by reflow gives up its ids (where this
     /// row has none) and its time (when later).
     #[inline]
     pub(crate) fn absorb_tags(&mut self, other: &Row<T>) {

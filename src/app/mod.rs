@@ -283,7 +283,7 @@ pub enum UserEvent {
     Caption(isize, crate::caption::Event),
     /// An ssh: URL came from outside (the URL pipe): `ssh_url_app::receive_url`.
     OpenUrl(String),
-    /// Another `tandem.exe` handed over a request (the launch pipe, `launch_ui`).
+    /// Another `termurion.exe` handed over a request (the launch pipe, `launch_ui`).
     Launch(crate::launch::Request),
     /// A console handed over by the Windows default-terminal handoff (`handoff_win`, `default_term_ui`).
     Handoff(crate::handoff_win::Handoff),
@@ -762,7 +762,7 @@ pub struct App {
     url_listener: Option<crate::url_launch::Serving>,
     /// The flood cap on URLs from outside (P13).
     url_flood: crate::url_launch::Flood,
-    /// Requests of a second `tandem.exe` that wait for the first window, and the flood cap on
+    /// Requests of a second `termurion.exe` that wait for the first window, and the flood cap on
     /// them (app-wide, not in `swap_live`; m13v1).
     launch_queue: Vec<crate::launch::Request>,
     launch_flood: crate::url_launch::Flood,
@@ -1191,7 +1191,7 @@ pub struct App {
     /// and its click count.
     tab_clicks: (Instant, Option<usize>, u8),
     banners: Banners,
-    /// The `utilities` folder beside tandem.exe, when `utilities::ensure` made it at start.
+    /// The `utilities` folder beside termurion.exe, when `utilities::ensure` made it at start.
     utilities: Option<PathBuf>,
     clipboard: Option<arboard::Clipboard>,
     store: Store,
@@ -1920,7 +1920,7 @@ pub fn run() {
         Err(usage) => return message_box(&usage),
         // Handled above (its hand-over and its queue are the URL's own).
         Ok(crate::launch::Request::Url { .. }) => {}
-        // COM starts `tandem.exe -Embedding` for one handoff; any local program can too. It runs
+        // COM starts `termurion.exe -Embedding` for one handoff; any local program can too. It runs
         // only while Tandem is the default terminal with its pack and no Tandem answers the
         // launch pipe; it forwards nothing and makes no window until a handoff arrives (B9).
         Ok(crate::launch::Request::Embedding) => {

@@ -30,7 +30,7 @@ pub use cosmic_text::{
     Wrap,
 };
 
-/// Tandem patch 1: the flag bits that ask for a filtered text mask (bit 8 aliased, bit 9 thin
+/// Termurion patch 1: the flag bits that ask for a filtered text mask (bit 8 aliased, bit 9 thin
 /// strokes). cosmic-text keeps bits it does not know (`CacheKeyFlags::from_bits_retain`).
 const MASK_FLAG_BITS: u32 = (1 << 8) | (1 << 9);
 
@@ -39,13 +39,13 @@ pub type MaskFilter = fn(u32, &mut [u8]);
 
 static MASK_FILTER: std::sync::OnceLock<MaskFilter> = std::sync::OnceLock::new();
 
-/// Tandem patch 1: sets the process-wide mask filter. A second call is ignored (every window's
+/// Termurion patch 1: sets the process-wide mask filter. A second call is ignored (every window's
 /// renderer sets the same function).
 pub fn set_mask_filter(filter: MaskFilter) {
     let _ = MASK_FILTER.set(filter);
 }
 
-/// Tandem patch 1: runs the filter over a text glyph's alpha mask when its flags ask for one.
+/// Termurion patch 1: runs the filter over a text glyph's alpha mask when its flags ask for one.
 /// Every place that rasterizes a text glyph calls this (the first upload and the re-rasterization
 /// when an atlas grows); color glyphs never come here.
 pub(crate) fn filter_text_mask(flags: u32, alpha: &mut [u8]) {

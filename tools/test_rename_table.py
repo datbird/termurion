@@ -76,7 +76,7 @@ class TableTests(unittest.TestCase):
             self.assertIn(r.mode, ("exact", "word", "keep"), r)
             self.assertTrue(isinstance(r.old, str) and r.old != "", "empty old: %r" % (r,))
             self.assertFalse(hasattr(r, "regex"))
-            self.assertIn(r.group, list("ABCDEF") + ["K"], r)
+            self.assertIn(r.group, list("ABCDEF") + ["K", "T"], r)
             self.assertTrue(r.reason.strip(), "row without reason: %r" % (r.old,))
             key = (r.old, tuple(r.scope))
             self.assertNotIn(key, seen, "duplicate row %r" % (key,))

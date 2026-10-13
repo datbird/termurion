@@ -1,11 +1,11 @@
-# Tandem patches to alacritty_terminal 0.26.0
+# Termurion patches to alacritty_terminal 0.26.0
 
 This is alacritty_terminal 0.26.0 from crates.io (Apache-2.0, see LICENSE-APACHE), used
-through `[patch.crates-io]` in Tandem's Cargo.toml. The `tests/` directory (46 MB of ref
+through `[patch.crates-io]` in Termurion's Cargo.toml. The `tests/` directory (46 MB of ref
 test data) is left out. Changes:
 
 1. `grid/row.rs`: `Row` has `mark: u32` and `manual: u32` fields with `mark()`, `set_mark()`,
-   `manual()`, and `set_manual()` (a row can hold a prompt mark and a manual mark). Tandem stores
+   `manual()`, and `set_manual()` (a row can hold a prompt mark and a manual mark). Termurion stores
    shell-integration and manual marks there, so a mark moves with its row through scrolling,
    scrollback, and reflow. `Row::reset` clears it, so a recycled row starts unmarked.
 2. `grid/resize.rs`: when widening merges a wrapped continuation row into the row above,
@@ -38,7 +38,7 @@ test data) is left out. Changes:
 
 9. `term/mod.rs`: `Term.modify_other_keys` (0, 1, 2) is set by `CSI > 4 ; n m` and reported
    for `CSI ? 4 m` as `CSI > 4 ; n m`; RIS clears it. `Config.kitty_keyboard` now means
-   "programs may change how keys are reported" (Tandem's profile setting Allow
+   "programs may change how keys are reported" (Termurion's profile setting Allow
    modifyOtherKeys) and gates both kitty flags and modifyOtherKeys. Upstream's
    `push_keyboard_mode` removed the oldest entry from the title stack when the keyboard stack
    was full, which panics on an empty title stack; it now removes from the keyboard stack.
@@ -67,7 +67,7 @@ test data) is left out. Changes:
     place through `Grid::scroll_up_in_place` (`grid/mod.rs`), like a region below the top, so no
     line reaches history (iTerm2's Scrollback With Status Bar). `grid/storage.rs`: `Storage::swap`
     swaps whole rows with `slice::swap`; upstream copied four qwords, the size of an unpatched
-    `Row`, so the Tandem row slots stayed behind and debug builds panicked on region scrolls.
+    `Row`, so the Termurion row slots stayed behind and debug builds panicked on region scrolls.
 
 15. `grid/mod.rs`: each `Grid` also counts rows lost off the top of its history (`dropped`): a full
     history scrolling, a smaller history limit, and the history limit cut in `resize.rs`'s
@@ -86,7 +86,7 @@ test data) is left out. Changes:
 
 18. `term/cell.rs`, `term/mod.rs`: `Flags::BLINK` (the last free bit of the `u16`), set by SGR 5
     (`Attr::BlinkSlow`) and SGR 6 (`Attr::BlinkFast`) and cleared by SGR 25 (`Attr::CancelBlink`)
-    and `Attr::Reset`. Upstream ignored all three. Tandem draws BLINK text in the off phase of the
+    and `Attr::Reset`. Upstream ignored all three. Termurion draws BLINK text in the off phase of the
     blink clock when the profile allows blinking text.
 
 19. `selection.rs`, `term/mod.rs`: `Selection.runs` (inclusive per-line `(first, last)` cell pairs),
@@ -95,7 +95,7 @@ test data) is left out. Changes:
     the runs, each line in logical order, joined by newlines (not across a wrapped line).
     `Selection::update` drops the runs; `rotate` moves them (and the visual drag's anchor,
     `set_visual_anchor`/`visual_anchor`, a grid line plus visual column) with the content and
-    drops the runs that scroll out of the region. Tandem's visual character selection on
+    drops the runs that scroll out of the region. Termurion's visual character selection on
     bidirectional rows uses it (iTerm2's live visual range, `iTermSelection.m:409`).
     `Selection::drop_above` (called after `scroll_up_relative` scrolls the grid) drops runs
     above the oldest buffer line (alternate screen, full scrollback) and clamps the anchor;
@@ -130,10 +130,10 @@ test data) is left out. Changes:
     entry is cut at 4096 bytes on a character boundary, so `CSI 22 t` repeated cannot hold
     gigabytes of a program's 1 MiB title. `KEYBOARD_MODE_STACK_MAX_DEPTH` keeps 4096 (it shared
     the constant). A title longer than 4096 bytes comes back cut from `CSI 23 t`. `Term::title_stack()`
-    lets Tandem's tests read the stack.
+    lets Termurion's tests read the stack.
 23. `term/cell.rs`: `Cell::push_zerowidth` keeps at most `MAX_ZEROWIDTH` (16) marks per cell; later
     ones are dropped. Without it one `CSI 65535 b` after a combining mark added 65535 marks to a
-    cell (REP now repeats the whole cell, in Tandem's `pass`, but any stream of marks was unbounded).
+    cell (REP now repeats the whole cell, in Termurion's `pass`, but any stream of marks was unbounded).
 24. `term/mod.rs`, `grid/mod.rs`: scrollback in the alternate screen (iTerm2's Scrollback in
     Alternate Screen, on by default; upstream kept none). `Term.alt_scrollback` and
     `Term::set_alt_scrollback`: the alternate grid's history limit is the main screen's, or 0
@@ -149,7 +149,7 @@ test data) is left out. Changes:
     `Term.printed` counts characters written, for "has the program drawn anything since".
 25. `term/mod.rs`: `WidthRule` and `Term.width_rule: Option<WidthRule>` (None keeps upstream's
     `c.width()`). `input` takes the cells of a character from the rule's `width` function
-    (Tandem's: iTerm2's tables, U+200B by `zwsp_advances`). A U+FE0F after a narrow cell whose
+    (Termurion's: iTerm2's tables, U+200B by `zwsp_advances`). A U+FE0F after a narrow cell whose
     base `accepts_vs16`, with `vs16` or (`vs16_primary` and not in the alternate screen), widens
     that cell (`widen_previous`): the spacer is written and the cursor moves one more column; a
     cell in the last column moves to the next row first when line wrap is on (a leading spacer
@@ -167,21 +167,21 @@ test data) is left out. Changes:
     `scrolled_off` named history rows) can move them down by the rows inserted after them.
 27. `term/mod.rs`: DEC mode 2048 (in-band resize reports), `Term.resize_reports`. DECSET and
     DECRST set and clear it (also inside a parameter list), DECRQM answers set or reset instead of
-    not recognized, RIS clears it. The report itself is written by Tandem after a pty resize.
+    not recognized, RIS clears it. The report itself is written by Termurion after a pty resize.
 28. `term/mod.rs`: `Term.tabs_wrap` (iTerm2's tabsWrapAround, default false) and `put_tab`. A
     tab in the pending-wrap state does nothing (upstream wrapped the line); with `tabs_wrap` a
     tab at the last column (or pending wrap) wraps the line softly and moves to the first tab
     stop after column 0 (`MS:2795-2818`), whether DECAWM is on or off (`wrapline_always`).
-29. `term/mod.rs`: `Term.resets` counts RIS (`reset_state`), so Tandem can stop an OSC 9;4 progress bar on
+29. `term/mod.rs`: `Term.resets` counts RIS (`reset_state`), so Termurion can stop an OSC 9;4 progress bar on
     a reset (iTerm2 `terminalDidReset`).
 30. `term/mod.rs`: `Term.history_clears` counts scrollback clears (`ClearMode::Saved` with history), so
-    Tandem's extra selections, numbered by buffer row, can drop when a clear renumbers the rows.
+    Termurion's extra selections, numbered by buffer row, can drop when a clear renumbers the rows.
 31. `term/mod.rs`: `Term::is_tab_stop(column)`, so the copy text model can tell a tab's blanks from
     typed spaces (13s Task 3).
 32. `tty/windows/conpty.rs`: `LoadLibraryExW("conpty.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32)`
     instead of a bare load, so no conpty.dll beside the exe or in the current folder loads.
 33. `term/mod.rs`: `TermMode::META_SENDS_ESCAPE` (bit 23), DEC mode 1036 (xterm metaSendsEscape). DECSET and
     DECRST set and clear it (also inside a parameter list), DECRQM answers set or reset, RIS clears it
-    (`mode &= VI`). DECSTR clears it too (Tandem's byte list in `Screen::soft_reset` sends `?1036l`, as iTerm2's softReset does). Tandem reads it in `KeyOptions::effective`.
+    (`mode &= VI`). DECSTR clears it too (Termurion's byte list in `Screen::soft_reset` sends `?1036l`, as iTerm2's softReset does). Termurion reads it in `KeyOptions::effective`.
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

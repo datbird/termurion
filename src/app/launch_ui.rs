@@ -1,4 +1,4 @@
-//! Requests from another `tandem.exe` (m13v1 Task 1): the command line a second start was given,
+//! Requests from another `termurion.exe` (m13v1 Task 1): the command line a second start was given,
 //! handed over the one launch pipe (`url_launch`). Every request is untrusted (another program of
 //! the user may have sent it): a flood cap, a closed set of kinds, a profile or arrangement found
 //! only in Tandem's own store, and none runs a command.

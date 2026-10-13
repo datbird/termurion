@@ -119,9 +119,9 @@ pub enum SelectionType {
 pub struct Selection {
     pub ty: SelectionType,
     region: Range<Anchor>,
-    // Tandem patch: see `set_visual`.
+    // Termurion patch: see `set_visual`.
     pub runs: Vec<(Point, Point)>,
-    // Tandem patch: where a visual drag began, `(grid line, visual column)` and the right half
+    // Termurion patch: where a visual drag began, `(grid line, visual column)` and the right half
     // flag; `rotate` moves it with the content like the region.
     visual_anchor: Option<(Point, bool)>,
 }
@@ -136,7 +136,7 @@ impl Selection {
         }
     }
 
-    // Tandem patch: a visual selection (iTerm2's character selection on a bidi row follows
+    // Termurion patch: a visual selection (iTerm2's character selection on a bidi row follows
     // the pointer on screen). `runs` are inclusive `(first, last)` cell pairs, each on one
     // line, in reading order: the logical cells the swept screen cells show. The region
     // becomes their hull, so every consumer of the range sees a superset; `covers` and
@@ -147,7 +147,7 @@ impl Selection {
         self.runs = runs;
     }
 
-    // Tandem patch: the buffer's oldest line moved (a scroll pushed a line out of history, or
+    // Termurion patch: the buffer's oldest line moved (a scroll pushed a line out of history, or
     // the alternate screen, which keeps none, lost its top row). Runs above `topmost` are
     // dropped and the visual anchor is clamped into the buffer as the hull's start is (column
     // 0, left side). Returns false when the selection was visual and nothing of it is left.
@@ -161,7 +161,7 @@ impl Selection {
         !(had_runs && self.runs.is_empty())
     }
 
-    // Tandem patch: a height-only resize moved every buffer line by `delta` (pulled from or
+    // Termurion patch: a height-only resize moved every buffer line by `delta` (pulled from or
     // pushed into history) and dropped the lines outside `topmost..=bottommost` (rows cut
     // below a high cursor, the oldest history, the alternate screen's top rows). Only what
     // still maps exactly stays: runs and the visual anchor on a dropped line are dropped, and
@@ -191,7 +191,7 @@ impl Selection {
         (inside(self.region.start.point.line) && inside(self.region.end.point.line)).then_some(self)
     }
 
-    // Tandem patch: the visual drag anchor.
+    // Termurion patch: the visual drag anchor.
     /// Where a visual drag began: a grid line, a visual column and whether the press was in
     /// that cell's right half.
     pub fn set_visual_anchor(&mut self, (line, column, right): (i32, usize, bool)) {
@@ -210,7 +210,7 @@ impl Selection {
 
     /// Update the end of the selection.
     pub fn update(&mut self, point: Point, side: Side) {
-        // Tandem patch: a logical update ends a visual selection.
+        // Termurion patch: a logical update ends a visual selection.
         self.runs.clear();
         self.region.end = Anchor::new(point, side);
     }
@@ -225,7 +225,7 @@ impl Selection {
         self.rotate_region(dimensions, range, delta, into_history)
     }
 
-    // Tandem patch: `rotate` for a scroll that moves only the region's rows, even one starting
+    // Termurion patch: `rotate` for a scroll that moves only the region's rows, even one starting
     // at the top (a region scrolling in place, or any scroll down): history stays put, and what
     // leaves the region's top is clamped or dropped as below a fixed top.
     pub fn rotate_in_place<D: Dimensions>(
@@ -237,7 +237,7 @@ impl Selection {
         self.rotate_region(dimensions, range, delta, false)
     }
 
-    // Tandem patch: upstream's `range_top == 0` (lines above the region move into history with
+    // Termurion patch: upstream's `range_top == 0` (lines above the region move into history with
     // it) is `into_history`.
     fn rotate_region<D: Dimensions>(
         mut self,
@@ -250,7 +250,7 @@ impl Selection {
         let range_bottom = range.end;
         let range_top = range.start;
 
-        // Tandem patch: runs and the visual anchor are numbered by line; they move with the
+        // Termurion patch: runs and the visual anchor are numbered by line; they move with the
         // content as the region does. A run that scrolls out of the region is dropped.
         let moves = |line: Line| (line >= range_top || into_history) && line < range_bottom;
         let mut runs = Vec::with_capacity(self.runs.len());

@@ -3572,7 +3572,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tandem"
+name = "termurion"
 version = "0.0.1"
 dependencies = [
  "alacritty_terminal",

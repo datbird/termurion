@@ -97,7 +97,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         self.lines = target;
     }
 
-    /// Tandem patch: removes every row from `line` to the bottom of the screen, scrollback
+    /// Termurion patch: removes every row from `line` to the bottom of the screen, scrollback
     /// included when `line` is in it. Blank rows fill the screen from there down; the rows
     /// above keep their places.
     pub fn cut_from(&mut self, line: Line) {
@@ -113,7 +113,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         self.display_offset = min(self.display_offset, self.history_size());
     }
 
-    /// Tandem patch: replaces rows `first..=last` with `with` (top first) and returns the
+    /// Termurion patch: replaces rows `first..=last` with `with` (top first) and returns the
     /// removed rows, top first. Rows above slide down (pulled from history) when fewer
     /// come back, and up into history when more come back; a cursor below the range keeps
     /// its row, and one above it moves with its row.
@@ -159,7 +159,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         while rows.len() < lines {
             rows.push(Row::new(columns));
         }
-        // Tandem patch: rows past the history limit are lost.
+        // Termurion patch: rows past the history limit are lost.
         self.add_dropped(rows.len().saturating_sub(self.max_scroll_limit + lines));
         rows.truncate(self.max_scroll_limit + lines);
         self.raw.replace_inner(rows);
@@ -252,14 +252,14 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                 let line_delta = self.cursor.point.line - target.line;
 
                 if line_delta != 0 && row.is_clear() {
-                    // Tandem patch: a merged-away continuation row's ids and time move up.
+                    // Termurion patch: a merged-away continuation row's ids and time move up.
                     last_row.absorb_tags(&row);
                     continue;
                 }
 
                 cursor_line_delta += line_delta.0 as usize;
             } else if row.is_clear() {
-                // Tandem patch: a merged-away continuation row's ids and time move up.
+                // Termurion patch: a merged-away continuation row's ids and time move up.
                 last_row.absorb_tags(&row);
                 if i < self.display_offset {
                     // Since we removed a line, rotate down the viewport.
@@ -427,7 +427,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                     if occ < columns {
                         wrapped.resize_with(columns, T::default);
                     }
-                    // Tandem patch: the split-off part keeps the line's time.
+                    // Termurion patch: the split-off part keeps the line's time.
                     let time = new_raw.last().map_or(0, |r: &Row<T>| r.time);
                     let block = new_raw.last().map_or(0, |r: &Row<T>| r.block);
                     let porthole = new_raw.last().map_or(0, |r: &Row<T>| r.porthole);
@@ -446,7 +446,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // Reverse iterator and use it as the new grid storage.
         let mut reversed: Vec<Row<T>> = new_raw.drain(..).rev().collect();
-        // Tandem patch: rows past the history limit are lost.
+        // Termurion patch: rows past the history limit are lost.
         self.add_dropped(reversed.len().saturating_sub(self.max_scroll_limit + self.lines));
         reversed.truncate(self.max_scroll_limit + self.lines);
         self.raw.replace_inner(reversed);

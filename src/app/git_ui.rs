@@ -44,8 +44,8 @@ pub(super) const DEBUG_BAR: &str = "statusbar:git-debug";
 pub(super) const GONE_BAR: &str = "statusbar:git-gone";
 /// The git menu's item ids after `statusbar:`.
 const MENU_ID: &str = "git:";
-/// The wrapper a single-use window runs, beside `tandem.exe`.
-const WRAPPER: &str = "tandem-git.exe";
+/// The wrapper a single-use window runs, beside `termurion.exe`.
+const WRAPPER: &str = crate::git_wrapper::WRAPPER_EXE;
 
 /// A session opened for a git menu command (`openSingleUseWindowWithCommand:`): the pane
 /// whose component ran it, and whether it is short-lived (no Session Ended alert, no Undo
@@ -96,7 +96,7 @@ pub(super) fn git_bar_answer(id: &str, button: &str) -> GitBarAnswer {
     }
 }
 
-/// A single-use window's command: `tandem-git.exe` in `exe_dir`, the git it runs, and the
+/// A single-use window's command: `termurion-git.exe` in `exe_dir`, the git it runs, and the
 /// command's arguments (a branch never read as an option).
 pub(super) fn single_use_command(exe_dir: &Path, git: &Path, command: &GitCommand) -> String {
     crate::git_wrapper::command_line(&exe_dir.join(WRAPPER), git, &command.args())
@@ -833,7 +833,7 @@ impl App {
 
     /// A menu command in a single-use window (`runGitInWindowWithArguments:`, `GIT:596-626`):
     /// nothing while a command runs; the send prompt on a remote host; else the status
-    /// shows, and a new window of the default profile runs `tandem-git.exe` in the folder
+    /// shows, and a new window of the default profile runs `termurion-git.exe` in the folder
     /// the menu was opened for, buried at once for Stash, Push, Pull and Check out.
     pub(super) fn run_git_in_window(&mut self, pane: PaneId, command: &GitCommand, event_loop: &ActiveEventLoop) {
         let Some(gp) = self.git.get(&pane) else { return };
@@ -1045,12 +1045,12 @@ mod tests {
     #[test]
     fn single_use_windows_follow_iterm2() {
         let push = GitCommand::Push("main".into());
-        assert_eq!(single_use_command(Path::new("C:\\Program Files\\Tandem"), Path::new("git"), &push), "\"C:\\Program Files\\Tandem\\tandem-git.exe\" git push origin main");
+        assert_eq!(single_use_command(Path::new("C:\\Program Files\\Tandem"), Path::new("git"), &push), "\"C:\\Program Files\\Tandem\\termurion-git.exe\" git push origin main");
         assert_eq!(
             single_use_command(Path::new("C:\\T"), Path::new("C:\\Git\\cmd\\git.exe"), &GitCommand::Checkout("-x".into())),
-            "C:\\T\\tandem-git.exe C:\\Git\\cmd\\git.exe checkout refs/heads/-x"
+            "C:\\T\\termurion-git.exe C:\\Git\\cmd\\git.exe checkout refs/heads/-x"
         );
-        assert_eq!(single_use_command(Path::new("C:\\T"), Path::new("git"), &GitCommand::AddCommit), "C:\\T\\tandem-git.exe git commit -a");
+        assert_eq!(single_use_command(Path::new("C:\\T"), Path::new("git"), &GitCommand::AddCommit), "C:\\T\\termurion-git.exe git commit -a");
 
         assert_eq!(git_bar_answer(TIMEOUT_BAR, "Increase to 8s"), GitBarAnswer::IncreaseTimeout(8.0));
         assert_eq!(git_bar_answer(TIMEOUT_BAR, &gs::increase_button(gs::proposed_timeout(1.3))), GitBarAnswer::IncreaseTimeout(3.3));

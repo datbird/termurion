@@ -1,5 +1,5 @@
-//! The `utilities` folder beside tandem.exe (milestone 11e): one hard link (or copy) of
-//! `tandem-utils.exe` per utility name, refreshed at every start when stale, and the PATH
+//! The `utilities` folder beside termurion.exe (milestone 11e): one hard link (or copy) of
+//! `termurion-utils.exe` per utility name, refreshed at every start when stale, and the PATH
 //! value that puts the folder at the end of a new session's PATH (`PS:3273-3281`). Pure
 //! except `ensure`.
 
@@ -7,17 +7,17 @@ use std::ffi::OsStr;
 #[cfg(windows)]
 use std::path::{Path, PathBuf};
 
-/// The folder beside tandem.exe that holds the utilities.
+/// The folder beside termurion.exe that holds the utilities.
 pub const FOLDER: &str = "utilities";
 
 /// The multi-call program every utility name links to.
-pub const EXE: &str = "tandem-utils.exe";
+pub const EXE: &str = "termurion-utils.exe";
 
 /// iTerm2's it2api script (`util_api::script`), written into the folder.
 pub const API_SCRIPT: &str = "it2api.py";
 
 /// A file's length and modified time (nanoseconds since 1970), enough to tell a link or copy
-/// of an older `tandem-utils.exe` from a current one.
+/// of an older `termurion-utils.exe` from a current one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {
     pub len: u64,
@@ -86,14 +86,14 @@ fn stamp(path: &Path) -> Option<Stamp> {
 }
 
 /// Makes `exe_dir\utilities` and brings one `<name>.exe` per `util_cli::NAMES` entry up to
-/// date with `exe_dir\tandem-utils.exe`: a stale one is removed (or, when it is running,
+/// date with `exe_dir\termurion-utils.exe`: a stale one is removed (or, when it is running,
 /// renamed aside to `<name>.exe.old`, which the next start removes) and hard linked again, or
 /// copied when a link cannot be made (another volume, a file system without links).
 /// `it2api.py` is written when its bytes are not `util_api::script()`'s. Every file that
 /// cannot be brought up to date is reported in `failed`. Files Tandem does not make are never
 /// touched. Err, with nothing probed, when Tandem's folder is a network path (in any
 /// spelling) or not a local drive path; Err when a link on the way leads to a network path,
-/// when `tandem-utils.exe` is missing (no folder is made) or the folder cannot be made.
+/// when `termurion-utils.exe` is missing (no folder is made) or the folder cannot be made.
 #[cfg(windows)]
 pub fn ensure(exe_dir: &Path) -> Result<Ensured, String> {
     let text = exe_dir.to_string_lossy();
@@ -185,7 +185,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let folder = dir.join(FOLDER);
 
-        // No tandem-utils.exe: an error and no folder.
+        // No termurion-utils.exe: an error and no folder.
         assert!(ensure(&dir).is_err());
         assert!(!folder.exists(), "no folder without the program");
 
@@ -210,7 +210,7 @@ mod tests {
             }).collect()
         };
         let first = times(&folder);
-        assert!(first.iter().all(|(l, _)| *l == len), "each as long as tandem-utils.exe");
+        assert!(first.iter().all(|(l, _)| *l == len), "each as long as termurion-utils.exe");
 
         // An unrelated file survives; a second pass changes nothing.
         std::fs::write(folder.join("notes.txt"), "mine").unwrap();
@@ -224,7 +224,7 @@ mod tests {
         ensure(&dir).unwrap();
         assert_eq!(std::fs::read_to_string(&api).unwrap(), crate::util_api::script(), "rewritten");
 
-        // A new, longer tandem-utils.exe (a new file, so the old links keep the old bytes).
+        // A new, longer termurion-utils.exe (a new file, so the old links keep the old bytes).
         std::fs::remove_file(&src).unwrap();
         let mut longer = std::fs::read(&small).unwrap();
         longer.extend_from_slice(&[0u8; 4096]);
@@ -275,7 +275,7 @@ mod tests {
         );
     }
 
-    /// A folder for one test holding a copy of `exe` (from System32) as tandem-utils.exe.
+    /// A folder for one test holding a copy of `exe` (from System32) as termurion-utils.exe.
     #[cfg(windows)]
     fn with_program(name: &str, exe: &str) -> (crate::util_cli::TempDir, std::path::PathBuf) {
         let dir = crate::util_cli::TempDir::new(name);
@@ -285,7 +285,7 @@ mod tests {
         (dir, src)
     }
 
-    /// Replaces tandem-utils.exe with a new, longer file.
+    /// Replaces termurion-utils.exe with a new, longer file.
     #[cfg(windows)]
     fn grow(dir: &Path, from: &Path) -> Vec<u8> {
         let mut longer = std::fs::read(from).unwrap();
