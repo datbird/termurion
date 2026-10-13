@@ -290,8 +290,8 @@ mod tests {
 
     #[test]
     fn help_text_follows_windows() {
-        assert_eq!(HELP_MD.len(), 2880);
-        assert_eq!(sha256(HELP_MD), "f64f3b4cea64d0507b240446f2cb99bd7760e9544a35fea4f3bdc92960301d13");
+        assert_eq!(HELP_MD.len(), 2846);
+        assert_eq!(sha256(HELP_MD), "fc5ae7a5f6d5ab73d96b157278a771471b53d49f76bae6bf2fa46481a488ec56");
         assert!(HELP_MD.contains("(Win+Y)") && HELP_MD.contains("(Shift+Win+.)"));
         assert!(!HELP_MD.contains("iTerm2"));
         assert_eq!(COST_NOTE, "Your AI provider may charge for each token used.");

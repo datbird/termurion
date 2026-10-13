@@ -2648,7 +2648,7 @@ tab = "Advanced"
 section = "General"
 label = "URL to check for updates to the AI model catalog."
 type = "string"
-default = "https://iterm2.com/downloads/ai/manifest.json"
+default = "https://raw.githubusercontent.com/datbird/termurion/main/dist/downloads/ai/manifest.json"
 help = "URL to check for updates to the AI model catalog.\nThe catalog defines the built-in AI models (context window, capabilities, and the recommended model per vendor). Termurion ships its catalog with each release and never downloads a newer one, so this URL is not used."
 
 [[setting]]
@@ -2992,7 +2992,7 @@ tab = "Advanced"
 section = "Scripting"
 label = "URL to check for new versions of the Python scripting runtime."
 type = "string"
-default = "https://iterm2.com/downloads/pyenv/manifest.json"
+default = "https://raw.githubusercontent.com/datbird/termurion/main/dist/downloads/pyenv/manifest.json"
 help = "URL to check for new versions of the Python scripting runtime."
 
 [[setting]]
@@ -3001,7 +3001,7 @@ tab = "Advanced"
 section = "Scripting"
 label = "URL of the uv download manifest (used when the Python runtime is provisioned with uv)."
 type = "string"
-default = "https://iterm2.com/downloads/uv/manifest.json"
+default = "https://raw.githubusercontent.com/datbird/termurion/main/dist/downloads/uv/manifest.json"
 help = "URL of the uv download manifest (used when the Python runtime is provisioned with uv)."
 
 [[setting]]
@@ -3010,7 +3010,7 @@ tab = "Advanced"
 section = "Scripting"
 label = "URL to check for new Beta versions of the Python scripting runtime."
 type = "string"
-default = "https://iterm2.com/downloads/pyenv/betamanifest.json"
+default = "https://raw.githubusercontent.com/datbird/termurion/main/dist/downloads/pyenv/betamanifest.json"
 help = "URL to check for new Beta versions of the Python scripting runtime."
 
 [[setting]]

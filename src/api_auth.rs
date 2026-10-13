@@ -323,7 +323,7 @@ pub const OK: &str = "OK";
 pub const CANCEL: &str = "Cancel";
 pub const MORE_INFO: &str = "More Info";
 pub const ALWAYS: &str = "Always";
-pub const SECURITY_URL: &str = "https://iterm2.com/python-api-security-model";
+pub const SECURITY_URL: &str = crate::links::HELP_PYTHON_API_SECURITY;
 pub const CONFIRM_HEADING: &str = "Confirm";
 pub const CONFIRM_ALWAYS: &str = "New sessions will contain an environment variable that allows scripts to run without confirmation. Are you sure you want to enable this?";
 
@@ -343,7 +343,7 @@ pub const REQUIRE_COOKIE: &str = "Require a cookie";
 pub const ALLOW_ALL_APPS: &str = "Allow all apps to connect";
 pub const ALLOW_ALL_HEADING: &str = "Disable per-app authentication?";
 pub const ALLOW_ALL_TEXT: &str = "Do you want to allow all apps running on this machine to use the Python API?\n\nThis will disable the check for a cookie. Only programs running as you, at the same elevation, can connect.";
-pub const AUTH_URL: &str = "https://iterm2.com/python-api-auth.html";
+pub const AUTH_URL: &str = crate::links::HELP_PYTHON_API_AUTH;
 pub const RESET_HEADING: &str = "Python API Permissions Reset";
 pub const RESET_TEXT: &str = "The location of your user profile folder appears to have moved or the allow-all file's contents have changed unexpectedly. As a precaution, the authentication mechanism for Python API scripts for Termurion has been reverted to always require a cookie.";
 pub const REVEAL_PREFERENCE: &str = "Reveal Preference";
@@ -591,7 +591,7 @@ mod tests {
             "\n\nAlthough you have chosen to allow connections automatically, this script has not presented a valid cookie."
         );
         assert_eq!((OK, CANCEL, MORE_INFO, ALWAYS), ("OK", "Cancel", "More Info", "Always"));
-        assert_eq!(SECURITY_URL, "https://iterm2.com/python-api-security-model");
+        assert_eq!(SECURITY_URL, "https://github.com/datbird/termurion/blob/main/docs/help/python-api-security.md");
         assert_eq!(CONFIRM_HEADING, "Confirm");
         assert_eq!(
             CONFIRM_ALWAYS,
@@ -615,7 +615,7 @@ mod tests {
             ALLOW_ALL_TEXT,
             "Do you want to allow all apps running on this machine to use the Python API?\n\nThis will disable the check for a cookie. Only programs running as you, at the same elevation, can connect."
         );
-        assert_eq!(AUTH_URL, "https://iterm2.com/python-api-auth.html");
+        assert_eq!(AUTH_URL, "https://github.com/datbird/termurion/blob/main/docs/help/python-api-auth.md");
         assert_eq!(RESET_HEADING, "Python API Permissions Reset");
         assert_eq!(
             RESET_TEXT,
@@ -642,6 +642,6 @@ mod tests {
         for t in user.iter().copied().chain([remove_failed_text("p", "e").as_str(), change_failed_text("e").as_str()]) {
             assert!(!t.contains("iTerm2"), "{t}");
         }
-        assert!(AUTH_URL.contains("iterm2.com") && SECURITY_URL.contains("iterm2.com"));
+        assert!(AUTH_URL.starts_with(crate::links::REPO) && SECURITY_URL.starts_with(crate::links::REPO));
     }
 }

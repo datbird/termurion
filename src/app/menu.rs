@@ -1230,7 +1230,7 @@ impl App {
             }
             "saveContents:" | "saveDocumentAs:" => self.save_text(item.selector == "saveDocumentAs:"),
             "installShellIntegration:" => self.install_shell_integration(),
-            "showHelp:" => self.open_help_page(crate::update::REPO_URL),
+            "showHelp:" => self.open_help_page(crate::links::REPO),
             _ => {}
         }
         self.apply_fonts();
@@ -1645,8 +1645,8 @@ mod install_tests {
 
     #[test]
     fn install_command_follows_iterm2() {
-        assert_eq!(curl_command(true), "curl -L https://iterm2.com/shell_integration/install_shell_integration_and_utilities.sh | bash\r");
-        assert_eq!(curl_command(false), "curl -L https://iterm2.com/shell_integration/install_shell_integration.sh | bash\r");
+        assert_eq!(curl_command(true), "curl -L https://raw.githubusercontent.com/datbird/termurion/main/dist/install_shell_integration_and_utilities.sh | bash\r");
+        assert_eq!(curl_command(false), "curl -L https://raw.githubusercontent.com/datbird/termurion/main/dist/install_shell_integration.sh | bash\r");
         assert_eq!(INSTALL_UTILITIES_KEY, "NoSyncInstallUtilities");
     }
 
@@ -1678,14 +1678,14 @@ pub(super) const INSTALL_UTILITIES_KEY: &str = "NoSyncInstallUtilities";
 /// `install_shell_integration_and_utilities.sh` (`iTermShellIntegrationDownloadAndRunViewController.m:28-33`).
 pub(super) fn curl_command(utilities: bool) -> &'static str {
     if utilities {
-        "curl -L https://iterm2.com/shell_integration/install_shell_integration_and_utilities.sh | bash\r"
+        "curl -L https://raw.githubusercontent.com/datbird/termurion/main/dist/install_shell_integration_and_utilities.sh | bash\r"
     } else {
-        "curl -L https://iterm2.com/shell_integration/install_shell_integration.sh | bash\r"
+        "curl -L https://raw.githubusercontent.com/datbird/termurion/main/dist/install_shell_integration.sh | bash\r"
     }
 }
 
 /// Termurion's box for `Plan::Curl`: "Also install iTerm2 Utilities?" as Yes/No/Cancel.
-const CURL_TEXT: &str = "Termurion will type iTerm2's installer into this session. It adds iTerm2's script to your shell's startup file.\n\nAlso install Termurion Utilities? Utilities include scripts to download files, display images inline, and more.\n\nYes types:\ncurl -L https://iterm2.com/shell_integration/install_shell_integration_and_utilities.sh | bash\n\nNo types:\ncurl -L https://iterm2.com/shell_integration/install_shell_integration.sh | bash";
+const CURL_TEXT: &str = "Termurion will type its installer into this session. It adds Termurion's script to your shell's startup file.\n\nAlso install Termurion Utilities? Utilities include scripts to download files, display images inline, and more.\n\nYes types:\ncurl -L https://raw.githubusercontent.com/datbird/termurion/main/dist/install_shell_integration_and_utilities.sh | bash\n\nNo types:\ncurl -L https://raw.githubusercontent.com/datbird/termurion/main/dist/install_shell_integration.sh | bash";
 
 /// Yes, No or Cancel for `text`, the default button Yes when `yes_first`, else No: Some(true),
 /// Some(false), None.
@@ -1796,7 +1796,7 @@ impl App {
 
 /// The About box text: version, one line on what it is, and where the project lives.
 fn about_text(version: &str) -> String {
-    format!("Termurion {version}\nAn iTerm2-style terminal for Windows.\n{}", crate::update::REPO_URL)
+    format!("Termurion {version}\nAn iTerm2-style terminal for Windows.\n{}", crate::links::REPO)
 }
 
 pub(super) fn info_box(text: &str) {
@@ -1843,15 +1843,15 @@ mod tests {
     fn about_points_at_the_repo() {
         let t = super::about_text("1.2.3");
         assert!(t.starts_with("Termurion 1.2.3\n"));
-        assert!(t.contains(crate::update::REPO_URL));
-        assert!(!t.contains("iterm2.com"));
+        assert!(t.contains(crate::links::REPO));
+        assert!(!t.contains(&["iterm2", ".com"].concat()));
     }
 
     /// Help opens the project repository, and the guard lets it through.
     #[test]
     fn help_page_is_the_repo_and_passes_the_guard() {
-        assert_eq!(crate::update::REPO_URL, "https://github.com/datbird/termurion");
-        assert!(matches!(crate::semantic::guard_open(crate::update::REPO_URL, false), crate::semantic::Run::Open(_)));
+        assert_eq!(crate::links::REPO, "https://github.com/datbird/termurion");
+        assert!(matches!(crate::semantic::guard_open(crate::links::REPO, false), crate::semantic::Run::Open(_)));
     }
 
     /// The notification area icon lists every window, minimized or hidden or excluded from the

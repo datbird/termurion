@@ -24,7 +24,7 @@ pub(super) enum Offer {
 const OFFERS: [Offer; 4] = [Offer::Focus, Offer::Mouse, Offer::Paste, Offer::Dec2048];
 
 /// Paste bracketing's Help button (`NC:560`).
-pub(super) const PASTE_HELP_URL: &str = "https://iterm2.com/paste_bracketing";
+pub(super) const PASTE_HELP_URL: &str = crate::links::HELP_PASTE_BRACKETING;
 
 /// The optional bool that answers an offer for good (`PS:245-246`, `NC:33`).
 pub(super) fn offer_key(o: Offer) -> &'static str {
@@ -185,6 +185,6 @@ mod tests {
         assert_eq!(offer_key(Dec2048), "NoSyncTurnOffDEC2048OnHostChange");
         assert_eq!(bar_id(Dec2048), "TurnOffDEC2048OnHostChange");
         assert!(crate::schema::find_global("NoSyncTurnOffDEC2048OnHostChange").is_none());
-        assert_eq!(PASTE_HELP_URL, "https://iterm2.com/paste_bracketing");
+        assert_eq!(PASTE_HELP_URL, "https://github.com/datbird/termurion/blob/main/docs/help/paste-bracketing.md");
     }
 }

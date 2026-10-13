@@ -256,7 +256,7 @@ impl App {
             return false;
         }
         match button {
-            Some("Learn More...") => self.open_url(pane, "https://iterm2.com/documentation-shell-integration.html"),
+            Some("Learn More...") => self.open_url(pane, crate::links::HELP_SHELL_INTEGRATION),
             Some("Install Now") => self.install_shell_integration(),
             _ => {}
         }

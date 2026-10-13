@@ -2040,7 +2040,7 @@ impl IndicatorKind {
             IndicatorKind::Receive => "Keyboard input from another session gets broadcast to this one, but this session is not an input source for broadcasting (anything you type here stays here).",
             IndicatorKind::Coprocess => "A coprocess is running.",
             IndicatorKind::Alert => "Will alert on next mark.",
-            IndicatorKind::CopyMode => "In copy mode. See [documentation](https://iterm2.com/documentation-copymode.html) for details.",
+            IndicatorKind::CopyMode => "In copy mode. See [documentation](https://github.com/datbird/termurion/blob/main/docs/help/copy-mode.md) for details.",
             IndicatorKind::DebugLogging => "Debug logging is enabled.",
             IndicatorKind::Pin => "This Hotkey Window is pinned.",
             IndicatorKind::AiLinked => "AI Chats can view or control this session.\n * [Unlink from AI Chat](iterm2:unlink-session-chat)\n * [Reveal AI Chat](iterm2:reveal-chat-for-session)",

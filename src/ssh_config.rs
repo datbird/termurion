@@ -20,7 +20,7 @@ pub const BROWSE: &str = "Browse";
 pub const SELECT_TITLE: &str = "Select SSH Binary";
 pub const NOT_EXECUTABLE: &str = "Selected file must be an executable.";
 pub const DEST_LABEL: &str = "Destination folder on remote host:";
-pub const HELP_URL: &str = "https://gitlab.com/gnachman/iterm2/-/wikis/SSH-Integration";
+pub const HELP_URL: &str = crate::links::HELP_SSH_INTEGRATION;
 /// The button beside the command type (`PreferencePanel.xib:2107`).
 pub const CONFIGURE: &str = "Configure\u{2026}";
 /// Termurion's: iTerm2's sheet has no title.
@@ -229,7 +229,7 @@ mod tests {
         assert_eq!(SELECT_TITLE, "Select SSH Binary");
         assert_eq!(NOT_EXECUTABLE, "Selected file must be an executable.");
         assert_eq!(DEST_LABEL, "Destination folder on remote host:");
-        assert_eq!(HELP_URL, "https://gitlab.com/gnachman/iterm2/-/wikis/SSH-Integration");
+        assert_eq!(HELP_URL, "https://github.com/datbird/termurion/blob/main/docs/help/ssh-integration.md");
         assert_eq!(CONFIGURE, "Configure\u{2026}");
         assert_eq!(SHEET_TITLE, "Configure SSH");
         assert_eq!(ADD_FILES, "Files\u{2026}");

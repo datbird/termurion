@@ -658,7 +658,7 @@ mod tests {
             ("iterm2_shell_integration.bash", 47053, "2ba74f411bc8e43e"),
             ("iterm2_shell_integration.zsh", 20739, "6826c8f0fedded72"),
             ("iterm2_shell_integration.fish", 22450, "c38b0938c5f64431"),
-            ("iterm2_shell_integration.xonsh", 21541, "83fdfacb076028ca"),
+            ("iterm2_shell_integration.xonsh", 21563, "198b9ef8734f3698"),
             ("bash-si-loader", 2336, "0c1cd7ae5949b091"),
             (".zshenv", 1438, "9393d21a9772bdbe"),
             ("iterm2-shell-integration-loader.fish", 1528, "228a19f70f2928fd"),

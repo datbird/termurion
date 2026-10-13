@@ -28,8 +28,8 @@ use winit::keyboard::{Key as WKey, NamedKey};
 pub(super) const CTX_ID: &str = "toolbelt:ctx:";
 /// Command History's and Recent Directories' Help (`ToolCommandHistoryView.m:316-325`,
 /// `ToolDirectoriesView.m`; the first is http, as the source has it).
-const COMMAND_HELP: &str = "http://iterm2.com/shell_integration.html";
-const DIRS_HELP: &str = "https://iterm2.com/shell_integration.html";
+const COMMAND_HELP: &str = crate::links::HELP_SHELL_INTEGRATION;
+const DIRS_HELP: &str = crate::links::HELP_SHELL_INTEGRATION;
 /// Profiles' popup is as wide as the strip lets it be (`ToolProfiles.m:120-131`).
 const POPUP_FILL: f32 = 10_000.0;
 /// Snippets' glyphs (Segoe Fluent Icons) and colors (`TS:733-737`): a snippet in blue, a folder

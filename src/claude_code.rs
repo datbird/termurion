@@ -30,7 +30,7 @@ pub const REPAIR_ID: &str = "NoSyncSuppressClaudeCodeIntegrationRepairPrompt";
 pub const WATCHER_BAR: &str = "ClaudeCodeStatusTool";
 /// The announcement shows when this many sessions run claude.
 pub const WATCHER_THRESHOLD: usize = 3;
-pub const HELP_URL: &str = "https://iterm2.com/claude-code-integration.html";
+pub const HELP_URL: &str = crate::links::HELP_CLAUDE_CODE;
 
 // ---- texts ("Claude Code texts")
 pub const INTRO_TITLE: &str = "Before You Start";
@@ -1022,7 +1022,7 @@ mod tests {
         assert_eq!(remove_failed("Boom."), "Boom. Continue removing the workgroup and triggers anyway? cc-status will keep running until you fix the underlying issue and try again.");
         assert!(broken_text(p).starts_with("Termurion\u{2019}s cc-status hook is no longer in C:\\c\\settings.json. This usually means"));
         assert_eq!(REMOVE_FAILED_HEADING, "Couldn\u{2019}t Remove Hooks");
-        assert_eq!(HELP_URL, "https://iterm2.com/claude-code-integration.html");
+        assert_eq!(HELP_URL, "https://github.com/datbird/termurion/blob/main/docs/help/claude-code.md");
         assert_eq!(EXE, "cc-status.exe");
         assert!(missing_exe(Path::new(r"C:\T\cc-status.exe")).contains(r"C:\T\cc-status.exe"));
     }

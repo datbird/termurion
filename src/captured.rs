@@ -86,7 +86,7 @@ pub const NOT_VISIBLE: &str = "A Capture Output trigger fired, but the Captured 
 pub const NO_SHELL_INTEGRATION: &str = "A Capture Output trigger fired, but Shell Integration is not installed.";
 pub const SUPPRESS_KEY: &str = "NoSyncSuppressCaptureOutputToolNotVisibleWarning";
 pub const SUPPRESS_SI_KEY: &str = "NoSyncSuppressCaptureOutputRequiresShellIntegrationWarning";
-pub const HELP_URL: &str = "http://iterm2.com/captured_output.html";
+pub const HELP_URL: &str = crate::links::HELP_CAPTURED_OUTPUT;
 pub const RUN_TITLE: &str = "Captured Output trigger";
 
 #[cfg(test)]

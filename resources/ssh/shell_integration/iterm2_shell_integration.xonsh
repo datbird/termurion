@@ -60,7 +60,7 @@ class _iTerm2Xonsh:
         @.env.register('ITERM_ENABLE_SHELL_INTEGRATION_WITH_TMUX', type='bool', default=False,
                        doc="By default, shell Integration does not work with tmux or screen. "
                            "If you'd like to use it with tmux, set `True`. "
-                           "Docs: https://iterm2.com/documentation-shell-integration.html")
+                           "Docs: https://github.com/datbird/termurion/blob/main/docs/help/shell-integration.md")
 
     def print_err(self, msg):
         print(msg, file=@.imp.sys.stderr)

@@ -31,7 +31,7 @@ pub enum SetupEvent {
 }
 
 /// iTerm2's help page for the setup window (`SVC:331-336`).
-pub const HELP_URL: &str = "https://iterm2.com/status-bar-layout";
+pub const HELP_URL: &str = crate::links::HELP_STATUS_BAR;
 
 /// The Auto-Rainbow popup's items (`SXIB:198-207`).
 const RAINBOW_ITEMS: [(Rainbow, &str); 4] = [(Rainbow::Disabled, "Disabled"), (Rainbow::Light, "Light Colors"), (Rainbow::Dark, "Dark Colors"), (Rainbow::Automatic, "Automatic")];

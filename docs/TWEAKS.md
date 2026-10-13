@@ -42,6 +42,8 @@ Each item says what is wrong, what it should do, and where it was seen.
 
 ## Done
 
+10. **Help links pointed at iTerm2's site.** Done 2026-10-13 (main): Help and About open the repository; every other iTerm2 link (help pages, bug reports, installers, download.sh, manifest defaults) comes from `src/links.rs` and points at the repo. Help pages are in docs/help, installers and utilities in dist. Downloads 404 while the repository is private. Plan: docs/superpowers/plans/2026-10-13-tw10-repo-links.md.
+
 1. **The first menu says "iTerm2", not the product name.** Done 2026-10-12 (branch m14r-text, c18fb0b4): the application menu and its items (About, Hide, Quit, Make Default Term, Help) read Termurion; menu identifiers and selectors keep iTerm2 text (compatibility keys).
 
 2. **Rename the whole project to Termurion.** Done 2026-10-12 (branches m14r-text and m14r-data): user-visible text (b1fd3809), menu bar (c18fb0b4), docs and logo, identifiers, data and registry names.

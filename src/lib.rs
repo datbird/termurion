@@ -421,6 +421,7 @@ pub mod default_term;
 #[cfg(windows)]
 pub mod handoff_win;
 pub mod url_launch;
+pub mod links;
 pub mod update;
 pub mod tip_ui;
 pub mod tips;

@@ -14,11 +14,11 @@ pub struct Tip {
     pub url: Option<String>,
 }
 
-/// iTerm2's script at `64791fc`, byte for byte.
+/// iTerm2's script at `64791fc`, byte for byte except that its links point at the Termurion repo.
 const SCRIPT: &str = include_str!("../resources/utilities/it2tip");
 
 /// The SHA-256 of `SCRIPT`.
-pub const SCRIPT_SHA256: &str = "582555a80108ede97ebc088676370fc17033405a61b76853a06b47218d4c95ae";
+pub const SCRIPT_SHA256: &str = "3e3a1fd009b1b1f2cc35603426dbd0109d31155306ff67d9d7cf7e8485ba03e0";
 
 /// The script's `tips` list, parsed as JSON once its trailing commas are dropped, with
 /// "iTerm2" replaced by "Termurion" in titles and bodies.
@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(all.iter().filter(|t| t.url.is_some()).count(), 30);
         assert!(all.iter().all(|t| !t.title.contains("iTerm2") && !t.body.contains("iTerm2")));
         let body = "The big new feature of Termurion version 3 is Shell Integration. Click \u{201c}Learn More\u{201d} for all the details.";
-        let url = "https://iterm2.com/shell_integration.html";
+        let url = "https://github.com/datbird/termurion/blob/main/docs/help/shell-integration.md";
         assert_eq!(all[0], Tip { title: "Shell Integration".into(), body: body.into(), url: Some(url.into()) });
         assert_eq!(all[1].url, None);
         assert_eq!(all[122].title, "SSH File Browser");

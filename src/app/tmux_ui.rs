@@ -459,7 +459,7 @@ impl App {
             }
             (HUNG_BAR, _) => {}
             (super::tmux_tabs_ui::PLANE_BAR, Some("Why?")) => {
-                if let Err(e) = super::semantic_ui::shell_open("https://iterm2.com//tmux22bug.html", false) {
+                if let Err(e) = super::semantic_ui::shell_open(crate::links::HELP_TMUX_22, false) {
                     self.banners.set("window", format!("Could not open the page: {e}"));
                 }
             }

@@ -16,7 +16,7 @@ use std::time::Duration;
 use crate::menus;
 
 /// iTerm2's page of copy mode commands (`PseudoTerminal.m:10717-10722`).
-pub const COPY_MODE_URL: &str = "https://iterm2.com/documentation-copymode.html";
+pub const COPY_MODE_URL: &str = crate::links::HELP_COPY_MODE;
 
 /// The glyph before the two horizontal-split items (`AD:392-401`): a line with a combining box.
 const HORIZONTAL_HINT: &str = "\u{2500}\u{20de} ";
@@ -303,7 +303,7 @@ mod tests {
         assert!(tip_for("Fold Selected Lines").is_some_and(|t| !t.contains("Unfold in Selection")));
         // The right-click Unfold is Termurion's context menu item (semantic_ui.rs `CtxItem::Unfold`), so the clause stays.
         assert!(tip_for("Fold Selected Lines").is_some_and(|t| t.ends_with("by clicking the arrow in the margin, or right-clicking and choosing Unfold.")));
-        assert_eq!(COPY_MODE_URL, "https://iterm2.com/documentation-copymode.html");
+        assert_eq!(COPY_MODE_URL, "https://github.com/datbird/termurion/blob/main/docs/help/copy-mode.md");
     }
 
     #[test]

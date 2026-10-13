@@ -338,7 +338,7 @@ mod tests {
     fn share_text_is_title_body_and_address() {
         let tip = crate::tips::Tip { key: "1".into(), title: "T".into(), body: "B".into(), url: None };
         assert_eq!(share_text(&tip), "T\n\nB");
-        let with = crate::tips::Tip { url: Some("https://iterm2.com/x".into()), ..tip };
-        assert_eq!(share_text(&with), "T\n\nB\n\nhttps://iterm2.com/x");
+        let with = crate::tips::Tip { url: Some("https://github.com/datbird/termurion/x".into()), ..tip };
+        assert_eq!(share_text(&with), "T\n\nB\n\nhttps://github.com/datbird/termurion/x");
     }
 }

@@ -6,7 +6,7 @@ This prompt is used when you invoke the menu item **Edit > Engage Artificial Int
 
 For example, you could open the Composer (Shift+Win+.) and write `Remove files whose name contains a vowel`. Then you select `Engage Artificial Intelligence` and it will rewrite your statement as `rm *[aeiou]*`.
 
-The syntax is that of [interpolated strings](https://iterm2.com/documentation-scripting-fundamentals.html#:~:text=References%2C%20below.-,Interpolated%20Strings,-Another%20way%20that). The `shell` and `uname` variables are always defined and are based on the best guess of these settings in your current session. If you use the SSH integration, these should be correct for the remote host. This is done so the answer can be tailored to the system you're using. The prompt takes the form of a shell script, which is a good way to persuade ChatGPT to write a command. The `\(ai.prompt)` is only available when evaluating an interpolated string in the context of AI and it takes the value that you entered in the composer.
+The syntax is that of [interpolated strings](https://github.com/datbird/termurion/blob/main/docs/help/scripting-fundamentals.md#interpolated-strings). The `shell` and `uname` variables are always defined and are based on the best guess of these settings in your current session. If you use the SSH integration, these should be correct for the remote host. This is done so the answer can be tailored to the system you're using. The prompt takes the form of a shell script, which is a good way to persuade ChatGPT to write a command. The `\(ai.prompt)` is only available when evaluating an interpolated string in the context of AI and it takes the value that you entered in the composer.
 
 ## AI Chat
 

@@ -9,7 +9,7 @@ body = "This window shows the Termurion tip of the day. It\u2019ll appear every 
 key = "0000"
 title = "Shell Integration"
 body = "A big feature of Termurion is Shell Integration. Click \u201CLearn More\u201D for all the details."
-url = "https://iterm2.com/shell_integration.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/shell-integration.md"
 
 [[tip]]
 key = "0001"
@@ -25,7 +25,7 @@ body = "Did you know Termurion has a password manager? Open it with \u201CWindow
 key = "0003"
 title = "Open Quickly"
 body = "You can quickly search through your sessions with \u201CView > Open Quickly\u201D (Shift+Win+O). You can type a query and sessions whose name, badge, current hostname, current user name, recent commands, and recent working directories match will be surfaced. It works best with Shell Integration so the user name, hostname, command, and directories can be known even while sshed."
-url = "https://iterm2.com/shell_integration.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/shell-integration.md"
 
 [[tip]]
 key = "0004"
@@ -46,31 +46,31 @@ body = "Copy a selection with Alt+Win+C to include styles such as colors and fon
 key = "0007"
 title = "Inline Images"
 body = "Termurion can display images (even animated GIFs) inline."
-url = "https://iterm2.com/images.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/inline-images.md"
 
 [[tip]]
 key = "0008"
 title = "Automatic Profile Switching"
 body = "Automatic Profile Switching changes the current profile when the username, hostname, or directory changes. Set it up in \u201CSettings > Profiles > Advanced.\u201D It requires Shell Integration to be installed."
-url = "https://iterm2.com/shell_integration.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/shell-integration.md"
 
 [[tip]]
 key = "0009"
 title = "Captured Output"
 body = "Termurion can act like an IDE using the Captured Output feature. When it sees text matching a regular expression you define, like compiler errors, it shows the matching lines in the Toolbelt. You can click to jump to the line in your terminal and double-click to perform an action like opening an editor to the line with the error."
-url = "https://iterm2.com/captured_output.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/captured-output.md"
 
 [[tip]]
 key = "0010"
 title = "Badges"
 body = "You can display a status message in the top right of your session in the background. It\u2019s called a \u201CBadge.\u201D If you install Shell Integration you can include info like user name, hostname, current directory, and more."
-url = "https://iterm2.com/badges.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/badges.md"
 
 [[tip]]
 key = "0011"
 title = "Dynamic Profiles"
 body = "Dynamic Profiles let you store your profiles as one or more JSON files. It\u2019s great for batch creating and editing profiles."
-url = "https://iterm2.com/dynamic-profiles.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/dynamic-profiles.md"
 
 [[tip]]
 key = "0012"
@@ -91,19 +91,19 @@ body = "The \u201CSemantic History\u201D feature allows you to Win+click on a fi
 key = "0015"
 title = "Tmux Integration"
 body = "If you use tmux, try running \u201Ctmux -CC\u201D to get Termurion\u2019s tmux integration mode. The tmux windows show up as native Termurion windows, and you can use Termurion\u2019s keyboard shortcuts. It even works over ssh!"
-url = "https://gitlab.com/gnachman/iterm2/wikis/TmuxIntegration"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/tmux-integration.md"
 
 [[tip]]
 key = "0016"
 title = "Triggers"
 body = "Termurion can automatically perform actions you define when text matching a regular expression is received. For example, you can highlight text or show an alert box. Set it up in \u201CSettings > Profiles > Advanced > Triggers.\u201D"
-url = "https://www.iterm2.com/documentation-triggers.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/triggers.md"
 
 [[tip]]
 key = "0017"
 title = "Smart Selection"
 body = "Quadruple click to perform Smart Selection. It figures out if you\u2019re selecting a URL, filename, email address, etc. based on prioritized regular expressions."
-url = "https://www.iterm2.com/smartselection.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/smart-selection.md"
 
 [[tip]]
 key = "0018"
@@ -129,7 +129,7 @@ body = "The cursor guide is a horizontal line that follows your cursor. You can 
 key = "0022"
 title = "Shell Integration: Alerts"
 body = "The Shell Integration feature lets you ask to be alerted (Alt+Win+A) when a long-running command completes."
-url = "https://iterm2.com/shell_integration.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/shell-integration.md"
 
 [[tip]]
 key = "0023"
@@ -140,19 +140,19 @@ body = "You can configure how quickly the cursor blinks in \u201CSettings > Adva
 key = "0024"
 title = "Shell Integration: Navigation"
 body = "The Shell Integration feature lets you navigate among shell prompts with Shift+Win+Up and Shift+Win+Down."
-url = "https://iterm2.com/shell_integration.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/shell-integration.md"
 
 [[tip]]
 key = "0025"
 title = "Shell Integration: Status"
 body = "The Shell Integration feature puts a blue arrow next to your shell prompt. If you run a command that fails, it turns red. Right click on it to get the running time and status."
-url = "https://iterm2.com/shell_integration.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/shell-integration.md"
 
 [[tip]]
 key = "0026"
 title = "Shell Integration: Selection"
 body = "With Shell Integration installed, you can select the output of the last command with Shift+Win+A."
-url = "https://iterm2.com/shell_integration.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/shell-integration.md"
 
 [[tip]]
 key = "0027"
@@ -163,7 +163,7 @@ body = "The taskbar button shows a count of the number of bells rung and notific
 key = "0028"
 title = "Shell Integration: Downloads"
 body = "If you install Shell Integration on a machine you ssh to, you can right click on a filename (for example, in the output of \u201Cls\u201D) and choose \u201CDownload with scp\u201D to download the file."
-url = "https://iterm2.com/shell_integration.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/shell-integration.md"
 
 [[tip]]
 key = "0029"
@@ -174,13 +174,13 @@ body = "Press Win+/ to locate your cursor. It\u2019s fun!"
 key = "0030"
 title = "Customize Smart Selection"
 body = "You can edit Smart Selection regular expressions in \u201CSettings > Profiles > Advanced > Smart Selection.\u201D"
-url = "https://www.iterm2.com/smartselection.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/smart-selection.md"
 
 [[tip]]
 key = "0031"
 title = "Smart Selection Actions"
 body = "Assign an action to a Smart Selection rule in \u201CSettings > Profiles > Advanced > Smart Selection.\u201D They go in the context menu and override semantic history on Win+click."
-url = "https://www.iterm2.com/smartselection.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/smart-selection.md"
 
 [[tip]]
 key = "0032"
@@ -206,31 +206,31 @@ body = "If you put a slash in a profile\u2019s tag, that implicitly defines a hi
 key = "0036"
 title = "Downloads"
 body = "Termurion can download files by base-64 encoding them. Click \u201CLearn More\u201D to download a shell script that makes it easy."
-url = "https://iterm2.com/download.sh"
+url = "https://raw.githubusercontent.com/datbird/termurion/main/dist/download.sh"
 
 [[tip]]
 key = "0037"
 title = "Command Completion"
 body = "If you install Shell Integration, Shift+Win+; helps you complete commands. It remembers the commands you\u2019ve run on each host that has Shell Integration installed. It knows how often that command was run and how recently to help make the best suggestions."
-url = "https://iterm2.com/shell_integration.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/shell-integration.md"
 
 [[tip]]
 key = "0038"
 title = "Recent Directories"
 body = "Termurion remembers which directories you use the most on each host that has Shell Integration installed. There\u2019s a Toolbelt tool to browse them, and Alt+Win+/ gives you a popup sorted by frequency and recency of use."
-url = "https://iterm2.com/shell_integration.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/shell-integration.md"
 
 [[tip]]
 key = "0039"
 title = "Favorite Directories"
 body = "If you have Shell Integration installed, you can \u201Cstar\u201D a directory to keep it always at the bottom of the Recent Directories tool in the Toolbelt. Right click and choose \u201CToggle Star.\u201D"
-url = "https://iterm2.com/shell_integration.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/shell-integration.md"
 
 [[tip]]
 key = "0040"
 title = "Shell Integration History"
 body = "Install Shell Integration and turn on \u201CSettings > General > Save copy/paste and command history to disk\u201D to remember command history per host across restarts of Termurion."
-url = "https://iterm2.com/shell_integration.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/shell-integration.md"
 
 [[tip]]
 key = "0041"
@@ -251,7 +251,7 @@ body = "Resize split panes with the keyboard using Ctrl+Win+Arrow Key."
 key = "0044"
 title = "Move Cursor"
 body = "Hold Alt and click to move your cursor. It works best with Shell Integration installed (to avoid sending up/down arrow keys to your shell)."
-url = "https://iterm2.com/shell_integration.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/shell-integration.md"
 
 [[tip]]
 key = "0045"
@@ -337,13 +337,13 @@ body = "Did you know? If the bell rings too often, you\u2019ll be asked if you\u
 key = "0062"
 title = "Profile Search"
 body = "Every list of profiles has a search field (e.g., in \u201DSettings > Profiles.\u201D) You can use various operators to restrict your search query. Click \u201CLearn More\u201D for all the details."
-url = "https://iterm2.com/search_syntax.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/search-syntax.md"
 
 [[tip]]
 key = "0063"
 title = "Color Schemes"
 body = "The online color gallery features over one hundred beautiful color schemes you can download."
-url = "https://www.iterm2.com/colorgallery"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/color-presets.md"
 
 [[tip]]
 key = "0064"
@@ -354,7 +354,7 @@ body = "You can have a separate font for ASCII versus non-ASCII text. Enable it 
 key = "0065"
 title = "Coprocesses"
 body = "A coprocess is a job, such as a shell script, that has a special relationship with a particular Termurion session. All output in a terminal window (that is, what you see on the screen) is also input to the coprocess. All output from the coprocess acts like text that the user is typing at the keyboard."
-url = "https://iterm2.com/coprocesses.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/coprocesses.md"
 
 [[tip]]
 key = "0067"
@@ -380,13 +380,13 @@ body = "You can \u201Cbury\u201D a session with \u201CSession > Bury Session.\u2
 key = "0072"
 title = "Python API"
 body = "You can add custom behavior to Termurion using the Python API."
-url = "https://iterm2.com/python-api"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/python-api.md"
 
 [[tip]]
 key = "0073"
 title = "Status Bar"
 body = "You can add a configurable status bar to your terminal windows."
-url = "https://iterm2.com/3.3/documentation-status-bar.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/status-bar.md"
 
 [[tip]]
 key = "0074"
@@ -417,7 +417,7 @@ body = "Press Shift+Win+. to open the Composer. It gives you a scratchpad to edi
 key = "0080"
 title = "Shell Integration: Uploads"
 body = "If you install Shell Integration on a machine you ssh to, you can drag-drop from Explorer into the remote host by holding Alt while dragging. The destination directory is determined by where you drop the file in the terminal window: run cd foo, then drop the file below the cd command, and the file will go into the foo directory."
-url = "https://iterm2.com/shell_integration.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/shell-integration.md"
 
 [[tip]]
 key = "0081"
@@ -603,7 +603,7 @@ body = "Termurion now has an AI Chat feature! Use \u201CWindow > AI Chats\u201D 
 key = "0118"
 title = "Web Browser Profiles"
 body = "You can configure a profile to be a web browser! In \u201CSettings > Profiles > General\u201D, set \u201CProfile Type\u201D to \u201CWeb Browser\u201D. Key bindings, smart selection, and the password manager all work in browser sessions."
-url = "https://iterm2.com/documentation-web.html"
+url = "https://github.com/datbird/termurion/blob/main/docs/help/web-browser.md"
 
 [[tip]]
 key = "0119"

@@ -8,5 +8,5 @@ import iterm2
 connection=await iterm2.Connection.async_create()
 await iterm2.Window.async_create(connection)
 
-]8;;https://iterm2.com/python-api⌘-click here for iTerm2 Python API Docs]8;;
+]8;;https://github.com/datbird/termurion/blob/main/docs/help/python-api.md⌘-click here for iTerm2 Python API Docs]8;;
 

@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# This script sets iTerm2 user-defined variables describing the state of the git
+# repo in the current directory.
+#
+# For more information on the status bar, see:
+# https://github.com/datbird/termurion/blob/main/docs/help/status-bar.md
+#
+# Installation instructions for this script:
+#
+# bash: Place this in .bashrc.
+# --------------------------------------------------------------------------------------
+# function iterm2_print_user_vars() {
+#   it2git
+# }
+
+# fish: Place this in ~/.config/fish/config.fish after the line
+#       "source ~/.iterm2_shell_integration.fish".
+# --------------------------------------------------------------------------------------
+# function iterm2_print_user_vars
+#   it2git
+# end
+
+# tcsh: Place this in .tcshrc
+# --------------------------------------------------------------------------------------
+# alias get_current_branch "bash -c '((git branch 2> /dev/null) | grep \* | cut -c3-)'"
+# alias _iterm2_user_defined_vars 'it2git'
+
+# zsh:Place this in .zshrc after "source /Users/georgen/.iterm2_shell_integration.zsh".
+# --------------------------------------------------------------------------------------
+# iterm2_print_user_vars() {
+#   it2git
+# }
+
+GIT_BINARY=/usr/bin/git
+
+dirty() {
+    # Outputs "dirty" or "clean"
+    OUTPUT=$("$GIT_BINARY" status --porcelain --ignore-submodules -unormal 2>/dev/null)
+    if (($?)); then
+        echo "clean"
+        return
+    fi
+    if [ -z "$OUTPUT" ]; then
+        echo "clean"
+    else
+        echo "dirty"
+    fi
+}
+
+counts() {
+    OUTPUT=$("$GIT_BINARY" rev-list --left-right --count HEAD...@'{u}' 2>/dev/null)
+    if (($?)); then
+        echo "error"
+        return
+    fi
+    echo "$OUTPUT"
+}
+
+branch() {
+    OUTPUT=$("$GIT_BINARY" symbolic-ref -q --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)
+    if (($?)); then
+        return
+    fi
+    echo "$OUTPUT"
+}
+
+adds() {
+    "${GIT_BINARY}" ls-files --others --exclude-standard | wc -l
+}
+
+deletes() {
+    "${GIT_BINARY}" ls-files --deleted --exclude-standard | wc -l
+}
+
+# Line counts: "insertions<TAB>deletions" for modified files only.
+# Excludes added, untracked, and deleted files — their line contents are not
+# counted as inserted/deleted lines, only the file-level add/delete below.
+line_counts() {
+    local insertions=0 deletions=0
+    local line
+    # Include M (modified), R (renamed), T (typechange). Exclude A/D.
+    # --numstat prints "INS\tDEL\tPATH" per file; "-\t-\tPATH" for binary.
+    while IFS=$'\t' read -r line; do
+        local ins del
+        ins="${line%%$'\t'*}"
+        del="${line#*$'\t'}"
+        del="${del%%$'\t'*}"
+        [[ "$ins" == "-" ]] && ins=0
+        [[ "$del" == "-" ]] && del=0
+        insertions=$((insertions + ins))
+        deletions=$((deletions + del))
+    done < <("${GIT_BINARY}" diff --numstat --diff-filter=MRT HEAD 2>/dev/null)
+    printf '%s\t%s\n' "$insertions" "$deletions"
+}
+
+# File counts by status across staged+unstaged+untracked.
+# Added: brand-new files only (staged A or untracked ??).
+# Deleted: actually-removed files only (D in either column).
+# Modified: M/R/T/C/U — existing files whose contents changed.
+# Emits "A<TAB>M<TAB>D".
+file_counts() {
+    local added=0 modified=0 deleted=0 porcelain
+    porcelain=$("${GIT_BINARY}" status --porcelain --ignore-submodules -unormal 2>/dev/null) || {
+        printf '%s\t%s\t%s\n' 0 0 0
+        return
+    }
+    # git status --porcelain: two status chars in cols 1-2, space, path.
+    # XY where X=index, Y=worktree. Categorize per file, "added" and "deleted"
+    # take priority over "modified" when both columns differ (e.g. AM, MD).
+    local line x y
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        x="${line:0:1}"
+        y="${line:1:1}"
+        if [[ "$x" == "?" && "$y" == "?" ]]; then
+            added=$((added + 1))
+        elif [[ "$x" == "A" || "$y" == "A" ]]; then
+            added=$((added + 1))
+        elif [[ "$x" == "D" || "$y" == "D" ]]; then
+            deleted=$((deleted + 1))
+        else
+            # M, R, C, T, U, or any mix of those — existing file changed.
+            modified=$((modified + 1))
+        fi
+    done <<< "$porcelain"
+    printf '%s\t%s\t%s\n' "$added" "$modified" "$deleted"
+}
+function iterm2_begin_osc {
+  printf "\033]"
+}
+
+function iterm2_end_osc {
+  printf "\007"
+}
+
+function iterm2_set_user_var() {
+  iterm2_begin_osc
+  printf "1337;SetUserVar=%s=%s" "$1" $(printf "%s" "$2" | base64 | tr -d '\n')
+  iterm2_end_osc
+}
+
+git_poll () {
+    DIRECTORY="$1"
+    cd "$DIRECTORY"
+    DIRTY=$(dirty)
+    COUNTS=$(counts)
+    PUSH_COUNT=$(cut -f1 <<< "$COUNTS")
+    PULL_COUNT=$(cut -f2 <<< "$COUNTS")
+    BRANCH=$(branch)
+    ADDS=$(adds)
+    DELETES=$(deletes)
+    LINES=$(line_counts)
+    LINES_INSERTED=$(cut -f1 <<< "$LINES")
+    LINES_DELETED=$(cut -f2 <<< "$LINES")
+    FILES=$(file_counts)
+    FILES_ADDED=$(cut -f1 <<< "$FILES")
+    FILES_MODIFIED=$(cut -f2 <<< "$FILES")
+    FILES_DELETED=$(cut -f3 <<< "$FILES")
+
+    iterm2_set_user_var gitBranch "$BRANCH"
+    iterm2_set_user_var gitDirty "$DIRTY"
+    iterm2_set_user_var gitPushCount "$PUSH_COUNT"
+    iterm2_set_user_var gitPullCount "$PULL_COUNT"
+    iterm2_set_user_var gitAdds "$ADDS"
+    iterm2_set_user_var gitDeletes "$DELETES"
+    iterm2_set_user_var gitLinesInserted "$LINES_INSERTED"
+    iterm2_set_user_var gitLinesDeleted "$LINES_DELETED"
+    iterm2_set_user_var gitFilesAdded "$FILES_ADDED"
+    iterm2_set_user_var gitFilesModified "$FILES_MODIFIED"
+    iterm2_set_user_var gitFilesDeleted "$FILES_DELETED"
+}
+
+"$GIT_BINARY" rev-parse --git-dir 2>/dev/null >/dev/null
+if (($?)); then
+    iterm2_set_user_var gitBranch ""
+    iterm2_set_user_var gitDirty ""
+    iterm2_set_user_var gitPushCount ""
+    iterm2_set_user_var gitPullCount ""
+    iterm2_set_user_var gitAdds ""
+    iterm2_set_user_var gitDeletes ""
+    iterm2_set_user_var gitLinesInserted ""
+    iterm2_set_user_var gitLinesDeleted ""
+    iterm2_set_user_var gitFilesAdded ""
+    iterm2_set_user_var gitFilesModified ""
+    iterm2_set_user_var gitFilesDeleted ""
+else
+    git_poll "$PWD"
+fi
+
+

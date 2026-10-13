@@ -9,7 +9,7 @@ use crate::workgroup::{Kind, Mode, NavigationShortcuts, SessionConfig, ToolbarIt
 
 pub const EMPTY_STATE: &str = "Select a workgroup on the left or click + to create one.";
 pub const WHAT_IS: &str = "What is a Workgroup?";
-pub const WHAT_IS_TEXT: &str = "A **Workgroup** turns a single session into a coordinated set of related sessions, each with its own command and toolbar; see the [Workgroups documentation](https://iterm2.com/documentation-workgroups.html) for the full story.";
+pub const WHAT_IS_TEXT: &str = "A **Workgroup** turns a single session into a coordinated set of related sessions, each with its own command and toolbar; see the [Workgroups documentation](https://github.com/datbird/termurion/blob/main/docs/help/workgroups.md) for the full story.";
 pub const NAME_PLACEHOLDER: &str = "Workgroup name";
 pub const UNTITLED_WORKGROUP: &str = "Untitled Workgroup";
 pub const ADD_PRESET: &str = "Add Preset";

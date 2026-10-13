@@ -11,7 +11,7 @@ use crate::scripts::Fs;
 const BANNER: &str = include_str!("../resources/scripts/repl_banner.txt");
 
 /// The banner's SHA-256: iTerm2's file at `64791fc`.
-pub const BANNER_SHA256: &str = "6ea333be584b6ecb6343843868404c8f8bd9bc214aad0807973af69140734637";
+pub const BANNER_SHA256: &str = "ba4ebd356d6fd3fafe7cd16afce9496b1341eb4db287fd8cf861f048e4b208ee";
 
 /// The banner fed to the REPL's pane before the interpreter writes: iTerm2's, naming Termurion
 /// and Win-click (the link's URL stays iTerm2's).
@@ -393,8 +393,8 @@ mod tests {
         assert!(b.ends_with("\r\n"));
         assert_eq!(b.matches('\n').count(), b.matches("\r\n").count());
         assert!(b.contains("import iterm2\r\nconnection=await iterm2.Connection.async_create()\r\n"));
-        assert!(b.contains("\x1b]8;;https://iterm2.com/python-api\x07Win-click here for Termurion Python API Docs\x1b]8;;\x07"));
-        assert!(!b.replace("https://iterm2.com/python-api", "").contains("iTerm2"));
+        assert!(b.contains("\x1b]8;;https://github.com/datbird/termurion/blob/main/docs/help/python-api.md\x07Win-click here for Termurion Python API Docs\x1b]8;;\x07"));
+        assert!(!b.replace("https://github.com/datbird/termurion/blob/main/docs/help/python-api.md", "").contains("iTerm2"));
         assert!(!b.contains('\u{2318}'));
         assert_eq!(repl_args(), ["-m", "asyncio"]);
         assert_eq!(REPL_NAME, "REPL");

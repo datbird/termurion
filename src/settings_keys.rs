@@ -2959,15 +2959,15 @@ mod tests {
     #[test]
     fn scripting_rows_follow_iterm2() {
         for (key, default, help) in [
-            ("PythonRuntimeDownloadURL", "https://iterm2.com/downloads/pyenv/manifest.json", "URL to check for new versions of the Python scripting runtime."),
+            ("PythonRuntimeDownloadURL", crate::links::PYENV_MANIFEST, "URL to check for new versions of the Python scripting runtime."),
             (
                 "UvManifestDownloadURL",
-                "https://iterm2.com/downloads/uv/manifest.json",
+                crate::links::UV_MANIFEST,
                 "URL of the uv download manifest (used when the Python runtime is provisioned with uv).",
             ),
             (
                 "PythonRuntimeBetaDownloadURL",
-                "https://iterm2.com/downloads/pyenv/betamanifest.json",
+                crate::links::PYENV_BETA_MANIFEST,
                 "URL to check for new Beta versions of the Python scripting runtime.",
             ),
         ] {
@@ -3831,7 +3831,7 @@ mod tests {
                 "AiModelCatalogURL",
                 "General",
                 Kind::String,
-                s("https://iterm2.com/downloads/ai/manifest.json"),
+                s(crate::links::AI_MANIFEST),
                 "URL to check for updates to the AI model catalog.\nThe catalog defines the built-in AI models (context window, capabilities, and the recommended model per vendor). Termurion ships its catalog with each release and never downloads a newer one, so this URL is not used.".into(),
             ),
             (

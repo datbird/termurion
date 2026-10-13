@@ -247,7 +247,7 @@ mod tests {
         let by = |k: &str| all.iter().find(|t| t.key == k).unwrap_or_else(|| panic!("{k}"));
         assert!(by("0003").body.contains("Shift+Win+O"));
         assert!(by("0027").body.starts_with("The taskbar button shows a count"));
-        assert_eq!(by("0000").url.as_deref(), Some("https://iterm2.com/shell_integration.html"));
+        assert_eq!(by("0000").url.as_deref(), Some("https://github.com/datbird/termurion/blob/main/docs/help/shell-integration.md"));
         assert!(all.iter().all(|t| t.key != "0066" && t.key != "0105"));
         for t in all {
             for bad in ["iTerm2", "\u{2318}", "\u{2325}", "\u{21e7}", "\u{2303}", "Finder"] {
@@ -256,15 +256,13 @@ mod tests {
         }
     }
 
-    /// P11: a tip's address is one of two fixed https hosts; the data is static.
+    /// P11: a tip's address is a help page in the repo (or the download script); the data is static.
     #[test]
     fn tips_urls_are_fixed() {
         for t in all() {
             if let Some(u) = &t.url {
                 assert!(
-                    u.starts_with("https://iterm2.com/")
-                        || u.starts_with("https://www.iterm2.com/")
-                        || u.starts_with("https://gitlab.com/gnachman/iterm2/"),
+                    (u.starts_with(crate::links::REPO) && u[crate::links::REPO.len()..].starts_with("/blob/main/docs/help/")) || u == crate::links::DOWNLOAD_SH,
                     "{}: {u}",
                     t.key
                 );

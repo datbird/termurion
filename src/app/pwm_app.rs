@@ -39,7 +39,7 @@ const OP_ACCOUNT_KEY: &str = "OnePasswordAccount";
 /// `iTermAdvancedSettingsModel.lastpassGroups`.
 const LP_GROUPS_KEY: &str = "LastpassGroups";
 /// The LastPass help page the Can't Find alert's Help opens (`LP:579`).
-const LP_HELP_URL: &str = "https://iterm2.com/lastpass-cli";
+const LP_HELP_URL: &str = crate::links::HELP_PASSWORD_MANAGER;
 /// The heading of an adapter's errors (`AP:999`) and of its list warning (`AP:697`).
 const ADAPTER_ERROR_HEADING: &str = "Password Manager Error";
 const ADAPTER_WARNING_HEADING: &str = "Password Manager";

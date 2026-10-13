@@ -12,8 +12,6 @@ use crate::inert_files::{is_hidden, shown_name};
 pub const RELEASES_URL: &str = "https://api.github.com/repos/datbird/termurion/releases?per_page=30";
 /// The page Learn More opens when the feed names no better one (and the only host it may name).
 pub const RELEASE_PAGE: &str = "https://github.com/datbird/termurion/releases";
-/// The project home: Help > Termurion Help opens it and About names it.
-pub const REPO_URL: &str = "https://github.com/datbird/termurion";
 
 /// The stored keys (`SUUpdater.m`: `SUEnableAutomaticChecks`, `SUScheduledCheckInterval`,
 /// `SULastCheckTime`, `SUHasLaunchedBefore`, `SUSkippedVersion`).

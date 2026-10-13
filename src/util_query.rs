@@ -147,7 +147,7 @@ pub fn getvar_help() -> String {
         "Output value of the Termurion variable",
         "",
         "See the Variables Reference for information about built-in Termurion variables:",
-        "  -> https://iterm2.com/documentation-variables.html",
+        "  -> https://github.com/datbird/termurion/blob/main/docs/help/variables.md",
         "",
     ]
     .iter()
@@ -629,7 +629,7 @@ mod tests {
 
     #[test]
     fn query_texts_follow_the_scripts() {
-        let help = "\nUsage: it2getvar variable_name\n\nOutput value of the Termurion variable\n\nSee the Variables Reference for information about built-in Termurion variables:\n  -> https://iterm2.com/documentation-variables.html\n\n";
+        let help = "\nUsage: it2getvar variable_name\n\nOutput value of the Termurion variable\n\nSee the Variables Reference for information about built-in Termurion variables:\n  -> https://github.com/datbird/termurion/blob/main/docs/help/variables.md\n\n";
         assert_eq!(getvar_help(), help);
         for (args, code, err) in [
             (&[][..], 0, help.to_string()),

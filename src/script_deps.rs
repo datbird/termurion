@@ -56,7 +56,7 @@ pub fn folder_exists(path: &Path) -> String {
     format!("Can\u{2019}t upgrade because {} already exists", path.display())
 }
 pub fn upgrade_error(e: &str) -> String {
-    format!("Please file a bug report at https://iterm2.com/bugs. The following error occurred while upgrading a dependency: {e}")
+    format!("Please file a bug report at https://github.com/datbird/termurion/issues. The following error occurred while upgrading a dependency: {e}")
 }
 pub fn error_creating(folder: &Path, e: &str) -> String {
     format!("Error creating {}: {e}", folder.display())
@@ -290,7 +290,7 @@ mod tests {
         assert_eq!(folder_exists(Path::new(r"C:\S\tool")), "Can\u{2019}t upgrade because C:\\S\\tool already exists");
         assert_eq!(error_creating(Path::new(r"C:\a"), "e"), "Error creating C:\\a: e");
         assert_eq!(error_moving(Path::new(r"C:\a"), Path::new(r"C:\b"), "e"), "Error moving C:\\a to C:\\b: e");
-        assert_eq!(upgrade_error("e"), "Please file a bug report at https://iterm2.com/bugs. The following error occurred while upgrading a dependency: e");
+        assert_eq!(upgrade_error("e"), "Please file a bug report at https://github.com/datbird/termurion/issues. The following error occurred while upgrading a dependency: e");
         assert_eq!((ADD_HEADING, ADD_TEXT, RUN_HEADING, RUN_ID), ("Add Dependency", "What dependency would you like to add?", "Run this Command?", "DependencyEditorPip3Confirmation"));
         assert_eq!((INSTALL_CHECK_PIP, INSTALLATION_FAILED, REMOVAL_FAILED, COULD_NOT_CHANGE, ERROR), ("Check the pip output for errors.", "Installation Failed", "Removal Failed", "Could Not Change Python Version", "Error"));
         assert_eq!(REBUILDING, "Rebuilding the Python environment\u{2026}");

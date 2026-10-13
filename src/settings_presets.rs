@@ -17,7 +17,7 @@ use crate::warnings::{Kind, Spec};
 const SEPARATE: &str = "Use Separate Colors for Light and Dark Mode";
 
 /// `kColorGalleryURL`: opened in the default browser through the settings window's `open_url`.
-pub const GALLERY_URL: &str = "https://www.iterm2.com/colorgallery";
+pub const GALLERY_URL: &str = crate::links::HELP_COLOR_PRESETS;
 /// A hover this long previews a preset (`menu:willHighlightItem:`).
 pub const PREVIEW_DELAY: Duration = Duration::from_millis(400);
 /// A multi-pick in Import stops here (B3).
@@ -843,7 +843,7 @@ mod tests {
         assert_eq!(ADD_ANYWAY, "Add it anyway");
         assert_eq!(duplicate_text("Mine"), "The color preset \u{201c}Mine\u{201d} is the same as the preset you're trying to add. Really add it?");
         assert_eq!(could_not_save_text("C:\\x.itermcolors"), "Could not save to C:\\x.itermcolors");
-        assert_eq!(GALLERY_URL, "https://www.iterm2.com/colorgallery");
+        assert_eq!(GALLERY_URL, "https://github.com/datbird/termurion/blob/main/docs/help/color-presets.md");
         assert_eq!(PREVIEW_DELAY, Duration::from_millis(400));
     }
 
