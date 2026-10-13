@@ -809,19 +809,11 @@ impl App {
             return self.relayout();
         }
         match item.selector.as_str() {
-            "showAbout:" => info_box(&format!("Termurion {}\nAn iTerm2-style terminal for Windows.", crate::update::current_version())),
+            "showAbout:" => info_box(&about_text(crate::update::current_version())),
             "showPrefWindow:" => self.open_settings(event_loop, Mode::Settings),
             "checkForUpdatesFromMenu:" => self.check_for_updates(true),
             // Help pages and the license file: fixed targets, the page through the one guard.
-            "copyModeShortcuts:" => match crate::semantic::guard_open(crate::menu_tips::COPY_MODE_URL, false) {
-                crate::semantic::Run::Open(url) => {
-                    if let Err(e) = super::semantic_ui::shell_open(&url, false) {
-                        self.banners.set("action", format!("Could not open {url}: {e}"));
-                    }
-                }
-                crate::semantic::Run::Blocked(why) => self.banners.set("action", why),
-                _ => {}
-            },
+            "copyModeShortcuts:" => self.open_help_page(crate::menu_tips::COPY_MODE_URL),
             "openSourceLicenses:" => {
                 let dir = std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, std::path::PathBuf::from).join("Termurion");
                 // The folder goes through the one path judge (a redirected LocalAppData on a share is refused).
@@ -1238,14 +1230,25 @@ impl App {
             }
             "saveContents:" | "saveDocumentAs:" => self.save_text(item.selector == "saveDocumentAs:"),
             "installShellIntegration:" => self.install_shell_integration(),
-            "showHelp:" => {
-                let _ = std::process::Command::new("explorer.exe").arg("https://iterm2.com/documentation.html").spawn();
-            }
+            "showHelp:" => self.open_help_page(crate::update::REPO_URL),
             _ => {}
         }
         self.apply_fonts();
         self.sync_checks();
         self.relayout();
+    }
+
+    /// Opens a fixed help page through the one guard; a refusal or failure shows in the banner.
+    fn open_help_page(&mut self, target: &str) {
+        match crate::semantic::guard_open(target, false) {
+            crate::semantic::Run::Open(url) => {
+                if let Err(e) = super::semantic_ui::shell_open(&url, false) {
+                    self.banners.set("action", format!("Could not open {url}: {e}"));
+                }
+            }
+            crate::semantic::Run::Blocked(why) => self.banners.set("action", why),
+            _ => {}
+        }
     }
 
     fn save_text(&mut self, selection_only: bool) {
@@ -1791,6 +1794,11 @@ impl App {
     }
 }
 
+/// The About box text: version, one line on what it is, and where the project lives.
+fn about_text(version: &str) -> String {
+    format!("Termurion {version}\nAn iTerm2-style terminal for Windows.\n{}", crate::update::REPO_URL)
+}
+
 pub(super) fn info_box(text: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK, MessageBoxW};
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
@@ -1829,6 +1837,22 @@ pub(super) fn restart_spec() -> crate::warnings::Spec {
 
 #[cfg(test)]
 mod tests {
+
+    /// About names the version and the project repository (not iTerm2's site).
+    #[test]
+    fn about_points_at_the_repo() {
+        let t = super::about_text("1.2.3");
+        assert!(t.starts_with("Termurion 1.2.3\n"));
+        assert!(t.contains(crate::update::REPO_URL));
+        assert!(!t.contains("iterm2.com"));
+    }
+
+    /// Help opens the project repository, and the guard lets it through.
+    #[test]
+    fn help_page_is_the_repo_and_passes_the_guard() {
+        assert_eq!(crate::update::REPO_URL, "https://github.com/datbird/termurion");
+        assert!(matches!(crate::semantic::guard_open(crate::update::REPO_URL, false), crate::semantic::Run::Open(_)));
+    }
 
     /// The notification area icon lists every window, minimized or hidden or excluded from the
     /// taskbar, so none is without a way back (Task 8 review).
