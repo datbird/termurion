@@ -22,7 +22,7 @@ use crate::store::Store;
 const REVEAL_KEY: &str = "RevealExportedSettingsAndData";
 /// `dryRunEraseAllSettingsAndData` (`ASM:559`).
 const DRY_RUN_KEY: &str = "DryRunEraseAllSettingsAndData";
-/// The variable naming the process a relaunched Tandem waits for (`IE:898-911`).
+/// The variable naming the process a relaunched Termurion waits for (`IE:898-911`).
 pub(super) const WAIT_PID_VAR: &str = "TERMURION_WAIT_PID";
 
 /// Where the export reads from.
@@ -226,8 +226,8 @@ fn alias_entry(dir: &Path) -> Option<PathBuf> {
 }
 
 /// Import's first phase (`Importer.importEntities`, `IE:81-110`): `file` read ONCE into memory, every
-/// entry checked and then written from those same bytes by Tandem's own walk (`extract::tgz`, the
-/// rule every Tandem extraction uses: plain files and folders only, no link of any kind, no name
+/// entry checked and then written from those same bytes by Termurion's own walk (`extract::tgz`, the
+/// rule every Termurion extraction uses: plain files and folders only, no link of any kind, no name
 /// that leaves the folder or that Windows reads as another, Task 9 findings r3; no tar.exe, so no
 /// second parser and no reopen by path, final findings r2) into a fresh
 /// `<temp>\.termurion-import-<uuid>`, refused when it holds a link after all (`staged_links`), then
@@ -322,7 +322,7 @@ pub(super) fn finish_import(appdata_termurion: &Path) -> Vec<PathBuf> {
 }
 
 /// Waits up to 30 seconds for the process `pid` to end (`IE:898-911`, the relaunch waiting for
-/// the old Tandem); at once when it cannot be opened (already gone).
+/// the old Termurion); at once when it cannot be opened (already gone).
 pub(super) fn wait_for_pid(pid: u32) {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
@@ -337,7 +337,7 @@ pub(super) fn wait_for_pid(pid: u32) {
     }
 }
 
-/// Starts Tandem again (the current executable) telling it to wait for this process to end.
+/// Starts Termurion again (the current executable) telling it to wait for this process to end.
 pub(super) fn start_relaunched() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     std::process::Command::new(exe).env(WAIT_PID_VAR, std::process::id().to_string()).spawn().map(|_| ()).map_err(|e| e.to_string())
@@ -408,7 +408,7 @@ impl App {
     }
 
     /// OK in "Importing Settings and Data": the archive is extracted and named for the next
-    /// start, then Tandem quits (no quit confirmation; sessions are kept as after any quit) and
+    /// start, then Termurion quits (no quit confirmation; sessions are kept as after any quit) and
     /// starts again. A failure says "Problem Importing" with the reason.
     pub(super) fn import_confirmed(&mut self, file: PathBuf) {
         match stage_import(&file, &std::env::temp_dir(), &appdata_termurion()) {
@@ -418,7 +418,7 @@ impl App {
     }
 
     /// The quit path without its confirmation, for the restart after an import (`NSApp
-    /// relaunch`); `run()` starts the new Tandem once the event loop has ended.
+    /// relaunch`); `run()` starts the new Termurion once the event loop has ended.
     pub(super) fn relaunch(&mut self, event_loop: &ActiveEventLoop) {
         self.relaunch_on_exit = true;
         self.quit_confirmed(event_loop);
@@ -471,11 +471,11 @@ impl App {
     }
 
     /// The second button of the confirmation (`Eraser`, `IE:224-329`): the Scripts folder is
-    /// resolved first as the one Tandem uses (`scripts_folder`, iTerm2's `scriptsPath`; its
+    /// resolved first as the one Termurion uses (`scripts_folder`, iTerm2's `scriptsPath`; its
     /// settings are erased with the rest; one on, or reached through a link to, a network path
     /// is left alone), then the list of every entry of `%APPDATA%\Termurion`
     /// and of that folder. A dry run logs each path and says so; otherwise the host's shells
-    /// end, every path goes (links as links) and Tandem exits at once, saving nothing (iTerm2's
+    /// end, every path goes (links as links) and Termurion exits at once, saving nothing (iTerm2's
     /// `_exit(0)`). Credential Manager entries are not touched.
     pub(super) fn erase_confirmed(&mut self, dry_run: bool) {
         let scripts = se::scripts_to_erase(self.scripts_folder()).filter(|s| crate::scripts::ancestors_stay_local(s, &crate::netpath::read_reparse));
@@ -553,7 +553,7 @@ mod tests {
         std::fs::write(appdata.join("host.log"), "log").unwrap();
         std::fs::write(appdata.join(crate::workgroup_restore::KEY_FILE), [1u8; 32]).unwrap();
         let snap = user_defaults(&appdata);
-        let out = root.join("Tandem State.termurionexport");
+        let out = root.join("Termurion State.termurionexport");
         let scripts = appdata.join("Scripts");
         export_into(&out, &Sources { app_support: &appdata, scripts: Some(&scripts), user_defaults: &snap, local: &|_| true }).unwrap();
         assert!(out.is_file());
@@ -768,7 +768,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Beyond the plan: the archive's app-support never replaces what Tandem keeps out of an
+    /// Beyond the plan: the archive's app-support never replaces what Termurion keeps out of an
     /// export (the settings files, the Python API consent, the marker), nor a hidden entry.
     #[test]
     fn finish_import_keeps_what_export_leaves_out() {
@@ -885,7 +885,7 @@ mod tests {
     /// Task 9 findings r3, on the real file system: a hard-link entry whose target leaves the
     /// staging folder (absolute with either slash, or "..") never writes there, whether the link
     /// carries data or a file of the same name follows it. Every entry is checked before anything
-    /// is written (since final findings r2 by Tandem itself, no tar.exe) and the archive is refused
+    /// is written (since final findings r2 by Termurion itself, no tar.exe) and the archive is refused
     /// whole.
     #[test]
     fn import_checks_every_entry_before_tar_runs() {
@@ -985,7 +985,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Beyond the plan: an export written by the real tar.exe imported into another Tandem folder
+    /// Beyond the plan: an export written by the real tar.exe imported into another Termurion folder
     /// (the first phase names the staging folder in the marker; the next start applies it),
     /// and a file that is not an archive fails with nothing left behind.
     #[test]

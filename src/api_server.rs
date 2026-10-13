@@ -527,7 +527,7 @@ fn accept_loop(listener: TcpListener, shared: Arc<Shared>, tx: SyncSender<Event>
             Err(e) => {
                 if last_log.is_none_or(|t| t.elapsed() >= ACCEPT_LOG_EVERY) {
                     let more = if unlogged > 0 { format!(" ({unlogged} more since the last)") } else { String::new() };
-                    eprintln!("tandem: the Python API could not accept a connection: {e}{more}");
+                    eprintln!("termurion: the Python API could not accept a connection: {e}{more}");
                     last_log = Some(Instant::now());
                     unlogged = 0;
                 } else {

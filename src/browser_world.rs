@@ -338,7 +338,7 @@ impl Setup {
             Check::World(_) => text(r).as_deref() == Some("function|number"),
         };
         if !ok {
-            self.state = ClientWorld::Unavailable(format!("the isolation check failed ({})", match check { Check::Reload => "reload", Check::Page(_) => "page world", Check::World(_) => "tandem world" }));
+            self.state = ClientWorld::Unavailable(format!("the isolation check failed ({})", match check { Check::Reload => "reload", Check::Page(_) => "page world", Check::World(_) => "termurion world" }));
         } else if self.checks.is_empty() {
             self.state = ClientWorld::Ready;
         }

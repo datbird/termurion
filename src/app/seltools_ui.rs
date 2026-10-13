@@ -58,9 +58,9 @@ impl App {
         }
         let mut rows = crate::print::rows(screen, what);
         let cols = { use alacritty_terminal::grid::Dimensions; screen.term().columns() };
-        let title = screen.title().unwrap_or("Tandem").to_string();
+        let title = screen.title().unwrap_or("Termurion").to_string();
         let font = self.profile_of(id).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0 });
-        // iTerm2 keeps "Black and white" in its print panel; Tandem asks first.
+        // iTerm2 keeps "Black and white" in its print panel; Termurion asks first.
         let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
         let default = if self.globals.bool("Print In Black And White") { MB_DEFBUTTON1 } else { MB_DEFBUTTON2 };
         let answer = unsafe {
@@ -175,7 +175,7 @@ impl App {
         true
     }
 
-    /// Replace Selection: the selected whole lines are replaced in Tandem's buffer (not
+    /// Replace Selection: the selected whole lines are replaced in Termurion's buffer (not
     /// sent to the shell), as iTerm2 does.
     fn replace_selection(&mut self, id: PaneId, f: impl Fn(&str) -> Result<String, String>) {
         let Some((a, b)) = self.selection_pos(id) else { return self.banners.set("action", "Select whole lines first.") };

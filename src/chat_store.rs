@@ -16,7 +16,7 @@ pub const FILE_NAME: &str = "chatdb.sqlite";
 /// The lock file beside the database (iTerm2's named lock, `DB:96-110`).
 pub const LOCK_NAME: &str = "chatdb-lock";
 pub const OPEN_FAILED_HEADING: &str = "Error";
-pub const OPEN_FAILED: &str = "AI Chat could not open because of a problem loading the database. Verify there is only one instance of Tandem running.";
+pub const OPEN_FAILED: &str = "AI Chat could not open because of a problem loading the database. Verify there is only one instance of Termurion running.";
 
 /// `%APPDATA%\Termurion\chatdb.sqlite`, beside the settings file.
 pub fn default_path() -> PathBuf {
@@ -232,7 +232,7 @@ fn int_of(v: ValueRef) -> Option<i64> {
     }
 }
 
-/// A date column: Tandem writes REAL seconds, iTerm2 may have left an INTEGER.
+/// A date column: Termurion writes REAL seconds, iTerm2 may have left an INTEGER.
 fn real_of(v: ValueRef) -> Option<f64> {
     match v {
         ValueRef::Integer(i) => Some(i as f64),
@@ -1093,7 +1093,7 @@ mod tests {
         drop(again);
         assert_eq!(Store::open(&path, &lock).unwrap().chats().unwrap().len(), 1);
         assert_eq!(OPEN_FAILED_HEADING, "Error");
-        assert_eq!(OPEN_FAILED, "AI Chat could not open because of a problem loading the database. Verify there is only one instance of Tandem running.");
+        assert_eq!(OPEN_FAILED, "AI Chat could not open because of a problem loading the database. Verify there is only one instance of Termurion running.");
         assert!(default_path().ends_with(std::path::Path::new("Termurion").join("chatdb.sqlite")));
     }
 }

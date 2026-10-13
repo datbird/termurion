@@ -55,8 +55,8 @@ pub fn std_path(system_root: &str) -> String {
 }
 
 /// A new session's PATH with the utilities folder (`entry`, from `path_entry`) at the end:
-/// Tandem's PATH by iTerm2's rule, the standard path when PATH is unset, and None (the
-/// session keeps its inherited PATH) when Tandem's PATH is not Unicode.
+/// Termurion's PATH by iTerm2's rule, the standard path when PATH is unset, and None (the
+/// session keeps its inherited PATH) when Termurion's PATH is not Unicode.
 pub fn session_path(path: Option<&OsStr>, system_root: &str, entry: &str) -> Option<String> {
     match path {
         Some(p) => p.to_str().map(|p| path_with(p, entry)),
@@ -75,7 +75,7 @@ pub struct Ensured {
 
 /// The banner for files `ensure` could not bring up to date, when there are any.
 pub fn refresh_banner(failed: &[String]) -> Option<String> {
-    (!failed.is_empty()).then(|| format!("Some utilities could not be refreshed ({}). Close any running utility and restart Tandem.", failed.join("; ")))
+    (!failed.is_empty()).then(|| format!("Some utilities could not be refreshed ({}). Close any running utility and restart Termurion.", failed.join("; ")))
 }
 
 #[cfg(windows)]
@@ -90,8 +90,8 @@ fn stamp(path: &Path) -> Option<Stamp> {
 /// renamed aside to `<name>.exe.old`, which the next start removes) and hard linked again, or
 /// copied when a link cannot be made (another volume, a file system without links).
 /// `it2api.py` is written when its bytes are not `util_api::script()`'s. Every file that
-/// cannot be brought up to date is reported in `failed`. Files Tandem does not make are never
-/// touched. Err, with nothing probed, when Tandem's folder is a network path (in any
+/// cannot be brought up to date is reported in `failed`. Files Termurion does not make are never
+/// touched. Err, with nothing probed, when Termurion's folder is a network path (in any
 /// spelling) or not a local drive path; Err when a link on the way leads to a network path,
 /// when `termurion-utils.exe` is missing (no folder is made) or the folder cannot be made.
 #[cfg(windows)]
@@ -99,10 +99,10 @@ pub fn ensure(exe_dir: &Path) -> Result<Ensured, String> {
     let text = exe_dir.to_string_lossy();
     let local = crate::util_cli::local_form(&text);
     if crate::prompted::network_path(local) {
-        return Err(format!("Tandem runs from a network folder ({text}), so the utilities are not put on PATH"));
+        return Err(format!("Termurion runs from a network folder ({text}), so the utilities are not put on PATH"));
     }
     if !crate::prompted::local_path_ok(local) {
-        return Err(format!("Tandem's folder ({text}) is not a local folder, so the utilities are not put on PATH"));
+        return Err(format!("Termurion's folder ({text}) is not a local folder, so the utilities are not put on PATH"));
     }
     let exe_dir = Path::new(local);
     let folder = exe_dir.join(FOLDER);
@@ -144,7 +144,7 @@ pub fn ensure(exe_dir: &Path) -> Result<Ensured, String> {
 #[cfg(windows)]
 fn refresh(src: &Path, dst: &Path, old: &Path) -> std::io::Result<()> {
     match std::fs::symlink_metadata(dst) {
-        // Not a file Tandem made: left alone.
+        // Not a file Termurion made: left alone.
         Ok(m) if m.is_dir() => return Err(std::io::Error::other("a folder has this name")),
         Ok(_) if std::fs::remove_file(dst).is_err() => std::fs::rename(dst, old)?,
         _ => {}
@@ -271,7 +271,7 @@ mod tests {
         assert_eq!(refresh_banner(&[]), None);
         assert_eq!(
             refresh_banner(&["imgcat.exe: Access is denied. (os error 5)".to_string(), "it2ul.exe: x".to_string()]).as_deref(),
-            Some("Some utilities could not be refreshed (imgcat.exe: Access is denied. (os error 5); it2ul.exe: x). Close any running utility and restart Tandem.")
+            Some("Some utilities could not be refreshed (imgcat.exe: Access is denied. (os error 5); it2ul.exe: x). Close any running utility and restart Termurion.")
         );
     }
 
@@ -369,7 +369,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(folder.join("it2ul.exe").join("mine.txt")).unwrap(), "mine");
         std::fs::remove_dir_all(folder.join("it2ul.exe")).unwrap();
 
-        // A folder Tandem may not write in: every name is reported. A token holding
+        // A folder Termurion may not write in: every name is reported. A token holding
         // SeRestorePrivilege (an elevated ssh session) writes through the deny, so there the
         // case cannot be observed.
         let privs = std::process::Command::new("whoami").arg("/priv").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();

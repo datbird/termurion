@@ -519,7 +519,7 @@ fn undoes_an_override(arg: &str) -> bool {
 pub fn launch_args(vet: &Vetted, args: &[&str]) -> Result<Vec<String>, String> {
     let Some((sub, rest)) = args.split_first() else { return Err("The git command has no subcommand, so it did not start.".into()) };
     if !LAUNCH_SUBCOMMANDS.contains(sub) {
-        return Err("Tandem starts git in a workgroup only for diff, difftool, status, show or log, so this command did not start.".into());
+        return Err("Termurion starts git in a workgroup only for diff, difftool, status, show or log, so this command did not start.".into());
     }
     let paths_from = rest.iter().position(|a| *a == "--").unwrap_or(rest.len());
     if rest[..paths_from].iter().any(|a| undoes_an_override(a)) {
@@ -699,7 +699,7 @@ pub const LOG_CAP: usize = 100_000;
 pub const TRUNCATED: &str = "\n[Truncated]\n";
 /// Set for every status bar git run: no prompts, no optional locks, no lazy fetch.
 pub const GIT_ENV: &[(&str, &str)] = &[("GIT_TERMINAL_PROMPT", "0"), ("GIT_OPTIONAL_LOCKS", "0"), ("GIT_NO_LAZY_FETCH", "1")];
-/// Removed from Tandem's environment for every status bar git run: they pick another
+/// Removed from Termurion's environment for every status bar git run: they pick another
 /// repository than the one the checks looked at.
 pub const GIT_ENV_REMOVED: &[&str] =
     &["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"];
@@ -797,9 +797,9 @@ impl Vetted {
             let shown: Vec<String> = self.programs.iter().take(3).map(|k| crate::inert_files::display_text(k, 64, false)).collect();
             let more = if self.programs.len() > 3 { format!(" and {} more", self.programs.len() - 3) } else { String::new() };
             let _ = first;
-            return Some(format!("This repository's own git configuration runs programs ({}{more}), so Tandem will not start git in it. Remove those settings from its .git/config to use it here.", shown.join(", ")));
+            return Some(format!("This repository's own git configuration runs programs ({}{more}), so Termurion will not start git in it. Remove those settings from its .git/config to use it here.", shown.join(", ")));
         }
-        self.partial_clone.then(|| "This repository is a partial clone, so git may fetch from a remote while it runs; Tandem will not start git in it.".to_string())
+        self.partial_clone.then(|| "This repository is a partial clone, so git may fetch from a remote while it runs; Termurion will not start git in it.".to_string())
     }
 }
 
@@ -813,7 +813,7 @@ pub struct Launch {
 
 /// Why a git started in a pane must not run for this verdict (Run Anyway and every launch): None when it may.
 pub fn launch_verdict(l: Option<&Launch>) -> Option<String> {
-    let Some(l) = l else { return Some("Tandem has not finished checking this folder yet.".into()) };
+    let Some(l) = l else { return Some("Termurion has not finished checking this folder yet.".into()) };
     let Some(vet) = &l.vet else { return Some("git will not run in this folder (its configuration is not safe to read).".into()) };
     if vet.root.is_none() {
         return Some("This folder is not in a git repository, so git will not run.".into());
@@ -1423,7 +1423,7 @@ impl WorkerCache {
         self.pending.retain(|k, _| !of_path(k));
     }
 
-    /// `debugInfoForDirectory:` (`GPW:74-85`); Tandem has no rich cache.
+    /// `debugInfoForDirectory:` (`GPW:74-85`); Termurion has no rich cache.
     pub fn debug_info(&self, path: &str, now: Instant) -> String {
         let basic = self.cache.get(path).map_or_else(|| "none".to_string(), |(_, made)| format!("age {}", now.saturating_duration_since(*made).as_secs_f64()));
         format!("Basic cache: {basic}\nRich cache: none\nPending calls: {}\n", self.pending.get(path).copied().unwrap_or(0))
@@ -1495,7 +1495,7 @@ pub struct Polls {
 }
 
 /// The knob as a cadence: 0 reads as 1 (`GIT:245-247`). iTerm2 has no other floor (only
-/// NSTimer's 0.1 ms); Tandem floors at 1 s (controller ruling), so a tiny or non-number
+/// NSTimer's 0.1 ms); Termurion floors at 1 s (controller ruling), so a tiny or non-number
 /// value cannot make the timer spin on the UI thread.
 fn cadence_of(knob: f64) -> f64 {
     if knob.is_finite() && knob > 0.0 { knob.clamp(MIN_CADENCE, 1e9) } else { 1.0 }
@@ -1691,7 +1691,7 @@ pub fn remote_state(user: &BTreeMap<String, String>) -> Option<GitState> {
 }
 
 /// `bumpIfLastCommandWasGit` (`GIT:267-282`): the first word (a space must follow it) is
-/// `git` after the last `/`. Tandem also splits on `\` and drops `.exe`, ignoring case.
+/// `git` after the last `/`. Termurion also splits on `\` and drops `.exe`, ignoring case.
 pub fn looks_like_git(command: &str) -> bool {
     let Some((first, _)) = command.split_once(' ') else { return false };
     let base = first.rsplit(['/', '\\']).next().unwrap_or(first).to_ascii_lowercase();

@@ -1,7 +1,7 @@
 //! Keys in a browser pane (milestone 13x2, Task 6). A key reaches here only from the person: the
 //! 13u keyboard hook and WebView2's `AcceleratorKeyPressed` (through `Event::Key`), never from a
 //! page script event. The key gate (`browser_keys::GateState`, read inside the COM handler) decides
-//! synchronously whether Tandem takes the key before the page sees it; this side repeats the route
+//! synchronously whether Termurion takes the key before the page sees it; this side repeats the route
 //! and runs what iTerm2's browser would (`BAP`): scroll, send text into the focused field, extend
 //! the selection, copy or paste, or hand the binding to the session. Bound text goes through
 //! `Input.insertText` or iTerm2's insert-text.js, never to a pty (a browser pane has none).
@@ -31,7 +31,7 @@ pub(super) enum PageNext {
 /// Text sent or pasted into a page is bounded (the page's own paste limit).
 const MAX_TEXT: usize = 1_048_576;
 
-/// The unique id of the Tandem world named by a `Runtime.executionContextCreated` event (never the
+/// The unique id of the Termurion world named by a `Runtime.executionContextCreated` event (never the
 /// numeric id, which is reused); None for any other context.
 pub(super) fn isolated_unique(json: &str) -> Option<String> {
     crate::browser_world::isolated_unique(json)
@@ -260,7 +260,7 @@ impl App {
         self.browser_do_basic(pane, Do::PageScript(browser_keys::scroll_script(s).to_string()));
     }
 
-    /// Moves one end of the page's selection (`WVA:379-433`), in Tandem's world.
+    /// Moves one end of the page's selection (`WVA:379-433`), in Termurion's world.
     #[allow(dead_code)] // reached through `plan`
     pub(super) fn browser_extend(&mut self, pane: PaneId, start: bool, forward: bool, unit: i64) {
         if let Some(s) = browser_keys::extend_script(start, forward, unit) {
@@ -293,7 +293,7 @@ impl App {
     }
 
     /// Copies the page's selection (Decision: its text, not the page's copy command, which needs a
-    /// user gesture in Chromium). Read in Tandem's world, so the page cannot choose the text.
+    /// user gesture in Chromium). Read in Termurion's world, so the page cannot choose the text.
     pub(super) fn browser_copy_selection(&mut self, pane: PaneId) {
         self.browser_read_selection(pane, Box::new(|a, _, text| {
             if !text.is_empty() {
@@ -373,7 +373,7 @@ impl App {
         self.browser_world_update(pane, &browser_pointer::gate_update(&keys, four, focus));
     }
 
-    /// A new Tandem world (a document that loaded) reads the table of now, not the one the script was
+    /// A new Termurion world (a document that loaded) reads the table of now, not the one the script was
     /// registered with.
     pub(super) fn browser_pointer_push_new(&mut self, pane: PaneId, session: Option<&str>, json: &str) {
         if !self.client_open(pane) {
@@ -514,7 +514,7 @@ impl App {
     }
 
     /// The right click iTerm2's Open Context Menu is (`BVC:1494-1500`): a trusted right press through
-    /// DevTools at the point, so the page may intercept it and WebView2 shows its menu with Tandem's
+    /// DevTools at the point, so the page may intercept it and WebView2 shows its menu with Termurion's
     /// items (Task 3). Not done when the right button has a binding of its own (the gate would take it).
     fn browser_context_menu_at(&mut self, pane: PaneId, js: (f64, f64)) {
         let (keys, _, _) = self.browser_pointer_table();
@@ -535,7 +535,7 @@ impl App {
         crate::browser_js::fill_template(crate::browser_js::resource(name).unwrap_or_default(), &subs)
     }
 
-    /// The link at a page point (`WVA:158-178`), in Tandem's world: the page cannot choose what the
+    /// The link at a page point (`WVA:158-178`), in Termurion's world: the page cannot choose what the
     /// script finds by overriding `elementFromPoint`.
     pub(super) fn browser_link_at(&mut self, pane: PaneId, js: (f64, f64), done: JsDone) {
         let script = self.browser_point_script("open-link-at-point.js", js, &[]);
@@ -738,7 +738,7 @@ mod tests {
         assert!(bind.contains("self.run_key_action(b, None, Some(chord), event_loop)") && bind.contains("self.focused_id() == Some(pane)"), "Session: the existing path");
         assert!(bind.contains("is_browser_profile(p)") && bind.contains("set_profile_on"), "Set Profile only to a browser profile");
         assert!(bind.contains("self.toggle_setting(&json)") && bind.contains("browser_copy_mode_commands"));
-        assert!(bind.contains("has-selection.js") && bind.contains("browser_eval_in_frame"), "the selection is asked in Tandem's world");
+        assert!(bind.contains("has-selection.js") && bind.contains("browser_eval_in_frame"), "the selection is asked in Termurion's world");
         let send = &p[p.find("pub(super) fn browser_send_text").unwrap()..p.find("fn browser_insert_raw").unwrap()];
         assert!(send.contains("insert_script(text)") && send.contains("Bool(true)") && send.contains("browser_insert_raw"), "insert-text.js, then DevTools");
         assert!(!p.contains("send_to_focused") && !p.contains("execCommand"), "no pty, no execCommand");
@@ -749,7 +749,7 @@ mod tests {
     }
 
     /// Only a person's key or binding sends text into a page: nothing from a page message reaches
-    /// `browser_send_text`, and the gate is built from Tandem's maps.
+    /// `browser_send_text`, and the gate is built from Termurion's maps.
     #[test]
     fn text_is_sent_only_for_a_person() {
         for (name, src) in [("browser_scripts_app.rs", include_str!("browser_scripts_app.rs")), ("browser_frames_app.rs", include_str!("browser_frames_app.rs")), ("browser_ctx_app.rs", include_str!("browser_ctx_app.rs"))] {

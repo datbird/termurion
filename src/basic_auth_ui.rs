@@ -1,4 +1,4 @@
-//! The HTTP sign-in prompt of a browser pane (13x7 Task 9): a native Tandem window (never page
+//! The HTTP sign-in prompt of a browser pane (13x7 Task 9): a native Termurion window (never page
 //! content), iTerm2's `ModalPasswordAlert` (`MPA:32-38`, `:111-127`, `:146-222`). The caller builds the
 //! heading (`browser_basic_auth::prompt_heading`), so the real origin and the server's labelled realm
 //! are the same text the coordinator was given. The window carries the one input guard
@@ -85,7 +85,7 @@ impl AuthWindow {
         remember_by_default: bool,
         offer_password_manager: bool,
     ) -> Result<AuthWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, "Tandem", 420.0, 230.0)?;
+        let host = EguiHost::open(event_loop, instance, adapter, device, queue, "Termurion", 420.0, 230.0)?;
         let layout = layout(offer_remember, offer_password_manager, !user.is_empty());
         let pw = password.map(Secret::duplicate).unwrap_or_else(|| Secret::new(String::new()));
         let start = (user.len(), pw.expose().len());

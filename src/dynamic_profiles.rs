@@ -638,7 +638,7 @@ pub fn load_gated(folder: &Path, list: &dyn Fn(&Path) -> Vec<String>, saved_guid
             continue;
         };
         if got.profiles.len() + entries.len() > MAX_PROFILES {
-            fail(&mut got, format!("Dynamic Profiles file {text} was not loaded: Tandem loads at most {MAX_PROFILES} dynamic profiles."));
+            fail(&mut got, format!("Dynamic Profiles file {text} was not loaded: Termurion loads at most {MAX_PROFILES} dynamic profiles."));
             continue;
         }
         for mut entry in entries {

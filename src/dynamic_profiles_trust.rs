@@ -70,7 +70,7 @@ pub struct Stat {
 /// a file saved from a browser is read without a question, so it must be unblocked first).
 pub fn judge_facts(f: &Facts, me: &str) -> Result<(), String> {
     if f.reparse {
-        return Err("it is a link (a symbolic link or junction), which Tandem does not follow".into());
+        return Err("it is a link (a symbolic link or junction), which Termurion does not follow".into());
     }
     if !f.dir && f.links > 1 && f.owner != me && f.owner != "S-1-5-32-544" {
         return Err("it has more than one name and is not yours".into());

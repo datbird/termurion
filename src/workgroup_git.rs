@@ -215,7 +215,7 @@ pub fn diff_should_launch(visible: bool, has_changes: bool) -> bool {
 }
 
 pub const WAITING_TITLE: &str = "Diff session is waiting for changes.";
-pub const WAITING_BODY: &str = "This session is set to Diff mode and only starts its command when git reports staged or unstaged changes. The working tree is currently clean, or Tandem hasn\u{2019}t finished its first check yet. Edit a file (or stage one) and the command will start on its own. To run it now anyway, click below.";
+pub const WAITING_BODY: &str = "This session is set to Diff mode and only starts its command when git reports staged or unstaged changes. The working tree is currently clean, or Termurion hasn\u{2019}t finished its first check yet. Edit a file (or stage one) and the command will start on its own. To run it now anyway, click below.";
 pub const RELOAD_TITLE: &str = "Reload queued. Waiting for changes.";
 pub const RELOAD_BODY: &str = "This session is set to Diff mode, so Reload will re-run the command only after git reports staged or unstaged changes. The previous output is still on screen behind this panel. Cancel to keep that output and abandon the reload, or run the command now anyway.";
 pub const RUN_ANYWAY: &str = "Run Anyway";
@@ -233,7 +233,7 @@ impl Refusal {
     pub fn text(self) -> &'static str {
         match self {
             Refusal::Empty => "This member has no command to run.",
-            Refusal::Expression => "A workgroup command uses an expression Tandem does not run here, so nothing started.",
+            Refusal::Expression => "A workgroup command uses an expression Termurion does not run here, so nothing started.",
             Refusal::Base => "The base for this command is not a usable name (not blank, no leading dash, no control character, at most 256 characters), so nothing started.",
             Refusal::File => "That file name cannot be passed to a command (a control character, empty or over 1024 characters), so nothing started.",
         }
@@ -391,7 +391,7 @@ mod tests {
         assert_eq!(empty.advance(true), None);
     }
 
-    /// Diff mode: a buried or empty Diff peer waits; the texts are iTerm2's with Tandem for iTerm2.
+    /// Diff mode: a buried or empty Diff peer waits; the texts are iTerm2's with Termurion for iTerm2.
     #[test]
     fn diff_mode_follows_iterm2() {
         assert!(!diff_should_launch(false, true), "a buried peer waits");
@@ -400,7 +400,7 @@ mod tests {
         assert_eq!(WAITING_TITLE, "Diff session is waiting for changes.");
         assert_eq!(RELOAD_TITLE, "Reload queued. Waiting for changes.");
         assert_eq!(RUN_ANYWAY, "Run Anyway");
-        assert!(WAITING_BODY.starts_with("This session is set to Diff mode and only starts its command when git reports staged or unstaged changes.") && WAITING_BODY.contains("or Tandem hasn\u{2019}t finished its first check yet"));
+        assert!(WAITING_BODY.starts_with("This session is set to Diff mode and only starts its command when git reports staged or unstaged changes.") && WAITING_BODY.contains("or Termurion hasn\u{2019}t finished its first check yet"));
         assert!(RELOAD_BODY.starts_with("This session is set to Diff mode, so Reload will re-run the command only after git reports staged or unstaged changes.") && RELOAD_BODY.ends_with("or run the command now anyway."));
         assert!(!WAITING_BODY.contains("iTerm2") && !RELOAD_BODY.contains("iTerm2"));
     }

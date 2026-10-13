@@ -1,6 +1,6 @@
 //! The HTTP authentication coordinator of a browser pane (13x7 Task 8): a pure state machine, a
 //! port of iTerm2's `BrowserBasicAuthCoordinator` (BAC:87-448) for WebView2's
-//! `BasicAuthenticationRequested`, with Tandem's fixes (pre-flight B5, B6, P10, S3, S4, S8).
+//! `BasicAuthenticationRequested`, with Termurion's fixes (pre-flight B5, B6, P10, S3, S4, S8).
 //! It is driven by `Event`s (the owner translates WebView2's navigation events and the async
 //! results of its effects) and returns `Effect`s; it never touches WebView2, the store or a
 //! window. One `Coordinator` belongs to one pane's view and goes with it.
@@ -20,7 +20,7 @@
 //! 6. `last_entered` is prompt prefill only.
 //! 7. A superseded navigation is a no-op: the awaiting slot is cleared on every fresh start.
 //!
-//! Tandem's additions (rulings R13x78-1 to R13x78-6):
+//! Termurion's additions (rulings R13x78-1 to R13x78-6):
 //! - NO silent credential supply, ever. A saved credential is only the PREFILL of the prompt the
 //!   person answers; `Supply` follows a `PromptResult::Submitted` or a `PickerResult` and nothing
 //!   else. A page that makes a cross-origin request therefore cannot learn which sites have a
@@ -711,8 +711,8 @@ pub fn prompt_text(host: &str, realm: &str) -> String {
     }
 }
 
-/// The server's realm is labelled as the site's own words, never Tandem's (B5a).
-pub const REALM_LABEL: &str = "The site describes this sign-in as (text from the site, not from Tandem):";
+/// The server's realm is labelled as the site's own words, never Termurion's (B5a).
+pub const REALM_LABEL: &str = "The site describes this sign-in as (text from the site, not from Termurion):";
 pub const CLEARTEXT_WARNING: &str = "Warning: this connection is not encrypted. The password would be sent as plain text.";
 
 /// The whole text of the sign-in prompt: the real origin (or the proxy) as the permission prompt
@@ -1456,7 +1456,7 @@ mod tests {
 
     #[test]
     fn shown_text_is_inert_and_keeps_the_end_of_the_host() {
-        let s = SpaceKey { realm: format!("Tandem\u{202e}: type your master password\n{}", "z".repeat(300)), ..sp("r") };
+        let s = SpaceKey { realm: format!("Termurion\u{202e}: type your master password\n{}", "z".repeat(300)), ..sp("r") };
         let r = s.shown_realm();
         assert!(!r.contains('\u{202e}') && !r.contains('\n') && r.chars().count() <= SHOWN_REALM);
         let long = SpaceKey { host: format!("{}.bank.example", "a.".repeat(60)), port: 8443, ..sp("r") };
@@ -1674,12 +1674,12 @@ mod tests {
     #[test]
     fn the_prompt_heading_names_the_origin_and_labels_the_realm() {
         let mut space = sp("r");
-        space.realm = "Tandem\u{202e}: type your master password".into();
+        space.realm = "Termurion\u{202e}: type your master password".into();
         let req = PromptRequest { space, prefill: None, offer_remember: false, offer_password_manager: false, remember_by_default: false, cleartext: true, proxy: false };
         let h = prompt_heading(&req);
         assert!(h.starts_with("The website \u{201c}https://a.b\u{201d} requires"), "{h}");
         assert!(h.contains(REALM_LABEL) && !h.contains('\u{202e}'), "{h}");
-        assert!(h.find("a.b").unwrap() < h.find("Tandem").unwrap(), "the realm comes after the host");
+        assert!(h.find("a.b").unwrap() < h.find("Termurion").unwrap(), "the realm comes after the host");
         assert!(h.contains(CLEARTEXT_WARNING));
         let proxy = PromptRequest { proxy: true, cleartext: false, ..req };
         let h = prompt_heading(&proxy);

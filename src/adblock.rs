@@ -1,6 +1,6 @@
 //! Ad blocking and the browser proxy (milestone 13x, Task 8). Pure: iTerm2 feeds a WebKit
 //! content-blocker JSON list to `WKContentRuleListStore` (`ABM:26-288`); WebView2 has no such
-//! store, so Tandem compiles the same JSON to a matcher the app asks for every request
+//! store, so Termurion compiles the same JSON to a matcher the app asks for every request
 //! (`WebResourceRequested`) and for the element-hiding CSS of the top page. Everything a list or a
 //! setting holds is untrusted: sizes are capped, parsing never panics, a regex is compiled only
 //! from the restricted WebKit subset with a size limit, and a proxy host can never carry a
@@ -289,7 +289,7 @@ fn parse_rule(v: &Value) -> Option<Rule> {
         // block-cookies and make-https are not supported (Decision).
         _ => return None,
     };
-    // Triggers Tandem does not implement make a rule inapplicable rather than broader.
+    // Triggers Termurion does not implement make a rule inapplicable rather than broader.
     for unsupported in ["if-top-url", "unless-top-url", "if-frame-url", "unless-frame-url"] {
         if trigger.contains_key(unsupported) {
             return None;
@@ -569,7 +569,7 @@ pub fn list_url_ok(url: &str) -> bool {
 
 /// A hostname or IPv4 address (`[A-Za-z0-9.-]`, 1 to 253 characters, not starting with `-`) or a
 /// bracketed IPv6 address: nothing that could be a second argument (iTerm2 checks only for empty,
-/// `iTermBrowserSettingsHandler.swift:383`; Tandem builds a command line, so it is stricter).
+/// `iTermBrowserSettingsHandler.swift:383`; Termurion builds a command line, so it is stricter).
 pub fn proxy_host_ok(host: &str) -> bool {
     if let Some(inner) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
         return !inner.is_empty() && inner.contains(':') && inner.len() <= 45 && inner.bytes().all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.');
@@ -664,7 +664,7 @@ mod tests {
             let e = compile(bad).unwrap_err();
             assert!(e == NOT_JSON || e == PARSE_FAILED, "{bad}: {e}");
         }
-        // Only http, https, ws and wss are blocked (Tandem's own pages, data and blob never).
+        // Only http, https, ws and wss are blocked (Termurion's own pages, data and blob never).
         let all = rules(r#"[{"trigger":{"url-filter":".*"},"action":{"type":"block"}}]"#);
         assert!(blocks(&all, "https://x.test/", Resource::Document, ""));
         for url in ["iterm2-about:welcome", "data:text/html,x", "blob:https://x.test/1", "file:///c:/a.html"] {
@@ -741,7 +741,7 @@ mod tests {
         let scoped = rules(r#"[{"trigger":{"url-filter":".*","if-domain":["*site.test"]},"action":{"type":"css-display-none","selector":".ad"}}]"#);
         assert!(hiding_css(&scoped, "https://www.site.test/p").contains(".ad"));
         assert_eq!(hiding_css(&scoped, "https://other.test/"), "");
-        assert_eq!(hiding_css(&scoped, "iterm2-about:welcome"), "", "Tandem's own pages are never styled");
+        assert_eq!(hiding_css(&scoped, "iterm2-about:welcome"), "", "Termurion's own pages are never styled");
     }
 
     #[test]

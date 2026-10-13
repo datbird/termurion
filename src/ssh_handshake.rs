@@ -15,7 +15,7 @@ pub const CONDUCTOR_SHA256: &str = "bf04e9a90460d9e2de13043d60cc7bea4d797a42a7e6
 /// `SendConductor` with a version below 3 or none (iTerm2's text).
 pub const OUT_OF_DATE: &str = "Out-of-date version of it2ssh detected. Please upgrade it2ssh.";
 /// `SendConductor` with a version above 3.
-pub const FUTURE: &str = "Future version of it2ssh detected. Please upgrade Tandem.";
+pub const FUTURE: &str = "Future version of it2ssh detected. Please upgrade Termurion.";
 /// The token sent when it2ssh gave an empty one: base64 of "none".
 pub const NO_TOKEN: &str = "bm9uZQ==";
 

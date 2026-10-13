@@ -4,7 +4,7 @@
 //! the credential's blob as UTF-8. A blob is copied straight into a `Secret` and the copy Windows
 //! handed back is zeroed before `CredFree`. The generic-target functions (`write_generic`,
 //! `read_generic`, `delete_generic`) also serve the AI keys under `TermurionAI/` (`ai_keys`), and
-//! refuse any target outside Tandem's two prefixes before calling Windows. No test calls
+//! refuse any target outside Termurion's two prefixes before calling Windows. No test calls
 //! Credential Manager; the milestone's checklist covers that by hand.
 
 use crate::pwm::{Account, Secret};
@@ -15,8 +15,8 @@ use windows_sys::Win32::Security::Credentials::{
     CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
 };
 
-/// The comment written on every credential Tandem stores (shown in Control Panel).
-const COMMENT: &str = "Tandem password manager";
+/// The comment written on every credential Termurion stores (shown in Control Panel).
+const COMMENT: &str = "Termurion password manager";
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -69,20 +69,20 @@ unsafe fn zero_blob(c: *mut CREDENTIALW) {
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
 
-/// The account's target, refused unless it is one of Tandem's (so nothing here ever reads,
+/// The account's target, refused unless it is one of Termurion's (so nothing here ever reads,
 /// writes or deletes another program's credential).
 fn target(scope: Scope, a: &Account) -> Result<&str, String> {
     match pwm_source::parse_target_in(scope, &a.id) {
         Some(_) => Ok(&a.id),
-        None => Err("Not a Tandem credential.".to_string()),
+        None => Err("Not a Termurion credential.".to_string()),
     }
 }
 
-/// The prefixes of every target Tandem owns: the password manager's `Termurion/` and
+/// The prefixes of every target Termurion owns: the password manager's `Termurion/` and
 /// `Termurion-Browser/` and the AI keys' `TermurionAI/` (compared case-sensitively).
 const OWNED_PREFIXES: [&str; 3] = ["Termurion/", "Termurion-Browser/", "TermurionAI/"];
 
-/// Whether a target is one of Tandem's. The generic functions below refuse any other target
+/// Whether a target is one of Termurion's. The generic functions below refuse any other target
 /// before calling Windows, so nothing here ever touches another program's credential.
 pub(crate) fn owned(target: &str) -> bool {
     OWNED_PREFIXES.iter().any(|p| target.starts_with(p))
@@ -92,7 +92,7 @@ fn guard(target: &str) -> Result<(), String> {
     if owned(target) {
         Ok(())
     } else {
-        Err("Not a Tandem credential.".to_string())
+        Err("Not a Termurion credential.".to_string())
     }
 }
 
@@ -251,7 +251,7 @@ impl Source for CredentialManager {
             // SAFETY: `list` holds `count` valid credential pointers until CredFree below.
             unsafe {
                 let c = *list.add(i);
-                // The filter is case-insensitive; parse_target keeps only Tandem's exact prefix.
+                // The filter is case-insensitive; parse_target keeps only Termurion's exact prefix.
                 // A name that is not valid UTF-16 is skipped (it could not be used).
                 if let Some(a) = from_wide((*c).TargetName).and_then(|t| pwm_source::parse_target_in(self.scope, &t)) {
                     out.push(a);
@@ -288,7 +288,7 @@ impl Source for CredentialManager {
         // Credential Manager has no Add Account toggles, so flags is ignored (as iTerm2's keychain).
         let t = pwm_source::target_name_in(self.scope, name, user);
         write(&t, user, &p)?;
-        pwm_source::parse_target_in(self.scope, &t).ok_or_else(|| "Not a Tandem credential.".to_string())
+        pwm_source::parse_target_in(self.scope, &t).ok_or_else(|| "Not a Termurion credential.".to_string())
     }
 
     fn edit_in_place(&mut self, _a: &Account, _name: Option<&str>, _user: Option<&str>, _p: Option<Secret>) -> Result<(), String> {
@@ -343,10 +343,10 @@ mod tests {
         assert!(!owned("termurionai/x"));
         assert!(!owned("Other/x"));
         // Each refusal returns before any Win32 call.
-        let refused = Err("Not a Tandem credential.".to_string());
+        let refused = Err("Not a Termurion credential.".to_string());
         assert_eq!(write_generic("Other/x", "", &Secret::new("k".into()), "c", "API key"), refused);
-        assert!(matches!(read_generic("Other/x", "API key"), Err(e) if e == "Not a Tandem credential."));
-        assert_eq!(delete_generic("Other/x"), Err("Not a Tandem credential.".to_string()));
+        assert!(matches!(read_generic("Other/x", "API key"), Err(e) if e == "Not a Termurion credential."));
+        assert_eq!(delete_generic("Other/x"), Err("Not a Termurion credential.".to_string()));
     }
 
     #[test]

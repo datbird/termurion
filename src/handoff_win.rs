@@ -2,7 +2,7 @@
 //! the default terminal through this class. Any local program can call it, so every call is
 //! untrusted: the caller is checked first (`default_term::vet`: same user, session and integrity), handles are duplicated and typed
 //! before use, the title is bounded and cleaned, the rate and the live count are capped, and a
-//! handoff while Tandem closes is refused. Nothing here touches `App`: a good handoff becomes a
+//! handoff while Termurion closes is refused. Nothing here touches `App`: a good handoff becomes a
 //! `Handoff` sent to the UI thread, which owns its handles from then on.
 
 #![allow(non_snake_case)]
@@ -63,7 +63,7 @@ impl Drop for Live {
     }
 }
 
-/// A console handed to Tandem: raw handles Tandem now owns. Dropping an unused one closes them.
+/// A console handed to Termurion: raw handles Termurion now owns. Dropping an unused one closes them.
 #[derive(Debug)]
 pub struct Handoff {
     pub hpc: isize,
@@ -200,13 +200,13 @@ fn wait_idle(calls: &AtomicUsize, limit: std::time::Duration) -> bool {
 const E_UNEXPECTED: i32 = 0x8000_FFFFu32 as i32;
 
 /// Runs a COM entry point's body; a panic becomes `E_UNEXPECTED` for the caller instead of unwinding
-/// into COM, which would abort Tandem with every session (final review item 13, 13u's rule for
+/// into COM, which would abort Termurion with every session (final review item 13, 13u's rule for
 /// callbacks on foreign threads).
 fn unwind_safe<T>(body: impl FnOnce() -> Result<T, i32>) -> Result<T, i32> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or(Err(E_UNEXPECTED))
 }
 
-/// Set once Tandem is ending: a handoff after that is refused with `E_ABORT`.
+/// Set once Termurion is ending: a handoff after that is refused with `E_ABORT`.
 static CLOSING: AtomicBool = AtomicBool::new(false);
 
 pub fn begin_closing() {
@@ -415,7 +415,7 @@ mod tests {
     }
 
     /// Final review item 13 (13u: a callback on a foreign thread never panics through it): a panic in a
-    /// COM entry point is E_UNEXPECTED to the caller, never an abort of Tandem with every session.
+    /// COM entry point is E_UNEXPECTED to the caller, never an abort of Termurion with every session.
     #[test]
     fn a_panic_in_a_com_entry_point_is_an_error() {
         assert_eq!(unwind_safe(|| -> Result<(), i32> { panic!("boom") }), Err(E_UNEXPECTED));
@@ -497,7 +497,7 @@ mod tests {
         assert!(check_process(&r, false).is_err(), "a pipe is not a process");
         let _ = std::fs::remove_file(&path);
         let me = Own::dup(HANDLE(unsafe { GetCurrentProcess() })).unwrap();
-        assert!(check_process(&me, true).is_err(), "Tandem itself is never the client");
+        assert!(check_process(&me, true).is_err(), "Termurion itself is never the client");
         assert!(Own::dup(HANDLE(0x7777_7770 as *mut c_void)).is_err(), "a handle that is not there");
     }
 

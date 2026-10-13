@@ -24,7 +24,7 @@ By process of elimination, you can determine which prompt applies to your situat
 
 ## Code Review System Prompt
 
-When a workspace has a member with the Code Review role, this prompt goes in the system message and tells the agent how to update Tandem with its findings.
+When a workspace has a member with the Code Review role, this prompt goes in the system message and tells the agent how to update Termurion with its findings.
 
 ## Chat List Icon
 

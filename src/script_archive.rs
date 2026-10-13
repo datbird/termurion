@@ -1,6 +1,6 @@
 //! Open Python REPL's banner and arguments (`AD:3528-3551`, `API/iTermReplLauncher.swift`),
 //! and import and export (`IM`, `AR`, `EX`): which layouts an archive may have, the export's
-//! zip name and the tar.exe arguments that write it (Tandem reads it itself, `extract`), the replace backup's names and
+//! zip name and the tar.exe arguments that write it (Termurion reads it itself, `extract`), the replace backup's names and
 //! the texts. Pure.
 
 use std::path::{Path, PathBuf};
@@ -13,10 +13,10 @@ const BANNER: &str = include_str!("../resources/scripts/repl_banner.txt");
 /// The banner's SHA-256: iTerm2's file at `64791fc`.
 pub const BANNER_SHA256: &str = "6ea333be584b6ecb6343843868404c8f8bd9bc214aad0807973af69140734637";
 
-/// The banner fed to the REPL's pane before the interpreter writes: iTerm2's, naming Tandem
+/// The banner fed to the REPL's pane before the interpreter writes: iTerm2's, naming Termurion
 /// and Win-click (the link's URL stays iTerm2's).
 pub fn repl_banner() -> String {
-    BANNER.replace("\u{2318}-click", "Win-click").replace("iTerm2", "Tandem")
+    BANNER.replace("\u{2318}-click", "Win-click").replace("iTerm2", "Termurion")
 }
 
 /// The interpreter's arguments under uv (`iTermReplLauncher.arguments(usesUV:)`): the
@@ -156,13 +156,13 @@ pub fn stale_backup(entry: &str) -> Option<String> {
     Some(name.to_string())
 }
 
-/// Import and export texts (iTerm2's with Tandem's names; `IM`, `AR`, `M:683-789`, `EX`).
+/// Import and export texts (iTerm2's with Termurion's names; `IM`, `AR`, `M:683-789`, `EX`).
 pub const IMPORT_IN_PROGRESS: &str = "Another import is in progress. Please try again after it completes.";
 pub fn unzip_failed(e: &str) -> String {
     format!("Could not unzip archive: {e}")
 }
-pub const NO_VALID_SCRIPT: &str = "Archive does not contain a valid Tandem script";
-pub const LEGACY_ARCHIVE: &str = "This archive was created by an older version of Tandem. This kind of archive is no longer supported and cannot be installed.";
+pub const NO_VALID_SCRIPT: &str = "Archive does not contain a valid Termurion script";
+pub const LEGACY_ARCHIVE: &str = "This archive was created by an older version of Termurion. This kind of archive is no longer supported and cannot be installed.";
 pub fn already_installed(name: &str) -> String {
     format!("A script named \u{201c}{name}\u{201d} is already installed")
 }
@@ -192,7 +192,7 @@ pub const INVALID_LOCATION: &str = "Invalid location (not under Scripts folder).
 pub const NO_SCRIPT_FOUND: &str = "No found script at selected location.";
 pub const SETUP_CFG_PARSE: &str = "Could not parse install_requires in setup.cfg";
 pub const OFFER_AUTOLAUNCH: &str = "Offer to launch automatically during installation";
-/// The chooser window's title (Tandem's; iTerm2's open panel has none).
+/// The chooser window's title (Termurion's; iTerm2's open panel has none).
 pub const EXPORT_TITLE: &str = "Export Script";
 
 /// Whether a script name taken from an archive (a basic script's file name or a full
@@ -282,12 +282,12 @@ pub const LAUNCH_MANUALLY: &str = "Lauch Manually";
 
 /// A verified archive whose metadata asks for AutoLaunch (`AR:216-230`).
 pub fn trusted_autolaunch_text(name: &str) -> String {
-    format!("\u{201c}{}\u{201d} would like to launch automatically when Tandem starts. Would you like to allow that?", crate::inert_files::display_text(name, 128, false))
+    format!("\u{201c}{}\u{201d} would like to launch automatically when Termurion starts. Would you like to allow that?", crate::inert_files::display_text(name, 128, false))
 }
 
 /// The offer when the import itself asked for AutoLaunch (`AR:216-230`).
 pub fn explicit_autolaunch_text(name: &str) -> String {
-    format!("\u{201c}{}\u{201d} can launch automatically when Tandem starts. Would you like to allow that?", crate::inert_files::display_text(name, 128, false))
+    format!("\u{201c}{}\u{201d} can launch automatically when Termurion starts. Would you like to allow that?", crate::inert_files::display_text(name, 128, false))
 }
 
 #[cfg(test)]
@@ -388,12 +388,12 @@ mod tests {
         let sum: String = Sha256::digest(BANNER.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(sum, BANNER_SHA256, "the vendored banner is iTerm2's, byte for byte");
         let b = repl_banner();
-        assert!(b.starts_with("\x1b[1mWelcome to the Tandem Python REPL!\x1b[m\r\n\r\n"), "{b:?}");
+        assert!(b.starts_with("\x1b[1mWelcome to the Termurion Python REPL!\x1b[m\r\n\r\n"), "{b:?}");
         // Every line keeps its CRLF.
         assert!(b.ends_with("\r\n"));
         assert_eq!(b.matches('\n').count(), b.matches("\r\n").count());
         assert!(b.contains("import iterm2\r\nconnection=await iterm2.Connection.async_create()\r\n"));
-        assert!(b.contains("\x1b]8;;https://iterm2.com/python-api\x07Win-click here for Tandem Python API Docs\x1b]8;;\x07"));
+        assert!(b.contains("\x1b]8;;https://iterm2.com/python-api\x07Win-click here for Termurion Python API Docs\x1b]8;;\x07"));
         assert!(!b.replace("https://iterm2.com/python-api", "").contains("iTerm2"));
         assert!(!b.contains('\u{2318}'));
         assert_eq!(repl_args(), ["-m", "asyncio"]);
@@ -478,8 +478,8 @@ mod tests {
         let q = |s: &str| format!("\u{201c}{s}\u{201d}");
         assert_eq!(IMPORT_IN_PROGRESS, "Another import is in progress. Please try again after it completes.");
         assert_eq!(unzip_failed("boom"), "Could not unzip archive: boom");
-        assert_eq!(NO_VALID_SCRIPT, "Archive does not contain a valid Tandem script");
-        assert_eq!(LEGACY_ARCHIVE, "This archive was created by an older version of Tandem. This kind of archive is no longer supported and cannot be installed.");
+        assert_eq!(NO_VALID_SCRIPT, "Archive does not contain a valid Termurion script");
+        assert_eq!(LEGACY_ARCHIVE, "This archive was created by an older version of Termurion. This kind of archive is no longer supported and cannot be installed.");
         assert_eq!(already_installed("tool"), format!("A script named {} is already installed", q("tool")));
         assert_eq!((ALREADY_HEADING, REPLACE), ("Script Already Exists", "Replace Script"));
         assert_eq!(replace_failed("tool"), format!("Could not replace {}: the existing script could not be moved aside, so it was left unchanged.", q("tool")));

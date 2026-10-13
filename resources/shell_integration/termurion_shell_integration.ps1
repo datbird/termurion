@@ -1,4 +1,4 @@
-# Tandem shell integration for PowerShell (Windows PowerShell 5.1 and PowerShell 7).
+# Termurion shell integration for PowerShell (Windows PowerShell 5.1 and PowerShell 7).
 # Marks each prompt and command with OSC 133 and reports the location with OSC 7, the
 # same sequences iTerm2's bash and zsh scripts send. Load it from $PROFILE:
 #   . "<path to this file>"
@@ -19,7 +19,7 @@ function global:__TermurionOsc([string]$body) {
 }
 
 # The machine identity OSC 7 carries (iTerm2's machineID, version 1): HMAC-SHA256 of this
-# boot's identity, "MachineGuid:BootId", keyed with iTerm2's key, as lowercase hex. Tandem
+# boot's identity, "MachineGuid:BootId", keyed with iTerm2's key, as lowercase hex. Termurion
 # computes the same value, so a path reported by this shell is known to be on this machine.
 function global:Get-TermurionMachineIdHash([string]$identity) {
     $hmac = New-Object System.Security.Cryptography.HMACSHA256

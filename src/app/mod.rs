@@ -1,4 +1,4 @@
-//! The Tandem window: tabs of split panes, drawn with wgpu.
+//! The Termurion window: tabs of split panes, drawn with wgpu.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
@@ -446,7 +446,7 @@ pub struct App {
     menu_bar: Option<menu::MenuBar>,
     /// Keys > Remap Modifiers, read by the keyboard hook's thread.
     remap_tags: Arc<std::sync::RwLock<crate::remap::Tags>>,
-    /// What the keyboard hook needs to decide which Win chords Tandem takes.
+    /// What the keyboard hook needs to decide which Win chords Termurion takes.
     route_snapshot: Arc<std::sync::RwLock<keyroute::Snapshot>>,
     /// Global bindings to Do Not Remap Modifiers, for the hook.
     exempt_map: Arc<std::sync::RwLock<toml::Table>>,
@@ -503,7 +503,7 @@ pub struct App {
     /// Each pane's find bar and matches.
     finds: HashMap<PaneId, find_ui::FindState>,
     /// The query every find bar shares with `SynchronizeQueryWithFindPasteboard` on (iTerm2's find
-    /// pasteboard; Windows has none, so it lives in Tandem). App-wide, not swapped per window.
+    /// pasteboard; Windows has none, so it lives in Termurion). App-wide, not swapped per window.
     find_pasteboard: String,
     /// The pane that had the keyboard when the shared query was last loaded.
     find_focus_seen: Option<PaneId>,
@@ -682,7 +682,7 @@ pub struct App {
     /// "Custom Python API Scripts Folder" and its text when the scanner last started: a change
     /// to either starts it again.
     scripts_keys: (bool, String),
-    /// AutoLaunch was tried (`_ranAutoLaunchScript`): it runs once per Tandem run.
+    /// AutoLaunch was tried (`_ranAutoLaunchScript`): it runs once per Termurion run.
     autolaunch_ran: bool,
     composer_windows: composer_ui::Windows,
     composer_clip: Option<(String, Vec<usize>)>,
@@ -733,7 +733,7 @@ pub struct App {
     /// pane: its folder and the pane itself (R3), taken before the empty window swaps in.
     window_previous_dir: Option<PathBuf>,
     window_previous_pane: Option<PaneId>,
-    /// Tandem's terminfo folder, written once per run on the first WSL session that needs it
+    /// Termurion's terminfo folder, written once per run on the first WSL session that needs it
     /// (`terminfo::ensure`); app-wide.
     terminfo_dir: Option<PathBuf>,
     /// Sessions opened for a git menu command, by pane (app-wide).
@@ -757,7 +757,7 @@ pub struct App {
     /// A launch URL waiting for the hotkey window of a profile to be made (guid to URL); the
     /// window's first session takes it (`ssh_url_app::open_url_in_termurion`).
     hotkey_urls: HashMap<String, String>,
-    /// The launch pipe this Tandem serves, when it owns it (an idle `-Embedding` start stops it
+    /// The launch pipe this Termurion serves, when it owns it (an idle `-Embedding` start stops it
     /// before it ends; otherwise it ends with the process).
     url_listener: Option<crate::url_launch::Serving>,
     /// The flood cap on URLs from outside (P13).
@@ -766,7 +766,7 @@ pub struct App {
     /// them (app-wide, not in `swap_live`; m13v1).
     launch_queue: Vec<crate::launch::Request>,
     launch_flood: crate::url_launch::Flood,
-    /// Tandem runs with no window (m13v1 Task 7, R3): the last window is hidden, empty and off the
+    /// Termurion runs with no window (m13v1 Task 7, R3): the last window is hidden, empty and off the
     /// taskbar, the notification area icon is its way back. App-wide, not in `swap_live`.
     resident: bool,
     /// The Downloads folder chosen for the run (final review item 17). App-wide.
@@ -774,7 +774,7 @@ pub struct App {
     /// Where in `pending_windows` the resident wake's one window waits (final review item 3): later
     /// tabs asked for before it opens join it. Cleared when the window is awake. App-wide.
     pending_wake: Option<usize>,
-    /// When this Tandem started, and whether the person has done anything yet (a key in a
+    /// When this Termurion started, and whether the person has done anything yet (a key in a
     /// session, Close, a window they closed): iTerm2's grace period for quitting (`AD:915-942`).
     launched_at: Instant,
     user_interacted: bool,
@@ -783,7 +783,7 @@ pub struct App {
     /// The Jump List needs a rebuild (the profiles, the arrangements or the recents changed).
     jump_list_due: bool,
     jump_sync: crate::jumplist::Sync,
-    /// The default-terminal handoff class, registered while Tandem is the default (m13v1 Task 5).
+    /// The default-terminal handoff class, registered while Termurion is the default (m13v1 Task 5).
     handoff: Option<crate::handoff_win::Server>,
     /// The handed-off console the next started pane takes (`spawn_pane`), and the ones that
     /// arrived before the first window.
@@ -792,7 +792,7 @@ pub struct App {
     /// When an `-Embedding` start began: it makes no window until its handoff arrives.
     embedding: Option<Instant>,
     handoffs_seen: usize,
-    /// Files and folders opened with Tandem: the batch gathering, the workers that check them and
+    /// Files and folders opened with Termurion: the batch gathering, the workers that check them and
     /// the scripts the person said OK to run (app-wide, not in `swap_live`; m13v1 Task 2).
     open_batch: crate::open_file::Batch,
     open_ignored: crate::open_file::IgnoredCount,
@@ -813,7 +813,7 @@ pub struct App {
     /// event loop turn ends so one drop goes to the program whole (13o Task 9).
     dnd_dropped: Vec<(PaneId, std::path::PathBuf, (f32, f32))>,
     api: Api,
-    /// The session host this Tandem runs its shells in, and what it said at the handshake.
+    /// The session host this Termurion runs its shells in, and what it said at the handshake.
     host: Option<crate::host_client::Client>,
     /// The current window's hotkey state (swapped per window).
     hotkey: Option<hotkey_ui::HotkeyWin>,
@@ -837,9 +837,9 @@ pub struct App {
     session_hotkeys_dirty: bool,
     /// Panes whose own session hotkey value was looked at once (`session_hotkeys_adopt`).
     session_hotkey_seen: std::collections::HashSet<PaneId>,
-    /// A Tandem window was in front at the last check (Reopen on activation).
+    /// A Termurion window was in front at the last check (Reopen on activation).
     app_active: bool,
-    /// Focus follows mouse: the pointer's screen point when Tandem lost the foreground, then
+    /// Focus follows mouse: the pointer's screen point when Termurion lost the foreground, then
     /// the point activation refuses to move focus from until the pointer moves. App-wide.
     ffm_saved: Option<(f64, f64)>,
     /// The Ctrl+wheel pinch's running total. App-wide.
@@ -868,7 +868,7 @@ pub struct App {
     /// The floors under every beep, flash and taskbar flash (B6). App-wide on purpose: three
     /// flashes a second is a limit of the person's eyes, not of one pane.
     bell_limiter: crate::bell::Limiter,
-    /// The taskbar button's count: bells rung and sessions waiting while no Tandem window is
+    /// The taskbar button's count: bells rung and sessions waiting while no Termurion window is
     /// active. App-wide (one count for every window's button).
     bell_badge: crate::bell_badge::Badge,
     /// The label last queued for the buttons and when; None makes the next pass queue it again.
@@ -876,9 +876,9 @@ pub struct App {
     fireworks: HashMap<PaneId, (Instant, (usize, usize))>,
     /// SetColors `tab`: the tab color a pane's program chose.
     tab_colors: HashMap<PaneId, alacritty_terminal::vte::ansi::Rgb>,
-    /// tmux windows opening in new Tandem windows: their saved origin and size, by tab.
+    /// tmux windows opening in new Termurion windows: their saved origin and size, by tab.
     tmux_geometry: HashMap<u64, (Option<(i32, i32)>, Option<crate::tmux_persist::WinSize>)>,
-    /// Each Tandem window's last place and size while not minimized (by window key).
+    /// Each Termurion window's last place and size while not minimized (by window key).
     tmux_last_geometry: HashMap<u64, ((i32, i32), Option<crate::tmux_persist::WinSize>)>,
     /// Background images by path (None for a file that does not load), and folder
     /// rotations by folder and interval.
@@ -1229,7 +1229,7 @@ pub struct App {
     display_due: Option<Instant>,
     /// The setting is confirmed (the warning answered); the warning shows only while it is not.
     ui_element_confirmed: bool,
-    /// Tandem is acting as a UI element now (`presence::is_ui_element`).
+    /// Termurion is acting as a UI element now (`presence::is_ui_element`).
     ui_element_now: bool,
     /// The notification area icon is added (app-wide).
     tray_on: bool,
@@ -1275,7 +1275,7 @@ pub struct App {
     /// The `iterm2-ssh:` URL the new browser pane loads first: set only by the person's View answer
     /// and taken by `start_browser_pane` in the same call.
     ssh_view_url: Option<String>,
-    /// What waits for each file request, by pane and the id Tandem sent it with (app-wide,
+    /// What waits for each file request, by pane and the id Termurion sent it with (app-wide,
     /// not in `swap_live`; 14d).
     ssh_waiters: HashMap<(PaneId, u64), ssh_files_app::Waiter>,
     /// The id of the next file request.
@@ -1287,7 +1287,7 @@ pub struct App {
     /// The panel's running search: its pane, the id the remote gave it (empty until it
     /// answers) and the panel's generation (app-wide; 14d).
     ssh_search: Option<(PaneId, String, u64)>,
-    /// The ids of the searches Tandem started lately, by pane: results of a replaced search are
+    /// The ids of the searches Termurion started lately, by pane: results of a replaced search are
     /// still acknowledged (P18), and no other id is.
     ssh_search_issued: Vec<(PaneId, String)>,
     /// The search acknowledgements still out, by pane: a result past 16 is dropped (P18).
@@ -1390,7 +1390,7 @@ pub struct App {
     script_alert: Option<(crate::prompt_ui::ConfirmWindow, script_ui::Alert, bool)>,
     /// The provisioning worker (started on first use), what each submitted job continues
     /// with, the install each job queued behind one needs (dependent id to install id), the
-    /// installed-Python probes running off the UI thread, and whether Tandem's uv is installed
+    /// installed-Python probes running off the UI thread, and whether Termurion's uv is installed
     /// (the runtime menu item's title). Also the environment each submitted job makes, and the
     /// requests waiting for an environment already being asked about or built.
     provisioner: Option<crate::script_provision::Provisioner>,
@@ -1534,7 +1534,7 @@ pub struct App {
     chat_drafts: crate::chat_input::Drafts,
     chat_drops: Vec<std::path::PathBuf>,
     /// The find bar of the chat window (app-wide, as the window is): the query the next bar
-    /// opens with (Tandem has no shared find pasteboard), and the bar's state while it is open.
+    /// opens with (Termurion has no shared find pasteboard), and the bar's state while it is open.
     chat_find_query: String,
     chat_find: chat_window_app::ChatFind,
     chat_toolbar: crate::chat_window_ui::ToolbarData,
@@ -1656,7 +1656,7 @@ pub struct App {
     /// takes the click over, as `last_notified`).
     script_procs: HashMap<String, crate::script_proc::ScriptProcess>,
     /// The jobs of scripts that ended by themselves while something they started still runs;
-    /// dropped when that ends (closing a job ends what is in it, so Tandem's quit ends them).
+    /// dropped when that ends (closing a job ends what is in it, so Termurion's quit ends them).
     script_jobs_left: Vec<crate::script_provision::KillJob>,
     script_after_enable: Vec<crate::script_launch::Request>,
     /// Open Python REPL: the interpreter waiting for "Enable Python API?", and the one whose
@@ -1750,7 +1750,7 @@ pub struct App {
     script_moved: Vec<(u64, u64)>,
     /// "Load settings from a custom folder or URL" (app-wide): what the location held when it
     /// was loaded or last written (iTerm2's `savedRemotePrefs`), when the automatic save is due,
-    /// a URL load running off the UI thread, whether Tandem ends once the quit question is
+    /// a URL load running off the UI thread, whether Termurion ends once the quit question is
     /// answered, the launch's questions waiting for the first window, whether Settings opens at
     /// General on the next pass (Reveal in Settings), and the GPU the quit question opens with
     /// after the last window has gone.
@@ -1776,7 +1776,7 @@ pub struct App {
     /// The custom folder's location as typed at launch; None once it was edited this session,
     /// which skips the quit step (`customFolderChanged`).
     prefs_launch_folder: Option<String>,
-    /// Import All Settings and Data (app-wide): Tandem starts again once the event loop ends
+    /// Import All Settings and Data (app-wide): Termurion starts again once the event loop ends
     /// (`run()`), the quit that restart needs is due on the next loop pass, the script zips an
     /// import left for this run to install, and their folder, removed once they are done.
     relaunch_on_exit: bool,
@@ -1842,7 +1842,7 @@ fn default_shell() -> String {
 fn message_box(text: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Tandem").as_ptr(), MB_OK | MB_ICONERROR) };
+    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Termurion").as_ptr(), MB_OK | MB_ICONERROR) };
 }
 
 /// What ends with the process, on EVERY way out of it (Quit, Erase All, a logoff, a panic on the
@@ -1856,10 +1856,10 @@ pub(crate) fn teardown_process() {
     crate::input_locale::restore_after_panic();
     crate::notify::remove(0);
     crate::handoff_win::begin_closing();
-    // A running update check ends with Tandem (its curl.exe), not after it.
+    // A running update check ends with Termurion (its curl.exe), not after it.
     #[cfg(windows)]
     crate::update_fetch_win::cancel_running();
-    // The Dynamic Profiles folder's watch stops with Tandem.
+    // The Dynamic Profiles folder's watch stops with Termurion.
     #[cfg(windows)]
     crate::dynamic_profiles_scan::stop_all();
     // Every screen reader provider is disconnected, so no client keeps a dead one (P14).
@@ -1878,37 +1878,37 @@ pub(crate) fn teardown_process() {
 
 pub fn run() {
     crate::dlog::mark_main_thread();
-    // A cookie in Tandem's own environment (Tandem started from a Tandem shell) must reach no
-    // session and no child: only a cookie Tandem mints for a session is ever set.
+    // A cookie in Termurion's own environment (Termurion started from a Termurion shell) must reach no
+    // session and no child: only a cookie Termurion mints for a session is ever set.
     for name in crate::session_env::NEVER_INHERITED {
-        // SAFETY: the first thing Tandem does, before any thread (the event loop, termurion-host,
+        // SAFETY: the first thing Termurion does, before any thread (the event loop, termurion-host,
         // the API server) exists, so nothing reads the environment meanwhile.
         unsafe { std::env::remove_var(name) };
     }
-    // An ssh: URL from a protocol handler (m14e): a running Tandem of this user takes it and this
+    // An ssh: URL from a protocol handler (m14e): a running Termurion of this user takes it and this
     // process ends; a refused command line opens nothing. Before any window or thread exists.
     let mut pending_urls_at_start = Vec::new();
     match crate::url_launch::url_argument(&std::env::args_os().collect::<Vec<_>>()) {
         crate::url_launch::UrlArg::None => {}
         crate::url_launch::UrlArg::Refused(why) => return crate::host::log(&format!("url: refused {why}")),
-        // Only when no Tandem of this user runs does this one start (fix r1): a busy or failed
-        // hand-over never opens a second Tandem beside the first.
+        // Only when no Termurion of this user runs does this one start (fix r1): a busy or failed
+        // hand-over never opens a second Termurion beside the first.
         crate::url_launch::UrlArg::Url(url) => match crate::url_launch::hand_to_running(&crate::launch::Request::Url { url: url.clone() }) {
             crate::url_launch::AfterHand::Exit => return,
             crate::url_launch::AfterHand::Start => pending_urls_at_start.push(url),
             crate::url_launch::AfterHand::Refuse(why) => return crate::host::log(&format!("url: refused: {why}")),
         },
     }
-    // Started again after Import All Settings and Data: the old Tandem ends first (`IE:898-911`).
+    // Started again after Import All Settings and Data: the old Termurion ends first (`IE:898-911`).
     let wait_pid = std::env::var(settings_export_ui::WAIT_PID_VAR).ok().and_then(|v| v.parse::<u32>().ok());
     // SAFETY: as above, before any thread exists; no session or child inherits the variable.
     unsafe { std::env::remove_var(settings_export_ui::WAIT_PID_VAR) };
     if let Some(pid) = wait_pid {
         settings_export_ui::wait_for_pid(pid);
     }
-    // The rest of the command line (m13v1): a running Tandem of this user takes the request over
+    // The rest of the command line (m13v1): a running Termurion of this user takes the request over
     // the same pipe and this process ends (after the wait above, so the relaunch after an import
-    // never hands its start to the Tandem it replaced). With none running, this one starts and
+    // never hands its start to the Termurion it replaced). With none running, this one starts and
     // runs the request after its first window.
     let mut launch_queue = Vec::new();
     let mut embedding = false;
@@ -1921,13 +1921,13 @@ pub fn run() {
         // Handled above (its hand-over and its queue are the URL's own).
         Ok(crate::launch::Request::Url { .. }) => {}
         // COM starts `termurion.exe -Embedding` for one handoff; any local program can too. It runs
-        // only while Tandem is the default terminal with its pack and no Tandem answers the
+        // only while Termurion is the default terminal with its pack and no Termurion answers the
         // launch pipe; it forwards nothing and makes no window until a handoff arrives (B9).
         Ok(crate::launch::Request::Embedding) => {
             let exe = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_default();
             let pack = conpty::load(&Source::Shipped(exe)).is_ok_and(|a| a.pack.is_some());
-            let tandem = crate::default_term::is_termurion(&crate::default_term::current(&crate::reg::HkcuRegistry));
-            match crate::default_term::embedding_start(tandem, pack, &crate::url_launch::probe_running()) {
+            let termurion = crate::default_term::is_termurion(&crate::default_term::current(&crate::reg::HkcuRegistry));
+            match crate::default_term::embedding_start(termurion, pack, &crate::url_launch::probe_running()) {
                 crate::default_term::EmbeddingStart::Run => embedding = true,
                 crate::default_term::EmbeddingStart::Exit(why) => return crate::host::log(&format!("embedding: not started: {why}")),
             }
@@ -1946,7 +1946,7 @@ pub fn run() {
             }
         }
     }
-    // A panic on the main thread (it ends Tandem) takes the keyboard hook down first, so no remap
+    // A panic on the main thread (it ends Termurion) takes the keyboard hook down first, so no remap
     // outlives it; a worker thread's panic leaves the hook alone.
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -1980,7 +1980,7 @@ pub fn run() {
     let jobs = crate::jobwatch::JobWatch::start(Arc::new(move || {
         let _ = job_wake.lock().map(|p| p.send_event(UserEvent::JobsChanged));
     }));
-    // This Tandem takes the requests sent to it. One that cannot bind is a second Tandem of the
+    // This Termurion takes the requests sent to it. One that cannot bind is a second Termurion of the
     // same user (another started at the same moment, or something holds the name): it hands its
     // own request over once more and ends, so it never installs a second keyboard hook, hotkeys
     // or tray icon beside the first (13u S4, R14de-6).
@@ -1997,19 +1997,19 @@ pub fn run() {
                 again.push(crate::launch::Request::Reopen);
             }
             let after: Vec<_> = again.iter().map(crate::url_launch::hand_to_running).collect();
-            // A holder that is not this Tandem (another user, a lower integrity level, another
-            // program) is sent nothing and does not stop Tandem from starting: this one runs
+            // A holder that is not this Termurion (another user, a lower integrity level, another
+            // program) is sent nothing and does not stop Termurion from starting: this one runs
             // without a listener and says so (review r1, Important 1). Only a holder that may
-            // be Tandem but did not answer ends the launch.
+            // be Termurion but did not answer ends the launch.
             match crate::url_launch::lost_pipe(&after, false) {
                 crate::url_launch::LostPipe::Handed => return,
                 crate::url_launch::LostPipe::Refused => {
-                    message_box(&format!("Tandem could not take its launch pipe: {e}"));
+                    message_box(&format!("Termurion could not take its launch pipe: {e}"));
                     return;
                 }
                 crate::url_launch::LostPipe::RunWithout => {}
             }
-            pipe_problem = Some("Another program holds Tandem's launch pipe, so files and links opened with Tandem cannot reach this window.".to_string());
+            pipe_problem = Some("Another program holds Termurion's launch pipe, so files and links opened with Termurion cannot reach this window.".to_string());
             None
         }
     };
@@ -2037,7 +2037,7 @@ pub fn run() {
         Ok(done) => {
             let entry = crate::utilities::path_entry(&done.folder.to_string_lossy());
             if let Some(text) = crate::utilities::refresh_banner(&done.failed) {
-                crate::host::log(&format!("tandem: {text}"));
+                crate::host::log(&format!("termurion: {text}"));
                 banners.set("utilities", text);
             } else if entry.is_none() {
                 banners.set("utilities", format!("The utilities folder {} has a \";\" in its path, so it is not put on PATH.", done.folder.display()));
@@ -2087,9 +2087,9 @@ pub fn run() {
             banners.set("globals", format!("Could not save settings: {e}"));
         }
     }
-    // Tandem's own scheme registrations follow the exe when it moved (only schemes the person bound).
+    // Termurion's own scheme registrations follow the exe when it moved (only schemes the person bound).
     crate::url_schemes::repair_at_start(&globals);
-    // A crash mid-download leaves a hidden `.Tandem.*` temp: older ones are swept with the
+    // A crash mid-download leaves a hidden `.Termurion.*` temp: older ones are swept with the
     // launch's other housekeeping (P24), off the launch path.
     let downloads_setting = globals.string("DownloadsDirectory");
     std::thread::spawn(move || {
@@ -2138,9 +2138,9 @@ pub fn run() {
     jobs.set_ancestry_diagnostics(globals.bool("LogForegroundJobAncestryDiagnostics"));
     let side_bar_preferred = side_bar_default(&globals);
     let min_tab_drag = globals.int("MinimumTabDragDistance") as f32;
-    // Session restoration: shells run in termurion-host so they outlive Tandem (read once:
+    // Session restoration: shells run in termurion-host so they outlive Termurion (read once:
     // a change needs a restart, as in iTerm2).
-    // A second Tandem (the host serves the first) neither restores nor saves windows: the
+    // A second Termurion (the host serves the first) neither restores nor saves windows: the
     // saved state belongs to the first.
     let mut second_copy = false;
     let (host, host_welcome) = if globals.bool("RunJobsInServers") {
@@ -2149,7 +2149,7 @@ pub fn run() {
             Ok((c, w)) => (Some(c), Some(w)),
             Err(e) => {
                 second_copy = matches!(e, crate::host_client::HostError::Busy(_));
-                banners.set("host", format!("Shells run inside Tandem this time, so they end with it: {e}"));
+                banners.set("host", format!("Shells run inside Termurion this time, so they end with it: {e}"));
                 (None, None)
             }
         }
@@ -2863,16 +2863,16 @@ pub fn run() {
     // The handoff class is registered before the first window, so COM's wait for it is short.
     app.sync_handoff_server();
     if let Err(e) = event_loop.run_app(&mut app) {
-        message_box(&format!("Tandem stopped: {e}"));
+        message_box(&format!("Termurion stopped: {e}"));
     }
     // Stop browsing: the callbacks end before the process does.
     app.bonjour = None;
     teardown_process();
-    // The restart after Import All Settings and Data: the new Tandem finishes the import.
+    // The restart after Import All Settings and Data: the new Termurion finishes the import.
     if app.relaunch_on_exit {
         drop(app);
         if let Err(e) = settings_export_ui::start_relaunched() {
-            message_box(&format!("Could not start Tandem again: {e}. Start it to finish the import."));
+            message_box(&format!("Could not start Termurion again: {e}. Start it to finish the import."));
         }
     }
 }
@@ -3104,7 +3104,7 @@ impl App {
     }
 
     /// A side tab bar's width in pixels: the window's preferred width (`LeftTabBarWidth` when
-    /// it opened) clamped to the window (`tab_position::side_width`), with Tandem's side
+    /// it opened) clamped to the window (`tab_position::side_width`), with Termurion's side
     /// padding as the side margin.
     pub(super) fn side_bar_width(&self) -> f32 {
         let scale = self.scale();
@@ -4186,7 +4186,7 @@ impl App {
         Vec::new()
     }
 
-    /// Tandem's terminfo folder, written on first use and kept for the run. A UNC `%APPDATA%`
+    /// Termurion's terminfo folder, written on first use and kept for the run. A UNC `%APPDATA%`
     /// is never written (none, silently); a write error leaves it out with a banner.
     #[cfg(windows)]
     fn terminfo_folder(&mut self) -> Option<PathBuf> {
@@ -4197,7 +4197,7 @@ impl App {
                     self.banners.clear("terminfo");
                     self.terminfo_dir = Some(dir);
                 }
-                Err(e) => self.banners.set("terminfo", format!("Could not write Tandem's terminfo files: {e}")),
+                Err(e) => self.banners.set("terminfo", format!("Could not write Termurion's terminfo files: {e}")),
             }
         }
         self.terminfo_dir.clone()
@@ -4358,7 +4358,7 @@ impl App {
         }
         if self.host.as_ref().is_some_and(|h| h.is_lost()) {
             self.host = None;
-            self.banners.set("host", "The session host stopped. New shells run inside Tandem, so they end with it.");
+            self.banners.set("host", "The session host stopped. New shells run inside Termurion, so they end with it.");
         }
         let (env, cookie) = self.session_env(id, &p, transport, &cmd);
         // Only the profile's own shell is injected; `cmd` stays the profile's line for the pane,
@@ -4368,9 +4368,9 @@ impl App {
         let started = match &self.host {
             Some(h) => match Pane::start_hosted_transport(id, h, transport, launch, Some(&cwd), &env, cols, rows, self.notify.clone()) {
                 // A host below protocol 4 cannot run this transport: the session runs inside
-                // Tandem instead.
+                // Termurion instead.
                 Err(e) if e == crate::host_client::HOST_TOO_OLD => {
-                    self.banners.set("host", "The session host is too old for this SSH session, so it runs inside Tandem.");
+                    self.banners.set("host", "The session host is too old for this SSH session, so it runs inside Termurion.");
                     Pane::start_transport(id, &self.api, transport, launch, Some(&cwd), &env, cols, rows, self.notify.clone())
                 }
                 other => other,
@@ -5230,15 +5230,15 @@ impl App {
         }
         if self.tabs.is_empty() {
             // The last window's last tab closed while sessions are buried: the newest comes
-            // back here instead of Tandem ending with them.
+            // back here instead of Termurion ending with them.
             if self.windows.parked().next().is_none() && self.buried.newest().is_some() {
                 self.disinter_here();
                 return;
             }
-            // The window's last tab closed: the window goes; the last window ends Tandem. The
+            // The window's last tab closed: the window goes; the last window ends Termurion. The
             // settings folder's quit question may open after it has gone, with its GPU.
             self.prefs_gpu = self.gpu.as_ref().map(|g| (g.instance.clone(), g.adapter.clone(), g.device.clone(), g.queue.clone()));
-            // iTerm2's rule for the last window (`AD:915-942`, R3): Tandem stays resident unless
+            // iTerm2's rule for the last window (`AD:915-942`, R3): Termurion stays resident unless
             // "Quit when all windows are closed" says otherwise (and the grace period has passed).
             if self.windows.parked().next().is_none() && self.after_last_window_now() == crate::resident::AfterLast::StayResident {
                 self.prefs_gpu = None;
@@ -5475,7 +5475,7 @@ impl App {
             Action::Copy => {
                 if let Some(id) = self.tabs.get(self.active).map(|t| t.focused) {
                     self.copy_selection(id);
-                    // Tandem's copy chord is iTerm2's Cmd-C to the frustration detector.
+                    // Termurion's copy chord is iTerm2's Cmd-C to the frustration detector.
                     self.frustration_copy(id);
                 }
             }
@@ -5540,7 +5540,7 @@ impl App {
     }
 
     /// Saves a custom scripts folder typed in the open Settings window and not yet applied,
-    /// before Tandem ends, so nothing typed is lost.
+    /// before Termurion ends, so nothing typed is lost.
     fn save_pending_settings(&mut self) {
         // A color preset still previewed goes back before anything is saved (B2).
         for slot in [&mut self.settings, &mut self.profiles_win] {
@@ -5932,7 +5932,7 @@ impl App {
         if button == MouseButton::Left && (self.info_bar_press(x, y, event_loop) || self.porthole_press(x, y) || self.block_press(x, y) || self.cmd_button_press(x, y, event_loop)) {
             return;
         }
-        // A divider's grab zone is Tandem's for every button: the left drags it, the others
+        // A divider's grab zone is Termurion's for every button: the left drags it, the others
         // do nothing (a program never sees a press meant for a divider).
         if let Some(d) = self.divider_at(x, y) {
             if button == MouseButton::Left {
@@ -5976,18 +5976,18 @@ impl App {
         if button == MouseButton::Left && self.find_press(x, y) {
             return;
         }
-        // Any button on one of Tandem's overlays inside a pane is Tandem's, never the program's (B5).
+        // Any button on one of Termurion's overlays inside a pane is Termurion's, never the program's (B5).
         if self.termurion_ui_at(x, y) {
             return;
         }
         // The offscreen command line scrolls to its command (`PTYTextView.m:7885-7896`): after
-        // every Tandem surface that can sit over its strip, a single click that did not activate
+        // every Termurion surface that can sit over its strip, a single click that did not activate
         // the window (`clickCount == 1`); the band covers the pane's scrollbar, so it comes first.
         if button == MouseButton::Left && offscreen_ui::click_allowed(first, self.next_os_clicks(0)) && self.offscreen_click(x, y) {
             self.os_clicks(0);
             return;
         }
-        // The scrollbar is the pane's own, below Tandem's overlays and before any report.
+        // The scrollbar is the pane's own, below Termurion's overlays and before any report.
         // The click that activated the window only activates it, on the bar too.
         if self.bar_press_only_activates(first, x, y) {
             return;
@@ -6051,7 +6051,7 @@ impl App {
         // would open the Start menu when Win comes up, so that is masked.
         // A click that only brought the window forward is a plain click (`MH:278-295`).
         let acts = crate::semantic::win_click_acts(self.first_mouse_down, was_focused, self.globals.bool("CmdClickWhenInactiveInvokesSemanticHistory"));
-        // Shift+Win-click on a link that opens in Tandem splits the pane (`PTYTextView.m:7987-8043`).
+        // Shift+Win-click on a link that opens in Termurion splits the pane (`PTYTextView.m:7987-8043`).
         if b == 0 && mods.cmd && mods.shift && !mods.ctrl && acts && self.globals.bool("CommandSelection") {
             let point = self.grid_point(id, col, row);
             if self.open_link_split(id, point) {
@@ -6417,7 +6417,7 @@ impl App {
             return;
         }
         let (x, y) = self.cursor;
-        // A wheel over a Tandem overlay is not the program's: no report and no arrows.
+        // A wheel over a Termurion overlay is not the program's: no report and no arrows.
         if self.termurion_ui_at(x, y) {
             return;
         }
@@ -6571,7 +6571,7 @@ impl App {
         let stripes = self.globals.bool("Use background pattern indicator").then(|| self.stripe_tile());
         if let Some(tab) = self.tabs.get(self.active) {
             for (id, rect) in self.visible(tab) {
-                // A browser pane's view covers its rectangle: only its background is Tandem's.
+                // A browser pane's view covers its rectangle: only its background is Termurion's.
                 if self.is_browser_pane(id) {
                     if let Some(p) = self.panes.get(&id) {
                         frame.quads.push(scene::Quad { rect, color: scene::rgba(p.screen.palette.bg, 1.0) });
@@ -6866,7 +6866,7 @@ impl App {
             overlay_drawn.push((mouse::Overlay::Banner, scene::banner(&mut frame, &text, Rect { x: 0.0, y: 0.0, w, h }, cell)));
         }
         // The offscreen command lines, last: over the pane's rows and strokes (they are cut out)
-        // but around every Tandem surface drawn over a pane's top, which the one overlay list
+        // but around every Termurion surface drawn over a pane's top, which the one overlay list
         // names (`ui_rects`): info bars, the composer and completion, portholes, pills,
         // pickers, indicators, the find bar, the toast and the banner (Task 6 review 2).
         let mut holes: Vec<Rect> = overlay_drawn.iter().map(|(_, r)| *r).collect();
@@ -6941,7 +6941,7 @@ impl App {
             self.window_menu_text = menu_text;
             self.refresh_window_list();
         }
-        // iTerm2 shows the Leader as sparkles on the cursor; Tandem says so in the title.
+        // iTerm2 shows the Leader as sparkles on the cursor; Termurion says so in the title.
         let title = if self.leader_on { format!("[Leader] {title}") } else { title };
         // A mode change reconfigures the surface once; this frame draws with it.
         let transparent = self.frame_alpha;
@@ -7090,7 +7090,7 @@ impl ApplicationHandler<UserEvent> for App {
         let hotkey_only = !arrangement_policy && self.globals.bool("OpenNoWindowsAtStartup");
         let hotkey_profiles: Vec<String> = self.hotkey_prefs().into_iter().filter(|(_, p)| p.active()).map(|(g, _)| g).collect();
         let system_policy = !arrangement_policy && !hotkey_only;
-        // `state_frozen` at launch: a second copy of Tandem, which leaves the state to the first.
+        // `state_frozen` at launch: a second copy of Termurion, which leaves the state to the first.
         let mut saved = if (system_policy || hotkey_only) && !self.state_frozen && self.start_handoff.is_none() { self.saved_windows() } else { None };
         let regular_saved = saved.as_ref().is_some_and(|(w, _)| w.iter().any(|w| crate::arrangement::hotkey_guid(w).is_none()));
         let g = &self.globals;
@@ -7101,11 +7101,11 @@ impl ApplicationHandler<UserEvent> for App {
         // window and nothing restored): the first window is a hotkey window, made hidden.
         let quiet = hotkey_only || (system_policy && !early.window && !early.restore);
         let startup_hotkey = if quiet && !self.state_frozen && self.start_handoff.is_none() { hotkey_profiles.first().cloned() } else { None };
-        // R3: when the plan opens no window (and no hotkey window comes up), Tandem starts resident, as
+        // R3: when the plan opens no window (and no hotkey window comes up), Termurion starts resident, as
         // iTerm2 runs with no window: the first window is made hidden and empty, the icon is the way in.
         // The icon-click key never decides a launch window (`AD:2463-2470`): only the plan does.
         let resident_start = self.start_handoff.is_none() && startup_hotkey.is_none() && matches!(policy, crate::startup::SYSTEM | crate::startup::HOTKEY_ONLY) && hotkey_profiles.is_empty() && !early.restore && !early.window;
-        let mut attrs = Window::default_attributes().with_title("Tandem").with_inner_size(LogicalSize::new(1000.0, 650.0));
+        let mut attrs = Window::default_attributes().with_title("Termurion").with_inner_size(LogicalSize::new(1000.0, 650.0));
         if startup_hotkey.is_some() || resident_start {
             use winit::platform::windows::WindowAttributesExtWindows;
             attrs = attrs.with_visible(false).with_skip_taskbar(true);
@@ -7377,7 +7377,7 @@ impl ApplicationHandler<UserEvent> for App {
         let active = hotkey_ui::termurion_in_front();
         let edge = active != self.app_active;
         if active && !self.app_active {
-            // Tandem is in front: the waiting sessions clear and the bells reset (`PT:4999`).
+            // Termurion is in front: the waiting sessions clear and the bells reset (`PT:4999`).
             self.bell_badge.became_active();
             self.bell_badge.reset_bells();
             self.hotkey_reactivated();
@@ -7455,7 +7455,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.icon_tick();
         let icon_due = self.icon_due();
         let browser_due = self.browser_tick();
-        // OK in "Importing Settings and Data": Tandem quits and starts again.
+        // OK in "Importing Settings and Data": Termurion quits and starts again.
         if std::mem::take(&mut self.relaunch_due) {
             self.relaunch(event_loop);
         }
@@ -7535,7 +7535,7 @@ impl ApplicationHandler<UserEvent> for App {
         let open_due = self.open_tick(event_loop);
         let jump_due = self.jump_list_tick();
         let command_due = self.command_click_tick();
-        // Update and Tip of the Day deadlines wake no resident Tandem (the 13v1 merge).
+        // Update and Tip of the Day deadlines wake no resident Termurion (the 13v1 merge).
         let (update_wake, tip_of_day_wake) = (update_app::idle_due(self.update_due, self.resident), update_app::idle_due(self.tip_due, self.resident));
         let wake = [tray_due, workgroup_due, jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
@@ -7697,7 +7697,7 @@ impl ApplicationHandler<UserEvent> for App {
                     let url = slot.as_mut().and_then(|s| s.open_url.take());
                     // An exported color preset is shown in Explorer.
                     let reveal = slot.as_mut().and_then(|s| s.take_reveal());
-                    // Profiles > General's URL schemes menu asks before Tandem becomes the handler.
+                    // Profiles > General's URL schemes menu asks before Termurion becomes the handler.
                     let scheme_ask = slot.as_mut().and_then(|s| s.scheme_ask.take());
                     // Profiles > Text's "Manage Special Exceptions" opens its window.
                     let special = slot.as_mut().and_then(|s| s.special_exceptions.take());
@@ -7754,7 +7754,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             return;
         }
-        // Tandem is ending once the settings folder's quit question is answered: the terminal
+        // Termurion is ending once the settings folder's quit question is answered: the terminal
         // windows, whose sessions are gone, take nothing more.
         if self.prefs_exit_pending {
             return;
@@ -7794,7 +7794,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::CloseRequested => self.close_window(id, event_loop),
-            // tmux keeps where Tandem's windows are (@origins).
+            // tmux keeps where Termurion's windows are (@origins).
             WindowEvent::Moved(_) => self.tmux_save_all_windows(),
             WindowEvent::Resized(size) => {
                 // Minimizing reports 0x0. Keep every pty at its size, or ConPTY reflows the screen.
@@ -8252,7 +8252,7 @@ impl App {
             self.composer_keys.clear();
             // A half-typed composition is dropped, not committed.
             self.ime_cancel();
-            // Keys held while the window loses focus send no release to Tandem.
+            // Keys held while the window loses focus send no release to Termurion.
             self.sent_keys.clear();
         }
         if let Some(flag) = a.flag {
@@ -8260,8 +8260,8 @@ impl App {
             // The border takes the focused or unfocused color.
             self.apply_border();
             self.jobs.set_fast(flag);
-            // Tandem going to the background saves the windows (iTerm2 saves on resign
-            // active); a switch between Tandem's own windows gains focus again at once.
+            // Termurion going to the background saves the windows (iTerm2 saves on resign
+            // active); a switch between Termurion's own windows gains focus again at once.
             self.focus_lost = a.save;
         }
         if a.access {
@@ -8609,7 +8609,7 @@ mod tests {
     }
 
     /// P17: 13o's `TERM` reaches a WSL session through `WSLENV`, only when `term_var` set it
-    /// (a TERM in Tandem's own environment or a profile's own `TERM=` entry wins and is not
+    /// (a TERM in Termurion's own environment or a profile's own `TERM=` entry wins and is not
     /// listed), never for another program; the `TERM=` entry goes after the POSIX block.
     #[test]
     fn term_reaches_wsl_through_wslenv() {

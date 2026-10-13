@@ -1,5 +1,5 @@
 //! Browser autofill's pure model (milestone 13x7, Task 1): iTerm2's four autofill scripts and the
-//! load-time patches Tandem lays on two of them, the request parser, the contact card and its field
+//! load-time patches Termurion lays on two of them, the request parser, the contact card and its field
 //! values (`prepareAutofillData`), the write script's typed call, and the per-pane operation queue
 //! (iTerm2's `AsyncMutex`). Web content is untrusted: a request's fields are page text, so they are
 //! bounded here and reach a script only as typed arguments, never as template text. Card values and
@@ -57,16 +57,16 @@ fn patch_n(src: &str, from: &str, to: &str, n: usize) -> Result<String, String> 
 
 /// The page guard patched into `autofill-detector.js` as its first statement: buttons only on an
 /// http or https page (an http page's press is refused by `refusal`). Every `iterm2-about:` page
-/// (Tandem's own pages, the error page), every `iterm2-file:` and `iterm2-ssh:` page (13x8: no Tandem
+/// (Termurion's own pages, the error page), every `iterm2-file:` and `iterm2-ssh:` page (13x8: no Termurion
 /// script there; `browser_js::wrap` returns first anyway), `file:`, `data:` and `about:blank` get none.
-pub(crate) const DETECTOR_GUARD: &str = "'use strict';\n    // Tandem: buttons only on a web (http or https) page, never on a local, file, ssh or error page.\n    if (location.protocol !== 'https:' && location.protocol !== 'http:') return;";
+pub(crate) const DETECTOR_GUARD: &str = "'use strict';\n    // Termurion: buttons only on a web (http or https) page, never on a local, file, ssh or error page.\n    if (location.protocol !== 'https:' && location.protocol !== 'http:') return;";
 
-/// `autofill-detector.js` with Tandem's patches, every one exact and fail closed (the copy in
+/// `autofill-detector.js` with Termurion's patches, every one exact and fail closed (the copy in
 /// `resources/` stays iTerm2's, byte for byte). The buttons are built in a closed shadow root held by
 /// the isolated world under a host styled with `!important` inline rules, so a page cannot `.click()` a
 /// button, read its values or restyle the host directly. It CAN still find the host, hide, move or lure
 /// (an invisible button over a decoy; R13x5-6), so a press only REQUESTS: nothing fills until the
-/// person confirms in a native Tandem window that names the page origin and each field type (I1; Task 3).
+/// person confirms in a native Termurion window that names the page origin and each field type (I1; Task 3).
 /// Only visible, enabled fields are collected (`isFieldInteractable`). A click counts only when it is a person's (`isTrusted`) and
 /// the trusted pointer's point holds that very button (`elementFromPoint` on the shadow root), or,
 /// for a keyboard activation (`detail` 0), when that button has focus (13x5's `termurionReal`).
@@ -75,12 +75,12 @@ pub(crate) fn detector_patched(src: &str) -> Result<String, String> {
     let s = patch_once(
         &s,
         "const fieldButtons = new WeakMap();",
-        "const fieldButtons = new WeakMap();\n    // Tandem: the buttons live in a closed shadow root the page cannot reach.\n    let termurionHost = null;\n    let termurionShadow = null;\n    function termurionRoot() {\n        if (!termurionShadow) {\n            termurionHost = document.createElement('div');\n            termurionHost.style.cssText = 'all: initial !important; display: block !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 0 !important; overflow: visible !important; z-index: 2147483647 !important; pointer-events: none !important;';\n            termurionShadow = termurionHost.attachShadow({mode: 'closed'});\n            const rule = document.createElement('style');\n            rule.textContent = 'button { pointer-events: auto !important; }';\n            termurionShadow.appendChild(rule);\n        }\n        if (!termurionHost.isConnected && document.body) { document.body.appendChild(termurionHost); }\n        return termurionShadow;\n    }\n    function termurionReal(e, btn) {\n        if (!e.isTrusted) return false;\n        const root = termurionRoot();\n        if (e.detail === 0) return root.activeElement === btn;\n        return root.elementFromPoint(e.clientX, e.clientY) === btn;\n    }",
+        "const fieldButtons = new WeakMap();\n    // Termurion: the buttons live in a closed shadow root the page cannot reach.\n    let termurionHost = null;\n    let termurionShadow = null;\n    function termurionRoot() {\n        if (!termurionShadow) {\n            termurionHost = document.createElement('div');\n            termurionHost.style.cssText = 'all: initial !important; display: block !important; position: absolute !important; top: 0 !important; left: 0 !important; width: 100% !important; height: 0 !important; overflow: visible !important; z-index: 2147483647 !important; pointer-events: none !important;';\n            termurionShadow = termurionHost.attachShadow({mode: 'closed'});\n            const rule = document.createElement('style');\n            rule.textContent = 'button { pointer-events: auto !important; }';\n            termurionShadow.appendChild(rule);\n        }\n        if (!termurionHost.isConnected && document.body) { document.body.appendChild(termurionHost); }\n        return termurionShadow;\n    }\n    function termurionReal(e, btn) {\n        if (!e.isTrusted) return false;\n        const root = termurionRoot();\n        if (e.detail === 0) return root.activeElement === btn;\n        return root.elementFromPoint(e.clientX, e.clientY) === btn;\n    }",
     )?;
     let s = patch_once(
         &s,
         "btn.addEventListener('click', e => {",
-        "btn.addEventListener('click', e => {\n            // Tandem: act only on a person's click, never a page script's (R13x67-2; iTerm2 bug).\n            if (!e.isTrusted) return;\n            if (!termurionReal(e, btn)) return;",
+        "btn.addEventListener('click', e => {\n            // Termurion: act only on a person's click, never a page script's (R13x67-2; iTerm2 bug).\n            if (!e.isTrusted) return;\n            if (!termurionReal(e, btn)) return;",
     )?;
     // Only fields a person can see and use are collected (iTerm2 gathers every input of the form: hidden
     // ones would be filled by one lured click, I1).
@@ -107,7 +107,7 @@ pub(crate) fn write_patched(src: &str) -> Result<String, String> {
 }
 
 /// The detector as injected (`AH:28-33`): the secret in, the include resolved by 13x2. The secret is
-/// Tandem's own hex, never page text. None when the patch failed closed.
+/// Termurion's own hex, never page text. None when the patch failed closed.
 pub fn detector_script(secret: &str) -> Option<String> {
     detector_js().ok().map(|js| fill_template(&js, &[("SECRET", secret)]))
 }
@@ -323,7 +323,7 @@ const MAX_CARD_FILE: u64 = 64 * 1024;
 const CARD_ENTROPY: &[u8] = b"termurion autofill contact card\0v1";
 
 pub const CARD_TITLE: &str = "Autofill Contact Card";
-pub const CARD_TEXT: &str = "Tandem fills web forms from this card. It stays on this computer.";
+pub const CARD_TEXT: &str = "Termurion fills web forms from this card. It stays on this computer.";
 /// The card's fields in `FIELD_TYPES` order: the field type and the label the editor shows.
 pub const CARD_LABELS: [(&str, &str); 12] = [
     ("firstName", "First name"),
@@ -812,9 +812,9 @@ mod tests {
 
     #[test]
     fn copied_scripts_follow_iterm2() {
-        // The four copies are iTerm2's files: nothing of Tandem's is in the file itself.
+        // The four copies are iTerm2's files: nothing of Termurion's is in the file itself.
         for f in ["autofill-core.js", "autofill-detector.js", "autofill-fill-all.js", "autofill-write.js"] {
-            assert!(!raw(f).contains("Tandem"), "{f} is byte-for-byte iTerm2's");
+            assert!(!raw(f).contains("Termurion"), "{f} is byte-for-byte iTerm2's");
             assert!(raw(f).starts_with("// ") || raw(f).starts_with(";(function") || raw(f).starts_with("(function"), "{f}");
         }
         assert!(!raw("autofill-detector.js").contains(TRUSTED_CHECK));
@@ -825,7 +825,7 @@ mod tests {
         let from = d.find(open).unwrap() + open.len();
         let to = d.find(TRUSTED_CHECK).unwrap();
         let between = &d[from..to];
-        assert!(between.contains("Tandem: act only on a person's click"), "the patch says whose fix it is");
+        assert!(between.contains("Termurion: act only on a person's click"), "the patch says whose fix it is");
         assert!(between.lines().all(|l| l.trim().is_empty() || l.trim_start().starts_with("//")), "the check is the first statement: {between:?}");
         let after = &d[to..];
         assert!(after.contains("if (!termurionReal(e, btn)) return;"));

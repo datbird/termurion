@@ -1,8 +1,8 @@
 # Milestone 11c acceptance checklist
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Setup: install Python 3 and run `py -m pip install iterm2` in a plain venv (pin `websockets<14`
 if `extra_headers` raises a TypeError, as in the m11a and m11b checklists). Turn on Settings >
@@ -14,7 +14,7 @@ tab (`ssh` to a host with tmux, then `tmux -CC`). Add a status bar with an Inter
 component and a Call Script Function component to one session's bar. Each check below runs a
 short script (an `@iterm2.RPC` function, a title provider, or a `StatusBarComponent`, as the check
 needs) against `iterm2.run_until_complete` with the stock `iterm2` package, and states what
-Tandem is expected to show.
+Termurion is expected to show.
 
 | # | Check | Result |
 |---|---|---|
@@ -51,7 +51,7 @@ Tandem is expected to show.
 | 26 | An unclosed `\(` in an interpolated string (for example `a \(session.hostname`) is left as literal text unchanged, not an error. | |
 | 27 | `[1, 2] == [1, 2]` is a syntax error; comparing arrays needs two calls returning arrays (`f() == g()`). | |
 | 28 | `matches[7]` past the capture count reads as "" with the lax setting on (default), and an index-out-of-range error with it off. | |
-| 29 | `\(a ?? b)` still works as a Tandem extension (first non-empty text wins); it is not part of iTerm2's own language. | |
+| 29 | `\(a ?? b)` still works as a Termurion extension (first non-empty text wins); it is not part of iTerm2's own language. | |
 | 30 | Turning off Settings > Advanced > Scripting > "Should references to undefined variables in interpolated strings be converted to empty string?" makes a bare `\(bogus)` an error; a function call's own arguments are always strict regardless of the setting. | |
 | 31 | A trigger's own parameter field, a badge, an Automatic Profile Switching rule, a coprocess command template, and Copy Interpolated String each refuse a function call in their text with "Function calls are not allowed here.", even though those fields now accept the rest of the expression language. | |
 | 32 | The Title Function popup lists "Built-in components" (not a live preview of the built-in title) plus every registered provider; choosing "Built-in components" resets Title Components to 2 (Job). | |
@@ -65,6 +65,6 @@ Tandem is expected to show.
 | 40 | `focus`, the clippings functions, `get_profile_property`, and `set_status` can target a buried session; `paste` cannot. | |
 | 41 | Picking a context menu provider item on a session that closed while the menu was open does nothing (no alert); a tab or NUL character in a provider's display name shows as a space in the menu. | |
 | 42 | Per-pane title bar menus (not yet built), the Title Function popup's title preview, and a tmux Custom title's prefix are documented gaps for milestone 13, not bugs in this milestone. | |
-| 43 | A script status bar component, and its click handler, run with side effects off (Tandem's rule; iTerm2 allows them): a component whose function calls a built-in that acts, such as `iterm2.paste`, gets that built-in's placeholder value and nothing is pasted. A saved component whose unique id or default paths are anything but plain names and paths (for example text pasted into a Dynamic Profiles file) shows nothing and runs nothing. | |
+| 43 | A script status bar component, and its click handler, run with side effects off (Termurion's rule; iTerm2 allows them): a component whose function calls a built-in that acts, such as `iterm2.paste`, gets that built-in's placeholder value and nothing is pasted. A saved component whose unique id or default paths are anything but plain names and paths (for example text pasted into a Dynamic Profiles file) shows nothing and runs nothing. | |
 | 44 | A trigger that calls `iterm2.alert` or `iterm2.get_string` on every match queues at most 16 dialogs; an older waiting one is dropped and its call fails "Too many dialogs were waiting, so this one was not shown." | |
 | 45 | `set_status_bar_component_unread_count` keeps at most 64 identifiers app-wide and 64 per session; a new identifier past that is ignored (existing ones still update). | |

@@ -19,7 +19,7 @@ use std::sync::Arc;
 /// `REVIEW_RESPONSE` (`T:596-634`).
 pub const REVIEW_KEY: &str = "placeholder";
 /// Decision 11: "your PC" for "your Mac".
-pub const REVIEW_RESPONSE: &str = "This is a demonstration response from the Tandem AI assistant. Tandem is configured with a placeholder key for App Review, so no external AI service is contacted and no data leaves your PC. To get real answers, set your AI provider\u{2019}s API key in Tandem Settings > AI.";
+pub const REVIEW_RESPONSE: &str = "This is a demonstration response from the Termurion AI assistant. Termurion is configured with a placeholder key for App Review, so no external AI service is contacted and no data leaves your PC. To get real answers, set your AI provider\u{2019}s API key in Termurion Settings > AI.";
 /// Consecutive tool failures (or unknown tool names) that end a turn (`T:70-71`).
 pub const MAX_TOOL_FAILURES: u32 = 6;
 

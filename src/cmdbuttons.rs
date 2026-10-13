@@ -4,8 +4,8 @@
 
 pub const DISABLE_SELECTION: &str = "Disable Command Selection";
 pub const HELP: &str = "Help";
-/// `Resources/Help/CommandSelectionHelp.md` with "iTerm2" as "Tandem".
-pub const HELP_TEXT: &str = "## Command Selection\n\nWhen you click on a command in a terminal, it becomes \u{201c}selected\u{201d}. Tandem draws selected commands with an outline and dims non-selected commands. Some features, like Search and Filter, then operate only on the selected command. \n\nYou can disable this feature with \u{201c}Disable Command Selection\u{201d} in the settings menu from which you opened this Help window. If you\u{2019}d like to re-enable it later, search app Settings for \u{201c}Clicking: on a command selects it.\u{201d}";
+/// `Resources/Help/CommandSelectionHelp.md` with "iTerm2" as "Termurion".
+pub const HELP_TEXT: &str = "## Command Selection\n\nWhen you click on a command in a terminal, it becomes \u{201c}selected\u{201d}. Termurion draws selected commands with an outline and dims non-selected commands. Some features, like Search and Filter, then operate only on the selected command. \n\nYou can disable this feature with \u{201c}Disable Command Selection\u{201d} in the settings menu from which you opened this Help window. If you\u{2019}d like to re-enable it later, search app Settings for \u{201c}Clicking: on a command selects it.\u{201d}";
 pub const COPY_COMMAND: &str = "Copy Command";
 pub const COPY_OUTPUT: &str = "Copy Output";
 pub const COMMAND_COPIED: &str = "Command Copied";
@@ -139,7 +139,7 @@ mod tests {
             assert!(menu(b, "ls").is_empty(), "{b:?} acts at once");
         }
         assert!(HELP_TEXT.starts_with("## Command Selection"));
-        assert!(HELP_TEXT.contains("Tandem") && !HELP_TEXT.contains("iTerm2"));
+        assert!(HELP_TEXT.contains("Termurion") && !HELP_TEXT.contains("iTerm2"));
         assert_eq!((COMMAND_COPIED, OUTPUT_COPIED, HELP), ("Command Copied", "Output Copied", "Help"));
         assert!(include_str!("cmdbuttons.rs").is_ascii(), "escapes outside ASCII in the source");
     }

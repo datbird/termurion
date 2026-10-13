@@ -157,9 +157,9 @@ mod tests {
             ("AI Prompt for AI Chat with Browser", 1148, "9670f3c9088a521faf8bd5c3b0c8ed3f80f525b1374797374e3a3b683f09426a"),
             ("AI Prompt for AI Chat with ReadOnlyTerminalBrowser", 1587, "2e936c33b5c58d0e7f66aafffbb2f2500e93124446bb475c13046332a2e53fa3"),
             ("AI Prompt for AI Chat with ReadWriteTerminalBrowser", 1438, "6608c7b0caaf73005ca0b7cc10ea5dfef7e563bc329b296ef654947d3586b4c6"),
-            ("AI Prompt for AI Chat Orchestration", 11702, "1bfdf31bb6b9d9ac2d19c989232549d8529a776c459213fd0f32add6afceafb6"),
+            ("AI Prompt for AI Chat Orchestration", 11732, "a0415880cf7213635518f75576821d631a2c6df8756c1828f599659387ffb95e"),
             ("AI Prompt for Code Review", 1092, "337c39e056c530733ab7bc1399b691001dc2faab9d889cbc3370f52aa3ea39d7"),
-            ("AI Prompt for Code Review System", 2361, "bc7cb42d342bed200d9c37e9b8073bcae3e39f532d8a4eb08598bf8050014cb3"),
+            ("AI Prompt for Code Review System", 2364, "9566e3c5a985a9e1e7fb243362009e58313c5a0ca8993bb73ceb192f27bacd3f"),
             ("AI Prompt for Chat Icon", 524, "6fe319a2620139a0fcc8093f4b1bd6d7c8287eb30e42ee5e66688e68c34c0dad"),
         ];
         for (key, len, digest) in table {
@@ -290,8 +290,8 @@ mod tests {
 
     #[test]
     fn help_text_follows_windows() {
-        assert_eq!(HELP_MD.len(), 2877);
-        assert_eq!(sha256(HELP_MD), "e9e4089e0594a4b9fcb8ab8e754a2c1df1d4d6c6fa848f7f09e2fec4ed3a9c32");
+        assert_eq!(HELP_MD.len(), 2880);
+        assert_eq!(sha256(HELP_MD), "f64f3b4cea64d0507b240446f2cb99bd7760e9544a35fea4f3bdc92960301d13");
         assert!(HELP_MD.contains("(Win+Y)") && HELP_MD.contains("(Shift+Win+.)"));
         assert!(!HELP_MD.contains("iTerm2"));
         assert_eq!(COST_NOTE, "Your AI provider may charge for each token used.");

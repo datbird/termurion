@@ -154,7 +154,7 @@ pub fn file_name(utc: (u16, u16, u16, u16, u16, u16), pid: u32) -> String {
 
 /// The file's first line (`WL:181-183`).
 pub fn header_line(stamp: &str, pid: u32) -> String {
-    format!("# Tandem AI chat wire log, started {stamp} pid {pid}\n\n")
+    format!("# Termurion AI chat wire log, started {stamp} pid {pid}\n\n")
 }
 
 fn push_text(out: &mut String, text: &str) {
@@ -306,7 +306,7 @@ impl WireLog {
     }
 }
 
-/// One verbose console line, "Tandem AI: <line>", for DebugView or a debugger (Decision 6); a
+/// One verbose console line, "Termurion AI: <line>", for DebugView or a debugger (Decision 6); a
 /// no-op when disabled and off Windows.
 pub fn console(enabled: bool, line: &str) {
     if !enabled {
@@ -314,7 +314,7 @@ pub fn console(enabled: bool, line: &str) {
     }
     #[cfg(windows)]
     {
-        let wide: Vec<u16> = format!("Tandem AI: {line}\n").encode_utf16().chain(std::iter::once(0)).collect();
+        let wide: Vec<u16> = format!("Termurion AI: {line}\n").encode_utf16().chain(std::iter::once(0)).collect();
         unsafe { windows_sys::Win32::System::Diagnostics::Debug::OutputDebugStringW(wide.as_ptr()) };
     }
     #[cfg(not(windows))]
@@ -397,7 +397,7 @@ mod tests {
                 ("x-custom-thing".into(), format!("tok {secret}")),
                 ("Content-Type".into(), "application/json".into()),
                 ("Accept".into(), "text/event-stream".into()),
-                ("User-Agent".into(), "Tandem".into()),
+                ("User-Agent".into(), "Termurion".into()),
                 ("anthropic-version".into(), "2023-06-01".into()),
                 ("OpenAI-Beta".into(), "assistants=v2".into()),
                 ("Content-Length".into(), "2".into()),
@@ -411,7 +411,7 @@ mod tests {
         assert!(text.contains("Proxy-Authorization: Basic [redacted 25 chars]\n"), "the scheme stays: {text}");
         assert!(text.contains("X-Access-Token: [redacted 25 chars]\n"));
         assert!(text.contains("x-custom-thing: [redacted 29 chars]\n"), "an unknown header keeps no first word");
-        for line in ["Content-Type: application/json", "Accept: text/event-stream", "User-Agent: Tandem", "anthropic-version: 2023-06-01", "OpenAI-Beta: assistants=v2", "Content-Length: 2"] {
+        for line in ["Content-Type: application/json", "Accept: text/event-stream", "User-Agent: Termurion", "anthropic-version: 2023-06-01", "OpenAI-Beta: assistants=v2", "Content-Length: 2"] {
             assert!(text.contains(&format!("{line}\n")), "{line} is logged");
         }
     }
@@ -419,7 +419,7 @@ mod tests {
     #[test]
     fn wire_log_records_follow_iterm2() {
         assert_eq!(file_name((2026, 9, 27, 14, 30, 5), 4242), "aichat-wire-20260927T143005-pid4242.log");
-        assert_eq!(header_line("2026-09-27T14:30:05.123Z", 4242), "# Tandem AI chat wire log, started 2026-09-27T14:30:05.123Z pid 4242\n\n");
+        assert_eq!(header_line("2026-09-27T14:30:05.123Z", 4242), "# Termurion AI chat wire log, started 2026-09-27T14:30:05.123Z pid 4242\n\n");
         let r = HttpRequest {
             method: "POST",
             url: "https://h.test/x".into(),
@@ -479,7 +479,7 @@ mod tests {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         assert!(name.starts_with("aichat-wire-") && name.ends_with(&format!("-pid{}.log", std::process::id())), "{name}");
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.starts_with("# Tandem AI chat wire log, started "), "{text}");
+        assert!(text.starts_with("# Termurion AI chat wire log, started "), "{text}");
         assert!(text.ends_with("\n\none\ntwo\n"), "{text}");
         drop(log);
         std::fs::remove_dir_all(&dir).unwrap();

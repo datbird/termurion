@@ -1,5 +1,5 @@
 //! Pointer bindings in a page (milestone 13x2, Task 7). Pure. Web content is untrusted: a press
-//! reaches Tandem only from Tandem's own gate script (`resources/browser/pointer-gate.js`), which
+//! reaches Termurion only from Termurion's own gate script (`resources/browser/pointer-gate.js`), which
 //! runs in the isolated world and ignores every event whose `isTrusted` is false, so a page that
 //! dispatches a synthetic press runs no binding. This module builds the table that script reads,
 //! reads its messages, and classifies what a binding does in a page (`PAP`, `BVC:1474-1600`).
@@ -85,11 +85,11 @@ pub fn classify(action: &str) -> PointerAct {
     }
 }
 
-/// The keys of the pointer map the page must yield to Tandem (`BWV:459-490`, `:604-631`): every
+/// The keys of the pointer map the page must yield to Termurion (`BWV:459-490`, `:604-631`): every
 /// binding on the right or the middle button (or another) that `pointer::on_down` takes with no
 /// app reporting, plus plain Ctrl single left when it stands for a right click and the right click is
 /// bound. Left clicks stay the page's (`BWV:383-433`). The right button's own Open Context Menu is
-/// left to the page: WebView2 shows its own menu with Tandem's items (Task 3), which is that action.
+/// left to the page: WebView2 shows its own menu with Termurion's items (Task 3), which is that action.
 pub fn gate_keys(map: &toml::Table, prefs: &Prefs) -> Vec<String> {
     let mut keys = Vec::new();
     for (k, v) in map {
@@ -168,7 +168,7 @@ pub fn gate_update(keys: &[String], four_click_smart: bool, focus_on_right_or_mi
     format!("__termurionGate = Object.freeze({{keys: {list}, fourClick: {four_click_smart}, focus: {focus_on_right_or_middle}}});")
 }
 
-/// `pointer-gate.js` (Tandem's), with its `{{SECRET}}` key.
+/// `pointer-gate.js` (Termurion's), with its `{{SECRET}}` key.
 pub fn gate_script() -> String {
     crate::browser_js::resource("pointer-gate.js").unwrap_or_default().to_string()
 }
@@ -265,7 +265,7 @@ mod tests {
         ] {
             assert_eq!(classify(a), Session, "{a}");
         }
-        // Every action Tandem lists is classified (none falls through by accident).
+        // Every action Termurion lists is classified (none falls through by accident).
         for (a, _, _) in pointer::ACTIONS.iter() {
             let _ = classify(a);
         }
@@ -321,7 +321,7 @@ mod tests {
         assert_eq!(press_of(&json!({"type": "smart", "x": 1.0, "y": 2.0})), Some(Press::SmartSelect { x: 1.0, y: 2.0 }));
         assert_eq!(press_of(&json!({"type": "smartAction", "x": 1.0, "y": 2.0})), Some(Press::SmartAction { x: 1.0, y: 2.0 }));
         assert_eq!(press_of(&json!({"type": "focus"})), Some(Press::Focus));
-        // Anything else is nothing: unknown type, missing or absurd values, a button Tandem has no key for.
+        // Anything else is nothing: unknown type, missing or absurd values, a button Termurion has no key for.
         for bad in [
             json!({"type": "nope"}),
             json!({"type": "down", "button": 1, "clicks": 1, "mods": 0, "x": 1.0}),
@@ -349,9 +349,9 @@ mod tests {
         assert_eq!(js_press_key(2, 1, &Mods { ctrl: true, ..NONE }), "Button,2,1,^,");
         assert_eq!(js_press_key(2, 1, &Mods { ctrl: true, ..NONE }), pointer::key(2, 1, Mods { ctrl: true, ..NONE }));
         assert_eq!(js_press_key(0, 1, &Mods { cmd: true, alt: true, shift: true, ctrl: true }), "Button,0,1,cos^,");
-        // The gate script: Tandem's, trusted events only, one place that listens.
+        // The gate script: Termurion's, trusted events only, one place that listens.
         let s = gate_script();
-        assert!(s.contains("Tandem's own script") && s.contains(GATE_HANDLER));
+        assert!(s.contains("Termurion's own script") && s.contains(GATE_HANDLER));
         assert_eq!(s.matches("addEventListener(").count(), 1, "one listener helper");
         let at = s.find("addEventListener(").unwrap();
         assert!(s[at..at + 160].contains("if (!e.isTrusted)"), "the check is at the top of the listener");

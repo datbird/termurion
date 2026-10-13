@@ -14,7 +14,7 @@ pub const WAITING: &str = "The person was asked to confirm the restart; it has n
 pub const NOT_RESTARTABLE: &str = "This session cannot be restarted.";
 
 /// What `insert_text_at_cursor` answers, and what the chat shows, for a text holding a line
-/// end (ruling R12cd-2, Tandem's texts).
+/// end (ruling R12cd-2, Termurion's texts).
 pub const LINE_END_REFUSED: &str = "Error: insert_text_at_cursor cannot type a line break or a control key (only Tab is typed). To run a command, use execute_command, which is safety checked.";
 pub const LINE_END_NOTICE: &str = "AI tried to type a line break or a control key, so nothing was typed.";
 
@@ -234,11 +234,11 @@ pub fn man_page_plan(cmd: &str, kind: ShellKind) -> Option<Vec<String>> {
 }
 
 pub fn man_page_unavailable(cmd: &str) -> String {
-    format!("The manpage for {cmd} is not available: Tandem reads help only through PowerShell's Get-Help, in a PowerShell session.")
+    format!("The manpage for {cmd} is not available: Termurion reads help only through PowerShell's Get-Help, in a PowerShell session.")
 }
 
 /// Windows PowerShell in the System32 folder `system` (`GetSystemDirectoryW`): run by its full
-/// path, never found by the search order (Tandem's own folder first).
+/// path, never found by the search order (Termurion's own folder first).
 pub fn powershell_in(system: &Path) -> PathBuf {
     system.join(r"WindowsPowerShell\v1.0\powershell.exe")
 }
@@ -406,12 +406,12 @@ mod tests {
         for k in [ShellKind::Cmd, ShellKind::Posix, ShellKind::Unknown] {
             assert_eq!(man_page_plan("ls", k), None);
         }
-        assert_eq!(man_page_unavailable("ls"), "The manpage for ls is not available: Tandem reads help only through PowerShell's Get-Help, in a PowerShell session.");
+        assert_eq!(man_page_unavailable("ls"), "The manpage for ls is not available: Termurion reads help only through PowerShell's Get-Help, in a PowerShell session.");
     }
 
     #[test]
     fn get_help_runs_system_powershell() {
-        // Final review Minor 4: by its full path, never Tandem's folder or PATH first.
+        // Final review Minor 4: by its full path, never Termurion's folder or PATH first.
         assert_eq!(powershell_in(Path::new(r"C:\Windows\System32")), PathBuf::from(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"));
     }
 

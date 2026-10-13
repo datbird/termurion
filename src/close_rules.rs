@@ -53,7 +53,7 @@ pub fn must_ask(kind: Kind, running: usize, has_reason: bool, confirm_multiple: 
     }
 }
 
-/// The most job names the question lists (Tandem-side guard: iTerm2 lists them all).
+/// The most job names the question lists (Termurion-side guard: iTerm2 lists them all).
 pub const NAMES_SHOWN: usize = 32;
 
 /// Job names sorted without case; a repeated name reads `N instances of "name"`.
@@ -86,7 +86,7 @@ pub fn body(subject: Subject, names: &[String]) -> String {
         1 => format!("{what} is running {}.", names[0]),
         2..=10 => format!("{what} is running the following jobs: {}.", oxford(names)),
         n if n <= NAMES_SHOWN => format!("{what} is running the following jobs: {}, plus {} others.", oxford(names), n - 10),
-        // Tandem-side guard: the first NAMES_SHOWN, then the true count of the rest.
+        // Termurion-side guard: the first NAMES_SHOWN, then the true count of the rest.
         n => format!("{what} is running the following jobs: {}, plus {} others.", names[..NAMES_SHOWN].join(", "), n - NAMES_SHOWN),
     }
 }
@@ -105,8 +105,8 @@ pub fn active_after_close(active: usize, closed: usize, remaining: usize, move_l
 }
 
 
-pub const CONFIRM_QUIT: &str = "\u{201c}Settings > General > Closing > Confirm Quit Tandem\u{201d} is enabled and there is at least one terminal window.";
-pub const CONFIRM_QUIT_NO_WINDOWS: &str = "\u{201c}Settings > General > Closing > Confirm Quit Tandem\u{201d} and \u{201c}Even if there are no windows\u{201d} is enabled.";
+pub const CONFIRM_QUIT: &str = "\u{201c}Settings > General > Closing > Confirm Quit Termurion\u{201d} is enabled and there is at least one terminal window.";
+pub const CONFIRM_QUIT_NO_WINDOWS: &str = "\u{201c}Settings > General > Closing > Confirm Quit Termurion\u{201d} and \u{201c}Even if there are no windows\u{201d} is enabled.";
 pub const CONFIRM_MULTIPLE: &str = "\u{201c}Settings > General > Closing > Confirm closing multiple sessions\u{201d} is enabled.";
 
 /// The Closing settings a quit reads.
@@ -180,7 +180,7 @@ pub fn keep_jobs(run_in_servers: bool, restore_contents: bool, system_policy: bo
 }
 
 pub fn quit_body(keep: bool) -> &'static str {
-    if keep { "Sessions will be restored automatically when Tandem is relaunched." } else { "All sessions will be closed." }
+    if keep { "Sessions will be restored automatically when Termurion is relaunched." } else { "All sessions will be closed." }
 }
 
 pub fn quit_text(reasons: &[Reason], keep: bool) -> String {
@@ -221,7 +221,7 @@ mod tests {
         assert!(!keep_jobs(false, true, true, false), "no host");
         assert!(!keep_jobs(true, false, true, false), "no contents restored");
         assert!(!keep_jobs(true, true, false, false), "another startup policy");
-        assert_eq!(quit_body(true), "Sessions will be restored automatically when Tandem is relaunched.");
+        assert_eq!(quit_body(true), "Sessions will be restored automatically when Termurion is relaunched.");
         assert_eq!(quit_body(false), "All sessions will be closed.");
         let r = [Reason { kind: ReasonKind::Message, priority: 100, text: "x".into() }];
         assert!(quit_text(&r, true).starts_with("Sessions will be restored automatically"));
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn notes_follow_the_body() {
         assert_eq!(with_notes("This tab will be closed.".into(), &[]), "This tab will be closed.");
-        assert_eq!(with_notes("This tab will be closed.".into(), &["Tandem could not read the programs (x).".into()]), "This tab will be closed.\n\nTandem could not read the programs (x).");
+        assert_eq!(with_notes("This tab will be closed.".into(), &["Termurion could not read the programs (x).".into()]), "This tab will be closed.\n\nTermurion could not read the programs (x).");
     }
 
     #[test]

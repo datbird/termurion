@@ -31,8 +31,8 @@ pub fn after_last_window(restoring: bool, terminals_left: usize, interacted: boo
     }
 }
 
-/// Whether the notification area icon is there: 13g's rule, or Tandem is resident (otherwise a
-/// Tandem with no window could not be reached).
+/// Whether the notification area icon is there: 13g's rule, or Termurion is resident (otherwise a
+/// Termurion with no window could not be reached).
 pub fn icon_wanted(tray_13g: bool, resident: bool) -> bool {
     tray_13g || resident
 }
@@ -43,9 +43,9 @@ pub fn reopen_opens_window(open_untitled: bool, visible_windows: usize) -> bool 
     open_untitled && visible_windows == 0
 }
 
-/// What the log says when the grace period kept Tandem running.
+/// What the log says when the grace period kept Termurion running.
 pub fn grace_note() -> &'static str {
-    "Not quitting Tandem because it ran very briefly and had no user interaction. Set the MinRunningTime float preference to 0 to turn this feature off."
+    "Not quitting Termurion because it ran very briefly and had no user interaction. Set the MinRunningTime float preference to 0 to turn this feature off."
 }
 
 /// What a Windows shutdown does about the quit question (`AD:1010-1036`).
@@ -56,10 +56,10 @@ pub enum ShutdownAnswer {
 }
 
 /// The reason Windows shows while the quit question is open.
-pub const BLOCK_REASON: &str = "Tandem is asking whether to quit.";
+pub const BLOCK_REASON: &str = "Termurion is asking whether to quit.";
 
 /// `AD:1010-1036`: with `NeverBlockSystemShutdown` on no reason is collected, so nothing asks;
-/// otherwise a shutdown asks exactly when a quit would (R3: Tandem used to end without asking).
+/// otherwise a shutdown asks exactly when a quit would (R3: Termurion used to end without asking).
 pub fn on_shutdown(never_block: bool, has_reasons: bool) -> ShutdownAnswer {
     if !never_block && has_reasons {
         ShutdownAnswer::AskFirst
@@ -101,7 +101,7 @@ mod tests {
         assert_eq!(after_last_window(false, 0, false, S(60), 10.0, false), StayResident, "the key off, no interaction");
         assert!(icon_wanted(false, true) && icon_wanted(true, false) && icon_wanted(true, true));
         assert!(!icon_wanted(false, false));
-        assert!(grace_note().starts_with("Not quitting Tandem because it ran very briefly"));
+        assert!(grace_note().starts_with("Not quitting Termurion because it ran very briefly"));
     }
 
     #[test]
@@ -118,7 +118,7 @@ mod tests {
         assert_eq!(on_shutdown(false, false), EndNow, "nothing to ask");
         assert_eq!(on_shutdown(true, true), EndNow, "NeverBlockSystemShutdown");
         assert_eq!(on_shutdown(true, false), EndNow);
-        assert_eq!(BLOCK_REASON, "Tandem is asking whether to quit.");
+        assert_eq!(BLOCK_REASON, "Termurion is asking whether to quit.");
         assert!(!reasons_collected(true, true), "AD:1010: no reason is collected");
         assert!(reasons_collected(true, false) && reasons_collected(false, true) && reasons_collected(false, false));
     }

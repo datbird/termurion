@@ -1,7 +1,7 @@
-//! Tandem as the Windows default terminal, the app side (m13v1 Task 5): the two menu items, the
-//! handoff class while Tandem is the default, and the pane a handed-off console becomes. The
+//! Termurion as the Windows default terminal, the app side (m13v1 Task 5): the two menu items, the
+//! handoff class while Termurion is the default, and the pane a handed-off console becomes. The
 //! handoff itself is untrusted (`handoff_win`, `default_term`); by the time it reaches here it
-//! has been vetted, and it is still refused while Tandem is closing.
+//! has been vetted, and it is still refused while Termurion is closing.
 
 use winit::application::ApplicationHandler;
 use winit::event_loop::ActiveEventLoop;
@@ -22,8 +22,8 @@ impl App {
         self.ask_scripts(ask(heading, text, &[crate::api_auth::OK], None, crate::warnings::Kind::Persistent, Then::Nothing));
     }
 
-    /// Make Tandem Default Term: alerts and changes nothing without Windows Terminal or the pack;
-    /// else saves the pair now (unless it is already Tandem's), writes the class and the pair,
+    /// Make Termurion Default Term: alerts and changes nothing without Windows Terminal or the pack;
+    /// else saves the pair now (unless it is already Termurion's), writes the class and the pair,
     /// and registers the handoff class.
     pub(super) fn make_default_terminal(&mut self) {
         let wt = Self::windows_apps().is_some_and(|d| dt::console_host_present(&d));
@@ -41,8 +41,8 @@ impl App {
             apply(&mut r, &dt::make_termurion_entries(&exe))
         })();
         match result {
-            Ok(_) => self.banners.set("default-terminal", "Tandem is now the default terminal.".to_string()),
-            Err(e) => self.banners.set("default-terminal", format!("Could not make Tandem the default terminal: {e}")),
+            Ok(_) => self.banners.set("default-terminal", "Termurion is now the default terminal.".to_string()),
+            Err(e) => self.banners.set("default-terminal", format!("Could not make Termurion the default terminal: {e}")),
         }
         self.sync_handoff_server();
         self.refresh_default_item();
@@ -50,7 +50,7 @@ impl App {
     }
 
     /// Make Terminal Default Term: puts back the pair saved before (only while the pair is still
-    /// Tandem's; one chosen since stays), removes Tandem's class and the saved pair, and revokes the server.
+    /// Termurion's; one chosen since stays), removes Termurion's class and the saved pair, and revokes the server.
     pub(super) fn unmake_default_terminal(&mut self) {
         let mut r = HkcuRegistry;
         let now = dt::current(&r);
@@ -79,7 +79,7 @@ impl App {
         }
     }
 
-    /// The handoff class is registered exactly while Tandem is the default and has the pack.
+    /// The handoff class is registered exactly while Termurion is the default and has the pack.
     pub(super) fn sync_handoff_server(&mut self) {
         let want = self.api.pack.is_some() && dt::is_termurion(&dt::current(&HkcuRegistry));
         match (want, self.handoff.is_some()) {
@@ -94,7 +94,7 @@ impl App {
                     Ok(s) => self.handoff = Some(s),
                     Err(e) => {
                         crate::host::log(&format!("handoff: not registered: {e}"));
-                        self.banners.set("handoff", "Tandem could not take terminal hand-offs from Windows.".to_string());
+                        self.banners.set("handoff", "Termurion could not take terminal hand-offs from Windows.".to_string());
                     }
                 }
             }
@@ -113,7 +113,7 @@ impl App {
     }
 
     /// A console arrived: a tab in the current window, a window when there is none (an
-    /// `-Embedding` start makes its first window here). A closing Tandem refuses it; dropping
+    /// `-Embedding` start makes its first window here). A closing Termurion refuses it; dropping
     /// the value closes what it owns.
     pub(super) fn handoff_arrived(&mut self, h: Handoff, event_loop: &ActiveEventLoop) {
         if event_loop.exiting() {
@@ -150,7 +150,7 @@ impl App {
     }
 
     /// An `-Embedding` start becomes the main instance: it serves the pipe and the handoff class
-    /// again if it had stopped, then starts like any Tandem (`resumed`). When another Tandem took
+    /// again if it had stopped, then starts like any Termurion (`resumed`). When another Termurion took
     /// the pipe in between, the waiting launches and links go to it, and this process ends when it
     /// has nothing of its own left. False when it ended.
     pub(super) fn embedding_becomes_main(&mut self, event_loop: &ActiveEventLoop) -> bool {
@@ -170,7 +170,7 @@ impl App {
                     let after: Vec<crate::url_launch::AfterHand> = handed.iter().map(|(_, a)| a.clone()).collect();
                     let waiting = self.start_handoff.is_some() || !self.handoff_queue.is_empty();
                     // run()'s rule (13u S4, round 5 race B): this process runs beside another holder
-                    // only when that holder is not Tandem, or a handed-off console would be lost.
+                    // only when that holder is not Termurion, or a handed-off console would be lost.
                     match crate::url_launch::lost_pipe(&after, waiting) {
                         crate::url_launch::LostPipe::RunWithout => {}
                         ended => {
@@ -188,7 +188,7 @@ impl App {
                             other => self.launch_queue.push(other),
                         }
                     }
-                    self.banners.set("launch-pipe", "Another program holds Tandem's launch pipe, so files and links opened with Tandem cannot reach this window.".to_string());
+                    self.banners.set("launch-pipe", "Another program holds Termurion's launch pipe, so files and links opened with Termurion cannot reach this window.".to_string());
                 }
             }
         }
@@ -218,7 +218,7 @@ impl App {
         }
         // Not taken (a window or tab that did not start): the value closes its handles here.
         if self.start_handoff.take().is_some() {
-            self.banners.set("handoff", "A console handed to Tandem could not be shown.".to_string());
+            self.banners.set("handoff", "A console handed to Termurion could not be shown.".to_string());
         }
         self.bring_forward();
         self.redraw();
@@ -245,7 +245,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    /// The item that makes Tandem the default reads the registry, never writes it from a test:
+    /// The item that makes Termurion the default reads the registry, never writes it from a test:
     /// the two commands exist, are done, and every registry write goes through `reg`.
     #[test]
     fn the_two_items_are_wired() {
@@ -263,7 +263,7 @@ mod tests {
 
     /// Round 5 race B: an idle `-Embedding` process that finds the pipe taken applies `run()`'s rule
     /// (13u S4): a refused hand-over with no console waiting ends it; it runs without the pipe only
-    /// when every request it kept was a Start (a holder that is not Tandem), or a console waits.
+    /// when every request it kept was a Start (a holder that is not Termurion), or a console waits.
     #[test]
     fn a_lost_pipe_follows_runs_rule() {
         let me = include_str!("default_term_ui.rs").split("\n#[cfg(test)]").next().unwrap();
@@ -275,7 +275,7 @@ mod tests {
         assert!(run.contains("crate::url_launch::lost_pipe(&after, false)"), "run() uses the same rule");
     }
 
-    /// B9: the class is registered only while Tandem is the default and the pack exists, and the
+    /// B9: the class is registered only while Termurion is the default and the pack exists, and the
     /// closing flag is raised by the one teardown.
     #[test]
     fn the_handoff_class_follows_the_default_and_the_pack() {

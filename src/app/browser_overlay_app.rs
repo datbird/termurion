@@ -1,7 +1,7 @@
 //! Overlays above a browser page (milestone 13x2, Task 5): the hovered link, the toast, and
 //! announcement bars. A child web view covers anything the scene draws in its rectangle, so the
 //! link and the toast are `browser_tip`'s popup window; a bar is drawn by the scene over the top of
-//! the pane and the web view gives way below it. Everything shown is Tandem's text or a URL that
+//! the pane and the web view gives way below it. Everything shown is Termurion's text or a URL that
 //! `browser_tip::tip_text` made inert; the hovered link is accepted only from the Ready isolated
 //! world and only while the real pointer is over the rectangle it reports (P14).
 
@@ -28,7 +28,7 @@ pub(super) enum TipAsk {
 impl App {
     /// The top of pane `id`'s `visible()` rectangle `r` split in one place (the one owner of the
     /// layout, 13x3 B1): the find bar's row (None while no bar is open above the page) and the web
-    /// view's rectangle. `r` is already below Tandem's chrome and the toolbar strip (cut once, never
+    /// view's rectangle. `r` is already below Termurion's chrome and the toolbar strip (cut once, never
     /// again). Both strips want the top of `r`: the front announcement bar first (the scene draws it
     /// at the top of `r`, P21), then the find bar's row below it, then the page.
     pub(super) fn browser_split(&self, id: PaneId, r: Rect) -> (Option<Rect>, Rect) {
@@ -88,7 +88,7 @@ impl App {
     /// (the window needs the event loop; the newest one wins, which also bounds a page's flood).
     pub(super) fn browser_hover(&mut self, pane: PaneId, hover: Hover) {
         match hover {
-            // A page's Clear never replaces what is Tandem's own: a waiting toast, or another pane's ask.
+            // A page's Clear never replaces what is Termurion's own: a waiting toast, or another pane's ask.
             Hover::Clear => {
                 let others = matches!(&self.browser_tip_next, Some(TipAsk::Toast(..))) || matches!(&self.browser_tip_next, Some(TipAsk::Hover(p, _) | TipAsk::Clear(p)) if *p != pane);
                 if !others {
@@ -175,7 +175,7 @@ impl App {
         }
     }
 
-    /// "Copied" and its like: `text` (Tandem's own) at the pointer for `secs`.
+    /// "Copied" and its like: `text` (Termurion's own) at the pointer for `secs`.
     pub(super) fn browser_toast(&mut self, pane: PaneId, text: &str, secs: f64) {
         self.browser_tip_next = Some(TipAsk::Toast(pane, text.to_string(), secs));
     }
@@ -235,7 +235,7 @@ impl App {
 
     /// Closes pane `pane`'s tip and tells its page to forget the link (iTerm2 does the same on
     /// `mouseExited`, `BWV:858-870`, `BM:952-955`; WebView2 reports no exit). Evaluated in the main
-    /// frame's Tandem world, where the secret-checking handler lives, never the page world.
+    /// frame's Termurion world, where the secret-checking handler lives, never the page world.
     pub(super) fn browser_tip_clear(&mut self, pane: PaneId) {
         self.browser_tip_cancel(pane);
         if !self.browser_tip.as_ref().is_some_and(|t| t.owner == Some(pane as u64)) {
@@ -331,7 +331,7 @@ mod tests {
         &src[..src.find("#[cfg(test)]").unwrap()]
     }
 
-    /// A real bug on main: `App::visible()` already returns each pane's rectangle after Tandem's
+    /// A real bug on main: `App::visible()` already returns each pane's rectangle after Termurion's
     /// chrome (title bar, status bar and the browser strip), so running `pane_chrome` on it cuts the
     /// strip a second time. The strip is cut once, from the pane's full rectangle (`browser_strip`),
     /// and the web view is the `visible()` rectangle itself, below the front announcement bar.
@@ -353,7 +353,7 @@ mod tests {
         assert!(m.contains("self.draw_info_bar(&mut frame, id, rect, self.pane_cell(id))"), "an announcement bar is drawn for a browser pane too");
     }
 
-    /// The overlay is Tandem's: never inside the page, never the page's text unmade inert, never
+    /// The overlay is Termurion's: never inside the page, never the page's text unmade inert, never
     /// focused, and the real pointer decides (P14).
     #[test]
     fn overlays_are_termurions_own() {
@@ -363,7 +363,7 @@ mod tests {
         assert!(hover.contains("from_js("), "page pixels become window pixels");
         assert!(!p.contains(".focus()") && !p.contains("frame.overlay") && !p.contains("execute_script("), "no focus, no scene overlay, no page-world script");
         let clear = &p[p.find("pub(super) fn browser_tip_clear(").unwrap()..p.find("pub(super) fn browser_tip_clear_all").unwrap()];
-        assert!(clear.contains("browser_eval_in_frame(pane, None,") && clear.contains("clear_script("), "the clear runs in the main frame's Tandem world");
+        assert!(clear.contains("browser_eval_in_frame(pane, None,") && clear.contains("clear_script("), "the clear runs in the main frame's Termurion world");
         assert!(!clear.contains("browser_eval(") && !clear.contains("browser_page_call"));
         let toast = &p[p.find("fn browser_toast_now").unwrap()..p.find("pub(super) fn browser_tip_event").unwrap()];
         assert!(toast.contains("display_text("), "even a toast's text is made inert");
@@ -431,7 +431,7 @@ mod tests {
         assert!(f.contains("self.gutter_split(id, strip).0"), "{f}");
     }
 
-    /// Task 5 re-review minor: a page's Clear never cancels what is Tandem's own (a waiting toast, another
+    /// Task 5 re-review minor: a page's Clear never cancels what is Termurion's own (a waiting toast, another
     /// pane's ask) and never hides a toast that has not run out.
     #[test]
     fn a_page_clear_never_cancels_a_toast() {

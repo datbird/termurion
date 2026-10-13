@@ -397,8 +397,8 @@ mod tests {
         h.add(done);
         let started = |s: u64| format!("t{s}");
         let row = |id: &str, name: &str, started: &str| Row { id: id.into(), name: name.into(), started: started.into() };
-        assert_eq!(rows(&h, false, &started), vec![row("iTerm2", "Tandem App", "t10"), row("k", "tool", "t20"), row("d", "(done)", "t30")]);
-        assert_eq!(rows(&h, true, &started), vec![row("iTerm2", "Tandem App", "t10"), row("k", "tool", "t20")]);
+        assert_eq!(rows(&h, false, &started), vec![row("iTerm2", "Termurion App", "t10"), row("k", "tool", "t20"), row("d", "(done)", "t30")]);
+        assert_eq!(rows(&h, true, &started), vec![row("iTerm2", "Termurion App", "t10"), row("k", "tool", "t20")]);
     }
 
     #[test]

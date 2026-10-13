@@ -26,7 +26,7 @@ static ON_CLICK: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static ON_TRAY: OnceLock<Box<dyn Fn(bool) + Send + Sync>> = OnceLock::new();
 /// Told when Explorer restarted (TaskbarCreated): the app owns the tray, so it re-adds the icon.
 static ON_TASKBAR: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
-/// Tandem's icon, made once (an HICON handle).
+/// Termurion's icon, made once (an HICON handle).
 static ICON: AtomicIsize = AtomicIsize::new(0);
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 const WM_LBUTTONUP: u32 = 0x0202;
@@ -63,7 +63,7 @@ pub fn on_taskbar_created(f: Box<dyn Fn() + Send + Sync>) {
     let _ = ON_TASKBAR.set(f);
 }
 
-/// Tandem's icon (the logo, drawn by `presence::tray_icon_rgba`), the generic application icon if
+/// Termurion's icon (the logo, drawn by `presence::tray_icon_rgba`), the generic application icon if
 /// Windows refuses to make it.
 fn icon() -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
     let h = ICON.load(Ordering::SeqCst);
@@ -173,7 +173,7 @@ fn add_resident(hwnd: HWND) -> Result<(), String> {
     Err(format!("Windows did not add the notification area icon (hwnd {:#x}: {})", hwnd as usize, tried.join(", ")))
 }
 
-/// Adds or removes the resident notification area icon (the way back for a Tandem that left
+/// Adds or removes the resident notification area icon (the way back for a Termurion that left
 /// the taskbar). Removing always deletes the icon; a later balloon adds it again.
 pub fn set_resident(on: bool) -> Result<(), String> {
     if on {
@@ -199,7 +199,7 @@ pub fn show_with(title: &str, body: &str, silent: bool) -> Result<(), String> {
     nid.uCallbackMessage = CALLBACK;
     nid.hIcon = icon();
     nid.dwInfoFlags = NIIF_INFO | if silent { NIIF_NOSOUND } else { 0 };
-    copy(&mut nid.szTip, "Tandem");
+    copy(&mut nid.szTip, "Termurion");
     copy(&mut nid.szInfoTitle, title);
     copy(&mut nid.szInfo, body);
     let op = if ADDED.swap(true, Ordering::SeqCst) { NIM_MODIFY } else { NIM_ADD };
@@ -220,7 +220,7 @@ pub fn still_shown(at: u64, now: u64) -> bool {
 }
 
 /// Dismisses the balloon (an empty `szInfo` removes it), but only while it is still the one shown
-/// when `shown_count()` was `at`: a web notification can only ever close ITSELF, never a Tandem
+/// when `shown_count()` was `at`: a web notification can only ever close ITSELF, never a Termurion
 /// alert (or another site's) shown after it. True when it was cleared. Nothing when no icon was
 /// added.
 pub fn clear_if_shown(at: u64) -> bool {

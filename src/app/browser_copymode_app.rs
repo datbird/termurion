@@ -1,5 +1,5 @@
 //! Copy mode in a browser pane (milestone 13x3, Task 8). iTerm2's page cursor (`copy-mode.js`) runs
-//! in Tandem's isolated world; this file turns the shared copy-mode keys into calls on it. Keys
+//! in Termurion's isolated world; this file turns the shared copy-mode keys into calls on it. Keys
 //! arrive two ways and only two: the key gate (`Owner::CopyMode`, a key the page never saw) and the
 //! world's own trusted-key listener (`browser_copymode::KEY_HANDLER`). A page's message, a page's
 //! synthetic event or a view without a proven isolated world drives nothing.
@@ -31,7 +31,7 @@ impl App {
     }
 
     /// Turns copy mode on or off (`BCH:25-46`): the page's cursor, the keys switch of every live
-    /// Tandem world, the key gate, the view's focus (`BCH:101-110`) and the menu check.
+    /// Termurion world, the key gate, the view's focus (`BCH:101-110`) and the menu check.
     pub(super) fn browser_copy_mode_set(&mut self, pane: PaneId, on: bool) {
         let Some(secret) = self.browser_view_secret(pane).map(str::to_string) else { return };
         if on {
@@ -68,7 +68,7 @@ impl App {
         self.redraw();
     }
 
-    /// A Tandem world made while copy mode is on (an iframe that loaded mid-session) captures keys
+    /// A Termurion world made while copy mode is on (an iframe that loaded mid-session) captures keys
     /// too: the switch is turned on in that one context (`unique id` from the DevTools event, as the
     /// pointer table is pushed).
     pub(super) fn browser_copy_mode_new_context(&mut self, pane: PaneId, session: Option<&str>, json: &str) {
@@ -174,7 +174,7 @@ mod tests {
         assert!(set.contains("cm::enable_js(&secret)") && set.contains("cm::disable_js(&secret)"));
         assert!(set.contains("self.browser_world_update(pane, &cm::keys_on_js(&secret, true))") && set.contains("self.browser_world_update(pane, &cm::keys_on_js(&secret, false))"));
         assert!(set.contains("v.focus()") && set.contains("self.browser_gate_refresh(pane)") && set.contains("self.sync_checks()") && set.contains("self.belt_yield_keys()"));
-        assert!(!set.contains("execute_script") && !set.contains("browser_eval("), "only the Tandem world");
+        assert!(!set.contains("execute_script") && !set.contains("browser_eval("), "only the Termurion world");
         // Every script the steps run goes through the world call, never the page.
         let apply = between(me, "fn browser_copy_mode_apply", "\n}\n");
         assert!(apply.contains("self.browser_js_call(pane, &js") && apply.contains("self.browser_copy_selection(pane)"), "Copy is the one selection reader and clipboard path");

@@ -58,7 +58,7 @@ pub enum Purpose {
 }
 
 /// A running background command (`handleBackgroundJob`): its output, channel 1 only. iTerm2
-/// keeps the pieces and joins them with nothing at the end; Tandem appends each piece as it
+/// keeps the pieces and joins them with nothing at the end; Termurion appends each piece as it
 /// comes, so the kept length is known at once (a remote streaming lone newlines sends a
 /// piece per byte).
 #[derive(Clone, Debug, PartialEq)]
@@ -182,7 +182,7 @@ impl Conductor {
 
     /// doFraming (`CD:1901-1930`), the framer path after python is found (`CD:2130-2161`).
     /// Every command is queued now and goes out after the previous one's reply. The it2
-    /// socket listen is n/a (ruling 3, Tandem never sends `it2listen`). The `save` pairs go in
+    /// socket listen is n/a (ruling 3, Termurion never sends `it2listen`). The `save` pairs go in
     /// a fixed order (iTerm2's dictionary order is arbitrary).
     pub fn frame(&mut self) {
         self.exec_framer();
@@ -258,7 +258,7 @@ impl Conductor {
 
     /// The hops a new session reconnects through (Duplicate Session, Duplicate Tab, a saved
     /// arrangement), or None for a plain session. Beyond iTerm2 (ruling, final review I1): only
-    /// the hops from the outermost whose hook Tandem's own token vouched for (a nested hook is
+    /// the hops from the outermost whose hook Termurion's own token vouched for (a nested hook is
     /// text the host above printed, so in practice the first hop alone), and only through
     /// `ssh_jumps::safe_hops`, the one validator.
     pub fn reconnect_hops(&self) -> Option<Vec<Reconnection>> {
@@ -272,7 +272,7 @@ impl Conductor {
         crate::ssh_jumps::safe_hops(&vouched)
     }
 
-    /// Whether the chain's first hook was vouched for by Tandem's own origin token. Only then
+    /// Whether the chain's first hook was vouched for by Termurion's own origin token. Only then
     /// is the first hop's ssh text something the person typed; a hook any program can print
     /// says nothing about what to run locally.
     pub fn root_is_local(&self) -> bool {
@@ -280,7 +280,7 @@ impl Conductor {
     }
 
     /// The host a split of this session connects to (`PS:2947-2952`), when it may go into a
-    /// local command line. Beyond iTerm2 (no check there): only when Tandem's own token vouched
+    /// local command line. Beyond iTerm2 (no check there): only when Termurion's own token vouched
     /// for THIS conductor's hook (ruling). The chain's first hook vouching is not enough: a
     /// nested hook is text the hop above printed and could name any user, port or host. And
     /// only names `identity_is_safe` takes.
@@ -367,7 +367,7 @@ impl Conductor {
         }
         if pid == AUTOPOLL_PID {
             // "EOF" hands the text to the process list and re-arms the poll; any other piece
-            // joins the text (`CD:2600-2611`), up to the cap. Tandem-side guard: the poll is
+            // joins the text (`CD:2600-2611`), up to the cap. Termurion-side guard: the poll is
             // re-armed only when none is queued or in flight (iTerm2 adds one per EOF, so a
             // remote that never ends the command grows the queue until the timeout).
             if text == "EOF" {
@@ -566,7 +566,7 @@ impl Conductor {
     }
 
     /// handleRecovery(line:) (`CD:2713-2800`) for one recovery line, the OSC string with its
-    /// leading colon. Only a conductor in recovery reads them (Tandem-side: iTerm2's
+    /// leading colon. Only a conductor in recovery reads them (Termurion-side: iTerm2's
     /// `:begin-recovery` would put any conductor in it). The block ends at `:end-recovery`:
     /// without a login the conductor quits and gives None; else it has the framed pid and the
     /// finished information comes back for the app to build the recovered conductor from.
@@ -628,7 +628,7 @@ impl Conductor {
 
     /// didResynchronize (`CD:1809-1820`): tokens may have been dropped, so the conductor and its
     /// parents are reset and the framer's home and PATH read again. Nothing waits for the
-    /// parser's boundary token here (Decision: Tandem swaps its hook at once).
+    /// parser's boundary token here (Decision: Termurion swaps its hook at once).
     pub fn did_resynchronize(&mut self) {
         self.waiting_to_resync = false;
         self.force_ground();
@@ -1696,7 +1696,7 @@ mod tests {
         (c, started)
     }
 
-    /// Final review I1 (ruling): hops for a new session come only from conductors Tandem's own
+    /// Final review I1 (ruling): hops for a new session come only from conductors Termurion's own
     /// token vouched for, and only through the one validator. A hook `cat`ed on host A names a
     /// hop whose text would run in host A's `eval`: it is never offered.
     #[test]
@@ -1823,7 +1823,7 @@ mod tests {
         assert!(child(root).root_is_local(), "the chain's first hook decides");
     }
 
-    /// A split runs a LOCAL ssh to the innermost host, so only a hop Tandem's own token vouched
+    /// A split runs a LOCAL ssh to the innermost host, so only a hop Termurion's own token vouched
     /// for names it (ruling). A hostile first hop prints a nested hook naming its own user, port
     /// and host: the split must not connect there.
     #[test]
@@ -1923,7 +1923,7 @@ mod tests {
 
     #[test]
     fn a_recovery_never_ends_by_itself() {
-        // Tandem-side guard: a remote that begins recovery and stops is failed by the command
+        // Termurion-side guard: a remote that begins recovery and stops is failed by the command
         // clock rather than held forever.
         let mut c = Conductor::recovery_shim(None);
         let t0 = Instant::now();
@@ -2061,7 +2061,7 @@ mod tests {
         root.setup.parsed = crate::ssh_args::parse("-p 22 me@home.lan ", "46", &crate::ssh_args::NoConfig);
         root.framed_pid = Some(100);
         let back = Conductor::from_json(&root.json()).expect("restores");
-        assert!(!back.setup.local_origin && !back.root_is_local() && back.split_identity().is_none(), "Tandem's own file vouches for nothing");
+        assert!(!back.setup.local_origin && !back.root_is_local() && back.split_identity().is_none(), "Termurion's own file vouches for nothing");
         // An edited file claiming the origin at every level is not believed either.
         let mut v: serde_json::Value = serde_json::from_str(&root.json()).unwrap();
         v["local_origin"] = true.into();

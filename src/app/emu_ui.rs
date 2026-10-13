@@ -160,7 +160,7 @@ impl App {
             crate::screen::PrintJob::Text(t) => crate::print::text_rows(t, screen.palette.fg, screen.palette.bg),
         };
         let cols = { use alacritty_terminal::grid::Dimensions; screen.term().columns() };
-        let title = screen.title().unwrap_or("Tandem").to_string();
+        let title = screen.title().unwrap_or("Termurion").to_string();
         let font = self.profile_of(pane).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0 });
         if self.globals.bool("Print In Black And White") {
             crate::print::black_and_white(&mut rows);

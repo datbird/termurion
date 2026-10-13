@@ -302,7 +302,7 @@ fn detail(ui: &mut egui::Ui, model: &Model, profiles: &[(String, String)], keys:
     }
     if !model.source_of(&w.unique_identifier).is_person() {
         ui.horizontal_wrapped(|ui| {
-            ui.colored_label(egui::Color32::from_rgb(0xD0, 0x8A, 0x00), "This workgroup was imported. Tandem asks before it runs its commands.");
+            ui.colored_label(egui::Color32::from_rgb(0xD0, 0x8A, 0x00), "This workgroup was imported. Termurion asks before it runs its commands.");
             if ui.button("Trust this workgroup").on_hover_text("You have read its commands and want them to run without asking.").clicked() {
                 *cmd = Some(Cmd::Trust(w.unique_identifier.clone()));
             }

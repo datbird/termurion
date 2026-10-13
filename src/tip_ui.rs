@@ -28,8 +28,8 @@ pub enum Action {
 pub const WIDTH: f64 = 400.0;
 pub const MARGIN: f32 = 8.0;
 /// The signature line under the body (`iTermTipCardViewController.m:191`).
-pub const SIGNATURE: &str = "Tandem tip of the day";
-pub const TITLE: &str = "Tandem Tip of the Day";
+pub const SIGNATURE: &str = "Termurion tip of the day";
+pub const TITLE: &str = "Termurion Tip of the Day";
 
 /// The buttons, top to bottom (`addButtonsToCard:expanded:`): Learn More only with an address, the
 /// options toggle third, and the collapsible ones after it only while expanded. The next and

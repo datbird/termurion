@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 pub const DATA_DIR: &str = "Data";
 
 /// iTerm2's `snippets.plist`, `notes.rtfd`, `graphic_colors.json` and `graphic_icons.json`, with
-/// Tandem's own file names for the first two; each relative to `%APPDATA%\Termurion` locally and to
+/// Termurion's own file names for the first two; each relative to `%APPDATA%\Termurion` locally and to
 /// `<folder>\Data` remotely. Custom icon images are not synced.
 pub const ALLOWLIST: [&str; 4] = ["snippets.json", "notes.txt", crate::tab_icons::COLORS_FILE, crate::tab_icons::ICONS_FILE];
 
@@ -35,7 +35,7 @@ pub const LAST_PUSHED_KEY: &str = "NoSyncRemoteDataFileSyncLastPushedLocal";
 pub const DISCARD_PENDING_KEY: &str = "NoSyncRemoteDataFileSyncDiscardPending";
 
 /// `RemotePreferences.SyncDataFilesPrompt` (`:798-801`); `%@` is the folder.
-pub const CONSENT_TEXT: &str = "Tandem can also keep your snippets, global notes, and session icon customizations in the settings folder \u{201c}%@\u{201d} so they sync across machines. Notes and snippets can contain sensitive text such as passwords or tokens. Sync them too?";
+pub const CONSENT_TEXT: &str = "Termurion can also keep your snippets, global notes, and session icon customizations in the settings folder \u{201c}%@\u{201d} so they sync across machines. Notes and snippets can contain sensitive text such as passwords or tokens. Sync them too?";
 pub const SYNC_TOO: &str = "Sync These Too";
 pub const JUST_SETTINGS: &str = "Just Settings";
 /// `RemotePreferences.DataFileConflictPrompt` (`:1368-1370`), "this Mac" as "this PC".
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn texts_are_iterm2s_with_the_replacements() {
-        assert!(CONSENT_TEXT.starts_with("Tandem can also keep your snippets, global notes, and session icon customizations"));
+        assert!(CONSENT_TEXT.starts_with("Termurion can also keep your snippets, global notes, and session icon customizations"));
         assert!(CONFLICT_TEXT.contains("this PC") && !CONFLICT_TEXT.contains("Mac"));
         assert_eq!(USE_THIS_PC, "Use This PC\u{2019}s");
         assert_eq!(USE_FOLDER, "Use Settings Folder\u{2019}s");

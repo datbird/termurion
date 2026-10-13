@@ -1,8 +1,8 @@
 # Milestone 13x5 acceptance checklist (browser named marks and browser triggers)
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe` on a machine with the
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe` on a machine with the
 WebView2 Runtime installed (one run). Mark each line pass or fail.
 
 Before anything else: `m13x5-rulings.txt` first lines record the 13x5 desktop probe (Probe: PASS,
@@ -41,7 +41,7 @@ body range do not read an annotation's name (R13x5-43).
 - [ ] Edit > Set Named Mark marks the page's centre (the same prompt, then the same annotation).
 - [ ] Named Marks tool > Add (browser session focused) adds a mark on the page.
 - [ ] Submit `form.html`. On the result page Edit > Set Named Mark does nothing (no prompt). The context menu's "Add Named Mark..." opens the prompt but adds nothing after OK (iTerm2's per-path gate, R13x5-5).
-- [ ] A Tandem page (`iterm2-about:history`) takes no mark by any path (menu, context menu, tool).
+- [ ] A Termurion page (`iterm2-about:history`) takes no mark by any path (menu, context menu, tool).
 - [ ] Open a terminal and a browser Set Named Mark prompt: only one is open at a time (the second request focuses the first).
 - [ ] A mark with a name over 256 characters is cut; a mark on a page with `&` in the marked text reveals the right place and writes no pair of its own.
 - [ ] A Dev Null profile: marks added there are gone after closing the profile; marks in the normal profile are unaffected and are not listed in the Dev Null session.
@@ -51,17 +51,17 @@ body range do not read an annotation's name (R13x5-43).
 - [ ] Scroll away. Pick the mark from Edit > Named Marks: the page scrolls back smoothly and outlines the paragraph.
 - [ ] Open another page, pick the mark from the Named Marks tool, then again from Open Quickly ("mark name"): the article loads and scrolls to it. Clicking a link while it loads cancels the reveal instead of scrolling the wrong page.
 - [ ] Browser marks are listed newest first in Edit > Named Marks and in the tool, per browser session in Open Quickly.
-- [ ] Rename from the Named Marks tool (Edit) or Edit > Named Marks: a Tandem name window opens (not the page); Edit > Named Marks, the tool, Open Quickly and the annotation follow.
-- [ ] Click Rename on the annotation: a Tandem name window opens outside the page showing the stored name; the page never shows an editable box. Keys and clicks in the first half second of any such window are ignored.
-- [ ] Click Delete on the annotation: a Tandem confirm window opens, Cancel is the default (Enter cancels). Delete removes the mark from all three lists and the annotation leaves the page.
+- [ ] Rename from the Named Marks tool (Edit) or Edit > Named Marks: a Termurion name window opens (not the page); Edit > Named Marks, the tool, Open Quickly and the annotation follow.
+- [ ] Click Rename on the annotation: a Termurion name window opens outside the page showing the stored name; the page never shows an editable box. Keys and clicks in the first half second of any such window are ignored.
+- [ ] Click Delete on the annotation: a Termurion confirm window opens, Cancel is the default (Enter cancels). Delete removes the mark from all three lists and the annotation leaves the page.
 - [ ] Remove from the Named Marks tool deletes with no confirm (as iTerm2's).
 - [ ] Navigating away while a rename or delete window opened from the page's annotation is open closes it with no change (a window the person opened from the Named Marks tool or the menu stays open, R13x5-9).
 - [ ] Removing the last mark of a page clears the annotation box.
 
 ## D. Hostile pages (world)
 
-- [ ] On `hide.html` with an annotation: the page hides or covers the box. It cannot rename or delete it; a click under the page's overlay cannot reach Delete. This is a residual (R13x5-6): the person may see no annotation, and the worst result of luring a press is Tandem's own window opening.
-- [ ] A page that moves or deletes the box: the mark still exists in Edit > Named Marks and can be renamed and removed from Tandem's windows.
+- [ ] On `hide.html` with an annotation: the page hides or covers the box. It cannot rename or delete it; a click under the page's overlay cannot reach Delete. This is a residual (R13x5-6): the person may see no annotation, and the worst result of luring a press is Termurion's own window opening.
+- [ ] A page that moves or deletes the box: the mark still exists in Edit > Named Marks and can be renamed and removed from Termurion's windows.
 - [ ] A page script calling `.click()` on a visible annotation button, or typing into it, changes nothing.
 - [ ] A rename or delete request for a mark of another page, or from before a navigation, opens no window.
 
@@ -79,7 +79,7 @@ In the Browser profile's Triggers editor (a terminal profile's editor offers ter
 - [ ] A terminal profile with a browser action stored does nothing in a terminal.
 - [ ] Triggers do nothing on `iterm2-about:` pages, including after a profile edit (the list is not resent there).
 - [ ] A page with many matches (a page with thousands of repeats of the matched word) still fires: at most 64 matches per check and 256 effects per pane per 10 seconds.
-- [ ] A slow regex on a huge page (a 1 MiB `<pre>` with a quadratic pattern such as `foo.*bar` against a line of "foo") stalls only that page's renderer; Tandem's window and other panes stay responsive. A pattern that nests an unbounded quantifier in a repeated group is refused with one message and not given to the page.
+- [ ] A slow regex on a huge page (a 1 MiB `<pre>` with a quadratic pattern such as `foo.*bar` against a line of "foo") stalls only that page's renderer; Termurion's window and other panes stay responsive. A pattern that nests an unbounded quantifier in a repeated group is refused with one message and not given to the page.
 - [ ] A hash-only navigation drops later matches until the next page load (fails closed, noted in the rulings).
 
 ## F. Import, export and the editor

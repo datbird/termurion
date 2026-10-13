@@ -1,7 +1,7 @@
 //! Key bindings in a browser pane (milestone 13x2, Task 6): which of iTerm2's key actions a page
 //! can run (`KBP:12-171`), the editing rule (`IA:527-537`), the scripts that scroll, send text and
 //! extend the selection (`WVA`), and the gate that decides, inside WebView2's accelerator handler,
-//! whether Tandem takes a key before the page sees it. Keys come only from the person; page script
+//! whether Termurion takes a key before the page sees it. Keys come only from the person; page script
 //! events never reach this module. Pure: the App side is `app::browser_input_app`.
 
 use crate::browser_js::{fill_template, resource};
@@ -142,7 +142,7 @@ pub fn extend_script(start: bool, forward: bool, unit: i64) -> Option<String> {
 /// never past the selection's anchor (a selection that is only whitespace is left alone). The copied
 /// file is not edited; the target must be found exactly once, or there is no word extension.
 const FORWARD_EXTEND_RAW: &str = "            newOffset = modifiedRange.endOffset;\n";
-const FORWARD_EXTEND_TYPED: &str = "            newOffset = modifiedRange.endOffset;\n            // Tandem (Windows): Chromium's Windows editing behavior extends forward by word to the start\n            // of the next word, past the space; macOS stops at the end of the word. From the end of a\n            // word that is a step over the space alone: extend once more (macOS reaches the end of the\n            // next word). Then trim whitespace the extension ended on, never back to the anchor.\n            if (/^\\s+$/.test(modifiedRange.toString())) {\n                tempSelection.modify(\"extend\", \"forward\", \"word\");\n                if (tempSelection.rangeCount > 0) {\n                    modifiedRange = tempSelection.getRangeAt(0);\n                    newContainer = modifiedRange.endContainer;\n                    newOffset = modifiedRange.endOffset;\n                }\n            }\n            if (newContainer.nodeType === 3) {\n                var floor = newContainer === modifiedRange.startContainer ? modifiedRange.startOffset : 0;\n                var trimmed = newOffset;\n                while (trimmed > floor && /\\s/.test(newContainer.textContent.charAt(trimmed - 1))) trimmed--;\n                if (trimmed > floor) newOffset = trimmed;\n            }\n";
+const FORWARD_EXTEND_TYPED: &str = "            newOffset = modifiedRange.endOffset;\n            // Termurion (Windows): Chromium's Windows editing behavior extends forward by word to the start\n            // of the next word, past the space; macOS stops at the end of the word. From the end of a\n            // word that is a step over the space alone: extend once more (macOS reaches the end of the\n            // next word). Then trim whitespace the extension ended on, never back to the anchor.\n            if (/^\\s+$/.test(modifiedRange.toString())) {\n                tempSelection.modify(\"extend\", \"forward\", \"word\");\n                if (tempSelection.rangeCount > 0) {\n                    modifiedRange = tempSelection.getRangeAt(0);\n                    newContainer = modifiedRange.endContainer;\n                    newOffset = modifiedRange.endOffset;\n                }\n            }\n            if (newContainer.nodeType === 3) {\n                var floor = newContainer === modifiedRange.startContainer ? modifiedRange.startOffset : 0;\n                var trimmed = newOffset;\n                while (trimmed > floor && /\\s/.test(newContainer.textContent.charAt(trimmed - 1))) trimmed--;\n                if (trimmed > floor) newOffset = trimmed;\n            }\n";
 
 fn type_forward_extension(script: &str) -> Result<String, String> {
     match script.matches(FORWARD_EXTEND_RAW).count() {
@@ -335,7 +335,7 @@ pub struct Facts {
 }
 
 /// One effect of a key; the app runs each (page scripts in the page world, world scripts in
-/// Tandem's isolated world).
+/// Termurion's isolated world).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Do {
     PageScript(String),
@@ -375,7 +375,7 @@ pub fn plan(act: &KeyAct, own: &str, f: &Facts) -> Vec<Do> {
 
 // --- Broadcast between browser panes (Task 8) ---
 
-/// The handler of Tandem's broadcast script (`broadcast-input.js`, Client world).
+/// The handler of Termurion's broadcast script (`broadcast-input.js`, Client world).
 pub const BROADCAST_HANDLER: &str = "termurionBroadcastInput";
 
 /// The longest text one broadcast event carries (a page's own paste limit).
@@ -428,7 +428,7 @@ pub fn broadcast_of(body: &serde_json::Value) -> Option<BroadcastEvent> {
     }
 }
 
-/// DevTools' `modifiers` for Tandem's key bits (Alt 1, Ctrl 2, Meta 4, Shift 8).
+/// DevTools' `modifiers` for Termurion's key bits (Alt 1, Ctrl 2, Meta 4, Shift 8).
 fn devtools_modifiers(mods: u8) -> u8 {
     (if mods & ALT != 0 { 1 } else { 0 }) | (if mods & CTRL != 0 { 2 } else { 0 }) | (if mods & WIN != 0 { 4 } else { 0 }) | (if mods & SHIFT != 0 { 8 } else { 0 })
 }
@@ -577,7 +577,7 @@ pub fn receiving_lower(n: u32) -> u32 {
 /// must not silence the pane for good).
 pub const RECEIVING_STALE_SECS: u64 = 5;
 
-/// The receiving side's own check, run in Tandem's world before anything is replayed: true when the
+/// The receiving side's own check, run in Termurion's world before anything is replayed: true when the
 /// focused field holds a secret (a password, a one-time code, a card), when the focus is in a frame
 /// (this world cannot see inside it), or when anything fails. Only a plain `false` lets a replay go.
 pub fn guard_body() -> String {
@@ -616,7 +616,7 @@ pub fn field_is_secret(f: &FieldFacts) -> bool {
     !f.editable
 }
 
-/// The check both sides run in Tandem's isolated world (a page cannot replace its builtins): the
+/// The check both sides run in Termurion's isolated world (a page cannot replace its builtins): the
 /// element focused through open shadow roots, judged by `termurionSecretField` (the selector the caller
 /// holds as `SEL`, a masked computed style, the autocomplete tokens, the field type, and fail closed
 /// for anything not itself an editable).
@@ -748,7 +748,7 @@ mod tests {
     #[test]
     fn forward_word_extension_stops_before_the_space_on_windows() {
         let f = extend_script(false, true, 1).expect("the script assembles");
-        assert_eq!(f.matches("// Tandem (Windows): Chromium's Windows editing behavior extends forward by word").count(), 1);
+        assert_eq!(f.matches("// Termurion (Windows): Chromium's Windows editing behavior extends forward by word").count(), 1);
         assert!(f.contains("trimmed--") && !f.contains("{{"));
         // Probe run 2026-10-10: from the end of "hello" the Windows step covers only the space, so a
         // second extension stayed "hello ". A whitespace-only step extends once more, before the trim
@@ -763,7 +763,7 @@ mod tests {
         assert_eq!(type_forward_extension(&format!("a{FORWARD_EXTEND_RAW}b")), Ok(format!("a{FORWARD_EXTEND_TYPED}b")));
         let b = extend_script(true, false, 1).unwrap();
         assert!(b.contains("var isForward = false;"), "backward is the same patched file, guarded by isForward");
-        assert!(!extend_script(true, true, 0).unwrap().contains("Tandem (Windows)"), "other units are untouched");
+        assert!(!extend_script(true, true, 0).unwrap().contains("Termurion (Windows)"), "other units are untouched");
     }
 
     #[test]
@@ -789,7 +789,7 @@ mod tests {
         let mut g = GateState { profile_map: table(&[("0x6a-0x40000", 0), ("0x6b-0x40000", 12)]), switch: [4, 9, 6], ..GateState::default() };
         assert_eq!(g.owner(0x4A, CTRL), Owner::Binding);
         assert_eq!(g.owner(0x4B, CTRL), Owner::Binding, "text is sent when no field has the page's focus");
-        assert_eq!(g.owner(0x4C, CTRL), Owner::Address, "Ctrl+L is Tandem's address field");
+        assert_eq!(g.owner(0x4C, CTRL), Owner::Address, "Ctrl+L is Termurion's address field");
         assert_eq!(g.owner(0x44, ALT), Owner::Address);
         assert_eq!(g.owner(0x75, 0), Owner::Address);
         assert_eq!(g.owner(0x4D, CTRL), Owner::Page, "an unbound key is the page's");
@@ -820,7 +820,7 @@ mod tests {
         let g = GateState { profile_map: table(&[("0x6a-0x40000", 74), ("0x6c-0x40000", 0)]), ..GateState::default() };
         assert_eq!(g.owner(0x4A, CTRL), Owner::Page, "Bypass passes the key on");
         assert_eq!(g.owner(0x4C, CTRL), Owner::Binding, "Ctrl+L is the person's binding here");
-        assert_eq!(g.owner(0x44, ALT), Owner::Address, "unbound address keys stay Tandem's");
+        assert_eq!(g.owner(0x44, ALT), Owner::Address, "unbound address keys stay Termurion's");
         assert_eq!(g.owner(0x75, 0), Owner::Address);
     }
 
@@ -905,7 +905,7 @@ mod tests {
 
     #[test]
     fn the_gate_offers_a_members_own_keys() {
-        // 13y1 seam S3: a member's peer or toolbar shortcut is Tandem's, not the page's.
+        // 13y1 seam S3: a member's peer or toolbar shortcut is Termurion's, not the page's.
         let ctrl_m = keyroute::press_from_chord(&chord_of(0x4D, CTRL).unwrap()).stroke.serialized();
         let peer = crate::workgroup::Shortcut { serialized: ctrl_m };
         let mut g = GateState { profile_map: table(&[("0x6a-0x40000", 0)]), ..GateState::default() };
@@ -996,7 +996,7 @@ mod tests {
         assert_eq!(calls[0].1["modifiers"], 0);
         assert_eq!(calls[1].1["type"], "keyUp");
         assert_eq!(calls[1].1["windowsVirtualKeyCode"], 13);
-        // Tandem's bits (Shift 1, Ctrl 2, Alt 4, Win 8) become DevTools' (Alt 1, Ctrl 2, Meta 4, Shift 8).
+        // Termurion's bits (Shift 1, Ctrl 2, Alt 4, Win 8) become DevTools' (Alt 1, Ctrl 2, Meta 4, Shift 8).
         let all = BroadcastEvent::Key { key: "Tab".into(), code: "Tab".into(), key_code: 9, mods: SHIFT | CTRL | ALT | WIN };
         assert_eq!(replay_calls(&all)[0].1["modifiers"], 15);
         for (mods, want) in [(SHIFT, 8), (CTRL, 2), (ALT, 1), (WIN, 4), (SHIFT | ALT, 9), (0, 0)] {
@@ -1056,7 +1056,7 @@ mod tests {
     #[test]
     fn broadcast_script_follows_the_rules() {
         let js = resource("broadcast-input.js").unwrap();
-        assert!(js.contains("Tandem's own script"));
+        assert!(js.contains("Termurion's own script"));
         assert!(js.contains("termurionBroadcastInput") && js.contains("{{SECRET}}") && js.contains("{{SELECTOR}}"));
         // Every listener checks isTrusted first (P26), and a field that holds a secret sends nothing (P18).
         let mut at = 0;

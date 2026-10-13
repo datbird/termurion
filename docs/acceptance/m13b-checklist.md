@@ -1,13 +1,13 @@
 # Milestone 13b acceptance checklist
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 
-Setup: start from settings with no remembered answers (Tandem > Suppressed Alerts… empty). Have a
-PowerShell pane with Tandem's shell integration (Tandem > Install Shell Integration), a WSL bash
+Setup: start from settings with no remembered answers (Termurion > Suppressed Alerts… empty). Have a
+PowerShell pane with Termurion's shell integration (Termurion > Install Shell Integration), a WSL bash
 pane for the `printf` lines, and an ssh host whose shell has iTerm2's shell integration installed
-(it must report its host name). "Tandem > …" is the application menu (iTerm2's app menu). A
+(it must report its host name). "Termurion > …" is the application menu (iTerm2's app menu). A
 button's Alt shortcut is Alt plus the letter shown underlined with the Advanced setting "Buttons in
 modal alerts indicate keyboard shortcuts." (General). Mark each line pass or fail.
 
@@ -16,10 +16,10 @@ modal alerts indicate keyboard shortcuts." (General). Mark each line pass or fai
 | # | Check | Result |
 |---|---|---|
 | 1 | Paste two lines into a shell: "Confirm Multi-Line Paste" asks with Paste, Cancel and Advanced..., and its checkbox reads "Remember my choice". Check it and choose Paste. | |
-| 2 | Paste two lines again: nothing asks, the paste goes in. Tandem > Suppressed Alerts now reads "1 Alert Suppressed (< 1 min ago)…"; after a few minutes the time grows ("5 min ago") within a minute of the real age. | |
-| 3 | Open Tandem > Suppressed Alerts…: the "Suppressed Alerts" window lists the paste warning with the columns Alert (heading, then the text), Automatic Response ("Paste") and Last Suppressed ("moments ago" or "N minutes ago"). Hovering the row shows the warning's text. | |
+| 2 | Paste two lines again: nothing asks, the paste goes in. Termurion > Suppressed Alerts now reads "1 Alert Suppressed (< 1 min ago)…"; after a few minutes the time grows ("5 min ago") within a minute of the real age. | |
+| 3 | Open Termurion > Suppressed Alerts…: the "Suppressed Alerts" window lists the paste warning with the columns Alert (heading, then the text), Automatic Response ("Paste") and Last Suppressed ("moments ago" or "N minutes ago"). Hovering the row shows the warning's text. | |
 | 4 | Select the row and press Un-suppress (or double-click it): the row goes, the menu reads "Suppressed Alerts…", and the next two-line paste asks again. Un-suppress All clears every row. With nothing suppressed the window says "No alerts are currently being suppressed." | |
-| 5 | Remember the paste answer again, then turn on "Always show alerts with remembered selections" in the window: the next two-line paste asks, its text ends with "This alert had a saved selection of “Paste”. It is being shown because “Always show alerts with remembered selections” is turned on in Tandem > Suppressed Alerts.", and a fourth button "Permanently Forget Saved Selection" forgets the answer and asks again without it. Quit and restart Tandem: the checkbox is off again. | |
+| 5 | Remember the paste answer again, then turn on "Always show alerts with remembered selections" in the window: the next two-line paste asks, its text ends with "This alert had a saved selection of “Paste”. It is being shown because “Always show alerts with remembered selections” is turned on in Termurion > Suppressed Alerts.", and a fourth button "Permanently Forget Saved Selection" forgets the answer and asks again without it. Quit and restart Termurion: the checkbox is off again. | |
 | 6 | Paste a single line ending in a newline at a prompt: its warning has two buttons that are not Cancel (Paste, Paste Without Newline), so the box reads "Remember my choice"; check it and choose Cancel: nothing is remembered and the next such paste asks again. | |
 | 7 | Turn on "Buttons in modal alerts indicate keyboard shortcuts." (Settings > Advanced, General). Open two panes, turn on Broadcast Input for both, and choose Edit > Clear Buffer: "Clear in All Broadcasted-to Sessions?" asks with Clear All, Clear Current Session Only and Cancel; "Clear Current Session Only" shows an underlined C, and Alt+C presses it (only the current pane clears). Clear All (the first button) and Cancel have no letter. Turn the setting off: no letter is underlined and Alt+C still presses it. | |
 | 8 | In Settings > Advanced (Warnings), "Send Clear Session to all broadcasted-to sessions?" set to No: Clear Buffer with broadcast still asks (No means not silenced). Remembering Clear Current Session Only makes it answer silently, and it appears in Suppressed Alerts. | |
@@ -63,7 +63,7 @@ modal alerts indicate keyboard shortcuts." (General). Mark each line pass or fai
 
 | # | Check | Result |
 |---|---|---|
-| 24 | In a WSL bash, send the version report of iTerm2's version 4 bash script: `printf '\033]1337;ShellIntegrationVersion=4;shell=bash\a'`: the bar "This account’s Shell Integration scripts are out of date." offers Upgrade and Silence Warning. Silence Warning stops it for that user and host. The PowerShell pane with Tandem's script (version 1, pwsh) never shows it. | |
+| 24 | In a WSL bash, send the version report of iTerm2's version 4 bash script: `printf '\033]1337;ShellIntegrationVersion=4;shell=bash\a'`: the bar "This account’s Shell Integration scripts are out of date." offers Upgrade and Silence Warning. Silence Warning stops it for that user and host. The PowerShell pane with Termurion's script (version 1, pwsh) never shows it. | |
 | 25 | Settings > General > Software Update, "Ignore non-critical shell integration updates" off: a report of version 5 for bash is now out of date (latest 22); on (the default), it is not. Upgrade away from a prompt (while a program runs) asks "It looks like you're not at a command prompt." with Run Installer Anyway and Cancel. | |
 
 ## Kept iTerm2 quirks and rulings a person can see
@@ -72,10 +72,10 @@ modal alerts indicate keyboard shortcuts." (General). Mark each line pass or fai
 |---|---|---|
 | 26 | Two buttons may share one shortcut letter (iTerm2 never marks a letter as taken); Alt plus that letter presses the first. | |
 | 27 | Remembering Cancel on "Restart session?" makes Restart Session do nothing from the menu until it is un-suppressed (iTerm2's restart question names no cancel button). | |
-| 28 | "Always show alerts with remembered selections" resets when Tandem restarts; the menu title's age can lag by up to a minute. | |
+| 28 | "Always show alerts with remembered selections" resets when Termurion restarts; the menu title's age can lag by up to a minute. | |
 | 29 | The settings warnings (Meta, key overrides, another hotkey profile) never underline their letters; Alt plus the letter still works. | |
 | 30 | In the remembered mode the annotation question has no explanation or Forget button; un-suppress it from Suppressed Alerts. | |
-| 31 | The question before adding another hotkey profile is always asked and has no checkbox (iTerm2's is persistent); a box ticked in an older Tandem no longer skips it. | |
+| 31 | The question before adding another hotkey profile is always asked and has no checkbox (iTerm2's is persistent); a box ticked in an older Termurion no longer skips it. | |
 | 32 | With Save changes set to Manually for a settings folder, the quit question asks at every quit after a change, even with Lose Changes remembered. | |
 | 33 | The paste and tmux close questions are windows, not pane bars; a second paste while the paste question is open is dropped (paste again). | |
 | 34 | The broadcast input warning is headed "Warning" with OK and Cancel; "Install Script Archive?" is silenced for ten minutes only. | |
@@ -103,7 +103,7 @@ modal alerts indicate keyboard shortcuts." (General). Mark each line pass or fai
 
 | # | Check | Result |
 |---|---|---|
-| 49 | Settings folder: with a custom folder in use, edit its settings file in Notepad after Tandem starts, then Save Now: "Settings at <folder> changed since Tandem started. Overwrite it?" asks; closing it with the title bar X leaves the file as Notepad saved it (Discard Local Changes). | |
+| 49 | Settings folder: with a custom folder in use, edit its settings file in Notepad after Termurion starts, then Save Now: "Settings at <folder> changed since Termurion started. Overwrite it?" asks; closing it with the title bar X leaves the file as Notepad saved it (Discard Local Changes). | |
 | 50 | With Save changes set to Manually and a change made, quit: closing "Settings have changed. Copy them to <folder>?" with the title bar X copies them (the one question whose close does not refuse); Escape does nothing. | |
 | 51 | An SSH-profile session saved with contents and the folder `~/proj` in a named arrangement restores with the bad folder bar (Repair) and without the window banner "The folder ... from the arrangement does not exist"; it shows the same bar on every restore. | |
 | 52 | A file name the terminal sends with a line or paragraph separator (U+2028, U+2029) or a zero-width character (U+200B to U+200D, U+2060, U+FEFF) is shown on one line without them in the download and display questions. | |

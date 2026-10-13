@@ -10,7 +10,7 @@ use crate::ai_terminal::Facts;
 pub const CONSENT_KEY: &str = "NoSyncAutoProvideConsent";
 
 pub const CONSENT_HEADING: &str = "Share Terminal Contents Automatically?";
-pub const CONSENT_TEXT: &str = "Tandem can include this session\u{2019}s visible screen and terminal state with every message you send in AI chats where you\u{2019}ve allowed it, so the assistant sees what you see. You can turn this off any time from a chat\u{2019}s permission settings.";
+pub const CONSENT_TEXT: &str = "Termurion can include this session\u{2019}s visible screen and terminal state with every message you send in AI chats where you\u{2019}ve allowed it, so the assistant sees what you see. You can turn this off any time from a chat\u{2019}s permission settings.";
 pub const TURN_ON: &str = "Turn On";
 pub const NOT_NOW: &str = "Not Now";
 
@@ -104,7 +104,7 @@ pub fn escape_html(s: &str) -> String {
 /// `ChatAgent.neutralizeContextDelimiters`, hardened beyond iTerm2 (Task 8 finding 5).
 ///
 /// Untrusted terminal and page text must not close the wrapper early and read as top-level
-/// instructions. The three tags (iTerm2's two and Tandem's `page-content`), matched the way a
+/// instructions. The three tags (iTerm2's two and Termurion's `page-content`), matched the way a
 /// lenient reader would: any letter case; whitespace, line breaks and invisible characters
 /// (zero-width, BOM, soft hyphen, bidi controls) between the pieces and inside the name; `/` or
 /// `\` (the escaped `<\/` form) or a lookalike slash; fullwidth and other lookalike `<` and `>`;
@@ -494,7 +494,7 @@ mod tests {
     #[test]
     fn consent_texts_follow_iterm2() {
         assert_eq!(CONSENT_HEADING, "Share Terminal Contents Automatically?");
-        assert_eq!(CONSENT_TEXT, "Tandem can include this session\u{2019}s visible screen and terminal state with every message you send in AI chats where you\u{2019}ve allowed it, so the assistant sees what you see. You can turn this off any time from a chat\u{2019}s permission settings.");
+        assert_eq!(CONSENT_TEXT, "Termurion can include this session\u{2019}s visible screen and terminal state with every message you send in AI chats where you\u{2019}ve allowed it, so the assistant sees what you see. You can turn this off any time from a chat\u{2019}s permission settings.");
         assert_eq!((TURN_ON, NOT_NOW), ("Turn On", "Not Now"));
         assert_eq!(CONSENT_KEY, "NoSyncAutoProvideConsent");
         assert_eq!(Consent::from_global(0), Consent::Unknown);

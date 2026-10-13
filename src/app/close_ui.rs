@@ -49,7 +49,7 @@ impl App {
                 Some(Ok(names)) => names,
                 // A tree that cannot be read is a reason to ask, with the error.
                 Some(Err(e)) => {
-                    out.push(format!("Tandem could not read the programs running in a session ({e})."));
+                    out.push(format!("Termurion could not read the programs running in a session ({e})."));
                     continue;
                 }
                 None => Vec::new(),
@@ -80,7 +80,7 @@ impl App {
             }
             match p.shell_pid().map(crate::jobwatch::descendants_now) {
                 Some(Ok(procs)) => out.extend(procs.iter().map(|q| crate::proctree::strip_exe(&q.name).to_string()).filter(|n| !n.eq_ignore_ascii_case("conhost") && !n.eq_ignore_ascii_case("OpenConsole"))),
-                Some(Err(e)) => notes.push(format!("Tandem could not read the programs running in a session ({e}).")),
+                Some(Err(e)) => notes.push(format!("Termurion could not read the programs running in a session ({e}).")),
                 None => {}
             }
         }
@@ -112,7 +112,7 @@ impl App {
                 if reasons.is_empty() {
                     return true;
                 }
-                return confirm(self.hwnd(), "Quit Tandem?", &close_rules::quit_text(&reasons, self.keep_jobs_on_quit()));
+                return confirm(self.hwnd(), "Quit Termurion?", &close_rules::quit_text(&reasons, self.keep_jobs_on_quit()));
             }
         };
         let running = panes.iter().filter(|id| self.panes.get(id).is_some_and(|p| p.exited.is_none() || !p.live_survivors().is_empty())).count();

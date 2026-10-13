@@ -34,7 +34,7 @@ impl App {
                 continue;
             }
             let Some(url) = bv.world.restore_load.take() else { continue };
-            // A web page's parked navigation is judged again as the page's, never as Tandem's own.
+            // A web page's parked navigation is judged again as the page's, never as Termurion's own.
             match bv.world.restore_from.take() {
                 Some(from) => self.browser_load_parked(pane, &url, &from),
                 None => self.browser_load_own(pane, &url),
@@ -63,7 +63,7 @@ impl App {
         }
     }
 
-    /// Loads the pane's own URL (Tandem's load, never a page's): the one 13x verdict judges it here
+    /// Loads the pane's own URL (Termurion's load, never a page's): the one 13x verdict judges it here
     /// as the guarded NavigationStarting will, so a refused one says so instead of leaving a blank
     /// pane.
     pub(super) fn browser_load_own(&mut self, pane: PaneId, url: &str) {
@@ -81,7 +81,7 @@ impl App {
         }
         let judge = |p: &std::path::Path| crate::localfs::LocalPath::judge(p).is_some();
         let Some(url) = browser_restore::own_load(url, &|t| crate::webhost::file_url_local(t, &judge)) else {
-            self.banners.set("action", "Tandem will not open that file location.");
+            self.banners.set("action", "Termurion will not open that file location.");
             return;
         };
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
@@ -124,7 +124,7 @@ impl App {
     }
 
     /// A page finished loading: its background color is read once, in the isolated world (a page
-    /// must not choose what Tandem reads; without the world nothing is read).
+    /// must not choose what Termurion reads; without the world nothing is read).
     pub(super) fn browser_color_read(&mut self, pane: PaneId) {
         self.browser_eval_in_frame(pane, None, browser_restore::COLOR_SCRIPT, Box::new(|app, pane, r| {
             // Only a short string is parsed; anything else is no color.
@@ -217,7 +217,7 @@ mod tests {
         let save = &arrange[arrange.find("    fn session_value(").unwrap()..arrange.find("pub(super) fn snapshot_window").unwrap()];
         assert!(save.contains("crate::browser::arrangement_url(&io.url)") && save.contains("crate::browser::URL_KEY"), "13x's one URL key");
         assert!(save.contains("crate::browser_restore::TARGET_KEY") && save.contains("target_text"), "the target, bounded and clean");
-        assert!(!save.contains("Browser State") && !save.contains("Tandem URL"), "no second key for the URL (B13)");
+        assert!(!save.contains("Browser State") && !save.contains("Termurion URL"), "no second key for the URL (B13)");
         let build = &arrange[arrange.find("self.browser_url_override = super::browser_app::restored_url(&session)").unwrap()..];
         assert!(build.find("browser_target_restored(id, &session)").unwrap() > build.find("self.start_dir_override = None").unwrap(), "the target goes on the started pane");
         let app = prod(include_str!("browser_app.rs"));

@@ -1,5 +1,5 @@
-//! Tandem's side of the session host: one connection, and a `HostedPty` per session with the
-//! same methods as `Pty`, so a pane runs its shell in the host or in Tandem alike.
+//! Termurion's side of the session host: one connection, and a `HostedPty` per session with the
+//! same methods as `Pty`, so a pane runs its shell in the host or in Termurion alike.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
@@ -22,10 +22,10 @@ pub struct Welcome {
     pub sessions: Vec<Live>,
 }
 
-/// Why Tandem could not use the host.
+/// Why Termurion could not use the host.
 #[derive(Debug)]
 pub enum HostError {
-    /// Another Tandem is attached: this one is a second copy.
+    /// Another Termurion is attached: this one is a second copy.
     Busy(String),
     Failed(String),
 }
@@ -178,7 +178,7 @@ fn dispatch(inner: &Inner, m: Msg, welcome: &mut Option<mpsc::Sender<Result<Welc
         }
         Msg::Refused { busy, reason } => {
             if let Some(w) = welcome.take() {
-                let text = format!("the session host refused Tandem: {reason}");
+                let text = format!("the session host refused Termurion: {reason}");
                 let _ = w.send(Err(if busy { HostError::Busy(text) } else { HostError::Failed(text) }));
             }
         }
@@ -249,7 +249,7 @@ impl Client {
         let mut version = VERSION;
         loop {
             match Client::connect_as(pipe, wait, version) {
-                // A host from an older Tandem refuses this version (and says so, not busy): try
+                // A host from an older Termurion refuses this version (and says so, not busy): try
                 // the next lower one on a new connection, so a version 2 host keeps password
                 // prompts and signals. Only a version 3 host gives new sessions their environment;
                 // a version 1 host's password prompts read as unknown.
@@ -470,10 +470,10 @@ impl HostedPty {
     }
 
     /// Send Signal's Ctrl+C (or Ctrl+Break) to this session's console, sent by the host (the
-    /// console is the host's: Tandem never attaches to it). A version 1 host cannot.
+    /// console is the host's: Termurion never attaches to it). A version 1 host cannot.
     pub fn signal(&self, ctrl_break: bool) -> Result<(), String> {
         if self.inner.version.load(Ordering::Acquire) < 2 {
-            return Err("the session host is too old to send console signals; quit Tandem with no sessions kept to update it".into());
+            return Err("the session host is too old to send console signals; quit Termurion with no sessions kept to update it".into());
         }
         self.inner.send(&Msg::Signal { id: self.id, ctrl_break })
     }
@@ -509,8 +509,8 @@ impl Drop for HostedPty {
 /// The session host program beside the app; `start_host_process` starts it by this file name.
 pub const HOST_EXE: &str = "termurion-host.exe";
 
-/// Starts `termurion-host.exe` from `exe_dir`, detached from Tandem (its own process group,
-/// out of Tandem's job when Windows allows), so it outlives Tandem.
+/// Starts `termurion-host.exe` from `exe_dir`, detached from Termurion (its own process group,
+/// out of Termurion's job when Windows allows), so it outlives Termurion.
 pub fn start_host_process(exe_dir: &Path) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
@@ -526,7 +526,7 @@ pub fn start_host_process(exe_dir: &Path) -> Result<(), String> {
             .spawn()
     };
     let base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
-    // A job that forbids breakaway refuses the flag; the host then lives in Tandem's job.
+    // A job that forbids breakaway refuses the flag; the host then lives in Termurion's job.
     spawn(base | CREATE_BREAKAWAY_FROM_JOB).or_else(|_| spawn(base)).map(drop).map_err(|e| format!("could not start {}: {e}", exe.display()))
 }
 
@@ -595,7 +595,7 @@ mod tests {
         assert!(t.elapsed() >= Duration::from_millis(190), "and waited the whole time");
     }
 
-    /// A host from an older Tandem that speaks up to `speaks`: it refuses each higher version
+    /// A host from an older Termurion that speaks up to `speaks`: it refuses each higher version
     /// (not busy), welcomes the client at `speaks`, and returns the first message after that.
     fn older_host(name: String, speaks: u32) -> std::thread::JoinHandle<Msg> {
         use crate::host_proto::Decoder;
@@ -660,7 +660,7 @@ mod tests {
         client.close();
     }
 
-    /// A version 3 host never sees LaunchWith: a transport launch is refused in Tandem, and a
+    /// A version 3 host never sees LaunchWith: a transport launch is refused in Termurion, and a
     /// ConPTY launch still goes out as Launch.
     #[test]
     fn a_version_three_host_is_too_old_for_a_transport() {
@@ -735,7 +735,7 @@ mod tests {
         match Client::connect(&name, Duration::from_secs(5)) {
             Err(HostError::Busy(_)) => {}
             Err(e) => panic!("not busy: {e}"),
-            Ok(_) => panic!("a second Tandem was let in"),
+            Ok(_) => panic!("a second Termurion was let in"),
         }
     }
 

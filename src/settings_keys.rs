@@ -140,7 +140,7 @@ pub fn indicate_non_default() -> bool {
 pub const EXPERIMENTAL_NOTE: &str = "This setting also enables ligature support in the GPU renderer.";
 
 /// The banner shown when "Prefer integrated to discrete GPU" changes (`GP:2089`).
-pub const GPU_RESTART: &str = "You must restart Tandem for this change to take effect.";
+pub const GPU_RESTART: &str = "You must restart Termurion for this change to take effect.";
 
 /// The right-to-left checkbox's tooltip: iTerm2's xib carries this unrelated text on it
 /// (`XIB:8720`), kept as iTerm2 shows it.
@@ -1197,14 +1197,14 @@ pub fn possible_override_spec() -> crate::warnings::Spec {
 /// Editing a dynamic profile that is not rewritable (`showDynamicProfileWarning`,
 /// `ProfilePreferencesViewController.m:1217-1253`): iTerm2's text and buttons ("rewritable" closes
 /// with a second left quote there, kept). None for a saved profile and for a rewritable one.
-/// Supersedes the m13t Task 8 ruling that Tandem never writes dynamic profiles back (13v2).
+/// Supersedes the m13t Task 8 ruling that Termurion never writes dynamic profiles back (13v2).
 pub fn dynamic_profile_spec(profile: &crate::profile::Profile) -> Option<crate::warnings::Spec> {
     if !profile.bool("Is Dynamic Profile") || profile.bool("Rewritable") {
         return None;
     }
     let name = profile.name();
     let name = if name.is_empty() { "(unknown name)".to_string() } else { name };
-    let text = format!("The selected profile, \u{201c}{name}\u{201d}, is a dynamic profile. These are generally only edited by hand.\n\nTandem is now able to write changes back to dynamic profiles when they are marked as \u{201c}rewritable\u{201c}. Rewriting can cause the order of values to change.");
+    let text = format!("The selected profile, \u{201c}{name}\u{201d}, is a dynamic profile. These are generally only edited by hand.\n\nTermurion is now able to write changes back to dynamic profiles when they are marked as \u{201c}rewritable\u{201c}. Rewriting can cause the order of values to change.");
     Some(crate::warnings::Spec {
         id: Some("NoSyncDynamicProfileChangeWillBeLost".to_string()),
         kind: crate::warnings::Kind::Temporary,
@@ -1915,7 +1915,7 @@ mod tests {
     }
 
     /// 13j: the Advanced > Mouse rows and the three Experimental Features rows, iTerm2's text
-    /// with "Tandem" for "iTerm2"; the label is the first line of the help.
+    /// with "Termurion" for "iTerm2"; the label is the first line of the help.
     #[test]
     fn mouse_rows_follow_iterm2() {
         use crate::schema::Kind;
@@ -1927,12 +1927,12 @@ mod tests {
             ("AlternateMouseScroll", "Mouse", Kind::Bool, Value::Boolean(false), "Scroll wheel sends arrow keys when in alternate screen mode.".into()),
             ("PinchToChangeFontSizeDisabled", "Mouse", Kind::Bool, Value::Boolean(false), "Disable changing font size in response to a pinch gesture.".into()),
             ("UseSystemCursorWhenPossible", "Mouse", Kind::Bool, Value::Boolean(true), "Use system cursor icons when possible.".into()),
-            ("AlwaysAcceptFirstMouse", "Mouse", Kind::Bool, Value::Boolean(true), "Always accept first mouse event on terminal windows.\nThis means clicks will work the same when Tandem is active as when it\u{2019}s inactive. Note that there is a separate setting for mouse reporting on first mouse.".into()),
+            ("AlwaysAcceptFirstMouse", "Mouse", Kind::Bool, Value::Boolean(true), "Always accept first mouse event on terminal windows.\nThis means clicks will work the same when Termurion is active as when it\u{2019}s inactive. Note that there is a separate setting for mouse reporting on first mouse.".into()),
             ("AutodetectMouseReportingStuck", "Mouse", Kind::Bool, Value::Boolean(true), "Automatically detect when mouse reporting got stuck on?\nThis watches for parts of mouse reporting control sequences being printed to the screen".into()),
             ("ReportOnFirstMouse", "Mouse", Kind::Bool, Value::Boolean(false), "Send mouse reports when you click in a window that isn't already frontmouse?".into()),
             ("DoubleReportScrollWheel", "Mouse", Kind::Bool, Value::Boolean(false), "Double-report scroll wheel events to work around tmux scrolling bug.".into()),
             ("StealKeyFocus", "Mouse", Kind::Bool, Value::Boolean(false), "When Focus Follows Mouse is enabled, steal key focus even when inactive.".into()),
-            ("AggressiveFocusFollowsMouse", "Mouse", Kind::Bool, Value::Boolean(false), "When Focus Follows Mouse is enabled, activate the window under the cursor when Tandem becomes active?".into()),
+            ("AggressiveFocusFollowsMouse", "Mouse", Kind::Bool, Value::Boolean(false), "When Focus Follows Mouse is enabled, activate the window under the cursor when Termurion becomes active?".into()),
             ("SensitiveScrollWheel", "Mouse", Kind::Bool, Value::Boolean(false), "Scroll on any scroll wheel movement, no matter how small?".into()),
             ("ScrollWheelAcceleration", "Mouse", Kind::Float, Value::Float(1.0), "Speed up scroll gestures by this factor.".into()),
             ("NaturalScrollingAffectsHorizontalMouseReporting", "Mouse", Kind::Bool, Value::Boolean(false), "Horizontal scrolling is reversed when \u{201c}Natural scrolling\u{201d} is enabled in Windows Settings".into()),
@@ -1978,18 +1978,18 @@ mod tests {
     fn keys_rows_follow_iterm2() {
         use crate::schema::Kind;
         let b = |v: bool| Value::Boolean(v);
-        let force_once = "When \u{201c}Force keyboard\u{201d} is on, Tandem continuously forces the selected layout while it is active, so you cannot switch to another layout within a session. Turn this on to force the layout only once, the first time a newly created terminal receives keyboard focus, leaving you free to change it afterward.";
+        let force_once = "When \u{201c}Force keyboard\u{201d} is on, Termurion continuously forces the selected layout while it is active, so you cannot switch to another layout within a session. Turn this on to force the layout only once, the first time a newly created terminal receives keyboard focus, leaving you free to change it afterward.";
         let rows: Vec<(&str, &str, &str, Kind, Value, &str, String)> = vec![
             ("ShowPinnedIndicator", "Advanced", "Hotkey", Kind::Bool, b(false), "Show indicator for pinned hotkey windows.", "Show indicator for pinned hotkey windows.".into()),
             ("UseBlackFillerColorForTmuxInFullScreen", "Advanced", "Tmux Integration", Kind::Bool, b(false), "Use black for filler area in tmux windows in full screen.", "Use black for filler area in tmux windows in full screen.".into()),
             ("TmuxWindowsOpenInBackground", "Advanced", "Tmux Integration", Kind::Bool, b(false), "Open tmux windows and tabs in the background?", "Open tmux windows and tabs in the background?\nWhen enabled, attaching with tmux -CC (or when tmux creates a new window) will reveal the window or tab without moving keyboard focus to it. Focus stays on the attaching session.".into()),
             ("SupportDecsetMetaSendsEscape", "Advanced", "Experimental Features", Kind::Bool, b(false), "Support DECSET 1036?", "Support DECSET 1036?\nThis allows apps in the terminal to control whether the Alt key sends esc+ or acts like a regular Alt key.".into()),
-            ("ForceKeyboard", "Keys", "Remap Modifiers", Kind::Bool, b(false), "Force keyboard", "Forces Tandem to use the selected keyboard layout while it is active.".into()),
+            ("ForceKeyboard", "Keys", "Remap Modifiers", Kind::Bool, b(false), "Force keyboard", "Forces Termurion to use the selected keyboard layout while it is active.".into()),
             ("ForceKeyboardOncePerSession", "Keys", "Remap Modifiers", Kind::Bool, b(false), "Only force once per session when it first receives keyboard focus", force_once.into()),
             ("KeyboardLocale", "Keys", "Remap Modifiers", Kind::String, Value::String(String::new()), "Keyboard locale", "Keyboard locale".into()),
-            ("AllowSymbolicHotKeys", "Keys", "Remap Modifiers", Kind::Bool, b(true), "Respect shortcuts from Windows keyboard shortcuts", "Win shortcuts Windows keeps for itself go to Windows instead of a key mapping; Tandem's own menu shortcuts still work.".into()),
-            ("ShortcutKey", "Keys", "Shortcut Key", Kind::Enum, Value::Integer(0), "Shortcut key", "The keys that stand for iTerm2's Cmd in Tandem's shortcuts, menus and key bindings. Cmd+Shift+X becomes Ctrl+Shift+Alt+X. Win collides with Windows shortcuts (Win+L, Win+D, Win+arrows). Ctrl+Alt is AltGr on many European layouts, so it can swallow characters you type; prefer Ctrl+Shift there.".into()),
-            ("RemapModifiersGlobally", "Keys", "Remap Modifiers", Kind::Bool, b(true), "Remap modifiers globally", "When off, Tandem remaps modifiers only for keys it receives, so Windows' own shortcuts see the physical keys.".into()),
+            ("AllowSymbolicHotKeys", "Keys", "Remap Modifiers", Kind::Bool, b(true), "Respect shortcuts from Windows keyboard shortcuts", "Win shortcuts Windows keeps for itself go to Windows instead of a key mapping; Termurion's own menu shortcuts still work.".into()),
+            ("ShortcutKey", "Keys", "Shortcut Key", Kind::Enum, Value::Integer(0), "Shortcut key", "The keys that stand for iTerm2's Cmd in Termurion's shortcuts, menus and key bindings. Cmd+Shift+X becomes Ctrl+Shift+Alt+X. Win collides with Windows shortcuts (Win+L, Win+D, Win+arrows). Ctrl+Alt is AltGr on many European layouts, so it can swallow characters you type; prefer Ctrl+Shift there.".into()),
+            ("RemapModifiersGlobally", "Keys", "Remap Modifiers", Kind::Bool, b(true), "Remap modifiers globally", "When off, Termurion remaps modifiers only for keys it receives, so Windows' own shortcuts see the physical keys.".into()),
         ];
         for (key, tab, section, kind, default, label, help) in rows {
             let s = schema::find_global(key).unwrap_or_else(|| panic!("{key} is missing"));
@@ -2328,7 +2328,7 @@ mod tests {
                 Kind::Bool,
                 Value::Boolean(false),
                 "Show hints in split pane menu items to indicate horizontal vs vertical semantics.",
-                "\nYou must restart Tandem after changing this setting for it to take effect.",
+                "\nYou must restart Termurion after changing this setting for it to take effect.",
             ),
             ("MenuTipDelay", Kind::Float, Value::Float(1.0), "Time to wait before showing tips in the main menu.", "\nSet this to a big number if you don\u{2019}t like the tips."),
             (
@@ -2356,7 +2356,7 @@ mod tests {
         assert_eq!(s.label, "Maximum number of lines of history to expose to Accessibility.");
         assert_eq!(
             s.help,
-            "Maximum number of lines of history to expose to Accessibility.\nAccessibility APIs can make Tandem slow. In order to limit the effect, you can restrict the number of lines in each session that are visible to accessibility. The last lines of each session will be made accessible."
+            "Maximum number of lines of history to expose to Accessibility.\nAccessibility APIs can make Termurion slow. In order to limit the effect, you can restrict the number of lines in each session that are visible to accessibility. The last lines of each session will be made accessible."
         );
     }
 
@@ -2372,7 +2372,7 @@ mod tests {
         assert_eq!(spec.heading, "Changes Will Be Lost");
         assert_eq!(
             spec.text,
-            "The selected profile, \u{201c}Dev\u{201d}, is a dynamic profile. These are generally only edited by hand.\n\nTandem is now able to write changes back to dynamic profiles when they are marked as \u{201c}rewritable\u{201c}. Rewriting can cause the order of values to change."
+            "The selected profile, \u{201c}Dev\u{201d}, is a dynamic profile. These are generally only edited by hand.\n\nTermurion is now able to write changes back to dynamic profiles when they are marked as \u{201c}rewritable\u{201c}. Rewriting can cause the order of values to change."
         );
         assert_eq!(spec.labels, ["Mark as Rewritable", "Reveal in Explorer", "Cancel"]);
         assert_eq!(spec.cancel, Some(2));
@@ -2397,7 +2397,7 @@ mod tests {
                 Kind::String,
                 Value::String(String::new()),
                 "Path to folder with dynamic profiles.",
-                "\nWhen empty, %APPDATA%\\Termurion\\DynamicProfiles will be used. You must restart Tandem after modifying this setting.",
+                "\nWhen empty, %APPDATA%\\Termurion\\DynamicProfiles will be used. You must restart Termurion after modifying this setting.",
             ),
             (
                 "DynamicProfilesNotificationLatency",
@@ -2634,7 +2634,7 @@ mod tests {
         assert_eq!((custom.tab.as_str(), custom.section.as_str(), custom.label.as_str()), ("General", "Python API", "Custom folder for Python API scripts"));
         assert_eq!(custom.kind, Kind::String);
         assert_eq!(custom.default, Some(Value::String(String::new())));
-        let help = "Tandem looks for Python API scripts in this folder instead of %APPDATA%\\Termurion\\Scripts. It must exist and have no spaces in its path. Network paths are not supported.";
+        let help = "Termurion looks for Python API scripts in this folder instead of %APPDATA%\\Termurion\\Scripts. It must exist and have no spaces in its path. Network paths are not supported.";
         assert_eq!((use_custom.help.as_str(), custom.help.as_str()), (help, help));
         // The field follows the checkbox (`GP:2152-2154`).
         let mut g = Globals::empty(std::path::Path::new("scripts-rows-test.toml"));
@@ -2687,8 +2687,8 @@ mod tests {
         assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Drawing"));
         assert_eq!(row.kind, Kind::Bool);
         assert_eq!(row.default, Some(Value::Boolean(false)));
-        assert_eq!(row.label, "Use your typeface\u{2019}s box-drawing characters instead of Tandem\u{2019}s custom drawing code.");
-        assert_eq!(row.help, format!("{}\nYou must restart Tandem after changing this setting.", row.label));
+        assert_eq!(row.label, "Use your typeface\u{2019}s box-drawing characters instead of Termurion\u{2019}s custom drawing code.");
+        assert_eq!(row.help, format!("{}\nYou must restart Termurion after changing this setting.", row.label));
     }
 
     #[test]
@@ -2782,7 +2782,7 @@ mod tests {
         assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Terminal"));
         assert_eq!((row.kind, row.default.clone()), (Kind::Bool, Some(Value::Boolean(true))));
         assert_eq!((row.label.as_str(), row.help.as_str()), (p3, p3));
-        let hdr = "Allow HDR effects\nWhen enabled, Tandem may render some UI effects, such as the selected tab's outline, brighter than white on an HDR-capable display. Off by default because forcing the display into extended dynamic range can cause hangs on some systems.";
+        let hdr = "Allow HDR effects\nWhen enabled, Termurion may render some UI effects, such as the selected tab's outline, brighter than white on an HDR-capable display. Off by default because forcing the display into extended dynamic range can cause hangs on some systems.";
         let row = schema::find_global("AllowHDR").unwrap();
         assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Drawing"));
         assert_eq!((row.kind, row.default.clone()), (Kind::Bool, Some(Value::Boolean(false))));
@@ -2806,7 +2806,7 @@ mod tests {
         let rows: [(&str, &str, Kind, Value, &str, String); 8] = [
             ("DoNotSetCtype", "Terminal", Kind::Bool, Value::Boolean(false), ctype, ctype.to_string()),
             ("UseColorfgbgFallback", "Terminal", Kind::Bool, Value::Boolean(true), colorfgbg, format!("{colorfgbg}\nThe COLORFGBG variable indicates the ANSI colors that match the foreground and background colors. If no colors match and this setting is enabled, then the variable will be set to 15;0 to indicate a dark background or 0;15 to indicate a light background.")),
-            ("ShouldSetTerminfoDirs", "Terminal", Kind::Bool, Value::Boolean(true), terminfo, format!("{terminfo}\nTandem ships with extended terminfo capabilities for common TERMs (xterm, xterm-new, and xterm-256color). For example, it enables undercurl. New sessions get created with a TERMINFO_DIRS that make the customized TERMINFOs take precedence over the system defaults.")),
+            ("ShouldSetTerminfoDirs", "Terminal", Kind::Bool, Value::Boolean(true), terminfo, format!("{terminfo}\nTermurion ships with extended terminfo capabilities for common TERMs (xterm, xterm-new, and xterm-256color). For example, it enables undercurl. New sessions get created with a TERMINFO_DIRS that make the customized TERMINFOs take precedence over the system defaults.")),
             ("PreventSleepOnBatteryToo", "General", Kind::Bool, Value::Boolean(false), battery, format!("{battery}\nBy default the \u{201c}Prevent sleep\u{201d} profile setting only prevents idle sleep while connected to power. Enable this to also prevent idle sleep on battery.")),
             ("IdleTimeSeconds", "General", Kind::Float, Value::Float(2.0), idle, format!("{idle}\nUsed for updating icons and activity indicator in tabs.")),
             ("JiggleTTYSizeOnClearBuffer", "General", Kind::Bool, Value::Boolean(false), jiggle, format!("{jiggle}\nWhen enabled, the TTY size is briefly changed after clearing the buffer to cause the shell or current app to redraw.")),
@@ -2897,7 +2897,7 @@ mod tests {
         use crate::advanced_pane::{self, RowKind};
         let url_regex = r#"https?://([a-z0-9A-Z]+(:[a-zA-Z0-9]+)?@)?[a-z0-9A-Z\-]+(\.[a-z0-9A-Z\-]+)*((:[0-9]+)?)(/[a-zA-Z0-9;:/\.\-_+%~?&amp;@=#\(\)]*)?"#;
         let fraction = "Fraction of character\u{2019}s width on its right side that can be used to select the character to its right.";
-        let swap = "Swap Find Next and Find Previous.\nIf enabled, Find Next will search up and Find Previous will search down (Tandem's traditional behavior, which is a departure from Windows's standard). When disabled, search behaves like a normal Windows app.";
+        let swap = "Swap Find Next and Find Previous.\nIf enabled, Find Next will search up and Find Previous will search down (Termurion's traditional behavior, which is a departure from Windows's standard). When disabled, search behaves like a normal Windows app.";
         let sync = "Synchronize search queries across windows and applications.\nNormally, when you enter a search query in a Find field all find fields in all applications get updated to hold the same value. This is utter nonsense, and can be disabled by setting this preference to No.";
         let bg = "Exclude the default background color when text is copied with color and font style?\nWhen off, the default background color will be left unset. Non-default background colors will remain.";
         let empty = "Disallow copying empty string to pasteboard.\nIf enabled, selecting an empty string (or all whitespace if trimming is enabled) will not erase the contents of the pasteboard.";
@@ -2978,19 +2978,19 @@ mod tests {
             assert_eq!((row.label.as_str(), row.help.as_str()), (help, help), "{key}");
         }
         let uv_label = "Use uv to provision the Python runtime for API scripts?";
-        let app_label = "Set IT2_APP_PATH environment variable on new sessions, pointing at this Tandem build\u{2019}s app bundle?";
+        let app_label = "Set IT2_APP_PATH environment variable on new sessions, pointing at this Termurion build\u{2019}s app bundle?";
         for (key, default, label, help) in [
             (
                 "PythonRuntimeUsesUV",
                 true,
                 uv_label,
-                format!("{uv_label}\nWhen enabled, Tandem uses uv to download Python and build per-script environments instead of the bundled Python runtime. Scripts already provisioned continue to run regardless of this setting; it only affects creating, importing, and migrating scripts."),
+                format!("{uv_label}\nWhen enabled, Termurion uses uv to download Python and build per-script environments instead of the bundled Python runtime. Scripts already provisioned continue to run regardless of this setting; it only affects creating, importing, and migrating scripts."),
             ),
             (
                 "SetIT2AppPath",
                 false,
                 app_label,
-                format!("{app_label}\nThis disambiguates the AppleScript target when multiple Tandem builds with the same bundle identifier are running, so that the \u{201c}it2\u{201d} CLI requests its cookie from this Tandem instance. Intended for Tandem developers. Only affects sessions created after changing this setting."),
+                format!("{app_label}\nThis disambiguates the AppleScript target when multiple Termurion builds with the same bundle identifier are running, so that the \u{201c}it2\u{201d} CLI requests its cookie from this Termurion instance. Intended for Termurion developers. Only affects sessions created after changing this setting."),
             ),
         ] {
             let row = schema::find_global(key).unwrap();
@@ -3202,13 +3202,13 @@ mod tests {
     }
 
     /// 13v1 Task 7 (`AS` MinRunningTime, OpenUntitledFile): the grace period and the icon click rows; the quit
-    /// row keeps its label and no longer says Tandem cannot stay without a window (R3).
+    /// row keeps its label and no longer says Termurion cannot stay without a window (R3).
     #[test]
     fn resident_rows_follow_iterm2() {
         let min = schema::find_global("MinRunningTime").expect("MinRunningTime");
         assert_eq!((min.tab.as_str(), min.section.as_str(), min.kind, min.default.clone()), ("Advanced", "General", Kind::Float, Some(Value::Float(10.0))));
         assert_eq!(min.label, "Grace period for automatic quitting after the last window is closed.");
-        assert_eq!(min.help, "Grace period for automatic quitting after the last window is closed.\nIf Tandem is configured to quit automatically when the last window is closed, this setting gives a grace period (in seconds) after startup where that feature is disabled. Set to 0 to have no grace period.");
+        assert_eq!(min.help, "Grace period for automatic quitting after the last window is closed.\nIf Termurion is configured to quit automatically when the last window is closed, this setting gives a grace period (in seconds) after startup where that feature is disabled. Set to 0 to have no grace period.");
         let open = schema::find_global("OpenUntitledFile").expect("OpenUntitledFile");
         assert_eq!((open.tab.as_str(), open.section.as_str(), open.kind, open.default.clone()), ("Advanced", "General", Kind::Bool, Some(Value::Boolean(true))));
         let text = "Open a new window when you click the notification area icon and no windows are already open, and also on app launch when no other windows are open?";
@@ -3249,8 +3249,8 @@ mod tests {
                 "General",
                 Kind::Bool,
                 Value::Boolean(true),
-                "Should opening a script with Tandem disable the default profile\u{2019}s \u{201c}Send Text at Start\u{201d} setting?".into(),
-                "\nIf you use \u{201c}tandem.exe file.ps1\u{201d} or drag a script onto Tandem's icon and this setting is enabled then the script will be executed in lieu of the profile's \u{201c}Send Text at Start\u{201d} setting. If this setting is off then both will be executed.".into(),
+                "Should opening a script with Termurion disable the default profile\u{2019}s \u{201c}Send Text at Start\u{201d} setting?".into(),
+                "\nIf you use \u{201c}termurion.exe file.ps1\u{201d} or drag a script onto Termurion's icon and this setting is enabled then the script will be executed in lieu of the profile's \u{201c}Send Text at Start\u{201d} setting. If this setting is off then both will be executed.".into(),
             ),
             ("OpenFileInNewWindows", "Windows", Kind::Bool, Value::Boolean(false), dep.into(), "\nOpen files in new windows, not new tabs or split panes.\nThis affects shell scripts opened from Explorer, for example. See also \u{201c}Open files in split panes\u{201d}.".into()),
             ("OpenFileInSplitPanes", "Windows", Kind::Bool, Value::Boolean(false), dep.into(), "\nOpen files in split panes.\nThis affects shell scripts opened from Explorer, for example. You must set \u{201c}Open files in new windows, not new tabs\u{201d} to \u{201c}No\u{201d} for this to take effect. See also \u{201c}When opening a file in a split pane, should it be a vertical split?\u{201d}".into()),
@@ -3292,7 +3292,7 @@ mod tests {
     fn utilities_rows_follow_iterm2() {
         let lc = "Set LC_TERMINAL=iTerm2.";
         for (key, label, help) in [
-            ("AddUtilitiesToPATH", "Add path to Tandem utilities to $PATH for new sessions?", "Add path to Tandem utilities to $PATH for new sessions?".to_string()),
+            ("AddUtilitiesToPATH", "Add path to Termurion utilities to $PATH for new sessions?", "Add path to Termurion utilities to $PATH for new sessions?".to_string()),
             ("ShouldSetLCTerminal", lc, format!("{lc}\nopenssh and mosh pass this to hosts you connect to. It communicates the current terminal emulator. This is useful for enabling terminal emulator-specific features.")),
         ] {
             let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
@@ -3594,7 +3594,7 @@ mod tests {
         assert_eq!(row.kind, Kind::Int);
         assert_eq!(row.default, Some(Value::Integer(10)));
         assert_eq!(row.label, "How far must the mouse move before a tab drag is initiated?");
-        assert!(row.help.ends_with("You must restart Tandem after changing this setting for it to take effect."), "{}", row.help);
+        assert!(row.help.ends_with("You must restart Termurion after changing this setting for it to take effect."), "{}", row.help);
     }
 
     #[test]
@@ -3832,7 +3832,7 @@ mod tests {
                 "General",
                 Kind::String,
                 s("https://iterm2.com/downloads/ai/manifest.json"),
-                "URL to check for updates to the AI model catalog.\nThe catalog defines the built-in AI models (context window, capabilities, and the recommended model per vendor). Tandem ships its catalog with each release and never downloads a newer one, so this URL is not used.".into(),
+                "URL to check for updates to the AI model catalog.\nThe catalog defines the built-in AI models (context window, capabilities, and the recommended model per vendor). Termurion ships its catalog with each release and never downloads a newer one, so this URL is not used.".into(),
             ),
             (
                 "AiChatVerboseConsoleLogging",
@@ -4097,7 +4097,7 @@ mod tests {
             assert!(s.help.starts_with(&format!("{label}\n")), "{key}");
         }
         let s = schema::find_global("SquareWindowCorners").expect("SquareWindowCorners");
-        assert!(s.help.ends_with("You must restart Tandem after changing this setting for it to take effect."));
+        assert!(s.help.ends_with("You must restart Termurion after changing this setting for it to take effect."));
     }
 
     /// The resize settings (`AS:692`, `:720`).
@@ -4169,7 +4169,7 @@ mod tests {
         assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", Kind::Bool));
         assert_eq!(s.default, Some(Value::Boolean(true)));
         assert_eq!(s.label, "Add notification area icon when excluded from taskbar?");
-        assert_eq!(s.help, "Add notification area icon when excluded from taskbar?\nWhen you turn on \u{201c}Exclude from taskbar and Alt+Tab switcher\u{201d} a notification area icon is added so you can switch the setting back off. Disable this to remove the icon. Doing so makes it very hard to get to Settings. You must restart Tandem after changing this setting.");
+        assert_eq!(s.help, "Add notification area icon when excluded from taskbar?\nWhen you turn on \u{201c}Exclude from taskbar and Alt+Tab switcher\u{201d} a notification area icon is added so you can switch the setting back off. Disable this to remove the icon. Doing so makes it very hard to get to Settings. You must restart Termurion after changing this setting.");
     }
 
     #[test]
@@ -4212,7 +4212,7 @@ mod tests {
     }
 
     /// 13l: the Advanced rows for frames and underlines (`AS:563-595`, `AS:479`, `AS:850`): tab, section, kind,
-    /// default, label (the first line of the help) and help, iTerm2's text with "Tandem" for "iTerm2".
+    /// default, label (the first line of the help) and help, iTerm2's text with "Termurion" for "iTerm2".
     #[test]
     fn drawing_rows_follow_iterm2() {
         use crate::advanced_pane::RowKind;
@@ -4233,7 +4233,7 @@ mod tests {
             ("UseMultiPassUnderlineRenderer", "Drawing", Kind::Bool, t.clone(), "Use multi-pass underline renderer?\nFixes underline gaps with ligature fonts. Requires restart."),
             ("ShowMetalFPSmeter", "Drawing", Kind::Bool, f.clone(), "Show FPS meter\nRequires Metal renderer"),
             ("MetalRedrawPeriod", "Drawing", Kind::Float, Value::Float(0.5), "GPU renderer redraws at least this often, in seconds.\nThis is to work around a problem where the GPU renderer encounters a lot of latency when drawing for the first time after a short period of inactivity. Set this to a big number to render it ineffectual."),
-            ("DisableAppNap", "General", Kind::Bool, f.clone(), "Disable App Nap.\nChange effective after restarting Tandem."),
+            ("DisableAppNap", "General", Kind::Bool, f.clone(), "Disable App Nap.\nChange effective after restarting Termurion."),
             ("ExtendBackgroundColorIntoMargins", "Experimental Features", Kind::Bool, t.clone(), "Extend background color into margins in alternate screen mode?"),
         ];
         assert_eq!(rows.len(), 15);
@@ -4270,7 +4270,7 @@ mod tests {
     #[test]
     fn gpu_rows_follow_iterm2() {
         use crate::schema::Kind;
-        let inert = "\nTandem always draws with the GPU; stored for settings you bring from iTerm2.";
+        let inert = "\nTermurion always draws with the GPU; stored for settings you bring from iTerm2.";
         let rows = [
             ("metalMaximizeThroughput", "Maximize throughput at the cost of higher latency", String::new()),
             ("disableMetalWhenUnplugged", "Disable GPU renderer when disconnected from power", inert.to_string()),
@@ -4285,7 +4285,7 @@ mod tests {
             assert_eq!(s.label, label, "{key}");
             assert_eq!(s.help, format!("{label}{note}"), "{key}");
         }
-        assert_eq!(GPU_RESTART, "You must restart Tandem for this change to take effect.");
+        assert_eq!(GPU_RESTART, "You must restart Termurion for this change to take effect.");
     }
 
     /// 13l: Appearance > Panes margins (`P:112-113`, in points).
@@ -4377,13 +4377,13 @@ mod tests {
     #[test]
     fn terminal_rows_follow_iterm2() {
         let focus = "Apps may turn on Focus Reporting.";
-        let osc7 = "Accept OSC 7 to set username, hostname, and path. Tandem shell integration now reports this information using OSC 7, so turning this off also disables shell integration\u{2019}s username, hostname, and directory tracking.";
+        let osc7 = "Accept OSC 7 to set username, hostname, and path. Termurion shell integration now reports this information using OSC 7, so turning this off also disables shell integration\u{2019}s username, hostname, and directory tracking.";
         let tab = "Default tab stop width for new sessions.";
         let xterm = "xterm version for secondary device attributes (SDA).";
         let color = "Report 16-bit color values to OSC 4 and 10 through 19.";
         let depth = "Maximum number of chunks to buffer.";
         let rows: [(&str, &str, Kind, Value, &str, String); 6] = [
-            ("FocusReportingEnabled", "Terminal", Kind::Bool, Value::Boolean(true), focus, format!("{focus}\nFocus reporting causes Tandem to send an escape sequence when a session gains or loses focus. It can cause problems when an ssh session dies unexpectedly because it gets left on, so some users prefer to disable it.")),
+            ("FocusReportingEnabled", "Terminal", Kind::Bool, Value::Boolean(true), focus, format!("{focus}\nFocus reporting causes Termurion to send an escape sequence when a session gains or loses focus. It can cause problems when an ssh session dies unexpectedly because it gets left on, so some users prefer to disable it.")),
             ("AcceptOSC7", "Terminal", Kind::Bool, Value::Boolean(true), osc7, osc7.to_string()),
             ("DefaultTabStopWidth", "Terminal", Kind::Int, Value::Integer(8), tab, format!("{tab}\nNote: this will break drawing in emacs and other apps.")),
             ("XtermVersion", "Terminal", Kind::Int, Value::Integer(2500), xterm, format!("{xterm}\nIncreasing this number enables more features in apps but may break things. Use 95 to recover pre-3.4.10 behavior.")),
@@ -4404,7 +4404,7 @@ mod tests {
         let above = "Save the screen to scrollback when an app moves the cursor above the prompt.";
         let rows: [(&str, &str, String); 2] = [
             ("SaveScrollBufferWhenClearing", clear, format!("{clear}\nWhen enabled, saves the current screen into scroll back buffer instead of clearing it.")),
-            ("SaveScrollbackWhenCursorMovesAbovePrompt", above, format!("{above}\nSome full-screen programs that don\u{2019}t use the alternate screen buffer repaint by moving the cursor to the top of the screen and overwriting whatever was already there, destroying content you can still see. When enabled, Tandem first scrolls the visible screen into history so that content isn\u{2019}t lost. Requires shell integration.")),
+            ("SaveScrollbackWhenCursorMovesAbovePrompt", above, format!("{above}\nSome full-screen programs that don\u{2019}t use the alternate screen buffer repaint by moving the cursor to the top of the screen and overwriting whatever was already there, destroying content you can still see. When enabled, Termurion first scrolls the visible screen into history so that content isn\u{2019}t lost. Requires shell integration.")),
         ];
         for (key, label, help) in rows {
             let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
@@ -4462,7 +4462,7 @@ mod tests {
         let fw = "Lone regional indicators render full-width.";
         let ag = "Detect base unicode characters with lookup table.";
         let rows: [(&str, &str, bool, &str, String); 5] = [
-            ("ZeroWidthSpaceAdvancesCursor", "Terminal", true, zw, format!("{zw}\nWhile a zero-width space should not advance the cursor per the Unicode spec, both Terminal.app and Konsole do this, and Weechat depends on it. You must restart Tandem after changing this setting.")),
+            ("ZeroWidthSpaceAdvancesCursor", "Terminal", true, zw, format!("{zw}\nWhile a zero-width space should not advance the cursor per the Unicode spec, both Terminal.app and Konsole do this, and Weechat depends on it. You must restart Termurion after changing this setting.")),
             ("Vs16Supported", "Experimental Features", false, a, a.to_string()),
             ("Vs16SupportedInPrimaryScreen", "Experimental Features", true, b, b.to_string()),
             ("FullWidthFlags", "Experimental Features", true, fw, format!("{fw}\nA complete flag is always two columns, which is the width wcwidth reports for the pair.")),
@@ -4508,15 +4508,15 @@ mod tests {
         }
         // (key, section, default, help); the label is the help's first line.
         let table: Vec<(&str, &str, D, String)> = vec![
-            ("CmdClickWhenInactiveInvokesSemanticHistory", "Mouse", D::B(false), "Win-click in an active pane while Tandem isn't the active app invokes Semantic History.\nBy default, Tandem respects the OS standard that Win-click in an app that doesn't have keyboard focus behaves like a non-Win click that does not raise the window.".into()),
+            ("CmdClickWhenInactiveInvokesSemanticHistory", "Mouse", D::B(false), "Win-click in an active pane while Termurion isn't the active app invokes Semantic History.\nBy default, Termurion respects the OS standard that Win-click in an app that doesn't have keyboard focus behaves like a non-Win click that does not raise the window.".into()),
             ("EnableUnderlineSemanticHistoryOnCmdHover", "Mouse", D::B(true), "Underline Semantic History-selectable items under the cursor while holding Win?".into()),
             ("EnableCmdClickPromptForShowCommandInfo", "Mouse", D::B(true), "Win-click in the prompt shows the Command Info window".into()),
             ("ShowButtonsForSelectedCommand", "General", D::B(true), "Show buttons at the top of a selected command?\nWhen you select a command by single clicking the command line or its output, buttons are shown on the top right with options like Copy and Share. Note that this setting only applies when marks are not \u{201c}line style\u{201d} such as when using Auto Composer.".into()),
             ("ShowURLPreviewForSemanticHistory", "Drawing", D::B(true), "Show URL preview on Win-hover for semantic history matches.".into()),
             ("IgnoreHardNewlinesInURLs", "Semantic History", D::B(false), "Ignore hard newlines for the purposes of locating URLs and file names for Semantic History.\nIf a hard newline occurs at the end of a line then Win-click will not see it all unless this setting is turned on. This is useful for some interactive applications. Turning this on will remove newlines from the \\3 and \\4 substitutions.".into()),
-            ("URLCharacterSet", "Semantic History", D::S(".?\\/:;$%=&_-,+~#@!*'(\u{ff08})\u{ff09}|[]"), "Non-alphanumeric characters considered part of a URL or file name for Semantic History.\nLetters and numbers are always considered part of the URL. These non-alphanumeric characters are used in addition for the purposes of figuring out where a URL begins and ends. You must restart Tandem for changes to this setting to take effect.".into()),
+            ("URLCharacterSet", "Semantic History", D::S(".?\\/:;$%=&_-,+~#@!*'(\u{ff08})\u{ff09}|[]"), "Non-alphanumeric characters considered part of a URL or file name for Semantic History.\nLetters and numbers are always considered part of the URL. These non-alphanumeric characters are used in addition for the purposes of figuring out where a URL begins and ends. You must restart Termurion for changes to this setting to take effect.".into()),
             ("URLCharacterSetExclusions", "Semantic History", D::S("\u{ac}"), "Characters never considered part of a URL.\nThe characters in this string may never occur in a URL; when one is seen that delineates the beginning or end of a URL.".into()),
-            ("FilenameCharacterSet", "Semantic History", D::S("$@"), "Non-alphanumeric characters considered part of a filename. Note that URL characters (a separate advanced setting) are also allowed.\nLetters and numbers are always considered part of the URL. These non-alphanumeric characters are used in addition for the purposes of figuring out where a file begins and ends. You must restart Tandem for changes to this setting to take effect.".into()),
+            ("FilenameCharacterSet", "Semantic History", D::S("$@"), "Non-alphanumeric characters considered part of a filename. Note that URL characters (a separate advanced setting) are also allowed.\nLetters and numbers are always considered part of the URL. These non-alphanumeric characters are used in addition for the purposes of figuring out where a file begins and ends. You must restart Termurion for changes to this setting to take effect.".into()),
             ("MaxSemanticHistoryPrefixOrSuffix", "Semantic History", D::I(2000), "Maximum number of bytes of text before and after click location to take into account.\nThis also limits the size of the \\3 and \\4 substitutions.".into()),
             ("PathsToIgnore", "Semantic History", D::S(""), "Paths to ignore for Semantic History.\nSeparate paths with a comma. Any file under one of these paths will not be openable with Semantic History. It is wise to add network file systems to this list, since they can be very slow.".into()),
             ("ShowYellowMarkForJobStoppedBySignal", "Semantic History", D::B(true), "Use a yellow for a Shell Integration prompt mark when the job is stopped by a signal.".into()),
@@ -4525,9 +4525,9 @@ mod tests {
             // 13s's row (Task 7, 02:839), in this section since the merge (S1).
             ("RequireSlashInURLGuess", "Semantic History", D::B(true), "Only consider a two+ part domain-name to be a URL if it also contains a slash.\nThis setting is used when guessing if a string is a URL for semantic history. When enabled, `example.com` would not be considered a URL but `example.com/` would be.".into()),
             ("DefaultURLScheme", "Semantic History", D::S("https"), "Default URL scheme.\nThis is applied to hostnames that are not a single word.".into()),
-            ("UrlHandlerCommand", "Semantic History", D::S(""), "Command to run when opening a clicked URL, instead of asking the OS to open it.\nWhen non-empty, this command runs as a silent background task whenever you click a URL (including OSC 8 hyperlinks and auto-detected URLs) that Tandem would otherwise hand to the system. Tandem splits it into a program and its arguments and starts the program directly, without a shell. This is an interpolated string; use \\(url) for the URL, which is always passed as one argument of its own (added at the end when \\(url) is absent), and \\(background) for whether a background open was requested (1 if you held Alt while clicking, otherwise 0). Any other variable is passed as one argument of its own (or part of one) and can never name the program; a variable holding a quote, a control character, a trailing backslash or one of & | < > ^ % ! ( ) ` is refused. The command is responsible for opening the URL however it likes (e.g., \u{201c}explorer.exe \\(url)\u{201d} to open it with the default browser). cmd.exe, conhost, forfiles, wt, sh, zsh, rundll32, regsvr32, msiexec and certutil cannot be URL handlers (they hand their arguments to another program); a .cmd or .bat handler, or an interpreter such as PowerShell, is not given URLs containing % ^ & | < > \" or control characters. When empty, URLs open normally. Tandem-internal schemes (iterm2:), URL schemes bound to a profile, and Semantic History file links are not affected.".into()),
+            ("UrlHandlerCommand", "Semantic History", D::S(""), "Command to run when opening a clicked URL, instead of asking the OS to open it.\nWhen non-empty, this command runs as a silent background task whenever you click a URL (including OSC 8 hyperlinks and auto-detected URLs) that Termurion would otherwise hand to the system. Termurion splits it into a program and its arguments and starts the program directly, without a shell. This is an interpolated string; use \\(url) for the URL, which is always passed as one argument of its own (added at the end when \\(url) is absent), and \\(background) for whether a background open was requested (1 if you held Alt while clicking, otherwise 0). Any other variable is passed as one argument of its own (or part of one) and can never name the program; a variable holding a quote, a control character, a trailing backslash or one of & | < > ^ % ! ( ) ` is refused. The command is responsible for opening the URL however it likes (e.g., \u{201c}explorer.exe \\(url)\u{201d} to open it with the default browser). cmd.exe, conhost, forfiles, wt, sh, zsh, rundll32, regsvr32, msiexec and certutil cannot be URL handlers (they hand their arguments to another program); a .cmd or .bat handler, or an interpreter such as PowerShell, is not given URLs containing % ^ & | < > \" or control characters. When empty, URLs open normally. Termurion-internal schemes (iterm2:), URL schemes bound to a profile, and Semantic History file links are not affected.".into()),
             ("RestrictSemanticHistoryPrefixAndSuffixToLogicalWindow", "Semantic History", D::B(true), "Respect soft boundaries for computing the prefix and suffix text passed to semantic history commands?\nDue to a long-standing bug this did not used to be respected. Soft boundaries were always respected for deciding what text was clicked on, but the prefix and suffix did not. If you have a semantic history command that depends on the bug, you can switch this off to get the pre-3.1.2 behavior.".into()),
-            ("EnableSemanticHistoryOnNetworkMounts", "Semantic History", D::B(false), "Enable semantic history for network-mounted filesystems?\nOnly enable this if you know your network-mounted filesystems are really fast and reliable. A slow filesystem may cause the entire Tandem app to hang.".into()),
+            ("EnableSemanticHistoryOnNetworkMounts", "Semantic History", D::B(false), "Enable semantic history for network-mounted filesystems?\nOnly enable this if you know your network-mounted filesystems are really fast and reliable. A slow filesystem may cause the entire Termurion app to hang.".into()),
             ("PrioritizeSmartSelectionActions", "Semantic History", D::B(false), "Check smart selection actions before existing files on Win-click?".into()),
             ("DisableSmartSelectionActionsOnClick", "Semantic History", D::B(false), "Disable performing the first matching Smart Selection\u{2019}s Action on Win-click?".into()),
         ];
@@ -4578,7 +4578,7 @@ mod tests {
             ("SuppressRestartAnnouncement", "Session", Kind::Bool, b(false), "Suppress the Restart Session offer.\nWhen a session terminates, it will offer to restart itself. Turn this on to suppress the offer permanently.".into()),
             ("AutoLogFormat", "Session", Kind::String, t(auto_log), "Format for automatic session log filenames.\nSee the Badges documentation for supported substitutions.".into()),
             ("AutologAppends", "Session", Kind::Bool, b(true), "Automatic session logging appends to existing files.\nWhen set to No, the file will be overwritten instead.".into()),
-            ("LogTimestampFormat", "Session", Kind::String, t("yyyy-MM-dd hh.mm.ss.SSS"), "Format for log timestamps. See Unicode TR 35-31 for syntax.\nYou must restart Tandem for changes to this setting to take effect.".into()),
+            ("LogTimestampFormat", "Session", Kind::String, t("yyyy-MM-dd hh.mm.ss.SSS"), "Format for log timestamps. See Unicode TR 35-31 for syntax.\nYou must restart Termurion for changes to this setting to take effect.".into()),
             ("LogTimestampsWithPlainText", "Session", Kind::Bool, b(true), "When logging plain text, include timestamps for each line?".into()),
             ("SessionEndMessageText", "Session", Kind::String, t(""), "Text displayed when a session ends. Leave empty to use default.".into()),
             ("SessionEndMessageDividerCharacter", "Session", Kind::String, t(""), divider.into()),
@@ -4610,11 +4610,11 @@ mod tests {
     }
 
     /// 13w Task 1 (`AS` Debugging rows, `02:631`, `02:633`, `02:858`): the three debug-log rows with
-    /// iTerm2's section, kind, default and text (Tandem's names for its own folders).
+    /// iTerm2's section, kind, default and text (Termurion's names for its own folders).
     #[test]
     fn debug_log_rows_follow_iterm2() {
         let rows: Vec<(&str, &str)> = vec![
-            ("StartDebugLoggingAutomatically", "Start debug logging automatically when Tandem is launched."),
+            ("StartDebugLoggingAutomatically", "Start debug logging automatically when Termurion is launched."),
             ("AppendToExistingDebugLog", "Append to existing debug log rather than replacing it."),
             ("LogToSyslog", "Debug logs also write to the debug output."),
         ];
@@ -4708,7 +4708,7 @@ mod tests {
         }
     }
 
-    /// 13w Task 6: the taskbar and mark-sound rows, iTerm2's text with Tandem's words.
+    /// 13w Task 6: the taskbar and mark-sound rows, iTerm2's text with Termurion's words.
     #[test]
     fn taskbar_rows_follow_iterm2() {
         let rows = [
@@ -4764,7 +4764,7 @@ mod tests {
             ("TriggerRadius", "Terminal", Kind::Int, Value::Integer(3), "Number of screen lines to match against trigger regular expressions.\nTrigger regular expressions are matched against the last logical line of text when a newline is received. A search is performed to find the start of the line. Since very long lines would cause performance problems, the search (and consequently the regular expression match, highlighting, and so on) is limited to this many screen lines.".to_string()),
             ("AllowIdempotentTriggers", "Terminal", Kind::Bool, Value::Boolean(false), "Evaluate idempotent triggers periodically in interactive apps, even when triggers in interactive apps are disabled.".to_string()),
             ("IdempotentTriggerModeRateLimit", "Terminal", Kind::Float, Value::Float(0.25), "When evaluating idempotent triggers in interactive apps, wait this long (in seconds) between updates.\nThis limits the performance impact of trigger evaluation.".to_string()),
-            ("MaximumNumberOfTriggerCommands", "General", Kind::Int, Value::Integer(16), "Maximum number of trigger-launched commands that can run at once.\nIf too many \u{201c}Run Command\u{2026}\u{201d} triggers fire their commands will be queued. You must restart Tandem for changes to this setting to take effect.".to_string()),
+            ("MaximumNumberOfTriggerCommands", "General", Kind::Int, Value::Integer(16), "Maximum number of trigger-launched commands that can run at once.\nIf too many \u{201c}Run Command\u{2026}\u{201d} triggers fire their commands will be queued. You must restart Termurion for changes to this setting to take effect.".to_string()),
             ("AlertTriggerRateLimit", "General", Kind::Float, Value::Float(1.0), format!("Rate limit for Alert triggers.{again}")),
             ("UserNotificationTriggerRateLimit", "General", Kind::Float, Value::Float(0.0), format!("Rate limit for Notification triggers.{again}")),
         ];

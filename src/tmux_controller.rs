@@ -31,7 +31,7 @@ enum Req {
     ListWindows,
     /// `list-windows -F "#{window_id}"` for a tab reorder: the wanted order.
     Reorder(Vec<u32>),
-    /// `new-window -PF` from Tandem: the tmux window whose Tandem window it joins.
+    /// `new-window -PF` from Termurion: the tmux window whose Termurion window it joins.
     NewWindow(Option<u32>),
     /// `refresh-client -A '%P:pause'` for these panes.
     PausePanes(Vec<u32>),
@@ -63,7 +63,7 @@ enum Req {
     LiveHotkeys,
     /// `list-panes -s` before `@tab_colors` is written: the panes that still exist.
     LivePanes,
-    /// `break-pane -P`: the tmux window whose Tandem window gets the new one (None: a new window).
+    /// `break-pane -P`: the tmux window whose Termurion window gets the new one (None: a new window).
     BreakPane(Option<u32>),
     /// `display-message -p "#{status-interval}"` for the status monitors.
     StatusInterval,
@@ -146,7 +146,7 @@ pub enum Action {
     InitialWindowsOpened,
     /// The attach found hidden windows or too many (the Dashboard may open).
     Attached { too_many: bool, hidden: bool },
-    /// The session's `@iterm2_id`: another gateway of this Tandem may already show it.
+    /// The session's `@iterm2_id`: another gateway of this Termurion may already show it.
     SessionGuid(String),
     SelectWindow(u32),
     /// A pane monitor's new value.
@@ -166,7 +166,7 @@ pub enum Action {
     StatusLine { window: u32, side: Side, value: String },
 }
 
-/// What Tandem saved about a tmux window's Tandem window and tab.
+/// What Termurion saved about a tmux window's Termurion window and tab.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Restore {
     pub settings: Option<crate::tmux_persist::WindowSettings>,
@@ -174,7 +174,7 @@ pub struct Restore {
     pub tab_title: Option<String>,
     /// The tab's place in its window, when it comes back from being hidden.
     pub tab_index: Option<usize>,
-    /// The Tandem window (`pty-<key>`) it was hidden from.
+    /// The Termurion window (`pty-<key>`) it was hidden from.
     pub terminal: Option<String>,
     pub tab_colors: Vec<(u32, Option<(u8, u8, u8)>)>,
     /// The panes' session hotkeys `@hotkeys` holds (the person has not allowed them yet).
@@ -183,7 +183,7 @@ pub struct Restore {
     pub session_name: String,
 }
 
-/// One Tandem window, as saved: its name, its tmux windows (tab order), where it is, its
+/// One Termurion window, as saved: its name, its tmux windows (tab order), where it is, its
 /// size, and its tmux tabs' title overrides.
 #[derive(Clone, Debug, Default)]
 pub struct GroupState {
@@ -273,7 +273,7 @@ pub struct Controller {
     window_sizes: HashMap<u32, (u32, u32)>,
     /// Client resizes whose relist has not come back (only the last one is read).
     outstanding: u32,
-    /// Windows Tandem asked for: not anonymous when tmux adds them.
+    /// Windows Termurion asked for: not anonymous when tmux adds them.
     intentional: BTreeSet<u32>,
     /// The last `@affinities` command sent (iTerm2 skips an unchanged one).
     last_affinities: Option<String>,
@@ -309,7 +309,7 @@ pub struct Controller {
     /// get-clipboard and set-clipboard levels.
     clip_get: u8,
     clip_set: u8,
-    /// Saved window state read on attach, and what Tandem changed since.
+    /// Saved window state read on attach, and what Termurion changed since.
     per_window: HashMap<String, crate::tmux_persist::WindowSettings>,
     per_tab: HashMap<u32, String>,
     origins: HashMap<u32, (i32, i32)>,
@@ -319,7 +319,7 @@ pub struct Controller {
     pub hotkeys: HashMap<u32, crate::hotkey::Shortcut>,
     /// Where a pane broken out to a new window should open (by pane).
     break_points: HashMap<u32, (i32, i32)>,
-    /// Hidden windows opened again: their Tandem window and tab index.
+    /// Hidden windows opened again: their Termurion window and tab index.
     unburied: HashMap<u32, (String, usize)>,
     /// The last command sent for each saved option (iTerm2 skips an unchanged one).
     last_saved: HashMap<&'static str, String>,
@@ -411,7 +411,7 @@ impl Controller {
         self.windows.iter().find(|(_, ps)| ps.contains(&pane)).map(|(w, _)| *w)
     }
 
-    /// The tmux tabs' sizes in cells (by tmux window) after Tandem laid them out: per
+    /// The tmux tabs' sizes in cells (by tmux window) after Termurion laid them out: per
     /// window on tmux 2.9 and later, else one client size, the smallest.
     pub fn tabs_resized(&mut self, tabs: &[(u32, (u32, u32))], gw: &mut Gateway) {
         let Some((s, _)) = self.session.clone() else { return };
@@ -479,7 +479,7 @@ impl Controller {
         self.with_relist(crate::tmux_edits::move_pane(src, dst, side_by_side, before), gw);
     }
 
-    /// New Tmux Tab (`affinity`: the tmux window whose Tandem window gets the tab) or New
+    /// New Tmux Tab (`affinity`: the tmux window whose Termurion window gets the tab) or New
     /// Tmux Window. With variable sizes the client first takes the new window's size.
     /// Returns the tag of the `new-window` command, whose reply comes as `NewWindowReply`.
     pub fn new_window(&mut self, affinity: Option<u32>, dir: &crate::tmux_edits::Dir, size: Option<(u32, u32)>, gw: &mut Gateway) -> Tag {
@@ -512,7 +512,7 @@ impl Controller {
         gw.send(&crate::tmux_edits::kill_window(window), None, Flags { tolerate: true, laggy: true, ..Default::default() });
     }
 
-    /// Which tmux windows share a Tandem window, saved for the next attach (skipped while
+    /// Which tmux windows share a Termurion window, saved for the next attach (skipped while
     /// windows are still opening, and when unchanged).
     pub fn save_affinities(&mut self, groups: &[crate::tmux_persist::Group], gw: &mut Gateway) {
         let Some((s, _)) = self.session.clone() else { return };
@@ -606,7 +606,7 @@ impl Controller {
     }
 
     /// Opens windows from the Dashboard (iTerm2's openWindowWithId intentional): out of
-    /// `@hidden`, then listed and opened; `tabs`: all in one Tandem window.
+    /// `@hidden`, then listed and opened; `tabs`: all in one Termurion window.
     pub fn open_windows(&mut self, windows: &[u32], tabs: bool, gw: &mut Gateway) {
         let Some((s, _)) = self.session.clone() else { return };
         for w in windows {
@@ -843,7 +843,7 @@ impl Controller {
         }
     }
 
-    /// A pane's variables changed in Tandem: all of them go to `@uservars` (tmux 3.1 and
+    /// A pane's variables changed in Termurion: all of them go to `@uservars` (tmux 3.1 and
     /// later), unless tmux has them already.
     pub fn sync_user_vars(&mut self, pane: u32, vars: &BTreeMap<String, String>, gw: &mut Gateway) {
         if self.v() < 3.1 || self.user_vars.get(&pane) == Some(vars) {
@@ -859,7 +859,7 @@ impl Controller {
         gw.send(&cmd, Some(t), Flags { tolerate: true, ..Default::default() });
     }
 
-    /// What was saved about a tmux window that is opening (with these panes): the Tandem
+    /// What was saved about a tmux window that is opening (with these panes): the Termurion
     /// window's settings, origin, the tab's title and place, and the panes' tab colors.
     pub fn restore_of(&mut self, window: u32, panes: &[u32]) -> Restore {
         let terminal = self.affinities.class_of(&window.to_string()).into_iter().find(|n| n.starts_with("pty-"));
@@ -878,7 +878,7 @@ impl Controller {
         }
     }
 
-    /// Saves the Tandem windows' state (per-window settings, per-tab settings, origins, and
+    /// Saves the Termurion windows' state (per-window settings, per-tab settings, origins, and
     /// buried indexes), each only when it changed; skipped while windows are opening.
     pub fn save_window_state(&mut self, groups: &[GroupState], gw: &mut Gateway) {
         let Some((s, _)) = self.session.clone() else { return };
@@ -941,7 +941,7 @@ impl Controller {
     }
 
     /// Move Session to Window (`sibling` None, opening at `point`) or to Tab (`sibling`: a
-    /// tmux window in the Tandem window that gets it).
+    /// tmux window in the Termurion window that gets it).
     pub fn break_pane(&mut self, pane: u32, sibling: Option<u32>, point: Option<(i32, i32)>, gw: &mut Gateway) {
         if let Some(p) = point {
             self.break_points.insert(pane, p);
@@ -959,7 +959,7 @@ impl Controller {
         self.buried.entry(terminal.to_string()).or_default().push((window, index));
     }
 
-    /// A hidden window opens again: it goes back to its Tandem window and tab index.
+    /// A hidden window opens again: it goes back to its Termurion window and tab index.
     pub fn unbury(&mut self, window: u32) -> Option<(String, usize)> {
         let (terminal, index) = self.buried.iter_mut().find_map(|(t, list)| {
             let i = list.iter().position(|(w, _)| *w == window)?;
@@ -1023,7 +1023,7 @@ impl Controller {
         gw.send("list-windows -F \"#{window_id}\"", Some(t), Flags::default());
     }
 
-    /// Tandem closed this pane (tmux still has it, until milestone 8c sends kill-pane): the
+    /// Termurion closed this pane (tmux still has it, until milestone 8c sends kill-pane): the
     /// next layout that names it opens it again.
     pub fn forget_pane(&mut self, pane: u32) {
         for ps in self.windows.values_mut() {
@@ -1682,7 +1682,7 @@ mod tests {
         assert_eq!((panes[0].w, panes[0].h), (80, 24));
         assert!(panes[0].restore.starts_with(b"line1\r\nline2"));
         assert_eq!(r.lines(&["%output %0 late"]), vec![Action::Output(0, b"late".to_vec())]);
-        assert!(r.lines(&["%output %9 other"]).is_empty(), "a pane Tandem does not show");
+        assert!(r.lines(&["%output %9 other"]).is_empty(), "a pane Termurion does not show");
     }
 
     fn opened() -> Rig {
@@ -1843,7 +1843,7 @@ mod tests {
             assert!(r.answer(Some("")).is_empty(), "the rest of its captures open nothing");
         }
         assert!(!r.ctl.windows.contains_key(&8));
-        // A window Tandem shows still closes its tab.
+        // A window Termurion shows still closes its tab.
         assert_eq!(r.lines(&["%window-close @0"]), vec![Action::Close(0)]);
     }
 
@@ -1885,7 +1885,7 @@ mod tests {
         assert_eq!(a, vec![Action::SessionGuid("ABC-123".into())]);
         assert_eq!(r.ctl.session_guid.as_deref(), Some("ABC-123"));
         let (heading, text, buttons) = crate::tmux_persist::attach_warning(true);
-        assert_eq!((heading, text), ("Cannot Attach", "This instance of Tandem is already attached to this session"));
+        assert_eq!((heading, text), ("Cannot Attach", "This instance of Termurion is already attached to this session"));
         assert_eq!(buttons, vec!["OK", "Reveal", "Force Detach Other"]);
         assert_eq!(crate::tmux_persist::attach_warning(false).2, vec!["OK"]);
     }
@@ -2015,7 +2015,7 @@ mod tests {
         r.ctl.break_pane(0, None, Some((10, 20)), &mut r.gw);
         assert_eq!(r.sent(), "break-pane -P -F \"#{window_id}\" -s \"%0\"\r");
         r.answer(Some("@5"));
-        assert!(r.ctl.intentional.contains(&5), "a new Tandem window");
+        assert!(r.ctl.intentional.contains(&5), "a new Termurion window");
         assert_eq!(r.ctl.restore_of(5, &[0]).origin, Some((10, 20)));
         assert_eq!(r.ctl.restore_of(5, &[0]).origin, None, "a break-out point is used once");
         r.ctl.break_pane(0, Some(3), None, &mut r.gw);
@@ -2031,7 +2031,7 @@ mod tests {
         r.ctl.save_window_state(&[], &mut r.gw);
         assert!(r.sent().contains(&crate::tmux_persist::option_command(0, "@buried_indexes", "pty-2:0=1")));
         assert_eq!(r.ctl.unbury(0), Some(("pty-2".into(), 1)));
-        assert!(r.ctl.affinities.class_of("0").contains("pty-2"), "back to its Tandem window");
+        assert!(r.ctl.affinities.class_of("0").contains("pty-2"), "back to its Termurion window");
         let back = r.ctl.restore_of(0, &[0]);
         assert_eq!((back.tab_index, back.terminal.as_deref()), (Some(1), Some("pty-2")), "its window, even with no tmux tab left there");
         assert_eq!(r.ctl.unbury(0), None);

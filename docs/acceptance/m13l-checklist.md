@@ -1,8 +1,8 @@
 # Milestone 13l acceptance checklist
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Nothing in this milestone was checked on screen while it was built, so every line is a first look. The pure
 parts (cadence, pacer, power state, stroke geometry and patterns, gap cutting, margin math and colors, the
@@ -25,7 +25,7 @@ on for the frame rows. Run the underline rows at 100%, 125% and 200% display sca
 | 6 | Advanced LowPowerModeFrameRate 10 with the saver on: 10 fps. | |
 | 7 | Settings > General > GPU Renderer, Maximize throughput off: 60 fps under heavy output (not adaptive). | |
 | 8 | A still window with the meter on and MetalRedrawPeriod 0.5 (default): the frame number rises twice a second. | |
-| 9 | Idle CPU zero with MetalRedrawPeriod 0 (live check): the frame number stops, Task Manager shows Tandem at 0% for a minute with a blink-off profile and no activity. At 0.5 the frame number rises twice a second and CPU is a small steady figure. | |
+| 9 | Idle CPU zero with MetalRedrawPeriod 0 (live check): the frame number stops, Task Manager shows Termurion at 0% for a minute with a blink-off profile and no activity. At 0.5 the frame number rises twice a second and CPU is a small steady figure. | |
 | 10 | Two panes: only the focused pane shows the meter. Two windows: each counts its own frames. A minimized, hidden or cloaked (hotkey) window draws no frames and wakes nothing. | |
 | 11 | A cursor on row 0 at the right edge draws over the meter (kept, listed in the rulings). | |
 | 12 | Output into a background tab or a minimized window: no frames; on restore the window shows current output. A background tab's title and new-output icon still update while output runs in it. | |
@@ -44,11 +44,11 @@ on for the frame rows. Run the underline rows at 100%, 125% and 200% display sca
 
 | # | Check | Result |
 |---|---|---|
-| 18 | Dual-GPU laptop: stderr lists every adapter ("adapter available:") and "renderer adapter:" shows the integrated one by default; Task Manager shows Tandem on the integrated GPU. | |
-| 19 | Prefer integrated GPU off, restart Tandem (integrated GPU preference after restart): Tandem lands on the default (discrete) adapter. Toggling it shows the restart note under the row. | |
+| 18 | Dual-GPU laptop: stderr lists every adapter ("adapter available:") and "renderer adapter:" shows the integrated one by default; Task Manager shows Termurion on the integrated GPU. | |
+| 19 | Prefer integrated GPU off, restart Termurion (integrated GPU preference after restart): Termurion lands on the default (discrete) adapter. Toggling it shows the restart note under the row. | |
 | 20 | Prefer integrated GPU is enabled on a two-GPU machine and disabled on a single-GPU machine; before the first window's GPU starts it reads disabled (kept). | |
 | 21 | A see-through window (transparency) uses the same adapter as an opaque window (the log never shows two different names in "renderer adapter:"). | |
-| 22 | Advanced Disable App Nap on, restart: Task Manager's Efficiency mode stays off for Tandem when minimized. The two Disable GPU rows, UseAdaptiveFrameRate, DisableAdaptiveFrameRateInInteractiveApps, UseLowPowerGPUWhenUnplugged and UseMultiPassUnderlineRenderer change nothing (stored, inert). | |
+| 22 | Advanced Disable App Nap on, restart: Task Manager's Efficiency mode stays off for Termurion when minimized. The two Disable GPU rows, UseAdaptiveFrameRate, DisableAdaptiveFrameRateInInteractiveApps, UseLowPowerGPUWhenUnplugged and UseMultiPassUnderlineRenderer change nothing (stored, inert). | |
 
 ## Underline and strikethrough styles (run at 100%, 125% and 200%)
 
@@ -66,7 +66,7 @@ on for the frame rows. Run the underline rows at 100%, 125% and 200% display sca
 | 32 | Make Screenshot of underlined links with Underline OSC 8 hyperlinks off shows no dashes; struck text sits mid x-height; gaps appear in the screenshot. | |
 | 33 | Hover, annotation and IME underlines do not gap at descenders and are not trimmed under a popup (kept minor). | |
 
-## Underlines under every Tandem surface
+## Underlines under every Termurion surface
 
 Fill the pane with SGR 4 and 9 spaces first: `for i in $(seq 1 60); do printf '\e[4;9m%*s\e[0m\n' 160 ''; done`.
 
@@ -107,4 +107,4 @@ Fill the pane with SGR 4 and 9 spaces first: `for i in $(seq 1 60); do printf '\
 | 51 | Settings > Appearance > Panes: TerminalMargin and TerminalVMargin draw one labeled drag value each; General > tmux, Instant Replay and AI pages show no new bare drag values. | |
 | 52 | A resize, split or divider drag during a Reduce Flicker hold ends the hold at once (a live frame); a program that hides the cursor in a window on another tab or a parked window releases to a fresh frame within 0.2 s, even with MetalRedrawPeriod 0. | |
 | 53 | A full screen of dotted underline (SGR 4:4 across a 200x60 window) scrolls without a visible stall (about 60k quads; time it). | |
-| 54 | Copy Performance Stats numbers are Tandem's own and are not comparable with iTerm2's. | |
+| 54 | Copy Performance Stats numbers are Termurion's own and are not comparable with iTerm2's. | |

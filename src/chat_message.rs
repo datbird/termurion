@@ -1,6 +1,6 @@
 //! A chat message and its Swift-shaped JSON (`AITerm/Message.swift`, `Categories/Result+iTerm.swift`,
 //! `AITerm/TerminalCommand.swift`), so a message iTerm2 wrote into `chatdb.sqlite` reads back and
-//! a message Tandem writes has iTerm2's shape. Pure.
+//! a message Termurion writes has iTerm2's shape. Pure.
 //!
 //! Swift's synthesized enum coding: each case is a one-key object named by the case, its
 //! unlabeled values are `_0`, `_1`, ... and its labeled ones use their labels, a `nil` value
@@ -14,7 +14,7 @@ use crate::ai_permissions::Category;
 use crate::ai_tools::{truncated, Call};
 
 /// Shown in place of a message this build cannot read (`CVC:2569-2572`).
-pub const UNSUPPORTED_TEXT: &str = "This message requires a newer version of Tandem to view.";
+pub const UNSUPPORTED_TEXT: &str = "This message requires a newer version of Termurion to view.";
 
 /// The chat list's snippet length (`MSG:455-459`).
 pub const SNIPPET_MAX: usize = 40;
@@ -70,7 +70,7 @@ pub struct AiError {
 pub struct RemoteCommand {
     pub llm_message: Value,
     pub call: Call,
-    /// Tandem's (final review I1): for a browser call, the host its pane showed when the approval
+    /// Termurion's (final review I1): for a browser call, the host its pane showed when the approval
     /// was asked (`ai_browser::Site::host`), written as `termurionSite`; None for every other call.
     pub site: Option<String>,
 }
@@ -80,7 +80,7 @@ impl RemoteCommand {
         RemoteCommand { llm_message, call, site: None }
     }
 
-    /// The text of the parked request: a browser call asked about a site gets Tandem's text naming
+    /// The text of the parked request: a browser call asked about a site gets Termurion's text naming
     /// the action and the site (`ai_browser::approval_text`); every other call keeps
     /// `consent_description`.
     pub fn consent_text(&self) -> String {
@@ -827,7 +827,7 @@ mod tests {
             assert_eq!(decode_content(bad), Content::Unsupported(bad.to_string()), "{bad}");
         }
         assert_eq!(decode_content(r#"{"setPermissions":{"_0":["View History"]}}"#), Content::SetPermissions(vec![Category::ViewContents]));
-        assert_eq!(UNSUPPORTED_TEXT, "This message requires a newer version of Tandem to view.");
+        assert_eq!(UNSUPPORTED_TEXT, "This message requires a newer version of Termurion to view.");
         let t = r#"{"futureThing":  {"_0" : 1}}"#;
         assert_eq!(encode_content(&Content::Unsupported(t.to_string())), t);
     }

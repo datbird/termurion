@@ -293,7 +293,7 @@ pub(super) fn ensure_mint_sub(broker: &mut crate::chat_broker::Broker, sub: &mut
 /// What Session > Open AI Chat says when the earlier run's links could not be cleared, so no
 /// chat binds to a terminal this run; None while links work.
 pub(super) fn links_off_text(off: bool) -> Option<&'static str> {
-    off.then_some("Chats cannot be linked to terminal sessions in this run: an earlier run's links could not all be cleared. Restart Tandem to try again.")
+    off.then_some("Chats cannot be linked to terminal sessions in this run: an earlier run's links could not all be cleared. Restart Termurion to try again.")
 }
 
 impl App {
@@ -942,7 +942,7 @@ mod tests {
     fn links_off_says_so() {
         assert_eq!(links_off_text(false), None);
         let text = links_off_text(true).expect("a message");
-        assert!(text.contains("cannot be linked") && text.contains("Restart Tandem"), "{text}");
+        assert!(text.contains("cannot be linked") && text.contains("Restart Termurion"), "{text}");
     }
 
     fn ask(_: Category) -> i64 {
@@ -1270,7 +1270,7 @@ mod tests {
         let (_, saved) = set_permission_in(&mut store, &mut overrides, key(&chat.id, Category::ViewContents), Permission::Never).unwrap();
         assert!(!saved);
         assert_eq!(overrides.get(&chat.id, SESSION, Category::ViewContents, &ask), Permission::Never);
-        assert_eq!(ai_permissions::NOT_SAVED, "The permission change could not be saved. It applies until Tandem quits.");
+        assert_eq!(ai_permissions::NOT_SAVED, "The permission change could not be saved. It applies until Termurion quits.");
     }
 
     #[test]

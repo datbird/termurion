@@ -191,7 +191,7 @@ pub fn row_with(t: &Trigger, workgroups: &[(String, String)]) -> Row {
     if !t.job.is_empty() {
         detail.push_str(&format!("Job: {} ", t.job));
     }
-    let action = triggers::action_info(&t.action).map_or_else(|| format!("{} (not in Tandem)", t.action), action_label);
+    let action = triggers::action_info(&t.action).map_or_else(|| format!("{} (not in Termurion)", t.action), action_label);
     match crate::trigger_events::EventKind::from_match_type(t.match_type) {
         Some(e) => detail.push_str(&format!("Event: {} {action}", event_label(e))),
         None => detail.push_str(&format!("/{}/ {action}", t.regex)),
@@ -334,7 +334,7 @@ pub fn browser_row(t: &Trigger) -> Row {
         detail.push_str(&format!("/{}/ ", shown(t.extra.get(CONTENT_REGEX_KEY).and_then(|v| v.as_str()).unwrap_or(""))));
     }
     let info = triggers::browser_action_info(&t.action);
-    detail.push_str(&info.map_or_else(|| format!("{} (not in Tandem)", shown(&t.action)), action_label));
+    detail.push_str(&info.map_or_else(|| format!("{} (not in Termurion)", shown(&t.action)), action_label));
     if info.is_some_and(|a| a.kind == Kind::BrowserColors) {
         let (fg, bg) = triggers::browser_colors(&t.parameter);
         for (label, c) in [(" Text: ", fg), (" Background: ", bg)] {
@@ -953,7 +953,7 @@ mod tests {
         assert_eq!(r.detail, "Instant. Job: vim /err/ Highlight Text\u{2026} {#ff0000,}");
         assert!(r.faint, "disabled rows are faint");
         assert_eq!(row(&trig("", "x", "CaptureTrigger", "")).detail, "/x/ Capture Output");
-        assert_eq!(row(&trig("", "x", "NoSuch", "")).detail, "/x/ NoSuch (not in Tandem)");
+        assert_eq!(row(&trig("", "x", "NoSuch", "")).detail, "/x/ NoSuch (not in Termurion)");
         assert_eq!(action_label(crate::triggers::action_info("iTermEnterWorkgroupTrigger").unwrap()), "Enter Workgroup\u{2026}");
         let ew = trig("", "x", "iTermEnterWorkgroupTrigger", "gid");
         assert_eq!(row_with(&ew, &[("gid".into(), "Chat".into())]).detail, "/x/ Enter Workgroup\u{2026} Chat", "the workgroup's name, never its id");

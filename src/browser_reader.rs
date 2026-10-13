@@ -44,7 +44,7 @@ fn statement_body(text: &str) -> String {
 // byte-identical (B6, the 13x3 rule): the assembled loader checks `isTrusted`. The text must be
 // found exactly once, or there is no reader script.
 const ESCAPE_RAW: &str = "        if (event.key === 'Escape' && isReaderMode) {\n";
-const ESCAPE_TYPED: &str = "        // Tandem: trusted keys only (iTerm2 accepts synthetic Escape)\n        if (event.isTrusted && event.key === 'Escape' && isReaderMode) {\n";
+const ESCAPE_TYPED: &str = "        // Termurion: trusted keys only (iTerm2 accepts synthetic Escape)\n        if (event.isTrusted && event.key === 'Escape' && isReaderMode) {\n";
 
 fn trust_escape(script: &str) -> Result<String, String> {
     match script.matches(ESCAPE_RAW).count() {
@@ -99,7 +99,7 @@ pub fn plain_text_body() -> String {
     expression_body(&fill_template(file("extract-plain-text.js"), &[("TERMURION_UI", TERMURION_UI)]))
 }
 
-/// What Tandem's injecting scripts add to a page (the injecting scripts are upstream's, so this
+/// What Termurion's injecting scripts add to a page (the injecting scripts are upstream's, so this
 /// list names what they create): removed from the clone both readers use, so none of it (a mark
 /// name, a find bubble) reaches a model. The one list; both scripts take it as `{{TERMURION_UI}}`.
 pub const TERMURION_UI: &str = r#"#iterm-mark-annotations, .iterm-mark-annotation, .find-nav-bubble, #find-nav-styles, #iterm2-autofill-highlight-style, #iterm-copy-mode-cursor, button[aria-label="Open Password Manager"], button[aria-label^="Autofill "], [data-termurion-ui]"#;
@@ -114,7 +114,7 @@ pub fn markdown_answer(v: &serde_json::Value) -> String {
     v.as_str().map_or_else(|| NO_CONTENT.to_string(), str::to_string)
 }
 
-/// The most page text or markdown Tandem keeps, in bytes. The page chooses the text: the answer first
+/// The most page text or markdown Termurion keeps, in bytes. The page chooses the text: the answer first
 /// meets the runner's `MAX_RESULT` (the JSON text of the answer, escapes counted, as `ViewGate::admit`
 /// weighs a payload), and the model then keeps at most this much of what passed.
 pub const MAX_PAGE_TEXT: usize = 1024 * 1024;
@@ -296,7 +296,7 @@ mod tests {
         "distraction-removal-helpers.js", "enter-distraction-removal.js", "exit-distraction-removal.js", "remove-element-at-point.js", "extract-plain-text.js", "convert-to-markdown.js", "turndown.browser.umd.js",
     ];
 
-    /// Tandem's own page UI (a mark's name, an autofill or password button, a find bubble) never
+    /// Termurion's own page UI (a mark's name, an autofill or password button, a find bubble) never
     /// reaches the model: the converter's clone drops each node the injecting scripts create, and
     /// every selector names something a script really creates.
     #[test]
@@ -329,7 +329,7 @@ mod tests {
         assert!(plain.find("{{TERMURION_UI}}").unwrap() < plain.find("new Readability(").unwrap());
         // The removal runs before the markdown is made from the clone.
         assert!(conv.find("{{TERMURION_UI}}").unwrap() < conv.find("service.turndown(").unwrap());
-        // The injecting scripts stay upstream's: no Tandem marker patched into them.
+        // The injecting scripts stay upstream's: no Termurion marker patched into them.
         assert!(!file("show-named-mark-annotations.js").contains("data-termurion-ui"));
     }
 
@@ -385,7 +385,7 @@ mod tests {
         let [_, b] = loader_bodies().unwrap();
         assert_eq!(b.matches(ESCAPE_TYPED).count(), 1);
         assert!(b.contains("if (event.isTrusted && event.key === 'Escape' && isReaderMode) {"));
-        assert!(b.contains("// Tandem: trusted keys only (iTerm2 accepts synthetic Escape)"));
+        assert!(b.contains("// Termurion: trusted keys only (iTerm2 accepts synthetic Escape)"));
         assert!(trust_escape("no target here").is_err());
         assert!(trust_escape(&format!("{ESCAPE_RAW}{ESCAPE_RAW}")).is_err());
         assert_eq!(trust_escape(&format!("a{ESCAPE_RAW}b")), Ok(format!("a{ESCAPE_TYPED}b")));

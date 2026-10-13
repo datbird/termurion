@@ -542,7 +542,7 @@ impl App {
         let key = crate::ai_prompts::Prompt::CodeReviewSystem.key();
         let stored = self.globals.string(key);
         let system = if stored.is_empty() { crate::ai_prompts::default_text(key).unwrap_or_default().to_string() } else { stored };
-        let dir = review_tmp_dir().ok_or("Tandem could not find a local folder for the review's files, so the review did not start.")?;
+        let dir = review_tmp_dir().ok_or("Termurion could not find a local folder for the review's files, so the review did not start.")?;
         let file = self.write_review_file(instance, config, &dir, &system)?;
         let resources = write_review_settings(&dir)?;
         let made = cr::review_argv(template, prompt, &file, &resources, &base)?;
@@ -565,7 +565,7 @@ impl App {
             remove_review_file(&old);
         }
         #[cfg(windows)]
-        let made = cr::write_system_prompt(dir, text).map_err(|e| format!("Tandem could not write the review's system prompt: {e}"));
+        let made = cr::write_system_prompt(dir, text).map_err(|e| format!("Termurion could not write the review's system prompt: {e}"));
         #[cfg(not(windows))]
         let made: Result<std::path::PathBuf, String> = {
             let _ = (dir, text);
@@ -766,7 +766,7 @@ fn review_tmp_dir() -> Option<crate::localfs::LocalPath> {
 /// The resources folder the review settings file lives in: `<tmp>\..\resources`, the file rewritten when it
 /// differs and made owner-only. Returns the folder (`\(iterm2.appBundlePath)/Contents/Resources`).
 fn write_review_settings(tmp: &crate::localfs::LocalPath) -> Result<std::path::PathBuf, String> {
-    let bad = || "Tandem could not write the review's settings file, so the review did not start.".to_string();
+    let bad = || "Termurion could not write the review's settings file, so the review did not start.".to_string();
     let dir = tmp.parent().and_then(|p| p.join("resources")).ok_or_else(bad)?;
     crate::localfs::create_dir_all(&dir).map_err(|_| bad())?;
     let entry = dir.unfollowed("code-review-settings.txt").ok_or_else(bad)?;

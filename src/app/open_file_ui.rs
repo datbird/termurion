@@ -161,7 +161,7 @@ impl App {
         });
         if started.is_err() {
             inflight.fetch_sub(1, Ordering::SeqCst);
-            self.open_file_banner("Tandem could not start a worker to open this file.".to_string());
+            self.open_file_banner("Termurion could not start a worker to open this file.".to_string());
         }
     }
 
@@ -177,7 +177,7 @@ impl App {
         let shown = crate::inert_files::shown_name(&f.path.to_string_lossy());
         let data = !matches!(f.kind, Kind::Folder | Kind::Script);
         if data && (!f.regular || f.len > open_file::MAX_DATA_LEN) {
-            return self.open_file_banner(format!("Tandem did not open \u{201c}{shown}\u{201d}: it is not a file of a size it reads."));
+            return self.open_file_banner(format!("Termurion did not open \u{201c}{shown}\u{201d}: it is not a file of a size it reads."));
         }
         match f.kind {
             // Not user-initiated: no AutoLaunch offer. A signed archive is refused by the importer.
@@ -299,7 +299,7 @@ impl App {
         }
     }
 
-    /// Adds Tandem to Explorer's "Open with" list, once per run, only when its entry is absent or
+    /// Adds Termurion to Explorer's "Open with" list, once per run, only when its entry is absent or
     /// names another program (P10): per user, never a default association.
     pub(super) fn register_open_with(&mut self) {
         if std::mem::replace(&mut self.open_with_done, true) {

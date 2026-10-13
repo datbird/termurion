@@ -1,4 +1,4 @@
-# Tandem global setting schema (iTerm2 user defaults), same shape as schema/profile.toml.
+# Termurion global setting schema (iTerm2 user defaults), same shape as schema/profile.toml.
 # Defaults are iTerm2's, from sources/Settings/iTermPreferences.m (defaultValueMap).
 # Milestone 3b covers the Keys and Pointer panes; milestone 13 completes the rest.
 
@@ -38,7 +38,7 @@ label = "Shortcut key"
 type = "enum"
 default = 0
 choices = [ { value = 0, label = "Ctrl+Shift" }, { value = 1, label = "Win" }, { value = 2, label = "Ctrl+Alt (AltGr on many European layouts)" } ]
-help = "The keys that stand for iTerm2's Cmd in Tandem's shortcuts, menus and key bindings. Cmd+Shift+X becomes Ctrl+Shift+Alt+X. Win collides with Windows shortcuts (Win+L, Win+D, Win+arrows). Ctrl+Alt is AltGr on many European layouts, so it can swallow characters you type; prefer Ctrl+Shift there."
+help = "The keys that stand for iTerm2's Cmd in Termurion's shortcuts, menus and key bindings. Cmd+Shift+X becomes Ctrl+Shift+Alt+X. Win collides with Windows shortcuts (Win+L, Win+D, Win+arrows). Ctrl+Alt is AltGr on many European layouts, so it can swallow characters you type; prefer Ctrl+Shift there."
 
 [[setting]]
 key = "SwitchTabModifier"
@@ -157,7 +157,7 @@ section = "Remap Modifiers"
 label = "Remap modifiers globally"
 type = "bool"
 default = true
-help = "When off, Tandem remaps modifiers only for keys it receives, so Windows' own shortcuts see the physical keys."
+help = "When off, Termurion remaps modifiers only for keys it receives, so Windows' own shortcuts see the physical keys."
 
 [[setting]]
 key = "ForceKeyboard"
@@ -166,7 +166,7 @@ section = "Remap Modifiers"
 label = "Force keyboard"
 type = "bool"
 default = false
-help = "Forces Tandem to use the selected keyboard layout while it is active."
+help = "Forces Termurion to use the selected keyboard layout while it is active."
 
 [[setting]]
 key = "ForceKeyboardOncePerSession"
@@ -175,7 +175,7 @@ section = "Remap Modifiers"
 label = "Only force once per session when it first receives keyboard focus"
 type = "bool"
 default = false
-help = "When \u201cForce keyboard\u201d is on, Tandem continuously forces the selected layout while it is active, so you cannot switch to another layout within a session. Turn this on to force the layout only once, the first time a newly created terminal receives keyboard focus, leaving you free to change it afterward."
+help = "When \u201cForce keyboard\u201d is on, Termurion continuously forces the selected layout while it is active, so you cannot switch to another layout within a session. Turn this on to force the layout only once, the first time a newly created terminal receives keyboard focus, leaving you free to change it afterward."
 
 [[setting]]
 key = "KeyboardLocale"
@@ -193,7 +193,7 @@ section = "Remap Modifiers"
 label = "Respect shortcuts from Windows keyboard shortcuts"
 type = "bool"
 default = true
-help = "Win shortcuts Windows keeps for itself go to Windows instead of a key mapping; Tandem's own menu shortcuts still work."
+help = "Win shortcuts Windows keeps for itself go to Windows instead of a key mapping; Termurion's own menu shortcuts still work."
 
 [[setting]]
 key = "CommandSelection"
@@ -432,7 +432,7 @@ section = "General"
 label = "Disable potentially insecure escape sequences."
 type = "bool"
 default = false
-help = "Disable potentially insecure escape sequences.\nSome features of Tandem expand the surface area for security issues. Consider turning this on when viewing untrusted content. The following custom escape sequences will be disabled: RemoteHost, StealFocus, CurrentDir, SetProfile, CopyToClipboard, EndCopy, File, SetBackgroundImageFile, OSC 6\u2019s proxy icon-changing feature. The following DEC sequences are disabled: DECRQCRA. The following xterm extensions are disabled: Window Title Reporting, Icon Title Reporting. This will break displaying inline images, file download, some shell integration features, and other features."
+help = "Disable potentially insecure escape sequences.\nSome features of Termurion expand the surface area for security issues. Consider turning this on when viewing untrusted content. The following custom escape sequences will be disabled: RemoteHost, StealFocus, CurrentDir, SetProfile, CopyToClipboard, EndCopy, File, SetBackgroundImageFile, OSC 6\u2019s proxy icon-changing feature. The following DEC sequences are disabled: DECRQCRA. The following xterm extensions are disabled: Window Title Reporting, Icon Title Reporting. This will break displaying inline images, file download, some shell integration features, and other features."
 
 [[setting]]
 key = "UseOldStyleDropDownViews"
@@ -696,7 +696,7 @@ section = "Drawing"
 label = "Allow HDR effects"
 type = "bool"
 default = false
-help = "Allow HDR effects\nWhen enabled, Tandem may render some UI effects, such as the selected tab's outline, brighter than white on an HDR-capable display. Off by default because forcing the display into extended dynamic range can cause hangs on some systems."
+help = "Allow HDR effects\nWhen enabled, Termurion may render some UI effects, such as the selected tab's outline, brighter than white on an HDR-capable display. Off by default because forcing the display into extended dynamic range can cause hangs on some systems."
 
 [[setting]]
 key = "DisableTopRightIndicators"
@@ -829,7 +829,7 @@ help = "Select the tab to the left when closing a tab?\nIf disabled, the tab to 
 key = "PromptOnQuit"
 tab = "General"
 section = "Closing"
-label = "Confirm \"Quit Tandem\""
+label = "Confirm \"Quit Termurion\""
 type = "bool"
 default = true
 help = "Quitting asks first while a terminal window is open."
@@ -868,7 +868,7 @@ section = "Closing"
 label = "Even if there are no windows"
 type = "bool"
 default = false
-help = "Quitting asks first even with no terminal window open (only with Confirm \"Quit Tandem\")."
+help = "Quitting asks first even with no terminal window open (only with Confirm \"Quit Termurion\")."
 
 [[setting]]
 key = "QuitWhenAllWindowsClosed"
@@ -877,7 +877,7 @@ section = "Closing"
 label = "Quit when all windows are closed"
 type = "bool"
 default = false
-help = "Tandem ends when its last window closes. When this is off, Tandem keeps running with its icon in the notification area; a click on the icon opens a window when Advanced > General > Open a new window when you click the notification area icon (OpenUntitledFile) is on."
+help = "Termurion ends when its last window closes. When this is off, Termurion keeps running with its icon in the notification area; a click on the icon opens a window when Advanced > General > Open a new window when you click the notification area icon (OpenUntitledFile) is on."
 
 [[setting]]
 key = "NeverBlockSystemShutdown"
@@ -886,7 +886,7 @@ section = "Closing"
 label = "Disable all confirmations on system shutdown, restart, and log out"
 type = "bool"
 default = false
-help = "Windows shutting down, restarting, or signing out never waits for Tandem's questions."
+help = "Windows shutting down, restarting, or signing out never waits for Termurion's questions."
 
 [[setting]]
 key = "OpenBookmark"
@@ -895,7 +895,7 @@ section = "Startup"
 label = "Open profiles window"
 type = "bool"
 default = false
-help = "The Profiles window also opens when Tandem starts."
+help = "The Profiles window also opens when Termurion starts."
 
 [[setting]]
 key = "OpenArrangementAtStartup"
@@ -904,7 +904,7 @@ section = "Startup"
 label = "Open default window arrangement"
 type = "bool"
 default = false
-help = "Tandem starts with the default window arrangement (Window > Arrangements) instead of one window."
+help = "Termurion starts with the default window arrangement (Window > Arrangements) instead of one window."
 
 [[setting]]
 key = "OpenNoWindowsAtStartup"
@@ -913,7 +913,7 @@ section = "Startup"
 label = "Only restore hotkey window"
 type = "bool"
 default = false
-help = "Tandem starts with only its hotkey windows. With no hotkey window a window opens anyway, since Windows would show nothing."
+help = "Termurion starts with only its hotkey windows. With no hotkey window a window opens anyway, since Windows would show nothing."
 
 [[setting]]
 key = "RestoreWindowsToSameSpaces"
@@ -951,7 +951,7 @@ section = "Python API"
 label = "Enable Python API"
 type = "bool"
 default = false
-help = "Runs the Python API server on 127.0.0.1 and [::1] port 1912 so scripts can control Tandem. Turning it off disconnects every script."
+help = "Runs the Python API server on 127.0.0.1 and [::1] port 1912 so scripts can control Termurion. Turning it off disconnects every script."
 
 [[setting]]
 key = "API Authentication Method"
@@ -961,7 +961,7 @@ label = "Authentication method for Python API"
 type = "enum"
 choices = [{ value = 0, label = "Require a cookie" }, { value = 1, label = "Allow all apps to connect" }]
 default = 0
-help = "Whether scripts need a cookie (scripts started in a Tandem session with setCookie on have one), or any program running as you may connect. The choice is stored as a file that the iterm2 Python package also reads."
+help = "Whether scripts need a cookie (scripts started in a Termurion session with setCookie on have one), or any program running as you may connect. The choice is stored as a file that the iterm2 Python package also reads."
 
 [[setting]]
 key = "UseCustomScriptsFolder"
@@ -970,7 +970,7 @@ section = "Python API"
 label = "Custom Python API Scripts Folder"
 type = "bool"
 default = false
-help = "Tandem looks for Python API scripts in this folder instead of %APPDATA%\\Tandem\\Scripts. It must exist and have no spaces in its path. Network paths are not supported."
+help = "Termurion looks for Python API scripts in this folder instead of %APPDATA%\\Termurion\\Scripts. It must exist and have no spaces in its path. Network paths are not supported."
 
 [[setting]]
 key = "CustomScriptsFolder"
@@ -979,7 +979,7 @@ section = "Python API"
 label = "Custom folder for Python API scripts"
 type = "string"
 default = ""
-help = "Tandem looks for Python API scripts in this folder instead of %APPDATA%\\Tandem\\Scripts. It must exist and have no spaces in its path. Network paths are not supported."
+help = "Termurion looks for Python API scripts in this folder instead of %APPDATA%\\Termurion\\Scripts. It must exist and have no spaces in its path. Network paths are not supported."
 
 [[setting]]
 key = "OpenNewWindowAtStartup"
@@ -997,16 +997,16 @@ section = "Session"
 label = "Enable session restoration."
 type = "bool"
 default = true
-help = "Enable session restoration.\nSession restoration runs jobs in a separate process (tandem-host). They will survive crashes, force quits, and upgrades.\nYou must restart Tandem for this change to take effect."
+help = "Enable session restoration.\nSession restoration runs jobs in a separate process (termurion-host). They will survive crashes, force quits, and upgrades.\nYou must restart Termurion for this change to take effect."
 
 [[setting]]
 key = "KillJobsInServersOnQuit"
 tab = "Advanced"
 section = "Session"
-label = "User-initiated Quit (Win+Q) of Tandem will kill all running jobs."
+label = "User-initiated Quit (Win+Q) of Termurion will kill all running jobs."
 type = "bool"
 default = true
-help = "User-initiated Quit (Win+Q) of Tandem will kill all running jobs.\nApplies only when session restoration is on."
+help = "User-initiated Quit (Win+Q) of Termurion will kill all running jobs.\nApplies only when session restoration is on."
 
 [[setting]]
 key = "ShowSessionRestoredBanner"
@@ -1102,10 +1102,10 @@ help = "Show key at cursor at password prompt?"
 key = "DetectPasswordInputDebounce"
 tab = "Advanced"
 section = "Terminal"
-label = "How long (seconds) terminal echo must remain disabled before Tandem treats it as a password prompt."
+label = "How long (seconds) terminal echo must remain disabled before Termurion treats it as a password prompt."
 type = "float"
 default = 0.2
-help = "How long (seconds) terminal echo must remain disabled before Tandem treats it as a password prompt.\nThis prevents shell scripts that briefly turn off echo (e.g. while reading the response to an OSC report request) from triggering the password manager. Set to 0 to disable debouncing."
+help = "How long (seconds) terminal echo must remain disabled before Termurion treats it as a password prompt.\nThis prevents shell scripts that briefly turn off echo (e.g. while reading the response to an OSC report request) from triggering the password manager. Set to 0 to disable debouncing."
 
 [[setting]]
 key = "RequireAuthenticationToOpenPasswordManager"
@@ -1132,7 +1132,7 @@ section = "Password Manager"
 label = "Require authentication on every open"
 type = "bool"
 default = false
-help = "Asks again each time the password manager opens, instead of once until Tandem quits or the screen locks."
+help = "Asks again each time the password manager opens, instead of once until Termurion quits or the screen locks."
 
 [[setting]]
 key = "RestoreWindowContents"
@@ -1186,7 +1186,7 @@ section = "Windows"
 label = "Windows have square corners."
 type = "bool"
 default = false
-help = "Windows have square corners.\nWindows 11 rounds window corners; this turns the rounding off. You must restart Tandem after changing this setting for it to take effect."
+help = "Windows have square corners.\nWindows 11 rounds window corners; this turns the rounding off. You must restart Termurion after changing this setting for it to take effect."
 
 [[setting]]
 key = "WindowBorderColor"
@@ -1249,7 +1249,7 @@ section = "Hotkey"
 label = "Show/hide all windows with a system-wide hotkey"
 type = "bool"
 default = false
-help = "A system-wide hotkey shows and hides all of Tandem's windows."
+help = "A system-wide hotkey shows and hides all of Termurion's windows."
 
 [[setting]]
 key = "HotkeyCode"
@@ -1453,10 +1453,10 @@ help = "Force text to be anti-aliased on Retina displays.\nEnable this to use no
 key = "DisableCustomBoxDrawing"
 tab = "Advanced"
 section = "Drawing"
-label = "Use your typeface\u2019s box-drawing characters instead of Tandem\u2019s custom drawing code."
+label = "Use your typeface\u2019s box-drawing characters instead of Termurion\u2019s custom drawing code."
 type = "bool"
 default = false
-help = "Use your typeface\u2019s box-drawing characters instead of Tandem\u2019s custom drawing code.\nYou must restart Tandem after changing this setting."
+help = "Use your typeface\u2019s box-drawing characters instead of Termurion\u2019s custom drawing code.\nYou must restart Termurion after changing this setting."
 
 [[setting]]
 key = "MakeSomePowerlineSymbolsWide"
@@ -1609,7 +1609,7 @@ section = "Settings"
 label = "Custom folder"
 type = "string"
 default = ""
-help = "The folder (or http:// or https:// URL) holding tandem-settings.toml. Network paths are not supported."
+help = "The folder (or http:// or https:// URL) holding termurion-settings.toml. Network paths are not supported."
 
 [[setting]]
 key = "SavePasteHistory"
@@ -1993,7 +1993,7 @@ label = "When attaching, open unrecognized windows in"
 type = "enum"
 default = 0
 choices = [ { value = 0, label = "Windows" }, { value = 1, label = "Tabs in a new window" }, { value = 2, label = "Tabs in the attaching window" } ]
-help = "Where tmux windows open when Tandem attaches. Tabs in the attaching window is iTerm2's \"Open tmux windows as tabs in the attaching window\" checkbox."
+help = "Where tmux windows open when Termurion attaches. Tabs in the attaching window is iTerm2's \"Open tmux windows as tabs in the attaching window\" checkbox."
 
 [[setting]]
 key = "TmuxUsesDedicatedProfile"
@@ -2017,11 +2017,11 @@ help = "When a tmux session has more windows than this, none open on attach (iTe
 key = "AnonymousTmuxWindowsOpenInCurrentWindow"
 tab = "Advanced"
 section = "Tmux Integration"
-label = "Where should new tmux windows not created by Tandem open?"
+label = "Where should new tmux windows not created by Termurion open?"
 type = "enum"
 default = 1
 choices = [ { value = 0, label = "New window" }, { value = 1, label = "Focused window" }, { value = 2, label = "Topmost session window" } ]
-help = "Where should new tmux windows not created by Tandem open?\n\u201cFocused window\u201d (the default) attaches the window as a tab of whichever Tandem window currently has keyboard focus. \u201cTopmost session window\u201d attaches it to the frontmost Tandem window that already shows a tab from this tmux session, regardless of focus."
+help = "Where should new tmux windows not created by Termurion open?\n\u201cFocused window\u201d (the default) attaches the window as a tab of whichever Termurion window currently has keyboard focus. \u201cTopmost session window\u201d attaches it to the frontmost Termurion window that already shows a tab from this tmux session, regardless of focus."
 
 [[setting]]
 key = "PollForTmuxForegroundJob"
@@ -2081,10 +2081,10 @@ help = "Set LC_TERMINAL=iTerm2.\nopenssh and mosh pass this to hosts you connect
 key = "AddUtilitiesToPATH"
 tab = "Advanced"
 section = "Experimental Features"
-label = "Add path to Tandem utilities to $PATH for new sessions?"
+label = "Add path to Termurion utilities to $PATH for new sessions?"
 type = "bool"
 default = true
-help = "Add path to Tandem utilities to $PATH for new sessions?"
+help = "Add path to Termurion utilities to $PATH for new sessions?"
 
 [[setting]]
 key = "SmartLoggingWithAutoComposer"
@@ -2649,7 +2649,7 @@ section = "General"
 label = "URL to check for updates to the AI model catalog."
 type = "string"
 default = "https://iterm2.com/downloads/ai/manifest.json"
-help = "URL to check for updates to the AI model catalog.\nThe catalog defines the built-in AI models (context window, capabilities, and the recommended model per vendor). Tandem ships its catalog with each release and never downloads a newer one, so this URL is not used."
+help = "URL to check for updates to the AI model catalog.\nThe catalog defines the built-in AI models (context window, capabilities, and the recommended model per vendor). Termurion ships its catalog with each release and never downloads a newer one, so this URL is not used."
 
 [[setting]]
 key = "AiChatVerboseConsoleLogging"
@@ -2667,7 +2667,7 @@ section = "Debugging"
 label = "Log raw AI API requests and responses to disk."
 type = "bool"
 default = false
-help = "Log raw AI API requests and responses to disk.\nWrites every byte sent to and received from the AI vendor (request headers, body, streaming chunks, final response, errors, and timing) to %APPDATA%\\Tandem\\AIChatWire\\. One log file per app launch; rotate or delete it yourself when done. Every header value except known non-secret ones (such as Content-Type, Accept, User-Agent and anthropic-version), and keys that appear in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters); prompt and response content is logged verbatim. Off by default; turn on only while reproducing an issue and delete the files when finished."
+help = "Log raw AI API requests and responses to disk.\nWrites every byte sent to and received from the AI vendor (request headers, body, streaming chunks, final response, errors, and timing) to %APPDATA%\\Termurion\\AIChatWire\\. One log file per app launch; rotate or delete it yourself when done. Every header value except known non-secret ones (such as Content-Type, Accept, User-Agent and anthropic-version), and keys that appear in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters); prompt and response content is logged verbatim. Off by default; turn on only while reproducing an issue and delete the files when finished."
 
 [[setting]]
 key = "UnameCommand"
@@ -3020,16 +3020,16 @@ section = "Scripting"
 label = "Use uv to provision the Python runtime for API scripts?"
 type = "bool"
 default = true
-help = "Use uv to provision the Python runtime for API scripts?\nWhen enabled, Tandem uses uv to download Python and build per-script environments instead of the bundled Python runtime. Scripts already provisioned continue to run regardless of this setting; it only affects creating, importing, and migrating scripts."
+help = "Use uv to provision the Python runtime for API scripts?\nWhen enabled, Termurion uses uv to download Python and build per-script environments instead of the bundled Python runtime. Scripts already provisioned continue to run regardless of this setting; it only affects creating, importing, and migrating scripts."
 
 [[setting]]
 key = "SetIT2AppPath"
 tab = "Advanced"
 section = "Scripting"
-label = "Set IT2_APP_PATH environment variable on new sessions, pointing at this Tandem build\u2019s app bundle?"
+label = "Set IT2_APP_PATH environment variable on new sessions, pointing at this Termurion build\u2019s app bundle?"
 type = "bool"
 default = false
-help = "Set IT2_APP_PATH environment variable on new sessions, pointing at this Tandem build\u2019s app bundle?\nThis disambiguates the AppleScript target when multiple Tandem builds with the same bundle identifier are running, so that the \u201cit2\u201d CLI requests its cookie from this Tandem instance. Intended for Tandem developers. Only affects sessions created after changing this setting."
+help = "Set IT2_APP_PATH environment variable on new sessions, pointing at this Termurion build\u2019s app bundle?\nThis disambiguates the AppleScript target when multiple Termurion builds with the same bundle identifier are running, so that the \u201cit2\u201d CLI requests its cookie from this Termurion instance. Intended for Termurion developers. Only affects sessions created after changing this setting."
 
 [[setting]]
 key = "NoSyncVariablesToReport"
@@ -3081,7 +3081,7 @@ section = "General"
 label = "Folder for config files. There must not be a space in the path."
 type = "string"
 default = ""
-help = "Folder for config files. There must not be a space in the path.\nIf empty, then %APPDATA%\\Tandem will be the default location."
+help = "Folder for config files. There must not be a space in the path.\nIf empty, then %APPDATA%\\Termurion will be the default location."
 
 [[setting]]
 key = "NoSyncHideDefaultValuedSettings"
@@ -3191,7 +3191,7 @@ section = "GPU Renderer"
 label = "Disable GPU renderer when disconnected from power"
 type = "bool"
 default = true
-help = "Disable GPU renderer when disconnected from power\nTandem always draws with the GPU; stored for settings you bring from iTerm2."
+help = "Disable GPU renderer when disconnected from power\nTermurion always draws with the GPU; stored for settings you bring from iTerm2."
 
 [[setting]]
 key = "disableMetalInLowPowerMode"
@@ -3200,7 +3200,7 @@ section = "GPU Renderer"
 label = "Disable GPU renderer in low power mode"
 type = "bool"
 default = true
-help = "Disable GPU renderer in low power mode\nTandem always draws with the GPU; stored for settings you bring from iTerm2."
+help = "Disable GPU renderer in low power mode\nTermurion always draws with the GPU; stored for settings you bring from iTerm2."
 
 [[setting]]
 key = "preferIntegratedGPU"
@@ -3229,7 +3229,7 @@ section = "Software Update"
 label = "Check for updates automatically"
 type = "bool"
 default = true
-help = "Tandem checks its GitHub releases once a day and tells you about a newer one. It never downloads or installs anything."
+help = "Termurion checks its GitHub releases once a day and tells you about a newer one. It never downloads or installs anything."
 
 [[setting]]
 key = "CheckTestRelease"
@@ -3274,7 +3274,7 @@ section = "Warnings"
 label = "Suppressed alerts"
 type = "dict"
 default = {}
-help = "The warnings answered automatically with a remembered choice, listed in Tandem > Suppressed Alerts."
+help = "The warnings answered automatically with a remembered choice, listed in Termurion > Suppressed Alerts."
 
 [[setting]]
 key = "NoSyncAppSupportMoved"
@@ -3671,7 +3671,7 @@ section = "Tabs"
 label = "How far must the mouse move before a tab drag is initiated?"
 type = "int"
 default = 10
-help = "How far must the mouse move before a tab drag is initiated?\nYou must restart Tandem after changing this setting for it to take effect."
+help = "How far must the mouse move before a tab drag is initiated?\nYou must restart Termurion after changing this setting for it to take effect."
 
 [[setting]]
 key = "DuplicatedTabsOpenAdjacentToOriginal"
@@ -3824,7 +3824,7 @@ section = "General"
 label = "Exclude from taskbar and Alt+Tab switcher"
 type = "bool"
 default = false
-help = "Tandem's windows get no taskbar button and do not appear in Alt+Tab; a notification area icon gets you back to Settings."
+help = "Termurion's windows get no taskbar button and do not appear in Alt+Tab; a notification area icon gets you back to Settings."
 
 [[setting]]
 key = "UIElementRequiresHotkeys"
@@ -3851,7 +3851,7 @@ section = "General"
 label = "Add notification area icon when excluded from taskbar?"
 type = "bool"
 default = true
-help = "Add notification area icon when excluded from taskbar?\nWhen you turn on \u201cExclude from taskbar and Alt+Tab switcher\u201d a notification area icon is added so you can switch the setting back off. Disable this to remove the icon. Doing so makes it very hard to get to Settings. You must restart Tandem after changing this setting."
+help = "Add notification area icon when excluded from taskbar?\nWhen you turn on \u201cExclude from taskbar and Alt+Tab switcher\u201d a notification area icon is added so you can switch the setting back off. Disable this to remove the icon. Doing so makes it very hard to get to Settings. You must restart Termurion after changing this setting."
 
 # Milestone 13j: Advanced > Mouse and the wheel's Experimental Features (a block of its own).
 
@@ -3907,7 +3907,7 @@ section = "Mouse"
 label = "Always accept first mouse event on terminal windows."
 type = "bool"
 default = true
-help = "Always accept first mouse event on terminal windows.\nThis means clicks will work the same when Tandem is active as when it\u2019s inactive. Note that there is a separate setting for mouse reporting on first mouse."
+help = "Always accept first mouse event on terminal windows.\nThis means clicks will work the same when Termurion is active as when it\u2019s inactive. Note that there is a separate setting for mouse reporting on first mouse."
 
 [[setting]]
 key = "AutodetectMouseReportingStuck"
@@ -3949,10 +3949,10 @@ help = "When Focus Follows Mouse is enabled, steal key focus even when inactive.
 key = "AggressiveFocusFollowsMouse"
 tab = "Advanced"
 section = "Mouse"
-label = "When Focus Follows Mouse is enabled, activate the window under the cursor when Tandem becomes active?"
+label = "When Focus Follows Mouse is enabled, activate the window under the cursor when Termurion becomes active?"
 type = "bool"
 default = false
-help = "When Focus Follows Mouse is enabled, activate the window under the cursor when Tandem becomes active?"
+help = "When Focus Follows Mouse is enabled, activate the window under the cursor when Termurion becomes active?"
 
 [[setting]]
 key = "SensitiveScrollWheel"
@@ -4346,7 +4346,7 @@ section = "General"
 label = "Disable App Nap."
 type = "bool"
 default = false
-help = "Disable App Nap.\nChange effective after restarting Tandem."
+help = "Disable App Nap.\nChange effective after restarting Termurion."
 
 [[setting]]
 key = "ExtendBackgroundColorIntoMargins"
@@ -4382,16 +4382,16 @@ section = "Terminal"
 label = "Apps may turn on Focus Reporting."
 type = "bool"
 default = true
-help = "Apps may turn on Focus Reporting.\nFocus reporting causes Tandem to send an escape sequence when a session gains or loses focus. It can cause problems when an ssh session dies unexpectedly because it gets left on, so some users prefer to disable it."
+help = "Apps may turn on Focus Reporting.\nFocus reporting causes Termurion to send an escape sequence when a session gains or loses focus. It can cause problems when an ssh session dies unexpectedly because it gets left on, so some users prefer to disable it."
 
 [[setting]]
 key = "AcceptOSC7"
 tab = "Advanced"
 section = "Terminal"
-label = "Accept OSC 7 to set username, hostname, and path. Tandem shell integration now reports this information using OSC 7, so turning this off also disables shell integration\u2019s username, hostname, and directory tracking."
+label = "Accept OSC 7 to set username, hostname, and path. Termurion shell integration now reports this information using OSC 7, so turning this off also disables shell integration\u2019s username, hostname, and directory tracking."
 type = "bool"
 default = true
-help = "Accept OSC 7 to set username, hostname, and path. Tandem shell integration now reports this information using OSC 7, so turning this off also disables shell integration\u2019s username, hostname, and directory tracking."
+help = "Accept OSC 7 to set username, hostname, and path. Termurion shell integration now reports this information using OSC 7, so turning this off also disables shell integration\u2019s username, hostname, and directory tracking."
 
 [[setting]]
 key = "DefaultTabStopWidth"
@@ -4454,7 +4454,7 @@ section = "General"
 label = "Save the screen to scrollback when an app moves the cursor above the prompt."
 type = "bool"
 default = true
-help = "Save the screen to scrollback when an app moves the cursor above the prompt.\nSome full-screen programs that don\u2019t use the alternate screen buffer repaint by moving the cursor to the top of the screen and overwriting whatever was already there, destroying content you can still see. When enabled, Tandem first scrolls the visible screen into history so that content isn\u2019t lost. Requires shell integration."
+help = "Save the screen to scrollback when an app moves the cursor above the prompt.\nSome full-screen programs that don\u2019t use the alternate screen buffer repaint by moving the cursor to the top of the screen and overwriting whatever was already there, destroying content you can still see. When enabled, Termurion first scrolls the visible screen into history so that content isn\u2019t lost. Requires shell integration."
 
 [[setting]]
 key = "NoSyncDisableDECRQCRA"
@@ -4499,7 +4499,7 @@ section = "Terminal"
 label = "Zero-Width Space (U+200B) advances cursor?"
 type = "bool"
 default = true
-help = "Zero-Width Space (U+200B) advances cursor?\nWhile a zero-width space should not advance the cursor per the Unicode spec, both Terminal.app and Konsole do this, and Weechat depends on it. You must restart Tandem after changing this setting."
+help = "Zero-Width Space (U+200B) advances cursor?\nWhile a zero-width space should not advance the cursor per the Unicode spec, both Terminal.app and Konsole do this, and Weechat depends on it. You must restart Termurion after changing this setting."
 
 [[setting]]
 key = "Vs16Supported"
@@ -4581,7 +4581,7 @@ section = "Terminal"
 label = "Set $TERMINFO_DIRS to add modern terminal features to xterm-like $TERMs?"
 type = "bool"
 default = true
-help = "Set $TERMINFO_DIRS to add modern terminal features to xterm-like $TERMs?\nTandem ships with extended terminfo capabilities for common TERMs (xterm, xterm-new, and xterm-256color). For example, it enables undercurl. New sessions get created with a TERMINFO_DIRS that make the customized TERMINFOs take precedence over the system defaults."
+help = "Set $TERMINFO_DIRS to add modern terminal features to xterm-like $TERMs?\nTermurion ships with extended terminfo capabilities for common TERMs (xterm, xterm-new, and xterm-256color). For example, it enables undercurl. New sessions get created with a TERMINFO_DIRS that make the customized TERMINFOs take precedence over the system defaults."
 
 [[setting]]
 key = "PreventSleepOnBatteryToo"
@@ -4664,7 +4664,7 @@ section = "Session"
 label = "Format for log timestamps. See Unicode TR 35-31 for syntax."
 type = "string"
 default = "yyyy-MM-dd hh.mm.ss.SSS"
-help = "Format for log timestamps. See Unicode TR 35-31 for syntax.\nYou must restart Tandem for changes to this setting to take effect."
+help = "Format for log timestamps. See Unicode TR 35-31 for syntax.\nYou must restart Termurion for changes to this setting to take effect."
 
 [[setting]]
 key = "LogTimestampsWithPlainText"
@@ -4809,7 +4809,7 @@ section = "General"
 label = "Swap Find Next and Find Previous."
 type = "bool"
 default = true
-help = "Swap Find Next and Find Previous.\nIf enabled, Find Next will search up and Find Previous will search down (Tandem's traditional behavior, which is a departure from Windows's standard). When disabled, search behaves like a normal Windows app."
+help = "Swap Find Next and Find Previous.\nIf enabled, Find Next will search up and Find Previous will search down (Termurion's traditional behavior, which is a departure from Windows's standard). When disabled, search behaves like a normal Windows app."
 
 [[setting]]
 key = "SynchronizeQueryWithFindPasteboard"
@@ -4906,10 +4906,10 @@ help = "Automatically search for selected text after making a selection?"
 key = "CmdClickWhenInactiveInvokesSemanticHistory"
 tab = "Advanced"
 section = "Mouse"
-label = "Win-click in an active pane while Tandem isn't the active app invokes Semantic History."
+label = "Win-click in an active pane while Termurion isn't the active app invokes Semantic History."
 type = "bool"
 default = false
-help = "Win-click in an active pane while Tandem isn't the active app invokes Semantic History.\nBy default, Tandem respects the OS standard that Win-click in an app that doesn't have keyboard focus behaves like a non-Win click that does not raise the window."
+help = "Win-click in an active pane while Termurion isn't the active app invokes Semantic History.\nBy default, Termurion respects the OS standard that Win-click in an app that doesn't have keyboard focus behaves like a non-Win click that does not raise the window."
 
 [[setting]]
 key = "EnableUnderlineSemanticHistoryOnCmdHover"
@@ -4963,7 +4963,7 @@ section = "Semantic History"
 label = "Non-alphanumeric characters considered part of a URL or file name for Semantic History."
 type = "string"
 default = ".?\\/:;$%=&_-,+~#@!*'(\uFF08)\uFF09|[]"
-help = "Non-alphanumeric characters considered part of a URL or file name for Semantic History.\nLetters and numbers are always considered part of the URL. These non-alphanumeric characters are used in addition for the purposes of figuring out where a URL begins and ends. You must restart Tandem for changes to this setting to take effect."
+help = "Non-alphanumeric characters considered part of a URL or file name for Semantic History.\nLetters and numbers are always considered part of the URL. These non-alphanumeric characters are used in addition for the purposes of figuring out where a URL begins and ends. You must restart Termurion for changes to this setting to take effect."
 
 [[setting]]
 key = "URLCharacterSetExclusions"
@@ -4981,7 +4981,7 @@ section = "Semantic History"
 label = "Non-alphanumeric characters considered part of a filename. Note that URL characters (a separate advanced setting) are also allowed."
 type = "string"
 default = "$@"
-help = "Non-alphanumeric characters considered part of a filename. Note that URL characters (a separate advanced setting) are also allowed.\nLetters and numbers are always considered part of the URL. These non-alphanumeric characters are used in addition for the purposes of figuring out where a file begins and ends. You must restart Tandem for changes to this setting to take effect."
+help = "Non-alphanumeric characters considered part of a filename. Note that URL characters (a separate advanced setting) are also allowed.\nLetters and numbers are always considered part of the URL. These non-alphanumeric characters are used in addition for the purposes of figuring out where a file begins and ends. You must restart Termurion for changes to this setting to take effect."
 
 [[setting]]
 key = "MaxSemanticHistoryPrefixOrSuffix"
@@ -5053,7 +5053,7 @@ section = "Semantic History"
 label = "Command to run when opening a clicked URL, instead of asking the OS to open it."
 type = "string"
 default = ""
-help = "Command to run when opening a clicked URL, instead of asking the OS to open it.\nWhen non-empty, this command runs as a silent background task whenever you click a URL (including OSC 8 hyperlinks and auto-detected URLs) that Tandem would otherwise hand to the system. Tandem splits it into a program and its arguments and starts the program directly, without a shell. This is an interpolated string; use \\(url) for the URL, which is always passed as one argument of its own (added at the end when \\(url) is absent), and \\(background) for whether a background open was requested (1 if you held Alt while clicking, otherwise 0). Any other variable is passed as one argument of its own (or part of one) and can never name the program; a variable holding a quote, a control character, a trailing backslash or one of & | < > ^ % ! ( ) ` is refused. The command is responsible for opening the URL however it likes (e.g., \u201Cexplorer.exe \\(url)\u201D to open it with the default browser). cmd.exe, conhost, forfiles, wt, sh, zsh, rundll32, regsvr32, msiexec and certutil cannot be URL handlers (they hand their arguments to another program); a .cmd or .bat handler, or an interpreter such as PowerShell, is not given URLs containing % ^ & | < > \" or control characters. When empty, URLs open normally. Tandem-internal schemes (iterm2:), URL schemes bound to a profile, and Semantic History file links are not affected."
+help = "Command to run when opening a clicked URL, instead of asking the OS to open it.\nWhen non-empty, this command runs as a silent background task whenever you click a URL (including OSC 8 hyperlinks and auto-detected URLs) that Termurion would otherwise hand to the system. Termurion splits it into a program and its arguments and starts the program directly, without a shell. This is an interpolated string; use \\(url) for the URL, which is always passed as one argument of its own (added at the end when \\(url) is absent), and \\(background) for whether a background open was requested (1 if you held Alt while clicking, otherwise 0). Any other variable is passed as one argument of its own (or part of one) and can never name the program; a variable holding a quote, a control character, a trailing backslash or one of & | < > ^ % ! ( ) ` is refused. The command is responsible for opening the URL however it likes (e.g., \u201Cexplorer.exe \\(url)\u201D to open it with the default browser). cmd.exe, conhost, forfiles, wt, sh, zsh, rundll32, regsvr32, msiexec and certutil cannot be URL handlers (they hand their arguments to another program); a .cmd or .bat handler, or an interpreter such as PowerShell, is not given URLs containing % ^ & | < > \" or control characters. When empty, URLs open normally. Termurion-internal schemes (iterm2:), URL schemes bound to a profile, and Semantic History file links are not affected."
 
 [[setting]]
 key = "RestrictSemanticHistoryPrefixAndSuffixToLogicalWindow"
@@ -5071,7 +5071,7 @@ section = "Semantic History"
 label = "Enable semantic history for network-mounted filesystems?"
 type = "bool"
 default = false
-help = "Enable semantic history for network-mounted filesystems?\nOnly enable this if you know your network-mounted filesystems are really fast and reliable. A slow filesystem may cause the entire Tandem app to hang."
+help = "Enable semantic history for network-mounted filesystems?\nOnly enable this if you know your network-mounted filesystems are really fast and reliable. A slow filesystem may cause the entire Termurion app to hang."
 
 [[setting]]
 key = "PrioritizeSmartSelectionActions"
@@ -5203,7 +5203,7 @@ section = "General"
 label = "Path to folder with dynamic profiles."
 type = "string"
 default = ""
-help = "Path to folder with dynamic profiles.\nWhen empty, %APPDATA%\\Tandem\\DynamicProfiles will be used. You must restart Tandem after modifying this setting."
+help = "Path to folder with dynamic profiles.\nWhen empty, %APPDATA%\\Termurion\\DynamicProfiles will be used. You must restart Termurion after modifying this setting."
 
 [[setting]]
 key = "DynamicProfilesNotificationLatency"
@@ -5232,7 +5232,7 @@ section = "General"
 label = "Show hints in split pane menu items to indicate horizontal vs vertical semantics."
 type = "bool"
 default = false
-help = "Show hints in split pane menu items to indicate horizontal vs vertical semantics.\nYou must restart Tandem after changing this setting for it to take effect."
+help = "Show hints in split pane menu items to indicate horizontal vs vertical semantics.\nYou must restart Termurion after changing this setting for it to take effect."
 
 [[setting]]
 key = "MenuTipDelay"
@@ -5261,16 +5261,16 @@ section = "Terminal"
 label = "Maximum number of lines of history to expose to Accessibility."
 type = "int"
 default = 1000
-help = "Maximum number of lines of history to expose to Accessibility.\nAccessibility APIs can make Tandem slow. In order to limit the effect, you can restrict the number of lines in each session that are visible to accessibility. The last lines of each session will be made accessible."
+help = "Maximum number of lines of history to expose to Accessibility.\nAccessibility APIs can make Termurion slow. In order to limit the effect, you can restrict the number of lines in each session that are visible to accessibility. The last lines of each session will be made accessible."
 
 [[setting]]
 key = "OpenFileOverridesSendText"
 tab = "Advanced"
 section = "General"
-label = "Should opening a script with Tandem disable the default profile\u2019s \u201cSend Text at Start\u201d setting?"
+label = "Should opening a script with Termurion disable the default profile\u2019s \u201cSend Text at Start\u201d setting?"
 type = "bool"
 default = true
-help = "Should opening a script with Tandem disable the default profile\u2019s \u201cSend Text at Start\u201d setting?\nIf you use \u201ctandem.exe file.ps1\u201d or drag a script onto Tandem's icon and this setting is enabled then the script will be executed in lieu of the profile's \u201cSend Text at Start\u201d setting. If this setting is off then both will be executed."
+help = "Should opening a script with Termurion disable the default profile\u2019s \u201cSend Text at Start\u201d setting?\nIf you use \u201ctermurion.exe file.ps1\u201d or drag a script onto Termurion's icon and this setting is enabled then the script will be executed in lieu of the profile's \u201cSend Text at Start\u201d setting. If this setting is off then both will be executed."
 
 [[setting]]
 key = "MinRunningTime"
@@ -5279,7 +5279,7 @@ section = "General"
 label = "Grace period for automatic quitting after the last window is closed."
 type = "float"
 default = 10.0
-help = "Grace period for automatic quitting after the last window is closed.\nIf Tandem is configured to quit automatically when the last window is closed, this setting gives a grace period (in seconds) after startup where that feature is disabled. Set to 0 to have no grace period."
+help = "Grace period for automatic quitting after the last window is closed.\nIf Termurion is configured to quit automatically when the last window is closed, this setting gives a grace period (in seconds) after startup where that feature is disabled. Set to 0 to have no grace period."
 
 [[setting]]
 key = "DownloadsDirectory"
@@ -5378,7 +5378,7 @@ section = "General"
 label = "Link schemes of other apps that open without asking (space separated)."
 type = "string"
 default = ""
-help = "Link schemes of other apps that open without asking (space separated).\nThese (vscode, slack) open at once in the app Windows has registered for them when a terminal link is clicked. Tandem asks once per scheme; Always adds the scheme here. Some schemes (ms-msdt, search-ms, file, javascript and others) never open, whatever is listed."
+help = "Link schemes of other apps that open without asking (space separated).\nThese (vscode, slack) open at once in the app Windows has registered for them when a terminal link is clicked. Termurion asks once per scheme; Always adds the scheme here. Some schemes (ms-msdt, search-ms, file, javascript and others) never open, whatever is listed."
 
 [[setting]]
 key = "LinkSchemesNever"
@@ -5387,7 +5387,7 @@ section = "General"
 label = "Link schemes of other apps that never open (space separated)."
 type = "string"
 default = ""
-help = "Link schemes of other apps that never open (space separated).\nThese (vscode, slack) are never opened from a terminal link. Tandem asks once per scheme; Never adds the scheme here. Remove it to be asked again."
+help = "Link schemes of other apps that never open (space separated).\nThese (vscode, slack) are never opened from a terminal link. Termurion asks once per scheme; Never adds the scheme here. Remove it to be asked again."
 
 [[setting]]
 key = "WebUserAgent"
@@ -5468,7 +5468,7 @@ section = "Experimental Features"
 label = "Enable browser-style profiles?"
 type = "bool"
 default = true
-help = "Enable browser-style profiles?\nYou must restart Tandem for this to take effect."
+help = "Enable browser-style profiles?\nYou must restart Termurion for this to take effect."
 
 [[setting]]
 key = "SearchCommand"
@@ -5477,7 +5477,7 @@ section = "General"
 label = "Template for URL of search engine."
 type = "string"
 default = "https://google.com/search?q=%@"
-help = "Template for URL of search engine.\nTandem replaces the string \u201c%@\u201d with the text to search for. Query parameter percent escaping is used."
+help = "Template for URL of search engine.\nTermurion replaces the string \u201c%@\u201d with the text to search for. Query parameter percent escaping is used."
 
 [[setting]]
 key = "SearchSuggestURL"
@@ -5486,7 +5486,7 @@ section = "General"
 label = "Template of URL for typeahead search suggestions."
 type = "string"
 default = "https://suggestqueries.google.com/complete/search?client=firefox&q=%@"
-help = "Template of URL for typeahead search suggestions.\nTandem replaces the string \u201c%@\u201d with the text to search for. Query parameter percent escaping is used."
+help = "Template of URL for typeahead search suggestions.\nTermurion replaces the string \u201c%@\u201d with the text to search for. Query parameter percent escaping is used."
 
 [[setting]]
 key = "NoSyncOpenLinksInApp"
@@ -5495,7 +5495,7 @@ section = "Warnings"
 label = "Open links using the in-app browser?"
 type = "bool"
 default = false
-help = "Open links using the in-app browser?\nThe same saved answer as \u201cDo not ask again\u201d on the Open in Tandem question."
+help = "Open links using the in-app browser?\nThe same saved answer as \u201cDo not ask again\u201d on the Open in Termurion question."
 
 [[setting]]
 key = "NoSyncBrowserUpsell"
@@ -5512,10 +5512,10 @@ help = "Suppress the WebView2 Runtime upsell when clicking links?\nThe same save
 key = "StartDebugLoggingAutomatically"
 tab = "Advanced"
 section = "Debugging"
-label = "Start debug logging automatically when Tandem is launched."
+label = "Start debug logging automatically when Termurion is launched."
 type = "bool"
 default = false
-help = "Start debug logging automatically when Tandem is launched."
+help = "Start debug logging automatically when Termurion is launched."
 
 [[setting]]
 key = "AppendToExistingDebugLog"
@@ -5703,7 +5703,7 @@ section = "General"
 label = "Maximum number of trigger-launched commands that can run at once."
 type = "int"
 default = 16
-help = "Maximum number of trigger-launched commands that can run at once.\nIf too many \u201cRun Command\u2026\u201d triggers fire their commands will be queued. You must restart Tandem for changes to this setting to take effect."
+help = "Maximum number of trigger-launched commands that can run at once.\nIf too many \u201cRun Command\u2026\u201d triggers fire their commands will be queued. You must restart Termurion for changes to this setting to take effect."
 
 [[setting]]
 key = "AlertTriggerRateLimit"
@@ -5795,7 +5795,7 @@ section = "Workgroups"
 label = "The workgroups that came from an import, a remote folder or a Dynamic Profile."
 type = "string"
 default = ""
-help = "A list of workgroup ids Tandem keeps so it asks before running their commands after a restart. Saving a workgroup in the editor removes it from the list."
+help = "A list of workgroup ids Termurion keeps so it asks before running their commands after a restart. Saving a workgroup in the editor removes it from the list."
 
 [[setting]]
 key = "CodeReviewSavedPrompts"

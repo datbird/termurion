@@ -661,7 +661,7 @@ mod tests {
         let png = png.into_inner();
         assert!(png.len() > 100 * 1024, "{} bytes", png.len());
         // cmd's special characters in the path (review: the child's words are carried in hex).
-        let path = std::env::temp_dir().join(format!("tandem imgcat 100% & ^ (conpty) {}.png", std::process::id()));
+        let path = std::env::temp_dir().join(format!("termurion imgcat 100% & ^ (conpty) {}.png", std::process::id()));
         std::fs::write(&path, &png).unwrap();
         let (code, _, screen) = run_in_conpty(&["imgcat", &path.to_string_lossy()], &mut |_, _| {});
         let _ = std::fs::remove_file(&path);

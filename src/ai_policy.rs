@@ -214,13 +214,13 @@ pub fn merged_headers(base: &[(String, String)], custom: &[(String, String)]) ->
 /// The advice naming the lane's credential header.
 pub fn self_hosted_hint(header: &str) -> String {
     format!(
-        "Tandem did not send an API key with this request. If this endpoint requires authentication, add the header \u{201c}{header}\u{201d} under \u{201c}Custom headers\u{201d}."
+        "Termurion did not send an API key with this request. If this endpoint requires authentication, add the header \u{201c}{header}\u{201d} under \u{201c}Custom headers\u{201d}."
     )
 }
 
 /// The advice for a lane with no credential header of its own (Gemini, Ollama).
 pub const SELF_HOSTED_HINT_GENERIC: &str =
-    "Tandem did not send an API key with this request. If this endpoint requires authentication, add the header it expects under \u{201c}Custom headers\u{201d}.";
+    "Termurion did not send an API key with this request. If this endpoint requires authentication, add the header it expects under \u{201c}Custom headers\u{201d}.";
 
 /// Advice for a request that carried no vendor key because its endpoint is local, or None when
 /// the key was sent, the model runs on the device, or a custom header that `merged_headers`
@@ -391,8 +391,8 @@ mod tests {
     #[test]
     fn withheld_key_advice_follows_iterm2() {
         let local = "http://localhost:1234/v1/chat/completions";
-        let named = "Tandem did not send an API key with this request. If this endpoint requires authentication, add the header \u{201c}Authorization\u{201d} under \u{201c}Custom headers\u{201d}.";
-        let generic = "Tandem did not send an API key with this request. If this endpoint requires authentication, add the header it expects under \u{201c}Custom headers\u{201d}.";
+        let named = "Termurion did not send an API key with this request. If this endpoint requires authentication, add the header \u{201c}Authorization\u{201d} under \u{201c}Custom headers\u{201d}.";
+        let generic = "Termurion did not send an API key with this request. If this endpoint requires authentication, add the header it expects under \u{201c}Custom headers\u{201d}.";
         assert_eq!(withheld_key_hint(local, Api::ChatCompletions, &[]).as_deref(), Some(named));
         assert_eq!(self_hosted_hint("Authorization"), named);
         assert_eq!(SELF_HOSTED_HINT_GENERIC, generic);

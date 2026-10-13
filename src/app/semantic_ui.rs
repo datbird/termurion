@@ -295,7 +295,7 @@ impl App {
             return self.secure_copy_at(id, point);
         }
         let Some((c, target, _)) = found else { return self.secure_copy_at(id, point) };
-        // A bound ssh: link opens a Tandem tab, never a local run, and never from a remote pane (P4).
+        // A bound ssh: link opens a Termurion tab, never a local run, and never from a remote pane (P4).
         if let Target::Link(u) | Target::Url(u) = &target {
             let bound = self.bound_ssh_profile();
             if let Some(guid) = super::ssh_url_app::click_plan(self.remote_text(id), u, bound.as_deref()) {
@@ -434,7 +434,7 @@ impl App {
             Run::Spawn { program, args } => self.spawn_direct(&program, &args, cwd),
             Run::Window(command) => match event_loop {
                 Some(event_loop) => self.run_in_new_window(id, command, cwd, event_loop),
-                None => self.banners.set("action", "Tandem could not open a window for this command."),
+                None => self.banners.set("action", "Termurion could not open a window for this command."),
             },
         }
         self.redraw();
@@ -449,7 +449,7 @@ impl App {
             return;
         };
         if semantic::is_batch(&exe) && args.iter().any(|a| semantic::batch_unsafe(a)) {
-            self.banners.set("action", "Tandem did not start this program: a batch file would read special characters in the file name.");
+            self.banners.set("action", "Termurion did not start this program: a batch file would read special characters in the file name.");
             return;
         }
         let mut cmd = std::process::Command::new(&exe);
@@ -482,7 +482,7 @@ impl App {
                 let end = self.store.default_profile().int(crate::session_end::END_ACTION_KEY);
                 self.single_use.insert(new, super::git_ui::run_window_single_use(owner, end));
             }
-            None => self.banners.set("action", "Tandem could not open a window for this command."),
+            None => self.banners.set("action", "Termurion could not open a window for this command."),
         }
     }
 
@@ -498,7 +498,7 @@ impl App {
             return;
         };
         let Some(arg) = semantic::explorer_select_arg(path) else {
-            self.banners.set("action", format!("Tandem does not show this path in Explorer: {path:?}"));
+            self.banners.set("action", format!("Termurion does not show this path in Explorer: {path:?}"));
             return;
         };
         let mut cmd = std::process::Command::new(program);
@@ -1020,7 +1020,7 @@ fn has_code() -> bool {
 pub(super) fn shell_open(target: &str, background: bool) -> Result<(), String> {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, SW_SHOWNORMAL};
-    let Some(url) = crate::semantic::shell_url(target) else { return Err("Tandem opens only links here, not paths.".to_string()) };
+    let Some(url) = crate::semantic::shell_url(target) else { return Err("Termurion opens only links here, not paths.".to_string()) };
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     let (verb, file) = (wide("open"), wide(&url));
     let show = if background { SW_SHOWNOACTIVATE } else { SW_SHOWNORMAL };
@@ -1036,7 +1036,7 @@ pub(super) fn shell_open(target: &str, background: bool) -> Result<(), String> {
 pub(super) fn shell_open_scheme(url: &str, background: bool) -> Result<(), String> {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, SW_SHOWNORMAL};
-    let scheme = crate::link_scheme::scheme_of(url).ok_or_else(|| "Tandem opens only links here, not paths.".to_string())?;
+    let scheme = crate::link_scheme::scheme_of(url).ok_or_else(|| "Termurion opens only links here, not paths.".to_string())?;
     crate::link_scheme::screen(&scheme, url)?;
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     let (verb, file) = (wide("open"), wide(&crate::semantic::encode_url_chars(url)));
@@ -1219,7 +1219,7 @@ mod tests {
     /// The guard calls a GATED function may make.
     const GUARDS: &[&str] = &["remote_text(", "self.pane_dir("];
 
-    /// Calls that open or run something on this machine: Tandem's own sinks and every direct
+    /// Calls that open or run something on this machine: Termurion's own sinks and every direct
     /// process start (`Command::new`, `ShellExecuteW`, `ShellExecuteExW`, `CreateProcessW`).
     const SINKS: &[&str] = &[
         "self.execute(",
@@ -1257,9 +1257,9 @@ mod tests {
         ("app/pathnav_ui.rs", "pathnav_tick", "runs what open_local settled: a Run that came through guard_open or open_file_run, whose callers are checked"),
         ("app/semantic_ui.rs", "shell_open", "the sink itself; its callers are checked"),
         ("app/semantic_ui.rs", "shell_open_scheme", "the sink itself; its only caller is link_scheme_app::launch_scheme, after link_scheme::decide and the person's answer"),
-        ("app/browser_download_app.rs", "browser_downloads_message", "Show in folder only SELECTS the file Tandem itself finished in the Downloads folder (the id names its own record, never the page's text); nothing is opened or run"),
+        ("app/browser_download_app.rs", "browser_downloads_message", "Show in folder only SELECTS the file Termurion itself finished in the Downloads folder (the id names its own record, never the page's text); nothing is opened or run"),
         ("app/page_saver_app.rs", "page_save_acts", "selects the index.html the saver itself wrote in the folder the person picked in Explorer; nothing is opened or run, and the path is not pane text"),
-        ("app/workgroup_toolbar_ui.rs", "usage_report_answered", "opens the fixed issue form; the person's click on Report Bug, the query holds only the report Tandem built"),
+        ("app/workgroup_toolbar_ui.rs", "usage_report_answered", "opens the fixed issue form; the person's click on Report Bug, the query holds only the report Termurion built"),
         ("app/workgroup_toolbar_ui.rs", "run_usage", "runs `claude.exe` from the path or the item's own command line (the person's settings, never pane text), with no substitution"),
         ("app/browser_app.rs", "open_link", "takes a Run::Open from guard_open or a web_link; its callers (execute_with, open_selection_url, open_link_split) are checked"),
         ("app/browser_app.rs", "open_link_answered", "the answer to the ask open_link raised for a link it had settled"),
@@ -1293,13 +1293,13 @@ mod tests {
         ("ai_actions.rs", "get_help", "PowerShell Get-Help on a name man_page_plan checked, runs no command"),
         ("app/api_ui.rs", "open_info_link", "a fixed More Info page"),
         ("app/claude_code_app.rs", "cc_onboarding_event", "the fixed Learn more page (claude_code::HELP_URL)"),
-        ("app/api_ui.rs", "reveal_allow_all_file", "reveals Tandem's own allow-all file"),
-        ("app/web_replay_app.rs", "web_replay_saved", "selects Tandem's own saved movie in Explorer (a path it made itself)"),
+        ("app/api_ui.rs", "reveal_allow_all_file", "reveals Termurion's own allow-all file"),
+        ("app/web_replay_app.rs", "web_replay_saved", "selects Termurion's own saved movie in Explorer (a path it made itself)"),
         ("app/builtin_ui.rs", "session_method", "a local script's request"),
         ("app/chat_window_app.rs", "chat_open_url", "a link in the AI chat window, not a pane"),
         ("app/chat_window_app.rs", "chat_file", "an AI chat attachment, inert types only (F19)"),
         ("app/coprocess_ui.rs", "coprocess_prompt_event", "the command the user typed"),
-        ("app/coprocess_ui.rs", "coprocess_bar", "Notepad on Tandem's own coprocess error file"),
+        ("app/coprocess_ui.rs", "coprocess_bar", "Notepad on Termurion's own coprocess error file"),
         ("app/coprocess_ui.rs", "flush_dropped", "files the user dropped, through the one cmd.exe builder and its refusal (drop_command)"),
         ("app/coprocess_ui.rs", "start_coprocess", "the sink itself; its callers are checked"),
         ("app/toolbelt_more_ui.rs", "run_captured", "a Captured Output command the user's own Capture Output trigger built through the one cmd.exe builder and its refusal"),
@@ -1307,25 +1307,25 @@ mod tests {
         ("app/menu.rs", "run_command", "the Help menu's fixed documentation page"),
         ("app/mod.rs", "window_event", "the Configure SSH help page, the color gallery page, an exported color preset revealed"),
         ("app/prefs_ui.rs", "curl_fetch", "the settings URL the user typed in Settings"),
-        ("app/screenshot_ui.rs", "shot_event", "reveals the screenshot Tandem just saved"),
+        ("app/screenshot_ui.rs", "shot_event", "reveals the screenshot Termurion just saved"),
         ("app/scripts_app.rs", "edit_new_script", "the user's new script, edited, never run"),
         ("app/scripts_app.rs", "reveal_path", "a script in the user's Scripts folder, revealed"),
-        ("app/settings_export_ui.rs", "start_relaunched", "starts Tandem's own executable"),
+        ("app/settings_export_ui.rs", "start_relaunched", "starts Termurion's own executable"),
         ("app/snippets_ui.rs", "run_applied", "the user's own key binding"),
-        ("app/ssh_panel_app.rs", "reveal_all", "the Download Files batch folder Tandem made (P12)"),
+        ("app/ssh_panel_app.rs", "reveal_all", "the Download Files batch folder Termurion made (P12)"),
         ("app/tmux_ui.rs", "tmux_bar", "a fixed help page"),
         ("app/triggers_ui.rs", "trigger_request", "the user's own trigger rule (ruling)"),
         ("app/triggers_ui.rs", "start_command", "Run Command for the user's own trigger rule (ruling)"),
         ("bin/termurion-git.rs", "run", "the git menu's wrapper: git with the menu's own command"),
-        ("git_run_win.rs", "start", "git for the status bar, Tandem's own arguments"),
-        ("host_client.rs", "start_host_process", "starts Tandem's own session host"),
-        ("probe.rs", "wsl", "`wsl.exe` with Tandem's own arguments"),
+        ("git_run_win.rs", "start", "git for the status bar, Termurion's own arguments"),
+        ("host_client.rs", "start_host_process", "starts Termurion's own session host"),
+        ("probe.rs", "wsl", "`wsl.exe` with Termurion's own arguments"),
         ("pty.rs", "start", "a pane's shell, from its profile"),
         ("pty.rs", "start_pipes", "a pane's shell, from its profile"),
         ("pwm_run.rs", "run", "the password manager CLI the user set up"),
         ("script_proc.rs", "start", "a local Python API script"),
         ("script_provision.rs", "run_watched", "the scripts' Python setup steps"),
-        ("update_fetch_win.rs", "fetch", "curl.exe from System32 with Tandem's own fixed arguments (update::fetch_args), https only"),
+        ("update_fetch_win.rs", "fetch", "curl.exe from System32 with Termurion's own fixed arguments (update::fetch_args), https only"),
         ("app/tips_app.rs", "tip_learn_more", "a URL from the static tips, a fixed https page, through guard_open"),
         ("app/update_app.rs", "learn_more_target", "the pinned releases page (update::release_url) through guard_open"),
         ("app/update_app.rs", "learn_more", "opens what learn_more_target settled, the pinned releases page"),

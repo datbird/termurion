@@ -123,7 +123,7 @@ pub struct Field {
     pub placeholder: Option<String>,
     pub is_secret: bool,
     pub note: Option<String>,
-    /// iTerm2 keeps such a value in the keychain; Tandem keeps it in memory for the run only.
+    /// iTerm2 keeps such a value in the keychain; Termurion keeps it in memory for the run only.
     pub persist_in_keychain: bool,
 }
 
@@ -210,7 +210,7 @@ pub fn target_name_in(scope: Scope, account: &str, user: &str) -> String {
     format!("{}/{account}{SEP}{user}", scope.service())
 }
 
-/// The account a Credential Manager target names, or `None` when it is not one of Tandem's.
+/// The account a Credential Manager target names, or `None` when it is not one of Termurion's.
 /// The part after `Termurion/` splits at the first separator into account and user; with no
 /// separator it is iTerm2's one-part legacy item, the whole part the account and the user
 /// empty. The display string is that part unchanged (iTerm2's `displayString`, the keychain
@@ -256,7 +256,7 @@ mod tests {
     fn credman_names_follow_iterm2() {
         let t = target_name("github", "me");
         assert_eq!(t, "Termurion/github\u{2002}\u{2014}\u{2002}me");
-        let a = parse_target(&t).expect("a Tandem target");
+        let a = parse_target(&t).expect("a Termurion target");
         assert_eq!(a.account_name, "github");
         assert_eq!(a.user_name, "me");
         assert_eq!(a.display, "github\u{2002}\u{2014}\u{2002}me");
@@ -264,7 +264,7 @@ mod tests {
         assert!(!a.has_otp && !a.send_otp && a.source_label.is_none());
 
         // iTerm2's one-part legacy item: the whole name is the account, the user is empty.
-        let solo = parse_target("Termurion/solo").expect("a Tandem target");
+        let solo = parse_target("Termurion/solo").expect("a Termurion target");
         assert_eq!(solo.account_name, "solo");
         assert_eq!(solo.user_name, "");
         assert_eq!(solo.display, "solo");
@@ -276,12 +276,12 @@ mod tests {
         // iTerm2's modern add with no user keeps the separator; it round-trips to an empty user.
         let no_user = target_name("a", "");
         assert!(no_user.ends_with(SEP));
-        let a = parse_target(&no_user).expect("a Tandem target");
+        let a = parse_target(&no_user).expect("a Termurion target");
         assert_eq!((a.account_name.as_str(), a.user_name.as_str()), ("a", ""));
         assert_eq!(a.display, format!("a{SEP}"));
 
         // The first separator splits, as iTerm2's range(of:).
-        let two = parse_target(&format!("Termurion/x{SEP}y{SEP}z")).expect("a Tandem target");
+        let two = parse_target(&format!("Termurion/x{SEP}y{SEP}z")).expect("a Termurion target");
         assert_eq!((two.account_name.as_str(), two.user_name.as_str()), ("x", &*format!("y{SEP}z")));
 
         assert_eq!(Kind::from_stored("Keychain"), Kind::CredentialManager);

@@ -142,7 +142,7 @@ pub fn shown(text: &str) -> String {
 }
 
 /// The banner for text too long to write.
-pub const TOO_LONG: &str = "Tandem did not write this text to the terminal: it is too long.";
+pub const TOO_LONG: &str = "Termurion did not write this text to the terminal: it is too long.";
 
 /// Program text a button may write to the terminal, or the banner (B5).
 pub fn writable(text: &str) -> Result<&str, String> {

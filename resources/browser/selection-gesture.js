@@ -1,8 +1,8 @@
 // selection-gesture.js
-// Tandem's own script (not from iTerm2). Runs in Tandem's isolated world in every frame. It tells
-// Tandem that the PERSON just pressed or released the pointer or a key: only trusted events count (a
+// Termurion's own script (not from iTerm2). Runs in Termurion's isolated world in every frame. It tells
+// Termurion that the PERSON just pressed or released the pointer or a key: only trusted events count (a
 // page script can dispatch fake ones, and can change the selection programmatically), at most ten
-// presses and ten releases a second, and a held key's repeats are not presses. Tandem copies a page
+// presses and ten releases a second, and a held key's repeats are not presses. Termurion copies a page
 // selection to the clipboard only when a press began it (the release copies the latest change) or a
 // release came a moment before it (a double click).
 

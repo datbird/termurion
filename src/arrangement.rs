@@ -1,5 +1,5 @@
 //! Window arrangements in iTerm2's form: windows, tabs with a tree of "Splitter" and
-//! "SessionView" nodes (pixel frames, n-ary splitters), and sessions. Tandem's layouts are
+//! "SessionView" nodes (pixel frames, n-ary splitters), and sessions. Termurion's layouts are
 //! binary; `node` and `tree_of` convert.
 
 
@@ -296,7 +296,7 @@ pub fn color_dict(c: Rgb) -> Value {
 }
 
 /// A color dictionary's color, or None when a component is missing. Reading an arrangement
-/// file turns iTerm2's dictionary into Tandem's r, g, b table (`import::from_plist`, which
+/// file turns iTerm2's dictionary into Termurion's r, g, b table (`import::from_plist`, which
 /// also converts Display P3), so both forms are read.
 pub fn color_of_dict(v: &Value) -> Option<Rgb> {
     let comp = |long: &str, short: &str| num(v.get(long).or_else(|| v.get(short)));
@@ -658,7 +658,7 @@ pub fn trust_text(name: &str, windows: &[Value]) -> String {
                 }
                 let mut shown = prof.clone();
                 if !without_network_folders(&mut shown).is_empty() {
-                    lines.push(format!("Profile \u{201c}{pname}\u{201d} names a network path (a folder, icon, image or ssh file); Tandem ignores it."));
+                    lines.push(format!("Profile \u{201c}{pname}\u{201d} names a network path (a folder, icon, image or ssh file); Termurion ignores it."));
                 }
                 // Where the profile would write raw shell output and a saved archive (an unset
                 // folder is the home folder).

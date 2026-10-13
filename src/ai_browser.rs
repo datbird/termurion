@@ -8,7 +8,7 @@
 //!   the navigation epoch and the exact origin it was read from.
 //! - [`Answer::deliver`] gives the model its text only when the page is still that page.
 //! - A `Page` cannot be opened for a private (Dev Null) pane or for any page that is not plain
-//!   http(s) (Tandem's own pages, local files, ssh listings, data and blob pages).
+//!   http(s) (Termurion's own pages, local files, ssh listings, data and blob pages).
 //! - A page URL is shown without credentials.
 use crate::ai_terminal::Outcome;
 
@@ -38,11 +38,11 @@ pub const READ_FAILED_PREFIX: &str = "The page could not be converted to markdow
 pub const INTERRUPTED: &str = "the navigation was interrupted by another request";
 pub const PANE_GONE: &str = "the browser session was closed";
 pub const AI_OFF: &str = "Generative AI features are turned off, so the web browser was not used.";
-/// Tandem's: the page the call was approved for is not the page now shown.
+/// Termurion's: the page the call was approved for is not the page now shown.
 /// A chat's browser tool calls came faster than the limiter allows (`webhost::PermissionLimiter`, the one owner).
 pub const RATE_LIMITED: &str = "Too many web browser requests at once. Wait a moment and try again.";
 pub const N_RATE_LIMITED: &str = "Too many requests";
-/// Browser tool calls one person turn may start (ROBERT FLAG: this number is a Tandem choice, not iTerm2's).
+/// Browser tool calls one person turn may start (ROBERT FLAG: this number is a Termurion choice, not iTerm2's).
 pub const CALLS_PER_TURN: usize = 30;
 pub const TURN_LIMITED: &str = "This request has used the web browser too many times. Answer with what you have, or ask the person to continue.";
 pub const PAGE_CHANGED: &str = "The web page changed while the request was running, so nothing was returned. Ask again if you still need it.";
@@ -50,7 +50,7 @@ pub const PAGE_CHANGED: &str = "The web page changed while the request was runni
 pub const NOT_OFFERED: &str = "The linked browser pane is private or is not showing an ordinary web page, so the browser tools are not available there.";
 pub const DEV_NULL_REFUSED: &str = "This browser pane is private and keeps nothing, so its web page is not available to you.";
 pub const PRIVATE_HOST_REFUSED: &str = "This address is on this computer or the local network, so the browser tools do not load or read it.";
-pub const POWER_PAGE_REFUSED: &str = "This page is not an ordinary web page (it is a Tandem page, a local file or another page type), so it is not available to you.";
+pub const POWER_PAGE_REFUSED: &str = "This page is not an ordinary web page (it is a Termurion page, a local file or another page type), so it is not available to you.";
 
 pub const N_FIND_OK: &str = "Find on page complete";
 pub const N_FIND_FAILED: &str = "Find on page failed";
@@ -82,7 +82,7 @@ pub fn orch_kind_error(text: &str) -> String {
     format!("Error executing command: {text}")
 }
 
-/// Tandem's descriptions of WebView2's `COREWEBVIEW2_WEB_ERROR_STATUS`: constant strings only.
+/// Termurion's descriptions of WebView2's `COREWEBVIEW2_WEB_ERROR_STATUS`: constant strings only.
 pub fn nav_error_text(status: i32) -> String {
     match status {
         1..=5 => "a secure connection to the server could not be made",
@@ -166,7 +166,7 @@ pub fn mirror_kind(o: Outcome, mirror: bool) -> Outcome {
 
 /// The picker's button in a browser pane's toolbar strip (Task 6): centered, never wider than the
 /// strip, the strip's height less 4 points above and below. A browser pane's view covers its
-/// rectangle, so the button lives in the strip Tandem draws, never in the page.
+/// rectangle, so the button lives in the strip Termurion draws, never in the page.
 pub fn picker_in_toolbar(bar: crate::layout::Rect, label_w: f32, pad: f32) -> crate::layout::Rect {
     let w = (label_w + 2.0 * pad).clamp(0.0, bar.w.max(0.0));
     let h = (bar.h - 8.0).max(0.0);
@@ -174,7 +174,7 @@ pub fn picker_in_toolbar(bar: crate::layout::Rect, label_w: f32, pad: f32) -> cr
 }
 
 /// Whether a browser pane showing `url` may be offered browser tools at all: never a private
-/// (Dev Null) pane, never a Tandem, local or extension page (`webhost::termurion_or_local_page`, the one
+/// (Dev Null) pane, never a Termurion, local or extension page (`webhost::termurion_or_local_page`, the one
 /// predicate the nav judge's atoms build), and otherwise only an ordinary web origin (`origin_of`).
 /// A blank or not yet loaded pane is offered (nothing is shown; reads still go through
 /// `Page::open`). Same rule as `Page::open`.
@@ -215,7 +215,7 @@ pub fn ask_ai_name(title: &str) -> String {
     if n.trim().is_empty() { "Web page".to_string() } else { n }
 }
 
-/// The origin of a page the model may read: not a Tandem, local or extension page (the one shared
+/// The origin of a page the model may read: not a Termurion, local or extension page (the one shared
 /// predicate, never a copy here) and a plain web origin.
 fn readable_origin(url: &str) -> Option<String> {
     if crate::webhost::termurion_or_local_page(url) {
@@ -225,11 +225,11 @@ fn readable_origin(url: &str) -> Option<String> {
 }
 
 /// R13xai-3: the model may load `http://` and `https://` URLs only, without control characters,
-/// credentials or an empty host, and never a Tandem, local or extension page (the shared
+/// credentials or an empty host, and never a Termurion, local or extension page (the shared
 /// `webhost::termurion_or_local_page`). Everything else answers the not-well-formed text.
 ///
 /// Hook point (B6, seam S4): a load this allows is started ONLY with the guarded `WebView::navigate`
-/// (never Tandem's own load, pinned below), so its NavigationStarting and every redirect after it
+/// (never Termurion's own load, pinned below), so its NavigationStarting and every redirect after it
 /// are judged by 13x8's one `webhost::navigation_allowed` with `by_termurion` false (WebView2 reports a
 /// navigation started through its API as user-initiated, so `user` is true): a redirect onto a power
 /// page or a local scheme is refused there, not here (the redirect rules come before the `user` rule).
@@ -261,7 +261,7 @@ fn safe_url(url: &str) -> String {
 }
 
 /// The `get_current_url` answer. A private (Dev Null) pane, or a page the tools are not offered on
-/// (a Tandem, local or extension page: `offerable`), answers the fixed refusal and never its URL
+/// (a Termurion, local or extension page: `offerable`), answers the fixed refusal and never its URL
 /// (task 2 review I1).
 pub fn current_url_outcome(url: &str, dev_null: bool) -> Outcome {
     if dev_null {
@@ -276,7 +276,7 @@ pub fn current_url_outcome(url: &str, dev_null: bool) -> Outcome {
     outcome(safe_url(url), N_URL)
 }
 
-/// The name a browser pane goes by wherever Tandem names it to a model or in an orchestration
+/// The name a browser pane goes by wherever Termurion names it to a model or in an orchestration
 /// bubble (final review I2, Task 9 review I1): a constant and the host, never the page title. A
 /// private (Dev Null) pane or one that is not showing an ordinary web page is named by the constant.
 pub fn session_name(url: &str, dev_null: bool) -> String {
@@ -335,7 +335,7 @@ pub fn session_use_text(host: &str) -> String {
     format!("The AI agent would like to use the web browser session showing {on}")
 }
 
-/// Tandem's approval text for a browser call (final review I1, a deviation from iTerm2's
+/// Termurion's approval text for a browser call (final review I1, a deviation from iTerm2's
 /// `permissionDescription`): the action and the site the pane shows now, every model-written field
 /// and the host escaped as running text. A load also names the host it goes to.
 pub fn approval_text(call: &crate::ai_tools::Call, host: &str) -> String {
@@ -873,7 +873,7 @@ mod tests {
         let src = include_str!("ai_browser.rs");
         let code = &src[..src.find("#[cfg(test)]").unwrap()];
         for owned in ["\"iterm2-about\"", "\"iterm2-file\"", "\"iterm2-ssh\"", "\"chrome-extension\"", "fn power_page", "fn local_scheme"] {
-            assert!(!code.contains(owned), "the Tandem/local page rule lives in webhost, not here: {owned}");
+            assert!(!code.contains(owned), "the Termurion/local page rule lives in webhost, not here: {owned}");
         }
         assert!(code.contains("crate::webhost::termurion_or_local_page("));
     }

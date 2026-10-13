@@ -5,7 +5,7 @@
 //! parent's label to iTerm2's XIB identifier (Win32 menu items do not carry muda's ids). The
 //! window side is `menu_tip_win`.
 //!
-//! The tip texts are iTerm2's with "iTerm2" as "Tandem", "the macOS Keychain" as "Windows
+//! The tip texts are iTerm2's with "iTerm2" as "Termurion", "the macOS Keychain" as "Windows
 //! Credential Manager", "Keychain" as "Credential Manager", "macOS-native" as "native",
 //! "/tmp/debuglog.txt" as "%TEMP%\debuglog.txt" (with the folder 13w's debug log falls back to) and
 //! the Markdown marks removed. iTerm2's tip
@@ -66,9 +66,9 @@ pub const TIPS: &[MenuTip] = &[
     MenuTip { identifier: "Engage Artificial Intelligence", text: "When selected at a shell prompt (provided Shell Integration is installed) or in the Composer, it sends the current command to the configured AI system along with a prompt for it to generate a command. If no input is provided, you\u{2019}ll be asked to give instructions. The generated command goes into the Composer." },
     MenuTip { identifier: "Explain Output with AI", text: "This is meant to be used at the shell prompt after executing a command. It requires Shell Integration. The output of the preceding (or selected) command is sent to AI, which annotates the output and opens a chat window for further discussion." },
     MenuTip { identifier: "Edit.Snippets", text: "Snippets are pieces of text that you save to reuse later. They\u{2019}re great for frequently used commands, hard-to-remember directories, and much more." },
-    MenuTip { identifier: "Edit.Actions", text: "Actions are saved instructions for Tandem. For example, you could create an action that opens a new window and then creates a split pane." },
+    MenuTip { identifier: "Edit.Actions", text: "Actions are saved instructions for Termurion. For example, you could create an action that opens a new window and then creates a split pane." },
     MenuTip { identifier: "Set Default Width", text: "Records the current width of the toolbelt for use in newly created windows." },
-    MenuTip { identifier: "Toolbelt.Actions", text: "Actions are saved instructions for Tandem. For example, you could create an action that opens a new window and then creates a split pane." },
+    MenuTip { identifier: "Toolbelt.Actions", text: "Actions are saved instructions for Termurion. For example, you could create an action that opens a new window and then creates a split pane." },
     MenuTip { identifier: "Selection Respects Soft Boundaries", text: "When enabled, dividers rendered by programs like vim or emacs are detected, and text selection wraps around them." },
     MenuTip { identifier: "Find.Filter", text: "Filter allows you to hide any lines that do not match a search query, which can be a substring or regular expression. It updates live as new text arrives." },
     MenuTip { identifier: "Marks and Annotations.Set Mark", text: "A Mark appears as a blue triangle in the left margin. You can easily navigate among marks using Jump to Mark, Next Mark, and Previous Mark. If Shell Integration is enabled, a Mark is automatically added at each shell prompt." },
@@ -79,7 +79,7 @@ pub const TIPS: &[MenuTip] = &[
     MenuTip { identifier: "Toolbelt.Codecierge", text: "Codecierge uses AI to help you achieve a goal. Tell it what you want to do, and it can watch your terminal to interpret output and suggest commands. Shell Integration is required." },
     MenuTip { identifier: "Toolbelt.Command History", text: "If Shell Integration is installed, Command History shows a searchable list of recently run commands on the current host." },
     MenuTip { identifier: "Toolbelt.Notes", text: "Notes is a single, persistent notepad in your Toolbelt. It\u{2019}s useful for keeping track of what you\u{2019}re doing or composing messages." },
-    MenuTip { identifier: "Toolbelt.Paste History", text: "Paste History shows text that you have copied and pasted in Tandem. You can configure it to be saved long term." },
+    MenuTip { identifier: "Toolbelt.Paste History", text: "Paste History shows text that you have copied and pasted in Termurion. You can configure it to be saved long term." },
     MenuTip { identifier: "Toolbelt.Profiles", text: "Shows a list of your profiles so you can create new sessions easily." },
     MenuTip { identifier: "Toolbelt.Recent Directories", text: "Shows your most used directories, sorted by a combination of frequency and recency of use. Requires Shell Integration." },
     MenuTip { identifier: "Toolbelt.Snippets", text: "Snippets are pieces of text that you save to reuse later. They\u{2019}re great for frequently used commands, hard-to-remember directories, and much more." },
@@ -96,19 +96,19 @@ pub const TIPS: &[MenuTip] = &[
     MenuTip { identifier: "Terminal State.Literal Mode", text: "When enabled, control characters are displayed visually rather than being interpreted as usual." },
     MenuTip { identifier: "Terminal State.Report Modifiers with CSI u", text: "This mode is generally not recommended. Disambiguate Escape is a more modern approach." },
     MenuTip { identifier: "Bury Session", text: "Buried sessions are hidden in the Buried Sessions menu below and do not appear in any window. These are particularly useful for the session where you initiate tmux integration by running tmux -CC." },
-    MenuTip { identifier: "Open Interactive Window", text: "The Python REPL opens a window running a special Python interpreter that lets you experiment with Tandem\u{2019}s Python API. You can use await at the top level of the interpreter." },
+    MenuTip { identifier: "Open Interactive Window", text: "The Python REPL opens a window running a special Python interpreter that lets you experiment with Termurion\u{2019}s Python API. You can use await at the top level of the interpreter." },
     MenuTip { identifier: "Manage Dependencies", text: "Opens a UI where you can add, update, or remove pip dependencies of a Python API script." },
-    MenuTip { identifier: "Install Python Runtime", text: "Tandem\u{2019}s Python Runtime is a large binary package (hundreds of MBs) that enables the Python API by installing a pre-built Python environment that scripts can use." },
+    MenuTip { identifier: "Install Python Runtime", text: "Termurion\u{2019}s Python Runtime is a large binary package (hundreds of MBs) that enables the Python API by installing a pre-built Python environment that scripts can use." },
     MenuTip { identifier: "Import Script", text: "Use Import to install scripts others have shared with you. These scripts have the .its extension." },
     MenuTip { identifier: "Export Script", text: "If you want to share Python API scripts, you can export them to an .its file. If you have a code signing certificate and private key in your Credential Manager, you can also sign the .its file." },
-    MenuTip { identifier: "Script Console", text: "View errors and low-level communication between Python API scripts and Tandem here.\n\nThe Inspector can be accessed from the Console. It allows you to browse variables in sessions, tabs, and windows." },
+    MenuTip { identifier: "Script Console", text: "View errors and low-level communication between Python API scripts and Termurion here.\n\nThe Inspector can be accessed from the Console. It allows you to browse variables in sessions, tabs, and windows." },
     MenuTip { identifier: "Arrangements", text: "Window Arrangements are a saved record of one or more windows, their tabs, and split panes, including how each pane is configured. They do not include content. They\u{2019}re a quick way to create a working environment with multiple sessions in various configurations." },
     MenuTip { identifier: "Password Manager", text: "The Password Manager helps you keep track of your passwords securely. By default, it stores them in Windows Credential Manager, but it can also use 1Password or LastPass." },
     MenuTip { identifier: "AI Chats", text: "AI Chats opens a chat window where you can interact with AI. It can optionally view and control the terminal if you grant it permission." },
     MenuTip { identifier: "Pin Hotkey Window", text: "A pinned Hotkey Window does not close automatically when it loses keyboard focus." },
     MenuTip { identifier: "GPU Renderer Availability", text: "Checks whether the GPU Renderer is currently being used in the active session. This is sometimes useful for debugging." },
     MenuTip { identifier: "Secure Keyboard Entry", text: "Secure Keyboard Entry prevents other programs from intercepting your keystrokes in the terminal. However, it also breaks some functionality: other programs cannot activate their windows while this is enabled. For example, the open command will still open an app, but it won\u{2019}t be activated." },
-    MenuTip { identifier: "Install Shell Integration", text: "Shell Integration consists of shell scripts that run when you log in. They inform Tandem of where your shell prompt is. This enables dozens of useful features such as command history, directory history, AI features, and more." },
+    MenuTip { identifier: "Install Shell Integration", text: "Shell Integration consists of shell scripts that run when you log in. They inform Termurion of where your shell prompt is. This enables dozens of useful features such as command history, directory history, AI features, and more." },
     MenuTip { identifier: "Toggle Debug Logging", text: "Debug logs are saved in memory while this setting is enabled and written to %TEMP%\\debuglog.txt (%LOCALAPPDATA%\\Termurion\\Logs\\debuglog.txt when %TEMP% is not a local folder) when you turn it off. Memory use is capped at about 200MB; if the log grows past that, the oldest entries are discarded so the most recent activity is always kept." },
     MenuTip { identifier: "Broadcast Input.Broadcast Input to All Panes in All Tabs", text: "When enabled, anything you type in this window is sent to all sessions in this window." },
     MenuTip { identifier: "Broadcast Input.Broadcast Input to All Panes in Current Tab", text: "When enabled, anything you type in this tab is sent to all sessions in this tab." },
@@ -135,7 +135,7 @@ pub fn tip_for(identifier: &str) -> Option<&'static str> {
 /// The XIB identifier of the menu item with this shown label under this parent (the parent's shown
 /// label; "" for a top-level menu), by `menu_text`'s rules. An item under View > Toolbelt that is
 /// one of the toolbelt's tools is "Toolbelt.<label>", the identifier iTerm2 gives its dynamic
-/// Toolbelt items (`append_toolbelt_menu` builds Tandem's). A submenu's own item counts, as
+/// Toolbelt items (`append_toolbelt_menu` builds Termurion's). A submenu's own item counts, as
 /// iTerm2 shows tips on "Toolbelt", "Edit.Snippets" and the like.
 pub fn identifier_for(label: &str, parent: &str) -> Option<String> {
     // Only this build's items: an item `hidden_in_menu` removes has no tip, even if some other
@@ -216,10 +216,10 @@ mod tests {
     fn menu_tips_skip_hidden_items() {
         for i in menus::items().iter().filter(|i| !i.separator && menus::hidden_in_menu(&i.selector, cfg!(debug_assertions))) {
             assert!(tip_for(&i.identifier).is_none(), "{} is hidden but has a tip", i.identifier);
-            assert_eq!(identifier_for(&menus::shown_label(i.label()), "iTerm2"), None, "{}", i.identifier);
+            assert_eq!(identifier_for(&menus::shown_label(i.label()), "Termurion"), None, "{}", i.identifier);
         }
-        assert_eq!(identifier_for("Check Settings Control Truncation", "iTerm2"), None);
-        assert_eq!(identifier_for("Capture GPU Frame", "iTerm2").is_some(), cfg!(debug_assertions));
+        assert_eq!(identifier_for("Check Settings Control Truncation", "Termurion"), None);
+        assert_eq!(identifier_for("Capture GPU Frame", "Termurion").is_some(), cfg!(debug_assertions));
     }
 
     /// The 13v2 x 13w seam: the Toggle Debug Logging tip names the file 13w's debug log writes
@@ -285,7 +285,7 @@ mod tests {
             let parent = if item.path.len() > 1 { menus::shown_label(&item.path[item.path.len() - 2]) } else { String::new() };
             assert_eq!(identifier_for(&menus::shown_label(item.label()), &parent).as_deref(), Some(t.identifier), "{}", t.identifier);
         }
-        // Tandem's words.
+        // Termurion's words.
         assert!(tip_for("Toggle Debug Logging").unwrap().contains("%TEMP%\\debuglog.txt"));
         assert!(!tip_for("Toggle Debug Logging").unwrap().contains("/tmp"));
         assert!(tip_for("Password Manager").unwrap().contains("Windows Credential Manager"));
@@ -295,13 +295,13 @@ mod tests {
             assert_eq!(plain(t.text), t.text, "{}: Markdown marks remain", t.identifier);
             assert!(!t.text.contains('\u{2014}') && !t.text.is_empty(), "{}", t.identifier);
         }
-        // The one menu path the two split tips quote is a real Tandem item.
+        // The one menu path the two split tips quote is a real Termurion item.
         let quoted = TIPS.iter().filter(|t| t.text.contains(" > ")).count();
         assert_eq!(quoted, 2, "a new quoted menu path needs a check here");
         assert!(menus::items().iter().any(|i| i.path == ["Session", "Edit Session..."]), "Session > Edit Session");
-        // iTerm2 also says to unfold with Edit > Unfold in Selection, which Tandem's Edit menu lacks.
+        // iTerm2 also says to unfold with Edit > Unfold in Selection, which Termurion's Edit menu lacks.
         assert!(tip_for("Fold Selected Lines").is_some_and(|t| !t.contains("Unfold in Selection")));
-        // The right-click Unfold is Tandem's context menu item (semantic_ui.rs `CtxItem::Unfold`), so the clause stays.
+        // The right-click Unfold is Termurion's context menu item (semantic_ui.rs `CtxItem::Unfold`), so the clause stays.
         assert!(tip_for("Fold Selected Lines").is_some_and(|t| t.ends_with("by clicking the arrow in the margin, or right-clicking and choosing Unfold.")));
         assert_eq!(COPY_MODE_URL, "https://iterm2.com/documentation-copymode.html");
     }

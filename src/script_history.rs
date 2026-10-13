@@ -9,7 +9,7 @@ use crate::stamps::Parts;
 /// The app-wide entry's identifier (`SH:32-43`).
 pub const GLOBAL_ID: &str = "iTerm2";
 /// The app-wide entry's name ("iTerm2 App", `SH:37`).
-pub const GLOBAL_NAME: &str = "Tandem App";
+pub const GLOBAL_NAME: &str = "Termurion App";
 /// Automatic Profile Switching's entry (`SH:45-54`).
 pub const APS_ID: &str = "__APS";
 pub const APS_NAME: &str = "Automatic Profile Switching";
@@ -63,9 +63,9 @@ pub fn connection_accepted(reason: &str) -> String {
 /// Which way an API message went.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dir {
-    /// From the script to Tandem.
+    /// From the script to Termurion.
     In,
-    /// From Tandem to the script.
+    /// From Termurion to the script.
     Out,
 }
 
@@ -85,7 +85,7 @@ pub fn call_text(dir: Dir, stamp: &str, text: &str) -> String {
     } else {
         text.to_string()
     };
-    format!("Script {arrow} Tandem {stamp}:\n{body}\n\n")
+    format!("Script {arrow} Termurion {stamp}:\n{body}\n\n")
 }
 
 /// Keeps what is written up to `cap` bytes of whole characters, then refuses more, so a
@@ -558,24 +558,24 @@ mod tests {
         h.add_call("k", Dir::In, "x", "S");
         h.add_call("k", Dir::Out, "x", "S");
         let calls: Vec<&String> = h.find("k").unwrap().calls().collect();
-        assert_eq!(calls[0], "Script \u{2192} Tandem S:\nx\n\n");
-        assert_eq!(calls[1], "Script \u{2190} Tandem S:\nx\n\n");
-        assert_eq!(h.find("k").unwrap().calls_text(), "Script \u{2192} Tandem S:\nx\n\n\nScript \u{2190} Tandem S:\nx\n\n");
+        assert_eq!(calls[0], "Script \u{2192} Termurion S:\nx\n\n");
+        assert_eq!(calls[1], "Script \u{2190} Termurion S:\nx\n\n");
+        assert_eq!(h.find("k").unwrap().calls_text(), "Script \u{2192} Termurion S:\nx\n\n\nScript \u{2190} Termurion S:\nx\n\n");
 
         for i in 0..101 {
             h.add_call("k", Dir::In, &format!("{i}"), "S");
         }
         let calls: Vec<&String> = h.find("k").unwrap().calls().collect();
         assert_eq!(calls.len(), MAX_CALLS);
-        assert_eq!(calls[0], "Script \u{2192} Tandem S:\n1\n\n");
-        assert_eq!(calls[99], "Script \u{2192} Tandem S:\n100\n\n");
+        assert_eq!(calls[0], "Script \u{2192} Termurion S:\n1\n\n");
+        assert_eq!(calls[99], "Script \u{2192} Termurion S:\n100\n\n");
 
         // Three-byte characters, so the limit falls inside one.
         let long = "\u{2192}".repeat(20000 / 3 + 1);
         assert!(long.len() >= 20000);
         h.add_call("k", Dir::In, &long, "S");
         let last = h.find("k").unwrap().calls().last().unwrap().clone();
-        let head = "Script \u{2192} Tandem S:\n";
+        let head = "Script \u{2192} Termurion S:\n";
         let body = last.strip_prefix(head).unwrap().strip_suffix("\u{2026}\n\n").unwrap();
         assert!(body.len() <= MAX_CALL_BYTES && body.len() > MAX_CALL_BYTES - 3, "{}", body.len());
         assert!(long.starts_with(body));
@@ -586,8 +586,8 @@ mod tests {
         let h = History::new(false, 0);
         assert_eq!(h.entries().len(), 1);
         let g = &h.entries()[0];
-        assert_eq!((g.id.as_str(), g.name.as_str(), g.running), ("iTerm2", "Tandem App", true));
-        assert_eq!(GLOBAL_NAME, "Tandem App");
+        assert_eq!((g.id.as_str(), g.name.as_str(), g.running), ("iTerm2", "Termurion App", true));
+        assert_eq!(GLOBAL_NAME, "Termurion App");
 
         let h = History::new(true, 0);
         let ids: Vec<&str> = h.entries().iter().map(|e| e.id.as_str()).collect();
@@ -675,7 +675,7 @@ mod tests {
         h.add_dynamic_profiles_entry(7);
         h.add_dynamic_profiles_entry(8);
         let rows: Vec<(&str, &str)> = h.entries().iter().map(|e| (e.id.as_str(), e.name.as_str())).collect();
-        assert_eq!(rows, [("iTerm2", "Tandem App"), ("__DP", "Dynamic Profiles")]);
+        assert_eq!(rows, [("iTerm2", "Termurion App"), ("__DP", "Dynamic Profiles")]);
         assert_eq!((DYNAMIC_PROFILES_ID, DYNAMIC_PROFILES_NAME), ("__DP", "Dynamic Profiles"));
         assert_eq!(h.entries()[1].started, 7);
         h.add_log(DYNAMIC_PROFILES_ID, "bad file\n", "S");

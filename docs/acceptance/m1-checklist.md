@@ -1,6 +1,6 @@
 # Milestone 1 acceptance checklist
 
-Run `C:\Users\datbi\src\tandem\target\release\tandem.exe` on EXTREME. Mark each line pass or fail,
+Run `C:\Users\datbi\src\termurion\target\release\tandem.exe` on EXTREME. Mark each line pass or fail,
 with a note on anything that feels unlike iTerm2.
 
 | # | Check | iTerm2 behavior it copies | Result |

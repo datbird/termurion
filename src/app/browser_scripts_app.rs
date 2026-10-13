@@ -1,10 +1,10 @@
-//! The page-script host on the app side (milestone 13x2, Task 1): Tandem's isolated world for each
+//! The page-script host on the app side (milestone 13x2, Task 1): Termurion's isolated world for each
 //! browser view, the message router, calls into the page and into the world, and the one funnel
 //! that opens a URL a page supplied. Web content is untrusted: a message is World::Client only
 //! when it arrives through `Runtime.bindingCalled` from a context `browser_world::Contexts` knows
-//! as Tandem's (never because of its JSON), the per-view secrets exist only in Client scripts and
+//! as Termurion's (never because of its JSON), the per-view secrets exist only in Client scripts and
 //! in expressions the world evaluates, a script call is never logged (only the kind of its failure),
-//! and no page-world code can make Tandem evaluate anything.
+//! and no page-world code can make Termurion evaluate anything.
 
 // The calls and fields below are the host's API for the plans that build on it (13x3 to 13x8).
 #![allow(dead_code)]
@@ -21,12 +21,12 @@ use serde_json::{Value, json};
 /// What a script call hands back: the value, or the error text (a kind, never page text).
 pub(super) type JsDone = Box<dyn FnOnce(&mut App, PaneId, Result<Value, String>)>;
 
-/// Tokens of Tandem's own script and DevTools calls start here: far from 0, 1 (the popovers') and
+/// Tokens of Termurion's own script and DevTools calls start here: far from 0, 1 (the popovers') and
 /// `web_replay`'s two.
 pub(super) const TOKEN_BASE: u64 = 1 << 32;
 /// How long the world's setup and checks may take before the view loads without it.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
-/// A page-world script result Tandem will read.
+/// A page-world script result Termurion will read.
 const MAX_RESULT: usize = 4 * 1024 * 1024;
 /// Page-world frames remembered per view.
 const MAX_PAGE_FRAMES: usize = 512;
@@ -56,13 +56,13 @@ pub(super) struct WorldState {
     pub(super) restore_load: Option<String>,
     /// Set when `restore_load` is a web page's own navigation the permission gate parked (13x6): how
     /// it was judged, so the release judges it again with that and loads nothing else. None: the
-    /// target is Tandem's own (the person's typed address, a restored page).
+    /// target is Termurion's own (the person's typed address, a restored page).
     pub(super) restore_from: Option<crate::browser_restore::ParkedFrom>,
     /// The check that waits for the navigation to about:blank, and that navigation's id.
     pub(super) reload_wait: bool,
     pub(super) reload_nav: Option<u64>,
     /// After a renderer or frame process failure the view reloads: when this passes, the main frame
-    /// must have its Tandem context again (whether Page and Runtime enablement survive a renderer
+    /// must have its Termurion context again (whether Page and Runtime enablement survive a renderer
     /// crash is not known), else the setup runs once more, then the world is Unavailable.
     pub(super) verify_at: Option<Instant>,
     pub(super) restarted: bool,
@@ -161,12 +161,12 @@ impl App {
         // once it is Unavailable; messages are acted on only when it is Ready.
         let client_ok = bv.is_none_or(|b| !matches!(b.client_world, ClientWorld::Unavailable(_)));
         let mut scripts = browser_js::always_on_scripts(secret, dom, client_ok, cfg!(debug_assertions));
-        // Tandem's pointer gate (Task 7): the table as it is now; a later change reaches the live
+        // Termurion's pointer gate (Task 7): the table as it is now; a later change reaches the live
         // worlds through `browser_pointer_sync`.
         if client_ok {
             let (keys, four, focus) = self.browser_pointer_table();
             scripts.push(crate::browser_pointer::user_script(secret, &keys, four, focus));
-            // Tandem's broadcast script (Task 8): always installed, so turning broadcast on works at
+            // Termurion's broadcast script (Task 8): always installed, so turning broadcast on works at
             // once without a reload; `browser_always_on` drops its messages unless the pane sends.
             scripts.push(crate::browser_keys::user_script(secret));
             // iTerm2's find script (13x3 Task 1): every browser pane, the isolated world only. No
@@ -175,7 +175,7 @@ impl App {
                 Ok(s) => scripts.push(s),
                 Err(_) => crate::rlog!("browser find script not registered"),
             }
-            // iTerm2's copy mode cursor and Tandem's key listener (13x3 Task 8): both or neither, and
+            // iTerm2's copy mode cursor and Termurion's key listener (13x3 Task 8): both or neither, and
             // only with an isolated world (this block); without them Edit > Copy Mode is not offered.
             // (They fail together only for a secret that is not plain letters and digits, which the find
             // script above would already have logged.)
@@ -581,7 +581,7 @@ impl App {
             "Runtime.executionContextCreated" => {
                 // The pointer table goes only into a context the table accepted, once (final review I4).
                 let recorded = bv.contexts.created(session, json);
-                // A new Tandem context in the main frame has none of the reader's objects (B8).
+                // A new Termurion context in the main frame has none of the reader's objects (B8).
                 if recorded && bv.contexts.is_main_context(json) {
                     bv.reader.reset();
                     bv.marks_page.document_gone();
@@ -612,8 +612,8 @@ impl App {
                 }
             }
             "Runtime.bindingCalled" => {
-                // A message is the Tandem world's only when the binding was called from a context the
-                // table knows as Tandem's; the JSON never says so.
+                // A message is the Termurion world's only when the binding was called from a context the
+                // table knows as Termurion's; the JSON never says so.
                 if let Some((frame, origin, payload)) = bv.contexts.binding_called(session, json) {
                     if let Some(r) = browser_js::route(&payload, World::Client, frame, &origin) {
                         self.browser_message(pane, r);
@@ -624,7 +624,7 @@ impl App {
         }
     }
 
-    /// The frames with a Tandem world changed: the graph forgets the ones that lost it.
+    /// The frames with a Termurion world changed: the graph forgets the ones that lost it.
     fn browser_frames_changed(bv: &mut super::browser_app::BrowserView) {
         let now = bv.contexts.frames();
         for lost in bv.frames.iter().filter(|f| !now.contains(f)) {
@@ -678,7 +678,7 @@ impl App {
 
     // --- Calls ---
 
-    /// `Runtime.evaluate` of `expression` in the Tandem world of `frame` (None is the main frame),
+    /// `Runtime.evaluate` of `expression` in the Termurion world of `frame` (None is the main frame),
     /// by the context's unique id; `done` gets the value or the error.
     fn browser_evaluate(&mut self, pane: PaneId, frame: Option<u64>, expression: String, done: JsDone) {
         self.browser_evaluate_in(pane, frame, expression, done, false);
@@ -703,7 +703,7 @@ impl App {
         }));
     }
 
-    /// The DevTools session and unique context id of `pane`'s Tandem world (the frame's, or the main
+    /// The DevTools session and unique context id of `pane`'s Termurion world (the frame's, or the main
     /// frame's): Err with the reason when there is no view, the world is not Ready or no context exists.
     fn world_target(&self, pane: PaneId, frame: Option<u64>, allow_setup: bool) -> Result<(Option<String>, String), &'static str> {
         match self.browser_views.get(&pane) {
@@ -744,7 +744,7 @@ impl App {
         }));
     }
 
-    /// `callAsyncJavaScript` in the Tandem world of the main frame. `Err("isolated world unavailable")`
+    /// `callAsyncJavaScript` in the Termurion world of the main frame. `Err("isolated world unavailable")`
     /// at once when the view has none. The script and the arguments are never logged.
     pub(super) fn browser_js_call(&mut self, pane: PaneId, body: &str, args: Value, done: JsDone) {
         let Some(done) = self.seam_intercept(pane, super::browser_test_seam::Runner::World, body, done) else { return };
@@ -781,7 +781,7 @@ impl App {
         view.execute_script(&browser_js::make_safe(script), token);
     }
 
-    /// The same in the Tandem world of one frame (never the page world).
+    /// The same in the Termurion world of one frame (never the page world).
     pub(super) fn browser_eval_in_frame(&mut self, pane: PaneId, frame: Option<u64>, script: &str, done: JsDone) {
         self.browser_evaluate(pane, frame, browser_js::make_safe(script), done);
     }
@@ -805,7 +805,7 @@ impl App {
         }
     }
 
-    /// Runs `expression` in every live Tandem context of the view (a table a script reads changes
+    /// Runs `expression` in every live Termurion context of the view (a table a script reads changes
     /// without a reload).
     pub(super) fn browser_world_update(&mut self, pane: PaneId, expression: &str) {
         let frames: Vec<Option<u64>> = match self.browser_views.get(&pane) {
@@ -817,7 +817,7 @@ impl App {
         }
     }
 
-    /// An answer to a script or DevTools call that Tandem made: resolves its callback. A page-world
+    /// An answer to a script or DevTools call that Termurion made: resolves its callback. A page-world
     /// answer is parsed as JSON (it is page-controlled); an answer over `MAX_RESULT` is an error.
     pub(super) fn browser_script_done(&mut self, pane: PaneId, token: u64, json: &Result<String, String>) -> bool {
         let Some(bv) = self.browser_views.get_mut(&pane) else { return false };
@@ -835,7 +835,7 @@ impl App {
         true
     }
 
-    /// Whether `token` is a call Tandem made on this view.
+    /// Whether `token` is a call Termurion made on this view.
     pub(super) fn browser_owns_token(&self, pane: PaneId, token: u64) -> bool {
         self.browser_views.get(&pane).is_some_and(|b| b.pending_js.contains_key(&token) || b.eval_waiting.contains(&token))
     }
@@ -935,13 +935,13 @@ impl App {
     /// counted in the log, never its text.
     pub(super) fn browser_message(&mut self, pane: PaneId, r: Routed) {
         // A file or ssh page is a document of the person's files or a remote host, not a page of
-        // the web and not Tandem's own: nothing it posts reaches a handler (13x8).
+        // the web and not Termurion's own: nothing it posts reaches a handler (13x8).
         // By pane state and by the message's own source (a leaving file page can still post).
         if self.browser_views.get(&pane).is_some_and(|b| b.page_root.is_some()) || matches!(crate::webhost::scheme_of(&r.source).as_str(), "iterm2-file" | "iterm2-ssh") {
             return;
         }
         // An extension's own page (`chrome-extension:`) is code the person approved for its sites, not
-        // for Tandem: nothing it posts reaches a handler or an isolated-world script (13x8 Task 10).
+        // for Termurion: nothing it posts reaches a handler or an isolated-world script (13x8 Task 10).
         if crate::webhost::scheme_of(&r.source) == "chrome-extension" {
             return;
         }
@@ -1092,11 +1092,11 @@ mod tests {
         let e = &p[p.find("pub(super) fn browser_eval(").unwrap()..p.find("pub(super) fn browser_eval_in_frame").unwrap()];
         assert!(e.contains("make_safe(script)") && e.contains("execute_script("), "the page world, made safe");
         let w = &p[p.find("pub(super) fn browser_eval_in_frame").unwrap()..p.find("pub(super) fn browser_page_call").unwrap()];
-        assert!(w.contains("browser_evaluate(") && !w.contains("execute_script"), "a frame's eval is the Tandem world's, never the page's");
+        assert!(w.contains("browser_evaluate(") && !w.contains("execute_script"), "a frame's eval is the Termurion world's, never the page's");
     }
 
     /// A world call never runs without a ready world, and every call to the page's frames is the
-    /// Tandem world's by unique context id.
+    /// Termurion world's by unique context id.
     #[test]
     fn calls_need_a_ready_world() {
         let p = prod();
@@ -1119,7 +1119,7 @@ mod tests {
         assert!(b.contains("local_page_ok(&r)") && b.contains("json!({\"handler\": r.handler, \"body\": r.body})"));
         assert!(!b.contains("serde_json::from_str"), "the router never re-reads a page's JSON");
         // The binding is accepted only through the context table.
-        let d = &p[p.find("\"Runtime.bindingCalled\" =>").unwrap()..p.find("_ => {}\n        }\n    }\n\n    /// The frames with a Tandem world changed").unwrap()];
+        let d = &p[p.find("\"Runtime.bindingCalled\" =>").unwrap()..p.find("_ => {}\n        }\n    }\n\n    /// The frames with a Termurion world changed").unwrap()];
         assert!(d.contains("contexts.binding_called(session, json)"));
     }
 

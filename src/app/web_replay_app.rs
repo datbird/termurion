@@ -2,7 +2,7 @@
 //! profile has Instant Replay on and the pane is shown, its view is captured as JPEG at up to
 //! `WebInstantReplayFrameRate` into a per-pane ring bounded by the Instant Replay memory setting
 //! (`IRMemory`) and, over all panes, by `web_replay::TOTAL_CAP`. Start Instant Replay opens the
-//! playback window on a copy of the ring; Reveal in Explorer saves a Motion JPEG AVI in Tandem's own
+//! playback window on a copy of the ring; Reveal in Explorer saves a Motion JPEG AVI in Termurion's own
 //! folder. Nothing is written unless the person asks, a Dev Null pane is never recorded, a window
 //! that is not on screen is not captured, an unchanged page backs the capture off, and a page marked
 //! sensitive (a password, one-time-code or card field in any frame, until the top page navigates) is
@@ -237,7 +237,7 @@ impl App {
     }
 
     /// Reveal in Explorer: the movie is built and written on a worker (never the UI thread) into
-    /// Tandem's own folder under a random name, and selected in Explorer when it is done.
+    /// Termurion's own folder under a random name, and selected in Explorer when it is done.
     fn web_replay_reveal(&mut self) {
         let Some(w) = self.web_replay.as_mut() else { return };
         if w.saving {
@@ -282,7 +282,7 @@ impl App {
     }
 }
 
-/// Builds the AVI and writes it to a new owner-only file in Tandem's Replay folder (P16): a random name,
+/// Builds the AVI and writes it to a new owner-only file in Termurion's Replay folder (P16): a random name,
 /// never an existing entry, never a link. The folder is swept at the next launch and at exit.
 fn save_movie(frames: &[(Duration, Vec<u8>)], size: (u32, u32)) -> Result<std::path::PathBuf, String> {
     use std::io::Write;
@@ -294,7 +294,7 @@ fn save_movie(frames: &[(Duration, Vec<u8>)], size: (u32, u32)) -> Result<std::p
     let folder = web_replay::replay_folder(&base);
     crate::webhost_win::prepare_folder(&folder)?;
     let dir = crate::localfs::LocalPath::judge(&folder).ok_or("the Replay folder is on a share or behind a link")?;
-    let name = format!("Tandem Instant Replay {}.avi", uuid::Uuid::new_v4().simple());
+    let name = format!("Termurion Instant Replay {}.avi", uuid::Uuid::new_v4().simple());
     let file = dir.unfollowed(&name).ok_or("the file name was refused")?;
     let mut f = crate::localfs::create_owner_only(&file).map_err(|e| e.to_string())?;
     f.write_all(&avi).and_then(|_| f.flush()).map_err(|e| {

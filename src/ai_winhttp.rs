@@ -427,7 +427,7 @@ impl Worker {
     /// The request from open to the last read, following redirects to the gated host only.
     fn exchange(&self, request: &HttpRequest, target: &Target, options: &Options, delivery: &mut Delivery) -> Result<(), Fail> {
         let check = |ok: i32| if ok != 0 { Ok(()) } else { Err(Fail::Code(last_error())) };
-        let agent = wide("Tandem");
+        let agent = wide("Termurion");
         let proxy_name = match &options.proxy {
             Proxy::HttpsOnly { host, port } => Some(wide(&format!("https={host}:{port}"))),
             _ => None,
@@ -587,7 +587,7 @@ fn follow(current: &Target, location: &str) -> Result<Target, String> {
         let dir = &path[..path.rfind('/').map_or(0, |i| i + 1)];
         format!("{origin}{dir}{location}")
     };
-    let mut next = parse_url(&url).map_err(|_| redirect_refused("an address Tandem cannot read"))?;
+    let mut next = parse_url(&url).map_err(|_| redirect_refused("an address Termurion cannot read"))?;
     if next.host != current.host {
         return Err(redirect_refused(&format!("another host ({})", next.host)));
     }
@@ -808,7 +808,7 @@ mod tests {
         assert!(lower.contains("\r\nx-test: a\r\n"), "{head}");
         assert!(lower.contains("\r\ncontent-type: application/json\r\n"), "{head}");
         assert!(lower.contains("\r\ncontent-length: 7\r\n"), "{head}");
-        assert!(lower.contains("\r\nuser-agent: tandem\r\n"), "{head}");
+        assert!(lower.contains("\r\nuser-agent: termurion\r\n"), "{head}");
         assert_eq!(body, br#"{"q":1}"#);
         std::thread::sleep(Duration::from_millis(100));
         assert!(call.finished());
@@ -1102,8 +1102,8 @@ mod tests {
         assert_eq!(follow(&here, "//evil.test/"), Err(redirect_refused("another host (evil.test)")));
         assert_eq!(follow(&here, "https://api.test.evil.test/"), Err(redirect_refused("another host (api.test.evil.test)")));
         assert_eq!(follow(&here, "http://api.test/v1"), Err(redirect_refused("plain http")));
-        assert_eq!(follow(&here, "https://evil.test\\@api.test/"), Err(redirect_refused("an address Tandem cannot read")));
-        assert_eq!(follow(&here, "ftp://api.test/"), Err(redirect_refused("an address Tandem cannot read")));
+        assert_eq!(follow(&here, "https://evil.test\\@api.test/"), Err(redirect_refused("an address Termurion cannot read")));
+        assert_eq!(follow(&here, "ftp://api.test/"), Err(redirect_refused("an address Termurion cannot read")));
         // Relative references as RFC 3986 resolves them.
         assert_eq!(follow(&here, "?y=2"), Ok(t("https://api.test:8443/v1/chat?y=2")), "a query keeps the path");
         assert_eq!(follow(&here, "#top"), Ok(t("https://api.test:8443/v1/chat?x=1")), "a fragment alone keeps the address");

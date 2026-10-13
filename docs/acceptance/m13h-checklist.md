@@ -1,8 +1,8 @@
 # Milestone 13h acceptance checklist
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Nothing in this milestone was checked on screen while it was built, so every line here is a
 first look. The pure parts (the title bar geometry and colors, the pick halves, the drop plans, the
@@ -65,12 +65,12 @@ windows. Mark each line pass or fail.
 | 30 | Press on a bar and drag 4 points or more: the pick look appears (source green, halves dark red); release over another pane's half: the pane moves there, focused. Release on its own pane or on a bar: nothing moves. A short drag (under 4 points) is only a click. | |
 | 31 | Drag onto a pane of another window (a different window under the pointer): the half shows there; release moves the pane into that window, focused, and that window comes to the front. | |
 | 32 | Release over a window's tab bar (its own or another window's): the pane becomes a new tab at that slot; never among pinned tabs, never inside a collapsed group (it lands after the group). The group pill itself does not join the group (kept). | |
-| 33 | Release over the desktop (outside every Tandem window) or over another program's window: a new Tandem window opens with its top left at the pointer (it may reach past a monitor edge, kept). Another program's window is not treated as ours. | |
+| 33 | Release over the desktop (outside every Termurion window) or over another program's window: a new Termurion window opens with its top left at the pointer (it may reach past a monitor edge, kept). Another program's window is not treated as ours. | |
 | 34 | A lone pane (with "even if only one pane"): dragging its bar moves the window (refused, with nothing happening, for a Centered, docked or full screen window). It cannot be dropped onto another pane by drag (use Move Session to Split Pane; kept, ruled). | |
 | 35 | Advanced RequireOptionToDragSplitPaneTitleBar on: a plain drag does nothing (a click still focuses); an Alt drag moves the pane. The lone pane's window drag needs Alt too. Off: a plain drag moves it. | |
 | 36 | Lock Layout on: a drag beeps and never starts. Dropping into a Lock Layout window is refused with a beep. | |
 | 37 | tmux pane dragged onto another pane's half in its session: tmux moves it. Dropped onto a tab bar (its own window's or another window's): it breaks out into a tmux window of THAT window, next to the tab at the drop slot (a window with no tab of the same tmux session refuses with a beep). Dropped outside every window: the new window opens at the pointer. | |
-| 38a | Ending a drag without a release: start a title bar drag and press Esc, then another and Alt-Tab away, then another and let go of the button outside any Tandem window (or take the mouse away with a screenshot tool): each time the overlays vanish in every window, nothing moves, and the next mouse move starts nothing. | |
+| 38a | Ending a drag without a release: start a title bar drag and press Esc, then another and Alt-Tab away, then another and let go of the button outside any Termurion window (or take the mouse away with a screenshot tool): each time the overlays vanish in every window, nothing moves, and the next mouse move starts nothing. | |
 | 38 | Instant Replay open on the dragged pane or a loaded recording: refused (a beep), nothing moves. | |
 
 ## Colors and sizes
@@ -86,7 +86,7 @@ windows. Mark each line pass or fail.
 |---|---|---|
 | 41 | The lock glyph on a bar does nothing yet (13i brings Lock Pane). | |
 | 42 | A drag or pick drop is refused for a tmux gateway pane. | |
-| 43 | Tandem's title bar menu has no per-pane link, fold or Smart Selection items (no click point). | |
+| 43 | Termurion's title bar menu has no per-pane link, fold or Smart Selection items (no click point). | |
 | 44 | The title bar uses `shown_name` rules: control, bidi and zero-width characters are dropped and a title is cut at 200 characters before it is fitted to the bar. | |
 | 45 | Soft hyphens, tag characters and variation selectors are not filtered from a title (they have no width). | |
 | 46 | Label width counts each character's width; a text-style character followed by a variation selector may overflow the label by one cell, clipped at its edge. | |

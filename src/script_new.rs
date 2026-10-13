@@ -49,10 +49,10 @@ pub const TEMPLATE_SHA256: [(&str, &str); 4] = [
 ];
 
 /// `templateForPicker:url:` (`M:1479-1491`): `$$PYTHON_VERSION$$` becomes the two-part
-/// version, else "3"; the comments name Tandem.
+/// version, else "3"; the comments name Termurion.
 pub fn template(env: Env, t: Template, python: Option<&str>) -> String {
     let version = python.map(rt::two_part).unwrap_or_else(|| "3".to_string());
-    vendored(env, t).replace("iTerm2", "Tandem").replace("$$PYTHON_VERSION$$", &version)
+    vendored(env, t).replace("iTerm2", "Termurion").replace("$$PYTHON_VERSION$$", &version)
 }
 
 /// What the picker and the save dialog chose.
@@ -209,7 +209,7 @@ pub const WARNING: &str = "Warning";
 /// A place outside the Scripts folder (`M:1693-1709`).
 pub const INVALID_FOLDER: &str = "Invalid Folder";
 pub fn location_restricted(scripts: &Path) -> String {
-    format!("Full-environment scripts must be located under in your Tandem Scripts directory:\n{}", scripts.display())
+    format!("Full-environment scripts must be located under in your Termurion Scripts directory:\n{}", scripts.display())
 }
 pub const LOCATION_ID: &str = "FullEnvironmentScriptsLocationRestricted";
 
@@ -237,8 +237,8 @@ mod tests {
                 let want = TEMPLATE_SHA256.iter().find(|(n, _)| *n == name).map(|(_, h)| *h).unwrap();
                 let got: String = Sha256::digest(vendored(env, t).as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
                 assert_eq!(got, want, "{name}");
-                // Comments name Tandem; nothing else changes but the version.
-                assert_eq!(template(env, t, Some("3.12")), vendored(env, t).replace("iTerm2", "Tandem").replace("$$PYTHON_VERSION$$", "3.12"));
+                // Comments name Termurion; nothing else changes but the version.
+                assert_eq!(template(env, t, Some("3.12")), vendored(env, t).replace("iTerm2", "Termurion").replace("$$PYTHON_VERSION$$", "3.12"));
                 assert!(!template(env, t, None).contains("iTerm2"));
             }
         }
@@ -249,9 +249,9 @@ mod tests {
         // A three-part version is cut to two (`M:1553`).
         assert!(template(Env::Basic, Template::Simple, Some("3.12.4")).starts_with("#!/usr/bin/env python3.12\n"));
         let daemon = template(Env::Full, Template::Daemon, None);
-        // The brief's "a terminal session in Tandem ..." spans a line break in iTerm2's file:
+        // The brief's "a terminal session in Termurion ..." spans a line break in iTerm2's file:
         // "in a\n    # terminal session in iTerm2 while this script is running:".
-        assert!(daemon.contains("issuing this command in a\n    # terminal session in Tandem while this script is running"));
+        assert!(daemon.contains("issuing this command in a\n    # terminal session in Termurion while this script is running"));
         assert!(!daemon.contains("iTerm2"));
     }
 
@@ -314,7 +314,7 @@ mod tests {
         assert_eq!(open_in("Notepad"), "Open new script in Notepad?");
         assert_eq!(SHOW_IN_EXPLORER, "Show in Explorer");
         assert_eq!(OPEN_IN_ID, "NoSyncOpenNewPythonScriptInDefaultEditor");
-        assert_eq!(location_restricted(Path::new(r"C:\S")), "Full-environment scripts must be located under in your Tandem Scripts directory:\nC:\\S");
+        assert_eq!(location_restricted(Path::new(r"C:\S")), "Full-environment scripts must be located under in your Termurion Scripts directory:\nC:\\S");
         assert_eq!(LOCATION_ID, "FullEnvironmentScriptsLocationRestricted");
         assert_eq!(INVALID_FOLDER, "Invalid Folder");
         assert_eq!(INSTALLATION_FAILED, "Installation Failed");

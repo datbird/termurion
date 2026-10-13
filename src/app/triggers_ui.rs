@@ -159,7 +159,7 @@ impl App {
             TriggerRequest::TooSlow => self.tell_once(pane, "too-slow", "Triggers are taking too long and were skipped for some output."),
             TriggerRequest::PatternTooSlow { trigger } => self.tell_once(pane, &format!("pattern-slow-{trigger}"), &format!("The pattern of trigger {} took too long to match, so the trigger was turned off for this session.", trigger + 1)),
             TriggerRequest::Unavailable { title, milestone, .. } => {
-                let text = if milestone == 0 { format!("The trigger action \u{201c}{title}\u{201d} is not available in Tandem yet.") } else { format!("The trigger action \u{201c}{title}\u{201d} comes in milestone {milestone}.") };
+                let text = if milestone == 0 { format!("The trigger action \u{201c}{title}\u{201d} is not available in Termurion yet.") } else { format!("The trigger action \u{201c}{title}\u{201d} comes in milestone {milestone}.") };
                 self.tell_once(pane, &title, &text);
             }
         }
@@ -184,7 +184,7 @@ impl App {
         }
     }
 
-    /// Bounce Dock Icon: the taskbar button flashes until Tandem is in front, or once.
+    /// Bounce Dock Icon: the taskbar button flashes until Termurion is in front, or once.
     pub(super) fn flash_taskbar(&mut self, until_active: bool) {
         use windows_sys::Win32::UI::WindowsAndMessaging::{FLASHW_ALL, FLASHW_TIMERNOFG, FLASHW_TRAY};
         if until_active { self.flash_taskbar_raw(FLASHW_TRAY | FLASHW_TIMERNOFG, 0) } else { self.flash_taskbar_raw(FLASHW_ALL, 1) }
@@ -328,7 +328,7 @@ impl App {
             "toggleNotifyOnStatusChange:" => self.status_armed = !self.status_armed,
             "enableAllTriggers:" | "disableAllTriggers:" => {
                 let on = selector == "enableAllTriggers:";
-                // In place: entries Tandem cannot read, and every other key, stay as stored.
+                // In place: entries Termurion cannot read, and every other key, stay as stored.
                 // Enable All leaves Inject Javascript, Reload, Reader Mode and the workgroup actions off: each
                 // is turned on only by its own confirm in the Triggers editor (R13x5-12).
                 let stored = self.profile_of(id).and_then(|p| p.get("Triggers"));

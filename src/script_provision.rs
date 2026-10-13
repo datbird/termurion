@@ -1275,9 +1275,9 @@ mod tests {
     fn runner_runs_hidden() {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut r = RealRunner::new(tx);
-        let echo = Step { program: p("cmd.exe"), args: s(&["/c", "echo tandem"]), env: vec![] };
-        assert_eq!(r.run(&echo), Ok("tandem\r\n".to_string()));
-        assert_eq!(rx.try_iter().collect::<Vec<_>>(), s(&["tandem"]));
+        let echo = Step { program: p("cmd.exe"), args: s(&["/c", "echo termurion"]), env: vec![] };
+        assert_eq!(r.run(&echo), Ok("termurion\r\n".to_string()));
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), s(&["termurion"]));
         let fail = Step { program: p("cmd.exe"), args: s(&["/c", "exit 3"]), env: vec![] };
         let err = r.run(&fail).unwrap_err();
         assert!(err.contains("status 3"), "{err}");

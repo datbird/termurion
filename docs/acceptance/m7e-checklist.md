@@ -1,7 +1,7 @@
 # Milestone 7e acceptance checklist
 
-Close any open Tandem window. Copy `tandem.exe` and `tandem-host.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`. Cmd is the Win key and
+Close any open Termurion window. Copy `tandem.exe` and `tandem-host.exe` from
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`. Cmd is the Win key and
 Option is Alt. Mark each line pass or fail.
 
 | # | Check | Result |
@@ -18,9 +18,9 @@ Option is Alt. Mark each line pass or fail.
 | 10 | Additional Hotkeys...: add F12 as a second shortcut, OK, OK. F12 toggles the window too. | |
 | 11 | Profile Window > Style "Normal" on the hotkey profile: the window shows and hides at once (no slide). Style back to "Full-Width Top of Screen". | |
 | 12 | "Floating window" on: the shown hotkey window stays above other windows. | |
-| 13 | "Automatically reopen on app reactivation" on: show it, click Notepad (it hides), click a Tandem window: it comes back. | |
-| 14 | Close every regular Tandem window: Tandem keeps running (the hotkey still shows its window). Close the hotkey window's last tab: Tandem ends. | |
-| 15 | Settings > Keys: tick "Show/hide all windows with a system-wide hotkey": it becomes Alt+Space. With Tandem in front, Alt+Space minimizes all its windows; from another app, Alt+Space brings them back. With no windows open, it opens one. | |
-| 16 | Settings > General > Startup "Only Restore Hotkey Window": quit and start Tandem: no window shows; the hotkey shows the hotkey window. Set it back to "Use System Window Restoration Setting". | |
+| 13 | "Automatically reopen on app reactivation" on: show it, click Notepad (it hides), click a Termurion window: it comes back. | |
+| 14 | Close every regular Termurion window: Termurion keeps running (the hotkey still shows its window). Close the hotkey window's last tab: Termurion ends. | |
+| 15 | Settings > Keys: tick "Show/hide all windows with a system-wide hotkey": it becomes Alt+Space. With Termurion in front, Alt+Space minimizes all its windows; from another app, Alt+Space brings them back. With no windows open, it opens one. | |
+| 16 | Settings > General > Startup "Only Restore Hotkey Window": quit and start Termurion: no window shows; the hotkey shows the hotkey window. Set it back to "Use System Window Restoration Setting". | |
 | 17 | With the hotkey window shown and holding text, quit and relaunch: it does not show at launch; the hotkey shows it with its text restored. | |
 | 18 | Keys: bind a key to "Toggle Pin Hotkey Window" in the hotkey profile: the key flips the Pin check in the Window menu. | |

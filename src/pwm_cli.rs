@@ -25,7 +25,7 @@ use crate::pwm_source::{Caps, Kind, Scope, Source};
 /// `op`'s minimum usable version (`OT:103`): older CLIs accept a piped `item edit` template,
 /// report success, and silently change nothing, which would break secure in-place editing.
 pub const OP_MIN: [u32; 3] = [2, 23, 0];
-/// The tag every account Tandem's 1Password integration lists or creates carries (`OP:228`).
+/// The tag every account Termurion's 1Password integration lists or creates carries (`OP:228`).
 pub const OP_TAG: &str = "iTerm2";
 /// The tag that turns an OTP-bearing item's automatic code off (`OP:263`).
 pub const NO_OTP_TAG: &str = "iTerm2-no-otp";
@@ -336,16 +336,16 @@ pub fn lpass_add_input(user: &str, p: &Secret) -> Secret {
     Secret::new(format!("Username: {user}\nPassword: {}", p.expose()))
 }
 
-// --- Alert texts (Resume notes and the source; "iTerm2" replaced by "Tandem" in user-facing
+// --- Alert texts (Resume notes and the source; "iTerm2" replaced by "Termurion" in user-facing
 // text, exact wording and punctuation otherwise, non-ASCII as \u{...} escapes) ---
 
 pub const OP_UNAVAILABLE_TITLE: &str = "OnePassword Unavailable";
 pub const OP_CANNOT_FIND_TITLE: &str = "Can\u{2019}t Find 1Password CLI";
-/// Names where Tandem actually looks (PATH, then WinGet's link folder; `op_paths`) in place of
+/// Names where Termurion actually looks (PATH, then WinGet's link folder; `op_paths`) in place of
 /// iTerm2's macOS-only "/usr/local/bin", which would mislead a Windows user (m10b ruling; the
 /// source's wording and structure otherwise kept verbatim).
 pub const OP_CANNOT_FIND_MESSAGE: &str =
-    "In order to use the 1Password integration, Tandem needs to know where to find the CLI app named \u{201c}op\u{201d}. Tandem looks on your PATH and in WinGet\u{2019}s install folder. If you have installed it elsewhere, please select Locate to provide its location.";
+    "In order to use the 1Password integration, Termurion needs to know where to find the CLI app named \u{201c}op\u{201d}. Termurion looks on your PATH and in WinGet\u{2019}s install folder. If you have installed it elsewhere, please select Locate to provide its location.";
 pub const OP_LOCATE: &str = "Locate";
 pub const OP_NOT_FOUND_MESSAGE: &str = "The 1Password CLI could not be found, or is older than the required version 2.23. Check that a current op is installed.";
 pub const OP_MASTER_PASSWORD_PROMPT: &str = "Enter your 1Password master password:";
@@ -365,7 +365,7 @@ pub const OP_SIGNIN_FAILED_MESSAGE: &str = "1Password sign-in failed.";
 
 /// "The 1Password CLI at <path> is too old..." (`OT:128`).
 pub fn op_too_old_message(path: &str) -> String {
-    format!("The 1Password CLI at {path} is too old. The Tandem integration requires version 2.23 or later.")
+    format!("The 1Password CLI at {path} is too old. The Termurion integration requires version 2.23 or later.")
 }
 
 /// "Enter the 1Password master password for account \u{201c}<account>\u{201d}:" (`OT:325`).
@@ -375,7 +375,7 @@ pub fn op_master_password_prompt_for_account(account: &str) -> String {
 
 pub const LP_CANNOT_FIND_TITLE: &str = "Can\u{2019}t Find LastPass CLI";
 pub const LP_CANNOT_FIND_MESSAGE: &str =
-    "In order to use the LastPass integration, Tandem needs to know where to find the CLI app named \u{201c}lpass\u{201d}. Select Locate to provide its location.";
+    "In order to use the LastPass integration, Termurion needs to know where to find the CLI app named \u{201c}lpass\u{201d}. Select Locate to provide its location.";
 pub const LP_LOCATE: &str = "Locate";
 pub const LP_HELP: &str = "Help";
 pub const LP_ACCOUNT_LIST_FETCH_FAILED: &str = "The account list could not be fetched.";

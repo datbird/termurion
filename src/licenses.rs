@@ -14,10 +14,10 @@ pub fn text() -> &'static str {
 }
 
 /// The file name Open Source Licenses opens.
-pub const FILE_NAME: &str = "Tandem Licenses.txt";
+pub const FILE_NAME: &str = "Termurion Licenses.txt";
 
 /// Writes the list to `dir\Termurion Licenses.txt` and returns the path (P17): the folder is
-/// Tandem's own (`%LOCALAPPDATA%\Termurion`), not the predictable temp folder; the text goes to a
+/// Termurion's own (`%LOCALAPPDATA%\Termurion`), not the predictable temp folder; the text goes to a
 /// fresh temp file in it (`create_new`, never through an existing link) and is renamed over the
 /// final name; a link at the final name is refused.
 pub fn write_to(dir: &crate::localfs::LocalPath, text: &str) -> std::io::Result<crate::localfs::LocalPath> {
@@ -72,7 +72,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let judged = crate::localfs::LocalPath::judge(&dir).unwrap();
         let p = write_to(&judged, "first").unwrap();
-        assert_eq!(p.path(), dir.join("Tandem Licenses.txt"));
+        assert_eq!(p.path(), dir.join("Termurion Licenses.txt"));
         assert_eq!(std::fs::read_to_string(p.path()).unwrap(), "first");
         write_to(&judged, "second").unwrap();
         assert_eq!(std::fs::read_to_string(p.path()).unwrap(), "second");
@@ -118,7 +118,7 @@ mod tests {
         Folder,
         /// A notice at the top of `resources/`, which says which files it covers.
         Root,
-        /// Tandem's own file.
+        /// Termurion's own file.
         Own(&'static str),
     }
 
@@ -134,7 +134,7 @@ mod tests {
         ("ColorPresets.plist", Cover::Root),
         ("tips.toml", Cover::Root),
         ("code-review-settings.txt", Cover::Root),
-        ("shell_integration/termurion_shell_integration.ps1", Cover::Own("Tandem's own PowerShell script")),
+        ("shell_integration/termurion_shell_integration.ps1", Cover::Own("Termurion's own PowerShell script")),
     ];
 
     fn is_notice(name: &str) -> bool {
@@ -154,7 +154,7 @@ mod tests {
     }
 
     /// The class rule (m13v2 Task 7 fix): every file bundled from `resources/` is covered by a
-    /// notice that the list carries, or is declared Tandem's own. A new file with neither fails.
+    /// notice that the list carries, or is declared Termurion's own. A new file with neither fails.
     #[test]
     fn every_bundled_file_has_a_notice() {
         let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources");
@@ -204,7 +204,7 @@ mod tests {
         assert!(bad.is_empty(), "bundled files without a notice in the list:\n{}", bad.join("\n"));
     }
 
-    /// The files the installer copies are Tandem's own binaries or the ConPTY pair, whose notice is in the list.
+    /// The files the installer copies are Termurion's own binaries or the ConPTY pair, whose notice is in the list.
     #[test]
     fn every_installed_file_has_a_notice() {
         let ps = include_str!("../scripts/install-extreme.ps1");
@@ -215,7 +215,7 @@ mod tests {
             match n {
                 "termurion.exe" | "termurion-host.exe" | "termurion-git.exe" | "termurion-utils.exe" | "cc-status.exe" => {}
                 "conpty.dll" | "OpenConsole.exe" => assert!(text().contains("resources/conpty/NOTICE.md"), "{n}"),
-                other => panic!("{other} is installed with no notice: add it to the list or declare it Tandem's own"),
+                other => panic!("{other} is installed with no notice: add it to the list or declare it Termurion's own"),
             }
         }
     }

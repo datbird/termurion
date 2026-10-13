@@ -268,9 +268,9 @@ pub const KEEP_GOING: &str = "Keep Going";
 pub const STOP: &str = "Stop Codecierge";
 pub const USAGE_ID: &str = "CodeciergeCommandWarning";
 
-/// Why a file is not written (Tandem's, rulings R12e-4 and the final ruling on Windows shells).
+/// Why a file is not written (Termurion's, rulings R12e-4 and the final ruling on Windows shells).
 pub const WINDOWS_SHELL: &str = "Writing files is not supported in this session's shell (cmd or PowerShell).";
-pub const UNKNOWN_SHELL: &str = "Tandem cannot tell which shell this session runs, so Codecierge cannot write files in it.";
+pub const UNKNOWN_SHELL: &str = "Termurion cannot tell which shell this session runs, so Codecierge cannot write files in it.";
 pub const UNVOUCHED_SHELL: &str = "Writing files is not supported in this session: Codecierge writes only in a local POSIX shell or over it2ssh to a POSIX host.";
 pub const WRITE_INVALID: &str = "Codecierge cannot write a file name with characters Windows does not allow.";
 /// 12c's text for an empty name, shared so the two writers answer alike.
@@ -495,7 +495,7 @@ pub fn invoke_plan(s: &Session, id: u64, gate_open: bool, name: &str, arguments:
 
 // ---- Writing a file (ruling R12e-4 and the final ruling on Windows shells) ----
 
-/// What Tandem knows of the shell a `write` would type into (final residual ruling).
+/// What Termurion knows of the shell a `write` would type into (final residual ruling).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WriteShell {
     /// `App::ai_shell_of`'s kind: the one detector's answer, classified.
@@ -530,9 +530,9 @@ pub fn session_is_local(host_is_local: bool, ancestors: &[String]) -> bool {
 }
 
 impl WriteShell {
-    /// Whether Tandem positively knows a POSIX shell reads what is typed (final residual
+    /// Whether Termurion positively knows a POSIX shell reads what is typed (final residual
     /// ruling): a local session whose shell and launch program are no remote login, or a
-    /// framing conductor vouched for by Tandem's origin token that reports a POSIX shell. A
+    /// framing conductor vouched for by Termurion's origin token that reports a POSIX shell. A
     /// remote login in the job tree refuses either way.
     pub fn known_posix(&self) -> bool {
         use crate::ai_shell::{classify, ShellKind};
@@ -562,7 +562,7 @@ impl WriteShell {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Link {
     None,
-    /// Level 2; `vouched` when the chain's first hook carried Tandem's origin token.
+    /// Level 2; `vouched` when the chain's first hook carried Termurion's origin token.
     Framing { vouched: bool },
     /// Level 1: no remote shell is known.
     Unframed,
@@ -890,7 +890,7 @@ mod tests {
 
     #[test]
     fn a_typed_write_needs_a_known_posix_shell() {
-        // Final residual ruling: the file's lines are typed only where Tandem knows a POSIX
+        // Final residual ruling: the file's lines are typed only where Termurion knows a POSIX
         // shell reads them. `kind` is what `ai_shell_of` reports for each case today.
         let refused = WritePlan::Refuse(UNVOUCHED_SHELL.into());
         for login in ["telnet", "plink", "mosh-client"] {

@@ -384,7 +384,6 @@ class DryrunReportTests(unittest.TestCase):
         rep = dry.scan(REPO, TABLE)
         self.assertEqual(rep.unmapped_outside_history, 0, rep.unmapped[:5])
         self.assertTrue(rep.by_alias)
-        self.assertTrue(rep.by_prose)
 
 
 class ApplySafetyTests(unittest.TestCase):

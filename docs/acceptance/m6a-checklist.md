@@ -1,6 +1,6 @@
 # Milestone 6a acceptance checklist
 
-Close any open Tandem window, then run `C:\Users\datbi\src\tandem\target\release\tandem.exe`.
+Close any open Termurion window, then run `C:\Users\datbi\src\termurion\target\release\tandem.exe`.
 Cmd is the Win key and Option is Alt. The checks use WSL (`wsl`). Mark each line pass or fail.
 
 | # | Check | Result |
@@ -15,8 +15,8 @@ Cmd is the Win key and Option is Alt. The checks use WSL (`wsl`). Mark each line
 | 8 | Add `note (.*)` with "Annotate..." and `\1`: `echo note hello` puts an annotation reading "hello" over the text. | |
 | 9 | Add `^start$` "Set Named Mark" `top` and `^end$` "Fold to Named Mark" `top`; `printf 'start\na\nb\nend\n'` folds start to end into one line. | |
 | 10 | Add `cd (\S+)` "Report Directory" `\1`, then `echo cd /tmp` and `printf '\e]1337;ReportVariable=%s\a' "$(printf path | base64)"; read -rs -t10 -d $'\a' x; echo "$x"` (allow the variable once): the reply decodes to `/tmp` (`echo ... | base64 -d`). | |
-| 11 | Add `beep` "Bounce Dock Icon" (Bounce Once), switch to another app, then `sleep 2; echo beep` in Tandem: its taskbar button flashes once. | |
-| 12 | Add `run it` "Run Command..." `echo hi > %TEMP%\tandem-trigger.txt`: `echo run it` creates that file. `exit 3` as the command shows "Run Command Trigger Failed". | |
+| 11 | Add `beep` "Bounce Dock Icon" (Bounce Once), switch to another app, then `sleep 2; echo beep` in Termurion: its taskbar button flashes once. | |
+| 12 | Add `run it` "Run Command..." `echo hi > %TEMP%\termurion-trigger.txt`: `echo run it` creates that file. `exit 3` as the command shows "Run Command Trigger Failed". | |
 | 13 | Add `x` with "Capture Output": `echo x` shows once "The trigger action “Capture Output” comes in milestone 9." | |
 | 14 | Turn on "Use interpolated strings for parameters"; a Show Alert trigger `id=(\w+)` with `\(matches[1]) on \(session.name)` shows "abc on <the tab title>" for `echo id=abc`. `\(f(1))` shows no alert (function calls are refused). | |
 | 15 | Run `vim`, type `:echo "error"`: no highlight while "Enable triggers in interactive apps" is off; Session > Triggers > Enable Triggers in Interactive Apps (check mark) turns it on for this session. | |

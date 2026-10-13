@@ -12,7 +12,7 @@ const ESC: u8 = 0x1b;
 /// parser unhooks and the input is output.
 pub const MAX_HELD: usize = 1024 * 1024;
 
-/// The longest command id a `begin` may carry (Tandem's: iTerm2 takes any length).
+/// The longest command id a `begin` may carry (Termurion's: iTerm2 takes any length).
 /// conductor.sh's ids (`randomnumber`) are a counter and four random numbers, about 30
 /// bytes; framer.py's (`makeid`) about 25. Every reply line is matched against the id, so
 /// a remote-sent id of a megabyte would make each line cost a megabyte.
@@ -26,7 +26,7 @@ pub const ID_TOO_LONG: &str = "The remote sent a command id that is too long";
 pub const MAX_AUTOPOLL: usize = 8 * 1024 * 1024;
 
 /// Why a block past its cap ends the conductor (`Token::Error`).
-pub const OUTPUT_TOO_LONG: &str = "The remote sent more in one block than Tandem accepts";
+pub const OUTPUT_TOO_LONG: &str = "The remote sent more in one block than Termurion accepts";
 
 /// The pid of the autopoll block's output token (`VT100/VT100Token.h:426`).
 pub const AUTOPOLL_PID: i32 = -1000;
@@ -55,7 +55,7 @@ pub enum Token {
     End { id: String, status: u8, kind: String },
     /// conductor.sh's `unhook`: what follows is output again.
     Unhook,
-    /// A protocol error (Tandem's): the parser unhooked, and the conductor fails with this
+    /// A protocol error (Termurion's): the parser unhooked, and the conductor fails with this
     /// text rather than waiting for a reply that cannot come.
     Error(String),
     /// Framed output (`SSH_OUTPUT`): the raw bytes of a `%output` block (`channel` -1 is the
@@ -209,7 +209,7 @@ fn scan_osc(bytes: &[u8], skip_garbage: bool, from: Scan) -> (Osc, usize, Scan) 
                 if c == ESC {
                     checkpoint = i - 1;
                 } else {
-                    // Tandem restarts at the ESC that interrupted (iTerm2 backs up one byte
+                    // Termurion restarts at the ESC that interrupted (iTerm2 backs up one byte
                     // past it and loses the second OSC, bug B14).
                     checkpoint = i - 2;
                     i -= 1;
@@ -422,7 +422,7 @@ impl Parser {
                             fed.tokens.push(Token::Init(init));
                             self.state = State::Ground;
                         }
-                        // Tandem unhooks on a rejected line too (iTerm2 stays hooked, bug B4).
+                        // Termurion unhooks on a rejected line too (iTerm2 stays hooked, bug B4).
                         None => return self.unhook(fed, &data[i..]),
                     }
                 }
@@ -520,7 +520,7 @@ impl Parser {
         }
         data.drain(..i);
         if data.len() > MAX_HELD {
-            // An init line or OSC that never ends: Tandem gives up on it and shows it, where
+            // An init line or OSC that never ends: Termurion gives up on it and shows it, where
             // iTerm2's DCS parser stops at kMaxDataLength (`DP:441-448`).
             return self.unhook(fed, &data);
         }

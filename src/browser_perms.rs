@@ -2,11 +2,11 @@
 //! with their raw values and texts (`BP:10-83`), the two decisions, the origin string a decision is
 //! keyed by (`BPM:245-265`) and the mapping from WebView2's permission kinds.
 //!
-//! Default deny is total. A person's saved Allow, for a kind Tandem asks about, is the only thing
-//! that ever answers "allow": every other WebView2 kind (the ones Tandem does not ask about, and
+//! Default deny is total. A person's saved Allow, for a kind Termurion asks about, is the only thing
+//! that ever answers "allow": every other WebView2 kind (the ones Termurion does not ask about, and
 //! any kind a later WebView2 adds) is Deny, and so is an origin that cannot be keyed
 //! (`answer_for`, `route_kind`). `STATE_DEFAULT` (WebView2's own prompt, remembered outside
-//! Tandem's database) is never an answer to a request; it only means "no saved state" when
+//! Termurion's database) is never an answer to a request; it only means "no saved state" when
 //! mirroring a reset into the profile (`state_of`).
 
 /// One of iTerm2's six permission types, in its `CaseIterable` order (`BP:10-16`).
@@ -137,7 +137,7 @@ pub fn state_of(d: Option<Decision>) -> i32 {
     }
 }
 
-/// The permission type of a WebView2 `COREWEBVIEW2_PERMISSION_KIND` Tandem asks about:
+/// The permission type of a WebView2 `COREWEBVIEW2_PERMISSION_KIND` Termurion asks about:
 /// 1 Microphone, 2 Camera, 3 Geolocation, 4 Notification. Every other kind, known or not, is None.
 pub fn from_kind(kind: i32) -> Option<PermissionType> {
     match kind {
@@ -166,7 +166,7 @@ pub fn kinds_of(t: PermissionType) -> &'static [i32] {
 }
 
 /// What to do with a permission request of a WebView2 kind: ask about it, or refuse it outright.
-/// There is no third route ("leave it to WebView2"): that would be a grant nobody asked Tandem about.
+/// There is no third route ("leave it to WebView2"): that would be a grant nobody asked Termurion about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KindRoute {
     Ask(PermissionType),
@@ -183,7 +183,7 @@ pub fn route_kind(kind: i32) -> KindRoute {
 }
 
 /// The final `COREWEBVIEW2_PERMISSION_STATE` for a request of `kind` given the person's saved
-/// decision for it: `STATE_ALLOW` only for a kind Tandem asks about with a saved Granted; every
+/// decision for it: `STATE_ALLOW` only for a kind Termurion asks about with a saved Granted; every
 /// other case is `STATE_DENY`. Never `STATE_DEFAULT`.
 pub fn answer_for(kind: i32, saved: Option<Decision>) -> i32 {
     match (route_kind(kind), saved) {
@@ -462,7 +462,7 @@ pub fn show_notification(saved: Option<Decision>) -> bool {
 }
 
 /// Whether a page's close of its notification is honored: iTerm2 checks the origin again before a
-/// close (`BNH:58-62`), so a revoked origin cannot touch Tandem's balloon.
+/// close (`BNH:58-62`), so a revoked origin cannot touch Termurion's balloon.
 pub fn close_honored(saved: Option<Decision>) -> bool {
     saved == Some(Decision::Granted)
 }
@@ -501,7 +501,7 @@ fn clip(s: &str, max: usize) -> String {
 }
 
 /// A web notification's balloon text (B4). The origin (punycode, as `normalize_origin` made it) is
-/// ALWAYS the title, so a page can never pose as Tandem or as another site; the page's own title
+/// ALWAYS the title, so a page can never pose as Termurion or as another site; the page's own title
 /// and body, cleaned of control and bidi characters and capped, are the body. A notification with
 /// no text at all still says who sent it (an empty body removes the balloon).
 pub fn notification_text(title: &str, body: &str, origin: &str) -> (String, String) {
@@ -518,7 +518,7 @@ pub fn notification_text(title: &str, body: &str, origin: &str) -> (String, Stri
     (head, clip(&text, NOTE_BODY_CHARS))
 }
 
-/// A web notification taken off Tandem's record: whom to tell it closed, and `notify::shown_count()`
+/// A web notification taken off Termurion's record: whom to tell it closed, and `notify::shown_count()`
 /// right after it was shown (the balloon is cleared only while that is still the count:
 /// `notify::clear_if_shown`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -528,9 +528,9 @@ pub struct NoteGone {
     pub shown_at: u64,
 }
 
-/// The one web notification on Tandem's balloon: the pane, the page's token, the origin and the
+/// The one web notification on Termurion's balloon: the pane, the page's token, the origin and the
 /// show count it was shown at. The balloon holds one notification, so a newer one (or any other
-/// Tandem alert) replaces it, and the page is told the old one closed.
+/// Termurion alert) replaces it, and the page is told the old one closed.
 #[derive(Debug, Default)]
 pub struct NoteScreen {
     on: Option<(NoteGone, String)>,
@@ -577,7 +577,7 @@ pub const AUDIO_BUTTONS: [&str; 4] = [ALLOW_ONCE, ALLOW_ALWAYS, DENY_ONCE, DENY_
 pub enum AudioAct {
     Nothing,
     Unmute,
-    /// Mute if needed and record the page as muted by Tandem.
+    /// Mute if needed and record the page as muted by Termurion.
     Mute,
     /// The same, and ask.
     Ask,
@@ -648,7 +648,7 @@ pub fn apply(answer: AudioAnswer) -> (Option<Decision>, bool, bool) {
 /// change comes from the person's choices and the engine's play events, never from a page message.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AudioState {
-    /// Tandem muted the page on a play event (`currentPageIsMuted`, `BM:590-592`).
+    /// Termurion muted the page on a play event (`currentPageIsMuted`, `BM:590-592`).
     pub muted_by_us: bool,
     /// A once answer ended the question for this document (`BAH:72`).
     pub disabled: bool,
@@ -797,7 +797,7 @@ pub struct PageQuery {
 }
 
 impl PageQuery {
-    /// iTerm2's defaults for anything missing or of the wrong type; Tandem clamps the numbers so a
+    /// iTerm2's defaults for anything missing or of the wrong type; Termurion clamps the numbers so a
     /// page cannot ask for an absurd slice.
     pub fn from_message(body: &serde_json::Value) -> PageQuery {
         let num = |key: &str, default: u64, hi: u64| body.get(key).and_then(|v| v.as_i64()).map_or(default, |n| (n.max(0) as u64).min(hi));
@@ -1031,7 +1031,7 @@ mod tests {
     #[test]
     fn default_deny_is_total() {
         // Every kind WebView2 has, and every number it might gain, is answered. Only a person's
-        // saved Allow for a kind Tandem asks about can ever come out as Allow.
+        // saved Allow for a kind Termurion asks about can ever come out as Allow.
         for k in -5..=64 {
             for saved in [None, Some(Decision::Denied), Some(Decision::Granted)] {
                 let a = answer_for(k, saved);
@@ -1045,7 +1045,7 @@ mod tests {
             assert_eq!(route_kind(k), KindRoute::Deny, "kind {k}");
         }
         assert_eq!(route_kind(4), KindRoute::Ask(PermissionType::Notification));
-        // Nothing saved for a kind Tandem asks about: Deny until the person answers.
+        // Nothing saved for a kind Termurion asks about: Deny until the person answers.
         assert_eq!(answer_for(4, None), STATE_DENY);
         assert_eq!(answer_for(4, Some(Decision::Granted)), STATE_ALLOW);
         // A missing or unparsable stored row is no consent.
@@ -1189,7 +1189,7 @@ mod tests {
 
     #[test]
     fn a_page_cannot_pose_as_termurion() {
-        let (t, b) = notification_text("Session Ended", "Tandem: your session \"x\" just terminated\u{202e}\n", "https://evil.example");
+        let (t, b) = notification_text("Session Ended", "Termurion: your session \"x\" just terminated\u{202e}\n", "https://evil.example");
         assert_eq!(t, "https://evil.example", "the origin is always the title");
         assert!(!b.contains('\u{202e}') && !b.contains('\n'));
         assert!(b.starts_with("Session Ended: "));
@@ -1228,16 +1228,16 @@ mod tests {
         assert_eq!(n.take(), None);
     }
 
-    /// Task 6 review I1: a page can close only its OWN notification. A Tandem alert shown after it
+    /// Task 6 review I1: a page can close only its OWN notification. A Termurion alert shown after it
     /// (any caller of `notify::show_with`, not only `post_alert`) moves the show count, so the
     /// page's close clears nothing; the page is still told its note closed.
     #[test]
     fn a_web_note_closes_only_itself() {
         let mut n = NoteScreen::default();
         n.shown(1, 7, "https://a.b", 10);
-        // A Tandem alert ("debug logging was turned on") is shown: the count is 11 now.
+        // A Termurion alert ("debug logging was turned on") is shown: the count is 11 now.
         let gone = n.take().unwrap();
-        assert!(!crate::notify::still_shown(gone.shown_at, 11), "the Tandem alert is not the page's to clear");
+        assert!(!crate::notify::still_shown(gone.shown_at, 11), "the Termurion alert is not the page's to clear");
         assert!(crate::notify::still_shown(gone.shown_at, 10), "its own still is");
     }
 

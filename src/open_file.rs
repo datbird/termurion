@@ -1,4 +1,4 @@
-//! Opening files and folders with Tandem (m13v1 Task 2), after iTerm2's `openFile:`
+//! Opening files and folders with Termurion (m13v1 Task 2), after iTerm2's `openFile:`
 //! (`iTermApplicationDelegate.m:785-913`, called AD below). Pure: what a path is, where it
 //! opens, the text a script runs with, the batching of many opens, and Explorer's "Open with"
 //! entries. Every path here came from another program (Explorer, the pipe) and is untrusted:
@@ -114,7 +114,7 @@ fn nav_shell(shell: Shell) -> crate::pathnav::Shell {
 
 /// What a refused name says (B5), naming it through `shown_name`.
 pub fn refused_banner(shown: &str) -> String {
-    format!("Tandem will not run \u{201c}{shown}\u{201d}: its name holds characters a shell reads as commands.")
+    format!("Termurion will not run \u{201c}{shown}\u{201d}: its name holds characters a shell reads as commands.")
 }
 
 /// The path as the run text writes it: `pathnav::quote_for`, the one refusal for every shell (a
@@ -167,7 +167,7 @@ pub const COLORS_IMPORTED_TEXT: &str = "The color scheme was imported and added 
 /// The first line of the question for a file that came from outside (B6).
 pub const OUTSIDE_NOTE: &str = "This file came from outside this computer or the network.";
 /// What a network path (or one reached through a link to one) says; nothing was probed.
-pub const NETWORK_BANNER: &str = "Tandem does not open files on network locations.";
+pub const NETWORK_BANNER: &str = "Termurion does not open files on network locations.";
 /// A file larger than this never gets the silenceable question (B6).
 pub const MAX_SILENCED_LEN: u64 = 1 << 20;
 /// A data file (arrangement, recording, archive, colors) larger than this is refused unread.
@@ -261,7 +261,7 @@ pub fn inspect(path: &Path, fs: &dyn FileProbe) -> Result<Facts, String> {
         return Err(NETWORK_BANNER.to_string());
     }
     let Some(stat) = fs.stat(path) else {
-        return Err(format!("Tandem could not open \u{201c}{}\u{201d}: it does not exist.", crate::inert_files::shown_name(&path.to_string_lossy())));
+        return Err(format!("Termurion could not open \u{201c}{}\u{201d}: it does not exist.", crate::inert_files::shown_name(&path.to_string_lossy())));
     };
     let kind = classify(path, stat.is_dir);
     let marked = !stat.is_dir && fs.marked(path);
@@ -349,7 +349,7 @@ impl Batch {
         self.pending.len().max(usize::from(self.due.is_some()))
     }
 
-    /// Every gathered path, taken out unopened (to hand to the Tandem that owns the pipe).
+    /// Every gathered path, taken out unopened (to hand to the Termurion that owns the pipe).
     pub fn take_all(&mut self) -> Vec<PathBuf> {
         self.due = None;
         std::mem::take(&mut self.pending)
@@ -378,13 +378,13 @@ impl Batch {
     }
 }
 
-/// The file types Explorer's "Open with" lists Tandem for (P10): iTerm2's document types and
+/// The file types Explorer's "Open with" lists Termurion for (P10): iTerm2's document types and
 /// scripts, never `.bat`, `.cmd`, `.exe` and the like.
 pub const SUPPORTED_TYPES: [&str; 14] = [".command", ".tool", ".sh", ".zsh", ".csh", ".pl", ".bash", ".ps1", ".its", ".itermtab", ".itermcolors", ".itr", ".iterm2arrangement", ".it2triggers"];
 
 pub const APPLICATION_KEY: &str = "Software\\Classes\\Applications\\termurion.exe";
 
-/// The registry entries (key, value name, value) that make Tandem an "Open with" choice for one
+/// The registry entries (key, value name, value) that make Termurion an "Open with" choice for one
 /// user. Never a default association.
 pub fn open_with_entries(exe: &Path) -> Vec<(String, String, String)> {
     let mut v = vec![
@@ -487,7 +487,7 @@ mod tests {
         assert!(quoted_path(Path::new("C:\\a\\\u{202e}gnp.ps1"), Shell::PowerShell).is_err());
         let launch = plan(Path::new("C:\\a\\\u{202e}s.ps1"), false, "G", "", "pwsh", OpenKeys { overrides_send_text: true, new_instance_style: -1, in_new_windows: false, in_splits: false, vertical: true });
         assert!(launch.is_err(), "a refusal opens nothing");
-        assert!(refused_banner("x.ps1").starts_with("Tandem will not run \u{201c}x.ps1\u{201d}"));
+        assert!(refused_banner("x.ps1").starts_with("Termurion will not run \u{201c}x.ps1\u{201d}"));
     }
 
     #[test]

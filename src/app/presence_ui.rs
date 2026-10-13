@@ -64,7 +64,7 @@ fn apply_look(window: &winit::window::Window, look: Look, seen: &mut Option<Look
 }
 
 impl App {
-    /// Each loop pass: whether Tandem is a UI element now, and every window's look. Returns
+    /// Each loop pass: whether Termurion is a UI element now, and every window's look. Returns
     /// the UI element value (Task 9's notification area icon follows it).
     pub(super) fn presence_tick(&mut self) -> bool {
         let windows = self.registry.order().len();
@@ -131,7 +131,7 @@ const TRAY_BRING_ALL_ID: &str = "tray-bring-all";
 impl App {
     /// Follows `presence_tick`'s value: the notification area icon is added or removed on a change.
     /// A failed add is retried on a growing delay (`presence::tray_retry_delay`), woken through the
-    /// pass's wake array, so a resident Tandem with no events still gets its icon once Explorer is
+    /// pass's wake array, so a resident Termurion with no events still gets its icon once Explorer is
     /// up. Returns the next retry's due time. Every result is logged to host.log.
     pub(super) fn tray_tick(&mut self, ui_element_now: bool) -> Option<Instant> {
         let want = crate::resident::icon_wanted(presence::tray_wanted(ui_element_now, self.globals.bool(presence::STATUS_BAR_ICON_KEY)), self.resident);
@@ -386,8 +386,8 @@ mod tests {
         assert!(!win.contains("HWND_MESSAGE"), "a message-only window never hears TaskbarCreated");
         let run = m.split("pub fn run()").nth(1).and_then(|r| r.split("let event_loop").next()).expect("run");
         let after_wait = run.split("wait_for_pid(pid)").nth(1).expect("the wait comes first");
-        assert!(after_wait.contains("forwardable_start(&request, wait_pid.is_some())") && after_wait.contains("hand_to_running(&request)"), "a second bare start hands its Reopen to the running Tandem, after the import wait");
-        assert!(include_str!("launch_ui.rs").contains("Request::Reopen => self.dock_click_now"), "and the running Tandem acts as the dock click");
+        assert!(after_wait.contains("forwardable_start(&request, wait_pid.is_some())") && after_wait.contains("hand_to_running(&request)"), "a second bare start hands its Reopen to the running Termurion, after the import wait");
+        assert!(include_str!("launch_ui.rs").contains("Request::Reopen => self.dock_click_now"), "and the running Termurion acts as the dock click");
         assert!(!include_str!("../notify.rs").contains("forward_reopen"), "no second start channel beside the pipe");
     }
 }

@@ -19,7 +19,7 @@ pub const MAX_VALUE: usize = 2048;
 /// The longest extension id a message may carry (Task 10 holds the exact shape).
 const MAX_ID: usize = 128;
 
-/// What the page asks the Tandem side to do (`SH:117-187`).
+/// What the page asks the Termurion side to do (`SH:117-187`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Msg {
     ClearCookies,
@@ -83,7 +83,7 @@ fn bool_value(map: &serde_json::Map<String, Value>, key: &str) -> Option<bool> {
 }
 
 /// The action a message body names. iTerm2 refuses a message without its `sessionSecret`
-/// (`SH:109-114`); Tandem keeps the field (the copied page sends it) but decides by the message's
+/// (`SH:109-114`); Termurion keeps the field (the copied page sends it) but decides by the message's
 /// source, so only its type is checked. A value of the wrong JSON type, a key outside the action's
 /// own, or an unknown action is None (`as?` casts, `SH:132-187`).
 pub fn parse(body: &Value) -> Option<Msg> {
@@ -201,7 +201,7 @@ impl LinkPref {
 
 /// The two keys a link-opening choice may write, and nothing else: the silence flag and the saved
 /// selection of the existing warning (`warnings::selection_key`). The setting only picks between
-/// Tandem's own browser and the default browser for a web link; it names no scheme, program or path.
+/// Termurion's own browser and the default browser for a web link; it names no scheme, program or path.
 pub fn link_keys() -> [String; 2] {
     [crate::browser::OPEN_LINKS_ID.to_string(), crate::warnings::selection_key(crate::browser::OPEN_LINKS_ID)]
 }
@@ -233,10 +233,10 @@ pub fn link_pref_of(silenced: bool, selection: Option<i64>) -> LinkPref {
 pub const ADBLOCK_ON: &str = "Ad blocking enabled";
 pub const ADBLOCK_OFF: &str = "Ad blocking disabled";
 pub const FILTER_URL_UPDATED: &str = "Filter list URL updated";
-/// Tandem's: the list is fetched by Tandem, so the address must be an https address.
+/// Termurion's: the list is fetched by Termurion, so the address must be an https address.
 pub const INVALID_FILTER_URL: &str = "Invalid filter list URL: must be an https address";
 pub const RULES_UPDATED: &str = "Ad block rules updated successfully";
-/// Tandem's: an update was asked for while ad blocking is off.
+/// Termurion's: an update was asked for while ad blocking is off.
 pub const ADBLOCK_IS_OFF: &str = "Ad blocking is disabled";
 pub const INVALID_SEARCH: &str = "Invalid search URL: must contain %@ placeholder";
 pub const SEARCH_UPDATED: &str = "Search engine updated";
@@ -270,12 +270,12 @@ fn template_https(t: &str) -> bool {
         && t.split_once("://").is_some_and(|(_, r)| r.split(['/', '?', '#']).next().is_some_and(|a| !a.is_empty() && !a.starts_with(['%', '@', ':']) && !a.contains('@')))
 }
 
-/// `SH:321`: non-empty and holding `%@` (plus Tandem's rules above).
+/// `SH:321`: non-empty and holding `%@` (plus Termurion's rules above).
 pub fn search_command_ok(url: &str) -> bool {
     !url.is_empty() && template_https(url)
 }
 
-/// `SH:332`: empty (suggestions off) or holding `%@` (plus Tandem's rules above).
+/// `SH:332`: empty (suggestions off) or holding `%@` (plus Termurion's rules above).
 pub fn suggest_url_ok(url: &str) -> bool {
     url.is_empty() || template_https(url)
 }
@@ -329,10 +329,10 @@ pub fn proxy_ui_script(enabled: bool, host: &str, port: i64) -> String {
 /// attributes one delegated listener reads (trusted events only). The extension rows are built from
 /// an untrusted manifest: the name, description and version go in by `textContent` and the id by a
 /// data attribute, never through `innerHTML` or an inline handler (preflight B2). (name, iTerm2's
-/// text, Tandem's text)
+/// text, Termurion's text)
 pub const PATCHES: [(&str, &str, &str); 25] = [
     ("SCRIPT", "    <script>\n        function clearCookies() {", "    <script nonce=\"{{NONCE}}\">\n        function clearCookies() {"),
-    ("TANDEM", "    </script>\n</body>", "    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TERMURION_SCRIPT}}\n    </script>\n</body>"),
+    ("TERMURION", "    </script>\n</body>", "    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TERMURION_SCRIPT}}\n    </script>\n</body>"),
     ("CLEAR_COOKIES", "onclick=\"clearCookies()\"", "data-termurion-action=\"clearCookies\""),
     ("CLEAR_DATA", "onclick=\"clearAllData()\"", "data-termurion-action=\"clearAllData\""),
     ("PERMISSIONS", "onclick=\"openPermissions()\"", "data-termurion-action=\"openPermissions\""),
@@ -349,7 +349,7 @@ pub const PATCHES: [(&str, &str, &str); 25] = [
     ("PROXY_TOGGLE", "onchange=\"toggleProxy(this.checked)\"", "data-termurion-change=\"toggleProxy\""),
     ("PROXY_HOST", "onchange=\"updateProxyHost(this.value)\"", "data-termurion-change=\"updateProxyHost\""),
     ("PROXY_PORT", "onchange=\"updateProxyPort(this.value)\"", "data-termurion-change=\"updateProxyPort\""),
-    // Tandem's addition (Task 10): the one way to load an extension is a folder the person picks.
+    // Termurion's addition (Task 10): the one way to load an extension is a folder the person picks.
     ("EXT_CHOOSE", "Reveal in Finder</button>", "Reveal in Finder</button>\n                        <button class=\"button small\" data-termurion-action=\"chooseExtensionFolder\">Choose Folder\u{2026}</button>"),
     ("EXT_NAME", "<h4>${extension.name}</h4>", "<h4 data-termurion-text=\"name\"></h4>"),
     ("EXT_DESCRIPTION", "<p>${description}</p>", "<p data-termurion-text=\"description\"></p>"),
@@ -363,7 +363,7 @@ pub const PATCHES: [(&str, &str, &str); 25] = [
     ("EXT_FINDER", "Reveal in Finder", "Reveal in Explorer"),
 ];
 
-/// Tandem's own script: one delegated listener for clicks and one for changes. An event a script
+/// Termurion's own script: one delegated listener for clicks and one for changes. An event a script
 /// made up (`isTrusted` false) does nothing, so a setting changes only by the person's own click or
 /// edit on the page's own control; the page's own functions then post the message. Nothing here
 /// builds markup.
@@ -426,7 +426,7 @@ pub fn document(state: &PageState, nonce: &str) -> Option<String> {
 pub struct State {
     /// A Clear All Data is waiting for the web view to finish; its `DataCleared` then erases the database.
     pub clearing: bool,
-    /// Clear All Data is waiting for the person's answer on Tandem's own window.
+    /// Clear All Data is waiting for the person's answer on Termurion's own window.
     pub confirming: bool,
     limit: Cooldown<u8>,
 }
@@ -600,7 +600,7 @@ mod tests {
         // Manifest text never reaches markup (B2): nothing interpolates it into innerHTML.
         assert!(!html.contains("${extension.name}") && !html.contains("${description}") && !html.contains("${version}") && !html.contains("${extension.id}"));
         assert!(html.contains("textContent = String(v)") && html.contains("dataset.extensionId"));
-        assert!(!html.contains("iTerm2"), "visible names are Tandem's");
+        assert!(!html.contains("iTerm2"), "visible names are Termurion's");
         // Every inline handler of the copy is accounted for by a patch.
         let handlers = raw.matches("onclick=\"").count() + raw.matches("onchange=\"").count();
         assert_eq!(handlers, PATCHES.iter().filter(|(_, t, _)| t.starts_with("onclick=\"") || t.starts_with("onchange=\"")).count());

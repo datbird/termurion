@@ -1,4 +1,4 @@
-//! Box and block drawing (iTerm2's `iTermBoxDrawingBezierCurveFactory`): which characters Tandem
+//! Box and block drawing (iTerm2's `iTermBoxDrawingBezierCurveFactory`): which characters Termurion
 //! draws itself, their path descriptions in cell units, and the alpha masks they rasterize to.
 
 /// True for iTerm2's `blockDrawingCharacters`: block elements, shades, quadrants, the corner
@@ -299,7 +299,7 @@ fn shape(c: char) -> Option<Shape> {
     Some(Shape::Path(COMPONENTS[i].1, COMPONENTS[i].2))
 }
 
-/// Whether Tandem draws `c` itself: never with `disabled` (`DisableCustomBoxDrawing`). The
+/// Whether Termurion draws `c` itself: never with `disabled` (`DisableCustomBoxDrawing`). The
 /// Powerline set joins it with `powerline` (the profile's Draw Powerline Glyphs), with its
 /// extended symbols too (`SupportPowerlineExtendedSymbols`, on here).
 pub fn drawn(c: char, powerline: bool, disabled: bool) -> bool {
@@ -392,7 +392,7 @@ fn weight_of(seg: &Seg) -> Weight {
     }
 }
 
-/// What `c` is made of, in cell units (empty when Tandem does not draw it). This is a summary of
+/// What `c` is made of, in cell units (empty when Termurion does not draw it). This is a summary of
 /// iTerm2's descriptions, not what is rasterized: the two strokes of a heavy or double line
 /// merge into one piece, and a stroke drawn twice (iTerm2 repeats the shared arm of a corner)
 /// appears once, at its heaviest.
@@ -473,11 +473,11 @@ impl Weight {
     }
 }
 
-/// The largest cell (in pixels, either way) Tandem rasterizes; a bigger request is an empty mask.
+/// The largest cell (in pixels, either way) Termurion rasterizes; a bigger request is an empty mask.
 const MAX_CELL: u16 = 1024;
 
 /// The alpha mask (`w * h`, row by row) of `c` in a cell of `w` by `h` physical pixels at device
-/// `scale` (a stroke is `scale` rounded pixels thick, at least one). Total: a character Tandem
+/// `scale` (a stroke is `scale` rounded pixels thick, at least one). Total: a character Termurion
 /// does not draw, an empty cell and an absurd size give an all-zero mask of the right length.
 pub fn rasterize(c: char, w: u16, h: u16, scale: f32) -> Vec<u8> {
     let mut mask = vec![0u8; usize::from(w) * usize::from(h)];
@@ -612,7 +612,7 @@ mod tests {
         assert_eq!(pieces('\u{2550}'), vec![Piece::Line { from: (0.0, 0.5), to: (1.0, 0.5), weight: Weight::Double }]);
         assert_eq!(pieces('\u{2588}'), vec![Piece::Solid(vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])]);
         // iTerm2 leaves the shades to the font (they are in `blockDrawingCharacters`, the minimum
-        // contrast exemption, but not in the drawn set), so Tandem draws nothing for them.
+        // contrast exemption, but not in the drawn set), so Termurion draws nothing for them.
         for c in ['\u{2591}', '\u{2592}', '\u{2593}'] {
             assert!(!drawn(c, false, false) && !drawn(c, true, false) && pieces(c).is_empty(), "{c:?}");
             assert!(rasterize(c, 8, 16, 1.0).iter().all(|&a| a == 0), "{c:?}");
@@ -637,7 +637,7 @@ mod tests {
     }
 
     /// The seam with 13m: every block (but Powerline and the shades, which iTerm2 leaves to the
-    /// font) is a character Tandem draws.
+    /// font) is a character Termurion draws.
     #[test]
     fn drawn_set_contains_every_block_except_powerline_when_off() {
         for n in 0..=0x1FB6F_u32 {
@@ -729,7 +729,7 @@ mod tests {
         assert!(rasterize('\u{2500}', 0, 10, 1.0).is_empty());
         assert!(rasterize('\u{2500}', 10, 0, 1.0).is_empty());
         assert_eq!(rasterize('\u{2500}', 4000, 3, 1.0).len(), 12_000, "an absurd size is still a valid, empty mask");
-        assert_eq!(rasterize('a', 5, 5, 1.0), vec![0; 25], "a character Tandem does not draw is empty");
+        assert_eq!(rasterize('a', 5, 5, 1.0), vec![0; 25], "a character Termurion does not draw is empty");
         assert_eq!(rasterize('\u{2500}', 9, 19, f32::NAN).len(), 9 * 19);
         assert_eq!(rasterize('\u{2500}', 9, 19, -3.0).len(), 9 * 19);
     }

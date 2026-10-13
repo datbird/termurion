@@ -11,16 +11,16 @@ use serde::Serialize;
 /// The archive's extension (`IE:22`, iTerm2's `itermexport`).
 pub const EXTENSION: &str = "termurionexport";
 /// The name the save panel suggests (`IE:23`).
-pub const DEFAULT_NAME: &str = "Tandem State.termurionexport";
+pub const DEFAULT_NAME: &str = "Termurion State.termurionexport";
 /// The save panel's title (`IE:24`).
-pub const PANEL_TITLE: &str = "Export Tandem Settings and Data";
-/// The save panel's file type (Tandem's; macOS names the content type itself).
-pub const FILTER_NAME: &str = "Tandem Settings and Data";
+pub const PANEL_TITLE: &str = "Export Termurion Settings and Data";
+/// The save panel's file type (Termurion's; macOS names the content type itself).
+pub const FILTER_NAME: &str = "Termurion Settings and Data";
 /// The failure alert's heading (`GP:4085`).
 pub const PROBLEM_EXPORTING: &str = "Problem Exporting";
 
 /// What the archive holds, one folder each (`IE:393-429`). iTerm2's secure settings, the
-/// automation authorization and `~/.iterm2` have no Tandem counterpart.
+/// automation authorization and `~/.iterm2` have no Termurion counterpart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Entity {
     PythonRuntimes,
@@ -54,7 +54,7 @@ impl Entity {
 pub const ENTITIES: [Entity; 4] = [Entity::PythonRuntimes, Entity::UserDefaults, Entity::AppSupport, Entity::Scripts];
 
 /// Entries of `%APPDATA%\Termurion` the Application Support entity leaves out (iTerm2's app-support
-/// exclusions, `IE:410-424`, for Tandem's files): the settings and profiles (the User Defaults
+/// exclusions, `IE:410-424`, for Termurion's files): the settings and profiles (the User Defaults
 /// entity carries them), their temporary and recovered copies, the Scripts folder (the Scripts
 /// entity), uv's runtimes (provisioned again on first launch), the Python API consent marker
 /// (only OK in "Enable Python API?" grants it), the host's log, an import waiting for the
@@ -63,7 +63,7 @@ pub const APP_SUPPORT_EXCLUDE: [&str; 11] = ["settings.toml", "profiles.toml", "
 
 /// The file in `%APPDATA%\Termurion` that says the `state` beside it came from an Import All (13y2): the next
 /// launch restore starts no buried workgroup member of it (`workgroup_restore::foreign_restore`). Written by
-/// `finish_import`, removed when Tandem writes its own state, never exported.
+/// `finish_import`, removed when Termurion writes its own state, never exported.
 pub const STATE_IMPORTED: &str = "state-imported";
 
 /// `fnmatch` on one name (`IE:1235-1241`): `*` any run, `?` one character; ASCII case is
@@ -239,14 +239,14 @@ pub fn pending(marker_text: Option<&str>, is_dir: &dyn Fn(&Path) -> bool) -> Pen
 }
 
 /// Logged in the app-wide console entry when a script from an imported archive could not be
-/// installed (Tandem's; iTerm2 writes the path and the error to its log, `IE:1082`).
+/// installed (Termurion's; iTerm2 writes the path and the error to its log, `IE:1082`).
 pub fn script_import_failed(zip: &Path, error: &str) -> String {
     format!("Import of {} failed: {error}\n", zip.display())
 }
 
 /// Import texts (`IE:81-110`, `GP:4089`).
 pub const IMPORT_HEADING: &str = "Importing Settings and Data";
-pub const IMPORT_BODY: &str = "Any needed Python runtimes will be installed and secure settings will be updated, which may require you to enter your password. Then Tandem will restart and finish importing. This can take several minutes.";
+pub const IMPORT_BODY: &str = "Any needed Python runtimes will be installed and secure settings will be updated, which may require you to enter your password. Then Termurion will restart and finish importing. This can take several minutes.";
 pub const PROBLEM_IMPORTING: &str = "Problem Importing";
 
 /// Erase texts (`IE:122-222`, `GP:4094`).
@@ -256,19 +256,19 @@ pub const EXPORT_FIRST: &str = "Export First";
 pub const SKIP_EXPORT: &str = "Skip Export";
 pub const PROBLEM_EXPORTING_ERASE: &str = "Problem Exporting Settings and Data";
 pub const DRY_RUN_HEADING: &str = "Dry-Run Erase?";
-pub const DRY_RUN_BODY: &str = "Dry-run mode is enabled. Tandem will log to the debug output what it would erase and stay running. Nothing will actually be deleted.";
+pub const DRY_RUN_BODY: &str = "Dry-run mode is enabled. Termurion will log to the debug output what it would erase and stay running. Nothing will actually be deleted.";
 pub const DRY_RUN_ACTION: &str = "Run Dry Run";
 pub const ERASE_CONFIRM_HEADING: &str = "Erase Everything?";
 pub const ERASE_ACTION: &str = "Erase Everything and Quit";
 pub const DRY_RUN_DONE_HEADING: &str = "Dry Run Complete";
-pub const DRY_RUN_DONE_BODY: &str = "Tandem logged what it would have erased to the debug output. Nothing was actually deleted because the \u{201c}Dry-run Erase All Settings and Data\u{201d} advanced setting is enabled.";
+pub const DRY_RUN_DONE_BODY: &str = "Termurion logged what it would have erased to the debug output. Nothing was actually deleted because the \u{201c}Dry-run Erase All Settings and Data\u{201d} advanced setting is enabled.";
 pub const PROBLEM_ERASING: &str = "Problem Erasing Settings and Data";
 
-/// "Erase Everything?"'s body (`IE:170-181`): iTerm2's list for what Tandem keeps, and Windows
+/// "Erase Everything?"'s body (`IE:170-181`): iTerm2's list for what Termurion keeps, and Windows
 /// Credential Manager for the Keychain.
 pub fn erase_confirm_body() -> String {
     [
-        "The following will be erased and Tandem will quit immediately:",
+        "The following will be erased and Termurion will quit immediately:",
         "",
         "\u{2022} Preferences (profiles, key bindings, arrangements, advanced settings)",
         "\u{2022} Saved windows and sessions",
@@ -283,9 +283,9 @@ pub fn erase_confirm_body() -> String {
 }
 
 /// The Scripts folder whose entries the erase removes (`Eraser.init`, `IE:262-266`), given the
-/// folder Tandem uses (`scripts::scripts_folder`, iTerm2's `scriptsPath`: the custom folder
+/// folder Termurion uses (`scripts::scripts_folder`, iTerm2's `scriptsPath`: the custom folder
 /// only when it is on and valid, else the default), resolved before anything is removed, since
-/// the settings naming a custom folder go with the rest. A custom folder Tandem does not use
+/// the settings naming a custom folder go with the rest. A custom folder Termurion does not use
 /// (invalid: a space, missing, a file, a network path) is never touched. A folder on a network
 /// path (the default one under a redirected `%APPDATA%`) is never erased (None).
 pub fn scripts_to_erase(folder: PathBuf) -> Option<PathBuf> {
@@ -408,10 +408,10 @@ mod tests {
             assert_eq!(e.message(), text);
         }
         assert_eq!(PROBLEM_EXPORTING, "Problem Exporting");
-        assert_eq!(DEFAULT_NAME, "Tandem State.termurionexport");
-        assert_eq!(PANEL_TITLE, "Export Tandem Settings and Data");
+        assert_eq!(DEFAULT_NAME, "Termurion State.termurionexport");
+        assert_eq!(PANEL_TITLE, "Export Termurion Settings and Data");
         assert_eq!(EXTENSION, "termurionexport");
-        assert_eq!(FILTER_NAME, "Tandem Settings and Data");
+        assert_eq!(FILTER_NAME, "Termurion Settings and Data");
     }
 
     #[test]
@@ -435,7 +435,7 @@ mod tests {
     #[test]
     fn erase_plan_follows_iterm2() {
         // The folder is iTerm2's `scriptsPath` (`IE:262-266`, `FM:236-252`): a custom folder
-        // Tandem does not use (a space, missing, a file, a network path) falls back to the
+        // Termurion does not use (a space, missing, a file, a network path) falls back to the
         // default, and the typed folder is never erased (the Task 10 review's Critical 1).
         struct Dirs(&'static [&'static str]);
         impl crate::scripts::Fs for Dirs {
@@ -481,7 +481,7 @@ mod tests {
         assert_eq!(IMPORT_HEADING, "Importing Settings and Data");
         assert_eq!(
             IMPORT_BODY,
-            "Any needed Python runtimes will be installed and secure settings will be updated, which may require you to enter your password. Then Tandem will restart and finish importing. This can take several minutes."
+            "Any needed Python runtimes will be installed and secure settings will be updated, which may require you to enter your password. Then Termurion will restart and finish importing. This can take several minutes."
         );
         assert_eq!(PROBLEM_IMPORTING, "Problem Importing");
         assert_eq!(ERASE_HEADING, "Erase All Settings and Data");
@@ -489,17 +489,17 @@ mod tests {
         assert_eq!((EXPORT_FIRST, SKIP_EXPORT), ("Export First", "Skip Export"));
         assert_eq!(PROBLEM_EXPORTING_ERASE, "Problem Exporting Settings and Data");
         assert_eq!(DRY_RUN_HEADING, "Dry-Run Erase?");
-        assert_eq!(DRY_RUN_BODY, "Dry-run mode is enabled. Tandem will log to the debug output what it would erase and stay running. Nothing will actually be deleted.");
+        assert_eq!(DRY_RUN_BODY, "Dry-run mode is enabled. Termurion will log to the debug output what it would erase and stay running. Nothing will actually be deleted.");
         assert_eq!(DRY_RUN_ACTION, "Run Dry Run");
         assert_eq!((ERASE_CONFIRM_HEADING, ERASE_ACTION), ("Erase Everything?", "Erase Everything and Quit"));
         assert_eq!(
             erase_confirm_body(),
-            "The following will be erased and Tandem will quit immediately:\n\n\u{2022} Preferences (profiles, key bindings, arrangements, advanced settings)\n\u{2022} Saved windows and sessions\n\u{2022} Python API scripts and runtimes\n\u{2022} The contents of %APPDATA%\\Termurion\n\nItems stored in Windows Credential Manager (such as the AI API key and Password Manager entries) are not erased and must be removed manually from Credential Manager if you want them gone too.\n\nThis cannot be undone."
+            "The following will be erased and Termurion will quit immediately:\n\n\u{2022} Preferences (profiles, key bindings, arrangements, advanced settings)\n\u{2022} Saved windows and sessions\n\u{2022} Python API scripts and runtimes\n\u{2022} The contents of %APPDATA%\\Termurion\n\nItems stored in Windows Credential Manager (such as the AI API key and Password Manager entries) are not erased and must be removed manually from Credential Manager if you want them gone too.\n\nThis cannot be undone."
         );
         assert_eq!(DRY_RUN_DONE_HEADING, "Dry Run Complete");
         assert_eq!(
             DRY_RUN_DONE_BODY,
-            "Tandem logged what it would have erased to the debug output. Nothing was actually deleted because the \u{201c}Dry-run Erase All Settings and Data\u{201d} advanced setting is enabled."
+            "Termurion logged what it would have erased to the debug output. Nothing was actually deleted because the \u{201c}Dry-run Erase All Settings and Data\u{201d} advanced setting is enabled."
         );
         assert_eq!(PROBLEM_ERASING, "Problem Erasing Settings and Data");
         assert_eq!(script_import_failed(Path::new(r"C:\A\script U.zip"), "e"), "Import of C:\\A\\script U.zip failed: e\n");

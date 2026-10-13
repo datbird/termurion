@@ -1,6 +1,6 @@
 # Milestone 5e acceptance checklist
 
-Close any open Tandem window, then run `C:\Users\datbi\src\tandem\target\release\tandem.exe`.
+Close any open Termurion window, then run `C:\Users\datbi\src\termurion\target\release\tandem.exe`.
 Cmd is the Win key and Option is Alt. The checks use WSL (`wsl`). Mark each line pass or fail.
 
 | # | Check | Result |
@@ -10,7 +10,7 @@ Cmd is the Win key and Option is Alt. The checks use WSL (`wsl`). Mark each line
 | 3 | Select some text in the frozen pane, press Redact Selection: the selection goes, the list shows "N lines: “text”", and the preview blurs those cells. Change Redaction method to Solid Color: they turn black. Move the blur radius: the blur follows. | |
 | 4 | Select other text, Highlight Selection: a yellow outline with a glow shows around it. Remove one item and Clear All: the list empties. | |
 | 5 | Copy to Clipboard: the button reads "Copied!" for about a second; paste into Paint: the image has the pane's full width, no cursor, no selection. | |
-| 6 | Save: the panel closes, the pane goes live again, and Explorer shows `Tandem-Screenshot-<date>-<time>.png` on the Desktop. Save As... writes a PNG where you choose. | |
+| 6 | Save: the panel closes, the pane goes live again, and Explorer shows `Termurion-Screenshot-<date>-<time>.png` on the Desktop. Save As... writes a PNG where you choose. | |
 | 7 | Settings > Advanced > General > Screenshot save folder: set a folder; Save writes there. | |
 | 8 | Run `seq 1 20000`, Make Screenshot, choose all lines: Copy is off; Save writes `...-part-1-of-N.png` files, each under 30000 px tall. | |
 | 9 | `printf '\e]1337;Block=id=b1;attr=start\a'; seq 1 10; printf '\e]1337;Block=id=b1;attr=end\a'`: a bar shows in the left margin next to those rows. Hover them: the bar turns red and a pill with copy and fold buttons shows at the top right of the block. | |

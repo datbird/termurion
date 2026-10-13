@@ -55,7 +55,7 @@ pub fn page_url_of(url: &str) -> Option<&'static str> {
 }
 
 /// The action a message body names. iTerm2 refuses a message without its `sessionSecret` (`OH:77-82`);
-/// Tandem keeps the field (the copied page sends it) but decides by the message's source, so only its
+/// Termurion keeps the field (the copied page sends it) but decides by the message's source, so only its
 /// type is checked, here. A body with another key, or an unknown action, is None (`OH:132-133`).
 pub fn parse(body: &Value) -> Option<Action> {
     let map = body.as_object()?;
@@ -124,31 +124,31 @@ pub fn redirect_document(completed: bool, nonce: &str) -> Option<String> {
 
 // --- The two copied pages, adapted at load time (R13x3-1/-2 pattern) ---
 
-/// The setup page: Tandem's name in the title, the nonce on its script, each inline `onclick`
-/// replaced by an attribute Tandem's delegated listener reads. (name, iTerm2's text, Tandem's text)
+/// The setup page: Termurion's name in the title, the nonce on its script, each inline `onclick`
+/// replaced by an attribute Termurion's delegated listener reads. (name, iTerm2's text, Termurion's text)
 pub const SETUP_PATCHES: [(&str, &str, &str); 7] = [
-    ("TITLE", "<title>iTerm2 Browser - Setup</title>", "<title>Tandem Browser - Setup</title>"),
+    ("TITLE", "<title>iTerm2 Browser - Setup</title>", "<title>Termurion Browser - Setup</title>"),
     ("SCRIPT", "    <script>\n        const sessionSecret = '{{SECRET}}';", "    <script nonce=\"{{NONCE}}\">\n        const sessionSecret = '{{SECRET}}';"),
-    ("TANDEM", "    </script>\n</head>", "    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TERMURION_SCRIPT}}\n    </script>\n</head>"),
+    ("TERMURION", "    </script>\n</head>", "    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TERMURION_SCRIPT}}\n    </script>\n</head>"),
     ("ADBLOCK", "onclick=\"enableAdBlocker()\"", "data-termurion-action=\"enableAdBlocker\""),
     ("REPLAY", "onclick=\"enableInstantReplay()\"", "data-termurion-action=\"enableInstantReplay\""),
     ("FINISH", "onclick=\"finishSetup()\"", "data-termurion-action=\"finishSetup\""),
-    // Completion is host-driven: Tandem completes, then loads the welcome page, so a lost race between
+    // Completion is host-driven: Termurion completes, then loads the welcome page, so a lost race between
     // the message and the page's own navigation cannot send the welcome redirect round again.
     ("FINISH_NAV", "            // Navigate to a blank welcome page\n            window.location.href = 'iterm2-about:welcome';\n", ""),
 ];
 
 pub const PROFILE_PATCHES: [(&str, &str, &str); 6] = [
-    ("TITLE", "<title>iTerm2 Browser - Create Profile</title>", "<title>Tandem Browser - Create Profile</title>"),
+    ("TITLE", "<title>iTerm2 Browser - Create Profile</title>", "<title>Termurion Browser - Create Profile</title>"),
     ("SCRIPT", "    <script>\n        const sessionSecret = '{{SECRET}}';", "    <script nonce=\"{{NONCE}}\">\n        const sessionSecret = '{{SECRET}}';"),
-    ("TANDEM", "    </script>\n</head>", "    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TERMURION_SCRIPT}}\n    </script>\n</head>"),
+    ("TERMURION", "    </script>\n</head>", "    </script>\n    <script nonce=\"{{NONCE}}\">\n        {{TERMURION_SCRIPT}}\n    </script>\n</head>"),
     ("CREATE", "onclick=\"createBrowserProfile()\"", "data-termurion-action=\"createBrowserProfile\""),
     ("CONTINUE", "onclick=\"continueToSetup()\"", "data-termurion-action=\"continueToSetup\""),
-    // Host-driven too: the switch is handled, then Tandem loads the setup page.
+    // Host-driven too: the switch is handled, then Termurion loads the setup page.
     ("CONTINUE_NAV", "            // Navigate to setup page\n            window.location.href = 'iterm2-about:onboarding-setup';\n", ""),
 ];
 
-/// Tandem's own script for both pages: one delegated listener. A click a script made up
+/// Termurion's own script for both pages: one delegated listener. A click a script made up
 /// (`isTrusted` false) does nothing, so a setting changes only by a click of the person on the page's
 /// own button; the page's own functions then post the message.
 pub const TERMURION_SCRIPT: &str = "document.addEventListener('click', function (e) {
@@ -326,8 +326,8 @@ mod tests {
             assert!(!html.contains("onclick=") && !html.contains("{{"), "{name}: no inline handler, no unfilled slot");
             assert!(html.matches("<script").count() == 2 && html.matches("<script nonce=\"n0nce\">").count() == 2, "{name}: every script has the nonce");
             assert!(html.contains("const sessionSecret = '';") && html.contains("e.isTrusted"));
-            assert!(html.contains("<title>Tandem Browser"));
-            assert!(!html.contains("iTerm2"), "{name}: visible names are Tandem's");
+            assert!(html.contains("<title>Termurion Browser"));
+            assert!(!html.contains("iTerm2"), "{name}: visible names are Termurion's");
         }
         assert!(!document("onboarding-setup", "n").unwrap().contains("window.location.href = 'iterm2-about:welcome'"), "Finish is host-driven");
         assert!(!document("onboarding-profile", "n").unwrap().contains("window.location.href = 'iterm2-about:onboarding-setup'"), "Continue is host-driven");

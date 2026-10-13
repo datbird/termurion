@@ -115,7 +115,7 @@ const IMGCAT_HELP: &[&str] = &[
     "Usage: imgcat [-p] [-n] [-W width] [-H height] [-r] [-s] [-u] [-t file-type] [-f] filename ...",
     "       cat filename | imgcat [-W width] [-H height] [-r] [-s]",
     "",
-    "Display images inline in the Tandem using Inline Images Protocol",
+    "Display images inline in the Termurion using Inline Images Protocol",
     "",
     "Options:",
     "",
@@ -623,7 +623,7 @@ mod tests {
         assert_eq!(text(&h.err), help);
 
         assert!(help.starts_with("\nUsage: imgcat [-p] [-n] [-W width] [-H height] [-r] [-s] [-u] [-t file-type] [-f] filename ...\n"));
-        assert!(help.contains("\nDisplay images inline in the Tandem using Inline Images Protocol\n"));
+        assert!(help.contains("\nDisplay images inline in the Termurion using Inline Images Protocol\n"));
         assert!(help.contains("\n    $ imgcat -t application/json config.json\n\n"));
         assert!(help.ends_with("\n\n"));
         assert!(!help.contains("iTerm2"));

@@ -1,7 +1,7 @@
 # Milestone 10a acceptance checklist
 
-Close any open Tandem window. Copy `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`,
-`conpty.dll`, and `OpenConsole.exe` from `C:\Users\datbi\src\tandem\target\release\` together,
+Close any open Termurion window. Copy `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`,
+`conpty.dll`, and `OpenConsole.exe` from `C:\Users\datbi\src\termurion\target\release\` together,
 then run `tandem.exe`.
 
 Setup: on the profile you use, bind a key to key action 15 ("Start Instant Replay", Settings >
@@ -52,8 +52,8 @@ may be in use). Mark each line pass or fail.
 | 27 | Widening the panel stretches only the slider and its tick strip; the labels and buttons keep their original positions (see check 18). | |
 | 28 | Exporting an empty recorder writes a valid, empty `.itr` file, and importing it opens a blank tab with no replay to step through (see check 10). | |
 | 29 | The panel is fully opaque; iTerm2's 90% transparency (brightening to 100% on hover) is not built. | |
-| 30 | Split selection (Move Session to Split Pane) is not implemented in Tandem, so the closer that would end a replay when a split-selection pick starts cannot be exercised; only its pure rule is tested. | |
-| 31 | Closing Tandem, restarting it, or saving/restoring a window arrangement never brings back a tab opened by Import Recording; that tab is left out of every saved arrangement the same way iTerm2 leaves out its own synthetic replay sessions. | |
-| 32 | A `.itr` file Tandem exports cannot be opened by real iTerm2, and an iTerm2 recording cannot be imported into Tandem; the two use unrelated file formats. | |
+| 30 | Split selection (Move Session to Split Pane) is not implemented in Termurion, so the closer that would end a replay when a split-selection pick starts cannot be exercised; only its pure rule is tested. | |
+| 31 | Closing Termurion, restarting it, or saving/restoring a window arrangement never brings back a tab opened by Import Recording; that tab is left out of every saved arrangement the same way iTerm2 leaves out its own synthetic replay sessions. | |
+| 32 | A `.itr` file Termurion exports cannot be opened by real iTerm2, and an iTerm2 recording cannot be imported into Termurion; the two use unrelated file formats. | |
 | 33 | Recording speed follows iTerm2's own cadence, not a flat rate: idle or backgrounded panes record about once a second, the frontmost pane records 60 times a second under light output and 30 times a second under heavy output (10000 bytes a second or more), and a pane on the alternate screen (an editor or pager) always records every 16 ms regardless of throughput. | |
 | 34 | A frame recorded at a different pane size than the one replaying it is cropped or padded to fit; unlike iTerm2, the window is never resized to match the recorded frame. | |

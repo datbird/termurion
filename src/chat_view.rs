@@ -185,7 +185,7 @@ const VECTOR_STORE_TEXT: &str = "A vector store was created";
 const WAITING_TEXT: &str = "Waiting for a session to be selected\u{2026}";
 const STREAM_ACTIVE: &str = "All terminal commands in the linked session will be sent to AI automatically.";
 const STREAM_STOPPED: &str = "Terminal commands will no longer be sent to AI automatically.";
-const STREAM_STOPPED_AUTO: &str = "Terminal commands will no longer be sent to AI automatically. Automatic sending always terminates when Tandem restarts or the current chat changes.";
+const STREAM_STOPPED_AUTO: &str = "Terminal commands will no longer be sent to AI automatically. Automatic sending always terminates when Termurion restarts or the current chat changes.";
 const PERMISSIONS_HELP: &str = "You can use these buttons or the info button menu at the top of the chat window to control AI permissions for this chat.";
 const ORCHESTRATION_OFFER: &str = "**Enable orchestration for this chat?**\n\n**Orchestration** lets the AI coordinate across multiple terminal sessions. It can read the contents of any session, and you grant a one-time approval before it controls a session instead of approving every call. It also runs in **auto mode**: each command the AI proposes is checked for safety by your AI provider, and anything risky is held for your review.";
 pub const ENABLE_ORCHESTRATION: &str = "**Enable orchestration?**\n\nOrchestration mode lets the agent read screen contents from any session. To type into a session still requires your permission.\n\nThis is a more permissive model than when an agent is linked to a single session, where there are very fine-grained permission settings.\n\nEnabling will detach any linked terminal or browser session and switch the chat to Orchestration mode.";
@@ -268,7 +268,7 @@ pub fn body(content: &Content) -> Body {
         Content::RemoteCommandRequest { payload: Payload::External(v), .. } => Body::Markdown(v.get("markdownDescription").and_then(serde_json::Value::as_str).unwrap_or_default().to_string()),
         Content::RemoteCommandResponse { result: Err(e), .. } => Body::Markdown(e.message.clone()),
         Content::RemoteCommandResponse { .. } => Body::Plain(String::new()),
-        // The detail is Tandem's text around a program's words: it opens no link or span.
+        // The detail is Termurion's text around a program's words: it opens no link or span.
         Content::WatcherEvent(v) => Body::Markdown(chat_json::watcher(v).map(|(_, detail)| field(&detail)).unwrap_or_default()),
         Content::Unsupported(_) => system(UNSUPPORTED_TEXT),
         Content::SelectSessionRequest { terminal, .. } => system(crate::ai_permissions::needs_session(*terminal)),
@@ -776,7 +776,7 @@ mod tests {
         assert_eq!(body(&local(ClientLocal::StreamingChanged(Streaming::Stopped))), Body::Markdown("Terminal commands will no longer be sent to AI automatically.".into()));
         assert_eq!(
             body(&local(ClientLocal::StreamingChanged(Streaming::StoppedAutomatically))),
-            Body::Markdown("Terminal commands will no longer be sent to AI automatically. Automatic sending always terminates when Tandem restarts or the current chat changes.".into())
+            Body::Markdown("Terminal commands will no longer be sent to AI automatically. Automatic sending always terminates when Termurion restarts or the current chat changes.".into())
         );
         let link = |terminal, name: Option<&str>| body(&local(ClientLocal::OfferLink { terminal, guid: "g".into(), name: name.map(str::to_string) }));
         assert_eq!(link(true, Some("zsh")), Body::Markdown("**Link this chat to terminal session \u{201C}zsh\u{201D}, or enable orchestration?**\n\nLinking gives the AI access to this terminal session subject to your per-call permission. **Orchestration** is an alternative mode where the AI can coordinate multiple sessions. It uses automatic safety checking and one-time per-session approval instead of fine-grained permissions.".into()));
@@ -799,7 +799,7 @@ mod tests {
         assert_eq!(body(&classic(call.clone(), Some(false))), want(Some(false)));
         assert_eq!(glyph(&classic(call.clone(), Some(false))), Some(WARNING_GLYPH));
         assert_eq!(glyph(&classic(call, Some(true))), None);
-        assert_eq!(body(&Content::Unsupported("{}".into())), Body::Markdown("This message requires a newer version of Tandem to view.".into()));
+        assert_eq!(body(&Content::Unsupported("{}".into())), Body::Markdown("This message requires a newer version of Termurion to view.".into()));
         assert_eq!(body(&Content::SelectSessionRequest { original: Box::new(msg(Participant::Agent, plain("x"), 1.0)), terminal: true }), Body::Markdown("The AI agent needs to run commands in a live terminal session, but none is attached to this chat.".into()));
         let Body::Markdown(web) = body(&Content::SelectSessionRequest { original: Box::new(msg(Participant::Agent, plain("x"), 1.0)), terminal: false }) else { panic!() };
         assert!(web.contains("live web browser session"));

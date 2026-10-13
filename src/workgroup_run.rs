@@ -450,13 +450,13 @@ pub fn command_plan(template: &str, git_base: &str) -> Result<Plan, String> {
     }
     let tokens: Vec<String> = crate::semantic::split_command_line(template).into_iter().map(|t| t.replace("\\(gitBase)", git_base)).collect();
     if tokens.is_empty() || tokens.iter().any(|t| t.contains("\\(")) {
-        return Err("A workgroup command uses an expression Tandem does not run here, so nothing started.".to_string());
+        return Err("A workgroup command uses an expression Termurion does not run here, so nothing started.".to_string());
     }
     Ok(Plan::Argv(tokens))
 }
 
 /// Why a member that is not a Diff member does not start git.
-pub const GIT_ONLY_IN_DIFF: &str = "A workgroup starts git only in a Diff member, where Tandem checks the repository first, so this member did not start.";
+pub const GIT_ONLY_IN_DIFF: &str = "A workgroup starts git only in a Diff member, where Termurion checks the repository first, so this member did not start.";
 
 /// THE refusal of git for a program a workgroup member starts outside `git_state::pane_line` (a
 /// regular member's command, a Code Review member's review command): git by the name as written (any
@@ -491,7 +491,7 @@ pub fn member_line(plan: Plan, resolve: &dyn Fn(&std::path::Path) -> Option<std:
     }
 }
 
-/// The command line for a program Tandem resolved and its arguments, made with CreateProcess's
+/// The command line for a program Termurion resolved and its arguments, made with CreateProcess's
 /// rules. A batch file never gets an argument cmd.exe would read as syntax.
 pub fn argv_line(program: &std::path::Path, args: &[String]) -> Result<String, String> {
     // Anything cmd.exe parses (cmd itself, a .cmd or .bat) must not get an argument it reads as syntax (13r).
@@ -900,7 +900,7 @@ mod tests {
         for bad in ["", "-x", "--output=a", "a\nb", "a\u{3}b", "   ", &"x".repeat(257)] {
             assert!(command_plan("git diff \\(gitBase)", bad).is_err(), "{bad:?}");
         }
-        // An expression Tandem does not run here is refused whole, never half substituted.
+        // An expression Termurion does not run here is refused whole, never half substituted.
         assert!(command_plan("echo \\(user.x)", "HEAD").is_err());
         // The line is made with CreateProcess rules; a batch target refuses unsafe arguments.
         let line = argv_line(std::path::Path::new("C:\\Program Files\\Git\\git.exe"), &["diff".into(), "a b".into(), "x\"y".into()]).unwrap();

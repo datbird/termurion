@@ -1,6 +1,6 @@
 //! cc-status (milestone 12f): the hook Claude Code runs on each event, ported from iTerm2's
 //! `cc-status/Sources/cc-status/main.swift` (`CS`). It maps a hook event to a Session Status
-//! (status, colors, detail, background task count) and reports it to Tandem's Python API as
+//! (status, colors, detail, background task count) and reports it to Termurion's Python API as
 //! `iterm2.set_status(...)`. Its input is untrusted: any local program can run it and feed it
 //! any bytes, so everything shown is capped and every failure is a quiet exit 0. Pure here;
 //! `real_main` (Windows) wires stdin, the environment and the socket.
@@ -311,7 +311,7 @@ pub fn run(term_session_id: Option<&str>, stdin: &str, api: &mut dyn Api, err: &
     let Some(update) = map(&event, &mut stored) else { return 0 };
     if let Err(reason) = api.invoke(&session, &update.invocation()) {
         if reason != DROPPED {
-            let _ = writeln!(err, "cc-status: could not update Tandem for {}: {reason}", crate::inert_files::shown_name(&name));
+            let _ = writeln!(err, "cc-status: could not update Termurion for {}: {reason}", crate::inert_files::shown_name(&name));
         }
     }
     0
@@ -513,7 +513,7 @@ mod tests {
         // A failing API: one line on stderr, exit 0.
         let mut bad = Fake { fail: Some("no route".into()), ..Default::default() };
         let (code, err) = ran(Some("w0t0p0:42"), r#"{"hook_event_name":"Stop"}"#, &mut bad);
-        assert_eq!((code, err.as_str()), (0, "cc-status: could not update Tandem for Stop: no route\n"));
+        assert_eq!((code, err.as_str()), (0, "cc-status: could not update Termurion for Stop: no route\n"));
         // A dropped status (another session's cookie) is silent.
         let mut dropped = Fake { fail: Some(DROPPED.into()), ..Default::default() };
         assert_eq!(ran(Some("w0t0p0:42"), r#"{"hook_event_name":"Stop"}"#, &mut dropped), (0, String::new()));

@@ -501,7 +501,7 @@ pub fn build_cmd_line(pieces: &[CmdPiece]) -> Option<String> {
 /// makes it strip exactly the quotes added here, so the quotes around a value (which may be
 /// the first thing on the line) stay and `& | < > ^ ( )` inside them are inert; `/v:off` stops
 /// `!VAR!` rewriting a value when the registry turns delayed expansion on; `/d` skips
-/// AutoRun. The one place a Tandem command line for cmd.exe is built (Semantic History,
+/// AutoRun. The one place a Termurion command line for cmd.exe is built (Semantic History,
 /// Smart Selection, triggers and coprocesses).
 pub fn cmd_args(line: &str) -> String {
     format!("/d /v:off /s /c \"{line}\"")
@@ -513,7 +513,7 @@ pub fn cmd_command_line(line: &str) -> String {
 }
 
 /// What a refused value in a Send Text says.
-pub const SEND_REFUSED: &str = "Tandem did not type this text: a value in it holds a control character (a line break would run a second command).";
+pub const SEND_REFUSED: &str = "Termurion did not type this text: a value in it holds a control character (a line break would run a second command).";
 
 /// Whether any substituted value of a Send Text holds a control character; the template's own
 /// text (its `\n`) is not a value and stays.
@@ -521,7 +521,7 @@ pub fn send_unsafe(values: &[&str]) -> bool {
     values.iter().any(|v| v.chars().any(char::is_control))
 }
 
-pub const CMD_REFUSED: &str = "Tandem did not run this command: a value in it holds a character cmd.exe would read as more than text (& | < > ^ \" % ! ( ) `, a control character, a quote mark, or a trailing backslash).";
+pub const CMD_REFUSED: &str = "Termurion did not run this command: a value in it holds a character cmd.exe would read as more than text (& | < > ^ \" % ! ( ) `, a control character, a quote mark, or a trailing backslash).";
 
 /// Arguments a batch file (or cmd.exe) would re-read as syntax: refused for a `.cmd` or `.bat`
 /// program (the BatchUnsafe set).
@@ -548,7 +548,7 @@ pub fn resolve_program(name: &str, path_var: &str, pathext: &str, exists: &dyn F
     let try_all = |list: Vec<String>| list.into_iter().filter(|c| !crate::scripts::is_network_path(c)).map(PathBuf::from).find(|p| exists(p));
     let folder_given = name.contains(['\\', '/']) || Path::new(name).is_absolute();
     if folder_given {
-        // A relative name with a folder would resolve against Tandem's own current folder.
+        // A relative name with a folder would resolve against Termurion's own current folder.
         if !Path::new(name).is_absolute() {
             return None;
         }
@@ -608,13 +608,13 @@ impl Refusal {
     pub fn text(self) -> &'static str {
         match self {
             Refusal::Empty => "",
-            Refusal::UrlInProgram => "Tandem did not run the URL handler command: the URL cannot name the program.",
-            Refusal::ControlCharacter => "Tandem did not pass this URL to the URL handler command: it contains a control character.",
-            Refusal::BatchUnsafe => "Tandem did not pass this URL to the URL handler command: a batch file or cmd.exe would read its special characters.",
+            Refusal::UrlInProgram => "Termurion did not run the URL handler command: the URL cannot name the program.",
+            Refusal::ControlCharacter => "Termurion did not pass this URL to the URL handler command: it contains a control character.",
+            Refusal::BatchUnsafe => "Termurion did not pass this URL to the URL handler command: a batch file or cmd.exe would read its special characters.",
             Refusal::Unresolved => HANDLER_FAILED,
-            Refusal::Forwarder => "Tandem did not run the URL handler command: its program hands its arguments to a shell or another program, so it cannot be a URL handler.",
-            Refusal::VariableInProgram => "Tandem did not run the URL handler command: a session variable cannot name the program.",
-            Refusal::VariableUnsafe => "Tandem did not run the URL handler command: a session variable in it holds a quote, a control character or another character a command reader would act on.",
+            Refusal::Forwarder => "Termurion did not run the URL handler command: its program hands its arguments to a shell or another program, so it cannot be a URL handler.",
+            Refusal::VariableInProgram => "Termurion did not run the URL handler command: a session variable cannot name the program.",
+            Refusal::VariableUnsafe => "Termurion did not run the URL handler command: a session variable in it holds a quote, a control character or another character a command reader would act on.",
         }
     }
 }
@@ -826,18 +826,18 @@ pub fn guard_open(target: &str, has_code: bool) -> Run {
         return Run::Blocked(why);
     }
     if crate::scripts::is_network_path(target) {
-        return Run::Blocked(format!("Tandem does not open network paths: {target}"));
+        return Run::Blocked(format!("Termurion does not open network paths: {target}"));
     }
     match scheme(target).as_deref() {
-        None => Run::Blocked("Tandem opens only http, https, mailto, and ftp links, not paths or other text.".into()),
+        None => Run::Blocked("Termurion opens only http, https, mailto, and ftp links, not paths or other text.".into()),
         Some(s) if WEB.contains(&s) => Run::Open(encode_url_chars(target)),
         Some("file") => match file_url_path(target) {
             Some(p) if !crate::scripts::is_network_path(&p) => Run::OpenLocal { path: p, has_code },
-            _ => Run::Blocked(format!("Tandem does not open network file links: {target}")),
+            _ => Run::Blocked(format!("Termurion does not open network file links: {target}")),
         },
         // An ssh: link a bound handler would have opened never gets here; an unbound one is not
         // handed to whatever the system registered (14e's Decision).
-        Some("ssh") => Run::Blocked("Tandem opens ssh: links when ssh is set to open in Tandem (Settings > Profiles > General > URL schemes).".into()),
+        Some("ssh") => Run::Blocked("Termurion opens ssh: links when ssh is set to open in Termurion (Settings > Profiles > General > URL schemes).".into()),
         Some(s) => match crate::link_scheme::screen(s, target) {
             Ok(()) => Run::OpenScheme(target.to_string()),
             Err(why) => Run::Blocked(why),
@@ -849,12 +849,12 @@ pub fn guard_open(target: &str, has_code: bool) -> Run {
 /// (never a protocol), resolved against the pane's folder, local, existing, and opened by its
 /// default app; a program or script is shown, not run, and no editor command line is built.
 pub fn open_file_run(path: &str, cwd: Option<&Path>, _has_code: bool) -> Run {
-    let blocked = |why: &str| Run::Blocked(format!("Tandem did not open this file: {why}"));
+    let blocked = |why: &str| Run::Blocked(format!("Termurion did not open this file: {why}"));
     if path.chars().any(char::is_control) {
         return blocked("its name holds a control character.");
     }
     if crate::scripts::is_network_path(path) {
-        return Run::Blocked(format!("Tandem does not open network paths: {path}"));
+        return Run::Blocked(format!("Termurion does not open network paths: {path}"));
     }
     if scheme(path).is_some() {
         return blocked("it is a link, not a path.");
@@ -870,7 +870,7 @@ pub fn open_file_run(path: &str, cwd: Option<&Path>, _has_code: bool) -> Run {
     };
     let text = full.to_string_lossy().to_string();
     if crate::scripts::is_network_path(&text) {
-        return Run::Blocked(format!("Tandem does not open network paths: {path}"));
+        return Run::Blocked(format!("Termurion does not open network paths: {path}"));
     }
     // The drive, the ignored folders, the links and the file's existence are asked off the UI thread.
     Run::OpenLocal { path: text, has_code: false }
@@ -881,10 +881,10 @@ pub fn open_file_run(path: &str, cwd: Option<&Path>, _has_code: bool) -> Run {
 /// on a worker, so a slow drive never freezes the window.
 pub fn open_local_result(path: &str, has_code: bool, probe: &crate::netpath::Probe, exists: &dyn Fn(&str) -> bool) -> Run {
     if !crate::netpath::may_probe(path, probe) {
-        return Run::Blocked(format!("Tandem does not open network paths: {path}"));
+        return Run::Blocked(format!("Termurion does not open network paths: {path}"));
     }
     if !exists(path) {
-        return Run::Blocked("Tandem did not open this file: it does not exist.".into());
+        return Run::Blocked("Termurion did not open this file: it does not exist.".into());
     }
     file_open(path, None, None, has_code)
 }
@@ -894,7 +894,7 @@ pub fn open_url_run(text: &str, has_code: bool) -> Run {
     guard_open(text, has_code)
 }
 
-/// Programs and scripts: "open" would run them, so Tandem shows them instead. The one rule is the
+/// Programs and scripts: "open" would run them, so Termurion shows them instead. The one rule is the
 /// write door's, `inert_files::high_risk`: the name as Windows opens it (`inert_files::opened_name`:
 /// a stream suffix, trailing dots and spaces dropped, and any stream fails closed), the one list,
 /// and the machine's own PATHEXT.
@@ -1009,12 +1009,12 @@ pub fn shell_target(target: &str) -> String {
     if web_link(target) { encode_url_chars(target) } else { target.to_string() }
 }
 
-/// The schemes the URL sink hands the shell besides Tandem's registered ones (`url_schemes::SCHEMES`):
+/// The schemes the URL sink hands the shell besides Termurion's registered ones (`url_schemes::SCHEMES`):
 /// web and mail links, and the Settings app's pages (Default apps).
 const SHELL_SCHEMES: &[&str] = &["http", "https", "mailto", "ms-settings"];
 
 /// The URL sink's input (judge round 5): `target` as `shell_target` gives it, only when it is a
-/// URL of a scheme Tandem means to open (`SHELL_SCHEMES` and Tandem's own ftp, ssh and telnet) and no
+/// URL of a scheme Termurion means to open (`SHELL_SCHEMES` and Termurion's own ftp, ssh and telnet) and no
 /// network path. A path, a drive path, a file link, a shell namespace (`search-ms:`, `shell:`) or any
 /// other protocol handler is None (round 5 item 3; a file opens only as a judged `LocalPath`,
 /// `localfs::open_with_shell`).
@@ -1144,7 +1144,7 @@ mod tests {
         for bad in [r"C:\x.txt", "c:/x.txt", r"Z:\share\x.pdf", r"\\host\s\x", "//host/s/x", r"\\?\C:\x", "file:///C:/x.txt", "FILE://host/s/x", "x.txt", r"..\x", ""] {
             assert_eq!(shell_url(bad), None, "{bad}");
         }
-        // Round 5 item 3: only the schemes Tandem means to hand the shell. A shell namespace or any
+        // Round 5 item 3: only the schemes Termurion means to hand the shell. A shell namespace or any
         // other protocol handler (search-ms: makes Explorer connect to a share) is refused.
         for good in ["http://h/x", "HTTPS://h", "mailto:a@b.c", "ftp://h/f", "ssh://u@h", "telnet://h", crate::url_schemes::DEFAULT_APPS_URI] {
             assert!(shell_url(good).is_some(), "{good}");
@@ -1168,7 +1168,7 @@ mod tests {
         assert!(open.contains("LocalPath::semantic(") && open.contains("open_with_shell("), "a Semantic History file opens as a judged LocalPath");
     }
 
-    /// TWEAKS 6 review I4: the schemes Tandem owns (or does not offer) never reach the Windows handler.
+    /// TWEAKS 6 review I4: the schemes Termurion owns (or does not offer) never reach the Windows handler.
     #[test]
     fn termurions_own_schemes_never_reach_the_windows_handler() {
         for u in ["telnet://h", "TELNET://h:23", "ssh://h", "x-man-page://1/ls", "iterm2:annotation?ann=A", "termurion://x"] {
@@ -1184,7 +1184,7 @@ mod tests {
     #[test]
     fn an_unbound_ssh_link_says_how_to_open_it() {
         let Run::Blocked(why) = guard_open("ssh://host", false) else { panic!("refused") };
-        assert!(why.contains("Tandem opens ssh: links when ssh is set to open in Tandem"), "{why}");
+        assert!(why.contains("Termurion opens ssh: links when ssh is set to open in Termurion"), "{why}");
         let Run::Blocked(other) = guard_open("ms-msdt:x", false) else { panic!("refused") };
         assert!(other.contains("never opens ms-msdt: links"), "{other}");
     }
@@ -1195,7 +1195,7 @@ mod tests {
 
     #[test]
     fn explorer_runs_from_the_windows_folder() {
-        // Final review Minor 4: by its full path, never Tandem's folder or PATH first.
+        // Final review Minor 4: by its full path, never Termurion's folder or PATH first.
         assert_eq!(explorer_in(Path::new(r"C:\Windows\System32")), Some(PathBuf::from(r"C:\Windows\explorer.exe")));
     }
 
@@ -2050,9 +2050,9 @@ mod tests {
         // The URL can never add arguments or reach the program.
         assert_eq!(plan(&format!("open.exe {URL_TOKEN}"), "https://a/ --evil \"x y\""), spawn_of(r"C:\t\open.exe", &["https://a/ --evil \"x y\""]));
         assert_eq!(Refusal::Empty.text(), "");
-        assert_eq!(Refusal::UrlInProgram.text(), "Tandem did not run the URL handler command: the URL cannot name the program.");
-        assert_eq!(Refusal::ControlCharacter.text(), "Tandem did not pass this URL to the URL handler command: it contains a control character.");
-        assert_eq!(Refusal::BatchUnsafe.text(), "Tandem did not pass this URL to the URL handler command: a batch file or cmd.exe would read its special characters.");
+        assert_eq!(Refusal::UrlInProgram.text(), "Termurion did not run the URL handler command: the URL cannot name the program.");
+        assert_eq!(Refusal::ControlCharacter.text(), "Termurion did not pass this URL to the URL handler command: it contains a control character.");
+        assert_eq!(Refusal::BatchUnsafe.text(), "Termurion did not pass this URL to the URL handler command: a batch file or cmd.exe would read its special characters.");
         assert_eq!(Refusal::Unresolved.text(), HANDLER_FAILED);
         assert_eq!(HANDLER_TITLE, "URL Handler");
     }
@@ -2068,7 +2068,7 @@ mod tests {
         assert_eq!(v(r#"p "a""b c" d"#), ["p", "a\"b", "c d"]);
     }
 
-    /// Final wave minor 11: a relative name with a folder is never resolved against Tandem's own folder.
+    /// Final wave minor 11: a relative name with a folder is never resolved against Termurion's own folder.
     #[test]
     fn a_relative_program_with_a_folder_is_not_resolved() {
         for name in [r"sub\p.exe", r"..\p.exe", "sub/p.exe", r".\p.exe"] {

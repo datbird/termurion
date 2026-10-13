@@ -1,7 +1,7 @@
-//! Staying resident with no window (m13v1 Task 7, R3): closing the last window keeps Tandem
+//! Staying resident with no window (m13v1 Task 7, R3): closing the last window keeps Termurion
 //! running with its notification area icon unless "Quit when all windows are closed" is on
 //! (`AD:915-942`). The last window is hidden, leaves the taskbar and keeps its GPU device; no shell
-//! remains. Nothing here wakes the event loop while Tandem is idle.
+//! remains. Nothing here wakes the event loop while Termurion is idle.
 
 use super::*;
 use crate::resident::{self, AfterLast};
@@ -47,7 +47,7 @@ impl App {
         decision
     }
 
-    /// The last window's last tab closed and Tandem stays: the sessions end, the host stays up, the
+    /// The last window's last tab closed and Termurion stays: the sessions end, the host stays up, the
     /// empty state is written without freezing later saves (B7), and the window is hidden.
     pub(super) fn go_resident_after_last(&mut self) {
         self.save_pending_settings();
@@ -259,13 +259,13 @@ impl App {
         }
         let text = crate::close_rules::quit_text(&reasons, self.keep_jobs_on_quit());
         let proxy = self.proxy.clone();
-        super::logout_ui::ask_on_thread(move || close_ui::confirm_on_top("Quit Tandem?", &text), move |ok| {
+        super::logout_ui::ask_on_thread(move || close_ui::confirm_on_top("Quit Termurion?", &text), move |ok| {
             let _ = proxy.lock().map(|p| p.send_event(UserEvent::ShutdownAnswer(ok)));
         });
     }
 
     /// The question's answer (`UserEvent::ShutdownAnswer`): OK takes the reason down and quits as Quit
-    /// does, without asking again; Cancel takes it down and Tandem keeps running (Windows does not
+    /// does, without asking again; Cancel takes it down and Termurion keeps running (Windows does not
     /// retry: the person starts the shutdown again, Decision). An answer after the session end wrote
     /// out (the question closed as Cancel) does nothing.
     pub(super) fn shutdown_answered(&mut self, ok: bool, event_loop: &ActiveEventLoop) {
@@ -407,7 +407,7 @@ mod tests {
     }
 
     /// Final review item 11 (iTerm2's bury, `PTYSession.m:15145`): with "Quit when all windows are
-    /// closed" off, burying the last session hides the last window and Tandem stays resident with the
+    /// closed" off, burying the last session hides the last window and Termurion stays resident with the
     /// session buried; with it on, the banner says why it stays. A buried session restored while
     /// resident comes back as the hidden window's tab.
     #[test]
@@ -415,7 +415,7 @@ mod tests {
         let bury = production(include_str!("bury_ui.rs"));
         let b = body(bury, "bury_pane");
         let gate = &b[b.find("if only && ").unwrap()..];
-        assert!(gate.contains("self.globals.bool(QUIT_KEY)") && gate.contains("Tandem quits when its last window closes"), "the banner only when the key is on");
+        assert!(gate.contains("self.globals.bool(QUIT_KEY)") && gate.contains("Termurion quits when its last window closes"), "the banner only when the key is on");
         assert!(b.contains("if only {\n                self.go_resident();"), "the last window goes resident with the session buried");
         let dis = body(bury, "disinter");
         assert!(dis.contains("Wake::Tabs(vec![tab])"), "while resident the session comes back as the hidden window's tab");
@@ -539,7 +539,7 @@ mod tests {
     }
 
     /// R3 at launch: no window planned (and no hotkey window) is a hidden empty first window and a resident
-    /// Tandem, not a window made "because nothing else would show".
+    /// Termurion, not a window made "because nothing else would show".
     #[test]
     fn a_launch_with_no_window_starts_resident() {
         let run = body(production(MOD), "resumed");

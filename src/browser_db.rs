@@ -230,7 +230,7 @@ fn bring_up(conn: &Connection, extra: &[&str]) -> Result<(), String> {
     // R13x8-3: iTerm2 never runs `PRAGMA foreign_keys`, so its engine enforces none. rusqlite's bundled
     // SQLite is built with enforcement ON by default, which refuses every tag insert and bookmark
     // delete ("foreign key mismatch": the tag table references the implicit rowid of a table keyed by
-    // url). Turned OFF here, once, on every connection; nothing in Tandem turns it on.
+    // url). Turned OFF here, once, on every connection; nothing in Termurion turns it on.
     conn.pragma_update(None, "foreign_keys", false).map_err(err)?;
     conn.execute_batch(SCHEMA).map_err(err)?;
     for schema in extra {

@@ -37,7 +37,7 @@ pub fn harden_process() -> bool {
 
 /// The stderr line for a hardening call that failed; None when it succeeded.
 pub fn failure_line(call: &str, ok: bool) -> Option<String> {
-    (!ok).then(|| format!("tandem: {call} failed; the DLL search is not fully restricted"))
+    (!ok).then(|| format!("termurion: {call} failed; the DLL search is not fully restricted"))
 }
 
 /// A system DLL by bare name (`icu.dll`): only System32 is searched, never the exe's folder or
@@ -50,7 +50,7 @@ pub fn load_system(name: &str) -> Option<HMODULE> {
     (!module.is_null()).then_some(module)
 }
 
-/// A DLL Tandem ships, by full path: its own folder and System32 (for its imports) are
+/// A DLL Termurion ships, by full path: its own folder and System32 (for its imports) are
 /// searched. A relative path is refused, since the flag needs an absolute one and a relative
 /// one would depend on the current folder.
 #[cfg(windows)]
@@ -71,7 +71,7 @@ pub fn load_bundled(path: &std::path::Path) -> Result<HMODULE, String> {
 mod tests {
     use std::path::Path;
 
-    /// The WebView2 loader is webview2-com's static one, linked into the exe: Tandem ships no
+    /// The WebView2 loader is webview2-com's static one, linked into the exe: Termurion ships no
     /// `WebView2Loader.dll`, loads none, and nothing in the build or the installer names one.
     #[test]
     fn the_webview2_loader_is_static() {
@@ -175,7 +175,7 @@ mod tests {
             let body = &text[main_at..];
             let harden = body.find("termurion::dll::harden_process()").unwrap_or_else(|| panic!("{name}: main never calls harden_process"));
             let first_use = body.find("termurion::").unwrap();
-            assert_eq!(harden, first_use, "{name}: harden_process is not the first call into Tandem");
+            assert_eq!(harden, first_use, "{name}: harden_process is not the first call into Termurion");
             // Nothing before it in main but the opening: no other statement ends with a semicolon.
             assert!(!body[..harden].contains(';'), "{name}: a statement runs before harden_process");
             seen += 1;

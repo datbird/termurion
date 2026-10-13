@@ -5,7 +5,7 @@
 //!
 //! Task 4: the runner. `Calls` is App-free (it returns the `Act`s the App then performs), so the
 //! whole state machine is tested without a window. A load is started ONLY through the guarded
-//! `WebView::navigate` (never Tandem's own `navigate_termurion`), so `webhost::navigation_allowed`
+//! `WebView::navigate` (never Termurion's own `navigate_termurion`), so `webhost::navigation_allowed`
 //! judges it and every redirect; page text is read only through `browser_page_markdown(_with)`
 //! (the isolated world) and reaches the model only as a `Page` answer. Arguments (URLs, queries) and
 //! page text are never logged.
@@ -329,7 +329,7 @@ impl App {
         let Some(io) = self.panes.get(&pane).and_then(|p| p.browser_io()) else { return ToolStart::Done(Outcome { model: crate::ai_browser::NOT_A_BROWSER.to_string(), notice: None }) };
         let started = match call {
             Call::GetUrl => return ToolStart::Done(crate::ai_browser::current_url_outcome(&io.url, io.dev_null)),
-            // A load or a search starts from an ordinary page only: not Dev Null, not a Tandem or local page.
+            // A load or a search starts from an ordinary page only: not Dev Null, not a Termurion or local page.
             Call::LoadUrl { .. } | Call::WebSearch { .. } if !crate::ai_browser::offerable(&io.url, io.dev_null) => return ToolStart::Done(Outcome { model: crate::ai_browser::NOT_OFFERED.to_string(), notice: None }),
             Call::LoadUrl { url } => self.ai_browser.start_load(pane, url),
             Call::WebSearch { query } => {
@@ -394,17 +394,17 @@ impl App {
         }
     }
 
-    /// The one place a model's URL is loaded: the GUARDED `WebView::navigate` (never Tandem's own
+    /// The one place a model's URL is loaded: the GUARDED `WebView::navigate` (never Termurion's own
     /// load), so `navigation_allowed` judges it and each redirect; with no view yet the load fails
-    /// (never the pending-load slot, which view creation loads as Tandem's own). While the permission store is
+    /// (never the pending-load slot, which view creation loads as Termurion's own). While the permission store is
     /// not synced or the world is being set up nothing loads (the parked/deferred loads are
-    /// Tandem's own, which a model's URL must never become): a fixed failure.
+    /// Termurion's own, which a model's URL must never become): a fixed failure.
     fn ai_browser_load(&mut self, pane: PaneId, url: &str) -> Result<(), &'static str> {
         const NOT_READY: &str = "the browser is not ready, try again";
         let synced = self.perm_synced(pane);
         let bv = self.browser_views.get(&pane).ok_or(NOT_READY)?;
         // No view yet means the view is being set up: the URL never waits in the pending-load slot, which the
-        // view's creation loads as Tandem's own load (I1).
+        // view's creation loads as Termurion's own load (I1).
         let Some(v) = bv.view.as_ref() else { return Err(NOT_READY) };
         if !synced || bv.world.setup.is_some() {
             return Err(NOT_READY);
@@ -417,7 +417,7 @@ impl App {
 
     /// A main-frame navigation of `pane` began (`Event::Starting`).
     pub(super) fn ai_browser_starting(&mut self, pane: PaneId, redirect: bool, nav: u64) {
-        // While the world is being set up the navigations are Tandem's own (the world check's
+        // While the world is being set up the navigations are Termurion's own (the world check's
         // about:blank, the parked load): a waiting load never binds to one (I1).
         if self.browser_views.get(&pane).is_some_and(|bv| bv.world.setup.is_some() || bv.view.is_none()) {
             return;
@@ -903,8 +903,8 @@ mod tests {
         assert!(!router.contains("ai_browser"), "a page's message never answers a call");
         assert!(!p.contains("pending_url"), "a model's URL never waits in pending_url (I1)");
         let start = &p[p.find("pub(super) fn ai_browser_starting").unwrap()..p.find("pub(super) fn ai_browser_navigated").unwrap()];
-        assert!(start.contains("world.setup.is_some()") && start.contains("view.is_none()"), "setup navigations are Tandem's own (I1)");
-        assert!(!p.contains("navigate_termurion") && !p.contains("defer_load") && !p.contains("browser_navigate("), "a model's URL never takes Tandem's own load");
+        assert!(start.contains("world.setup.is_some()") && start.contains("view.is_none()"), "setup navigations are Termurion's own (I1)");
+        assert!(!p.contains("navigate_termurion") && !p.contains("defer_load") && !p.contains("browser_navigate("), "a model's URL never takes Termurion's own load");
         assert_eq!(p.matches("v.navigate_model(url)").count(), 1, "the guarded navigation, marked as the model's (final review I3)");
         assert_eq!(p.matches("browser_page_markdown_with(").count(), 1);
         for banned in ["browser_page_call", "browser_devtools", "execute_script", "password", "autofill", "cookie", "log::", "dlog"] {

@@ -13,7 +13,7 @@ use crate::cmdinfo_ui::{Act, CmdInfoEvent, CmdInfoWindow};
 pub(super) const ENDED: &str = "The session has ended.";
 
 /// The banner for a session waiting at a password prompt.
-pub(super) const PASSWORD_PROMPT: &str = "Tandem did not write this text: the session is at a password prompt.";
+pub(super) const PASSWORD_PROMPT: &str = "Termurion did not write this text: the session is at a password prompt.";
 
 impl App {
     /// Win-click on a prompt's command: the Command Info window at the click (`at`, window

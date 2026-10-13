@@ -1,8 +1,8 @@
 # Milestone 13k acceptance checklist
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Nothing in this milestone was checked on screen while it was built, so every line is a first look. The pure
 parts (geometry, blink timing, fade curves, smart color math, mute, shadow, outline, slide and smear rules,

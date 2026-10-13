@@ -266,7 +266,7 @@ impl App {
         if let Some(why) = gs::launch_verdict(launch.as_ref()) {
             return Err(why);
         }
-        let launch = launch.ok_or("Tandem has not finished checking this folder yet.")?;
+        let launch = launch.ok_or("Termurion has not finished checking this folder yet.")?;
         let (vet, git) = (launch.vet.ok_or("git will not run in this folder.")?, launch.git.ok_or("git was not found.")?);
         let Some(root) = vet.root.clone() else { return Err("This folder is not in a git repository, so git will not run.".into()) };
         // The one rule: git (by name or by the file it resolves to) only through `gs::launch`, which judges

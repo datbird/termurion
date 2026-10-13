@@ -1,5 +1,5 @@
 //! The session environment (`PS:3246-3350`): the variables a new session's shell gets from
-//! Tandem, and the Windows environment block that carries them with the inherited ones. Pure.
+//! Termurion, and the Windows environment block that carries them with the inherited ones. Pure.
 
 use crate::palette::Rgb;
 
@@ -61,7 +61,7 @@ pub struct Facts<'a> {
 }
 
 /// The `TERM=<type>` entry a new session gets: only when no entry of its own names TERM (any
-/// case) and Tandem's environment has none, as iTerm2 sets it only when the environment lacks
+/// case) and Termurion's environment has none, as iTerm2 sets it only when the environment lacks
 /// it (`PS:3253-3255`).
 pub fn term_var(env: &[String], inherited_has_term: bool, term: &str) -> Option<String> {
     let named = env.iter().any(|e| e.split('=').next().is_some_and(|n| n.eq_ignore_ascii_case("TERM")));
@@ -78,7 +78,7 @@ pub const LC_TERMINAL: &str = "iTerm2";
 /// cookie), `ITERM_SESSION_ID`, `TERM_SESSION_ID`, `ITERM_PROFILE`, then iTerm2's own
 /// (`PS:3332-3359`): `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `COLORTERM`, `TERM_FEATURES`,
 /// `LC_TERMINAL` and `LC_TERMINAL_VERSION` with `lc_terminal`, and `PATH` when given; then
-/// Tandem's `SSH` and `TERMURION_SSH_TRANSPORT` when given.
+/// Termurion's `SSH` and `TERMURION_SSH_TRANSPORT` when given.
 pub fn vars(f: &Facts) -> Vec<String> {
     use crate::reports::ITERM2_VERSION;
     let id = session_id(f.window, f.tab, f.pane, f.id);
@@ -109,8 +109,8 @@ pub fn vars(f: &Facts) -> Vec<String> {
     v
 }
 
-/// Variables never inherited: only a cookie Tandem minted for the session reaches it, never
-/// one from Tandem's own environment (Tandem started from a Tandem shell) or a host's.
+/// Variables never inherited: only a cookie Termurion minted for the session reaches it, never
+/// one from Termurion's own environment (Termurion started from a Termurion shell) or a host's.
 pub const NEVER_INHERITED: [&str; 2] = ["ITERM2_COOKIE", "ITERM2_KEY"];
 
 /// The session's variables with `extra`'s `NAME=value` entries over them (the REPL's cookie
@@ -201,15 +201,15 @@ pub fn colorfgbg(ansi: &[Rgb; 16], fg: Rgb, bg: Rgb, fallback: bool) -> Option<S
     fallback.then(|| if brightness(fg) > brightness(bg) { "15;0" } else { "0;15" }.to_string())
 }
 
-/// The POSIX variables Tandem adds to a session beside `vars`.
+/// The POSIX variables Termurion adds to a session beside `vars`.
 #[derive(Clone, Debug, Default)]
 pub struct Posix {
     pub colorfgbg: Option<String>,
     /// `LANG` or `LC_CTYPE`, in the order to set.
     pub locale: Vec<(String, String)>,
-    /// The Windows path of Tandem's terminfo folder, for a WSL session only.
+    /// The Windows path of Termurion's terminfo folder, for a WSL session only.
     pub terminfo: Option<String>,
-    /// Tandem's own `WSLENV`, kept so a user's setup is not lost.
+    /// Termurion's own `WSLENV`, kept so a user's setup is not lost.
     pub inherited_wslenv: Option<String>,
     /// A WSL session that gets 13o's `TERM` (the profile's Terminal Type): `WSLENV` names it, as
     /// WSL imports no Windows variable it does not list (P17). The `TERM=` entry itself is
@@ -278,7 +278,7 @@ pub fn is_unc(path: &str) -> bool {
 }
 
 /// The roaming application data folder (`%APPDATA%`), or `None` when it is not set or is a
-/// network path (folder redirection): Tandem writes its terminfo and the PowerShell
+/// network path (folder redirection): Termurion writes its terminfo and the PowerShell
 /// integration script only to a local folder (P12).
 pub fn appdata_local() -> Option<std::path::PathBuf> {
     appdata_local_from(std::env::var("APPDATA").ok().as_deref())
@@ -403,7 +403,7 @@ mod tests {
     #[test]
     fn inherited_cookies_never_pass() {
         let base = pairs(&[("iterm2_cookie", "stale"), ("ITERM2_KEY", "k"), ("Path", "a")]);
-        assert_eq!(merge(base.clone(), &["X=1".into()]), pairs(&[("Path", "a"), ("X", "1")]), "no cookie of Tandem's: none at all");
+        assert_eq!(merge(base.clone(), &["X=1".into()]), pairs(&[("Path", "a"), ("X", "1")]), "no cookie of Termurion's: none at all");
         assert_eq!(merge(base, &["ITERM2_COOKIE=mine".into()]), pairs(&[("ITERM2_COOKIE", "mine"), ("Path", "a")]), "only the cookie minted for the session");
         assert_eq!(merge(Vec::new(), &[]), Vec::<(String, String)>::new());
     }
@@ -463,7 +463,7 @@ mod tests {
     }
 
     /// P17: a WSL session given 13o's `TERM` lists it in `WSLENV` (no flag: a name, not a
-    /// path), after Tandem's own entries and once even when the inherited value names it.
+    /// path), after Termurion's own entries and once even when the inherited value names it.
     #[test]
     fn wslenv_lists_term_for_wsl() {
         let full = Posix {

@@ -32,7 +32,7 @@
     clone
         .querySelectorAll('script, style')
         .forEach(e => e.remove());
-    // Tandem's own page UI is not the page's content (mark annotations carry the person's mark
+    // Termurion's own page UI is not the page's content (mark annotations carry the person's mark
     // names): never in what the model reads. The injecting scripts are upstream's, so this list
     // names what they create.
     clone

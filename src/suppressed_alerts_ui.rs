@@ -1,4 +1,4 @@
-//! iTerm2 > Suppressed Alerts (iTerm2's `iTermSuppressedAlertsWindowController`, `SAW`): the
+//! Termurion > Suppressed Alerts (iTerm2's `iTermSuppressedAlertsWindowController`, `SAW`): the
 //! warnings being answered automatically, un-suppressing them, and the "Always show alerts
 //! with remembered selections" mode; and the menu item's title (`iTermApplicationDelegate.m:548-566`).
 
@@ -23,7 +23,7 @@ pub const UNSUPPRESS: &str = "Un-suppress";
 pub const UNSUPPRESS_ALL: &str = "Un-suppress All";
 pub const DONE_BUTTON: &str = "Done";
 pub const SHOW_REMEMBERED: &str = "Always show alerts with remembered selections";
-pub const SHOW_REMEMBERED_TIP: &str = "When you check \u{201c}Remember my choice\u{201d} or \u{201c}Suppress this message permanently\u{201d} in an alert, Tandem stops showing it and reuses your saved response. Turn this on to show those alerts again so you can see them or choose differently. It stays on until you turn it off.";
+pub const SHOW_REMEMBERED_TIP: &str = "When you check \u{201c}Remember my choice\u{201d} or \u{201c}Suppress this message permanently\u{201d} in an alert, Termurion stops showing it and reuses your saved response. Turn this on to show those alerts again so you can see them or choose differently. It stays on until you turn it off.";
 
 /// The panel's size and least size in points (`SAW:29-35`).
 const SIZE: (f64, f64) = (640.0, 380.0);
@@ -34,7 +34,7 @@ const WHEN_WIDTH: f32 = 130.0;
 const ALERT_MIN_WIDTH: f32 = 120.0;
 const ROW_H: f32 = 22.0;
 
-/// iTerm2 > Suppressed Alerts' title: the count and how long ago the newest was answered
+/// Termurion > Suppressed Alerts' title: the count and how long ago the newest was answered
 /// (`newest_age` seconds), or the plain title when nothing is suppressed.
 pub fn menu_title(count: usize, newest_age: Option<f64>) -> String {
     if count == 0 {
@@ -337,7 +337,7 @@ mod tests {
         assert_eq!(SHOW_REMEMBERED, "Always show alerts with remembered selections");
         assert_eq!(
             SHOW_REMEMBERED_TIP,
-            "When you check \u{201c}Remember my choice\u{201d} or \u{201c}Suppress this message permanently\u{201d} in an alert, Tandem stops showing it and reuses your saved response. Turn this on to show those alerts again so you can see them or choose differently. It stays on until you turn it off."
+            "When you check \u{201c}Remember my choice\u{201d} or \u{201c}Suppress this message permanently\u{201d} in an alert, Termurion stops showing it and reuses your saved response. Turn this on to show those alerts again so you can see them or choose differently. It stays on until you turn it off."
         );
         assert_eq!((ALERT_COLUMN, RESPONSE_COLUMN, WHEN_COLUMN), ("Alert", "Automatic Response", "Last Suppressed"));
         assert_eq!((UNSUPPRESS, UNSUPPRESS_ALL, DONE_BUTTON), ("Un-suppress", "Un-suppress All", "Done"));

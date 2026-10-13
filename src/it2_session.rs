@@ -80,7 +80,7 @@ pub fn run(c: &Command, term_session_id: Option<&str>, api: &mut dyn crate::cc_s
         Command::Add { session, .. } | Command::Archive { session } => session.clone(),
     };
     let Some(session) = session.or_else(|| crate::cc_status::session_id(term_session_id)) else {
-        let _ = writeln!(err, "it2: no session: pass --session or run it inside a Tandem session");
+        let _ = writeln!(err, "it2: no session: pass --session or run it inside a Termurion session");
         return 1;
     };
     match api.invoke(&session, &invocation(c)) {
@@ -112,7 +112,7 @@ pub fn it2(args: &[String], io: &mut crate::util_cli::Io) -> i32 {
     #[cfg(not(windows))]
     {
         let _ = cmd;
-        let _ = writeln!(io.err, "it2: Tandem's API is available on Windows only");
+        let _ = writeln!(io.err, "it2: Termurion's API is available on Windows only");
         1
     }
 }

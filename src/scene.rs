@@ -77,7 +77,7 @@ pub struct ImageQuad {
     pub repeat: bool,
 }
 
-/// A character Tandem draws itself to fill its cell (`boxdraw`): a box line, a block, a sextant.
+/// A character Termurion draws itself to fill its cell (`boxdraw`): a box line, a block, a sextant.
 /// It draws with the text, so it is cut, covered and held exactly like a row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CellGlyph {
@@ -101,7 +101,7 @@ pub struct Frame {
     pub quads: Vec<Quad>,
     pub images: Vec<ImageQuad>,
     pub rows: Vec<TextRow>,
-    /// Box and block characters Tandem draws itself, drawn with the rows.
+    /// Box and block characters Termurion draws itself, drawn with the rows.
     pub glyphs: Vec<CellGlyph>,
     pub overlay: Vec<Quad>,
     /// Underline and strikethrough strokes: drawn after the text, right before `overlay`, so
@@ -347,7 +347,7 @@ pub struct DrawPrefs {
     pub alt_level: u8,
     /// What the pane's profile and the window say about anti-aliasing and thin strokes.
     pub masks: crate::fonts::MaskRules,
-    /// Tandem draws box and block characters itself (`DisableCustomBoxDrawing` off).
+    /// Termurion draws box and block characters itself (`DisableCustomBoxDrawing` off).
     pub custom_boxes: bool,
     /// The pane's profile draws Powerline symbols itself (Draw Powerline Glyphs).
     pub powerline: bool,
@@ -1186,7 +1186,7 @@ pub fn pane_with(
             }
             let at = col;
             col += 1;
-            // A box or block character is drawn by Tandem to fill its cell (iTerm2 does the
+            // A box or block character is drawn by Termurion to fill its cell (iTerm2 does the
             // same): it leaves the text, ends the piece around it, and takes the cell's color.
             // The row is in display order here, so `at` is the VISUAL column and the character
             // is the mirrored one on a right-to-left row (S4); `c.fg` is the color after minimum
@@ -2008,7 +2008,7 @@ pub enum IndicatorKind {
 }
 
 impl IndicatorKind {
-    /// Whether a press on it in a terminal pane's corner is Tandem's (the AI glyphs open their
+    /// Whether a press on it in a terminal pane's corner is Termurion's (the AI glyphs open their
     /// menu; the pin and the bug show hover text); the others are drawn only.
     pub fn terminal_press(self) -> bool {
         matches!(self, IndicatorKind::AiLinked | IndicatorKind::AiStreaming | IndicatorKind::Pin | IndicatorKind::DebugLogging)
@@ -2032,7 +2032,7 @@ impl IndicatorKind {
         }
     }
 
-    /// The help markdown (`IH:377-402`, "iTerm2" is "Tandem"). The AI links are not followed.
+    /// The help markdown (`IH:377-402`, "iTerm2" is "Termurion"). The AI links are not followed.
     pub fn help_markdown(self) -> &'static str {
         match self {
             IndicatorKind::Maximized => "This is a maximized split pane.",
@@ -2045,7 +2045,7 @@ impl IndicatorKind {
             IndicatorKind::Pin => "This Hotkey Window is pinned.",
             IndicatorKind::AiLinked => "AI Chats can view or control this session.\n * [Unlink from AI Chat](iterm2:unlink-session-chat)\n * [Reveal AI Chat](iterm2:reveal-chat-for-session)",
             IndicatorKind::AiStreaming => "Commands run in this session are automatically sent to an AI chat, along with their output. [Stop sending](iterm2:disable-streaming-session-chat)",
-            IndicatorKind::ShowRemembered => "Showing alerts with remembered selections. Disable in Tandem > Suppressed Alerts.",
+            IndicatorKind::ShowRemembered => "Showing alerts with remembered selections. Disable in Termurion > Suppressed Alerts.",
         }
     }
 }
@@ -3292,7 +3292,7 @@ pub fn session_picker_button(frame: &mut Frame, pane: Rect, label: &str, fg: Rgb
 
 /// The session picker's button in a browser pane's toolbar strip (13x AI browser tools Task 6): the
 /// strip is covered (the address field gives way while the pick lasts) and the button is centered
-/// in it by `ai_browser::picker_in_toolbar`. Tandem draws it; the page cannot click or hide it.
+/// in it by `ai_browser::picker_in_toolbar`. Termurion draws it; the page cannot click or hide it.
 /// Answers the button's hit rectangle.
 pub fn browser_picker_button(frame: &mut Frame, bar: Rect, label: &str, fg: Rgb, bg: Rgb, cell: (f32, f32), scale: f32) -> Rect {
     let pad = 2.0 * cell.0;
@@ -3333,11 +3333,11 @@ pub fn command_buttons(frame: &mut Frame, pane_inner: Rect, cell: (f32, f32), ro
 /// outlined by a 1 pixel line at its top and bottom, and the command's cells on `line` are
 /// drawn in it from `text_origin`. The box goes in `popups` and the text in `rows`, never in
 /// `overlay`, which draws over text. `colors` is `offscreen::band_colors` (sRGB). `holes` are
-/// Tandem's surfaces already drawn over the band's strip (info bar, find bar, indicators): the
+/// Termurion's surfaces already drawn over the band's strip (info bar, find bar, indicators): the
 /// band is drawn around them, so it is called last.
 pub fn offscreen_band(frame: &mut Frame, screen: &Screen, band: Rect, text_origin: (f32, f32), cell: (f32, f32), line: i32, colors: ([f32; 4], [f32; 4]), face: u16, holes: &[Rect]) {
     let lin = |c: [f32; 4]| [srgb_to_linear((c[0] * 255.0).round() as u8), srgb_to_linear((c[1] * 255.0).round() as u8), srgb_to_linear((c[2] * 255.0).round() as u8), c[3]];
-    // Around Tandem's own surfaces over the pane's top, which keep their pixels.
+    // Around Termurion's own surfaces over the pane's top, which keep their pixels.
     let parts = crate::offscreen::band_pieces(band, holes);
     let (top, bottom) = (Rect { h: 1.0, ..band }, Rect { y: band.y + band.h - 1.0, h: 1.0, ..band });
     for part in &parts {
@@ -3700,7 +3700,7 @@ pub struct BeltDraw<'a> {
     pub text_scale: f32,
 }
 
-/// The panel's background: iTerm2's sidebar is clear in dark (Tandem has no vibrancy, so a
+/// The panel's background: iTerm2's sidebar is clear in dark (Termurion has no vibrancy, so a
 /// sidebar gray) and white in light.
 const BELT_BG_DARK: Rgb = rgb(0x25, 0x25, 0x28);
 const BELT_BG_LIGHT: Rgb = rgb(0xff, 0xff, 0xff);
@@ -4693,11 +4693,11 @@ mod broadcast_tests {
         assert_eq!(ids, vec!["kiTermIndicatorMaximized", "kItermIndicatorBroadcastInput", "kItermIndicatorBroadcastInputReceiver", "kiTermIndicatorAlert", "kiTermIndicatorCopyMode", "kiTermIndicatorDebugLogging", "kiTermIndicatorPinned", "kiTermIndicatorAIChatLinked", "kiTermIndicatorAIChatStreaming", "kiTermIndicatorShowRememberedAlerts"]);
         assert_eq!(K::Maximized.help_markdown(), "This is a maximized split pane.");
         assert_eq!(K::Alert.help_markdown(), "Will alert on next mark.");
-        assert_eq!(K::ShowRemembered.help_markdown(), "Showing alerts with remembered selections. Disable in Tandem > Suppressed Alerts.");
+        assert_eq!(K::ShowRemembered.help_markdown(), "Showing alerts with remembered selections. Disable in Termurion > Suppressed Alerts.");
         assert_eq!(plain_markdown(K::CopyMode.help_markdown()), "In copy mode. See documentation for details.");
         assert_eq!(plain_markdown(K::AiLinked.help_markdown()), "AI Chats can view or control this session.\n * Unlink from AI Chat\n * Reveal AI Chat");
         assert_eq!(plain_markdown("a [b] c [d](e"), "a [b] c [d](e", "malformed links stay as written");
-        // The terminal corner keeps its presses: only the AI, pin and bug glyphs are Tandem's there.
+        // The terminal corner keeps its presses: only the AI, pin and bug glyphs are Termurion's there.
         assert!(!K::Maximized.terminal_press() && K::Pin.terminal_press());
     }
 
@@ -5754,7 +5754,7 @@ mod tests {
     }
 
     /// `TV:1743`: blue prompt, green command, red excluded ranges, each a 1-pixel outline of four
-    /// overlay quads (Tandem records no excluded range, so the red kind is only drawn when given).
+    /// overlay quads (Termurion records no excluded range, so the red kind is only drawn when given).
     #[test]
     fn prompt_outlines_follow_iterm2() {
         let mut f = Frame::default();
@@ -6034,7 +6034,7 @@ mod tests {
         assert_eq!(odd.len(), 1, "{odd:?}");
     }
 
-    /// Powerline and box glyphs Tandem draws never go through the table (the preflight's T7 to
+    /// Powerline and box glyphs Termurion draws never go through the table (the preflight's T7 to
     /// T9 seam): the glyph is chosen from the character, the table only picks text fonts.
     #[test]
     fn table_never_overrides_drawn_glyphs() {
@@ -6046,7 +6046,7 @@ mod tests {
             f
         };
         let f = draw("\u{e0b0}", &on);
-        assert_eq!((f.glyphs.len(), f.rows.len()), (1, 0), "the Powerline arrow is Tandem's");
+        assert_eq!((f.glyphs.len(), f.rows.len()), (1, 0), "the Powerline arrow is Termurion's");
         // With Draw Powerline Glyphs off the character is text, in the table's font.
         let f = draw("\u{e0b0}", &table_prefs(false, &[]));
         assert_eq!((f.glyphs.len(), f.rows.len()), (0, 1));
@@ -6091,7 +6091,7 @@ mod tests {
         v
     }
 
-    /// Review Focus 4: Tandem draws the box and block characters (a glyph each, out of the text),
+    /// Review Focus 4: Termurion draws the box and block characters (a glyph each, out of the text),
     /// unless `DisableCustomBoxDrawing` leaves them to the font.
     #[test]
     fn box_drawing_switch_follows_iterm2() {
@@ -6641,7 +6641,7 @@ mod tests {
         assert_eq!(piece.x, 20.0);
     }
 
-    /// Seam S2 (13m x 13n): a box line Tandem draws takes the cell's color AFTER minimum
+    /// Seam S2 (13m x 13n): a box line Termurion draws takes the cell's color AFTER minimum
     /// contrast, as text does; a block character is exempt (`contrastIneligible`,
     /// `iTermAttributedStringBuilder.m:755`) and keeps its own color.
     #[test]
@@ -6963,7 +6963,7 @@ mod tests {
         with_min_contrast(&mut s, 1.0);
         let mut f = Frame::default();
         pane(&mut f, &s, RECT, CELL, false, &CursorLook::shown(false));
-        // Both are drawn by Tandem (13n), so their colors are the glyphs'.
+        // Both are drawn by Termurion (13n), so their colors are the glyphs'.
         let block = f.glyphs.iter().find(|g| g.c == '\u{2588}').unwrap();
         assert_eq!(block.color, rgb(128, 128, 128), "a block character keeps its foreground");
         let line = f.glyphs.iter().find(|g| g.c == '\u{2500}').unwrap();
@@ -8067,7 +8067,7 @@ mod tests {
         assert_eq!(xs, vec![(0.0, 40.0), (60.0, 40.0), (200.0, 10.0)]);
     }
 
-    /// One rule for every Tandem surface drawn over pane rows: where it cuts the text it cuts the
+    /// One rule for every Termurion surface drawn over pane rows: where it cuts the text it cuts the
     /// underline and strikethrough strokes too, or a program's SGR 4 or 9 line would draw through it.
     #[test]
     fn surfaces_over_rows_cut_the_strokes_too() {
@@ -8584,7 +8584,7 @@ mod tests {
         assert!(f.rows.iter().enumerate().all(|(i, r)| i >= under || r.clip.w <= 0.0 || !hit(Rect { x: r.clip.x, y: r.y, w: r.clip.w, h: 16.0 })), "rows: {:?}", f.rows.iter().map(|r| (r.y, r.clip, r.spans.iter().map(|s| s.text.clone()).collect::<String>())).collect::<Vec<_>>());
     }
 
-    /// Task 6 review 2: Tandem's surfaces over the pane's top (an info bar, the find bar, an
+    /// Task 6 review 2: Termurion's surfaces over the pane's top (an info bar, the find bar, an
     /// indicator) keep their own pixels: the band's fill and outlines go around them, its text is
     /// clipped away from them, and what they drew is not cut.
     #[test]

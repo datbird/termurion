@@ -6,7 +6,7 @@
 //! request encoded as JSON on stdin; the adapter answers with JSON on stdout, either the expected
 //! response or an `ErrorResponse` (`AP:124-177`).
 //!
-//! Tandem ships all three adapter executables (`src/bin/iterm2-*-adapter.rs`) beside
+//! Termurion ships all three adapter executables (`src/bin/iterm2-*-adapter.rs`) beside
 //! `termurion.exe`; the wire types here derive both `Serialize` and `Deserialize` so the app and the
 //! executables share one definition. When an executable is missing, `available()` fails with
 //! "Adapter not found." and the window falls back to Credential Manager, as iTerm2 falls back
@@ -80,7 +80,7 @@ pub struct CustomCommand {
 }
 
 /// Names a pre-existing keychain entry an adapter wants migrated into its master-password slot.
-/// Tandem never persists adapter credentials (a Decision below), so it is decoded and ignored.
+/// Termurion never persists adapter credentials (a Decision below), so it is decoded and ignored.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LegacyCredentialMigration {
@@ -141,7 +141,7 @@ pub struct HandshakeResponse {
 
 /// `PR:146-156`. `settings` carries every settings field's current value, secret or not: iTerm2
 /// merges them all into one dictionary (`AP:319-329`) rather than keeping secret ones out of the
-/// request, so Tandem does the same.
+/// request, so Termurion does the same.
 #[derive(Serialize, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestHeader {
@@ -317,7 +317,7 @@ pub struct ErrorResponse {
 
 // --- Errors (`AP:14-73`) ---
 
-/// The adapter side's error shapes, each carrying iTerm2's own text (`AP:26-51`, "Tandem" for
+/// The adapter side's error shapes, each carrying iTerm2's own text (`AP:26-51`, "Termurion" for
 /// "iTerm2"). `Source` methods return `String` (the trait's error type), so `text()` is the last
 /// step before a `Result` leaves this module; nothing here is ever shown via `Debug`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -341,7 +341,7 @@ impl AdapterError {
             AdapterError::NotAuthenticated => "Not authenticated.".to_string(),
             AdapterError::InvalidOutput => "Invalid output.".to_string(),
             AdapterError::Handshake => "Handshake failed.".to_string(),
-            AdapterError::Incompatible => "Incompatible protocol. Please update Tandem.".to_string(),
+            AdapterError::Incompatible => "Incompatible protocol. Please update Termurion.".to_string(),
             AdapterError::NotFound => "Adapter not found.".to_string(),
             AdapterError::InvalidToken => "Authentication failed. Log in again.".to_string(),
             AdapterError::Other(message) => message.clone(),
@@ -351,7 +351,7 @@ impl AdapterError {
 
 // --- Locating a bundled adapter ---
 
-/// The executable Tandem looks for next to `termurion.exe` for each adapter-backed source; `None`
+/// The executable Termurion looks for next to `termurion.exe` for each adapter-backed source; `None`
 /// for a source that is not an adapter.
 pub fn adapter_file(kind: Kind) -> Option<&'static str> {
     match kind {
@@ -520,7 +520,7 @@ impl<R: Runner> Adapter<R> {
     }
 
     /// Handshakes if needed, then logs in if there is no session token yet, prompting for a
-    /// master password only when the handshake says one is required (`AP:459-525`). Tandem never
+    /// master password only when the handshake says one is required (`AP:459-525`). Termurion never
     /// persists a master password or session token across runs (a Decision below), so this asks
     /// again every time the token is cleared.
     fn ensure_authenticated(&mut self) -> Result<(), AdapterError> {
@@ -668,7 +668,7 @@ impl<R: Runner> Source for Adapter<R> {
     }
 
     fn reset_configuration(&mut self) {
-        // Tandem keeps no adapter credentials or settings storage in this module to clear (a
+        // Termurion keeps no adapter credentials or settings storage in this module to clear (a
         // Decision below); resetting drops the in-memory handshake and session only, so the next
         // call re-handshakes and re-logs in.
         self.handshake = None;
@@ -846,7 +846,7 @@ mod tests {
         assert!(a.runner.requests.lock().unwrap().is_empty());
 
         // The handshake request, argument "handshake", stdin
-        // {"iTermVersion": <Tandem version>, "minProtocolVersion": 0, "maxProtocolVersion": 0};
+        // {"iTermVersion": <Termurion version>, "minProtocolVersion": 0, "maxProtocolVersion": 0};
         // then login with the master password only on the login request's stdin, never on the
         // handshake request, and never as an argument.
         let mut runner = FakeRunner::default();
@@ -874,7 +874,7 @@ mod tests {
         let mut runner = FakeRunner::default();
         runner.push(&handshake_json(serde_json::json!({"protocolVersion": 1, "requiresMasterPassword": false})));
         let mut a = adapter(runner, Box::new(|_| None));
-        assert_eq!(a.accounts().unwrap_err(), "Incompatible protocol. Please update Tandem.");
+        assert_eq!(a.accounts().unwrap_err(), "Incompatible protocol. Please update Termurion.");
 
         // Invalid JSON from the adapter.
         let mut runner = FakeRunner::default();

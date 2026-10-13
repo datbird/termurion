@@ -1,9 +1,9 @@
 // pointer-gate.js
-// Tandem's own script (not from iTerm2). It runs in Tandem's isolated world, in the main frame, at
+// Termurion's own script (not from iTerm2). It runs in Termurion's isolated world, in the main frame, at
 // document start. WebView2 gives the host no mouse hook before the page, so a press a pointer
 // binding claims has to be taken here, synchronously, before the page's own handlers see it
 // (iTerm2 decides in the web view's mouseDown, `iTermBrowserWebView.swift:383-490`). Only the
-// presses in the table Tandem keeps in `__termurionGate` are taken: right, middle and other buttons
+// presses in the table Termurion keeps in `__termurionGate` are taken: right, middle and other buttons
 // that are bound, and plain Ctrl single left when it stands for a right click. Left clicks stay the
 // page's, except the fourth click (Smart Selection) and a single Win-click (the first action of the
 // best Smart Selection rule). Every listener ignores an event whose isTrusted is false: a page that

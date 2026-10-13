@@ -21,7 +21,7 @@ fn ssh_config_paths() -> Vec<std::path::PathBuf> {
 }
 
 impl App {
-    /// Starts serving origin secrets on this user's pipe. A failure (another Tandem of this
+    /// Starts serving origin secrets on this user's pipe. A failure (another Termurion of this
     /// user holds the name) sets no banner: it2ssh then sends "none", as off macOS. The pipe
     /// name carries the user SID, so the message leaves it out.
     pub(super) fn ssh_secrets_start(&mut self) {
@@ -32,7 +32,7 @@ impl App {
                     Ok(sid) => e.replace(&sid, "<SID>"),
                     Err(_) => e,
                 };
-                eprintln!("Tandem: the SSH origin secret pipe did not start: {e}");
+                eprintln!("Termurion: the SSH origin secret pipe did not start: {e}");
             }
         }
     }
@@ -84,7 +84,7 @@ impl App {
 
     /// Runs what one pane's SSH hook found, in order. A tmux integration pane is pumped inside
     /// `tmux_pump`, after `ssh_pump`, so its Output arm calls this at once: nothing else wakes
-    /// the loop for a conductor waiting on Tandem's next command.
+    /// the loop for a conductor waiting on Termurion's next command.
     pub(super) fn ssh_pump_pane(&mut self, pane: PaneId) {
         let outs = self.panes.get_mut(&pane).map(|p| p.take_ssh()).unwrap_or_default();
         let mut batch = crate::ssh_hook::Batch::default();

@@ -1,27 +1,27 @@
 # Milestone 11b acceptance checklist
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Setup: install Python 3 and run `py -m pip install iterm2` in a plain venv (pin `websockets<14`
 if `extra_headers` raises a TypeError, as in the m11a checklist). Turn on Settings > General >
 Python API > "Enable Python API" and accept the warning; turn `setCookie` on so a script run from
-a Tandem session's own shell connects with no prompt. Open a two-window layout: window 1 has a
+a Termurion session's own shell connects with no prompt. Open a two-window layout: window 1 has a
 plain tab with a vertical split; window 2 has a tmux tab (`ssh` to a host with tmux, then
 `tmux -CC`) and one buried session. Have a shell with shell integration installed in the plain
 tab, so prompt marks exist.
 
 Each check below runs a short script against `iterm2.run_until_complete` with the stock package
-(no local modification), unless noted otherwise, and states what Tandem is expected to show.
+(no local modification), unless noted otherwise, and states what Termurion is expected to show.
 
 | # | Check | Result |
 |---|---|---|
 | 1 | `async_send_text` on the split's shell types the text there, as if it had been typed; on a session in a broadcast domain it also reaches every other pane of that domain unless `suppress_broadcast` is set. | |
 | 2 | `async_inject` on a session prints the given bytes as if they were program output, without going to the shell (a following prompt does not see it as typed input). | |
 | 3 | `async_activate` on a session in the other window selects that window's tab and pane; the window comes to the front. | |
-| 4 | `async_activate`'s raise brings a window to the front without activating Tandem itself (no taskbar flash claims focus); repeat it on a hidden hotkey window and it rolls in, which may take focus. | |
-| 5 | `async_close` on a session with `force` unset asks first (Tandem's own confirmation) and returns `RPCException` / `USER_DECLINED` on Cancel; with `force=True` it closes with no prompt. | |
+| 4 | `async_activate`'s raise brings a window to the front without activating Termurion itself (no taskbar flash claims focus); repeat it on a hidden hotkey window and it rolls in, which may take focus. | |
+| 5 | `async_close` on a session with `force` unset asks first (Termurion's own confirmation) and returns `RPCException` / `USER_DECLINED` on Cancel; with `force=True` it closes with no prompt. | |
 | 6 | With Lock Layout on for a tab, `async_close` on a session or tab in it (force unset) is refused (USER_DECLINED); a window close and any `force=True` close still work. | |
 | 7 | `Window.async_create_tab(profile_customizations={"Background Color": {...}, "Command": "..."})` starts the new tab's pane with that background color and command; afterward, the saved profile it copied from is unchanged in Settings. | |
 | 8 | `Window.async_create_tab(index=0)` places the new tab first; an out-of-range index still creates the tab and answers `INVALID_TAB_INDEX`. | |
@@ -37,7 +37,7 @@ Each check below runs a short script against `iterm2.run_until_complete` with th
 | 18 | `async_set_grid_size(cols, rows)` resizes the window so the pane's grid matches; `async_get_property("grid_size")` reads back one less in each dimension (iTerm2's own quirk, kept). | |
 | 19 | `async_get_profile` and `async_list_profiles` round-trip a profile's properties; `async_set_property` on a session (frame, fullscreen) changes the window as expected. | |
 | 20 | `PreferenceKey` get and set (for example a non-secret General preference) round-trips, and the change is visible in Settings after the set. | |
-| 21 | `PreferenceKey` set of `setCookie` to `True` shows the Confirm alert in Tandem; the request answers OK immediately, before the alert is answered; only clicking OK actually turns it on. | |
+| 21 | `PreferenceKey` set of `setCookie` to `True` shows the Confirm alert in Termurion; the request answers OK immediately, before the alert is answered; only clicking OK actually turns it on. | |
 | 22 | `PreferenceKey` set of a stored-consent key (for example the API's own "don't ask again") answers `INVALID_VALUE` and changes nothing. | |
 | 23 | `async_save_window_arrangement` then closing the window then `async_restore_window_arrangement` brings the window back with its tabs and splits. | |
 | 24 | `async_restart` on a session whose shell has exited restarts it; on a tmux pane, a gateway session, or a still-running session (with `only_if_exited`) it is refused. | |
@@ -78,16 +78,16 @@ Each check below runs a short script against `iterm2.run_until_complete` with th
 | 54 | An unrecognized `SavedArrangementRequest` action value is treated as RESTORE, not refused. | |
 | 55 | `SavedArrangement` save silently replaces an existing name with the same one; the menu's own Save always asks first. | |
 | 56 | Setting a WORD, SMART, LINE or WHOLE_LINE selection, then reading it back, reports the mode as CHARACTER (the exact range is kept, the mode name is not). | |
-| 57 | A hyperlink id that looks like Tandem's own generated form (digits followed by `_alacritty`) is never reported, whether Tandem generated it or a program happened to send that exact text. | |
+| 57 | A hyperlink id that looks like Termurion's own generated form (digits followed by `_alacritty`) is never reported, whether Termurion generated it or a program happened to send that exact text. | |
 | 58 | Sending a tmux command whose text contains a raw CR or LF desynchronizes later tmux replies, exactly as it would against a real iTerm2 with tmux integration. | |
 | 59 | A prompt's command range, read right after Enter with no text typed, is empty rather than one character wide; typing text (not yet run) grows it to the cursor. | |
-| 60 | A profile-change notification subscription is accepted by iTerm2's own routing rules but never actually fires, even from Tandem, since the stock `iterm2` package cannot send that subscription type at all. | |
+| 60 | A profile-change notification subscription is accepted by iTerm2's own routing rules but never actually fires, even from Termurion, since the stock `iterm2` package cannot send that subscription type at all. | |
 
 ## Final fix wave
 
 | # | Check | Result |
 |---|---|---|
-| 61 | In a pane with long lines in its history (run `seq -s ' ' 1 400` a few times), split it vertically so it narrows, then read `number_of_lines` with `GetProperty` and the whole buffer with `async_get_contents` (or GetBuffer with `trailing_lines`): the overflow and every line number are 0 or more, and the oldest line's number equals the overflow. Selecting the oldest line in Tandem, reading it with `async_get_selection` and setting it back with `async_set_selection` works (no REQUEST_MALFORMED). | |
+| 61 | In a pane with long lines in its history (run `seq -s ' ' 1 400` a few times), split it vertically so it narrows, then read `number_of_lines` with `GetProperty` and the whole buffer with `async_get_contents` (or GetBuffer with `trailing_lines`): the overflow and every line number are 0 or more, and the oldest line's number equals the overflow. Selecting the oldest line in Termurion, reading it with `async_get_selection` and setting it back with `async_set_selection` works (no REQUEST_MALFORMED). | |
 | 62 | In the tmux tab, set tmux's `default-command` to something that exits at once (`tmux set -g default-command 'exit'`), then `Window.async_create_window` through the tmux connection (`async_create_window` on the gateway's `TmuxConnection`): the call returns promptly instead of hanging, with no window; reset `default-command` afterward. | |
 | 63 | With Lock Layout on in window 1, `Window.async_create_tab()` on it creates the tab (and `index=0` places it first), while New Tab from the menu or its key is still refused there. | |
 | 64 | A styled GetBuffer larger than 32 MiB (a session with a very long scrollback, all of it read with styles through `async_get_contents` or a raw GetBuffer with a large `trailing_lines`) is answered; the script stays connected and its next request works. | |

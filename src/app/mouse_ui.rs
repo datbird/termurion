@@ -38,9 +38,9 @@ impl App {
     }
 
     /// The pointer entered this window (`WindowEvent::CursorEntered`, the window already
-    /// current): with focus follows mouse it makes the window key while Tandem is active, or
+    /// current): with focus follows mouse it makes the window key while Termurion is active, or
     /// takes the foreground for it when `StealKeyFocus` says so (`FFM:107-165`). Never from a
-    /// Tandem dialog, a password prompt or a waiting approval, and never for a hidden hotkey
+    /// Termurion dialog, a password prompt or a waiting approval, and never for a hidden hotkey
     /// window. The pane under the pointer is focused by `mouse_move` as before.
     pub(super) fn ffm_enter(&mut self) {
         self.ffm_entered = false;
@@ -49,7 +49,7 @@ impl App {
             return;
         }
         let now = pointer_screen();
-        // The refusal point (the pointer where Tandem became active) holds until it moves.
+        // The refusal point (the pointer where Termurion became active) holds until it moves.
         let moved = self.ffm_saved.is_none_or(|s| Some(s) != now);
         if moved {
             self.ffm_saved = None;
@@ -78,7 +78,7 @@ impl App {
         }
     }
 
-    /// True while an IME composition is open in any Tandem window (13k's IME state is per
+    /// True while an IME composition is open in any Termurion window (13k's IME state is per
     /// window: the live one and every parked one): focus follows mouse never moves the keyboard
     /// away from it.
     fn ffm_composing(&self) -> bool {
@@ -87,7 +87,7 @@ impl App {
 
     /// Plain focus follows mouse inside a window: the pane under the pointer takes focus.
     /// Only in the key window with no dialog or approval waiting (`iTermFocusFollowsMouse.swift:
-    /// 118-158`), never at a password prompt (Tandem's own guard), never over one of Tandem's
+    /// 118-158`), never at a password prompt (Termurion's own guard), never over one of Termurion's
     /// overlays (the one list), never while composing (13k).
     pub(super) fn ffm_pane_focus(&mut self, id: PaneId, at: (f32, f32)) {
         if !mouse::ffm_pane_may_focus(self.focused, !self.orch_waits.is_empty(), self.focused_password_prompt(), self.ffm_composing()) || self.termurion_ui_at(at.0, at.1) {
@@ -99,14 +99,14 @@ impl App {
         }
     }
 
-    /// Tandem lost the foreground: the pointer is remembered (`FFMC:99-102`).
+    /// Termurion lost the foreground: the pointer is remembered (`FFMC:99-102`).
     pub(super) fn ffm_became_inactive(&mut self) {
         self.ffm_saved = pointer_screen();
     }
 
-    /// Tandem became active (`FFMC:40-94`): with Aggressive Focus Follows Mouse the Tandem
+    /// Termurion became active (`FFMC:40-94`): with Aggressive Focus Follows Mouse the Termurion
     /// window under the pointer comes forward and its pane takes focus, unless the pointer is
-    /// where it was when Tandem resigned; otherwise the pointer is the refusal point.
+    /// where it was when Termurion resigned; otherwise the pointer is the refusal point.
     pub(super) fn ffm_became_active(&mut self) {
         let ffm = self.globals.bool("FocusFollowsMouse");
         let Some(now) = pointer_screen() else { return };
@@ -154,7 +154,7 @@ impl App {
         tabs.any(|t| self.panes.get(&t.focused).is_some_and(|p| p.at_password_prompt()))
     }
 
-    /// The Tandem terminal window under the screen point: its id and handle.
+    /// The Termurion terminal window under the screen point: its id and handle.
     fn terminal_window_under(&self, screen: (f64, f64)) -> Option<(winit::window::WindowId, isize)> {
         use windows_sys::Win32::Foundation::POINT;
         use windows_sys::Win32::UI::WindowsAndMessaging::{GetAncestor, WindowFromPoint, GA_ROOT};
@@ -179,7 +179,7 @@ impl App {
         }
     }
 
-    /// Every Tandem overlay inside the terminal rectangle or over the window, in ONE list (B5).
+    /// Every Termurion overlay inside the terminal rectangle or over the window, in ONE list (B5).
     /// The info bars, completion list, composers and popups, toast, banner and Move Pane pick
     /// are the rectangles their draw code recorded in `overlay_drawn` (never recomputed here);
     /// portholes, block pills, session pickers, AI indicators and the focused pane's find bar
@@ -202,7 +202,7 @@ impl App {
         for h in &self.picker_hits {
             ui.push(Overlay::Picker, h.1);
         }
-        // The command buttons are pills too: a click on one is Tandem's, never the program's.
+        // The command buttons are pills too: a click on one is Termurion's, never the program's.
         for h in &self.cmd_button_hits {
             ui.push(Overlay::Pill, h.1);
         }
@@ -230,7 +230,7 @@ impl App {
     }
 
     /// What is under the pointer, for the shape (`PTYTextView+ARC.m:728-771`): the divider and
-    /// side bar handle resize shapes first (Tandem's), then `pointer_shape::choose`'s inputs.
+    /// side bar handle resize shapes first (Termurion's), then `pointer_shape::choose`'s inputs.
     /// Overlays are the one list (`termurion_ui_at`) and the program's claim is `report_gate`.
     fn pointer_over(&self) -> Result<crate::pointer_shape::Over, crate::pointer_shape::Shape> {
         use crate::pointer_shape::{Over, Shape};
@@ -309,7 +309,7 @@ impl App {
         self.tabs.get(self.active)?.layout.dividers(area, self.gap()).into_iter().find(|d| mouse::divider_grab(d.rect, grab).contains(x, y))
     }
 
-    /// A button a program drew on a line of its output (Tandem acts on it, not the program).
+    /// A button a program drew on a line of its output (Termurion acts on it, not the program).
     fn inline_button_at(&self, x: f32, y: f32) -> bool {
         let Some((id, rect)) = self.pane_at(x, y) else { return false };
         let (col, row, _) = self.cell_at(id, rect, x, y);
@@ -331,7 +331,7 @@ impl App {
         }
     }
 
-    /// The point is on one of Tandem's overlays inside a pane: no program ever sees a click,
+    /// The point is on one of Termurion's overlays inside a pane: no program ever sees a click,
     /// drag or hover there, whatever the button (B5).
     pub(super) fn termurion_ui_at(&self, x: f32, y: f32) -> bool {
         self.ui_rects().hit(x, y) || self.inline_button_at(x, y)
@@ -855,7 +855,7 @@ mod tests {
         assert!(frame.contains("draw_scrollbar("), "drawn in each pane's turn, so popups drawn later cut it");
         let press = body(MOD, "mouse_press");
         let (ui, bar, pane) = (press.find("self.termurion_ui_at("), press.find("self.scroll_press("), press.find("self.pane_at("));
-        assert!(ui < bar && bar < pane, "after Tandem's own overlays, before the program or the selection");
+        assert!(ui < bar && bar < pane, "after Termurion's own overlays, before the program or the selection");
         assert!(press[ui.unwrap()..bar.unwrap()].contains("self.bar_press_only_activates("), "the click that activates a window only activates it, on the bar too");
         let wheel = body(MOD, "wheel");
         let (ui, bar, pane) = (wheel.find("self.termurion_ui_at("), wheel.find("self.scroll_wheel("), wheel.find("self.pane_at("));
@@ -1190,7 +1190,7 @@ mod tests {
         assert!(wait[edge..].contains("self.sync_pane_activity()"), "a focus change at the edge stamps in this pass");
     }
 
-    /// A right or middle press on a divider's grab zone is Tandem's too.
+    /// A right or middle press on a divider's grab zone is Termurion's too.
     #[test]
     fn a_divider_press_never_reaches_the_program() {
         let b = body(MOD, "mouse_press");

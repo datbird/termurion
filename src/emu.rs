@@ -134,7 +134,7 @@ pub fn checksum_reply(id: i64, sum: i32) -> String {
 }
 
 /// A title as it may go into a report: iTerm2 replaces `|`, `;`, CR, LF and ESC with spaces.
-/// Tandem also replaces every other control (C0, DEL, C1, U+2028, U+2029) and cuts at
+/// Termurion also replaces every other control (C0, DEL, C1, U+2028, U+2029) and cuts at
 /// `host_state::MAX_TITLE`, since the report is typed into the shell's input.
 pub fn safe_title(t: &str) -> String {
     t.chars()
@@ -406,7 +406,7 @@ impl PrintCapture {
 
 pub const OSC7_WARNING_ID: &str = "NoSyncOSC7DisabledBreaksShellIntegration";
 pub const OSC7_HEADING: &str = "Shell Integration Setting Conflict";
-pub const OSC7_TEXT: &str = "Tandem\u{2019}s shell integration now reports your username, hostname, and current directory using OSC 7, but the \u{201c}Accept OSC 7\u{201d} advanced setting is turned off. Shell integration will not work correctly until it is turned back on.";
+pub const OSC7_TEXT: &str = "Termurion\u{2019}s shell integration now reports your username, hostname, and current directory using OSC 7, but the \u{201c}Accept OSC 7\u{201d} advanced setting is turned off. Shell integration will not work correctly until it is turned back on.";
 pub const OSC7_TURN_ON: &str = "Turn On OSC 7";
 
 /// iTerm2's once-per-process OSC 7 warning flag, held on the App.

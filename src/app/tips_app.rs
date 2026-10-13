@@ -16,7 +16,7 @@ use crate::tips::{self, Launch, Tip, Try};
 use crate::warnings::Kind;
 
 pub(super) const PERMISSION_TITLE: &str = "See Tips of the Day?";
-pub(super) const PERMISSION_TEXT: &str = "Tandem can show you a Tip of the Day message to help you learn about its many features. Are you interested?";
+pub(super) const PERMISSION_TEXT: &str = "Termurion can show you a Tip of the Day message to help you learn about its many features. Are you interested?";
 
 /// What the launch does about tips.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,8 +27,8 @@ pub(super) enum Step {
     Start,
 }
 
-/// "Tandem is active" for the tip rules (P18, the 13v1 merge): a Tandem window is in front and
-/// Tandem is not resident. A resident Tandem shows only its notification area icon (its tray menu
+/// "Termurion is active" for the tip rules (P18, the 13v1 merge): a Termurion window is in front and
+/// Termurion is not resident. A resident Termurion shows only its notification area icon (its tray menu
 /// can bring the hidden window to the foreground), so no tip ever opens then.
 pub(super) fn tip_active(app_active: bool, resident: bool) -> bool {
     app_active && !resident
@@ -137,7 +137,7 @@ impl App {
         }
     }
 
-    /// Tandem came to the front: try again soon (`applicationDidBecomeActive:`).
+    /// Termurion came to the front: try again soon (`applicationDidBecomeActive:`).
     pub(super) fn tips_became_active(&mut self) {
         if self.tips_started && tip_active(true, self.resident) {
             self.arm_tip(0.0);
@@ -159,7 +159,7 @@ impl App {
         let showing = self.tip_window.is_some();
         let verdict = tips::try_show(tips::permission_of(&self.globals), self.globals.bool(tips::DISABLED_KEY), tip_active(self.app_active, self.resident), showing, tips::shown_recently(now, last, between));
         match verdict {
-            // Not due to anyone now: the next activation tries again, so an idle Tandem is not woken.
+            // Not due to anyone now: the next activation tries again, so an idle Termurion is not woken.
             Try::Never => {}
             Try::Wait => self.arm_tip(retry_in(between)),
             Try::Show => {
@@ -381,15 +381,15 @@ mod tests {
         assert!(src.contains("crate::semantic::guard_open(url, false)"));
     }
 
-    /// The 13v1 merge (P18, S8 c): "active" for the tip rules is a Tandem window in front while
-    /// Tandem is not resident (the tray menu can put the hidden resident window in front); a
-    /// resident Tandem keeps the deadline armed and never wakes for it.
+    /// The 13v1 merge (P18, S8 c): "active" for the tip rules is a Termurion window in front while
+    /// Termurion is not resident (the tray menu can put the hidden resident window in front); a
+    /// resident Termurion keeps the deadline armed and never wakes for it.
     #[test]
     fn no_tip_opens_while_resident() {
         assert!(tip_active(true, false));
         assert!(!tip_active(true, true), "resident: never active, even with the hidden window in front");
         assert!(!tip_active(false, false));
-        assert_eq!(tips::try_show(Some(true), false, tip_active(true, true), false, false), Try::Never, "the rules never show a tip to a resident Tandem");
+        assert_eq!(tips::try_show(Some(true), false, tip_active(true, true), false, false), Try::Never, "the rules never show a tip to a resident Termurion");
         let src = include_str!("tips_app.rs").split("#[cfg(test)]").next().unwrap().to_string();
         let try_tip = src.split("fn try_tip(").nth(1).and_then(|r| r.split("\n    }\n").next()).unwrap();
         assert!(try_tip.contains("tip_active(self.app_active, self.resident)"), "try_tip asks the resident-aware rule");

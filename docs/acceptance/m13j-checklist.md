@@ -1,8 +1,8 @@
 # Milestone 13j acceptance checklist
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Nothing in this milestone was checked on screen while it was built, so every line here is a first
 look. The pure parts (DECSET 1007, the alternate-screen decision, the inferrer, the accumulators,
@@ -11,7 +11,7 @@ focus follows mouse and pinch rules, the pointer shape choice and the drawn I-be
 tested. The mouse paths, Win32 activation, the cursor itself and the touchpad were not, so read
 those rows twice. Setup: the profile switches are Settings > Profiles > Terminal (reporting and
 alternate scroll) and Settings > Profiles > Keys; the rest are Settings > Advanced ("Mouse"),
-Settings > Pointer (focus follows mouse) and Settings > Appearance. Have two Tandem windows open for
+Settings > Pointer (focus follows mouse) and Settings > Appearance. Have two Termurion windows open for
 the rows that cross windows, `vim` and `less` installed in WSL or MSYS, and a laptop with a precision
 touchpad for the touchpad rows. Mark each line pass or fail.
 
@@ -21,7 +21,7 @@ touchpad for the touchpad rows. Mark each line pass or fail.
 |---|---|---|
 | 1 | Run `less` on a long file. The wheel does NOT move it (the default changed: the alternate screen no longer gets arrows unless asked). Leave `less`, scroll back: the history scrolls. | |
 | 2 | `printf '\e[?1007h'` then `less`: one arrow per notch (three notches move three lines). `printf '\e[?1007l'` turns it off again. | |
-| 3 | A new Tandem tab starts with 1007 off: `printf '\e[?1007$p'` answers `\e[?1007;2$y` (reset). | |
+| 3 | A new Termurion tab starts with 1007 off: `printf '\e[?1007$p'` answers `\e[?1007;2$y` (reset). | |
 | 4 | Profile "Automatically enable alternate mouse scroll" on: `less` gets arrows from the wheel without 1007. | |
 | 5 | With that on, "Restrict alternate mouse scroll to vertical" on: a horizontal swipe in `less` does nothing; off: a horizontal swipe sends Left and Right arrows. | |
 | 6 | "Applications may use alternate mouse scroll" off: `printf '\e[?1007h'` is refused (the DECRQM answer stays reset) and the wheel in `less` does nothing. A tmux pane follows the same switch. | |
@@ -52,7 +52,7 @@ touchpad for the touchpad rows. Mark each line pass or fail.
 
 | # | Check | Result |
 |---|---|---|
-| 24 | Two Tandem windows, `vim` with mouse on in the back one. Click inside the back window: it comes forward, the click selects (text under it highlights) but `vim` sees nothing (the cursor does not move). A drag from that click and its release are also not reported; the NEXT click is reported. | |
+| 24 | Two Termurion windows, `vim` with mouse on in the back one. Click inside the back window: it comes forward, the click selects (text under it highlights) but `vim` sees nothing (the cursor does not move). A drag from that click and its release are also not reported; the NEXT click is reported. | |
 | 25 | Advanced ReportOnFirstMouse on: the same click is reported to `vim` too. | |
 | 26 | Advanced AlwaysAcceptFirstMouse off: the click only activates the window (no selection, no report). A Win-click on a link still acts. | |
 | 27 | The activating click never selects, copies or moves a cursor: a click-drag that activates the window selects nothing and copies nothing (check the clipboard); an Alt-click that activates it does not move the prompt cursor; a double click that activates does not copy a smart selection. | |
@@ -66,16 +66,16 @@ touchpad for the touchpad rows. Mark each line pass or fail.
 |---|---|---|
 | 31 | `printf '\e[?1000h'` at a shell prompt, then click: the shell echoes `^[[M...` and the bar says "Looks like mouse reporting was left on..." with "_Yes", "Always" and "Never". "_Yes" stops the echo (reporting is off for that pane only; another pane in mouse mode keeps reporting). | |
 | 32 | "Always" turns it off at once the next time; "Never" never offers again. Advanced AutodetectMouseReportingStuck off: no offer. Advanced NoSyncNeverAskAboutMouseReportingFrustration on: no offer. | |
-| 33 | A program that only prints the text `0;12;5M` never triggers the offer (it needs a report Tandem actually sent). Short reports (one-digit SGR, X10) do not arm it (kept, as iTerm2). | |
+| 33 | A program that only prints the text `0;12;5M` never triggers the offer (it needs a report Termurion actually sent). Short reports (one-digit SGR, X10) do not arm it (kept, as iTerm2). | |
 
 ## Focus follows mouse and pinch
 
 | # | Check | Result |
 |---|---|---|
-| 34 | Focus follows mouse on: moving between two Tandem windows makes the one under the pointer key while Tandem is active (new in 13j). Moving over a tab bar, title bar, status bar or any bar or popup does not move focus. | |
-| 35 | Hovering a pane in a window that is not key (another app in front, or another Tandem window), or while a Tandem dialog, a password prompt or an approval is waiting does not take focus. With focus follows mouse (and steal, aggressive) on, start a Microsoft Pinyin composition in a pane, then move the pointer over another pane and into another Tandem window: neither the pane nor the window takes focus and the composition stays until Enter or Esc (13k merge). | |
-| 36 | StealKeyFocus on (with focus follows mouse): from another app, moving the pointer into a Tandem window brings Tandem forward, or Windows flashes the taskbar button instead (partial, expected). A hidden hotkey window never pops up under a hover. | |
-| 37 | AggressiveFocusFollowsMouse on: Alt+Tab back to Tandem activates the window under the pointer; if the pointer has not moved since Tandem lost activation, nothing changes. Switching between two Tandem windows does not trigger it. | |
+| 34 | Focus follows mouse on: moving between two Termurion windows makes the one under the pointer key while Termurion is active (new in 13j). Moving over a tab bar, title bar, status bar or any bar or popup does not move focus. | |
+| 35 | Hovering a pane in a window that is not key (another app in front, or another Termurion window), or while a Termurion dialog, a password prompt or an approval is waiting does not take focus. With focus follows mouse (and steal, aggressive) on, start a Microsoft Pinyin composition in a pane, then move the pointer over another pane and into another Termurion window: neither the pane nor the window takes focus and the composition stays until Enter or Esc (13k merge). | |
+| 36 | StealKeyFocus on (with focus follows mouse): from another app, moving the pointer into a Termurion window brings Termurion forward, or Windows flashes the taskbar button instead (partial, expected). A hidden hotkey window never pops up under a hover. | |
+| 37 | AggressiveFocusFollowsMouse on: Alt+Tab back to Termurion activates the window under the pointer; if the pointer has not moved since Termurion lost activation, nothing changes. Switching between two Termurion windows does not trigger it. | |
 | 38 | Ctrl+wheel (Ctrl only) over a pane changes the font size, one notch one step; Ctrl+wheel over a title bar or status bar does not. A touchpad pinch does the same. With a mouse-reporting `vim`, Ctrl+wheel changes the font and is not reported. The font size cannot run away: keep spinning, it stops at the drawn limits. All windows change together (app-wide, ruled). | |
 | 39 | PinchToChangeFontSizeDisabled on: Ctrl+wheel is reported or scrolls like any wheel. | |
 
@@ -84,7 +84,7 @@ touchpad for the touchpad rows. Mark each line pass or fail.
 | # | Check | Result |
 |---|---|---|
 | 40 | The pointer is an I-beam over text, the circled I-beam under `vim` with mouse on, an arrow over an inline image, a pointing hand over a Win-hovered link, a crosshair with Ctrl+Alt held, resize arrows over a divider and the side bar handle. It does not flicker. | |
-| 41 | UseSystemCursorWhenPossible off shows Tandem's drawn I-beam (compare size and position with the system one; look at 100 and 150 percent scaling and on a second monitor at another scale, where the images keep the first window's scale). The circled I-beam is always Tandem's drawing (a guess at iTerm2's sizes: 8x16 and 16x32). | |
+| 41 | UseSystemCursorWhenPossible off shows Termurion's drawn I-beam (compare size and position with the system one; look at 100 and 150 percent scaling and on a second monitor at another scale, where the images keep the first window's scale). The circled I-beam is always Termurion's drawing (a guess at iTerm2's sizes: 8x16 and 16x32). | |
 | 42 | Over a bar, popup or other overlay the pointer is the arrow or hand of the overlay, never the reporting circle. A program that asks for a pointer name (OSC 22) gets the normal pointer (not built; 13y2). | |
 
 ## Pointer actions
@@ -93,7 +93,7 @@ touchpad for the touchpad rows. Mark each line pass or fail.
 |---|---|---|
 | 43 | Settings > Pointer: bind a click to Next Window, another to Previous Window, another to New Window With Profile (pick a profile): each runs. Move Pane still works. With clicks reporting to a program (`vim` mouse on), a bound action still runs when the click is refused by a gate (clicks off), and does not run when the program owns the click. | |
 
-## Security: Tandem overlays never reach the program
+## Security: Termurion overlays never reach the program
 
 Run `vim` (or `htop`) with the mouse on in the pane. Every row: nothing the program shows changes
 (no cursor move, no wheel scroll, no `:mouse` event) and nothing is typed.
@@ -125,13 +125,13 @@ Run `vim` (or `htop`) with the mouse on in the pane. Every row: nothing the prog
 
 | # | Check | Result |
 |---|---|---|
-| 59 | The wheel in `less` does nothing by default (R3, changed from Tandem's old arrows). | |
+| 59 | The wheel in `less` does nothing by default (R3, changed from Termurion's old arrows). | |
 | 60 | One report and one arrow per notch (R3, was three). | |
 | 61 | Horizontal sensitivity 0.1 (R3). | |
 | 62 | A new profile reports the mouse (R3 addition). | |
 | 63 | Font changes from Ctrl+wheel are app-wide, not per session (ruled). | |
 | 64 | A mouse-reporting program does not get Ctrl+wheel by default (ruled). | |
-| 65 | Plain focus follows mouse now makes another Tandem window key (ruled; can take focus from a window you are typing in, as iTerm2). | |
+| 65 | Plain focus follows mouse now makes another Termurion window key (ruled; can take focus from a window you are typing in, as iTerm2). | |
 | 66 | A tilt-wheel mouse's horizontal reports are not reversed by the touchpad setting (deferred; iTerm2 would). | |
 | 67 | Stuck-report matching needs an unbroken echo (ruled); output with cursor moves between the characters is missed. | |
 | 68 | Open URL in background and QuickLook are partial (final, R7). | |

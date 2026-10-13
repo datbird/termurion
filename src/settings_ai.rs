@@ -199,10 +199,10 @@ impl Editor {
     }
 }
 
-// The General sub-tab's texts (`X:7171-7466`, `G:2859-3358`, `G:3547-3626`), Tandem's where
+// The General sub-tab's texts (`X:7171-7466`, `G:2859-3358`, `G:3547-3626`), Termurion's where
 // iTerm2's name a plugin or the macOS Keychain.
 pub const REQUESTS_LABEL: &str = "Requests:";
-pub const REQUESTS_NOTE: &str = "To ensure privacy, Tandem asks before it first sends AI requests to a provider.";
+pub const REQUESTS_NOTE: &str = "To ensure privacy, Termurion asks before it first sends AI requests to a provider.";
 pub const FORGET_HOSTS: &str = "Forget Allowed Hosts";
 pub const CONSENT_LABEL: &str = "Consent:";
 pub const ENABLE: &str = "Enable generative AI features";
@@ -218,7 +218,7 @@ pub const SAFETY: &str = "Use AI to check safety of commands before running them
 pub const ZDR: &str = "Enable \u{201c}zero data retention\u{201d} (send whole conversation every time)";
 pub const AUTO_UPDATE: &str = "Automatically update available AI models from live online database";
 pub const UPDATE_NOW: &str = "Update Now";
-pub const UPDATES_OFF: &str = "Tandem ships its AI model list with each release; online updates are not available.";
+pub const UPDATES_OFF: &str = "Termurion ships its AI model list with each release; online updates are not available.";
 pub const KEYS_HEADING: &str = "Manage AI API Keys";
 pub const KEYS_TEXT: &str = "Keys are stored securely in the Windows Credential Manager.";
 pub const NO_KEY_USED: &str = "No API key is used.";
@@ -457,7 +457,7 @@ pub fn requests_text(g: &Globals, catalog: &Catalog, found: &Discovered) -> Stri
     if ai_gate::consented(g, &host) {
         format!("Requests go to {host} ({provider}). You allowed them.")
     } else {
-        format!("Requests go to {host} ({provider}). Tandem asks before the first one.")
+        format!("Requests go to {host} ({provider}). Termurion asks before the first one.")
     }
 }
 
@@ -564,7 +564,7 @@ fn open_key_dialog(opened: u64) -> KeyDialog {
 }
 
 /// OK: writes the changed fields. A failed write keeps the key for the session (`Keys::set`)
-/// and becomes the settings window's error text, one line per failed vendor (Tandem's; iTerm2
+/// and becomes the settings window's error text, one line per failed vendor (Termurion's; iTerm2
 /// logs each failure, `KC:257-275`).
 fn save_keys(d: &KeyDialog, cache: &mut Keys, store: &mut dyn KeyStore) -> Option<String> {
     let failures: Vec<String> = changed_fields(&d.initial, &d.now)
@@ -1610,7 +1610,7 @@ mod tests {
         assert_eq!(key_hint(&g, "manual:qwen3", cat, &found, &|_| false).as_deref(), Some("No API key is used."));
         // Settings, the gate and the request name the same host for a dynamic default, even with
         // other usable entries ahead of it.
-        assert_eq!(requests_text(&g, cat, &found), "Requests go to server.example (Ollama). Tandem asks before the first one.");
+        assert_eq!(requests_text(&g, cat, &found), "Requests go to server.example (Ollama). Termurion asks before the first one.");
         g.set(crate::ai_settings::ENABLE_AI, Value::Boolean(true));
         assert_eq!(crate::ai_gate::check(&g, cat, &found), crate::ai_gate::Check::NeedsConsent { provider: "Ollama".into(), host: "server.example".into() });
         assert_eq!(crate::ai_gate::check_endpoint(&g, Some(&crate::ai_model::endpoint(&resolved))), crate::ai_gate::check(&g, cat, &found));
@@ -1902,7 +1902,7 @@ mod tests {
     #[test]
     fn general_texts_follow_iterm2() {
         assert_eq!(REQUESTS_LABEL, "Requests:");
-        assert_eq!(REQUESTS_NOTE, "To ensure privacy, Tandem asks before it first sends AI requests to a provider.");
+        assert_eq!(REQUESTS_NOTE, "To ensure privacy, Termurion asks before it first sends AI requests to a provider.");
         assert_eq!(FORGET_HOSTS, "Forget Allowed Hosts");
         assert_eq!(CONSENT_LABEL, "Consent:");
         assert_eq!(ENABLE, "Enable generative AI features");
@@ -1918,7 +1918,7 @@ mod tests {
         assert_eq!(ZDR, "Enable \u{201c}zero data retention\u{201d} (send whole conversation every time)");
         assert_eq!(AUTO_UPDATE, "Automatically update available AI models from live online database");
         assert_eq!(UPDATE_NOW, "Update Now");
-        assert_eq!(UPDATES_OFF, "Tandem ships its AI model list with each release; online updates are not available.");
+        assert_eq!(UPDATES_OFF, "Termurion ships its AI model list with each release; online updates are not available.");
         assert_eq!(KEYS_HEADING, "Manage AI API Keys");
         assert_eq!(KEYS_TEXT, "Keys are stored securely in the Windows Credential Manager.");
         assert_eq!(key_placeholder("Gemini"), "Gemini API key");
@@ -1932,7 +1932,7 @@ mod tests {
 
         let cat = bundled();
         let mut g = with_models(&[]);
-        assert_eq!(requests_text(&g, cat, &Discovered::default()), "Requests go to api.openai.com (OpenAI). Tandem asks before the first one.");
+        assert_eq!(requests_text(&g, cat, &Discovered::default()), "Requests go to api.openai.com (OpenAI). Termurion asks before the first one.");
         crate::ai_gate::grant(&mut g, "api.openai.com");
         assert_eq!(requests_text(&g, cat, &Discovered::default()), "Requests go to api.openai.com (OpenAI). You allowed them.");
         g.set(VENDOR, Value::Integer(5));

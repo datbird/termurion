@@ -61,7 +61,7 @@ pub struct Event {
 
 /// The event a press, release or motion reports to a tracking program. It carries the PHYSICAL
 /// modifiers, the same for all three: the shortcut key (TWEAKS 9) only changes what a click means
-/// to Tandem, never what the program is told, so Ctrl+Shift+click reports Ctrl and Shift.
+/// to Termurion, never what the program is told, so Ctrl+Shift+click reports Ctrl and Shift.
 pub fn report_event(button: Button, action: Action, physical: Mods, col: u32, row: u32) -> Event {
     Event { button, action, mods: physical, col, row }
 }
@@ -82,7 +82,7 @@ pub enum Kind {
     Wheel { horizontal: bool },
 }
 
-/// The profile and Tandem state that gate reports besides the program's own request.
+/// The profile and Termurion state that gate reports besides the program's own request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Gates {
     /// The profile's "Mouse Reporting allow clicks and drags".
@@ -93,7 +93,7 @@ pub struct Gates {
     pub horizontal: bool,
     /// The activating click holds and ReportOnFirstMouse is off.
     pub first_mouse_blocks: bool,
-    /// The pointer is over one of Tandem's own overlays inside the pane (B5).
+    /// The pointer is over one of Termurion's own overlays inside the pane (B5).
     pub ui_over: bool,
     /// The pane has the keyboard in the key window (iTerm2's `mouseHandlerViewHasFocus`).
     pub view_focused: bool,
@@ -139,13 +139,13 @@ pub fn first_click(first_mouse: bool, cmd: bool, always_accept: bool, ffm: bool,
     (FirstClick::Normal, first_mouse)
 }
 
-/// What the pointer entering a Tandem window does under focus follows mouse.
+/// What the pointer entering a Termurion window does under focus follows mouse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Enter {
     Nothing,
-    /// Make that Tandem window key (Tandem is active, so Windows allows it).
+    /// Make that Termurion window key (Termurion is active, so Windows allows it).
     MakeKey,
-    /// Take the foreground for that window although Tandem is not active (`StealKeyFocus`).
+    /// Take the foreground for that window although Termurion is not active (`StealKeyFocus`).
     Steal,
 }
 
@@ -166,7 +166,7 @@ pub fn ffm_on_enter(ffm: bool, steal: bool, app_active: bool, moved_since_refusa
 }
 
 /// `iTermFocusFollowsMouseController.m:40-94`: on becoming active, aggressive mode activates the
-/// window under the pointer unless the pointer is where it was when Tandem resigned. Regular
+/// window under the pointer unless the pointer is where it was when Termurion resigned. Regular
 /// activation only refuses the first responder at the current point (no focus change).
 pub fn ffm_on_activate(ffm: bool, aggressive: bool, saved: Option<(f64, f64)>, now: (f64, f64)) -> bool {
     ffm && aggressive && saved != Some(now)
@@ -175,15 +175,15 @@ pub fn ffm_on_activate(ffm: bool, aggressive: bool, saved: Option<(f64, f64)>, n
 /// What is in front of the window the pointer entered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Front {
-    /// A Tandem terminal window.
+    /// A Termurion terminal window.
     Terminal,
-    /// A Tandem window that is not a terminal: a dialog, Settings, a chat or approval window.
+    /// A Termurion window that is not a terminal: a dialog, Settings, a chat or approval window.
     OtherTermurion,
     /// Another application.
     Elsewhere,
 }
 
-/// Whether focus follows mouse may act on `enter` now. It never takes focus from a Tandem
+/// Whether focus follows mouse may act on `enter` now. It never takes focus from a Termurion
 /// dialog (modal prompt, 12f approval window), from a password prompt, or while an approval is
 /// waiting; it takes it from another app only as the steal switch (`Enter::Steal`) says.
 pub fn ffm_may_act(enter: Enter, front: Front, password_prompt: bool, approval_pending: bool, composing: bool) -> bool {
@@ -199,7 +199,7 @@ pub fn ffm_may_act(enter: Enter, front: Front, password_prompt: bool, approval_p
 }
 
 /// Whether plain focus follows mouse may move the pane focus inside a window
-/// (`iTermFocusFollowsMouse.swift:118-158`: key window and no modal window). Tandem also holds
+/// (`iTermFocusFollowsMouse.swift:118-158`: key window and no modal window). Termurion also holds
 /// it at a password prompt (ruling, final review 2) and during an IME composition (13k).
 pub fn ffm_pane_may_focus(window_key: bool, approval_pending: bool, password_prompt: bool, composing: bool) -> bool {
     window_key && !approval_pending && !password_prompt && !composing
@@ -233,7 +233,7 @@ pub fn reporting_on(ever_allowed: bool, alt_screen: bool, restrict: bool) -> boo
     ever_allowed && (alt_screen || !restrict)
 }
 
-/// The kinds of Tandem overlay drawn inside a pane's rectangle or over the window (B5). A new
+/// The kinds of Termurion overlay drawn inside a pane's rectangle or over the window (B5). A new
 /// overlay adds its kind here and pushes its rectangle in `App::ui_rects`; a test checks both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Overlay {
@@ -261,10 +261,10 @@ impl Overlay {
     pub const ALL: [Overlay; 13] = [Overlay::InfoBar, Overlay::Porthole, Overlay::Pill, Overlay::Picker, Overlay::Indicator, Overlay::Find, Overlay::Completion, Overlay::Composer, Overlay::ComposerPopup, Overlay::Toast, Overlay::Banner, Overlay::PaneMove, Overlay::CommandInfo];
 }
 
-/// Tandem's own surfaces that never lie inside a pane's terminal rectangle, so `pane_at` never
+/// Termurion's own surfaces that never lie inside a pane's terminal rectangle, so `pane_at` never
 /// finds a pane there, and why: `visible()` cuts the title bar and the status bar out, the
 /// inline AI panel and the Clippings panel take the right of the pane, the tab bar and toolbelt
-/// are outside the content area, and Tandem draws no scrollbar.
+/// are outside the content area, and Termurion draws no scrollbar.
 pub const OUTSIDE_THE_TERMINAL: [(&str, &str); 5] = [
     ("title bar", "visible() splits it off (pane_bar_split)"),
     ("status bar", "visible() and the content area exclude it"),
@@ -273,7 +273,7 @@ pub const OUTSIDE_THE_TERMINAL: [(&str, &str); 5] = [
     ("scrollbar", "none is drawn"),
 ];
 
-/// Every overlay's rectangle in one list (B5): a point inside any is Tandem's.
+/// Every overlay's rectangle in one list (B5): a point inside any is Termurion's.
 #[derive(Clone, Debug, Default)]
 pub struct UiRects {
     rects: Vec<(Overlay, crate::layout::Rect)>,
@@ -567,7 +567,7 @@ mod tests {
         assert!(should_report(SGR_ANY, m, Kind::Wheel { horizontal: true }, blocked));
     }
 
-    /// B5: a program never gets a click, drag or hover meant for a Tandem overlay.
+    /// B5: a program never gets a click, drag or hover meant for a Termurion overlay.
     #[test]
     fn overlay_clicks_are_not_reported() {
         let m = Mods::default();
@@ -575,7 +575,7 @@ mod tests {
         for k in [Kind::Click, Kind::Drag, Kind::Hover] {
             assert!(!should_report(SGR_ANY, m, k, over), "{k:?} over an overlay");
         }
-        assert!(!should_report(SGR_ANY, m, Kind::Wheel { horizontal: false }, over), "the wheel over an overlay is Tandem's too (review fix 1)");
+        assert!(!should_report(SGR_ANY, m, Kind::Wheel { horizontal: false }, over), "the wheel over an overlay is Termurion's too (review fix 1)");
     }
 
     fn r(x: f32, y: f32) -> crate::layout::Rect {
@@ -661,7 +661,7 @@ mod tests {
     fn focus_follows_mouse_follows_iterm2() {
         // ffm_on_enter(ffm, steal, app_active, moved_since_refusal)
         assert_eq!(ffm_on_enter(false, true, true, true), Enter::Nothing, "setting off");
-        assert_eq!(ffm_on_enter(true, false, true, true), Enter::MakeKey, "Tandem is active");
+        assert_eq!(ffm_on_enter(true, false, true, true), Enter::MakeKey, "Termurion is active");
         assert_eq!(ffm_on_enter(true, false, false, true), Enter::Nothing, "inactive, no steal");
         assert_eq!(ffm_on_enter(true, true, false, true), Enter::Steal);
         assert_eq!(ffm_on_enter(true, true, true, false), Enter::Nothing, "the pointer has not moved since activation");
@@ -683,7 +683,7 @@ mod tests {
         assert!(!ok(Enter::MakeKey, Front::OtherTermurion, false, false), "a dialog, settings or chat window is in front");
         assert!(!ok(Enter::MakeKey, Front::Terminal, true, false), "a password prompt holds focus");
         assert!(!ok(Enter::MakeKey, Front::Terminal, false, true), "an approval is waiting");
-        assert!(!ok(Enter::MakeKey, Front::Elsewhere, false, false), "MakeKey is only for an active Tandem");
+        assert!(!ok(Enter::MakeKey, Front::Elsewhere, false, false), "MakeKey is only for an active Termurion");
         assert!(ok(Enter::Steal, Front::Elsewhere, false, false), "the opt-in steals from another app");
         assert!(!ok(Enter::Steal, Front::Elsewhere, true, false));
         assert!(!ok(Enter::Steal, Front::OtherTermurion, false, false));
@@ -699,7 +699,7 @@ mod tests {
     }
 
     /// A split divider's grab zone: the divider grown by `grab` on every side. Every button
-    /// pressed in it is Tandem's (left drags the divider; right and middle do nothing), never
+    /// pressed in it is Termurion's (left drags the divider; right and middle do nothing), never
     /// the program's.
     #[test]
     fn divider_grab_zone_holds_every_button() {

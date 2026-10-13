@@ -44,7 +44,7 @@ pub fn decode(bytes: &[u8]) -> Result<State, String> {
     let d = root.as_dictionary().ok_or("the saved state is not a state file")?;
     let version = d.get("Version").and_then(|v| v.as_signed_integer()).ok_or("the saved state has no version")?;
     if version != VERSION {
-        return Err(format!("the saved state has version {version}; this Tandem reads version {VERSION}"));
+        return Err(format!("the saved state has version {version}; this Termurion reads version {VERSION}"));
     }
     let windows = d.get("Windows").and_then(|w| w.as_array()).ok_or("the saved state has no list of windows")?;
     Ok(State {

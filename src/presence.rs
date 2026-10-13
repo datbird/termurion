@@ -1,4 +1,4 @@
-//! Leaving the taskbar and Alt+Tab (13g): when Tandem acts as iTerm2's UI element, and what a
+//! Leaving the taskbar and Alt+Tab (13g): when Termurion acts as iTerm2's UI element, and what a
 //! window's styles are. Pure; `app::presence_ui` applies it.
 
 pub const UI_ELEMENT_KEY: &str = "HideFromDockAndAppSwitcher";
@@ -7,11 +7,11 @@ pub const EXCLUDED_FROM_CYCLING_KEY: &str = "HotkeyWindowsExcludedFromCycling";
 
 /// The persistent warning before the setting turns on (`APV:251-262`, Mac words replaced).
 pub const EXCLUDE_HEADING: &str = "Warning";
-pub const EXCLUDE_WARNING: &str = "When Tandem is excluded from the taskbar, you can always get back to Settings using the notification area icon. Look for a Tandem icon on the right side of your taskbar.";
+pub const EXCLUDE_WARNING: &str = "When Termurion is excluded from the taskbar, you can always get back to Settings using the notification area icon. Look for a Termurion icon on the right side of your taskbar.";
 pub const EXCLUDE_ACTION: &str = "Exclude From Taskbar and Alt+Tab Switcher";
 pub const CANCEL: &str = "Cancel";
 
-/// Whether Tandem is a UI element now (`AD:3756-3765`): the setting, narrowed by the second
+/// Whether Termurion is a UI element now (`AD:3756-3765`): the setting, narrowed by the second
 /// to "every terminal window is a hotkey window" (true on an empty list, as `allWithBlock`).
 pub fn is_ui_element(ui_element: bool, requires_hotkeys: bool, windows: usize, hotkey_windows: usize) -> bool {
     ui_element && (!requires_hotkeys || hotkey_windows >= windows)
@@ -89,7 +89,7 @@ pub fn cycling_skips(hotkey: Option<bool>, excluded_from_cycling: bool) -> bool 
 
 pub const STATUS_BAR_ICON_KEY: &str = "StatusBarIcon";
 /// The notification area icon's tip.
-pub const TRAY_TIP: &str = "Tandem";
+pub const TRAY_TIP: &str = "Termurion";
 
 /// The icon's menu (`AD:1846-1880`): label, and the selector of the menu item it runs or the
 /// kind of submenu ("buried", "main").
@@ -100,7 +100,7 @@ pub const TRAY_ITEMS: [(&str, &str); 7] = [
     ("Buried Sessions", "buried"),
     ("Check For Updates", "checkForUpdatesFromMenu:"),
     ("Main Menu", "main"),
-    ("Quit Tandem", "terminate:"),
+    ("Quit Termurion", "terminate:"),
 ];
 
 /// "HotKey Window Dock Click Action" values.
@@ -110,7 +110,7 @@ pub const DOCK_SHOW_IF_NONE: i64 = 2;
 
 /// Whether the notification area icon is there: iTerm2's rule (`APP:979-993`), the status item
 /// exists only in UI-element mode and with `StatusBarIcon` on (read at start). The way back
-/// without it is starting Tandem again, which acts as the dock click (`launch::Request::Reopen`).
+/// without it is starting Termurion again, which acts as the dock click (`launch::Request::Reopen`).
 pub fn tray_wanted(ui_element_now: bool, status_bar_icon: bool) -> bool {
     ui_element_now && status_bar_icon
 }
@@ -143,7 +143,7 @@ pub fn tray_retry_delay(failures: u32) -> Option<std::time::Duration> {
 }
 
 /// Whether a pass tries the icon now: it differs from what is wanted and the last failure's delay
-/// has passed. `_failures` no longer limits it: a resident Tandem keeps trying.
+/// has passed. `_failures` no longer limits it: a resident Termurion keeps trying.
 pub fn tray_attempt_due(want: bool, on: bool, _failures: u32, due: Option<std::time::Instant>, now: std::time::Instant) -> bool {
     tray_changes(want, on) && due.is_none_or(|d| now >= d)
 }
@@ -180,7 +180,7 @@ pub fn tray_failures_after(failures: u32, ok: bool) -> u32 {
     }
 }
 
-/// Tandem's logo (docs/assets/termurion-logo.svg) as `size` x `size` RGBA pixels for the tray: the
+/// Termurion's logo (docs/assets/termurion/termurion-mark.svg, drawn here in code) as `size` x `size` RGBA pixels for the tray: the
 /// blue card behind, the dark terminal card in front with its border, the prompt chevron and
 /// cursor bar. 3x3 supersampled; clear outside the cards.
 pub fn tray_icon_rgba(size: u32) -> Vec<u8> {
@@ -275,7 +275,7 @@ const PANEL_PREFIX: &str = "tray-panel:";
 /// The tray menu entries for windows outside the terminal list (Settings, chat, panels):
 /// (menu id, title) from (window id, title).
 pub fn tray_panel_items(panels: &[(u64, String)]) -> Vec<(String, String)> {
-    panels.iter().map(|(id, t)| (format!("{PANEL_PREFIX}{id}"), if t.is_empty() { "Tandem".to_string() } else { t.clone() })).collect()
+    panels.iter().map(|(id, t)| (format!("{PANEL_PREFIX}{id}"), if t.is_empty() { "Termurion".to_string() } else { t.clone() })).collect()
 }
 
 /// The window id of a tray panel menu id.
@@ -378,7 +378,7 @@ mod tests {
     /// `APV:251-262`.
     #[test]
     fn exclude_warning_follows_iterm2() {
-        assert_eq!(EXCLUDE_WARNING, "When Tandem is excluded from the taskbar, you can always get back to Settings using the notification area icon. Look for a Tandem icon on the right side of your taskbar.");
+        assert_eq!(EXCLUDE_WARNING, "When Termurion is excluded from the taskbar, you can always get back to Settings using the notification area icon. Look for a Termurion icon on the right side of your taskbar.");
         assert_eq!(EXCLUDE_ACTION, "Exclude From Taskbar and Alt+Tab Switcher");
         assert_eq!(CANCEL, "Cancel");
         assert_eq!(EXCLUDE_HEADING, "Warning");
@@ -392,13 +392,13 @@ mod tests {
     fn tray_items_follow_iterm2() {
         assert_eq!(
             TRAY_ITEMS,
-            [("New Window", "newWindow:"), ("Settings", "showPrefWindow:"), ("Bring All Windows to Front", "arrangeInFront:"), ("Buried Sessions", "buried"), ("Check For Updates", "checkForUpdatesFromMenu:"), ("Main Menu", "main"), ("Quit Tandem", "terminate:")]
+            [("New Window", "newWindow:"), ("Settings", "showPrefWindow:"), ("Bring All Windows to Front", "arrangeInFront:"), ("Buried Sessions", "buried"), ("Check For Updates", "checkForUpdatesFromMenu:"), ("Main Menu", "main"), ("Quit Termurion", "terminate:")]
         );
         for (_, sel) in TRAY_ITEMS.iter().filter(|(_, s)| s.ends_with(':')) {
             assert!(crate::menus::items().iter().any(|i| i.selector == *sel), "{sel}");
         }
         assert_eq!(STATUS_BAR_ICON_KEY, "StatusBarIcon");
-        assert_eq!(TRAY_TIP, "Tandem");
+        assert_eq!(TRAY_TIP, "Termurion");
     }
 
     /// `HKC:362-402`.
@@ -476,7 +476,7 @@ mod tests {
         assert_eq!(tray_add_order(true, false), &[TrayOp::Modify, TrayOp::Add], "already added");
     }
 
-    /// TWEAKS 8: the icon drawn for the tray is Tandem's (the logo), the right size, not blank.
+    /// TWEAKS 8: the icon drawn for the tray is Termurion's (the logo), the right size, not blank.
     #[test]
     fn tray_icon_is_the_logo() {
         let px = tray_icon_rgba(32);
@@ -492,7 +492,7 @@ mod tests {
     #[test]
     fn tray_menu_offers_new_window_and_quit() {
         assert_eq!(TRAY_ITEMS[0], ("New Window", "newWindow:"));
-        assert_eq!(TRAY_ITEMS[TRAY_ITEMS.len() - 1], ("Quit Tandem", "terminate:"));
+        assert_eq!(TRAY_ITEMS[TRAY_ITEMS.len() - 1], ("Quit Termurion", "terminate:"));
     }
 
     /// iTerm2's reopen (`AD:946-952`): the last window comes forward, never a hidden hotkey

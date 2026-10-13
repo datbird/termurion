@@ -1,5 +1,5 @@
 //! The debug log (iTerm2's `DebugLogging.m`): `dlog!` lines kept in memory while Toggle Debug
-//! Logging is on, written as one file when it goes off. The file is the one place Tandem writes
+//! Logging is on, written as one file when it goes off. The file is the one place Termurion writes
 //! what it did, so it holds no secret: every argument of `dlog!` must be a `LogSafe` value (a
 //! number, a flag, a literal, or `name(..)`, which keeps a short plain-ASCII word), a format
 //! string never captures a variable inline, and the call sites are listed (`CALL_SITES`).
@@ -213,7 +213,7 @@ pub fn ring_entry(secs: i64, micros: u32, file: &str, line: u32, module: &str, t
 }
 
 /// The ring's scrub (`DL:288-311`): the text inside `chars="..."` and `unmodchars="..."` (a key
-/// event's characters) becomes `[redacted]`. Tandem also redacts the shapes of a secret (P2):
+/// event's characters) becomes `[redacted]`. Termurion also redacts the shapes of a secret (P2):
 /// `password=`/`token=`/`secret=` values, a bearer token, a cookie header and URL userinfo.
 pub fn scrub(text: &str) -> String {
     use regex::Regex;
@@ -447,7 +447,7 @@ fn windows_line(f: &Facts) -> String {
 pub fn header(f: &Facts) -> String {
     let key = f.key_window.map_or("none".to_string(), |n| n.to_string());
     format!(
-        "Tandem version: {}\nDate: {} ({})\nMachine: {}\nScreens: {}\nOS version: {}\nKey window: {}\nWindows: {}\nOrdered windows: {}\nPinned messages: \n------ END HEADER ------\n\n",
+        "Termurion version: {}\nDate: {} ({})\nMachine: {}\nScreens: {}\nOS version: {}\nKey window: {}\nWindows: {}\nOrdered windows: {}\nPinned messages: \n------ END HEADER ------\n\n",
         f.version,
         f.date,
         f.unix,
@@ -464,8 +464,8 @@ pub fn footer(f: &Facts) -> String {
     format!("------ BEGIN FOOTER -----\nScreens: {}\nWindows: {}\nOrdered windows: {}\n", screens_line(f), windows_line(f), joined(&f.order))
 }
 
-/// The footer of a log saved while Tandem ends: no window is left to describe.
-pub const EXIT_FOOTER: &str = "------ BEGIN FOOTER -----\nTandem was ending; no window facts were taken.\n";
+/// The footer of a log saved while Termurion ends: no window is left to describe.
+pub const EXIT_FOOTER: &str = "------ BEGIN FOOTER -----\nTermurion was ending; no window facts were taken.\n";
 
 // ---- the process-wide log ----
 
@@ -963,7 +963,7 @@ mod tests {
         takes(&name("x"));
     }
 
-    /// The header and footer: Tandem's facts in iTerm2's layout, counts and numbers only (P3).
+    /// The header and footer: Termurion's facts in iTerm2's layout, counts and numbers only (P3).
     #[test]
     fn header_and_footer_follow_iterm2() {
         let facts = Facts {
@@ -980,7 +980,7 @@ mod tests {
         let h = header(&facts);
         assert_eq!(
             h,
-            "Tandem version: 1.2.3\nDate: 2026-10-06 12:00:00 (1790000000)\nMachine: x86_64 Some CPU\nScreens: 0,0 1920x1080 @ 1.00; 1920,0 2560x1440 @ 1.50\nOS version: Windows 11 Pro build 26100\nKey window: 2\nWindows: 1 (3 tabs, 5 panes); 2 (1 tab, 1 pane)\nOrdered windows: 2, 1\nPinned messages: \n------ END HEADER ------\n\n"
+            "Termurion version: 1.2.3\nDate: 2026-10-06 12:00:00 (1790000000)\nMachine: x86_64 Some CPU\nScreens: 0,0 1920x1080 @ 1.00; 1920,0 2560x1440 @ 1.50\nOS version: Windows 11 Pro build 26100\nKey window: 2\nWindows: 1 (3 tabs, 5 panes); 2 (1 tab, 1 pane)\nOrdered windows: 2, 1\nPinned messages: \n------ END HEADER ------\n\n"
         );
         let f = footer(&facts);
         assert_eq!(f, "------ BEGIN FOOTER -----\nScreens: 0,0 1920x1080 @ 1.00; 1920,0 2560x1440 @ 1.50\nWindows: 1 (3 tabs, 5 panes); 2 (1 tab, 1 pane)\nOrdered windows: 2, 1\n");

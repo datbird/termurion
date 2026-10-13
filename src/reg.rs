@@ -8,19 +8,19 @@ pub trait Registry {
     fn get(&self, key: &str, name: &str) -> Option<String>;
     fn set(&mut self, key: &str, name: &str, value: &str) -> Result<(), String>;
     fn delete_tree(&mut self, key: &str) -> Result<(), String>;
-    /// Removes one value; only inside Tandem's own keys, or Tandem's `RegisteredApplications` entry.
+    /// Removes one value; only inside Termurion's own keys, or Termurion's `RegisteredApplications` entry.
     fn delete_value(&mut self, key: &str, name: &str) -> Result<(), String>;
-    /// Removes `Software\Classes\<scheme>` for a scheme Tandem lists; the caller has checked that
-    /// its command is Tandem's.
+    /// Removes `Software\Classes\<scheme>` for a scheme Termurion lists; the caller has checked that
+    /// its command is Termurion's.
     fn delete_scheme_class(&mut self, scheme: &str) -> Result<(), String>;
 }
 
-/// Whether a value may be deleted: inside a tree Tandem made, or its one `RegisteredApplications` entry.
+/// Whether a value may be deleted: inside a tree Termurion made, or its one `RegisteredApplications` entry.
 pub fn value_deletable(key: &str, name: &str) -> bool {
     deletable(key) || (key.trim_matches('\\').eq_ignore_ascii_case("Software\\RegisteredApplications") && name.eq_ignore_ascii_case("Termurion"))
 }
 
-/// Whether `key` is a tree Tandem made and may delete: Tandem's own software key, its protocol
+/// Whether `key` is a tree Termurion made and may delete: Termurion's own software key, its protocol
 /// ProgIds and its "Open with" application key. Nothing else: not a scheme (`ssh`, `http`),
 /// not `Console`, not an empty key.
 pub fn deletable(key: &str) -> bool {
@@ -69,7 +69,7 @@ impl Registry for FakeRegistry {
 
     fn delete_tree(&mut self, key: &str) -> Result<(), String> {
         if !deletable(key) {
-            return Err(format!("Tandem does not delete the registry key {key}"));
+            return Err(format!("Termurion does not delete the registry key {key}"));
         }
         let k = key.trim_matches('\\').to_ascii_lowercase();
         self.values.retain(|(kk, _), _| {
@@ -81,7 +81,7 @@ impl Registry for FakeRegistry {
 
     fn delete_value(&mut self, key: &str, name: &str) -> Result<(), String> {
         if !value_deletable(key, name) {
-            return Err(format!("Tandem does not delete the registry value {key}\\{name}"));
+            return Err(format!("Termurion does not delete the registry value {key}\\{name}"));
         }
         if let Some(slot) = self.slot(key, name) {
             self.values.remove(&slot);
@@ -91,7 +91,7 @@ impl Registry for FakeRegistry {
 
     fn delete_scheme_class(&mut self, scheme: &str) -> Result<(), String> {
         if !crate::url_schemes::is_listed(scheme) {
-            return Err(format!("Tandem does not delete the registry key for {scheme}"));
+            return Err(format!("Termurion does not delete the registry key for {scheme}"));
         }
         let k = format!("software\\classes\\{scheme}");
         self.values.retain(|(kk, _), _| {
@@ -118,7 +118,7 @@ impl Registry for HkcuRegistry {
 
     fn delete_tree(&mut self, key: &str) -> Result<(), String> {
         if !deletable(key) {
-            return Err(format!("Tandem does not delete the registry key {key}"));
+            return Err(format!("Termurion does not delete the registry key {key}"));
         }
         crate::url_schemes::win::delete_tree(key);
         Ok(())
@@ -126,7 +126,7 @@ impl Registry for HkcuRegistry {
 
     fn delete_value(&mut self, key: &str, name: &str) -> Result<(), String> {
         if !value_deletable(key, name) {
-            return Err(format!("Tandem does not delete the registry value {key}\\{name}"));
+            return Err(format!("Termurion does not delete the registry value {key}\\{name}"));
         }
         crate::url_schemes::win::delete_value(key, (!name.is_empty()).then_some(name));
         Ok(())
@@ -134,7 +134,7 @@ impl Registry for HkcuRegistry {
 
     fn delete_scheme_class(&mut self, scheme: &str) -> Result<(), String> {
         if !crate::url_schemes::is_listed(scheme) {
-            return Err(format!("Tandem does not delete the registry key for {scheme}"));
+            return Err(format!("Termurion does not delete the registry key for {scheme}"));
         }
         crate::url_schemes::win::delete_tree(&format!("Software\\Classes\\{scheme}"));
         Ok(())
@@ -164,7 +164,7 @@ mod tests {
         assert_eq!(r.get("Software\\Classes\\Applications\\termurion.exe\\SupportedTypes", ".ps1").as_deref(), Some(""));
     }
 
-    /// P9: a tree is deleted only under Tandem's own keys; the fake refuses as the real one does.
+    /// P9: a tree is deleted only under Termurion's own keys; the fake refuses as the real one does.
     #[test]
     fn registry_deletes_only_termurions_keys() {
         let mut r = FakeRegistry::default();

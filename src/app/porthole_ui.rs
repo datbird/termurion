@@ -452,11 +452,11 @@ impl App {
                     }
                     return;
                 }
-                crate::ssh_files::RemoteDocLink::Refuse => return self.banners.set("link", format!("Tandem opens only web and mail links from a remote document, not {link:?}.")),
+                crate::ssh_files::RemoteDocLink::Refuse => return self.banners.set("link", format!("Termurion opens only web and mail links from a remote document, not {link:?}.")),
             }
         }
         let Some(target) = crate::porthole::link_target(link, base) else {
-            return self.banners.set("link", format!("Tandem opens web and mail links and local files only, not {link:?}."));
+            return self.banners.set("link", format!("Termurion opens web and mail links and local files only, not {link:?}."));
         };
         // The judge before the question: a link it refuses is not asked about (and is judged again at the answer).
         if let crate::porthole::LinkTarget::File(f) = &target {
@@ -480,7 +480,7 @@ impl App {
         // Asked again at the answer: the pane may have started framing since (P10).
         let web = matches!(target, crate::porthole::LinkTarget::Url(u) if crate::semantic::web_link(u));
         if self.remote_text(pane) && !web {
-            return self.banners.set("link", format!("Tandem opens only web and mail links from a remote document, not {t:?}."));
+            return self.banners.set("link", format!("Termurion opens only web and mail links from a remote document, not {t:?}."));
         }
         let crate::porthole::LinkTarget::File(_) = target else {
             if let Err(e) = super::semantic_ui::shell_open(&t, false) {

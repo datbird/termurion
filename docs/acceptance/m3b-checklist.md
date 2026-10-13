@@ -1,6 +1,6 @@
 # Milestone 3b acceptance checklist
 
-Close any open Tandem window, then run `C:\Users\datbi\src\tandem\target\release\tandem.exe`.
+Close any open Termurion window, then run `C:\Users\datbi\src\termurion\target\release\tandem.exe`.
 Cmd is the Win key and Option is Alt. Mark each line pass or fail.
 
 | # | Check | Result |
@@ -14,7 +14,7 @@ Cmd is the Win key and Option is Alt. Mark each line pass or fail.
 | 7 | Keys pane > +: record Ctrl+Shift+K, action Send Text, text `echo hi\n`. Pressing Ctrl+Shift+K runs `echo hi`. | |
 | 8 | Keys pane > Leader: record Ctrl+B. Add a binding: record Ctrl+B then S (the recorder shows "Leader, S"), action Split Horizontally with Profile, pick a profile. Ctrl+B then S splits; the title shows `[Leader]` between the two keys. Press Ctrl+B, switch to another app and back: `[Leader]` is gone. | |
 | 9 | Add a binding Win+J to Next Pane. Win+J cycles panes. Delete the binding: Win+J goes back to Windows. | |
-| 10 | Remap Modifiers: Left Control to Left Win. Ctrl+T now opens a tab (as Win+T). On a German or French layout, AltGr still types `@`. Switch to another app while holding Left Control, let go there: no key sticks. Hold Left Control in another app, click into Tandem, keep holding past the key repeat, then let go: nothing stays held. Reset to Defaults. | |
+| 10 | Remap Modifiers: Left Control to Left Win. Ctrl+T now opens a tab (as Win+T). On a German or French layout, AltGr still types `@`. Switch to another app while holding Left Control, let go there: no key sticks. Hold Left Control in another app, click into Termurion, keep holding past the key repeat, then let go: nothing stays held. Reset to Defaults. | |
 | 11 | Profile Keys tab: Option Key Sends (Left) = Normal or Esc+: Alt+B in zsh moves back a word. Meta: Alt+B sends one byte with the high bit set (`cat -v` shows `M-b`). | |
 | 12 | Right-click opens the context menu; in vim with `set mouse=a`, right-click still opens it. Tick "Right click reported to apps": vim now gets the right click. Middle-click pastes; in vim with `mouse=a` vim gets the middle click. With two splits, middle-click the unfocused one: the text lands in the split you clicked. | |
 | 13 | Alt-click on the prompt line of pwsh moves the cursor to the click. | |

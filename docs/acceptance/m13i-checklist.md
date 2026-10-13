@@ -1,8 +1,8 @@
 # Milestone 13i acceptance checklist
 
-Build a release binary (`scripts/xt build --release`). Close any open Tandem window, copy
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Nothing in this milestone was checked on screen while it was built, so every line is a first look. The
 pure parts (pane order, adjacency and wraparound, the dim amounts and colors, divider width, border
@@ -95,12 +95,12 @@ divider rows at 100, 150 and 200 percent display scale. Mark each line pass or f
 
 | # | Check | Result |
 |---|---|---|
-| 40 | A divorced ssh pane splits to a local shell with its own values; the next split of a Tandem-made ssh copy connects to the copy's host (m13i rulings, Task 5). | |
+| 40 | A divorced ssh pane splits to a local shell with its own values; the next split of a Termurion-made ssh copy connects to the copy's host (m13i rulings, Task 5). | |
 | 41 | Next Pane unzooms a zoomed tab instead of swapping the maximized pane. | |
 | 42 | Dimming averages toward gray in linear light, so midtones differ slightly from iTerm2's. | |
 | 43 | Dim only text leaves the tab bar undimmed and adds no Minimal outline boost, and leaves selection, match, cursor and label colors alone, and inline images and portholes are unverified. | |
 | 44 | The active pane border has square corners where iTerm2 rounds them at the window's corners. | |
-| 45 | The default divider is scaled: 2 pixels at 150 percent and 200 percent where Tandem drew 1. | |
+| 45 | The default divider is scaled: 2 pixels at 150 percent and 200 percent where Termurion drew 1. | |
 | 46 | A pinned and locked tab's close question says "This tab", not "This pinned tab". | |
 | 47 | Move Session to Window and to Tab look enabled for a locked pane and refuse with a beep. | |
 | 48 | Unlock All Panes in Tab is a menu item of its own when some panes are locked (iTerm2 hides it behind Option). | |

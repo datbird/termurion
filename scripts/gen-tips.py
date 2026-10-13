@@ -15,14 +15,14 @@ DEFAULT_SOURCE = os.path.expanduser("~/gitrepos/iterm2-ref/sources/TIps/iTermTip
 OUT = os.path.join(ROOT, "resources", "tips.toml")
 
 EXPECTED = 124
-# Not ported: they describe the Mac only (Touch Bar, "on your Mac"), or a setting Tandem has no
+# Not ported: they describe the Mac only (Touch Bar, "on your Mac"), or a setting Termurion has no
 # row for (0068: the hotkey window floating over other apps' full-screen windows; 0052: every new
-# tab opening next to the current one, Tandem only has the duplicated-tab setting).
+# tab opening next to the current one, Termurion only has the duplicated-tab setting).
 DROPPED = ["0066", "0105", "0068", "0052"]
 
 # Applied in exactly this order (the triple before any pair, pairs before singles).
 REPLACEMENTS = [
-    ("iTerm2", "Tandem"),
+    ("iTerm2", "Termurion"),
     ("⇧⌥⌘", "Shift+Alt+Win+"),
     ("⇧⌘", "Shift+Win+"),
     ("⌥⌘", "Alt+Win+"),
@@ -76,11 +76,11 @@ def parse(text):
     return entries
 
 
-# iTerm2 release numbers are not Tandem's: the tip keeps its feature and drops the number.
+# iTerm2 release numbers are not Termurion's: the tip keeps its feature and drops the number.
 RELEASE_WORDS = [
-    ("The big new feature of Tandem version 3 is", "A big feature of Tandem is"),
+    ("The big new feature of Termurion version 3 is", "A big feature of Termurion is"),
 ]
-# Names that are iTerm2's, not Tandem's controls (checked by tips::tip_paths_are_real_menus_and_settings).
+# Names that are iTerm2's, not Termurion's controls (checked by tips::tip_paths_are_real_menus_and_settings).
 NAME_FIXES = [
     ("turn that on in \u201cSettings > Advanced.\u201d", "turn that on in \u201cSettings > Profiles > Terminal > Notifications.\u201d"),
     ("Settings > Profiles > Keys > Customize Hotkey Window", "Settings > Profiles > Keys > Hotkey Window"),

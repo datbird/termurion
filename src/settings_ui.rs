@@ -421,7 +421,7 @@ pub struct SettingsWindow {
     /// A page to open in the browser (the Configure SSH help button); the app takes it after
     /// each frame.
     pub open_url: Option<String>,
-    /// Profiles > General's "URL schemes:" menu chose a scheme Tandem does not handle yet: the
+    /// Profiles > General's "URL schemes:" menu chose a scheme Termurion does not handle yet: the
     /// not-default question to ask (the app takes it after each frame).
     pub scheme_ask: Option<SchemeAsk>,
     /// Profiles > Text's "Manage Special Exceptions" was pressed for this profile Guid: the
@@ -593,7 +593,7 @@ impl SettingsWindow {
 
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, mode: Mode) -> Result<Self, String> {
         let (title, w, h) = match mode {
-            Mode::Settings => ("Tandem Settings", 980.0, 720.0),
+            Mode::Settings => ("Termurion Settings", 980.0, 720.0),
             Mode::Profiles => ("Profiles", 420.0, 460.0),
         };
         let host = crate::egui_host::EguiHost::open(event_loop, instance, adapter, device, queue, title, w, h)?;
@@ -1169,7 +1169,7 @@ impl SettingsWindow {
                     if crate::settings_presets::pump_dialogs(ui.ctx(), presets, globals, profile) {
                         edit = Edit::GlobalsChanged;
                     }
-                    // iTerm2 shows a warning button whose click shows this text; Tandem shows the text.
+                    // iTerm2 shows a warning button whose click shows this text; Termurion shows the text.
                     if separate && crate::tab_theme::mode_warning(style, separate) {
                         ui.colored_label(ui.visuals().warn_fg_color, crate::tab_theme::MODE_WARNING);
                     }
@@ -1726,7 +1726,7 @@ pub fn edit_key(profile: &Profile, s: &Setting, dark: bool) -> String {
 /// Whether a profile control shows its default (`iTermProfilePreferencesBaseViewController.m:253-265`):
 /// the value of `key` (`edit_key`: the setting or its Light or Dark variant) nullably equals
 /// DefaultBookmark.plist's (the schema's seed) or else iTerm2's default, within 0.001. The
-/// fonts compare with Tandem's new-profile font, which stands in for Monaco 12; the Guid has no
+/// fonts compare with Termurion's new-profile font, which stands in for Monaco 12; the Guid has no
 /// control and is never marked.
 ///
 /// The controls iTerm2 gives a `hasDefaultValue` of their own follow it: the working directory
@@ -1764,7 +1764,7 @@ pub fn profile_is_default(profile: &Profile, s: &Setting, key: &str) -> bool {
 
 /// The working directory field's rule (`ProfilesGeneralPreferencesViewController.m:356-359`,
 /// "Because new profiles are initialized with NSHomeDirectory here"): default when the text is
-/// the home folder. Tandem's new profiles store an empty path, which is default too.
+/// the home folder. Termurion's new profiles store an empty path, which is default too.
 pub fn working_directory_is_default(value: Option<&Value>, home: &str) -> bool {
     let text = value.and_then(Value::as_str).unwrap_or("");
     text.is_empty() || text == home
@@ -2643,7 +2643,7 @@ mod tests {
         let near = |v: &Value| Value::Table(v.as_table().unwrap().iter().map(|(k, x)| (k.clone(), Value::Float(x.as_float().unwrap() + 0.0005))).collect());
         q.set("Foreground Color (Dark)", near(fg.seed_dark.as_ref().unwrap()));
         assert!(profile_is_default(&q, fg, "Foreground Color (Dark)"));
-        // Tandem's new-profile font stands in for Monaco 12.
+        // Termurion's new-profile font stands in for Monaco 12.
         let font = crate::schema::find("Normal Font").unwrap();
         let mut f = Profile::new("Default");
         assert!(profile_is_default(&f, font, "Normal Font"));
@@ -2655,7 +2655,7 @@ mod tests {
     #[test]
     fn profile_custom_indicators_follow_iterm2() {
         // `ProfilesGeneralPreferencesViewController.m:356-359`: the working directory is default
-        // when it is the home folder (iTerm2 seeds new profiles with it); Tandem seeds new
+        // when it is the home folder (iTerm2 seeds new profiles with it); Termurion seeds new
         // profiles with an empty path, so that is default too.
         let home = "C:\\Users\\rob";
         let wd = |s: &str| Some(Value::String(s.into()));

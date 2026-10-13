@@ -1,7 +1,7 @@
 //! Requests from another `termurion.exe` (m13v1 Task 1): the command line a second start was given,
 //! handed over the one launch pipe (`url_launch`). Every request is untrusted (another program of
 //! the user may have sent it): a flood cap, a closed set of kinds, a profile or arrangement found
-//! only in Tandem's own store, and none runs a command.
+//! only in Termurion's own store, and none runs a command.
 
 use std::time::Instant;
 
@@ -94,7 +94,7 @@ impl App {
     /// (no window shows) a notification, so it is neither lost nor stale when a window next opens.
     pub(super) fn outside_note(&mut self, key: &'static str, text: String) {
         if self.resident {
-            if let Err(e) = crate::notify::show_with("Tandem", &text, true) {
+            if let Err(e) = crate::notify::show_with("Termurion", &text, true) {
                 crate::host::log(&format!("{key}: {text} (no notification: {e})"));
             }
             return;
@@ -103,7 +103,7 @@ impl App {
         self.redraw();
     }
 
-    /// A profile named by a request exists in Tandem's own store (none named is the default
+    /// A profile named by a request exists in Termurion's own store (none named is the default
     /// profile); an unknown guid shows a banner and opens nothing, never the default silently (P22).
     fn known_profile(&mut self, guid: Option<&str>) -> bool {
         let Some(g) = guid else { return true };
@@ -117,7 +117,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    /// The 13u startup a second Tandem must never reach: the keyboard hook, the global remap,
+    /// The 13u startup a second Termurion must never reach: the keyboard hook, the global remap,
     /// the hotkeys (app, profile and session), the forced layout and the notification icon.
     const KEYS_STARTUP: &[&str] = &["winkeys::install", "set_remap_global", "set_hotkey_sink", "register_hotkeys", "input_locale::", "locale_focus", "notify::add", "notify::show"];
 
@@ -174,7 +174,7 @@ mod tests {
         assert!(include_str!("logout_ui.rs").contains("teardown_process()"));
     }
 
-    /// 13u S5: a session hotkey with no session (Tandem without a window, or every session gone)
+    /// 13u S5: a session hotkey with no session (Termurion without a window, or every session gone)
     /// picks nothing, so it neither reveals a pane nor wakes a window.
     #[test]
     fn a_session_hotkey_with_no_session_does_nothing() {

@@ -1,9 +1,9 @@
-//! Win chords for Tandem. Windows keeps many Win chords for itself (Win+D, Win+T), so
-//! a low-level keyboard hook takes Win chords while a Tandem window has focus and sends
-//! them to the app as Cmd chords. Only chords with an enabled Tandem command are taken;
+//! Win chords for Termurion. Windows keeps many Win chords for itself (Win+D, Win+T), so
+//! a low-level keyboard hook takes Win chords while a Termurion window has focus and sends
+//! them to the app as Cmd chords. Only chords with an enabled Termurion command are taken;
 //! the rest stay with Windows. Win+L is never taken (Windows does not allow it), and a
 //! harmless key is sent with each taken chord, so the Start menu does not open after it.
-//! The same hook remaps modifiers (Keys > Remap Modifiers) while a Tandem window is in front.
+//! The same hook remaps modifiers (Keys > Remap Modifiers) while a Termurion window is in front.
 
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -69,7 +69,7 @@ pub fn vk_to_key(vk: u16) -> Option<ChordKey> {
 pub enum Verdict {
     /// Let Windows have the key.
     Pass,
-    /// Tandem takes the key; on a key down, this is the chord to run.
+    /// Termurion takes the key; on a key down, this is the chord to run.
     Take(Option<Chord>),
 }
 
@@ -81,7 +81,7 @@ pub struct KeyEvent {
     /// Win is physically down now (read live, so a Win release the hook missed,
     /// after Win+L for example, cannot stick).
     pub win_held: bool,
-    /// A Tandem window is in front.
+    /// A Termurion window is in front.
     pub focused: bool,
     pub shift: bool,
     pub alt: bool,
@@ -91,12 +91,12 @@ pub struct KeyEvent {
 /// The hook's decisions, kept apart from Win32 so they can be tested.
 #[derive(Default)]
 pub struct Gate {
-    /// Keys whose key-down Tandem took; their key-ups are taken too.
+    /// Keys whose key-down Termurion took; their key-ups are taken too.
     taken: std::collections::HashSet<u16>,
 }
 
 impl Gate {
-    /// `bound` says whether Tandem has an enabled command for a chord. Unbound Win chords
+    /// `bound` says whether Termurion has an enabled command for a chord. Unbound Win chords
     /// (Win+Shift+S, snapping, virtual desktops) stay with Windows.
     pub fn on_key(&mut self, e: KeyEvent, bound: &dyn Fn(&Chord) -> bool) -> Verdict {
         if e.vk == VK_LWIN || e.vk == VK_RWIN {
@@ -119,7 +119,7 @@ impl Gate {
     }
 }
 
-/// Whether the Win key stands for Cmd in a Tandem window for this chord: always with the Win
+/// Whether the Win key stands for Cmd in a Termurion window for this chord: always with the Win
 /// shortcut key, else only for a chord the shortcut key's own modifiers cannot press
 /// (`shortcut_key`), so Win+D and the other Windows chords stay with Windows.
 fn win_is_cmd(c: &Chord) -> bool {
@@ -155,7 +155,7 @@ struct Hook {
 }
 
 static HOOK: OnceLock<Hook> = OnceLock::new();
-/// Tandem's terminal windows.
+/// Termurion's terminal windows.
 static WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
 fn is_termurion(hwnd: isize) -> bool {
@@ -170,8 +170,8 @@ pub fn set_web_focus(hwnd: isize) {
     WEB_FOCUS.store(hwnd, Ordering::Release);
 }
 
-/// Whether the terminal has the keyboard: `foreground` is a Tandem window and no web view of it holds
-/// the focus. A page owns the keyboard (as in iTerm2), so Tandem's Win-chord commands and remaps
+/// Whether the terminal has the keyboard: `foreground` is a Termurion window and no web view of it holds
+/// the focus. A page owns the keyboard (as in iTerm2), so Termurion's Win-chord commands and remaps
 /// stay out of it; only the registered global hotkeys still act.
 fn terminal_has_keyboard(foreground_is_termurion: bool, foreground: isize, web_focus: isize) -> bool {
     foreground_is_termurion && !(web_focus != 0 && web_focus == foreground)
@@ -283,14 +283,14 @@ pub fn set_recording(on: bool) {
     }
 }
 
-/// The settings window counts as Tandem for remapping.
+/// The settings window counts as Termurion for remapping.
 pub fn set_settings_window(hwnd: isize) {
     SETTINGS.store(hwnd, Ordering::Relaxed);
 }
 /// Remap modifiers globally (iTerm2's RemapModifiersGlobally, default on). Read by the hook, so an atomic.
 static REMAP_GLOBAL: AtomicBool = AtomicBool::new(true);
 
-/// Marks the mask key Tandem sends, so the hook passes it and nothing else injected.
+/// Marks the mask key Termurion sends, so the hook passes it and nothing else injected.
 /// Other software (a KVM tool such as bumbles) injects real keystrokes; those are handled.
 const MAGIC: usize = 0x5441_4E44;
 
@@ -306,7 +306,7 @@ pub fn mouse_buttons() -> (bool, bool, bool) {
 }
 
 /// Sends a harmless key while Win is down, so Windows does not open the Start menu when
-/// Win comes up after a chord Tandem took (the pattern AutoHotkey uses).
+/// Win comes up after a chord Termurion took (the pattern AutoHotkey uses).
 pub fn mask_start_menu() {
     let key = |flags| INPUT {
         r#type: INPUT_KEYBOARD,
@@ -376,7 +376,7 @@ pub fn set_remap_global(on: bool) {
 }
 
 /// Removes the keyboard hook and the hotkeys, first releasing any remapped key still held. Called
-/// when Tandem ends and from the panic hook; a crash or kill needs nothing, as Windows removes a
+/// when Termurion ends and from the panic hook; a crash or kill needs nothing, as Windows removes a
 /// low-level hook and its hotkeys when the process dies. Waits a moment for the hook thread.
 pub fn uninstall() {
     let thread = HOOK_THREAD.swap(0, Ordering::AcqRel);
@@ -539,9 +539,9 @@ unsafe fn hook_body(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
 }
 
-/// Installs the hook for Tandem's main window, on a thread of its own: a low-level hook
+/// Installs the hook for Termurion's main window, on a thread of its own: a low-level hook
 /// runs on the installing thread's message loop, and every keystroke on the machine waits
-/// for it, so it must never wait for Tandem's drawing. `bound` says which chords Tandem
+/// for it, so it must never wait for Termurion's drawing. `bound` says which chords Termurion
 /// takes; taken chords go to `send`. `tags` are the Remap Modifiers settings, and `exempt`
 /// says which keys are bound to Do Not Remap Modifiers.
 pub fn install(
@@ -972,15 +972,15 @@ mod tests {
     }
 
     /// 13u seam (13x Task 1a fix, security): while keyboard focus is inside a web view of the
-    /// foreground Tandem window, the terminal does not have the keyboard. The hook passes every key
+    /// foreground Termurion window, the terminal does not have the keyboard. The hook passes every key
     /// on (no Win-chord command, no remap), so Win+V pastes into the page and never the shell.
     #[test]
     fn a_web_view_with_the_keyboard_is_not_the_terminal() {
-        // One predicate: a Tandem window in front, and not the one a web view holds.
+        // One predicate: a Termurion window in front, and not the one a web view holds.
         assert!(terminal_has_keyboard(true, 10, 0), "no web focus");
         assert!(!terminal_has_keyboard(true, 10, 10), "the web view in front has it");
         assert!(terminal_has_keyboard(true, 10, 20), "another window's web view does not matter");
-        assert!(!terminal_has_keyboard(false, 10, 0), "not a Tandem window");
+        assert!(!terminal_has_keyboard(false, 10, 0), "not a Termurion window");
         let mut g = Gate::default();
         let v = KeyEvent { focused: terminal_has_keyboard(true, 10, 10), ..key(0x56, true) };
         assert_eq!(g.on_key(v, &all), Verdict::Pass, "Win+V with web focus goes to the page");
@@ -1159,7 +1159,7 @@ mod tests {
 
     #[test]
     fn unbound_win_chords_stay_with_windows() {
-        // Win+Shift+S (screenshot) and friends: Tandem has no command there.
+        // Win+Shift+S (screenshot) and friends: Termurion has no command there.
         let mut g = Gate::default();
         assert_eq!(g.on_key(key(0x53, true), &none), Verdict::Pass);
         assert_eq!(g.on_key(key(0x53, false), &none), Verdict::Pass);

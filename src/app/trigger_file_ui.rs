@@ -83,7 +83,7 @@ impl App {
     pub(super) fn import_triggers_file(&mut self, f: &Facts, event_loop: &ActiveEventLoop) {
         let shown = crate::inert_files::shown_name(&f.path.to_string_lossy());
         if !f.regular || f.len > tf::MAX_FILE as u64 {
-            return self.open_file_banner(format!("Tandem did not open \u{201c}{shown}\u{201d}: it is not a file of a size it reads."));
+            return self.open_file_banner(format!("Termurion did not open \u{201c}{shown}\u{201d}: it is not a file of a size it reads."));
         }
         let Some(path) = crate::localfs::LocalPath::judge(&f.path) else { return self.open_file_banner(open_file::NETWORK_BANNER.to_string()) };
         let ok = [crate::api_auth::OK];

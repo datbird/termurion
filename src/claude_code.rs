@@ -1,7 +1,7 @@
 //! The Claude Code integration's pure half (`OB`, `MC`, `HM`, `CWT`): the settings.json hook
 //! merge and strip, the health checks, the menu rule, the steps and every text. The person's
 //! `settings.json` is theirs: a file that cannot be read or parsed is never written, only
-//! Tandem's own cc-status entries are touched, a backup is kept, and the write is a temp file
+//! Termurion's own cc-status entries are touched, a backup is kept, and the write is a temp file
 //! renamed over the old one. Every path is passed in, so a test never reaches the real
 //! `%USERPROFILE%\.claude`.
 
@@ -34,7 +34,7 @@ pub const HELP_URL: &str = "https://iterm2.com/claude-code-integration.html";
 
 // ---- texts ("Claude Code texts")
 pub const INTRO_TITLE: &str = "Before You Start";
-pub const INTRO_LEAD: &str = "Don\u{2019}t panic! All of this can be undone later via Tandem > Uninstall Claude Code Integration.";
+pub const INTRO_LEAD: &str = "Don\u{2019}t panic! All of this can be undone later via Termurion > Uninstall Claude Code Integration.";
 pub const WHAT_CHANGES: &str = "What gets changed";
 pub const LEARN_MORE: &str = "Learn more about the Claude Code integration";
 pub const CONTINUE: &str = "Continue";
@@ -49,19 +49,19 @@ pub const UNINSTALL: &str = "Uninstall";
 pub const REMOVE_FAILED_HEADING: &str = "Couldn\u{2019}t Remove Hooks";
 pub const CONTINUE_BUTTON: &str = "Continue";
 pub const DISABLE_API_HEADING: &str = "Disable the Python API?";
-pub const DISABLE_API_TEXT: &str = "The installer enabled Tandem\u{2019}s Python API. Other scripts or integrations may be using it now. Leave it enabled, or turn it off?";
+pub const DISABLE_API_TEXT: &str = "The installer enabled Termurion\u{2019}s Python API. Other scripts or integrations may be using it now. Leave it enabled, or turn it off?";
 pub const LEAVE_ENABLED: &str = "Leave Enabled";
 pub const DISABLE: &str = "Disable";
 pub const BROKEN_HEADING: &str = "Claude Code Integration Looks Broken";
 pub const REINSTALL: &str = "Reinstall";
 pub const NOT_NOW: &str = "Not Now";
-pub const WATCHER_TEXT: &str = "Want to try Tandem\u{2019}s Claude Code integration?";
+pub const WATCHER_TEXT: &str = "Want to try Termurion\u{2019}s Claude Code integration?";
 pub const WATCHER_BUTTONS: [&str; 3] = ["_Yes", "Never", "Ask Later"];
 
 /// The settings the person is asked about: "\u{2022} ..." lines.
 pub fn bullets(settings: &Path) -> String {
     format!(
-        "\u{2022} Tandem\u{2019}s Python API is enabled\n\u{2022} A cc-status hook is added to {}\n\u{2022} The toolbelt is shown\n\u{2022} A Claude Code workgroup is added to Tandem\u{2019}s settings\n\u{2022} Enter/Exit Workgroup triggers are added to the profiles you pick",
+        "\u{2022} Termurion\u{2019}s Python API is enabled\n\u{2022} A cc-status hook is added to {}\n\u{2022} The toolbelt is shown\n\u{2022} A Claude Code workgroup is added to Termurion\u{2019}s settings\n\u{2022} Enter/Exit Workgroup triggers are added to the profiles you pick",
         settings.display()
     )
 }
@@ -84,11 +84,11 @@ pub const NO_PROFILE: &str = "Could not find your user folder (USERPROFILE is no
 /// The hook program is not beside termurion.exe: a hook pointing at nothing would fail at every
 /// Claude Code event.
 pub fn missing_exe(exe: &Path) -> String {
-    format!("{} was not found. Reinstall Tandem, then try again.", exe.display())
+    format!("{} was not found. Reinstall Termurion, then try again.", exe.display())
 }
 
 pub fn uninstall_text(path: &Path) -> String {
-    format!("This removes the cc-status hook from {}, the Claude Code workgroup from your settings, and the Enter/Exit Workgroup triggers from every profile. You can reinstall any time using Tandem > Install Claude Code Integration.", path.display())
+    format!("This removes the cc-status hook from {}, the Claude Code workgroup from your settings, and the Enter/Exit Workgroup triggers from every profile. You can reinstall any time using Termurion > Install Claude Code Integration.", path.display())
 }
 
 pub fn remove_failed(detail: &str) -> String {
@@ -96,7 +96,7 @@ pub fn remove_failed(detail: &str) -> String {
 }
 
 pub fn broken_text(path: &Path) -> String {
-    format!("Tandem\u{2019}s cc-status hook is no longer in {}. This usually means Claude Code rewrote that file. Reinstall the hook so per-tab status indicators (\u{201C}Working\u{2026},\u{201D} \u{201C}Waiting\u{2026}\u{201D}) work again?", path.display())
+    format!("Termurion\u{2019}s cc-status hook is no longer in {}. This usually means Claude Code rewrote that file. Reinstall the hook so per-tab status indicators (\u{201C}Working\u{2026},\u{201D} \u{201C}Waiting\u{2026}\u{201D}) work again?", path.display())
 }
 
 /// The hook command for the exe: its path with forward slashes in double quotes, a form cmd
@@ -113,7 +113,7 @@ pub enum Step {
     EnableCookie,
     InstallHook,
     ShowToolbelt,
-    /// Adds the Claude Code workgroup to Tandem's workgroups (iTerm2's step 4).
+    /// Adds the Claude Code workgroup to Termurion's workgroups (iTerm2's step 4).
     InstallWorkgroup,
     /// Adds Enter/Exit Workgroup triggers to the profiles the person picks (iTerm2's step 5).
     InstallTriggers,
@@ -141,12 +141,12 @@ impl Step {
 
     pub fn description(self) -> &'static str {
         match self {
-            Step::EnablePythonApi => "The Claude Code integration relies on Tandem\u{2019}s Python API to find sessions running Claude and track their status.\n\nThe Python API is currently disabled. Setup can\u{2019}t continue until it is enabled. Click Enable to turn it on.",
-            Step::EnableCookie => "The hook runs in a new process that has to prove it belongs to a Tandem session. Session cookies let it do that.\n\nWith cookies on, every new session gets a secret that lets a program running in it use Tandem\u{2019}s Python API without a prompt. Click Enable and confirm to turn them on. Setup cannot go on without them: Cancel leaves them as they are, and you can close setup.",
-            Step::InstallHook => "Install a Claude Code hook that lets Tandem detect Claude\u{2019}s state (working, waiting, idle) and display it in the Session Status tool.\n\nThis adds a hook to your Claude Code settings that runs automatically as Claude works.",
+            Step::EnablePythonApi => "The Claude Code integration relies on Termurion\u{2019}s Python API to find sessions running Claude and track their status.\n\nThe Python API is currently disabled. Setup can\u{2019}t continue until it is enabled. Click Enable to turn it on.",
+            Step::EnableCookie => "The hook runs in a new process that has to prove it belongs to a Termurion session. Session cookies let it do that.\n\nWith cookies on, every new session gets a secret that lets a program running in it use Termurion\u{2019}s Python API without a prompt. Click Enable and confirm to turn them on. Setup cannot go on without them: Cancel leaves them as they are, and you can close setup.",
+            Step::InstallHook => "Install a Claude Code hook that lets Termurion detect Claude\u{2019}s state (working, waiting, idle) and display it in the Session Status tool.\n\nThis adds a hook to your Claude Code settings that runs automatically as Claude works.",
             Step::ShowToolbelt => "Show the toolbelt and enable the Session Status tool. The toolbelt appears on the right side of your terminal window.\n\nYou can toggle the toolbelt from View > Toolbelt > Show Toolbelt (the menu shows its shortcut).",
             Step::InstallWorkgroup => "Install the Claude Code workgroup, which groups your main Claude session with two peer sessions: a diff viewer and a code-review session. You can switch between them with one click.\n\nYou can customize this layout later in Settings > Arrangements > Workgroups.",
-            Step::InstallTriggers => "Pick the terminal profiles where you run claude. Tandem will add triggers so the Claude Code workgroup is entered automatically when claude starts and exited when it stops.\n\nWithout this, you can still enter the workgroup manually via Shell > Workgroups > Claude Code.",
+            Step::InstallTriggers => "Pick the terminal profiles where you run claude. Termurion will add triggers so the Claude Code workgroup is entered automatically when claude starts and exited when it stops.\n\nWithout this, you can still enter the workgroup manually via Shell > Workgroups > Claude Code.",
         }
     }
 }
@@ -154,13 +154,13 @@ impl Step {
 // ---- impl begin
 /// "Enable Session Cookies?": the step's own question (a closed window is Cancel).
 pub const COOKIE_HEADING: &str = "Enable Session Cookies?";
-pub const COOKIE_TEXT: &str = "New Tandem sessions will get a secret cookie that lets any program running in them use Tandem\u{2019}s Python API without asking you. The Claude Code hook needs it to report status. Cancel leaves cookies as they are.";
+pub const COOKIE_TEXT: &str = "New Termurion sessions will get a secret cookie that lets any program running in them use Termurion\u{2019}s Python API without asking you. The Claude Code hook needs it to report status. Cancel leaves cookies as they are.";
 pub const COOKIE_BUTTONS: [&str; 2] = ["Enable", "Cancel"];
-/// Set while the cookie setting is on because Tandem turned it on (with the person's OK) and
+/// Set while the cookie setting is on because Termurion turned it on (with the person's OK) and
 /// nobody changed it since: any other change of the setting clears it (`Globals::set`).
 pub const COOKIE_BY_KEY: &str = "NoSyncClaudeCodeTurnedOnCookie";
 
-/// The cookie setting and whether Tandem is the one who turned it on.
+/// The cookie setting and whether Termurion is the one who turned it on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CookieState {
     pub on: bool,
@@ -168,12 +168,12 @@ pub struct CookieState {
 }
 
 impl CookieState {
-    /// The person said Enable: on, and Tandem's own only when it was off.
+    /// The person said Enable: on, and Termurion's own only when it was off.
     pub fn enabled(self) -> CookieState {
         if self.on { self } else { CookieState { on: true, by_termurion: true } }
     }
 
-    /// Undo what Tandem did, and only that: a setting the person made is left as it is.
+    /// Undo what Termurion did, and only that: a setting the person made is left as it is.
     pub fn reverted(self) -> CookieState {
         if self.by_termurion { CookieState { on: false, by_termurion: false } } else { self }
     }
@@ -196,7 +196,7 @@ fn lexical(p: &Path) -> Vec<String> {
 }
 
 /// Where Claude Code keeps its settings: `CLAUDE_CONFIG_DIR` (a leading `~` is the profile
-/// folder), else `<profile>\.claude`. Tandem has no login shell to ask, so only its own
+/// folder), else `<profile>\.claude`. Termurion has no login shell to ask, so only its own
 /// environment counts. A relative value or a network folder means nothing safe here and
 /// falls back to the default.
 pub fn config_dir(env_value: Option<&str>, userprofile: &Path) -> PathBuf {
@@ -230,7 +230,7 @@ pub fn command_path(command: &str) -> String {
     }
 }
 
-/// Whether a hook command runs cc-status (iTerm2's ends in "/cc-status"; Tandem's is the exe).
+/// Whether a hook command runs cc-status (iTerm2's ends in "/cc-status"; Termurion's is the exe).
 pub fn is_cc_status(command: &str) -> bool {
     let path = command_path(command).to_lowercase();
     matches!(path.rsplit(['/', '\\']).next(), Some("cc-status.exe" | "cc-status"))
@@ -260,7 +260,7 @@ fn parse_object(text: &str) -> Option<Value> {
     serde_json::from_str::<Value>(text).ok().filter(Value::is_object)
 }
 
-/// An object with its keys in order (the objects Tandem creates; the person's keep theirs).
+/// An object with its keys in order (the objects Termurion creates; the person's keep theirs).
 fn sorted_object(entries: Vec<(String, Value)>) -> Value {
     let mut entries = entries;
     entries.sort_by(|a, b| a.0.cmp(&b.0));
@@ -289,7 +289,7 @@ fn rewrite_entries(groups: &mut [Value], command: &str) -> bool {
     found
 }
 
-/// The settings with Tandem's hook on all ten events (`OB:1581-1726`): an old cc-status entry is
+/// The settings with Termurion's hook on all ten events (`OB:1581-1726`): an old cc-status entry is
 /// rewritten in place, any other hook stays, an event with none gets a group of its own.
 /// Nothing of the person's is removed, and a file that is already right comes back byte for
 /// byte. Text that is not a JSON object is an `Err`: it is refused, never replaced (iTerm2
@@ -351,7 +351,7 @@ impl StripError {
     }
 }
 
-/// Removes Tandem's cc-status entries, then the groups, events and `hooks` that this left
+/// Removes Termurion's cc-status entries, then the groups, events and `hooks` that this left
 /// empty, and nothing else; text with none of ours comes back as it was.
 pub fn strip(text: &str) -> Result<String, StripError> {
     let original = parse_object(text).ok_or(StripError::Malformed)?;
@@ -812,7 +812,7 @@ mod tests {
         assert_eq!(entries(&v, "Stop"), ["notify-me"]);
         assert_eq!(v["hooks"]["Stop"][0]["matcher"], "*");
         assert_eq!(v["hooks"].as_object().unwrap().len(), 2, "only the events with other hooks stay: {v}");
-        // Nothing of Tandem's is left behind but the backup.
+        // Nothing of Termurion's is left behind but the backup.
         let mut names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
         names.sort();
         assert_eq!(names, ["settings.json", "settings.json.termurion-backup"]);
@@ -828,7 +828,7 @@ mod tests {
         assert_eq!(install_to(&path, CMD), Ok(true));
         assert!(sorted(&parse(&std::fs::read_to_string(&path).unwrap())));
         assert!(!path.with_file_name("settings.json.termurion-backup").exists(), "nothing to back up");
-        // Stripping what Tandem alone put there leaves a file with no hooks.
+        // Stripping what Termurion alone put there leaves a file with no hooks.
         assert_eq!(uninstall_from(&path), Ok(()));
         assert_eq!(parse(&std::fs::read_to_string(&path).unwrap()), serde_json::json!({}));
         let _ = std::fs::remove_dir_all(&dir);
@@ -844,7 +844,7 @@ mod tests {
         assert_eq!(v, serde_json::json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "other"}]}]}}));
         // Text with nothing of ours comes back as it was.
         assert_eq!(strip("{ \"a\" :1 }").unwrap(), "{ \"a\" :1 }");
-        // A group, event or hooks object that was already empty is not Tandem's to remove.
+        // A group, event or hooks object that was already empty is not Termurion's to remove.
         let kept = r#"{"hooks": {"Empty": [], "G": [{"hooks": []}]}}"#;
         assert_eq!(strip(kept).unwrap(), kept);
         assert_eq!(strip("{oops"), Err(StripError::Malformed));
@@ -896,7 +896,7 @@ mod tests {
         let titles: Vec<_> = steps(false, true).iter().map(|s| (s.title(), s.button())).collect();
         assert_eq!(titles, [("Enable Python API", "Enable"), ("Install Hook", "Install"), ("Show Toolbelt", "Show"), ("Install Workgroup", "Install"), ("Auto-Enter Workgroup", "Install")]);
         assert!(!Step::EnablePythonApi.description().contains("cookie"), "the API step turns nothing else on");
-        assert_eq!(bullets(Path::new(r"C:\c\settings.json")), "\u{2022} Tandem\u{2019}s Python API is enabled\n\u{2022} A cc-status hook is added to C:\\c\\settings.json\n\u{2022} The toolbelt is shown\n\u{2022} A Claude Code workgroup is added to Tandem\u{2019}s settings\n\u{2022} Enter/Exit Workgroup triggers are added to the profiles you pick");
+        assert_eq!(bullets(Path::new(r"C:\c\settings.json")), "\u{2022} Termurion\u{2019}s Python API is enabled\n\u{2022} A cc-status hook is added to C:\\c\\settings.json\n\u{2022} The toolbelt is shown\n\u{2022} A Claude Code workgroup is added to Termurion\u{2019}s settings\n\u{2022} Enter/Exit Workgroup triggers are added to the profiles you pick");
     }
 
     /// Review Focus 7: iTerm2's steps 4 and 5, the two trigger dictionaries and the matching that
@@ -910,7 +910,7 @@ mod tests {
             "Install the Claude Code workgroup, which groups your main Claude session with two peer sessions: a diff viewer and a code-review session. You can switch between them with one click.\n\nYou can customize this layout later in Settings > Arrangements > Workgroups."
         );
         assert_eq!((Step::InstallTriggers.title(), Step::InstallTriggers.button()), ("Auto-Enter Workgroup", "Install"));
-        assert!(Step::InstallTriggers.description().starts_with("Pick the terminal profiles where you run claude. Tandem will add triggers"));
+        assert!(Step::InstallTriggers.description().starts_with("Pick the terminal profiles where you run claude. Termurion will add triggers"));
         assert!(Step::InstallTriggers.description().ends_with("Shell > Workgroups > Claude Code."));
         assert!(!Step::InstallTriggers.description().contains("iTerm2"));
         let tail = [Step::InstallHook, Step::ShowToolbelt, Step::InstallWorkgroup, Step::InstallTriggers];
@@ -922,7 +922,7 @@ mod tests {
         assert_eq!(pre_completed(true, true), [Step::InstallWorkgroup, Step::InstallTriggers]);
         assert!(pre_completed(false, false).is_empty());
         assert_eq!(TRIGGERS_INSTALLED_KEY, "ClaudeCodeTriggersInstalled");
-        assert!(bullets(Path::new("s.json")).contains("A Claude Code workgroup is added to Tandem\u{2019}s settings\n\u{2022} Enter/Exit Workgroup triggers are added to the profiles you pick"));
+        assert!(bullets(Path::new("s.json")).contains("A Claude Code workgroup is added to Termurion\u{2019}s settings\n\u{2022} Enter/Exit Workgroup triggers are added to the profiles you pick"));
         assert!(remove_failed("x").contains("Continue removing the workgroup and triggers anyway?"));
         assert!(uninstall_text(Path::new("s.json")).contains("the Claude Code workgroup from your settings, and the Enter/Exit Workgroup triggers from every profile."));
 
@@ -986,7 +986,7 @@ mod tests {
         assert!(!watcher_enabled(false, 1.0, false));
         assert!(!watcher_enabled(false, 0.0, true));
         assert_eq!(WATCHER_THRESHOLD, 3);
-        assert_eq!(WATCHER_TEXT, "Want to try Tandem\u{2019}s Claude Code integration?");
+        assert_eq!(WATCHER_TEXT, "Want to try Termurion\u{2019}s Claude Code integration?");
         assert_eq!(WATCHER_BUTTONS, ["_Yes", "Never", "Ask Later"]);
     }
 
@@ -1018,9 +1018,9 @@ mod tests {
     #[test]
     fn texts_follow_iterm2() {
         let p = Path::new(r"C:\c\settings.json");
-        assert_eq!(uninstall_text(p), "This removes the cc-status hook from C:\\c\\settings.json, the Claude Code workgroup from your settings, and the Enter/Exit Workgroup triggers from every profile. You can reinstall any time using Tandem > Install Claude Code Integration.");
+        assert_eq!(uninstall_text(p), "This removes the cc-status hook from C:\\c\\settings.json, the Claude Code workgroup from your settings, and the Enter/Exit Workgroup triggers from every profile. You can reinstall any time using Termurion > Install Claude Code Integration.");
         assert_eq!(remove_failed("Boom."), "Boom. Continue removing the workgroup and triggers anyway? cc-status will keep running until you fix the underlying issue and try again.");
-        assert!(broken_text(p).starts_with("Tandem\u{2019}s cc-status hook is no longer in C:\\c\\settings.json. This usually means"));
+        assert!(broken_text(p).starts_with("Termurion\u{2019}s cc-status hook is no longer in C:\\c\\settings.json. This usually means"));
         assert_eq!(REMOVE_FAILED_HEADING, "Couldn\u{2019}t Remove Hooks");
         assert_eq!(HELP_URL, "https://iterm2.com/claude-code-integration.html");
         assert_eq!(EXE, "cc-status.exe");
@@ -1042,7 +1042,7 @@ mod tests {
         assert!(COOKIE_TEXT.contains("without asking") || COOKIE_TEXT.contains("any program"));
     }
 
-    /// Fix round 1: Tandem turns the cookie on only on the person's OK, remembers that it did,
+    /// Fix round 1: Termurion turns the cookie on only on the person's OK, remembers that it did,
     /// and turns it back off only if it did.
     #[test]
     fn the_cookie_is_turned_off_only_if_termurion_turned_it_on() {
@@ -1061,7 +1061,7 @@ mod tests {
     }
 
     /// Task 8 fix round 2: the marker holds only while nobody else changed the setting since
-    /// Tandem set it. Switching it off and on again elsewhere makes it the person's own.
+    /// Termurion set it. Switching it off and on again elsewhere makes it the person's own.
     #[test]
     fn a_cookie_changed_elsewhere_is_the_persons_own() {
         let mut g = crate::globals::Globals::empty(std::path::Path::new("cookie-test.toml"));
@@ -1072,7 +1072,7 @@ mod tests {
         assert!(g.bool(COOKIE_BY_KEY), "writing the same value changes nothing");
         g.set(key, toml::Value::Boolean(false));
         g.set(key, toml::Value::Boolean(true));
-        assert!(!g.bool(COOKIE_BY_KEY), "off and on again by someone else: no longer Tandem's");
+        assert!(!g.bool(COOKIE_BY_KEY), "off and on again by someone else: no longer Termurion's");
         let state = CookieState { on: g.bool(key), by_termurion: g.bool(COOKIE_BY_KEY) };
         assert_eq!(state.reverted(), state, "Uninstall leaves the person's setting on");
         assert!(!Step::EnableCookie.description().contains("the hook cannot report"), "Cancel does not let setup go on");

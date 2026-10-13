@@ -1,9 +1,9 @@
 //! The page-script host's pure model (milestone 13x2, Task 1): templates and includes, the bridge
 //! rewrite that lets iTerm2's copied scripts post through `window.webkit.messageHandlers`, the
 //! wrapping of a user script, the routing of a posted message, async calls into the isolated world,
-//! the gate every page-derived URL passes before Tandem opens it, and coordinate math. Web content
+//! the gate every page-derived URL passes before Termurion opens it, and coordinate math. Web content
 //! is untrusted: the world of a message comes from the transport that carried it (the DevTools
-//! binding of Tandem's isolated world, or WebMessageReceived), never from its JSON, and nothing
+//! binding of Termurion's isolated world, or WebMessageReceived), never from its JSON, and nothing
 //! here holds or sends a secret in an envelope.
 
 use serde_json::Value;
@@ -188,7 +188,7 @@ pub fn new_secret() -> String {
 
 // --- Scripts ---
 
-/// iTerm2's two content worlds: `.page` and `.defaultClient` (Tandem's isolated world).
+/// iTerm2's two content worlds: `.page` and `.defaultClient` (Termurion's isolated world).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum World {
     Page,
@@ -296,7 +296,7 @@ pub fn wrap(script: &UserScript) -> String {
     let mut s = String::from("(function () {\n");
     s.push_str(capture(script.world));
     s.push('\n');
-    // No Tandem script runs in a file or ssh page: its content is the file's, not the web's, and
+    // No Termurion script runs in a file or ssh page: its content is the file's, not the web's, and
     // gets none of the bridge, the buttons or the world (13x8).
     s.push_str("if (location.protocol === 'iterm2-file:' || location.protocol === 'iterm2-ssh:') return;\n");
     if script.main_frame_only {
@@ -340,7 +340,7 @@ pub struct Routed {
     pub world: World,
     /// None is the main frame.
     pub frame: Option<u64>,
-    /// The posting document's URL (a Page message) or the origin of its Tandem context (a Client one).
+    /// The posting document's URL (a Page message) or the origin of its Termurion context (a Client one).
     pub source: String,
     pub body: Value,
 }
@@ -374,18 +374,18 @@ pub fn local_page_ok(r: &Routed) -> bool {
 pub const CONSOLE_HANDLER: &str = "iTerm2ConsoleLog";
 pub const EDITING_HANDLER: &str = "iTerm2EditingDetector";
 pub const SELECTION_HANDLER: &str = "iTermSelectionMonitor";
-/// Tandem's own: the person used the pointer or keyboard (`selection-gesture.js`).
+/// Termurion's own: the person used the pointer or keyboard (`selection-gesture.js`).
 pub const SELECTION_GESTURE_HANDLER: &str = "TermurionSelectionGesture";
-/// The longest selection Tandem stores or copies (B10).
+/// The longest selection Termurion stores or copies (B10).
 pub const MAX_SELECTION: usize = 1024 * 1024;
 
 fn script(id: &'static str, code: String, world: World) -> UserScript {
     UserScript { id, code, inject: Inject::DocumentStart, main_frame_only: false, world }
 }
 
-/// The scripts every browser view carries, in iTerm2's order (`BM:215-372`): Tandem's cloak first of
+/// The scripts every browser view carries, in iTerm2's order (`BM:215-372`): Termurion's cloak first of
 /// the page world, the console wrapper in both worlds, then the isolated world's graph discovery,
-/// selection monitor (with Tandem's gesture script) and editing detector, then the local pages'
+/// selection monitor (with Termurion's gesture script) and editing detector, then the local pages'
 /// bridge. `secret` is the view's, `dom_secret` the editing detector's separate one (B9). With
 /// `client_ok` false (no isolated world) no Client script is offered: never moved to the page world.
 pub fn always_on_scripts(secret: &str, dom_secret: &str, client_ok: bool, debug: bool) -> Vec<UserScript> {
@@ -717,7 +717,7 @@ fn percent_decode(s: &str) -> String {
 /// path, and any bare target `scripts::is_network_path` accepts. Nothing is probed.
 pub fn gate_refusal(target: &str) -> Option<String> {
     let t = target.trim_start();
-    let refuse = || Some(format!("Tandem does not open network file links: {t}"));
+    let refuse = || Some(format!("Termurion does not open network file links: {t}"));
     if scheme_of(t) == "file" {
         let rest = &t["file:".len()..];
         let path = match rest.strip_prefix("//") {
@@ -750,7 +750,7 @@ fn plain_navigation(t: &str) -> bool {
     matches!(scheme_of(t).as_str(), "http" | "https" | "iterm2-about") || t.eq_ignore_ascii_case("about:blank")
 }
 
-/// What Tandem does with a URL a page, page text or an arrangement supplied (I1). `http`, `https`,
+/// What Termurion does with a URL a page, page text or an arrangement supplied (I1). `http`, `https`,
 /// `iterm2-about:` and `about:blank` navigate; script-bearing schemes and network targets are refused;
 /// everything else, EVERY `file:` target included, goes through `semantic::guard_open` (a local file
 /// opens in its default app or is revealed, never loaded into the pane: the 13x verdict is the one
@@ -758,14 +758,14 @@ fn plain_navigation(t: &str) -> bool {
 pub fn nav_gate(url: &str) -> NavGate {
     let t = url.trim_start_matches(|c: char| c <= ' ');
     if let Some(s) = dangerous_scheme(t) {
-        return NavGate::Blocked(format!("Tandem does not open {s}: links."));
+        return NavGate::Blocked(format!("Termurion does not open {s}: links."));
     }
     if let Some(why) = gate_refusal(t) {
         return NavGate::Blocked(why);
     }
     // A page, page text or an arrangement never opens the settings or an onboarding step (Task 5).
     if crate::webhost::power_page(t) {
-        return NavGate::Blocked("Tandem does not open that page from a link.".into());
+        return NavGate::Blocked("Termurion does not open that page from a link.".into());
     }
     if plain_navigation(t) {
         return NavGate::Navigate(t.to_string());
@@ -778,7 +778,7 @@ pub fn nav_gate(url: &str) -> NavGate {
 pub fn nav_gate_tab(url: &str) -> NavGate {
     let t = url.trim_start_matches(|c: char| c <= ' ');
     if scheme_of(t) == "file" || t.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("file:")) {
-        return NavGate::Blocked("Tandem does not open file: links from a page.".into());
+        return NavGate::Blocked("Termurion does not open file: links from a page.".into());
     }
     nav_gate(url)
 }
@@ -1047,7 +1047,7 @@ mod tests {
             assert_eq!(nav_gate(f), NavGate::Open(guard_open(f, false)), "{f}");
             assert!(matches!(nav_gate(f), NavGate::Open(Run::OpenLocal { .. })), "{f}");
         }
-        let text = |u: &str| format!("Tandem does not open network file links: {u}");
+        let text = |u: &str| format!("Termurion does not open network file links: {u}");
         for net in ["file://evil/s/x", "file:////evil/s/x", "file://///evil/s/x", "\\\\evil\\s\\x", "//evil/s/x", "file:///%5C%5Cevil%5Cs%5Cx", "\\\\?\\UNC\\h\\s", "file:\\\\evil\\s"] {
             assert_eq!(nav_gate(net), NavGate::Blocked(text(net)), "{net}");
         }
@@ -1164,10 +1164,10 @@ mod tests {
         // The cloak removes only the page-world channel, only in a challenge frame.
         let cloak = code("termurion-cloak");
         assert!(cloak.contains("delete window.chrome.webview") && cloak.contains("hcaptcha") && !cloak.contains("webkit"));
-        // Every listener of a Tandem script checks isTrusted first (P26).
+        // Every listener of a Termurion script checks isTrusted first (P26).
         for name in ["selection-gesture.js", "termurion-cloak.js", "pointer-gate.js", "broadcast-input.js"] {
             let text = resource(name).unwrap();
-            assert!(text.contains("Tandem's own script"), "{name} says it is Tandem's");
+            assert!(text.contains("Termurion's own script"), "{name} says it is Termurion's");
             let mut at = 0;
             while let Some(i) = text[at..].find("addEventListener(") {
                 let tail = &text[at + i..];

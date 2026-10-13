@@ -288,7 +288,7 @@ fn sheet(ctx: &egui::Context, sh: &mut Sheet, keys: &mut KeysState, others: &[(S
         ui.label(egui::RichText::new(if sh.guid.is_some() {
             "When you press the hotkey bound to this profile a dedicated window will show or hide. Each profile with a hotkey controls its own Hotkey Window."
         } else {
-            "This panel helps you configure a new profile that will be bound to a keystroke you assign. Pressing the hotkey (even when Tandem is not active) will toggle a special window."
+            "This panel helps you configure a new profile that will be bound to a keystroke you assign. Pressing the hotkey (even when Termurion is not active) will toggle a special window."
         }).small());
         ui.add_space(6.0);
         ui.horizontal(|ui| {
@@ -682,7 +682,7 @@ mod tests {
         assert_eq!(crate::warnings::checkbox_label(&one), None);
         let two = create_warning_spec(&["A".to_string(), "B".into()]);
         assert_eq!((two.labels.clone(), two.cancel), (vec!["OK".to_string(), "Cancel".into()], Some(1)));
-        // A stored flag (Tandem's old "Do not ask again") no longer skips it.
+        // A stored flag (Termurion's old "Do not ask again") no longer skips it.
         let mut g = Globals::empty(std::path::Path::new("hotkey-warning-test.toml"));
         g.set("NoSyncSuppressAddAnotherHotkeyProfileWarning", Value::Boolean(true));
         let w = crate::settings_keys::SheetWarning::new(one, crate::settings_keys::SheetThen::CreateHotkey(vec![("G".into(), "Quake".into())]));

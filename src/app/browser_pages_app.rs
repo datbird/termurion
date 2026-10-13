@@ -26,7 +26,7 @@ impl App {
         bv.nav_root = browser_pages::page_root(url);
         bv.nav_url = bv.nav_root.is_some().then(|| url.to_string());
         bv.nav_id = nav;
-        // A new navigation that is not Tandem's error page ends the pending one (Task 2 review M1).
+        // A new navigation that is not Termurion's error page ends the pending one (Task 2 review M1).
         if !url.eq_ignore_ascii_case(browser_pages::ERROR_URL) {
             bv.pending_error = None;
         }
@@ -48,7 +48,7 @@ impl App {
 
     /// The tree the navigation guard lets a listing's links go to: the root the person opened the file
     /// page at. A page committed inside the old root keeps it; any other file page (one the person or
-    /// Tandem opened, since a click out of the root was refused) starts a new one; leaving file pages
+    /// Termurion opened, since a click out of the root was refused) starts a new one; leaving file pages
     /// ends it (13x8 Task 9 review I1).
     pub(super) fn browser_local_root_sync(&mut self, pane: PaneId) {
         let Some(bv) = self.browser_views.get(&pane) else { return };
@@ -89,8 +89,8 @@ impl App {
     /// failed last. A cancelled load shows nothing (`BM:1342-1345`), nor does a `file:` failure (Task 3's
     /// page), an `iterm2-file:` one (`BM:1382`; an `iterm2-ssh:` failure does get the page) or a failure of a
     /// local page. The page's text comes from `pending_error`, set here from the failure and the URL
-    /// the NavigationStarting named; the load is Tandem's own (`navigate_termurion`), so it passes the one
-    /// verdict as Tandem's load and its document request is the pane's.
+    /// the NavigationStarting named; the load is Termurion's own (`navigate_termurion`), so it passes the one
+    /// verdict as Termurion's load and its document request is the pane's.
     pub(super) fn browser_load_failed(&mut self, pane: PaneId, url: &str, status: i32, http: i32) {
         let failure = browser_pages::failure_of(status);
         let scheme = crate::webhost::scheme_of(url);
@@ -98,7 +98,7 @@ impl App {
             return;
         }
         let Some(bv) = self.browser_views.get_mut(&pane) else { return };
-        // The main document the ad blocker refused (a synthetic 403): Tandem's page says so, not
+        // The main document the ad blocker refused (a synthetic 403): Termurion's page says so, not
         // Chromium's "HTTP ERROR 403" (merge review 2).
         let unfragmented = |u: &str| u.split('#').next().unwrap_or("").to_string();
         let blocked = bv.blocked_url.take().is_some_and(|b| unfragmented(&b) == unfragmented(url));
@@ -206,7 +206,7 @@ impl App {
                 if let Some(guid) = guid.filter(|g| self.store.get(g).is_some()) {
                     self.remarry(pane, &guid);
                 }
-                // The page no longer navigates on its own: Tandem loads the setup step once the switch is handled.
+                // The page no longer navigates on its own: Termurion loads the setup step once the switch is handled.
                 self.browser_navigate(pane, ob::SETUP_URL);
             }
             ob::Action::GetSettingsStatus => {
@@ -398,7 +398,7 @@ impl App {
     }
 
     /// Every browser pane showing the settings page is told how an update it asked for ended
-    /// (`BM:1843-1848`). The text is Tandem's own or a bounded reason, never the server's.
+    /// (`BM:1843-1848`). The text is Termurion's own or a bounded reason, never the server's.
     pub(super) fn browser_settings_adblock_result(&mut self, result: Result<(), String>) {
         use crate::browser_settings_page as sp;
         let text = match result {
@@ -538,7 +538,7 @@ impl App {
     }
 
     /// A `file:` navigation the host cancelled (`Event::FileRedirect`, after the one verdict): the same
-    /// path as an `iterm2-file:` page, loaded as Tandem's own navigation so the one verdict lets it
+    /// path as an `iterm2-file:` page, loaded as Termurion's own navigation so the one verdict lets it
     /// through; a path the one decoder refuses shows "Invalid file path" (`LPM:190-195`).
     pub(super) fn browser_file_redirect(&mut self, pane: PaneId, uri: &str) {
         let target = crate::webhost::iterm2_file_url(uri).filter(|u| browser_pages::file_path_of(u).is_ok());
@@ -679,7 +679,7 @@ mod tests {
             assert!(body.contains("eq_ignore_ascii_case(browser_pages::ERROR_URL)") && body.contains("bv.pending_error = None;"), "{f}");
         }
         assert!(!p.contains("std::fs") && !p.contains("localfs"), "this file reads no file; the serving arms live on a worker (file_serve)");
-        // The file arm is answered from the tick, and the redirect loads Tandem's own page.
+        // The file arm is answered from the tick, and the redirect loads Termurion's own page.
         let web = include_str!("webhost_app.rs");
         let tick = &web[web.find("pub(super) fn web_tick").unwrap()..web.find("fn web_focus_recheck").unwrap()];
         assert!(tick.contains("self.files_tick();"));
@@ -701,7 +701,7 @@ mod tests {
         assert!(!a.contains("url.split") && !a.contains("query"), "nothing is read from the URL");
         let f = &p[p.find("pub(super) fn browser_load_failed").unwrap()..p.find("pub(super) fn browser_load_succeeded").unwrap()];
         assert!(f.contains("browser_pages::server_answered(http)") && f.contains("failure == browser_pages::Failure::Cancelled") && f.contains("\"file\" | browser_pages::FILE_SCHEME | browser_pages::ABOUT"), "iterm2-ssh is not excluded");
-        assert!(f.contains("!blocked && browser_pages::server_answered(http)") && f.contains("bv.last_failed = None;") && f.contains("bv.blocked_url.take()"), "a server answer ends the earlier failure; a blocked document shows Tandem's page");
+        assert!(f.contains("!blocked && browser_pages::server_answered(http)") && f.contains("bv.last_failed = None;") && f.contains("bv.blocked_url.take()"), "a server answer ends the earlier failure; a blocked document shows Termurion's page");
         assert!(!f.contains("SSH_SCHEME"));
         assert!(f.contains("should_show_error(Some(url), bv.last_failed.as_deref())") && f.contains("error_burst.allow(") && f.contains("navigate_termurion(browser_pages::ERROR_URL)"));
         let app = include_str!("browser_app.rs");

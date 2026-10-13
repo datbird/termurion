@@ -3,12 +3,12 @@
 [[tip]]
 key = "000"
 title = "Tip of the Day"
-body = "This window shows the Tandem tip of the day. It\u2019ll appear every 24 hours to let you know about new features and hidden secrets. Hit \u201CMore Options\u201D to view more tips or to stop getting them altogether."
+body = "This window shows the Termurion tip of the day. It\u2019ll appear every 24 hours to let you know about new features and hidden secrets. Hit \u201CMore Options\u201D to view more tips or to stop getting them altogether."
 
 [[tip]]
 key = "0000"
 title = "Shell Integration"
-body = "A big feature of Tandem is Shell Integration. Click \u201CLearn More\u201D for all the details."
+body = "A big feature of Termurion is Shell Integration. Click \u201CLearn More\u201D for all the details."
 url = "https://iterm2.com/shell_integration.html"
 
 [[tip]]
@@ -19,7 +19,7 @@ body = "\u201CView > Show Timestamps\u201D shows the time (and date, if appropri
 [[tip]]
 key = "0002"
 title = "Password Manager"
-body = "Did you know Tandem has a password manager? Open it with \u201CWindow > Password Manager.\u201D You can define a Trigger to open it for you at a password prompt in \u201CSettings > Profiles > Advanced > Triggers.\u201D"
+body = "Did you know Termurion has a password manager? Open it with \u201CWindow > Password Manager.\u201D You can define a Trigger to open it for you at a password prompt in \u201CSettings > Profiles > Advanced > Triggers.\u201D"
 
 [[tip]]
 key = "0003"
@@ -45,7 +45,7 @@ body = "Copy a selection with Alt+Win+C to include styles such as colors and fon
 [[tip]]
 key = "0007"
 title = "Inline Images"
-body = "Tandem can display images (even animated GIFs) inline."
+body = "Termurion can display images (even animated GIFs) inline."
 url = "https://iterm2.com/images.html"
 
 [[tip]]
@@ -57,7 +57,7 @@ url = "https://iterm2.com/shell_integration.html"
 [[tip]]
 key = "0009"
 title = "Captured Output"
-body = "Tandem can act like an IDE using the Captured Output feature. When it sees text matching a regular expression you define, like compiler errors, it shows the matching lines in the Toolbelt. You can click to jump to the line in your terminal and double-click to perform an action like opening an editor to the line with the error."
+body = "Termurion can act like an IDE using the Captured Output feature. When it sees text matching a regular expression you define, like compiler errors, it shows the matching lines in the Toolbelt. You can click to jump to the line in your terminal and double-click to perform an action like opening an editor to the line with the error."
 url = "https://iterm2.com/captured_output.html"
 
 [[tip]]
@@ -90,13 +90,13 @@ body = "The \u201CSemantic History\u201D feature allows you to Win+click on a fi
 [[tip]]
 key = "0015"
 title = "Tmux Integration"
-body = "If you use tmux, try running \u201Ctmux -CC\u201D to get Tandem\u2019s tmux integration mode. The tmux windows show up as native Tandem windows, and you can use Tandem\u2019s keyboard shortcuts. It even works over ssh!"
+body = "If you use tmux, try running \u201Ctmux -CC\u201D to get Termurion\u2019s tmux integration mode. The tmux windows show up as native Termurion windows, and you can use Termurion\u2019s keyboard shortcuts. It even works over ssh!"
 url = "https://gitlab.com/gnachman/iterm2/wikis/TmuxIntegration"
 
 [[tip]]
 key = "0016"
 title = "Triggers"
-body = "Tandem can automatically perform actions you define when text matching a regular expression is received. For example, you can highlight text or show an alert box. Set it up in \u201CSettings > Profiles > Advanced > Triggers.\u201D"
+body = "Termurion can automatically perform actions you define when text matching a regular expression is received. For example, you can highlight text or show an alert box. Set it up in \u201CSettings > Profiles > Advanced > Triggers.\u201D"
 url = "https://www.iterm2.com/documentation-triggers.html"
 
 [[tip]]
@@ -205,7 +205,7 @@ body = "If you put a slash in a profile\u2019s tag, that implicitly defines a hi
 [[tip]]
 key = "0036"
 title = "Downloads"
-body = "Tandem can download files by base-64 encoding them. Click \u201CLearn More\u201D to download a shell script that makes it easy."
+body = "Termurion can download files by base-64 encoding them. Click \u201CLearn More\u201D to download a shell script that makes it easy."
 url = "https://iterm2.com/download.sh"
 
 [[tip]]
@@ -217,7 +217,7 @@ url = "https://iterm2.com/shell_integration.html"
 [[tip]]
 key = "0038"
 title = "Recent Directories"
-body = "Tandem remembers which directories you use the most on each host that has Shell Integration installed. There\u2019s a Toolbelt tool to browse them, and Alt+Win+/ gives you a popup sorted by frequency and recency of use."
+body = "Termurion remembers which directories you use the most on each host that has Shell Integration installed. There\u2019s a Toolbelt tool to browse them, and Alt+Win+/ gives you a popup sorted by frequency and recency of use."
 url = "https://iterm2.com/shell_integration.html"
 
 [[tip]]
@@ -229,7 +229,7 @@ url = "https://iterm2.com/shell_integration.html"
 [[tip]]
 key = "0040"
 title = "Shell Integration History"
-body = "Install Shell Integration and turn on \u201CSettings > General > Save copy/paste and command history to disk\u201D to remember command history per host across restarts of Tandem."
+body = "Install Shell Integration and turn on \u201CSettings > General > Save copy/paste and command history to disk\u201D to remember command history per host across restarts of Termurion."
 url = "https://iterm2.com/shell_integration.html"
 
 [[tip]]
@@ -331,7 +331,7 @@ body = "If you paste text containing tabs, you\u2019ll be asked if you want to c
 [[tip]]
 key = "0061"
 title = "Bell Silencing"
-body = "Did you know? If the bell rings too often, you\u2019ll be asked if you\u2019d like to silence it temporarily. Tandem cares about your comfort."
+body = "Did you know? If the bell rings too often, you\u2019ll be asked if you\u2019d like to silence it temporarily. Termurion cares about your comfort."
 
 [[tip]]
 key = "0062"
@@ -353,7 +353,7 @@ body = "You can have a separate font for ASCII versus non-ASCII text. Enable it 
 [[tip]]
 key = "0065"
 title = "Coprocesses"
-body = "A coprocess is a job, such as a shell script, that has a special relationship with a particular Tandem session. All output in a terminal window (that is, what you see on the screen) is also input to the coprocess. All output from the coprocess acts like text that the user is typing at the keyboard."
+body = "A coprocess is a job, such as a shell script, that has a special relationship with a particular Termurion session. All output in a terminal window (that is, what you see on the screen) is also input to the coprocess. All output from the coprocess acts like text that the user is typing at the keyboard."
 url = "https://iterm2.com/coprocesses.html"
 
 [[tip]]
@@ -379,7 +379,7 @@ body = "You can \u201Cbury\u201D a session with \u201CSession > Bury Session.\u2
 [[tip]]
 key = "0072"
 title = "Python API"
-body = "You can add custom behavior to Tandem using the Python API."
+body = "You can add custom behavior to Termurion using the Python API."
 url = "https://iterm2.com/python-api"
 
 [[tip]]
@@ -477,7 +477,7 @@ body = "Execute a series of actions in order with a single shortcut using \u201C
 [[tip]]
 key = "0092"
 title = "Export/Import Settings"
-body = "Easily backup or transfer your Tandem settings using the Export/Import feature in \u201CSettings > General > Settings\u201D."
+body = "Easily backup or transfer your Termurion settings using the Export/Import feature in \u201CSettings > General > Settings\u201D."
 
 [[tip]]
 key = "0093"
@@ -597,7 +597,7 @@ body = "Reposition the Tip of the Day window conveniently on your screen, as it 
 [[tip]]
 key = "0117"
 title = "AI Chat"
-body = "Tandem now has an AI Chat feature! Use \u201CWindow > AI Chats\u201D or \u201CEdit > Explain Output with AI\u201D. The assistant can interact with your terminal (with your permission) and explain command output, adding annotations right in the terminal."
+body = "Termurion now has an AI Chat feature! Use \u201CWindow > AI Chats\u201D or \u201CEdit > Explain Output with AI\u201D. The assistant can interact with your terminal (with your permission) and explain command output, adding annotations right in the terminal."
 
 [[tip]]
 key = "0118"
