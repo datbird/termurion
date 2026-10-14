@@ -3599,7 +3599,7 @@ dependencies = [
 
 [[package]]
 name = "termurion"
-version = "0.0.1-beta1"
+version = "0.0.1-beta2"
 dependencies = [
  "alacritty_terminal",
  "arboard",
