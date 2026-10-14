@@ -19,6 +19,7 @@ the same settings, the same menus, the same mouse, the same tmux integration, th
 [Screenshots](#screenshots) ·
 [How it compares](#how-it-compares) ·
 [Architecture](#architecture) ·
+[Download](#download) ·
 [Building](#building) ·
 [Credits](#credits-and-licenses)
 
@@ -189,6 +190,15 @@ flowchart LR
   from beside the exe, never from the inbox console host by accident.
 - **Safety.** Every program links the C runtime statically and loads its imports from System32
   only. Downloads, imports, and escape sequences that can act go through trust gates first.
+
+## Download
+
+Get the newest beta from [Releases](https://github.com/datbird/termurion/releases):
+
+- `Termurion-<version>-setup.exe` installs for your user (no admin) and adds Start menu entries.
+- `Termurion-<version>-windows-x64.zip` runs from any folder.
+
+Windows 10 or 11, x64. Report bugs in [Issues](https://github.com/datbird/termurion/issues).
 
 ## Building
 
