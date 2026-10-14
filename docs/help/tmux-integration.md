@@ -144,6 +144,7 @@ All of these are in Settings (Ctrl+Shift+,), mostly under Advanced and General >
 
 - Native Windows: psmux 3.3.8 (from winget).
 - WSL: tmux 3.4.
+- tmux over ssh: not in the live suite yet. It uses the same code as WSL tmux, and the remote tmux version decides what is on.
 
 Termurion's live suite starts a real server of each kind, attaches through the same code the app uses, and checks the features above. It uses its own server names and never touches your default servers. The results are in `docs/probe/2026-10-14-psmux-wsl-tmux-results.md`.
 
