@@ -2,7 +2,7 @@
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Setup: install Python 3 and run `py -m pip install iterm2` in a plain venv (pin `websockets<14`
 if `extra_headers` raises a TypeError, as in the m11a and m11b checklists). Turn on Settings >

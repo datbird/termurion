@@ -1,10 +1,10 @@
 # Copies the current release build to a stable folder and points a Desktop and a Start Menu
 # shortcut at it, so the person can run the latest Termurion without holding a
 # lock on target\release (a running termurion.exe there would break the next build).
-# Run on EXTREME after `scripts/xt build --release` from the main checkout.
+# Run on the Windows test machine after `scripts/xt build --release` from the main checkout.
 # It also removes the old Tandem install, once (see Remove-OldTandem).
 $ErrorActionPreference = 'Stop'
-$src = 'C:\Users\datbi\src\termurion\target\release'
+$src = Join-Path $env:USERPROFILE 'src\termurion\target\release'
 $dest = Join-Path $env:LOCALAPPDATA 'Programs\Termurion'
 $files = 'termurion.exe', 'termurion-host.exe', 'termurion-git.exe', 'termurion-utils.exe', 'cc-status.exe', 'conpty.dll', 'OpenConsole.exe'
 

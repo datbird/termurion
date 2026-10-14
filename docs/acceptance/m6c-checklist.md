@@ -1,6 +1,6 @@
 # Milestone 6c acceptance checklist
 
-Close any open Termurion window, then run `C:\Users\datbi\src\termurion\target\release\tandem.exe`.
+Close any open Termurion window, then run `%USERPROFILE%\src\termurion\target\release\tandem.exe`.
 Cmd is the Win key and Option is Alt. The shell is the profile's default (PowerShell or cmd) unless a
 line says WSL. Mark each line pass or fail.
 

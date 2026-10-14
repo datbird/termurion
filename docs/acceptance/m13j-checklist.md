@@ -2,7 +2,7 @@
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Nothing in this milestone was checked on screen while it was built, so every line here is a first
 look. The pure parts (DECSET 1007, the alternate-screen decision, the inferrer, the accumulators,

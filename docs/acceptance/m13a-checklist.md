@@ -2,15 +2,15 @@
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Setup: start from fresh settings (rename `%APPDATA%\Tandem` aside first, and put it back after the
 erase checks). Have an iTerm2 settings plist at hand whose globals hold `Control` = 1 and a legacy
 single hotkey window (`Hotkey` and `HotKeyTogglesWindow` true, `HotKeyBookmark` naming one of its
 profiles' Guid). For the URL checks, Save Now to a folder first, commit that
 `termurion-settings.toml` to a GitHub repository and use its raw URL
-(`https://raw.githubusercontent.com/...`): a `python -m http.server` on sirtoolio is not reachable
-from EXTREME. Install DebugView (Sysinternals) for the dry run. "Explorer" below is the file window
+(`https://raw.githubusercontent.com/...`): a `python -m http.server` on the Linux dev machine is not reachable
+from the Windows test machine. Install DebugView (Sysinternals) for the dry run. "Explorer" below is the file window
 Termurion opens with the item selected. Mark each line pass or fail.
 
 ## The Advanced pane

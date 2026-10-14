@@ -2,7 +2,7 @@
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Setup: a git repository with at least two commits and an uncommitted change. Claude Code installed
 for the Claude steps; otherwise use a stand-in command (a batch file named `claude.cmd` on PATH that

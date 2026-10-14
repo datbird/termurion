@@ -3,7 +3,7 @@
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, `OpenConsole.exe`,
 `iterm2-bitwarden-adapter.exe`, `iterm2-keepassxc-adapter.exe` and `iterm2-keeper-adapter.exe`
-from `C:\Users\datbi\src\termurion\target\release\` together (the adapters must sit beside
+from `%USERPROFILE%\src\termurion\target\release\` together (the adapters must sit beside
 `tandem.exe`), then run `tandem.exe`.
 
 Setup: a window with a vertical split; a second PC or a shared folder for the data sync rows; a
@@ -49,7 +49,7 @@ string as one filter):
 
 ```powershell
 $f = @('webhost_win::probe::')
-& C:\Users\datbi\src\<checkout>\scripts\probe-desktop.ps1 -Repo C:\Users\datbi\src\<checkout> -Filters $f
+& %USERPROFILE%\src\<checkout>\scripts\probe-desktop.ps1 -Repo %USERPROFILE%\src\<checkout> -Filters $f
 ```
 
 The script runs only on Robert's yes. A line that ends `SKIPPED` (session 0) is not a pass.

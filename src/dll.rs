@@ -79,7 +79,7 @@ mod tests {
         let host = code(include_str!("webhost_win.rs"));
         let host = host.split("#[cfg(test)]\nmod tests").next().unwrap_or("");
         assert!(host.contains("CreateCoreWebView2EnvironmentWithOptions") && host.contains("GetAvailableCoreWebView2BrowserVersionString"));
-        for (name, text) in [("webhost_win.rs", host.to_string()), ("build.rs", code(include_str!("../build.rs"))), ("install-extreme.ps1", code(include_str!("../scripts/install-extreme.ps1")))] {
+        for (name, text) in [("webhost_win.rs", host.to_string()), ("build.rs", code(include_str!("../build.rs"))), ("install-windows.ps1", code(include_str!("../scripts/install-windows.ps1")))] {
             assert!(!text.contains("WebView2Loader.dll"), "{name} names the loader DLL");
         }
         assert!(!Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts").join("fetch-webview2-loader.ps1").exists());

@@ -2,7 +2,7 @@
 
 Build a release binary (`scripts/xt build --release`), close any open Termurion window, copy `tandem.exe`,
 `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`. Nothing of 13r was checked on screen during
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`. Nothing of 13r was checked on screen during
 the build. Mark each line pass or fail. Where a row says refused, the banner names the refusal and nothing starts.
 
 | # | Check | Result |

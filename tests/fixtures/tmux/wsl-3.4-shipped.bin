@@ -3,7 +3,7 @@
 %window-add @1
 %sessions-changed
 %session-changed $1 1
-%output %1 \033[?2004h\033[01;32mtbird@EXTREME\033[00m:\033[01;34m/mnt/c/Users/datbi/src/tandem\033[00m$ 
+%output %1 \033[?2004h\033[01;32muser1@WINHOST\033[00m:\033[01;34m/mnt/c/Users/user2/src/tandem\033[00m$ 
 %begin 1790341903 279 1
 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 %end 1790341903 279 1

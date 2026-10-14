@@ -1,6 +1,6 @@
 # Milestone 4c acceptance checklist
 
-Close any open Termurion window, then run `C:\Users\datbi\src\termurion\target\release\tandem.exe`.
+Close any open Termurion window, then run `%USERPROFILE%\src\termurion\target\release\tandem.exe`.
 Cmd is the Win key and Option is Alt. Mark each line pass or fail.
 
 | # | Check | Result |

@@ -2,7 +2,7 @@
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe` on a machine with the
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe` on a machine with the
 WebView2 Runtime installed (one run; a camera or microphone if available, otherwise mark the
 media rows not applicable). Mark each line pass or fail.
 
@@ -46,16 +46,16 @@ tests, 33 inherited and 15 new, plus `webhost_win::tests::menu_gets_our_items`):
 - [ ] `a_page_cannot_unmute_itself`
 - [ ] `service_worker_notifications_are_refused` (ruling R13x6-SW: a granted origin's service worker never installs, so no persistent notification reaches WebView2's own toast)
 
-Full run (from an ssh session on EXTREME, with Robert's yes and no implementer building in the
+Full run (from an ssh session on the Windows test machine, with Robert's yes and no implementer building in the
 checkout; a PowerShell console window shows for the whole run; `probe: process session N` must
 show N not 0, session 0 prints SKIPPED, which is not a pass):
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\datbi\src\<checkout>\scripts\probe-desktop.ps1 -Repo C:\Users\datbi\src\<checkout>
+powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\src\<checkout>\scripts\probe-desktop.ps1 -Repo %USERPROFILE%\src\<checkout>
 ```
 
 Only the 13x6 tests: `-Filters` is a `string[]`, and `-File` passes a comma string as ONE
-filter, so use a wrapper `C:\Users\datbi\src\run-13x6-probe.ps1` and run it the same way:
+filter, so use a wrapper `%USERPROFILE%\src\run-13x6-probe.ps1` and run it the same way:
 
 ```
 $f = @(
@@ -75,7 +75,7 @@ $f = @(
  'webhost_win::probe::a_page_cannot_unmute_itself',
  'webhost_win::probe::service_worker_notifications_are_refused'
 )
-& C:\Users\datbi\src\<checkout>\scripts\probe-desktop.ps1 -Repo C:\Users\datbi\src\<checkout> -Filters $f
+& %USERPROFILE%\src\<checkout>\scripts\probe-desktop.ps1 -Repo %USERPROFILE%\src\<checkout> -Filters $f
 ```
 
 ## B. The permission prompt

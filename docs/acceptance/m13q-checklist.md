@@ -3,7 +3,7 @@
 Nothing of 13q was run on screen during the build. Build a release binary (`scripts/xt build --release`;
 the debug build is a console-subsystem app). Close any open Termurion window, copy `tandem.exe`,
 `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Setup: make three profiles from Settings > Profiles > Session: one with "After a session ends" set to
 No Action, one to Close, one to Restart. Give the No Action profile a Log Directory of a scratch folder

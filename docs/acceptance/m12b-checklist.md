@@ -2,7 +2,7 @@
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Setup: AI enabled in Settings as 12a leaves it ("Enable generative AI features" on). A real API key
 for at least one cloud vendor (OpenAI, Anthropic, Gemini or DeepSeek), stored with Set API Key…; mark

@@ -12,7 +12,7 @@
 
 ## Where things run
 
-Same as milestone 0. Edit on sirtoolio in `~/gitrepos/tandem`. `scripts/xt <cargo args>` builds and tests on EXTREME. The GPU tests render offscreen, so they open no window. Robert may be using EXTREME. Nothing in Tasks 1 to 10 may open a window on his desktop.
+Same as milestone 0. Edit on the Linux dev machine in `~/gitrepos/tandem`. `scripts/xt <cargo args>` builds and tests on the Windows test machine. The GPU tests render offscreen, so they open no window. Robert may be using the Windows test machine. Nothing in Tasks 1 to 10 may open a window on his desktop.
 
 ## Global Constraints
 
@@ -3287,7 +3287,7 @@ git push
 
 `docs/acceptance/m1-checklist.md` lists each check, with the iTerm2 behavior it copies:
 
-1. Start `C:\Users\datbi\src\tandem\target\release\tandem.exe`. A window opens with a PowerShell prompt.
+1. Start `%USERPROFILE%\src\tandem\target\release\tandem.exe`. A window opens with a PowerShell prompt.
 2. Type `dir`, press Enter. Output appears. Colors look like iTerm2's defaults.
 3. Ctrl+Shift+D splits right. Ctrl+Shift+Alt+D splits down. The inactive pane is dimmed.
 4. Ctrl+Shift+] and Ctrl+Shift+[ move between panes. Ctrl+Shift+Alt+arrows move by direction.
@@ -3303,4 +3303,4 @@ git push
 
 - [ ] **Step 2: Hand it to Robert**
 
-Ask Robert to run the checklist, because he is the user and he may be using EXTREME. Do not launch the window yourself. Record his results in the checklist file and commit.
+Ask Robert to run the checklist, because he is the user and he may be using the Windows test machine. Do not launch the window yourself. Record his results in the checklist file and commit.

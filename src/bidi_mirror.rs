@@ -450,7 +450,7 @@ pub fn counterpart(c: u16) -> u16 {
 mod tests {
     use super::*;
 
-    /// Run by hand on EXTREME: `scripts/xt test --lib bidi_mirror::tests::generate_table -- --ignored --nocapture`.
+    /// Run by hand on the Windows test machine: `scripts/xt test --lib bidi_mirror::tests::generate_table -- --ignored --nocapture`.
     /// Walks U+0000 to U+FFFF through ICU's `u_charMirror` (Windows' `icu.dll`, loaded at runtime;
     /// the mirroring property comes from Unicode's `BidiMirroring.txt`) and prints the table
     /// with the Unicode version, ready to paste above. No build or test step reads ICU.

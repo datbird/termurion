@@ -1,7 +1,7 @@
 # Milestone 7f acceptance checklist
 
 Close any open Termurion window. Copy `tandem.exe` and `tandem-host.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`. Cmd is the Win key and
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`. Cmd is the Win key and
 Option is Alt. Mark each line pass or fail.
 
 | # | Check | Result |

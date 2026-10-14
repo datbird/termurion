@@ -283,7 +283,7 @@ mod tests {
     }
 
     /// The inputs sit between the configured limits and the libraries' defaults (measured on
-    /// EXTREME: 16 'a's is above 20 000 backtracking steps and below the default 1 000 000;
+    /// the Windows test machine: 16 'a's is above 20 000 backtracking steps and below the default 1 000 000;
     /// 50 000 repeats compile under the default 10 MiB size limit and over 1 MiB), so removing
     /// either bound from `find_urls_regex` fails this test.
     #[test]

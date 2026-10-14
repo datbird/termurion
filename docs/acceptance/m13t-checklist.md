@@ -1,6 +1,6 @@
 # Milestone 13t acceptance checklist
 
-Build a release binary (`scripts/xt build --release`), close any open Termurion window, copy `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from `C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`. Nothing of 13t was checked on screen during the build (the Settings drawing, the hover preview, the wheel, the Profiles window, the menus, the Ctrl+Win chord and the Windows DNS-SD browser have no unit test that drives a window or the network). Mark each line pass or fail. Where a row says refused or dropped, nothing starts and nothing is saved.
+Build a release binary (`scripts/xt build --release`), close any open Termurion window, copy `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from `%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`. Nothing of 13t was checked on screen during the build (the Settings drawing, the hover preview, the wheel, the Profiles window, the menus, the Ctrl+Win chord and the Windows DNS-SD browser have no unit test that drives a window or the network). Mark each line pass or fail. Where a row says refused or dropped, nothing starts and nothing is saved.
 
 | # | Check | Result |
 |---|---|---|

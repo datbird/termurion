@@ -2,8 +2,8 @@
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `tandem-utils.exe`, `conpty.dll`, and
-`OpenConsole.exe` from `C:\Users\datbi\src\termurion\target\release\` (the worktree build is in
-`C:\Users\datbi\src\termurion-14b\target\release\`) together, then run `tandem.exe` once. Check that
+`OpenConsole.exe` from `%USERPROFILE%\src\termurion\target\release\` (the worktree build is in
+`%USERPROFILE%\src\termurion-14b\target\release\`) together, then run `tandem.exe` once. Check that
 the `utilities` folder beside `tandem.exe` holds `it2ssh.exe` (SSH profiles run it). Quit Termurion,
 end `tandem-host.exe` (Task Manager), and start Termurion again.
 

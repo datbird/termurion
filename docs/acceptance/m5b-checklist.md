@@ -1,6 +1,6 @@
 # Milestone 5b acceptance checklist
 
-Close any open Termurion window, then run `C:\Users\datbi\src\termurion\target\release\tandem.exe`.
+Close any open Termurion window, then run `%USERPROFILE%\src\termurion\target\release\tandem.exe`.
 Cmd is the Win key and Option is Alt. The checks use WSL (`wsl`) for its tools. Mark each line
 pass or fail.
 

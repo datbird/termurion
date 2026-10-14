@@ -2,13 +2,13 @@
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`.
 
 ## The network-path judge (task 4 fix round 1, item 2)
 
 Any probe of a path on a share sends the person's NTLM hash to the server, so Termurion must refuse
 these paths without touching the network at all, the judge included. Setup: a share you control
-(`\\server\share`, for example on bigboss) holding `bg.png`, `notes.txt` and a git repository `repo`.
+(`\\server\share`, for example on a file server) holding `bg.png`, `notes.txt` and a git repository `repo`.
 Run Wireshark on the Termurion machine with the display filter `smb2 || nbss || tcp.port == 445`
 (or Process Monitor filtered to `tandem.exe` and `git.exe`, Path begins with the share and the
 mapped letter). A row passes only when Termurion shows the refusal AND the capture shows no new SMB

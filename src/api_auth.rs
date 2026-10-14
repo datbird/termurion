@@ -420,8 +420,8 @@ mod tests {
 
     #[test]
     fn allow_all_file_follows_python() {
-        let p = noauth_path("C:\\Users\\datbi");
-        assert_eq!(p, "C:\\Users\\datbi/Library/Application Support/iTerm2/disable-automation-auth");
+        let p = noauth_path("C:\\Users\\someone");
+        assert_eq!(p, "C:\\Users\\someone/Library/Application Support/iTerm2/disable-automation-auth");
         let c = noauth_contents(&p);
         let hex: String = p.bytes().map(|b| format!("{b:02x}")).collect();
         assert_eq!(c, format!("{hex} {NOAUTH_MAGIC}"));
@@ -445,7 +445,7 @@ mod tests {
 
     #[test]
     fn allow_all_file_must_be_plain_and_owned() {
-        let p = noauth_path("C:\\Users\\datbi");
+        let p = noauth_path("C:\\Users\\someone");
         let good = holding(&noauth_contents(&p));
         assert_eq!(noauth_status(&p, Some(&good)), AllowAll::Valid);
         // A symlink, a junction or any other reparse point is never trusted, whatever it points

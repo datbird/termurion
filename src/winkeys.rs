@@ -291,7 +291,7 @@ pub fn set_settings_window(hwnd: isize) {
 static REMAP_GLOBAL: AtomicBool = AtomicBool::new(true);
 
 /// Marks the mask key Termurion sends, so the hook passes it and nothing else injected.
-/// Other software (a KVM tool such as bumbles) injects real keystrokes; those are handled.
+/// Other software (a KVM tool) injects real keystrokes; those are handled.
 const MAGIC: usize = 0x5441_4E44;
 
 fn held(vk: i32) -> bool {

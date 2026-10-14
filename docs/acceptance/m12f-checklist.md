@@ -2,7 +2,7 @@
 
 Nothing of 12f was run on screen during the build: no Cockpit window, picker, command bar, bubble or timer was seen, `cc-status.exe` never ran against real Claude Code, and the install and uninstall never touched a real `settings.json`. This list is that first run.
 
-Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `cc-status.exe`, `conpty.dll` and `OpenConsole.exe` from `C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
+Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `cc-status.exe`, `conpty.dll` and `OpenConsole.exe` from `%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Setup: Claude Code installed natively on Windows (not through npm, not inside WSL) and signed in. Work on a COPY of `%USERPROFILE%\.claude\settings.json` where a row says so: set `CLAUDE_CONFIG_DIR` to a scratch folder holding a copy, so the real file is never touched. For the orchestration rows 12a to 12d must be built (Enable generative AI features on, the AI gate open) with one provider working (a model that can call tools). Open at least two windows with two or three sessions each, and bury one session. Mark each line pass or fail; mark "not applicable" only when the tool itself is missing.
 

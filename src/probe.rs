@@ -283,8 +283,8 @@ mod tests {
     #[test]
     fn wsl_path_maps_drive_letters() {
         assert_eq!(
-            wsl_path(Path::new(r"C:\Users\datbi\src\termurion\probe\x.py")),
-            "/mnt/c/Users/datbi/src/termurion/probe/x.py"
+            wsl_path(Path::new(r"C:\Users\someone\src\termurion\probe\x.py")),
+            "/mnt/c/Users/someone/src/termurion/probe/x.py"
         );
     }
 }

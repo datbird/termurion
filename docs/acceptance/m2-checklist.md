@@ -1,6 +1,6 @@
 # Milestone 2 acceptance checklist
 
-Run `C:\Users\datbi\src\termurion\target\release\tandem.exe`. Mark each line pass or fail.
+Run `%USERPROFILE%\src\termurion\target\release\tandem.exe`. Mark each line pass or fail.
 
 | # | Check | Result |
 |---|---|---|

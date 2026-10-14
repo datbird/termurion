@@ -2,7 +2,7 @@ Plan: Ruling: the peer check is the owning process of the loopback connection (G
 
 Plan: Ruling: elevation must match too (a Windows addition): a normal process may not drive an elevated Tandem, nor the reverse - cost if wrong: a script started elevated cannot reach a normal Tandem.
 
-Plan: Ruling: protobuf is prost 0.14 with the generated code checked in (src/api_pb.rs), made by tools/protogen (prost-build plus protox, no protoc), rather than a build script, since EXTREME has no protoc and a checked-in file keeps Tandem's build free of code generation - cost if wrong: regenerating after a proto change is a manual scripts/xt run --manifest-path tools/protogen/Cargo.toml and an scp; proto_is_vendored_unchanged catches a forgotten one.
+Plan: Ruling: protobuf is prost 0.14 with the generated code checked in (src/api_pb.rs), made by tools/protogen (prost-build plus protox, no protoc), rather than a build script, since the Windows test machine has no protoc and a checked-in file keeps Tandem's build free of code generation - cost if wrong: regenerating after a proto change is a manual scripts/xt run --manifest-path tools/protogen/Cargo.toml and an scp; proto_is_vendored_unchanged catches a forgotten one.
 
 Plan: Ruling: the websocket layer is tungstenite 0.28, framing only (WebSocket::from_raw_socket, derive_accept_key), with Tandem's own HTTP parsing so iTerm2's checks, order, reasons and 400/401/406 answers are exact (tungstenite's own handshake refuses with its own errors and no HTTP response) - cost if wrong: one new crate with its small dependency set (sha1, http, httparse, rand, data-encoding, utf-8).
 

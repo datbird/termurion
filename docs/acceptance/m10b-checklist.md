@@ -3,7 +3,7 @@
 Build a release binary (`scripts/xt build --release`); the debug build is a console-subsystem app
 and never detects a password prompt in a local pane. Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Setup: create a second profile with "Open Password Manager Automatically" turned on (Session
 tab). Add a trigger with the regex `[Pp]assword:` and action Open Password Manager (the capital

@@ -1,7 +1,7 @@
 # Milestone 9l acceptance checklist
 
 Close any open Termurion window. Copy `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`,
-`conpty.dll`, and `OpenConsole.exe` from `C:\Users\datbi\src\termurion\target\release\` together,
+`conpty.dll`, and `OpenConsole.exe` from `%USERPROFILE%\src\termurion\target\release\` together,
 then run `tandem.exe`.
 
 Setup: install shell integration in the PowerShell session (milestone 4a). On the profile you
@@ -12,7 +12,7 @@ command (for example `echo one` then a newline then `echo two`). In Settings > K
 Bindings add a global key mapped to "Open Composer" with some starter text. Have a tmux session
 attached in one pane, and a second pane sharing Broadcast Input with the focused one. None of this
 has been checked on a real screen before this pass (every task deferred launching the GUI on
-EXTREME, since the rules forbid it while the machine may be in use), so this pass is the first
+The Windows test machine, since the rules forbid it while the machine may be in use), so this pass is the first
 look. Mark each line pass or fail.
 
 | # | Check | Result |

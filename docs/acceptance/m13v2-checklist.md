@@ -2,8 +2,8 @@
 
 Build a release binary (`scripts/xt build --release`); close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`. Run the whole list in
-a desktop session on EXTREME (not over ssh: a session without a desktop cannot show a window, a
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`. Run the whole list in
+a desktop session on the Windows test machine (not over ssh: a session without a desktop cannot show a window, a
 tooltip or a screen reader). Mark each line pass or fail. Every row below was never exercised by
 the automated suite, which has no composed desktop, no real screen reader and no real GitHub
 feed; the tests cover the models, the gates and a loopback `curl.exe` only.

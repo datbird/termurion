@@ -2,7 +2,7 @@
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Nothing in this milestone was checked on screen while it was built, so every line here is a
 first look. Setup: the tab bar settings are on Settings > Appearance > General ("Tab bar
@@ -10,7 +10,7 @@ location:"), Settings > Appearance > Tabs and Settings > Advanced > Tabs; the pr
 Settings > Profiles > General ("Profile icon" and "Custom icon path"). Leave "Show tab bar even
 when there is only one tab" off (the default) unless a check says otherwise. Run the shell checks
 in a PowerShell session; the tmux checks need `tmux -CC` in WSL (milestone 8's setup). Put a PNG
-of any size somewhere local (for example `C:\Users\datbi\Pictures\icon.png`). Mark each line pass
+of any size somewhere local (for example `%USERPROFILE%\Pictures\icon.png`). Mark each line pass
 or fail.
 
 ## Dragging
@@ -138,4 +138,4 @@ or fail.
 | 69 | Icon files and the two map files on a network path, however spelled, or reached through a link to one, are never read; a map with a trailing comma is read anyway. | |
 | 70 | A tmux tab opened by New Tab to the Right lands at the end of the bar, not next to the clicked tab. | |
 | 71 | An icon or map file over 8 MiB, or a picture over 4096 pixels a side, shows nothing (a Termurion limit; iTerm2 has none). | |
-| 72 | A Custom icon path naming a Windows device (`COM1`, `NUL`, `CON.png`, `C:\Users\datbi\Pictures\LPT1.png`, `\\.\COM1`) or a folder shows no icon, and the window never stops responding (a Termurion limit: only regular files are read). | |
+| 72 | A Custom icon path naming a Windows device (`COM1`, `NUL`, `CON.png`, `%USERPROFILE%\Pictures\LPT1.png`, `\\.\COM1`) or a folder shows no icon, and the window never stops responding (a Termurion limit: only regular files are read). | |

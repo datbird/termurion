@@ -3,8 +3,8 @@
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `tandem-utils.exe` (SSH profiles run its
 `utilities\it2ssh.exe`), `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` (the worktree build is in
-`C:\Users\datbi\src\termurion-14d\target\release\`) together, then run `tandem.exe` once. Quit Termurion,
+`%USERPROFILE%\src\termurion\target\release\` (the worktree build is in
+`%USERPROFILE%\src\termurion-14d\target\release\`) together, then run `tandem.exe` once. Quit Termurion,
 end `tandem-host.exe` (Task Manager), and start Termurion again.
 
 Nothing of 14d was seen on screen while it was built: no window was drawn, no App-level flow ran,

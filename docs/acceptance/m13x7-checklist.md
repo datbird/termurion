@@ -2,7 +2,7 @@
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe` on a machine with the
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe` on a machine with the
 WebView2 Runtime installed (one run). Mark each line pass or fail.
 
 Before anything else: `m13x7-rulings.txt` ends with PROBE and FLAGS FOR ROBERT, the behaviors that
@@ -38,16 +38,16 @@ The autofill and key-button probes press the button with a TRUSTED click (`Input
 which the page sees as `isTrusted`) after the untrusted ones: exactly one request each (R13x7-P3). The
 by-hand lines in sections B and E remain for the native windows the probe does not open.
 
-Full run (from an ssh session on EXTREME, with Robert's yes and no implementer building in the
+Full run (from an ssh session on the Windows test machine, with Robert's yes and no implementer building in the
 checkout; a PowerShell console window shows for the whole run; `probe: process session N` must show
 N not 0, session 0 prints SKIPPED, which is not a pass):
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\datbi\src\<checkout>\scripts\probe-desktop.ps1 -Repo C:\Users\datbi\src\<checkout>
+powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\src\<checkout>\scripts\probe-desktop.ps1 -Repo %USERPROFILE%\src\<checkout>
 ```
 
 Only the 13x7 tests: `-Filters` is a `string[]`, and `-File` passes a comma string as ONE filter,
-so use a wrapper `C:\Users\datbi\src\run-13x7-probe.ps1` and run it the same way:
+so use a wrapper `%USERPROFILE%\src\run-13x7-probe.ps1` and run it the same way:
 
 ```
 $f = @(
@@ -60,7 +60,7 @@ $f = @(
  'webhost_win::probe::integrated_auth_is_never_sent_by_itself',
  'webhost_win::probe::proxy_challenge_reports_the_proxy'
 )
-& C:\Users\datbi\src\<checkout>\scripts\probe-desktop.ps1 -Repo C:\Users\datbi\src\<checkout> -Filters $f
+& %USERPROFILE%\src\<checkout>\scripts\probe-desktop.ps1 -Repo %USERPROFILE%\src\<checkout> -Filters $f
 ```
 
 ## B. Autofill: the button only requests

@@ -2,7 +2,7 @@
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe` on a machine with the
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe` on a machine with the
 WebView2 Runtime installed (one run). Mark each line pass or fail.
 
 Before anything else: `m13x3-rulings.txt` line "Probe:" records the 13x3 desktop probe

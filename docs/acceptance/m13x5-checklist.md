@@ -2,11 +2,11 @@
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe` on a machine with the
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe` on a machine with the
 WebView2 Runtime installed (one run). Mark each line pass or fail.
 
 Before anything else: `m13x5-rulings.txt` first lines record the 13x5 desktop probe (Probe: PASS,
-41 of 41 on EXTREME, 2026-10-10). 13x2's probe passed (PASS, 12 of 12 on EXTREME, 2026-10-07), so the
+41 of 41 on the Windows test machine, 2026-10-10). 13x2's probe passed (PASS, 12 of 12 on the Windows test machine, 2026-10-07), so the
 isolated world exists; a (world) line that finds a feature inert is a fail, not "not shipped".
 Section A lists the probe tests; sections B to F are what no test could execute (a real page, the
 real windows, the real menus).

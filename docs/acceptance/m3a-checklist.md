@@ -1,6 +1,6 @@
 # Milestone 3a acceptance checklist
 
-Close any open Termurion window, then run `C:\Users\datbi\src\termurion\target\release\tandem.exe`.
+Close any open Termurion window, then run `%USERPROFILE%\src\termurion\target\release\tandem.exe`.
 Cmd is the Win key. Mark each line pass or fail.
 
 | # | Check | Result |
@@ -19,4 +19,4 @@ Cmd is the Win key. Mark each line pass or fail.
 | 12 | Win+Ctrl+arrows move the divider next to the focused pane. Window > Arrange Windows > Arrange Split Panes Evenly evens them out. | |
 | 13 | Session > Reset (in a shell after `printf '\e[?25l'`) brings the cursor back and keeps the text. | |
 | 14 | Tap Alt, then type: the letters reach the shell (the menu bar does not take them). In WSL run `htop`: F10 quits htop and does not open the menu bar. | |
-| 15 | While bumbles drives the keyboard from the Mac, Win chords (Win+T, Win+D) still reach Termurion. | |
+| 15 | While a KVM tool drives the keyboard from the Mac, Win chords (Win+T, Win+D) still reach Termurion. | |

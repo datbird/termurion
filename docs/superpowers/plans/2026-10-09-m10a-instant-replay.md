@@ -19,7 +19,7 @@
 - No alacritty patch. Frames are the visible rows (`grid()[Line(0)..Line(rows - 1)]`, the active grid, display offset ignored) plus cursor and size; dirty lines are alacritty's damage (`TermDamage::Full` means none clean, as iTerm2's scrolled case).
 - Byte accounting is iTerm2's with Tandem's cell: a line counts `size_of::<Cell>() * (cols + 1)` bytes, every line adds iTerm2's 4-byte metadata length, a diff line adds 5 bytes (type and length) and a diff metadata entry 5 more; line metadata payloads count 0 (Tandem keeps row data inside the row).
 - Strings, sizes, orders and alerts are iTerm2's, verbatim (Resume notes), with "iTerm2" in user text replaced by "Tandem"; key names in text use Windows words. Characters outside ASCII are `\u{...}` escapes in code. iTerm2 bugs are kept, each with a checklist line: the first replay frame being the second newest, the key-frame counter counting only diff-eligible frames, diffs reserving the key-frame size, a stranded decoder after eviction (Right to the oldest, Left beeps), Clear Instant Replay during replay clearing nothing, a range export restamping every frame as a key frame, tick marks computed once per panel open.
-- Win is Cmd and Alt is Option. New pure code is a plain `pub mod`; app code is `#[cfg(windows)]`. Tests run on EXTREME with `scripts/xt test --lib <filter>`. Do not launch the GUI.
+- Win is Cmd and Alt is Option. New pure code is a plain `pub mod`; app code is `#[cfg(windows)]`. Tests run on the Windows test machine with `scripts/xt test --lib <filter>`. Do not launch the GUI.
 
 ## Review Focus
 

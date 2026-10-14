@@ -2,8 +2,8 @@
 
 Build a release binary (`scripts/xt build --release`); close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`. Run the whole list in
-a desktop session on EXTREME (not over ssh: a session without a desktop cannot show a layout, a
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`. Run the whole list in
+a desktop session on the Windows test machine (not over ssh: a session without a desktop cannot show a layout, a
 fade or a focus change). Mark each line pass or fail. Rows marked "not run in tests" were never
 exercised by the automated suite, which has no composed desktop.
 
@@ -30,7 +30,7 @@ reachable by `tmux -CC` for the tmux rows. Keep a Notepad window open.
 |---|---|---|
 | 9 | Keys > Remap Modifiers: "Respect shortcuts from Windows keyboard shortcuts" is ticked by default. Add a global key mapping on Win+B (any action): with the option on, Win+B in Termurion does Windows' (notification area focus); off, it runs the mapping. Win+T still makes a tab either way. (Win+E is a Termurion menu command and never yields.) | |
 | 10 | Stock shortcuts: Win+Left and Win+Right change tab, Win+Home, Win+Shift+Left and Win+Up and Down still work in Termurion (the stock mappings are Termurion's own) with the option on. Edit the Win+Left mapping to Send Text: it now yields to Windows (snaps the window) until the option is off. The Natural Text Editing preset's Win+Left and Win+Right still work unedited. | |
-| 11 | From the work Mac through bumbles: Cmd+T (new tab), Cmd+Left (previous tab) and Cmd+D still reach Termurion; a mapping made on Cmd+B goes to Windows until the option is off. bumbles-injected Win+Arrow still switches tabs. | |
+| 11 | From the work Mac through a KVM tool: Cmd+T (new tab), Cmd+Left (previous tab) and Cmd+D still reach Termurion; a mapping made on Cmd+B goes to Windows until the option is off. KVM-injected Win+Arrow still switches tabs. | |
 | 12 | Windows 11 shell chords still reach Windows with a person's own mapping on them and the option on: Win+Ctrl+Space (previous input language) and Win+Ctrl+1 (last window of the first pinned app). To confirm and add to the shell list if Windows consumes them: Win+Alt+Up and Down, Win+Ctrl+O, Win+Shift+R, Win+Shift+Enter. | |
 | 13 | The remap hook never acts while another app is in front: with Left Alt remapped and Remap globally on, type in Notepad and Edge: Alt behaves as Alt (menus open, Alt+Tab works) and Win chords are Windows'. Hotkey chords registered for Termurion (hotkey windows) still work from the other app. | |
 | 14 | Force keyboard on, Keyboard locale German: the popup lists installed layouts by name (US and US-International distinct) and is greyed until Force keyboard is on. Typing in Termurion gives German keys (z and y swap). Not run in tests: ActivateKeyboardLayout and the layout list on a desktop. | |

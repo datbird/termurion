@@ -239,8 +239,8 @@ reason = 'default-terminal CLSID GUID without braces; unchanged'
 
 [[row]]
 group = 'K'
-old = '/mnt/c/Users/datbi/src/tandem'
-new = '/mnt/c/Users/datbi/src/tandem'
+old = '/mnt/c/Users/user2/src/tandem'
+new = '/mnt/c/Users/user2/src/tandem'
 mode = 'keep'
 scope = ['tests/fixtures/**']
 reason = 'recorded tmux fixture bytes contain this prompt path'
@@ -1185,7 +1185,7 @@ old = 'gitrepos/tandem'
 new = 'gitrepos/termurion'
 mode = 'exact'
 scope = ['**']
-reason = 'local clone path on sirtoolio and W541 (Task 9)'
+reason = 'local clone path on the Linux machines (Task 9)'
 
 [[row]]
 group = 'E'
@@ -1193,7 +1193,7 @@ old = 'src\tandem'
 new = 'src\termurion'
 mode = 'exact'
 scope = ['**']
-reason = 'EXTREME checkout folder (Task 9), single backslash'
+reason = 'Windows checkout folder (Task 9), single backslash'
 
 [[row]]
 group = 'E'
@@ -1201,7 +1201,7 @@ old = 'src\\tandem'
 new = 'src\\termurion'
 mode = 'exact'
 scope = ['**']
-reason = 'EXTREME checkout folder (Task 9), escaped backslashes'
+reason = 'Windows checkout folder (Task 9), escaped backslashes'
 
 [[row]]
 group = 'E'
@@ -1209,7 +1209,7 @@ old = 'src\\\\tandem'
 new = 'src\\\\termurion'
 mode = 'exact'
 scope = ['**']
-reason = 'EXTREME checkout folder (Task 9), doubly escaped'
+reason = 'Windows checkout folder (Task 9), doubly escaped'
 
 [[row]]
 group = 'E'
@@ -1225,7 +1225,7 @@ old = 'tandem\target'
 new = 'termurion\target'
 mode = 'exact'
 scope = ['**']
-reason = 'EXTREME build output under the checkout'
+reason = 'Windows build output under the checkout'
 
 [[row]]
 group = 'B'
@@ -8052,7 +8052,7 @@ group = 'E'
 old = 'Tandem'
 new = 'Termurion'
 mode = 'exact'
-scope = ['scripts/install-extreme.ps1']
+scope = ['scripts/install-windows.ps1']
 reason = 'script or tool text: becomes Termurion; file-level row, every hit in this file was reviewed'
 
 [[row]]
@@ -8068,7 +8068,7 @@ group = 'E'
 old = 'tandem'
 new = 'termurion'
 mode = 'exact'
-scope = ['scripts/install-extreme.ps1']
+scope = ['scripts/install-windows.ps1']
 reason = 'script or tool text: becomes Termurion; file-level row, every hit in this file was reviewed'
 
 [[row]]

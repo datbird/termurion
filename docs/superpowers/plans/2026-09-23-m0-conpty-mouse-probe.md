@@ -6,7 +6,7 @@
 
 **Architecture:** A Rust library crate with four modules: a pure mouse encoder, a ConPTY loader, a pty wrapper, and a screen that runs app output through `alacritty_terminal`. A `probe` binary drives real apps (a Windows console app, a raw WSL program, vim, tmux, htop) under both the shipped ConPTY and the Windows copy, and prints a pass/fail table. These modules are the real Tandem modules. Milestone 1 builds the window on top of them.
 
-**Tech Stack:** Rust 2024 edition (rustc 1.98.1 on EXTREME, MSVC), `alacritty_terminal` 0.26.0, `windows-sys` 0.59, ConPTY NuGet package 1.24.260710001, Python 3.12 in WSL.
+**Tech Stack:** Rust 2024 edition (rustc 1.98.1 on the Windows test machine, MSVC), `alacritty_terminal` 0.26.0, `windows-sys` 0.59, ConPTY NuGet package 1.24.260710001, Python 3.12 in WSL.
 
 **Spec:** `docs/superpowers/specs/2026-09-23-tandem-design.md`
 
@@ -14,14 +14,14 @@
 
 ## Where things run
 
-- The repo is `~/gitrepos/tandem` on **sirtoolio**. Edit and commit there.
-- sirtoolio has no Rust. **EXTREME** (Windows, `ssh extreme`, PowerShell) builds and runs everything.
-- `scripts/xt <cargo args>` copies the repo to `C:\Users\datbi\src\tandem` over the sshfs mount at `/home/tbird/aiplayground/mount/extreme`, then runs `cargo <args>` there. Example: `scripts/xt test --lib mouse`.
-- WSL on EXTREME is the distro `Ubuntu-Personal` (python3 3.12, vim, tmux 3.4). htop is installed in Task 7.
+- The repo is `~/gitrepos/tandem` on **the Linux dev machine**. Edit and commit there.
+- The Linux dev machine has no Rust. **The Windows test machine** (Windows, `ssh <windows-host>`, PowerShell) builds and runs everything.
+- `scripts/xt <cargo args>` copies the repo to `%USERPROFILE%\src\tandem` over the remote mount at `$XT_MOUNT`, then runs `cargo <args>` there. Example: `scripts/xt test --lib mouse`.
+- WSL on the Windows test machine is the distro `Ubuntu-Personal` (python3 3.12, vim, tmux 3.4). htop is installed in Task 7.
 
 ## Global Constraints
 
-- Target: Windows only, `x86_64-pc-windows-msvc`. Every build and test runs on EXTREME through `scripts/xt`.
+- Target: Windows only, `x86_64-pc-windows-msvc`. Every build and test runs on the Windows test machine through `scripts/xt`.
 - `alacritty_terminal = "=0.26.0"`, used unmodified.
 - `windows-sys = "0.59"`, the same version `alacritty_terminal` 0.26.0 uses.
 - ConPTY: `Microsoft.Windows.Console.ConPTY` 1.24.260710001, nupkg SHA256 `175640566A3B59C4B132070EE96C2C77E5AB7EDD2E92732A5EB3610BBF63D90E`.
@@ -117,22 +117,22 @@ pub mod mouse;
 
 ```bash
 #!/usr/bin/env bash
-# Copies this repo to EXTREME and runs cargo there.
+# Copies this repo to the Windows test machine and runs cargo there.
 # Usage: scripts/xt test --lib mouse
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
-mount_root=/home/tbird/aiplayground/mount/extreme
-dest="$mount_root/c/Users/datbi/src/tandem"
-win='C:\Users\datbi\src\tandem'
+mount_root=$XT_MOUNT
+dest="$mount_root/c/Users/<you>/src/tandem"
+win='%USERPROFILE%\src\tandem'
 if ! mountpoint -q "$mount_root"; then
-    echo "xt: $mount_root is not mounted. Run: systemctl --user restart sshfs-extreme" >&2
+    echo "xt: $mount_root is not mounted. Run: systemctl --user restart the mount service" >&2
     exit 2
 fi
 mkdir -p "$dest"
 # -rt, not -a: the Windows side cannot take Linux owners or modes.
-# target/ and vendor/ live only on EXTREME, and excluded paths survive --delete.
+# target/ and vendor/ live only on the Windows test machine, and excluded paths survive --delete.
 rsync -rt --delete --exclude target/ --exclude vendor/ --exclude .git/ "$repo/" "$dest/"
-ssh extreme "cd '$win'; cargo $*; exit \$LASTEXITCODE"
+ssh <windows-host> "cd '$win'; cargo $*; exit \$LASTEXITCODE"
 ```
 
 - [ ] **Step 3: Write the failing tests**
@@ -371,7 +371,7 @@ Expected: `test result: ok. 14 passed`.
 
 ```bash
 git add Cargo.toml .gitignore scripts/xt src/lib.rs src/mouse.rs
-git commit -m "Add scaffold, EXTREME sync script, and mouse encoder"
+git commit -m "Add scaffold, the Windows test machine sync script, and mouse encoder"
 git push
 ```
 
@@ -421,14 +421,14 @@ Remove-Item -Recurse -Force $tmp, $pkg
 Write-Output "ConPTY $version installed in $dest"
 ```
 
-- [ ] **Step 2: Sync and run it on EXTREME**
+- [ ] **Step 2: Sync and run it on the Windows test machine**
 
 ```bash
 scripts/xt --version
-ssh extreme 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\datbi\src\tandem\scripts\fetch-conpty.ps1'
+ssh <windows-host> 'powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\src\tandem\scripts\fetch-conpty.ps1'
 ```
 
-Expected: `ConPTY 1.24.260710001 installed in C:\Users\datbi\src\tandem\vendor\conpty`.
+Expected: `ConPTY 1.24.260710001 installed in %USERPROFILE%\src\tandem\vendor\conpty`.
 
 - [ ] **Step 3: Write the failing tests**
 
@@ -1179,8 +1179,8 @@ mod tests {
     #[test]
     fn wsl_path_maps_drive_letters() {
         assert_eq!(
-            wsl_path(Path::new(r"C:\Users\datbi\src\tandem\probe\x.py")),
-            "/mnt/c/Users/datbi/src/tandem/probe/x.py"
+            wsl_path(Path::new(r"%USERPROFILE%\src\tandem\probe\x.py")),
+            "/mnt/c/Users/user2/src/tandem/probe/x.py"
         );
     }
 }
@@ -1605,7 +1605,7 @@ git push
 - [ ] **Step 1: Install htop in WSL**
 
 ```bash
-ssh extreme 'wsl -d Ubuntu-Personal -u root -e apt-get install -y htop'
+ssh <windows-host> 'wsl -d Ubuntu-Personal -u root -e apt-get install -y htop'
 ```
 
 Expected: `htop` installs, or apt says it is already the newest version.
@@ -1768,7 +1768,7 @@ Expected: all unit tests pass. The probe exits 0 if every shipped row passes.
 `docs/probe/<date>-m0-results.md` holds:
 
 1. A one-line heading: `# Milestone 0 probe results, <date>`.
-2. The machine: `EXTREME, Windows build <from [Environment]::OSVersion>, ConPTY package 1.24.260710001`.
+2. The machine: `the Windows test machine, Windows build <from [Environment]::OSVersion>, ConPTY package 1.24.260710001`.
 3. The table, pasted verbatim from `/tmp/claude-probe-table.md`.
 4. One short paragraph per FAIL row: what failed, under which ConPTY copy, and what that means for milestone 1.
 

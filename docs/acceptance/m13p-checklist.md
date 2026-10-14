@@ -2,7 +2,7 @@
 
 Build a release binary (`scripts/xt build --release`), close any open Termurion window, copy `tandem.exe`,
 `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`. Nothing of milestone 13p
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`. Nothing of milestone 13p
 was checked on screen during the build; every row below is an item the task reports list as untested,
 plus the security rows (marked SECURITY).
 

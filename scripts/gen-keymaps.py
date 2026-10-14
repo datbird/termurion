@@ -6,9 +6,10 @@ key mapping presets. Usage: scripts/gen-keymaps.py [path/to/iTerm2]
 """
 import plistlib
 import re
+import os
 import sys
 
-ref = sys.argv[1] if len(sys.argv) > 1 else "/home/tbird/gitrepos/iterm2-ref"
+ref = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("ITERM2_REF") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "iterm2-ref")
 
 
 def q(s):

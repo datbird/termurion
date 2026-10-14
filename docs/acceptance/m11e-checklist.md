@@ -2,7 +2,7 @@
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `tandem-utils.exe`, `conpty.dll`, and
-`OpenConsole.exe` from `C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`
+`OpenConsole.exe` from `%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`
 once. Check that a `utilities` folder now sits beside `tandem.exe` holding 16 programs (`imgcat.exe`,
 `imgls.exe`, `it2api.exe`, `it2attention.exe`, `it2cat.exe`, `it2check.exe`, `it2copy.exe`,
 `it2dl.exe`, `it2getvar.exe`, `it2git.exe`, `it2profile.exe`, `it2setcolor.exe`,
@@ -52,8 +52,8 @@ session unless it says otherwise. Mark each line pass or fail.
 | 29 | In PowerShell, `$env:TERM = "tmux-256color"; imgcat pic.png` still shows the picture (the utility wraps for tmux and Termurion reads the wrapped form); `$env:TERM = "screen"; it2copy README.md` still fills the clipboard. | |
 | 30 | Run `it2ul`, and while the Files/Folders bar waits, end `it2ul.exe` in Task Manager (a hard kill, so the console input mode is not put back): if the shell then echoes oddly or ignores keys, Session > Reset restores it. Dismiss the bar afterwards. | |
 | 31 | Start `utilities\it2copy.exe` in a plain console outside Termurion (it waits on stdin) and leave it running. Close Termurion, **delete** `tandem-utils.exe` (Windows allows deleting a running program's name; copying over it fails because `it2copy.exe` is a hard link to the same running file), copy the newer `tandem-utils.exe` in, then start Termurion: every `utilities\*.exe` now has the new size, and no banner shows. If a name could not be refreshed, the banner "Some utilities could not be refreshed (...). Close any running utility and restart Termurion." names it. End `it2copy.exe` with Ctrl+C afterwards. | |
-| 32 | Robert, from a non-elevated console on EXTREME (a normal, not administrator, PowerShell), in `C:\Users\datbi\src\termurion-11e` (or the main checkout once merged): `cargo test --lib refresh_failures_are_reported -- --nocapture` passes and does not print "SeRestorePrivilege is enabled", so the read-only-folder case is observed at least once. | |
-| 33 | Robert, once: `py -3 -m venv C:\Users\datbi\src\termurion\target\api-venv`, then `C:\Users\datbi\src\termurion\target\api-venv\Scripts\python.exe -m pip install iterm2 "websockets<14"`, then from sirtoolio `scripts/xt test --lib it2api_lists -- --ignored --nocapture` in the 11e worktree: the test passes without the "skipped:" line, and its MEASURED lines show `id=1`, `id=2`, `id=3`, `id=4`, `id=7` and `id=8` from list-sessions and "Key window: pty-A" from show-focus. Record the measured output here. | |
+| 32 | Robert, from a non-elevated console on the Windows test machine (a normal, not administrator, PowerShell), in `%USERPROFILE%\src\termurion-11e` (or the main checkout once merged): `cargo test --lib refresh_failures_are_reported -- --nocapture` passes and does not print "SeRestorePrivilege is enabled", so the read-only-folder case is observed at least once. | |
+| 33 | Robert, once: `py -3 -m venv %USERPROFILE%\src\termurion\target\api-venv`, then `%USERPROFILE%\src\termurion\target\api-venv\Scripts\python.exe -m pip install iterm2 "websockets<14"`, then from the Linux dev machine `scripts/xt test --lib it2api_lists -- --ignored --nocapture` in the 11e worktree: the test passes without the "skipped:" line, and its MEASURED lines show `id=1`, `id=2`, `id=3`, `id=4`, `id=7` and `id=8` from list-sessions and "Key window: pty-A" from show-focus. Record the measured output here. | |
 
 ## Kept bugs and rulings a person can see
 

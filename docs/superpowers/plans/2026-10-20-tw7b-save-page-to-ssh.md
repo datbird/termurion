@@ -88,7 +88,7 @@
 ### Task 6: Full verification and a desktop look
 
 - [ ] **Step 1:** `scripts/xt test --tests --no-fail-fast` (known flake `find_over_a_large_buffer_is_quick` passes alone) and `scripts/xt build --release`, foreground.
-- [ ] **Step 2 (Robert's machine, with warning):** one real save of a small page and of a large one to a real host (W541 or bigboss): the folder appears with the unique name, nothing `.part` is left, the page opens from the host, a cancel mid-way leaves no folder; the staging folder is gone afterwards.
+- [ ] **Step 2 (Robert's machine, with warning):** one real save of a small page and of a large one to a real host (a second Linux machine or a file server): the folder appears with the unique name, nothing `.part` is left, the page opens from the host, a cancel mid-way leaves no folder; the staging folder is gone afterwards.
 
 ## Acceptance (whole plan)
 

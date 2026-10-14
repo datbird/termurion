@@ -1,6 +1,6 @@
 # Milestone 13s acceptance checklist
 
-Build a release binary (`scripts/xt build --release`), close any open Termurion window, copy `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from `C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`. Nothing of 13s was checked on screen during the build (the mouse paths, the OLE drag, the DLL loading and every drawing path have no unit test that drives a window). Mark each line pass or fail. Where a row says refused, the banner names the refusal and nothing starts.
+Build a release binary (`scripts/xt build --release`), close any open Termurion window, copy `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from `%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`. Nothing of 13s was checked on screen during the build (the mouse paths, the OLE drag, the DLL loading and every drawing path have no unit test that drives a window). Mark each line pass or fail. Where a row says refused, the banner names the refusal and nothing starts.
 
 | # | Check | Result |
 |---|---|---|
@@ -45,7 +45,7 @@ Build a release binary (`scripts/xt build --release`), close any open Termurion 
 | S39 | Security, icu.dll: with Process Monitor, a double click in a pane makes `icu.dll` load from C:\Windows\System32 (never from the exe's folder or the current folder); a planted `icu.dll` beside tandem.exe is ignored. | |
 | S40 | Security, search path: termurion renders (Vulkan and D3D12 backends) and a new session opens through the shipped ConPTY; a `vulkan-1.dll` or `d3d12.dll` placed in the folder Termurion is started from is ignored; tandem-host and the utilities start. | |
 | S41 | Security, child processes: from a Termurion pane, a program that loads a DLL from its own folder or the current folder (for example python importing a local .pyd, or a Go or .NET tool with a sidecar DLL) still finds it (SetDllDirectoryW("") may be inherited by child processes; if it is, note which programs break). | |
-| S42 | Test suite: a full `scripts/xt test --lib` on EXTREME three times in a row ends with no STATUS_ACCESS_VIOLATION now that the shared GPU test device is in (built; vulkan-1.dll 1.4.341 was the cause; the 20-run stress loop of render::tests at 26 threads ends clean). | |
+| S42 | Test suite: a full `scripts/xt test --lib` on the Windows test machine three times in a row ends with no STATUS_ACCESS_VIOLATION now that the shared GPU test device is in (built; vulkan-1.dll 1.4.341 was the cause; the 20-run stress loop of render::tests at 26 threads ends clean). | |
 | S43 | Filter with a command selected (shell integration): shows only that command's lines, in color. | |
 | S44 | Typing a new query during a filter run restarts it; closing the bar mid-run stops it; output while filtering adds matching lines at the end without losing the scroll position. | |
 | S45 | Idle with the find bar open: no CPU wake (the frame counter holds steady). | |

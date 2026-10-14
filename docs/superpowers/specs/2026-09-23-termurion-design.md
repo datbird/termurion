@@ -171,7 +171,7 @@ Shell integration:
 - Each tmux window becomes a Termurion tab. Each tmux pane becomes a Termurion split, placed from the layout string.
 - Keys in a pane go out as `send-keys`. Resizing a Termurion split sends `resize-pane`.
 - On attach, Termurion reads pane history with `capture-pane` so scrollback is present.
-- Target: real tmux in WSL and over SSH. psmux (the tmux on EXTREME) may not support control mode.
+- Target: real tmux in WSL and over SSH. psmux (the tmux on the Windows test machine) may not support control mode.
   We check that at milestone 5. It is not a requirement.
 - A protocol error shows the raw text in the tab and a clear message. Termurion does not guess.
 
@@ -189,15 +189,15 @@ Errors in a settings file keep the last good settings and show a banner with the
 
 ### Where things run
 
-- The code lives in `~/gitrepos/termurion` on sirtoolio, in a private `datbird` repo.
-- EXTREME builds and runs it (Rust stable, MSVC toolchain, already installed).
-- The build pulls from the repo on EXTREME and runs `cargo build`.
+- The code lives in `~/gitrepos/termurion` on the Linux dev machine, in a `datbird` repo.
+- The Windows test machine builds and runs it (Rust stable, MSVC toolchain, already installed).
+- The build pulls from the repo on the Windows test machine and runs `cargo build`.
 
 ### Tests
 
 - Unit tests: mouse encoding for each mode, OSC 1337 and OSC 133 parsing, key mapping,
   the tmux control-mode parser (from recorded tmux sessions), and plist import (from a copy of his real settings file).
-- ConPTY tests on EXTREME: start a shell, send input, check the screen contents.
+- ConPTY tests on the Windows test machine: start a shell, send input, check the screen contents.
 - Acceptance: a checklist run side by side with iTerm2 on the Mac, one row per item in section 1.
 
 ## 6. Milestones

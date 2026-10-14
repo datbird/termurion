@@ -1,7 +1,7 @@
 # Milestone 9i acceptance checklist
 
 Close any open Termurion window. Copy `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`,
-`conpty.dll`, and `OpenConsole.exe` from `C:\Users\datbi\src\termurion\target\release\` together,
+`conpty.dll`, and `OpenConsole.exe` from `%USERPROFILE%\src\termurion\target\release\` together,
 then run `tandem.exe`.
 
 Setup: in Settings > Profiles > Session turn "Status bar enabled" on for the default profile and
@@ -11,7 +11,7 @@ Throughput, and git state. Install shell integration in the PowerShell session f
 component stays empty. Then open a PowerShell pane with `cd` to a git repository for the git checks
 (a fresh `git init` for the unborn-branch check). None of these five components, their icon
 glyphs, or the graph animation have been checked on a real screen before this pass (Tasks 1 and 3
-both deferred it, since the rules forbid launching the GUI on EXTREME while the machine may be in
+both deferred it, since the rules forbid launching the GUI on the Windows test machine while the machine may be in
 use), so this pass is the first look. Mark each line pass or fail.
 
 | # | Check | Result |

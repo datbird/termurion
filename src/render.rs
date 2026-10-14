@@ -1777,7 +1777,7 @@ mod tests {
         // The record must be in the rulings file.
         let rulings = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/superpowers/rulings/m13g-rulings.txt"))
             .unwrap_or_default();
-        assert!(rulings.contains("Today's backend per adapter on EXTREME:"), "m13g-rulings.txt must record the backend");
+        assert!(rulings.contains("Today's backend per adapter on the Windows test machine:"), "m13g-rulings.txt must record the backend");
     }
 
     fn key(family: &str, px: f32, h: f32, v: f32) -> FaceKey {

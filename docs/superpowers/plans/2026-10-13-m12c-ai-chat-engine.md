@@ -6,7 +6,7 @@
 
 **Goal:** with a provider configured (12b), a chat linked to a Tandem session can talk to the model, which can read the terminal (state, screen, history, output), type into it, run commands in cmd, PowerShell or a POSIX shell and get their output, set the clipboard, create a file and restart the session, each only through the permission a person chose (Ask parks for Allow Once, Always Allow, Deny this Time, Always Deny; Always runs; Never refuses), with a flagged-command warning from the optional safety check, and every message kept in a SQLite database with iTerm2's schema so an imported `chatdb.sqlite` opens unchanged.
 
-**Architecture:** pure models first, each a plain `pub mod` tested on EXTREME. `chat_message.rs` is the message model and its Swift-shaped JSON codec; `chat_store.rs` the rusqlite database (schema, migrations, rows, blobs, search, the lock). `chat_broker.rs` is the broker and service (publish, processors, subscriptions, the streaming rewrite rule, the turn queue) as a pure state machine that returns effects. `ai_permissions.rs` holds categories, overrides and the gate decision; `ai_tools.rs` the tool registry (names, descriptions, schemas, argument parsing). `ai_screen.rs` adds screen extraction methods to `Screen` (an `impl Screen` block, as `marks.rs` does); `ai_terminal.rs` answers the read-only tools from a `Facts` snapshot. `ai_shell.rs` detects the session's shell; `ai_actions.rs` holds the writing tools' pure parts (escape decoder, line-end rule, the staged-line accumulator, file path rule, man page rule). `ai_exec.rs` is `execute_command`'s plan and output extraction. `ai_context.rs` builds the volatile context block and the consent state. `ai_hard_rules.rs` is TerminalHardRules plus the Windows set; `ai_classifier.rs` the AutoModeClassifier (budgets, rendering, neutralization, parse) and the transcript projection. `chat_agent.rs` is the per-chat agent state (system prompt choice, parks, Stop). The app side is `src/app/chat_app.rs` (the database, broker, agents and their tick), `src/app/ai_tools_app.rs` (running a tool on a pane), `src/app/ai_exec_app.rs` (running commands), `src/app/ai_safety_app.rs` (the safety check and its nag). Every new App field is app-wide; none goes in `swap_live`.
+**Architecture:** pure models first, each a plain `pub mod` tested on the Windows test machine. `chat_message.rs` is the message model and its Swift-shaped JSON codec; `chat_store.rs` the rusqlite database (schema, migrations, rows, blobs, search, the lock). `chat_broker.rs` is the broker and service (publish, processors, subscriptions, the streaming rewrite rule, the turn queue) as a pure state machine that returns effects. `ai_permissions.rs` holds categories, overrides and the gate decision; `ai_tools.rs` the tool registry (names, descriptions, schemas, argument parsing). `ai_screen.rs` adds screen extraction methods to `Screen` (an `impl Screen` block, as `marks.rs` does); `ai_terminal.rs` answers the read-only tools from a `Facts` snapshot. `ai_shell.rs` detects the session's shell; `ai_actions.rs` holds the writing tools' pure parts (escape decoder, line-end rule, the staged-line accumulator, file path rule, man page rule). `ai_exec.rs` is `execute_command`'s plan and output extraction. `ai_context.rs` builds the volatile context block and the consent state. `ai_hard_rules.rs` is TerminalHardRules plus the Windows set; `ai_classifier.rs` the AutoModeClassifier (budgets, rendering, neutralization, parse) and the transcript projection. `chat_agent.rs` is the per-chat agent state (system prompt choice, parks, Stop). The app side is `src/app/chat_app.rs` (the database, broker, agents and their tick), `src/app/ai_tools_app.rs` (running a tool on a pane), `src/app/ai_exec_app.rs` (running commands), `src/app/ai_safety_app.rs` (the safety check and its nag). Every new App field is app-wide; none goes in `swap_live`.
 
 **Tech Stack:** rusqlite with the `bundled` feature (ruling 5; the one new crate); `serde_json` (message JSON, schemas, tool arguments), `uuid` v4 (message and chat ids), `regex` (the command-name rule), `arboard` (clipboard, already `App::clipboard`), `std::process::Command` (Get-Help, hidden). No HTTP here: every model call goes through 12b.
 
@@ -25,7 +25,7 @@
 - **The chat queue** (Task 2's per-chat turn queue) is 12c's; 12f Task 11 adds its one rule (a person's message goes ahead of queued watcher events, `ChatService.swift:365-403`) to `chat_broker.rs`. 12c does not implement that rule.
 - SQL uses bound parameters only (ruling 10); no query text is built from data.
 - Reuse, do not duplicate: `App::{user_write, restart_pane, variables, redraw, enter_pane_window}`, `Pane::{own, tmux_io}`, `Screen::{at_prompt, typed_command, last_command_mark, prompts_seen, current_prompt_line, last_output_range, last_command_range, mouse_modes, term}` (`src/marks.rs`, `src/screen.rs`), `api_buffer::above` (absolute lines), `shell_history::Store::ever_used`, `statusbar_content::is_localhost`, `proctree::strip_exe`, `semantic::cmd_quote` and the `explorer.exe /select,` form of `Run::Reveal` (`src/app/semantic_ui.rs:190-201`), `App::clipboard`, `globals::default_path`, `prompt_ui::ConfirmWindow::actions`, `crate::pty::Notify`, the `scripts_alerts` queue shape.
-- New pure code is a plain `pub mod`; Win32 code is `#[cfg(windows)]`. Tests run on EXTREME with `scripts/xt test --lib <filter>`. Do not launch the GUI. Tests never call a model or the network: 12b is reached through the fakes named in each task.
+- New pure code is a plain `pub mod`; Win32 code is `#[cfg(windows)]`. Tests run on the Windows test machine with `scripts/xt test --lib <filter>`. Do not launch the GUI. Tests never call a model or the network: 12b is reached through the fakes named in each task.
 
 ## Review Focus
 
@@ -348,7 +348,7 @@
 - Loop: `about_to_wait` (`src/app/mod.rs:2824`, the tick calls at `:2871-2917`), `UserEvent::Wake` (`src/app/mod.rs:119-121`), `crate::pty::Notify` (`src/pty.rs:172`).
 - Paths: `globals::default_path` (`src/globals.rs:54-57`, `%APPDATA%\Tandem\settings.toml`); `Globals::{get, set, bool, int, string}` (`src/globals.rs:96-126`).
 - Cargo: no SQLite crate (`Cargo.toml:7-39`); `serde_json` with `preserve_order`, `uuid` v4, `regex`, `arboard` present; `windows-sys` has `Win32_Storage_FileSystem`.
-- Tests on EXTREME: `scripts/xt test --lib <filter>`; the `marks.rs` tests show how to feed OSC 133 into a `Screen`.
+- Tests on the Windows test machine: `scripts/xt test --lib <filter>`; the `marks.rs` tests show how to feed OSC 133 into a `Screen`.
 
 ### 12a and 12b interfaces consumed (names from the facts split; the written plans win)
 
@@ -473,7 +473,7 @@
 
 ### Decisions (each goes in `m12c-rulings.txt`)
 
-- rusqlite `bundled` builds SQLite with MSVC's `cl.exe` on EXTREME (already needed by the Rust toolchain). Cost: a slower first build.
+- rusqlite `bundled` builds SQLite with MSVC's `cl.exe` on the Windows test machine (already needed by the Rust toolchain). Cost: a slower first build.
 - A known message case whose body does not decode is `Unsupported` (iTerm2 throws and the whole chat fails to load); `Unsupported` rows are never rewritten. Cost: a corrupt message shows as "requires a newer version".
 - Types other parts own (explanations, watcher events, orchestration actions, attachments, `llmMessage`) ride as opaque JSON in 12c. Cost: they are kept, not interpreted, until their part lands.
 - Tandem-written `llmMessage` is 12b's raw assistant JSON, not iTerm2's `LLM.Message` shape; iTerm2 opening a Tandem database is not a goal. Cost: a Tandem chat copied back to iTerm2 may not replay its tool calls.
@@ -521,4 +521,4 @@
 - A park's request id is the request message's unique id; a response after Stop finds no park and is dropped.
 - New App fields are app-wide; none goes in `WinSlot` or `swap_live`.
 - `Write::Agent` must be added to both exhaustive matches in `broadcast.rs`, or the build fails.
-- Copy `Cargo.lock` back from EXTREME after adding rusqlite (implementer rules).
+- Copy `Cargo.lock` back from the Windows test machine after adding rusqlite (implementer rules).

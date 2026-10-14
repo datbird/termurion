@@ -2,11 +2,11 @@
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe` on a machine with the
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe` on a machine with the
 WebView2 Runtime installed (one run). Mark each line pass or fail.
 
 Before anything else: `m13x4-rulings.txt` line "Probe:" records the 13x4 desktop probe (PASS, 34
-of 34 on EXTREME on 2026-10-10, run c). Section A lists the probe tests; sections B to F are what no test
+of 34 on the Windows test machine on 2026-10-10, run c). Section A lists the probe tests; sections B to F are what no test
 could execute (a real page, a real drive, the real Explorer). Reader Mode, Remove Distractions and
 Remove Element cannot be compared with a running iTerm2 (iTerm2's never run at `64791fc`, see the
 rulings); the expected behavior is written on each line. Rows marked (world) are inert only if the
@@ -67,7 +67,7 @@ All 34 passed on 2026-10-10 (run c, after one product fix and the probe fixes; m
 
 ## D. Save Page As to an NTFS folder
 
-- [ ] Right-click `links.html` (images and CSS), Save Page As..., pick `C:\Users\datbi\Desktop` and name `saved1`: a folder `saved1` holding `index.html` and a `resources` folder is created and Explorer shows `index.html`.
+- [ ] Right-click `links.html` (images and CSS), Save Page As..., pick `%USERPROFILE%\Desktop` and name `saved1`: a folder `saved1` holding `index.html` and a `resources` folder is created and Explorer shows `index.html`.
 - [ ] Disconnect the network (or stop the web server) and open `saved1\index.html` offline in a browser: the page, its image and its CSS show.
 - [ ] Mark of the Web on every file: in PowerShell run `Get-ChildItem saved1 -Recurse -File | ForEach-Object { "$($_.FullName): " + (Get-Content -LiteralPath $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue | Out-String) }`. Every file prints `ZoneId=3` and a `HostUrl=` of the page.
 - [ ] Save to an existing folder name (save again as `saved1`): "Save Failed" with the cause; nothing in `saved1` is changed or deleted.

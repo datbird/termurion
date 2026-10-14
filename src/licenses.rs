@@ -207,7 +207,7 @@ mod tests {
     /// The files the installer copies are Termurion's own binaries or the ConPTY pair, whose notice is in the list.
     #[test]
     fn every_installed_file_has_a_notice() {
-        let ps = include_str!("../scripts/install-extreme.ps1");
+        let ps = include_str!("../scripts/install-windows.ps1");
         let line = ps.lines().find(|l| l.starts_with("$files = ")).expect("the file list");
         let names: Vec<&str> = line.trim_start_matches("$files = ").split(',').map(|n| n.trim().trim_matches('\'')).collect();
         assert!(names.len() >= 7, "{names:?}");

@@ -100,7 +100,7 @@ pub enum FadePath {
 }
 
 /// Step 0's results (`fade_probe.rs`, `m13u-rulings.txt`). The layered path ships off until a
-/// desktop-session check on EXTREME (Intel and NVIDIA) shows non-blank frames (checklist row);
+/// desktop-session check on the Windows test machine (Intel and NVIDIA) shows non-blank frames (checklist row);
 /// flip it to true then. An opaque hotkey window shows and hides at once until it is.
 pub const FADE_LAYERED: bool = false;
 pub const FADE_COMPOSED: bool = true;

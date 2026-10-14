@@ -1,7 +1,7 @@
 # Milestone 9j acceptance checklist
 
 Close any open Termurion window. Copy `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`,
-`conpty.dll`, and `OpenConsole.exe` from `C:\Users\datbi\src\termurion\target\release\` together,
+`conpty.dll`, and `OpenConsole.exe` from `%USERPROFILE%\src\termurion\target\release\` together,
 then run `tandem.exe`.
 
 Setup: install shell integration in the PowerShell session (milestone 4a); without it, Command
@@ -11,7 +11,7 @@ few Snippets (at least one plain, one in a folder, one tagged) and a couple of A
 few named marks in a pane (Edit > Mark or a Set Named Mark trigger). In Settings > Profiles create
 two profiles besides Default, each with a distinct tag under Advanced (for the Profiles tool's
 `tag:` search). None of this has been checked on a real screen before this pass (every task
-deferred launching the GUI on EXTREME, since the rules forbid it while the machine may be in use),
+deferred launching the GUI on the Windows test machine, since the rules forbid it while the machine may be in use),
 so this pass is the first look. Mark each line pass or fail.
 
 | # | Check | Result |

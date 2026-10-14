@@ -6,7 +6,7 @@ sends a message. Nothing in 12c can be tried without it.
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Setup: a real API key for at least one cloud vendor from 12a (Set API Key...), "Enable generative AI
 features" on, and a chat model that supports function calling (for example `gpt-5-mini`, or an

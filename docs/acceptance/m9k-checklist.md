@@ -1,7 +1,7 @@
 # Milestone 9k acceptance checklist
 
 Close any open Termurion window. Copy `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`,
-`conpty.dll`, and `OpenConsole.exe` from `C:\Users\datbi\src\termurion\target\release\` together,
+`conpty.dll`, and `OpenConsole.exe` from `%USERPROFILE%\src\termurion\target\release\` together,
 then run `tandem.exe`.
 
 Setup: install shell integration in the PowerShell session (milestone 4a). On the profile you use,
@@ -15,7 +15,7 @@ Start-Sleep 1 }` loop) for the Jobs tool. In Settings > Profiles create a second
 Default. Place a named mark in a pane (Edit > Mark, or a Set Named Mark trigger). In Settings >
 Shortcuts add a snippet and an action. With the toolbelt shown and a couple of tools on, save a
 window arrangement (Window > Save Window Arrangement). None of this has been checked on a real
-screen before this pass (every task deferred launching the GUI on EXTREME, since the rules forbid
+screen before this pass (every task deferred launching the GUI on the Windows test machine, since the rules forbid
 it while the machine may be in use), so this pass is the first look. Mark each line pass or fail.
 
 | # | Check | Result |

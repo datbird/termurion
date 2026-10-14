@@ -1,13 +1,13 @@
 # Milestone 10a acceptance checklist
 
 Close any open Termurion window. Copy `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`,
-`conpty.dll`, and `OpenConsole.exe` from `C:\Users\datbi\src\termurion\target\release\` together,
+`conpty.dll`, and `OpenConsole.exe` from `%USERPROFILE%\src\termurion\target\release\` together,
 then run `tandem.exe`.
 
 Setup: on the profile you use, bind a key to key action 15 ("Start Instant Replay", Settings >
 Keys > Key Bindings), in addition to the default Win+Alt+B. Open a second window. Have a tmux
 session attached in one pane of the first window. This pass is the first look at a real screen
-(every task deferred launching the GUI on EXTREME, since the rules forbid it while the machine
+(every task deferred launching the GUI on the Windows test machine, since the rules forbid it while the machine
 may be in use). Mark each line pass or fail.
 
 | # | Check | Result |

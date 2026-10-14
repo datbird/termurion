@@ -2,7 +2,7 @@
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Setup: a provider key in Settings > General > AI, "Enable generative AI features" on, the WebView2
 Runtime installed, and a Browser profile from 13x (Settings > Profiles, Profile type Browser). Have
@@ -91,14 +91,14 @@ One probe test belongs to this milestone:
 
 - [ ] `webhost_win::probe::ai_browser_tools_run_on_a_page` (the pure answer functions over the real markdown script on a 127.0.0.1 page, loads through the guarded `navigate`; secret fields, a `[hidden]` element, a password-autocomplete textarea and a Termurion mark annotation absent from the page text while their unmarked twins are present; a `</page-content>` line in the page cannot close the fence; a model may not read the 127.0.0.1 page itself (final review I3); find and section answers). Changed in the final wave after the 2026-10-11 PASS: run it again.
 
-Run it from an ssh session on EXTREME with Robert's yes and no implementer building in the
+Run it from an ssh session on the Windows test machine with Robert's yes and no implementer building in the
 checkout; a PowerShell console window shows for the whole run; `probe: process session N` must show
 N not 0 (session 0 prints SKIPPED, which is not a pass). `-Filters` is a `string[]`, and `-File`
-passes a comma string as ONE filter, so write a wrapper `C:\Users\datbi\src\run-13xai-probe.ps1` and
+passes a comma string as ONE filter, so write a wrapper `%USERPROFILE%\src\run-13xai-probe.ps1` and
 run it the same way:
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\datbi\src\run-13xai-probe.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\src\run-13xai-probe.ps1
 ```
 
 with the wrapper holding:
@@ -107,7 +107,7 @@ with the wrapper holding:
 $f = @(
  'webhost_win::probe::ai_browser_tools_run_on_a_page'
 )
-& C:\Users\datbi\src\<checkout>\scripts\probe-desktop.ps1 -Repo C:\Users\datbi\src\<checkout> -Filters $f
+& %USERPROFILE%\src\<checkout>\scripts\probe-desktop.ps1 -Repo %USERPROFILE%\src\<checkout> -Filters $f
 ```
 
 The full run (no `-Filters`) runs every `webhost_win::probe::` test including this one.

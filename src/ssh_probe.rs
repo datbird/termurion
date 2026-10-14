@@ -482,7 +482,7 @@ mod tests {
         assert_eq!(choose(&with(false, false, false)), None);
     }
 
-    /// The probe run on EXTREME (2026-09-27, shipped ConPTY 1.24.260710001, OpenSSH_for_Windows
+    /// The probe run on the Windows test machine (2026-09-27, shipped ConPTY 1.24.260710001, OpenSSH_for_Windows
     /// 9.5p2, sshd in WSL Ubuntu-Personal). Both ConPTY modes carry every piece but the main
     /// payload, whose invalid UTF-8 comes back as U+FFFD; pipes ends at once ("GetConsoleMode on
     /// console input handle failed with 6") and never forwards a byte on anonymous pipes. The pipes

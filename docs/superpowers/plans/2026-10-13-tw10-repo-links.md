@@ -71,4 +71,4 @@ links point at the repo now (they fail while the repo is private, accepted).
   `resources/` outside the Keep list.
 - A test that every `help(slug)` used in code has `docs/help/<slug>.md`.
 - `tips_urls_are_fixed` accepts only the repo bases.
-- Full suite on EXTREME via `scripts/xt test --release`.
+- Full suite on the Windows test machine via `scripts/xt test --release`.

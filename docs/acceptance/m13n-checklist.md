@@ -2,12 +2,12 @@
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Nothing in this milestone was checked on screen while it was built, so every line is a first look. The pure
 parts (weight and bold choice, line height, ligature levels, anti-alias and thin-stroke rules, the box and
 Powerline shapes, the Special Font Config table and its editor's field checks, the text size rules) are unit
-tested, and two checks were measured headless on EXTREME (Cascadia Code glyph ids with and without ligatures; an
+tested, and two checks were measured headless on the Windows test machine (Cascadia Code glyph ids with and without ligatures; an
 offscreen "W" with 51 alpha levels before the anti-alias fix and 2 after). The app wiring (per-pane faces,
 pointer cells, tmux sizing, broadcast, Automatic Profile Switching) is covered by pure-function and source-order
 tests only, so read those rows twice. Fonts needed: Consolas, Cascadia Mono, Cascadia Code, a Nerd Font (for

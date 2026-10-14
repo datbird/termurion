@@ -16,7 +16,7 @@
 - Texts exactly as research 1.2, 1.3, 2 ("** tmux mode started **" and the Command Menu, "Detaching...", "Detached", "tmux logging on/off", "Exiting tmux mode, but tmux client may still be running.", "tmux failed with error: ...", "Unrecognized command from tmux. Did your ssh session die? The command was:", "tmux Reported a Problem", "Unsupported tmux option" and its text, "UTF-8 Mode Not Detected" and its text, "Slow tmux Response" and its text, "Force Detach?").
 - On entering tmux mode Tandem writes a bare Ctrl+C (0x03) first; nothing else is written until tmux sends `%session-changed` (or the first reply completes on tmux 1.8).
 - Commands end with "\r", or "\n" with the profile's Tmux Newline.
-- Recorded transcripts from a real tmux 3.4 (WSL on EXTREME, through Tandem's ConPTY) are test fixtures under `tests/fixtures/tmux/`.
+- Recorded transcripts from a real tmux 3.4 (WSL on the Windows test machine, through Tandem's ConPTY) are test fixtures under `tests/fixtures/tmux/`.
 
 ## Review Focus
 
@@ -32,7 +32,7 @@
 
 **Files:** Create `src/tmux_probe.rs` (an ignored test that runs `wsl.exe -e tmux -L tandem-probe -f /dev/null -CC new-session` in a ConPTY with each ConPTY source, sends `display-message -p` with a 300-character text and `kill-server`, and writes the raw reads); `tests/fixtures/tmux/wsl-3.4-shipped.bin`, `wsl-3.4-inbox.bin`.
 
-- [ ] Run it on EXTREME, check `ESC P 1000 p`, unwrapped long lines, `%exit` and `ESC \`; commit the fixtures and the findings in the ledger. Commit `tmux probe`.
+- [ ] Run it on the Windows test machine, check `ESC P 1000 p`, unwrapped long lines, `%exit` and `ESC \`; commit the fixtures and the findings in the ledger. Commit `tmux probe`.
 
 ### Task 2: The hook and line reader
 

@@ -113,7 +113,7 @@ Task 7: minor (deferred): ConfirmWindow heading only in title; Enter answers OK 
 Task 7: minor (deferred): failed note save not retried; a still-Deferred note at quit loses typing without a discarded copy.
 Task 7: minor (deferred): debug (console-subsystem) builds cannot send INT/QUIT (AttachConsole fails); stray eprintln while attached may reach the pane.
 Task 7: minor (deferred): a descendants_now failure banner is overwritten by "already ended".
-Task 7: minor (deferred): notes.rs tests never actually run on Linux (no cargo on sirtoolio); inspection says they pass.
+Task 7: minor (deferred): notes.rs tests never actually run on Linux (no cargo on the Linux dev machine); inspection says they pass.
 
 Task 8: Ruling: row spacing 44+2 and centering on the whole monitor follow the iTerm2 source over the brief - cost if wrong: palette slightly taller/offset.
 Task 8: CORRECTION of the row-spacing ruling above: row pitch is 44 with zero spacing (iTerm2 WC:91 sets intercellSpacing = NSZeroSize at runtime), so the brief's values were right; whole-monitor centering stays (WC:257-258). Plain Up/Down wrap (iTermOpenQuicklyTableView.m keyDown, verified) - brief kept.

@@ -21,7 +21,7 @@
 - Strings, sizes, modifiers, alerts and orders are iTerm2's, verbatim (Resume notes). Characters outside ASCII are `\u{...}` escapes in code. iTerm2 bugs are kept and each gets a checklist line (the 9c ruling); the ones here: the Snippets reorder index bug, the proportions name check that accepts a prefix, Command History's unescaped `cd`, the close button of the only tool hiding the toolbelt in every window.
 - Win is Cmd and Alt is Option. Double-clicks use the Windows double-click time (the 9f ruling). Ctrl+click toggles a row and Shift+click extends (Windows list convention, as Settings' lists do).
 - Reuse, do not duplicate: `snippets::search` and its tokens, `shell_history::Store`, `paste_history::History`, `user_actions::load`, `marks_ui::named_marks`, `shell_history::insertable_dir`, `settings_shortcuts` editors, `PromptWindow`, `show_menu_at`, `run_key_action`, `open_advanced_paste`, `user_paste`, `user_write`, `new_tab`, `split`, `COMPOSER_REFUSAL`.
-- New pure code is a plain `pub mod`; app code is `#[cfg(windows)]`. Tests run on EXTREME with `scripts/xt test --lib <filter>`. Do not launch the GUI.
+- New pure code is a plain `pub mod`; app code is `#[cfg(windows)]`. Tests run on the Windows test machine with `scripts/xt test --lib <filter>`. Do not launch the GUI.
 
 ## Review Focus
 

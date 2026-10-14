@@ -1,6 +1,6 @@
 # Milestone 5a acceptance checklist
 
-Close any open Termurion window, then run `C:\Users\datbi\src\termurion\target\release\tandem.exe`.
+Close any open Termurion window, then run `%USERPROFILE%\src\termurion\target\release\tandem.exe`.
 Use a WSL tab for the image tools (`imgcat` from iTerm2's utilities, `img2sixel` from
 libsixel-bin, `kitten icat` from kitty). Mark each line pass or fail.
 

@@ -3,15 +3,15 @@
 # The probe window is created by the tests and is never shown.
 # Run this over ssh ONLY after Robert said yes. Plain ASCII on purpose.
 #
-# Usage (from an ssh session on EXTREME):
-#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\datbi\src\termurion\scripts\probe-desktop.ps1
+# Usage (from an ssh session on the Windows test machine):
+#   powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\src\termurion\scripts\probe-desktop.ps1
 # Optional: -Repo <folder>  -TimeoutMinutes <n>  -Filters <cargo test filters>
 # If the ssh session drops while this runs, nothing cleans up by itself: run
 #   schtasks /Query /FO LIST | findstr termurion-probe   then   schtasks /Delete /TN <name> /F
 # by hand and look for leftover termurion-probe-* folders under %TEMP% and your home folder.
 
 param(
-    [string]$Repo = 'C:\Users\datbi\src\termurion',
+    [string]$Repo = (Join-Path $env:USERPROFILE 'src\termurion'),
     [int]$TimeoutMinutes = 40,
     [string[]]$Filters = @('webhost_win::probe::', 'webhost_win::tests::menu_gets_our_items')
 )
@@ -19,7 +19,7 @@ param(
 $ErrorActionPreference = 'Continue'
 $stamp = Get-Date -Format 'yyyyMMddHHmmss'
 $task = "termurion-probe-$stamp"
-$dir = "C:\Users\datbi\termurion-probe-$stamp"
+$dir = Join-Path $env:USERPROFILE "termurion-probe-$stamp"
 $taskCreated = $false
 $dirCreated = $false
 # A run folder that already exists was not made by this run: never use it, never remove it.

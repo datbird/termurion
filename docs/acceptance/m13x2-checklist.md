@@ -2,7 +2,7 @@
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe` with the WebView2
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe` with the WebView2
 Runtime installed (one run). Mark each line pass or fail. Nothing of 13x2's window, COM or
 isolated-world code has run on a real WebView2: the ignored runtime tests, the context menu, the
 link tip window, the overlays, the DevTools replay and the world itself are all on this list.
@@ -47,10 +47,10 @@ setTimeout(() => { var r = document.createRange(); r.selectNodeContents(document
 | # | Check | Result |
 |---|---|---|
 | **A. The probe (not passed until every row here passes; the 2026-10-07 run failed on probe defects, fixed after it)** | | |
-| 1 | With Robert's yes and no implementer building in the checkout under test, run `powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\datbi\src\<checkout>\scripts\probe-desktop.ps1 -Repo C:\Users\datbi\src\<checkout>` from an ssh session on EXTREME (`scripts/probe-desktop.ps1` is the only desktop command; a PowerShell console window shows for the whole run). The output shows `probe: process session N` with N not 0 (session 0 prints SKIPPED, which is not a pass). | |
+| 1 | With Robert's yes and no implementer building in the checkout under test, run `powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\src\<checkout>\scripts\probe-desktop.ps1 -Repo %USERPROFILE%\src\<checkout>` from an ssh session on the Windows test machine (`scripts/probe-desktop.ps1` is the only desktop command; a PowerShell console window shows for the whole run). The output shows `probe: process session N` with N not 0 (session 0 prints SKIPPED, which is not a pass). | |
 | 2 | The output shows `running 12 tests` and 12 `ok` results (the eleven ignored `webhost_win::probe::` tests and `webhost_win::tests::menu_gets_our_items`) and no failure; a timeout is a fail. | |
-| 3 | The output's `Runtime.enable detectable: yes` or `no` line is copied into the rulings file; replace line 1 with `Probe: PASS\|FAIL on EXTREME, WebView2 Runtime <version>, <date>; Runtime.enable detectable: yes\|no`. If yes, the controller revisits P25 before 13x3. | |
-| 4 | The script's last lines say `left running: none`, `left scheduled: none` and `left on disk: none`; `schtasks /Query /TN tandem-probe-<stamp>` says the task cannot be found; no `tandem-probe-*` folder remains under `C:\Users\datbi` or `%TEMP%`, and Teams, Outlook and other WebView2 hosts were not touched. | |
+| 3 | The output's `Runtime.enable detectable: yes` or `no` line is copied into the rulings file; replace line 1 with `Probe: PASS\|FAIL on the Windows test machine, WebView2 Runtime <version>, <date>; Runtime.enable detectable: yes\|no`. If yes, the controller revisits P25 before 13x3. | |
+| 4 | The script's last lines say `left running: none`, `left scheduled: none` and `left on disk: none`; `schtasks /Query /TN tandem-probe-<stamp>` says the task cannot be found; no `tandem-probe-*` folder remains under `%USERPROFILE%` or `%TEMP%`, and Teams, Outlook and other WebView2 hosts were not touched. | |
 | 5 | Also in the console session (same method, one task): the other ignored runtime tests pass: `bridge_round_trip` (`typeof window.webkit` is "undefined" on an https page and "object" on `iterm2-about:history`), `menu_gets_our_items`, `hover_reaches_the_router`, `send_text_reaches_a_field` (a field, a contenteditable, nothing focused), `smart_selection_selects_in_a_page`, `synthetic_click_runs_nothing`, `broadcast_types_into_a_second_view`, `probe_page_cannot_reach_evaluate_in_frame`. The script's default filters (`webhost_win::probe::` and `webhost_win::tests::menu_gets_our_items`) run all of them. (`synthetic_selection_copies_nothing` is not written: row 10 covers it by hand.) | |
 | **B. Security (page world versus Termurion's world)** | | |
 | 6 | Open `evil.html` in a Browser profile tab, then in DevTools (Inspect) console run `report`: it contains `binding:undefined` and `webview:undefined` (a page cannot call the binding or the host object from its own world). | |

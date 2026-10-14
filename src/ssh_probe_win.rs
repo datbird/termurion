@@ -299,7 +299,7 @@ mod tests {
         assert!(!bytes.is_empty(), "the client key could not be read from WSL");
         std::fs::write(&key, bytes).unwrap();
         let key = key.to_string_lossy().into_owned();
-        // %TEMP% can carry more than the user's ACL (EXTREME's grants CodexSandboxUsers), which
+        // %TEMP% can carry more than the user's ACL (the Windows test machine's grants CodexSandboxUsers), which
         // OpenSSH for Windows refuses ("UNPROTECTED PRIVATE KEY FILE"): only this user keeps access.
         // USERDOMAIN reads WORKGROUP in an ssh session there, so the bare name is used.
         let me = format!("{}:F", std::env::var("USERNAME").unwrap_or_default());

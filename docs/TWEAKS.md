@@ -12,7 +12,7 @@ Each item says what is wrong, what it should do, and where it was seen.
    folder (up to 2000 files, 256 MiB) over the SSH file machinery, and what stands in for the Mark
    of the Web, create-new and cleanup guarantees the local saver has. Recorded by the 13y2 parity
    sweep. Plan written 2026-10-12, build after the rename: plan: docs/superpowers/plans/2026-10-20-tw7b-save-page-to-ssh.md
-8. **Termurion stays running with no window.** On EXTREME, tandem.exe (started from Explorer at
+8. **Termurion stays running with no window.** On the Windows test machine, tandem.exe (started from Explorer at
    17:00 on 2026-10-11) and its tandem-host.exe were still running at 22:10 with no window
    (MainWindowHandle 0), so the installer refused to replace them ("Termurion is running"). Robert
    had no Termurion window open. Expected: when the last window closes, Termurion exits (unless a
@@ -26,7 +26,7 @@ Each item says what is wrong, what it should do, and where it was seen.
    while Termurion is resident (retry on failure and on TaskbarCreated after an Explorer restart),
    use the real Termurion icon, offer Quit, and log the result.
    2026-10-12 desktop try: the icon was there but Windows 11 hid it under the ^ overflow (new
-   icons start hidden; Robert's EXTREME now shows it). Three bugs found and fixed the same day:
+   icons start hidden; Robert's the Windows test machine now shows it). Three bugs found and fixed the same day:
    (a) every tray menu pick (Quit, New Window) did nothing while resident: the find handler
    claimed every command when no session was focused (`browser_find::claims_without_session`);
    (b) a window woken from resident lost its menu bar: the old muda menu was dropped after the
@@ -52,7 +52,7 @@ Each item says what is wrong, what it should do, and where it was seen.
 
 1. **The menu bar ignores Windows dark mode.** Done 2026-10-11 (main, tw1-darkmenu merged): menus follow the Windows app mode and switch live; Automatic uses AllowDark so the title bar and terminal colors follow too. Needs Robert's desktop look (dark, light, live switch).
 
-2. **"Jump List: Access is denied. (0x80070005)" red banner.** Cause: EXTREME has "Show
+2. **"Jump List: Access is denied. (0x80070005)" red banner.** Cause: The Windows test machine has "Show
    recently opened items in Start, Jump Lists and File Explorer" turned off, so Windows refuses
    the custom Recents category and the whole Jump List commit fails. Done in 13y2 (13b7b50, retry
    in 634e998): the custom categories are skipped, the taskbar tasks stay, no banner. Seen

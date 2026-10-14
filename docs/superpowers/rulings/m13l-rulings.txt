@@ -133,7 +133,7 @@ Deferred: the EcoQoS opt-out does not touch timer resolution - cost if wrong: ti
 Deferred: a doc comment and a global-flag test for the both-GPU-kinds flag - cost if wrong: none.
 Deferred: occluded windows are not kept warm at 1 s - cost if wrong: an occluded window draws only when asked (iTerm2 keeps a 1 s tick).
 Deferred: the meter's stats count only while the meter is shown - cost if wrong: the first seconds after turning it on read low.
-Final fix: Ruling: skip_covered filters in one pass. Deferred: about 60k quads for a full screen of dotted underline; gapped_underlines scans every quad per row and cut_gaps walks every ink of the row per quad (time it on EXTREME, checklist row 53; if it shows, cut the solid run before dashing or sort the inks and binary-search) - cost if wrong: a slow frame on a full screen of SGR 4:4.
+Final fix: Ruling: skip_covered filters in one pass. Deferred: about 60k quads for a full screen of dotted underline; gapped_underlines scans every quad per row and cut_gaps walks every ink of the row per quad (time it on the Windows test machine, checklist row 53; if it shows, cut the solid run before dashing or sort the inks and binary-search) - cost if wrong: a slow frame on a full screen of SGR 4:4.
 Deferred: the fallback metrics baseline (no renderer) is approximate - cost if wrong: a preview underline a pixel off.
 Deferred: per-row indexing in the gap pass and hover or annotation gap parity (hover and note underlines do not gap) - cost if wrong: a hover line does not break at descenders.
 Deferred: IME composition popups are not held during a Reduce Flicker hold - cost if wrong: the composition preview is absent for at most 0.2 s.

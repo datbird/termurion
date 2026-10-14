@@ -1,7 +1,7 @@
 # Milestone 9h acceptance checklist
 
 Close any open Termurion window. Copy `tandem.exe`, `tandem-host.exe`, `conpty.dll`, and
-`OpenConsole.exe` from `C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
+`OpenConsole.exe` from `%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`.
 
 Setup: in Settings > Profiles > Session turn "Status bar enabled" on for the default profile and
 press "Configure Status Bar". Install shell integration in the PowerShell session (milestone 4a) so

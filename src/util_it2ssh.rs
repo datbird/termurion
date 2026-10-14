@@ -340,7 +340,7 @@ mod tests {
 
     const B: &str = "46AaCfGgKkMNnqsTtVvXxYy";
 
-    /// OpenSSH for Windows 9.5p2's usage (EXTREME, 2026-09-27).
+    /// OpenSSH for Windows 9.5p2's usage (the Windows test machine, 2026-09-27).
     const WIN_USAGE: &str = "usage: ssh [-46AaCfGgKkMNnqsTtVvXxYy] [-B bind_interface] [-b bind_address]\r\n           [-c cipher_spec] [-D [bind_address:]port] [-E log_file]\r\n           [-e escape_char] [-F configfile] [-I pkcs11] [-i identity_file]\r\n           [-J destination] [-L address] [-l login_name] [-m mac_spec]\r\n           [-O ctl_cmd] [-o option] [-P tag] [-p port] [-Q query_option]\r\n           [-R address] [-S ctl_path] [-W host:port] [-w local_tun[:remote_tun]]\r\n           destination [command [argument ...]]\r\n";
 
     fn parsed(user_args: &[&str], host: &str, command: &[&str]) -> Parsed {

@@ -102,7 +102,7 @@ class TableTests(unittest.TestCase):
         keep_old = {r.old for r in rows if r.mode.startswith("keep")}
         for needed in [
             "{6A1E8D3C-2B7F-4C9E-9D41-5F0B7A2C8E13}",
-            "/mnt/c/Users/datbi/src/tandem",
+            "/mnt/c/Users/user2/src/tandem",
             "in tandem",
             "com.googlecode.iterm2",
             ".itermtab",
@@ -159,7 +159,7 @@ class DryrunTests(unittest.TestCase):
             "src/a.rs": b'fn x() { "Tandem" } // tandem tandem\nlet y = 1;\n',
             "README.md": b"Tandem is run in tandem.\nTANDEM_UI and a TanDem oddity\n",
             "docs/superpowers/plans/p.md": b"Tandem plan, tandem again\n",
-            "tests/fixtures/tmux/f.bin": b"%output \\033 /mnt/c/Users/datbi/src/tandem\n",
+            "tests/fixtures/tmux/f.bin": b"%output \\033 /mnt/c/Users/user2/src/tandem\n",
             "src/none.rs": b"nothing here\n",
         }
         root = make_repo(files)
@@ -382,8 +382,8 @@ class DryrunReportTests(unittest.TestCase):
     def test_real_table_has_zero_unmapped(self):
         dry = load("rename_dryrun")
         rep = dry.scan(REPO, TABLE)
+        # The rename has landed, so alias rows may find nothing left; only unmapped hits matter.
         self.assertEqual(rep.unmapped_outside_history, 0, rep.unmapped[:5])
-        self.assertTrue(rep.by_alias)
 
 
 class ApplySafetyTests(unittest.TestCase):

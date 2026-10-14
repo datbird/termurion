@@ -19,7 +19,7 @@
 - The toolbelt stays native (quads and `Frame.rows`); popovers and Open Quickly are egui host windows. No egui in the terminal window.
 - New per-window state goes in `Belt` (already in `WinSlot` and `swap_live`); new per-pane state goes on the Pane or the Screen; globals for the rest. Nothing new in `WinSlot`.
 - Strings, sizes, orders and alerts are iTerm2's, verbatim (Resume notes). Characters outside ASCII are `\u{...}` escapes in code. iTerm2 bugs are kept and each gets a checklist line: Jobs' plural "processes" for one, Open Quickly's x button closing instead of clearing, tips scoring below matches, the reversed color-preset quotes (kept in the string table though the source is empty), the double modifier symbol for a double-tap hotkey.
-- Win is Cmd and Alt is Option. Menu shortcuts in text read `Win+Shift+O`. New pure code is a plain `pub mod`; app code is `#[cfg(windows)]`. Tests run on EXTREME with `scripts/xt test --lib <filter>`. Do not launch the GUI.
+- Win is Cmd and Alt is Option. Menu shortcuts in text read `Win+Shift+O`. New pure code is a plain `pub mod`; app code is `#[cfg(windows)]`. Tests run on the Windows test machine with `scripts/xt test --lib <filter>`. Do not launch the GUI.
 
 ## Review Focus
 

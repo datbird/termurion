@@ -1,7 +1,7 @@
 # Milestone 8d acceptance checklist
 
 Close any open Termurion window. Copy `tandem.exe`, `tandem-host.exe`, `conpty.dll`, and
-`OpenConsole.exe` from `C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
+`OpenConsole.exe` from `%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`.
 Use WSL tmux 3.4 (pause mode needs 3.2 or later). Settings > General > tmux: set "Pause a pane if
 catching up would take longer than (seconds):" to 10 for these checks. Mark each line pass or fail.
 

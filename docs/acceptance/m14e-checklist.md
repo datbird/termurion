@@ -3,8 +3,8 @@
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `tandem-utils.exe` (SSH profiles run its
 `utilities\it2ssh.exe`), `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` (the worktree build is in
-`C:\Users\datbi\src\termurion-14e\target\release\`) together, then run `tandem.exe` once from a folder
+`%USERPROFILE%\src\termurion\target\release\` (the worktree build is in
+`%USERPROFILE%\src\termurion-14e\target\release\`) together, then run `tandem.exe` once from a folder
 with a path you can name in the registry (the protocol handler stores that exact path; moving the
 exe later makes Termurion ask to register again).
 

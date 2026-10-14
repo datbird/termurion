@@ -1,8 +1,8 @@
 # Milestone 13w acceptance checklist
 
-Build a release binary (`scripts/xt build --release`); the GPU capture rows and the window facts only mean something in release. Close any open Termurion window, copy `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from `C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
+Build a release binary (`scripts/xt build --release`); the GPU capture rows and the window facts only mean something in release. Close any open Termurion window, copy `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from `%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`.
 
-Setup: install DebugView from Sysinternals (run it with Capture Win32 and Capture Global Win32 on) for the debug output rows; open a window with a pwsh pane and, if available, a WSL or Git Bash pane with shell integration loaded (Session > Install Shell Integration); make a profile with a Highlight trigger and one with a Run Command trigger; keep Wireshark on EXTREME's adapter for the sound row. 13v1 must be built for the opened-file rows. Mark each line pass or fail; mark a row not applicable instead of fail when the tool itself is not installed on this machine.
+Setup: install DebugView from Sysinternals (run it with Capture Win32 and Capture Global Win32 on) for the debug output rows; open a window with a pwsh pane and, if available, a WSL or Git Bash pane with shell integration loaded (Session > Install Shell Integration); make a profile with a Highlight trigger and one with a Run Command trigger; keep Wireshark on the Windows test machine's adapter for the sound row. 13v1 must be built for the opened-file rows. Mark each line pass or fail; mark a row not applicable instead of fail when the tool itself is not installed on this machine.
 
 | # | Check | Result |
 |---|---|---|

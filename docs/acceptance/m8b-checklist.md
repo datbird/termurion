@@ -1,7 +1,7 @@
 # Milestone 8b acceptance checklist
 
 Close any open Termurion window. Copy `tandem.exe`, `tandem-host.exe`, `conpty.dll`, and
-`OpenConsole.exe` from `C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe`.
+`OpenConsole.exe` from `%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe`.
 The checks use tmux 3.4 in WSL. Edits from Termurion (splits, divider drags, closing, renaming into
 tmux) are 8c. Mark each line pass or fail.
 

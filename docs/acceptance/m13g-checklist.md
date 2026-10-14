@@ -2,7 +2,7 @@
 
 Build a release binary (`scripts/xt build --release`). Close any open Termurion window, copy
 `tandem.exe`, `tandem-host.exe`, `tandem-git.exe`, `conpty.dll`, and `OpenConsole.exe` from
-`C:\Users\datbi\src\termurion\target\release\` together, then run `tandem.exe` in the desktop
+`%USERPROFILE%\src\termurion\target\release\` together, then run `tandem.exe` in the desktop
 session (not over SSH).
 
 Setup: Windows 11 22H2 or later (a Windows 10 machine for the blur fallback line) with two
