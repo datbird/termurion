@@ -12,15 +12,13 @@ the same settings, the same menus, the same mouse, the same tmux integration, th
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4?style=flat-square)
 ![Language](https://img.shields.io/badge/Rust-2024%20edition-B7410E?style=flat-square)
 ![Renderer](https://img.shields.io/badge/renderer-wgpu-5b8cff?style=flat-square)
-![Tests](https://img.shields.io/badge/tests-6%2C338-28c840?style=flat-square)
-![Status](https://img.shields.io/badge/status-final%20milestones-7a5cff?style=flat-square)
+![Status](https://img.shields.io/badge/status-beta-7a5cff?style=flat-square)
 
 [Why Termurion](#why-termurion) ·
 [Features](#features) ·
 [How it compares](#how-it-compares) ·
 [Architecture](#architecture) ·
 [Building](#building) ·
-[Status](#status) ·
 [Credits](#credits-and-licenses)
 
 </div>
@@ -40,7 +38,7 @@ rows until they read `have`. Where iTerm2 has a quirk, Termurion keeps it and wr
 - **Your Mac settings, as they are.** Termurion reads iTerm2's own plist. Profiles, colors, keys,
   triggers, and arrangements come across without a conversion step.
 - **Your scripts, unchanged.** The stock `iterm2` pip package connects to Termurion and works.
-- **Your muscle memory.** iTerm2's menu bar, key actions, and pointer actions, with Win in place of Cmd.
+- **Your muscle memory.** iTerm2's menu bar, key actions, and pointer actions, with Ctrl+Shift in place of Cmd (or Win, your pick).
 
 ## Features
 
@@ -54,7 +52,7 @@ rows until they read `have`. Where iTerm2 has a quirk, Termurion keeps it and wr
 - Inline images: OSC 1337 File, sixel, the kitty graphics protocol, animated GIFs
 - Every keyboard protocol: CSI u, modifyOtherKeys, and kitty flags with key releases
 - Mouse reporting that works in vim, tmux, and htop, on WSL and native shells
-- Sessions in `tandem-host.exe`, so shells outlive a crashed window
+- Sessions in `termurion-host.exe`, so shells outlive a crashed window
 
 </td>
 <td width="50%" valign="top">
@@ -147,10 +145,10 @@ is native tmux control mode, which no other Windows terminal ships.
 
 ```mermaid
 flowchart LR
-    subgraph Host["tandem-host.exe"]
+    subgraph Host["termurion-host.exe"]
         CP["ConPTY<br/>(OpenConsole)"] --> SH["Shells: pwsh, cmd, WSL, ssh"]
     end
-    subgraph App["tandem.exe"]
+    subgraph App["termurion.exe"]
         PTY["Own ConPTY layer"] --> EMU["alacritty_terminal<br/>(patched core)"]
         EMU --> R["wgpu renderer<br/>(glyphon text)"]
         UI["iTerm2 UI<br/>menus, toolbelt, status bar"] --> R
@@ -183,7 +181,7 @@ Termurion builds on Windows with the MSVC Rust toolchain.
 cargo build --release
 
 # 3. Run
-.\target\release\tandem.exe
+.\target\release\termurion.exe
 ```
 
 The build copies `conpty.dll` and `OpenConsole.exe` next to the exe. The browser pane needs the
@@ -196,7 +194,7 @@ WebView2 runtime, which Windows 10 and 11 normally have.
 | Path | What it holds |
 |---|---|
 | `src/` | The app, about 520 modules |
-| `src/bin/` | `termurion`, `tandem-host`, `tandem-utils`, `tandem-git`, `cc-status`, and the probes |
+| `src/bin/` | `termurion`, `termurion-host`, `termurion-utils`, `termurion-git`, `cc-status`, and the probes |
 | `crates/` | Patched copies of `alacritty_terminal`, `vte`, and `glyphon` |
 | `resources/` | Shell integration, color presets, tab icons, terminfo, and AI prompts |
 | `proto/`, `schema/` | iTerm2's API protocol and the settings schema |
@@ -204,22 +202,6 @@ WebView2 runtime, which Windows 10 and 11 normally have.
 | `docs/acceptance/` | One hands-on checklist per milestone |
 | `docs/superpowers/` | Specs, plans, and rulings for each milestone |
 | `tests/` | Integration tests and fixtures |
-
-## Status
-
-Termurion started on 2026-09-23. It is near the end of the port.
-
-| | |
-|---|---|
-| Milestones done | 0 to 12, 14, and 13a to 13x8 |
-| Milestones left | AI browser tools, and a final gaps sweep |
-| Tests | 6,338 |
-| Rust | about 460,000 lines |
-| Commits | about 1,970 |
-
-The parity roadmap is in [`docs/parity/00-roadmap.md`](docs/parity/00-roadmap.md). Each
-milestone has a checklist in [`docs/acceptance/`](docs/acceptance/) and a rulings file that lists
-every kept iTerm2 quirk and every Windows-specific choice.
 
 ## Credits and licenses
 
