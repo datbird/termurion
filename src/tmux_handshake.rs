@@ -120,6 +120,9 @@ pub struct Handshake {
     pub tab_bug: bool,
     pub server_pid: Option<u32>,
     pub set_titles: bool,
+    /// The server is psmux (native Windows tmux): it answers `phony-command`, which every
+    /// tmux refuses as an unknown command.
+    pub psmux: bool,
 }
 
 impl Handshake {
@@ -169,7 +172,13 @@ impl Handshake {
     pub fn reply(&mut self, ask: Ask, text: Option<&str>, gw: &mut Gateway) -> Vec<Step> {
         let mut steps = Vec::new();
         match ask {
-            Ask::Phony => self.phony_since = None,
+            Ask::Phony => {
+                self.phony_since = None;
+                if text.is_some() {
+                    self.psmux = true;
+                    gw.psmux = true;
+                }
+            }
             Ask::Ping | Ask::CopyMode => {}
             Ask::AggressiveResize => {
                 for line in text.unwrap_or("").split('\n') {
@@ -382,6 +391,18 @@ mod tests {
         assert!(matches!(&bad[..], [Step::Abort(t, m)] if t == "Unsupported tmux option" && m.contains("\u{201c}aggressive-resize\u{201d} option is turned on")));
         let bad = h.reply(Ask::Utf8, Some("_"), &mut g);
         assert!(matches!(&bad[..], [Step::Abort(t, _)] if t == "UTF-8 Mode Not Detected"));
+    }
+
+    #[test]
+    fn psmux_is_the_server_that_accepts_the_phony_command() {
+        let mut g = started();
+        let mut h = Handshake::default();
+        assert!(h.reply(Ask::Phony, None, &mut g).is_empty(), "tmux: an unknown command");
+        assert!(!h.psmux && !g.psmux);
+        h.reply(Ask::Phony, Some(""), &mut g);
+        assert!(h.psmux && g.psmux, "psmux: it succeeds");
+        // psmux says 3.3.8 for its version, which reads as tmux 3.3.
+        assert_eq!(parse_version("3.3.8"), Version::Exact { number: 3.3, tab_bug: false });
     }
 
     #[test]

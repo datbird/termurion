@@ -45,6 +45,8 @@ pub struct DashData {
     pub windows: Vec<WindowRow>,
     pub limit: i64,
     pub open_if_hidden: bool,
+    /// The connection is psmux: no new session and no attach.
+    pub psmux: bool,
 }
 
 pub struct TmuxDashboardWindow {
@@ -137,8 +139,9 @@ impl TmuxDashboardWindow {
                         }
                     });
                     let (attach, detach, remove) = model::session_buttons(*sel_s, d.attached);
+                    let (add, attach) = model::session_buttons_for(d.psmux, attach);
                     ui.horizontal(|ui| {
-                        if ui.button("+").clicked() {
+                        if ui.add_enabled(add, egui::Button::new("+")).clicked() {
                             out = DashEvent::AddSession(model::new_session_name(&d.sessions));
                         }
                         if ui.add_enabled(remove, egui::Button::new("-")).clicked() {

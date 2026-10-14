@@ -1166,6 +1166,10 @@ impl App {
             return true;
         }
         let Some(t) = self.tmux.get_mut(&gw) else { return false };
+        if t.ctl.psmux {
+            self.banners.set("window", "psmux cannot move a pane next to another pane.".to_string());
+            return true;
+        }
         t.ctl.move_pane(ps, pd, axis == Axis::Row, before, &mut t.gw);
         self.tmux_flush(gw);
         true

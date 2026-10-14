@@ -79,17 +79,17 @@ impl Hook {
                 None => {
                     self.line.extend(rest.iter().filter(|b| **b != b'\r'));
                     i = data.len();
+                    // psmux ends a `detach` reply with `%exit` and no newline.
+                    if split_glued_exit(&self.line).is_some() {
+                        let line = std::mem::take(&mut self.line);
+                        self.finish_line(line, &mut out);
+                    }
                 }
                 Some(k) => {
                     self.line.extend(rest[..k].iter().filter(|b| **b != b'\r'));
                     i += k + 1;
                     let line = std::mem::take(&mut self.line);
-                    if let Some(o) = self.process(line) {
-                        if matches!(o, Out::Exit(_)) {
-                            self.control = false;
-                        }
-                        out.push(o);
-                    }
+                    self.finish_line(line, &mut out);
                 }
             }
         }
@@ -97,6 +97,23 @@ impl Hook {
             out.push(Out::Screen(screen));
         }
         out
+    }
+
+    /// A whole line: psmux glues `%exit` to the end of the `%begin` line of its `detach` reply,
+    /// so that line is two.
+    fn finish_line(&mut self, line: Vec<u8>, out: &mut Vec<Out>) {
+        let parts = match split_glued_exit(&line).map(|(head, exit)| (head.to_vec(), exit.to_vec())) {
+            Some((head, exit)) => vec![head, exit],
+            None => vec![line],
+        };
+        for line in parts {
+            if let Some(o) = self.process(line) {
+                if matches!(o, Out::Exit(_)) {
+                    self.control = false;
+                }
+                out.push(o);
+            }
+        }
     }
 
     /// One line (iTerm2's processLineIntoToken): the reply block it opens or closes, and
@@ -125,6 +142,13 @@ impl Hook {
         }
         Some(Out::Line(line))
     }
+}
+
+/// A `%begin` line with `%exit` glued to its end (psmux ends control mode this way after
+/// `detach`): the `%begin` part and the `%exit`. Real tmux never prints this line.
+fn split_glued_exit(line: &[u8]) -> Option<(&[u8], &[u8])> {
+    let head = line.strip_suffix(b"%exit")?;
+    (head.starts_with(b"%begin ") && head.last().is_some_and(u8::is_ascii_digit)).then(|| (head, &line[head.len()..]))
 }
 
 #[cfg(test)]
@@ -221,6 +245,30 @@ mod tests {
                 assert_eq!(screen, [&b"\x1b[1t\x1b[c\x1b[?1004h\x1b[?9001h"[..], tail].concat(), "{name} size {size}");
             }
         }
+    }
+
+    #[test]
+    fn psmux_detach_glues_the_exit_to_the_begin_line() {
+        let mut h = Hook::default();
+        let out = h.feed(b"\x1bP1000p%begin 1791963131 62 1%exit\n\x1b\\tail");
+        assert_eq!(out, vec![Out::Enter, l("%begin 1791963131 62 1"), Out::Exit(b"%exit".to_vec()), s(b"\x1b\\tail")]);
+        assert!(!h.active(), "control mode is over");
+        // psmux sends no newline after it: the exit is found in the partial line, at any read size.
+        for size in [1, 5, 64] {
+            let mut h = Hook::default();
+            let bytes = b"\x1bP1000p%begin 1791963131 62 1%exit";
+            let out: Vec<Out> = bytes.chunks(size).flat_map(|c| h.feed(c)).collect();
+            assert_eq!(out, vec![Out::Enter, l("%begin 1791963131 62 1"), Out::Exit(b"%exit".to_vec())], "size {size}");
+            assert!(!h.active());
+            assert_eq!(h.feed(b"\n\x1b\\"), vec![s(b"\n\x1b\\")]);
+        }
+        // A reply line that merely ends in the word is data, and a bare %exit is as before.
+        let mut h = Hook::default();
+        let out = h.feed(b"\x1bP1000p%begin 1 2 1\nsay %exit\n%end 1 2 1\n%exit\n");
+        assert_eq!(out, vec![Out::Enter, l("%begin 1 2 1"), l("say %exit"), l("%end 1 2 1"), Out::Exit(b"%exit".to_vec())]);
+        assert_eq!(split_glued_exit(b"%begin 1 2 1%exit"), Some((&b"%begin 1 2 1"[..], &b"%exit"[..])));
+        assert_eq!(split_glued_exit(b"%begin 1 2 1 %exit"), None);
+        assert_eq!(split_glued_exit(b"%output %1 a1%exit"), None);
     }
 
     /// psmux ends its lines with a bare newline, tmux with CR LF: both give the same lines.

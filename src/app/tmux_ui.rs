@@ -167,6 +167,7 @@ impl App {
                                 Step::VersionKnown => {
                                     let Some(t) = self.tmux.get_mut(&pane) else { return };
                                     let (min, tab_bug, status) = (t.hs.min, t.hs.tab_bug, t.hs.status_bar);
+                                    t.ctl.psmux = t.hs.psmux;
                                     t.ctl.version_known(min, tab_bug, status, &mut t.gw);
                                 }
                             }
@@ -205,6 +206,8 @@ impl App {
                     self.tmux_flush(pane);
                     return self.tmux_disconnected(pane, false);
                 }
+                // psmux killed the attached session and sent no %exit: let go (which ends its client).
+                Event::Gone => return self.tmux_disconnected(pane, true),
             }
         }
         self.tmux_flush(pane);
@@ -214,6 +217,10 @@ impl App {
     pub(super) fn tmux_flush(&mut self, pane: PaneId) {
         let Some(t) = self.tmux.get_mut(&pane) else { return };
         let bytes = t.gw.take_writes();
+        // A psmux detach: nothing to send, the client goes.
+        if t.gw.take_left() {
+            return self.tmux_disconnected(pane, true);
+        }
         if bytes.is_empty() {
             return;
         }
@@ -244,6 +251,8 @@ impl App {
             return;
         }
         self.api_tmux_gone(pane);
+        // psmux's client does not leave by itself when its gateway lets go: it is ended here.
+        let psmux = self.tmux.get(&pane).is_some_and(|t| t.gw.psmux);
         // A buried gateway comes back first (iTerm2 restores it before anything else).
         if self.buried.contains(pane) {
             self.disinter(pane);
@@ -257,6 +266,9 @@ impl App {
             p.gateway = false;
             if unhook {
                 p.unhook_tmux();
+                if psmux {
+                    p.end_client();
+                }
             }
         }
         self.bars.entry(pane).or_default().retain(|b| b.id != SLOW_BAR && b.id != HUNG_BAR);

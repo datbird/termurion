@@ -43,6 +43,12 @@ pub fn session_buttons(selected: Option<u32>, attached: Option<u32>) -> (bool, b
     }
 }
 
+/// psmux runs one session per server: the Dashboard cannot make or attach to another one
+/// through a control-mode client (its `new-session` and `attach-session` are not there).
+pub fn session_buttons_for(psmux: bool, attach: bool) -> (bool, bool) {
+    (!psmux, attach && !psmux)
+}
+
 /// Which window buttons work, and the Open in Windows label.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowButtons {
@@ -113,6 +119,8 @@ mod tests {
         assert_eq!(new_session("New Session"), "new-session -s \"New Session\"");
         assert_eq!(attach_session(2), "attach-session -t \"$2\"");
         assert_eq!(unlink_window(7), "unlink-window -k -t @7");
+        assert_eq!(session_buttons_for(false, true), (true, true));
+        assert_eq!(session_buttons_for(true, true), (false, false), "psmux: no new session, no attach");
         assert_eq!(list_windows(2, "\"F\""), "list-windows -F \"F\" -t \"$2\"");
         assert_eq!(list_sessions(), "list-sessions -F \"#{session_id} #{session_name}\"");
     }

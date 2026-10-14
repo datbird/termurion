@@ -211,6 +211,17 @@ impl Io {
         }
     }
 
+    /// Ends the program at once: killed here, or sent Ctrl+C by the session host.
+    pub fn end_client(&self) {
+        match self {
+            Io::Local(p) => p.terminate(),
+            Io::Hosted(p) => {
+                let _ = p.signal(false);
+            }
+            Io::Tmux(_) | Io::Browser(_) => {}
+        }
+    }
+
     pub fn exit_code(&self) -> Option<u32> {
         match self {
             Io::Local(p) => p.exit_code(),
@@ -1003,6 +1014,13 @@ impl Pane {
     /// Ends tmux control mode here without an `%exit`.
     pub fn unhook_tmux(&mut self) {
         self.tmux_hook.unhook();
+    }
+
+    /// Ends the program of this pane (a psmux client that outlives its session).
+    pub fn end_client(&self) {
+        if let Some(pty) = &self.pty {
+            pty.end_client();
+        }
     }
 
     /// A tmux integration pane's `%output` (`tmux_pump`'s Output arm): pushed and read at
