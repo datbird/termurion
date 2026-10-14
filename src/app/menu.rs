@@ -945,6 +945,8 @@ impl App {
                 }
             }
             "detachTmux:" => self.tmux_request_detach(),
+            "newPsmuxSession:" => self.start_tmux_session(crate::tmux_launch::Kind::Psmux, event_loop),
+            "newWslTmuxSession:" => self.start_tmux_session(crate::tmux_launch::Kind::WslTmux, event_loop),
             // A replay view cannot be buried (`textViewCanBury`, `PS:14820-14822`): refused
             // while the tab holds a replaying pane or the focused pane is a loaded recording.
             "bury:" => {

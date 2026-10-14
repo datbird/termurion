@@ -145,6 +145,7 @@ mod broadcast_ui;
 mod tmux_ui;
 mod tmux_tabs_ui;
 mod tmux_dashboard_app;
+mod tmux_launch_app;
 mod bury_ui;
 mod statusbar_ui;
 mod pane_title_ui;

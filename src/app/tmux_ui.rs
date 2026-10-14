@@ -470,6 +470,8 @@ impl App {
                 self.tmux_disconnected(pane, true);
             }
             (HUNG_BAR, _) => {}
+            // The missing-program bars of New psmux Session and New tmux Session in WSL.
+            (id, _) if id.starts_with(crate::tmux_launch::MISSING_BAR) => {}
             (super::tmux_tabs_ui::PLANE_BAR, Some("Why?")) => {
                 if let Err(e) = super::semantic_ui::shell_open(crate::links::HELP_TMUX_22, false) {
                     self.banners.set("window", format!("Could not open the page: {e}"));

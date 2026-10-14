@@ -392,6 +392,7 @@ mod tmux_probe;
 #[cfg(test)]
 mod tmux_live;
 pub mod tmux_hook;
+pub mod tmux_launch;
 pub mod conductor_parser;
 pub mod ssh_hook;
 pub mod ssh_args;
