@@ -65,6 +65,9 @@ rows until they read `have`. Where iTerm2 has a quirk, Termurion keeps it and wr
 - Pause and resume, the tmux dashboard, and option monitors
 - Edits, moves, clipboard, client lists, and persistence
 - The tmux status bar inside Termurion's own status bar
+- Three ways to run tmux on Windows: psmux (recommended for native tmux, no WSL; `winget install psmux`, https://github.com/psmux/psmux), tmux in WSL, and tmux over ssh
+- Shell > tmux > New psmux Session and New tmux Session in WSL start the first two
+- Native Windows support is tested against psmux 3.3.8, and WSL support against tmux 3.4, with a live suite that drives real servers
 
 </td>
 </tr>

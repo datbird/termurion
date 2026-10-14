@@ -88,6 +88,7 @@ impl App {
         if let Some(t) = self.tmux_dash_gw.and_then(|g| self.tmux.get(&g)) {
             data.sessions = t.ctl.sessions.iter().map(|(id, name)| model::SessionRow { id: *id, name: name.clone() }).collect();
             data.attached = t.ctl.session.as_ref().map(|(s, _)| *s);
+            data.psmux = t.ctl.psmux;
             let s = selected.or(data.attached);
             data.windows = s
                 .and_then(|s| t.ctl.session_windows.get(&s))
@@ -155,6 +156,7 @@ impl App {
             let g = &mut t.gw;
             match e {
                 DashEvent::Session(s) => c.dashboard_windows(s, clock - 1.5),
+                DashEvent::Attach(_) | DashEvent::AddSession(_) if c.psmux => {}
                 DashEvent::Attach(s) => c.command(&model::attach_session(s), g),
                 DashEvent::AddSession(name) => c.command_then_list(&model::new_session(&name), false, g),
                 DashEvent::RemoveSession(s) => c.command_then_list(&model::kill_session(s), true, g),
@@ -164,7 +166,9 @@ impl App {
                 }
                 DashEvent::AddWindow(s) => {
                     let recycling = t.hs.at_least(1.9);
-                    c.command(&crate::tmux_edits::new_window(Some(s), &crate::tmux_edits::Dir::Home, recycling), g);
+                    // psmux has no `-a -t $S:+`: it has one session, and a plain new-window is in it.
+                    let session = (!c.psmux).then_some(s);
+                    c.command(&crate::tmux_edits::new_window(session, &crate::tmux_edits::Dir::Home, recycling), g);
                     c.dashboard_windows(s, clock);
                 }
                 DashEvent::RemoveWindows(ids) => {

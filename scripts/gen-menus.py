@@ -3,7 +3,7 @@
 
 Each menu item keeps iTerm2's title, its action selector (Tandem's command id), its
 XIB identifier (what the Python API's MenuItem request names), and its key equivalent
-and modifier mask. Usage: scripts/gen-menus.py [path/to/iTerm2]
+and modifier mask. TERMURION_ADDITIONS below adds the few items only Termurion has. Usage: scripts/gen-menus.py [path/to/iTerm2]
 """
 import base64
 import os
@@ -38,6 +38,31 @@ def qa(s):
         return f"\\u{ord(c):04X}" if ord(c) < 0x10000 else f"\\U{ord(c):08X}"
 
     return '"' + "".join(one(c) for c in s) + '"'
+
+
+# Items only Termurion has, appended to the end of the named submenu: (title, selector, identifier).
+# A None entry is a separator. They are not in iTerm2's XIB, so nothing else generates them.
+TERMURION_ADDITIONS = {
+    ("Shell", "tmux"): [
+        None,
+        ("New psmux Session", "newPsmuxSession:", "tmux.New psmux Session"),
+        ("New tmux Session in WSL", "newWslTmuxSession:", "tmux.New tmux Session in WSL"),
+    ],
+}
+
+
+def add_termurion_items(path):
+    for entry in TERMURION_ADDITIONS.get(tuple(path), []):
+        out.append("[[item]]")
+        if entry is None:
+            out.append(f"path = [{', '.join(q(p) for p in path)}]")
+            out.append("separator = true")
+        else:
+            title, sel, ident = entry
+            out.append(f"path = [{', '.join(q(p) for p in path + [title])}]")
+            out.append(f"selector = {q(sel)}")
+            out.append(f"identifier = {qa(ident)}")
+        out.append("")
 
 
 def walk(menu, path):
@@ -90,6 +115,7 @@ def walk(menu, path):
         out.append("")
         if sub is not None:
             walk(sub, path + [title])
+    add_termurion_items(path)
 
 
 walk(main, [])

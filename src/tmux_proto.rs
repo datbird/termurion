@@ -175,9 +175,30 @@ pub fn parse(line: &[u8]) -> Result<Note, String> {
     })
 }
 
+/// `parse`, for psmux: it names a renamed session without an id (`%session-renamed name`),
+/// which is the attached session (`session`, when known).
+pub fn parse_psmux(line: &[u8], session: Option<u32>) -> Result<Note, String> {
+    if let Some(name) = line.strip_prefix(b"%session-renamed ") {
+        let name = String::from_utf8_lossy(name).into_owned();
+        let has_id = name.split(' ').next().is_some_and(|w| w.strip_prefix('$').and_then(num).is_some());
+        if let (false, false, Some(session)) = (has_id, name.is_empty(), session) {
+            return Ok(Note::SessionRenamed { session, name });
+        }
+    }
+    parse(line)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn psmux_names_a_renamed_session_without_an_id() {
+        assert_eq!(parse_psmux(b"%session-renamed my new name", Some(7)), Ok(Note::SessionRenamed { session: 7, name: "my new name".into() }));
+        assert_eq!(parse_psmux(b"%session-renamed $3 other", Some(7)), Ok(Note::SessionRenamed { session: 3, name: "other".into() }), "tmux's form still parses");
+        assert!(parse_psmux(b"%session-renamed other", None).is_err(), "no attached session known: as tmux's parser");
+        assert_eq!(parse_psmux(b"%window-add @1", Some(7)), Ok(Note::WindowAdd(1)));
+    }
 
     #[test]
     fn octal_decoding_follows_iterm2() {

@@ -32,6 +32,9 @@ pub enum Event {
     Print(String),
     /// tmux left (or the stream was not tmux): the gateway is disconnected.
     Exit,
+    /// psmux sends no `%exit` when the attached session is killed: the gateway is
+    /// disconnected, and the app must end the client itself.
+    Gone,
 }
 
 struct Cmd {
@@ -89,11 +92,40 @@ pub struct Gateway {
     stash: Vec<Vec<u8>>,
     /// tmux 3.2 or later (the wait-exit handshake).
     pub v3_2: bool,
+    /// The server is psmux (native Windows tmux): its `phony-command` succeeds.
+    pub psmux: bool,
+    /// The attached session, from `%session-changed`.
+    session: Option<(u32, String)>,
+    /// psmux: a detach was asked for, and the app must end the client.
+    left: bool,
+}
+
+/// Whether `cmd` ends the attached session `session`: `kill-server`, or `kill-session` of it
+/// (by `$id` or name, or with no target). `kill-session -a` keeps the attached one.
+pub fn kills_session(cmd: &str, session: Option<&(u32, String)>) -> bool {
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    match words.first() {
+        Some(&"kill-server") => return true,
+        Some(&"kill-session") => {}
+        _ => return false,
+    }
+    if words.iter().any(|w| *w == "-a") {
+        return false;
+    }
+    let Some(at) = words.iter().position(|w| *w == "-t") else { return true };
+    if words.get(at + 1).is_none() {
+        return true;
+    }
+    // The name may hold spaces: take the rest of the command, minus quotes.
+    let target = words[at + 1..].join(" ");
+    let target = target.trim_matches(|c| c == '"' || c == '\'');
+    let Some((id, name)) = session else { return false };
+    target == format!("${id}") || target == name.as_str()
 }
 
 impl Gateway {
     pub fn new(newline: &str) -> Gateway {
-        Gateway { newline: newline.into(), queue: VecDeque::new(), current: None, out: Vec::new(), held: Vec::new(), can_write: false, accept_notes: false, initialized: false, detach_sent: false, disconnected: false, stray: String::new(), logging: false, tolerate_unrecognized: false, paused: false, stash: Vec::new(), v3_2: false }
+        Gateway { newline: newline.into(), queue: VecDeque::new(), current: None, out: Vec::new(), held: Vec::new(), can_write: false, accept_notes: false, initialized: false, detach_sent: false, disconnected: false, stray: String::new(), logging: false, tolerate_unrecognized: false, paused: false, stash: Vec::new(), v3_2: false, psmux: false, session: None, left: false }
     }
 
     /// Sends one command. With no tag its errors are tolerated (iTerm2 does the same).
@@ -137,8 +169,21 @@ impl Gateway {
 
     /// Esc in the gateway session: `detach`, and nothing more after it.
     pub fn detach(&mut self) {
+        if self.psmux {
+            // psmux's client leaves on `detach` only when it reads more input, and the server
+            // is its own process: dropping the client is the detach.
+            self.detach_sent = true;
+            self.left = true;
+            self.force_disconnect();
+            return;
+        }
         self.send("detach", None, Flags { laggy: true, tolerate: true, ..Default::default() });
         self.detach_sent = true;
+    }
+
+    /// psmux only: true once after a detach, when the app must end the client.
+    pub fn take_left(&mut self) -> bool {
+        std::mem::take(&mut self.left)
     }
 
     /// Shell > tmux > Detach (iTerm2's requestDetach): false when a detach already went out,
@@ -249,11 +294,13 @@ impl Gateway {
         if gated.iter().any(|g| text.starts_with(g)) && !self.accept_notes {
             return ev;
         }
-        match tmux_proto::parse(raw) {
+        let parsed = if self.psmux { tmux_proto::parse_psmux(raw, self.session.as_ref().map(|s| s.0)) } else { tmux_proto::parse(raw) };
+        match parsed {
             Err(e) => ev.push(Event::Abort(e)),
             Ok(Note::Begin { time, flags, .. }) => self.begin(time, flags, &mut ev),
             Ok(Note::End { .. } | Note::Error { .. } | Note::Continue) => {}
             Ok(Note::SessionChanged { session, name }) => {
+                self.session = Some((session, name.clone()));
                 ev.push(Event::Note(Note::SessionChanged { session, name }));
                 if !self.can_write {
                     self.enable_writes();
@@ -291,7 +338,14 @@ impl Gateway {
             }
             // %noop, %pane-mode-changed, and notifications Termurion does not know are logged only.
             Ok(Note::Other(_)) => {}
-            Ok(n) => ev.push(Event::Note(n)),
+            Ok(n) => {
+                if let Note::SessionRenamed { session, name } = &n {
+                    if self.session.as_ref().is_some_and(|(s, _)| s == session) {
+                        self.session = Some((*session, name.clone()));
+                    }
+                }
+                ev.push(Event::Note(n));
+            }
         }
         ev
     }
@@ -343,6 +397,13 @@ impl Gateway {
                 if let Some(c) = &cur.cmd {
                     ev.push(Event::Print(format!("[Normal response to \u{201c}{}\u{201d}]", c.text)));
                 }
+            }
+            // psmux answers the kill of the attached session and says nothing more.
+            if !error && self.psmux && !self.disconnected && cur.cmd.as_ref().is_some_and(|c| kills_session(&c.text, self.session.as_ref())) {
+                self.disconnected = true;
+                self.queue.clear();
+                ev.push(Event::Gone);
+                return;
             }
             let fail_next = error && cur.cmd.as_ref().is_some_and(|c| c.in_list && !c.last_in_list);
             if cur.cmd.as_ref().is_some_and(|c| c.initial) {
@@ -508,5 +569,83 @@ mod tests {
         assert!(g.hung(t0 + LAG + Duration::from_millis(1)));
         g.send("list-windows", None, Flags::default());
         assert!(g.take_writes().starts_with(b"detach\r"), "nothing goes out after detach");
+    }
+
+    #[test]
+    fn killing_the_attached_session_is_found_by_target() {
+        let me = (3u32, "work".to_string());
+        let k = |c: &str| kills_session(c, Some(&me));
+        assert!(k("kill-session -t $3"));
+        assert!(k("kill-session -t \"$3\""));
+        assert!(k("kill-session -t work"));
+        assert!(k("kill-session"));
+        assert!(k("kill-server"));
+        assert!(!k("kill-session -t $4"));
+        assert!(!k("kill-session -t other"));
+        assert!(!k("kill-session -a -t $3"), "-a keeps the named session");
+        assert!(!k("kill-window -t @1"));
+        assert!(!k("display-message kill-session"));
+        assert!(!kills_session("kill-session -t work", None), "no attached session known");
+        let spaced = (5u32, "my work".to_string());
+        assert!(kills_session("kill-session -t \"my work\"", Some(&spaced)));
+    }
+
+    fn psmux_started() -> Gateway {
+        let mut g = started();
+        g.psmux = true;
+        g
+    }
+
+    #[test]
+    fn psmux_kill_of_the_attached_session_ends_the_gateway() {
+        let mut g = psmux_started();
+        g.send("kill-session -t $0", Some(1), tol());
+        g.take_writes();
+        let ev = feed(&mut g, &["%begin 9 9 1", "%end 9 9 1"]);
+        assert_eq!(ev, vec![Event::Reply { tag: 1, ok: true, text: String::new(), data: Vec::new() }, Event::Gone]);
+        assert!(g.disconnected());
+        g.send("list-windows", None, Flags::default());
+        assert!(g.take_writes().is_empty(), "nothing goes out after");
+        // The same command on real tmux waits for %exit, as before.
+        let mut g = started();
+        g.send("kill-session -t $0", Some(1), tol());
+        let ev = feed(&mut g, &["%begin 9 9 1", "%end 9 9 1"]);
+        assert_eq!(ev, vec![Event::Reply { tag: 1, ok: true, text: String::new(), data: Vec::new() }]);
+        assert!(!g.disconnected());
+        // Another session's kill, or a failed one, does not end psmux's gateway.
+        let mut g = psmux_started();
+        g.send("kill-session -t $7", Some(1), tol());
+        assert_eq!(feed(&mut g, &["%begin 9 9 1", "%end 9 9 1"]).len(), 1);
+        g.send("kill-session -t $0", Some(2), tol());
+        assert!(!feed(&mut g, &["%begin 9 9 1", "no such", "%error 9 9 1"]).contains(&Event::Gone));
+    }
+
+    #[test]
+    fn psmux_session_rename_without_an_id_is_the_attached_one() {
+        let mut g = psmux_started();
+        g.accept_notifications();
+        let ev = feed(&mut g, &["%session-renamed renamed"]);
+        assert_eq!(ev, vec![Event::Note(Note::SessionRenamed { session: 0, name: "renamed".into() })]);
+        let mut t = started();
+        t.accept_notifications();
+        assert!(matches!(&feed(&mut t, &["%session-renamed renamed"])[..], [Event::Abort(_)]), "real tmux keeps its parser");
+    }
+
+    #[test]
+    fn psmux_detach_drops_the_client_and_sends_nothing() {
+        let mut g = psmux_started();
+        g.take_writes();
+        assert!(g.request_detach());
+        assert!(g.take_writes().is_empty(), "psmux's client would sit on a detach");
+        assert!(g.disconnected() && g.detach_sent());
+        assert!(g.take_left());
+        assert!(!g.take_left(), "told once");
+        assert!(!g.request_detach(), "a second request asks to force it");
+        // Real tmux sends `detach` and waits for %exit.
+        let mut t = started();
+        t.take_writes();
+        assert!(t.request_detach());
+        assert_eq!(t.take_writes(), b"detach\r");
+        assert!(!t.take_left() && !t.disconnected());
     }
 }

@@ -4,6 +4,37 @@ tmux integration lets Termurion show a tmux session as native tabs, windows, and
 
 This works through tmux control mode. You do not need to learn tmux keys to use it.
 
+## Choosing a tmux
+
+Termurion works with tmux control mode on Windows three ways.
+
+| Way | Use it when | Install |
+|---|---|---|
+| psmux | You want native Windows tmux, with no WSL. Recommended for this. | `winget install psmux` (https://github.com/psmux/psmux) |
+| tmux in WSL | You already work in a WSL distribution. | `sudo apt install tmux` in the distribution |
+| tmux over ssh | The tmux server runs on another host. | tmux on that host |
+
+Native Windows support is tested against psmux 3.3.8. WSL support is tested against tmux 3.4. See [Tested with](#tested-with).
+
+### Start from the menu
+
+- Shell > tmux > New psmux Session opens a new tab that runs `psmux.exe -CC new-session -A -s termurion`.
+- Shell > tmux > New tmux Session in WSL opens a new tab that runs `wsl.exe -e tmux -CC new-session -A -s termurion`.
+
+Both attach to the session named `termurion`, or make it if it does not exist. If psmux is missing, an info bar gives the command that installs it (`winget install psmux`) and no tab opens. If WSL itself is missing, the bar says `wsl --install`. If WSL is there but tmux is not, the new tab says `sudo apt install tmux` and leaves you at a WSL shell, so the click never waits for WSL to start.
+
+### Start by hand
+
+In any Termurion tab, run the command for your way:
+
+```
+psmux -CC new-session -A -s main
+wsl.exe -e tmux -CC new-session -A -s main
+ssh -t host tmux -CC new -A -s main
+```
+
+You can also run `tmux -CC` or `tmux -CC attach` in a shell that already has tmux, as described next.
+
 ## Start
 
 In a shell that runs tmux (usually WSL, or an ssh session to a host that has tmux), run:
@@ -26,6 +57,22 @@ The first tab, the one where you typed the command, stays as the gateway. It is 
 
 - tmux on the host. Termurion detects the version when it connects. Features that need a newer tmux say so below.
 - The ConPTY that ships with Termurion (the `resources\conpty` folder, `conpty.dll` and `OpenConsole.exe`). The ConPTY that comes with Windows drops the start sequence of control mode (`DCS 1000p`), so tmux integration cannot start through it. Termurion loads the shipped ConPTY itself. If you replace or remove that folder, tmux integration stops working.
+
+## psmux differences
+
+psmux is not tmux, and its control mode does less. Termurion detects psmux when it connects and turns off what psmux cannot do. What you see:
+
+- Move Session to Split Pane shows a banner and does nothing. psmux has no `move-pane` or `join-pane` in control mode.
+- You cannot reorder tabs by dragging. psmux has no `swap-window` in control mode, so tabs keep their order.
+- In the Dashboard, the + button (new session) and Attach are off. psmux has no `new-session` or `attach-session` in control mode. The Dashboard lists the attached session only.
+- User variables are not saved to tmux. psmux refuses pane options that start with `@`.
+- Detach drops the client and leaves the session running in the psmux server, because psmux's client does not leave until it reads more input.
+- If the attached session is killed, Termurion ends the connection itself, because psmux sends no exit notice.
+- Keys sent to a pane may log a "command timed out" error from psmux. The keys still arrive, and Termurion ignores the error.
+- psmux starts a session at 120x30. Termurion resizes it to the tab size when it connects.
+- psmux reports version 3.3.8, which Termurion reads as tmux 3.3. Pause mode and per-window sizes are on.
+
+Everything else the live suite checks (attach, sizing, new window, split, resize, layouts, rename, send keys, pause, kill pane, detach) passes on psmux. The full list is in `docs/probe/2026-10-14-psmux-wsl-tmux-results.md`.
 
 ## Windows, tabs, and panes
 
@@ -92,6 +139,13 @@ All of these are in Settings (Ctrl+Shift+,), mostly under Advanced and General >
 - "Convert italics to reverse video in tmux integration?"
 - "Status bar shows tmux status bar content, not native components" (see [Status Bar](status-bar.md))
 - "Poll for foreground job name in tmux integration with tmux < 3.2?"
+
+## Tested with
+
+- Native Windows: psmux 3.3.8 (from winget).
+- WSL: tmux 3.4.
+
+Termurion's live suite starts a real server of each kind, attaches through the same code the app uses, and checks the features above. It uses its own server names and never touches your default servers. The results are in `docs/probe/2026-10-14-psmux-wsl-tmux-results.md`.
 
 ## Related pages
 

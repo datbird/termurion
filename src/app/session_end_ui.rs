@@ -114,6 +114,11 @@ impl App {
 
     /// The pane's session ended (R3: the pane stays unless its end action says Close).
     pub(super) fn session_exited(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        // A tmux client that ended without %exit (psmux after its session was killed, or a
+        // client that crashed) leaves its gateway behind: the gateway ends with it.
+        if self.tmux.contains_key(&id) {
+            self.tmux_disconnected(id, true);
+        }
         let Some(p) = self.panes.get_mut(&id) else { return };
         let tmux = p.tmux_io().is_some();
         crate::rlog!("session ended: pane {} exit code {}", id, p.exited.map_or(-1i64, i64::from));
@@ -537,5 +542,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A tmux client that ends without %exit (psmux after its session was killed, or a crash)
+    /// takes its gateway with it; psmux's client is ended when its gateway lets go; a detach
+    /// from psmux and the kill of its attached session both reach that path.
+    #[test]
+    fn a_gateway_ends_with_its_client_and_psmux_clients_are_ended() {
+        let ended = body(include_str!("session_end_ui.rs"), "    pub(super) fn session_exited(");
+        assert!(ended.find("self.tmux.contains_key(&id)").unwrap() < ended.find("let Some(p) = self.panes.get_mut(&id)").unwrap(), "before the pane is read as an ordinary one");
+        assert!(ended.contains("self.tmux_disconnected(id, true)"));
+        let ui = include_str!("tmux_ui.rs");
+        assert!(ui.contains("Event::Gone => return self.tmux_disconnected(pane, true),"));
+        let gone = body(ui, "    pub(super) fn tmux_disconnected(");
+        assert!(gone.contains("let psmux = self.tmux.get(&pane).is_some_and(|t| t.gw.psmux);") && gone.contains("p.end_client()"));
+        assert!(gone.find("p.unhook_tmux();").unwrap() < gone.find("p.end_client()").unwrap(), "only when the hook is let go, never after tmux's own %exit");
+        let flush = body(ui, "    pub(super) fn tmux_flush(");
+        assert!(flush.contains("t.gw.take_left()") && flush.contains("self.tmux_disconnected(pane, true)"), "a psmux detach");
     }
 }

@@ -37,3 +37,12 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
    (`validateMenuItem`: enabled only when the window has more than one session, and never for a
    locked session). Termurion leaves it enabled. Done 2026-10-14: both items now grey out by iTerm2's rule, per window
    (`menu::move_session_enabled`, test `move_session_items_follow_iterm2`).
+
+3. **tmux on Windows: psmux for native tmux, and WSL tmux, tested live.** Done 2026-10-14: native
+   Windows tmux support is now tested against psmux 3.3.8 and WSL support against tmux 3.4, with a
+   live suite that drives real servers (`docs/probe/2026-10-14-psmux-wsl-tmux-results.md`).
+   Termurion detects psmux and gates what it lacks (Move Session to Split Pane, tab reorder,
+   Dashboard attach and new session, user variables), and ends the gateway when the session ends.
+   Shell > tmux has New psmux Session and New tmux Session in WSL. Commits: f8731c6e (psmux
+   transcripts), c5e566d8 (fixture tests), 4a57f672 (gating and gateway end), 4088828c (live suite
+   and results), 4f978e69 (menu items). Docs: README, `help/tmux-integration.md`.

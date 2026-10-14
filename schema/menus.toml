@@ -484,6 +484,20 @@ mods = ["ctrl", "shift", "cmd"]
 alternate = true
 
 [[item]]
+path = ["Shell", "tmux"]
+separator = true
+
+[[item]]
+path = ["Shell", "tmux", "New psmux Session"]
+selector = "newPsmuxSession:"
+identifier = "tmux.New psmux Session"
+
+[[item]]
+path = ["Shell", "tmux", "New tmux Session in WSL"]
+selector = "newWslTmuxSession:"
+identifier = "tmux.New tmux Session in WSL"
+
+[[item]]
 path = ["Shell", "ssh"]
 selector = ""
 submenu = true

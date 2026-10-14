@@ -17,6 +17,7 @@ beta is out.
 
 ## Next
 
+- tmux on Windows: psmux (native) and WSL tmux are now tested with a live suite (see FIXES item 3). tmux over ssh has no live suite yet.
 - Fixes from beta testers. File bugs at https://github.com/datbird/termurion/issues.
 - The open items in [`FIXES.md`](FIXES.md) (found after the beta) and [`TWEAKS.md`](TWEAKS.md).
 - The rows still marked `partial` or `missing` in the parity inventory.

@@ -43,6 +43,8 @@ enum Req {
     Capture { opener: u64, pane: u32, part: Part },
     /// The short list-windows after a client resize.
     Relist,
+    /// psmux said `%window-close` for this window: is it still in `list-windows`?
+    StillThere(u32),
     /// A monitor's `refresh-client -B` and `display-message` replies.
     Subscribed(Key),
     Fetched(Key),
@@ -331,6 +333,9 @@ pub struct Controller {
     /// monitor pair, never reset), and the early polls they scheduled.
     accelerated: BTreeSet<u32>,
     accelerated_due: Vec<(u32, f64)>,
+    /// The server is psmux: commands it lacks are left out or sent in the form it has
+    /// (the app sets this from the handshake before `version_known`).
+    pub psmux: bool,
 }
 
 impl Controller {
@@ -392,6 +397,7 @@ impl Controller {
             status_interval_asked: false,
             accelerated: BTreeSet::new(),
             accelerated_due: Vec::new(),
+            psmux: false,
         }
     }
 
@@ -476,6 +482,10 @@ impl Controller {
     /// Move Session to Split Pane: `pane` joins `dest`'s window beside it (`side_by_side`) or
     /// above or below it, before it when `before`. Numeric ids only.
     pub fn move_pane(&mut self, src: u32, dst: u32, side_by_side: bool, before: bool, gw: &mut Gateway) {
+        // psmux has neither move-pane nor join-pane in control mode.
+        if self.psmux {
+            return;
+        }
         self.with_relist(crate::tmux_edits::move_pane(src, dst, side_by_side, before), gw);
     }
 
@@ -846,7 +856,8 @@ impl Controller {
     /// A pane's variables changed in Termurion: all of them go to `@uservars` (tmux 3.1 and
     /// later), unless tmux has them already.
     pub fn sync_user_vars(&mut self, pane: u32, vars: &BTreeMap<String, String>, gw: &mut Gateway) {
-        if self.v() < 3.1 || self.user_vars.get(&pane) == Some(vars) {
+        // psmux refuses pane options named @...: it would keep nothing.
+        if self.psmux || self.v() < 3.1 || self.user_vars.get(&pane) == Some(vars) {
             return;
         }
         self.user_vars.insert(pane, vars.clone());
@@ -994,12 +1005,15 @@ impl Controller {
     /// Fetches a paste buffer for the clipboard.
     pub fn fetch_buffer(&mut self, name: &str, gw: &mut Gateway) {
         let t = self.tag(Req::ShowBuffer);
-        gw.send(&format!("show-buffer -b {name}"), Some(t), Flags::default());
+        // psmux has no such buffer to show when its notice names one already deleted.
+        gw.send(&format!("show-buffer -b {name}"), Some(t), Flags { tolerate: self.psmux, ..Default::default() });
     }
 
-    /// A pane's foreground and background colors, for tmux to answer OSC 10 and 11 (3.4+).
+    /// A pane's foreground and background colors, for tmux to answer OSC 10 and 11. iTerm2
+    /// sends them from 3.4, but `refresh-client -r` arrived in tmux 3.5 (3.4 answers an error on
+    /// every attach), so Termurion waits for 3.5.
     pub fn color_reports(&mut self, pane: u32, fg: (u8, u8, u8), bg: (u8, u8, u8), sixteen: bool, gw: &mut Gateway) {
-        if self.v() < 3.4 {
+        if self.v() < 3.5 {
             return;
         }
         let tolerate = Flags { tolerate: true, ..Default::default() };
@@ -1019,6 +1033,10 @@ impl Controller {
 
     /// Tabs moved: tmux's windows take the tabs' order (iTerm2's setPartialWindowIdOrder).
     pub fn reorder(&mut self, wanted: Vec<u32>, gw: &mut Gateway) {
+        // psmux has no swap-window: its tabs keep the order they were made in.
+        if self.psmux {
+            return;
+        }
         let t = self.tag(Req::Reorder(wanted));
         gw.send("list-windows -F \"#{window_id}\"", Some(t), Flags::default());
     }
@@ -1240,6 +1258,17 @@ impl Controller {
                 let cmds = crate::tmux_edits::reorder(text, &wanted);
                 if !cmds.is_empty() {
                     gw.send_list(cmds.into_iter().map(|c| (c, None, Flags::default())).collect(), false);
+                }
+            }
+            Req::StillThere(window) => {
+                let alive = ok && text.lines().any(|l| l.trim().strip_prefix('@').and_then(|n| n.parse::<u32>().ok()) == Some(window));
+                if alive {
+                    // The window stays and a pane went: its layout says which.
+                    let t = self.tag(Req::Relist);
+                    self.outstanding += 1;
+                    gw.send(&crate::tmux_sizes::short_list(self.v()), Some(t), Flags::default());
+                } else {
+                    out.extend(self.window_closed(window, gw));
                 }
             }
             Req::Relist => {
@@ -1484,16 +1513,13 @@ impl Controller {
                     gw.send(&format!("display -p -F {format} -t @{window}"), Some(t), Flags { tolerate: true, ..Default::default() });
                 }
             }
-            Note::WindowClose(window) => {
-                self.windows_changed();
-                self.openers.retain(|_, o| o.window.id != window);
-                self.unwatch_window(window, gw);
-                if self.windows.remove(&window).is_some() {
-                    return vec![Action::Close(window)];
-                }
-                // Never opened (or never will): no tab to close, but the app may be waiting.
-                return vec![Action::Abandoned(window)];
+            // psmux says %window-close when one pane of a window dies and the window stays: ask
+            // before closing the tab (a window that is gone for good is not in the list).
+            Note::WindowClose(window) if self.psmux && self.windows.contains_key(&window) => {
+                let t = self.tag(Req::StillThere(window));
+                gw.send("list-windows -F \"#{window_id}\"", Some(t), Flags { tolerate: true, ..Default::default() });
             }
+            Note::WindowClose(window) => return self.window_closed(window, gw),
             Note::WindowRenamed { window, name } => {
                 self.windows_changed();
                 if self.windows.contains_key(&window) {
@@ -1557,6 +1583,18 @@ impl Controller {
 }
 
 impl Controller {
+    /// tmux's window is gone: its tab closes (or its open was still waiting).
+    fn window_closed(&mut self, window: u32, gw: &mut Gateway) -> Vec<Action> {
+        self.windows_changed();
+        self.openers.retain(|_, o| o.window.id != window);
+        self.unwatch_window(window, gw);
+        if self.windows.remove(&window).is_some() {
+            return vec![Action::Close(window)];
+        }
+        // Never opened (or never will): no tab to close, but the app may be waiting.
+        vec![Action::Abandoned(window)]
+    }
+
     /// A monitor's new value: an action, or (the clipboard options) a level kept here.
     fn monitor_value(&mut self, key: Key, value: String) -> Option<Action> {
         match key {
@@ -1892,7 +1930,11 @@ mod tests {
 
     /// tmux 3.4 attached with one window, one pane (%0), six captures a pane.
     fn opened_34() -> Rig {
-        let mut r = Rig::with_version(3.4);
+        opened_at(3.4)
+    }
+
+    fn opened_at(v: f64) -> Rig {
+        let mut r = Rig::with_version(v);
         r.lines(&["%session-changed $0 main"]);
         r.answer(Some(""));
         for _ in 0..11 {
@@ -2206,10 +2248,13 @@ mod tests {
     }
 
     #[test]
-    fn colors_are_reported_on_34() {
-        let mut r = opened_34();
+    fn colors_are_reported_from_35() {
+        let mut r = opened_at(3.5);
         r.ctl.color_reports(0, (1, 2, 3), (0x1e, 0x1e, 0x1e), true, &mut r.gw);
         assert_eq!(r.sent(), "refresh-client -r \"%0:\\033]10;rgb:0101/0202/0303\\033\\\\\"\rrefresh-client -r \"%0:\\033]11;rgb:1e1e/1e1e/1e1e\\033\\\\\"\r");
+        let mut r34 = opened_34();
+        r34.ctl.color_reports(0, (1, 2, 3), (4, 5, 6), true, &mut r34.gw);
+        assert_eq!(r34.sent(), "", "tmux 3.4 has no refresh-client -r");
         let mut old = opened();
         old.ctl.color_reports(0, (1, 2, 3), (4, 5, 6), true, &mut old.gw);
         assert_eq!(old.sent(), "", "tmux 3.1 has no report forwarding");
@@ -2416,5 +2461,76 @@ mod tests {
         assert!(gw.take_writes().is_empty(), "no version yet");
         ctl.version_known(Some(3.4), false, false, &mut gw);
         assert_eq!(gw.take_writes(), b"refresh-client -fpause-after=120\rshow -v -q -t $1 @iterm2_size\r", "pause mode first, as iTerm2's didGuessVersion");
+    }
+
+    /// psmux lacks `move-pane`, `join-pane`, `swap-window`, pane `@` options and `show-buffer` for a deleted
+    /// buffer: the controller leaves out or rewrites those, and real tmux is as before.
+    #[test]
+    fn psmux_gets_the_commands_it_has() {
+        let mut r = opened();
+        r.ctl.psmux = true;
+        r.sent();
+        r.ctl.move_pane(0, 1, true, true, &mut r.gw);
+        assert_eq!(r.sent(), "", "no move-pane, and psmux has no join-pane in control mode either");
+        r.ctl.reorder(vec![2, 0], &mut r.gw);
+        assert_eq!(r.sent(), "", "no swap-window");
+        let mut vars = BTreeMap::new();
+        vars.insert("user.a".to_string(), "1".to_string());
+        r.ctl.sync_user_vars(0, &vars, &mut r.gw);
+        assert_eq!(r.sent(), "", "no pane @ options");
+        r.ctl.fetch_buffer("buffer3", &mut r.gw);
+        assert_eq!(r.sent(), "show-buffer -b buffer3\r");
+        // The error reply is tolerated: no abort, and no clipboard.
+        let before = r.gw.take_writes();
+        assert!(before.is_empty());
+        let mut aborted = false;
+        for l in ["%begin 99 99 1", "no buffer buffer3", "%error 99 99 1"] {
+            aborted |= r.gw.line(l.as_bytes()).iter().any(|e| matches!(e, Event::Abort(_)));
+        }
+        assert!(!aborted);
+        // Real tmux keeps move-pane, swap-window and the abort.
+        let mut t = opened();
+        t.sent();
+        t.ctl.move_pane(0, 1, true, true, &mut t.gw);
+        assert!(t.sent().starts_with("move-pane -s"));
+        t.answer(Some(""));
+        t.answer(Some(""));
+        t.ctl.reorder(vec![2, 0], &mut t.gw);
+        assert_eq!(t.sent(), "list-windows -F \"#{window_id}\"\r");
+    }
+
+    /// psmux says `%window-close` when one pane of a window dies and the window stays: the tab
+    /// closes only when the window is gone from `list-windows`. Real tmux closes at once.
+    #[test]
+    fn psmux_window_close_is_checked_against_the_list() {
+        let mut r = opened();
+        r.ctl.psmux = true;
+        r.sent();
+        assert!(r.lines(&["%window-close @0"]).is_empty(), "held for the check");
+        assert_eq!(r.sent(), "list-windows -F \"#{window_id}\"\r");
+        assert!(r.ctl.windows.contains_key(&0));
+        // Still there: its layout is read again, and the tab stays.
+        let a = r.answer(Some("@0"));
+        assert!(!a.iter().any(|x| matches!(x, Action::Close(_))), "{a:?}");
+        assert!(r.sent().starts_with("list-windows -F \"#{window_id} #{window_layout}"), "the short list follows");
+        assert!(r.ctl.windows.contains_key(&0));
+        // Gone: the tab closes.
+        let mut g = opened();
+        g.ctl.psmux = true;
+        g.sent();
+        g.lines(&["%window-close @0"]);
+        g.sent();
+        assert_eq!(g.answer(Some("@1")), vec![Action::Close(0)]);
+        assert!(!g.ctl.windows.contains_key(&0));
+        // A failed check closes it too.
+        let mut e = opened();
+        e.ctl.psmux = true;
+        e.lines(&["%window-close @0"]);
+        assert_eq!(e.answer(None), vec![Action::Close(0)]);
+        // Real tmux: at once, no list.
+        let mut t = opened();
+        t.sent();
+        assert_eq!(t.lines(&["%window-close @0"]), vec![Action::Close(0)]);
+        assert_eq!(t.sent(), "");
     }
 }

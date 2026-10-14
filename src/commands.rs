@@ -37,7 +37,7 @@ pub const DONE: &[&str] = &[
     "newSessionWithSameProfile:", "duplicateTab:", "splitHorizontally:", "splitVertically:",
     "openSplitHorizontallySheet:", "openSplitVerticallySheet:", "saveContents:", "saveDocumentAs:",
     "closeCurrentSession:", "closeTerminalWindow:", "closeCurrentTab:", "copy:", "paste:|Paste",
-    "startStopLogging:", "debugLogging:", "saveRetrospectiveDebugLogs:", "saveArchive:", "restoreArchive:", "detachTmux:", "forceDetachTmux:", "newTmuxWindow:", "newTmuxTab:", "toggleTmuxPausePane:", "openDashboard:", "revealCockpit:", "bury:",
+    "startStopLogging:", "debugLogging:", "saveRetrospectiveDebugLogs:", "saveArchive:", "restoreArchive:", "detachTmux:", "forceDetachTmux:", "newTmuxWindow:", "newTmuxTab:", "newPsmuxSession:", "newWslTmuxSession:", "toggleTmuxPausePane:", "openDashboard:", "revealCockpit:", "bury:",
     "pasteSelection:", "selectAll:", "clearBuffer:", "clearScrollbackBuffer:", "toggleFullScreenMode:", "toggleFullScreenTabBar:", "toggleUseTransparency:", "toggleDisableTransparencyForActiveWindow:", "toggleLockSplitPaneWidth:",
     "nextTabGroup:", "previousTabGroup:", "addTabToNewGroupAction:", "removeTabFromGroupAction:",
     "copyPerformanceStats:", "gpuRendererAvailability:", "biggerFont:", "smallerFont:", "toggleSizeChangesAffectProfile:", "returnToDefaultSize:|Make Text Normal Size",
@@ -445,6 +445,21 @@ mod tests {
         for sel in DISABLED_UNDER_UV {
             assert!(items().iter().any(|i| i.selector == *sel), "{sel} is not in the menu");
         }
+    }
+
+    /// The two Termurion-only items under Shell > tmux come from the generator's additions table,
+    /// close that submenu, and work.
+    #[test]
+    fn the_session_start_items_are_done() {
+        let gen_script = include_str!("../scripts/gen-menus.py");
+        for (label, sel) in [("New psmux Session", "newPsmuxSession:"), ("New tmux Session in WSL", "newWslTmuxSession:")] {
+            let item = menus::by_id(&format!("Shell > tmux > {label}")).unwrap_or_else(|| panic!("{label}"));
+            assert_eq!(item.selector, sel);
+            assert_eq!(status(item), Status::Done, "{label}");
+            assert!(gen_script.contains(label) && gen_script.contains(sel), "{label} is in the generator");
+        }
+        let tmux: Vec<&str> = items().iter().filter(|i| i.path.len() == 3 && i.path[..2] == ["Shell", "tmux"]).map(|i| i.label()).collect();
+        assert_eq!(&tmux[tmux.len() - 2..], ["New psmux Session", "New tmux Session in WSL"]);
     }
 
     #[test]

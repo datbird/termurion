@@ -552,6 +552,12 @@ impl Pty {
         self.held = Some(what);
     }
 
+    /// Ends the child at once. psmux's client stays after its session is gone; the server
+    /// (a separate process) is not touched.
+    pub fn terminate(&self) {
+        unsafe { TerminateProcess(self.process, 1) };
+    }
+
     /// Queues `bytes` for the child. Returns at once. A failed earlier write is reported here.
     pub fn write(&self, bytes: &[u8]) -> Result<(), String> {
         if let Some(e) = self.write_error.lock().unwrap().clone() {
