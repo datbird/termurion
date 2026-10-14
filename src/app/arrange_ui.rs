@@ -477,10 +477,8 @@ impl App {
 
 /// A Yes and No question; true for Yes.
 pub(super) fn yes_no(owner: Option<isize>, title: &str, text: &str) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW};
-    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    let owner = owner.map_or(std::ptr::null_mut(), |h| h as *mut core::ffi::c_void);
-    unsafe { MessageBoxW(owner, wide(text).as_ptr(), wide(title).as_ptr(), MB_YESNO | MB_ICONQUESTION) == IDYES }
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO};
+    super::msgbox::show(owner, title, text, MB_YESNO | MB_ICONQUESTION) == IDYES
 }
 
 /// The bad folder announcement's id: iTerm2 reuses the missing-profile identifier

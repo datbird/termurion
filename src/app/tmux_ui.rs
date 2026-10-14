@@ -488,8 +488,6 @@ impl App {
 
 /// An alert with OK (iTerm2's NSAlert with one button).
 fn alert(owner: Option<isize>, title: &str, text: &str) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONWARNING, MB_OK, MessageBoxW};
-    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    let owner = owner.map_or(std::ptr::null_mut(), |h| h as *mut core::ffi::c_void);
-    unsafe { MessageBoxW(owner, wide(text).as_ptr(), wide(title).as_ptr(), MB_OK | MB_ICONWARNING) };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONWARNING, MB_OK};
+    super::msgbox::show(owner, title, text, MB_OK | MB_ICONWARNING);
 }

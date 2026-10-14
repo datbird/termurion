@@ -46,3 +46,15 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
    Shell > tmux has New psmux Session and New tmux Session in WSL. Commits: f8731c6e (psmux
    transcripts), c5e566d8 (fixture tests), 4a57f672 (gating and gateway end), 4088828c (live suite
    and results), 4f978e69 (menu items). Docs: README, `help/tmux-integration.md`.
+
+4. **The close question opened behind its window.** Seen 2026-10-14 (0.0.1-beta2): closing a
+   window with running sessions showed "Close Window #1?" behind the Termurion window. The box
+   disables its window, so every click on the window only played the Windows error sound, and
+   Alt+Tab did not bring the box up. After about a minute of moving the window the box showed.
+   Cause not proven: the box is owned by its window, which Windows keeps in front, so the likely
+   cause is the GPU swap chain drawing over the box (the renderer was not logged). Done
+   2026-10-14: every message box now goes through one door (`app/msgbox.rs`, test
+   `no_message_box_bypasses_the_door`). Each box asks to come to the front, and a watcher finds
+   an owned box, logs `dialog:` lines to host.log (foreground, in front of its window, window
+   topmost) and raises the box when it is behind or not in front. host.log also names the
+   renderer (`renderer:`). If it comes back, the `dialog:` and `renderer:` lines say which.

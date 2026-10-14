@@ -117,6 +117,7 @@ mod requests_ui;
 mod emu_ui;
 mod jobs_ui;
 mod close_ui;
+mod msgbox;
 mod coprocess_ui;
 mod dlog_ui;
 mod aps_ui;
@@ -1841,9 +1842,8 @@ fn default_shell() -> String {
 }
 
 fn message_box(text: &str) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
-    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Termurion").as_ptr(), MB_OK | MB_ICONERROR) };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK};
+    msgbox::show(None, "Termurion", text, MB_OK | MB_ICONERROR);
 }
 
 /// What ends with the process, on EVERY way out of it (Quit, Erase All, a logoff, a panic on the
@@ -7940,6 +7940,9 @@ fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference:
     .map_err(|e| e.to_string())?;
     let info = adapter.get_info();
     eprintln!("renderer adapter: backend={:?} name={} vendor={:#06x} device_type={:?}", info.backend, info.name, info.vendor, info.device_type);
+    // Once per run in host.log too, so a desktop report says which renderer drew (FIXES 4).
+    static LOGGED: std::sync::Once = std::sync::Once::new();
+    LOGGED.call_once(|| crate::host::log(&format!("renderer: {:?} on {}", info.backend, info.name)));
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).map_err(|e| e.to_string())?;
     let caps = surface.get_capabilities(&adapter);
     let format = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0]);

@@ -46,7 +46,7 @@ impl App {
 
     /// Shell > Print > Screen, Selection, or Buffer.
     pub(super) fn print(&mut self, id: PaneId, what: crate::print::What) {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{IDCANCEL, IDYES, MB_DEFBUTTON1, MB_DEFBUTTON2, MB_ICONQUESTION, MB_YESNOCANCEL, MessageBoxW};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{IDCANCEL, IDYES, MB_DEFBUTTON1, MB_DEFBUTTON2, MB_ICONQUESTION, MB_YESNOCANCEL};
         use windows_sys::Win32::System::Diagnostics::Debug::MessageBeep;
         let Some(hwnd) = self.hwnd() else { return };
         let Some(p) = self.panes.get(&id) else { return };
@@ -61,11 +61,8 @@ impl App {
         let title = screen.title().unwrap_or("Termurion").to_string();
         let font = self.profile_of(id).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0 });
         // iTerm2 keeps "Black and white" in its print panel; Termurion asks first.
-        let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
         let default = if self.globals.bool("Print In Black And White") { MB_DEFBUTTON1 } else { MB_DEFBUTTON2 };
-        let answer = unsafe {
-            MessageBoxW(hwnd as _, wide("Print in black and white?\n\nYes leaves out colors; No prints the terminal's colors.").as_ptr(), wide("Print").as_ptr(), MB_YESNOCANCEL | MB_ICONQUESTION | default)
-        };
+        let answer = super::msgbox::show(Some(hwnd as isize), "Print", "Print in black and white?\n\nYes leaves out colors; No prints the terminal's colors.", MB_YESNOCANCEL | MB_ICONQUESTION | default);
         if answer == IDCANCEL {
             return;
         }

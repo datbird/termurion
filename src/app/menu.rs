@@ -1705,10 +1705,9 @@ const CURL_TEXT: &str = "Termurion will type its installer into this session. It
 /// Yes, No or Cancel for `text`, the default button Yes when `yes_first`, else No: Some(true),
 /// Some(false), None.
 fn ask_utilities(text: &str, yes_first: bool) -> Option<bool> {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDNO, IDYES, MB_DEFBUTTON1, MB_DEFBUTTON2, MB_ICONQUESTION, MB_YESNOCANCEL, MessageBoxW};
-    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDNO, IDYES, MB_DEFBUTTON1, MB_DEFBUTTON2, MB_ICONQUESTION, MB_YESNOCANCEL};
     let default = if yes_first { MB_DEFBUTTON1 } else { MB_DEFBUTTON2 };
-    match unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Install Shell Integration").as_ptr(), MB_YESNOCANCEL | MB_ICONQUESTION | default) } {
+    match super::msgbox::show(None, "Install Shell Integration", text, MB_YESNOCANCEL | MB_ICONQUESTION | default) {
         IDYES => Some(true),
         IDNO => Some(false),
         _ => None,
@@ -1741,9 +1740,8 @@ pub(super) fn pwsh_install_command(script: &std::path::Path) -> String {
 pub(super) const PWSH_SCRIPT: &str = include_str!("../../resources/shell_integration/termurion_shell_integration.ps1");
 
 fn ask(text: &str) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW};
-    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Install Shell Integration").as_ptr(), MB_YESNO | MB_ICONQUESTION) == IDYES }
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO};
+    super::msgbox::show(None, "Install Shell Integration", text, MB_YESNO | MB_ICONQUESTION) == IDYES
 }
 
 impl App {
@@ -1836,9 +1834,8 @@ fn about_text(version: &str) -> String {
 }
 
 pub(super) fn info_box(text: &str) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK, MessageBoxW};
-    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Termurion").as_ptr(), MB_OK | MB_ICONINFORMATION) };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK};
+    super::msgbox::show(None, "Termurion", text, MB_OK | MB_ICONINFORMATION);
 }
 
 /// The Window menu's window list (`PT:3069-3084`): (registry key, text, checked) for each

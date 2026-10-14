@@ -168,15 +168,12 @@ fn pinned_reasons(tabs: &[Tab]) -> Vec<String> {
 /// The shutdown's quit question, shown by a thread that owns no window: an OK and Cancel box on
 /// top and in front (no owner, so no window of the app thread is tied to it); true for OK.
 pub(super) fn confirm_on_top(title: &str, text: &str) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDOK, MB_ICONWARNING, MB_OKCANCEL, MB_SETFOREGROUND, MB_TOPMOST, MessageBoxW};
-    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide(title).as_ptr(), MB_OKCANCEL | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST) == IDOK }
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDOK, MB_ICONWARNING, MB_OKCANCEL, MB_TOPMOST};
+    super::msgbox::show(None, title, text, MB_OKCANCEL | MB_ICONWARNING | MB_TOPMOST) == IDOK
 }
 
 /// An OK and Cancel question; true for OK.
 pub(super) fn confirm(owner: Option<isize>, title: &str, text: &str) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDOK, MB_ICONWARNING, MB_OKCANCEL, MessageBoxW};
-    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    let owner = owner.map_or(std::ptr::null_mut(), |h| h as *mut core::ffi::c_void);
-    unsafe { MessageBoxW(owner, wide(text).as_ptr(), wide(title).as_ptr(), MB_OKCANCEL | MB_ICONWARNING) == IDOK }
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDOK, MB_ICONWARNING, MB_OKCANCEL};
+    super::msgbox::show(owner, title, text, MB_OKCANCEL | MB_ICONWARNING) == IDOK
 }

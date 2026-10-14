@@ -108,16 +108,14 @@ pub(super) fn downloads(override_path: &str) -> Downloads {
 #[cfg(windows)]
 /// A message box with an OK button.
 pub(super) fn message(text: &str) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONWARNING, MB_OK, MessageBoxW};
-    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Termurion").as_ptr(), MB_OK | MB_ICONWARNING) };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONWARNING, MB_OK};
+    super::msgbox::show(None, "Termurion", text, MB_OK | MB_ICONWARNING);
 }
 
 /// A yes/no question in a message box.
 pub(super) fn ask(text: &str) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW};
-    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Termurion").as_ptr(), MB_YESNO | MB_ICONQUESTION) == IDYES }
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO};
+    super::msgbox::show(None, "Termurion", text, MB_YESNO | MB_ICONQUESTION) == IDYES
 }
 
 /// Larger than this, a download allowed by a remembered answer asks again
