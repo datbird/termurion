@@ -205,6 +205,8 @@ WebView2 runtime, which Windows 10 and 11 normally have.
 
 ## Credits and licenses
 
+Termurion is free software under the GNU General Public License v3 or later. See [`LICENSE`](LICENSE).
+
 Termurion stands on these projects:
 
 - [iTerm2](https://github.com/gnachman/iTerm2) by George Nachman, the reference for every

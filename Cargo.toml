@@ -2,6 +2,7 @@
 name = "termurion"
 version = "0.0.1-beta1"
 edition = "2024"
+license = "GPL-3.0-or-later"
 publish = false
 
 [dependencies]
