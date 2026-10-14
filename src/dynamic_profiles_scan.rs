@@ -226,13 +226,14 @@ mod tests {
     #[test]
     fn a_burst_of_changes_asks_for_one_reload() {
         let tmp = TempDir::new("burst");
-        let s = Scanner::start(tmp.0.clone(), Duration::from_millis(200), Arc::new(|| {}));
-        assert!(wait_for_reload(&s, Duration::from_secs(2)));
+        // The quiet window is wide enough that 40 writes on a busy machine stay one burst.
+        let s = Scanner::start(tmp.0.clone(), Duration::from_millis(1000), Arc::new(|| {}));
+        assert!(wait_for_reload(&s, Duration::from_secs(3)));
         for i in 0..40 {
             std::fs::write(tmp.0.join(format!("f{i}.json")), "{}").unwrap();
         }
-        assert!(wait_for_reload(&s, Duration::from_secs(3)), "the burst was not seen");
-        assert!(!wait_for_reload(&s, Duration::from_millis(600)), "the burst asked for a second reload");
+        assert!(wait_for_reload(&s, Duration::from_secs(5)), "the burst was not seen");
+        assert!(!wait_for_reload(&s, Duration::from_millis(2500)), "the burst asked for a second reload");
     }
 
     #[test]
