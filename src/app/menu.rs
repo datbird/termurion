@@ -165,6 +165,10 @@ pub(super) struct MenuBar {
     pub(super) explain_ai: Option<MenuItem>,
     /// Termurion > Show Tip of the Day, disabled while a tip shows (`AD:523-524`; `sync_checks`).
     pub(super) tip_item: Option<MenuItem>,
+    /// Session > Move Session > Move Session to Window and Move Session to Tab, enabled by
+    /// iTerm2's rule (`move_session_enabled`; `sync_checks`).
+    pub(super) move_to_window: Option<MenuItem>,
+    pub(super) move_to_tab: Option<MenuItem>,
     /// Shell > ssh > Disconnect, retitled and enabled for the focused session (`refresh_ssh_menu`).
     pub(super) ssh_disconnect: Option<MenuItem>,
     /// Shell > ssh > Download Files, enabled while any host is connected (`refresh_download_files_menu`, P21).
@@ -218,6 +222,8 @@ impl App {
         let mut explain_ai = None;
         let mut peer_items: Vec<MenuItem> = Vec::new();
         let mut tip_item = None;
+        let mut move_to_window = None;
+        let mut move_to_tab = None;
         let mut ssh_disconnect = None;
         let mut ssh_download_files = None;
         let mut claude: [Option<MenuItem>; 3] = [None, None, None];
@@ -259,6 +265,12 @@ impl App {
                     }
                     if item.selector == "showTipOfTheDay:" {
                         tip_item = Some(m.clone());
+                    }
+                    if item.selector == "moveSessionToWindow:" {
+                        move_to_window = Some(m.clone());
+                    }
+                    if item.selector == "moveSessionToTab:" {
+                        move_to_tab = Some(m.clone());
                     }
                     if matches!(item.selector.as_str(), "previousWorkgroupPeer:" | "nextWorkgroupPeer:") {
                         peer_items.push(m.clone());
@@ -349,7 +361,7 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_browser: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), profile_cache: Default::default(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, archives: subs.get(&["Shell", "Archives"].map(str::to_string).to_vec()).cloned(), archive_items: Vec::new(), buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], workgroups: subs.get(&["Shell", "Workgroups"].map(str::to_string).to_vec()).cloned().map(WorkgroupsMenu::new), peer_items, snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, make_default, explain_ai, tip_item, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
+        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_browser: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), profile_cache: Default::default(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, archives: subs.get(&["Shell", "Archives"].map(str::to_string).to_vec()).cloned(), archive_items: Vec::new(), buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], workgroups: subs.get(&["Shell", "Workgroups"].map(str::to_string).to_vec()).cloned().map(WorkgroupsMenu::new), peer_items, snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, make_default, explain_ai, tip_item, move_to_window, move_to_tab, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
         self.runtime_menu_title();
         self.refresh_claude_menu();
         self.retitle_suppressed_menu();
@@ -631,6 +643,7 @@ impl App {
         let can_explain = self.can_explain();
         self.explain_shown = Some(can_explain);
         let tip_showing = self.tip_window.is_some();
+        self.sync_move_session_items();
         for bar in self.menu_bars_mut() {
             if let Some(item) = &bar.engage_ai {
                 item.set_enabled(ai_allowed);
@@ -1794,6 +1807,27 @@ impl App {
     }
 }
 
+/// Whether Move Session to Window and Move Session to Tab are enabled (`PseudoTerminal.m`
+/// `validateMenuItem:`): never for a locked session; to a window when the window holds more than one
+/// session, to a tab when the session's tab does. Otherwise the commands have nothing to move.
+pub(super) fn move_session_enabled(locked: bool, window_sessions: usize, tab_sessions: usize) -> (bool, bool) {
+    (!locked && window_sessions > 1, !locked && tab_sessions > 1)
+}
+
+/// The two Move Session items of one window's bar, from that window's tabs.
+pub(super) fn set_move_session_items(bar: &MenuBar, tabs: &[super::Tab], active: usize, panes: &std::collections::HashMap<crate::layout::PaneId, crate::pane::Pane>) {
+    let (to_window, to_tab) = tabs.get(active).map_or((false, false), |t| {
+        let window_sessions: usize = tabs.iter().map(|t| t.layout.panes().len()).sum();
+        move_session_enabled(panes.get(&t.focused).is_some_and(|p| p.locked), window_sessions, t.layout.panes().len())
+    });
+    if let Some(item) = &bar.move_to_window {
+        item.set_enabled(to_window);
+    }
+    if let Some(item) = &bar.move_to_tab {
+        item.set_enabled(to_tab);
+    }
+}
+
 /// The About box text: version, one line on what it is, and where the project lives.
 fn about_text(version: &str) -> String {
     format!("Termurion {version}\nAn iTerm2-style terminal for Windows.\n{}", crate::links::REPO)
@@ -1837,6 +1871,15 @@ pub(super) fn restart_spec() -> crate::warnings::Spec {
 
 #[cfg(test)]
 mod tests {
+
+    /// FIXES 1: the Move Session items follow iTerm2's rule, so a one-session window greys them out.
+    #[test]
+    fn move_session_items_follow_iterm2() {
+        assert_eq!(super::move_session_enabled(false, 1, 1), (false, false));
+        assert_eq!(super::move_session_enabled(false, 2, 1), (true, false));
+        assert_eq!(super::move_session_enabled(false, 2, 2), (true, true));
+        assert_eq!(super::move_session_enabled(true, 3, 2), (false, false));
+    }
 
     /// About names the version and the project repository (not iTerm2's site).
     #[test]

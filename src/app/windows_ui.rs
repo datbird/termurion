@@ -489,6 +489,18 @@ impl App {
         self.menu_bar.iter().chain(self.windows.parked().filter_map(|(_, s)| s.menu_bar.as_ref()))
     }
 
+    /// Every window's Move Session items follow that window's own sessions (FIXES 1).
+    pub(super) fn sync_move_session_items(&mut self) {
+        if let Some(bar) = &self.menu_bar {
+            menu::set_move_session_items(bar, &self.tabs, self.active, &self.panes);
+        }
+        for (_, slot) in self.windows.parked() {
+            if let Some(bar) = &slot.menu_bar {
+                menu::set_move_session_items(bar, &slot.tabs, slot.active, &self.panes);
+            }
+        }
+    }
+
     pub(super) fn menu_bars_mut(&mut self) -> impl Iterator<Item = &mut menu::MenuBar> {
         self.menu_bar.iter_mut().chain(self.windows.parked_mut().filter_map(|(_, s)| s.menu_bar.as_mut()))
     }
