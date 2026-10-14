@@ -3,7 +3,7 @@
 ; Apps > Installed apps entry.
 ;
 ; Build after `cargo build --release`, from the repo root:
-;   ISCC.exe /DAppVersion=0.0.1-beta2 installer\termurion.iss
+;   ISCC.exe /DAppVersion=0.0.1-beta3 installer\termurion.iss
 ; The setup file lands in target\installer\.
 
 #ifndef AppVersion
