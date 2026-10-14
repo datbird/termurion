@@ -51,10 +51,16 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
    window with running sessions showed "Close Window #1?" behind the Termurion window. The box
    disables its window, so every click on the window only played the Windows error sound, and
    Alt+Tab did not bring the box up. After about a minute of moving the window the box showed.
-   Cause not proven: the box is owned by its window, which Windows keeps in front, so the likely
-   cause is the GPU swap chain drawing over the box (the renderer was not logged). Done
-   2026-10-14: every message box now goes through one door (`app/msgbox.rs`, test
-   `no_message_box_bypasses_the_door`). Each box asks to come to the front, and a watcher finds
-   an owned box, logs `dialog:` lines to host.log (foreground, in front of its window, window
-   topmost) and raises the box when it is behind or not in front. host.log also names the
-   renderer (`renderer:`). If it comes back, the `dialog:` and `renderer:` lines say which.
+   Cause (proven): the box runs its own message loop inside a winit event handler, and winit
+   0.30.13 answers each WM_PAINT in that state by asking for another (`RDW_INTERNALPAINT`,
+   `event_loop.rs` WM_PAINT arm). Termurion always has a redraw pending, so the window paints
+   in a loop for as long as the box is open, the thread spins, and the box can wait a long time
+   for its first paint. Same loop as winit issue 4708 (window drags); Slint discussion 4102 saw
+   the same hidden, dinging dialog after its winit 0.29 update. Measured on the desktop (test
+   `winit_paint_loop_and_the_guard`): 860 ms of CPU per second with a box open, 0 ms with the
+   guard. Done 2026-10-14: every message box goes through one door (`app/msgbox.rs`, test
+   `no_message_box_bypasses_the_door`). While a box is open, a paint guard makes this thread's
+   windows answer WM_PAINT with the default handler (no new request); closing the box removes
+   it and repaints. Each box also asks to come to the front, and a watcher logs `dialog:` lines
+   to host.log and shows and raises a box that is hidden or behind its window. host.log also
+   names the renderer (`renderer:`).
