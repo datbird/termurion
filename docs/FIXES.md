@@ -6,7 +6,14 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 
 ## Open
 
-(none)
+2. **The session host outlives the app and blocks installs.** Seen 2026-10-14: no Termurion window
+   or tray icon, but `termurion-host.exe` (started 22:18 the day before) still held one PowerShell
+   session, so `scripts/install-windows.ps1` refused ("Still running: termurion-host"). host.log
+   shows the app logged `tray: remove ok` with no `quit:` line, so the app went away without the
+   quit path that ends host jobs. Find why the app exited that way (crash, or a close path that
+   skips quit), and decide what a host with no app should do: keep the sessions for the next
+   launch to reattach (crash recovery, as designed), but show it somewhere. The setup.exe
+   installer is not blocked (Restart Manager closes the host).
 
 ## In progress
 
