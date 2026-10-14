@@ -1009,9 +1009,11 @@ impl Controller {
         gw.send(&format!("show-buffer -b {name}"), Some(t), Flags { tolerate: self.psmux, ..Default::default() });
     }
 
-    /// A pane's foreground and background colors, for tmux to answer OSC 10 and 11 (3.4+).
+    /// A pane's foreground and background colors, for tmux to answer OSC 10 and 11. iTerm2
+    /// sends them from 3.4, but `refresh-client -r` arrived in tmux 3.5 (3.4 answers an error on
+    /// every attach), so Termurion waits for 3.5.
     pub fn color_reports(&mut self, pane: u32, fg: (u8, u8, u8), bg: (u8, u8, u8), sixteen: bool, gw: &mut Gateway) {
-        if self.v() < 3.4 {
+        if self.v() < 3.5 {
             return;
         }
         let tolerate = Flags { tolerate: true, ..Default::default() };
@@ -1928,7 +1930,11 @@ mod tests {
 
     /// tmux 3.4 attached with one window, one pane (%0), six captures a pane.
     fn opened_34() -> Rig {
-        let mut r = Rig::with_version(3.4);
+        opened_at(3.4)
+    }
+
+    fn opened_at(v: f64) -> Rig {
+        let mut r = Rig::with_version(v);
         r.lines(&["%session-changed $0 main"]);
         r.answer(Some(""));
         for _ in 0..11 {
@@ -2242,10 +2248,13 @@ mod tests {
     }
 
     #[test]
-    fn colors_are_reported_on_34() {
-        let mut r = opened_34();
+    fn colors_are_reported_from_35() {
+        let mut r = opened_at(3.5);
         r.ctl.color_reports(0, (1, 2, 3), (0x1e, 0x1e, 0x1e), true, &mut r.gw);
         assert_eq!(r.sent(), "refresh-client -r \"%0:\\033]10;rgb:0101/0202/0303\\033\\\\\"\rrefresh-client -r \"%0:\\033]11;rgb:1e1e/1e1e/1e1e\\033\\\\\"\r");
+        let mut r34 = opened_34();
+        r34.ctl.color_reports(0, (1, 2, 3), (4, 5, 6), true, &mut r34.gw);
+        assert_eq!(r34.sent(), "", "tmux 3.4 has no refresh-client -r");
         let mut old = opened();
         old.ctl.color_reports(0, (1, 2, 3), (4, 5, 6), true, &mut old.gw);
         assert_eq!(old.sent(), "", "tmux 3.1 has no report forwarding");

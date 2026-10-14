@@ -21,7 +21,7 @@ Native Windows support is tested against psmux 3.3.8. WSL support is tested agai
 - Shell > tmux > New psmux Session opens a new tab that runs `psmux.exe -CC new-session -A -s termurion`.
 - Shell > tmux > New tmux Session in WSL opens a new tab that runs `wsl.exe -e tmux -CC new-session -A -s termurion`.
 
-Both attach to the session named `termurion`, or make it if it does not exist. If the program is missing, an info bar tells you the command that installs it (`winget install psmux`, or `sudo apt install tmux` in WSL) and no tab opens. If WSL itself is missing, the bar says `wsl --install`.
+Both attach to the session named `termurion`, or make it if it does not exist. If psmux is missing, an info bar gives the command that installs it (`winget install psmux`) and no tab opens. If WSL itself is missing, the bar says `wsl --install`. If WSL is there but tmux is not, the new tab says `sudo apt install tmux` and leaves you at a WSL shell, so the click never waits for WSL to start.
 
 ### Start by hand
 

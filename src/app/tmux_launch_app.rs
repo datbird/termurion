@@ -38,22 +38,9 @@ fn tmux_program_found(kind: Kind) -> Found {
             let ext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
             tmux_launch::psmux_found(&path, &ext, &|p| crate::localfs::is_local_file(p))
         }
-        Kind::WslTmux => tmux_launch::wsl_found(wsl_has_tmux()),
-    }
-}
-
-/// Runs `wsl.exe -e sh -c "command -v tmux"` for at most eight seconds (WSL may be starting).
-fn wsl_has_tmux() -> Result<i32, bool> {
-    use std::os::windows::process::CommandExt;
-    use std::process::{Command, Stdio};
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let status = Command::new("wsl.exe").args(["-e", "sh", "-c", "command -v tmux"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).creation_flags(0x0800_0000).status();
-        let _ = tx.send(status.map(|s| s.code().unwrap_or(-1)).map_err(|_| ()));
-    });
-    match rx.recv_timeout(std::time::Duration::from_secs(8)) {
-        Ok(Ok(code)) => Ok(code),
-        Ok(Err(())) => Err(false),
-        Err(_) => Err(true),
+        Kind::WslTmux => {
+            let root = std::env::var_os("SystemRoot").map_or_else(|| std::path::PathBuf::from("C:\\Windows"), std::path::PathBuf::from);
+            tmux_launch::wsl_found(crate::localfs::is_local_file(&root.join("System32").join("wsl.exe")))
+        }
     }
 }

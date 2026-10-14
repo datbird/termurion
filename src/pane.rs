@@ -215,8 +215,11 @@ impl Io {
     pub fn end_client(&self) {
         match self {
             Io::Local(p) => p.terminate(),
+            // A hosted client gets Ctrl+C and then a blank line: psmux's control client only
+            // notices that its session is gone on its next input, then prints %exit and ends.
             Io::Hosted(p) => {
                 let _ = p.signal(false);
+                let _ = p.write(b"\r");
             }
             Io::Tmux(_) | Io::Browser(_) => {}
         }

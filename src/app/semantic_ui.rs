@@ -1250,7 +1250,6 @@ mod tests {
     /// Callers of a sink whose input is not text a remote host wrote, and why.
     const NOT_PANE_TEXT: &[(&str, &str, &str)] = &[
         ("app/browser_extensions_app.rs", "browser_extensions_reveal", "only SELECTS the extensions folder in Explorer: a local drive path (root_ok, judged) the profile or the default names, never pane text; nothing is opened or run"),
-        ("app/tmux_launch_app.rs", "wsl_has_tmux", "runs the fixed command `wsl.exe -e sh -c \"command -v tmux\"` for the New tmux Session in WSL menu item; no part of it is pane text, and its output is dropped"),
         ("app/semantic_ui.rs", "execute", "the sink itself; its callers are checked"),
         ("app/semantic_ui.rs", "execute_with", "the sink itself; its callers are checked"),
         ("app/url_handler_ui.rs", "url_handler", "starts the person's own handler program directly; reached only from execute_with, the URL is one argument (handler_plan)"),

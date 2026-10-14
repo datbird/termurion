@@ -19,7 +19,13 @@ impl Kind {
     pub fn command(self) -> String {
         match self {
             Kind::Psmux => format!("psmux.exe -CC new-session -A -s {SESSION}"),
-            Kind::WslTmux => format!("wsl.exe -e tmux -CC new-session -A -s {SESSION}"),
+            // The check runs inside the tab, so the click never waits for WSL to start: with
+            // tmux the script becomes the control-mode client, without it the tab says how to
+            // install tmux and stays at a WSL shell.
+            Kind::WslTmux => format!(
+                "wsl.exe -e sh -c \"command -v tmux >/dev/null 2>&1 && exec tmux -CC new-session -A -s {SESSION}; echo '{}'; exec ${{SHELL:-sh}} -l\"",
+                Kind::WslTmux.missing_text()
+            ),
         }
     }
 
@@ -79,8 +85,6 @@ pub enum Found {
     Yes,
     /// Missing: the info bar's text.
     No(String),
-    /// The check did not finish in time (WSL starting up): start the tab anyway.
-    Unknown,
 }
 
 /// psmux is found when `psmux.exe` is on PATH.
@@ -91,15 +95,10 @@ pub fn psmux_found(path_var: &str, pathext: &str, exists: &dyn Fn(&Path) -> bool
     }
 }
 
-/// How `wsl.exe -e sh -c "command -v tmux"` ended: the exit code, `Err(false)` when `wsl.exe`
-/// could not start, `Err(true)` when it did not finish in time.
-pub fn wsl_found(result: Result<i32, bool>) -> Found {
-    match result {
-        Ok(0) => Found::Yes,
-        Ok(_) => Found::No(Kind::WslTmux.missing_text()),
-        Err(false) => Found::No(NO_WSL_TEXT.to_string()),
-        Err(true) => Found::Unknown,
-    }
+/// WSL is found when `wsl.exe` is in the system folder; whether tmux is installed in it is
+/// checked inside the new tab (`Kind::command`), never on the click.
+pub fn wsl_found(wsl_exe_exists: bool) -> Found {
+    if wsl_exe_exists { Found::Yes } else { Found::No(NO_WSL_TEXT.to_string()) }
 }
 
 #[cfg(test)]
@@ -109,7 +108,10 @@ mod tests {
     #[test]
     fn commands_attach_or_create_the_termurion_session() {
         assert_eq!(Kind::Psmux.command(), "psmux.exe -CC new-session -A -s termurion");
-        assert_eq!(Kind::WslTmux.command(), "wsl.exe -e tmux -CC new-session -A -s termurion");
+        let wsl = Kind::WslTmux.command();
+        assert!(wsl.starts_with("wsl.exe -e sh -c \"command -v tmux >/dev/null 2>&1 && exec tmux -CC new-session -A -s termurion; echo '"), "{wsl}");
+        assert!(wsl.contains("sudo apt install tmux") && wsl.ends_with("exec ${SHELL:-sh} -l\""), "{wsl}");
+        assert!(!Kind::WslTmux.missing_text().contains(['\'', '"', '$', '`']), "the text sits inside quotes");
     }
 
     #[test]
@@ -133,9 +135,7 @@ mod tests {
 
     #[test]
     fn wsl_results_decide() {
-        assert_eq!(wsl_found(Ok(0)), Found::Yes);
-        assert_eq!(wsl_found(Ok(1)), Found::No(Kind::WslTmux.missing_text()));
-        assert_eq!(wsl_found(Err(false)), Found::No(NO_WSL_TEXT.to_string()));
-        assert_eq!(wsl_found(Err(true)), Found::Unknown);
+        assert_eq!(wsl_found(true), Found::Yes);
+        assert_eq!(wsl_found(false), Found::No(NO_WSL_TEXT.to_string()));
     }
 }
