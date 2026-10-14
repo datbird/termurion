@@ -1320,6 +1320,7 @@ mod tests {
         ("bin/termurion-git.rs", "run", "the git menu's wrapper: git with the menu's own command"),
         ("git_run_win.rs", "start", "git for the status bar, Termurion's own arguments"),
         ("host_client.rs", "start_host_process", "starts Termurion's own session host"),
+        ("host.rs", "reopen_app", "restarts Termurion's own exe, found beside the host's own exe"),
         ("probe.rs", "wsl", "`wsl.exe` with Termurion's own arguments"),
         ("pty.rs", "start", "a pane's shell, from its profile"),
         ("pty.rs", "start_pipes", "a pane's shell, from its profile"),

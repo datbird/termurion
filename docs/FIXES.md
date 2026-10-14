@@ -6,6 +6,14 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 
 ## Open
 
+(none)
+
+## In progress
+
+(none)
+
+## Done
+
 2. **The session host outlives the app and blocks installs.** Seen 2026-10-14: no Termurion window
    or tray icon, but `termurion-host.exe` (started 22:18 the day before) still held one PowerShell
    session, so `scripts/install-windows.ps1` refused ("Still running: termurion-host"). host.log
@@ -14,12 +22,13 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
    skips quit), and decide what a host with no app should do: keep the sessions for the next
    launch to reattach (crash recovery, as designed), but show it somewhere. The setup.exe
    installer is not blocked (Restart Manager closes the host).
+   Done 2026-10-14. Cause: termurion.exe crashed (access violation in Windows' icu.dll,
+   collation code, reached from a shell component; no dump existed), so the quit path never ran.
+   Now: both exes write a minidump to %LOCALAPPDATA%\Termurion\crashes and log a `crash:` line
+   (`crashdump.rs`); the app says goodbye on a clean quit (protocol 5), and a host whose app
+   vanished reopens termurion.exe after 3 s (at most once per 5 minutes) and ends the sessions
+   after 1 h with no app (`host_watch.rs`); ended sessions alone keep the host at most 1 h.
 
-## In progress
-
-(none)
-
-## Done
 
 1. **Session > Move Session > Move Session to Window does nothing.** Seen 2026-10-14 with two
    windows open. Cause: the item moves the focused session into a NEW window, as iTerm2's does

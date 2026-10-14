@@ -16,15 +16,18 @@ use crate::winpipe::{Listener, Pipe};
 /// Output a session keeps for a reattach.
 pub const RING: usize = 4 * 1024 * 1024;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Options {
     /// How long the host stays with no Termurion attached and no session.
     pub grace: Duration,
+    /// The termurion.exe to start when the attached Termurion vanishes (`host_watch`). None
+    /// (tests) turns the whole watch off.
+    pub reopen: Option<std::path::PathBuf>,
 }
 
 impl Default for Options {
     fn default() -> Options {
-        Options { grace: Duration::from_secs(5) }
+        Options { grace: Duration::from_secs(5), reopen: None }
     }
 }
 
@@ -60,6 +63,8 @@ struct Host {
     instance: String,
     /// The attached Termurion asked for password prompt readings with this debounce (seconds).
     prompt_debounce: Option<f64>,
+    /// Client arrivals and departures for the main loop's `host_watch::Watch`, oldest first.
+    events: Vec<(Instant, crate::host_watch::Event)>,
 }
 
 impl Host {
@@ -67,6 +72,11 @@ impl Host {
         if let Some(c) = &self.client {
             let _ = c.out.send(encode(m));
         }
+    }
+
+    /// Sessions still running (an ended one waits only to be forgotten).
+    fn running(&self) -> usize {
+        self.sessions.values().filter(|s| s.exited.is_none()).count()
     }
 
     fn live(&self) -> Vec<Live> {
@@ -169,7 +179,7 @@ type Shared = Arc<Mutex<Host>>;
 pub fn run(pipe: &str, api: Api, opts: Options) -> Result<(), String> {
     let mut listener = Listener::bind(pipe)?;
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-    let host: Shared = Arc::new(Mutex::new(Host { sessions: HashMap::new(), next_id: 1, client: None, instance: format!("{}-{nanos}", std::process::id()), prompt_debounce: None }));
+    let host: Shared = Arc::new(Mutex::new(Host { sessions: HashMap::new(), next_id: 1, client: None, instance: format!("{}-{nanos}", std::process::id()), prompt_debounce: None, events: Vec::new() }));
     let watched = Arc::downgrade(&host);
     std::thread::spawn(move || watch_prompts(watched));
     let (wake, woken) = mpsc::channel::<u64>();
@@ -181,6 +191,7 @@ pub fn run(pipe: &str, api: Api, opts: Options) -> Result<(), String> {
     });
     let mut conns = 0u64;
     let mut idle_since: Option<Instant> = None;
+    let mut watch = crate::host_watch::Watch::default();
     loop {
         match listener.accept(Duration::from_millis(250)) {
             Ok(Some(p)) => {
@@ -198,16 +209,70 @@ pub fn run(pipe: &str, api: Api, opts: Options) -> Result<(), String> {
                 std::thread::sleep(Duration::from_millis(500));
             }
         }
-        let idle = {
+        if let Some(exe) = &opts.reopen {
+            run_watch(&host, &mut watch, exe);
+        }
+        let (idle, ended_only) = {
             let h = host.lock().unwrap();
-            h.client.is_none() && h.sessions.is_empty()
+            let unattended = h.client.is_none() && h.running() == 0;
+            (unattended && h.sessions.is_empty(), unattended && !h.sessions.is_empty())
         };
-        if !idle {
-            idle_since = None;
-        } else if idle_since.get_or_insert_with(Instant::now).elapsed() >= opts.grace {
-            return Ok(());
+        // Ended sessions wait for Termurion to show how they ended, but not forever: with no
+        // app attached for ENDED_WAIT the host leaves (it kept the installer's lock, FIXES 2).
+        let wait = if ended_only { Some(ENDED_WAIT.max(opts.grace)) } else if idle { Some(opts.grace) } else { None };
+        match wait {
+            None => idle_since = None,
+            Some(w) => {
+                if idle_since.get_or_insert_with(Instant::now).elapsed() >= w {
+                    return Ok(());
+                }
+            }
         }
     }
+}
+
+/// Feeds the client events and the clock to the watch and carries out what it decides.
+/// How long ended sessions wait for an app to attach and show them, with nothing running.
+const ENDED_WAIT: Duration = Duration::from_secs(3600);
+
+fn run_watch(host: &Shared, watch: &mut crate::host_watch::Watch, exe: &std::path::Path) {
+    use crate::host_watch::{Action, Event};
+    let (events, live) = {
+        let mut h = host.lock().unwrap();
+        (std::mem::take(&mut h.events), h.running())
+    };
+    let mut actions = Vec::new();
+    for (at, ev) in events {
+        actions.extend(watch.on(at, ev));
+    }
+    actions.extend(watch.on(Instant::now(), Event::Tick { live }));
+    for a in actions {
+        match a {
+            Action::Log(line) => log(&line),
+            Action::Reopen => {
+                if let Err(e) = reopen_app(exe) {
+                    log(&format!("host: could not reopen termurion.exe: {e}"));
+                }
+            }
+            Action::EndSessions => {
+                let all: Vec<Session> = host.lock().unwrap().sessions.drain().map(|(_, s)| s).collect();
+                for p in all.into_iter().filter_map(|s| s.pty) {
+                    drop_later(p);
+                }
+            }
+        }
+    }
+}
+
+/// Starts Termurion again as this user at normal priority with default window flags (CreateProcessW
+/// through std), in the user's profile folder, so its reattach brings the sessions back.
+fn reopen_app(exe: &std::path::Path) -> Result<(), String> {
+    let mut cmd = std::process::Command::new(exe);
+    cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    if let Some(home) = std::env::var_os("USERPROFILE") {
+        cmd.current_dir(home);
+    }
+    cmd.spawn().map(drop).map_err(|e| format!("{}: {e}", exe.display()))
 }
 
 /// Moves a session's new output into its ring and to the attached Termurion.
@@ -258,6 +323,8 @@ fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: Api, wake: mpsc::Sender<
         let mut d = Decoder::default();
         let mut buf = vec![0u8; 64 * 1024];
         let mut welcomed = false;
+        // The client said goodbye (or ended every session): its pipe closing is not a vanish.
+        let mut clean = false;
         'read: loop {
             let n = match pipe.read(&mut buf) {
                 Ok(0) | Err(_) => break,
@@ -267,6 +334,7 @@ fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: Api, wake: mpsc::Sender<
             while let Some(m) = d.next() {
                 let Ok(m) = m else { break 'read };
                 if welcomed {
+                    clean |= matches!(m, Msg::Goodbye | Msg::KillAll);
                     handle(&host, m, &api, &wake);
                     continue;
                 }
@@ -289,12 +357,15 @@ fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: Api, wake: mpsc::Sender<
                 h.watch_prompts(None);
                 let welcome = Msg::Welcome { version, host_pid: std::process::id(), instance: h.instance.clone(), sessions: h.live() };
                 h.send(&welcome);
+                h.events.push((Instant::now(), crate::host_watch::Event::Connected));
                 welcomed = true;
             }
         }
         let mut h = host.lock().unwrap();
         if h.client.as_ref().is_some_and(|c| c.conn == conn) {
             h.client = None;
+            let live = h.running();
+            h.events.push((Instant::now(), crate::host_watch::Event::ClientGone { clean, live }));
             // No Termurion to tell.
             h.watch_prompts(None);
             for s in h.sessions.values_mut() {
@@ -461,7 +532,7 @@ pub(crate) mod tests {
     pub(crate) fn start_host(grace: Duration) -> (String, std::thread::JoinHandle<Result<(), String>>) {
         let name = winpipe::tests::test_name("host");
         let n2 = name.clone();
-        let t = std::thread::spawn(move || run(&n2, api(), Options { grace }));
+        let t = std::thread::spawn(move || run(&n2, api(), Options { grace, reopen: None }));
         (name, t)
     }
 
@@ -643,7 +714,7 @@ pub(crate) mod tests {
             }
             Session { pty: None, ring: Ring::new(16), pid: 1, cmdline: String::new(), cwd: String::new(), cols: 80, rows: 24, exited: None, attached: true, pending: 0, prompt }
         };
-        let mut h = Host { sessions: HashMap::new(), next_id: 3, client: None, instance: "t".into(), prompt_debounce: Some(0.2) };
+        let mut h = Host { sessions: HashMap::new(), next_id: 3, client: None, instance: "t".into(), prompt_debounce: Some(0.2), events: Vec::new() };
         h.sessions.insert(1, session(true));
         h.sessions.insert(2, session(false));
         let told = h.watch_prompts(Some(0.5));
@@ -661,7 +732,7 @@ pub(crate) mod tests {
             let pid = pty.pid();
             Session { pty: Some(pty), ring: Ring::new(16), pid, cmdline: String::new(), cwd: String::new(), cols: 80, rows: 24, exited: None, attached, pending: 0, prompt: Default::default() }
         };
-        let mut h = Host { sessions: HashMap::new(), next_id: 4, client: None, instance: "t".into(), prompt_debounce: Some(0.2) };
+        let mut h = Host { sessions: HashMap::new(), next_id: 4, client: None, instance: "t".into(), prompt_debounce: Some(0.2), events: Vec::new() };
         h.sessions.insert(1, session(true));
         h.sessions.insert(2, session(true));
         h.sessions.insert(3, session(false));

@@ -410,6 +410,11 @@ impl Client {
 
     /// Leaves the host: the sessions keep running there. Waits (briefly) for queued frames.
     pub fn close(&self) {
+        // A host that speaks version 5 tells a clean leave from a vanish by this (an older one
+        // would break on the unknown message, so it is not sent there).
+        if self.inner.version.load(Ordering::Acquire) >= 5 {
+            let _ = self.inner.send(&Msg::Goodbye);
+        }
         wait_drained(&self.inner.queued, Duration::from_secs(2));
         self.inner.pipe.shutdown();
     }
@@ -679,7 +684,7 @@ mod tests {
     fn a_transport_launch_runs_in_the_host() {
         let (name, _host) = start_host(Duration::from_secs(1));
         let (client, welcome) = connect(&name);
-        assert_eq!(welcome.version, crate::ssh_transport::HOST_VERSION);
+        assert_eq!(welcome.version, VERSION);
         let pty = client.launch_transport(Transport::Pipes, "cmd.exe /d /c echo client-pipes", None, &[], 80, 24, quiet()).unwrap();
         read_until(&pty, "client-pipes");
         client.kill_all();

@@ -5,6 +5,8 @@ fn main() {
     #[cfg(windows)]
     termurion::dll::harden_process();
     #[cfg(windows)]
+    termurion::crashdump::install();
+    #[cfg(windows)]
     std::process::exit(run());
 }
 
@@ -13,7 +15,7 @@ fn run() -> i32 {
     use termurion::conpty::{self, Source};
     use termurion::host;
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(std::path::PathBuf::from)).unwrap_or_default();
-    let api = match conpty::load(&Source::Shipped(exe_dir)).or_else(|e| conpty::load(&Source::Inbox).map_err(|e2| format!("{e}; {e2}"))) {
+    let api = match conpty::load(&Source::Shipped(exe_dir.clone())).or_else(|e| conpty::load(&Source::Inbox).map_err(|e2| format!("{e}; {e2}"))) {
         Ok(api) => api,
         Err(e) => {
             host::log(&format!("no ConPTY: {e}"));
@@ -27,7 +29,10 @@ fn run() -> i32 {
             return 1;
         }
     };
-    match host::run(&name, api, host::Options::default()) {
+    // A vanished Termurion is started again from this folder (`host_watch`).
+    let app = exe_dir.join("termurion.exe");
+    let opts = host::Options { reopen: app.is_file().then_some(app), ..host::Options::default() };
+    match host::run(&name, api, opts) {
         Ok(()) => 0,
         Err(e) => {
             host::log(&e);

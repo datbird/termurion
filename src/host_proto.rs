@@ -8,8 +8,9 @@ use std::collections::VecDeque;
 /// versions, so a version 1 peer never sees those messages (an unknown message breaks the
 /// stream). Version 3 hosts honor Launch's `env` (the session environment); the field was
 /// always on the wire, and older hosts ignore it. Version 4 adds `LaunchWith` (a session on an
-/// SSH transport, `ssh_transport::HOST_VERSION`).
-pub const VERSION: u32 = 4;
+/// SSH transport, `ssh_transport::HOST_VERSION`). Version 5 adds `Goodbye`: a client that leaves
+/// on purpose says so, so the host can tell it from a client that vanished.
+pub const VERSION: u32 = 5;
 pub const MIN_VERSION: u32 = 1;
 /// A frame longer than this is refused (a broken or hostile peer).
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
@@ -65,6 +66,9 @@ pub enum Msg {
     /// Version 4, Termurion to the host: `Launch` on a transport (`ssh_transport::wire`). Version 4
     /// hosts understand it; a lower version never sees it (Termurion refuses the launch instead).
     LaunchWith { tag: u64, cmdline: String, cwd: String, env: Vec<String>, cols: u16, rows: u16, transport: u8 },
+    /// Version 5, Termurion to the host: this client is leaving on purpose (quit or detach), so
+    /// the pipe closing next is not a crash.
+    Goodbye,
 }
 
 /// Field writers: integers little-endian, byte strings with a u32 length.
@@ -192,6 +196,7 @@ pub fn encode(m: &Msg) -> Vec<u8> {
             }
             w.u16(*cols).u16(*rows).u8(*transport)
         }
+        Msg::Goodbye => w.u8(22),
     };
     let mut out = (w.0.len() as u32).to_le_bytes().to_vec();
     out.extend(w.0);
@@ -243,6 +248,7 @@ fn decode(payload: &[u8]) -> Result<Msg, String> {
             let env = (0..n).map(|_| r.str()).collect::<Result<Vec<_>, _>>()?;
             Msg::LaunchWith { tag, cmdline, cwd, env, cols: r.u16()?, rows: r.u16()?, transport: r.u8()? }
         }
+        22 => Msg::Goodbye,
         t => return Err(format!("unknown message {t}")),
     };
     if !r.0.is_empty() {
@@ -359,13 +365,14 @@ mod tests {
             Msg::Signal { id: 9, ctrl_break: false },
             Msg::Signal { id: 9, ctrl_break: true },
             Msg::LaunchWith { tag: 8, cmdline: "ssh.exe host".into(), cwd: String::new(), env: vec![], cols: 100, rows: 30, transport: 1 },
+            Msg::Goodbye,
         ]
     }
 
     #[test]
     fn messages_round_trip() {
-        // Version 4 hosts take LaunchWith; version 1 is still spoken.
-        assert_eq!((VERSION, MIN_VERSION), (4, 1));
+        // Version 4 hosts take LaunchWith, version 5 Goodbye; version 1 is still spoken.
+        assert_eq!((VERSION, MIN_VERSION), (5, 1));
         let mut d = Decoder::default();
         for m in all() {
             d.push(&encode(&m));
@@ -383,7 +390,7 @@ mod tests {
         d.push(&encode(&m));
         assert_eq!(d.next(), Some(Ok(m)));
         assert_eq!(d.next(), None);
-        assert_eq!((VERSION, MIN_VERSION), (4, 1));
+        assert_eq!((VERSION, MIN_VERSION), (5, 1));
     }
 
     #[test]

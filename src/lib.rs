@@ -65,6 +65,7 @@ pub mod tab_position;
 pub mod status_tool;
 pub mod seltools;
 pub mod dll;
+pub mod crashdump;
 pub mod webhost;
 #[cfg(windows)]
 pub mod webhost_win;
@@ -380,6 +381,7 @@ pub mod settings_ssh;
 pub mod restore_state;
 pub mod resident;
 pub mod host_proto;
+pub mod host_watch;
 pub mod host;
 pub mod host_client;
 pub mod reattach;
