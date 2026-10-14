@@ -199,20 +199,41 @@ mod tests {
         assert_eq!(h.feed(b"%begin 1 1 1\n"), vec![l("%begin 1 1 1")]);
     }
 
+    /// The raw start of a recorded session: the screen text before the DCS, the lines after it.
+    /// `wsl-3.4-shipped` ends in `%exit`; psmux 3.3.8 sends none after `kill-session`.
     #[test]
     fn transcripts_parse() {
-        let bytes = std::fs::read("tests/fixtures/tmux/wsl-3.4-shipped.bin").unwrap();
-        // Any read boundary gives the same result.
-        for size in [1, 7, 64, bytes.len()] {
-            let mut h = Hook::default();
-            let out: Vec<Out> = bytes.chunks(size).flat_map(|c| h.feed(c)).collect();
-            let lines: Vec<&Out> = out.iter().filter(|o| matches!(o, Out::Line(_))).collect();
-            assert!(matches!(out.iter().find(|o| !matches!(o, Out::Screen(_))), Some(Out::Enter)), "size {size}");
-            assert_eq!(lines.first(), Some(&&l("%begin 1790341902 273 0")));
-            assert!(lines.iter().any(|o| matches!(o, Out::Line(b) if b.len() == 300)), "the long reply line is whole");
-            assert!(matches!(out.iter().rev().find(|o| !matches!(o, Out::Screen(_))), Some(Out::Exit(_))));
-            let screen: Vec<u8> = out.iter().filter_map(|o| if let Out::Screen(b) = o { Some(b.clone()) } else { None }).flatten().collect();
-            assert_eq!(screen, b"\x1b[1t\x1b[c\x1b[?1004h\x1b[?9001h\x1b\\".to_vec(), "size {size}");
+        let cases: [(&str, &str, bool); 2] = [("wsl-3.4-shipped", "%begin 1790341902 273 0", true), ("psmux-3.3.8-start", "%begin 1791960881 1 0", false)];
+        for (name, first, exits) in cases {
+            let bytes = std::fs::read(format!("tests/fixtures/tmux/{name}.bin")).unwrap();
+            // Any read boundary gives the same result.
+            for size in [1, 7, 64, bytes.len()] {
+                let mut h = Hook::default();
+                let out: Vec<Out> = bytes.chunks(size).flat_map(|c| h.feed(c)).collect();
+                let lines: Vec<&Out> = out.iter().filter(|o| matches!(o, Out::Line(_))).collect();
+                assert!(matches!(out.iter().find(|o| !matches!(o, Out::Screen(_))), Some(Out::Enter)), "{name} size {size}");
+                assert_eq!(lines.first(), Some(&&l(first)), "{name}");
+                assert!(lines.iter().any(|o| matches!(o, Out::Line(b) if b.len() == 300)), "{name}: the long reply line is whole");
+                assert_eq!(matches!(out.iter().rev().find(|o| !matches!(o, Out::Screen(_))), Some(Out::Exit(_))), exits, "{name}");
+                assert_eq!(h.active(), !exits, "{name}: without %exit the hook stays in control mode");
+                let screen: Vec<u8> = out.iter().filter_map(|o| if let Out::Screen(b) = o { Some(b.clone()) } else { None }).flatten().collect();
+                let tail: &[u8] = if exits { b"\x1b\\" } else { b"" };
+                assert_eq!(screen, [&b"\x1b[1t\x1b[c\x1b[?1004h\x1b[?9001h"[..], tail].concat(), "{name} size {size}");
+            }
         }
+    }
+
+    /// psmux ends its lines with a bare newline, tmux with CR LF: both give the same lines.
+    #[test]
+    fn psmux_lines_end_in_newline_only() {
+        let bytes = std::fs::read("tests/fixtures/tmux/psmux-3.3.8-start.bin").unwrap();
+        assert!(!bytes.windows(2).any(|w| w == b"\r\n"), "the recording has no CR LF");
+        let mut h = Hook::default();
+        let out = h.feed(&bytes);
+        let session = out.iter().find_map(|o| match o {
+            Out::Line(b) if b.starts_with(b"%session-changed") => Some(String::from_utf8_lossy(b).into_owned()),
+            _ => None,
+        });
+        assert_eq!(session.as_deref(), Some("%session-changed $335 termurion-test-rec"));
     }
 }

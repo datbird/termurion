@@ -285,13 +285,20 @@ mod tests {
         // Three deep, both kinds.
         let deep = parse("0000,80x24,0,0[80x12,0,0{40x12,0,0,1,39x12,41,0[39x6,41,0,2,39x5,41,7,3]},80x11,0,13,4]").unwrap();
         assert_eq!(panes(&deep), vec![1, 2, 3, 4]);
-        // Every layout of the recorded session.
-        let bytes = std::fs::read("tests/fixtures/tmux/wsl-3.4-layout.bin").unwrap();
-        let text = String::from_utf8_lossy(&bytes);
-        let layouts: Vec<&str> = text.lines().filter_map(|l| l.trim_end_matches('\r').strip_prefix("%layout-change @0 ")).map(|l| l.split(' ').next().unwrap()).collect();
-        assert_eq!(layouts.len(), 2);
-        for l in layouts {
-            assert!(parse(l).is_some(), "{l}");
+        // Every layout of the recorded sessions (tmux 3.4 in WSL, psmux 3.3.8), checksum included.
+        for (name, window, count) in [("wsl-3.4-layout", "@0", 2), ("psmux-3.3.8-layout", "@1", 2)] {
+            let bytes = std::fs::read(format!("tests/fixtures/tmux/{name}.bin")).unwrap();
+            let text = String::from_utf8_lossy(&bytes);
+            let prefix = format!("%layout-change {window} ");
+            let layouts: Vec<&str> = text.lines().filter_map(|l| l.trim_end_matches('\r').strip_prefix(prefix.as_str())).map(|l| l.split(' ').next().unwrap()).collect();
+            assert_eq!(layouts.len(), count, "{name}");
+            for l in layouts {
+                assert!(parse(l).is_some(), "{name}: {l}");
+                assert_eq!(checksum(&l[5..]), l, "{name}: the checksum is tmux's");
+            }
+            // The list-windows reply is the last layout.
+            let listed = text.lines().map(|l| l.trim_end_matches('\r')).filter(|l| l.len() > 5 && l.as_bytes()[4] == b',' && l.contains('x') && !l.starts_with('%') && !l.starts_with(' ')).next_back().unwrap_or_else(|| panic!("{name}: no list-windows reply"));
+            assert!(parse(listed).is_some(), "{name}: {listed}");
         }
     }
 
