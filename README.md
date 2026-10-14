@@ -16,12 +16,15 @@ the same settings, the same menus, the same mouse, the same tmux integration, th
 
 [Why Termurion](#why-termurion) ·
 [Features](#features) ·
+[Screenshots](#screenshots) ·
 [How it compares](#how-it-compares) ·
 [Architecture](#architecture) ·
 [Building](#building) ·
 [Credits](#credits-and-licenses)
 
 </div>
+
+<p align="center"><img src="docs/assets/screenshots/settings-profiles.png" width="900" alt="Termurion settings window open over a PowerShell session"></p>
 
 ---
 
@@ -127,6 +130,21 @@ rows until they read `have`. Where iTerm2 has a quirk, Termurion keeps it and wr
 </td>
 </tr>
 </table>
+
+## Screenshots
+
+<table>
+<tr>
+<td width="50%"><img src="docs/assets/screenshots/menu-shell.png" alt="The Shell menu: windows, tabs, splits, archives, workgroups, broadcast input, tmux and ssh"></td>
+<td width="50%"><img src="docs/assets/screenshots/menu-view.png" alt="The View menu: toolbelt, annotations, composer, timestamps, Instant Replay"></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/assets/screenshots/settings-appearance.png" alt="Settings, Appearance: tabs, panes and window options"></td>
+<td width="50%"><img src="docs/assets/screenshots/settings-keys.png" alt="Settings, Keys: key bindings, shortcut key and modifier remapping"></td>
+</tr>
+</table>
+
+iTerm2's menu bar, settings window and key bindings, on Windows. The Shortcut Key (iTerm2's Cmd) is Ctrl+Shift by default.
 
 ## How it compares
 
