@@ -14,6 +14,14 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 
 ## Done
 
+6. **Selecting text crashed Termurion.** Seen 2026-10-15 (access violation, call to address 0
+   from word selection). Cause: with edition 2024 precise capture, the ICU word-break session
+   closure captured only copies of `guard.it` and `guard.api`, so the guard dropped when
+   `session()` returned: the break iterator was closed and its text freed before every lookup
+   (since 516b981a, 2026-10-05). Done 2026-10-15 in 5cff44a9: the closure calls a method on the
+   whole guard; test `the_icu_session_keeps_its_iterator_open_until_dropped` fails on the old
+   code. A sweep of the other Drop guards in move closures found no other case.
+
 5. **The right-click menu, and other UI, was short-copied from iTerm2.** Seen 2026-10-14: the
    terminal right-click menu lacks about a dozen of iTerm2's items (Restart, Bury, Terminal
    State, Annotate Selection, Save Selection as Snippet, Add Trigger, Send Selection, Send Email,
