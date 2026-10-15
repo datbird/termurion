@@ -449,14 +449,43 @@ pub fn may_be_base64(text: &str) -> bool {
     text.chars().all(standard) || text.chars().all(url_safe)
 }
 
-/// Standard Base64, else URL-safe, with padding required and line breaks and white space ignored
-/// (Decision: iTerm2's decoder takes an unpadded run, which would offer a decode of any word).
+/// `NSD:27-51`: `dataWithBase64EncodedString`, else the URL-safe form with `-` and `_` swapped
+/// for `+` and `/`. Line breaks are removed, then APR's lenient decoder reads the leading run of
+/// Base64 characters, unpadded or not, so most words decode (as in iTerm2).
 fn decode_base64(text: &str) -> Option<Vec<u8>> {
-    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-    if compact.is_empty() {
-        return None;
+    let compact: String = text.chars().filter(|c| !matches!(c, '\n' | '\r')).collect();
+    apr_base64_decode(compact.as_bytes()).or_else(|| apr_base64_decode(compact.replace('-', "+").replace('_', "/").as_bytes()))
+}
+
+/// APR's `apr_base64_decode_binary` (the decoder iTerm2 links): the leading characters that are
+/// in the Base64 alphabet, four to three bytes, a short tail decoded as far as it goes. None when
+/// nothing decodes (iTerm2's `resultLength <= 0`).
+fn apr_base64_decode(input: &[u8]) -> Option<Vec<u8>> {
+    let six = |b: u8| -> Option<u8> {
+        match b {
+            b'A'..=b'Z' => Some(b - b'A'),
+            b'a'..=b'z' => Some(b - b'a' + 26),
+            b'0'..=b'9' => Some(b - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    };
+    let digits: Vec<u8> = input.iter().map_while(|&b| six(b)).collect();
+    let mut out = Vec::with_capacity(digits.len() / 4 * 3 + 3);
+    let mut chunks = digits.chunks(4);
+    for c in chunks.by_ref() {
+        if c.len() > 1 {
+            out.push(c[0] << 2 | c[1] >> 4);
+        }
+        if c.len() > 2 {
+            out.push(c[1] << 4 | c[2] >> 2);
+        }
+        if c.len() > 3 {
+            out.push(c[2] << 6 | c[3]);
+        }
     }
-    base64::engine::general_purpose::STANDARD.decode(&compact).or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(&compact)).ok().filter(|b| !b.is_empty())
+    (!out.is_empty()).then_some(out)
 }
 
 /// `NSD:385-421`: UTF-8 text with control characters escaped, unless it is all white space or not
@@ -773,7 +802,9 @@ mod tests {
     fn base64_items_follow_iterm2() {
         assert_eq!(help(base64_preview("aGVsbG8=")), ("Base64: hello".into(), Some(Copy::Bytes(b"hello".to_vec()))));
         assert_eq!(base64_preview("abc"), None, "the length must exceed 3 (CMU:366)");
-        assert_eq!(help(base64_preview("aGk_")).1, Some(Copy::Bytes(b"hi?".to_vec())));
+        // The standard decoder reads up to the `_` first, so the URL-safe form is not tried (NSD:27-51).
+        assert_eq!(help(base64_preview("aGk_")).1, Some(Copy::Bytes(b"hi".to_vec())));
+        assert_eq!(help(base64_preview("_-8_")).1, Some(Copy::Bytes(vec![0xff, 0xef, 0x3f])));
         assert_eq!(base64_preview("not base64!"), None);
         // The preview is the friendly form, cut at 20 characters.
         let long = crate::seltools::base64_encode(&"x".repeat(60));
@@ -782,8 +813,17 @@ mod tests {
         assert_eq!(help(base64_preview("//79/A==")).0, "Base64: FF FE FD FC");
 
         let titles = |v: Vec<Helper>| v.into_iter().map(|h| h.title).collect::<Vec<_>>();
-        assert_eq!(titles(copy_base64("hi")), vec!["Copy Base64-Encoded".to_string()]);
-        assert_eq!(copy_base64("hi")[0].copy, text("aGk="));
+        // APR's lenient decoder: any run of Base64 characters decodes, padded or not (iTerm2).
+        assert_eq!(titles(copy_base64("hi")), vec!["Copy Base64-Decoded".to_string(), "Copy Base64-Encoded".to_string()]);
+        assert_eq!(copy_base64("hi")[0].copy, Some(Copy::Bytes(vec![0x86])));
+        assert_eq!(copy_base64("hi")[1].copy, text("aGk="));
+        assert_eq!(decode_base64("aGVsbG8"), Some(b"hello".to_vec()), "unpadded");
+        assert_eq!(decode_base64("aGVs\r\nbG8="), Some(b"hello".to_vec()), "line breaks removed");
+        assert_eq!(decode_base64("aGk= tail"), Some(b"hi".to_vec()), "stops at the first non-alphabet character");
+        assert_eq!(decode_base64("_-8"), Some(vec![0xff, 0xef]), "URL-safe form");
+        assert_eq!(decode_base64("a"), None, "one character decodes nothing");
+        assert_eq!(decode_base64("=aGk"), None);
+        assert_eq!(titles(copy_base64("a")), vec!["Copy Base64-Encoded".to_string()]);
         assert_eq!(titles(copy_base64("aGk=")), vec!["Copy Base64-Decoded".to_string(), "Copy Base64-Encoded".to_string()]);
         assert_eq!(copy_base64("aGk=")[0].copy, Some(Copy::Bytes(b"hi".to_vec())));
         // The encoded copy wraps at 76 characters with CR LF.
