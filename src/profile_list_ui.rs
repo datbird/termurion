@@ -207,3 +207,20 @@ pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, Stri
     });
     event
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_search_menu_lists_the_tags_and_adds_one_to_the_query() {
+        let rows = vec![
+            ("1".to_string(), "a".to_string(), vec!["work".to_string(), "Home".to_string()], String::new()),
+            ("2".to_string(), "b".to_string(), vec!["work".to_string(), "alpha/beta".to_string()], String::new()),
+        ];
+        assert_eq!(menu_tags(&rows), ["alpha/beta", "Home", "work"], "sorted ignoring case, each once");
+        assert_eq!(query_with_tag("", "work"), "tag:work");
+        assert_eq!(query_with_tag("ssh ", "Home"), "ssh tag:Home");
+        assert_eq!((TAGS_HEADING, SEARCH_SYNTAX_HELP), ("Tags", "Search Syntax Help"));
+    }
+}

@@ -1719,6 +1719,9 @@ pub fn title_choice(components: i64, function: Option<(String, String)>, provide
     (text, items)
 }
 
+/// The terminal types the "Report terminal type:" combo box lists (`PreferencePanel.xib`).
+pub const TERMINAL_TYPES: [&str; 7] = ["vt100", "xterm", "xterm-new", "xterm-256color", "ansi", "rxvt", "linux"];
+
 /// The note under Buffer Input by Default (`PreferencePanel.xib`, after its warning sign).
 pub const BUFFERING_NOTE: &str = "You may want a trigger to stop buffering";
 
@@ -2381,6 +2384,18 @@ pub(crate) fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dar
                     }
                     widget = Some((r.rect, enabled));
                     commit = r.lost_focus();
+                    // "Report terminal type:" is a combo box: the field, and a menu of the usual names.
+                    if s.key == "Terminal Type" {
+                        ui.menu_button("\u{25be}", |ui| {
+                            for name in TERMINAL_TYPES {
+                                if ui.button(name).clicked() {
+                                    changed = Some(Value::String(name.to_string()));
+                                    commit = true;
+                                    ui.close();
+                                }
+                            }
+                        });
+                    }
                     if let Some(v) = settings_keys::reset_value(&r, reset_to.as_ref(), differs) {
                         changed = Some(v);
                         commit = true;
@@ -2555,6 +2570,38 @@ fn shows_ai_models_on(mode: Mode, page: Page, sub: crate::settings_ai::SubTab) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subtitles_need_a_tall_bar() {
+        use crate::tab_theme::TabStyle;
+        assert!(!subtitles_allowed(TabStyle::Automatic, None), "24 points by default");
+        assert!(!subtitles_allowed(TabStyle::Light, Some(27.0)));
+        assert!(subtitles_allowed(TabStyle::Light, Some(TALL_TAB_BAR)));
+        assert!(subtitles_allowed(TabStyle::Minimal, None), "the Minimal theme always has room");
+        assert_eq!((SUBTITLE_NEEDS_TALL_BAR, ENABLE_TALL_TAB_BAR), ("Subtitle support requires a taller tab bar.", "Enable Tall Tab Bar"));
+    }
+
+    #[test]
+    fn screen_popup_follows_iterm2() {
+        let r = |x: f32, w: f32| crate::placement::Rect { x, y: 0.0, w, h: 1080.0 };
+        // The monitor holding (0, 0) is first whatever order Windows lists them in; two alike are numbered.
+        let names = monitor_names(vec![(r(1920.0, 1920.0), Some("Dell".into())), (r(0.0, 1920.0), Some("Dell".into())), (r(-1920.0, 1920.0), None)]);
+        assert_eq!(names, ["Dell (1)", "Dell (2)", "Display 3"]);
+        let items = screen_items(&names);
+        assert_eq!(items[0], (-1, "No Preference".to_string()));
+        assert_eq!(items[1], (-2, "Screen with Cursor".to_string()));
+        assert_eq!(items[2], (0, "Main Screen".to_string()));
+        assert_eq!(items[3], (1, "Dell (2)".to_string()));
+        assert_eq!(items.len(), 5);
+    }
+
+    #[test]
+    fn field_defaults_for_the_reset_item() {
+        let s = crate::schema::find("Scrollback Lines").unwrap();
+        assert_eq!(profile_default_value(s, "Scrollback Lines"), s.seed.clone().or_else(|| s.default.clone()));
+        let font = crate::schema::find("Normal Font").unwrap();
+        assert_eq!(profile_default_value(font, "Normal Font"), Some(Value::String(profile::WINDOWS_FONT.into())));
+    }
 
     #[test]
     fn session_hotkey_row_is_edit_session_only() {

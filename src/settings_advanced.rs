@@ -351,6 +351,31 @@ mod tests {
         assert_eq!(stored["precision"].as_str(), Some("low"));
     }
 
+    #[test]
+    fn smart_selection_editor_follows_iterm2() {
+        assert_eq!(PRECISION_NAMES, ["Very Low", "Low", "Normal", "High", "Very High"]);
+        assert_eq!(precision_phrase("normal", 0), "Normal precision");
+        assert_eq!(precision_phrase("very_high", 3), "Very high precision, 3 actions");
+        assert_eq!(precision_phrase("high", 1), "High precision, 1 actions", "iTerm2's text does not singularize");
+        for (i, (name, value)) in smartsel::PRECISIONS.iter().enumerate() {
+            assert_eq!(precision_index(*value), i, "{name}");
+        }
+        let defaults = default_rules();
+        assert!(defaults.len() > 5 && defaults.iter().any(|r| r.notes == "Paths"));
+    }
+
+    #[test]
+    fn the_playground_names_the_rule_that_wins_where_you_click() {
+        let rules = default_rules();
+        let text = "see https://example.com/a/b for more\nsecond line";
+        let at = text.find("example").unwrap();
+        let said = playground_result(text, at, &rules);
+        assert!(said.contains("example.com/a/b"), "{said}");
+        assert_eq!(playground_result("  ", 0, &[]), NO_MATCH);
+        // A click on the second line reads that line, not the first.
+        assert!(playground_result(text, text.find("second").unwrap() + 1, &rules).contains("second"));
+    }
+
     /// Review Focus 10: the Apple-only rows are not offered and `aiTitle` is never set.
     #[test]
     fn apple_only_rows_are_hidden() {

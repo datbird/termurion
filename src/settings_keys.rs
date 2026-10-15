@@ -4563,6 +4563,47 @@ mod tests {
         assert!(now.contains('x') && now != before, "typed text was lost: {now:?}");
     }
 
+    #[test]
+    fn restoration_popup_is_a_view_of_two_switches() {
+        assert_eq!(RESTORATION_ITEMS, ["Use System Window Restoration Setting", "Open Default Window Arrangement", "Only Restore Hotkey Window"]);
+        for choice in 0..3 {
+            let (arrangement, none) = restoration_set(choice);
+            assert_eq!(restoration_choice(arrangement, none, true), choice);
+        }
+        // With no arrangement saved the arrangement switch reads as the system's setting.
+        assert_eq!(restoration_choice(true, false, false), 0);
+        assert_eq!(restoration_choice(true, true, true), 2, "only restore hotkey wins, as iTerm2's update: does");
+        assert!(row_enabled(&Globals::empty(std::path::Path::new("restore-test.toml")), "AlwaysOpenWindowAtStartup"));
+        let mut g = Globals::empty(std::path::Path::new("restore-test.toml"));
+        g.set("OpenNoWindowsAtStartup", Value::Boolean(true));
+        assert!(!row_enabled(&g, "AlwaysOpenWindowAtStartup"), "at least one window is replaced by the policy");
+    }
+
+    #[test]
+    fn clipboard_popup_stores_two_switches_and_never_its_own_key() {
+        let mut g = Globals::empty(std::path::Path::new("clipboard-test.toml"));
+        assert_eq!(clipboard_sending_choice(false, false), 2);
+        for (choice, never, always) in [(0, true, false), (1, false, true), (2, false, false)] {
+            set_clipboard_sending(&mut g, choice);
+            assert_eq!((g.bool("NoSyncNeverAllowPaste"), g.bool("NoSyncAllowPaste")), (never, always));
+            assert_eq!(clipboard_sending_choice(never, always), choice);
+        }
+        assert!(g.raw("PhonyAllowSendingClipboardContents").is_none());
+        let s = schema::find_global("PhonyAllowSendingClipboardContents").unwrap();
+        let labels: Vec<(&str, Option<i64>)> = s.choices.iter().map(|c| (c.label.as_str(), c.value.as_integer())).collect();
+        assert_eq!(labels, [("Ask Each Time", Some(2)), ("Never", Some(0)), ("Always", Some(1))]);
+    }
+
+    #[test]
+    fn reset_menu_names_the_default() {
+        assert_eq!(reset_title("5"), "Reset to 5");
+        assert_eq!(reset_title(""), "Reset to Empty Default");
+        assert_eq!(number_text(5.0), "5");
+        assert_eq!(number_text(0.5), "0.5");
+        assert_eq!(number_text(1.0 / 3.0), "0.333");
+        assert_eq!(number_text(-2.0), "-2");
+    }
+
     /// Task 1 fix 2: a hand-edited WordSelectionMode other than 1 is the list mode.
     #[test]
     fn out_of_range_word_mode_is_the_list() {
