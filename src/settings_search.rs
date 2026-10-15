@@ -88,7 +88,8 @@ pub fn documents() -> &'static [Doc] {
             if s.macos_only || s.label.is_empty() || s.key.starts_with("HotKey ") || matches!(s.key.as_str(), "Browser Zoom" | "Touch Bar Map" | "Title Function") {
                 continue;
             }
-            docs.push(doc(&s.label, &s.key, Where::ProfileTab(tab), &[&s.section]));
+            let (name, caption) = crate::settings_colors::search_name(s);
+            docs.push(doc(&name, &s.key, Where::ProfileTab(tab), &[&s.section, caption]));
         }
         for s in schema::global() {
             if s.macos_only || s.label.is_empty() || crate::settings_keys::row_hidden(&s.key) {

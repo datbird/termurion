@@ -105,13 +105,8 @@ const EXEMPT: &[(&str, &[&str], &str)] = &[
     ("profile", &["Bold Color"], "iTerm2 draws the bold color well next to the 'Use custom color for bold text' checkbox"),
     (
         "profile",
-        &["Foreground Color", "Background Color", "Selection Color", "Selected Text Color", "Cursor Color", "Cursor Text Color"],
-        "iTerm2 lays these wells out in rows with a header (Defaults:, Selection:, Cursor:) and a caption under each well; Termurion draws the same wells in the colors grid, see the rulings",
-    ),
-    (
-        "profile",
-        &["Ansi 0 Color", "Ansi 1 Color", "Ansi 2 Color", "Ansi 3 Color", "Ansi 4 Color", "Ansi 5 Color", "Ansi 6 Color", "Ansi 7 Color", "Ansi 8 Color", "Ansi 9 Color", "Ansi 10 Color", "Ansi 11 Color", "Ansi 12 Color", "Ansi 13 Color", "Ansi 14 Color", "Ansi 15 Color"],
-        "iTerm2 draws the sixteen ANSI wells as two rows under 'ANSI Colors:' with a color name over each; the names are the schema row's second half",
+        &["Ansi 9 Color", "Ansi 10 Color", "Ansi 11 Color", "Ansi 12 Color", "Ansi 13 Color", "Ansi 14 Color", "Ansi 15 Color"],
+        "iTerm2's bright ANSI wells have no label: the 'Bright' caption names the column and the name at the row's left is the normal well's",
     ),
     ("global", &["GlobalKeyMap", "PointerActions", "Leader", "ShortcutKey", "KeyboardLocale"], "a table or a Termurion-only row on the Keys or Pointer page; its label is drawn by that page's own code"),
     ("global", &["HotkeyCode", "HotkeyChar", "HotkeyModifiers", "OpenQuicklyHotkeyCode", "OpenQuicklyHotkeyChar", "OpenQuicklyHotkeyModifiers"], "drawn by the App Hotkey and Open Quickly Hotkey recorders, which are iTerm2's"),
@@ -166,25 +161,6 @@ fn exempt(scope: &str, key: &str) -> bool {
 
 /// Exempt rows iTerm2 does label, because the label is shared with a neighbor row.
 const DUPLICATES: &[&str] = &["Command"];
-
-/// Exempt color wells iTerm2 labels with a caption that only reads right in its grid.
-const COLOR_WELLS: &[&str] = &[
-    "Foreground Color",
-    "Background Color",
-    "Selection Color",
-    "Selected Text Color",
-    "Cursor Color",
-    "Cursor Text Color",
-    "Ansi 0 Color",
-    "Ansi 1 Color",
-    "Ansi 2 Color",
-    "Ansi 3 Color",
-    "Ansi 4 Color",
-    "Ansi 5 Color",
-    "Ansi 6 Color",
-    "Ansi 7 Color",
-    "Ansi 8 Color",
-];
 
 fn rows() -> Vec<(&'static str, &'static crate::schema::Setting)> {
     let mut v: Vec<(&'static str, &'static crate::schema::Setting)> = Vec::new();
@@ -246,7 +222,7 @@ fn override_and_exempt_tables_stay_honest() {
         assert!(!why.is_empty(), "{keys:?}");
         for key in *keys {
             assert!(rows().iter().any(|(sc, s)| sc == scope && s.key == *key), "{scope} {key} is not a schema row");
-            assert!(control_for(scope, key).is_none_or(|c| c.label.trim().is_empty() || DUPLICATES.contains(key) || COLOR_WELLS.contains(key)), "{scope} {key}: iTerm2 labels it, so it is not exempt");
+            assert!(control_for(scope, key).is_none_or(|c| c.label.trim().is_empty() || DUPLICATES.contains(key)), "{scope} {key}: iTerm2 labels it, so it is not exempt");
         }
     }
 }
@@ -296,6 +272,23 @@ const CHOICES_EXEMPT: &[(&str, &str, &str)] = &[
     ("global", "FunctionKey", "iTerm2 puts the fn glyph before the name; Windows has no fn key"),
     ("global", "API Authentication Method", "iTerm2 asks for macOS Automation permission; Termurion's methods are the cookie and all apps (the Python API rulings)"),
 ];
+
+/// The Colors tab draws every one of its rows (the grid, or the header above it) and in the xib's order.
+#[test]
+fn the_colors_grid_draws_every_colors_row() {
+    let mut p = crate::profile::Profile::new("ui-labels-test");
+    let mut ctx_keys = Vec::new();
+    for s in crate::schema::profile().iter().filter(|s| s.tab == "Colors") {
+        ctx_keys.push(s.key.as_str());
+    }
+    let src = include_str!("settings_colors.rs");
+    let missing: Vec<&&str> = ctx_keys.iter().filter(|k| **k != "Use Separate Colors for Light and Dark Mode" && !src.contains(&format!("\"{k}\""))).collect();
+    assert!(missing.is_empty(), "Colors rows the grid does not draw: {missing:?}");
+    let drawn = headless_height(&mut |ui| {
+        crate::settings_colors::body(ui, &mut p, false);
+    });
+    assert!(drawn > 300.0, "the grid draws its rows");
+}
 
 /// Global rows drawn by their own code rather than by `global_control`: (key, where).
 const GLOBAL_ELSEWHERE: &[(&str, &str)] = &[

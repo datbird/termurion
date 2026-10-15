@@ -1254,6 +1254,9 @@ impl SettingsWindow {
                     if h.previewed {
                         edit = Edit::Preview;
                     }
+                    if h.separate_changed {
+                        edit = Edit::Changed(selected.clone());
+                    }
                     if h.import {
                         crate::settings_presets::begin_import(presets);
                     }
@@ -1328,7 +1331,13 @@ impl SettingsWindow {
                             }
                         }
                     }
-                    for (section, list) in sections(schema::TABS[tab]) {
+                    // The Colors tab is iTerm2's grid of row headers and wells, not a list of sections.
+                    if colors {
+                        if crate::settings_colors::body(ui, profile, dark) {
+                            edit = Edit::Changed(selected.clone());
+                        }
+                    }
+                    for (section, list) in sections(schema::TABS[tab]).into_iter().filter(|_| !colors) {
                         if !section.is_empty() && section != "Key Mappings" {
                             ui.add_space(8.0);
                             ui.strong(&section);
@@ -2293,6 +2302,15 @@ fn contrast_warning(key: &str, value: f64) -> Option<&'static str> {
 /// checkboxes, pickers, and colors; when a drag ends for sliders; when the field loses
 /// focus (or Enter) for text. Uncommitted edits still update the profile in memory.
 pub(crate) fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool) -> bool {
+    control_inner(ui, profile, s, dark, true)
+}
+
+/// The control alone: a row whose caption the pane draws itself (the Colors grid) has no label here.
+pub(crate) fn control_bare(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool) -> bool {
+    control_inner(ui, profile, s, dark, false)
+}
+
+fn control_inner(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, labels: bool) -> bool {
     let top = ui.cursor().top();
     let key = edit_key(profile, s, dark);
     let current = if key == s.key {
@@ -2326,7 +2344,9 @@ pub(crate) fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dar
                     bind_action = binding_menu(ui, &r, bound_expression.as_deref());
                 }
                 Kind::Int => {
-                    ui.label(&s.label);
+                    if labels {
+                        ui.label(&s.label);
+                    }
                     let mut i = current.as_ref().and_then(|v| v.as_integer()).unwrap_or(0);
                     let mut w = egui::DragValue::new(&mut i);
                     if let (Some(a), Some(b)) = (s.min_f64(), s.max_f64()) {
@@ -2344,7 +2364,9 @@ pub(crate) fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dar
                     }
                 }
                 Kind::Float => {
-                    ui.label(&s.label);
+                    if labels {
+                        ui.label(&s.label);
+                    }
                     let mut f = current.as_ref().and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(0.0);
                     let ranged = s.min_f64().is_some() && s.max_f64().is_some();
                     let r = match (s.min_f64(), s.max_f64()) {
@@ -2373,7 +2395,9 @@ pub(crate) fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dar
                     }
                 }
                 Kind::String | Kind::Font => {
-                    ui.label(&s.label);
+                    if labels {
+                        ui.label(&s.label);
+                    }
                     let mut text = current.as_ref().and_then(|v| v.as_str()).unwrap_or("").to_string();
                     let r = ui.text_edit_singleline(&mut text);
                     if r.changed() {
@@ -2399,7 +2423,9 @@ pub(crate) fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dar
                     }
                 }
                 Kind::Color => {
-                    ui.label(&s.label);
+                    if labels {
+                        ui.label(&s.label);
+                    }
                     let mut c = current.as_ref().map(rgb_of).unwrap_or([0, 0, 0]);
                     let r = ui.color_edit_button_srgb(&mut c);
                     if r.changed() {
@@ -2410,7 +2436,9 @@ pub(crate) fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dar
                     bind_action = binding_menu(ui, &r, bound_expression.as_deref());
                 }
                 Kind::Enum => {
-                    ui.label(&s.label);
+                    if labels {
+                        ui.label(&s.label);
+                    }
                     let now = current.clone();
                     let shown = s.choices.iter().find(|c| Some(&c.value) == now.as_ref()).map_or("".to_string(), |c| c.label.clone());
                     let r = egui::ComboBox::from_id_salt(&s.key).selected_text(shown).show_ui(ui, |ui| {
@@ -2425,7 +2453,7 @@ pub(crate) fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dar
                 }
                 // A list or table has its own editor in the profile loop; a row reaching here only names itself.
                 Kind::List | Kind::Dict | Kind::Data => {
-                    let r = ui.label(&s.label);
+                    let r = ui.label(if labels { s.label.as_str() } else { "" });
                     widget = Some((r.rect, enabled));
                 }
             }

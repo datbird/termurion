@@ -340,6 +340,7 @@ pub mod settings_ui;
 pub mod settings_title;
 pub mod settings_fonts;
 pub mod settings_search;
+pub mod settings_colors;
 pub mod regex_railroad;
 pub mod settings_profile_actions;
 #[cfg(test)]
