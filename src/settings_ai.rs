@@ -780,7 +780,7 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
         row_label(ui, TIMEOUT_LABEL);
         ui.horizontal(|ui| {
             let mut t = g.int(ai::TIMEOUT);
-            if ui.add(egui::DragValue::new(&mut t).range(0..=i64::from(i32::MAX))).changed() {
+            if crate::settings_keys::field(ui, egui::DragValue::new(&mut t).range(0..=i64::from(i32::MAX))).changed() {
                 g.set(ai::TIMEOUT, Value::Integer(t));
                 changed = true;
             }
@@ -1191,7 +1191,7 @@ fn editor_modal(ctx: &egui::Context, g: &Globals, e: &mut Editor, models: &[Manu
                     });
                     e.focus_name = false;
                 } else {
-                    let name = ui.add(egui::TextEdit::singleline(&mut form.name).hint_text(form.name_placeholder.as_str()).desired_width(FIELD_WIDTH - 136.0));
+                    let name = crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut form.name).hint_text(form.name_placeholder.as_str()).desired_width(FIELD_WIDTH - 136.0));
                     if std::mem::take(&mut e.focus_name) {
                         name.request_focus();
                     }
@@ -1219,7 +1219,7 @@ fn editor_modal(ctx: &egui::Context, g: &Globals, e: &mut Editor, models: &[Manu
             ui.end_row();
 
             editor_label(ui, am::URL_LABEL);
-            ui.add(egui::TextEdit::singleline(&mut form.url).desired_width(FIELD_WIDTH));
+            crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut form.url).desired_width(FIELD_WIDTH));
             ui.end_row();
 
             editor_label(ui, am::API_LABEL);
@@ -1277,8 +1277,8 @@ fn editor_modal(ctx: &egui::Context, g: &Globals, e: &mut Editor, models: &[Manu
                         ui.end_row();
                         let focus = e.focus_header.take();
                         for (i, (n, v)) in form.headers.iter_mut().enumerate() {
-                            let rn = ui.add(egui::TextEdit::singleline(n).desired_width(170.0));
-                            let rv = ui.add(egui::TextEdit::singleline(v).desired_width(FIELD_WIDTH - 170.0 - 40.0));
+                            let rn = crate::settings_keys::field(ui, egui::TextEdit::singleline(n).desired_width(170.0));
+                            let rv = crate::settings_keys::field(ui, egui::TextEdit::singleline(v).desired_width(FIELD_WIDTH - 170.0 - 40.0));
                             if focus == Some(i) {
                                 rn.request_focus();
                             }

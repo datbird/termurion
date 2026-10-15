@@ -850,8 +850,227 @@ pub fn tmux_attach_rows(ui: &mut egui::Ui, g: &mut Globals) -> bool {
     changed
 }
 
+/// A number as iTerm2's formatter writes a default into the reset item: whole numbers plain, a
+/// fraction to at most three places (`NSNumberFormatter` decimal style).
+pub fn number_text(n: f64) -> String {
+    if n.fract() == 0.0 {
+        return format!("{}", n as i64);
+    }
+    let t = format!("{n:.3}");
+    t.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// The first item of a text field's context menu while its value is not the default
+/// (`iTermPrefsFieldEditor menuForEvent:`): "Reset to <default>", or "Reset to Empty Default".
+pub fn reset_title(default: &str) -> String {
+    format!("Reset to {}", if default.is_empty() { "Empty Default" } else { default })
+}
+
+/// The Windows-applicable items of the field editor's standard menu (`iTermPrefsFieldEditor`
+/// takes its menu from `NSTextView`; Spelling, Substitutions, Transformations, Speech, Writing
+/// Direction and AutoFill are macOS services).
+pub const FIELD_MENU: [&str; 3] = ["Cut", "Copy", "Paste"];
+
+/// What a chosen field-menu item asks of the field, kept for the next frame (egui's text edit takes
+/// Cut, Copy and Paste as input events while it has the focus).
+fn field_op_id() -> egui::Id {
+    egui::Id::new("settings-field-op")
+}
+
+/// A text or number field's right-click menu: "Reset to <default>" and a separator first when
+/// `reset` names a default, then Cut, Copy and Paste. True when the reset item was chosen.
+pub fn field_menu(r: &egui::Response, reset: Option<&str>) -> bool {
+    let mut chosen = false;
+    r.context_menu(|ui| {
+        if let Some(default) = reset {
+            if ui.button(reset_title(default)).clicked() {
+                chosen = true;
+                ui.close();
+            }
+            ui.separator();
+        }
+        for (op, label) in FIELD_MENU.iter().enumerate() {
+            if ui.button(*label).clicked() {
+                let id = r.id;
+                ui.ctx().data_mut(|d| d.insert_temp(field_op_id(), (id, op)));
+                ui.ctx().memory_mut(|m| m.request_focus(id));
+                ui.ctx().request_repaint();
+                ui.close();
+            }
+        }
+    });
+    chosen
+}
+
+/// Adds a text or number field with the standard menu (no default to reset to).
+pub fn field(ui: &mut egui::Ui, widget: impl egui::Widget) -> egui::Response {
+    let r = ui.add(widget);
+    field_menu(&r, None);
+    r
+}
+
+/// At the start of a frame: the field menu item chosen last frame is sent to its field, which has
+/// the focus again (Cut and Copy act on its selection; Paste inserts the clipboard's text).
+pub fn apply_field_op(ctx: &egui::Context) {
+    let Some((id, op)) = ctx.data_mut(|d| {
+        let v = d.get_temp::<(egui::Id, usize)>(field_op_id());
+        d.remove::<(egui::Id, usize)>(field_op_id());
+        v
+    }) else { return };
+    ctx.memory_mut(|m| m.request_focus(id));
+    let event = match op {
+        0 => Some(egui::Event::Cut),
+        1 => Some(egui::Event::Copy),
+        _ => crate::settings_shortcuts::clipboard_text().map(egui::Event::Paste),
+    };
+    if let Some(e) = event {
+        ctx.input_mut(|i| i.events.push(e));
+    }
+}
+
+/// Gives a field `r` its "Reset to <default>" menu when `differs`, with the standard items;
+/// true when the reset item was chosen.
+pub fn reset_menu(r: &egui::Response, default: &str, differs: bool) -> bool {
+    field_menu(r, differs.then_some(default))
+}
+
+/// The value a field's reset item restores, when one was chosen: the default `d` of a setting
+/// that is text or a number (other kinds have no such menu).
+pub fn reset_value(r: &egui::Response, d: Option<&Value>, differs: bool) -> Option<Value> {
+    let text = d.and_then(|d| match d {
+        Value::String(t) => Some(t.clone()),
+        Value::Integer(i) => Some(i.to_string()),
+        Value::Float(f) => Some(number_text(*f)),
+        _ => None,
+    });
+    let reset = text.as_deref().filter(|_| differs);
+    field_menu(r, reset).then(|| d.cloned()).flatten()
+}
+
+/// The Pointer bindings' button that puts the factory set back (`PreferencePanel.xib`).
+pub const LOAD_DEFAULTS: &str = "Load Defaults";
+
+/// Window restoration policy's popup items, by the tag iTerm2 gives them (`GeneralPreferencesViewController.m:38-40`).
+pub const RESTORATION_ITEMS: [&str; 3] = ["Use System Window Restoration Setting", "Open Default Window Arrangement", "Only Restore Hotkey Window"];
+/// The popup's label (`PreferencePanel.xib`).
+pub const RESTORATION_LABEL: &str = "Window restoration policy:";
+
+/// The popup item the two stored switches name (`update:` of the popup): Only Restore Hotkey Window
+/// when that switch is on, Open Default Window Arrangement when the arrangement switch is on and there
+/// is an arrangement to open, else the system's setting.
+pub fn restoration_choice(arrangement: bool, no_windows: bool, have_arrangements: bool) -> usize {
+    if no_windows {
+        2
+    } else if have_arrangements && arrangement {
+        1
+    } else {
+        0
+    }
+}
+
+/// The two switches an item stores: (OpenArrangementAtStartup, OpenNoWindowsAtStartup).
+pub fn restoration_set(choice: usize) -> (bool, bool) {
+    match choice {
+        1 => (true, false),
+        2 => (false, true),
+        _ => (false, false),
+    }
+}
+
+/// "Window restoration policy:" and its popup, one view of the two stored switches. The arrangement
+/// item is off until a window arrangement is saved. True when a switch changed.
+pub fn restoration_row(ui: &mut egui::Ui, g: &mut Globals) -> bool {
+    let have = !crate::arrangements::Store::from_values(g.get(crate::arrangements::ARRANGEMENTS_KEY).as_ref(), g.get(crate::arrangements::DEFAULT_KEY).as_ref()).names().is_empty();
+    let now = restoration_choice(g.bool("OpenArrangementAtStartup"), g.bool("OpenNoWindowsAtStartup"), have);
+    let mut picked = None;
+    let rect = ui
+        .horizontal(|ui| {
+            ui.label(RESTORATION_LABEL);
+            egui::ComboBox::from_id_salt("WindowRestorationPolicy")
+                .selected_text(RESTORATION_ITEMS[now])
+                .show_ui(ui, |ui| {
+                    for (i, title) in RESTORATION_ITEMS.iter().enumerate() {
+                        if ui.add_enabled(i != 1 || have, egui::Button::selectable(i == now, *title)).clicked() {
+                            picked = Some(i);
+                        }
+                    }
+                })
+                .response
+                .rect
+        })
+        .inner;
+    // The mark of a value that is not the default (`hasDefaultValue`): both switches off.
+    if indicate_non_default() && (g.bool("OpenArrangementAtStartup") || g.bool("OpenNoWindowsAtStartup")) {
+        non_default_bar(ui, rect, true);
+    }
+    match picked {
+        Some(i) if i != now => {
+            let (arrangement, none) = restoration_set(i);
+            g.set("OpenArrangementAtStartup", Value::Boolean(arrangement));
+            g.set("OpenNoWindowsAtStartup", Value::Boolean(none));
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The value of the synthetic "Allow sending of clipboard contents?" popup for the two stored
+/// switches (`PasteboardReporter.configuration`): Never 0, Always 1, Ask Each Time 2.
+pub fn clipboard_sending_choice(never: bool, always: bool) -> i64 {
+    match crate::clipboard_osc::read_policy(never, always) {
+        crate::clipboard_osc::ReadPolicy::Never => 0,
+        crate::clipboard_osc::ReadPolicy::Always => 1,
+        crate::clipboard_osc::ReadPolicy::Ask => 2,
+    }
+}
+
+/// Stores a choice of the popup (`PasteboardReporter.set(configuration:)`).
+pub fn set_clipboard_sending(g: &mut Globals, choice: i64) {
+    let (never, always) = match choice {
+        0 => (true, false),
+        1 => (false, true),
+        _ => (false, false),
+    };
+    g.set("NoSyncNeverAllowPaste", Value::Boolean(never));
+    g.set("NoSyncAllowPaste", Value::Boolean(always));
+}
+
+/// The "Allow sending of clipboard contents?" popup: a view of two stored switches; the row's own
+/// key is never stored. True when a switch changed.
+pub fn clipboard_sending_row(ui: &mut egui::Ui, g: &mut Globals, s: &Setting) -> bool {
+    let now = clipboard_sending_choice(g.bool("NoSyncNeverAllowPaste"), g.bool("NoSyncAllowPaste"));
+    let mut picked = None;
+    let rect = ui
+        .horizontal(|ui| {
+            ui.label(&s.label);
+            egui::ComboBox::from_id_salt(&s.key)
+                .selected_text(s.choices.iter().find(|c| c.value.as_integer() == Some(now)).map_or(String::new(), |c| c.label.clone()))
+                .show_ui(ui, |ui| {
+                    for c in &s.choices {
+                        if ui.selectable_label(c.value.as_integer() == Some(now), &c.label).clicked() {
+                            picked = c.value.as_integer();
+                        }
+                    }
+                })
+                .response
+                .rect
+        })
+        .inner;
+    if indicate_non_default() && now != 2 {
+        non_default_bar(ui, rect, true);
+    }
+    match picked {
+        Some(v) if v != now => {
+            set_clipboard_sending(g, v);
+            true
+        }
+        _ => false,
+    }
+}
+
 /// A control for one global setting (checkbox, menu, or text).
 pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: bool) -> bool {
+    let top = ui.cursor().top();
     let mut changed = false;
     ui.add_enabled_ui(enabled && !s.macos_only, |ui| {
         let control = match s.kind {
@@ -901,9 +1120,9 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
                 .inner
                 .into()
             }
-            // The margins are drag values; iTerm2 bounds neither (13l). Other Int rows stay as
-            // they were (undrawn or drawn elsewhere): a later milestone gives them a control.
-            Kind::Int if matches!(s.key.as_str(), "TerminalMargin" | "TerminalVMargin") => {
+            // An Int row is a drag value (iTerm2's integer text fields), bounded when the schema
+            // bounds it; the margins are not bounded (13l).
+            Kind::Int => {
                 ui.horizontal(|ui| {
                     ui.label(&s.label);
                     let mut v = g.int(&s.key);
@@ -914,6 +1133,10 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
                     });
                     if r.changed() {
                         g.set(&s.key, Value::Integer(v));
+                        changed = true;
+                    }
+                    if let Some(d) = reset_value(&r, s.default.as_ref(), !global_is_default(g, s)) {
+                        g.set(&s.key, d);
                         changed = true;
                     }
                     r.rect
@@ -959,6 +1182,45 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
                 }
                 Some(r.rect)
             }
+            // Any other String row is a text field (the word rows and the keyboard locale have their own above).
+            Kind::String => {
+                ui.horizontal(|ui| {
+                    ui.label(&s.label);
+                    let mut text = g.string(&s.key);
+                    let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(220.0));
+                    if r.changed() && text != g.string(&s.key) {
+                        g.set(&s.key, Value::String(text));
+                        changed = true;
+                    }
+                    if let Some(d) = reset_value(&r, s.default.as_ref(), !global_is_default(g, s)) {
+                        g.set(&s.key, d);
+                        changed = true;
+                    }
+                    r.rect
+                })
+                .inner
+                .into()
+            }
+            // An unranged Float row is a drag value.
+            Kind::Float => {
+                ui.horizontal(|ui| {
+                    ui.label(&s.label);
+                    let mut v = g.number(&s.key).unwrap_or(0.0);
+                    let r = ui.add(egui::DragValue::new(&mut v).speed(0.1));
+                    if r.changed() {
+                        g.set(&s.key, Value::Float(v));
+                        changed = true;
+                    }
+                    if let Some(d) = reset_value(&r, s.default.as_ref(), !global_is_default(g, s)) {
+                        g.set(&s.key, d);
+                        changed = true;
+                    }
+                    r.rect
+                })
+                .inner
+                .into()
+            }
+            // Lists, tables, colors and fonts have an editor of their own where iTerm2 has one.
             _ => None,
         };
         if let Some(rect) = control.filter(|_| indicate_non_default() && !global_is_default(g, s)) {
@@ -967,6 +1229,7 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
     })
     .response
     .on_hover_text(if s.macos_only { format!("{} (macOS only)", s.help) } else { s.help.clone() });
+    crate::settings_search::flash_if_marked(ui, &s.key, top);
     changed
 }
 
@@ -1358,6 +1621,8 @@ pub fn row_enabled_with(g: &Globals, key: &str, both_gpu_kinds: bool) -> bool {
         // The second title bar row follows the first (`APV:228-231`).
         "ShowPaneTitlesEvenIfOnlyOnePane" => g.bool("ShowPaneTitles"),
         // Enabled only under the system restore policy (`GP:3496-3506`).
+        // Opening the default arrangement or no window replaces "at least one window" (`GP:3486-3494`).
+        "AlwaysOpenWindowAtStartup" => !g.bool("OpenArrangementAtStartup") && !g.bool("OpenNoWindowsAtStartup"),
         "RestoreWindowsToSameSpaces" => crate::desktops::restore_row_enabled(g.bool("OpenArrangementAtStartup"), g.bool("OpenNoWindowsAtStartup")),
         // Narrows the first (`APV:285-290`).
         crate::presence::REQUIRES_HOTKEYS_KEY => g.bool(crate::presence::UI_ELEMENT_KEY),
@@ -1530,12 +1795,14 @@ pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &m
                 sections.push(&s.section);
             }
         }
+        let mut framing = crate::settings_search::RowFlash::default();
         for section in sections {
             ui.strong(section);
             for s in rows.iter().copied().filter(|s| s.section == section) {
                 if !row_visible(g, &s.key) {
                     continue;
                 }
+                framing.row(ui, &s.key);
                 if s.key == "CustomScriptsFolder" {
                     // The typed text is saved and applied when editing ends, not per key.
                     let (_, ended) = custom_scripts_folder_row(ui, g, &home);
@@ -1549,6 +1816,19 @@ pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &m
                     continue;
                 }
                 if s.key == crate::remote_prefs::FOLDER_KEY {
+                    continue;
+                }
+                // The clipboard question is a view of two stored switches (`PasteboardReporter`).
+                if s.key == "PhonyAllowSendingClipboardContents" {
+                    changed |= clipboard_sending_row(ui, g, s);
+                    continue;
+                }
+                // One popup stands for both startup switches (`GP:1919-1963`).
+                if s.key == "OpenArrangementAtStartup" {
+                    changed |= restoration_row(ui, g);
+                    continue;
+                }
+                if s.key == "OpenNoWindowsAtStartup" {
                     continue;
                 }
                 // The checkbox and the popup are two views of the one stored mode (`GP:2325-2361`).
@@ -1578,6 +1858,7 @@ pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &m
                     ui.ctx().data_mut(|d| d.remove_temp::<bool>(folder_pending_id()));
                 }
             }
+            framing.finish(ui);
             ui.add_space(8.0);
         }
         changed |= extra(ui, g);
@@ -1680,7 +1961,7 @@ fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path
     let mut valid = false;
     ui.horizontal(|ui| {
         ui.add_enabled_ui(on, |ui| {
-            let field = ui.add(egui::TextEdit::singleline(&mut text).hint_text(rp::FOLDER_HINT));
+            let field = crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut text).hint_text(rp::FOLDER_HINT));
             if field.changed() {
                 g.set(rp::FOLDER_KEY, Value::String(text.clone()));
                 action = action.max_changed();
@@ -1779,6 +2060,12 @@ pub fn pointer_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, prof
                 changed = true;
             }
             TableAction::None => {}
+        }
+        // "Load Defaults" puts iTerm2's factory bindings back (`PointerPrefsController loadDefaults:`).
+        if ui.button(LOAD_DEFAULTS).on_hover_text("Replaces the pointer bindings with iTerm2's factory set.").clicked() {
+            g.set("PointerActions", Value::Table(crate::globals::keymaps::factory_pointer().clone()));
+            st.pointer_selected = None;
+            changed = true;
         }
     });
     if let Some(e) = st.pointer_editor.as_mut() {
@@ -2009,9 +2296,9 @@ mod tests {
         let order: Vec<&str> = schema::global().iter().filter(|s| s.section == "Remap Modifiers").map(|s| s.key.as_str()).collect();
         let at = |k: &str| order.iter().position(|o| *o == k).unwrap_or_else(|| panic!("{k}"));
         assert!(at("RemapModifiersGlobally") < at("ForceKeyboard"));
-        assert!(at("ForceKeyboard") < at("ForceKeyboardOncePerSession"));
-        assert!(at("ForceKeyboardOncePerSession") < at("KeyboardLocale"));
-        assert!(at("KeyboardLocale") < at("AllowSymbolicHotKeys"));
+        assert!(at("ForceKeyboard") < at("KeyboardLocale"));
+        assert!(at("KeyboardLocale") < at("ForceKeyboardOncePerSession"));
+        assert!(at("ForceKeyboardOncePerSession") < at("AllowSymbolicHotKeys"));
         // The locale and the once-per-session switch follow Force keyboard.
         let mut g = Globals::empty(std::path::Path::new("keys-rows-test.toml"));
         for key in ["KeyboardLocale", "ForceKeyboardOncePerSession"] {
@@ -2024,11 +2311,11 @@ mod tests {
         }
         // The profile rows: not macOS-only, with the Windows texts.
         let prof: [(&str, &str, Kind, Value, &str); 5] = [
-            ("Right Option Key Sends", "Alt Key Sends (Right)", Kind::Enum, Value::Integer(0), "Same popup for the right-hand Alt key, letting the two sides differ."),
-            ("Left Option Key Changeable", "Left Alt key changeable", Kind::Bool, b(true), "Whether left Alt key mode can be toggled at runtime"),
-            ("Right Option Key Changeable", "Right Alt key changeable", Kind::Bool, b(false), "Whether right Alt key mode can be toggled at runtime"),
-            ("Left Command Key", "Left Win Key", Kind::Enum, Value::Integer(0), "Left Win key behavior: Regular, Hyper, Meta, or Super"),
-            ("Right Command Key", "Right Win Key", Kind::Enum, Value::Integer(0), "Right Win key behavior: Regular, Hyper, Meta, or Super"),
+            ("Right Option Key Sends", "Right Alt key:", Kind::Enum, Value::Integer(0), "Same popup for the right-hand Alt key, letting the two sides differ."),
+            ("Left Option Key Changeable", "Apps can change this", Kind::Bool, b(true), "Whether left Alt key mode can be toggled at runtime"),
+            ("Right Option Key Changeable", "Apps can change this", Kind::Bool, b(false), "Whether right Alt key mode can be toggled at runtime"),
+            ("Left Command Key", "Left Win key:", Kind::Enum, Value::Integer(0), "Left Win key behavior: Regular, Hyper, Meta, or Super"),
+            ("Right Command Key", "Right Win key:", Kind::Enum, Value::Integer(0), "Right Win key behavior: Regular, Hyper, Meta, or Super"),
         ];
         for (key, label, kind, default, help) in prof {
             let s = schema::find(key).unwrap_or_else(|| panic!("{key}"));
@@ -2267,9 +2554,9 @@ mod tests {
             row("PrefsCustomFolder").help,
             "The folder (or http:// or https:// URL) holding termurion-settings.toml. Network paths are not supported."
         );
-        // The rows sit before "Save copy/paste and command history to disk" (Task 8's order).
+        // iTerm2's xib draws the history switch above the external settings rows (`ui_labels` holds the order).
         let general: Vec<&str> = schema::global().iter().filter(|s| s.tab == "General" && s.section == "Settings").map(|s| s.key.as_str()).collect();
-        assert_eq!(&general[..3], ["LoadPrefsFromCustomFolder", "PrefsCustomFolder", "SavePasteHistory"]);
+        assert_eq!(&general[..3], ["SavePasteHistory", "AutoCommandHistory", "LoadPrefsFromCustomFolder"]);
     }
 
     /// m13v2 Task 1: the Software Update rows (`IP:50`, `IP:51`, `IP:716`).
@@ -2873,8 +3160,8 @@ mod tests {
         let mode = schema::find_global("WordSelectionMode").unwrap();
         let choices: Vec<(Value, &str)> = mode.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
         assert_eq!(choices, vec![(Value::Integer(0), "List of Characters"), (Value::Integer(1), "Regular Expression")]);
-        // iTerm2's pane order: copy, trailing newline, clipboard access, the word rows, triple
-        // click, command click, dropped names.
+        // iTerm2's xib order, top to bottom: copy, trailing newline, clipboard access, the word rows,
+        // triple click, double click, copy mode, command click, dropped names.
         let order: Vec<&str> = page_rows("General").iter().filter(|s| s.section == "Selection").map(|s| s.key.as_str()).collect();
         assert_eq!(
             order,
@@ -2882,10 +3169,13 @@ mod tests {
                 "CopySelection",
                 "CopyLastNewline",
                 "AllowClipboardAccess",
+                "PhonyAllowSendingClipboardContents",
                 "WordSelectionMode",
-                "WordCharacters",
                 "WordSelectionRegexPattern",
+                "WordCharacters",
                 "TripleClickSelectsFullWrappedLines",
+                "DoubleClickPerformsSmartSelection",
+                "EnterCopyModeAutomatically",
                 "ClickToSelectCommand",
                 "WrapDroppedFilenamesInQuotesWhenPasting"
             ]
@@ -3770,7 +4060,7 @@ mod tests {
             ("AiModel", Kind::String, s("gpt-4o-mini"), "AI model", MODEL),
             ("AiMaxTokens", Kind::Int, i(128000), "Context tokens", MODEL),
             ("AiResponseMaxTokens", Kind::Int, i(8192), "Max response tokens", MODEL),
-            ("AI Timeout", Kind::Int, i(1200), "AI timeout", GENERAL),
+            ("AI Timeout", Kind::Int, i(1200), "Timeout:", GENERAL),
             ("AitermURL", Kind::String, s(""), "AI endpoint URL", MODEL),
             ("AitermUseLegacyAPI", Kind::Bool, b(false), "Use the legacy API (deprecated)", GENERAL),
             ("AITermAPI", Kind::Int, i(2), "AI API", MODEL),
@@ -3787,7 +4077,7 @@ mod tests {
             ("AI Safety Check", Kind::Bool, b(false), "Use AI to check safety of commands before running them", GENERAL),
             ("AICustomHeadersEnabled", Kind::Bool, b(false), "Custom headers (legacy)", LEGACY),
             ("AICustomHeaders", Kind::List, Value::Array(Vec::new()), "Custom header list (legacy)", LEGACY),
-            ("AIZeroDataRetention", Kind::Bool, b(false), "Enable \u{201c}zero data retention\u{201d} (send whole conversation every time)", GENERAL),
+            ("AIZeroDataRetention", Kind::Bool, b(false), "Enable \u{201c}zero data retention\u{201d}\u{a0}(send whole conversation every time)", GENERAL),
             ("AIModelUpdatesEnabled", Kind::Bool, b(false), "Automatically update available AI models from live online database", GENERAL),
         ]
     }
@@ -4293,8 +4583,8 @@ mod tests {
     fn margin_rows_follow_iterm2() {
         use crate::schema::Kind;
         let rows = [
-            ("TerminalMargin", 5, "Side margins", "Space between the terminal text and the left and right edges of a pane, in points."),
-            ("TerminalVMargin", 2, "Top & bottom margins", "Space between the terminal text and the top and bottom edges of a pane, in points."),
+            ("TerminalMargin", 5, "Side margins:", "Space between the terminal text and the left and right edges of a pane, in points."),
+            ("TerminalVMargin", 2, "Top & bottom margins:", "Space between the terminal text and the top and bottom edges of a pane, in points."),
         ];
         for (key, default, label, help) in rows {
             let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
@@ -4330,6 +4620,85 @@ mod tests {
         assert!(now.contains('x') && now != before, "typed text was lost: {now:?}");
     }
 
+    #[test]
+    fn restoration_popup_is_a_view_of_two_switches() {
+        assert_eq!(RESTORATION_ITEMS, ["Use System Window Restoration Setting", "Open Default Window Arrangement", "Only Restore Hotkey Window"]);
+        for choice in 0..3 {
+            let (arrangement, none) = restoration_set(choice);
+            assert_eq!(restoration_choice(arrangement, none, true), choice);
+        }
+        // With no arrangement saved the arrangement switch reads as the system's setting.
+        assert_eq!(restoration_choice(true, false, false), 0);
+        assert_eq!(restoration_choice(true, true, true), 2, "only restore hotkey wins, as iTerm2's update: does");
+        assert!(row_enabled(&Globals::empty(std::path::Path::new("restore-test.toml")), "AlwaysOpenWindowAtStartup"));
+        let mut g = Globals::empty(std::path::Path::new("restore-test.toml"));
+        g.set("OpenNoWindowsAtStartup", Value::Boolean(true));
+        assert!(!row_enabled(&g, "AlwaysOpenWindowAtStartup"), "at least one window is replaced by the policy");
+    }
+
+    #[test]
+    fn clipboard_popup_stores_two_switches_and_never_its_own_key() {
+        let mut g = Globals::empty(std::path::Path::new("clipboard-test.toml"));
+        assert_eq!(clipboard_sending_choice(false, false), 2);
+        for (choice, never, always) in [(0, true, false), (1, false, true), (2, false, false)] {
+            set_clipboard_sending(&mut g, choice);
+            assert_eq!((g.bool("NoSyncNeverAllowPaste"), g.bool("NoSyncAllowPaste")), (never, always));
+            assert_eq!(clipboard_sending_choice(never, always), choice);
+        }
+        assert!(g.raw("PhonyAllowSendingClipboardContents").is_none());
+        let s = schema::find_global("PhonyAllowSendingClipboardContents").unwrap();
+        let labels: Vec<(&str, Option<i64>)> = s.choices.iter().map(|c| (c.label.as_str(), c.value.as_integer())).collect();
+        assert_eq!(labels, [("Ask Each Time", Some(2)), ("Never", Some(0)), ("Always", Some(1))]);
+    }
+
+    #[test]
+    fn the_field_menu_keeps_the_standard_items_iterm2_shows_on_windows() {
+        assert_eq!(FIELD_MENU, ["Cut", "Copy", "Paste"]);
+        let src = include_str!("settings_keys.rs");
+        let f = &src[src.find("pub fn field_menu").unwrap()..];
+        let f = &f[..f.find("pub fn field(").unwrap()];
+        assert!(f.find("reset_title(default)").unwrap() < f.find("FIELD_MENU.iter()").unwrap(), "Reset to <default> and a separator come first, as menuForEvent: inserts them");
+    }
+
+    /// A chosen Cut reaches the field on the next frame: the text goes and the clipboard gets it.
+    #[test]
+    fn a_chosen_cut_acts_on_the_field_next_frame() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("cut-test");
+        let mut text = "abc".to_string();
+        let frame = |text: &mut String, op: bool| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                if op {
+                    apply_field_op(ui.ctx());
+                }
+                egui::CentralPanel::default().show(ui, |ui| {
+                    field(ui, egui::TextEdit::singleline(text).id(id));
+                });
+            });
+            out.textures_delta.clear();
+            out.platform_output
+        };
+        ctx.memory_mut(|m| m.request_focus(id));
+        frame(&mut text, false);
+        let mut state = egui::TextEdit::load_state(&ctx, id).unwrap_or_default();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(3))));
+        state.store(&ctx, id);
+        ctx.data_mut(|d| d.insert_temp(field_op_id(), (id, 0usize)));
+        let out = frame(&mut text, true);
+        assert_eq!(text, "", "Cut removed the selection");
+        assert!(out.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == "abc")), "and copied it");
+    }
+
+    #[test]
+    fn reset_menu_names_the_default() {
+        assert_eq!(reset_title("5"), "Reset to 5");
+        assert_eq!(reset_title(""), "Reset to Empty Default");
+        assert_eq!(number_text(5.0), "5");
+        assert_eq!(number_text(0.5), "0.5");
+        assert_eq!(number_text(1.0 / 3.0), "0.333");
+        assert_eq!(number_text(-2.0), "-2");
+    }
+
     /// Task 1 fix 2: a hand-edited WordSelectionMode other than 1 is the list mode.
     #[test]
     fn out_of_range_word_mode_is_the_list() {
@@ -4356,22 +4725,24 @@ mod tests {
         assert_eq!(g.int("TerminalMargin"), 5);
     }
 
-    /// Final review 5: only the margin rows draw a drag value; an Int row such as IRMemory
-    /// (bounded 0..=1000) is not given an unbounded one.
+    /// Every Int row draws a drag value, bounded by the schema where it has bounds: the Memory usage
+    /// per session (IRMemory, 0 to 1000) and the tmux pause limit have controls (they had none).
     #[test]
-    fn other_int_rows_draw_no_unbounded_drag_value() {
+    fn bounded_int_rows_draw_a_drag_value() {
         let ctx = egui::Context::default();
         let mut g = Globals::empty(std::path::Path::new("int-row-test.toml"));
-        let s = schema::find_global("IRMemory").unwrap();
-        assert_eq!(s.kind, Kind::Int);
-        let mut drawn = 0.0;
-        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let before = ui.min_rect().height();
-            global_control(ui, &mut g, s, true);
-            drawn = ui.min_rect().height() - before;
-        });
-        out.textures_delta.clear();
-        assert_eq!(drawn, 0.0, "IRMemory drew an Int control");
+        for key in ["IRMemory", "TmuxPauseModeAgeLimit"] {
+            let s = schema::find_global(key).unwrap();
+            assert_eq!(s.kind, Kind::Int);
+            let mut drawn = 0.0;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let before = ui.min_rect().height();
+                global_control(ui, &mut g, s, true);
+                drawn = ui.min_rect().height() - before;
+            });
+            out.textures_delta.clear();
+            assert!(drawn > 0.0, "{key} drew nothing");
+        }
     }
 
     #[test]

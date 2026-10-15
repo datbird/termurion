@@ -306,7 +306,7 @@ pub fn action_description(t: &Table) -> String {
         },
         "iTermSetProfileBooleanTrigger" => match crate::settings_triggers::split_setting(param(t)) {
             (key, on) if !key.is_empty() => {
-                let label = crate::schema::find(&key).map_or(key.clone(), |s| s.label.clone());
+                let label = crate::schema::find(&key).map_or(key.clone(), |s| s.name().to_string());
                 format!("Set \u{201c}{}\u{201d} to {}", shortened(&label), if on { "On" } else { "Off" })
             }
             _ => "Set Profile Setting".into(),

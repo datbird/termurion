@@ -230,7 +230,7 @@ impl Store {
         (guid, true)
     }
 
-    /// Copies a profile under a new Guid and "<name> copy". Returns the new Guid.
+    /// Copies a profile under a new Guid and "Copy of <name>" (iTerm2's string). Returns the new Guid.
     pub fn duplicate(&mut self, guid: &str) -> Option<String> {
         let mut copy = self.get(guid)?.clone();
         // A copy of a transient profile is an ordinary saved profile (13t B1).
@@ -248,7 +248,13 @@ impl Store {
         }
         let new_guid = uuid::Uuid::new_v4().to_string().to_uppercase();
         copy.set(GUID, Value::String(new_guid.clone()));
-        copy.set(NAME, Value::String(format!("{} copy", copy.name())));
+        // iTerm2's `duplicateProfile:` (`ProfilePreferencesViewController.m`): "Copy of <name>", not the
+        // default, no shortcut, no Automatic Profile Switching rules, and no hotkey window of its own.
+        copy.set(NAME, Value::String(format!("Copy of {}", copy.name())));
+        copy.set("Default Bookmark", Value::String("No".into()));
+        copy.set("Shortcut", Value::String(String::new()));
+        copy.set("Bound Hosts", Value::Array(Vec::new()));
+        copy.set("Has Hotkey", Value::Boolean(false));
         self.profiles.push(copy);
         Some(new_guid)
     }
@@ -399,6 +405,23 @@ mod tests {
         let second = s.profiles[1].guid();
         assert!(s.delete(&second));
         assert_eq!(s.profiles.len(), 2);
+    }
+
+    #[test]
+    fn a_duplicate_is_named_and_cleared_as_iterm2_does() {
+        let mut s = Store::load(&scratch("duplicate")).unwrap();
+        let first = s.default_guid.clone();
+        let name = s.get(&first).unwrap().name();
+        s.get_mut(&first).unwrap().set("Shortcut", Value::String("A".into()));
+        s.get_mut(&first).unwrap().set("Has Hotkey", Value::Boolean(true));
+        s.get_mut(&first).unwrap().set("Bound Hosts", Value::Array(vec![Value::String("host".into())]));
+        let made = s.duplicate(&first).unwrap();
+        let copy = s.get(&made).unwrap().clone();
+        assert_eq!(copy.name(), format!("Copy of {name}"));
+        assert_eq!(copy.string("Shortcut"), "");
+        assert!(!copy.bool("Has Hotkey"));
+        assert_eq!(copy.get("Bound Hosts"), Some(Value::Array(Vec::new())));
+        assert_eq!(copy.string("Default Bookmark"), "No");
     }
 
     #[test]

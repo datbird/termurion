@@ -340,11 +340,18 @@ pub struct FaceKey {
     /// The profile's Special Font Config, normalized (`font_table::normalized`): the table itself
     /// and not a hash of it, so two tables never share a face (P5).
     pub table: Option<std::sync::Arc<str>>,
+    /// The weight of the regular face, 400 unless the profile's font names another member of the
+    /// family ("CascadiaMono-Light"); bold is picked relative to it.
+    pub weight: u16,
+    /// The Normal Font's and the Non-ASCII Font's stylistic sets and Contextual Alternates choice
+    /// (Settings' font menu); they shape text that ligatures.
+    pub ascii_features: crate::profile::FontFeatures,
+    pub non_ascii_features: crate::profile::FontFeatures,
 }
 
 impl FaceKey {
     pub fn new(family: &str, alt_family: Option<&str>, px: f32, h: f32, v: f32) -> FaceKey {
-        FaceKey { family: family.to_string(), alt_family: alt_family.map(str::to_string), px_bits: quantize_px(px).to_bits(), h_bits: h.to_bits(), v_bits: v.to_bits(), profile_bits: 0, use_bold: true, use_italic: true, ascii_ligatures: false, non_ascii_ligatures: false, ascii_aa: true, non_ascii_aa: true, thin: 4, powerline: false, table: None }
+        FaceKey { family: family.to_string(), alt_family: alt_family.map(str::to_string), px_bits: quantize_px(px).to_bits(), h_bits: h.to_bits(), v_bits: v.to_bits(), profile_bits: 0, use_bold: true, use_italic: true, ascii_ligatures: false, non_ascii_ligatures: false, ascii_aa: true, non_ascii_aa: true, thin: 4, powerline: false, table: None, weight: 400, ascii_features: Default::default(), non_ascii_features: Default::default() }
     }
 
     pub fn px(&self) -> f32 {
@@ -361,6 +368,17 @@ impl FaceKey {
 /// builds for the new scale.
 pub fn quantize_px(px: f32) -> f32 {
     (px * 64.0).round() / 64.0
+}
+
+/// A profile's font as Settings' menus show it (`Renderer::describe_font`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FontInfo {
+    pub family: String,
+    pub weight: u16,
+    /// The stylistic sets the font offers: (AAT selector, name), by name (`fonts::stylistic_sets`).
+    pub sets: Vec<(u32, String)>,
+    /// (title, the name a profile stores, weight), lightest first.
+    pub members: Vec<(String, String, u16)>,
 }
 
 /// A measured face: what `draw` shapes a row with and what the cursor and underlines read.
@@ -460,6 +478,8 @@ pub struct Renderer {
     face_ids: std::collections::HashMap<FaceKey, u16>,
     /// Memoized `resolve_family` and `has_family`: one scan of the installed fonts per name.
     resolved: std::cell::RefCell<std::collections::HashMap<String, String>>,
+    /// The weight each font name asks for (`resolve_weight`).
+    named_weights: std::cell::RefCell<std::collections::HashMap<String, u16>>,
     installed: std::cell::RefCell<std::collections::HashMap<String, bool>>,
     scans: std::cell::Cell<usize>,
     /// The device scale the faces' sizes are in (`set_scale`).
@@ -525,6 +545,7 @@ impl Renderer {
             faces: Vec::new(),
             face_ids: std::collections::HashMap::new(),
             resolved: Default::default(),
+            named_weights: Default::default(),
             installed: Default::default(),
             scans: Default::default(),
             scale: 1.0,
@@ -548,7 +569,7 @@ impl Renderer {
         let family = self.family.clone();
         let (cell, base, ul) = self.measure(&family, px, self.h_spacing, self.v_spacing);
         (self.cell, self.base_cell, self.ul_metrics) = (cell, base, ul);
-        self.default_bold = self.bold_face(&family);
+        self.default_bold = self.bold_face(&family, 400);
         self.sync_default_face();
         self.buffers.clear();
         self.widths.clear();
@@ -614,10 +635,10 @@ impl Renderer {
             return;
         }
         self.bold_difference = difference;
-        self.default_bold = self.bold_face(&self.family.clone());
+        self.default_bold = self.bold_face(&self.family.clone(), 400);
         for i in 0..self.faces.len() {
-            let family = self.faces[i].key.family.clone();
-            self.faces[i].bold = self.bold_face(&family);
+            let (family, weight) = (self.faces[i].key.family.clone(), self.faces[i].key.weight);
+            self.faces[i].bold = self.bold_face(&family, weight);
         }
         self.buffers.clear();
     }
@@ -652,9 +673,9 @@ impl Renderer {
     }
 
     /// The bold weight `family` has for its regular face, None when it needs the double strike.
-    fn bold_face(&mut self, family: &str) -> Option<u16> {
+    fn bold_face(&mut self, family: &str, weight: u16) -> Option<u16> {
         let weights = self.family_weights(family);
-        let regular = fonts::regular_weight(&weights)?;
+        let regular = fonts::nearest_weight(&weights, weight)?;
         fonts::bold_weight(regular, &weights, self.bold_difference)
     }
 
@@ -666,7 +687,7 @@ impl Renderer {
         let blacklisted = self.family_blacklisted(&key.family);
         let alt_blacklisted = key.alt_family.as_deref().map_or(blacklisted, |f| self.family_blacklisted(f));
         let (table, table_fonts) = self.table_of(key);
-        Face { key: key.clone(), cell, base, baseline: ul.baseline, ul, px, bold: self.bold_face(&key.family), use_bold: key.use_bold, use_italic: key.use_italic, blacklisted, alt_blacklisted, table, table_fonts: table_fonts.into() }
+        Face { key: key.clone(), cell, base, baseline: ul.baseline, ul, px, bold: self.bold_face(&key.family, key.weight), use_bold: key.use_bold, use_italic: key.use_italic, blacklisted, alt_blacklisted, table, table_fonts: table_fonts.into() }
     }
 
     /// The Special Font Config a key carries and the font of each entry: every name is resolved
@@ -730,6 +751,19 @@ impl Renderer {
         names.sort();
         names.dedup();
         names
+    }
+
+    /// Whether `family`'s regular face asks to be smoothed at `ppem` pixels per em, from its `gasp`
+    /// table (Settings' "(recommended for this font)"). A font with no such table does not ask.
+    pub fn font_wants_antialiasing(&self, family: &str, ppem: u16) -> bool {
+        let resolved = self.resolve_family(family);
+        let db = self.font_system.db();
+        let face = db
+            .faces()
+            .filter(|f| f.style == glyphon::fontdb::Style::Normal && f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(&resolved)))
+            .min_by_key(|f| ((f.weight.0 as i32 - 400).abs(), f.weight.0))
+            .map(|f| f.id);
+        face.and_then(|id| db.with_face_data(id, |data, index| fonts::sfnt_table(data, index, b"gasp").is_some_and(|t| fonts::gasp_smooths(t, ppem)))).unwrap_or(false)
     }
 
     /// Whether face `id`'s profile draws Powerline symbols itself.
@@ -812,6 +846,54 @@ impl Renderer {
             .flat_map(|f| f.families.iter())
             .find(|(n, _)| squash(n) == want)
             .map_or(guess, |(n, _)| n.clone())
+    }
+
+    /// The weight a profile's font name asks for: a family name is its regular face (400), a PostScript
+    /// name ("CascadiaMono-Light") the weight of that installed face, else its style word's.
+    pub fn resolve_weight(&self, name: &str) -> u16 {
+        if let Some(w) = self.named_weights.borrow().get(name) {
+            return *w;
+        }
+        let db = self.font_system.db();
+        let w = if db.faces().any(|f| f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name))) {
+            400
+        } else if let Some(f) = db.faces().find(|f| f.post_script_name.eq_ignore_ascii_case(name)) {
+            f.weight.0
+        } else {
+            fonts::weight_from_style_word(name)
+        };
+        let mut known = self.named_weights.borrow_mut();
+        if known.len() >= LOOKUP_CAP {
+            known.clear();
+        }
+        known.insert(name.to_string(), w);
+        w
+    }
+
+    /// What Settings' font menus show for a profile's font name: the installed family it resolves
+    /// to, the weight it asks for, and the family's members (upright faces by weight) as (title,
+    /// the name a profile stores for it, weight). The family's regular member is stored as the
+    /// family name, so the default draws as it always did.
+    pub fn describe_font(&self, name: &str) -> FontInfo {
+        let family = self.resolve_family(name);
+        let weight = self.resolve_weight(name);
+        let db = self.font_system.db();
+        let mut faces: Vec<(u16, String)> = db
+            .faces()
+            .filter(|f| f.style == glyphon::fontdb::Style::Normal && f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(&family)))
+            .map(|f| (f.weight.0, f.post_script_name.clone()))
+            .collect();
+        faces.sort();
+        faces.dedup_by_key(|f| f.0);
+        let regular = fonts::regular_weight(&faces.iter().map(|f| f.0).collect::<Vec<_>>());
+        let members = faces
+            .into_iter()
+            .map(|(w, ps)| (fonts::weight_name(w), if Some(w) == regular { family.clone() } else { ps }, w))
+            .collect();
+        // The sets come from the regular face's GSUB table.
+        let first = db.faces().find(|f| f.style == glyphon::fontdb::Style::Normal && f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(&family))).map(|f| f.id);
+        let sets = first.and_then(|id| db.with_face_data(id, |data, index| fonts::stylistic_sets(data, index))).unwrap_or_default();
+        FontInfo { family, weight, sets, members }
     }
 
     /// A porthole run's width: the cell width per column for the profile's font, the shaped
@@ -1276,7 +1358,7 @@ impl Renderer {
             let face = self.faces.get(row.face as usize).unwrap_or(&self.faces[0]);
             let ((cw, ch), px) = (face.cell, face.px);
             let (family, alt_family) = (face.key.family.clone(), face.key.alt_family.clone());
-            let (bold_weight, use_bold, use_italic) = (face.bold, face.use_bold, face.use_italic);
+            let (bold_weight, use_bold, use_italic, regular_weight) = (face.bold, face.use_bold, face.use_italic, face.key.weight);
             let table_fonts = if row.spans.iter().any(|s| s.font != 0) { face.table_fonts.clone() } else { Default::default() };
             let metrics = Metrics::new(px * row.scale, ch * row.scale);
             buffer.set_metrics_and_size(metrics, Some(row.clip.w + cw * row.scale), Some(ch * row.scale));
@@ -1319,7 +1401,8 @@ impl Renderer {
                 let weight = if s.badge {
                     badge_weight
                 } else if !s.bold {
-                    Weight::NORMAL
+                    // Terminal text is the profile's regular member of the family.
+                    if terminal { Weight(regular_weight) } else { Weight::NORMAL }
                 } else if s.fake_bold && terminal {
                     match (use_bold, bold_weight) {
                         (false, _) | (true, None) => Weight::NORMAL,
@@ -1332,7 +1415,8 @@ impl Renderer {
                 // Terminal text shapes with its ligature level's features. Non-ASCII text at level 0
                 // is one cell per piece (or a joined run of a cursive script), so it keeps the
                 // shaper's own features: nothing can ligate there and Arabic keeps its forms.
-                let start = if terminal && (s.ligatures > 0 || s.text.is_ascii()) { start.font_features(fonts::features(s.ligatures)) } else { start };
+                let chosen = if s.alt_font { &face.key.non_ascii_features } else { &face.key.ascii_features };
+                let start = if terminal && (s.ligatures > 0 || s.text.is_ascii()) { start.font_features(fonts::features_with(s.ligatures, chosen)) } else { start };
                 // Terminal text carries its mask mode in the glyph cache key (`from_bits_retain`
                 // keeps Termurion's bits), so each mode is cached apart and filtered in glyphon.
                 let start = if terminal { start.cache_key_flags(CacheKeyFlags::from_bits_retain(fonts::MaskMode::from_code(s.mask).flags())) } else { start };
@@ -1995,6 +2079,31 @@ mod tests {
         report("LIGATURES level 0", &off);
         assert_eq!(off, alone, "features(0) must shape each character as it does alone in {family}");
         assert!(off.iter().take(2).all(|v| v.len() == 2), "each pair is two glyphs with features(0) in {family}");
+    }
+
+    /// The font menu on a real font: Cascadia Code lists stylistic sets, a chosen set changes the
+    /// glyphs, and turning Contextual Alternates off changes how its ligatures form.
+    #[test]
+    fn font_menu_choices_shape_a_real_font() {
+        let mut fs = FontSystem::new();
+        let id = fs.db().faces().find(|f| f.style == glyphon::fontdb::Style::Normal && f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case("Cascadia Code"))).map(|f| f.id);
+        let Some(id) = id else {
+            println!("skip: Cascadia Code is not installed");
+            return;
+        };
+        let sets = fs.db().with_face_data(id, |data, index| fonts::stylistic_sets(data, index)).unwrap_or_default();
+        println!("STYLISTIC SETS: {sets:?}");
+        assert!(!sets.is_empty(), "Cascadia Code has stylistic sets");
+        let text = "abcdefghijklmnopqrstuvwxyz0123456789@&$%*{}<>|\\~`^";
+        let plain = glyph_ids(&mut fs, "Cascadia Code", text, Some(fonts::features_with(2, &Default::default())));
+        let changes = sets.iter().any(|(sel, _)| {
+            let chosen = crate::profile::FontFeatures { stylistic: vec![*sel], calt_off: false };
+            glyph_ids(&mut fs, "Cascadia Code", text, Some(fonts::features_with(2, &chosen))) != plain
+        });
+        assert!(changes, "a stylistic set the font lists must change some glyph");
+        let ligated = glyph_ids(&mut fs, "Cascadia Code", "<=>->!=", Some(fonts::features_with(2, &Default::default())));
+        let off = glyph_ids(&mut fs, "Cascadia Code", "<=>->!=", Some(fonts::features_with(2, &crate::profile::FontFeatures { stylistic: Vec::new(), calt_off: true })));
+        assert_ne!(ligated, off, "Contextual Alternates off changes the ligatures");
     }
 
     #[test]

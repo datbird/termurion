@@ -101,6 +101,8 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::BrowserExtension { .. } => Answer::Button(1),
         // Cancel: a closed window deletes no bookmark.
         Then::BookmarkDelete { .. } => Answer::Button(1),
+        // Abort: a closed window imports no more files.
+        Then::JsonImport(_) => Answer::Button(1),
         // Cancel is the third button: a closed window never opens a profile either way (B6).
         Then::OpenRenamedProfile { .. } => Answer::Button(2),
         // Cancel: a closed window never uninstalls or goes on past a failed removal (P10).
@@ -135,6 +137,9 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Then {
     Nothing,
+    /// "Could not Import Profile" for a JSON file with more files after it: OK (0) goes on with them,
+    /// Abort (1) stops. Neither is remembered by a button (the alert is only temporarily silenceable).
+    JsonImport(Vec<crate::localfs::LocalPath>),
     /// "Register a hotkey?" for a session hotkey a program supplied: Register (0) turns it on;
     /// Ignore (1) leaves it stored and inert. Register is never remembered.
     SessionHotkey { pane: crate::layout::PaneId, shortcut: crate::hotkey::Shortcut },
@@ -679,6 +684,11 @@ impl App {
             Then::BrowserClearData { pane } => self.browser_clear_data_answered(pane, index),
             Then::BrowserExtension { pane, folder, hash } => self.browser_extension_answered(pane, folder, hash, index),
             Then::BookmarkDelete { pane, url } => self.bookmark_delete_answered(pane, &url, index),
+            Then::JsonImport(rest) => {
+                if index == 0 {
+                    self.import_json_profiles(rest);
+                }
+            }
             Then::BrowserOpenFile { pane, file } => {
                 if index == 0 {
                     self.browser_open_file_confirmed(pane, &file);

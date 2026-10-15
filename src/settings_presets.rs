@@ -415,7 +415,14 @@ pub struct Header {
     pub gallery: bool,
     /// The Editing combo was changed.
     pub picked: bool,
+    /// The switch for separate light and dark colors was changed.
+    pub separate_changed: bool,
 }
+
+/// The three row headers above the wells (`PreferencePanel.xib`).
+pub const MODES: &str = "Modes:";
+pub const EDITING: &str = "Editing:";
+pub const COLOR_PRESET: &str = "Color Preset:";
 
 /// The row above the color wells: "Editing:" with its combo (enabled with separate colors) and the
 /// "Color Presets\u{2026}" menu. The preview timer runs while a preset row is hovered.
@@ -423,8 +430,19 @@ pub fn colors_header(ui: &mut egui::Ui, st: &mut State, g: &Globals, profile: &m
     let mut out = Header::default();
     st.shown = Some(guid.to_string());
     let separate = profile.bool(SEPARATE);
-    ui.horizontal(|ui| {
-        ui.label("Editing:");
+    let head = |ui: &mut egui::Ui, text: &str| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(text));
+    };
+    egui::Grid::new("colors-header").num_columns(2).spacing([8.0, 6.0]).min_col_width(crate::settings_colors::HEADER_WIDTH).show(ui, |ui| {
+        // Modes: the switch for separate light and dark colors (iTerm2's first row of the tab).
+        head(ui, MODES);
+        if let Some(s) = crate::schema::find(SEPARATE)
+            && crate::settings_ui::control_bare(ui, profile, s, false)
+        {
+            out.separate_changed = true;
+        }
+        ui.end_row();
+        head(ui, EDITING);
         ui.add_enabled_ui(editing_enabled(separate), |ui| {
             let mut dark = st.editing.dark;
             egui::ComboBox::from_id_salt("editing-mode").selected_text(if dark { "Dark Mode" } else { "Light Mode" }).show_ui(ui, |ui| {
@@ -436,6 +454,8 @@ pub fn colors_header(ui: &mut egui::Ui, st: &mut State, g: &Globals, profile: &m
                 out.picked = true;
             }
         });
+        ui.end_row();
+        head(ui, COLOR_PRESET);
         let editing_dark = st.editing.dark;
         let mut hovered: Option<Option<String>> = None;
         let button = ui.menu_button("Color Presets\u{2026}", |ui| {
@@ -524,6 +544,7 @@ pub fn colors_header(ui: &mut egui::Ui, st: &mut State, g: &Globals, profile: &m
                 out.previewed = true;
             }
         }
+        ui.end_row();
     });
     out
 }
@@ -626,7 +647,7 @@ pub fn pump_dialogs(ctx: &egui::Context, st: &mut State, g: &mut Globals, profil
                 ui.strong(SAVE_TITLE);
                 ui.label(SAVE_PROMPT);
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut name).char_limit(cp::MAX_NAME).desired_width(240.0));
+                    crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut name).char_limit(cp::MAX_NAME).desired_width(240.0));
                     egui::ComboBox::from_id_salt("save-preset-names").selected_text("").show_ui(ui, |ui| {
                         for n in &names {
                             if ui.selectable_label(*n == name, n).clicked() {

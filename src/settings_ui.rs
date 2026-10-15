@@ -13,17 +13,14 @@ use crate::mouse::Mods;
 use crate::profile::{self, Profile};
 use crate::schema::{self, Kind, Setting};
 use crate::settings_keys::{self, KeysState};
+use crate::settings_profile_actions as pa;
 use crate::store::Store;
 
+/// A profile tab's rows, in the order iTerm2's xib draws them (`scripts/order-schema.py`; the order is held
+/// by `ui_labels`). iTerm2's profile panes have no section headings, so the tab is one group with no name.
 pub fn sections(tab: &str) -> Vec<(String, Vec<&'static Setting>)> {
-    let mut out: Vec<(String, Vec<&'static Setting>)> = Vec::new();
-    for s in schema::profile().iter().filter(|s| s.tab == tab) {
-        match out.iter_mut().find(|(name, _)| *name == s.section) {
-            Some((_, list)) => list.push(s),
-            None => out.push((s.section.clone(), vec![s])),
-        }
-    }
-    out
+    let rows: Vec<&'static Setting> = schema::profile().iter().filter(|s| s.tab == tab).collect();
+    if rows.is_empty() { Vec::new() } else { vec![(String::new(), rows)] }
 }
 
 pub fn rgb_of(v: &Value) -> [u8; 3] {
@@ -57,6 +54,8 @@ pub enum Edit {
     /// and sets them on the copy (the saved profile stays as it was).
     SessionEdit(crate::layout::PaneId, Vec<(String, Option<Value>)>),
     Imported(usize),
+    /// The JSON files picked for Import JSON Profiles; the app imports them (an alert may stop it).
+    ImportJson(Vec<crate::localfs::LocalPath>),
     Error(String),
     /// An OK-only alert the person's own action raised (a trigger file that did not import or
     /// export, `TriggerController.m:1155-1163`); the App shows it through `ask_scripts`.
@@ -130,9 +129,6 @@ pub const SHOW_INDICATORS: &str = "Show indicators for non-default values";
 pub const SEARCH_OPTIONS: &str = "Search Options";
 /// The options menu button's glyph: Segoe Fluent Icons' Search.
 const SEARCH_GLYPH: char = '\u{E721}';
-
-/// Panes that arrive with later milestones.
-const LATER_PAGES: [(&str, u8); 0] = [];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum How {
@@ -450,6 +446,25 @@ pub struct SettingsWindow {
     dynamic_warned: std::collections::HashSet<String>,
     /// `show_shortcuts_editor`'s sheet, opened on the next frame.
     open_editor: Option<(crate::settings_shortcuts::Tab, Option<usize>)>,
+    /// The search field's text and highlighted result.
+    search: crate::settings_search::SearchState,
+    /// Profiles > Bulk Copy from Selected Profile\u{2026}, while its sheet is open.
+    bulk: Option<pa::BulkCopy>,
+    /// Alerts for JSON files that did not import, shown one after another.
+    /// A saved JSON file to show in Explorer (the app takes it with `take_reveal`).
+    json_reveal: Option<String>,
+    /// The installed font families, for the Text tab's font menus; the app lists them when the
+    /// window opens.
+    pub fonts: Vec<String>,
+    /// What the app found out about fonts: whether "family@pixels" asks for anti-aliasing.
+    pub font_hints: std::collections::HashMap<String, bool>,
+    /// Fonts the Text tab wants a hint for, as (family, pixels per em); the app answers after
+    /// each frame.
+    pub font_questions: Vec<(String, u16)>,
+    /// What the app found out about a font name: its family and the members of it.
+    pub font_info: std::collections::HashMap<String, crate::render::FontInfo>,
+    /// Font names the Text tab wants described; the app answers after each frame.
+    pub font_info_questions: Vec<String>,
     /// The registered session title providers as (display name, unique id), for the Title
     /// Function popup; the app sets them when the window opens and when they change.
     pub title_providers: Vec<(String, String)>,
@@ -534,7 +549,7 @@ impl SettingsWindow {
 
     /// A file to show in Explorer (an exported color preset), taken after each frame.
     pub fn take_reveal(&mut self) -> Option<String> {
-        self.presets.reveal.take().or_else(crate::settings_triggers::take_reveal)
+        self.presets.reveal.take().or_else(|| self.json_reveal.take()).or_else(crate::settings_triggers::take_reveal)
     }
 
     /// Puts a live color preview's colors back before anything is saved or the window goes (B2).
@@ -636,6 +651,14 @@ impl SettingsWindow {
             dynamic_request: None,
             dynamic_warned: Default::default(),
             open_editor: None,
+            search: Default::default(),
+            bulk: None,
+            json_reveal: None,
+            fonts: Vec::new(),
+            font_hints: Default::default(),
+            font_questions: Vec::new(),
+            font_info: Default::default(),
+            font_info_questions: Vec::new(),
             title_providers: Vec::new(),
             session_hotkey: None,
             session_hotkey_waiting: false,
@@ -751,6 +774,8 @@ impl SettingsWindow {
         let window_exists = self.window_exists;
         let list = &mut self.list;
         let list_rows = crate::profile_list::rows(&store.profiles);
+        // The monitors, for the Window tab's Screen popup.
+        let screens = if self.page == Page::Profiles && schema::TABS[self.tab] == "Window" { screens_of(&self.host.window) } else { Vec::new() };
         let mode = self.mode;
         let mut page = self.page;
         let keys = &mut self.keys;
@@ -785,6 +810,28 @@ impl SettingsWindow {
         let shortcut_rows: Vec<(String, String, Option<char>)> = store.profiles.iter().map(|p| (p.guid(), p.name(), crate::profile_menu::stored_key(&p.string("Shortcut")))).collect();
         let mut shortcut_take: Option<(String, Option<char>)> = None;
         let title_providers = &self.title_providers;
+        let fonts = &self.fonts;
+        let search = &mut self.search;
+        let bulk = &mut self.bulk;
+        let json_reveal = &mut self.json_reveal;
+        let font_hints = &self.font_hints;
+        let font_info = &self.font_info;
+        let info_questions = std::cell::RefCell::new(Vec::<String>::new());
+        let facts = |name: &str| match font_info.get(name) {
+            Some(i) => Some(i.clone()),
+            None => {
+                info_questions.borrow_mut().push(name.to_string());
+                None
+            }
+        };
+        let questions = std::cell::RefCell::new(Vec::<(String, u16)>::new());
+        let recommended = |family: &str, size_pt: f32| match font_hints.get(&crate::settings_fonts::hint_key(family, size_pt)) {
+            Some(v) => *v,
+            None => {
+                questions.borrow_mut().push((family.to_string(), crate::settings_fonts::ppem(size_pt)));
+                false
+            }
+        };
         let session_hotkey = self.session_hotkey.clone();
         let session_hotkey_waiting = self.session_hotkey_waiting;
         let session_hotkey_refused = self.session_hotkey_refused;
@@ -804,6 +851,8 @@ impl SettingsWindow {
             .map(|p| crate::aps::Candidate { guid: p.guid(), name: p.name(), rules: p.get("Bound Hosts").and_then(|v| v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())).unwrap_or_default() })
             .collect();
         self.host.paint(|ui| {
+            // The field menu item chosen on the last frame acts now, on its field.
+            settings_keys::apply_field_op(ui.ctx());
             // A warning an editor raised on the last frame shows now, over everything.
             if sheet.is_none() {
                 *sheet = keys.ask.take();
@@ -882,6 +931,20 @@ impl SettingsWindow {
                     ui.ctx().request_repaint();
                 }
             }
+            // Bulk Copy's sheet.
+            if let Some(b) = bulk.as_mut() {
+                match pa::show(ui.ctx(), b, &list_rows, &store.default_guid) {
+                    pa::BulkOutcome::Open => {}
+                    pa::BulkOutcome::Cancel => *bulk = None,
+                    pa::BulkOutcome::Copy(dests, categories) => {
+                        let source = b.source.clone();
+                        pa::bulk_copy(store, &source, &dests, &categories);
+                        *bulk = None;
+                        edit = Edit::Changed(String::new());
+                    }
+                }
+            }
+            let mut revealed: Option<&'static crate::settings_search::Doc> = None;
             if mode == Mode::Settings {
                 egui::Panel::top("pages").show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -902,9 +965,6 @@ impl SettingsWindow {
                                 page = p;
                             }
                         }
-                        for (name, m) in LATER_PAGES {
-                            ui.add_enabled(false, egui::Button::new(name)).on_disabled_hover_text(format!("Comes in milestone {m}."));
-                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let title = settings_keys::icon_text(ui.ctx(), SEARCH_GLYPH).unwrap_or_else(|| egui::RichText::new(SEARCH_OPTIONS));
                             ui.menu_button(title, |ui| {
@@ -917,9 +977,28 @@ impl SettingsWindow {
                             })
                             .response
                             .on_hover_text(SEARCH_OPTIONS);
+                            // The search field, with its results under it (`PreferencePanel.m` search toolbar item).
+                            if let Some(doc) = crate::settings_search::field(ui, search) {
+                                revealed = Some(doc);
+                            }
                         });
                     });
                 });
+                // A result of the search field opens its pane and tab and marks the control.
+                if let Some(doc) = revealed {
+                    match &doc.at {
+                        crate::settings_search::Where::ProfileTab(t) => {
+                            page = Page::Profiles;
+                            tab = *t;
+                        }
+                        crate::settings_search::Where::Pane(p) => page = *p,
+                        crate::settings_search::Where::Advanced(q) => {
+                            page = Page::Advanced;
+                            advanced.query = q.clone();
+                        }
+                    }
+                    crate::settings_search::mark(ui.ctx(), &doc.key);
+                }
                 if page != Page::Profiles {
                     egui::CentralPanel::default().show(ui, |ui| {
                         let changed = match page {
@@ -1005,6 +1084,7 @@ impl SettingsWindow {
                                 _ => open(How::Window),
                             }
                         }
+                        crate::profile_list_ui::ListEvent::SearchHelp => *open_url = Some(crate::links::HELP_SEARCH_SYNTAX.to_string()),
                         _ => {}
                     }
                     ui.separator();
@@ -1047,70 +1127,100 @@ impl SettingsWindow {
             egui::Panel::left("profiles").default_size(220.0).show(ui, |ui| {
                 ui.heading("Profiles");
                 list.selection = vec![selected.clone()];
-                if let crate::profile_list_ui::ListEvent::Picked(g) = crate::profile_list_ui::profile_list(ui, list, &list_rows, &store.default_guid, false, None) {
-                    pick = Some(g);
+                match crate::profile_list_ui::profile_list(ui, list, &list_rows, &store.default_guid, false, None) {
+                    crate::profile_list_ui::ListEvent::Picked(g) => pick = Some(g),
+                    crate::profile_list_ui::ListEvent::SearchHelp => *open_url = Some(crate::links::HELP_SEARCH_SYNTAX.to_string()),
+                    _ => {}
                 }
                 ui.separator();
                 // Edit Session hides the list's editing buttons (`ProfilePreferencesViewController.m:309-326`).
                 if edit_session.is_none() {
                     ui.horizontal(|ui| {
-                    if ui.button("+").on_hover_text("New profile").clicked() {
-                        let p = Profile::new("New Profile");
-                        pick = Some(p.guid());
-                        store.add(p);
-                        edit = Edit::Changed(String::new());
-                    }
-                    if ui.button("Duplicate").clicked() {
-                        pick = store.duplicate(&selected);
-                        edit = Edit::Changed(String::new());
-                    }
-                    if ui.button("-").on_hover_text("Delete profile").clicked() && store.delete(&selected) {
-                        pick = Some(store.default_guid.clone());
-                        edit = Edit::Changed(String::new());
-                    }
-                });
-                // A Bonjour host or a Dynamic Profile is not in the file (13t B1, 13v2 B1): it cannot be
-                // the default.
-                let transient = store.unsaved(&selected);
-                if ui.add_enabled(!transient, egui::Button::new("Set as Default")).clicked() {
-                    if store.set_default(&selected) {
-                        edit = Edit::Changed(selected.clone());
-                    }
-                }
-                if ui.button("Import from iTerm2...").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().add_filter("iTerm2 settings or Dynamic Profiles", &["plist", "json"]).pick_file() {
-                        edit = match crate::import::from_file(&path) {
-                            Ok(mut list) => {
-                                let n = list.len();
-                                // A full settings plist also carries the global key and pointer
-                                // settings, and maybe iTerm2's legacy keys, which are migrated into
-                                // the imported values and profiles before they are stored.
-                                let is_plist = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("plist"));
-                                let globals_read = is_plist.then(|| {
-                                    let mut values = crate::import::globals_from_file(&path)?;
-                                    crate::import::migrate_legacy(&mut values, &crate::import::legacy_from_file(&path)?, &mut list);
-                                    Ok::<_, String>(values)
-                                });
-                                for p in list {
-                                    store.profiles.retain(|q| q.guid() != p.guid());
-                                    store.add(p);
-                                }
-                                match globals_read {
-                                    Some(Err(e)) => Edit::Error(e),
-                                    Some(Ok(values)) => {
-                                        for (k, v) in values {
-                                            globals.set(&k, v);
-                                        }
-                                        crate::ai_models::migrate_after_import(globals);
-                                        Edit::Imported(n)
-                                    }
-                                    None => Edit::Imported(n),
+                        if ui.button("+").on_hover_text("New profile").clicked() {
+                            let p = Profile::new("New Profile");
+                            pick = Some(p.guid());
+                            store.add(p);
+                            edit = Edit::Changed(String::new());
+                        }
+                        if ui.button("-").on_hover_text("Delete profile").clicked() && store.delete(&selected) {
+                            pick = Some(store.default_guid.clone());
+                            edit = Edit::Changed(String::new());
+                        }
+                        // iTerm2's "Other Actions\u{2026}" popup (`PreferencePanel.xib`).
+                        ui.menu_button(pa::OTHER_ACTIONS, |ui| {
+                            // A Bonjour host or a Dynamic Profile is not in the file (13t B1, 13v2 B1): it cannot be
+                            // the default.
+                            let transient = store.unsaved(&selected);
+                            if ui.add_enabled(!transient, egui::Button::new(pa::SET_AS_DEFAULT)).clicked() {
+                                ui.close();
+                                if store.set_default(&selected) {
+                                    edit = Edit::Changed(selected.clone());
                                 }
                             }
-                            Err(e) => Edit::Error(e),
-                        };
-                    }
-                }
+                            ui.separator();
+                            if ui.button(pa::DUPLICATE_PROFILE).clicked() {
+                                ui.close();
+                                pick = store.duplicate(&selected);
+                                edit = Edit::Changed(String::new());
+                            }
+                            if ui.button(pa::BULK_COPY).clicked() {
+                                ui.close();
+                                *bulk = Some(pa::BulkCopy::new(&selected));
+                            }
+                            ui.separator();
+                            if ui.button(pa::SAVE_JSON).clicked() {
+                                ui.close();
+                                if let Some(p) = store.get(&selected) {
+                                    edit = pa::save_json(&format!("{}.json", p.name()), &pa::profile_json(p), json_reveal);
+                                }
+                            }
+                            if ui.button(pa::SAVE_ALL_JSON).clicked() {
+                                ui.close();
+                                edit = pa::save_json("Profiles.json", &pa::all_json(&store.profiles), json_reveal);
+                            }
+                            ui.separator();
+                            if ui.button(pa::IMPORT_JSON).clicked() {
+                                ui.close();
+                                edit = pa::pick_json_files();
+                            }
+                            ui.separator();
+                            if ui.button("Import from iTerm2...").clicked() {
+                                ui.close();
+                                if let Some(path) = rfd::FileDialog::new().add_filter("iTerm2 settings or Dynamic Profiles", &["plist", "json"]).pick_file() {
+                                    edit = match crate::import::from_file(&path) {
+                                        Ok(mut list) => {
+                                            let n = list.len();
+                                            // A full settings plist also carries the global key and pointer
+                                            // settings, and maybe iTerm2's legacy keys, which are migrated into
+                                            // the imported values and profiles before they are stored.
+                                            let is_plist = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("plist"));
+                                            let globals_read = is_plist.then(|| {
+                                                let mut values = crate::import::globals_from_file(&path)?;
+                                                crate::import::migrate_legacy(&mut values, &crate::import::legacy_from_file(&path)?, &mut list);
+                                                Ok::<_, String>(values)
+                                            });
+                                            for p in list {
+                                                store.profiles.retain(|q| q.guid() != p.guid());
+                                                store.add(p);
+                                            }
+                                            match globals_read {
+                                                Some(Err(e)) => Edit::Error(e),
+                                                Some(Ok(values)) => {
+                                                    for (k, v) in values {
+                                                        globals.set(&k, v);
+                                                    }
+                                                    crate::ai_models::migrate_after_import(globals);
+                                                    Edit::Imported(n)
+                                                }
+                                                None => Edit::Imported(n),
+                                            }
+                                        }
+                                        Err(e) => Edit::Error(e),
+                                    };
+                                }
+                            }
+                        });
+                    });
                 }
             });
             egui::CentralPanel::default().show(ui, |ui| {
@@ -1134,7 +1244,6 @@ impl SettingsWindow {
                 ui.separator();
                 let list_selected = selected.clone();
                 let selected = page_guid.clone();
-                let is_default = selected == store.default_guid;
                 let saved_guid = store.shared_guid(&selected);
                 // A session with no copy yet is edited through a scratch profile: a change comes
                 // back as `SessionEdit` and the app divorces then, once (never merely for a focus).
@@ -1159,6 +1268,9 @@ impl SettingsWindow {
                     let h = crate::settings_presets::colors_header(ui, presets, globals, profile, &selected, system_dark);
                     if h.previewed {
                         edit = Edit::Preview;
+                    }
+                    if h.separate_changed {
+                        edit = Edit::Changed(selected.clone());
                     }
                     if h.import {
                         crate::settings_presets::begin_import(presets);
@@ -1234,18 +1346,26 @@ impl SettingsWindow {
                             }
                         }
                     }
-                    for (section, list) in sections(schema::TABS[tab]) {
+                    // The Colors tab is iTerm2's grid of row headers and wells, not a list of sections.
+                    if colors {
+                        if crate::settings_colors::body(ui, profile, dark) {
+                            edit = Edit::Changed(selected.clone());
+                        }
+                    }
+                    for (section, list) in sections(schema::TABS[tab]).into_iter().filter(|_| !colors) {
                         if !section.is_empty() && section != "Key Mappings" {
                             ui.add_space(8.0);
                             ui.strong(&section);
                         }
+                        let mut framing = crate::settings_search::RowFlash::default();
                         for s in list {
                             if !crate::browser::settings_visible(s.mode.as_deref(), s.hidden_mode, browser, browser_profiles) {
                                 continue;
                             }
+                            framing.row(ui, &s.key);
                             // The zoom commands set the page zoom; it has no row.
                             // The extension keys are written by the approval window, never by a control.
-                            if s.key == "Browser Zoom" || s.key == crate::browser_extensions::ROOT_KEY || s.key == crate::browser_extensions::ACTIVE_KEY {
+                            if s.key == "Browser Zoom" || s.key == "Touch Bar Map" || s.key == crate::browser_extensions::ROOT_KEY || s.key == crate::browser_extensions::ACTIVE_KEY {
                                 continue;
                             }
                             // Profile type: a two-segment control over Custom Command (`PGP:268-290`).
@@ -1321,7 +1441,7 @@ impl SettingsWindow {
                             // "Status bar enabled" checkbox above it; both disabled for a
                             // tmux session's own profile (PSV:569-573).
                             if s.key == "Show Status Bar" && !status_bar_controls(tmux_session, true).0 {
-                                ui.add_enabled_ui(false, |ui| control(ui, profile, s, dark, is_default));
+                                ui.add_enabled_ui(false, |ui| control(ui, profile, s, dark));
                                 continue;
                             }
                             if s.key == "Status Bar Layout" {
@@ -1366,8 +1486,39 @@ impl SettingsWindow {
                             if s.key == "Background Image Source Mode" && background_image_row(ui, profile) {
                                 edit = Edit::Changed(selected.clone());
                             }
+                            // The Title popup holds the components and the script functions in one menu.
+                            if s.key == "Title Components" {
+                                if crate::settings_title::row(ui, profile, s, title_providers, edit_session.is_some(), browser) {
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
                             if s.key == "Title Function" {
-                                if title_function_row(ui, profile, s, title_providers) {
+                                continue;
+                            }
+                            // Tags and Snippets Filter are token fields (`NSTokenField`).
+                            if s.key == "Tags" || s.key == "Snippets Filter" {
+                                let hint = if s.key == "Tags" { "Add a tag\u{2026}" } else { "Add a snippet tag\u{2026}" };
+                                if crate::settings_lists::tokens_row(ui, profile, s, hint) {
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
+                            // The subtitle needs a tall enough tab bar (`updateSubtitlesAllowed`).
+                            if s.key == "Subtitle" && !subtitles_allowed(style, globals.number("DefaultTabBarHeight")) {
+                                ui.add_enabled(false, egui::Label::new(&s.label));
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(SUBTITLE_NEEDS_TALL_BAR).small());
+                                    if ui.add(egui::Button::new(ENABLE_TALL_TAB_BAR).small()).clicked() {
+                                        globals.set("DefaultTabBarHeight", Value::Float(TALL_TAB_BAR));
+                                        edit = Edit::GlobalsChanged;
+                                    }
+                                });
+                                continue;
+                            }
+                            // The Screen popup lists the monitors (`repopulateScreen`).
+                            if s.key == "Screen" {
+                                if screen_row(ui, profile, s, &screens) {
                                     edit = Edit::Changed(selected.clone());
                                 }
                                 continue;
@@ -1377,6 +1528,17 @@ impl SettingsWindow {
                                 if ui.button(&s.label).on_hover_text(&s.help).clicked() {
                                     *special_exceptions = Some(selected.clone());
                                 }
+                                continue;
+                            }
+                            // The font block: the pickers, spacings, anti-aliasing and ligatures (iTerm2's
+                            // font pickers), drawn once at the first of its rows.
+                            if s.key == "Normal Font" {
+                                if crate::settings_fonts::group(ui, profile, fonts, globals.bool("Bidi"), &recommended, &facts) {
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
+                            if crate::settings_fonts::GROUPED.contains(&s.key.as_str()) {
                                 continue;
                             }
                             if s.key == "Jobs to Ignore" {
@@ -1400,7 +1562,7 @@ impl SettingsWindow {
                             }
                             if s.key == "Smart Selection Rules" || s.key == "Semantic History" {
                                 let done = if s.key == "Smart Selection Rules" {
-                                    crate::settings_advanced::smart_selection_rules(ui, profile)
+                                    crate::settings_advanced::smart_selection_rules(ui, profile, open_url)
                                 } else {
                                     crate::settings_advanced::semantic_history(ui, profile)
                                 };
@@ -1414,7 +1576,7 @@ impl SettingsWindow {
                             if s.key == "Progress Bar Height" {
                                 ui.add_enabled_ui(enabled, |ui| changed = progress_height_row(ui, profile, s, globals.int("TerminalVMargin")));
                             } else {
-                                ui.add_enabled_ui(enabled, |ui| changed = control(ui, profile, s, dark, is_default));
+                                ui.add_enabled_ui(enabled, |ui| changed = control(ui, profile, s, dark));
                             }
                             // Edit Session's name row: the lock button toggles "Allow Title Setting", and a
                             // typed name locks the title (`PGP:1617-1623`).
@@ -1444,6 +1606,15 @@ impl SettingsWindow {
                             if s.key == crate::session_end::END_ACTION_KEY && short_lived_row(ui, profile, &saved_guid, globals) {
                                 edit = Edit::GlobalsChanged;
                             }
+                            // The note under Buffer Input by Default (its sign is the warning icon).
+                            if s.key == "Buffer Input by Default" {
+                                ui.horizontal(|ui| {
+                                    if let Some(g) = settings_keys::icon_text(ui.ctx(), crate::scripts::WARNING_GLYPH) {
+                                        ui.label(g.color(ui.visuals().warn_fg_color));
+                                    }
+                                    ui.label(egui::RichText::new(BUFFERING_NOTE).small());
+                                });
+                            }
                             if s.key == "Prevent Sleep" && !sleep_status.is_empty() {
                                 ui.label(egui::RichText::new(sleep_status).small().color(ui.visuals().weak_text_color()));
                             }
@@ -1462,6 +1633,7 @@ impl SettingsWindow {
                                 edit = Edit::Changed(selected.clone());
                             }
                         }
+                        framing.finish(ui);
                     }
                     // iTerm2's "URL schemes:" sits at the bottom of the General tab.
                     if schema::TABS[tab] == "General" {
@@ -1510,6 +1682,14 @@ impl SettingsWindow {
         if crate::settings_triggers::alerts_pending() {
             self.host.request_redraw();
         }
+        let mut asked = questions.into_inner();
+        asked.sort();
+        asked.dedup();
+        self.font_questions = asked;
+        let mut named = info_questions.into_inner();
+        named.sort();
+        named.dedup();
+        self.font_info_questions = named;
         self.tab = tab;
         // Leaving a page applies a custom scripts folder typed there (iTerm2's
         // `willDeselectTab`, `GP:3432-3434`); the field is no longer drawn to lose the focus.
@@ -1558,52 +1738,107 @@ pub fn title_choice(components: i64, function: Option<(String, String)>, provide
     (text, items)
 }
 
-/// The Title Function row: a popup of `title_choice`'s items in place of the list's "n
-/// item(s)". A provider writes Title Function `[{value = display name}, {value = unique
-/// id}]` (`jobtitle::title_function_value`) and Title Components Custom (`PGP:1427-1437`);
-/// "Built-in components" writes Title Components Job and keeps the Title Function. A saved function with no registered provider shows
-/// disabled. True when the profile changed.
-fn title_function_row(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, providers: &[(String, String)]) -> bool {
-    use crate::jobtitle::{CUSTOM, JOB};
-    let components = profile.int("Title Components");
-    let function = crate::jobtitle::title_function(profile.get("Title Function").as_ref());
-    let custom = components & i64::from(CUSTOM) != 0;
-    let current = function.as_ref().map(|(_, id)| id.clone());
-    let (text, items) = title_choice(components, function, providers);
+/// The terminal types the "Report terminal type:" combo box lists (`PreferencePanel.xib`).
+pub const TERMINAL_TYPES: [&str; 7] = ["vt100", "xterm", "xterm-new", "xterm-256color", "ansi", "rxvt", "linux"];
+
+/// The note under Buffer Input by Default (`PreferencePanel.xib`, after its warning sign).
+pub const BUFFERING_NOTE: &str = "You may want a trigger to stop buffering";
+
+/// The note under Subtitle while the tab bar is too short for one (`PreferencePanel.xib`).
+pub const SUBTITLE_NEEDS_TALL_BAR: &str = "Subtitle support requires a taller tab bar.";
+/// Its button, which sets the bar to the height a subtitle needs (`enableTallTabBar:`).
+pub const ENABLE_TALL_TAB_BAR: &str = "Enable Tall Tab Bar";
+/// The tab bar height that button sets, and the least that shows a subtitle.
+pub const TALL_TAB_BAR: f64 = 28.0;
+
+/// Whether the profile's Subtitle can show (`updateSubtitlesAllowed`): the Minimal theme, or a tab
+/// bar at least `TALL_TAB_BAR` tall (`DefaultTabBarHeight`, 24 when unset).
+pub fn subtitles_allowed(style: crate::tab_theme::TabStyle, bar_height: Option<f64>) -> bool {
+    style == crate::tab_theme::TabStyle::Minimal || bar_height.unwrap_or(24.0) >= TALL_TAB_BAR
+}
+
+/// The Screen popup's items: (stored value, title). No Preference is -1, Screen with Cursor -2, and
+/// the monitors follow by index with the first titled Main Screen (`repopulateScreen`).
+pub fn screen_items(monitors: &[String]) -> Vec<(i64, String)> {
+    let mut items = vec![(-1, "No Preference".to_string()), (-2, "Screen with Cursor".to_string())];
+    for (i, name) in monitors.iter().enumerate() {
+        items.push((i as i64, if i == 0 { "Main Screen".to_string() } else { name.clone() }));
+    }
+    items
+}
+
+/// The monitors' names for the Screen popup, primary first as iTerm2 numbers screens, with a
+/// number after a name two monitors share (`NSScreen it_uniqueName`).
+pub fn monitor_names(found: Vec<(crate::placement::Rect, Option<String>)>) -> Vec<String> {
+    let mut found = found;
+    if let Some(i) = found.iter().position(|(m, _)| m.x <= 0.0 && m.y <= 0.0 && m.x + m.w > 0.0 && m.y + m.h > 0.0) {
+        let p = found.remove(i);
+        found.insert(0, p);
+    }
+    let plain: Vec<String> = found.iter().enumerate().map(|(i, (_, n))| n.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| format!("Display {}", i + 1))).collect();
+    let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    plain
+        .iter()
+        .map(|n| {
+            let total = plain.iter().filter(|o| *o == n).count();
+            let nth = seen.entry(n.as_str()).or_insert(0);
+            *nth += 1;
+            if total > 1 { format!("{n} ({nth})") } else { n.clone() }
+        })
+        .collect()
+}
+
+/// The window's monitors as `monitor_names` wants them.
+fn screens_of(window: &winit::window::Window) -> Vec<String> {
+    let found = window.available_monitors().map(|m| (crate::placement::Rect { x: m.position().x as f32, y: m.position().y as f32, w: m.size().width as f32, h: m.size().height as f32 }, m.name())).collect();
+    monitor_names(found)
+}
+
+/// The value a profile row starts with, for its field's "Reset to <default>" item: what a new
+/// profile gets (`seed`), else iTerm2's value for a missing key, per light or dark variant.
+fn profile_default_value(s: &Setting, key: &str) -> Option<Value> {
+    match key.strip_prefix(s.key.as_str()).filter(|v| !v.is_empty()) {
+        Some(" (Dark)") => s.seed_dark.clone().or_else(|| s.default_dark.clone()),
+        Some(_) => s.seed_light.clone().or_else(|| s.default_light.clone()),
+        None if matches!(key, "Normal Font" | "Non Ascii Font") => Some(Value::String(profile::WINDOWS_FONT.into())),
+        None => s.seed.clone().or_else(|| s.default.clone()),
+    }
+}
+
+/// The Screen row: the popup of `screen_items` (`ProfilesWindowPreferencesViewController`). A stored
+/// monitor that is gone shows No Preference and is kept until another is picked. True when the
+/// profile changed.
+fn screen_row(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, monitors: &[String]) -> bool {
+    let now = profile.int("Screen");
+    let items = screen_items(monitors);
+    let shown = items.iter().find(|(v, _)| *v == now).map_or_else(|| items[0].1.clone(), |(_, t)| t.clone());
     let mut picked = None;
-    let mut popup_rect = None;
+    let mut rect = None;
     ui.horizontal(|ui| {
         ui.label(&s.label);
-        let r = egui::ComboBox::from_id_salt(&s.key).selected_text(text).show_ui(ui, |ui| {
-            for (i, (label, id)) in items.iter().enumerate() {
-                let (on, enabled) = if i == 0 { (!custom, true) } else { (custom && current.as_deref() == Some(id.as_str()), providers.iter().any(|(_, p)| p == id)) };
-                if ui.add_enabled(enabled, egui::Button::selectable(on, label.as_str())).clicked() {
-                    picked = Some(i);
-                }
-                if i == 0 && items.len() > 1 {
+        let r = egui::ComboBox::from_id_salt(&s.key).selected_text(shown).show_ui(ui, |ui| {
+            for (i, (v, title)) in items.iter().enumerate() {
+                if i == 2 {
                     ui.separator();
+                }
+                if ui.selectable_label(*v == now, title.as_str()).clicked() {
+                    picked = Some(*v);
                 }
             }
         });
-        popup_rect = Some(r.response.rect);
+        rect = Some(r.response.rect);
     })
     .response
     .on_hover_text(&s.help);
-    if let Some(rect) = popup_rect.filter(|_| settings_keys::indicate_non_default() && !profile_is_default(profile, s, &s.key)) {
-        settings_keys::non_default_bar(ui, rect, ui.is_enabled());
+    if let Some(r) = rect.filter(|_| settings_keys::indicate_non_default() && !profile_is_default(profile, s, &s.key)) {
+        settings_keys::non_default_bar(ui, r, ui.is_enabled());
     }
     match picked {
-        None => false,
-        Some(0) => {
-            profile.set("Title Components", Value::Integer(i64::from(JOB)));
+        Some(v) if v != now => {
+            profile.set("Screen", Value::Integer(v));
             true
         }
-        Some(i) => {
-            let (name, id) = items[i].clone();
-            profile.set("Title Function", crate::jobtitle::title_function_value(&name, &id));
-            profile.set("Title Components", Value::Integer(i64::from(CUSTOM)));
-            true
-        }
+        _ => false,
     }
 }
 
@@ -1678,7 +1913,7 @@ fn window_size_row(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
             let r = ui.add_enabled_ui(enabled, |ui| {
                 let mut v = if percent { profile.float(key).round() as i64 } else { profile.int(key) };
                 let range = if percent { 0..=100 } else { 1..=1250 };
-                let r = ui.add(egui::DragValue::new(&mut v).range(range));
+                let r = crate::settings_keys::field(ui, egui::DragValue::new(&mut v).range(range));
                 if r.changed() {
                     profile.set(key, if percent { Value::Float(v as f64) } else { Value::Integer(v) });
                 }
@@ -1773,7 +2008,7 @@ pub fn profile_is_default(profile: &Profile, s: &Setting, key: &str) -> bool {
         let (seed, default) = if variant == " (Dark)" { (&s.seed_dark, &s.default_dark) } else { (&s.seed_light, &s.default_light) };
         let preset = seed.clone().or_else(|| default.clone());
         (profile.values.get(key).cloned().or_else(|| default.clone()).or_else(|| profile.get(&s.key)), preset)
-    } else if FONT_KEYS[..2].contains(&key) {
+    } else if matches!(key, "Normal Font" | "Non Ascii Font") {
         (profile.get(key), Some(Value::String(profile::WINDOWS_FONT.into())))
     } else {
         (profile.get(key), s.seed.clone().or_else(|| s.default.clone()))
@@ -1795,8 +2030,6 @@ pub fn chose_meta(key: &str, value: Option<&Value>) -> bool {
     matches!(key, "Option Key Sends" | "Right Option Key Sends") && value.and_then(Value::as_integer) == Some(1)
 }
 
-/// Font settings follow the default profile until each pane can have its own renderer.
-pub const FONT_KEYS: [&str; 5] = ["Normal Font", "Non Ascii Font", "Use Non-ASCII Font", "Horizontal Spacing", "Vertical Spacing"];
 
 /// The not-default question a scheme menu choice raised: the question, its detail, and what it
 /// would bind.
@@ -1936,7 +2169,7 @@ fn progress_height_row(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, ma
     ui.horizontal(|ui| {
         ui.label(&s.label);
         let mut height = profile.float(&s.key);
-        let r = ui.add(egui::DragValue::new(&mut height).speed(0.1).range(0.0..=1000.0));
+        let r = crate::settings_keys::field(ui, egui::DragValue::new(&mut height).speed(0.1).range(0.0..=1000.0));
         if r.changed() {
             let (value, cut) = crate::progress::clamp_typed(height, margin as f64);
             profile.set(&s.key, Value::Float(value));
@@ -2089,8 +2322,17 @@ fn contrast_warning(key: &str, value: f64) -> Option<&'static str> {
 /// One control for one setting. Returns true when a change is committed: at once for
 /// checkboxes, pickers, and colors; when a drag ends for sliders; when the field loses
 /// focus (or Enter) for text. Uncommitted edits still update the profile in memory.
-fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is_default: bool) -> bool {
-    let font_locked = !is_default && FONT_KEYS.contains(&s.key.as_str());
+pub(crate) fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool) -> bool {
+    control_inner(ui, profile, s, dark, true)
+}
+
+/// The control alone: a row whose caption the pane draws itself (the Colors grid) has no label here.
+pub(crate) fn control_bare(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool) -> bool {
+    control_inner(ui, profile, s, dark, false)
+}
+
+fn control_inner(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, labels: bool) -> bool {
+    let top = ui.cursor().top();
     let key = edit_key(profile, s, dark);
     let current = if key == s.key {
         profile.get(&s.key)
@@ -2105,8 +2347,11 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
     // A color well or a checkbox can be bound to an expression (`ExpressionBindableView`).
     let bound_expression = matches!(s.kind, Kind::Bool | Kind::Color).then(|| crate::bindings::expression_of(profile, &key).map(str::to_string)).flatten();
     let mut bind_action = None;
+    // A text or number field's context menu starts with "Reset to <default>" while it differs.
+    let reset_to = profile_default_value(s, &key);
+    let differs = !profile_is_default(profile, s, &key);
     ui.horizontal(|ui| {
-        ui.add_enabled_ui(!s.macos_only && !font_locked, |ui| {
+        ui.add_enabled_ui(!s.macos_only, |ui| {
             let enabled = ui.is_enabled();
             match s.kind {
                 Kind::Bool => {
@@ -2120,7 +2365,9 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                     bind_action = binding_menu(ui, &r, bound_expression.as_deref());
                 }
                 Kind::Int => {
-                    ui.label(&s.label);
+                    if labels {
+                        ui.label(&s.label);
+                    }
                     let mut i = current.as_ref().and_then(|v| v.as_integer()).unwrap_or(0);
                     let mut w = egui::DragValue::new(&mut i);
                     if let (Some(a), Some(b)) = (s.min_f64(), s.max_f64()) {
@@ -2132,10 +2379,17 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                     }
                     widget = Some((r.rect, enabled));
                     commit = r.drag_stopped() || (r.changed() && !r.dragged());
+                    if let Some(v) = settings_keys::reset_value(&r, reset_to.as_ref(), differs) {
+                        changed = Some(v);
+                        commit = true;
+                    }
                 }
                 Kind::Float => {
-                    ui.label(&s.label);
+                    if labels {
+                        ui.label(&s.label);
+                    }
                     let mut f = current.as_ref().and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(0.0);
+                    let ranged = s.min_f64().is_some() && s.max_f64().is_some();
                     let r = match (s.min_f64(), s.max_f64()) {
                         (Some(a), Some(b)) => ui.add(egui::Slider::new(&mut f, a..=b)),
                         _ => ui.add(egui::DragValue::new(&mut f).speed(0.01)),
@@ -2145,6 +2399,13 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                     }
                     widget = Some((r.rect, enabled));
                     commit = r.drag_stopped() || (r.changed() && !r.dragged());
+                    // A slider has no text field to reset (iTerm2's menu is the field editor's).
+                    if !ranged
+                        && let Some(v) = settings_keys::reset_value(&r, reset_to.as_ref(), differs)
+                    {
+                        changed = Some(v);
+                        commit = true;
+                    }
                     // iTerm2's two outlets (`_bwWarning1`, `_bwWarning2`): the glyph, then the text.
                     if let Some(text) = contrast_warning(&s.key, f) {
                         let color = ui.visuals().warn_fg_color;
@@ -2155,7 +2416,9 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                     }
                 }
                 Kind::String | Kind::Font => {
-                    ui.label(&s.label);
+                    if labels {
+                        ui.label(&s.label);
+                    }
                     let mut text = current.as_ref().and_then(|v| v.as_str()).unwrap_or("").to_string();
                     let r = ui.text_edit_singleline(&mut text);
                     if r.changed() {
@@ -2163,9 +2426,27 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                     }
                     widget = Some((r.rect, enabled));
                     commit = r.lost_focus();
+                    // "Report terminal type:" is a combo box: the field, and a menu of the usual names.
+                    if s.key == "Terminal Type" {
+                        ui.menu_button("\u{25be}", |ui| {
+                            for name in TERMINAL_TYPES {
+                                if ui.button(name).clicked() {
+                                    changed = Some(Value::String(name.to_string()));
+                                    commit = true;
+                                    ui.close();
+                                }
+                            }
+                        });
+                    }
+                    if let Some(v) = settings_keys::reset_value(&r, reset_to.as_ref(), differs) {
+                        changed = Some(v);
+                        commit = true;
+                    }
                 }
                 Kind::Color => {
-                    ui.label(&s.label);
+                    if labels {
+                        ui.label(&s.label);
+                    }
                     let mut c = current.as_ref().map(rgb_of).unwrap_or([0, 0, 0]);
                     let r = ui.color_edit_button_srgb(&mut c);
                     if r.changed() {
@@ -2176,7 +2457,9 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                     bind_action = binding_menu(ui, &r, bound_expression.as_deref());
                 }
                 Kind::Enum => {
-                    ui.label(&s.label);
+                    if labels {
+                        ui.label(&s.label);
+                    }
                     let now = current.clone();
                     let shown = s.choices.iter().find(|c| Some(&c.value) == now.as_ref()).map_or("".to_string(), |c| c.label.clone());
                     let r = egui::ComboBox::from_id_salt(&s.key).selected_text(shown).show_ui(ui, |ui| {
@@ -2189,13 +2472,9 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
                     });
                     widget = Some((r.response.rect, enabled));
                 }
+                // A list or table has its own editor in the profile loop; a row reaching here only names itself.
                 Kind::List | Kind::Dict | Kind::Data => {
-                    let n = match &current {
-                        Some(Value::Array(a)) => a.len(),
-                        Some(Value::Table(t)) => t.len(),
-                        _ => 0,
-                    };
-                    let r = ui.label(format!("{}: {n} item(s)", s.label)).on_hover_text("This editor arrives with its feature's milestone.");
+                    let r = ui.label(if labels { s.label.as_str() } else { "" });
                     widget = Some((r.rect, enabled));
                 }
             }
@@ -2203,8 +2482,6 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
         .response
         .on_hover_text(if s.macos_only {
             format!("{} (macOS only, no Windows equivalent)", s.help)
-        } else if font_locked {
-            format!("{} Fonts follow the default profile for now; per-profile fonts come later.", s.help)
         } else {
             s.help.clone()
         });
@@ -2231,6 +2508,7 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
     if let Some((rect, enabled)) = widget.filter(|_| settings_keys::indicate_non_default() && !profile_is_default(profile, s, &key)) {
         settings_keys::non_default_bar(ui, rect, enabled);
     }
+    crate::settings_search::flash_if_marked(ui, &s.key, top);
     commit
 }
 
@@ -2292,7 +2570,7 @@ fn binding_dialog(ui: &egui::Ui, guid: &str, key: &str) -> Option<String> {
     let mut open = true;
     egui::Window::new(crate::bindings::TITLE).collapsible(false).resizable(false).default_width(420.0).open(&mut open).show(ctx, |ui| {
         ui.label(crate::bindings::INFO);
-        let r = ui.add(egui::TextEdit::singleline(&mut d.text).hint_text(crate::bindings::placeholder(key)).desired_width(380.0));
+        let r = crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut d.text).hint_text(crate::bindings::placeholder(key)).desired_width(380.0));
         if !d.help {
             r.request_focus();
         }
@@ -2338,6 +2616,38 @@ fn shows_ai_models_on(mode: Mode, page: Page, sub: crate::settings_ai::SubTab) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subtitles_need_a_tall_bar() {
+        use crate::tab_theme::TabStyle;
+        assert!(!subtitles_allowed(TabStyle::Automatic, None), "24 points by default");
+        assert!(!subtitles_allowed(TabStyle::Light, Some(27.0)));
+        assert!(subtitles_allowed(TabStyle::Light, Some(TALL_TAB_BAR)));
+        assert!(subtitles_allowed(TabStyle::Minimal, None), "the Minimal theme always has room");
+        assert_eq!((SUBTITLE_NEEDS_TALL_BAR, ENABLE_TALL_TAB_BAR), ("Subtitle support requires a taller tab bar.", "Enable Tall Tab Bar"));
+    }
+
+    #[test]
+    fn screen_popup_follows_iterm2() {
+        let r = |x: f32, w: f32| crate::placement::Rect { x, y: 0.0, w, h: 1080.0 };
+        // The monitor holding (0, 0) is first whatever order Windows lists them in; two alike are numbered.
+        let names = monitor_names(vec![(r(1920.0, 1920.0), Some("Dell".into())), (r(0.0, 1920.0), Some("Dell".into())), (r(-1920.0, 1920.0), None)]);
+        assert_eq!(names, ["Dell (1)", "Dell (2)", "Display 3"]);
+        let items = screen_items(&names);
+        assert_eq!(items[0], (-1, "No Preference".to_string()));
+        assert_eq!(items[1], (-2, "Screen with Cursor".to_string()));
+        assert_eq!(items[2], (0, "Main Screen".to_string()));
+        assert_eq!(items[3], (1, "Dell (2)".to_string()));
+        assert_eq!(items.len(), 5);
+    }
+
+    #[test]
+    fn field_defaults_for_the_reset_item() {
+        let s = crate::schema::find("Scrollback Lines").unwrap();
+        assert_eq!(profile_default_value(s, "Scrollback Lines"), s.seed.clone().or_else(|| s.default.clone()));
+        let font = crate::schema::find("Normal Font").unwrap();
+        assert_eq!(profile_default_value(font, "Normal Font"), Some(Value::String(profile::WINDOWS_FONT.into())));
+    }
 
     #[test]
     fn session_hotkey_row_is_edit_session_only() {
@@ -2558,7 +2868,7 @@ mod tests {
     fn space_row_follows_windows() {
         let s = crate::schema::profile().iter().find(|x| x.key == "Space").unwrap();
         assert!(!s.macos_only);
-        assert_eq!(s.label, "Desktop");
+        assert_eq!(s.label, "Desktop:");
         let got: Vec<(Value, String)> = s.choices.iter().map(|c| (c.value.clone(), c.label.clone())).collect();
         let mut want = vec![(Value::Integer(0), "Current Desktop".to_string()), (Value::Integer(-1), "All Desktops".to_string())];
         for n in 1..=9 {
@@ -2869,7 +3179,7 @@ mod tests {
     fn cursor_profile_help_follows_iterm2() {
         let boost = crate::schema::find("Cursor Boost").unwrap();
         assert_eq!(boost.help, "Amount to dim non-cursor text to highlight cursor");
-        assert_eq!(boost.label, "Cursor Boost");
+        assert_eq!(boost.label, "Cursor Boost:");
         assert_eq!((boost.min.clone(), boost.max.clone()), (Some(Value::Float(0.0)), Some(Value::Float(0.8))));
         let shadow = crate::schema::find("Cursor Shadow").unwrap();
         assert_eq!(shadow.help, "Whether the cursor has a shadow");
@@ -2938,7 +3248,7 @@ mod tests {
         assert_eq!(row.kind, Kind::Enum);
         assert_eq!(row.default, Some(Value::Integer(0)));
         assert_eq!(row.seed, Some(Value::Integer(1)));
-        assert_eq!(row.label, "Close or restart session on end");
+        assert_eq!(row.label, "After a session ends:");
         let choices: Vec<(Value, &str)> = row.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
         assert_eq!(choices, vec![(Value::Integer(0), "No Action"), (Value::Integer(1), "Close"), (Value::Integer(2), "Restart")]);
         assert_eq!(Profile::stock().int(END_ACTION_KEY), 1);

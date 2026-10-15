@@ -103,7 +103,7 @@ fn arrangements_page(ui: &mut egui::Ui, g: &mut Globals, profiles: &[(String, St
             store.set_default(&sel);
             changed = true;
         }
-        ui.add(egui::TextEdit::singleline(&mut st.rename).desired_width(220.0));
+        crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut st.rename).desired_width(220.0));
         if ui.button("Rename").clicked() && st.rename != sel {
             if store.rename(&sel, &st.rename) {
                 st.selected = Some(arrangements::clean_name(&st.rename));

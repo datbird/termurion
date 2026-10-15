@@ -338,7 +338,7 @@ pub const REASON_INTERNAL: &str = "Internal error";
 pub const UNKNOWN_NAME: &str = "Unknown";
 
 // The authentication popup and its warnings.
-pub const AUTH_METHOD_LABEL: &str = "Authentication method for Python API";
+pub const AUTH_METHOD_LABEL: &str = "Python API:";
 pub const REQUIRE_COOKIE: &str = "Require a cookie";
 pub const ALLOW_ALL_APPS: &str = "Allow all apps to connect";
 pub const ALLOW_ALL_HEADING: &str = "Disable per-app authentication?";
@@ -607,7 +607,7 @@ mod tests {
         assert_eq!(REASON_DENIED, "Denied by user");
         assert_eq!(REASON_INTERNAL, "Internal error");
         assert_eq!(UNKNOWN_NAME, "Unknown");
-        assert_eq!(AUTH_METHOD_LABEL, "Authentication method for Python API");
+        assert_eq!(AUTH_METHOD_LABEL, "Python API:");
         assert_eq!(REQUIRE_COOKIE, "Require a cookie");
         assert_eq!(ALLOW_ALL_APPS, "Allow all apps to connect");
         assert_eq!(ALLOW_ALL_HEADING, "Disable per-app authentication?");

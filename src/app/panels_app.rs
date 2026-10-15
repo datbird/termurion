@@ -131,9 +131,9 @@ impl App {
         again.then(|| Instant::now() + Duration::from_millis(100))
     }
 
-    /// The trigger editor's visualization button: the diagram in a popover (iTerm2's
-    /// `iTermRegexVisualizationViewController` in an NSPopover), or closed again. Without the web
-    /// runtime the page opens in the browser, as Smart Selection's does.
+    /// The trigger editor's and the Smart Selection editor's visualization buttons: the diagram in a
+    /// popover (iTerm2's `iTermRegexVisualizationViewController` in an NSPopover, both editors), or
+    /// closed again. Without the web runtime the page opens in the system browser.
     fn regex_visualization(&mut self, event_loop: &ActiveEventLoop) {
         use crate::web_popover::Kind as PopKind;
         let showing = matches!(&self.web_popover, Some((None, p)) if matches!(p.kind(), PopKind::Html { .. }));

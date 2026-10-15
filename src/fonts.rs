@@ -60,7 +60,46 @@ pub fn range_weights(min: u16, max: u16) -> Vec<u16> {
 
 /// The weight the "regular" face of a family has: the one nearest 400, the lighter on a tie.
 pub fn regular_weight(available: &[u16]) -> Option<u16> {
-    available.iter().copied().min_by_key(|w| ((*w as i32 - 400).abs(), *w))
+    nearest_weight(available, 400)
+}
+
+/// The weight of `available` nearest `target`, the lighter on a tie: the face a profile's font asks
+/// for when its family has no face at exactly that weight.
+pub fn nearest_weight(available: &[u16], target: u16) -> Option<u16> {
+    available.iter().copied().min_by_key(|w| ((*w as i32 - target as i32).abs(), *w))
+}
+
+/// The weight a PostScript name's style word asks for ("CascadiaMono-Light" is 300). A name with no
+/// style word, or one this does not know, is regular.
+pub fn weight_from_style_word(postscript: &str) -> u16 {
+    let word = postscript.rsplit_once('-').map_or("", |(_, w)| w).to_lowercase();
+    match word.trim_end_matches("italic").trim_end_matches("oblique") {
+        "thin" | "hairline" => 100,
+        "extralight" | "ultralight" => 200,
+        "light" => 300,
+        "medium" => 500,
+        "semibold" | "demibold" => 600,
+        "bold" => 700,
+        "extrabold" | "ultrabold" | "heavy" => 800,
+        "black" => 900,
+        _ => 400,
+    }
+}
+
+/// What the font menu calls a weight.
+pub fn weight_name(css: u16) -> String {
+    match css {
+        100 => "Thin".into(),
+        200 => "ExtraLight".into(),
+        300 => "Light".into(),
+        400 => "Regular".into(),
+        500 => "Medium".into(),
+        600 => "SemiBold".into(),
+        700 => "Bold".into(),
+        800 => "ExtraBold".into(),
+        900 => "Black".into(),
+        w => format!("Weight {w}"),
+    }
 }
 
 /// The bold weight for a regular face (`boldVersionOfFont:`): the lightest of `available` whose
@@ -83,6 +122,38 @@ pub fn blacklisted(postscript: &str) -> bool {
     LIST.iter().any(|prefix| postscript.starts_with(prefix))
 }
 
+/// One table of an OpenType font file: `index` picks the font of a collection. Reads only the
+/// table directory.
+pub fn sfnt_table<'a>(data: &'a [u8], index: u32, tag: &[u8; 4]) -> Option<&'a [u8]> {
+    let be16 = |o: usize| data.get(o..o + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+    let be32 = |o: usize| data.get(o..o + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+    let base = if data.get(0..4)? == b"ttcf" { be32(12 + 4 * index as usize)? as usize } else { 0 };
+    for i in 0..be16(base + 4)? as usize {
+        let rec = base + 12 + 16 * i;
+        if data.get(rec..rec + 4)? == tag {
+            let (off, len) = (be32(rec + 8)? as usize, be32(rec + 12)? as usize);
+            return data.get(off..off.checked_add(len)?);
+        }
+    }
+    None
+}
+
+/// Whether a font's `gasp` table asks for smoothed (anti-aliased) drawing at `ppem` pixels per em:
+/// the first range whose largest size reaches `ppem` has the gray-scale or symmetric-smoothing
+/// bit. This is what Settings' "(recommended for this font)" reads on Windows, where there is no
+/// CoreText `CTFontShouldAntiAlias`.
+pub fn gasp_smooths(table: &[u8], ppem: u16) -> bool {
+    let be16 = |o: usize| table.get(o..o + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+    let n = be16(2).unwrap_or(0) as usize;
+    for i in 0..n {
+        let (Some(max), Some(behavior)) = (be16(4 + 4 * i), be16(6 + 4 * i)) else { return false };
+        if ppem <= max {
+            return behavior & 0x0002 != 0 || behavior & 0x0008 != 0;
+        }
+    }
+    false
+}
+
 /// The ligature level of a font (`it_ligatureLevel`): 0 blacklisted, 2 with contextual
 /// alternates (`EnableContextualAlternates`), else 1.
 pub fn ligature_level(blacklisted: bool, calt: bool) -> u8 {
@@ -93,6 +164,75 @@ pub fn ligature_level(blacklisted: bool, calt: bool) -> u8 {
     } else {
         1
     }
+}
+
+/// The OpenType features a font's menu choices add to `level`'s: with Contextual Alternates turned
+/// off, the level that would turn `calt` on turns it off instead; the stylistic sets that are on
+/// (AAT selector 2n is OpenType `ssNN`, `n` from 1 to 20) are enabled for text that shapes.
+pub fn features_with(level: u8, chosen: &crate::profile::FontFeatures) -> glyphon::cosmic_text::FontFeatures {
+    use glyphon::cosmic_text::FeatureTag;
+    let mut f = features(if chosen.calt_off && level == 2 { 1 } else { level });
+    if level > 0 {
+        for selector in &chosen.stylistic {
+            let n = selector / 2;
+            if (1..=20).contains(&n) {
+                f.enable(FeatureTag::new(&[b's', b's', b'0' + (n / 10) as u8, b'0' + (n % 10) as u8]));
+            }
+        }
+    }
+    f
+}
+
+/// The stylistic sets a font offers, as its menu lists them: (the AAT selector, 2 for `ss01`, and
+/// the set's name), by name. The name is the one the font gives the set (the `name` table entry
+/// its GSUB feature points to), else "Stylistic Set N".
+pub fn stylistic_sets(data: &[u8], index: u32) -> Vec<(u32, String)> {
+    let be16 = |t: &[u8], o: usize| t.get(o..o + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+    let Some(gsub) = sfnt_table(data, index, b"GSUB") else { return Vec::new() };
+    let names = sfnt_table(data, index, b"name");
+    let Some(list) = be16(gsub, 6).map(|o| o as usize) else { return Vec::new() };
+    let mut out: Vec<(u32, String)> = Vec::new();
+    for i in 0..be16(gsub, list).unwrap_or(0) as usize {
+        let rec = list + 2 + 6 * i;
+        let Some(tag) = gsub.get(rec..rec + 4) else { break };
+        let n = match tag {
+            [b's', b's', a @ b'0'..=b'9', b @ b'0'..=b'9'] => u32::from(a - b'0') * 10 + u32::from(b - b'0'),
+            _ => continue,
+        };
+        if !(1..=20).contains(&n) || out.iter().any(|(s, _)| *s == n * 2) {
+            continue;
+        }
+        let feature = list + be16(gsub, rec + 4).unwrap_or(0) as usize;
+        // FeatureParams for a stylistic set: version 0, then the name id of its UI name.
+        let name = be16(gsub, feature).filter(|p| *p != 0).and_then(|p| be16(gsub, feature + p as usize + 2)).and_then(|id| names.and_then(|t| name_string(t, id)));
+        out.push((n * 2, name.unwrap_or_else(|| format!("Stylistic Set {n}"))));
+    }
+    out.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+    out
+}
+
+/// Name id `id` of a `name` table, English if it has one: a Windows (UTF-16) record, else a Mac Roman one.
+fn name_string(table: &[u8], id: u16) -> Option<String> {
+    let be16 = |o: usize| table.get(o..o + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+    let (count, strings) = (be16(2)? as usize, be16(4)? as usize);
+    let mut found: Option<(u8, String)> = None;
+    for i in 0..count {
+        let rec = 6 + 12 * i;
+        if be16(rec + 6)? != id {
+            continue;
+        }
+        let (platform, language, len, off) = (be16(rec)?, be16(rec + 4)?, be16(rec + 8)? as usize, be16(rec + 10)? as usize);
+        let raw = table.get(strings + off..strings + off + len)?;
+        let (rank, text) = match platform {
+            3 | 0 => (if language == 0x0409 { 0 } else { 2 }, String::from_utf16_lossy(&raw.chunks(2).filter(|c| c.len() == 2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect::<Vec<_>>())),
+            1 => (if language == 0 { 1 } else { 3 }, raw.iter().map(|b| *b as char).collect()),
+            _ => continue,
+        };
+        if found.as_ref().is_none_or(|(r, _)| rank < *r) {
+            found = Some((rank, text));
+        }
+    }
+    found.map(|(_, t)| t).filter(|t| !t.trim().is_empty())
 }
 
 /// The OpenType features that make `level` happen: 0 turns `liga`, `clig`, `calt` and `dlig` off,
@@ -288,6 +428,101 @@ pub fn double_strike_shift(mode: MaskMode, scale: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    /// A font file holding only `tables`, enough for `sfnt_table`.
+    fn sfnt(tables: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut out = vec![0, 1, 0, 0];
+        out.extend((tables.len() as u16).to_be_bytes());
+        out.extend([0u8; 6]);
+        let mut offset = 12 + 16 * tables.len();
+        for (tag, body) in tables {
+            out.extend(*tag);
+            out.extend([0u8; 4]);
+            out.extend((offset as u32).to_be_bytes());
+            out.extend((body.len() as u32).to_be_bytes());
+            offset += body.len();
+        }
+        for (_, body) in tables {
+            out.extend(body);
+        }
+        out
+    }
+
+    #[test]
+    fn stylistic_sets_are_listed_by_name_with_their_selectors() {
+        let be = |v: &[u16]| v.iter().flat_map(|x| x.to_be_bytes()).collect::<Vec<u8>>();
+        // GSUB: a feature list of ss02 (named by name id 256) and ss01 (unnamed), a liga that is no set.
+        let mut gsub = be(&[1, 0, 0, 10, 0]);
+        let mut list = be(&[3]);
+        list.extend(b"ss02");
+        list.extend(be(&[20]));
+        list.extend(b"ss01");
+        list.extend(be(&[28]));
+        list.extend(b"liga");
+        list.extend(be(&[32]));
+        list.extend(be(&[4, 0, 0, 256])); // ss02: params 4 bytes on, no lookups, params: version, name id
+        list.extend(be(&[0, 0])); // ss01: no params
+        list.extend(be(&[0, 0])); // liga
+        gsub.extend(list);
+        let text: Vec<u8> = "Open four".encode_utf16().flat_map(|u| u.to_be_bytes()).collect();
+        let mut name = be(&[0, 1, 18, 3, 1, 0x0409, 256, text.len() as u16, 0]);
+        name.extend(&text);
+        let font = sfnt(&[(b"GSUB", gsub), (b"name", name)]);
+        assert_eq!(stylistic_sets(&font, 0), vec![(4, "Open four".to_string()), (2, "Stylistic Set 1".to_string())]);
+        assert!(stylistic_sets(&sfnt(&[(b"name", Vec::new())]), 0).is_empty(), "no GSUB, no sets");
+        assert!(stylistic_sets(&[1, 2, 3], 0).is_empty(), "not a font");
+    }
+
+    #[test]
+    fn font_choices_add_to_the_levels_features() {
+        use crate::profile::FontFeatures;
+        use glyphon::cosmic_text::FeatureTag;
+        let none = FontFeatures::default();
+        assert_eq!(features_with(2, &none).features.len(), features(2).features.len());
+        let sets = FontFeatures { stylistic: vec![2, 42], calt_off: false };
+        let f = features_with(2, &sets);
+        assert!(f.features.iter().any(|x| x.tag == FeatureTag::new(b"ss01")), "selector 2 is ss01");
+        assert!(!f.features.iter().any(|x| x.tag.as_bytes().starts_with(b"ss") && x.tag != FeatureTag::new(b"ss01")), "selector 42 is past ss20");
+        assert!(features_with(0, &sets).features.iter().all(|x| x.tag != FeatureTag::new(b"ss01")), "a level that does not shape takes no set");
+        let off = FontFeatures { stylistic: Vec::new(), calt_off: true };
+        let calt = |f: &glyphon::cosmic_text::FontFeatures| f.features.iter().find(|x| x.tag == FeatureTag::CONTEXTUAL_ALTERNATES).map(|x| x.value);
+        assert_eq!(calt(&features_with(2, &none)), Some(1));
+        assert_eq!(calt(&features_with(2, &off)), Some(0), "Contextual Alternates turned off in the font menu");
+    }
+
+    #[test]
+    fn a_postscript_name_asks_for_its_weight() {
+        assert_eq!(weight_from_style_word("CascadiaMono-Light"), 300);
+        assert_eq!(weight_from_style_word("CascadiaMono-SemiBold"), 600);
+        assert_eq!(weight_from_style_word("CascadiaMono-BoldItalic"), 700);
+        assert_eq!(weight_from_style_word("Consolas"), 400);
+        assert_eq!(weight_from_style_word("Foo-Regular"), 400);
+        assert_eq!(nearest_weight(&[300, 500], 400), Some(300), "the lighter wins a tie");
+        assert_eq!(nearest_weight(&[300, 700], 600), Some(700));
+        assert_eq!(nearest_weight(&[], 400), None);
+        assert_eq!(weight_name(300), "Light");
+        assert_eq!(weight_name(450), "Weight 450");
+    }
+
+    #[test]
+    fn gasp_decides_the_antialiasing_hint() {
+        // version 1, two ranges: grid-fit only up to 8 ppem, gray-scale and grid-fit beyond.
+        let table = [0, 1, 0, 2, 0, 8, 0, 1, 0xFF, 0xFF, 0, 3];
+        assert!(!gasp_smooths(&table, 8));
+        assert!(gasp_smooths(&table, 9));
+        assert!(!gasp_smooths(&[], 12), "no table, no hint");
+    }
+
+    #[test]
+    fn a_font_file_table_is_found_by_its_tag() {
+        // A one-table sfnt: the directory says "gasp" is 4 bytes at offset 28.
+        let mut f = vec![0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        f.extend_from_slice(b"gasp");
+        f.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 28, 0, 0, 0, 4]);
+        f.extend_from_slice(&[1, 2, 3, 4]);
+        assert_eq!(sfnt_table(&f, 0, b"gasp"), Some(&[1u8, 2, 3, 4][..]));
+        assert_eq!(sfnt_table(&f, 0, b"cmap"), None);
+    }
+
     use super::*;
 
     const M: Metrics = Metrics { ascent: 12.4, descent: 3.2, leading: 0.0, advance_w: 7.6 };

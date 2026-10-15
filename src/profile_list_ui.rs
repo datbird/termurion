@@ -26,6 +26,28 @@ pub enum ListEvent {
     Context(Vec<String>),
     /// A context menu item was chosen (its label); the selection holds what it acts on.
     MenuItem(&'static str),
+    /// The search field menu's "Search Syntax Help" (`openHowToSearchHelp:`).
+    SearchHelp,
+}
+
+/// The search field menu's heading over the tags (`ProfileListView.m:_addTags:toSearchField:`).
+pub const TAGS_HEADING: &str = "Tags";
+/// The search field menu's help item.
+pub const SEARCH_SYNTAX_HELP: &str = "Search Syntax Help";
+/// The search glyph (Segoe Fluent Icons), shown at the start of the field.
+const SEARCH_GLYPH: char = '\u{E721}';
+
+/// The tags of the search field menu: every tag once, sorted ignoring case.
+pub fn menu_tags(rows: &[(String, String, Vec<String>, String)]) -> Vec<String> {
+    let mut all: Vec<String> = rows.iter().flat_map(|r| r.2.iter().cloned()).collect();
+    all.sort_by_key(|t| t.to_lowercase());
+    all.dedup();
+    all
+}
+
+/// The query after a tag was chosen in the menu: the typed text, then " tag:<tag>" (`_addTag:`).
+pub fn query_with_tag(query: &str, tag: &str) -> String {
+    format!("{} tag:{tag}", query.trim()).trim().to_string()
 }
 
 /// The list's height.
@@ -41,6 +63,22 @@ pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, Stri
     let mut field_focused = false;
     let mut enter_pressed = false;
     ui.horizontal(|ui| {
+        // The search field's menu: the tags to add to the query, and the syntax help.
+        let glyph = crate::settings_keys::icon_text(ui.ctx(), SEARCH_GLYPH).unwrap_or_else(|| egui::RichText::new("Search"));
+        ui.menu_button(glyph, |ui| {
+            ui.add_enabled(false, egui::Label::new(TAGS_HEADING));
+            for tag in menu_tags(rows) {
+                if ui.button(display_text(&tag)).clicked() {
+                    st.query = query_with_tag(&st.query, &tag);
+                    ui.close();
+                }
+            }
+            ui.separator();
+            if ui.button(SEARCH_SYNTAX_HELP).clicked() {
+                event = ListEvent::SearchHelp;
+                ui.close();
+            }
+        });
         let r = ui.add(egui::TextEdit::singleline(&mut st.query).id(focus_id).hint_text("Search").desired_width((ui.available_width() - 70.0).max(40.0)));
         // The search field has focus when the list opens (iTerm2's first responder).
         let first = ui.data_mut(|d| d.get_temp::<bool>(focus_id).is_none());
@@ -168,4 +206,21 @@ pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, Stri
         });
     });
     event
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_search_menu_lists_the_tags_and_adds_one_to_the_query() {
+        let rows = vec![
+            ("1".to_string(), "a".to_string(), vec!["work".to_string(), "Home".to_string()], String::new()),
+            ("2".to_string(), "b".to_string(), vec!["work".to_string(), "alpha/beta".to_string()], String::new()),
+        ];
+        assert_eq!(menu_tags(&rows), ["alpha/beta", "Home", "work"], "sorted ignoring case, each once");
+        assert_eq!(query_with_tag("", "work"), "tag:work");
+        assert_eq!(query_with_tag("ssh ", "Home"), "ssh tag:Home");
+        assert_eq!((TAGS_HEADING, SEARCH_SYNTAX_HELP), ("Tags", "Search Syntax Help"));
+    }
 }

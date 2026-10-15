@@ -429,6 +429,20 @@ impl App {
         self.globals_changed(true);
     }
 
+    /// Import JSON Profiles: the files in order. A file that fails raises iTerm2's alert, with Abort
+    /// when more files follow; OK goes on with them (`importJSONProfiles:`).
+    pub(super) fn import_json_profiles(&mut self, files: Vec<crate::localfs::LocalPath>) {
+        let (n, failed) = crate::settings_profile_actions::import_json_files(&mut self.store, &files);
+        if n > 0 {
+            self.apply_edit(Edit::Imported(n));
+        }
+        if let Some(f) = failed {
+            let labels: &[&str] = if f.rest.is_empty() { &[crate::api_auth::OK] } else { &[crate::api_auth::OK, "Abort"] };
+            let then = if f.rest.is_empty() { Then::Acknowledged } else { Then::JsonImport(f.rest) };
+            self.ask_scripts(ask(&f.heading, &f.text, labels, Some("NoSyncJSONImportFailed"), Kind::Temporary, then));
+        }
+    }
+
     /// Loads the URL off the UI thread; `prefs_tick` takes the result.
     fn prefs_fetch_start(&mut self, url: String, timeout: Option<f64>) {
         let (tx, rx) = std::sync::mpsc::channel();

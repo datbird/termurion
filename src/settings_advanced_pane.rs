@@ -116,7 +116,7 @@ fn value_cell(ui: &mut egui::Ui, g: &mut Globals, st: &mut AdvancedState, row: &
             let editing = st.editing.as_ref().filter(|(k, _)| k == row.key).map(|(_, t)| t.clone());
             let was_editing = editing.is_some();
             let mut text = editing.unwrap_or_else(|| shown_text(g, row));
-            let field = ui.add(egui::TextEdit::singleline(&mut text).id_salt(("advanced", row.key)).desired_width(ui.available_width()));
+            let field = crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut text).id_salt(("advanced", row.key)).desired_width(ui.available_width()));
             if field.changed() {
                 text_write(g, row, &text);
             }
@@ -163,7 +163,7 @@ pub fn page(ui: &mut egui::Ui, g: &mut Globals, st: &mut AdvancedState) -> bool 
     let bar = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
     ui.allocate_ui_with_layout(bar, egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.checkbox(&mut st.only_non_default, advanced_pane::ONLY_NON_DEFAULT).on_hover_text(advanced_pane::ONLY_NON_DEFAULT_TIP);
-        ui.add(egui::TextEdit::singleline(&mut st.query).hint_text(advanced_pane::SEARCH_HINT).desired_width(ui.available_width()));
+        crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut st.query).hint_text(advanced_pane::SEARCH_HINT).desired_width(ui.available_width()));
     });
     let rows = all_rows();
     let keep = st.editing.as_ref().map(|(k, _)| k.clone());

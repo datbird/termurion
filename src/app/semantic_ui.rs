@@ -825,7 +825,7 @@ mod tests {
     const NOT_PANE_TEXT: &[(&str, &str, &str)] = &[
         ("app/browser_extensions_app.rs", "browser_extensions_reveal", "only SELECTS the extensions folder in Explorer: a local drive path (root_ok, judged) the profile or the default names, never pane text; nothing is opened or run"),
         ("app/transfers_ui.rs", "transfer_picked", "Open is the person's click on a file Termurion itself saved from a transfer: a program or script type was saved as `name.ext.download`, a type the shell reads on listing was refused (inert_files), and the path comes from the transfer list, never pane text"),
-        ("regex_railroad.rs", "open", "opens a page Termurion just wrote itself in the temp folder (the diagram of a regular expression the person is editing), never pane text"),
+        ("regex_railroad.rs", "open", "opens the page this module wrote itself in the temp folder (a judged file whose name is the process id), never pane text; the regular expression is only drawn in it"),
         ("app/ai_app.rs", "ai_key_event", "opens a vendor page from Termurion's own text table (settings_ai::registration_message), never pane text"),
         ("app/alerts_ui.rs", "reveal_notified", "opens Termurion's own help page (links::HELP_COPY_MODE) after its own notification was clicked, never pane text"),
         ("app/panels_app.rs", "panel_act", "opens links Termurion's own windows carry (the issue page, What's New pages), never pane text"),

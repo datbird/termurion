@@ -63,7 +63,7 @@ fn rows(ui: &mut egui::Ui, id: &str, list: &mut Vec<String>, hint: &str) -> (Opt
     let mut remove = None;
     for (i, r) in list.iter_mut().enumerate() {
         ui.horizontal(|ui| {
-            let resp = ui.add(egui::TextEdit::singleline(r).hint_text(hint).desired_width(320.0).id_salt((id, i)));
+            let resp = crate::settings_keys::field(ui, egui::TextEdit::singleline(r).hint_text(hint).desired_width(320.0).id_salt((id, i)));
             edited |= resp.changed();
             if resp.lost_focus() {
                 event = Some(ListEvent::Committed);
@@ -125,6 +125,23 @@ pub fn bound_hosts(ui: &mut egui::Ui, profile: &mut Profile, others: &[Candidate
     true
 }
 
+/// A profile's string list as a token field with the row's label (Tags, Snippets Filter): the
+/// label, the field, and the row's help as a tooltip. True when the profile changed.
+pub fn tokens_row(ui: &mut egui::Ui, profile: &mut Profile, s: &crate::schema::Setting, hint: &str) -> bool {
+    let mut tokens = strings(profile, &s.key);
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(&s.label);
+        changed = token_field(ui, &s.key, &mut tokens, hint);
+    })
+    .response
+    .on_hover_text(&s.help);
+    if changed {
+        store(profile, &s.key, tokens);
+    }
+    changed
+}
+
 /// Profiles > Session, Jobs to Ignore (used when Prompt Before Closing is "If there are
 /// jobs besides").
 pub fn jobs_to_ignore(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
@@ -148,6 +165,61 @@ pub fn jobs_to_ignore(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
     }
 }
 
+/// The tokens after the text in a token field's box was committed (`NSTokenField`): the text is
+/// split at commas, each piece trimmed, and the new ones that are not already tokens added in
+/// order. Returns the tokens and whether any were added.
+pub fn tokens_after(tokens: &[String], text: &str) -> (Vec<String>, bool) {
+    let mut out = tokens.to_vec();
+    let mut added = false;
+    for piece in text.split(',') {
+        let t = piece.trim();
+        if !t.is_empty() && !out.iter().any(|o| o == t) {
+            out.push(t.to_string());
+            added = true;
+        }
+    }
+    (out, added)
+}
+
+/// A token field (iTerm2's `NSTokenField`, Tags and Snippets Filter): the tokens as chips, each with
+/// a remove button, and a box to type the next one; a comma, Enter or leaving the box makes the
+/// typed text a token. True when the tokens changed.
+pub fn token_field(ui: &mut egui::Ui, salt: &str, tokens: &mut Vec<String>, hint: &str) -> bool {
+    let id = ui.id().with(("token-field", salt));
+    let mut text: String = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_default();
+    let mut changed = false;
+    ui.horizontal_wrapped(|ui| {
+        let mut remove = None;
+        for (i, t) in tokens.iter().enumerate() {
+            ui.group(|ui| {
+                ui.label(t.as_str());
+                if ui.small_button("\u{2715}").on_hover_text("Remove").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            tokens.remove(i);
+            changed = true;
+        }
+        let r = crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut text).hint_text(hint).desired_width(140.0).id_salt((salt, "box")));
+        let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if text.contains(',') || enter || (r.lost_focus() && !text.trim().is_empty()) {
+            let (next, added) = tokens_after(tokens, &text);
+            if added {
+                *tokens = next;
+                changed = true;
+            }
+            text.clear();
+            if enter {
+                r.request_focus();
+            }
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(id, text));
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,5 +239,13 @@ mod tests {
         assert_eq!((list, beep), (vec!["a".to_string()], true), "left empty: it goes, with a beep");
         let (list, _) = after(&["a".to_string(), "b".to_string()], ListEvent::Removed);
         assert_eq!(list, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn token_field_splits_at_commas_and_skips_repeats() {
+        let have = vec!["work".to_string()];
+        assert_eq!(tokens_after(&have, "work, home ,, a/b"), (vec!["work".into(), "home".into(), "a/b".into()], true));
+        assert_eq!(tokens_after(&have, "  "), (have.clone(), false));
+        assert_eq!(tokens_after(&have, "work"), (have, false), "a token already there is not added again");
     }
 }

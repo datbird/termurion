@@ -18,6 +18,11 @@ pub fn face_key_for(p: &Profile, scale: f32, resolve: &dyn Fn(&str) -> String) -
     let alt = p.bool("Use Non-ASCII Font").then(|| resolve(&p.font("Non Ascii Font").family));
     let px = normal.size_pt * 4.0 / 3.0 * scale;
     let mut key = FaceKey::new(&resolve(&normal.family), alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32);
+    // The font menu's stylistic sets and Contextual Alternates choice, kept in the stored font strings.
+    key.ascii_features = normal.features.clone();
+    if alt.is_some() {
+        key.non_ascii_features = p.font("Non Ascii Font").features;
+    }
     // Use Bold Font and Use Italic Font (`ASB:773-778`): a face that ignores a switch is its own face.
     (key.use_bold, key.use_italic) = (p.bool("Use Bold Font"), p.bool("Use Italic Font"));
     // ASCII Ligatures and Non-ASCII Ligatures decide what the pane's text shapes with.
@@ -227,7 +232,12 @@ impl App {
     /// The face key of `p` in this window (`face_key_for`, with the renderer's memoized lookup).
     pub(super) fn face_key(&self, p: &Profile) -> FaceKey {
         let renderer = self.gpu.as_ref().map(|g| &g.renderer);
-        face_key_for(p, self.scale(), &|name| renderer.map_or_else(|| name.to_string(), |r| r.resolve_family(name)))
+        let mut key = face_key_for(p, self.scale(), &|name| renderer.map_or_else(|| name.to_string(), |r| r.resolve_family(name)));
+        // A font that names a member of its family (a PostScript name) asks for that weight.
+        if let Some(r) = renderer {
+            key.weight = r.resolve_weight(&p.font("Normal Font").family);
+        }
+        key
     }
 
     /// Measures the face of every pane of this window, at the window's scale. Called at the top
@@ -526,6 +536,22 @@ mod tests {
         let (zoom, remarry) = (source.find("zoom_delta(").expect("measured"), source.find("self.remarry(").unwrap());
         assert!(zoom < remarry, "measured before the switch");
         assert!(source[remarry..].contains("write_font_size("), "re-applied after it");
+    }
+
+    /// The font menu's choices are in the stored font strings and reach the face key, one set per font.
+    #[test]
+    fn font_features_make_a_new_key() {
+        let same = |s: &str| s.to_string();
+        let plain = profile(&[("Normal Font", "Cascadia Code 14".into()), ("Use Non-ASCII Font", true.into()), ("Non Ascii Font", "MS Gothic 12".into())]);
+        let chosen = profile(&[
+            ("Normal Font", r#"Cascadia Code 14 {"featureSettings":[{"CTFeatureSelectorIdentifier":4,"CTFeatureTypeIdentifier":35},{"CTFeatureSelectorIdentifier":1,"CTFeatureTypeIdentifier":36}]}"#.into()),
+            ("Use Non-ASCII Font", true.into()),
+            ("Non Ascii Font", "MS Gothic 12".into()),
+        ]);
+        let (a, b) = (face_key_for(&plain, 1.0, &same), face_key_for(&chosen, 1.0, &same));
+        assert_ne!(a, b);
+        assert_eq!((b.family.as_str(), b.ascii_features.stylistic.clone(), b.ascii_features.calt_off), ("Cascadia Code", vec![4], true));
+        assert!(b.non_ascii_features.is_empty());
     }
 
     #[test]
