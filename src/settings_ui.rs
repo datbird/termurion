@@ -58,6 +58,8 @@ pub enum Edit {
     /// and sets them on the copy (the saved profile stays as it was).
     SessionEdit(crate::layout::PaneId, Vec<(String, Option<Value>)>),
     Imported(usize),
+    /// The JSON files picked for Import JSON Profiles; the app imports them (an alert may stop it).
+    ImportJson(Vec<crate::localfs::LocalPath>),
     Error(String),
     /// An OK-only alert the person's own action raised (a trigger file that did not import or
     /// export, `TriggerController.m:1155-1163`); the App shows it through `ask_scripts`.
@@ -451,7 +453,6 @@ pub struct SettingsWindow {
     /// Profiles > Bulk Copy from Selected Profile\u{2026}, while its sheet is open.
     bulk: Option<pa::BulkCopy>,
     /// Alerts for JSON files that did not import, shown one after another.
-    json_alerts: std::collections::VecDeque<(String, String)>,
     /// A saved JSON file to show in Explorer (the app takes it with `take_reveal`).
     json_reveal: Option<String>,
     /// The installed font families, for the Text tab's font menus; the app lists them when the
@@ -651,7 +652,6 @@ impl SettingsWindow {
             open_editor: None,
             search: Default::default(),
             bulk: None,
-            json_alerts: Default::default(),
             json_reveal: None,
             fonts: Vec::new(),
             font_hints: Default::default(),
@@ -811,7 +811,6 @@ impl SettingsWindow {
         let fonts = &self.fonts;
         let search = &mut self.search;
         let bulk = &mut self.bulk;
-        let json_alerts = &mut self.json_alerts;
         let json_reveal = &mut self.json_reveal;
         let font_hints = &self.font_hints;
         let font_info = &self.font_info;
@@ -1165,7 +1164,7 @@ impl SettingsWindow {
                             ui.separator();
                             if ui.button(pa::IMPORT_JSON).clicked() {
                                 ui.close();
-                                edit = pa::import_json_files(store, json_alerts);
+                                edit = pa::pick_json_files();
                             }
                             ui.separator();
                             if ui.button("Import from iTerm2...").clicked() {
@@ -1652,15 +1651,6 @@ impl SettingsWindow {
             }
         }
         if crate::settings_triggers::alerts_pending() {
-            self.host.request_redraw();
-        }
-        // A JSON import's alerts, one a frame.
-        if matches!(edit, Edit::None)
-            && let Some((heading, text)) = self.json_alerts.pop_front()
-        {
-            edit = Edit::Alert { heading, text };
-        }
-        if !self.json_alerts.is_empty() {
             self.host.request_redraw();
         }
         let mut asked = questions.into_inner();

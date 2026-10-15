@@ -186,32 +186,42 @@ fn read_json(p: &crate::localfs::LocalPath) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "the file is not valid UTF-8".to_string())
 }
 
-/// Asks for JSON files and imports each (`importJSONProfiles:`); a file that fails queues its alert
-/// (`import_failed`), and the others still import.
-pub fn import_json_files(store: &mut Store, alerts: &mut std::collections::VecDeque<(String, String)>) -> crate::settings_ui::Edit {
-    use crate::settings_ui::Edit;
+/// Asks for the JSON files to import (`importJSONProfiles:`); the app imports them one at a time.
+pub fn pick_json_files() -> crate::settings_ui::Edit {
     let dialog = rfd::FileDialog::new().set_directory(crate::profile::home()).add_filter("JSON", &["json"]);
+    let files = crate::localfs::pick_files(dialog);
+    if files.is_empty() { crate::settings_ui::Edit::None } else { crate::settings_ui::Edit::ImportJson(files) }
+}
+
+/// A file that did not import: iTerm2's alert (`import_failed`) and the files after it. The alert has
+/// an Abort button unless the file was the last (`importJSONProfiles:`).
+pub struct Failed {
+    pub heading: String,
+    pub text: String,
+    pub rest: Vec<crate::localfs::LocalPath>,
+}
+
+/// Imports the files in order and stops at the first that fails (`tryToImportJSONProfileFromURL:`):
+/// how many profiles came in, and the failure with the files still to do.
+pub fn import_json_files(store: &mut Store, files: &[crate::localfs::LocalPath]) -> (usize, Option<Failed>) {
     let mut imported = 0;
-    for file in crate::localfs::pick_files(dialog) {
+    for (i, file) in files.iter().enumerate() {
         let shown = crate::inert_files::shown_name(&file.path().to_string_lossy());
-        let text = match read_json(&file) {
-            Ok(t) => t,
-            Err(e) => {
-                alerts.push_back(import_failed(&shown, &e));
-                continue;
-            }
-        };
-        match import_json(&text, &|g| store.get(g).is_some()) {
+        let result = read_json(file).and_then(|text| import_json(&text, &|g| store.get(g).is_some()));
+        match result {
             Ok(list) => {
                 imported += list.len();
                 for p in list {
                     store.add(p);
                 }
             }
-            Err(e) => alerts.push_back(import_failed(&shown, &e)),
+            Err(e) => {
+                let (heading, text) = import_failed(&shown, &e);
+                return (imported, Some(Failed { heading, text, rest: files[i + 1..].to_vec() }));
+            }
         }
     }
-    if imported > 0 { Edit::Imported(imported) } else { Edit::None }
+    (imported, None)
 }
 
 /// The Bulk Copy sheet while it is open.
@@ -299,6 +309,27 @@ mod tests {
         assert!(!store.get(&guids[1]).unwrap().values.contains_key("Silence Bell"));
         assert_eq!(store.get(&guids[1]).unwrap().int("Columns"), 99, "Window was not checked");
         assert_eq!(store.get(&guids[2]).unwrap().int("Scrollback Lines"), Profile::new("x").int("Scrollback Lines"), "an unselected profile is left alone");
+    }
+
+    #[test]
+    fn an_import_stops_at_the_first_bad_file_and_hands_back_the_rest() {
+        let dir = std::env::temp_dir().join(format!("termurion-json-import-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (good, bad) = (dir.join("a.json"), dir.join("b.json"));
+        std::fs::write(&good, profile_json(&Profile::new("A"))).unwrap();
+        std::fs::write(&bad, "not json").unwrap();
+        let files: Vec<_> = [&good, &bad, &good].iter().map(|p| crate::localfs::judge(p).unwrap()).collect();
+        let mut store = Store::fresh(std::path::Path::new("json-import-test.toml"));
+        let before = store.profiles.len();
+        let (n, failed) = import_json_files(&mut store, &files);
+        let failed = failed.expect("the second file fails");
+        assert_eq!((n, store.profiles.len() - before), (1, 1), "the file before it came in");
+        assert_eq!(failed.heading, "Could not Import Profile");
+        assert!(failed.text.starts_with("Import from ") && failed.text.contains(" failed: "));
+        assert_eq!(failed.rest.len(), 1, "the file after it waits for the answer (OK goes on, Abort stops)");
+        let (n, failed) = import_json_files(&mut store, &failed.rest);
+        assert!(n == 1 && failed.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

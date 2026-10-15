@@ -4659,6 +4659,7 @@ impl App {
                 let id = crate::trigger_file::identifier_for(&heading, &text);
                 self.ask_scripts(scripts_alerts::ask(&heading, &text, &[crate::api_auth::OK], Some(id), crate::warnings::Kind::Persistent, scripts_alerts::Then::Acknowledged));
             }
+            Edit::ImportJson(files) => self.import_json_profiles(files),
             Edit::SnippetsChanged => self.save_snippets(),
             Edit::GlobalsChanged => self.globals_changed(true),
             Edit::PrefsCopyNow => {
