@@ -1,0 +1,31 @@
+UI parity sweep, package B: main menu runtime items and file transfers (branch ui-b). Sources: AppKit/iTermApplicationDelegate.m, FileTransfer/*, PTYSession/PTYSession.m, PTYSession/iTermNaggingController.m, API/iTermScriptsMenuController.m, Companion/CompanionPresenceController.swift, Settings/UserDefaultsUnsavedController.swift.
+
+BUILT
+B1: Downloads and Uploads menus (AD:724-755, FileTransferManager.m:270-318, TransferrableFileMenuItemViewController.m). Top-level menus inserted before Help the first time a transfer of their kind starts (as iTerm2 creates them lazily), with Clear All, a line, and per transfer a submenu: Stop, Show in Finder (shown "Show in Explorer"), Remove from List, Open (downloads only), Get Info. Enable rules are validateMenuItem's, state by state. Get Info shows "File Transfer Summary" with iTerm2's status text. Model: src/transfers.rs (guard tests cite the iTerm2 lines); menus: src/app/transfers_ui.rs.
+B1: Fed by every transfer Termurion has: OSC 1337 File and MultipartFile downloads, SSH single downloads, Download Files items, SSH uploads, RequestUpload. Finished items are dropped after a day when the menu is next refreshed, instead of iTerm2's ten minute timer (no extra scheduled job).
+B2: Session > Triggers per-trigger check items (AD:4277-4298): one per trigger of the focused session, below a line, titled name, else regex, else the action's title, else "(Unnamed trigger)"; a pick flips `disabled` in the session's own profile (same code as the status bar Triggers menu).
+B3: View > Current Tab Color (AD:380-386), a submenu of the Tab Color picker's entries for the current tab (reuses color_picked).
+B4: Unsaved settings notice (UserDefaultsUnsavedController.swift): Termurion has the custom folder or URL mode (src/remote_prefs.rs), so the audit's "probably not applicable" was wrong and it is built: a red warning glyph at the left of the Settings page bar, its menu per iTerm2 (URL: Disable Loading Settings from URL; else Save Settings, Save Settings Automatically, Hide Unsaved Changes Notification). Hidden by NoSyncHideUnsavedSettingsNotification, while editing one session, and when saving is Automatically with a folder.
+B5: Alerts. "A file is being downloaded. Abort the download?" (OK/Cancel bar on Ctrl+C while a file arrives; the key still reaches the program, as in iTerm2). "Where would you like to save this download?" (heading "Save Terminal-Initiated Download", Save to Downloads / Choose..., id NoSyncPromptForDownloadLocation, permanently silenceable; Choose... opens a save dialog and the chosen path is used as is, closing it ends the transfer Failed with "Canceled."). "Upload in Progress" (OK). "Error Preparing Upload" / "tar failed with this message: %@". "A file transfer was aborted for exceeding its declared size." (warning bar, no buttons; size is 0 when the sequence gives none, plus 5 bytes of slack, exactly as TerminalFile.m:176-196).
+
+RULED OUT, existing ruling stays
+B6: Scripts menu Option alternate "Reveal %@" (iTermScriptsMenuController.m:1568-1576): m11d-rulings.txt:10 stands. Windows menus have no alternate items; Alt held at the pick reveals the script and Open Quickly lists the "Reveal" item.
+B7: Companion status item menu (CompanionPresenceController.swift:122): R12 (m13y2-rulings.txt Task 10, commands.rs pairCompanionDevice:). There is no companion connection, so there is nothing to put in the header line.
+
+macOS only, not built
+B8: Show in Finder reveals in Explorer (mapped, built). Nothing else of package B is macOS only: the animated image flying into the Downloads menu (FileTransferManager animateImage:, AX menu bar scripting) and the password prompt for scp transfers (interactivePrompt:, Termurion has no libssh scp path) are macOS or libssh machinery, not built.
+
+DECISIONS
+B9: A menu item holds one line on Windows. iTerm2 draws a view with the name, subheading, a progress bar and the status message. Termurion's item reads "<name> - <status message>" plus a percent while a size is known. The subheading (user@host:path) shows in Get Info only.
+B10: An OSC 1337 download arrives whole in Termurion (the scanner hands over the finished string), so it is listed when it ends (Finished, Failed, or Cancelled when answered No), not as Starting/Downloading while it streams. Stop is therefore never offered for it; Ctrl+C aborts it while it arrives and lists it as Cancelled "Unnamed file".
+B11: "Upload in Progress" is iTerm2's guard for Upload and Paste Path (nonTextPasteHelper), which Termurion does not have yet (package W's paste choices). It is wired to the one upload Termurion has: a second RequestUpload for a pane that is still sending shows it and answers the program with Ctrl+C. Package W should call App::upload_in_progress_alert from Upload and Paste Path.
+B12: The "(Unnamed trigger)" text (also in the windows audit's trigger group) is defined once, in triggers_ui.rs (UNNAMED_TRIGGER); package W should reuse it.
+B13: Audit item 5 (profile list search menu), 6 (field Reset to...), 7, 8 belong to packages S and W; not touched.
+
+FLAGS FOR ROBERT
+1. A download whose sequence has no size= is now dropped with "A file transfer was aborted for exceeding its declared size." as soon as it holds more than 5 bytes. That is iTerm2's behaviour (size defaults to 0 in VT100Terminal.m, TerminalFile.m:176-196), but it could break a hand-made script that omits size. it2dl sends size. Say if you want a more lenient rule.
+2. Every terminal download now asks "Where would you like to save this download?" before "Allow Terminal-Initiated Download?". Ticking "Do not show this again" on it remembers Save to Downloads or Choose..., as in iTerm2.
+3. The unsaved settings notice was added to the Settings page bar (left of General). Package S edits the same bar (search field, popups); expect a small merge there.
+4. Downloads and Uploads items are one line of text, not iTerm2's progress bar view (B9). A drawn row needs an owner-drawn menu, which muda does not offer.
+5. A second RequestUpload while one is sending now stops with "Upload in Progress" and a Ctrl+C to the program; before, it silently replaced the first upload (B11).
+6. Trigger items whose regex and name are both empty are titled by the action ("Highlight Text"); iTerm2 would print an internal description there.

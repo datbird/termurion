@@ -824,6 +824,7 @@ mod tests {
     /// Callers of a sink whose input is not text a remote host wrote, and why.
     const NOT_PANE_TEXT: &[(&str, &str, &str)] = &[
         ("app/browser_extensions_app.rs", "browser_extensions_reveal", "only SELECTS the extensions folder in Explorer: a local drive path (root_ok, judged) the profile or the default names, never pane text; nothing is opened or run"),
+        ("app/transfers_ui.rs", "transfer_picked", "Open is the person's click on a file Termurion itself saved from a transfer: a program or script type was saved as `name.ext.download`, a type the shell reads on listing was refused (inert_files), and the path comes from the transfer list, never pane text"),
         ("app/semantic_ui.rs", "execute", "the sink itself; its callers are checked"),
         ("app/semantic_ui.rs", "execute_with", "the sink itself; its callers are checked"),
         ("app/url_handler_ui.rs", "url_handler", "starts the person's own handler program directly; reached only from execute_with, the URL is one argument (handler_plan)"),

@@ -74,6 +74,8 @@ pub enum Edit {
     PrefsCopyNow,
     /// General > Settings' Save Now.
     PrefsSaveNow,
+    /// A pick from the unsaved settings notice's menu (`UserDefaultsUnsavedController.swift`).
+    Unsaved(crate::remote_prefs::UnsavedAction),
     /// General > Settings' Export All Settings and Data button.
     ExportAll,
     /// General > Settings' Import All Settings and Data button.
@@ -468,6 +470,9 @@ pub struct SettingsWindow {
     sheet: Option<settings_keys::SheetWarning>,
     /// "Always show alerts with remembered selections"; the app sets it before each redraw.
     pub show_remembered: bool,
+    /// The unsaved settings notice: shown (Some) when settings load from a custom location and
+    /// differ from what it holds; true when that location is a URL. Set by the app each frame.
+    pub unsaved: Option<bool>,
     /// The warnings answered since the app last took them: it lists the automatic answers in
     /// Suppressed Alerts and saves the settings a remembered answer changed.
     pub answered: Vec<settings_keys::SheetAnswer>,
@@ -640,6 +645,7 @@ impl SettingsWindow {
             ai: Default::default(),
             sheet: None,
             show_remembered: false,
+            unsaved: None,
             answered: Vec::new(),
             presets: crate::settings_presets::State::new(host_dark),
             list: Default::default(),
@@ -787,6 +793,7 @@ impl SettingsWindow {
         let ai = &mut self.ai;
         let sheet = &mut self.sheet;
         let show_remembered = self.show_remembered;
+        let unsaved = self.unsaved;
         let answered = &mut self.answered;
         let key_maps: Vec<toml::Table> = store.profiles.iter().map(|p| p.get("Keyboard Map").and_then(|v| v.as_table().cloned()).unwrap_or_default()).collect();
         let global_keys = globals.table("GlobalKeyMap");
@@ -878,6 +885,18 @@ impl SettingsWindow {
             if mode == Mode::Settings {
                 egui::Panel::top("pages").show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        // The red mark iTerm2 puts at the left of the title bar when settings are unsaved.
+                        if let Some(url) = unsaved {
+                            let glyph = settings_keys::icon_text(ui.ctx(), crate::transparency::WARNING_GLYPH).unwrap_or_else(|| egui::RichText::new("!"));
+                            ui.menu_button(glyph.color(egui::Color32::RED), |ui| {
+                                for (label, action) in crate::remote_prefs::unsaved_menu(url) {
+                                    if ui.button(label).clicked() {
+                                        edit = Edit::Unsaved(action);
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        }
                         for (p, name) in [(Page::General, "General"), (Page::Appearance, "Appearance"), (Page::Profiles, "Profiles"), (Page::Keys, "Keys"), (Page::Shortcuts, "Shortcuts"), (Page::Pointer, "Pointer"), (Page::Arrangements, "Arrangements"), (Page::Advanced, "Advanced")] {
                             if ui.selectable_label(page == p, name).clicked() {
                                 page = p;

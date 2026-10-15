@@ -264,6 +264,25 @@ fn could_be_wanted(buf: &[u8]) -> bool {
 }
 
 impl Scanner {
+    /// Whether an OSC 1337 `File` or `MultipartFile` string is open and still being read: the
+    /// terminal is receiving a file (`terminalReceivingFile`, `VT100Terminal.m:4071`).
+    pub fn receiving_file(&self) -> bool {
+        matches!(&self.string, Str::Osc(o) if o.keep && !o.swallow && (o.buf.starts_with(b"1337;File=") || o.buf.starts_with(b"1337;MultipartFile=")))
+    }
+
+    /// Stops reading the open file string: the rest of it up to its terminator is dropped, and
+    /// no download follows (`stopReceivingFile`). False when none is open.
+    pub fn abort_file(&mut self) -> bool {
+        if !self.receiving_file() {
+            return false;
+        }
+        if let Str::Osc(o) = &mut self.string {
+            o.swallow = true;
+            o.buf.clear();
+        }
+        true
+    }
+
     /// Back between sequences, as after Termurion wrote an ESC of its own that cancelled the one
     /// the program left open. The armed state stays.
     pub fn restart(&mut self) {

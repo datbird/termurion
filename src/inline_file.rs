@@ -27,6 +27,8 @@ pub struct FileArgs {
 pub struct Download {
     pub name: String,
     pub bytes: Vec<u8>,
+    /// Where the person chose to save it ("Choose\u{2026}"); None saves it in Downloads.
+    pub dest: Option<std::path::PathBuf>,
 }
 
 /// A file arriving in parts.
@@ -141,6 +143,12 @@ pub fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     (1..).map(|n| dir.join(format!("{stem} ({n}){ext}"))).find(|c| !crate::localfs::local_exists(c)).unwrap_or(first)
 }
 
+/// Saves a download at the path the person chose, as it is (`TerminalFile.m:97-101`): the one
+/// rule for a file a remote program named still refuses the types the shell reads on listing.
+pub fn save_to(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    crate::inert_files::write_checked(path, bytes)
+}
+
 /// Saves a download in `dir` under a free name, marked as coming from the internet (the
 /// Mark of the Web), so Windows warns before running it.
 pub fn save(dir: &std::path::Path, name: &str, bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
@@ -151,7 +159,20 @@ pub fn save(dir: &std::path::Path, name: &str, bytes: &[u8]) -> std::io::Result<
     Ok(path)
 }
 
+/// `TerminalFile appendData:` (`TerminalFile.m:176-196`): the data decodes to more than the
+/// declared size (0 when none was given) and 5 bytes of slack, the base64 text less its line
+/// breaks counting three bytes for every four characters.
+fn exceeds_declared(data: &str, declared: Option<u64>) -> bool {
+    let chars = data.bytes().filter(|b| *b != b'\r' && *b != b'\n').count();
+    chars as f64 * 3.0 / 4.0 > declared.unwrap_or(0) as f64 + 5.0
+}
+
 impl Screen {
+    /// Whether a download was dropped for exceeding its declared size since the last call.
+    pub fn take_file_aborted(&mut self) -> bool {
+        std::mem::take(&mut self.file_aborted)
+    }
+
     /// OSC 1337 `File`, `MultipartFile`, `FilePart`, and `FileEnd`.
     pub fn file_osc(&mut self, key: &str, value: &str) {
         match key {
@@ -174,6 +195,10 @@ impl Screen {
                     m.data.push_str(value);
                     if m.data.len() > self.limits.transfer {
                         self.multipart = None;
+                    } else if m.args.as_ref().is_some_and(|a| !a.inline && exceeds_declared(&m.data, a.size)) {
+                        // `screenDidReceiveBase64FileData:` (`PTYSession.m:17005-17020`): the download stops.
+                        self.multipart = None;
+                        self.file_aborted = true;
                     }
                 }
             }
@@ -199,8 +224,12 @@ impl Screen {
             return;
         }
         // One download waits at a time, so output cannot bury the window in questions.
+        if exceeds_declared(data, args.size) {
+            self.file_aborted = true;
+            return;
+        }
         if let (Some(bytes), true) = (decode_base64(data), self.downloads.is_empty()) {
-            self.downloads.push(Download { name: args.name, bytes });
+            self.downloads.push(Download { name: args.name, bytes, dest: None });
         }
     }
 
@@ -443,7 +472,7 @@ mod tests {
     fn downloads_wait_for_the_app() {
         let mut s = Screen::new(20, 6);
         s.feed(b"\x1b]1337;File=name=cmVwb3J0LnBkZg==;size=5:aGVsbG8=\x07");
-        assert_eq!(s.downloads, vec![Download { name: "report.pdf".into(), bytes: b"hello".to_vec() }]);
+        assert_eq!(s.downloads, vec![Download { name: "report.pdf".into(), bytes: b"hello".to_vec(), dest: None }]);
         assert!(s.images.by_id.is_empty());
     }
 
@@ -487,6 +516,50 @@ mod tests {
         assert_eq!(unique_path(&d, "a\u{200b}b.txt. . "), d.join("ab.txt"));
         assert_eq!(unique_path(&d, "CON"), d.join("_CON"));
         assert_eq!(unique_path(&d, "nul.txt"), d.join("_nul.txt"));
+    }
+
+    /// `TerminalFile appendData:` (`TerminalFile.m:176-196`): a download whose data decodes to
+    /// more than its declared size plus 5 is dropped and the person is told once
+    /// (`PTYSession.m:17005-17020`).
+    #[test]
+    fn a_download_past_its_declared_size_is_dropped() {
+        let mut s = Screen::new(20, 6);
+        // 20 bytes against a declared 5.
+        s.feed(b"\x1b]1337;File=name=YS50eHQ=;size=5:MDEyMzQ1Njc4OTAxMjM0NTY3ODk=\x07");
+        assert!(s.downloads.is_empty());
+        assert!(s.take_file_aborted() && !s.take_file_aborted(), "told once");
+        // 5 declared, 6 sent: inside the slack of 5.
+        s.feed(b"\x1b]1337;File=name=YS50eHQ=;size=5:MDEyMzQ1\x07");
+        assert_eq!(s.downloads.len(), 1);
+        assert!(!s.take_file_aborted());
+        // No size means 0 declared, as in iTerm2 (`[dict[@"size"] integerValue]`).
+        let mut s = Screen::new(20, 6);
+        s.feed(b"\x1b]1337;File=name=YS50eHQ=:aGVsbG8=\x07");
+        assert!(s.downloads.is_empty() && s.take_file_aborted());
+        // A multipart file stops at the part that passes it, and its end finds nothing.
+        let mut s = Screen::new(20, 6);
+        s.feed(b"\x1b]1337;MultipartFile=name=YS50eHQ=;size=3\x07\x1b]1337;FilePart=MDEyMzQ1Njc4OTAxMjM0NTY3ODk=\x07\x1b]1337;FileEnd\x07");
+        assert!(s.downloads.is_empty() && s.take_file_aborted() && !s.receiving_file());
+    }
+
+    /// Ctrl+C asks "A file is being downloaded. Abort the download?" while a file arrives
+    /// (`PTYSession.m:11536`); OK stops it, and the rest of its string is dropped, not printed.
+    #[test]
+    fn an_arriving_file_can_be_aborted() {
+        let mut s = Screen::new(40, 6);
+        assert!(!s.receiving_file());
+        s.feed(b"\x1b]1337;File=name=YS50eHQ=;size=500:MDEyMzQ1");
+        assert!(s.receiving_file());
+        s.abort_file();
+        assert!(!s.receiving_file());
+        s.feed(b"Njc4OTAxMjM0NTY3ODk=\x07ok");
+        assert!(s.downloads.is_empty() && !s.take_file_aborted());
+        let text: String = s.term().grid().display_iter().map(|c| c.c).collect();
+        assert!(text.contains("ok") && !text.contains("Njc4"), "{text:?}");
+        s.feed(b"\x1b]1337;MultipartFile=name=YS50eHQ=;size=500\x07");
+        assert!(s.receiving_file());
+        s.abort_file();
+        assert!(!s.receiving_file());
     }
 
     #[test]

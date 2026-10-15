@@ -257,6 +257,9 @@ pub struct Screen {
     pub images: crate::images::Store,
     /// Files the terminal was sent to save; the app asks before writing them.
     pub downloads: Vec<crate::inline_file::Download>,
+    /// A download was dropped for exceeding its declared size; the app tells the person once
+    /// (`PTYSession.m:17006`, `take_file_aborted`).
+    pub file_aborted: bool,
     /// A MultipartFile in progress.
     pub multipart: Option<crate::inline_file::Multipart>,
     /// An inline file waiting for the person to allow its display; while it waits, the output
@@ -602,6 +605,20 @@ impl PendingColors {
 }
 
 impl Screen {
+    /// Whether a file is arriving: a `File` string still open, or a `MultipartFile` before its end.
+    pub fn receiving_file(&self) -> bool {
+        self.osc.receiving_file() || self.multipart.is_some()
+    }
+
+    /// Stops the file that is arriving and drops the rest of it (`stopReceivingFile`).
+    pub fn abort_file(&mut self) {
+        // The terminal's own parser is inside the string too: a CAN ends it, as at the size cap.
+        if self.osc.abort_file() {
+            let _ = self.feed_raw(&[0x18]);
+        }
+        self.multipart = None;
+    }
+
     /// Applies OSC 21337 or Set Tab Status fields (`tabstatus::Status::apply`); a change moves
     /// `tab_status_gen`. True when something changed.
     pub fn apply_tab_status(&mut self, pairs: &[(String, String)]) -> bool {
@@ -668,6 +685,7 @@ impl Screen {
             clock: None,
             images: crate::images::Store::default(),
             downloads: Vec::new(),
+            file_aborted: false,
             multipart: None,
             inline_hold: None,
             held_output: Vec::new(),

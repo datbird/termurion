@@ -742,7 +742,7 @@ impl App {
     /// `PS:4506-4512`: the trigger's `disabled` flips in the session's own profile (a
     /// session copy, made now when there is none), so other sessions keep theirs. The rest
     /// of the list stays as stored.
-    fn toggle_session_trigger(&mut self, pane: PaneId, index: usize) {
+    pub(super) fn toggle_session_trigger(&mut self, pane: PaneId, index: usize) {
         let stored = self.profile_of(pane).and_then(|p| p.get("Triggers"));
         let Some(list) = stored.and_then(|v| crate::triggers::toggle_disabled_at(&v, index)) else { return };
         self.set_session_values(pane, &[("Triggers".to_string(), Some(list))]);

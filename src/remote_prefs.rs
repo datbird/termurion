@@ -253,6 +253,41 @@ pub fn differs(saved: &Snapshot, local: &Snapshot) -> bool {
     synced(saved) != synced(local) || saved.default != local.default || saved.profiles != local.profiles
 }
 
+/// The unsaved settings notice's switch (`UserDefaultsUnsavedController.swift:78`): once set, the
+/// red mark no longer shows.
+pub const HIDE_UNSAVED_KEY: &str = "NoSyncHideUnsavedSettingsNotification";
+
+/// What a click on the unsaved settings notice offers (`UserDefaultsUnsavedController.swift:134-147`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnsavedAction {
+    DisableLoadFromUrl,
+    SaveSettings,
+    SaveAutomatically,
+    HideNotification,
+}
+
+/// The click menu: only the way out of a URL when settings load from one, else the three ways to
+/// deal with unsaved changes.
+pub fn unsaved_menu(url: bool) -> Vec<(&'static str, UnsavedAction)> {
+    if url {
+        vec![("Disable Loading Settings from URL", UnsavedAction::DisableLoadFromUrl)]
+    } else {
+        vec![
+            ("Save Settings", UnsavedAction::SaveSettings),
+            ("Save Settings Automatically", UnsavedAction::SaveAutomatically),
+            ("Hide Unsaved Changes Notification", UnsavedAction::HideNotification),
+        ]
+    }
+}
+
+/// Whether the notice shows (`PreferencePanel.m:647`, `check()`): not hidden, not editing one session,
+/// settings load from a custom folder or URL, and they differ from what was saved there
+/// (`localPrefsDifferFromSavedRemotePrefsRespectingDefaults`, `RP:1568-1594`). With "Automatically"
+/// and a folder iTerm2 stops checking (`userDefaultsDidChange`), so nothing is unsaved.
+pub fn unsaved_shown(hidden: bool, editing_session: bool, enabled: bool, url: bool, mode: SaveMode, differs: bool) -> bool {
+    !hidden && !editing_session && enabled && !(mode == SaveMode::Always && !url) && differs
+}
+
 /// `iTermPreferenceSavePrefsMode` (`iTermPreferences.h:74-78`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SaveMode {
@@ -336,6 +371,21 @@ pub fn curl_args(url: &str, timeout: Option<f64>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// `UserDefaultsUnsavedController.swift:134-147`, `PreferencePanel.m:647`.
+    #[test]
+    fn the_unsaved_notice_follows_iterm2() {
+        let labels = |url| unsaved_menu(url).iter().map(|(l, _)| *l).collect::<Vec<_>>();
+        assert_eq!(labels(true), ["Disable Loading Settings from URL"]);
+        assert_eq!(labels(false), ["Save Settings", "Save Settings Automatically", "Hide Unsaved Changes Notification"]);
+        assert!(unsaved_shown(false, false, true, false, SaveMode::Never, true));
+        assert!(unsaved_shown(false, false, true, true, SaveMode::Always, true), "a URL cannot be saved to automatically");
+        assert!(!unsaved_shown(true, false, true, false, SaveMode::Never, true), "hidden");
+        assert!(!unsaved_shown(false, true, true, false, SaveMode::Never, true), "editing one session");
+        assert!(!unsaved_shown(false, false, false, false, SaveMode::Never, true), "no custom location");
+        assert!(!unsaved_shown(false, false, true, false, SaveMode::Always, true), "saved automatically");
+        assert!(!unsaved_shown(false, false, true, false, SaveMode::Never, false), "nothing differs");
+    }
+
     use super::*;
     use std::cell::Cell;
 

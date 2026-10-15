@@ -166,6 +166,12 @@ pub(super) fn big_download_spec(name: &str) -> crate::warnings::Spec {
     yes_no_spec("NoSyncAllowBigDownload", "Allow Large File Download?", text, ["Allow", "Deny"])
 }
 
+/// "Where would you like to save this download?" (`TerminalFile.m:80-93`): Save to Downloads or
+/// Choose\u{2026}, remembered by the warning's box.
+pub(super) fn download_where_spec() -> crate::warnings::Spec {
+    yes_no_spec("NoSyncPromptForDownloadLocation", "Save Terminal-Initiated Download", "Where would you like to save this download?".to_string(), ["Save to Downloads", "Choose\u{2026}"])
+}
+
 /// Whether an allowed download asks the large file question next: only when its question was
 /// silenced as it was asked (a shown one already asked the person) and the file is larger
 /// than `BIG_DOWNLOAD` (`PS:19812-19817`).
@@ -197,7 +203,7 @@ fn inline_ask_of(then: &super::scripts_alerts::Then) -> Option<(PaneId, u64)> {
 fn download_ask_of(then: &super::scripts_alerts::Then) -> Option<PaneId> {
     use super::scripts_alerts::Then;
     match then {
-        Then::Download(pane, ..) | Then::BigDownload(pane, _) => Some(*pane),
+        Then::Download(pane, ..) | Then::DownloadWhere(pane, _) | Then::BigDownload(pane, _) => Some(*pane),
         _ => None,
     }
 }
@@ -207,6 +213,7 @@ impl App {
     /// ones are saved (`download_answered`). A pane has one download question at a time: a
     /// file sent while its question is queued or showing is refused, as No.
     pub(super) fn take_downloads(&mut self) {
+        self.tell_oversize();
         let waiting: Vec<(PaneId, crate::inline_file::Download)> = self.panes.iter_mut().flat_map(|(id, p)| std::mem::take(&mut p.own_mut().downloads).into_iter().map(move |d| (*id, d))).collect();
         for (pane, d) in waiting {
             if self.alert_waits(|then| download_ask_of(then) == Some(pane)) {
@@ -218,16 +225,61 @@ impl App {
             };
             // Whether the question was silenced before it is asked (`wasSilenced`): a shown
             // question whose box is checked is not.
-            let was_silenced = crate::warnings::is_silenced(&self.globals, DOWNLOAD_ID, super::warnings_app::unix_now());
             // A name that cannot be saved is refused now, not after the person allowed it.
             if download_refused(&dir, &d.name) {
                 self.banners.set("action", format!("Could not save {}: files of this type are not allowed.", shown_name(&saved_name(&dir, &d.name))));
                 continue;
             }
-            let spec = download_spec(&saved_name(&dir, &d.name), d.bytes.len(), false);
-            self.ask_scripts(super::scripts_alerts::Ask::new(spec, super::scripts_alerts::Then::Download(pane, d, was_silenced)));
+            // Where to save comes first, as `TerminalFile` asks it when the file begins.
+            self.ask_scripts(super::scripts_alerts::Ask::new(download_where_spec(), super::scripts_alerts::Then::DownloadWhere(pane, d)));
         }
         self.take_inline_asks();
+    }
+
+    /// The where question answered: Save to Downloads (0), or Choose\u{2026} (1), which names the file in
+    /// a save dialog (`promptForLocalPathWithSuggestedName:`); closing that dialog ends the download
+    /// with the error "Canceled." (`TerminalFile.m:157-166`). The download question follows.
+    pub(super) fn download_where_answered(&mut self, pane: PaneId, mut d: crate::inline_file::Download, index: usize) {
+        if index == 1 {
+            let mut dialog = rfd::FileDialog::new().set_title("Save Terminal-Initiated Download").set_file_name(crate::inline_file::clean_name(&d.name));
+            if let Some(dir) = self.downloads_folder() {
+                dialog = dialog.set_directory(dir);
+            }
+            match crate::localfs::save_file(dialog) {
+                Some(path) => d.dest = Some(path.into_path_buf()),
+                None => return self.transfer_terminal_ended(&d, None, super::transfers_ui::End::Failed(crate::transfers::CANCELED_ERROR.to_string())),
+            }
+        }
+        self.download_confirm(pane, d);
+    }
+
+    /// Asks "Allow Terminal-Initiated Download?" for a download whose place is settled.
+    fn download_confirm(&mut self, pane: PaneId, d: crate::inline_file::Download) {
+        let Some(dir) = self.downloads_folder() else {
+            self.banners.set("action", "No Downloads folder: USERPROFILE is not set.");
+            return;
+        };
+        // Whether the question was silenced before it is asked (`wasSilenced`): a shown
+        // question whose box is checked is not.
+        let was_silenced = crate::warnings::is_silenced(&self.globals, DOWNLOAD_ID, super::warnings_app::unix_now());
+        let shown = d.dest.as_ref().and_then(|p| p.file_name()).map_or_else(|| saved_name(&dir, &d.name), |n| n.to_string_lossy().into_owned());
+        let spec = download_spec(&shown, d.bytes.len(), false);
+        self.ask_scripts(super::scripts_alerts::Ask::new(spec, super::scripts_alerts::Then::Download(pane, d, was_silenced)));
+    }
+
+    /// The download question answered No (or Deny): the transfer is recorded as cancelled
+    /// (`terminalWillReceiveFileNamed:` completion NO stops the file).
+    pub(super) fn download_declined(&mut self, d: &crate::inline_file::Download) {
+        let path = self.download_target(d);
+        self.transfer_terminal_ended(d, path, super::transfers_ui::End::Cancelled);
+    }
+
+    /// Where a download will be written: the chosen file, else a free name in Downloads.
+    fn download_target(&mut self, d: &crate::inline_file::Download) -> Option<std::path::PathBuf> {
+        match &d.dest {
+            Some(p) => Some(p.clone()),
+            None => self.downloads_folder().map(|dir| crate::inline_file::unique_path(&dir, &d.name)),
+        }
     }
 
     /// Asks about each inline file a pane's output waits on ("Allow Terminal-Initiated
@@ -340,6 +392,8 @@ impl App {
             self.ask_scripts(super::scripts_alerts::Ask::new(big_download_spec(&name), super::scripts_alerts::Then::BigDownload(pane, d)));
         } else if allowed {
             self.save_download(d);
+        } else {
+            self.download_declined(&d);
         }
     }
 
@@ -349,9 +403,20 @@ impl App {
             self.banners.set("action", "No Downloads folder: USERPROFILE is not set.");
             return;
         };
-        match crate::inline_file::save(&dir, &d.name, &d.bytes) {
-            Ok(path) => self.banners.set("action", format!("Saved {}", path.display())),
-            Err(e) => self.banners.set("action", format!("Could not save {}: {e}", saved_name(&dir, &d.name))),
+        // A chosen file is used as it is; otherwise a free name in Downloads.
+        let (result, intended) = match &d.dest {
+            Some(p) => (crate::inline_file::save_to(p, &d.bytes).map(|()| p.clone()), p.clone()),
+            None => (crate::inline_file::save(&dir, &d.name, &d.bytes), crate::inline_file::unique_path(&dir, &d.name)),
+        };
+        match result {
+            Ok(path) => {
+                self.banners.set("action", format!("Saved {}", path.display()));
+                self.transfer_terminal_ended(&d, Some(path.clone()), super::transfers_ui::End::Saved(path));
+            }
+            Err(e) => {
+                self.banners.set("action", format!("Could not save {}: {e}", shown_name(&intended.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())));
+                self.transfer_terminal_ended(&d, Some(intended), super::transfers_ui::End::Failed(e.to_string()));
+            }
         }
         self.redraw();
     }
@@ -408,7 +473,7 @@ mod tests {
     #[test]
     fn download_questions_name_their_pane() {
         use super::super::scripts_alerts::Then;
-        let d = || crate::inline_file::Download { name: "a".into(), bytes: Vec::new() };
+        let d = || crate::inline_file::Download { name: "a".into(), bytes: Vec::new(), dest: None };
         assert_eq!(download_ask_of(&Then::Download(4, d(), false)), Some(4));
         assert_eq!(download_ask_of(&Then::BigDownload(5, d())), Some(5));
         assert_eq!(download_ask_of(&Then::BigInline(3, 8)), None);

@@ -283,6 +283,40 @@ impl App {
         Snapshot::from_local(&self.globals.values, &self.store.saved_default_guid(), &self.store.file_profiles())
     }
 
+    /// Whether the Settings window shows the unsaved settings notice, and whether the location is a URL
+    /// (`UserDefaultsUnsavedController`). The comparison reads every setting, so it runs only while
+    /// the window is drawn.
+    pub(super) fn prefs_unsaved(&self, editing_session: bool) -> Option<bool> {
+        let g = &self.globals;
+        let (_, location) = self.prefs_location();
+        let url = rp::is_url(&location);
+        let mode = rp::save_mode(g.bool(rp::HAVE_SELECTION_KEY), g.int(rp::SELECTION_KEY));
+        let hidden = g.bool(rp::HIDE_UNSAVED_KEY);
+        let enabled = g.bool(rp::LOAD_KEY);
+        // The comparison is the dear part: skipped when a cheaper rule already says no.
+        if !rp::unsaved_shown(hidden, editing_session, enabled, url, mode, true) {
+            return None;
+        }
+        let differs = self.prefs_saved.as_ref().is_some_and(|saved| rp::differs(saved, &self.prefs_local()));
+        rp::unsaved_shown(hidden, editing_session, enabled, url, mode, differs).then_some(url)
+    }
+
+    /// A pick from the unsaved settings notice (`UserDefaultsUnsavedController.swift:134-190`).
+    pub(super) fn unsaved_action(&mut self, action: rp::UnsavedAction) {
+        match action {
+            rp::UnsavedAction::DisableLoadFromUrl => self.globals.set(rp::LOAD_KEY, Value::Boolean(false)),
+            rp::UnsavedAction::SaveSettings => self.prefs_save_now(true),
+            // Saves now, then the popup beside Save Now reads Automatically.
+            rp::UnsavedAction::SaveAutomatically => {
+                self.prefs_save_now(true);
+                self.globals.set(rp::HAVE_SELECTION_KEY, Value::Boolean(true));
+                self.globals.set(rp::SELECTION_KEY, Value::Integer(rp::SaveMode::Always.tag()));
+            }
+            rp::UnsavedAction::HideNotification => self.globals.set(rp::HIDE_UNSAVED_KEY, Value::Boolean(true)),
+        }
+        self.globals_changed(true);
+    }
+
     /// A setting or profile was saved (`RP:1460-1478`): with "Automatically", a folder, and a
     /// difference from what the folder held (or nothing held), the folder is written half a
     /// second later.

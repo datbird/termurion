@@ -185,6 +185,17 @@ pub(super) struct MenuBar {
     /// it lists: (registry key, text, checked).
     pub(super) window_list: Option<(Submenu, usize)>,
     pub(super) window_items: Vec<(u64, String, bool)>,
+    /// The Downloads and Uploads menus (added before Help at a kind's first transfer), and the
+    /// rows each lists (`transfers_ui`).
+    pub(super) transfer_menus: [Option<Submenu>; 2],
+    /// Session > Triggers, its fixed items, and the per-trigger items listed after them
+    /// (place in the stored list, title, on).
+    pub(super) triggers: Option<(Submenu, usize)>,
+    /// View > Current Tab Color and the swatches it lists.
+    pub(super) tab_color: Option<Submenu>,
+    pub(super) tab_color_swatches: Vec<crate::palette::Rgb>,
+    pub(super) trigger_items: Vec<(usize, String, bool)>,
+    pub(super) transfer_rows: [Vec<crate::transfers::Row>; 2],
 }
 
 /// Menu ids of the Profiles menu's profile entries.
@@ -301,6 +312,14 @@ impl App {
                 self.banners.set("menu", format!("Menu item {}: {e}", item.id()));
             }
         }
+        // View ends with a line and Current Tab Color (`AD:380-386`): iTerm2's row of color cells is
+        // a submenu of the Tab Color picker's entries here, filled by `refresh_tab_color_menu`.
+        let tab_color = subs.get(&vec!["View".to_string()]).cloned().and_then(|view| {
+            let _ = view.append(&PredefinedMenuItem::separator());
+            let s = Submenu::new(menus::shown_label(VIEW_TAB_COLOR), true);
+            view.append(&s).ok()?;
+            Some(s)
+        });
         // The window's earlier bar (a resident window woken, a rebuild) comes off first: dropped
         // after the new one is attached, muda takes the window's menu away, the new bar with it.
         let earlier = self.menu_bar.take().map(|b| b.menu);
@@ -361,7 +380,7 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_browser: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), profile_cache: Default::default(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, archives: subs.get(&["Shell", "Archives"].map(str::to_string).to_vec()).cloned(), archive_items: Vec::new(), buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], workgroups: subs.get(&["Shell", "Workgroups"].map(str::to_string).to_vec()).cloned().map(WorkgroupsMenu::new), peer_items, snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, make_default, explain_ai, tip_item, move_to_window, move_to_tab, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
+        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_browser: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), profile_cache: Default::default(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, archives: subs.get(&["Shell", "Archives"].map(str::to_string).to_vec()).cloned(), archive_items: Vec::new(), buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], workgroups: subs.get(&["Shell", "Workgroups"].map(str::to_string).to_vec()).cloned().map(WorkgroupsMenu::new), peer_items, snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, make_default, explain_ai, tip_item, move_to_window, move_to_tab, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new(), tab_color, tab_color_swatches: Vec::new(), triggers: subs.get(&["Session", "Triggers"].map(str::to_string).to_vec()).cloned().map(|s| { let fixed = s.items().len(); (s, fixed) }), trigger_items: Vec::new(), transfer_menus: [None, None], transfer_rows: [Vec::new(), Vec::new()] });
         self.runtime_menu_title();
         self.refresh_claude_menu();
         self.retitle_suppressed_menu();
@@ -573,6 +592,39 @@ impl App {
         self.popup_menu = Some(menu);
     }
 
+    /// View > Current Tab Color (`ViewMenu.CurrentTabColor`, `AD:386`): the Tab Color picker's
+    /// entries for the current tab, enabled while there is one. Rebuilt when the swatches change.
+    pub(super) fn refresh_tab_color_menu(&mut self) {
+        let swatches = tab_layout::tab_colors(&self.globals.string("TabColorMenuOptions"));
+        let has_tab = !self.tabs.is_empty();
+        for bar in self.menu_bars_mut() {
+            let Some(sub) = &bar.tab_color else { continue };
+            sub.set_enabled(has_tab);
+            if bar.tab_color_swatches == swatches {
+                continue;
+            }
+            while sub.remove_at(0).is_some() {}
+            for (n, (label, color, _)) in picker_items(&swatches, true).into_iter().enumerate() {
+                let id = format!("{VIEW_COLOR_ID}{n}");
+                let _ = match color {
+                    Some(c) => sub.append(&IconMenuItem::with_id(id, label, true, swatch_icon(c), None)),
+                    None => sub.append(&MenuItem::with_id(id, label, true, None)),
+                };
+            }
+            bar.tab_color_swatches = swatches.clone();
+        }
+    }
+
+    /// A pick from View > Current Tab Color: the Tab Color picker's pick for the current tab.
+    fn view_tab_color_picked(&mut self, id: &str) -> bool {
+        let Some(n) = id.strip_prefix(VIEW_COLOR_ID) else { return false };
+        let Some(tab) = self.tabs.get(self.active).map(|t| t.id) else { return true };
+        let swatches = tab_layout::tab_colors(&self.globals.string("TabColorMenuOptions"));
+        self.color_pick = Some((ColorTarget::Tab(tab), swatches));
+        self.color_picked(&format!("color-pick:{n}"));
+        true
+    }
+
     /// A pick from the Tab Color picker: "Default" clears the color, a swatch sets it, and
     /// "Choose Color\u{2026}" asks Windows' color dialog (the swatches as its custom colors;
     /// Cancel changes nothing).
@@ -698,6 +750,9 @@ impl App {
         self.refresh_snippet_menus();
         self.sync_toolbelt_checks();
         self.refresh_window_list();
+        self.refresh_transfer_menus();
+        self.refresh_triggers_menu();
+        self.refresh_tab_color_menu();
         self.menus_dirty = false;
         let Some(bar) = &self.menu_bar else { return };
         for selector in super::seltools_ui::CHECKED {
@@ -747,7 +802,7 @@ impl App {
         if self.tab_menu_picked(id, event_loop) {
             return;
         }
-        if self.tray_picked(id) || self.buried_picked(id) || self.script_picked(id) || self.workgroup_picked(id) || self.workgroup_file_picked(id) {
+        if self.tray_picked(id) || self.view_tab_color_picked(id) || self.transfer_picked(id) || self.trigger_item_picked(id) || self.buried_picked(id) || self.script_picked(id) || self.workgroup_picked(id) || self.workgroup_file_picked(id) {
             return;
         }
         if self.review_menu_picked(id, event_loop) {
@@ -1328,6 +1383,10 @@ impl App {
         visible_rects(&tab.layout, tab.zoomed, self.pane_area_for(tab), self.gap()).into_iter().map(|(id, r)| (id, self.gutter_split(id, self.pane_bar_split(tab, id, r).0).0)).collect()
     }
 }
+
+/// View > Current Tab Color: its title (`ViewMenu.CurrentTabColor`) and the ids of its entries.
+pub(super) const VIEW_TAB_COLOR: &str = "Current Tab Color";
+const VIEW_COLOR_ID: &str = "view-tab-color:";
 
 /// What the Tab Color picker colors: a tab by its stable `Tab.id`, or a tab group by its id.
 /// 13d's menus build them.
