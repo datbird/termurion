@@ -16,15 +16,11 @@ use crate::settings_keys::{self, KeysState};
 use crate::settings_profile_actions as pa;
 use crate::store::Store;
 
+/// A profile tab's rows, in the order iTerm2's xib draws them (`scripts/order-schema.py`; the order is held
+/// by `ui_labels`). iTerm2's profile panes have no section headings, so the tab is one group with no name.
 pub fn sections(tab: &str) -> Vec<(String, Vec<&'static Setting>)> {
-    let mut out: Vec<(String, Vec<&'static Setting>)> = Vec::new();
-    for s in schema::profile().iter().filter(|s| s.tab == tab) {
-        match out.iter_mut().find(|(name, _)| *name == s.section) {
-            Some((_, list)) => list.push(s),
-            None => out.push((s.section.clone(), vec![s])),
-        }
-    }
-    out
+    let rows: Vec<&'static Setting> = schema::profile().iter().filter(|s| s.tab == tab).collect();
+    if rows.is_empty() { Vec::new() } else { vec![(String::new(), rows)] }
 }
 
 pub fn rgb_of(v: &Value) -> [u8; 3] {

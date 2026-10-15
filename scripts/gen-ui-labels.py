@@ -64,6 +64,27 @@ def abs_frame(el):
     return x, y, w, h
 
 
+def place(el):
+    """(top y, x) of a control in the coordinates of its pane, y AppKit-style (up): every ancestor's origin added."""
+    f = frame(el)
+    if f is None:
+        return None
+    x, y, w, h = f
+    p = parent.get(el)
+    while p is not None and p.tag not in ("tabViewItem", "window", "objects", "viewController", "customObject"):
+        pf = frame(p)
+        if pf is not None:
+            x += pf[0]
+            y += pf[1]
+        p = parent.get(p)
+    item = p.get("label") if p is not None and p.tag == "tabViewItem" else ""
+    index = list(parent[p]).index(p) if item and parent.get(p) is not None else 0
+    return round(y + h, 1), round(x, 1), item or "", index
+
+
+POS = {}
+
+
 def pick(d, *names):
     for n in names:
         if d.get(n) is not None:
@@ -209,6 +230,8 @@ for fn in sorted(os.listdir(settings)):
         if ident in seen:
             continue
         seen.add(ident)
+        if el is not None and place(el):
+            POS[ident] = (cls, *place(el))
         rows.append((scope, key, label, how, items, f"{fn}:{line}", typ, name))
 
 
@@ -223,6 +246,7 @@ for fn in ("ProfilesTextPreferencesViewController.m",):
             continue
         seen.add(("profile", key))
         line = text.count("\n", 0, m.start()) + 1
+        # These live in the "Configure..." sheet, which has coordinates of its own: no place in the pane.
         rows.append(("profile", key, text_of(pick(d, f"_{lab}")), "label-outlet", popup_items(pick(d, f"_{name}")), f"{fn}:{line}", "smooth", name))
 
 # Color wells: two dictionary literals, controls and related labels.
@@ -249,6 +273,8 @@ for keytok, name in dict_pairs(r"colorWellDictionary"):
     if label is None and el is not None:
         label = nearby_static_text(el)
         how = "adjacent"
+    if el is not None and place(el):
+        POS[("profile", key)] = ("ProfilesColorsPreferencesViewController", *place(el))
     rows.append(("profile", key, label, how, [], f"{fn}", "color", name))
 
 
@@ -313,6 +339,45 @@ for (sc, k) in EXTRA:
         rows.append((sc, k, text, "extra", [], src, "extra", ""))
 
 
+# Controls the xib has no outlet for (a font picker, a button whose action is all it does): where they sit is
+# where their static text sits. (scope, key) -> (view controller, text).
+PLACE_BY_TEXT = {
+    ("profile", "Normal Font"): ("ProfilesTextPreferencesViewController", "Font:"),
+    ("profile", "Non Ascii Font"): ("ProfilesTextPreferencesViewController", "Non-ASCII Font:"),
+    ("profile", "Special Font Config"): ("ProfilesTextPreferencesViewController", "Manage Special Exceptions\u2026"),
+    ("global", "OpenTmuxWindowsIn"): ("GeneralPreferencesViewController", "When attaching, open unrecognized windows in"),
+}
+
+
+def ancestors(el):
+    out = []
+    while el is not None:
+        out.append(el)
+        el = parent.get(el)
+    return out
+
+
+def place_by_text(cls, text):
+    near = set()
+    for v in outlets.get(cls, {}).values():
+        if v is not None:
+            near.update(ancestors(v))
+    best = None
+    for e in root.iter():
+        if e.tag in ("textFieldCell", "buttonCell") and e.get("title") == text:
+            holder = parent.get(e)
+            shared = len([a for a in ancestors(holder) if a in near])
+            if shared and (best is None or shared > best[0]):
+                best = (shared, holder)
+    return place(best[1]) if best else None
+
+
+for (sc, k), (cls, text) in PLACE_BY_TEXT.items():
+    pl = place_by_text(cls, text)
+    assert pl, (k, text)
+    POS[(sc, k)] = (cls, *pl)
+
+
 def q(s):
     s = s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
     return '"' + s + '"'
@@ -333,6 +398,14 @@ for scope, key, label, how, items, src, typ, name in rows:
     out.append(f"outlet = {q(name)}")
     out.append(f"type = {q(typ)}")
     out.append(f"source = {q(src)}")
+    if (scope, key) in POS:
+        pane, top, left, item, index = POS[(scope, key)]
+        out.append(f"pane = {q(pane)}")
+        out.append(f"top = {top}")
+        out.append(f"left = {left}")
+        if item:
+            out.append(f"item = {q(item)}")
+            out.append(f"item_index = {index}")
     if items:
         out.append("choices = [" + ", ".join(f"[{q(t or '')}, {q(l)}]" for t, l in items) + "]")
     out.append("")

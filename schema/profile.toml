@@ -42,25 +42,28 @@ light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Icon"
+key = "Profile Type (Phony)"
 tab = "General"
+hidden_mode = true
 section = ""
-label = "Icon:"
+label = "Profile Type:"
 type = "enum"
 default = 0
-choices = [ { value = 0, label = "No Icon" }, { value = 1, label = "Built-in Icon for Current App" }, { value = 2, label = "Custom" } ]
-help = "Chooses none, an automatic app icon, or a custom image to represent the profile."
+default_note = "Synthetic key with no plist storage of its own; its getter/setter compute and set Custom Command to the Browser value (or Login Shell) instead."
+choices = [ { value = 0, label = "Terminal" }, { value = 1, label = "Browser" } ]
+help = "Segmented control choosing Terminal or Browser mode for the profile; synthetic, backed by the command type value."
 light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Custom Icon Path"
+key = "Initial URL"
 tab = "General"
+mode = "browser"
 section = ""
-label = "Custom icon path"
+label = "Initial URL:"
 type = "string"
-default = ""
-help = "File path to the custom icon image when icon is set to custom."
+default = "iterm2-about:welcome"
+help = "The URL a Browser-type profile opens on start."
 light_dark = false
 macos_only = false
 
@@ -88,16 +91,159 @@ light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Profile Type (Phony)"
+key = "Badge Text"
 tab = "General"
-hidden_mode = true
+mode = "terminal"
+section = "Badge"
+label = "Badge:"
+type = "string"
+default = ""
+help = "Overlay text drawn in the corner of the terminal, can reference session variables."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Badge Font"
+tab = "General"
+mode = "terminal"
+section = "Badge"
+label = "Badge font"
+type = "font"
+default = "Helvetica-Bold"
+default_note = "No profile default is stored; computed at render time from the BadgeFont Advanced setting (\"Helvetica\") and, when the BadgeFontIsBold Advanced setting is on (the default), its bold face."
+help = "Font used to draw the badge overlay text."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Badge Top Margin"
+tab = "General"
+section = "Badge"
+label = "Top Margin:"
+type = "float"
+default = 10.0
+default_note = "No profile default is stored; computed from the BadgeTopMargin Advanced setting (default 10 points) when the key is absent; the Advanced > Badge row is the default."
+help = "Space in points between the top edge of the badge and the top edge of the terminal."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Badge Right Margin"
+tab = "General"
+section = "Badge"
+label = "Right Margin:"
+type = "float"
+default = 10.0
+default_note = "No profile default is stored; computed from the BadgeRightMargin Advanced setting (default 10 points) when the key is absent; the Advanced > Badge row is the default."
+help = "Space in points between the right edge of the badge and the right edge of the terminal."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Badge Max Width"
+tab = "General"
+section = "Badge"
+label = "Maximum Width:"
+type = "float"
+default = 0.5
+default_note = "No profile default is stored; computed from the BadgeMaxWidthFraction Advanced setting (default 0.5) when the key is absent; the Advanced > Badge row is the default."
+min = 0.0
+max = 1.0
+help = "Maximum width of the badge as a fraction of the terminal's width."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Badge Max Height"
+tab = "General"
+section = "Badge"
+label = "Maximum Height:"
+type = "float"
+default = 0.2
+default_note = "No profile default is stored; computed from the BadgeMaxHeightFraction Advanced setting (default 0.2) when the key is absent; the Advanced > Badge row is the default."
+min = 0.0
+max = 1.0
+help = "Maximum height of the badge as a fraction of the terminal's height."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Title Components"
+tab = "General"
+section = "Title"
+label = "Title:"
+type = "int"
+default = 2
+default_note = "Default is iTermTitleComponentsJob (bit 1<<1 = 2)."
+help = "Bitmask popup choosing what appears in the window/tab title. Bit values: 1=Session Name, 2=Job, 4=Working Directory, 8=TTY, 16=Custom (mutually exclusive with all others), 32=Profile Name, 64=Profile+Session Name, 128=User, 256=Host, 512=Command Line, 1024=Size, 2048=Temporary Session Name, 4096=AI-generated name (not available on Windows: the bit is kept for imported profiles and draws nothing)."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Title Function"
+tab = "General"
+section = "Title"
+label = "Custom title function"
+type = "list"
+default_note = "No default value (NSNull). When set, stored as a two-element array [display name, registered scripting-API function identifier]."
+help = "Points the title at a registered scripting-API function instead of the built-in components."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "SSH"
+tab = "General"
 section = ""
-label = "Profile Type:"
+label = "Configure SSH"
+type = "dict"
+default = {}
+help = "SSH Integration, the environment variables and files to copy to the remote host, and the path to ssh, for the SSH command type."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Allow Title Setting"
+tab = "General"
+mode = "terminal"
+section = ""
+label = "Applications in terminal may change the title"
+type = "bool"
+default = true
+help = "Permits escape sequences from the running program to change the session/window title; also drives a lock icon when editing the current session."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Subtitle"
+tab = "General"
+section = ""
+label = "Subtitle:"
+type = "string"
+default = ""
+help = "A second line of small text shown under the tab title when the tall tab bar is enabled."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Icon"
+tab = "General"
+section = ""
+label = "Icon:"
 type = "enum"
 default = 0
-default_note = "Synthetic key with no plist storage of its own; its getter/setter compute and set Custom Command to the Browser value (or Login Shell) instead."
-choices = [ { value = 0, label = "Terminal" }, { value = 1, label = "Browser" } ]
-help = "Segmented control choosing Terminal or Browser mode for the profile; synthetic, backed by the command type value."
+choices = [ { value = 0, label = "No Icon" }, { value = 1, label = "Built-in Icon for Current App" }, { value = 2, label = "Custom" } ]
+help = "Chooses none, an automatic app icon, or a custom image to represent the profile."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Custom Icon Path"
+tab = "General"
+section = ""
+label = "Custom icon path"
+type = "string"
+default = ""
+help = "File path to the custom icon image when icon is set to custom."
 light_dark = false
 macos_only = false
 
@@ -127,14 +273,26 @@ light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Initial URL"
+key = "Load Shell Integration Automatically"
 tab = "General"
-mode = "browser"
+mode = "terminal"
 section = ""
-label = "Initial URL:"
-type = "string"
-default = "iterm2-about:welcome"
-help = "The URL a Browser-type profile opens on start."
+label = "Load shell integration automatically"
+type = "bool"
+default = false
+help = "Automatically injects the shell integration script at session start: for PowerShell here, and for the shells of an SSH integration session (zsh, fish and xonsh) on the remote host."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Run Command In Login Shell"
+tab = "General"
+mode = "terminal"
+section = ""
+label = "Run command through your shell"
+type = "bool"
+default = false
+help = "Wraps a custom command so it still runs inside a login shell for dotfile sourcing."
 light_dark = false
 macos_only = false
 
@@ -246,164 +404,6 @@ light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Badge Text"
-tab = "General"
-mode = "terminal"
-section = "Badge"
-label = "Badge:"
-type = "string"
-default = ""
-help = "Overlay text drawn in the corner of the terminal, can reference session variables."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Badge Font"
-tab = "General"
-mode = "terminal"
-section = "Badge"
-label = "Badge font"
-type = "font"
-default = "Helvetica-Bold"
-default_note = "No profile default is stored; computed at render time from the BadgeFont Advanced setting (\"Helvetica\") and, when the BadgeFontIsBold Advanced setting is on (the default), its bold face."
-help = "Font used to draw the badge overlay text."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Badge Top Margin"
-tab = "General"
-section = "Badge"
-label = "Top Margin:"
-type = "float"
-default = 10.0
-default_note = "No profile default is stored; computed from the BadgeTopMargin Advanced setting (default 10 points) when the key is absent; the Advanced > Badge row is the default."
-help = "Space in points between the top edge of the badge and the top edge of the terminal."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Badge Right Margin"
-tab = "General"
-section = "Badge"
-label = "Right Margin:"
-type = "float"
-default = 10.0
-default_note = "No profile default is stored; computed from the BadgeRightMargin Advanced setting (default 10 points) when the key is absent; the Advanced > Badge row is the default."
-help = "Space in points between the right edge of the badge and the right edge of the terminal."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Badge Max Width"
-tab = "General"
-section = "Badge"
-label = "Maximum Width:"
-type = "float"
-default = 0.5
-default_note = "No profile default is stored; computed from the BadgeMaxWidthFraction Advanced setting (default 0.5) when the key is absent; the Advanced > Badge row is the default."
-min = 0.0
-max = 1.0
-help = "Maximum width of the badge as a fraction of the terminal's width."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Badge Max Height"
-tab = "General"
-section = "Badge"
-label = "Maximum Height:"
-type = "float"
-default = 0.2
-default_note = "No profile default is stored; computed from the BadgeMaxHeightFraction Advanced setting (default 0.2) when the key is absent; the Advanced > Badge row is the default."
-min = 0.0
-max = 1.0
-help = "Maximum height of the badge as a fraction of the terminal's height."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Subtitle"
-tab = "General"
-section = ""
-label = "Subtitle:"
-type = "string"
-default = ""
-help = "A second line of small text shown under the tab title when the tall tab bar is enabled."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Title Components"
-tab = "General"
-section = "Title"
-label = "Title:"
-type = "int"
-default = 2
-default_note = "Default is iTermTitleComponentsJob (bit 1<<1 = 2)."
-help = "Bitmask popup choosing what appears in the window/tab title. Bit values: 1=Session Name, 2=Job, 4=Working Directory, 8=TTY, 16=Custom (mutually exclusive with all others), 32=Profile Name, 64=Profile+Session Name, 128=User, 256=Host, 512=Command Line, 1024=Size, 2048=Temporary Session Name, 4096=AI-generated name (not available on Windows: the bit is kept for imported profiles and draws nothing)."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Title Function"
-tab = "General"
-section = "Title"
-label = "Custom title function"
-type = "list"
-default_note = "No default value (NSNull). When set, stored as a two-element array [display name, registered scripting-API function identifier]."
-help = "Points the title at a registered scripting-API function instead of the built-in components."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "SSH"
-tab = "General"
-section = ""
-label = "Configure SSH"
-type = "dict"
-default = {}
-help = "SSH Integration, the environment variables and files to copy to the remote host, and the path to ssh, for the SSH command type."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Load Shell Integration Automatically"
-tab = "General"
-mode = "terminal"
-section = ""
-label = "Load shell integration automatically"
-type = "bool"
-default = false
-help = "Automatically injects the shell integration script at session start: for PowerShell here, and for the shells of an SSH integration session (zsh, fish and xonsh) on the remote host."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Run Command In Login Shell"
-tab = "General"
-mode = "terminal"
-section = ""
-label = "Run command through your shell"
-type = "bool"
-default = false
-help = "Wraps a custom command so it still runs inside a login shell for dotfile sourcing."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Allow Title Setting"
-tab = "General"
-mode = "terminal"
-section = ""
-label = "Applications in terminal may change the title"
-type = "bool"
-default = true
-help = "Permits escape sequences from the running program to change the session/window title; also drives a lock icon when editing the current session."
-light_dark = false
-macos_only = false
-
-[[setting]]
 key = "Prevent Automatic Profile Switching"
 tab = "General"
 mode = "terminal"
@@ -441,24 +441,6 @@ macos_only = false
 
 seed = true
 [[setting]]
-key = "Foreground Color"
-tab = "Colors"
-mode = "terminal"
-section = "Basic Colors"
-label = "Defaults:"
-type = "color"
-default = { r = 0.733, g = 0.733, b = 0.733, a = 1.0 }
-default_note = "Stock DefaultBookmark.plist value (Light variant matches; Dark variant is r=0.862 g=0.862 b=0.862 a=1.0)."
-help = "Default text color (has separate Light/Dark variant when enabled)."
-light_dark = true
-macos_only = false
-default_light = { r = 0.733, g = 0.733, b = 0.733, a = 1.0 }
-default_dark = { r = 0.733, g = 0.733, b = 0.733, a = 1.0 }
-
-seed = { r = 0.062745, g = 0.062745, b = 0.062745, a = 1.0 }
-seed_light = { r = 0.062745, g = 0.062745, b = 0.062745, a = 1.0 }
-seed_dark = { r = 0.861979, g = 0.862, b = 0.861989, a = 1.0 }
-[[setting]]
 key = "Background Color"
 tab = "Colors"
 mode = "terminal"
@@ -477,133 +459,23 @@ seed = { r = 0.98, g = 0.98, b = 0.98, a = 1.0 }
 seed_light = { r = 0.98, g = 0.98, b = 0.98, a = 1.0 }
 seed_dark = { r = 0.080688, g = 0.099111, b = 0.121033, a = 1.0 }
 [[setting]]
-key = "Use Bright Bold"
+key = "Foreground Color"
 tab = "Colors"
 mode = "terminal"
 section = "Basic Colors"
-label = "Use custom color for bold text"
-type = "bool"
-default = true
-help = "Enables the Bold Color swatch; also makes bold text in a normal ANSI color use that color's bright variant."
-light_dark = true
-macos_only = false
-
-default_light = true
-default_dark = true
-[[setting]]
-key = "Bold Color"
-tab = "Colors"
-mode = "terminal"
-section = "Basic Colors"
-label = "Bold Color"
+label = "Defaults:"
 type = "color"
-default = { r = 1.0, g = 1.0, b = 1.0, a = 1.0 }
-default_note = "Stock DefaultBookmark.plist value (Light variant matches; Dark variant is r=1.0 g=1.0 b=1.0 a=1.0)."
-help = "Color used for bold text when the custom bold color option is on."
+default = { r = 0.733, g = 0.733, b = 0.733, a = 1.0 }
+default_note = "Stock DefaultBookmark.plist value (Light variant matches; Dark variant is r=0.862 g=0.862 b=0.862 a=1.0)."
+help = "Default text color (has separate Light/Dark variant when enabled)."
 light_dark = true
 macos_only = false
-default_light = { r = 1.0, g = 1.0, b = 1.0, a = 1.0 }
-default_dark = { r = 1.0, g = 1.0, b = 1.0, a = 1.0 }
+default_light = { r = 0.733, g = 0.733, b = 0.733, a = 1.0 }
+default_dark = { r = 0.733, g = 0.733, b = 0.733, a = 1.0 }
 
 seed = { r = 0.062745, g = 0.062745, b = 0.062745, a = 1.0 }
 seed_light = { r = 0.062745, g = 0.062745, b = 0.062745, a = 1.0 }
-seed_dark = { r = 0.999996, g = 1.0, b = 1.0, a = 1.0 }
-[[setting]]
-key = "Brighten Bold Text"
-tab = "Colors"
-mode = "terminal"
-section = "Basic Colors"
-label = "Use bright version of ANSI colors for bold text"
-type = "bool"
-default = true
-help = "Brightens text drawn in a normal ANSI color when it is also bold."
-light_dark = true
-macos_only = false
-
-default_light = true
-default_dark = true
-[[setting]]
-key = "Link Color"
-tab = "Colors"
-mode = "terminal"
-section = "Basic Colors"
-label = "Links:"
-type = "color"
-default = { r = 0.023, g = 0.27, b = 0.678, a = 1.0 }
-default_note = "Stock DefaultBookmark.plist value; identical across Light and Dark."
-help = "Color for clickable hyperlink and URL text."
-light_dark = true
-macos_only = false
-default_light = { r = 0.023, g = 0.27, b = 0.678, a = 1.0 }
-default_dark = { r = 0.023, g = 0.27, b = 0.678, a = 1.0 }
-
-seed = { r = 0.198024, g = 0.557898, b = 0.933716, a = 1.0 }
-seed_light = { r = 0.198024, g = 0.557898, b = 0.933716, a = 1.0 }
-seed_dark = { r = 0.198024, g = 0.557898, b = 0.933716, a = 1.0 }
-[[setting]]
-key = "Match Background Color"
-tab = "Colors"
-mode = "terminal"
-section = "Basic Colors"
-label = "Search results:"
-type = "color"
-default = { r = 1.0, g = 1.0, b = 0.0, a = 1.0 }
-default_note = "Not present in DefaultBookmark.plist; falls back to iTermProfilePreferences.m's defaultValueMap value, which the source comments say is one of the few color defaults actually used at runtime."
-help = "Background used to highlight Find, Smart Selection, and Semantic History matches."
-light_dark = true
-macos_only = false
-
-default_light = { r = 1.0, g = 1.0, b = 0.0, a = 1.0 }
-default_dark = { r = 1.0, g = 1.0, b = 0.0, a = 1.0 }
-[[setting]]
-key = "Selection Color"
-tab = "Colors"
-mode = "terminal"
-section = "Basic Colors"
-label = "Selection:"
-type = "color"
-default = { r = 0.709, g = 0.835, b = 1.0, a = 1.0 }
-default_note = "Stock DefaultBookmark.plist value; identical across Light and Dark."
-help = "Background color of selected text."
-light_dark = true
-macos_only = false
-default_light = { r = 0.709, g = 0.835, b = 1.0, a = 1.0 }
-default_dark = { r = 0.709, g = 0.835, b = 1.0, a = 1.0 }
-
-seed = { r = 0.701961, g = 0.843137, b = 1.0, a = 1.0 }
-seed_light = { r = 0.701961, g = 0.843137, b = 1.0, a = 1.0 }
-seed_dark = { r = 0.701961, g = 0.843137, b = 1.0, a = 1.0 }
-[[setting]]
-key = "Use Selected Text Color"
-tab = "Colors"
-mode = "terminal"
-section = "Basic Colors"
-label = "Use custom color for selected text"
-type = "bool"
-default = true
-help = "Enables a custom color for text drawn over a selection instead of keeping its normal foreground color."
-light_dark = true
-macos_only = false
-
-default_light = true
-default_dark = true
-[[setting]]
-key = "Selected Text Color"
-tab = "Colors"
-mode = "terminal"
-section = "Basic Colors"
-label = "Use custom color for selected text"
-type = "color"
-default = { r = 0.0, g = 0.0, b = 0.0, a = 1.0 }
-default_note = "Stock DefaultBookmark.plist value; identical across Light and Dark."
-help = "Text color drawn over a selection, when enabled."
-light_dark = true
-macos_only = false
-default_light = { r = 0.0, g = 0.0, b = 0.0, a = 1.0 }
-default_dark = { r = 0.0, g = 0.0, b = 0.0, a = 1.0 }
-
-seed_light = { r = 0.0, g = 0.0, b = 0.0, a = 1.0 }
-seed_dark = { r = 0.0, g = 0.0, b = 0.0, a = 1.0 }
+seed_dark = { r = 0.861979, g = 0.862, b = 0.861989, a = 1.0 }
 [[setting]]
 key = "Cursor Color"
 tab = "Colors"
@@ -654,126 +526,30 @@ macos_only = false
 default_light = false
 default_dark = false
 [[setting]]
-key = "IME Cursor Color"
+key = "Cursor Boost"
 tab = "Colors"
 mode = "terminal"
 section = "Cursor"
-label = "Input Method Editor:"
-type = "color"
-default = { r = 1.0, g = 1.0, b = 0.0, a = 1.0 }
-default_note = "Not present in DefaultBookmark.plist; falls back to iTermProfilePreferences.m's defaultValueMap value."
-help = "Cursor color shown while composing text through an Input Method Editor."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Badge Color"
-tab = "Colors"
-mode = "terminal"
-section = "Other Colors"
-label = "Badge:"
-type = "color"
-default = { r = 1.0, g = 0.0, b = 0.0, a = 0.5 }
-default_note = "Stock DefaultBookmark.plist value (Light variant matches; Dark variant is r=0.979 g=0.652 b=0.652 a=0.5). This key honors alpha."
-help = "Color of the badge text overlay drawn in the corner of the terminal."
+label = "Cursor Boost:"
+type = "float"
+default = 0.0
+min = 0.0
+max = 0.8
+help = "Amount to dim non-cursor text to highlight cursor"
 light_dark = true
 macos_only = false
-default_light = { r = 1.0, g = 0.0, b = 0.0, a = 0.5 }
-default_dark = { r = 1.0, g = 0.0, b = 0.0, a = 0.5 }
 
-seed = { r = 0.746139, g = 0.116106, b = 0.116106, a = 0.5 }
-seed_light = { r = 0.746139, g = 0.116106, b = 0.116106, a = 0.5 }
-seed_dark = { r = 0.978744, g = 0.652186, b = 0.652186, a = 0.5 }
+default_light = 0.0
+default_dark = 0.0
 [[setting]]
-key = "Use Tab Color"
+key = "HDR Cursor"
 tab = "Colors"
 mode = "terminal"
-section = "Other Colors"
-label = "Use custom tab color"
+section = "Cursor"
+label = "Use HDR cursor when available"
 type = "bool"
 default = false
-help = "Enables a custom color for the session's tab."
-light_dark = true
-macos_only = false
-
-default_light = false
-default_dark = false
-[[setting]]
-key = "Tab Color"
-tab = "Colors"
-mode = "terminal"
-section = "Other Colors"
-label = "Tab:"
-type = "color"
-default_note = "Default value is NSNull (no color) until the user enables and picks one."
-help = "Color used to color the session's tab, when enabled."
-light_dark = true
-macos_only = false
-
-[[setting]]
-key = "Use Underline Color"
-tab = "Colors"
-mode = "terminal"
-section = "Other Colors"
-label = "Use custom underline color"
-type = "bool"
-default = false
-help = "Draws underlines in the Underline Color instead of the text color (an app's SGR 58 color still wins)."
-light_dark = true
-macos_only = false
-
-default_light = false
-default_dark = false
-[[setting]]
-key = "Underline Color"
-tab = "Colors"
-mode = "terminal"
-section = "Other Colors"
-label = "Underlines:"
-type = "color"
-default_note = "Default value is NSNull (no color) until the user enables and picks one."
-help = "Color of underlines under underlined text, when enabled."
-light_dark = true
-macos_only = false
-
-[[setting]]
-key = "Use Active Pane Border"
-tab = "Colors"
-mode = "terminal"
-section = "Other Colors"
-label = "Border around active pane"
-type = "bool"
-default = false
-help = "Draws a custom-colored border around the currently focused split pane."
-light_dark = true
-macos_only = false
-
-default_light = false
-default_dark = false
-[[setting]]
-key = "Active Pane Border Color"
-tab = "Colors"
-mode = "terminal"
-section = "Other Colors"
-label = "Pane:"
-type = "color"
-default = { r = 0.0, g = 0.5, b = 1.0, a = 1.0 }
-default_note = "Not present in DefaultBookmark.plist; falls back to iTermProfilePreferences.m's defaultValueMap value."
-help = "Color of the focused split-pane border, when enabled."
-light_dark = true
-macos_only = false
-
-default_light = { r = 0.0, g = 0.5, b = 1.0, a = 1.0 }
-default_dark = { r = 0.0, g = 0.5, b = 1.0, a = 1.0 }
-[[setting]]
-key = "Use Cursor Guide"
-tab = "Colors"
-mode = "terminal"
-section = "Other Colors"
-label = "Use cursor guide"
-type = "bool"
-default = false
-help = "Draws a highlighted horizontal guide across the row containing the text cursor."
+help = "On HDR-capable displays, draws the cursor at maximum HDR brightness white."
 light_dark = true
 macos_only = false
 
@@ -798,6 +574,123 @@ seed = { r = 0.523383, g = 0.772177, b = 0.853193, a = 0.25 }
 seed_light = { r = 0.523383, g = 0.772177, b = 0.853193, a = 0.25 }
 seed_dark = { r = 0.376496, g = 0.802326, b = 0.94099, a = 0.25 }
 [[setting]]
+key = "Use Cursor Guide"
+tab = "Colors"
+mode = "terminal"
+section = "Other Colors"
+label = "Use cursor guide"
+type = "bool"
+default = false
+help = "Draws a highlighted horizontal guide across the row containing the text cursor."
+light_dark = true
+macos_only = false
+
+default_light = false
+default_dark = false
+[[setting]]
+key = "IME Cursor Color"
+tab = "Colors"
+mode = "terminal"
+section = "Cursor"
+label = "Input Method Editor:"
+type = "color"
+default = { r = 1.0, g = 1.0, b = 0.0, a = 1.0 }
+default_note = "Not present in DefaultBookmark.plist; falls back to iTermProfilePreferences.m's defaultValueMap value."
+help = "Cursor color shown while composing text through an Input Method Editor."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Brighten Bold Text"
+tab = "Colors"
+mode = "terminal"
+section = "Basic Colors"
+label = "Use bright version of ANSI colors for bold text"
+type = "bool"
+default = true
+help = "Brightens text drawn in a normal ANSI color when it is also bold."
+light_dark = true
+macos_only = false
+
+default_light = true
+default_dark = true
+[[setting]]
+key = "Bold Color"
+tab = "Colors"
+mode = "terminal"
+section = "Basic Colors"
+label = "Bold Color"
+type = "color"
+default = { r = 1.0, g = 1.0, b = 1.0, a = 1.0 }
+default_note = "Stock DefaultBookmark.plist value (Light variant matches; Dark variant is r=1.0 g=1.0 b=1.0 a=1.0)."
+help = "Color used for bold text when the custom bold color option is on."
+light_dark = true
+macos_only = false
+default_light = { r = 1.0, g = 1.0, b = 1.0, a = 1.0 }
+default_dark = { r = 1.0, g = 1.0, b = 1.0, a = 1.0 }
+
+seed = { r = 0.062745, g = 0.062745, b = 0.062745, a = 1.0 }
+seed_light = { r = 0.062745, g = 0.062745, b = 0.062745, a = 1.0 }
+seed_dark = { r = 0.999996, g = 1.0, b = 1.0, a = 1.0 }
+[[setting]]
+key = "Use Bright Bold"
+tab = "Colors"
+mode = "terminal"
+section = "Basic Colors"
+label = "Use custom color for bold text"
+type = "bool"
+default = true
+help = "Enables the Bold Color swatch; also makes bold text in a normal ANSI color use that color's bright variant."
+light_dark = true
+macos_only = false
+
+default_light = true
+default_dark = true
+[[setting]]
+key = "Underline Color"
+tab = "Colors"
+mode = "terminal"
+section = "Other Colors"
+label = "Underlines:"
+type = "color"
+default_note = "Default value is NSNull (no color) until the user enables and picks one."
+help = "Color of underlines under underlined text, when enabled."
+light_dark = true
+macos_only = false
+
+[[setting]]
+key = "Use Underline Color"
+tab = "Colors"
+mode = "terminal"
+section = "Other Colors"
+label = "Use custom underline color"
+type = "bool"
+default = false
+help = "Draws underlines in the Underline Color instead of the text color (an app's SGR 58 color still wins)."
+light_dark = true
+macos_only = false
+
+default_light = false
+default_dark = false
+[[setting]]
+key = "Link Color"
+tab = "Colors"
+mode = "terminal"
+section = "Basic Colors"
+label = "Links:"
+type = "color"
+default = { r = 0.023, g = 0.27, b = 0.678, a = 1.0 }
+default_note = "Stock DefaultBookmark.plist value; identical across Light and Dark."
+help = "Color for clickable hyperlink and URL text."
+light_dark = true
+macos_only = false
+default_light = { r = 0.023, g = 0.27, b = 0.678, a = 1.0 }
+default_dark = { r = 0.023, g = 0.27, b = 0.678, a = 1.0 }
+
+seed = { r = 0.198024, g = 0.557898, b = 0.933716, a = 1.0 }
+seed_light = { r = 0.198024, g = 0.557898, b = 0.933716, a = 1.0 }
+seed_dark = { r = 0.198024, g = 0.557898, b = 0.933716, a = 1.0 }
+[[setting]]
 key = "Use Theme Mark Colors"
 tab = "Colors"
 mode = "terminal"
@@ -809,50 +702,6 @@ help = "Makes command-status marks in the left margin use the ANSI palette inste
 light_dark = false
 macos_only = false
 
-[[setting]]
-key = "Harmonize 256 Colors"
-tab = "Colors"
-mode = "terminal"
-section = "Other Colors"
-label = "Select 8-bit colors to match ANSI colors"
-type = "bool"
-default = false
-help = "Chooses the extended 256-color palette to visually match the 8 normal ANSI colors instead of the standard RGB cube."
-light_dark = true
-macos_only = false
-
-default_light = false
-default_dark = false
-[[setting]]
-key = "HDR Cursor"
-tab = "Colors"
-mode = "terminal"
-section = "Cursor"
-label = "Use HDR cursor when available"
-type = "bool"
-default = false
-help = "On HDR-capable displays, draws the cursor at maximum HDR brightness white."
-light_dark = true
-macos_only = false
-
-default_light = false
-default_dark = false
-[[setting]]
-key = "Minimum Contrast"
-tab = "Colors"
-mode = "terminal"
-section = "Other Colors"
-label = "Minimum Contrast:"
-type = "float"
-default = 0.0
-min = 0.0
-max = 1.0
-help = "Forces a minimum contrast ratio between text and background, shifting colors toward black or white as needed."
-light_dark = true
-macos_only = false
-
-default_light = 0.0
-default_dark = 0.0
 [[setting]]
 key = "Faint Text Alpha"
 tab = "Colors"
@@ -870,21 +719,85 @@ macos_only = false
 default_light = 0.5
 default_dark = 0.5
 [[setting]]
-key = "Cursor Boost"
+key = "Minimum Contrast"
 tab = "Colors"
 mode = "terminal"
-section = "Cursor"
-label = "Cursor Boost:"
+section = "Other Colors"
+label = "Minimum Contrast:"
 type = "float"
 default = 0.0
 min = 0.0
-max = 0.8
-help = "Amount to dim non-cursor text to highlight cursor"
+max = 1.0
+help = "Forces a minimum contrast ratio between text and background, shifting colors toward black or white as needed."
 light_dark = true
 macos_only = false
 
 default_light = 0.0
 default_dark = 0.0
+[[setting]]
+key = "Match Background Color"
+tab = "Colors"
+mode = "terminal"
+section = "Basic Colors"
+label = "Search results:"
+type = "color"
+default = { r = 1.0, g = 1.0, b = 0.0, a = 1.0 }
+default_note = "Not present in DefaultBookmark.plist; falls back to iTermProfilePreferences.m's defaultValueMap value, which the source comments say is one of the few color defaults actually used at runtime."
+help = "Background used to highlight Find, Smart Selection, and Semantic History matches."
+light_dark = true
+macos_only = false
+
+default_light = { r = 1.0, g = 1.0, b = 0.0, a = 1.0 }
+default_dark = { r = 1.0, g = 1.0, b = 0.0, a = 1.0 }
+[[setting]]
+key = "Selection Color"
+tab = "Colors"
+mode = "terminal"
+section = "Basic Colors"
+label = "Selection:"
+type = "color"
+default = { r = 0.709, g = 0.835, b = 1.0, a = 1.0 }
+default_note = "Stock DefaultBookmark.plist value; identical across Light and Dark."
+help = "Background color of selected text."
+light_dark = true
+macos_only = false
+default_light = { r = 0.709, g = 0.835, b = 1.0, a = 1.0 }
+default_dark = { r = 0.709, g = 0.835, b = 1.0, a = 1.0 }
+
+seed = { r = 0.701961, g = 0.843137, b = 1.0, a = 1.0 }
+seed_light = { r = 0.701961, g = 0.843137, b = 1.0, a = 1.0 }
+seed_dark = { r = 0.701961, g = 0.843137, b = 1.0, a = 1.0 }
+[[setting]]
+key = "Selected Text Color"
+tab = "Colors"
+mode = "terminal"
+section = "Basic Colors"
+label = "Use custom color for selected text"
+type = "color"
+default = { r = 0.0, g = 0.0, b = 0.0, a = 1.0 }
+default_note = "Stock DefaultBookmark.plist value; identical across Light and Dark."
+help = "Text color drawn over a selection, when enabled."
+light_dark = true
+macos_only = false
+default_light = { r = 0.0, g = 0.0, b = 0.0, a = 1.0 }
+default_dark = { r = 0.0, g = 0.0, b = 0.0, a = 1.0 }
+
+seed_light = { r = 0.0, g = 0.0, b = 0.0, a = 1.0 }
+seed_dark = { r = 0.0, g = 0.0, b = 0.0, a = 1.0 }
+[[setting]]
+key = "Use Selected Text Color"
+tab = "Colors"
+mode = "terminal"
+section = "Basic Colors"
+label = "Use custom color for selected text"
+type = "bool"
+default = true
+help = "Enables a custom color for text drawn over a selection instead of keeping its normal foreground color."
+light_dark = true
+macos_only = false
+
+default_light = true
+default_dark = true
 [[setting]]
 key = "Ansi 0 Color"
 tab = "Colors"
@@ -904,132 +817,6 @@ seed = { r = 0.078431, g = 0.098039, b = 0.117647, a = 1.0 }
 seed_light = { r = 0.078431, g = 0.098039, b = 0.117647, a = 1.0 }
 seed_dark = { r = 0.078431, g = 0.098039, b = 0.117647, a = 1.0 }
 [[setting]]
-key = "Ansi 1 Color"
-tab = "Colors"
-mode = "terminal"
-section = "ANSI Colors"
-label = "Red"
-type = "color"
-default = { r = 0.733, g = 0.0, b = 0.0, a = 1.0 }
-default_note = "Stock DefaultBookmark.plist value; identical across base, Light, and Dark."
-help = "ANSI palette slot 1 (Red)."
-light_dark = true
-macos_only = false
-default_light = { r = 0.733, g = 0.0, b = 0.0, a = 1.0 }
-default_dark = { r = 0.733, g = 0.0, b = 0.0, a = 1.0 }
-
-seed = { r = 0.707443, g = 0.236601, b = 0.163, a = 1.0 }
-seed_light = { r = 0.707443, g = 0.236601, b = 0.163, a = 1.0 }
-seed_dark = { r = 0.707443, g = 0.236601, b = 0.163, a = 1.0 }
-[[setting]]
-key = "Ansi 2 Color"
-tab = "Colors"
-mode = "terminal"
-section = "ANSI Colors"
-label = "Green"
-type = "color"
-default = { r = 0.0, g = 0.733, b = 0.0, a = 1.0 }
-default_note = "Stock DefaultBookmark.plist value; identical across base, Light, and Dark."
-help = "ANSI palette slot 2 (Green)."
-light_dark = true
-macos_only = false
-default_light = { r = 0.0, g = 0.733, b = 0.0, a = 1.0 }
-default_dark = { r = 0.0, g = 0.733, b = 0.0, a = 1.0 }
-
-seed = { r = 0.0, g = 0.760784, b = 0.0, a = 1.0 }
-seed_light = { r = 0.0, g = 0.760784, b = 0.0, a = 1.0 }
-seed_dark = { r = 0.0, g = 0.760784, b = 0.0, a = 1.0 }
-[[setting]]
-key = "Ansi 3 Color"
-tab = "Colors"
-mode = "terminal"
-section = "ANSI Colors"
-label = "Yellow"
-type = "color"
-default = { r = 0.733, g = 0.733, b = 0.0, a = 1.0 }
-default_note = "Stock DefaultBookmark.plist value; identical across base, Light, and Dark."
-help = "ANSI palette slot 3 (Yellow)."
-light_dark = true
-macos_only = false
-default_light = { r = 0.733, g = 0.733, b = 0.0, a = 1.0 }
-default_dark = { r = 0.733, g = 0.733, b = 0.0, a = 1.0 }
-
-seed = { r = 0.780586, g = 0.769595, b = 0.0, a = 1.0 }
-seed_light = { r = 0.780586, g = 0.769595, b = 0.0, a = 1.0 }
-seed_dark = { r = 0.780586, g = 0.769595, b = 0.0, a = 1.0 }
-[[setting]]
-key = "Ansi 4 Color"
-tab = "Colors"
-mode = "terminal"
-section = "ANSI Colors"
-label = "Blue"
-type = "color"
-default = { r = 0.0, g = 0.0, b = 0.733, a = 1.0 }
-default_note = "Stock DefaultBookmark.plist value; identical across base, Light, and Dark."
-help = "ANSI palette slot 4 (Blue)."
-light_dark = true
-macos_only = false
-default_light = { r = 0.0, g = 0.0, b = 0.733, a = 1.0 }
-default_dark = { r = 0.0, g = 0.0, b = 0.733, a = 1.0 }
-
-seed = { r = 0.154043, g = 0.264744, b = 0.782162, a = 1.0 }
-seed_light = { r = 0.154043, g = 0.264744, b = 0.782162, a = 1.0 }
-seed_dark = { r = 0.154043, g = 0.264744, b = 0.782162, a = 1.0 }
-[[setting]]
-key = "Ansi 5 Color"
-tab = "Colors"
-mode = "terminal"
-section = "ANSI Colors"
-label = "Magenta"
-type = "color"
-default = { r = 0.733, g = 0.0, b = 0.733, a = 1.0 }
-default_note = "Stock DefaultBookmark.plist value; identical across base, Light, and Dark."
-help = "ANSI palette slot 5 (Magenta)."
-light_dark = true
-macos_only = false
-default_light = { r = 0.733, g = 0.0, b = 0.733, a = 1.0 }
-default_dark = { r = 0.733, g = 0.0, b = 0.733, a = 1.0 }
-
-seed = { r = 0.752197, g = 0.249317, b = 0.744944, a = 1.0 }
-seed_light = { r = 0.752197, g = 0.249317, b = 0.744944, a = 1.0 }
-seed_dark = { r = 0.752197, g = 0.249317, b = 0.744944, a = 1.0 }
-[[setting]]
-key = "Ansi 6 Color"
-tab = "Colors"
-mode = "terminal"
-section = "ANSI Colors"
-label = "Cyan"
-type = "color"
-default = { r = 0.0, g = 0.733, b = 0.733, a = 1.0 }
-default_note = "Stock DefaultBookmark.plist value; identical across base, Light, and Dark."
-help = "ANSI palette slot 6 (Cyan)."
-light_dark = true
-macos_only = false
-default_light = { r = 0.0, g = 0.733, b = 0.733, a = 1.0 }
-default_dark = { r = 0.0, g = 0.733, b = 0.733, a = 1.0 }
-
-seed = { r = 0.0, g = 0.774259, b = 0.781662, a = 1.0 }
-seed_light = { r = 0.0, g = 0.774259, b = 0.781662, a = 1.0 }
-seed_dark = { r = 0.0, g = 0.774259, b = 0.781662, a = 1.0 }
-[[setting]]
-key = "Ansi 7 Color"
-tab = "Colors"
-mode = "terminal"
-section = "ANSI Colors"
-label = "White"
-type = "color"
-default = { r = 0.733, g = 0.733, b = 0.733, a = 1.0 }
-default_note = "Stock DefaultBookmark.plist value; identical across base, Light, and Dark."
-help = "ANSI palette slot 7 (White)."
-light_dark = true
-macos_only = false
-default_light = { r = 0.733, g = 0.733, b = 0.733, a = 1.0 }
-default_dark = { r = 0.733, g = 0.733, b = 0.733, a = 1.0 }
-
-seed = { r = 0.78104, g = 0.781058, b = 0.781048, a = 1.0 }
-seed_light = { r = 0.78104, g = 0.781058, b = 0.781048, a = 1.0 }
-seed_dark = { r = 0.78104, g = 0.781058, b = 0.781048, a = 1.0 }
-[[setting]]
 key = "Ansi 8 Color"
 tab = "Colors"
 mode = "terminal"
@@ -1047,6 +834,24 @@ default_dark = { r = 0.333, g = 0.333, b = 0.333, a = 1.0 }
 seed = { r = 0.407818, g = 0.407828, b = 0.407822, a = 1.0 }
 seed_light = { r = 0.407818, g = 0.407828, b = 0.407822, a = 1.0 }
 seed_dark = { r = 0.407818, g = 0.407828, b = 0.407822, a = 1.0 }
+[[setting]]
+key = "Ansi 1 Color"
+tab = "Colors"
+mode = "terminal"
+section = "ANSI Colors"
+label = "Red"
+type = "color"
+default = { r = 0.733, g = 0.0, b = 0.0, a = 1.0 }
+default_note = "Stock DefaultBookmark.plist value; identical across base, Light, and Dark."
+help = "ANSI palette slot 1 (Red)."
+light_dark = true
+macos_only = false
+default_light = { r = 0.733, g = 0.0, b = 0.0, a = 1.0 }
+default_dark = { r = 0.733, g = 0.0, b = 0.0, a = 1.0 }
+
+seed = { r = 0.707443, g = 0.236601, b = 0.163, a = 1.0 }
+seed_light = { r = 0.707443, g = 0.236601, b = 0.163, a = 1.0 }
+seed_dark = { r = 0.707443, g = 0.236601, b = 0.163, a = 1.0 }
 [[setting]]
 key = "Ansi 9 Color"
 tab = "Colors"
@@ -1066,6 +871,24 @@ seed = { r = 0.865952, g = 0.475241, b = 0.458332, a = 1.0 }
 seed_light = { r = 0.865952, g = 0.475241, b = 0.458332, a = 1.0 }
 seed_dark = { r = 0.865952, g = 0.475241, b = 0.458332, a = 1.0 }
 [[setting]]
+key = "Ansi 2 Color"
+tab = "Colors"
+mode = "terminal"
+section = "ANSI Colors"
+label = "Green"
+type = "color"
+default = { r = 0.0, g = 0.733, b = 0.0, a = 1.0 }
+default_note = "Stock DefaultBookmark.plist value; identical across base, Light, and Dark."
+help = "ANSI palette slot 2 (Green)."
+light_dark = true
+macos_only = false
+default_light = { r = 0.0, g = 0.733, b = 0.0, a = 1.0 }
+default_dark = { r = 0.0, g = 0.733, b = 0.0, a = 1.0 }
+
+seed = { r = 0.0, g = 0.760784, b = 0.0, a = 1.0 }
+seed_light = { r = 0.0, g = 0.760784, b = 0.0, a = 1.0 }
+seed_dark = { r = 0.0, g = 0.760784, b = 0.0, a = 1.0 }
+[[setting]]
 key = "Ansi 10 Color"
 tab = "Colors"
 mode = "terminal"
@@ -1083,6 +906,24 @@ default_dark = { r = 0.333, g = 1.0, b = 0.333, a = 1.0 }
 seed = { r = 0.345007, g = 0.904282, b = 0.565419, a = 1.0 }
 seed_light = { r = 0.345007, g = 0.904282, b = 0.565419, a = 1.0 }
 seed_dark = { r = 0.345007, g = 0.904282, b = 0.565419, a = 1.0 }
+[[setting]]
+key = "Ansi 3 Color"
+tab = "Colors"
+mode = "terminal"
+section = "ANSI Colors"
+label = "Yellow"
+type = "color"
+default = { r = 0.733, g = 0.733, b = 0.0, a = 1.0 }
+default_note = "Stock DefaultBookmark.plist value; identical across base, Light, and Dark."
+help = "ANSI palette slot 3 (Yellow)."
+light_dark = true
+macos_only = false
+default_light = { r = 0.733, g = 0.733, b = 0.0, a = 1.0 }
+default_dark = { r = 0.733, g = 0.733, b = 0.0, a = 1.0 }
+
+seed = { r = 0.780586, g = 0.769595, b = 0.0, a = 1.0 }
+seed_light = { r = 0.780586, g = 0.769595, b = 0.0, a = 1.0 }
+seed_dark = { r = 0.780586, g = 0.769595, b = 0.0, a = 1.0 }
 [[setting]]
 key = "Ansi 11 Color"
 tab = "Colors"
@@ -1102,6 +943,24 @@ seed = { r = 0.925903, g = 0.883378, b = 0.0, a = 1.0 }
 seed_light = { r = 0.925903, g = 0.883378, b = 0.0, a = 1.0 }
 seed_dark = { r = 0.925903, g = 0.883378, b = 0.0, a = 1.0 }
 [[setting]]
+key = "Ansi 4 Color"
+tab = "Colors"
+mode = "terminal"
+section = "ANSI Colors"
+label = "Blue"
+type = "color"
+default = { r = 0.0, g = 0.0, b = 0.733, a = 1.0 }
+default_note = "Stock DefaultBookmark.plist value; identical across base, Light, and Dark."
+help = "ANSI palette slot 4 (Blue)."
+light_dark = true
+macos_only = false
+default_light = { r = 0.0, g = 0.0, b = 0.733, a = 1.0 }
+default_dark = { r = 0.0, g = 0.0, b = 0.733, a = 1.0 }
+
+seed = { r = 0.154043, g = 0.264744, b = 0.782162, a = 1.0 }
+seed_light = { r = 0.154043, g = 0.264744, b = 0.782162, a = 1.0 }
+seed_dark = { r = 0.154043, g = 0.264744, b = 0.782162, a = 1.0 }
+[[setting]]
 key = "Ansi 12 Color"
 tab = "Colors"
 mode = "terminal"
@@ -1119,6 +978,24 @@ default_dark = { r = 0.333, g = 0.333, b = 1.0, a = 1.0 }
 seed = { r = 0.653491, g = 0.670447, b = 0.948532, a = 1.0 }
 seed_light = { r = 0.653491, g = 0.670447, b = 0.948532, a = 1.0 }
 seed_dark = { r = 0.653491, g = 0.670447, b = 0.948532, a = 1.0 }
+[[setting]]
+key = "Ansi 5 Color"
+tab = "Colors"
+mode = "terminal"
+section = "ANSI Colors"
+label = "Magenta"
+type = "color"
+default = { r = 0.733, g = 0.0, b = 0.733, a = 1.0 }
+default_note = "Stock DefaultBookmark.plist value; identical across base, Light, and Dark."
+help = "ANSI palette slot 5 (Magenta)."
+light_dark = true
+macos_only = false
+default_light = { r = 0.733, g = 0.0, b = 0.733, a = 1.0 }
+default_dark = { r = 0.733, g = 0.0, b = 0.733, a = 1.0 }
+
+seed = { r = 0.752197, g = 0.249317, b = 0.744944, a = 1.0 }
+seed_light = { r = 0.752197, g = 0.249317, b = 0.744944, a = 1.0 }
+seed_dark = { r = 0.752197, g = 0.249317, b = 0.744944, a = 1.0 }
 [[setting]]
 key = "Ansi 13 Color"
 tab = "Colors"
@@ -1138,6 +1015,24 @@ seed = { r = 0.882156, g = 0.492727, b = 0.882156, a = 1.0 }
 seed_light = { r = 0.882156, g = 0.492727, b = 0.882156, a = 1.0 }
 seed_dark = { r = 0.882156, g = 0.492727, b = 0.882156, a = 1.0 }
 [[setting]]
+key = "Ansi 6 Color"
+tab = "Colors"
+mode = "terminal"
+section = "ANSI Colors"
+label = "Cyan"
+type = "color"
+default = { r = 0.0, g = 0.733, b = 0.733, a = 1.0 }
+default_note = "Stock DefaultBookmark.plist value; identical across base, Light, and Dark."
+help = "ANSI palette slot 6 (Cyan)."
+light_dark = true
+macos_only = false
+default_light = { r = 0.0, g = 0.733, b = 0.733, a = 1.0 }
+default_dark = { r = 0.0, g = 0.733, b = 0.733, a = 1.0 }
+
+seed = { r = 0.0, g = 0.774259, b = 0.781662, a = 1.0 }
+seed_light = { r = 0.0, g = 0.774259, b = 0.781662, a = 1.0 }
+seed_dark = { r = 0.0, g = 0.774259, b = 0.781662, a = 1.0 }
+[[setting]]
 key = "Ansi 14 Color"
 tab = "Colors"
 mode = "terminal"
@@ -1155,6 +1050,24 @@ default_dark = { r = 0.333, g = 1.0, b = 1.0, a = 1.0 }
 seed = { r = 0.375975, g = 0.992633, b = 1.0, a = 1.0 }
 seed_light = { r = 0.375975, g = 0.992633, b = 1.0, a = 1.0 }
 seed_dark = { r = 0.375975, g = 0.992633, b = 1.0, a = 1.0 }
+[[setting]]
+key = "Ansi 7 Color"
+tab = "Colors"
+mode = "terminal"
+section = "ANSI Colors"
+label = "White"
+type = "color"
+default = { r = 0.733, g = 0.733, b = 0.733, a = 1.0 }
+default_note = "Stock DefaultBookmark.plist value; identical across base, Light, and Dark."
+help = "ANSI palette slot 7 (White)."
+light_dark = true
+macos_only = false
+default_light = { r = 0.733, g = 0.733, b = 0.733, a = 1.0 }
+default_dark = { r = 0.733, g = 0.733, b = 0.733, a = 1.0 }
+
+seed = { r = 0.78104, g = 0.781058, b = 0.781048, a = 1.0 }
+seed_light = { r = 0.78104, g = 0.781058, b = 0.781048, a = 1.0 }
+seed_dark = { r = 0.78104, g = 0.781058, b = 0.781048, a = 1.0 }
 [[setting]]
 key = "Ansi 15 Color"
 tab = "Colors"
@@ -1174,87 +1087,92 @@ seed = { r = 0.999996, g = 1.0, b = 1.0, a = 1.0 }
 seed_light = { r = 0.999996, g = 1.0, b = 1.0, a = 1.0 }
 seed_dark = { r = 0.999996, g = 1.0, b = 1.0, a = 1.0 }
 [[setting]]
-key = "Normal Font"
-tab = "Text"
+key = "Harmonize 256 Colors"
+tab = "Colors"
 mode = "terminal"
-section = "Font"
-label = "Font:"
-type = "font"
-default = "Monaco 12"
-default_note = "No entry in iTermProfilePreferences.m's defaultValueMap (in keysWithoutDefaultValues); value shown is the stock DefaultBookmark.plist seed. If truly unset, ITAddressBookMgr resolves a nil font description to [NSFont userFixedPitchFontOfSize:0], the system fixed-pitch font."
-help = "Font family, weight, and size for ASCII text, and for all text when no non-ASCII font is set."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Non Ascii Font"
-tab = "Text"
-mode = "terminal"
-section = "Font"
-label = "Non-ASCII Font:"
-type = "font"
-default = "Monaco 12"
-default_note = "No entry in defaultValueMap (in keysWithoutDefaultValues); value shown is the stock DefaultBookmark.plist seed."
-help = "Font family and size for characters above code point 127, when enabled."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Use Non-ASCII Font"
-tab = "Text"
-mode = "terminal"
-section = "Font"
-label = "Use a different font for non-ASCII text"
+section = "Other Colors"
+label = "Select 8-bit colors to match ANSI colors"
 type = "bool"
-default = true
-default_note = "iTermProfilePreferences.m's fallback default is true, but the shipped DefaultBookmark.plist sets this false for the stock Default profile."
-help = "Turns on the separate non-ASCII font, antialiasing, ligature, and spacing controls."
-light_dark = false
+default = false
+help = "Chooses the extended 256-color palette to visually match the 8 normal ANSI colors instead of the standard RGB cube."
+light_dark = true
 macos_only = false
 
-seed = false
+default_light = false
+default_dark = false
 [[setting]]
-key = "Special Font Config"
-tab = "Text"
+key = "Badge Color"
+tab = "Colors"
 mode = "terminal"
-section = "Font"
-label = "Manage Special Exceptions\u2026"
-type = "dict"
-default_note = "No entry in defaultValueMap (in keysWithoutDefaultValues); empty until per-Unicode-range font overrides are added."
-help = "Assigns additional per-Unicode-range font overrides beyond the normal and non-ASCII font pair."
-light_dark = false
+section = "Other Colors"
+label = "Badge:"
+type = "color"
+default = { r = 1.0, g = 0.0, b = 0.0, a = 0.5 }
+default_note = "Stock DefaultBookmark.plist value (Light variant matches; Dark variant is r=0.979 g=0.652 b=0.652 a=0.5). This key honors alpha."
+help = "Color of the badge text overlay drawn in the corner of the terminal."
+light_dark = true
+macos_only = false
+default_light = { r = 1.0, g = 0.0, b = 0.0, a = 0.5 }
+default_dark = { r = 1.0, g = 0.0, b = 0.0, a = 0.5 }
+
+seed = { r = 0.746139, g = 0.116106, b = 0.116106, a = 0.5 }
+seed_light = { r = 0.746139, g = 0.116106, b = 0.116106, a = 0.5 }
+seed_dark = { r = 0.978744, g = 0.652186, b = 0.652186, a = 0.5 }
+[[setting]]
+key = "Tab Color"
+tab = "Colors"
+mode = "terminal"
+section = "Other Colors"
+label = "Tab:"
+type = "color"
+default_note = "Default value is NSNull (no color) until the user enables and picks one."
+help = "Color used to color the session's tab, when enabled."
+light_dark = true
 macos_only = false
 
 [[setting]]
-key = "Horizontal Spacing"
-tab = "Text"
+key = "Use Tab Color"
+tab = "Colors"
 mode = "terminal"
-section = "Font"
-label = "Horizontal Spacing"
-type = "float"
-default = 1.0
-default_note = "Stored as a fraction (0.5 to 2.0); the UI shows it as a percentage, 50 to 200."
-min = 0.5
-max = 2.0
-help = "Stretches or compresses the character cell width, 50 to 200 percent."
-light_dark = false
+section = "Other Colors"
+label = "Use custom tab color"
+type = "bool"
+default = false
+help = "Enables a custom color for the session's tab."
+light_dark = true
 macos_only = false
 
+default_light = false
+default_dark = false
 [[setting]]
-key = "Vertical Spacing"
-tab = "Text"
+key = "Active Pane Border Color"
+tab = "Colors"
 mode = "terminal"
-section = "Font"
-label = "Vertical Spacing"
-type = "float"
-default = 1.0
-default_note = "Stored as a fraction (0.5 to 2.0); the UI shows it as a percentage, 50 to 200."
-min = 0.5
-max = 2.0
-help = "Stretches or compresses the line height, 50 to 200 percent."
-light_dark = false
+section = "Other Colors"
+label = "Pane:"
+type = "color"
+default = { r = 0.0, g = 0.5, b = 1.0, a = 1.0 }
+default_note = "Not present in DefaultBookmark.plist; falls back to iTermProfilePreferences.m's defaultValueMap value."
+help = "Color of the focused split-pane border, when enabled."
+light_dark = true
 macos_only = false
 
+default_light = { r = 0.0, g = 0.5, b = 1.0, a = 1.0 }
+default_dark = { r = 0.0, g = 0.5, b = 1.0, a = 1.0 }
+[[setting]]
+key = "Use Active Pane Border"
+tab = "Colors"
+mode = "terminal"
+section = "Other Colors"
+label = "Border around active pane"
+type = "bool"
+default = false
+help = "Draws a custom-colored border around the currently focused split pane."
+light_dark = true
+macos_only = false
+
+default_light = false
+default_dark = false
 [[setting]]
 key = "Cursor Type"
 tab = "Text"
@@ -1265,18 +1183,6 @@ type = "enum"
 default = 2
 choices = [ { value = 0, label = "Underline" }, { value = 1, label = "Vertical Bar" }, { value = 2, label = "Box" } ]
 help = "Chooses underline, vertical bar, or filled box cursor shape."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Blinking Cursor"
-tab = "Text"
-mode = "terminal"
-section = "Cursor"
-label = "Blink"
-type = "bool"
-default = false
-help = "Makes the text cursor blink."
 light_dark = false
 macos_only = false
 
@@ -1293,26 +1199,14 @@ light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Cursor Hidden When Unfocused"
+key = "Blinking Cursor"
 tab = "Text"
 mode = "terminal"
 section = "Cursor"
-label = "Hide when keyboard focus lost"
+label = "Blink"
 type = "bool"
 default = false
-help = "Hides the cursor when the window or pane is not focused."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Cursor Smooth Slide"
-tab = "Text"
-mode = "terminal"
-section = "Cursor"
-label = "Smooth-typing animation"
-type = "bool"
-default = false
-help = "Animates small cursor movements with an eased slide instead of an instant jump."
+help = "Makes the text cursor blink."
 light_dark = false
 macos_only = false
 
@@ -1403,18 +1297,6 @@ light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Blink Allowed"
-tab = "Text"
-mode = "terminal"
-section = "Cursor"
-label = "Allow blinking text"
-type = "bool"
-default = false
-help = "Permits text carrying the terminal blink attribute to actually blink."
-light_dark = false
-macos_only = false
-
-[[setting]]
 key = "Animate Movement"
 tab = "Text"
 mode = "terminal"
@@ -1439,14 +1321,26 @@ light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Use Bold Font"
+key = "Cursor Smooth Slide"
 tab = "Text"
 mode = "terminal"
-section = "Font"
-label = "Draw bold text in bold font"
+section = "Cursor"
+label = "Smooth-typing animation"
 type = "bool"
-default = true
-help = "Renders bold-attribute text with the font's real bold variant instead of faux weight."
+default = false
+help = "Animates small cursor movements with an eased slide instead of an instant jump."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Cursor Hidden When Unfocused"
+tab = "Text"
+mode = "terminal"
+section = "Cursor"
+label = "Hide when keyboard focus lost"
+type = "bool"
+default = false
+help = "Hides the cursor when the window or pane is not focused."
 light_dark = false
 macos_only = false
 
@@ -1463,6 +1357,42 @@ light_dark = false
 macos_only = false
 
 [[setting]]
+key = "Blink Allowed"
+tab = "Text"
+mode = "terminal"
+section = "Cursor"
+label = "Allow blinking text"
+type = "bool"
+default = false
+help = "Permits text carrying the terminal blink attribute to actually blink."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Use Bold Font"
+tab = "Text"
+mode = "terminal"
+section = "Font"
+label = "Draw bold text in bold font"
+type = "bool"
+default = true
+help = "Renders bold-attribute text with the font's real bold variant instead of faux weight."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Draw Powerline Glyphs"
+tab = "Text"
+mode = "terminal"
+section = "Font"
+label = "Use built-in Powerline glyphs"
+type = "bool"
+default = false
+help = "Draws Powerline symbol glyphs with iTerm2's own renderer instead of relying on the font."
+light_dark = false
+macos_only = false
+
+[[setting]]
 key = "Thin Strokes"
 tab = "Text"
 mode = "terminal"
@@ -1472,6 +1402,114 @@ type = "enum"
 default = 4
 choices = [ { value = 0, label = "Never" }, { value = 1, label = "On Retina Displays and Dark Backgrounds" }, { value = 2, label = "With Dark Backgrounds" }, { value = 3, label = "Always" }, { value = 4, label = "On Retina Displays" } ]
 help = "Chooses when to render glyphs with thinner strokes."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Unicode Version"
+tab = "Text"
+mode = "terminal"
+section = "Text"
+label = "Use Unicode version 9+ widths"
+type = "enum"
+default = 9
+choices = [ { value = 8, label = "Unicode 8" }, { value = 9, label = "Unicode 9+" } ]
+help = "Toggles the character-width table between Unicode 8 and Unicode 9+, which made most emoji two cells wide. UI is a single checkbox."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Ambiguous Double Width"
+tab = "Text"
+mode = "terminal"
+section = "Text"
+label = "Ambiguous characters are double-width"
+type = "bool"
+default = false
+help = "Treats Unicode ambiguous-width characters as occupying two cells instead of one."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Unicode Normalization"
+tab = "Text"
+mode = "terminal"
+section = "Text"
+label = "Normalization:"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "None" }, { value = 1, label = "NFC" }, { value = 2, label = "NFD" }, { value = 3, label = "HFS+" } ]
+help = "Chooses how incoming Unicode text is normalized before rendering."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Normal Font"
+tab = "Text"
+mode = "terminal"
+section = "Font"
+label = "Font:"
+type = "font"
+default = "Monaco 12"
+default_note = "No entry in iTermProfilePreferences.m's defaultValueMap (in keysWithoutDefaultValues); value shown is the stock DefaultBookmark.plist seed. If truly unset, ITAddressBookMgr resolves a nil font description to [NSFont userFixedPitchFontOfSize:0], the system fixed-pitch font."
+help = "Font family, weight, and size for ASCII text, and for all text when no non-ASCII font is set."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Non Ascii Font"
+tab = "Text"
+mode = "terminal"
+section = "Font"
+label = "Non-ASCII Font:"
+type = "font"
+default = "Monaco 12"
+default_note = "No entry in defaultValueMap (in keysWithoutDefaultValues); value shown is the stock DefaultBookmark.plist seed."
+help = "Font family and size for characters above code point 127, when enabled."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Use Non-ASCII Font"
+tab = "Text"
+mode = "terminal"
+section = "Font"
+label = "Use a different font for non-ASCII text"
+type = "bool"
+default = true
+default_note = "iTermProfilePreferences.m's fallback default is true, but the shipped DefaultBookmark.plist sets this false for the stock Default profile."
+help = "Turns on the separate non-ASCII font, antialiasing, ligature, and spacing controls."
+light_dark = false
+macos_only = false
+
+seed = false
+[[setting]]
+key = "Horizontal Spacing"
+tab = "Text"
+mode = "terminal"
+section = "Font"
+label = "Horizontal Spacing"
+type = "float"
+default = 1.0
+default_note = "Stored as a fraction (0.5 to 2.0); the UI shows it as a percentage, 50 to 200."
+min = 0.5
+max = 2.0
+help = "Stretches or compresses the character cell width, 50 to 200 percent."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Vertical Spacing"
+tab = "Text"
+mode = "terminal"
+section = "Font"
+label = "Vertical Spacing"
+type = "float"
+default = 1.0
+default_note = "Stored as a fraction (0.5 to 2.0); the UI shows it as a percentage, 50 to 200."
+min = 0.5
+max = 2.0
+help = "Stretches or compresses the line height, 50 to 200 percent."
 light_dark = false
 macos_only = false
 
@@ -1528,52 +1566,167 @@ light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Draw Powerline Glyphs"
+key = "Special Font Config"
 tab = "Text"
 mode = "terminal"
 section = "Font"
-label = "Use built-in Powerline glyphs"
-type = "bool"
-default = false
-help = "Draws Powerline symbol glyphs with iTerm2's own renderer instead of relying on the font."
+label = "Manage Special Exceptions\u2026"
+type = "dict"
+default_note = "No entry in defaultValueMap (in keysWithoutDefaultValues); empty until per-Unicode-range font overrides are added."
+help = "Assigns additional per-Unicode-range font overrides beyond the normal and non-ASCII font pair."
 light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Ambiguous Double Width"
-tab = "Text"
+key = "Transparency"
+tab = "Window"
 mode = "terminal"
-section = "Text"
-label = "Ambiguous characters are double-width"
-type = "bool"
-default = false
-help = "Treats Unicode ambiguous-width characters as occupying two cells instead of one."
+section = "Transparency"
+label = "Transparency:"
+type = "float"
+default = 0.0
+min = 0.0
+max = 1.0
+help = "Slider setting how transparent the background is."
 light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Unicode Normalization"
-tab = "Text"
+key = "Only The Default BG Color Uses Transparency"
+tab = "Window"
 mode = "terminal"
-section = "Text"
-label = "Normalization:"
+section = "Transparency"
+label = "Keep background colors opaque"
+type = "bool"
+default = false
+help = "Restricts transparency to the default background color only, leaving non-default backgrounds opaque."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Blur"
+tab = "Window"
+mode = "terminal"
+section = "Transparency"
+label = "Blur content behind the window"
+type = "bool"
+default = false
+help = "Enables a Gaussian-style blur of content behind the window, visible through transparent regions."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Blur Radius"
+tab = "Window"
+mode = "terminal"
+section = "Transparency"
+label = "Blur:"
+type = "float"
+default = 2.0
+default_note = "Max is set programmatically by iTermMaxBlurRadius() (64); the xib's static maxValue of 100 is overridden at runtime."
+min = 0.0
+max = 64.0
+help = "Sets the strength of the background blur effect."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Background Image Source Mode"
+tab = "Window"
+mode = "terminal"
+section = "Background Image"
+label = "Source:"
 type = "enum"
 default = 0
-choices = [ { value = 0, label = "None" }, { value = 1, label = "NFC" }, { value = 2, label = "NFD" }, { value = 3, label = "HFS+" } ]
-help = "Chooses how incoming Unicode text is normalized before rendering."
+choices = [ { value = 0, label = "Single Image" }, { value = 1, label = "Folder Rotation" } ]
+help = "Chooses a single fixed image versus rotating automatically through a folder."
 light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Unicode Version"
-tab = "Text"
+key = "Background Image Location"
+tab = "Window"
 mode = "terminal"
-section = "Text"
-label = "Use Unicode version 9+ widths"
+section = "Background Image"
+label = "Image:"
+type = "string"
+default_note = "Default value is NSNull (no image); the stock DefaultBookmark.plist represents this as an empty string instead."
+help = "Path to the single background image file."
+light_dark = false
+macos_only = false
+
+seed = ""
+[[setting]]
+key = "Background Image Folder Location"
+tab = "Window"
+mode = "terminal"
+section = "Background Image"
+label = "Image:"
+type = "string"
+default_note = "Default value is NSNull (no folder)."
+help = "Path to a folder of images to rotate through."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Background Image Folder Interval"
+tab = "Window"
+mode = "terminal"
+section = "Background Image"
+label = "Rotation Interval:"
+type = "int"
+default = 300
+default_note = "Seconds; must be greater than 0 per the key's validation block."
+help = "Seconds between automatic image changes in folder rotation mode."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Background Image Mode"
+tab = "Window"
+mode = "terminal"
+section = "Background Image"
+label = "Scaling mode:"
 type = "enum"
-default = 9
-choices = [ { value = 8, label = "Unicode 8" }, { value = 9, label = "Unicode 9+" } ]
-help = "Toggles the character-width table between Unicode 8 and Unicode 9+, which made most emoji two cells wide. UI is a single checkbox."
+default = 0
+choices = [ { value = 0, label = "Stretch" }, { value = 1, label = "Tile" }, { value = 2, label = "Scale to Fill" }, { value = 3, label = "Scale to Fit" } ]
+help = "Chooses stretch, tile, scale to fill, or scale to fit for the background image."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Blend"
+tab = "Window"
+mode = "terminal"
+section = "Background Image"
+label = "Blending:"
+type = "float"
+default = 0.5
+min = 0.0
+max = 1.0
+help = "Sets how much of the background color shows through over the background image."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Use Custom Tab Title"
+tab = "Window"
+section = "Title"
+label = "Use custom title for new tabs using this profile"
+type = "bool"
+default = false
+help = "Enables overriding the tab title text with a custom string."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Custom Tab Title"
+tab = "Window"
+section = "Title"
+label = "Custom tab title"
+type = "string"
+default = ""
+help = "The interpolated-string template used as the tab title, when enabled."
 light_dark = false
 macos_only = false
 
@@ -1720,6 +1873,17 @@ light_dark = false
 macos_only = false
 
 [[setting]]
+key = "Open Toolbelt"
+tab = "Window"
+section = "Window Style"
+label = "Open toolbelt"
+type = "bool"
+default = false
+help = "New windows open with the Toolbelt sidebar panel visible."
+light_dark = false
+macos_only = false
+
+[[setting]]
 key = "Prevent Opening in a Tab"
 tab = "Window"
 section = "Window Style"
@@ -1731,13 +1895,13 @@ light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Open Toolbelt"
+key = "Initial Use Transparency"
 tab = "Window"
-section = "Window Style"
-label = "Open toolbelt"
+section = "Transparency"
+label = "Use transparency"
 type = "bool"
-default = false
-help = "New windows open with the Toolbelt sidebar panel visible."
+default = true
+help = "Master on/off switch for whether the window starts with background transparency."
 light_dark = false
 macos_only = false
 
@@ -1760,170 +1924,6 @@ label = "Custom window title"
 type = "string"
 default = ""
 help = "The interpolated-string template used as the window title, when enabled."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Use Custom Tab Title"
-tab = "Window"
-section = "Title"
-label = "Use custom title for new tabs using this profile"
-type = "bool"
-default = false
-help = "Enables overriding the tab title text with a custom string."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Custom Tab Title"
-tab = "Window"
-section = "Title"
-label = "Custom tab title"
-type = "string"
-default = ""
-help = "The interpolated-string template used as the tab title, when enabled."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Initial Use Transparency"
-tab = "Window"
-section = "Transparency"
-label = "Use transparency"
-type = "bool"
-default = true
-help = "Master on/off switch for whether the window starts with background transparency."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Transparency"
-tab = "Window"
-mode = "terminal"
-section = "Transparency"
-label = "Transparency:"
-type = "float"
-default = 0.0
-min = 0.0
-max = 1.0
-help = "Slider setting how transparent the background is."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Only The Default BG Color Uses Transparency"
-tab = "Window"
-mode = "terminal"
-section = "Transparency"
-label = "Keep background colors opaque"
-type = "bool"
-default = false
-help = "Restricts transparency to the default background color only, leaving non-default backgrounds opaque."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Blur"
-tab = "Window"
-mode = "terminal"
-section = "Transparency"
-label = "Blur content behind the window"
-type = "bool"
-default = false
-help = "Enables a Gaussian-style blur of content behind the window, visible through transparent regions."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Blur Radius"
-tab = "Window"
-mode = "terminal"
-section = "Transparency"
-label = "Blur:"
-type = "float"
-default = 2.0
-default_note = "Max is set programmatically by iTermMaxBlurRadius() (64); the xib's static maxValue of 100 is overridden at runtime."
-min = 0.0
-max = 64.0
-help = "Sets the strength of the background blur effect."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Background Image Source Mode"
-tab = "Window"
-mode = "terminal"
-section = "Background Image"
-label = "Source:"
-type = "enum"
-default = 0
-choices = [ { value = 0, label = "Single Image" }, { value = 1, label = "Folder Rotation" } ]
-help = "Chooses a single fixed image versus rotating automatically through a folder."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Background Image Location"
-tab = "Window"
-mode = "terminal"
-section = "Background Image"
-label = "Image:"
-type = "string"
-default_note = "Default value is NSNull (no image); the stock DefaultBookmark.plist represents this as an empty string instead."
-help = "Path to the single background image file."
-light_dark = false
-macos_only = false
-
-seed = ""
-[[setting]]
-key = "Background Image Folder Location"
-tab = "Window"
-mode = "terminal"
-section = "Background Image"
-label = "Image:"
-type = "string"
-default_note = "Default value is NSNull (no folder)."
-help = "Path to a folder of images to rotate through."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Background Image Folder Interval"
-tab = "Window"
-mode = "terminal"
-section = "Background Image"
-label = "Rotation Interval:"
-type = "int"
-default = 300
-default_note = "Seconds; must be greater than 0 per the key's validation block."
-help = "Seconds between automatic image changes in folder rotation mode."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Background Image Mode"
-tab = "Window"
-mode = "terminal"
-section = "Background Image"
-label = "Scaling mode:"
-type = "enum"
-default = 0
-choices = [ { value = 0, label = "Stretch" }, { value = 1, label = "Tile" }, { value = 2, label = "Scale to Fill" }, { value = 3, label = "Scale to Fit" } ]
-help = "Chooses stretch, tile, scale to fill, or scale to fit for the background image."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Blend"
-tab = "Window"
-mode = "terminal"
-section = "Background Image"
-label = "Blending:"
-type = "float"
-default = 0.5
-min = 0.0
-max = 1.0
-help = "Sets how much of the background color shows through over the background image."
 light_dark = false
 macos_only = false
 
@@ -1986,42 +1986,6 @@ label = "Drag-to-scroll disabled in alternate screen mode"
 type = "bool"
 default = false
 help = "Disables click-and-drag scrolling while the alternate screen is active."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Automatically Enable Alternate Mouse Scroll"
-tab = "Terminal"
-mode = "terminal"
-section = "Mouse"
-label = "Automatically enable alternate mouse scroll"
-type = "bool"
-default = false
-help = "Automatically turns on translating scroll wheel input into arrow keys when an app enables the alternate screen."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Restrict Alternate Mouse Scroll to Vertical"
-tab = "Terminal"
-mode = "terminal"
-section = "Mouse"
-label = "Restrict alternate mouse scroll to vertical scrolling"
-type = "bool"
-default = false
-help = "Limits the alt-screen scroll-to-arrow translation to vertical scrolling only."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Allow Alternate Mouse Scroll"
-tab = "Terminal"
-mode = "terminal"
-section = "Mouse"
-label = "Terminal may enable alternate mouse scroll"
-type = "bool"
-default = true
-help = "Permits the alt-screen scroll-to-arrow-key feature to be used at all."
 light_dark = false
 macos_only = false
 
@@ -2102,6 +2066,42 @@ light_dark = false
 macos_only = false
 
 [[setting]]
+key = "Allow Alternate Mouse Scroll"
+tab = "Terminal"
+mode = "terminal"
+section = "Mouse"
+label = "Terminal may enable alternate mouse scroll"
+type = "bool"
+default = true
+help = "Permits the alt-screen scroll-to-arrow-key feature to be used at all."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Automatically Enable Alternate Mouse Scroll"
+tab = "Terminal"
+mode = "terminal"
+section = "Mouse"
+label = "Automatically enable alternate mouse scroll"
+type = "bool"
+default = false
+help = "Automatically turns on translating scroll wheel input into arrow keys when an app enables the alternate screen."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Restrict Alternate Mouse Scroll to Vertical"
+tab = "Terminal"
+mode = "terminal"
+section = "Mouse"
+label = "Restrict alternate mouse scroll to vertical scrolling"
+type = "bool"
+default = false
+help = "Limits the alt-screen scroll-to-arrow translation to vertical scrolling only."
+light_dark = false
+macos_only = false
+
+[[setting]]
 key = "Restrict Mouse Reporting to Alternate Screen Mode"
 tab = "Terminal"
 mode = "terminal"
@@ -2126,14 +2126,14 @@ light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Allow Paste Bracketing"
+key = "Allow Change Cursor Blink"
 tab = "Terminal"
 mode = "terminal"
 section = "Terminal Emulation"
-label = "Terminal may enable paste bracketing"
+label = "Terminal may change cursor blink"
 type = "bool"
-default = true
-help = "Allows the terminal to wrap pasted text in bracketed-paste escape sequences for apps that request it."
+default = false
+help = "Allows escape sequences to toggle whether the cursor blinks."
 light_dark = false
 macos_only = false
 
@@ -2188,14 +2188,14 @@ light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Allow Change Cursor Blink"
+key = "Allow Paste Bracketing"
 tab = "Terminal"
 mode = "terminal"
 section = "Terminal Emulation"
-label = "Terminal may change cursor blink"
+label = "Terminal may enable paste bracketing"
 type = "bool"
-default = false
-help = "Allows escape sequences to toggle whether the cursor blinks."
+default = true
+help = "Allows the terminal to wrap pasted text in bracketed-paste escape sequences for apps that request it."
 light_dark = false
 macos_only = false
 
@@ -2210,104 +2210,6 @@ default = false
 help = "Mutes the audible bell sound."
 light_dark = false
 macos_only = false
-
-[[setting]]
-key = "BM Growl"
-tab = "Terminal"
-mode = "terminal"
-section = "Notifications"
-label = "Notification Center alerts"
-type = "bool"
-default = false
-default_note = "iTermProfilePreferences.m's fallback default is false, but the shipped DefaultBookmark.plist sets this true for the stock Default profile."
-help = "Enables user notifications for terminal events."
-light_dark = false
-macos_only = false
-
-seed = true
-[[setting]]
-key = "Send Bell Alert"
-tab = "Terminal"
-mode = "terminal"
-section = "Notifications"
-label = "Send \u201CBell\u201D alert"
-type = "bool"
-default = true
-help = "Whether a bell event triggers a notification."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Send Idle Alert"
-tab = "Terminal"
-mode = "terminal"
-section = "Notifications"
-label = "Send \u201CIdle\u201D alert"
-type = "bool"
-default = false
-help = "Whether the session going idle triggers a notification."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Send New Output Alert"
-tab = "Terminal"
-mode = "terminal"
-section = "Notifications"
-label = "Send \u201CNew Output\u201D alert"
-type = "bool"
-default = false
-help = "Whether new output after idle triggers a notification."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Send Session Ended Alert"
-tab = "Terminal"
-mode = "terminal"
-section = "Notifications"
-label = "Send \u201CSession Ended\u201D alert"
-type = "bool"
-default = true
-help = "Whether the session ending triggers a notification."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Send Terminal Generated Alerts"
-tab = "Terminal"
-mode = "terminal"
-section = "Notifications"
-label = "Send escape sequence-generated alerts"
-type = "bool"
-default = true
-help = "Whether escape-sequence-generated alerts trigger a notification."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Suppress Alerts in Active Session"
-tab = "Terminal"
-mode = "terminal"
-section = "Notifications"
-label = "Suppress alerts from active session"
-type = "bool"
-default = false
-help = "Suppresses notifications for the session currently focused."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Send Alerts To Companion"
-tab = "Terminal"
-mode = "terminal"
-section = "Notifications"
-label = "Send alerts to paired iPhone"
-type = "bool"
-default = false
-help = "Also delivers alerts to a paired companion iPhone app."
-light_dark = false
-macos_only = true
 
 [[setting]]
 key = "Flashing Bell"
@@ -2331,6 +2233,20 @@ type = "bool"
 default = false
 default_note = "iTermProfilePreferences.m's fallback default is false, but the shipped DefaultBookmark.plist sets this true for the stock Default profile."
 help = "Enables a visual indicator for the bell."
+light_dark = false
+macos_only = false
+
+seed = true
+[[setting]]
+key = "BM Growl"
+tab = "Terminal"
+mode = "terminal"
+section = "Notifications"
+label = "Notification Center alerts"
+type = "bool"
+default = false
+default_note = "iTermProfilePreferences.m's fallback default is false, but the shipped DefaultBookmark.plist sets this true for the stock Default profile."
+help = "Enables user notifications for terminal events."
 light_dark = false
 macos_only = false
 
@@ -2361,6 +2277,54 @@ light_dark = false
 macos_only = false
 
 [[setting]]
+key = "Send Bell Alert"
+tab = "Terminal"
+mode = "terminal"
+section = "Notifications"
+label = "Send \u201CBell\u201D alert"
+type = "bool"
+default = true
+help = "Whether a bell event triggers a notification."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Send Session Ended Alert"
+tab = "Terminal"
+mode = "terminal"
+section = "Notifications"
+label = "Send \u201CSession Ended\u201D alert"
+type = "bool"
+default = true
+help = "Whether the session ending triggers a notification."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Send Idle Alert"
+tab = "Terminal"
+mode = "terminal"
+section = "Notifications"
+label = "Send \u201CIdle\u201D alert"
+type = "bool"
+default = false
+help = "Whether the session going idle triggers a notification."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Send New Output Alert"
+tab = "Terminal"
+mode = "terminal"
+section = "Notifications"
+label = "Send \u201CNew Output\u201D alert"
+type = "bool"
+default = false
+help = "Whether new output after idle triggers a notification."
+light_dark = false
+macos_only = false
+
+[[setting]]
 key = "Place Prompt at First Column"
 tab = "Terminal"
 mode = "terminal"
@@ -2369,6 +2333,18 @@ label = "Insert newline before start of command prompt if needed"
 type = "bool"
 default = true
 help = "Forces the shell prompt to always be placed at column 1."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Send Terminal Generated Alerts"
+tab = "Terminal"
+mode = "terminal"
+section = "Notifications"
+label = "Send escape sequence-generated alerts"
+type = "bool"
+default = true
+help = "Whether escape-sequence-generated alerts trigger a notification."
 light_dark = false
 macos_only = false
 
@@ -2385,18 +2361,6 @@ light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Prompt Path Click Opens Navigator"
-tab = "Terminal"
-mode = "terminal"
-section = "Shell Integration"
-label = "Click on a path in a shell prompt to open Navigator"
-type = "bool"
-default = false
-help = "Whether clicking path in prompt opens file navigator"
-light_dark = false
-macos_only = false
-
-[[setting]]
 key = "Show Offscreen Command line"
 tab = "Terminal"
 mode = "terminal"
@@ -2405,6 +2369,18 @@ label = "Show offscreen command line at top of session"
 type = "bool"
 default = true
 help = "Shows a floating bar with the current prompt when it has scrolled off the top."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Suppress Alerts in Active Session"
+tab = "Terminal"
+mode = "terminal"
+section = "Notifications"
+label = "Suppress alerts from active session"
+type = "bool"
+default = false
+help = "Suppresses notifications for the session currently focused."
 light_dark = false
 macos_only = false
 
@@ -2421,6 +2397,30 @@ light_dark = false
 macos_only = false
 
 [[setting]]
+key = "Send Alerts To Companion"
+tab = "Terminal"
+mode = "terminal"
+section = "Notifications"
+label = "Send alerts to paired iPhone"
+type = "bool"
+default = false
+help = "Also delivers alerts to a paired companion iPhone app."
+light_dark = false
+macos_only = true
+
+[[setting]]
+key = "Prompt Path Click Opens Navigator"
+tab = "Terminal"
+mode = "terminal"
+section = "Shell Integration"
+label = "Click on a path in a shell prompt to open Navigator"
+type = "bool"
+default = false
+help = "Whether clicking path in prompt opens file navigator"
+light_dark = false
+macos_only = false
+
+[[setting]]
 key = "Tmux Newline"
 tab = "Terminal"
 mode = "terminal"
@@ -2429,6 +2429,18 @@ label = "Send \\n rather than \\r to terminate commands"
 type = "bool"
 default = false
 help = "Controls whether tmux integration sends newline or CRLF line endings."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Session Close Undo Timeout"
+tab = "Session"
+mode = "terminal"
+section = ""
+label = "\u201CUndo\u201D can revive a closed session for up to this many seconds:"
+type = "float"
+default = 5
+help = "Seconds available to undo (reopen) a closed session."
 light_dark = false
 macos_only = false
 
@@ -2472,18 +2484,6 @@ light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Session Close Undo Timeout"
-tab = "Session"
-mode = "terminal"
-section = ""
-label = "\u201CUndo\u201D can revive a closed session for up to this many seconds:"
-type = "float"
-default = 5
-help = "Seconds available to undo (reopen) a closed session."
-light_dark = false
-macos_only = false
-
-[[setting]]
 key = "Automatically Log"
 tab = "Session"
 mode = "terminal"
@@ -2492,6 +2492,19 @@ label = "Enable automatic session logging"
 type = "bool"
 default = false
 help = "Enables automatic session logging to disk."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Plain Text Logging"
+tab = "Session"
+mode = "terminal"
+section = "Logging"
+label = "Log format:"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Raw data" }, { value = 1, label = "Plain text" }, { value = 2, label = "HTML" }, { value = 3, label = "asciinema" } ]
+help = "Chooses raw, plain text, HTML, or asciicast logging."
 light_dark = false
 macos_only = false
 
@@ -2521,19 +2534,6 @@ light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Plain Text Logging"
-tab = "Session"
-mode = "terminal"
-section = "Logging"
-label = "Log format:"
-type = "enum"
-default = 0
-choices = [ { value = 0, label = "Raw data" }, { value = 1, label = "Plain text" }, { value = 2, label = "HTML" }, { value = 3, label = "asciinema" } ]
-help = "Chooses raw, plain text, HTML, or asciicast logging."
-light_dark = false
-macos_only = false
-
-[[setting]]
 key = "Archive On Closure"
 tab = "Session"
 mode = "terminal"
@@ -2554,6 +2554,108 @@ label = "Folder:"
 type = "string"
 default = ""
 help = "Directory closed-session archives are written to."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Open Password Manager Automatically"
+tab = "Session"
+mode = "terminal"
+section = ""
+label = "Open password manager automatically when a password prompt is detected"
+type = "bool"
+default = false
+help = "Opens the password manager when the session reaches a password prompt."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Timestamps Visible"
+tab = "Session"
+mode = "terminal"
+section = "Timestamps"
+label = "Enabled"
+type = "bool"
+default = false
+default_note = "Computed as a migration fallback from the old \"ShowTimestampsByDefault\" NSUserDefaults key; false when that legacy default was never set, as on a stock install."
+help = "Whether per-line timestamps are shown at all."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Timestamps Style"
+tab = "Session"
+mode = "terminal"
+section = "Timestamps"
+label = "Timestamps:"
+type = "enum"
+default = 1
+default_note = "Cannot be iTermTimestampsModeOff (0) as a stored value for this key; off-ness is expressed via the separate Timestamps Visible key."
+choices = [ { value = 1, label = "Over contents" }, { value = 2, label = "Over contents when mouse hovers over scrollbar" }, { value = 3, label = "Next to contents" } ]
+help = "How per-line timestamps display when shown: overlap, hover, or adjacent."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Show Status Bar"
+tab = "Session"
+section = "Status Bar"
+label = "Status bar enabled"
+type = "bool"
+default = false
+help = "Shows a configurable status bar for sessions using this profile."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Status Bar Layout"
+tab = "Session"
+section = "Status Bar"
+label = "Configure Status Bar"
+type = "dict"
+default = {}
+default_note = "No literal default in defaultValueMap; when the key is absent it is computed as the dictionaryValue of an empty iTermStatusBarLayout (no components configured)."
+help = "Arrangement of status bar components such as clock, CPU, network, memory, working directory, and git branch."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Enable Progress Bars"
+tab = "Session"
+mode = "terminal"
+section = ""
+label = "Show progress bars"
+type = "bool"
+default = true
+help = "Enables OSC 9;4 style progress-bar indicators in the session."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Progress Bar Height"
+tab = "Session"
+mode = "terminal"
+section = ""
+label = "Height:"
+type = "float"
+default = 2.0
+default_note = "Max is bound to the app-wide \"Terminal Margins\" preference (TerminalVMargin, default 2 points), not a fixed profile-level bound."
+min = 1.0
+max = 2.0
+help = "Height of the progress bar in points."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Progress Bar Color Scheme"
+tab = "Session"
+mode = "terminal"
+section = ""
+label = "Color Scheme:"
+type = "enum"
+default = "default"
+choices = [ { value = "default", label = "Default" }, { value = "rainbow", label = "Rainbow" }, { value = "red", label = "Red" }, { value = "green", label = "Green" }, { value = "blue", label = "Blue" }, { value = "yellow", label = "Yellow" }, { value = "purple", label = "Purple" }, { value = "cyan", label = "Cyan" }, { value = "orange", label = "Orange" } ]
+help = "Color scheme for the progress bar."
 light_dark = false
 macos_only = false
 
@@ -2609,17 +2711,6 @@ light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Prevent Sleep"
-tab = "Session"
-section = ""
-label = "Prevent the system from sleeping while a session has this setting on."
-type = "bool"
-default = false
-help = "Keeps the system from idle-sleeping while a session using this profile exists."
-light_dark = false
-macos_only = false
-
-[[setting]]
 key = "Default Pane Locked"
 tab = "Session"
 mode = "terminal"
@@ -2644,154 +2735,13 @@ light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Show Status Bar"
+key = "Prevent Sleep"
 tab = "Session"
-section = "Status Bar"
-label = "Status bar enabled"
+section = ""
+label = "Prevent the system from sleeping while a session has this setting on."
 type = "bool"
 default = false
-help = "Shows a configurable status bar for sessions using this profile."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Status Bar Layout"
-tab = "Session"
-section = "Status Bar"
-label = "Configure Status Bar"
-type = "dict"
-default = {}
-default_note = "No literal default in defaultValueMap; when the key is absent it is computed as the dictionaryValue of an empty iTermStatusBarLayout (no components configured)."
-help = "Arrangement of status bar components such as clock, CPU, network, memory, working directory, and git branch."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Open Password Manager Automatically"
-tab = "Session"
-mode = "terminal"
-section = ""
-label = "Open password manager automatically when a password prompt is detected"
-type = "bool"
-default = false
-help = "Opens the password manager when the session reaches a password prompt."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Timestamps Style"
-tab = "Session"
-mode = "terminal"
-section = "Timestamps"
-label = "Timestamps:"
-type = "enum"
-default = 1
-default_note = "Cannot be iTermTimestampsModeOff (0) as a stored value for this key; off-ness is expressed via the separate Timestamps Visible key."
-choices = [ { value = 1, label = "Over contents" }, { value = 2, label = "Over contents when mouse hovers over scrollbar" }, { value = 3, label = "Next to contents" } ]
-help = "How per-line timestamps display when shown: overlap, hover, or adjacent."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Timestamps Visible"
-tab = "Session"
-mode = "terminal"
-section = "Timestamps"
-label = "Enabled"
-type = "bool"
-default = false
-default_note = "Computed as a migration fallback from the old \"ShowTimestampsByDefault\" NSUserDefaults key; false when that legacy default was never set, as on a stock install."
-help = "Whether per-line timestamps are shown at all."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Enable Progress Bars"
-tab = "Session"
-mode = "terminal"
-section = ""
-label = "Show progress bars"
-type = "bool"
-default = true
-help = "Enables OSC 9;4 style progress-bar indicators in the session."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Progress Bar Height"
-tab = "Session"
-mode = "terminal"
-section = ""
-label = "Height:"
-type = "float"
-default = 2.0
-default_note = "Max is bound to the app-wide \"Terminal Margins\" preference (TerminalVMargin, default 2 points), not a fixed profile-level bound."
-min = 1.0
-max = 2.0
-help = "Height of the progress bar in points."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Progress Bar Color Scheme"
-tab = "Session"
-mode = "terminal"
-section = ""
-label = "Color Scheme:"
-type = "enum"
-default = "default"
-choices = [ { value = "default", label = "Default" }, { value = "rainbow", label = "Rainbow" }, { value = "red", label = "Red" }, { value = "green", label = "Green" }, { value = "blue", label = "Blue" }, { value = "yellow", label = "Yellow" }, { value = "purple", label = "Purple" }, { value = "cyan", label = "Cyan" }, { value = "orange", label = "Orange" } ]
-help = "Color scheme for the progress bar."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Option Key Sends"
-tab = "Keys"
-mode = "terminal"
-section = ""
-label = "Left Alt key:"
-type = "enum"
-default = 0
-choices = [ { value = 0, label = "Normal" }, { value = 1, label = "Set high bit (not recommended)" }, { value = 2, label = "Esc+" } ]
-help = "Chooses what the left Alt key sends: Normal, Meta, or Esc+."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Right Option Key Sends"
-tab = "Keys"
-mode = "terminal"
-section = ""
-label = "Right Alt key:"
-type = "enum"
-default = 0
-choices = [ { value = 0, label = "Normal" }, { value = 1, label = "Set high bit (not recommended)" }, { value = 2, label = "Esc+" } ]
-help = "Same popup for the right-hand Alt key, letting the two sides differ."
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Left Option Key Changeable"
-tab = "Keys"
-mode = "terminal"
-section = ""
-label = "Apps can change this"
-type = "bool"
-default = true
-help = "Whether left Alt key mode can be toggled at runtime"
-light_dark = false
-macos_only = false
-
-[[setting]]
-key = "Right Option Key Changeable"
-tab = "Keys"
-mode = "terminal"
-section = ""
-label = "Apps can change this"
-type = "bool"
-default = false
-help = "Whether right Alt key mode can be toggled at runtime"
+help = "Keeps the system from idle-sleeping while a session using this profile exists."
 light_dark = false
 macos_only = false
 
@@ -2804,6 +2754,18 @@ label = "Allow application keypad mode"
 type = "bool"
 default = false
 help = "Permits apps to switch the numeric keypad into application mode via escape sequences."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Use libtickit protocol"
+tab = "Keys"
+mode = "terminal"
+section = ""
+label = "Report keys using CSI u"
+type = "bool"
+default = false
+help = "Enables the CSI u keyboard protocol for unambiguous key reporting."
 light_dark = false
 macos_only = false
 
@@ -2844,14 +2806,52 @@ light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Use libtickit protocol"
+key = "Option Key Sends"
 tab = "Keys"
 mode = "terminal"
 section = ""
-label = "Report keys using CSI u"
+label = "Left Alt key:"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Normal" }, { value = 1, label = "Set high bit (not recommended)" }, { value = 2, label = "Esc+" } ]
+help = "Chooses what the left Alt key sends: Normal, Meta, or Esc+."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Left Option Key Changeable"
+tab = "Keys"
+mode = "terminal"
+section = ""
+label = "Apps can change this"
+type = "bool"
+default = true
+help = "Whether left Alt key mode can be toggled at runtime"
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Right Option Key Sends"
+tab = "Keys"
+mode = "terminal"
+section = ""
+label = "Right Alt key:"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Normal" }, { value = 1, label = "Set high bit (not recommended)" }, { value = 2, label = "Esc+" } ]
+help = "Same popup for the right-hand Alt key, letting the two sides differ."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Right Option Key Changeable"
+tab = "Keys"
+mode = "terminal"
+section = ""
+label = "Apps can change this"
 type = "bool"
 default = false
-help = "Enables the CSI u keyboard protocol for unambiguous key reporting."
+help = "Whether right Alt key mode can be toggled at runtime"
 light_dark = false
 macos_only = false
 
@@ -3102,17 +3102,6 @@ light_dark = false
 macos_only = false
 
 [[setting]]
-key = "Snippets Filter"
-tab = "Advanced"
-section = ""
-label = "Snippets Filter:"
-type = "list"
-default = []
-help = "Filters which of the app's global Snippets appear in this profile's Snippets menu."
-light_dark = false
-macos_only = false
-
-[[setting]]
 key = "Enable Triggers in Interactive Apps"
 tab = "Advanced"
 mode = "terminal"
@@ -3191,6 +3180,17 @@ default = [
 ]
 default_note = "No entry in defaultValueMap (in keysWithoutDefaultValues); this is the full built-in rule list shipped in plists/SmartSelectionRules.plist, which SmartSelectionController falls back to when the profile has no Smart Selection Rules key of its own. None of the built-in rules carry an \"actions\" array (that is only added by user-created rules)."
 help = "Ordered regex rules that classify what a double or triple click selects, each with a precision level (low, normal, high, very_high) and optional actions."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Snippets Filter"
+tab = "Advanced"
+section = ""
+label = "Snippets Filter:"
+type = "list"
+default = []
+help = "Filters which of the app's global Snippets appear in this profile's Snippets menu."
 light_dark = false
 macos_only = false
 

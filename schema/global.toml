@@ -41,6 +41,16 @@ choices = [ { value = 0, label = "Ctrl+Shift" }, { value = 1, label = "Win" }, {
 help = "The keys that stand for iTerm2's Cmd in Termurion's shortcuts, menus and key bindings. Cmd+Shift+X becomes Ctrl+Shift+Alt+X. Win collides with Windows shortcuts (Win+L, Win+D, Win+arrows). Ctrl+Alt is AltGr on many European layouts, so it can swallow characters you type; prefer Ctrl+Shift there."
 
 [[setting]]
+key = "SwitchWindowModifier"
+tab = "Keys"
+section = "Navigation Shortcuts"
+label = "Shortcut to activate a window:"
+type = "enum"
+default = 6
+choices = [ { value = 9, label = "No Shortcut" }, { value = 5, label = "Alt+Number" }, { value = 4, label = "Win+Number" }, { value = 6, label = "Win+Alt+Number" }, { value = 1, label = "Ctrl+Number" } ]
+help = "Modifier held with a number key to switch to window N."
+
+[[setting]]
 key = "SwitchTabModifier"
 tab = "Keys"
 section = "Navigation Shortcuts"
@@ -59,16 +69,6 @@ type = "enum"
 default = 9
 choices = [ { value = 9, label = "No Shortcut" }, { value = 5, label = "Alt+Number" }, { value = 4, label = "Win+Number" }, { value = 6, label = "Win+Alt+Number" }, { value = 1, label = "Ctrl+Number" } ]
 help = "Modifier held with a number key to jump to split pane N."
-
-[[setting]]
-key = "SwitchWindowModifier"
-tab = "Keys"
-section = "Navigation Shortcuts"
-label = "Shortcut to activate a window:"
-type = "enum"
-default = 6
-choices = [ { value = 9, label = "No Shortcut" }, { value = 5, label = "Alt+Number" }, { value = 4, label = "Win+Number" }, { value = 6, label = "Win+Alt+Number" }, { value = 1, label = "Ctrl+Number" } ]
-help = "Modifier held with a number key to switch to window N."
 
 [[setting]]
 key = "UseVirtualKeyCodesForDetectingDigits"
@@ -169,15 +169,6 @@ default = false
 help = "Forces Termurion to use the selected keyboard layout while it is active."
 
 [[setting]]
-key = "ForceKeyboardOncePerSession"
-tab = "Keys"
-section = "Remap Modifiers"
-label = "Only force once per session when it first receives keyboard focus"
-type = "bool"
-default = false
-help = "When \u201cForce keyboard\u201d is on, Termurion continuously forces the selected layout while it is active, so you cannot switch to another layout within a session. Turn this on to force the layout only once, the first time a newly created terminal receives keyboard focus, leaving you free to change it afterward."
-
-[[setting]]
 key = "KeyboardLocale"
 tab = "Keys"
 section = "Remap Modifiers"
@@ -185,6 +176,15 @@ label = "Keyboard locale"
 type = "string"
 default = ""
 help = "Keyboard locale"
+
+[[setting]]
+key = "ForceKeyboardOncePerSession"
+tab = "Keys"
+section = "Remap Modifiers"
+label = "Only force once per session when it first receives keyboard focus"
+type = "bool"
+default = false
+help = "When \u201cForce keyboard\u201d is on, Termurion continuously forces the selected layout while it is active, so you cannot switch to another layout within a session. Turn this on to force the layout only once, the first time a newly created terminal receives keyboard focus, leaving you free to change it afterward."
 
 [[setting]]
 key = "AllowSymbolicHotKeys"
@@ -212,24 +212,6 @@ label = "Selection respects soft boundaries"
 type = "bool"
 default = false
 help = "Double-click and Smart Selection stop at vertical pane dividers drawn by tmux or vim (Edit > Selection Respects Soft Boundaries)."
-
-[[setting]]
-key = "PassOnControlClick"
-tab = "Pointer"
-section = "General"
-label = "Ctrl-Click reported to apps, does not open menu"
-type = "bool"
-default = false
-help = "A Ctrl-click goes to a mouse-reporting app instead of opening the context menu."
-
-[[setting]]
-key = "ReportRightClick"
-tab = "Pointer"
-section = "General"
-label = "Right click reported to apps, does not open menu"
-type = "bool"
-default = false
-help = "A right click goes to a mouse-reporting app instead of running its binding."
 
 [[setting]]
 key = "OptionClickMovesCursor"
@@ -276,6 +258,24 @@ label = "Mouse reporting supports horizontal scrolling"
 type = "bool"
 default = true
 help = "Horizontal wheel movement goes to mouse-reporting apps."
+
+[[setting]]
+key = "PassOnControlClick"
+tab = "Pointer"
+section = "General"
+label = "Ctrl-Click reported to apps, does not open menu"
+type = "bool"
+default = false
+help = "A Ctrl-click goes to a mouse-reporting app instead of opening the context menu."
+
+[[setting]]
+key = "ReportRightClick"
+tab = "Pointer"
+section = "General"
+label = "Right click reported to apps, does not open menu"
+type = "bool"
+default = false
+help = "A right click goes to a mouse-reporting app instead of running its binding."
 
 [[setting]]
 key = "PointerActions"
@@ -354,15 +354,6 @@ choices = [ { value = 2, label = "Ask Each Time" }, { value = 0, label = "Never"
 help = "Whether a program may read the clipboard with OSC 52. A synthetic row: Never stores NoSyncNeverAllowPaste and Always stores NoSyncAllowPaste, as iTerm2's pasteboard reporter does; this key itself is never stored."
 
 [[setting]]
-key = "DoubleClickPerformsSmartSelection"
-tab = "General"
-section = "Selection"
-label = "Double-click performs smart selection"
-type = "bool"
-default = false
-help = "A double click makes a Smart Selection and a quadruple click selects a word, the other way round from the default. iTerm2 keeps this under General > Selection."
-
-[[setting]]
 key = "WordSelectionMode"
 tab = "General"
 section = "Selection"
@@ -371,15 +362,6 @@ type = "enum"
 default = 0
 choices = [ { value = 0, label = "List of Characters" }, { value = 1, label = "Regular Expression" } ]
 help = "How double-click word selection decides what a word is: a list of extra characters, or a regular expression."
-
-[[setting]]
-key = "WordCharacters"
-tab = "General"
-section = "Selection"
-label = "Characters considered part of a word"
-type = "string"
-default = "/-+\\~_."
-help = "Characters considered part of a word"
 
 [[setting]]
 key = "WordSelectionRegexPattern"
@@ -391,6 +373,15 @@ default = "-|\\+|\\\\|~|_"
 help = "Characters considered part of a word"
 
 [[setting]]
+key = "WordCharacters"
+tab = "General"
+section = "Selection"
+label = "Characters considered part of a word"
+type = "string"
+default = "/-+\\~_."
+help = "Characters considered part of a word"
+
+[[setting]]
 key = "TripleClickSelectsFullWrappedLines"
 tab = "General"
 section = "Selection"
@@ -398,6 +389,24 @@ label = "Triple-click selects entire wrapped lines"
 type = "bool"
 default = true
 help = "If disabled, then triple click selects one line as it appears onscreen."
+
+[[setting]]
+key = "DoubleClickPerformsSmartSelection"
+tab = "General"
+section = "Selection"
+label = "Double-click performs smart selection"
+type = "bool"
+default = false
+help = "A double click makes a Smart Selection and a quadruple click selects a word, the other way round from the default. iTerm2 keeps this under General > Selection."
+
+[[setting]]
+key = "EnterCopyModeAutomatically"
+tab = "General"
+section = "Selection"
+label = "Automatically enter copy mode on Shift+Arrow key with selection"
+type = "bool"
+default = true
+help = "With text selected, Shift with an arrow, Home, End, Page Up, or Page Down starts Copy Mode at that end of the selection."
 
 [[setting]]
 key = "ClickToSelectCommand"
@@ -416,15 +425,6 @@ label = "When pasting a dropped filename, wrap it in double quotes"
 type = "bool"
 default = false
 help = "When pasting a dropped filename, wrap it in double quotes"
-
-[[setting]]
-key = "EnterCopyModeAutomatically"
-tab = "General"
-section = "Selection"
-label = "Automatically enter copy mode on Shift+Arrow key with selection"
-type = "bool"
-default = true
-help = "With text selected, Shift with an arrow, Home, End, Page Up, or Page Down starts Copy Mode at that end of the selection."
 
 [[setting]]
 key = "MaximumBytesToProvideToPythonAPI"
@@ -499,6 +499,15 @@ default = ""
 help = "Folder where the \u201cSave\u201d button in the screenshot window writes files.\nLeave empty to save to the Desktop. The \u201cSave As\u2026\u201d button ignores this and always prompts for a location."
 
 [[setting]]
+key = "AddNewTabAtEndOfTabs"
+tab = "Appearance"
+section = "Tabs"
+label = "New tabs open at end of tab bar"
+type = "bool"
+default = true
+help = "On, a new tab goes at the end of the tab bar; off, it goes next to the current tab."
+
+[[setting]]
 key = "HideTab"
 tab = "Appearance"
 section = "Tabs"
@@ -507,6 +516,87 @@ type = "bool"
 default = true
 inverted = true
 help = "With one tab in a window the tab bar is still shown; off, it appears only when there are two or more tabs."
+
+[[setting]]
+key = "FlashTabBarInFullscreen"
+tab = "Appearance"
+section = "Tabs"
+label = "Flash tab bar when switching tabs in fullscreen"
+type = "bool"
+default = false
+help = "With the tab bar hidden in full screen, switching tabs shows it briefly over the top of the sessions. Hold Win to keep it up."
+
+[[setting]]
+key = "ShowFullScreenTabBar"
+tab = "Appearance"
+section = "Tabs"
+label = "Show tab bar in fullscreen"
+type = "bool"
+default = true
+help = "In full screen the tab bar shows as it does in a window; off, it hides (View > Show Tabs in Fullscreen)."
+
+[[setting]]
+key = "ScrollableSideTabBar"
+tab = "Appearance"
+section = "Tabs"
+label = "Tab bar scrolls when tabs don\u2019t fit"
+type = "bool"
+default = true
+help = "When the tabs do not fit, the tab bar scrolls; off, the tabs that do not fit go in a menu at the bar's end."
+
+[[setting]]
+key = "SilentUserNotifications"
+tab = "Advanced"
+section = "General"
+label = "System notifications should be silent."
+type = "bool"
+default = false
+help = "System notifications should be silent."
+
+[[setting]]
+key = "SimpleNotifications"
+tab = "Advanced"
+section = "General"
+label = "Omit session identifier from notifications."
+type = "bool"
+default = false
+help = "Omit session identifier from notifications.\nWhen enabled, notifications will only show the message without the session name and tab number prefix."
+
+[[setting]]
+key = "SessionEndMessageText"
+tab = "Advanced"
+section = "Session"
+label = "Text displayed when a session ends. Leave empty to use default."
+type = "string"
+default = ""
+help = "Text displayed when a session ends. Leave empty to use default."
+
+[[setting]]
+key = "LeftTabBarWidth"
+tab = "Appearance"
+section = "Tabs"
+label = "Left (side) tab bar width"
+type = "float"
+default = 150.0
+help = "Width in points of a tab bar on the left or right side of the window. Dragging the bar's inner edge records the width."
+
+[[setting]]
+key = "PreserveWindowSizeWhenTabBarVisibilityChanges"
+tab = "Appearance"
+section = "Tabs"
+label = "Preserve window size when tab bar shows or hides"
+type = "bool"
+default = false
+help = "When the tab bar appears or goes away the window keeps its size and the sessions give up or take the room; off, the window grows or shrinks by the bar."
+
+[[setting]]
+key = "PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges"
+tab = "Appearance"
+section = "Tabs"
+label = "\u2026but only if it would cause the window to go off-screen"
+type = "bool"
+default = false
+help = "The window keeps its size only when growing for the tab bar would take it past the edge of the screen; it then also keeps its size when the bar goes away again."
 
 [[setting]]
 key = "HideTabNumber"
@@ -547,33 +637,6 @@ default = true
 help = "A tab whose session printed something you have not looked at shows the new-output mark."
 
 [[setting]]
-key = "SilentUserNotifications"
-tab = "Advanced"
-section = "General"
-label = "System notifications should be silent."
-type = "bool"
-default = false
-help = "System notifications should be silent."
-
-[[setting]]
-key = "SimpleNotifications"
-tab = "Advanced"
-section = "General"
-label = "Omit session identifier from notifications."
-type = "bool"
-default = false
-help = "Omit session identifier from notifications.\nWhen enabled, notifications will only show the message without the session name and tab number prefix."
-
-[[setting]]
-key = "SessionEndMessageText"
-tab = "Advanced"
-section = "Session"
-label = "Text displayed when a session ends. Leave empty to use default."
-type = "string"
-default = ""
-help = "Text displayed when a session ends. Leave empty to use default."
-
-[[setting]]
 key = "ShowSessionStatusInTabSubtitle"
 tab = "Appearance"
 section = "Tabs"
@@ -601,76 +664,13 @@ default = false
 help = "The following tags are recognized: <u>, <i>, and <b>. You can also use &lt; and &amp;."
 
 [[setting]]
-key = "ScrollableSideTabBar"
-tab = "Appearance"
-section = "Tabs"
-label = "Tab bar scrolls when tabs don\u2019t fit"
-type = "bool"
-default = true
-help = "When the tabs do not fit, the tab bar scrolls; off, the tabs that do not fit go in a menu at the bar's end."
-
-[[setting]]
-key = "LeftTabBarWidth"
-tab = "Appearance"
-section = "Tabs"
-label = "Left (side) tab bar width"
-type = "float"
-default = 150.0
-help = "Width in points of a tab bar on the left or right side of the window. Dragging the bar's inner edge records the width."
-
-[[setting]]
-key = "ShowFullScreenTabBar"
-tab = "Appearance"
-section = "Tabs"
-label = "Show tab bar in fullscreen"
-type = "bool"
-default = true
-help = "In full screen the tab bar shows as it does in a window; off, it hides (View > Show Tabs in Fullscreen)."
-
-[[setting]]
-key = "FlashTabBarInFullscreen"
-tab = "Appearance"
-section = "Tabs"
-label = "Flash tab bar when switching tabs in fullscreen"
-type = "bool"
-default = false
-help = "With the tab bar hidden in full screen, switching tabs shows it briefly over the top of the sessions. Hold Win to keep it up."
-
-[[setting]]
-key = "PreserveWindowSizeWhenTabBarVisibilityChanges"
-tab = "Appearance"
-section = "Tabs"
-label = "Preserve window size when tab bar shows or hides"
-type = "bool"
-default = false
-help = "When the tab bar appears or goes away the window keeps its size and the sessions give up or take the room; off, the window grows or shrinks by the bar."
-
-[[setting]]
-key = "PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges"
-tab = "Appearance"
-section = "Tabs"
-label = "\u2026but only if it would cause the window to go off-screen"
-type = "bool"
-default = false
-help = "The window keeps its size only when growing for the tab bar would take it past the edge of the screen; it then also keeps its size when the bar goes away again."
-
-[[setting]]
-key = "AddNewTabAtEndOfTabs"
-tab = "Appearance"
-section = "Tabs"
-label = "New tabs open at end of tab bar"
-type = "bool"
-default = true
-help = "On, a new tab goes at the end of the tab bar; off, it goes next to the current tab."
-
-[[setting]]
-key = "PerPaneBackgroundImage"
+key = "ShowPaneTitles"
 tab = "Appearance"
 section = "Panes"
-label = "Separate background images per pane"
+label = "Show per-pane title bars"
 type = "bool"
 default = true
-help = "Each split pane shows its own profile's background image; off, the active pane's image spans the whole tab."
+help = "Shows a small title bar above each split pane, with the session's title, a close button and a menu. With separate status bars per pane at the top, each pane's status bar sits in its title bar."
 
 [[setting]]
 key = "Print In Black And White"
@@ -754,13 +754,13 @@ default = false
 help = "Each Automatic Profile Switching decision goes to the Script Console's \"Automatic Profile Switching\" entry (Scripts > Manage > Console), as in iTerm2."
 
 [[setting]]
-key = "WindowNumber"
+key = "HideMenuBarInFullscreen"
 tab = "Appearance"
 section = "Windows"
-label = "Show window number in title bar"
+label = "Auto-hide menu bar in non-native fullscreen"
 type = "bool"
 default = true
-help = "A window with a title bar shows its number (1, 2, ...) as a label at the right of the title, with its switch shortcut. A window without a title bar, in full screen, or with Show window number in titlebar accessory? off, starts its title with \"N. \" instead."
+help = "A full screen window hides its menu bar, which comes back when the window leaves full screen. Turn this off to keep the menu bar visible; this is useful for multi-monitor systems."
 
 [[setting]]
 key = "OpenProfilesInNewWindow"
@@ -782,40 +782,13 @@ choices = [ { value = 0, label = "Let Windows decide the position of new windows
 help = "Where a new window opens. Smart Window Placement puts new windows where the most free space is available. Saved frames are kept per profile."
 
 [[setting]]
-key = "HideScrollbar"
+key = "WindowNumber"
 tab = "Appearance"
 section = "Windows"
-label = "Hide scrollbars"
-type = "bool"
-default = false
-help = "Hide scrollbars"
-
-[[setting]]
-key = "UseBorder"
-tab = "Appearance"
-section = "Windows"
-label = "Heavy border around windows in light mode"
-type = "bool"
-default = false
-help = "Draws a border around the window when the OS otherwise would not. This is effective in light mode or when the window contains a transparent pane. Windows 11 draws it; Windows 10 shows none."
-
-[[setting]]
-key = "DisableFullscreenTransparency"
-tab = "Appearance"
-section = "Windows"
-label = "Disable transparency for non-native fullscreen windows by default"
-type = "bool"
-default = false
-help = "Turns off window transparency automatically when a window enters full screen; leaving full screen turns it back on unless you toggled it meanwhile."
-
-[[setting]]
-key = "HideMenuBarInFullscreen"
-tab = "Appearance"
-section = "Windows"
-label = "Auto-hide menu bar in non-native fullscreen"
+label = "Show window number in title bar"
 type = "bool"
 default = true
-help = "A full screen window hides its menu bar, which comes back when the window leaves full screen. Turn this off to keep the menu bar visible; this is useful for multi-monitor systems."
+help = "A window with a title bar shows its number (1, 2, ...) as a label at the right of the title, with its switch shortcut. A window without a title bar, in full screen, or with Show window number in titlebar accessory? off, starts its title with \"N. \" instead."
 
 [[setting]]
 key = "EnableDivisionView"
@@ -827,13 +800,40 @@ default = true
 help = "A one-point line (2 pixels at 150% scale and above) separates the title bar from the terminal when no tab bar shows at the top of the window. It is not drawn in full screen, in windows without a title bar, or with the Minimal theme."
 
 [[setting]]
-key = "OnlyWhenMoreTabs"
+key = "UseBorder"
+tab = "Appearance"
+section = "Windows"
+label = "Heavy border around windows in light mode"
+type = "bool"
+default = false
+help = "Draws a border around the window when the OS otherwise would not. This is effective in light mode or when the window contains a transparent pane. Windows 11 draws it; Windows 10 shows none."
+
+[[setting]]
+key = "HideScrollbar"
+tab = "Appearance"
+section = "Windows"
+label = "Hide scrollbars"
+type = "bool"
+default = false
+help = "Hide scrollbars"
+
+[[setting]]
+key = "DisableFullscreenTransparency"
+tab = "Appearance"
+section = "Windows"
+label = "Disable transparency for non-native fullscreen windows by default"
+type = "bool"
+default = false
+help = "Turns off window transparency automatically when a window enters full screen; leaving full screen turns it back on unless you toggled it meanwhile."
+
+[[setting]]
+key = "QuitWhenAllWindowsClosed"
 tab = "General"
 section = "Closing"
-label = "Confirm closing multiple sessions"
+label = "Quit when all windows are closed"
 type = "bool"
-default = true
-help = "Closing a tab or window with more than one running session asks first."
+default = false
+help = "Termurion ends when its last window closes. When this is off, Termurion keeps running with its icon in the notification area; a click on the icon opens a window when Advanced > General > Open a new window when you click the notification area icon (OpenUntitledFile) is on."
 
 [[setting]]
 key = "MoveLeftAfterClosingTab"
@@ -845,13 +845,13 @@ default = false
 help = "Select the tab to the left when closing a tab?\nIf disabled, the tab to the right of the closing tab will be selected."
 
 [[setting]]
-key = "PromptOnQuit"
+key = "OnlyWhenMoreTabs"
 tab = "General"
 section = "Closing"
-label = "Confirm \"Quit Termurion\""
+label = "Confirm closing multiple sessions"
 type = "bool"
 default = true
-help = "Quitting asks first while a terminal window is open."
+help = "Closing a tab or window with more than one running session asks first."
 
 [[setting]]
 key = "AdjustWindowForFontSizeChange"
@@ -881,6 +881,15 @@ default = true
 help = "The OSC 0 and OSC 2 control sequences set the window title. This setting controls whether such a control sequence changes the window title associated with all sessions in the window, or only with the one in which it was received. The window title is derived from the window title associated with the currently active session in that window."
 
 [[setting]]
+key = "PromptOnQuit"
+tab = "General"
+section = "Closing"
+label = "Confirm \"Quit Termurion\""
+type = "bool"
+default = true
+help = "Quitting asks first while a terminal window is open."
+
+[[setting]]
 key = "PromptOnQuitEvenIfThereAreNoWindows"
 tab = "General"
 section = "Closing"
@@ -890,15 +899,6 @@ default = false
 help = "Quitting asks first even with no terminal window open (only with Confirm \"Quit Termurion\")."
 
 [[setting]]
-key = "QuitWhenAllWindowsClosed"
-tab = "General"
-section = "Closing"
-label = "Quit when all windows are closed"
-type = "bool"
-default = false
-help = "Termurion ends when its last window closes. When this is off, Termurion keeps running with its icon in the notification area; a click on the icon opens a window when Advanced > General > Open a new window when you click the notification area icon (OpenUntitledFile) is on."
-
-[[setting]]
 key = "NeverBlockSystemShutdown"
 tab = "General"
 section = "Closing"
@@ -906,15 +906,6 @@ label = "Disable all confirmations on system shutdown, restart, and log out"
 type = "bool"
 default = false
 help = "Windows shutting down, restarting, or signing out never waits for Termurion's questions."
-
-[[setting]]
-key = "OpenBookmark"
-tab = "General"
-section = "Startup"
-label = "Open profiles window"
-type = "bool"
-default = false
-help = "The Profiles window also opens when Termurion starts."
 
 [[setting]]
 key = "OpenArrangementAtStartup"
@@ -933,6 +924,15 @@ label = "Only restore hotkey window"
 type = "bool"
 default = false
 help = "Termurion starts with only its hotkey windows. With no hotkey window a window opens anyway, since Windows would show nothing."
+
+[[setting]]
+key = "OpenBookmark"
+tab = "General"
+section = "Startup"
+label = "Open profiles window"
+type = "bool"
+default = false
+help = "The Profiles window also opens when Termurion starts."
 
 [[setting]]
 key = "RestoreWindowsToSameSpaces"
@@ -1613,24 +1613,6 @@ default = false
 help = "Suppress warning about pasting a single line ending in a newline when at the shell prompt.\nThis requires Shell Integration to be installed."
 
 [[setting]]
-key = "LoadPrefsFromCustomFolder"
-tab = "General"
-section = "Settings"
-label = "Load settings from a custom folder or URL"
-type = "bool"
-default = false
-help = "Load settings from a custom folder or URL"
-
-[[setting]]
-key = "PrefsCustomFolder"
-tab = "General"
-section = "Settings"
-label = "Custom folder"
-type = "string"
-default = ""
-help = "The folder (or http:// or https:// URL) holding termurion-settings.toml. Network paths are not supported."
-
-[[setting]]
 key = "SavePasteHistory"
 tab = "General"
 section = "Settings"
@@ -1638,6 +1620,24 @@ label = "Save copy/paste and command history to disk"
 type = "bool"
 default = false
 help = "Persists paste history and command history between launches."
+
+[[setting]]
+key = "AutoCommandHistory"
+tab = "General"
+section = "Settings"
+label = "Auto Command Completion"
+type = "bool"
+default = false
+help = "Shows the commands from the shell history that start with what is typed at the prompt, as you type."
+
+[[setting]]
+key = "LoadPrefsFromCustomFolder"
+tab = "General"
+section = "Settings"
+label = "Load settings from a custom folder or URL"
+type = "bool"
+default = false
+help = "Load settings from a custom folder or URL"
 
 [[setting]]
 key = "PasteHistoryMaxOptions"
@@ -1793,13 +1793,13 @@ default = 1.0
 help = "When sorting command history for auto command completion: how much should the time-since-last-use of a command contribute to its score? A higher score moves the command closer to the top of the list.\nUse 0 to ignore time since last use."
 
 [[setting]]
-key = "AutoCommandHistory"
+key = "PrefsCustomFolder"
 tab = "General"
 section = "Settings"
-label = "Auto Command Completion"
-type = "bool"
-default = false
-help = "Shows the commands from the shell history that start with what is typed at the prompt, as you type."
+label = "Custom folder"
+type = "string"
+default = ""
+help = "The folder (or http:// or https:// URL) holding termurion-settings.toml. Network paths are not supported."
 
 [[setting]]
 key = "AutocompleteMaxOptions"
@@ -2015,6 +2015,15 @@ choices = [ { value = 0, label = "Windows" }, { value = 1, label = "Tabs in a ne
 help = "Where tmux windows open when Termurion attaches. Tabs in the attaching window is iTerm2's \"Open tmux windows as tabs in the attaching window\" checkbox."
 
 [[setting]]
+key = "AutoHideTmuxClientSession"
+tab = "General"
+section = "tmux"
+label = "Automatically bury the tmux client session after connecting"
+type = "bool"
+default = false
+help = "Buried sessions appear under Session > Buried Sessions. When this setting is enabled, window sizes are restored when attaching to an existing tmux session."
+
+[[setting]]
 key = "TmuxUsesDedicatedProfile"
 tab = "General"
 section = "tmux"
@@ -2022,15 +2031,6 @@ label = "Use \u201Ctmux\u201D profile rather than profile of the connecting sess
 type = "bool"
 default = true
 help = "tmux panes use a profile named tmux, made from the default profile the first time."
-
-[[setting]]
-key = "TmuxDashboardLimit"
-tab = "General"
-section = "tmux"
-label = "Don't open windows when attaching if there are at least this many windows"
-type = "int"
-default = 10
-help = "When a tmux session has more windows than this, none open on attach (iTerm2 tests more than, not at least)."
 
 [[setting]]
 key = "AnonymousTmuxWindowsOpenInCurrentWindow"
@@ -2187,6 +2187,24 @@ default = false
 help = "Suppress kill/hide dialog when closing a tmux window."
 
 [[setting]]
+key = "TmuxDashboardLimit"
+tab = "General"
+section = "tmux"
+label = "Don't open windows when attaching if there are at least this many windows"
+type = "int"
+default = 10
+help = "When a tmux session has more windows than this, none open on attach (iTerm2 tests more than, not at least)."
+
+[[setting]]
+key = "UseTmuxStatusBar"
+tab = "General"
+section = "tmux"
+label = "Status bar shows tmux status bar content, not native components"
+type = "bool"
+default = true
+help = "In a tmux tab with the status bar on, the bar shows tmux's status-left and status-right instead of the profile's components."
+
+[[setting]]
 key = "TmuxPauseModeAgeLimit"
 tab = "General"
 section = "tmux"
@@ -2194,24 +2212,6 @@ label = "Pause a pane if catching up would take longer than (seconds):"
 type = "int"
 default = 120
 help = "The \"pause\" feature requires tmux 3.2 or later."
-
-[[setting]]
-key = "TmuxUnpauseAutomatically"
-tab = "General"
-section = "tmux"
-label = "Unpause automatically"
-type = "bool"
-default = false
-help = "A pane tmux paused unpauses by itself after a second."
-
-[[setting]]
-key = "TmuxWarnBeforePausing"
-tab = "General"
-section = "tmux"
-label = "Warn before pausing"
-type = "bool"
-default = true
-help = "Shows how many seconds are left before tmux pauses a pane that buffers too much."
 
 [[setting]]
 key = "NoSyncSuppressCaptureOutputToolNotVisibleWarning"
@@ -2312,6 +2312,24 @@ label = "Max response tokens"
 type = "int"
 default = 8192
 help = "Max response tokens\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AIZeroDataRetention"
+tab = "General"
+section = "AI"
+label = "Enable \u201Czero data retention\u201D\u00A0(send whole conversation every time)"
+type = "bool"
+default = false
+help = "Enable \u201czero data retention\u201d\u00a0(send whole conversation every time)\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIModelUpdatesEnabled"
+tab = "General"
+section = "AI"
+label = "Automatically update available AI models from live online database"
+type = "bool"
+default = false
+help = "Automatically update available AI models from live online database\nSet by Settings > General > AI."
 
 [[setting]]
 key = "AI Timeout"
@@ -2467,24 +2485,6 @@ default = []
 help = "Custom header list (legacy)\nLegacy; copied once into each manual model."
 
 [[setting]]
-key = "AIZeroDataRetention"
-tab = "General"
-section = "AI"
-label = "Enable \u201Czero data retention\u201D\u00A0(send whole conversation every time)"
-type = "bool"
-default = false
-help = "Enable \u201czero data retention\u201d\u00a0(send whole conversation every time)\nSet by Settings > General > AI."
-
-[[setting]]
-key = "AIModelUpdatesEnabled"
-tab = "General"
-section = "AI"
-label = "Automatically update available AI models from live online database"
-type = "bool"
-default = false
-help = "Automatically update available AI models from live online database\nSet by Settings > General > AI."
-
-[[setting]]
 key = "AIPermissionCheckTerminalState"
 tab = "General"
 section = "AI"
@@ -2505,26 +2505,6 @@ choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow 
 help = "Run Commands\nSet by Settings > General > AI."
 
 [[setting]]
-key = "AIPermissionViewHistory"
-tab = "General"
-section = "AI"
-label = "View Contents"
-type = "enum"
-default = 0
-choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
-help = "View Contents\nSet by Settings > General > AI."
-
-[[setting]]
-key = "AIPermissionWriteToClipboard"
-tab = "General"
-section = "AI"
-label = "Write to Clipboard"
-type = "enum"
-default = 0
-choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
-help = "Write to Clipboard\nSet by Settings > General > AI."
-
-[[setting]]
 key = "AIPermissionTypeForYou"
 tab = "General"
 section = "AI"
@@ -2535,6 +2515,16 @@ choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow 
 help = "Control Terminal\nSet by Settings > General > AI."
 
 [[setting]]
+key = "AIPermissionViewHistory"
+tab = "General"
+section = "AI"
+label = "View Contents"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
+help = "View Contents\nSet by Settings > General > AI."
+
+[[setting]]
 key = "AIPermissionViewManpages"
 tab = "General"
 section = "AI"
@@ -2543,6 +2533,16 @@ type = "enum"
 default = 0
 choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
 help = "View Manpages\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIPermissionWriteToClipboard"
+tab = "General"
+section = "AI"
+label = "Write to Clipboard"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
+help = "Write to Clipboard\nSet by Settings > General > AI."
 
 [[setting]]
 key = "AIPermissionWriteToFilesystem"
@@ -2805,6 +2805,15 @@ default = false
 help = "Suppress announcement that tmux will pause a session."
 
 [[setting]]
+key = "TmuxWarnBeforePausing"
+tab = "General"
+section = "tmux"
+label = "Warn before pausing"
+type = "bool"
+default = true
+help = "Shows how many seconds are left before tmux pauses a pane that buffers too much."
+
+[[setting]]
 key = "OpenTmuxDashboardIfHiddenWindows"
 tab = "General"
 section = "tmux"
@@ -2814,22 +2823,13 @@ default = true
 help = "Opens the tmux Dashboard after an attach that left windows hidden."
 
 [[setting]]
-key = "TmuxSyncClipboard"
+key = "TmuxUnpauseAutomatically"
 tab = "General"
 section = "tmux"
-label = "Mirror tmux paste buffer to local clipboard"
+label = "Unpause automatically"
 type = "bool"
 default = false
-help = "When tmux's paste buffer changes, its text goes to the clipboard."
-
-[[setting]]
-key = "AutoHideTmuxClientSession"
-tab = "General"
-section = "tmux"
-label = "Automatically bury the tmux client session after connecting"
-type = "bool"
-default = false
-help = "Buried sessions appear under Session > Buried Sessions. When this setting is enabled, window sizes are restored when attaching to an existing tmux session."
+help = "A pane tmux paused unpauses by itself after a second."
 
 [[setting]]
 key = "NoSyncAutoBurialReveal"
@@ -2871,6 +2871,15 @@ choices = [ { value = 0, label = "Top" }, { value = 1, label = "Bottom" } ]
 help = "Where a status bar goes: at the top or the bottom of the tab's content, or of each pane with separate status bars per pane."
 
 [[setting]]
+key = "ShowPaneTitlesEvenIfOnlyOnePane"
+tab = "Appearance"
+section = "Panes"
+label = "\u2026even if there is only one pane"
+type = "bool"
+default = false
+help = "Keeps the title bar on a pane that is alone in its tab."
+
+[[setting]]
 key = "SeparateStatusBarsPerPane"
 tab = "Appearance"
 section = "Panes"
@@ -2880,22 +2889,13 @@ default = false
 help = "Each split pane shows its own profile's status bar; off, the window shows the current session's status bar across the tab. tmux tabs always share one bar."
 
 [[setting]]
-key = "ShowPaneTitles"
+key = "PerPaneBackgroundImage"
 tab = "Appearance"
 section = "Panes"
-label = "Show per-pane title bars"
+label = "Separate background images per pane"
 type = "bool"
 default = true
-help = "Shows a small title bar above each split pane, with the session's title, a close button and a menu. With separate status bars per pane at the top, each pane's status bar sits in its title bar."
-
-[[setting]]
-key = "ShowPaneTitlesEvenIfOnlyOnePane"
-tab = "Appearance"
-section = "Panes"
-label = "\u2026even if there is only one pane"
-type = "bool"
-default = false
-help = "Keeps the title bar on a pane that is alone in its tab."
+help = "Each split pane shows its own profile's background image; off, the active pane's image spans the whole tab."
 
 [[setting]]
 key = "StatusBarHeight"
@@ -2907,13 +2907,13 @@ default = 21.0
 help = "Height of the status bar in points.\nThis will also affect the height of per-pane title bars becuase the status bar may be embedded in it. A change here takes effect at once."
 
 [[setting]]
-key = "UseTmuxStatusBar"
+key = "TmuxSyncClipboard"
 tab = "General"
 section = "tmux"
-label = "Status bar shows tmux status bar content, not native components"
+label = "Mirror tmux paste buffer to local clipboard"
 type = "bool"
-default = true
-help = "In a tmux tab with the status bar on, the bar shows tmux's status-left and status-right instead of the profile's components."
+default = false
+help = "When tmux's paste buffer changes, its text goes to the clipboard."
 
 [[setting]]
 key = "GitSearchPath"
@@ -3184,15 +3184,13 @@ default = false
 help = "Set once the single hotkey window of an older iTerm2 settings file has moved to its profile, so the move happens only once."
 
 [[setting]]
-key = "NotifyOnlyForCriticalShellIntegrationUpdates"
+key = "CheckTestRelease"
 tab = "General"
 section = "Software Update"
-label = "Ignore non-critical shell integration updates"
+label = "Update to Beta test releases"
 type = "bool"
-default = true
-help = "Sessions whose shell integration scripts are out of date show \"This account\u2019s Shell Integration scripts are out of date.\" When on, only critically old scripts (bash, zsh or fish before version 5, tcsh before 2) and scripts that name no shell are announced; when off, any script older than the latest for its shell is."
-
-# Milestone 13l: General > GPU Renderer, before Experimental (the last General section).
+default = false
+help = "Beta releases (GitHub prereleases) are offered too."
 
 [[setting]]
 key = "metalMaximizeThroughput"
@@ -3251,13 +3249,15 @@ default = true
 help = "Termurion checks its GitHub releases once a day and tells you about a newer one. It never downloads or installs anything."
 
 [[setting]]
-key = "CheckTestRelease"
+key = "NotifyOnlyForCriticalShellIntegrationUpdates"
 tab = "General"
 section = "Software Update"
-label = "Update to Beta test releases"
+label = "Ignore non-critical shell integration updates"
 type = "bool"
-default = false
-help = "Beta releases (GitHub prereleases) are offered too."
+default = true
+help = "Sessions whose shell integration scripts are out of date show \"This account\u2019s Shell Integration scripts are out of date.\" When on, only critically old scripts (bash, zsh or fish before version 5, tcsh before 2) and scripts that name no shell are announced; when off, any script older than the latest for its shell is."
+
+# Milestone 13l: General > GPU Renderer, before Experimental (the last General section).
 
 [[setting]]
 key = "Bidi"

@@ -2296,9 +2296,9 @@ mod tests {
         let order: Vec<&str> = schema::global().iter().filter(|s| s.section == "Remap Modifiers").map(|s| s.key.as_str()).collect();
         let at = |k: &str| order.iter().position(|o| *o == k).unwrap_or_else(|| panic!("{k}"));
         assert!(at("RemapModifiersGlobally") < at("ForceKeyboard"));
-        assert!(at("ForceKeyboard") < at("ForceKeyboardOncePerSession"));
-        assert!(at("ForceKeyboardOncePerSession") < at("KeyboardLocale"));
-        assert!(at("KeyboardLocale") < at("AllowSymbolicHotKeys"));
+        assert!(at("ForceKeyboard") < at("KeyboardLocale"));
+        assert!(at("KeyboardLocale") < at("ForceKeyboardOncePerSession"));
+        assert!(at("ForceKeyboardOncePerSession") < at("AllowSymbolicHotKeys"));
         // The locale and the once-per-session switch follow Force keyboard.
         let mut g = Globals::empty(std::path::Path::new("keys-rows-test.toml"));
         for key in ["KeyboardLocale", "ForceKeyboardOncePerSession"] {
@@ -2554,9 +2554,9 @@ mod tests {
             row("PrefsCustomFolder").help,
             "The folder (or http:// or https:// URL) holding termurion-settings.toml. Network paths are not supported."
         );
-        // The rows sit before "Save copy/paste and command history to disk" (Task 8's order).
+        // iTerm2's xib draws the history switch above the external settings rows (`ui_labels` holds the order).
         let general: Vec<&str> = schema::global().iter().filter(|s| s.tab == "General" && s.section == "Settings").map(|s| s.key.as_str()).collect();
-        assert_eq!(&general[..3], ["LoadPrefsFromCustomFolder", "PrefsCustomFolder", "SavePasteHistory"]);
+        assert_eq!(&general[..3], ["SavePasteHistory", "AutoCommandHistory", "LoadPrefsFromCustomFolder"]);
     }
 
     /// m13v2 Task 1: the Software Update rows (`IP:50`, `IP:51`, `IP:716`).
@@ -3160,8 +3160,8 @@ mod tests {
         let mode = schema::find_global("WordSelectionMode").unwrap();
         let choices: Vec<(Value, &str)> = mode.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
         assert_eq!(choices, vec![(Value::Integer(0), "List of Characters"), (Value::Integer(1), "Regular Expression")]);
-        // iTerm2's pane order: copy, trailing newline, clipboard access, the word rows, triple
-        // click, command click, dropped names.
+        // iTerm2's xib order, top to bottom: copy, trailing newline, clipboard access, the word rows,
+        // triple click, double click, copy mode, command click, dropped names.
         let order: Vec<&str> = page_rows("General").iter().filter(|s| s.section == "Selection").map(|s| s.key.as_str()).collect();
         assert_eq!(
             order,
@@ -3170,14 +3170,14 @@ mod tests {
                 "CopyLastNewline",
                 "AllowClipboardAccess",
                 "PhonyAllowSendingClipboardContents",
-                "DoubleClickPerformsSmartSelection",
                 "WordSelectionMode",
-                "WordCharacters",
                 "WordSelectionRegexPattern",
+                "WordCharacters",
                 "TripleClickSelectsFullWrappedLines",
+                "DoubleClickPerformsSmartSelection",
+                "EnterCopyModeAutomatically",
                 "ClickToSelectCommand",
-                "WrapDroppedFilenamesInQuotesWhenPasting",
-                "EnterCopyModeAutomatically"
+                "WrapDroppedFilenamesInQuotesWhenPasting"
             ]
         );
     }

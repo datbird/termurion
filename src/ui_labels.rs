@@ -22,6 +22,10 @@ struct Control {
     source: String,
     #[serde(default)]
     choices: Vec<(String, String)>,
+    pane: Option<String>,
+    top: Option<f64>,
+    left: Option<f64>,
+    item_index: Option<i64>,
 }
 
 fn table() -> &'static Vec<Control> {
@@ -428,6 +432,95 @@ fn no_row_draws_a_placeholder() {
     ] {
         for needle in [count, promise, later] {
             assert!(!src.contains(needle), "{name} still draws {needle:?}");
+        }
+    }
+}
+
+/// Where a control sits in iTerm2's xib: (item index of its tab view, top, left), y AppKit-style (up).
+type Place = (i64, f64, f64);
+
+/// The key a group of keys is drawn at: one function draws these together, at the lead key's place.
+fn lead(key: &str) -> &str {
+    crate::settings_search::lead(key)
+}
+
+fn place(scope: &str, key: &str, tab: &str) -> Option<Place> {
+    const PROFILE: [(&str, &str); 8] = [
+        ("ProfilesGeneralPreferencesViewController", "General"),
+        ("ProfilesColorsPreferencesViewController", "Colors"),
+        ("ProfilesTextPreferencesViewController", "Text"),
+        ("ProfilesWindowPreferencesViewController", "Window"),
+        ("ProfilesTerminalPreferencesViewController", "Terminal"),
+        ("ProfilesSessionPreferencesViewController", "Session"),
+        ("ProfilesKeysPreferencesViewController", "Keys"),
+        ("ProfilesAdvancedPreferencesViewController", "Advanced"),
+    ];
+    const GLOBAL: [(&str, &str); 4] = [
+        ("GeneralPreferencesViewController", "General"),
+        ("AppearancePreferencesViewController", "Appearance"),
+        ("KeysPreferencesViewController", "Keys"),
+        ("PointerPreferencesViewController", "Pointer"),
+    ];
+    let panes: &[(&str, &str)] = if scope == "profile" { &PROFILE } else { &GLOBAL };
+    for k in [lead(key), key] {
+        if let Some(c) = control_for(scope, k)
+            && let (Some(pane), Some(top), Some(left)) = (&c.pane, c.top, c.left)
+            && panes.iter().any(|(p, t)| p == pane && *t == tab)
+        {
+            return Some((c.item_index.unwrap_or(0), top, left));
+        }
+    }
+    None
+}
+
+/// Whether `a` draws before `b` (or on the same line, left of it): a row is six points tall.
+fn not_after(a: Place, b: Place) -> bool {
+    if a.0 != b.0 {
+        return a.0 < b.0;
+    }
+    if (a.1 - b.1).abs() > 6.0 {
+        return a.1 > b.1;
+    }
+    a.2 <= b.2
+}
+
+/// Every pane draws its controls in the order of iTerm2's xib, top to bottom and left to right: the
+/// schema's row order is the draw order (`scripts/order-schema.py` writes it). A page's section is
+/// one group of rows; a profile tab is one group. Rows with no place in the xib are left where they are.
+#[test]
+fn rows_are_in_the_xibs_order() {
+    let mut bad = Vec::new();
+    let mut check = |scope: &str, group: String, rows: Vec<(&str, &str)>| {
+        let placed: Vec<(&str, Place)> = rows.iter().filter_map(|(key, tab)| place(scope, key, tab).map(|p| (*key, p))).collect();
+        for w in placed.windows(2) {
+            if !not_after(w[0].1, w[1].1) {
+                bad.push(format!("{scope} {group}: {} should come after {}", w[0].0, w[1].0));
+            }
+        }
+    };
+    for tab in crate::schema::TABS {
+        check("profile", (*tab).to_string(), crate::schema::profile().iter().filter(|s| s.tab == *tab).map(|s| (s.key.as_str(), s.tab.as_str())).collect());
+    }
+    for tab in ["General", "Appearance", "Keys", "Pointer"] {
+        let mut sections: Vec<&str> = Vec::new();
+        for s in crate::schema::global().iter().filter(|s| s.tab == tab) {
+            if !sections.contains(&s.section.as_str()) {
+                sections.push(&s.section);
+            }
+        }
+        for section in sections {
+            check("global", format!("{tab}/{section}"), crate::schema::global().iter().filter(|s| s.tab == tab && s.section == section).map(|s| (s.key.as_str(), s.tab.as_str())).collect());
+        }
+    }
+    assert!(bad.is_empty(), "{} rows out of the xib's order:\n{}", bad.len(), bad.join("\n"));
+}
+
+/// The profile tabs have no section headings, as iTerm2's panes have none: one group, no name.
+#[test]
+fn profile_tabs_draw_no_section_headings() {
+    for tab in crate::schema::TABS {
+        for (name, rows) in crate::settings_ui::sections(tab) {
+            assert!(name.is_empty() && !rows.is_empty(), "{tab}: {name:?}");
         }
     }
 }
