@@ -867,6 +867,7 @@ mod tests {
         ("app/settings_export_ui.rs", "restored_scripts_done", 1, "Termurion's own settings folders and its export and import staging folders"),
         ("app/settings_export_ui.rs", "runtime_requirements", 2, "Termurion's own settings folders and its export and import staging folders"),
         ("app/settings_export_ui.rs", "stage_import_with", 3, "Termurion's own settings folders and its export and import staging folders"),
+        ("app/restore_ui.rs", "restore_after_trouble", 1, "Termurion's own saved-windows state file, removed when the person discards the saved windows"),
         ("app/panels_app.rs", "panel_act", 1, "Termurion's own crash dump, found in its own crash folder and deleted by Discard"),
         ("app/panels_app.rs", "read_tail", 2, "Termurion's own crash log file in its own folder"),
         ("crash_report.rs", "pending", 2, "Termurion's own crash dump folder, listed for a dump this run has not reported"),

@@ -431,7 +431,7 @@ impl Wizard {
     /// `shellIntegrationInstallerSkipStage`.
     pub fn skip(&mut self) {
         let last = if self.utilities { 4 } else { 3 };
-        if self.stage + 1 <= last {
+        if self.stage < last {
             self.stage += 1;
         }
     }
@@ -782,5 +782,106 @@ fn buttons_enabled(ui: &mut egui::Ui, acts: &mut Vec<Act>, items: &[(&str, Side,
     });
     if let Some(name) = clicked {
         on(name, acts);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lines(l: &[&str]) -> Vec<String> {
+        l.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_texts_are_iterm2s_with_termurion_for_the_app() {
+        assert_eq!(HEADER, "Install Shell Integration");
+        assert_eq!(DOWNLOAD_CAPTION, "Downloads the latest version. Runs curl | bash");
+        assert_eq!(OFFLINE_CAPTION, "Guided manual installation. No download required.");
+        assert_eq!(discovered("zsh"), "\u{2705} Discovered your shell: you use \u{201c}zsh\u{201d}.");
+        assert_eq!(update_step(4), "Step 4. Update your shell\u{2019}s dotfile.");
+        assert!(SHELL_NOT_SUPPORTED.ends_with("Only bash, fish, xonsh, and zsh work with shell integration"));
+        for t in [FIRST_DESCRIPTION, SECOND_TEXT, UTILITIES_DESCRIPTION, FINISHED_TEXT] {
+            assert!(!t.contains("iTerm2") && !t.contains("\u{2014}"), "{t}");
+        }
+    }
+
+    #[test]
+    fn the_curl_command_is_a_blank_line_then_the_pipe() {
+        let c = curl_command(false);
+        assert!(c.starts_with("\ncurl -L ") && c.ends_with(" | bash"), "{c}");
+        assert_ne!(c, curl_command(true), "the utilities form names another script");
+        assert!(confirm_text(true, false).starts_with(WAITING_FOR_COMMAND));
+        assert!(confirm_text(false, false).starts_with(PRESS_CONTINUE_TO_RUN));
+    }
+
+    #[test]
+    fn shells_are_named_by_the_last_word_of_the_path() {
+        assert_eq!(Shell::from_name("zsh"), Shell::Zsh);
+        assert_eq!(Shell::from_name("tcsh"), Shell::Unknown, "tcsh ships no script");
+        assert_eq!(Shell::Fish.name(), "fish");
+    }
+
+    #[test]
+    fn discovery_finds_the_shell_then_the_zsh_dotfile_folder() {
+        let mut w = Wizard::new(Plan::Unix, false, "");
+        w.choose_offline();
+        w.stage = 0;
+        let acts = w.paste_continue();
+        assert_eq!(acts, vec![Act::SendText("echo My shell is $SHELL\n".to_string())]);
+        assert!(w.busy());
+        // A line that is not the answer changes nothing.
+        assert!(w.output(&lines(&["echo My shell is $SHELL"])).is_empty());
+        assert!(w.busy());
+        let next = w.output(&lines(&["My shell is /bin/zsh"]));
+        assert_eq!(next, vec![Act::SendText(ZSH_DOTDIR_COMMAND.to_string())], "zsh asks where its dotfiles go");
+        assert_eq!(w.shell(), Shell::Zsh);
+        assert!(w.output(&lines(&["My dotfiles go in /home/x/.config/zsh"])).is_empty());
+        assert!(!w.busy());
+        assert_eq!(w.dotdir(), "/home/x/.config/zsh");
+        assert_eq!(w.stage, 1);
+        let (stage_lines, bold) = w.stage_lines();
+        assert!(stage_lines.iter().any(|l| l == &discovered("zsh")), "{stage_lines:?}");
+        assert!(bold.is_some());
+    }
+
+    #[test]
+    fn an_unsupported_shell_stops_the_install() {
+        let mut w = Wizard::new(Plan::Unix, false, "");
+        w.choose_offline();
+        w.stage = 0;
+        w.paste_continue();
+        w.output(&lines(&["My shell is /bin/tcsh"]));
+        assert_eq!(w.shell(), Shell::Unknown);
+        assert!(w.paste_continue().is_empty(), "no script for it, so Continue types nothing");
+        let (l, _) = w.stage_lines();
+        assert!(l.iter().any(|x| x == SHELL_NOT_SUPPORTED));
+    }
+
+    #[test]
+    fn the_script_is_written_through_a_here_document_of_the_shell() {
+        let steps = script_steps(Shell::Bash, "~", false).expect("bash has a script");
+        let typed: String = steps.iter().map(|s| s.text.as_str()).collect();
+        assert!(typed.contains("cat <<'EOF' > ~/.iterm2_shell_integration.bash\n"), "{typed}");
+        assert!(typed.contains("chmod +x ~/.iterm2_shell_integration.bash\n"));
+        assert!(script_steps(Shell::Unknown, "~", false).is_none());
+        // The terminal's answers are matched as the prompts print them.
+        assert_eq!(PS1, "^>>( |$)");
+        assert_eq!(PS2, "^>( |$)");
+    }
+
+    #[test]
+    fn skipping_moves_to_the_next_stage_and_back_returns() {
+        let mut w = Wizard::new(Plan::Unix, true, "");
+        w.choose_offline();
+        w.stage = 0;
+        w.skip();
+        assert_eq!(w.stage, 1);
+        w.paste_back();
+        assert_eq!(w.stage, 0);
+        let mut plain = Wizard::new(Plan::Unix, false, "");
+        plain.stage = 3;
+        plain.skip();
+        assert_eq!(plain.stage, 3, "without utilities there are four stages");
     }
 }

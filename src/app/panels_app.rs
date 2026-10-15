@@ -130,10 +130,8 @@ impl App {
     }
 
     pub(super) fn close_panel(&mut self, kind: Kind, pane: Option<PaneId>) {
-        if kind == Kind::ShellIntegration {
-            if let Some(p) = pane {
-                self.wizard_watch.remove(&p);
-            }
+        if let (Kind::ShellIntegration, Some(p)) = (kind, pane) {
+            self.wizard_watch.remove(&p);
         }
         self.panels.retain(|p| !(p.kind == kind && p.pane == pane));
     }
