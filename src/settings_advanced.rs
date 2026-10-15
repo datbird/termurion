@@ -74,7 +74,6 @@ pub const ACTIONS: &str = "Actions\u{2026}";
 pub const SYNTAX_HELP: &str = "Syntax Help";
 pub const OPEN_VISUALIZER: &str = "Open Regular Expression Visualizer";
 pub const OPEN_VISUALIZATION: &str = "Open Regular Expression Visualization";
-pub const CLOSE_VISUALIZATION: &str = "Close Regular Expression Visualization";
 pub const PLAYGROUND_PROMPT: &str = "Click on text in playground to test rules";
 pub const NO_MATCH: &str = "No match";
 pub const ACTIONS_HEADING: &str = "Smart Selection Actions";
@@ -202,11 +201,16 @@ pub fn smart_selection_rules(ui: &mut egui::Ui, profile: &mut Profile, open_url:
                     if ui.button(SYNTAX_HELP).clicked() {
                         *open_url = Some(crate::links::HELP_SMART_SELECTION.to_string());
                     }
-                    let open = ui.data(|d| d.get_temp::<bool>(viz_id)).unwrap_or(false);
+                    // iTerm2 shows the diagram in a popover that the button closes again; here the page
+                    // opens in the browser, so the button only opens (the Close title has nothing to close).
                     let first_use = ui.data(|d| d.get_temp::<bool>(viz_id)).is_none();
-                    let title = if open { CLOSE_VISUALIZATION } else if first_use { OPEN_VISUALIZER } else { OPEN_VISUALIZATION };
-                    if ui.button(title).clicked() {
-                        ui.data_mut(|d| d.insert_temp(viz_id, !open));
+                    if ui.button(if first_use { OPEN_VISUALIZER } else { OPEN_VISUALIZATION }).clicked() {
+                        let dark = ui.visuals().dark_mode;
+                        let failed = crate::regex_railroad::open(&r.regex, dark).err();
+                        ui.data_mut(|d| {
+                            d.insert_temp(viz_id, true);
+                            d.insert_temp(viz_id.with("error"), failed.unwrap_or_default());
+                        });
                     }
                 });
                 ui.end_row();
@@ -231,8 +235,8 @@ pub fn smart_selection_rules(ui: &mut egui::Ui, profile: &mut Profile, open_url:
             if let Err(e) = fancy_regex::Regex::new(&smartsel::to_rust_regex(&r.regex)) {
                 ui.colored_label(egui::Color32::from_rgb(0xff, 0x6b, 0x6b), format!("This expression does not compile, so the rule is skipped: {e}"));
             }
-            if ui.data(|d| d.get_temp::<bool>(viz_id)).unwrap_or(false) {
-                egui::ScrollArea::horizontal().id_salt("smart-visualizer").show(ui, |ui| crate::regex_outline::show(ui, &crate::regex_outline::parse(&r.regex)));
+            if let Some(e) = ui.data(|d| d.get_temp::<String>(viz_id.with("error"))).filter(|e| !e.is_empty()) {
+                ui.colored_label(egui::Color32::from_rgb(0xff, 0x6b, 0x6b), format!("The visualization could not be opened: {e}"));
             }
             if ui.data(|d| d.get_temp::<bool>(actions_id)).unwrap_or(false) {
                 ui.separator();
