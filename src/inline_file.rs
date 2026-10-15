@@ -131,8 +131,7 @@ pub fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     // A high-risk type is kept as bytes under a neutral name (`inert_files::neutralized`), so the
     // question, the refusal check and the save all see the name that is written. A type the shell
     // reads on listing stays refused (12d), never renamed.
-    let clean = clean_name(name);
-    let clean = if crate::inert_files::refused_on_listing(&clean) { clean } else { crate::inert_files::neutralized(&clean) };
+    let clean = suggested_name(name);
     let first = dir.join(&clean);
     if !crate::localfs::local_exists(&first) {
         return first;
@@ -141,6 +140,13 @@ pub fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
     (1..).map(|n| dir.join(format!("{stem} ({n}){ext}"))).find(|c| !crate::localfs::local_exists(c)).unwrap_or(first)
+}
+
+/// The name the Choose... save dialog starts with: the name `save` would use, so a high-risk type
+/// (`setup.exe`) is offered as `setup.exe.download`. The person may still type another name.
+pub fn suggested_name(name: &str) -> String {
+    let clean = clean_name(name);
+    if crate::inert_files::refused_on_listing(&clean) { clean } else { crate::inert_files::neutralized(&clean) }
 }
 
 /// Saves a download at the path the person chose, as it is (`TerminalFile.m:97-101`): the one
@@ -360,6 +366,14 @@ mod tests {
         let mut out = std::io::Cursor::new(Vec::new());
         img.write_to(&mut out, image::ImageFormat::Png).unwrap();
         base64::engine::general_purpose::STANDARD.encode(out.into_inner())
+    }
+
+    #[test]
+    fn the_save_dialog_is_offered_the_neutral_name() {
+        assert_eq!(suggested_name("setup.exe"), "setup.exe.download");
+        assert_eq!(suggested_name("C:\\x\\setup.exe"), "setup.exe.download");
+        assert_eq!(suggested_name("notes.txt"), "notes.txt");
+        assert_eq!(suggested_name("setup.exe"), unique_path(std::path::Path::new("Z:\\no-such-folder"), "setup.exe").file_name().unwrap().to_string_lossy());
     }
 
     #[test]

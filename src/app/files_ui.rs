@@ -241,7 +241,7 @@ impl App {
     /// with the error "Canceled." (`TerminalFile.m:157-166`). The download question follows.
     pub(super) fn download_where_answered(&mut self, pane: PaneId, mut d: crate::inline_file::Download, index: usize) {
         if index == 1 {
-            let mut dialog = rfd::FileDialog::new().set_title("Save Terminal-Initiated Download").set_file_name(crate::inline_file::clean_name(&d.name));
+            let mut dialog = rfd::FileDialog::new().set_title("Save Terminal-Initiated Download").set_file_name(crate::inline_file::suggested_name(&d.name));
             if let Some(dir) = self.downloads_folder() {
                 dialog = dialog.set_directory(dir);
             }

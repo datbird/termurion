@@ -587,7 +587,7 @@ pub struct App {
     /// The same for a status bar's Progress component.
     paste_status_hits: Vec<(PaneId, scene::PasteHits)>,
     /// Keys typed while a paste runs, held until it ends or passthrough turns on.
-    queued_keys: HashMap<PaneId, Vec<KeyEvent>>,
+    queued_keys: HashMap<PaneId, Vec<crate::paste_view::Held<KeyEvent, Mods>>>,
     /// Passthrough just turned on: send the held keys now.
     flush_queued_keys: bool,
     /// A refused resize waiting for the person's answer, by session.

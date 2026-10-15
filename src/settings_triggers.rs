@@ -80,6 +80,16 @@ thread_local! {
     static CPU: std::cell::RefCell<Vec<Vec<f64>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// Where the profile's trigger `i` sits in a screen's list, which has no browser-action triggers
+/// (`triggers_of` drops them): the count of terminal triggers before it. None for a browser action.
+pub fn screen_index(list: &[Trigger], i: usize) -> Option<usize> {
+    let t = list.get(i)?;
+    if triggers::is_browser_action(&t.action) {
+        return None;
+    }
+    Some(list[..i].iter().filter(|t| !triggers::is_browser_action(&t.action)).count())
+}
+
 /// The times of the session Edit Session points at (empty: none).
 pub fn set_cpu(samples: Vec<Vec<f64>>) {
     CPU.with(|c| *c.borrow_mut() = samples);
@@ -959,6 +969,7 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
             ui.weak("Select one trigger to view or edit");
         }
         Some(i) => {
+            let cpu_at = if browser { None } else { screen_index(&list, i) };
             let t = &mut list[i];
             ui.separator();
             egui::Grid::new("trigger-detail").num_columns(2).show(ui, |ui| {
@@ -1107,7 +1118,7 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
                 ui.end_row();
             });
             // The CPU time the session spent checking this trigger, when it has been timed.
-            if let Some(samples) = CPU.with(|c| c.borrow().get(i).filter(|s| !s.is_empty()).cloned()) {
+            if let Some(samples) = CPU.with(|c| cpu_at.and_then(|k| c.borrow().get(k).cloned()).filter(|s| !s.is_empty())) {
                 cpu_row(ui, &samples);
             }
             // The one confirm: what the trigger will do, and Turn On or Cancel.
@@ -1180,6 +1191,16 @@ mod tests {
 
     fn trig(name: &str, regex: &str, action: &str, parameter: &str) -> Trigger {
         Trigger { regex: regex.into(), action: action.into(), parameter: parameter.into(), instant: false, enabled: true, name: name.into(), job: String::new(), match_type: 0, extra: toml::Table::new() }
+    }
+
+    #[test]
+    fn cpu_samples_follow_the_screens_list() {
+        let browser = triggers::BROWSER_CATALOG[0].class;
+        let list = vec![trig("a", "a", browser, ""), trig("b", "b", "BounceTrigger", "0"), trig("c", "c", "BounceTrigger", "0")];
+        assert_eq!(screen_index(&list, 0), None, "a browser action is not on the screen");
+        assert_eq!(screen_index(&list, 1), Some(0));
+        assert_eq!(screen_index(&list, 2), Some(1));
+        assert_eq!(screen_index(&list, 3), None);
     }
 
     #[test]

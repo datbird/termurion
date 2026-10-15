@@ -634,6 +634,18 @@ pub fn open(regex: &str, dark: bool) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn markup_in_a_pattern_never_reaches_the_page_raw() {
+        for pat in ["<script>alert(1)</script>", "\"a\" & b <script>", "[<script>]+&\"", "(?<n>\\<script>)|&amp;\"x\"", "<img src=x onerror=alert(1)>"] {
+            for dark in [false, true] {
+                let html = page(pat, dark);
+                let body = html.split("<body").nth(1).unwrap();
+                assert!(!body.to_ascii_lowercase().contains("<script"), "raw script tag for {pat}: {html}");
+                assert!(!body.to_ascii_lowercase().contains("<img"), "raw img tag for {pat}: {html}");
+            }
+        }
+    }
+
     fn t(s: &str) -> D {
         D::Term(s.into())
     }

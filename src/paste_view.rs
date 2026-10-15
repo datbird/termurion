@@ -5,6 +5,15 @@
 
 use std::time::{Duration, Instant};
 
+/// A key held during a paste, with the modifiers down when it was typed (`M`), so it is replayed
+/// with those and not with whatever is held when the paste ends.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Held<E, M> {
+    pub key: E,
+    pub mods: M,
+    pub phys_mods: M,
+}
+
 /// `PasteView.xib:25`; the label of an upload is "Sending…" (`PasteViewController.m:97`).
 pub const PASTING: &str = "Pasting\u{2026}";
 pub const SENDING: &str = "Sending\u{2026}";
@@ -125,6 +134,17 @@ pub fn queues_keys(pasting: bool, passthrough: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_held_key_keeps_the_modifiers_it_was_typed_with() {
+        let mut shift = crate::mouse::Mods { shift: true, ..Default::default() };
+        let mut queue = Vec::new();
+        queue.push(super::Held { key: 'a', mods: shift, phys_mods: shift });
+        shift.shift = false; // released before the paste ends
+        queue.push(super::Held { key: 'b', mods: shift, phys_mods: shift });
+        assert!(queue[0].mods.shift && queue[0].phys_mods.shift);
+        assert!(!queue[1].mods.shift);
+    }
+
     use super::*;
 
     #[test]

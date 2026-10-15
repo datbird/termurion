@@ -262,9 +262,9 @@ impl App {
         }
     }
 
-    /// `showStats:`: the numbers in a text file in the temporary folder, opened in the default editor.
+    /// `showStats:`: the numbers in a text file in one text file in the temporary folder (each click overwrites it), opened in the default editor.
     fn show_trigger_stats(&mut self, stats: &str) {
-        let path = std::env::temp_dir().join(format!("trigger-stats-{}.txt", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join("trigger-stats.txt");
         let result = crate::localfs::LocalPath::judge(&path).ok_or_else(|| "the temporary folder is not a local folder".to_string()).and_then(|lp| {
             crate::localfs::write(&lp, stats).map_err(|e| e.to_string())?;
             crate::localfs::open_with_shell(&lp, None, false).map_err(|e| e.to_string())

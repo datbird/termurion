@@ -71,9 +71,37 @@ impl App {
             return false;
         }
         self.paste_view.entry(pane).or_default().typed(Instant::now(), waiting);
-        self.queued_keys.entry(pane).or_default().push(ev.clone());
+        self.queued_keys.entry(pane).or_default().push(pv::Held { key: ev.clone(), mods: self.mods, phys_mods: self.phys_mods });
         self.redraw();
         true
+    }
+
+    /// Sends keys a paste held to the pane they were typed in, each with the modifiers it had then
+    /// (iTerm2 writes them to that session). A pane that is gone drops them. The key path acts on the
+    /// focused pane, so the pane is made the focused one for the replay and put back after, unless a
+    /// key changed the focus itself.
+    fn replay_held_keys(&mut self, pane: PaneId, keys: Vec<pv::Held<KeyEvent, Mods>>, event_loop: &ActiveEventLoop) {
+        let Some(at) = self.tabs.iter().position(|t| t.layout.panes().contains(&pane)) else { return };
+        let (tab_id, was_active, was_focused) = (self.tabs[at].id, self.active, self.tabs[at].focused);
+        let (mods, phys) = (self.mods, self.phys_mods);
+        for held in &keys {
+            self.active = at;
+            self.tabs[at].focused = pane;
+            self.mods = held.mods;
+            self.phys_mods = held.phys_mods;
+            self.key(&held.key, event_loop);
+            if self.tabs.get(at).is_none_or(|t| t.id != tab_id) {
+                break;
+            }
+        }
+        self.mods = mods;
+        self.phys_mods = phys;
+        if let Some(t) = self.tabs.get_mut(at).filter(|t| t.id == tab_id && t.focused == pane) {
+            t.focused = was_focused;
+            if self.active == at && was_active < self.tabs.len() {
+                self.active = was_active;
+            }
+        }
     }
 
     /// Forgets what a finished paste left (`_keystrokePassthrough = NO` for the next one) and sends
@@ -92,11 +120,7 @@ impl App {
             .collect();
         for pane in ready {
             let keys = self.queued_keys.remove(&pane).unwrap_or_default();
-            if self.focused_id() == Some(pane) {
-                for ev in &keys {
-                    self.key(ev, event_loop);
-                }
-            }
+            self.replay_held_keys(pane, keys, event_loop);
         }
         let idle: Vec<PaneId> = self.paste_view.keys().copied().filter(|p| !self.pastes.get(p).is_some_and(|(q, _, _)| q.busy()) && !self.queued_keys.contains_key(p)).collect();
         for p in idle {
