@@ -10,7 +10,16 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 
 ## In progress
 
-(none)
+5. **The right-click menu, and other UI, was short-copied from iTerm2.** Seen 2026-10-14: the
+   terminal right-click menu lacks about a dozen of iTerm2's items (Restart, Bury, Terminal
+   State, Annotate Selection, Save Selection as Snippet, Add Trigger, Send Selection, Send Email,
+   Download with scp, Save, the New Window, New Tab and Select submenus), in a different order
+   and with different labels. Cause: it was hand-copied from a short summary, and the parity
+   inventory checks settings keys, not what each menu and window shows. Audits found the same in
+   10 code-built menus, 11 Settings panes (plus labels that paraphrase iTerm2) and 21 windows and
+   alerts (`superpowers/audits/2026-10-14-ui-*.md`). Fix: every menu, window, Settings control
+   and label as iTerm2 has it, in iTerm2's exact wording, with guard tests. Plan:
+   `superpowers/plans/2026-10-14-ui-parity-sweep.md`.
 
 ## Done
 
