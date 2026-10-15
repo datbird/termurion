@@ -17,6 +17,75 @@ pub fn taskbar_windows() -> Vec<Arc<Window>> {
     list.iter().filter_map(|w| w.upgrade()).collect()
 }
 
+/// The earliest delayed repaint each egui window asked for (`request_repaint_after`: a tooltip's
+/// show delay, a debounce, a timed refresh). `about_to_wait` wakes at the earliest one and redraws
+/// the windows whose time came. A window egui reports idle for has no entry, so the loop sleeps.
+pub struct Deadlines<T> {
+    by_window: std::collections::HashMap<u64, (T, std::time::Instant)>,
+}
+
+impl<T> Default for Deadlines<T> {
+    fn default() -> Self {
+        Deadlines { by_window: std::collections::HashMap::new() }
+    }
+}
+
+impl<T> Deadlines<T> {
+    /// Records what a frame asked for: zero (drawn at once elsewhere) and `Duration::MAX` (idle)
+    /// keep nothing; any other delay keeps `now + delay`, replacing the window's older deadline.
+    pub fn record(&mut self, id: u64, handle: T, now: std::time::Instant, delay: std::time::Duration) {
+        match (delay.is_zero(), now.checked_add(delay)) {
+            (false, Some(at)) => {
+                self.by_window.insert(id, (handle, at));
+            }
+            _ => {
+                self.by_window.remove(&id);
+            }
+        }
+    }
+
+    /// Forgets a window.
+    pub fn clear(&mut self, id: u64) {
+        self.by_window.remove(&id);
+    }
+
+    /// Removes and returns the handles whose deadline passed.
+    pub fn take_due(&mut self, now: std::time::Instant) -> Vec<T> {
+        let due: Vec<u64> = self.by_window.iter().filter(|(_, (_, at))| *at <= now).map(|(id, _)| *id).collect();
+        due.into_iter().filter_map(|id| self.by_window.remove(&id)).map(|(h, _)| h).collect()
+    }
+
+    /// The earliest deadline kept, if any.
+    pub fn next(&self) -> Option<std::time::Instant> {
+        self.by_window.values().map(|(_, at)| *at).min()
+    }
+}
+
+/// The sooner of two optional wake times (never replaces a sooner deadline).
+pub fn sooner(a: Option<std::time::Instant>, b: Option<std::time::Instant>) -> Option<std::time::Instant> {
+    [a, b].into_iter().flatten().min()
+}
+
+static DELAYED: std::sync::Mutex<Option<Deadlines<std::sync::Weak<Window>>>> = std::sync::Mutex::new(None);
+
+fn with_delayed<R>(f: impl FnOnce(&mut Deadlines<std::sync::Weak<Window>>) -> R) -> R {
+    let mut g = DELAYED.lock().unwrap_or_else(|e| e.into_inner());
+    f(g.get_or_insert_with(Deadlines::default))
+}
+
+/// Redraws the egui windows whose delayed repaint came due and returns the next wake time
+/// (`about_to_wait`). None when no window waits.
+pub fn delayed_repaints(now: std::time::Instant) -> Option<std::time::Instant> {
+    with_delayed(|d| {
+        for w in d.take_due(now) {
+            if let Some(w) = w.upgrade() {
+                w.request_redraw();
+            }
+        }
+        d.next()
+    })
+}
+
 pub struct EguiHost {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
@@ -185,6 +254,9 @@ impl EguiHost {
         if wants_redraw_now(&out) {
             self.window.request_redraw();
         }
+        // A repaint asked for after a delay: the app wakes then (`delayed_repaints`).
+        let delay = out.viewport_output.get(&egui::ViewportId::ROOT).map_or(std::time::Duration::MAX, |v| v.repaint_delay);
+        with_delayed(|d| d.record(u64::from(self.window.id()), Arc::downgrade(&self.window), std::time::Instant::now(), delay));
         self.state.handle_platform_output(&self.window, out.platform_output);
         let jobs = self.ctx.tessellate(out.shapes, out.pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [self.config.width, self.config.height], pixels_per_point: out.pixels_per_point };
@@ -320,6 +392,83 @@ mod tests {
         let last = log.last().unwrap();
         assert!(last.0 && last.1 > log[opened].1, "the popup is fully drawn once the asked frames ran: {log:?}");
         assert!(!last.2, "and the window goes idle after it");
+    }
+
+    /// The repaint delay of the first frame that does not ask for an immediate one (the first
+    /// frames of a context do), the way the host runs frames while egui settles.
+    fn settled_delay(ctx: &egui::Context, mut f: impl FnMut(&mut egui::Ui)) -> std::time::Duration {
+        let mut delay = std::time::Duration::ZERO;
+        for i in 0..20 {
+            let mut input = egui::RawInput { time: Some(f64::from(i) * 0.016), screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 100.0))), ..Default::default() };
+            input.viewport_id = egui::ViewportId::ROOT;
+            let mut out = ctx.run_ui(input, &mut f);
+            out.textures_delta.clear();
+            delay = out.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+            if !delay.is_zero() {
+                break;
+            }
+        }
+        delay
+    }
+
+    #[test]
+    fn a_frame_asking_for_a_repaint_after_a_delay_keeps_a_deadline_that_far_ahead() {
+        let ctx = egui::Context::default();
+        let delay = settled_delay(&ctx, |ui| ui.ctx().request_repaint_after(std::time::Duration::from_millis(100)));
+        assert!(!delay.is_zero() && delay <= std::time::Duration::from_millis(100), "{delay:?}");
+        let now = std::time::Instant::now();
+        let mut d = Deadlines::<()>::default();
+        d.record(1, (), now, delay);
+        let ahead = d.next().unwrap() - now;
+        assert!(ahead > std::time::Duration::from_millis(50) && ahead <= std::time::Duration::from_millis(100), "{ahead:?}");
+        assert!(d.take_due(now).is_empty(), "not due yet");
+        assert_eq!(d.take_due(now + std::time::Duration::from_millis(101)).len(), 1);
+        assert!(d.next().is_none(), "a taken deadline is gone: the loop sleeps until a frame asks again");
+    }
+
+    #[test]
+    fn the_earliest_deadline_wins_across_windows_and_existing_deadlines() {
+        use std::time::Duration as D;
+        let now = std::time::Instant::now();
+        let mut d = Deadlines::<u8>::default();
+        d.record(1, 1, now, D::from_millis(300));
+        d.record(2, 2, now, D::from_millis(80));
+        d.record(3, 3, now, D::from_millis(500));
+        assert_eq!(d.next(), Some(now + D::from_millis(80)));
+        d.record(2, 2, now, D::from_millis(400));
+        assert_eq!(d.next(), Some(now + D::from_millis(300)), "a window's newer ask replaces its older one");
+        let existing = Some(now + D::from_millis(50));
+        assert_eq!(sooner(existing, d.next()), existing, "a sooner existing deadline is never replaced");
+        assert_eq!(sooner(Some(now + D::from_millis(900)), d.next()), d.next());
+        assert_eq!(sooner(None, d.next()), d.next());
+        assert_eq!(sooner(None, None), None);
+    }
+
+    #[test]
+    fn no_deadline_is_kept_when_egui_reports_idle_or_asks_for_a_frame_now() {
+        use std::time::Duration as D;
+        let now = std::time::Instant::now();
+        let mut d = Deadlines::<()>::default();
+        d.record(1, (), now, D::from_millis(100));
+        d.record(1, (), now, D::MAX);
+        assert!(d.next().is_none(), "idle clears the window's deadline");
+        d.record(2, (), now, D::from_millis(100));
+        d.record(2, (), now, D::ZERO);
+        assert!(d.next().is_none(), "an immediate ask is redrawn at once, nothing to wait for");
+        d.record(3, (), now, D::MAX);
+        assert!(d.next().is_none());
+        let ctx = egui::Context::default();
+        assert_eq!(settled_delay(&ctx, |_| {}), D::MAX, "a quiet frame is idle");
+    }
+
+    #[test]
+    fn paint_keeps_the_delayed_repaint_and_the_app_wakes_for_it() {
+        let source = include_str!("egui_host.rs").split("#[cfg(test)]").next().unwrap().to_string();
+        let paint = source.split("pub fn paint").nth(1).unwrap();
+        assert!(paint.contains("d.record("), "a host that drops request_repaint_after loses tooltips and refresh timers");
+        let app = include_str!("app/mod.rs");
+        let wait = &app[app.find("fn about_to_wait").unwrap()..];
+        assert!(wait.contains("egui_host::delayed_repaints("), "about_to_wait must redraw the due windows and wake for the next");
     }
 
     #[test]
