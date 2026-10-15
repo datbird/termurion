@@ -866,31 +866,85 @@ pub fn reset_title(default: &str) -> String {
     format!("Reset to {}", if default.is_empty() { "Empty Default" } else { default })
 }
 
-/// Gives a field `r` its "Reset to <default>" menu when `differs`; true when it was chosen.
-pub fn reset_menu(r: &egui::Response, default: &str, differs: bool) -> bool {
+/// The Windows-applicable items of the field editor's standard menu (`iTermPrefsFieldEditor`
+/// takes its menu from `NSTextView`; Spelling, Substitutions, Transformations, Speech, Writing
+/// Direction and AutoFill are macOS services).
+pub const FIELD_MENU: [&str; 3] = ["Cut", "Copy", "Paste"];
+
+/// What a chosen field-menu item asks of the field, kept for the next frame (egui's text edit takes
+/// Cut, Copy and Paste as input events while it has the focus).
+fn field_op_id() -> egui::Id {
+    egui::Id::new("settings-field-op")
+}
+
+/// A text or number field's right-click menu: "Reset to <default>" and a separator first when
+/// `reset` names a default, then Cut, Copy and Paste. True when the reset item was chosen.
+pub fn field_menu(r: &egui::Response, reset: Option<&str>) -> bool {
     let mut chosen = false;
-    if differs {
-        r.context_menu(|ui| {
+    r.context_menu(|ui| {
+        if let Some(default) = reset {
             if ui.button(reset_title(default)).clicked() {
                 chosen = true;
                 ui.close();
             }
-        });
-    }
+            ui.separator();
+        }
+        for (op, label) in FIELD_MENU.iter().enumerate() {
+            if ui.button(*label).clicked() {
+                let id = r.id;
+                ui.ctx().data_mut(|d| d.insert_temp(field_op_id(), (id, op)));
+                ui.ctx().memory_mut(|m| m.request_focus(id));
+                ui.ctx().request_repaint();
+                ui.close();
+            }
+        }
+    });
     chosen
+}
+
+/// Adds a text or number field with the standard menu (no default to reset to).
+pub fn field(ui: &mut egui::Ui, widget: impl egui::Widget) -> egui::Response {
+    let r = ui.add(widget);
+    field_menu(&r, None);
+    r
+}
+
+/// At the start of a frame: the field menu item chosen last frame is sent to its field, which has
+/// the focus again (Cut and Copy act on its selection; Paste inserts the clipboard's text).
+pub fn apply_field_op(ctx: &egui::Context) {
+    let Some((id, op)) = ctx.data_mut(|d| {
+        let v = d.get_temp::<(egui::Id, usize)>(field_op_id());
+        d.remove::<(egui::Id, usize)>(field_op_id());
+        v
+    }) else { return };
+    ctx.memory_mut(|m| m.request_focus(id));
+    let event = match op {
+        0 => Some(egui::Event::Cut),
+        1 => Some(egui::Event::Copy),
+        _ => crate::settings_shortcuts::clipboard_text().map(egui::Event::Paste),
+    };
+    if let Some(e) = event {
+        ctx.input_mut(|i| i.events.push(e));
+    }
+}
+
+/// Gives a field `r` its "Reset to <default>" menu when `differs`, with the standard items;
+/// true when the reset item was chosen.
+pub fn reset_menu(r: &egui::Response, default: &str, differs: bool) -> bool {
+    field_menu(r, differs.then_some(default))
 }
 
 /// The value a field's reset item restores, when one was chosen: the default `d` of a setting
 /// that is text or a number (other kinds have no such menu).
 pub fn reset_value(r: &egui::Response, d: Option<&Value>, differs: bool) -> Option<Value> {
-    let d = d?;
-    let text = match d {
-        Value::String(t) => t.clone(),
-        Value::Integer(i) => i.to_string(),
-        Value::Float(f) => number_text(*f),
-        _ => return None,
-    };
-    reset_menu(r, &text, differs).then(|| d.clone())
+    let text = d.and_then(|d| match d {
+        Value::String(t) => Some(t.clone()),
+        Value::Integer(i) => Some(i.to_string()),
+        Value::Float(f) => Some(number_text(*f)),
+        _ => None,
+    });
+    let reset = text.as_deref().filter(|_| differs);
+    field_menu(r, reset).then(|| d.cloned()).flatten()
 }
 
 /// The Pointer bindings' button that puts the factory set back (`PreferencePanel.xib`).
@@ -1904,7 +1958,7 @@ fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path
     let mut valid = false;
     ui.horizontal(|ui| {
         ui.add_enabled_ui(on, |ui| {
-            let field = ui.add(egui::TextEdit::singleline(&mut text).hint_text(rp::FOLDER_HINT));
+            let field = crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut text).hint_text(rp::FOLDER_HINT));
             if field.changed() {
                 g.set(rp::FOLDER_KEY, Value::String(text.clone()));
                 action = action.max_changed();
@@ -4592,6 +4646,44 @@ mod tests {
         let s = schema::find_global("PhonyAllowSendingClipboardContents").unwrap();
         let labels: Vec<(&str, Option<i64>)> = s.choices.iter().map(|c| (c.label.as_str(), c.value.as_integer())).collect();
         assert_eq!(labels, [("Ask Each Time", Some(2)), ("Never", Some(0)), ("Always", Some(1))]);
+    }
+
+    #[test]
+    fn the_field_menu_keeps_the_standard_items_iterm2_shows_on_windows() {
+        assert_eq!(FIELD_MENU, ["Cut", "Copy", "Paste"]);
+        let src = include_str!("settings_keys.rs");
+        let f = &src[src.find("pub fn field_menu").unwrap()..];
+        let f = &f[..f.find("pub fn field(").unwrap()];
+        assert!(f.find("reset_title(default)").unwrap() < f.find("FIELD_MENU.iter()").unwrap(), "Reset to <default> and a separator come first, as menuForEvent: inserts them");
+    }
+
+    /// A chosen Cut reaches the field on the next frame: the text goes and the clipboard gets it.
+    #[test]
+    fn a_chosen_cut_acts_on_the_field_next_frame() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("cut-test");
+        let mut text = "abc".to_string();
+        let frame = |text: &mut String, op: bool| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                if op {
+                    apply_field_op(ui.ctx());
+                }
+                egui::CentralPanel::default().show(ui, |ui| {
+                    field(ui, egui::TextEdit::singleline(text).id(id));
+                });
+            });
+            out.textures_delta.clear();
+            out.platform_output
+        };
+        ctx.memory_mut(|m| m.request_focus(id));
+        frame(&mut text, false);
+        let mut state = egui::TextEdit::load_state(&ctx, id).unwrap_or_default();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(3))));
+        state.store(&ctx, id);
+        ctx.data_mut(|d| d.insert_temp(field_op_id(), (id, 0usize)));
+        let out = frame(&mut text, true);
+        assert_eq!(text, "", "Cut removed the selection");
+        assert!(out.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == "abc")), "and copied it");
     }
 
     #[test]

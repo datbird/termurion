@@ -191,10 +191,10 @@ pub fn smart_selection_rules(ui: &mut egui::Ui, profile: &mut Profile, open_url:
             let r = &mut rules[i];
             egui::Grid::new("smart-rule").num_columns(2).show(ui, |ui| {
                 ui.label(NAME);
-                changed |= ui.add(egui::TextEdit::singleline(&mut r.notes).desired_width(360.0)).changed();
+                changed |= crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut r.notes).desired_width(360.0)).changed();
                 ui.end_row();
                 ui.label(REGEX);
-                changed |= ui.add(egui::TextEdit::singleline(&mut r.regex).code_editor().desired_width(360.0)).changed();
+                changed |= crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut r.regex).code_editor().desired_width(360.0)).changed();
                 ui.end_row();
                 ui.label("");
                 ui.horizontal(|ui| {
@@ -246,9 +246,9 @@ pub fn smart_selection_rules(ui: &mut egui::Ui, profile: &mut Profile, open_url:
                 let mut remove = None;
                 for (j, a) in r.actions.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
-                        changed |= ui.add(egui::TextEdit::singleline(&mut a.title).hint_text("Enter Item Title").desired_width(120.0)).changed();
+                        changed |= crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut a.title).hint_text("Enter Item Title").desired_width(120.0)).changed();
                         changed |= combo(ui, &format!("smart-action-{j}"), &RULE_ACTIONS, &mut a.action);
-                        changed |= ui.add(egui::TextEdit::singleline(&mut a.parameter).hint_text("Parameter").desired_width(220.0)).changed();
+                        changed |= crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut a.parameter).hint_text("Parameter").desired_width(220.0)).changed();
                         if ui.button("\u{2212}").clicked() {
                             remove = Some(j);
                         }
@@ -314,7 +314,7 @@ pub fn semantic_history(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
     };
     let mut value = get(&t, key);
     if !key.is_empty() {
-        changed |= ui.add(egui::TextEdit::singleline(&mut value).hint_text(hint).desired_width(f32::INFINITY)).changed();
+        changed |= crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut value).hint_text(hint).desired_width(f32::INFINITY)).changed();
     }
     if changed {
         t.insert("action".into(), Value::String(action));

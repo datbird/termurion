@@ -72,7 +72,7 @@ fn picker(ui: &mut egui::Ui, profile: &mut Profile, key: &str, families: &[Strin
         if families.is_empty() {
             // The installed fonts are not known yet: type the family.
             let mut family = spec.family.clone();
-            let r = ui.add(egui::TextEdit::singleline(&mut family).desired_width(220.0));
+            let r = crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut family).desired_width(220.0));
             rect = Some(r.rect);
             if r.changed() {
                 picked = Some(family);
@@ -81,7 +81,7 @@ fn picker(ui: &mut egui::Ui, profile: &mut Profile, key: &str, families: &[Strin
             let filter_id = egui::Id::new(("font-filter", key));
             let r = egui::ComboBox::from_id_salt((key, "family")).selected_text(shown_family.clone()).width(220.0).show_ui(ui, |ui| {
                 let mut filter: String = ui.data_mut(|d| d.get_temp::<String>(filter_id)).unwrap_or_default();
-                ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Search fonts").desired_width(200.0));
+                crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut filter).hint_text("Search fonts").desired_width(200.0));
                 let list = filtered(families, &filter);
                 let row = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
                 egui::ScrollArea::vertical().max_height(260.0).show_rows(ui, row, list.len(), |ui, range| {
@@ -106,7 +106,7 @@ fn picker(ui: &mut egui::Ui, profile: &mut Profile, key: &str, families: &[Strin
                 }
             });
         }
-        let d = ui.add(egui::DragValue::new(&mut size).range(4.0..=128.0).speed(0.25).suffix(" pt"));
+        let d = crate::settings_keys::field(ui, egui::DragValue::new(&mut size).range(4.0..=128.0).speed(0.25).suffix(" pt"));
         size_changed = d.changed();
     })
     .response
@@ -130,7 +130,7 @@ fn spacings(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
             let s = setting(key);
             ui.label(&s.label);
             let mut pct = (profile.float(key) * 100.0).clamp(SPACING_MIN, SPACING_MAX);
-            let r = ui.add(egui::DragValue::new(&mut pct).range(SPACING_MIN..=SPACING_MAX).speed(1.0).suffix("%")).on_hover_text(&s.help);
+            let r = crate::settings_keys::field(ui, egui::DragValue::new(&mut pct).range(SPACING_MIN..=SPACING_MAX).speed(1.0).suffix("%")).on_hover_text(&s.help);
             if r.changed() {
                 profile.set(key, Value::Float(pct / 100.0));
                 changed = true;

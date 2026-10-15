@@ -113,7 +113,7 @@ fn event_params(ui: &mut egui::Ui, kind: crate::trigger_events::EventKind, t: &m
     let text = |ui: &mut egui::Ui, key: &str, label: &str, hint: &str, params: &mut toml::Table| {
         let mut v = params.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
         ui.label(label);
-        let c = ui.add(egui::TextEdit::singleline(&mut v).hint_text(hint).desired_width(300.0)).changed();
+        let c = crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut v).hint_text(hint).desired_width(300.0)).changed();
         ui.end_row();
         if c {
             params.insert(key.into(), v.into());
@@ -123,7 +123,7 @@ fn event_params(ui: &mut egui::Ui, kind: crate::trigger_events::EventKind, t: &m
     let number = |ui: &mut egui::Ui, key: &str, label: &str, default: f64, params: &mut toml::Table| {
         let mut v = crate::trigger_events::param_secs(Some(params), key, default);
         ui.label(label);
-        let c = ui.add(egui::DragValue::new(&mut v).range(1.0..=86400.0).suffix(" s")).changed();
+        let c = crate::settings_keys::field(ui, egui::DragValue::new(&mut v).range(1.0..=86400.0).suffix(" s")).changed();
         ui.end_row();
         if c {
             params.insert(key.into(), toml::Value::Float(v));
@@ -435,7 +435,7 @@ fn parameter(ui: &mut egui::Ui, info: &ActionInfo, value: &mut String, workgroup
             ui.weak("No parameter");
             false
         }
-        Kind::Text => ui.add(egui::TextEdit::singleline(value).hint_text(info.placeholder).desired_width(360.0)).changed(),
+        Kind::Text => crate::settings_keys::field(ui, egui::TextEdit::singleline(value).hint_text(info.placeholder).desired_width(360.0)).changed(),
         Kind::Popup(choices) => {
             let current: i64 = value.trim().parse().unwrap_or(choices[0].1);
             let title = choices.iter().find(|(_, n)| *n == current).map_or(choices[0].0, |(t, _)| t);
@@ -466,8 +466,8 @@ fn parameter(ui: &mut egui::Ui, info: &ActionInfo, value: &mut String, workgroup
             let (mut a, mut b) = split_two(value);
             let mut changed = false;
             ui.horizontal(|ui| {
-                changed |= ui.add(egui::TextEdit::singleline(&mut a).hint_text("Variable name").desired_width(140.0)).changed();
-                changed |= ui.add(egui::TextEdit::singleline(&mut b).hint_text(info.placeholder).desired_width(200.0)).changed();
+                changed |= crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut a).hint_text("Variable name").desired_width(140.0)).changed();
+                changed |= crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut b).hint_text(info.placeholder).desired_width(200.0)).changed();
             });
             if changed {
                 *value = two_strings(&a, &b);
@@ -773,12 +773,12 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
                     Some(e) => changed |= event_params(ui, e, t),
                     None => {
                         ui.label(regex_label(browser, t.match_type));
-                        changed |= ui.add(egui::TextEdit::singleline(&mut t.regex).code_editor().char_limit(triggers::MAX_PATTERN).desired_width(360.0)).changed();
+                        changed |= crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut t.regex).code_editor().char_limit(triggers::MAX_PATTERN).desired_width(360.0)).changed();
                         ui.end_row();
                         if browser && t.match_type == triggers::PAGE_CONTENT_REGEX {
                             let mut content = t.extra.get(CONTENT_REGEX_KEY).and_then(|v| v.as_str()).unwrap_or("").to_string();
                             ui.label(CONTENT_REGEX_LABEL);
-                            if ui.add(egui::TextEdit::singleline(&mut content).code_editor().char_limit(triggers::MAX_PATTERN).desired_width(360.0)).changed() {
+                            if crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut content).code_editor().char_limit(triggers::MAX_PATTERN).desired_width(360.0)).changed() {
                                 t.extra.insert(CONTENT_REGEX_KEY.into(), content.into());
                                 changed = true;
                             }
@@ -828,7 +828,7 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
                 ui.label("Parameters:");
                 match if browser { triggers::browser_action_info(&t.action) } else { triggers::action_info(&t.action) } {
                     Some(info) => changed |= parameter(ui, info, &mut t.parameter, workgroups),
-                    None => changed |= ui.add(egui::TextEdit::singleline(&mut t.parameter).char_limit(triggers::MAX_PARAMETER)).changed(),
+                    None => changed |= crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut t.parameter).char_limit(triggers::MAX_PARAMETER)).changed(),
                 }
                 ui.end_row();
                 // Exit Workgroup's own option (`hasLeaderOnlyOption`): kept in the event params, only when on.

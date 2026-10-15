@@ -232,7 +232,7 @@ fn snippets_tab(ui: &mut egui::Ui, store: &mut Store, st: &mut State) -> Changed
     let mut changed = Changed::None;
     ui.horizontal(|ui| {
         ui.label("Search:");
-        ui.add(egui::TextEdit::singleline(&mut st.search).desired_width(300.0));
+        crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut st.search).desired_width(300.0));
         if ui.button("?").on_hover_text("Search help").clicked() {
             st.search_help = true;
         }
@@ -401,16 +401,16 @@ fn snippet_sheet(ctx: &egui::Context, e: &mut SnippetEditor) -> Option<bool> {
     egui::Window::new("Edit Snippet").collapsible(false).resizable(true).default_width(520.0).show(ctx, |ui| {
         egui::Grid::new("snippet-grid").num_columns(2).show(ui, |ui| {
             ui.label("Title:");
-            ui.add(egui::TextEdit::singleline(&mut e.snippet.title).desired_width(400.0));
+            crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut e.snippet.title).desired_width(400.0));
             ui.end_row();
             ui.label("Tags:");
-            ui.add(egui::TextEdit::singleline(&mut e.tags).desired_width(400.0).hint_text("Comma-separated tags"));
+            crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut e.tags).desired_width(400.0).hint_text("Comma-separated tags"));
             ui.end_row();
             ui.label("");
             ui.label(egui::RichText::new("Use / in tag names to create folders in Edit > Snippets menu").small());
             ui.end_row();
             ui.label("Value:");
-            ui.add(egui::TextEdit::multiline(&mut e.snippet.value).desired_width(400.0).desired_rows(8).code_editor());
+            crate::settings_keys::field(ui, egui::TextEdit::multiline(&mut e.snippet.value).desired_width(400.0).desired_rows(8).code_editor());
             ui.end_row();
         });
         ui.horizontal(|ui| {
@@ -536,7 +536,7 @@ fn action_sheet(ctx: &egui::Context, e: &mut ActionEditor, profiles: &[(String, 
     egui::Window::new("Edit Action").collapsible(false).resizable(true).default_width(560.0).show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.label("Title:");
-            ui.add(egui::TextEdit::singleline(&mut e.title).desired_width(380.0));
+            crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut e.title).desired_width(380.0));
         });
         ui.horizontal(|ui| {
             ui.label("Action:");

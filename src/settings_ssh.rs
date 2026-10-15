@@ -80,8 +80,8 @@ fn show(ctx: &egui::Context, sh: &mut Sheet, open_url: &mut Option<String>, home
                 ui.end_row();
                 for (i, (src, dst)) in sh.cfg.files_to_copy.iter_mut().enumerate() {
                     let mut picked = ui.selectable_label(sh.selected == Some(i), format!("{}", i + 1)).clicked();
-                    let a = ui.add(egui::TextEdit::singleline(src).desired_width(300.0));
-                    let b = ui.add(egui::TextEdit::singleline(dst).desired_width(140.0));
+                    let a = crate::settings_keys::field(ui, egui::TextEdit::singleline(src).desired_width(300.0));
+                    let b = crate::settings_keys::field(ui, egui::TextEdit::singleline(dst).desired_width(140.0));
                     picked |= a.gained_focus() || b.gained_focus();
                     if picked {
                         sh.selected = Some(i);
@@ -131,7 +131,7 @@ fn show(ctx: &egui::Context, sh: &mut Sheet, open_url: &mut Option<String>, home
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(cfg::PATH_LABEL);
-            if ui.add(egui::TextEdit::singleline(&mut sh.path_text).hint_text(cfg::PATH_PLACEHOLDER).desired_width(300.0)).changed() {
+            if crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut sh.path_text).hint_text(cfg::PATH_PLACEHOLDER).desired_width(300.0)).changed() {
                 sh.error = None;
             }
             if ui.button(cfg::BROWSE).clicked() {

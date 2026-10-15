@@ -172,7 +172,7 @@ pub struct SearchState {
 /// Draws the field and, while it has focus with text in it, the results under it. The returned
 /// document is the one to reveal (the field is then cleared).
 pub fn field(ui: &mut egui::Ui, st: &mut SearchState) -> Option<&'static Doc> {
-    let r = ui.add(egui::TextEdit::singleline(&mut st.query).hint_text(HINT).desired_width(180.0));
+    let r = crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut st.query).hint_text(HINT).desired_width(180.0));
     if r.changed() {
         st.selected = 0;
     }

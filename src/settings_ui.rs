@@ -848,6 +848,8 @@ impl SettingsWindow {
             .map(|p| crate::aps::Candidate { guid: p.guid(), name: p.name(), rules: p.get("Bound Hosts").and_then(|v| v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())).unwrap_or_default() })
             .collect();
         self.host.paint(|ui| {
+            // The field menu item chosen on the last frame acts now, on its field.
+            settings_keys::apply_field_op(ui.ctx());
             // A warning an editor raised on the last frame shows now, over everything.
             if sheet.is_none() {
                 *sheet = keys.ask.take();
@@ -1884,7 +1886,7 @@ fn window_size_row(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
             let r = ui.add_enabled_ui(enabled, |ui| {
                 let mut v = if percent { profile.float(key).round() as i64 } else { profile.int(key) };
                 let range = if percent { 0..=100 } else { 1..=1250 };
-                let r = ui.add(egui::DragValue::new(&mut v).range(range));
+                let r = crate::settings_keys::field(ui, egui::DragValue::new(&mut v).range(range));
                 if r.changed() {
                     profile.set(key, if percent { Value::Float(v as f64) } else { Value::Integer(v) });
                 }
@@ -2140,7 +2142,7 @@ fn progress_height_row(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, ma
     ui.horizontal(|ui| {
         ui.label(&s.label);
         let mut height = profile.float(&s.key);
-        let r = ui.add(egui::DragValue::new(&mut height).speed(0.1).range(0.0..=1000.0));
+        let r = crate::settings_keys::field(ui, egui::DragValue::new(&mut height).speed(0.1).range(0.0..=1000.0));
         if r.changed() {
             let (value, cut) = crate::progress::clamp_typed(height, margin as f64);
             profile.set(&s.key, Value::Float(value));
@@ -2352,7 +2354,9 @@ pub(crate) fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dar
                     widget = Some((r.rect, enabled));
                     commit = r.drag_stopped() || (r.changed() && !r.dragged());
                     // A slider has no text field to reset (iTerm2's menu is the field editor's).
-                    if let Some(v) = settings_keys::reset_value(&r, reset_to.as_ref(), differs && !ranged) {
+                    if !ranged
+                        && let Some(v) = settings_keys::reset_value(&r, reset_to.as_ref(), differs)
+                    {
                         changed = Some(v);
                         commit = true;
                     }
@@ -2514,7 +2518,7 @@ fn binding_dialog(ui: &egui::Ui, guid: &str, key: &str) -> Option<String> {
     let mut open = true;
     egui::Window::new(crate::bindings::TITLE).collapsible(false).resizable(false).default_width(420.0).open(&mut open).show(ctx, |ui| {
         ui.label(crate::bindings::INFO);
-        let r = ui.add(egui::TextEdit::singleline(&mut d.text).hint_text(crate::bindings::placeholder(key)).desired_width(380.0));
+        let r = crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut d.text).hint_text(crate::bindings::placeholder(key)).desired_width(380.0));
         if !d.help {
             r.request_focus();
         }

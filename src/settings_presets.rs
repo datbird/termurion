@@ -626,7 +626,7 @@ pub fn pump_dialogs(ctx: &egui::Context, st: &mut State, g: &mut Globals, profil
                 ui.strong(SAVE_TITLE);
                 ui.label(SAVE_PROMPT);
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut name).char_limit(cp::MAX_NAME).desired_width(240.0));
+                    crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut name).char_limit(cp::MAX_NAME).desired_width(240.0));
                     egui::ComboBox::from_id_salt("save-preset-names").selected_text("").show_ui(ui, |ui| {
                         for n in &names {
                             if ui.selectable_label(*n == name, n).clicked() {

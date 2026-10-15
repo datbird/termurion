@@ -63,7 +63,7 @@ fn rows(ui: &mut egui::Ui, id: &str, list: &mut Vec<String>, hint: &str) -> (Opt
     let mut remove = None;
     for (i, r) in list.iter_mut().enumerate() {
         ui.horizontal(|ui| {
-            let resp = ui.add(egui::TextEdit::singleline(r).hint_text(hint).desired_width(320.0).id_salt((id, i)));
+            let resp = crate::settings_keys::field(ui, egui::TextEdit::singleline(r).hint_text(hint).desired_width(320.0).id_salt((id, i)));
             edited |= resp.changed();
             if resp.lost_focus() {
                 event = Some(ListEvent::Committed);
@@ -202,7 +202,7 @@ pub fn token_field(ui: &mut egui::Ui, salt: &str, tokens: &mut Vec<String>, hint
             tokens.remove(i);
             changed = true;
         }
-        let r = ui.add(egui::TextEdit::singleline(&mut text).hint_text(hint).desired_width(140.0).id_salt((salt, "box")));
+        let r = crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut text).hint_text(hint).desired_width(140.0).id_salt((salt, "box")));
         let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         if text.contains(',') || enter || (r.lost_focus() && !text.trim().is_empty()) {
             let (next, added) = tokens_after(tokens, &text);
