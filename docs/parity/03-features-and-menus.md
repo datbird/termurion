@@ -873,6 +873,45 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Termurion's VT e
 | Utilities | it2ul | Uploads a file or directory from the local machine into the session via the file-transfer protocol. | have | Milestone 11e: a port of iTerm2's script: RequestUpload, then Termurion's bar asks Files or Folders (Windows cannot pick both in one dialog), and the archive is extracted by tar.exe into the current or given folder (extra arguments go to tar); a native console build (`utilities\it2ul.exe`) on each new session's PATH for PowerShell and cmd; iTerm2's bash script still works in WSL, Git Bash and over ssh, since Termurion reads its sequences. |
 | Utilities | it2universion | Sets/pushes/pops the terminal's reported unicode version, for compatibility with apps sensitive to grapheme width rules. | have | Milestone 11e: a port of iTerm2's script (`set`, `push`, `pop`, named or not); Termurion keeps and reports the version, but character widths do not change with it (the OSC 1337 UnicodeVersion row); a native console build (`utilities\it2universion.exe`) on each new session's PATH for PowerShell and cmd; iTerm2's bash script still works in WSL, Git Bash and over ssh, since Termurion reads its sequences. |
 
+## 4. Windows and alerts (UI parity sweep, package W)
+
+Each row names iTerm2's source (under `sources/`) and Termurion's state; the texts are pinned by `src/win_texts.rs`. Rulings: `docs/superpowers/rulings/ui-sweep-w-rulings.txt`.
+
+| Surface | iTerm2 source | Termurion status |
+|---|---|---|
+| Crash Reporter window | ThirdParty/UKCrashReporter | have (W1): shown at the next launch after a crash dump; Send opens a new GitHub issue with private paths removed, Discard deletes the dump, Remind Me Later keeps it |
+| What's New carousel | AppLaunch/iTermOnboardingWindowController | have (W2): four pages; the Companion page is ruled out (R12) |
+| Importing window | iTerm2ImportStatus/ImportingWindowController | have (W3) |
+| Python Runtime Installer window | API/iTermOptionalComponentDownloadWindowController | have (W4) |
+| "Hang tight!" Python environment window | API/iTermBuildingScriptWindowController | have (W4) |
+| Split Panel (profile list sheet) | SplitPanel/SplitPanel | have (W5) |
+| Install Shell Integration installer | ShellIntegrationInstaller | have (W6); PowerShell loads Termurion's script from $PROFILE; tcsh dropped |
+| Quit alert "Why am I being prompted?" | AppKit/iTermApplicationDelegate.m | have (W7) |
+| Print "Black and white" option | Printing/iTermPrintAccessoryViewController | have (W8), as a page of the system print dialog |
+| Pane lock tooltip and accessibility text | TerminalView/SessionTitleView.m | partial (W9): tooltip shown; accessibility label is a constant, no UI Automation node for title bars |
+| Command Info "Disable showing offscreen command" | TerminalView/CommandInfoViewController | have (W10) |
+| Set Window Title / Set Tab Title | TerminalView/PseudoTerminal.m | have (W11); context-mistake warning not built |
+| Global search mode popup | Find globally window | have (W12) |
+| AI key registration window | AITerm/AITerm.xib | have (W13) |
+| Session Status tooltips, orchestration notices, Copy Mode notification | Toolbelt, ChatViewController, iTermCopyModeHandler | have (W14) |
+| Triggers editor event fields, CPU Time histogram, Copy Trigger as URL | Settings/iTermAddTriggerViewController, TriggerController | have (W15, W38, W39): event fields, CPU Time histogram, Copy Trigger as URL, View Stats table, regex visualization in a WebView2 popover |
+| Slow triggers offer | PTYSession/iTermNaggingController.m | have (W15) |
+| RPC status bar AutoLaunch offer | StatusBar/Components/iTermStatusBarRPCProvidedTextComponent.m | have (W40) |
+| Error in Trigger Parameter alert | Triggers/Trigger.m | have (W16) |
+| Resize refusal announcements | PTYSession.m | have (W17) |
+| Gnarly JSON offer | iTermNaggingController.m | have (W17) |
+| Restore Windows? alert | StateRestoration/iTermRestorableStateDriver.m | have (W18); "Still restoring" is a SQLite database timeout with no counterpart |
+| Open N profiles alert | iTermController/iTermController.m | have (W19) |
+| File and image paste choices, Large Paste | Pasting/iTermNonTextPasteHelper.swift | have (W20) without the Upload buttons |
+| Tabs paste question "Tab size in spaces:" | Pasting/NumberOfSpacesAccessoryView.xib | have (W21) |
+| Empty background image folder alert | Settings/ProfilesWindowPreferencesViewController.m | have (W22) |
+| iterm2: URL command alerts | AppKit/CommandURLHandler.swift | n/a, Termurion registers only ftp, ssh and telnet and handles no iterm2: or termurion: URL from outside (W29) |
+| Horizontal scroll announcement | PTYSession.m | n/a, a trackpad swipe switching tabs (W24); Windows has no such swipe |
+| Option key frustration offer | TryingTooHard/iTermMetaFrustrationDetector | n/a, Normal already sends Esc+ on Windows (W25), so there is nothing to offer |
+| Session picker help popover, inspector pick button | Help/iTermHelpMessageViewController, API/iTermScriptInspector | n/a, a macOS menu bar stop icon popover (W26, W27); Termurion's picker is in the pane |
+| Save Contents "Include timestamps" accessory | TerminalView/PTYTextView.m | missing, see ruling W35 (no accessory hook in the Windows save dialog) |
+| Paste progress view with the keystroke queue toggle | Pasting/PasteViewController.m | have (W41), by Robert's override of 2026-10-15; the status bar progress component has no keyboard toggle |
+
 ## Counts
 
 Updated after milestone 3a (2026-09-24).

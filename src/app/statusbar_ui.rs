@@ -569,6 +569,7 @@ impl App {
     pub(super) fn draw_status_bars(&mut self, frame: &mut scene::Frame, cell: (f32, f32)) {
         let Some(tab) = self.tabs.get(self.active) else { return };
         let bars = self.status_bars(tab);
+        self.paste_status_hits.clear();
         let position = self.status_bar_position();
         let scale = self.scale();
         // A per-pane bar at the top sits in its pane's title bar (P23).
@@ -682,7 +683,29 @@ impl App {
             });
             let d = scene::StatusBarDraw { rect: bar.rect, bare, background, bands: &bands, separators: &separators, separator_color, boxes: &boxes, buttons: &buttons, texts: &texts, edge, scale };
             scene::status_bar(frame, &d, cell);
+            self.paste_status_view(frame, &bar, &p, cell);
         }
+    }
+
+    /// The Progress component's hit rectangles (Cancel, the keyboard button) and the queued-typing
+    /// hint over the keyboard button (`iTermStatusBarProgressComponent`, a mini `PasteViewController`).
+    fn paste_status_view(&mut self, frame: &mut scene::Frame, bar: &Bar, p: &Placement, cell: (f32, f32)) {
+        let scale = self.scale();
+        let Some(pl) = p.placed.iter().find(|pl| p.shown[pl.index].piece == Piece::Content(Kind::Progress)) else { return };
+        let icon_pt = if p.shown[pl.index].content.as_ref().is_some_and(|c| c.icon.is_some()) { ICON_PT } else { 0.0 };
+        let px = |x: f32| bar.rect.x + (x * scale).round();
+        let room_x = px(pl.x + icon_pt);
+        let w_pt = (pl.width - icon_pt).max(0.0);
+        let part = |a: f32, b: f32| Rect { x: room_x + (a * scale).round(), y: bar.rect.y, w: ((b - a).max(0.0) * scale).round(), h: bar.rect.h };
+        let cancel = part(w_pt - GLYPH_PT, w_pt);
+        let waiting = self.pastes.get(&bar.pane).is_some_and(|(q, _, _)| q.waiting_for_prompt());
+        let keyboard = waiting.then(|| part(w_pt - 2.0 * GLYPH_PT, w_pt - GLYPH_PT));
+        let view = part(0.0, w_pt);
+        let now = Instant::now();
+        let hint = self.paste_view.get(&bar.pane).and_then(|s| s.look(now));
+        let window = self.gpu.as_ref().map_or(Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 }, |g| Rect { x: 0.0, y: 0.0, w: g.config.width as f32, h: g.config.height as f32 });
+        let hint_rect = keyboard.zip(hint).map(|(k, look)| scene::paste_hint(frame, k, window, cell, scale, look));
+        self.paste_status_hits.push((bar.pane, scene::PasteHits { view, cancel, keyboard, hint: hint_rect }));
     }
 
     /// A press on a bar of the current tab. True when it was on one (the terminal is not
@@ -1201,6 +1224,8 @@ struct WidgetLook {
 const GLYPH_INSET_PT: f32 = 2.5;
 /// The progress track's height, in points.
 const TRACK_PT: f32 = 6.0;
+/// The keyboard button's glyph in Segoe Fluent Icons (KeyboardClassic).
+const KEYBOARD_GLYPH: char = '\u{E765}';
 
 /// A Search, Filter or Composer field's parts, from what `place_components` measured, for
 /// a component `width_pt` wide; the parts are in points from the field's left, which is
@@ -1263,13 +1288,22 @@ fn draw_widget(widget: &Widget, room: Rect, widths: &[(String, f32)], look: &Wid
                 texts.push(scene::BarText { x: r.x, text: label.clone(), color: look.dim, scale: look.text_scale, clip: r, icon: false, dy: 0.0 });
             }
         }
-        Widget::Progress(fraction) => {
-            let track_w = (w_pt - GLYPH_PT).max(0.0);
+        Widget::Progress(fraction, keyboard) => {
+            // The bar gives up the keyboard button's room while it shows (`setWaitingForPrompt:`).
+            let keys_w = if keyboard.is_some() { GLYPH_PT } else { 0.0 };
+            let track_w = (w_pt - GLYPH_PT - keys_w).max(0.0);
             let h = (TRACK_PT * scale).round();
             let track = Rect { y: room.y + ((room.h - h) / 2.0).round(), h, ..at(0.0, track_w) };
             boxes.push((track, look.color, 0.25));
             boxes.push((Rect { w: (track.w * fraction).round(), ..track }, look.color, 1.0));
-            glyph(texts, (track_w, w_pt), sbx::CLOSE_GLYPH);
+            if let Some(lit) = keyboard {
+                let part = (track_w, track_w + GLYPH_PT);
+                if *lit {
+                    boxes.push((at(part.0, part.1), look.color, 0.25));
+                }
+                glyph(texts, part, KEYBOARD_GLYPH);
+            }
+            glyph(texts, (w_pt - GLYPH_PT, w_pt), sbx::CLOSE_GLYPH);
         }
         // `SPK:447-543`: the sparklines in the content rect between the reserves, over the
         // baseline; the left text at the view's left and the right one at its reserve,

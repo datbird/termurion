@@ -488,6 +488,7 @@ impl App {
     /// Draws this window's toolbelt: the wrappers (title, close) and the dividers; each
     /// tool's content is its own.
     pub(super) fn draw_toolbelt(&mut self, frame: &mut Frame, cell: (f32, f32)) {
+        self.belt_tips.clear();
         let Some(l) = self.belt_layout() else {
             // A hidden toolbelt shows no Jobs: the watcher lets this window's tree go.
             self.hide_tool_views();

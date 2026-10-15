@@ -6,6 +6,9 @@ use winit::window::WindowId;
 
 use crate::egui_host::EguiHost;
 
+/// The delete button's accessibility description (`PTYNoteView.m:61`).
+pub const DELETE_ACCESSIBILITY: &str = "Delete annotation";
+
 pub enum NoteEvent {
     None,
     /// The text changed.
@@ -105,7 +108,11 @@ impl NoteWindow {
                             if ui.button(&spec.labels[1]).clicked() {
                                 *confirming = false;
                             }
-                        } else if ui.button("Delete").clicked() {
+                        } else if {
+                            let r = ui.button("Delete");
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, DELETE_ACCESSIBILITY));
+                            r.clicked()
+                        } {
                             out = NoteEvent::RequestDelete;
                         }
                     });

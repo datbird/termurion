@@ -40,15 +40,22 @@ fn show_with(owner: Option<isize>, title: &str, text: &str, style: u32, log: fn(
 /// the experiment that proves the loop).
 fn show_inner(owner: Option<isize>, title: &str, text: &str, style: u32, log: fn(&str), guard: bool) -> i32 {
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let owner_hwnd = owner.map_or(std::ptr::null_mut(), |h| h as HWND);
+    run_modal(owner, title, log, guard, || unsafe { MessageBoxW(owner_hwnd, wide(text).as_ptr(), wide(title).as_ptr(), flags(style)) })
+}
+
+/// Runs `show`, a modal window of this thread that `owner` owns, the way a message box runs: the
+/// watcher finds it and raises it when it opens behind, and the paint guard holds winit's paint
+/// loop back while it is open. The disclosure dialog comes through here.
+pub(super) fn run_modal<R>(owner: Option<isize>, title: &str, log: fn(&str), guard: bool, show: impl FnOnce() -> R) -> R {
     let done = Arc::new(AtomicBool::new(false));
     if let Some(owner) = owner {
         let thread = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
         let (done, title) = (done.clone(), title.to_string());
         std::thread::spawn(move || watch(owner, thread, &title, &done, log));
     }
-    let owner_hwnd = owner.map_or(std::ptr::null_mut(), |h| h as HWND);
     let _paint = guard.then(PaintGuard::install);
-    let answer = unsafe { MessageBoxW(owner_hwnd, wide(text).as_ptr(), wide(title).as_ptr(), flags(style)) };
+    let answer = show();
     done.store(true, Ordering::Relaxed);
     answer
 }

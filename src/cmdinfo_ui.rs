@@ -25,6 +25,8 @@ pub enum Act {
     CopyOutput,
     SelectOutput,
     Composer,
+    /// "Disable showing offscreen command" (`disableOffscrenCommandLine:`).
+    DisableOffscreen,
 }
 
 /// What a frame or an event asks of the app.
@@ -55,6 +57,8 @@ pub struct CmdInfoWindow {
     info: Info,
     /// "Started at <time> on <date>", with a start time only.
     started: Option<String>,
+    /// Opened from the offscreen command line: the "Started at" row also holds the button that turns the line off.
+    from_offscreen: bool,
     /// The time the running row counts to.
     now: SystemTime,
     focused: bool,
@@ -80,6 +84,7 @@ impl CmdInfoWindow {
         pane: PaneId,
         info: Info,
         started: Option<String>,
+        from_offscreen: bool,
         at: (f64, f64),
         work: Option<Rect>,
         dark: bool,
@@ -100,7 +105,7 @@ impl CmdInfoWindow {
         host.focus();
         host.ctx().set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
         crate::settings_keys::add_icon_font(host.ctx());
-        Ok(CmdInfoWindow { host, pane, info, started, now: SystemTime::now(), focused: false, at, work, share_open: false, sized_for: false, toast: None, next_frame: Instant::now() })
+        Ok(CmdInfoWindow { host, pane, info, started, from_offscreen, now: SystemTime::now(), focused: false, at, work, share_open: false, sized_for: false, toast: None, next_frame: Instant::now() })
     }
 
     pub fn id(&self) -> WindowId {
@@ -184,7 +189,7 @@ impl CmdInfoWindow {
             self.host.window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
         }
         let mut out = CmdInfoEvent::None;
-        let (info, started, now, toast) = (&self.info, &self.started, self.now, self.toast);
+        let (info, started, now, toast, from_offscreen) = (&self.info, &self.started, self.now, self.toast, self.from_offscreen);
         let share_open = &mut self.share_open;
         let mut new_toast = None;
         self.host.paint(|ui| {
@@ -220,7 +225,11 @@ impl CmdInfoWindow {
                     }
                 });
                 if let Some(text) = started {
-                    text_row(ui, "", text, None, |_| {});
+                    text_row(ui, "", text, None, |ui| {
+                        if from_offscreen && ui.button(cmdinfo::DISABLE_OFFSCREEN).clicked() {
+                            out = CmdInfoEvent::Act(Act::DisableOffscreen);
+                        }
+                    });
                 }
                 // The command's buttons: write, copy, share, composer.
                 ui.add_space(4.0);

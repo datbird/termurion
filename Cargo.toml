@@ -18,6 +18,7 @@ unicode-bidi = "0.3"
 unicode-general-category = "1.1"
 unicode-width = "0.2"
 fancy-regex = "0.14"
+railroad = { version = "0.3", default-features = false }
 bytemuck = "1"
 egui = "0.36"
 egui-wgpu = "0.36"

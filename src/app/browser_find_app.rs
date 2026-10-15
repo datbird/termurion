@@ -325,7 +325,7 @@ impl App {
     /// others contribute nothing. An answer for an older search is dropped.
     pub(super) fn browser_global_start(&mut self, query: &str) {
         let generation = self.global_generation;
-        let mode = self.find_mode();
+        let mode = self.global_mode();
         let panes: Vec<PaneId> = self.all_tab_panes().into_iter().flat_map(|(_, _, p)| p).filter(|p| self.is_browser_pane(*p) && self.client_open(*p)).collect();
         for pane in panes {
             let query = query.to_string();
@@ -860,7 +860,8 @@ mod tests {
         assert!(results.contains("b.global_gen != self.global_generation") && results.contains("self.global_find.is_none()") && results.contains("web_hit("));
         let f = prod(include_str!("find_ui.rs"));
         let ev = between(f, "pub(super) fn global_find_event", "fn global_focus_pane");
-        assert!(ev.contains("self.global_generation += 1") && ev.contains("self.browser_global_start(&q)") && ev.contains("GlobalEvent::PickWeb(id, identifier)"));
+        let search = between(f, "pub(super) fn global_search", "pub(super) fn global_title");
+        assert!(search.contains("self.global_generation += 1") && search.contains("self.browser_global_start(q)") && ev.contains("GlobalEvent::PickWeb(id, identifier)"));
         let web = between(ev, "GlobalEvent::PickWeb(id, identifier)", "GlobalEvent::Pick(id, m)");
         assert!(web.contains("self.global_focus_pane(id)") && web.contains("self.browser_global_reveal(id, &identifier)"));
         // A closed pane or replaced page drops its rows; a closed window drops them all; the counter starts at 1.

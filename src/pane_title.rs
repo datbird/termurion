@@ -112,6 +112,11 @@ pub fn fit_label(text: &str, cells: usize) -> String {
     out
 }
 
+/// The lock mark's tooltip (`SessionTitleView.m:99`) and its accessibility description (`:88`;
+/// Termurion's UI Automation model has no node for it, ruling W9).
+pub const LOCK_TIP: &str = "This pane is locked. It cannot be moved, swapped, or dragged, and closing it requires confirmation. Right-click to unlock.";
+pub const LOCK_ACCESSIBILITY: &str = "Pane is locked";
+
 /// Where every part of a title bar sits.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Geometry {

@@ -132,6 +132,10 @@ impl App {
         if state.windows.is_empty() {
             return None;
         }
+        // Windows that did not finish coming back last time ask first (`restoreWithIndex:`).
+        if !self.restore_after_trouble(&path) {
+            return None;
+        }
         self.state_imported = path.with_file_name(crate::settings_export::STATE_IMPORTED).is_file();
         crate::rlog!("restoring saved windows: {}", state.windows.len());
         if self.globals.bool("LogRestorableStateSize") {
@@ -146,6 +150,34 @@ impl App {
             }
         }
         Some((state.windows, state.host))
+    }
+
+    /// `NoSyncRestoreWindowsCount` (`iTermRestorableStateDriver.m:16`): launches that began restoring
+    /// and have not finished. After one that did not, the next launch asks whether to try again;
+    /// OK discards the saved windows. False when they are discarded.
+    fn restore_after_trouble(&mut self, path: &std::path::Path) -> bool {
+        let count = self.globals.int(crate::restore_state::COUNT_KEY);
+        if count > 1 {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{IDOK, MB_ICONQUESTION, MB_OKCANCEL};
+            let ok = super::msgbox::show(None, crate::restore_state::TROUBLE_HEADING, crate::restore_state::TROUBLE_TEXT, MB_OKCANCEL | MB_ICONQUESTION) == IDOK;
+            if ok {
+                let _ = std::fs::remove_file(path);
+                self.globals.set(crate::restore_state::COUNT_KEY, toml::Value::Integer(0));
+                self.save_globals();
+                return false;
+            }
+        }
+        self.globals.set(crate::restore_state::COUNT_KEY, toml::Value::Integer(count + 1));
+        self.save_globals();
+        true
+    }
+
+    /// The restoration finished (`didRestoreFromIndex:`).
+    pub(super) fn restore_count_reset(&mut self) {
+        if self.globals.int(crate::restore_state::COUNT_KEY) != 0 {
+            self.globals.set(crate::restore_state::COUNT_KEY, toml::Value::Integer(0));
+            self.save_globals();
+        }
     }
 
     /// LogRestorableStateSize (`AD:1271-1279`, `PT:15147-15150`): the sizes of the saved state as

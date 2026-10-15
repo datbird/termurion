@@ -10,13 +10,15 @@ use winit::window::WindowId;
 use crate::ai_settings::Vendor;
 use crate::egui_host::EguiHost;
 use crate::pwm::Secret;
-use crate::settings_ai::{key_prompt, KEYS_TEXT};
+use crate::settings_ai::{key_prompt, registration_message, Piece, CHARGE_NOTICE};
 
 /// What the prompt answered. `Ok` carries the typed key as typed; the caller decides whether it
 /// is blank.
 #[derive(Debug)]
 pub enum KeyResult {
     Open,
+    /// A link in the message was clicked: the app opens it (judged there).
+    Link(String),
     Cancel,
     Ok(Secret),
 }
@@ -24,6 +26,7 @@ pub enum KeyResult {
 pub struct KeyWindow {
     host: EguiHost,
     hint: String,
+    vendor: Vendor,
     key: Secret,
     /// The field takes the focus on the first frame.
     focus: bool,
@@ -37,8 +40,8 @@ const FIELD_WIDTH: f32 = 516.0;
 impl KeyWindow {
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, v: Vendor) -> Result<KeyWindow, String> {
         let (heading, hint) = key_prompt(v);
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, &heading, f64::from(FIELD_WIDTH) + 40.0, 130.0)?;
-        Ok(KeyWindow { host, hint, key: Secret::new(String::new()), focus: true, opened: None })
+        let host = EguiHost::open(event_loop, instance, adapter, device, queue, &heading, f64::from(FIELD_WIDTH) + 40.0, 330.0)?;
+        Ok(KeyWindow { host, hint, vendor: v, key: Secret::new(String::new()), focus: true, opened: None })
     }
 
     pub fn id(&self) -> WindowId {
@@ -56,16 +59,35 @@ impl KeyWindow {
     pub fn redraw(&mut self) -> KeyResult {
         let mut ok = false;
         let mut cancel = false;
-        let (hint, key, focus, opened) = (&self.hint, &mut self.key, &mut self.focus, &mut self.opened);
+        let (hint, key, focus, opened, vendor) = (&self.hint, &mut self.key, &mut self.focus, &mut self.opened, self.vendor);
+        let mut open_url: Option<String> = None;
         self.host.paint(|ui| {
             egui::CentralPanel::default().show(ui, |ui| {
-                ui.label(KEYS_TEXT);
+                ui.heading(crate::settings_ai::REGISTRATION_HEADING);
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    for piece in registration_message(vendor) {
+                        match piece {
+                            Piece::Text(t) => {
+                                ui.label(t);
+                            }
+                            Piece::Link(words, url) => {
+                                if ui.link(words).on_hover_text(&url).clicked() {
+                                    open_url = Some(url);
+                                }
+                            }
+                        }
+                    }
+                });
                 ui.add_space(8.0);
                 let id = egui::Id::new("ai-key-prompt");
                 crate::secret_field::secret_field(ui, id, key, true, Some(hint), FIELD_WIDTH, false);
                 if std::mem::take(focus) {
                     ui.memory_mut(|m| m.request_focus(id));
                 }
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(CHARGE_NOTICE).small());
                 ui.add_space(10.0);
                 // The key that opened the prompt does not answer it; Return in the key field does.
                 let first = *opened.get_or_insert_with(|| ui.ctx().cumulative_frame_nr());
@@ -76,6 +98,9 @@ impl KeyWindow {
                 });
             });
         });
+        if let Some(url) = open_url {
+            return KeyResult::Link(url);
+        }
         if ok {
             KeyResult::Ok(std::mem::replace(&mut self.key, Secret::new(String::new())))
         } else if cancel {

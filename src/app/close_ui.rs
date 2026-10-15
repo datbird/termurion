@@ -2,7 +2,7 @@
 //! ignore list, need an OK before they close.
 
 use super::*;
-use crate::close_prompt;
+use crate::{close_prompt, close_rules};
 
 /// What is closing, for the question's title.
 pub(super) enum Closing {
@@ -112,7 +112,7 @@ impl App {
                 if reasons.is_empty() {
                     return true;
                 }
-                return confirm(self.hwnd(), "Quit Termurion?", &close_rules::quit_text(&reasons, self.keep_jobs_on_quit()));
+                return confirm_quit(self.hwnd(), false, &reasons, self.keep_jobs_on_quit());
             }
         };
         let running = panes.iter().filter(|id| self.panes.get(id).is_some_and(|p| p.exited.is_none() || !p.live_survivors().is_empty())).count();
@@ -163,6 +163,17 @@ impl App {
 /// "Tab #N is pinned." for each pinned tab, in tab order.
 fn pinned_reasons(tabs: &[Tab]) -> Vec<String> {
     tabs.iter().enumerate().filter(|(_, t)| t.pinned).map(|(i, _)| close_prompt::pinned_reason(i + 1)).collect()
+}
+
+/// "Quit Termurion?" with a collapsed "Why am I being prompted?" holding the reasons
+/// (`iTermApplicationDelegate.m:1049-1071`); the plain box with them inline when the dialog cannot open.
+/// `topmost` is the shutdown's question, on top and in front.
+pub(super) fn confirm_quit(owner: Option<isize>, topmost: bool, reasons: &[close_rules::Reason], keep: bool) -> bool {
+    let (body, why) = close_rules::quit_parts(reasons, keep);
+    super::disclosure_ui::confirm(owner, topmost, "Quit Termurion?", &body, super::disclosure_ui::WHY_PROMPT, &why).unwrap_or_else(|| {
+        let text = close_rules::quit_text(reasons, keep);
+        if topmost { confirm_on_top("Quit Termurion?", &text) } else { confirm(owner, "Quit Termurion?", &text) }
+    })
 }
 
 /// The shutdown's quit question, shown by a thread that owns no window: an OK and Cancel box on

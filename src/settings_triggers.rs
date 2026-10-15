@@ -28,6 +28,90 @@ pub fn take_reveal() -> Option<String> {
     REVEAL.with(|r| r.borrow_mut().take())
 }
 
+/// The regex fields' visualization button (`toggleVisualization:`, `iTermAddTriggerViewController.m:1475`):
+/// "Show visualization" opens the diagram in a popover, "Hide visualization" closes it.
+pub const SHOW_VISUALIZATION: &str = "Show visualization";
+pub const HIDE_VISUALIZATION: &str = "Hide visualization";
+
+thread_local! {
+    /// A press of a visualization button, for the app to open or close the popover on its next tick.
+    static VISUALIZE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    static VISUALIZING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The regex whose diagram the person asked for (the press consumed); an empty request closes.
+pub fn take_visualization() -> Option<String> {
+    VISUALIZE.with(|v| v.borrow_mut().take())
+}
+
+/// The app says whether the popover is open now (the button's label and what a press does).
+pub fn set_visualizing(open: bool) {
+    VISUALIZING.with(|v| v.set(open));
+}
+
+fn visualization_button(ui: &mut egui::Ui, regex: &str) {
+    let open = VISUALIZING.with(|v| v.get());
+    let label = if open { HIDE_VISUALIZATION } else { SHOW_VISUALIZATION };
+    if ui.button("\u{25a4}").on_hover_text(label).clicked() {
+        // Closing sends nothing: the app sees the open popover and closes it; opening sends the regex.
+        VISUALIZE.with(|v| *v.borrow_mut() = Some(if open { String::new() } else { regex.to_string() }));
+        ui.ctx().request_repaint();
+    }
+}
+
+/// The CPU Time row (`iTermAddTriggerViewController.m:425-470`): its label and the help the (?)
+/// button shows. The row appears only when the session being edited has timed this trigger.
+pub const CPU_TIME_LABEL: &str = "CPU Time:";
+pub const CPU_TIME_HELP: &str = "This histogram shows how much CPU time was used evaluating the regular expression for this trigger over the lifetime of the current terminal session. The X axis gives time in microseconds while the Y axis gives the number of samples which fell in that duration bucket. The vertical red line indicates the mean duration. You can use this to diagnose triggers that cause performance problems.";
+
+thread_local! {
+    /// Each trigger's kept check times (microseconds) in the session being edited, in list order,
+    /// set by the window each pass (`set_cpu`).
+    static CPU: std::cell::RefCell<Vec<Vec<f64>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The times of the session Edit Session points at (empty: none).
+pub fn set_cpu(samples: Vec<Vec<f64>>) {
+    CPU.with(|c| *c.borrow_mut() = samples);
+}
+
+/// `buckets` equal-width bins over the samples' range: how many fall in each, and the mean's bin.
+pub fn histogram(samples: &[f64], buckets: usize) -> (Vec<usize>, usize) {
+    let (lo, hi) = samples.iter().fold((f64::MAX, f64::MIN), |(l, h), v| (l.min(*v), h.max(*v)));
+    let mut bins = vec![0; buckets];
+    if samples.is_empty() || buckets == 0 {
+        return (bins, 0);
+    }
+    let width = ((hi - lo) / buckets as f64).max(f64::MIN_POSITIVE);
+    let at = |v: f64| (((v - lo) / width) as usize).min(buckets - 1);
+    for v in samples {
+        bins[at(*v)] += 1;
+    }
+    let mean = samples.iter().sum::<f64>() / samples.len() as f64;
+    (bins, at(mean))
+}
+
+/// The row: label, help, the bars with the mean as a red line.
+fn cpu_row(ui: &mut egui::Ui, samples: &[f64]) {
+    ui.horizontal(|ui| {
+        ui.label(CPU_TIME_LABEL);
+        ui.label("(?)").on_hover_text(CPU_TIME_HELP);
+    });
+    let (bins, mean_bin) = histogram(samples, 24);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(360.0, 48.0), egui::Sense::hover());
+    let peak = bins.iter().copied().max().unwrap_or(1).max(1) as f32;
+    let w = rect.width() / bins.len() as f32;
+    for (i, n) in bins.iter().enumerate() {
+        let h = rect.height() * *n as f32 / peak;
+        let r = egui::Rect::from_min_max(egui::pos2(rect.left() + i as f32 * w + 1.0, rect.bottom() - h), egui::pos2(rect.left() + (i + 1) as f32 * w - 1.0, rect.bottom()));
+        ui.painter().rect_filled(r, 0.0, ui.visuals().text_color().gamma_multiply(0.7));
+    }
+    let x = rect.left() + (mean_bin as f32 + 0.5) * w;
+    ui.painter().line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], egui::Stroke::new(1.5, egui::Color32::RED));
+    let (lo, hi) = samples.iter().fold((f64::MAX, f64::MIN), |(l, h), v| (l.min(*v), h.max(*v)));
+    response.on_hover_text(format!("{} samples, {:.0} to {:.0} \u{b5}s", samples.len(), lo, hi));
+}
+
 thread_local! {
     /// The workgroups the Enter Workgroup pop-up lists, (id, name), decoded from the stored value
     /// the last time it changed (the Settings window draws every frame).
@@ -50,7 +134,9 @@ pub fn workgroup_choices(raw: &str) -> Vec<(String, String)> {
 /// Most alerts one Import raises (a folder of broken files must not queue windows forever).
 const MAX_ALERTS: usize = 8;
 
-fn push_alert(heading: &str, text: String) {
+/// Raises an alert for the Settings window to show on its next frame (the one door for the
+/// editors' alerts, the triggers' and the background folder's).
+pub fn push_alert(heading: &str, text: String) {
     ALERTS.with(|a| {
         let mut a = a.borrow_mut();
         if a.len() < MAX_ALERTS {
@@ -105,25 +191,89 @@ pub fn event_label(e: crate::trigger_events::EventKind) -> String {
     }
 }
 
+/// The event fields' labels, placeholders and help lines (`iTermEventTriggerParameterView.swift`
+/// `addExitCodeFilterUI` and the rows after it).
+pub mod event_text {
+    pub const EXIT_CODE: &str = "Exit Code:";
+    pub const EXIT_ANY: &str = "Any";
+    pub const EXIT_ZERO: &str = "Zero (Success)";
+    pub const EXIT_NON_ZERO: &str = "Non-Zero (Failure)";
+    pub const EXIT_SPECIFIC: &str = "Specific Value\u{2026}";
+    pub const EXIT_PLACEHOLDER: &str = "Exit code";
+    pub const JOB: &str = "Job:";
+    pub const JOB_PLACEHOLDER: &str = "claude";
+    pub const JOB_HELP: &str = "Process name to match in the foreground-job ancestry chain (case-insensitive)";
+    pub const VARIABLE: &str = "Variable:";
+    pub const VARIABLE_PLACEHOLDER: &str = "user.myVar";
+    pub const VARIABLE_HELP: &str = "Name of the session variable to watch";
+    pub const VALUE: &str = "Value:";
+    pub const VALUE_HELP: &str = "Regular expression the new value must match (leave blank to match any change)";
+    pub const DIRECTORY: &str = "Directory:";
+    pub const DIRECTORY_HELP: &str = "Regular expression to match the directory path";
+    pub const TIMEOUT: &str = "Timeout:";
+    pub const SECONDS: &str = "seconds";
+    pub const SEQUENCE_ID: &str = "Sequence ID:";
+    pub const SEQUENCE_ID_HELP: &str = "Regular expression to match the sequence identifier";
+    pub const MESSAGE: &str = "Message:";
+    pub const MESSAGE_HELP: &str = "Regular expression to match the notification message";
+    pub const HOST: &str = "Host:";
+    pub const HOST_HELP: &str = "Regular expression to match the hostname";
+    pub const USER: &str = "User:";
+    pub const USER_HELP: &str = "Regular expression to match the username";
+    pub const THRESHOLD: &str = "Threshold:";
+    pub const COMMAND: &str = "Command:";
+    pub const COMMAND_HELP: &str = "Regular expression to match the command line";
+    pub const FIRE_WHEN: &str = "Fire When:";
+    pub const EITHER: &str = "Appears or Disappears";
+    pub const APPEARS: &str = "Appears";
+    pub const DISAPPEARS: &str = "Disappears";
+    pub const NO_PARAMETERS: &str = "No additional parameters required.";
+    /// The regex placeholder every filter field shows.
+    pub const ANY_REGEX: &str = ".*";
+}
+
+/// The exit code popup's choice for a stored filter: 0 any, 1 zero, 2 non-zero, 3 a value
+/// (`applyParams`); and the filter a choice stores (`collectParams`).
+pub fn exit_choice(filter: &str) -> usize {
+    match filter {
+        "*" | "" => 0,
+        "0" => 1,
+        "!0" => 2,
+        _ => 3,
+    }
+}
+
 /// An event's filter fields (iTerm2's eventParams). True when one changed.
 fn event_params(ui: &mut egui::Ui, kind: crate::trigger_events::EventKind, t: &mut Trigger) -> bool {
     use crate::trigger_events::EventKind as E;
+    use event_text as x;
     let mut params = t.extra.get("eventParams").and_then(|v| v.as_table()).cloned().unwrap_or_default();
     let mut changed = false;
-    let text = |ui: &mut egui::Ui, key: &str, label: &str, hint: &str, params: &mut toml::Table| {
+    // A regex or name field with its placeholder, then its help line in small gray text under it.
+    let text = |ui: &mut egui::Ui, key: &str, label: &str, hint: &str, help: Option<&str>, params: &mut toml::Table| {
         let mut v = params.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
         ui.label(label);
         let c = ui.add(egui::TextEdit::singleline(&mut v).hint_text(hint).desired_width(300.0)).changed();
         ui.end_row();
+        if let Some(h) = help {
+            ui.label("");
+            ui.label(egui::RichText::new(h).small().weak());
+            ui.end_row();
+        }
         if c {
             params.insert(key.into(), v.into());
         }
         c
     };
+    // A duration in whole seconds with its unit (the field holds the number as typed).
     let number = |ui: &mut egui::Ui, key: &str, label: &str, default: f64, params: &mut toml::Table| {
         let mut v = crate::trigger_events::param_secs(Some(params), key, default);
         ui.label(label);
-        let c = ui.add(egui::DragValue::new(&mut v).range(1.0..=86400.0).suffix(" s")).changed();
+        let c = ui.horizontal(|ui| {
+            let c = ui.add(egui::DragValue::new(&mut v).range(1.0..=86400.0).max_decimals(0).speed(1.0)).changed();
+            ui.label(x::SECONDS);
+            c
+        }).inner;
         ui.end_row();
         if c {
             params.insert(key.into(), toml::Value::Float(v));
@@ -131,26 +281,72 @@ fn event_params(ui: &mut egui::Ui, kind: crate::trigger_events::EventKind, t: &m
         c
     };
     match kind {
-        E::CommandFinished => changed |= text(ui, "exitCodeFilter", "Exit code:", "* any, 0, !0, or a number", &mut params),
-        E::DirectoryChanged => changed |= text(ui, "directoryRegex", "Directory:", "Regular expression (empty: any)", &mut params),
-        E::HostChanged => changed |= text(ui, "hostRegex", "Host:", "Regular expression (empty: any)", &mut params),
-        E::UserChanged => changed |= text(ui, "userRegex", "User:", "Regular expression (empty: any)", &mut params),
-        E::Idle | E::ActivityAfterIdle => changed |= number(ui, "timeout", "Quiet for:", 30.0, &mut params),
-        E::LongRunningCommand => {
-            changed |= number(ui, "threshold", "Running for:", 60.0, &mut params);
-            changed |= text(ui, "commandRegex", "Command:", "Regular expression (empty: any)", &mut params);
+        E::CommandFinished => {
+            let filter = params.get("exitCodeFilter").and_then(|v| v.as_str()).unwrap_or("*").to_string();
+            // Specific Value with nothing typed yet stores an empty filter (which reads as Any on
+            // the next load, as in iTerm2); while the editor shows this trigger it stays Specific.
+            let spec_id = egui::Id::new("trigger-exit-specific");
+            let who = (t.name.clone(), t.regex.clone(), t.match_type);
+            let waiting = ui.data(|d| d.get_temp::<(String, String, i64)>(spec_id)).as_ref() == Some(&who);
+            let choice = if waiting && exit_choice(&filter) == 0 { 3 } else { exit_choice(&filter) };
+            ui.label(x::EXIT_CODE);
+            ui.horizontal(|ui| {
+                let mut pick = None;
+                egui::ComboBox::from_id_salt("trigger-exit").selected_text([x::EXIT_ANY, x::EXIT_ZERO, x::EXIT_NON_ZERO, x::EXIT_SPECIFIC][choice]).show_ui(ui, |ui| {
+                    for (i, name) in [x::EXIT_ANY, x::EXIT_ZERO, x::EXIT_NON_ZERO, x::EXIT_SPECIFIC].into_iter().enumerate() {
+                        if ui.selectable_label(choice == i, name).clicked() {
+                            pick = Some(i);
+                        }
+                    }
+                });
+                if let Some(i) = pick {
+                    // Specific Value keeps a number already typed, else starts empty.
+                    let value = match i {
+                        0 => "*".to_string(),
+                        1 => "0".to_string(),
+                        2 => "!0".to_string(),
+                        _ => if choice == 3 { filter.clone() } else { String::new() },
+                    };
+                    params.insert("exitCodeFilter".into(), value.into());
+                    ui.data_mut(|d| {
+                        if i == 3 {
+                            d.insert_temp(spec_id, who.clone());
+                        } else {
+                            d.remove::<(String, String, i64)>(spec_id);
+                        }
+                    });
+                    changed = true;
+                }
+                if choice == 3 || pick == Some(3) {
+                    let mut v = params.get("exitCodeFilter").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    if ui.add(egui::TextEdit::singleline(&mut v).hint_text(x::EXIT_PLACEHOLDER).desired_width(60.0)).changed() {
+                        // A field that holds no number is still the specific choice (an empty filter reads as any).
+                        params.insert("exitCodeFilter".into(), v.into());
+                        changed = true;
+                    }
+                }
+            });
+            ui.end_row();
         }
-        E::CustomEscapeSequence => changed |= text(ui, "sequenceId", "Sequence id:", "The id= the program sends", &mut params),
-        E::NotificationPosted => changed |= text(ui, "messageRegex", "Message:", "Regular expression (empty: any)", &mut params),
+        E::DirectoryChanged => changed |= text(ui, "directoryRegex", x::DIRECTORY, x::ANY_REGEX, Some(x::DIRECTORY_HELP), &mut params),
+        E::HostChanged => changed |= text(ui, "hostRegex", x::HOST, x::ANY_REGEX, Some(x::HOST_HELP), &mut params),
+        E::UserChanged => changed |= text(ui, "userRegex", x::USER, x::ANY_REGEX, Some(x::USER_HELP), &mut params),
+        E::Idle | E::ActivityAfterIdle => changed |= number(ui, "timeout", x::TIMEOUT, 30.0, &mut params),
+        E::LongRunningCommand => {
+            changed |= number(ui, "threshold", x::THRESHOLD, 60.0, &mut params);
+            changed |= text(ui, "commandRegex", x::COMMAND, x::ANY_REGEX, Some(x::COMMAND_HELP), &mut params);
+        }
+        E::CustomEscapeSequence => changed |= text(ui, "sequenceId", x::SEQUENCE_ID, x::ANY_REGEX, Some(x::SEQUENCE_ID_HELP), &mut params),
+        E::NotificationPosted => changed |= text(ui, "messageRegex", x::MESSAGE, x::ANY_REGEX, Some(x::MESSAGE_HELP), &mut params),
         E::ProgressBarChanged => {
             let cur = params.get("progressBarFilter").and_then(|v| v.as_str()).unwrap_or("*").to_string();
-            ui.label("When:");
+            ui.label(x::FIRE_WHEN);
             egui::ComboBox::from_id_salt("trigger-progress").selected_text(match cur.as_str() {
-                "appeared" => "Appeared",
-                "disappeared" => "Disappeared",
-                _ => "Either",
+                "appeared" => x::APPEARS,
+                "disappeared" => x::DISAPPEARS,
+                _ => x::EITHER,
             }).show_ui(ui, |ui| {
-                for (label, v) in [("Either", "*"), ("Appeared", "appeared"), ("Disappeared", "disappeared")] {
+                for (label, v) in [(x::EITHER, "*"), (x::APPEARS, "appeared"), (x::DISAPPEARS, "disappeared")] {
                     if ui.selectable_label(cur == v, label).clicked() {
                         params.insert("progressBarFilter".into(), v.into());
                         changed = true;
@@ -160,11 +356,15 @@ fn event_params(ui: &mut egui::Ui, kind: crate::trigger_events::EventKind, t: &m
             ui.end_row();
         }
         E::VariableChanged => {
-            changed |= text(ui, "variableName", "Variable:", "user.name", &mut params);
-            changed |= text(ui, "variableValueRegex", "Value:", "Regular expression (empty: any)", &mut params);
+            changed |= text(ui, "variableName", x::VARIABLE, x::VARIABLE_PLACEHOLDER, Some(x::VARIABLE_HELP), &mut params);
+            changed |= text(ui, "variableValueRegex", x::VALUE, x::ANY_REGEX, Some(x::VALUE_HELP), &mut params);
         }
-        E::JobStarted | E::JobEnded => changed |= text(ui, "jobName", "Job:", "claude", &mut params),
-        E::PromptDetected | E::SessionEnded | E::BellReceived => {}
+        E::JobStarted | E::JobEnded => changed |= text(ui, "jobName", x::JOB, x::JOB_PLACEHOLDER, Some(x::JOB_HELP), &mut params),
+        E::PromptDetected | E::SessionEnded | E::BellReceived => {
+            ui.label("");
+            ui.label(egui::RichText::new(x::NO_PARAMETERS).weak());
+            ui.end_row();
+        }
     }
     if changed {
         t.extra.insert("eventParams".into(), toml::Value::Table(params));
@@ -624,6 +824,17 @@ pub fn write_export(path: &crate::localfs::LocalPath, text: &str) -> std::io::Re
     }
 }
 
+/// The row menu's "Copy Trigger as URL to Clipboard": the trigger as one `iterm2:triggers?...` link.
+fn copy_url(t: &Trigger) -> String {
+    let mut table = t.to_table();
+    for k in ["name", "job"] {
+        if table.get(k).and_then(|v| v.as_str()).is_some_and(str::is_empty) {
+            table.remove(k);
+        }
+    }
+    crate::trigger_file::url_for(std::slice::from_ref(&table))
+}
+
 /// "Export to File" (`TriggerController.m:1139-1169`): the trigger as a one-element array in a file
 /// the person names. A failure is an "Export Failed" alert; a file written is shown in Explorer.
 fn export_one(t: &Trigger) {
@@ -695,6 +906,11 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
             }
             // The row's menu (`TriggerController.m:1133-1135`).
             response.context_menu(|ui| {
+                if ui.button(crate::trigger_file::COPY_URL_TITLE).clicked() {
+                    ui.ctx().copy_text(copy_url(t));
+                    ui.data_mut(|d| d.insert_temp(egui::Id::new("trigger-copied"), std::time::Instant::now()));
+                    ui.close();
+                }
                 if ui.button(crate::trigger_file::EXPORT_TITLE).clicked() {
                     export_one(t);
                     ui.close();
@@ -702,6 +918,11 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
             });
         }
     });
+    // The "Copied" toast, a second long (`ToastWindowController`).
+    if ui.data(|d| d.get_temp::<std::time::Instant>(egui::Id::new("trigger-copied"))).filter(|at| at.elapsed() < std::time::Duration::from_secs(1)).is_some() {
+        ui.label(egui::RichText::new(crate::trigger_file::COPIED).strong());
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+    }
     ui.horizontal(|ui| {
         if ui.button("+").clicked() {
             list.push(if browser {
@@ -773,15 +994,21 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
                     Some(e) => changed |= event_params(ui, e, t),
                     None => {
                         ui.label(regex_label(browser, t.match_type));
-                        changed |= ui.add(egui::TextEdit::singleline(&mut t.regex).code_editor().char_limit(triggers::MAX_PATTERN).desired_width(360.0)).changed();
+                        ui.horizontal(|ui| {
+                            changed |= ui.add(egui::TextEdit::singleline(&mut t.regex).code_editor().char_limit(triggers::MAX_PATTERN).desired_width(360.0)).changed();
+                            visualization_button(ui, &t.regex);
+                        });
                         ui.end_row();
                         if browser && t.match_type == triggers::PAGE_CONTENT_REGEX {
                             let mut content = t.extra.get(CONTENT_REGEX_KEY).and_then(|v| v.as_str()).unwrap_or("").to_string();
                             ui.label(CONTENT_REGEX_LABEL);
-                            if ui.add(egui::TextEdit::singleline(&mut content).code_editor().char_limit(triggers::MAX_PATTERN).desired_width(360.0)).changed() {
-                                t.extra.insert(CONTENT_REGEX_KEY.into(), content.into());
-                                changed = true;
-                            }
+                            ui.horizontal(|ui| {
+                                if ui.add(egui::TextEdit::singleline(&mut content).code_editor().char_limit(triggers::MAX_PATTERN).desired_width(360.0)).changed() {
+                                    t.extra.insert(CONTENT_REGEX_KEY.into(), content.clone().into());
+                                    changed = true;
+                                }
+                                visualization_button(ui, &content);
+                            });
                             ui.end_row();
                         }
                     }
@@ -869,6 +1096,10 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
                 });
                 ui.end_row();
             });
+            // The CPU time the session spent checking this trigger, when it has been timed.
+            if let Some(samples) = CPU.with(|c| c.borrow().get(i).filter(|s| !s.is_empty()).cloned()) {
+                cpu_row(ui, &samples);
+            }
             // The one confirm: what the trigger will do, and Turn On or Cancel.
             if ui.data(|d| d.get_temp::<usize>(confirm_id)) == Some(i) {
                 let read_id = egui::Id::new("trigger-confirm-read");
@@ -963,6 +1194,25 @@ mod tests {
         assert_eq!(row(&ev).detail, "Event: Idle (Silence) Ring Bell");
         ev.match_type = 113;
         assert_eq!(row(&ev).detail, "Event: Job Started Ring Bell");
+    }
+
+    #[test]
+    fn the_cpu_histogram_buckets_and_marks_the_mean() {
+        let (bins, mean) = histogram(&[1.0, 1.0, 1.0, 9.0], 4);
+        assert_eq!(bins, vec![3, 0, 0, 1]);
+        assert_eq!(mean, 1, "the mean 3 lies in the second bin");
+        assert_eq!(histogram(&[], 4), (vec![0; 4], 0));
+        assert_eq!(histogram(&[5.0, 5.0], 3).0.iter().sum::<usize>(), 2, "one value everywhere still counts every sample");
+        assert_eq!(CPU_TIME_LABEL, "CPU Time:");
+    }
+
+    #[test]
+    fn event_fields_follow_iterm2() {
+        use event_text as x;
+        assert_eq!((x::EXIT_CODE, x::EXIT_ANY, x::EXIT_ZERO, x::EXIT_NON_ZERO, x::EXIT_SPECIFIC), ("Exit Code:", "Any", "Zero (Success)", "Non-Zero (Failure)", "Specific Value\u{2026}"));
+        assert_eq!((exit_choice("*"), exit_choice(""), exit_choice("0"), exit_choice("!0"), exit_choice("7")), (0, 0, 1, 2, 3));
+        assert_eq!((x::TIMEOUT, x::THRESHOLD, x::FIRE_WHEN), ("Timeout:", "Threshold:", "Fire When:"));
+        assert_eq!(x::NO_PARAMETERS, "No additional parameters required.");
     }
 
     #[test]

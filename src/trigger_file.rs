@@ -27,6 +27,9 @@ pub const MALFORMED_ID: &str = "NoSyncTriggerEncodingError";
 pub const WRITE_FAILED_ID: &str = "NoSyncTriggerWritingError";
 pub const IMPORT_TITLE: &str = "Import\u{2026}";
 pub const EXPORT_TITLE: &str = "Export to File";
+/// The row menu's other item and its toast (`TriggerController.m:1123`, `:1128`).
+pub const COPY_URL_TITLE: &str = "Copy Trigger as URL to Clipboard";
+pub const COPIED: &str = "Copied";
 
 pub fn load_error_text(f: &str, e: &str) -> String {
     format!("While loading {f}: {e}")
@@ -122,6 +125,24 @@ pub fn canonical(t: &Table) -> Option<Table> {
 pub fn export_text(stored: &[Table]) -> String {
     let list: Vec<Json> = stored.iter().filter(|t| canonical(t).is_some()).filter_map(crate::api_profile::sanitized_trigger).collect();
     Json::Array(list).to_string().replace('/', "\\/")
+}
+
+/// `urlForSelectedTriggers` (`TriggerController.m:544-555`): `iterm2:triggers?` and each trigger's
+/// JSON as a query name with no value, percent-encoded. iTerm2 opens such a link to add the triggers.
+pub fn url_for(stored: &[Table]) -> String {
+    let encode = |s: &str| {
+        let mut out = String::new();
+        for b in s.bytes() {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+                out.push(b as char);
+            } else {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+        out
+    };
+    let parts: Vec<String> = stored.iter().filter(|t| canonical(t).is_some()).filter_map(crate::api_profile::sanitized_trigger).map(|j| encode(&j.to_string().replace('/', "\\/"))).collect();
+    format!("iterm2:triggers?{}", parts.join("&"))
 }
 
 /// `TriggerController.m:580-656`: the triggers of a file's text, canonical and in file order.
@@ -352,6 +373,17 @@ mod tests {
         assert_eq!(one[0].get("partial").and_then(toml::Value::as_bool), Some(false));
         assert_eq!(one[0].get("disabled").and_then(toml::Value::as_bool), Some(false));
         assert_eq!(one[0].get("matchType").and_then(toml::Value::as_integer), Some(0));
+    }
+
+    #[test]
+    fn a_trigger_copies_as_an_iterm2_link() {
+        let url = url_for(&[highlight()]);
+        assert!(url.starts_with("iterm2:triggers?%7B%22action%22%3A%22HighlightTrigger%22"), "{url}");
+        assert!(!url.contains(' ') && !url.contains('{') && !url.contains('"'), "{url}");
+        let two = url_for(&[highlight(), highlight()]);
+        assert_eq!(two.matches('&').count(), 1, "one query name for each trigger");
+        assert_eq!(url_for(&[]), "iterm2:triggers?");
+        assert_eq!((COPY_URL_TITLE, COPIED), ("Copy Trigger as URL to Clipboard", "Copied"));
     }
 
     #[test]

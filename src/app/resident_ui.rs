@@ -257,9 +257,9 @@ impl App {
         if reasons.is_empty() {
             return self.shutdown_answered(true, event_loop);
         }
-        let text = crate::close_rules::quit_text(&reasons, self.keep_jobs_on_quit());
+        let keep = self.keep_jobs_on_quit();
         let proxy = self.proxy.clone();
-        super::logout_ui::ask_on_thread(move || close_ui::confirm_on_top("Quit Termurion?", &text), move |ok| {
+        super::logout_ui::ask_on_thread(move || close_ui::confirm_quit(None, true, &reasons, keep), move |ok| {
             let _ = proxy.lock().map(|p| p.send_event(UserEvent::ShutdownAnswer(ok)));
         });
     }

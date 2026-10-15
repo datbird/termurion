@@ -917,9 +917,9 @@ impl App {
             "openScriptConsole:" => self.open_script_console(event_loop),
             "showSuppressedAlerts:" => self.show_suppressed_alerts(event_loop),
             "editCurrentSession:" => self.edit_session(self.focused_id(), event_loop),
-            "showBookmarkWindow:" | "openSplitHorizontallySheet:" | "openSplitVerticallySheet:" => {
-                self.open_settings(event_loop, Mode::Profiles)
-            }
+            "showBookmarkWindow:" => self.open_settings(event_loop, Mode::Profiles),
+            "openSplitHorizontallySheet:" => self.open_split_panel(event_loop, false),
+            "openSplitVerticallySheet:" => self.open_split_panel(event_loop, true),
             "terminate:" => self.quit(event_loop),
             "moveTabToNewWindow:" if self.layout_allowed(crate::winmodel::LayoutOp::MoveTab) => self.move_tab_to_new_window(),
             // Disabled while a pick is on (`PTYTextView.m:587-591`).
@@ -1628,8 +1628,6 @@ mod install_tests {
 
     #[test]
     fn install_command_follows_iterm2() {
-        assert_eq!(curl_command(true), "curl -L https://raw.githubusercontent.com/datbird/termurion/main/dist/install_shell_integration_and_utilities.sh | bash\r");
-        assert_eq!(curl_command(false), "curl -L https://raw.githubusercontent.com/datbird/termurion/main/dist/install_shell_integration.sh | bash\r");
         assert_eq!(INSTALL_UTILITIES_KEY, "NoSyncInstallUtilities");
     }
 
@@ -1657,31 +1655,6 @@ pub(super) enum Plan {
 /// Where "Also install iTerm2 Utilities" is remembered (`iTermShellIntegrationFirstPageViewController.m:19`).
 pub(super) const INSTALL_UTILITIES_KEY: &str = "NoSyncInstallUtilities";
 
-/// The one-liner typed for `Plan::Curl`: with the utilities, iTerm2's
-/// `install_shell_integration_and_utilities.sh` (`iTermShellIntegrationDownloadAndRunViewController.m:28-33`).
-pub(super) fn curl_command(utilities: bool) -> &'static str {
-    if utilities {
-        "curl -L https://raw.githubusercontent.com/datbird/termurion/main/dist/install_shell_integration_and_utilities.sh | bash\r"
-    } else {
-        "curl -L https://raw.githubusercontent.com/datbird/termurion/main/dist/install_shell_integration.sh | bash\r"
-    }
-}
-
-/// Termurion's box for `Plan::Curl`: "Also install iTerm2 Utilities?" as Yes/No/Cancel.
-const CURL_TEXT: &str = "Termurion will type its installer into this session. It adds Termurion's script to your shell's startup file.\n\nAlso install Termurion Utilities? Utilities include scripts to download files, display images inline, and more.\n\nYes types:\ncurl -L https://raw.githubusercontent.com/datbird/termurion/main/dist/install_shell_integration_and_utilities.sh | bash\n\nNo types:\ncurl -L https://raw.githubusercontent.com/datbird/termurion/main/dist/install_shell_integration.sh | bash";
-
-/// Yes, No or Cancel for `text`, the default button Yes when `yes_first`, else No: Some(true),
-/// Some(false), None.
-fn ask_utilities(text: &str, yes_first: bool) -> Option<bool> {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDNO, IDYES, MB_DEFBUTTON1, MB_DEFBUTTON2, MB_ICONQUESTION, MB_YESNOCANCEL};
-    let default = if yes_first { MB_DEFBUTTON1 } else { MB_DEFBUTTON2 };
-    match super::msgbox::show(None, "Install Shell Integration", text, MB_YESNOCANCEL | MB_ICONQUESTION | default) {
-        IDYES => Some(true),
-        IDNO => Some(false),
-        _ => None,
-    }
-}
-
 pub(super) fn install_plan(cmdline: &str) -> Plan {
     let c = cmdline.to_lowercase();
     if c.contains("pwsh") || c.contains("powershell") {
@@ -1706,11 +1679,6 @@ pub(super) fn pwsh_install_command(script: &std::path::Path) -> String {
 }
 
 pub(super) const PWSH_SCRIPT: &str = include_str!("../../resources/shell_integration/termurion_shell_integration.ps1");
-
-fn ask(text: &str) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO};
-    super::msgbox::show(None, "Install Shell Integration", text, MB_YESNO | MB_ICONQUESTION) == IDYES
-}
 
 impl App {
     /// The PowerShell integration script on disk for the automatic injection: written when
@@ -1741,37 +1709,39 @@ impl App {
         }
     }
 
-    /// Install Shell Integration for `pane`: types the installer for its profile's shell.
+    /// Install Shell Integration for `pane`: the installer window opens for its profile's shell
+    /// (`iTermShellIntegrationWindowController`); it opens on the next pass, which has the event loop.
     pub(super) fn install_shell_integration_in(&mut self, pane: PaneId) {
+        self.shell_wizard_due = Some(pane);
+    }
+
+    /// Opens the installer window for `pane`, or says the shell has no prompt hooks.
+    pub(super) fn open_shell_wizard(&mut self, event_loop: &ActiveEventLoop, pane: PaneId) {
         let Some(guid) = self.panes.get(&pane).map(|p| self.store.shared_guid(&p.profile)) else { return };
         let cmdline = crate::profile::command_line(&self.profile(Some(&guid)), &self.shell, None);
-        let typed = match install_plan(&cmdline) {
+        let plan = match install_plan(&cmdline) {
             Plan::Unsupported => {
                 return info_box("This shell has no prompt hooks, so it cannot have shell integration. Use PowerShell (pwsh), or bash, zsh, or fish in WSL.");
             }
-            Plan::Curl => {
-                let yes_first = self.globals.get(INSTALL_UTILITIES_KEY).and_then(|v| v.as_bool()).unwrap_or(true);
-                let Some(utilities) = ask_utilities(CURL_TEXT, yes_first) else { return };
-                self.globals.set(INSTALL_UTILITIES_KEY, toml::Value::Boolean(utilities));
-                self.save_globals();
-                curl_command(utilities).to_string()
-            }
-            Plan::Pwsh => {
-                let path = crate::shell_inject::script_path(&std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir));
-                let dir = path.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
-                if !ask(&format!("Termurion will save its PowerShell script to\n{}\nand add a line that loads it to your PowerShell profile ($PROFILE).\n\nIf PowerShell's execution policy blocks scripts (Restricted or AllSigned), Termurion also sets it to RemoteSigned for your user only. Continue?", path.display())) {
-                    return;
-                }
-                if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, PWSH_SCRIPT)) {
-                    return self.banners.set("install", format!("Could not save {}: {e}", path.display()));
-                }
-                pwsh_install_command(&path)
-            }
+            Plan::Curl => crate::shell_wizard::Plan::Unix,
+            Plan::Pwsh => crate::shell_wizard::Plan::Pwsh,
         };
-        if let Some(p) = self.panes.get_mut(&pane) {
-            p.scroll(Scroll::Bottom);
-            p.input(typed.as_bytes());
+        let utilities = self.globals.get(INSTALL_UTILITIES_KEY).and_then(|v| v.as_bool()).unwrap_or(true);
+        let path = crate::shell_inject::script_path(&std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir));
+        let view = crate::shell_wizard::WizardView::new(plan, utilities, &path.display().to_string());
+        self.open_panel(event_loop, crate::panel_ui::Kind::ShellIntegration, Some(pane), Box::new(view));
+    }
+
+    /// The PowerShell plan's work (the installer's Continue): saves Termurion's script and answers the
+    /// command that loads it from `$PROFILE`.
+    pub(super) fn write_pwsh_script(&mut self) -> Option<String> {
+        let path = crate::shell_inject::script_path(&std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir));
+        let dir = path.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, PWSH_SCRIPT)) {
+            self.banners.set("install", format!("Could not save {}: {e}", path.display()));
+            return None;
         }
+        Some(pwsh_install_command(&path))
     }
 }
 

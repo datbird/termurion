@@ -3,6 +3,12 @@
 
 use crate::find::Pos;
 
+/// Set the first time Copy Mode is used (`iTermCopyModeHandler.m:187`).
+pub const USED_KEY: &str = "NoSyncHaveUsedCopyMode";
+/// The notification that introduces Copy Mode (`iTermCopyModeHandler.m:501-502`); a click opens the manual.
+pub const NOTIFICATION_TITLE: &str = "Copy Mode";
+pub const NOTIFICATION_DETAIL: &str = "Copy Mode lets you make a selection with the keyboard. Click to view the manual.";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Char,

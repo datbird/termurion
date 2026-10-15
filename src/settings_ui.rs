@@ -326,8 +326,8 @@ pub fn copied_profile(session: &Profile, destination: &Profile) -> Profile {
     copy
 }
 
-/// Opening more than this many sessions at once asks first (P6).
-pub const OPEN_ASK_ABOVE: usize = 8;
+/// Opening more than this many sessions at once asks first (`kWarningThreshold`, `iTermController.m:950`).
+pub const OPEN_ASK_ABOVE: usize = 10;
 
 /// Whether opening `count` profiles at once asks first.
 pub fn asks_before_opening(count: usize) -> bool {
@@ -2067,8 +2067,14 @@ fn background_image_row(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
         }
         if ui.button("Folder...").on_hover_text(BACKGROUND_PICKER_MESSAGE).clicked() {
             if let Some(path) = rfd::FileDialog::new().set_title(BACKGROUND_PICKER_MESSAGE).pick_folder() {
-                set_background_pick(profile, &path.to_string_lossy(), true);
-                changed = true;
+                if crate::bgimage::folder_images(&path).is_empty() {
+                    // An empty folder is not taken (`applyBackgroundImageSelectionAtPath:`).
+                    let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                    crate::settings_triggers::push_alert(crate::bgimage::EMPTY_FOLDER_HEADING, crate::bgimage::empty_folder_text(&crate::inert_files::shown_name(&name)));
+                } else {
+                    set_background_pick(profile, &path.to_string_lossy(), true);
+                    changed = true;
+                }
             }
         }
     });
@@ -2408,9 +2414,9 @@ mod tests {
     }
 
     #[test]
-    fn opening_many_asks_above_eight() {
-        assert!(!asks_before_opening(1) && !asks_before_opening(8));
-        assert!(asks_before_opening(9) && asks_before_opening(500));
+    fn opening_many_asks_above_ten() {
+        assert!(!asks_before_opening(1) && !asks_before_opening(10));
+        assert!(asks_before_opening(11) && asks_before_opening(500));
     }
 
     #[test]

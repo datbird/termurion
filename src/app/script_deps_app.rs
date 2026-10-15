@@ -99,7 +99,7 @@ impl Deps {
 
 /// A runner for `pip show` and the version list: short, output not wanted.
 fn probe_runner() -> RealRunner {
-    RealRunner { lines: std::sync::mpsc::channel().0, timeout: crate::script_provision::PROBE_TIMEOUT }
+    RealRunner { lines: std::sync::mpsc::channel().0, timeout: crate::script_provision::PROBE_TIMEOUT, cancel: None }
 }
 
 /// What runs pip for a container, from its marker (no probe); None without one.

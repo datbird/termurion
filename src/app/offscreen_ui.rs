@@ -77,6 +77,35 @@ impl App {
         Some(offscreen::band_pieces(band, holes).into_iter().map(|r| (r, line)).collect())
     }
 
+    /// A right press inside a band shows the Command Info of the band's command, with the button that
+    /// turns the band off (`showCommandInfoForEvent`, `PTYTextView.m:4784-4791`).
+    pub(super) fn offscreen_info_click(&mut self, x: f32, y: f32, event_loop: &ActiveEventLoop) -> bool {
+        let covered = |x: f32, y: f32| self.termurion_ui_at(x, y);
+        let Some((id, line)) = hit(&self.offscreen_hits, &covered, x, y) else { return false };
+        let Some(mark) = self.offscreen_prepared.get(&id).and_then(|v| v.iter().find(|p| p.command_line == Some(line))).map(|p| p.mark) else { return false };
+        self.show_command_info_from(id, mark, (x, y), true, event_loop);
+        true
+    }
+
+    /// "Disable showing offscreen command" (`textViewDisableOffscreenCommandLine`,
+    /// `PTYSession.m:21560-21573`): a session with its own profile copy turns the band off on the
+    /// copy, any other session in the profile it uses.
+    pub(super) fn disable_offscreen_command_line(&mut self, pane: PaneId) {
+        let key = "Show Offscreen Command line";
+        let Some(guid) = self.panes.get(&pane).map(|p| p.profile.clone()) else { return };
+        let shared = self.store.shared_guid(&guid);
+        if shared != guid {
+            return self.set_session_values(pane, &[(key.to_string(), Some(toml::Value::Boolean(false)))]);
+        }
+        if let Some(p) = self.store.get_mut(&shared) {
+            p.set(key, toml::Value::Boolean(false));
+        }
+        self.store.merge_sessions();
+        self.refresh_panes();
+        self.save_due = Some(Instant::now() + SAVE_DELAY);
+        self.redraw();
+    }
+
     /// A left press inside a band reveals its command at the top of the pane and is consumed.
     pub(super) fn offscreen_click(&mut self, x: f32, y: f32) -> bool {
         let covered = |x: f32, y: f32| self.termurion_ui_at(x, y);

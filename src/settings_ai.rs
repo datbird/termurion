@@ -268,9 +268,52 @@ pub fn preset_title(tag: i64, catalog: &Catalog) -> String {
     m.unwrap_or_else(|| am::CUSTOM.to_string())
 }
 
-/// The one-vendor key prompt's heading and its field's hint (ruling 12e-1).
+/// The one-vendor key prompt's heading and its field's hint (ruling 12e-1). The heading is the
+/// registration sheet's own (`AITerm.xib:32`), not the Settings keys dialog's.
 pub fn key_prompt(v: Vendor) -> (String, String) {
-    (KEYS_HEADING.to_string(), key_placeholder(v.provider_name()))
+    (REGISTRATION_HEADING.to_string(), key_placeholder(v.provider_name()))
+}
+
+/// The registration sheet's heading (`AITerm.xib:32`).
+pub const REGISTRATION_HEADING: &str = "Set Up Artificial Intelligence";
+/// The notice under the key field (`AITerm.xib:127`).
+pub const CHARGE_NOTICE: &str = "You may be charged by your AI provider for each token sent or received.";
+
+/// A piece of the sheet's message: text, or a link with its words and address.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Piece {
+    Text(String),
+    Link(String, String),
+}
+
+/// The addresses and name the sheet fills in for a vendor (`AITermRegistrationWindowController.awakeFromNib`):
+/// create an account, generate a key, "learn more", and the vendor's name.
+fn registration_facts(v: Vendor) -> [&'static str; 4] {
+    match v {
+        Vendor::OpenAI | Vendor::Llama => ["https://auth.openai.com/create-account", "https://platform.openai.com/api-keys", "", "OpenAI"],
+        Vendor::Anthropic => ["https://console.anthropic.com/login", "https://console.anthropic.com/settings/keys", "", "Claude"],
+        Vendor::DeepSeek => ["https://chat.deepseek.com/sign_up", "https://platform.deepseek.com/api_keys", "", "Deep Seek"],
+        Vendor::Gemini => ["https://aistudio.google.com/prompts/new_chat", "https://aistudio.google.com/app/api-keys", "", "Gemini"],
+        // Never shown for Apple Intelligence (no key); harmless placeholders keep the match whole.
+        Vendor::Apple => ["https://support.apple.com/apple-intelligence", "https://support.apple.com/apple-intelligence", "", "Apple Intelligence"],
+    }
+}
+
+/// The sheet's message (`AITerm.xib:99-103`): Termurion for iTerm2, its repository for the "learn
+/// more" page (iTerm2's own site page).
+pub fn registration_message(v: Vendor) -> Vec<Piece> {
+    let [create, generate, _, name] = registration_facts(v);
+    let t = |s: &str| Piece::Text(s.to_string());
+    let l = |words: &str, url: &str| Piece::Link(words.to_string(), url.to_string());
+    vec![
+        t("Termurion integrates with the major LLM providers for various AI features. "),
+        l("Learn more here", crate::links::REPO),
+        t(&format!(".\n\nTermurion is currently configured to use {name}. You can change your AI provider in Settings > General > AI.\n\nBefore you can use this feature, you\u{2019}ll need an API key. If you don\u{2019}t already have one, you\u{2019}ll need to ")),
+        l("create an account", create),
+        t(" and "),
+        l("generate an API", generate),
+        t(". Then enter it below:"),
+    ]
 }
 
 /// The default-model popup's item identifiers (`G:2663-2686`).
@@ -1965,7 +2008,7 @@ mod tests {
 
     #[test]
     fn key_prompt_follows_iterm2() {
-        assert_eq!(key_prompt(Vendor::Anthropic), ("Manage AI API Keys".to_string(), "Anthropic API key".to_string()));
+        assert_eq!(key_prompt(Vendor::Anthropic), ("Set Up Artificial Intelligence".to_string(), "Anthropic API key".to_string()));
         assert_eq!(key_prompt(Vendor::OpenAI).1, "OpenAI API key");
         let typed = Secret::new(" \t ".to_string());
         assert_eq!(crate::ai_keys::normalized(typed.expose()), None, "a blank key writes nothing and continues with None");

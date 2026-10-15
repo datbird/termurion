@@ -162,11 +162,14 @@ impl App {
         let cols = { use alacritty_terminal::grid::Dimensions; screen.term().columns() };
         let title = screen.title().unwrap_or("Termurion").to_string();
         let font = self.profile_of(pane).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0 });
-        if self.globals.bool("Print In Black And White") {
-            crate::print::black_and_white(&mut rows);
-        }
-        if let Err(e) = crate::winprint::print(hwnd as _, &mut self.print_setup, &title, &rows, cols, &font.family, font.size_pt) {
+        let stored = self.globals.bool("Print In Black And White");
+        let mut bw = stored;
+        if let Err(e) = crate::winprint::print(hwnd as _, &mut self.print_setup, &title, &mut rows, &mut bw, cols, &font.family, font.size_pt) {
             self.banners.set("print", format!("Printing failed: {e}"));
+        }
+        if bw != stored {
+            self.globals.set("Print In Black And White", toml::Value::Boolean(bw));
+            self.save_globals();
         }
     }
 }

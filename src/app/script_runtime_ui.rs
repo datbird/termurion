@@ -102,7 +102,7 @@ fn env_name(target: &Target, after: &After) -> String {
 fn python_backend(argv: &[String]) -> Option<Backend> {
     let program = argv.first()?;
     // Lines are not wanted here; the receiver goes at once.
-    let mut runner = RealRunner { lines: std::sync::mpsc::channel().0, timeout: script_provision::PROBE_TIMEOUT };
+    let mut runner = RealRunner { lines: std::sync::mpsc::channel().0, timeout: script_provision::PROBE_TIMEOUT, cancel: None };
     if script_provision::is_py_launcher(program) {
         let out = runner.run(&Step { program: PathBuf::from(program), args: vec!["-0p".to_string()], env: Vec::new() }).ok()?;
         let minors: Vec<String> = rt::py_list(&out).into_iter().map(|(v, _)| v).collect();
@@ -283,7 +283,15 @@ impl App {
         for (job, after) in jobs {
             let is_install = matches!(job, Job::InstallUv { .. });
             let target = job_target(&job, &after);
+            let kind = match job {
+                Job::InstallUv { .. } => Some(super::panels_app::Long::Install),
+                Job::Provision { .. } => Some(super::panels_app::Long::Build),
+                _ => None,
+            };
             let id = provisioner.submit(job);
+            if let Some(k) = kind {
+                self.provision_long.insert(id, k);
+            }
             if let Some(t) = target {
                 self.provision_targets.insert(id, t);
             }
@@ -319,12 +327,14 @@ impl App {
         let done: Vec<(u64, Result<Outcome, String>)> = std::iter::from_fn(|| p.try_done()).collect();
         let busy = p.busy();
         for line in lines {
+            self.panel_status(crate::panel_ui::Kind::PythonRuntime, &line);
             self.script_log_app(format!("{line}\n"));
         }
         if done.is_empty() {
             return None;
         }
         for (id, result) in done {
+            self.provision_long.remove(&id);
             self.provision_needs.remove(&id);
             let target = self.provision_targets.remove(&id);
             let built = result.is_ok();
@@ -340,6 +350,16 @@ impl App {
     }
 
     fn provision_done(&mut self, id: u64, after: After, result: Result<Outcome, String>) {
+        // The installer window's Cancel: said in the console, nothing else to say.
+        if matches!(&result, Err(e) if e == crate::script_provision::CANCELED) {
+            self.script_log_app("Canceled\n".to_string());
+            match after {
+                After::Import(_) => self.import_install_done(Err(super::scripts_app::Failure::Canceled)),
+                After::DepsVersion(_) => self.deps_version_declined(),
+                _ => {}
+            }
+            return;
+        }
         let dir = uv_dir();
         let had_uv = self.uv_installed;
         self.uv_installed = rt::uv_exe(&dir).is_file();

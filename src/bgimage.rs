@@ -170,6 +170,13 @@ impl Deck {
 }
 
 /// The image files directly in a folder, by name (hidden files skipped).
+/// The warning when a chosen folder holds no image (`ProfilesWindowPreferencesViewController.m:870-875`).
+pub const EMPTY_FOLDER_HEADING: &str = "Empty Folder";
+
+pub fn empty_folder_text(name: &str) -> String {
+    format!("The folder \u{201c}{name}\u{201d} contains no images, so no background image will be shown.")
+}
+
 pub fn folder_images(folder: &Path) -> Vec<PathBuf> {
     const EXT: [&str; 9] = ["png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff", "ico"];
     let Some(Ok(dir)) = crate::localfs::LocalPath::judge(folder).map(|f| crate::localfs::entries(&f)) else { return Vec::new() };

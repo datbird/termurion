@@ -2003,12 +2003,12 @@ impl App {
         let Some(win) = self.current_window() else { return };
         let (label, target, now) = if tab {
             let Some(t) = self.tabs.get(self.active) else { return };
-            ("Tab title:", TitleEdit::Tab(win, t.id), t.title.clone().unwrap_or_default())
+            (crate::wintitle::TAB_TITLE_HELP, TitleEdit::Tab(win, t.id), t.title.clone().unwrap_or_default())
         } else {
-            ("Window title:", TitleEdit::Window(win), self.win_title.clone().unwrap_or_default())
+            (crate::wintitle::WINDOW_TITLE_HELP, TitleEdit::Window(win), self.win_title.clone().unwrap_or_default())
         };
         let Some(g) = self.gpu.as_ref() else { return };
-        let title = if tab { "Edit Tab Title" } else { "Edit Window Title" };
+        let title = if tab { crate::wintitle::SET_TAB_TITLE } else { crate::wintitle::SET_WINDOW_TITLE };
         match crate::prompt_ui::PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, title, label, &now) {
             Ok(w) => self.title_prompt = Some((w, target)),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),

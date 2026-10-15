@@ -599,6 +599,11 @@ impl Queue {
         }
     }
 
+    /// The paste being written waits for the shell prompt (`isWaitingForPrompt`).
+    pub fn waiting_for_prompt(&self) -> bool {
+        self.running.as_ref().is_some_and(|r| r.wait_for.is_some())
+    }
+
     pub fn busy(&self) -> bool {
         self.running.is_some() || !self.waiting.is_empty()
     }

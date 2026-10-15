@@ -73,7 +73,9 @@ impl PromptWindow {
         label: &str,
         initial: &str,
     ) -> Result<PromptWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, title, 420.0, 130.0)?;
+        // A long label (an alert's explanation) wraps; the window grows by a line for each 55 characters.
+        let lines = (label.chars().count() as f64 / 55.0).ceil().max(1.0);
+        let host = EguiHost::open(event_loop, instance, adapter, device, queue, title, 420.0, 112.0 + 18.0 * lines)?;
         Ok(PromptWindow { host, label: label.into(), text: initial.into(), first: true, choices: Vec::new(), check: None, refuse_blank: false, extra: None, hint: String::new(), ok_only: false, ok_label: None, select_all: false })
     }
 
@@ -356,6 +358,9 @@ impl InputGuard {
 /// An OK and Cancel question with iTerm2's permanently silenceable checkbox
 /// (`iTermWarning.m:400-406,517-520`: "Suppress this message permanently", remembered only on
 /// OK). Enter is OK and Escape Cancel.
+/// `NumberOfSpacesAccessoryView.xib:25`.
+pub const TAB_SIZE_LABEL: &str = "Tab size in spaces:";
+
 pub struct ConfirmWindow {
     host: EguiHost,
     text: String,
@@ -380,6 +385,8 @@ pub struct ConfirmWindow {
     /// The label of the button a close (X, Alt+F4) and Escape answer, when the caller names one
     /// (`escape_index`); None keeps `action_keys`' Cancel.
     close: Option<String>,
+    /// The tabs question's accessory (`NumberOfSpacesAccessoryView.xib`): the tab size in spaces.
+    spaces: Option<i32>,
     /// The action that waits until the body has been scrolled to its end, and whether it has been.
     gated: Option<usize>,
     read: bool,
@@ -404,7 +411,7 @@ impl ConfirmWindow {
         text: &str,
     ) -> Result<ConfirmWindow, String> {
         let host = EguiHost::open(event_loop, instance, adapter, device, queue, heading, 480.0, window_height(text))?;
-        Ok(ConfirmWindow { host, text: text.into(), suppress: false, checkbox: true, checkbox_label: Self::SUPPRESS, ok: "OK".into(), cancel: Some("Cancel".into()), enter_cancels: false, actions: Vec::new(), shortcuts: Vec::new(), underline: false, forget: false, close: None, gated: None, read: false, guard: None })
+        Ok(ConfirmWindow { host, text: text.into(), suppress: false, checkbox: true, checkbox_label: Self::SUPPRESS, ok: "OK".into(), cancel: Some("Cancel".into()), enter_cancels: false, actions: Vec::new(), shortcuts: Vec::new(), underline: false, forget: false, close: None, spaces: None, gated: None, read: false, guard: None })
     }
 
     /// A warning that cannot be silenced: the text and an OK button (Enter; Escape closes
@@ -498,6 +505,15 @@ impl ConfirmWindow {
 
     /// Action `index` (and its access key) is offered only after the body has been shown whole: it
     /// fits the window, or the person scrolled to its end.
+    pub fn with_tab_size(&mut self, spaces: i32) {
+        self.spaces = Some(spaces.clamp(0, 100));
+    }
+
+    /// The tab size the accessory shows now, when the window has one.
+    pub fn tab_size(&self) -> Option<i32> {
+        self.spaces
+    }
+
     pub fn require_read(&mut self, index: usize) {
         self.gated = Some(index);
     }
@@ -538,13 +554,14 @@ impl ConfirmWindow {
         let (text, suppress, checkbox, checkbox_label, ok, cancel, enter_cancels, actions) = (&self.text, &mut self.suppress, self.checkbox, self.checkbox_label, &self.ok, &self.cancel, self.enter_cancels, &self.actions);
         let (shortcuts, underline, forget, close) = (&self.shortcuts, self.underline, self.forget, &self.close);
         let (gated, read) = (self.gated, &mut self.read);
+        let spaces = &mut self.spaces;
         let guard = self.guard;
         let guard_armed = guard.is_none_or(|g| g.armed(std::time::Instant::now()));
         self.host.paint(|ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 // The body scrolls inside the window and the buttons stay below it, so no text or
                 // button is ever cut off.
-                let reserve = 48.0 + if checkbox { 28.0 } else { 0.0 } + if gated.is_some() { 20.0 } else { 0.0 };
+                let reserve = 48.0 + if spaces.is_some() { 30.0 } else { 0.0 } + if checkbox { 28.0 } else { 0.0 } + if gated.is_some() { 20.0 } else { 0.0 };
                 let out = egui::ScrollArea::vertical().max_height((ui.available_height() - reserve).max(60.0)).auto_shrink([false, true]).show(ui, |ui| {
                     ui.label(text.as_str());
                 });
@@ -555,6 +572,13 @@ impl ConfirmWindow {
                     ui.label("Scroll to the end of the text to enable the button.");
                 }
                 ui.add_space(6.0);
+                if let Some(n) = spaces.as_mut() {
+                    ui.horizontal(|ui| {
+                        ui.label(TAB_SIZE_LABEL);
+                        ui.add(egui::DragValue::new(n).range(0..=100));
+                    });
+                    ui.add_space(6.0);
+                }
                 if checkbox {
                     ui.checkbox(suppress, checkbox_label);
                     ui.add_space(6.0);

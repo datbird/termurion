@@ -282,6 +282,36 @@ pub const SETTINGS_TEXT: &str = "Statuses are sorted by priority. Items near the
 /// `StatusPriority.NewPatternTitle` / `NewPatternInfo`).
 pub const NEW_PATTERN: (&str, &str) = ("New Priority Pattern", "Enter a substring to match against status text (case-insensitive).");
 
+/// The Snooze button's tooltip (`ToolStatus.swift:1249-1253`): no row picked, a snoozed row, a row.
+pub const SNOOZE_TIP_SELECT: &str = "Select a session to snooze it.";
+pub const SNOOZE_TIP_UNSNOOZE: &str = "Un-snooze the selected session.";
+pub const SNOOZE_TIP_SNOOZE: &str = "Snooze the selected session so it sinks to the bottom of the list and dims until its status changes.";
+/// The Notify button's tooltips (`ToolStatus.swift:618-626`), armed or not, for a session or the window.
+pub const NOTIFY_TIP_WATCHING_SESSION: &str = "Watching the selected session for a status change. An alert will appear on the next change, then turn this off.";
+pub const NOTIFY_TIP_WATCHING_WINDOW: &str = "Watching this window for a session status change. An alert will appear on the next change, then turn this off.";
+pub const NOTIFY_TIP_SESSION: &str = "Notify with an alert when the selected session\u{2019}s status changes.";
+pub const NOTIFY_TIP_WINDOW: &str = "Notify with an alert when any session in this window changes status.";
+
+/// The Snooze button's tooltip for the selection.
+pub fn snooze_tip(selected: bool, snoozed: bool) -> &'static str {
+    match (selected, snoozed) {
+        (false, _) => SNOOZE_TIP_SELECT,
+        (true, true) => SNOOZE_TIP_UNSNOOZE,
+        (true, false) => SNOOZE_TIP_SNOOZE,
+    }
+}
+
+/// The Notify button's tooltip: whether it targets the selected session (else the window) and
+/// whether it is armed.
+pub fn notify_tip(session: bool, armed: bool) -> &'static str {
+    match (armed, session) {
+        (true, true) => NOTIFY_TIP_WATCHING_SESSION,
+        (true, false) => NOTIFY_TIP_WATCHING_WINDOW,
+        (false, true) => NOTIFY_TIP_SESSION,
+        (false, false) => NOTIFY_TIP_WINDOW,
+    }
+}
+
 /// The "Merge workgroup statuses" checkbox: label, then tooltip (`SPS`,
 /// `StatusPriority.MergeWorkgroups` / `MergeWorkgroupsTooltip`); `merge_rows` applies it.
 pub const MERGE_LABEL: (&str, &str) = ("Merge workgroup statuses", "When enabled, only the most recent status from each workgroup is shown.");

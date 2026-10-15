@@ -479,6 +479,11 @@ pub(super) fn show_line(pane: &mut crate::pane::Pane, line: i32) {
 }
 
 impl App {
+    /// Find Globally's own match mode (`iTermUserDefaults.globalSearchMode`), apart from the find bar's.
+    pub(super) fn global_mode(&self) -> find::Mode {
+        find::Mode::from_i64(self.globals.int(crate::global_find_ui::MODE_KEY))
+    }
+
     pub(super) fn find_mode(&self) -> find::Mode {
         find::Mode::from_i64(self.globals.int("findMode_iTerm"))
     }
@@ -1057,7 +1062,8 @@ impl App {
         }
         let query = self.focused_id().and_then(|id| self.finds.get(&id)).map(|f| f.query.clone()).unwrap_or_default();
         let Some(g) = self.gpu.as_ref() else { return };
-        match crate::global_find_ui::GlobalFindWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &query) {
+        let mode = self.global_mode();
+        match crate::global_find_ui::GlobalFindWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &query, mode) {
             Ok(w) => self.global_find = Some(w),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
@@ -1065,7 +1071,7 @@ impl App {
 
     /// Handles an event for the Find Globally window. False when `window` is not it.
     pub(super) fn global_find_event(&mut self, window: winit::window::WindowId, event: &winit::event::WindowEvent) -> bool {
-        use crate::global_find_ui::{GlobalEvent, Hit, snippet};
+        use crate::global_find_ui::GlobalEvent;
         let Some(w) = self.global_find.as_mut() else { return false };
         if w.id() != window {
             return false;
@@ -1075,40 +1081,16 @@ impl App {
             winit::event::WindowEvent::RedrawRequested => match w.redraw() {
                 GlobalEvent::None => {}
                 GlobalEvent::Close => self.global_closed(),
-                GlobalEvent::Search(q) => {
-                    let pattern = find::pattern(&q, self.find_mode());
-                    let mut hits = Vec::new();
-                    let mut error = None;
-                    // Every window's sessions, window by window. A browser pane has no screen: its
-                    // page answers below (`browser_global_start`).
-                    let windows = self.registry.order().len();
-                    'panes: for (win, n, panes) in self.all_tab_panes() {
-                        for id in panes {
-                            if hits.len() > crate::global_find_ui::MAX_HITS {
-                                break 'panes;
-                            }
-                            let Some(p) = self.panes.get(&id) else { continue };
-                            if p.browser_io().is_some() {
-                                continue;
-                            }
-                            let name = p.own().title().unwrap_or("Shell");
-                            let title = global_row_title(windows, win, n, name);
-                            match find::find_hits(&p.screen, &pattern) {
-                                Ok(found) => hits.extend(found.into_iter().map(|(m, line, r)| {
-                                    let (snippet, mark) = snippet(&line, r);
-                                    Hit { pane: id, title: title.clone(), m, snippet, mark, web: None }
-                                })),
-                                Err(e) => error = Some(e),
-                            }
-                        }
+                GlobalEvent::Mode(m) => {
+                    // The popup's pick is remembered (`modeDidChange:`) and the search runs again.
+                    self.globals.set(crate::global_find_ui::MODE_KEY, toml::Value::Integer(m as i64));
+                    self.save_globals();
+                    let q = self.global_find.as_ref().map(|w| w.query().to_string()).unwrap_or_default();
+                    if !q.is_empty() {
+                        self.global_search(&q);
                     }
-                    self.global_hits = hits;
-                    self.global_web.clear();
-                    self.global_error = error;
-                    self.global_generation += 1;
-                    self.global_show();
-                    self.browser_global_start(&q);
                 }
+                GlobalEvent::Search(q) => self.global_search(&q),
                 GlobalEvent::PickWeb(id, identifier) => {
                     self.global_focus_pane(id);
                     self.browser_global_reveal(id, &identifier);
@@ -1129,6 +1111,43 @@ impl App {
             }
         }
         true
+    }
+
+    /// Runs Find Globally for `q` in the stored match mode over every session, then asks the browser panes.
+    pub(super) fn global_search(&mut self, q: &str) {
+        use crate::global_find_ui::{Hit, snippet};
+        let pattern = find::pattern(q, self.global_mode());
+        let mut hits = Vec::new();
+        let mut error = None;
+        // Every window's sessions, window by window. A browser pane has no screen: its
+        // page answers below (`browser_global_start`).
+        let windows = self.registry.order().len();
+        'panes: for (win, n, panes) in self.all_tab_panes() {
+            for id in panes {
+                if hits.len() > crate::global_find_ui::MAX_HITS {
+                    break 'panes;
+                }
+                let Some(p) = self.panes.get(&id) else { continue };
+                if p.browser_io().is_some() {
+                    continue;
+                }
+                let name = p.own().title().unwrap_or("Shell");
+                let title = global_row_title(windows, win, n, name);
+                match find::find_hits(&p.screen, &pattern) {
+                    Ok(found) => hits.extend(found.into_iter().map(|(m, line, r)| {
+                        let (snippet, mark) = snippet(&line, r);
+                        Hit { pane: id, title: title.clone(), m, snippet, mark, web: None }
+                    })),
+                    Err(e) => error = Some(e),
+                }
+            }
+        }
+        self.global_hits = hits;
+        self.global_web.clear();
+        self.global_error = error;
+        self.global_generation += 1;
+        self.global_show();
+        self.browser_global_start(q);
     }
 
     /// The row title of pane `pane` in Find Globally, as the terminal rows have it.

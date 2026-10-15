@@ -142,6 +142,7 @@ impl App {
         if !self.chat_update(chat_id, |c| c.orchestration_enabled = on) {
             return Err("The chat could not be saved.".to_string());
         }
+        self.notice(chat_id, if on { orch::ENABLED_NOTICE } else { orch::DISABLED_NOTICE });
         self.chat_refresh();
         self.chat_state_changed();
         Ok(())

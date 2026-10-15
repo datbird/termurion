@@ -68,6 +68,14 @@ impl App {
     /// A click on a notification: Termurion comes forward on the session it named, or on the
     /// Script Console entry of the script that failed.
     pub(super) fn reveal_notified(&mut self) {
+        if let Some((at, url)) = self.last_notified_link.take() {
+            if crate::notify::still_shown(at, crate::notify::shown_count()) {
+                if let Err(e) = super::semantic_ui::shell_open(&url, false) {
+                    self.banners.set("action", e);
+                }
+                return;
+            }
+        }
         if crate::dlog::same_notice(self.last_notified_debug, crate::notify::shown_count()) {
             return self.disable_debug_logging_from_notice();
         }
