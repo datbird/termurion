@@ -731,6 +731,9 @@ pub fn find_bar_old(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f3
     OldFind { mode: Rect { x: field.x, y: field.y, w: (cell.0 * 2.0).min(field.w), h: field.h }, previous, next, close }
 }
 
+/// The paste view's left edge in its pane, points (`iTermPasteViewManager.m:109`).
+const PASTE_VIEW_LEFT: f32 = 20.0;
+
 /// What a click on the paste view lands on.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PasteHits {
@@ -747,10 +750,11 @@ pub struct PasteHits {
 /// flipped): the label, the bar filled to `fraction`, Cancel, and while `waiting` the keyboard button
 /// (lit when `passthrough`) a gap left of Cancel with the queued-keystrokes `hint` under it.
 #[allow(clippy::too_many_arguments)]
-pub fn paste_view(frame: &mut Frame, pane: Rect, cell: (f32, f32), scale: f32, old_style: bool, label: &str, fraction: f32, waiting: bool, passthrough: bool, hint: Option<&str>) -> PasteHits {
+pub fn paste_view(frame: &mut Frame, pane: Rect, cell: (f32, f32), scale: f32, old_style: bool, label: &str, fraction: f32, waiting: bool, passthrough: bool, hint: Option<crate::paste_view::HintLook>) -> PasteHits {
     let l = crate::dropdown_views::paste_layout(old_style);
-    let (w, h) = ((l.size.0 * scale).min(pane.w), l.size.1 * scale);
-    let r = Rect { x: pane.x + pane.w - w, y: pane.y, w, h };
+    let (w, h) = ((l.size.0 * scale).min((pane.w - PASTE_VIEW_LEFT * scale).max(0.0)), l.size.1 * scale);
+    // 20 points in from the pane's left, as `showDropDownInView:` puts it; the find bar is at the right.
+    let r = Rect { x: pane.x + PASTE_VIEW_LEFT * scale, y: pane.y, w, h };
     let at = |f: crate::dropdown_views::Frame| Rect { x: r.x + f.x * scale, y: r.y + (h - (f.y + f.h) * scale), w: f.w * scale, h: f.h * scale };
     frame.quads.push(Quad { rect: r, color: rgba(FIND_BAR, 1.0) });
     cut_rows_from(frame, r, cell.1);
@@ -776,21 +780,53 @@ pub fn paste_view(frame: &mut Frame, pane: Rect, cell: (f32, f32), scale: f32, o
         }
         text_at(frame, k, "\u{2328}", if passthrough { TAB_TEXT } else { TAB_TEXT_DIM }, r);
     }
-    // The callout: under the button, pointing up (the view is at the top).
-    let hint_rect = keyboard.zip(hint).map(|(k, text)| {
-        let cols = ((crate::paste_view::HINT_MAX_WIDTH * scale) / cell.0).floor().max(8.0) as usize;
-        let lines = wrap_words(text, cols);
-        let (hw, hh) = (lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f32 * cell.0 + cell.0, lines.len() as f32 * cell.1 + cell.1 / 2.0);
-        let x = (k.x + k.w / 2.0 - hw / 2.0).clamp(pane.x + 2.0, (pane.x + pane.w - hw - 2.0).max(pane.x + 2.0));
-        let hr = Rect { x, y: k.y + k.h + 1.0, w: hw, h: hh };
-        frame.quads.push(Quad { rect: hr, color: rgba(rgb(0x1a, 0x1a, 0x1a), 0.95) });
-        cut_rows_from(frame, hr, cell.1);
-        for (i, line) in lines.into_iter().enumerate() {
-            frame.rows.push(TextRow { x: hr.x + cell.0 / 2.0, y: hr.y + cell.1 / 4.0 + i as f32 * cell.1, spans: vec![span(line, TAB_TEXT)], clip: hr, scale: 1.0, face: crate::render::DEFAULT_FACE });
-        }
-        hr
-    });
+    let hint_rect = keyboard.zip(hint).map(|(k, look)| paste_hint(frame, k, pane, cell, scale, look));
     PasteHits { view: r, cancel, keyboard, hint: hint_rect }
+}
+
+/// The queued-typing hint (`iTermPasteQueuedHintView`): a rounded callout of the message in
+/// 220 points at most, a triangular pointer to the middle of `target` (the keyboard button), under
+/// the button in the top half of `bounds` and above it elsewhere. It springs in from the
+/// button's side by `look.offset` of 14 points and fades with `look.alpha`. Returns its box.
+pub fn paste_hint(frame: &mut Frame, target: Rect, bounds: Rect, cell: (f32, f32), scale: f32, look: crate::paste_view::HintLook) -> Rect {
+    use crate::paste_view as pv;
+    let span = |text: String| Span { text, color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+    let cols = (((pv::HINT_MAX_WIDTH - 2.0 * pv::PADDING_H) * scale) / cell.0).floor().max(8.0) as usize;
+    let lines = wrap_words(pv::QUEUED_HINT, cols);
+    let text_w = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f32 * cell.0;
+    let (pad_h, pad_v, ph, hw) = (pv::PADDING_H * scale, pv::PADDING_V * scale, pv::POINTER_HEIGHT * scale, pv::POINTER_HALF_WIDTH * scale);
+    let body_h = lines.len() as f32 * cell.1 + 2.0 * pad_v;
+    let (w, h) = (text_w + 2.0 * pad_h, body_h + ph);
+    let below = target.y + target.h / 2.0 < bounds.y + bounds.h / 2.0;
+    let x = (target.x + target.w / 2.0 - w / 2.0).clamp(bounds.x + 2.0, (bounds.x + bounds.w - w - 2.0).max(bounds.x + 2.0));
+    let rest = if below { target.y + target.h + scale } else { target.y - h - scale };
+    let y = rest + (if below { -1.0 } else { 1.0 }) * pv::SPRING_TRAVEL * scale * look.offset;
+    let body = Rect { x, y: if below { y + ph } else { y }, w, h: body_h };
+    let tip_x = (target.x + target.w / 2.0).clamp(x + pv::CORNER_RADIUS * scale + hw, x + w - pv::CORNER_RADIUS * scale - hw);
+    let a = look.alpha.clamp(0.0, 1.0);
+    let border = rgba(rgb(0x55, 0x55, 0x55), a);
+    let fill = rgba(rgb(0x2b, 0x2b, 0x2b), a);
+    let radius = pv::CORNER_RADIUS * scale;
+    let edge = scale.max(1.0);
+    cut_rows_from(frame, Rect { x, y, w, h }, cell.1);
+    rounded_box(&mut frame.quads, body, radius, border);
+    rounded_box(&mut frame.quads, Rect { x: body.x + edge, y: body.y + edge, w: body.w - 2.0 * edge, h: body.h - 2.0 * edge }, (radius - edge).max(0.0), fill);
+    // The pointer: one-pixel slices narrowing toward the tip, over the body's edge.
+    let steps = ph.ceil().max(1.0) as usize;
+    for i in 0..steps {
+        let t = (i as f32 + 0.5) / steps as f32;
+        let half = hw * (1.0 - t);
+        let (sy, sh) = if below { (body.y - 1.0 - i as f32, 1.0) } else { (body.y + body.h + i as f32, 1.0) };
+        frame.quads.push(Quad { rect: Rect { x: tip_x - half - edge, y: sy, w: 2.0 * half + 2.0 * edge, h: sh }, color: border });
+        frame.quads.push(Quad { rect: Rect { x: tip_x - half, y: sy, w: 2.0 * half, h: sh }, color: fill });
+    }
+    // The text appears once the callout is mostly opaque (a text row has no alpha).
+    if a > 0.5 {
+        for (i, line) in lines.into_iter().enumerate() {
+            frame.rows.push(TextRow { x: body.x + pad_h, y: body.y + pad_v + i as f32 * cell.1, spans: vec![span(line)], clip: body, scale: 1.0, face: crate::render::DEFAULT_FACE });
+        }
+    }
+    Rect { x, y, w, h }
 }
 
 /// iTerm2's Copy Mode cursor: a flag in the lower third of the cell at `row`, `col` (on

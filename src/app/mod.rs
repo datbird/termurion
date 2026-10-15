@@ -580,6 +580,8 @@ pub struct App {
     /// Each pane's paste view state (keystroke passthrough, the hint) and what the last frame drew of it.
     paste_view: HashMap<PaneId, crate::paste_view::State>,
     paste_hits: Vec<(PaneId, scene::PasteHits)>,
+    /// The same for a status bar's Progress component.
+    paste_status_hits: Vec<(PaneId, scene::PasteHits)>,
     /// Keys typed while a paste runs, held until it ends or passthrough turns on.
     queued_keys: HashMap<PaneId, Vec<KeyEvent>>,
     /// Passthrough just turned on: send the held keys now.
@@ -2407,6 +2409,7 @@ pub fn run() {
         resize_pending: HashMap::new(),
         paste_view: HashMap::new(),
         paste_hits: Vec::new(),
+        paste_status_hits: Vec::new(),
         flush_queued_keys: false,
         queued_keys: HashMap::new(),
         fix_launches: HashMap::new(),
@@ -5968,6 +5971,9 @@ impl App {
         if self.pane_move_press(button, x, y, event_loop) {
             return;
         }
+        if button == MouseButton::Left && self.paste_view_press(x, y) {
+            return;
+        }
         if self.status_press(button, x, y, event_loop) {
             return;
         }
@@ -6038,9 +6044,6 @@ impl App {
             if self.title_press(button, clicks, x, y, event_loop) {
                 return;
             }
-        }
-        if button == MouseButton::Left && self.paste_view_press(x, y) {
-            return;
         }
         if button == MouseButton::Left && self.find_press(x, y) {
             return;

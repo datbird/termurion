@@ -17,7 +17,7 @@ impl App {
             let Some((q, _, shows)) = self.pastes.get(&id) else { continue };
             let Some((sent, total)) = q.progress().filter(|_| *shows && !self.bar_shown_for(id)) else { continue };
             let state = self.paste_view.get(&id).copied().unwrap_or_default();
-            let hint = state.hint_shown(now).then_some(pv::QUEUED_HINT);
+            let hint = state.look(now);
             let fraction = sent as f32 / total.max(1) as f32;
             let h = scene::paste_view(frame, rect, self.pane_cell(id), self.scale(), self.dropdown_views.old_style(), pv::PASTING, fraction, q.waiting_for_prompt(), state.passthrough, hint);
             hits.push((id, h));
@@ -33,11 +33,11 @@ impl App {
     /// A left press on the view: Cancel stops the paste, the keyboard button toggles passthrough
     /// (queued keys go at once when it turns on, `pasteViewManagerDidSetKeystrokePassthrough:`).
     pub(super) fn paste_view_press(&mut self, x: f32, y: f32) -> bool {
-        let Some((pane, hit)) = self.paste_hits.iter().find(|(_, h)| h.view.contains(x, y)).map(|(p, h)| (*p, *h)) else { return false };
+        let Some((pane, hit)) = self.paste_hits.iter().chain(self.paste_status_hits.iter()).find(|(_, h)| h.view.contains(x, y)).map(|(p, h)| (*p, *h)) else { return false };
         if hit.cancel.contains(x, y) {
             self.cancel_paste(pane);
         } else if hit.keyboard.is_some_and(|k| k.contains(x, y)) {
-            let on = self.paste_view.entry(pane).or_default().toggle();
+            let on = self.paste_view.entry(pane).or_default().toggle(Instant::now());
             if on {
                 self.flush_queued_keys = true;
             }
@@ -48,7 +48,7 @@ impl App {
 
     /// The text the pointer's hover shows over the keyboard button.
     pub(super) fn paste_view_tip(&self, x: f32, y: f32) -> Option<&'static str> {
-        self.paste_hits.iter().find(|(_, h)| h.keyboard.is_some_and(|k| k.contains(x, y))).map(|_| pv::KEYSTROKES_TOOLTIP)
+        self.paste_hits.iter().chain(self.paste_status_hits.iter()).find(|(_, h)| h.keyboard.is_some_and(|k| k.contains(x, y))).map(|_| pv::KEYSTROKES_TOOLTIP)
     }
 
     /// A key while the focused pane pastes: Esc or Ctrl+C abort a paste waiting for the prompt;
@@ -104,13 +104,14 @@ impl App {
         }
         for (p, s) in self.paste_view.iter_mut() {
             if !self.pastes.get(p).is_some_and(|(q, _, _)| q.waiting_for_prompt()) {
-                s.stopped_waiting();
+                s.stopped_waiting(now);
             }
         }
-        let until = self.paste_view.values().filter_map(|s| s.hint_until()).filter(|t| *t > now).min();
-        if !self.paste_hits.is_empty() || until.is_some() {
+        // The hint animates: a frame about every 16 ms while it is on screen.
+        let animating = self.paste_view.values().any(|s| s.hint_shown(now));
+        if !self.paste_hits.is_empty() || !self.paste_status_hits.is_empty() || animating {
             self.redraw();
         }
-        until
+        animating.then(|| now + std::time::Duration::from_millis(16))
     }
 }

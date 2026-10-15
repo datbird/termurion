@@ -73,7 +73,8 @@ pub(super) enum Widget {
     /// has the keyboard, for a field that draws one.
     Field { text: String, placeholder: &'static str, label: String, error: bool, focused: bool, magnifier: bool, chevrons: bool, close: bool, history: bool, expand: bool, caret: Option<usize> },
     /// The paste's track, filled to the fraction, and a cancel glyph.
-    Progress(f32),
+    /// The paste's fraction, and while it waits for the prompt the keyboard button (lit when `Some(true)`).
+    Progress(f32, Option<bool>),
     /// A graph component's sparkline and texts (milestone 9i, `metrics_ui`).
     Graph(Graph),
 }
@@ -559,7 +560,8 @@ impl App {
             // fraction sent, and a cancel glyph.
             Kind::Progress => {
                 let fraction = self.pastes.get(&pane).and_then(|(q, _, _)| q.progress()).map_or(0.0, |(sent, total)| sent as f32 / total.max(1) as f32);
-                Content { empty: false, uncopyable: true, fixed: Some(FIELD_SIZE), click: Click::Cancel, widget: Some(Widget::Progress(fraction.clamp(0.0, 1.0))), ..Content::text(Vec::new()) }
+                let keyboard = self.pastes.get(&pane).filter(|(q, _, _)| q.waiting_for_prompt()).map(|_| self.paste_view.get(&pane).is_some_and(|s| s.passthrough));
+                Content { empty: false, uncopyable: true, fixed: Some(FIELD_SIZE), click: Click::Cancel, widget: Some(Widget::Progress(fraction.clamp(0.0, 1.0), keyboard)), ..Content::text(Vec::new()) }
             }
             // `iTermStatusBarLayout+tmux.m`: an Interpolated String (of `tmuxStatusLeft` or
             // `tmuxStatusRight`) whose variants drop `" | "` parts, trailing ones on the
