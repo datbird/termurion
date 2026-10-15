@@ -10,6 +10,10 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 
 ## In progress
 
+(none)
+
+## Done
+
 5. **The right-click menu, and other UI, was short-copied from iTerm2.** Seen 2026-10-14: the
    terminal right-click menu lacks about a dozen of iTerm2's items (Restart, Bury, Terminal
    State, Annotate Selection, Save Selection as Snippet, Add Trigger, Send Selection, Send Email,
@@ -20,8 +24,14 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
    alerts (`superpowers/audits/2026-10-14-ui-*.md`). Fix: every menu, window, Settings control
    and label as iTerm2 has it, in iTerm2's exact wording, with guard tests. Plan:
    `superpowers/plans/2026-10-14-ui-parity-sweep.md`.
+   Done 2026-10-15. Four packages, each held to iTerm2's source by guard tests: the terminal
+   right-click menu and the timestamp margin menu (`ctx_menu.rs`, merge e6206d6a); the Downloads
+   and Uploads menus, transfer alerts, per-trigger items and Current Tab Color (b6bdfbf5); the
+   windows, bars and alerts, with about 40 texts guarded in `win_texts.rs` (18c94170); and the
+   Settings window, 344 controls checked against the xibs by `ui_labels.rs` (b50ec2c2). Review
+   fixes in 6eaf134f. Rulings and the choices that differ from iTerm2:
+   `superpowers/rulings/ui-sweep-{a,b,s,w}-rulings.txt`.
 
-## Done
 
 2. **The session host outlives the app and blocks installs.** Seen 2026-10-14: no Termurion window
    or tray icon, but `termurion-host.exe` (started 22:18 the day before) still held one PowerShell

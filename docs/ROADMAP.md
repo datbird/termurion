@@ -11,9 +11,9 @@ beta is out.
 |---|---|
 | Release | 0.0.1-beta3 (2026-10-14) |
 | Milestones done | 0 to 14, including 13a to 13y2 and the AI browser tools |
-| Tests | 6,516 |
-| Rust | about 476,000 lines |
-| Commits | about 2,110 |
+| Tests | 6,678 |
+| Rust | about 491,000 lines |
+| Commits | about 2,170 |
 
 ## Next
 
