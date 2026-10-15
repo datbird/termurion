@@ -72,6 +72,8 @@ fn is_console_handle(h: HANDLE) -> bool {
 
 /// Turns on VT processing for a console output handle, remembering the mode before for the
 /// restore. Returns that mode, or None when `handle` is not a console.
+// A HANDLE is an opaque kernel value, never dereferenced: a bad one makes GetConsoleMode fail.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn vt_output(handle: HANDLE) -> Option<u32> {
     let mut mode = 0u32;
     if handle.is_null() || handle == INVALID_HANDLE_VALUE || unsafe { GetConsoleMode(handle, &mut mode) } == 0 {

@@ -188,10 +188,12 @@ impl Rec {
         if let Some(l) = nonempty(&self.login).or_else(|| nonempty(&self.username)) {
             return l;
         }
-        for d in [nonempty(&self.description), self.details_description()].into_iter().flatten() {
-            return login_from_description(&d);
-        }
-        String::new()
+        [nonempty(&self.description), self.details_description()]
+            .into_iter()
+            .flatten()
+            .next()
+            .map(|d| login_from_description(&d))
+            .unwrap_or_default()
     }
 
     fn source_label(&self) -> Option<&'static str> {
