@@ -316,7 +316,7 @@ mod tests {
 
     fn picture() -> crate::images::Image {
         let frame = crate::images::Frame { rgba: std::sync::Arc::new(vec![0; 400]), delay_ms: 0 };
-        crate::images::Image { width_px: 10, height_px: 10, cols: 3, rows: 2, frames: vec![frame], broken: false, keep_aspect: true, uid: 0 }
+        crate::images::Image { width_px: 10, height_px: 10, cols: 3, rows: 2, frames: vec![frame], broken: false, keep_aspect: true, uid: 0, filename: None, paused: None }
     }
 
     #[test]

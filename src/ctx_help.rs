@@ -602,6 +602,33 @@ pub fn menu_helpers_in(unstripped: &str, tz_offset_minutes: i32, tz_name: &str) 
     out
 }
 
+/// The terminal menu's helpers by group (`CMH:434-470`): a short selection gets the synonyms, the color and
+/// the Base64 preview, a reasonable one (under `MAX_LONG` characters) the numeric conversions and the
+/// Base64 copies. `short` is the selection when the menu's shortness rule holds, `reasonable` the
+/// selection and its unstripped form when its length does.
+pub fn groups_in(short: Option<&str>, reasonable: Option<(&str, &str)>, tz_offset_minutes: i32, tz_name: &str) -> crate::ctx_menu::Groups<Helper> {
+    let mut g = crate::ctx_menu::Groups::default();
+    if let Some(text) = short {
+        let trimmed = text.trim();
+        g.synonyms = synonyms_in(trimmed, tz_offset_minutes, tz_name);
+        g.color = color(trimmed);
+        g.preview = base64_preview(trimmed);
+    }
+    if let Some((text, unstripped)) = reasonable {
+        if unstripped.chars().count() < MAX_LONG {
+            g.numeric = numeric_conversions(text.trim());
+            g.copy = copy_base64(unstripped);
+        }
+    }
+    g
+}
+
+/// `groups_in` in this machine's zone.
+pub fn groups(short: Option<&str>, reasonable: Option<(&str, &str)>) -> crate::ctx_menu::Groups<Helper> {
+    let (offset, name) = local_zone();
+    groups_in(short, reasonable, offset, &name)
+}
+
 /// `menu_helpers_in` in this machine's zone.
 pub fn menu_helpers(unstripped: &str) -> Vec<Helper> {
     let (offset, name) = local_zone();

@@ -115,6 +115,58 @@ pub fn month_day_year(p: &Parts) -> String {
     format!("{month} {}, {}", p.day, p.year)
 }
 
+/// A signed distance from the baseline as the margin shows it with relative timestamps
+/// (`highResolutionCompactRelativeTimeStringFromSeconds:`, `NSDateFormatterExtras.m:298-398`):
+/// "Baseline" at zero, "+1.250s" under 10 seconds, whole seconds under a minute, then minutes,
+/// hours, and two of year, month, week, day, hour, minute, second from a day on.
+pub fn relative(seconds: f64) -> String {
+    let interval = seconds.abs();
+    if interval == 0.0 || seconds.is_nan() {
+        return "Baseline".to_string();
+    }
+    let sign = if seconds < 0.0 { "-" } else { "+" };
+    if interval < 10.0 {
+        return format!("{sign}{interval:.3}s");
+    }
+    if interval < 60.0 {
+        return format!("{sign}{}s", interval as i64);
+    }
+    let whole = interval.min(i64::MAX as f64) as i64;
+    if interval < 3600.0 {
+        let (m, s) = (whole / 60, whole % 60);
+        return if s == 0 { format!("{sign}{m}m") } else { format!("{sign}{m}m{s}s") };
+    }
+    if interval < 86_400.0 {
+        let (h, m, s) = (whole / 3600, (whole % 3600) / 60, whole % 60);
+        let mut out = format!("{sign}{h}h");
+        if m > 0 {
+            out.push_str(&format!("{m}m"));
+        }
+        if s > 0 {
+            out.push_str(&format!("{s}s"));
+        }
+        return out;
+    }
+    const YEAR: i64 = 31_536_000;
+    const MONTH: i64 = 2_592_000;
+    const WEEK: i64 = 604_800;
+    const DAY: i64 = 86_400;
+    let vals = [whole / YEAR, (whole % YEAR) / MONTH, (whole % MONTH) / WEEK, (whole % WEEK) / DAY, (whole % DAY) / 3600, (whole % 3600) / 60, whole % 60];
+    let units = ["y", "mo", "w", "d", "h", "m", "s"];
+    let mut out = String::new();
+    let mut parts = 0;
+    for (v, u) in vals.iter().zip(units) {
+        if *v > 0 && parts < 2 {
+            out.push_str(&format!("{v}{u}"));
+            parts += 1;
+        }
+    }
+    if out.is_empty() {
+        out.push_str("0s");
+    }
+    format!("{sign}{out}")
+}
+
 /// iTerm2's right extra for Adjacent timestamps, in points (`PTYSession.m`,
 /// `desiredRightExtraForProfile:session:`).
 pub const ADJACENT_POINTS: f32 = 100.0;
@@ -217,6 +269,26 @@ mod tests {
         assert_eq!(Mode::from_style(3), Mode::Adjacent);
         assert_eq!(Mode::from_style(0), Mode::Over);
         assert_eq!(Mode::from_style(9), Mode::Over);
+    }
+
+    /// `NSDateFormatterExtras.m:298-398`.
+    #[test]
+    fn relative_timestamps_follow_iterm2() {
+        assert_eq!(relative(0.0), "Baseline");
+        assert_eq!(relative(1.25), "+1.250s");
+        assert_eq!(relative(-9.9996), "-10.000s");
+        assert_eq!(relative(10.0), "+10s");
+        assert_eq!(relative(-59.9), "-59s");
+        assert_eq!(relative(60.0), "+1m");
+        assert_eq!(relative(303.0), "+5m3s");
+        assert_eq!(relative(3600.0), "+1h");
+        assert_eq!(relative(7500.0), "+2h5m");
+        assert_eq!(relative(3661.0), "+1h1m1s");
+        assert_eq!(relative(86_400.0 * 3.0 + 4.0 * 3600.0), "+3d4h");
+        assert_eq!(relative(86_400.0), "+1d");
+        assert_eq!(relative(31_536_000.0 + 2.0 * 2_592_000.0), "+1y2mo");
+        // iTerm2 reduces the week by the month, not the year, so a year and three days reads as a year and a week.
+        assert_eq!(relative(-(31_536_000.0 + 86_400.0 * 3.0 + 5.0)), "-1y1w");
     }
 
     #[test]

@@ -102,6 +102,23 @@ pub fn select_at(text: &str, click: usize, rules: &[Rule]) -> Option<Found> {
     best.map(|(_, f)| f)
 }
 
+/// The actions the context menu offers for a selected text (`CMH:864-896`): for each rule that has
+/// actions and whose regex matches somewhere in `text`, its first match's captures, in rule order.
+/// A rule that does not compile is skipped. Returns (rule index, captures).
+pub fn rules_matching_text(text: &str, rules: &[Rule]) -> Vec<(usize, Vec<String>)> {
+    let mut out = Vec::new();
+    for (i, rule) in rules.iter().enumerate() {
+        if rule.actions.is_empty() {
+            continue;
+        }
+        let Ok(re) = fancy_regex::Regex::new(&to_rust_regex(&rule.regex)) else { continue };
+        if let Ok(Some(caps)) = re.captures(text) {
+            out.push((i, (0..caps.len()).map(|g| caps.get(g).map_or(String::new(), |c| c.as_str().to_string())).collect()));
+        }
+    }
+    out
+}
+
 /// Fills in an action's parameter: \0 to \8 are the captures, \d the working
 /// directory, \h the host, \u the user, \n a newline, and \\ a backslash.
 pub fn expand(parameter: &str, captures: &[String], cwd: &str, host: &str, user: &str) -> String {
@@ -365,5 +382,24 @@ mod tests {
         let eval = |_: &str, _: &[Option<&str>], _: bool| -> Result<String, String> { Err("unused".into()) };
         assert_eq!(parameter(&a, &caps, false, &eval, "C:\\a b", "h", "u"), Ok("x \"C:\\a b\" \"h\" \"u\"".into()));
         assert_eq!(parameter(&a, &caps, false, &eval, "C:\\a&b", "h", "u"), Err(crate::semantic::CMD_REFUSED.into()));
+    }
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::*;
+
+    fn rule(regex: &str, actions: usize) -> Rule {
+        Rule { regex: regex.into(), precision: 1.0, notes: String::new(), actions: (0..actions).map(|i| RuleAction { title: format!("a{i}"), action: "copy:".into(), parameter: "\\0".into() }).collect() }
+    }
+
+    /// `CMH:864-896`: every rule with actions whose regex matches somewhere in the selection gives its
+    /// first match's captures; a rule with no actions, no match or a bad regex gives nothing.
+    #[test]
+    fn rules_match_the_selected_text() {
+        let rules = [rule(r"(\w+)@(\w+)\.com", 1), rule(r"zzz", 2), rule(r"\d+", 0), rule(r"[", 1), rule(r"\d+", 1)];
+        let found = rules_matching_text("write to me@host.com or 42 or 7", &rules);
+        assert_eq!(found, vec![(0, vec!["me@host.com".to_string(), "me".to_string(), "host".to_string()]), (4, vec!["42".to_string()])]);
+        assert!(rules_matching_text("", &rules).is_empty());
     }
 }

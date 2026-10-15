@@ -329,16 +329,83 @@ impl App {
             let (x, y) = self.cursor;
             let near = x >= inner.x + inner.w - 12.0 * cell.0 && x <= inner.x + inner.w && y >= inner.y && y <= inner.y + inner.h;
             if mode != stamps::Mode::Hover || near {
-                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-                let labels: Vec<(usize, String)> = (0..lines)
-                    .filter_map(|row| {
-                        let t = p.screen.row_time(row - offset) as u64;
-                        (t > 0).then(|| (row as usize, stamps::label(now.saturating_sub(t), &stamps::local(t))))
-                    })
-                    .collect();
+                let labels = self.stamp_labels(id);
                 scene::timestamps(frame, &labels, inner, cell, self.stamp_column(id, rect).filter(|_| mode == stamps::Mode::Adjacent), (p.screen.palette.fg, p.screen.palette.bg));
             }
         }
+    }
+
+    /// The timestamp labels of the pane's screen rows: the time of day by age, or with a baseline set
+    /// (from the timestamp margin's menu) the distance from it (`iTermTimestampDrawHelper.m:416-427`).
+    pub(super) fn stamp_labels(&self, id: PaneId) -> Vec<(usize, String)> {
+        let Some(p) = self.panes.get(&id) else { return Vec::new() };
+        let grid = p.screen.term().grid();
+        let (offset, lines) = (grid.display_offset() as i32, grid.screen_lines() as i32);
+        let baseline = self.ts_baseline.get(&id).copied().unwrap_or(0.0);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        (0..lines)
+            .filter_map(|row| {
+                let t = p.screen.row_time(row - offset) as u64;
+                (t > 0).then(|| (row as usize, if baseline != 0.0 { stamps::relative(t as f64 - baseline) } else { stamps::label(now.saturating_sub(t), &stamps::local(t)) }))
+            })
+            .collect()
+    }
+
+    /// The pane's relative-timestamp baseline: set to the time a row was written, or cleared with 0.
+    pub(super) fn set_timestamp_baseline(&mut self, id: PaneId, baseline: f64) {
+        if baseline == 0.0 {
+            self.ts_baseline.remove(&id);
+        } else {
+            self.ts_baseline.insert(id, baseline);
+        }
+        self.redraw();
+    }
+
+    /// The menu of a right click on the timestamps in the margin (`contextMenuClickIsOnTimestamps:`,
+    /// `PTYTextView+ARC.m:2722-2748`): when the pointer is over a label block of a row that has a time,
+    /// Set Baseline for Relative Timestamps and Disable Relative Timestamps. None elsewhere.
+    pub(super) fn timestamp_menu(&mut self, id: PaneId) -> Option<Vec<crate::ctx_menu::Row>> {
+        if !self.stamps_on(id) {
+            return None;
+        }
+        let (x, y) = self.cursor;
+        let (hit, rect) = self.pane_at(x, y)?;
+        if hit != id {
+            return None;
+        }
+        let cell = self.pane_cell(id);
+        let inner = self.text_rect(id, rect);
+        let mode = stamps::Mode::from_style(self.profile_of(id).map_or(1, |pr| pr.int("Timestamps Style")));
+        let near = x >= inner.x + inner.w - 12.0 * cell.0;
+        if mode == stamps::Mode::Hover && !near {
+            return None;
+        }
+        let labels = self.stamp_labels(id);
+        let row = ((y - inner.y) / cell.1).floor();
+        if row < 0.0 || !labels.iter().any(|(r, _)| *r as f32 == row) {
+            return None;
+        }
+        // The block: Adjacent ends at the column's right edge, the others at the pane's.
+        let left = match self.stamp_column(id, rect).filter(|_| mode == stamps::Mode::Adjacent) {
+            Some(col) => (col.x + col.w - stamps::block_width(cell.0, &labels)).max(inner.x),
+            None => {
+                let widest = labels.iter().map(|(_, t)| t.chars().count()).max().unwrap_or(0) as f32;
+                inner.x + inner.w - (widest + 2.0) * cell.0
+            }
+        };
+        if x < left {
+            return None;
+        }
+        let p = self.panes.get(&id)?;
+        let offset = p.screen.term().grid().display_offset() as i32;
+        let clicked = p.screen.row_time(row as i32 - offset) as f64;
+        if clicked == 0.0 {
+            return None;
+        }
+        let mut pend = super::ctx_menu_app::CtxPending::for_pane(id, Vec::new());
+        pend.set_stamp(clicked);
+        self.ctx_pending = Some(pend);
+        Some(crate::ctx_menu::timestamp_rows(self.ts_baseline.get(&id).copied().unwrap_or(0.0), clicked))
     }
 
     /// The pointer is within 12 columns of the right edge of a pane that shows Hover
@@ -395,7 +462,8 @@ impl App {
             .iter()
             .filter_map(|id| self.panes.get(id))
             .flat_map(|p| p.screen.images.by_id.values())
-            .filter_map(|img| scene::ms_to_next_frame(&img.frames, now))
+            // Stop Animating holds an image on its frame: it has no next one.
+            .filter_map(|img| if img.paused.is_some() { None } else { scene::ms_to_next_frame(&img.frames, now) })
             .min()?;
         if self.anim_due.is_some_and(|due| Instant::now() >= due) {
             self.redraw();

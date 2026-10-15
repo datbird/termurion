@@ -393,39 +393,39 @@ impl App {
         root
     }
 
-    /// iTerm2's right-click menu, after `extra` items (label, what it does) and a separator,
-    /// with the script providers' items (label, what it does) before Split Pane.
-    pub(super) fn show_context_menu_with(&mut self, extra: &[(String, super::semantic_ui::CtxItem)], providers: &[(String, super::semantic_ui::CtxItem)], tab_has_many: bool) {
+    /// The right-click menu's rows as a popup at the pointer (`ctx_menu::build`): a command row is greyed
+    /// when its main menu item is not built yet, a check row has a check, a swatch row an icon. A label's
+    /// "&" is doubled so Windows shows it. The menu lives until the next one: the pick arrives after it closes.
+    pub(super) fn show_context_rows(&mut self, rows: &[crate::ctx_menu::Row]) {
         let Some(hwnd) = self.hwnd() else { return };
         let context = Menu::new();
         let mut results = Vec::new();
-        let own = |(label, item): &(String, super::semantic_ui::CtxItem)| MenuItem::with_id(item.id(), label.replace('&', "&&"), item.enabled(), None);
-        for slot in context_layout(extra.len(), providers.len(), tab_has_many) {
-            results.push(match slot {
-                Slot::Separator => context.append(&PredefinedMenuItem::separator()),
-                Slot::Extra(i) => match &extra[i] {
-                    // Lock Pane is a check item (`CMH:671-678`).
-                    (label, item @ super::semantic_ui::CtxItem::LockPane(on)) => context.append(&CheckMenuItem::with_id(item.id(), label.replace('&', "&&"), true, *on, None)),
-                    other => context.append(&own(other)),
-                },
-                Slot::Provider(i) => context.append(&own(&providers[i])),
-                Slot::Swap => context.append(&own(&(super::semantic_ui::swap_label().to_string(), super::semantic_ui::CtxItem::SwapPane))),
-                Slot::Command(id) => match menus::by_id(id) {
-                    None => context.append(&PredefinedMenuItem::separator()),
-                    Some(item) => {
-                        let enabled = !commands::status(item).unavailable();
-                        // Acts on the menu's pane, not the focused one (`context_picked`).
-                        context.append(&MenuItem::with_id(super::semantic_ui::CtxItem::Command(item.id().to_string(), enabled).id(), menu_text(item), enabled, None))
-                    }
-                },
-            });
+        for row in rows {
+            let entry = context_row_item(row, &mut results);
+            results.push(context.append(entry.as_ref()));
         }
         if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
             self.banners.set("menu", format!("Context menu: {e}"));
         }
         unsafe { context.show_context_menu_for_hwnd(hwnd, None) };
-        // The pick arrives after the menu closes, so the menu lives until the next one.
         self.popup_menu = Some(context);
+    }
+
+    /// The titles checked in the Terminal State submenu of `pane`'s right-click menu: what the menu bar's
+    /// checks show for the focused pane (`sync_checks`), for the pane the menu is for.
+    pub(super) fn terminal_state_on(&self, pane: PaneId) -> Vec<String> {
+        let Some(p) = self.panes.get(&pane) else { return Vec::new() };
+        let mode = *p.screen.term().mode();
+        let screen = p.own();
+        let kb = screen.keyboard();
+        let mut on: Vec<String> = TOGGLES.iter().filter(|(_, _, _, flag)| mode.intersects(*flag)).map(|(label, ..)| (*label).to_string()).collect();
+        on.extend(KEY_MODES.iter().filter(|(_, m)| kb.mode == *m).map(|(l, _)| (*l).to_string()));
+        on.extend(KITTY_FLAGS.iter().filter(|(_, bit)| kb.kitty & bit != 0).map(|(l, _)| (*l).to_string()));
+        on.extend(LEVELS.iter().filter(|(_, level)| screen.level() == *level).map(|(l, _)| (*l).to_string()));
+        if screen.keys.literal {
+            on.push("Literal Controls".to_string());
+        }
+        on
     }
 
     /// The Window menu's window list, in every window's menu bar: a line after the fixed
@@ -1329,61 +1329,39 @@ impl App {
     }
 }
 
-/// One entry of the right-click menu: the nth extra item, the nth script provider item, a
-/// menu command by id, or a separator.
-#[derive(Clone, Debug, PartialEq)]
-pub(super) enum Slot {
-    Extra(usize),
-    Provider(usize),
-    Command(&'static str),
-    /// Swap With Session...
-    Swap,
-    Separator,
-}
-
-/// The right-click menu's order: `extra` items and a separator, then `commands::CONTEXT` with
-/// the `providers` items and a separator after its first separator (iTerm2 puts them after
-/// its custom actions, before Split Pane, `CMH:572-580`), and the move group after its second:
-/// Move Session to Split Pane, to Tab (only when the tab has several panes), to Window, Swap
-/// With Session and a separator (`CMH:593-606`).
-pub(super) fn context_layout(extra: usize, providers: usize, tab_has_many: bool) -> Vec<Slot> {
-    let mut slots: Vec<Slot> = (0..extra).map(Slot::Extra).collect();
-    if extra > 0 {
-        slots.push(Slot::Separator);
-    }
-    let mut placed = providers == 0;
-    let mut separators = 0;
-    for id in commands::CONTEXT {
-        if id.is_empty() {
-            slots.push(Slot::Separator);
-            separators += 1;
-            if !placed {
-                slots.extend((0..providers).map(Slot::Provider));
-                slots.push(Slot::Separator);
-                placed = true;
-            }
-            if separators == 2 {
-                slots.push(Slot::Command("Session > Move Session > Move Session to Split Pane"));
-                if tab_has_many {
-                    slots.push(Slot::Command("Session > Move Session > Move Session to Tab"));
-                }
-                slots.push(Slot::Command("Session > Move Session > Move Session to Window"));
-                slots.push(Slot::Swap);
-                slots.push(Slot::Separator);
-            }
-        } else {
-            slots.push(Slot::Command(id));
-        }
-    }
-    slots
-}
-
 /// What the Tab Color picker colors: a tab by its stable `Tab.id`, or a tab group by its id.
 /// 13d's menus build them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ColorTarget {
     Tab(u64),
     Group(String),
+}
+
+/// One row of the right-click menu as a muda item (a submenu's rows are appended to it).
+fn context_row_item(row: &crate::ctx_menu::Row, results: &mut Vec<muda::Result<()>>) -> Box<dyn IsMenuItem> {
+    use crate::ctx_menu::{Row, CTX_ID};
+    match row {
+        Row::Sep => Box::new(PredefinedMenuItem::separator()),
+        Row::Sub { label, rows } => {
+            let sub = Submenu::new(label.replace('&', "&&"), true);
+            for child in rows {
+                let item = context_row_item(child, results);
+                results.push(sub.append(item.as_ref()));
+            }
+            Box::new(sub)
+        }
+        Row::Item { id, label, enabled, checked, swatch } => {
+            // A menu command that is not built yet shows greyed (`commands::status`).
+            let available = id.strip_prefix(CTX_ID).and_then(|a| a.strip_prefix("cmd.")).is_none_or(|menu| crate::menus::by_id(menu).is_some_and(|i| !commands::status(i).unavailable()));
+            let enabled = *enabled && available;
+            let text = label.replace('&', "&&");
+            match (checked, swatch) {
+                (Some(on), _) => Box::new(CheckMenuItem::with_id(id.as_str(), text, enabled, *on, None)),
+                (None, Some((r, g, b))) => Box::new(IconMenuItem::with_id(id.as_str(), text, enabled, swatch_icon(crate::palette::rgb(*r, *g, *b)), None)),
+                (None, None) => Box::new(MenuItem::with_id(id.as_str(), text, enabled, None)),
+            }
+        }
+    }
 }
 
 /// A context menu entry as a muda item: a check item when it has a check mark, a submenu with
@@ -1527,75 +1505,6 @@ mod menu_bar_replace_tests {
         let src = include_str!("menu.rs");
         let body = src.split("pub(super) fn install_menus").nth(1).unwrap().split("muda::MenuEvent::set_event_handler").next().unwrap();
         assert!(body.contains("replace_menu_bar(earlier, &menu, hwnd)") && !body.contains("menu.init_for_hwnd"));
-    }
-}
-
-#[cfg(test)]
-mod context_tests {
-    use super::*;
-
-    /// `commands::CONTEXT` with the move group (P8) after its second separator.
-    fn with_move_group(many: bool) -> Vec<Slot> {
-        use Slot::{Command, Separator, Swap};
-        let today: Vec<Slot> = commands::CONTEXT.iter().map(|id| if id.is_empty() { Separator } else { Command(id) }).collect();
-        let mut group = vec![Command("Session > Move Session > Move Session to Split Pane")];
-        if many {
-            group.push(Command("Session > Move Session > Move Session to Tab"));
-        }
-        group.extend([Command("Session > Move Session > Move Session to Window"), Swap, Separator]);
-        let mut slots = today[..6].to_vec();
-        slots.extend(group);
-        slots.extend(today[6..].iter().cloned());
-        slots
-    }
-
-    #[test]
-    fn context_layout_places_providers_before_split_pane() {
-        use Slot::{Command, Extra, Provider, Separator};
-        // No providers: today's layout (with the move group), the extra items and a separator first when there are some.
-        assert_eq!(context_layout(0, 0, true), with_move_group(true));
-        let mut with_extra = vec![Extra(0), Extra(1), Separator];
-        with_extra.extend(with_move_group(true));
-        assert_eq!(context_layout(2, 0, true), with_extra);
-        // Providers go after Copy and Paste's separator, with a separator after them.
-        let mut want = vec![Extra(0), Separator, Command("Edit > Copy"), Command("Edit > Paste"), Separator, Provider(0), Provider(1), Separator];
-        want.extend(with_move_group(true)[3..].iter().cloned());
-        assert_eq!(want[8], Command("Shell > Split Vertically with Current Profile"));
-        assert_eq!(context_layout(1, 2, true), want);
-    }
-
-    #[test]
-    fn context_layout_places_move_items() {
-        use Slot::{Command, Separator, Swap};
-        let want = vec![
-            Command("Edit > Copy"),
-            Command("Edit > Paste"),
-            Separator,
-            Command("Shell > Split Vertically with Current Profile"),
-            Command("Shell > Split Horizontally with Current Profile"),
-            Separator,
-            Command("Session > Move Session > Move Session to Split Pane"),
-            Command("Session > Move Session > Move Session to Tab"),
-            Command("Session > Move Session > Move Session to Window"),
-            Swap,
-            Separator,
-            Command("View > Maximize Active Pane"),
-            Command("Edit > Select All"),
-            Command("Edit > Clear Buffer"),
-            Separator,
-            Command("Session > Edit Session..."),
-            Command("Shell > Close"),
-        ];
-        assert_eq!(context_layout(0, 0, true), want);
-        // A tab with one pane has no Move Session to Tab (`CMH:593-606`).
-        let one: Vec<Slot> = want.iter().filter(|s| **s != Command("Session > Move Session > Move Session to Tab")).cloned().collect();
-        assert_eq!(context_layout(0, 0, false), one);
-        assert_eq!(context_layout(0, 0, false), with_move_group(false));
-        for slot in &want {
-            if let Command(id) = slot {
-                assert!(crate::menus::by_id(id).is_some(), "{id}");
-            }
-        }
     }
 }
 

@@ -331,7 +331,7 @@ impl App {
     /// iTerm2's interpolated string with `matches` encoded per action when the profile says so
     /// (`CAP:161-225`), else the `\0`..`\8` form; a command action's line is built by the one
     /// cmd.exe builder either way, and a value it refuses runs nothing (B3).
-    fn smart_action_run(&mut self, id: PaneId, a: &smartsel::RuleAction, captures: &[String], cwd: &str) -> Option<Run> {
+    pub(super) fn smart_action_run(&mut self, id: PaneId, a: &smartsel::RuleAction, captures: &[String], cwd: &str) -> Option<Run> {
         // An evaluation error or a refused value runs nothing and says why.
         let param = match self.smart_param(id, a, captures, cwd)? {
             Ok(p) => p,
@@ -544,7 +544,7 @@ impl App {
     }
 
     /// The pane's reported host and user, empty when it reports none.
-    fn host_user(&self, id: PaneId) -> Option<(String, String)> {
+    pub(super) fn host_user(&self, id: PaneId) -> Option<(String, String)> {
         let shell = &self.panes.get(&id)?.own().shell;
         Some((shell.host.clone().unwrap_or_default(), shell.user.clone().unwrap_or_default()))
     }
@@ -589,183 +589,6 @@ impl App {
             }
         }
         self.refresh_pointer_shape();
-    }
-
-    /// The pane menu for `at`: the pane and, for a right click, the point (Smart Selection
-    /// matches' actions, Copy Link Address and Unfold come from the point). The title bar passes
-    /// its pane and no point (`titleBarMenu` is `menuAtCoord:(-1,-1)`, `CMH:615-616`).
-    pub(super) fn show_context_menu_at(&mut self, at: Option<(PaneId, Option<Point>)>) {
-        let mut extra: Vec<(String, CtxItem)> = Vec::new();
-        let mut pending = None;
-        let mut fold = None;
-        if let Some((id, Some(point))) = at {
-            if let Some(f) = self.fold_at_point(id, point) {
-                extra.push(("Unfold".into(), CtxItem::Unfold));
-                fold = Some(f);
-            }
-            if let Some(c) = self.clicked(id, point) {
-                // In a remote pane the actions that open or run here are greyed (P10).
-                let remote = self.remote_text(id);
-                if let Some(f) = c.found.as_ref() {
-                    for (i, a) in c.rules[f.rule].actions.iter().enumerate() {
-                        extra.push((a.title.clone(), CtxItem::Action(i, ssh_files::remote_action_allowed(remote, &a.action))));
-                    }
-                }
-                if c.ctx.link.is_some() {
-                    extra.push(("Copy Link Address".into(), CtxItem::CopyLink));
-                } else if semantic::url_like_in(&c.ctx.before, &c.ctx.after, &c.ctx.urls).is_some() {
-                    extra.push(("Copy URL".into(), CtxItem::CopyLink));
-                }
-                let link = c.ctx.link.clone().or_else(|| semantic::url_like_in(&c.ctx.before, &c.ctx.after, &c.ctx.urls));
-                let cwd = c.ctx.cwd.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
-                let actions = c.found.as_ref().map(|f| (c.rules[f.rule].actions.clone(), f.captures.clone())).unwrap_or_default();
-                pending = Some(CtxPending { pane: id, link, actions: actions.0, captures: actions.1, cwd, fold, providers: Vec::new(), quick_look: None, selection: None, helpers: Vec::new(), search: None });
-            } else if fold.is_some() {
-                pending = Some(CtxPending { fold, ..CtxPending::for_pane(id, Vec::new()) });
-            }
-        }
-        // Stop Coprocess (only while one runs) and Toggle Broadcasting Input, for the pane the
-        // menu is for. The pending item exists for the pane even with no other item, so the
-        // providers fill (P16).
-        if let Some(id) = menu_pane(at) {
-            let running = self.panes.get(&id).is_some_and(|p| p.coprocess_command().is_some());
-            for label in ctx_extras(running) {
-                extra.push((label.into(), if label == "Stop Coprocess" { CtxItem::StopCoprocess } else { CtxItem::ToggleBroadcast }));
-            }
-            // Lock Pane and the tab-wide items follow Toggle Broadcasting Input (`CMH:671-713`).
-            for (label, item) in self.lock_items_for(id) {
-                extra.push((label.into(), item));
-            }
-            let pend = pending.get_or_insert_with(|| CtxPending::for_pane(id, Vec::new()));
-            // The selection items (`CMH:549-560`): Open Selection as URL, the splits, Quick Look Link
-            // (a short http or https selection) and Search the Web for Selection.
-            let columns = self.panes.get(&id).map_or(0, |p| p.screen.term().columns());
-            let short = self.selected_text(id).filter(|t| crate::web_popover::short_selection(t.chars().count(), columns));
-            let quick = short.as_deref().and_then(crate::web_popover::quick_look_target);
-            let openable = short.as_deref().is_some_and(|t| self.link_locally_openable(t));
-            for label in crate::browser::web_context_items(short.as_deref(), openable, quick.is_some()) {
-                let item = match label {
-                    "Open Selection as URL" => CtxItem::OpenSelectionAsUrl,
-                    "Open URL in Vertical Split Pane" => CtxItem::OpenUrlVertical,
-                    "Open URL in Horizontal Split Pane" => CtxItem::OpenUrlHorizontal,
-                    "Quick Look Link" => CtxItem::QuickLookLink,
-                    _ => CtxItem::SearchWeb,
-                };
-                extra.push((label.into(), item));
-            }
-            pend.selection = short;
-            // The conversions of the selection (`CMH:440-465`), after the web items.
-            let rows = self.selected_text(id).map(|t| helper_rows(&t)).unwrap_or_default();
-            for (i, (label, h)) in rows.iter().enumerate() {
-                extra.push((label.clone(), CtxItem::Helper(i, h.copy.is_some())));
-            }
-            pend.helpers = rows.into_iter().map(|(_, h)| h).collect();
-            // Search takes the whole selection, short or not (`CMH:1179-1186`), bounded and cleaned.
-            pend.search = self.selected_text(id).as_deref().and_then(crate::browser::search_query);
-            if let Some(url) = quick {
-                pend.quick_look = Some((url, self.pointer_screen()));
-            }
-        }
-        // The script providers' items (`CMH:898-914`), for that session.
-        let mut providers: Vec<(String, CtxItem)> = Vec::new();
-        if let Some(p) = pending.as_mut() {
-            p.providers = crate::script_fn::context_rows(&self.api_fns.context_menu_items());
-            providers = p.providers.iter().map(|(title, id)| (title.clone(), CtxItem::Provider(id.clone()))).collect();
-        }
-        self.ctx_pending = pending;
-        let many = self.tabs.get(self.active).is_some_and(|t| t.layout.panes().len() > 1);
-        self.show_context_menu_with(&extra, &providers, many);
-    }
-
-    /// A pick from the right-click menu's own items. Returns false for other ids.
-    pub(super) fn context_picked(&mut self, id: &str, event_loop: &ActiveEventLoop) -> bool {
-        let Some(item) = id.strip_prefix(CTX_ID) else { return false };
-        let Some(pend) = self.ctx_pending.take() else { return true };
-        let focused = self.tabs.get(self.active).map(|t| t.focused);
-        let in_tab = self.tabs.get(self.active).is_some_and(|t| t.layout.panes().contains(&pend.pane));
-        match ctx_pick(id, pend.pane, focused, in_tab) {
-            CtxPick::Gone => {}
-            CtxPick::Swap(pane) => self.start_pane_move(pane, false, event_loop),
-            CtxPick::Provider { pane, unique_id } => {
-                let title = pend.providers.iter().find(|(_, id)| *id == unique_id).map(|(t, _)| t.clone()).unwrap_or_default();
-                self.context_provider_picked(pane, &unique_id, &title);
-            }
-            CtxPick::Command { id, focus, restore } => {
-                // The command acts on the menu's pane: it takes the focus for the command, and
-                // the pane that had it gets it back (iTerm2 never moves it, `CMH:542-547`).
-                if let (Some(pane), Some(t)) = (focus, self.tabs.get_mut(self.active)) {
-                    t.focused = pane;
-                    self.refresh_route();
-                }
-                if let Some(item) = crate::menus::by_id(&id) {
-                    self.run_command(item, event_loop);
-                }
-                let back = self.tabs.get(self.active).and_then(|t| restore_focus(restore, pend.pane, t.layout.panes().contains(&pend.pane), t.focused, t.zoomed.is_some(), |p| t.layout.panes().contains(&p)));
-                if let (Some(pane), Some(t)) = (back, self.tabs.get_mut(self.active)) {
-                    t.focused = pane;
-                    self.refresh_route();
-                }
-            }
-            CtxPick::Other => self.context_other_picked(item, pend, event_loop),
-        }
-        self.redraw();
-        true
-    }
-
-    fn context_other_picked(&mut self, item: &str, pend: CtxPending, event_loop: &ActiveEventLoop) {
-        if item == "stopcoprocess" {
-            self.stop_coprocess(pend.pane);
-        } else if item == "togglebroadcast" {
-            self.toggle_broadcast_pane(pend.pane);
-        } else if item == "lockpane" {
-            self.toggle_pane_lock(pend.pane);
-        } else if item == "lockall" || item == "unlockall" {
-            self.lock_all_in_tab(pend.pane, item == "lockall");
-        } else if item == "unfold" {
-            if let Some(f) = pend.fold {
-                self.unfold(pend.pane, f);
-            }
-        } else if let Some(i) = item.strip_prefix("helper.").and_then(|n| n.parse::<usize>().ok()) {
-            // A helper copies its text (bytes decoded as UTF-8 with what is not lost), and remembers it.
-            if let Some(copy) = pend.helpers.get(i).and_then(|h| h.copy.as_ref()) {
-                let text = crate::ctx_help::copy_text(copy);
-                self.set_clipboard_text(text.clone());
-                self.remember_paste(&text);
-            }
-        } else if item == "quicklook" {
-            if let Some((url, at)) = pend.quick_look {
-                self.quick_look_url(&url, at, event_loop);
-            }
-        } else if let Some(style) = match item {
-            "openurl" => Some(crate::browser::Style::Tab),
-            "openurlv" => Some(crate::browser::Style::Vertical),
-            "openurlh" => Some(crate::browser::Style::Horizontal),
-            _ => None,
-        } {
-            if let Some(text) = pend.selection {
-                self.open_selection_url(pend.pane, &text, style);
-            }
-        } else if item == "searchweb" {
-            // The search engine's page, built from the template and the escaped selection (`CMH:1179-1186`).
-            if let Some(text) = pend.search {
-                let url = crate::browser::search_url(&crate::browser::search_template(&self.globals.string("SearchCommand")), &text);
-                self.execute(pend.pane, semantic::guard_open(&url, has_code()), None, false);
-            }
-        } else if item == "copylink" {
-            if let (Some(link), Some(cb)) = (pend.link, &mut self.clipboard) {
-                if let Err(e) = cb.set_text(link) {
-                    self.banners.set("clipboard", format!("Copy failed: {e}"));
-                }
-            }
-        } else if let Some(a) = item.strip_prefix("action.").and_then(|n| n.parse::<usize>().ok()).and_then(|n| pend.actions.get(n).cloned()) {
-            let cwd_path = (!pend.cwd.is_empty()).then(|| std::path::PathBuf::from(&pend.cwd));
-            // Asked again at the pick: the pane may have started framing since the menu showed.
-            if !ssh_files::remote_action_allowed(self.remote_text(pend.pane), &a.action) {
-                self.banners.set("action", format!("{} does not run for text from a remote host.", a.title));
-            } else if let Some(run) = self.smart_action_run(pend.pane, &a, &pend.captures, &pend.cwd) {
-                self.execute_with(pend.pane, run, cwd_path.as_deref(), Exec { background: false, from_file: false, event_loop: Some(event_loop) });
-            }
-        }
     }
 
     /// Opens text picked from a label: an existing file (with its line) through Semantic
@@ -828,166 +651,6 @@ impl App {
     }
 }
 
-/// Menu item ids of the right-click menu's own items.
-pub(super) const CTX_ID: &str = "termurion.ctx.";
-
-pub(super) enum CtxItem {
-    /// A Smart Selection action by index, and whether it is enabled (not in a remote pane, P10).
-    Action(usize, bool),
-    CopyLink,
-    /// Quick Look Link (`CMH:557-558`): a short http or https selection, opened at the pointer.
-    QuickLookLink,
-    /// Open Selection as URL, the two split items and Search the Web for Selection (`CMH:549-560`).
-    OpenSelectionAsUrl,
-    OpenUrlVertical,
-    OpenUrlHorizontal,
-    SearchWeb,
-    Unfold,
-    /// A selection helper (`CMH:440-465`): copies its text; shown greyed when it copies nothing.
-    Helper(usize, bool),
-    StopCoprocess,
-    ToggleBroadcast,
-    /// Swap With Session...: the pick mode for a swap, from the pane the menu is for.
-    SwapPane,
-    /// Lock Pane (checked while the pane is locked), Lock All and Unlock All Panes in Tab.
-    LockPane(bool),
-    LockAll,
-    UnlockAll,
-    /// A script context menu provider's item, by its unique id.
-    Provider(String),
-    /// A menu command (by menu item id, and whether it is enabled) that acts on the menu's pane.
-    Command(String, bool),
-}
-
-impl CtxItem {
-    pub(super) fn enabled(&self) -> bool {
-        !matches!(self, CtxItem::Action(_, false) | CtxItem::Command(_, false) | CtxItem::Helper(_, false))
-    }
-
-    pub(super) fn id(&self) -> String {
-        match self {
-            CtxItem::Action(i, _) => format!("{CTX_ID}action.{i}"),
-            CtxItem::CopyLink => format!("{CTX_ID}copylink"),
-            CtxItem::QuickLookLink => format!("{CTX_ID}quicklook"),
-            CtxItem::OpenSelectionAsUrl => format!("{CTX_ID}openurl"),
-            CtxItem::OpenUrlVertical => format!("{CTX_ID}openurlv"),
-            CtxItem::OpenUrlHorizontal => format!("{CTX_ID}openurlh"),
-            CtxItem::SearchWeb => format!("{CTX_ID}searchweb"),
-            CtxItem::Unfold => format!("{CTX_ID}unfold"),
-            CtxItem::Helper(i, _) => format!("{CTX_ID}helper.{i}"),
-            CtxItem::StopCoprocess => format!("{CTX_ID}stopcoprocess"),
-            CtxItem::ToggleBroadcast => format!("{CTX_ID}togglebroadcast"),
-            CtxItem::SwapPane => format!("{CTX_ID}swappane"),
-            CtxItem::LockPane(_) => format!("{CTX_ID}lockpane"),
-            CtxItem::LockAll => format!("{CTX_ID}lockall"),
-            CtxItem::UnlockAll => format!("{CTX_ID}unlockall"),
-            CtxItem::Provider(id) => format!("{CTX_ID}provider.{id}"),
-            CtxItem::Command(id, _) => format!("{CTX_ID}cmd.{id}"),
-        }
-    }
-}
-
-/// The selection helper items of the terminal menu (`CMH:440-465`, the synonyms, color, Base64 and
-/// numeric conversions of `ctx_help`) for a selection, as (label, helper). The selection is the
-/// program's text, so each label is made inert and cut; the caller doubles the "&".
-pub(super) fn helper_rows(selection: &str) -> Vec<(String, crate::ctx_help::Helper)> {
-    crate::ctx_help::menu_helpers(selection)
-        .into_iter()
-        .filter_map(|h| {
-            let label = crate::browser_ctx::inert_label(&h.title);
-            (!label.is_empty()).then_some((label, h))
-        })
-        .collect()
-}
-
-/// The fixed items of the pane menu, by label: Stop Coprocess while one runs, then Toggle
-/// Broadcasting Input. They need only the pane, never a click point.
-pub(super) fn ctx_extras(running_coprocess: bool) -> Vec<&'static str> {
-    let mut v = Vec::new();
-    if running_coprocess {
-        v.push("Stop Coprocess");
-    }
-    v.push("Toggle Broadcasting Input");
-    v
-}
-
-/// What a pick from the pane menu does, decided from the menu's pane (`CtxPending::pane`) and
-/// the focused pane, so nothing acts on the focused pane when the menu is for another.
-#[derive(Debug, PartialEq)]
-pub(super) enum CtxPick {
-    Swap(PaneId),
-    Provider { pane: PaneId, unique_id: String },
-    /// A menu command: the pane to focus first (None when it already is) and the pane that had
-    /// the focus, which gets it back after the command (`restore_focus`).
-    Command { id: String, focus: Option<PaneId>, restore: Option<PaneId> },
-    /// The menu's pane is gone: the pick does nothing, never falls back to the focused pane.
-    Gone,
-    Other,
-}
-
-/// The pane that takes the focus back after a menu command ran on the menu's pane, as a
-/// clicked-pane pointer action leaves it (`run_pointer_action`): the command did not move the
-/// focus off the menu's pane, the tab is not maximized on it, and the old pane is still there.
-/// A command that took the menu's pane out of the tab (Move Session to Window) leaves the tab's
-/// focus on its first pane; the old pane gets it back too.
-pub(super) fn restore_focus(restore: Option<PaneId>, menu_pane: PaneId, menu_in_tab: bool, now_focused: PaneId, zoomed: bool, present: impl Fn(PaneId) -> bool) -> Option<PaneId> {
-    let prev = restore?;
-    ((now_focused == menu_pane || !menu_in_tab) && !zoomed && present(prev)).then_some(prev)
-}
-
-pub(super) fn ctx_pick(item: &str, pend_pane: PaneId, focused: Option<PaneId>, in_tab: bool) -> CtxPick {
-    let Some(item) = item.strip_prefix(CTX_ID) else { return CtxPick::Other };
-    if !in_tab && (item == "swappane" || item.starts_with("cmd.")) {
-        CtxPick::Gone
-    } else if item == "swappane" {
-        CtxPick::Swap(pend_pane)
-    } else if let Some(unique_id) = item.strip_prefix("provider.") {
-        CtxPick::Provider { pane: pend_pane, unique_id: unique_id.to_string() }
-    } else if let Some(id) = item.strip_prefix("cmd.") {
-        let moves = focused != Some(pend_pane);
-        CtxPick::Command { id: id.to_string(), focus: moves.then_some(pend_pane), restore: focused.filter(|_| moves) }
-    } else {
-        CtxPick::Other
-    }
-}
-
-/// The pane a pane menu is for.
-fn menu_pane(at: Option<(PaneId, Option<Point>)>) -> Option<PaneId> {
-    at.map(|(id, _)| id)
-}
-
-/// The label of the menu's Swap slot (`CMH:605`, "Swap With Session...").
-pub(super) fn swap_label() -> &'static str {
-    "Swap With Session\u{2026}"
-}
-
-/// What the right-click menu's own items act on.
-pub(super) struct CtxPending {
-    pane: PaneId,
-    link: Option<String>,
-    actions: Vec<smartsel::RuleAction>,
-    captures: Vec<String>,
-    cwd: String,
-    fold: Option<u32>,
-    /// The script providers' items shown (title, unique id).
-    providers: Vec<(String, String)>,
-    /// Quick Look Link's URL and the pointer (screen pixels) when the menu opened.
-    quick_look: Option<(String, (f64, f64))>,
-    /// The short selection the menu was made for (the URL and search items act on it).
-    selection: Option<String>,
-    /// The selection helpers shown (`helper_rows`): a pick copies the helper's text.
-    helpers: Vec<crate::ctx_help::Helper>,
-    /// The whole selection as a search text (`browser::search_query`): Search the Web for Selection acts on it.
-    search: Option<String>,
-}
-
-impl CtxPending {
-    /// A pending menu for `pane` with no link, fold or Smart Selection action.
-    fn for_pane(pane: PaneId, providers: Vec<(String, String)>) -> Self {
-        CtxPending { pane, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold: None, providers, quick_look: None, selection: None, helpers: Vec::new(), search: None }
-    }
-}
-
 pub(super) struct Clicked {
     pub(super) ctx: ClickContext,
     /// The clicked logical line.
@@ -1004,7 +667,7 @@ pub(super) struct Clicked {
 }
 
 /// VS Code is on the PATH, so the best editor can open a file at a line.
-fn has_code() -> bool {
+pub(super) fn has_code() -> bool {
     static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *HAS.get_or_init(|| {
         std::env::var_os("PATH").is_some_and(|path| {
@@ -1072,100 +735,10 @@ mod title_menu_tests {
         g.set("SmartSelectionRadius", toml::Value::Integer(100_000));
         assert_eq!(radius(&g), 50);
     }
-
-    #[test]
-    fn picks_act_on_the_menus_pane() {
-        let (a, b): (PaneId, PaneId) = (1, 2);
-        // Menu for B while A is focused: a provider pick and a Swap reach B only.
-        assert_eq!(ctx_pick("termurion.ctx.provider.u1", b, Some(a), true), CtxPick::Provider { pane: b, unique_id: "u1".into() });
-        assert_eq!(ctx_pick("termurion.ctx.swappane", b, Some(a), true), CtxPick::Swap(b));
-        // Every plain command of the menu (the move group among them) focuses B first.
-        for id in ["Session > Move Session > Move Session to Split Pane", "Session > Move Session > Move Session to Tab", "Session > Move Session > Move Session to Window", "Edit > Copy"] {
-            let item = format!("termurion.ctx.cmd.{id}");
-            assert_eq!(ctx_pick(&item, b, Some(a), true), CtxPick::Command { id: id.into(), focus: Some(b), restore: Some(a) }, "{id}");
-            // Already focused: nothing to move, nothing to give back.
-            assert_eq!(ctx_pick(&item, b, Some(b), true), CtxPick::Command { id: id.into(), focus: None, restore: None });
-        }
-        assert_eq!(ctx_pick("termurion.ctx.stopcoprocess", b, Some(a), true), CtxPick::Other);
-        assert_eq!(CtxItem::Command("Edit > Copy".into(), true).id(), "termurion.ctx.cmd.Edit > Copy");
-    }
-
-    #[test]
-    fn a_gone_menu_pane_does_nothing() {
-        let (a, b): (PaneId, PaneId) = (1, 2);
-        // The menu's pane closed before the pick arrived: no command runs on the focused pane.
-        assert_eq!(ctx_pick("termurion.ctx.cmd.Shell > Close", b, Some(a), false), CtxPick::Gone);
-        assert_eq!(ctx_pick("termurion.ctx.cmd.Edit > Paste", b, Some(a), false), CtxPick::Gone);
-        assert_eq!(ctx_pick("termurion.ctx.swappane", b, Some(a), false), CtxPick::Gone);
-        // A provider still resolves by id (P16).
-        assert_eq!(ctx_pick("termurion.ctx.provider.u1", b, Some(a), false), CtxPick::Provider { pane: b, unique_id: "u1".into() });
-    }
-
-    #[test]
-    fn commands_leave_the_focus_where_it_was() {
-        let present = |p: PaneId| p == 1 || p == 2 || p == 3;
-        // Copy or Paste on B with A focused: the command reached B, then A has the focus again.
-        assert_eq!(restore_focus(Some(1), 2, true, 2, false, present), Some(1));
-        // A command that moved the focus on (Split focuses the new pane) keeps it there.
-        assert_eq!(restore_focus(Some(1), 2, true, 3, false, present), None);
-        // Maximize on B keeps B focused: it is the one showing.
-        assert_eq!(restore_focus(Some(1), 2, true, 2, true, present), None);
-        // The old pane is gone (Close of A?): nothing to give back.
-        assert_eq!(restore_focus(Some(9), 2, true, 2, false, present), None);
-        // Move Session to Window on B left the tab: its focus fell to the first pane (3), A gets it back.
-        assert_eq!(restore_focus(Some(1), 2, false, 3, false, present), Some(1));
-        // The menu's pane was already focused.
-        assert_eq!(restore_focus(None, 2, true, 2, false, present), None);
-    }
-
-    #[test]
-    fn title_menu_is_the_pane_menu() {
-        // No point: no link, fold or Smart Selection item; Stop Coprocess only while one runs.
-        assert_eq!(ctx_extras(false), vec!["Toggle Broadcasting Input"]);
-        assert_eq!(ctx_extras(true), vec!["Stop Coprocess", "Toggle Broadcasting Input"]);
-        // Swap With Session... is the menu's own slot.
-        assert_eq!(swap_label(), "Swap With Session\u{2026}");
-        assert_eq!(CtxItem::SwapPane.id(), "termurion.ctx.swappane");
-        assert!(CtxItem::SwapPane.enabled());
-        // The pending item is built for the menu's pane even with no other item, so the
-        // providers fill (P16, `m11c-rulings.txt:161`); which pane a pick reaches is
-        // `picks_act_on_the_menus_pane`.
-        let pend = CtxPending::for_pane(2, vec![("Item".into(), "u1".into())]);
-        assert!(pend.link.is_none() && pend.fold.is_none() && pend.actions.is_empty());
-        assert_eq!(pend.providers, vec![("Item".to_string(), "u1".to_string())]);
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    /// TWEAKS 7a: the terminal menu offers the selection helpers, inert and bounded.
-    #[test]
-    fn the_terminal_menu_has_the_selection_helpers() {
-        use super::{helper_rows, CtxItem, CTX_ID};
-        let rows = helper_rows("255");
-        assert!(rows.iter().any(|(l, h)| l == "255 = 0xff" && h.copy.is_some()), "{rows:?}");
-        let color = helper_rows("#ff8000");
-        assert!(color.iter().any(|(_, h)| h.color == Some((255, 128, 0)) && h.copy.is_none()), "a color shows, copies nothing");
-        assert!(helper_rows("").is_empty());
-        let evil = format!("{}\u{202e}\u{200b}", "9".repeat(150));
-        for (l, _) in helper_rows(&evil) {
-            assert!(!l.contains('\u{202e}') && !l.contains('\u{200b}') && l.chars().count() <= 120, "{l:?}");
-        }
-        assert!(!CtxItem::Helper(0, false).enabled() && CtxItem::Helper(0, true).enabled());
-        assert_eq!(CtxItem::Helper(3, true).id(), format!("{CTX_ID}helper.3"));
-    }
-
-    /// The wiring: the menu builder adds the rows for the selection and a pick copies and remembers.
-    #[test]
-    fn the_helper_rows_are_wired() {
-        let src = include_str!("semantic_ui.rs");
-        let build = &src[src.find("pub(super) fn show_context_menu_at").unwrap()..src.find("pub(super) fn context_picked").unwrap()];
-        assert!(build.contains("helper_rows(") && build.contains("CtxItem::Helper("));
-        let pick = &src[src.find("fn context_other_picked").unwrap()..src.find("pub(super) fn open_text").unwrap()];
-        assert!(pick.contains("\"helper.\"") && pick.contains("remember_paste"));
-    }
-
-
     /// The 13w merge (S14 and the one locality answer): a browser pane has no directory, and no
     /// browser code makes its own "is this on this computer" check: a session's locality comes
     /// only from `statusbar_content::is_this_machine` (the token-aware one).
@@ -1205,8 +778,9 @@ mod tests {
         ("app/semantic_ui.rs", "open_target"),
         ("app/semantic_ui.rs", "open_selection_url"),
         ("app/browser_app.rs", "open_link_split"),
-        ("app/semantic_ui.rs", "show_context_menu_at"),
-        ("app/semantic_ui.rs", "context_other_picked"),
+        ("app/ctx_menu_app.rs", "show_context_menu_at"),
+        ("app/ctx_menu_app.rs", "context_other_picked"),
+        ("app/ctx_menu_app.rs", "open_selection_mail"),
         ("app/semantic_ui.rs", "open_text"),
         ("app/semantic_ui.rs", "pane_dir"),
         ("app/prompted_ui.rs", "open_url"),
@@ -1282,6 +856,7 @@ mod tests {
         ("localfs.rs", "shell_verb", "the file sink itself: it takes a judged LocalPath; its callers are checked"),
         ("app/scripts_alerts.rs", "bind_scheme_confirmed", "opens the constant Default apps page (url_schemes::DEFAULT_APPS_URI), never text from a pane or a link"),
         ("app/semantic_ui.rs", "reveal_in_explorer", "the sink itself; its callers are checked"),
+        ("app/ctx_menu_app.rs", "context_image_picked", "opens a PNG it encoded itself from the picture's pixels, in Termurion's own folder, under a name made of the process id and the image number; no pane text is a path or a command"),
         ("app/dynamic_profiles_app.rs", "reveal_dynamic", "selects a Dynamic Profiles file below the folder (a plain-name path the network judge passed); nothing runs it"),
         ("app/scripts_alerts.rs", "scripts_answered", "the Dynamic Profiles error's Reveal in Explorer selects the file the loader named; nothing runs it"),
         ("app/semantic_ui.rs", "spawn_direct", "the sink itself; execute's callers are checked"),

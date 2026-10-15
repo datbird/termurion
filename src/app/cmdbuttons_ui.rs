@@ -130,7 +130,7 @@ impl App {
     }
 
     /// Fold: the command's output rows become one line.
-    fn cmd_fold(&mut self, pane: PaneId, mark: u32) {
+    pub(super) fn cmd_fold(&mut self, pane: PaneId, mark: u32) {
         let Some(p) = self.panes.get_mut(&pane) else { return };
         let Some((a, b)) = p.screen.output_range_of(mark) else {
             return self.banners.set("action", "This command has no output to fold.");

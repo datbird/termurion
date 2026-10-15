@@ -496,7 +496,7 @@ pub fn outline(rows: &[Row]) -> Vec<String> {
     out
 }
 
-fn color_name(color: Color, fg: bool) -> String {
+fn color_name(color: Color) -> String {
     const NAMES: [&str; 8] = ["Black", "Red", "Green", "Yellow", "Blue", "Magenta", "Cyan", "White"];
     let indexed = |n: u8| -> String {
         match n {
@@ -509,8 +509,8 @@ fn color_name(color: Color, fg: bool) -> String {
         }
     };
     match color {
-        Color::Named(NamedColor::Foreground) | Color::Named(NamedColor::BrightForeground) => if fg { "Default fg" } else { "Default bg" }.to_string(),
-        Color::Named(NamedColor::Background) => if fg { "Default bg" } else { "Default fg" }.to_string(),
+        Color::Named(NamedColor::Foreground) | Color::Named(NamedColor::BrightForeground) => "Default fg".to_string(),
+        Color::Named(NamedColor::Background) => "Default bg".to_string(),
         Color::Named(NamedColor::Cursor) => "Cursor".to_string(),
         Color::Named(n) => {
             let i = n as usize;
@@ -558,10 +558,10 @@ pub fn char_description(cell: &Cell) -> Option<String> {
         attrs.push("Inverse");
     }
     attrs.push("Dir-Unk");
-    let mut text = format!("fg={} bg={}; {}", color_name(cell.fg, true), color_name(cell.bg, false), attrs.join(" "));
+    let mut text = format!("fg={} bg={}; {}", color_name(cell.fg), color_name(cell.bg), attrs.join(" "));
     let mut ea: Vec<String> = Vec::new();
     if let Some(c) = cell.underline_color() {
-        ea.push(format!("underline={}", color_name(c, true)));
+        ea.push(format!("underline={}", color_name(c)));
     }
     if cell.hyperlink().is_some() {
         ea.push("URL".to_string());
@@ -876,7 +876,7 @@ mod tests {
         cell.flags.insert(Flags::BOLD | Flags::ITALIC);
         cell.fg = Color::Indexed(9);
         cell.bg = Color::Indexed(200);
-        assert_eq!(char_description(&cell).unwrap(), "fg=ANSI Bright Red bg=8bit(4/5,0/5,2/5); Bold Italic Dir-Unk");
+        assert_eq!(char_description(&cell).unwrap(), "fg=ANSI Bright Red bg=8bit(5/5,0/5,4/5); Bold Italic Dir-Unk");
         cell.fg = Color::Spec(alacritty_terminal::vte::ansi::Rgb { r: 1, g: 2, b: 3 });
         cell.bg = Color::Indexed(240);
         assert_eq!(char_description(&cell).unwrap(), "fg=24bit(1,2,3) bg=gray8/22; Bold Italic Dir-Unk");

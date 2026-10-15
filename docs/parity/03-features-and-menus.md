@@ -806,6 +806,36 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Termurion's VT e
 | Broadcast input | Background pattern indicator | Optional diagonal stripe overlay rendered on panes currently receiving broadcast input, so it is visually obvious. | have |  |
 | Broadcast input | Broadcast source designation | Marks a specific session as the source pane whose input gets mirrored elsewhere. | have | Milestone 13x2: a browser pane sends only when it is a source (iTerm2 does not check). |
 
+### terminal context menu
+| Subsystem | Feature | What it does | Termurion status | Windows note |
+|---|---|---|---|---|
+| Terminal context menu | Command Info | On a line with a command mark: opens Command Info for it. | have | Top of the menu, above a line. |
+| Terminal context menu | Remove Named Mark | On a line with a named mark: shows the name (greyed) and Remove Named Mark. | have | The name is the mark's. |
+| Terminal context menu | Fold / Unfold | Unfold on a folded line; Fold on a command with output that can fold. | have | Fold takes the command's output rows (the Fold button's rule); it is not offered when the fold would hold the cursor's line. |
+| Terminal context menu | New Window, New Tab, Select | Profile submenus (tag folders and Open All) and, with several tabs, the tab list. | have | Profiles open as the Profiles menu's do; Select lists the window's tabs as title and number. |
+| Terminal context menu | Selection helpers | Number, date, UTF-8, color, Base64 and byte conversions of the selection, Copy Base64-Decoded and -Encoded. | have | A color shows as a swatch with its text (Windows menus hold no view). |
+| Terminal context menu | Replace with Pretty-Printed JSON / Base64-Decoded Value / Base64-Encoded Value | For whole-line selections that parse or decode. | have | Runs Replace Selection's code; JSON only for an object or array over several lines. |
+| Terminal context menu | One-cell description | A single selected cell is described (colors and attributes). | have | Direction reads Dir-Unk (Termurion keeps no bidi status per cell). |
+| Terminal context menu | Download with scp / Download using SSH Integration | Fetches the selected remote path; the title names the host. | have | Enabled only when the pane's SSH integration conductor can take the path: Termurion has no scp. |
+| Terminal context menu | Open Selection as URL, Open URL in Vertical or Horizontal Split Pane, Quick Look Link, Search the Web for Selection | Web items for the selection. | have | The splits are greyed under Lock Layout. |
+| Terminal context menu | Send Email to Selected Address | Opens mailto: with the selection. | have | Through the one link guard; a control character in the selection refuses it with a banner. |
+| Terminal context menu | Add Trigger… | Starts a trigger from the selection. | have | Runs Session > Triggers > Add Trigger... |
+| Terminal context menu | Smart Selection actions and script items | The actions of every Smart Selection rule matching the selected text, then script-registered items. | have | Titles take their captures; greyed in a remote pane. |
+| Terminal context menu | Split Pane Vertically / Horizontally | Splits the pane the menu is for. | have | Greyed under Lock Layout. |
+| Terminal context menu | Move Session to Split Pane / Tab / Window, Swap With Session… | Moves the pane. | have | Tab only with several panes; locked panes and Lock Layout grey them. |
+| Terminal context menu | Copy, Copy Link Address, Copy URL, Paste, Save | Clipboard and file items. | have | No shortcut text, as iTerm2. |
+| Terminal context menu | Select All, Send Selection, Save Selection as Snippet, Clear Buffer, Annotate Selection, Reveal Annotation | Selection and annotation items. | have | Send Selection goes through the same guard as Command Info's buttons (control characters are refused). |
+| Terminal context menu | Edit Session…, Toggle Broadcasting Input, Lock Pane, Lock All / Unlock All Panes in Tab, Stop Coprocess | Session items. | have | Both lock-all items show when some but not all are locked (iTerm2 hides Unlock behind Option). |
+| Terminal context menu | Close, Restart, Bury | Pane lifecycle. | have | Restart and Bury are greyed when the pane cannot restart or bury. |
+| Terminal context menu | Terminal State | Check items for the modes, key reporting, literal controls and the emulation level. | have | Checks follow the menu's pane. |
+| Terminal context menu | Pause tmux Pane / Unpause tmux Pane | In a pause-mode tmux session. | have |  |
+| Terminal context menu | Image menu | Save Image As…, Copy Image, Open Image, Inspect, Stop or Resume Animating (File variants for a broken image). | have | Open Image uses a temporary PNG in Termurion's folder; Stop Animating holds the shown frame. |
+| Terminal context menu | Timestamp margin menu | Set Baseline for Relative Timestamps, Disable Relative Timestamps. | have | A baseline per pane, not kept across restarts; labels read as iTerm2's compact distances. |
+| Terminal context menu | Workgroup git item menu | Copy puts the displayed branch on the clipboard. | have | Only while a plain branch name shows. |
+| Terminal context menu | Select under the pointer | A right click off the selection selects the match or word under it first. | have | White space only undoes it. |
+| Terminal context menu | Main Menu submenu, menu item images, Control-click bypass, Debug aid item | macOS UI-element, SF Symbols and Control-click behavior. | n/a, macOS only: no menu bar mode, symbols or Control-click on Windows (the notification area icon has its own Main Menu). |  |
+| Terminal context menu | menuForMark (Command, Directory, Return code, Re-run Command) | A menu iTerm2 builds but never shows. | n/a, dead code in iTerm2 (no caller), so there is nothing to match. |  |
+
 ### accessibility
 | Subsystem | Feature | What it does | Termurion status | Windows note |
 |---|---|---|---|---|

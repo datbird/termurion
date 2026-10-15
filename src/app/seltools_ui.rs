@@ -172,16 +172,17 @@ impl App {
         true
     }
 
-    /// Replace Selection: the selected whole lines are replaced in Termurion's buffer (not
-    /// sent to the shell), as iTerm2 does.
-    fn replace_selection(&mut self, id: PaneId, f: impl Fn(&str) -> Result<String, String>) {
-        let Some((a, b)) = self.selection_pos(id) else { return self.banners.set("action", "Select whole lines first.") };
-        let Some(p) = self.panes.get_mut(&id) else { return };
+    /// The whole lines Replace Selection works on: where they start and end and their text, or why
+    /// the selection cannot be replaced (the banner's words).
+    fn replace_source(&self, id: PaneId) -> Result<(Point, Point, String), &'static str> {
+        const WHOLE: &str = "Replace Selection needs whole lines, from the start of the first.";
+        let (a, b) = self.selection_pos(id).ok_or("Select whole lines first.")?;
+        let p = self.panes.get(&id).ok_or("Select whole lines first.")?;
         if p.live.is_some() {
-            return self.banners.set("action", "Replace Selection does not work in a Filter or Zoom view.");
+            return Err("Replace Selection does not work in a Filter or Zoom view.");
         }
         if p.screen.term().mode().contains(TermMode::ALT_SCREEN) {
-            return self.banners.set("action", "Replace Selection does not work while a full-screen app runs.");
+            return Err("Replace Selection does not work while a full-screen app runs.");
         }
         let (pa, pb) = (to_point(&p.screen, a), to_point(&p.screen, b));
         let grid = p.screen.term().grid();
@@ -190,13 +191,45 @@ impl App {
         let wraps = row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
         let last_end = (0..cols).rev().find(|&c| row[Column(c)].c != ' ').unwrap_or(0);
         if wraps || !seltools::whole_lines(a, b, last_end) {
-            return self.banners.set("action", "Replace Selection needs whole lines, from the start of the first.");
+            return Err(WHOLE);
         }
         let text = p.screen.term().bounds_to_string(pa, Point::new(pb.line, Column(cols - 1)));
         // A visual (bidi) selection that skips cells inside its lines is not whole lines.
         if !p.screen.visual_selection_is_whole_lines(pa, pb) {
-            return self.banners.set("action", "Replace Selection needs whole lines, from the start of the first.");
+            return Err(WHOLE);
         }
+        Ok((pa, pb, text))
+    }
+
+    /// The replacements the right-click menu offers for the selection (`PTYTextView+ARC.m:1986-2050`,
+    /// `SelectionReplacement.swift:56-95`): none unless the selection is whole lines, then
+    /// Pretty-Printed JSON for a several-line selection that parses as JSON, Base64-Decoded for text
+    /// that decodes, and Base64-Encoded for any text.
+    pub(super) fn replacement_kinds(&self, id: PaneId) -> Vec<crate::ctx_menu::Replace> {
+        use crate::ctx_menu::Replace;
+        let Ok((_, _, text)) = self.replace_source(id) else { return Vec::new() };
+        let text = text.trim_end_matches('\n');
+        let mut kinds = Vec::new();
+        if text.contains('\n') && serde_json::from_str::<serde_json::Value>(text.trim()).is_ok_and(|v| v.is_array() || v.is_object()) {
+            kinds.push(Replace::Json);
+        }
+        if seltools::base64_decode(text).is_ok() {
+            kinds.push(Replace::Base64Decode);
+        }
+        if !text.is_empty() {
+            kinds.push(Replace::Base64Encode);
+        }
+        kinds
+    }
+
+    /// Replace Selection: the selected whole lines are replaced in Termurion's buffer (not
+    /// sent to the shell), as iTerm2 does.
+    fn replace_selection(&mut self, id: PaneId, f: impl Fn(&str) -> Result<String, String>) {
+        let (pa, pb, text) = match self.replace_source(id) {
+            Ok(r) => r,
+            Err(why) => return self.banners.set("action", why),
+        };
+        let Some(p) = self.panes.get_mut(&id) else { return };
         match f(text.trim_end_matches('\n')) {
             Err(e) => self.banners.set("action", e),
             Ok(new) => {
