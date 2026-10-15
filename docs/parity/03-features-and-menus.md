@@ -837,6 +837,44 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Termurion's VT e
 | Utilities | it2ul | Uploads a file or directory from the local machine into the session via the file-transfer protocol. | have | Milestone 11e: a port of iTerm2's script: RequestUpload, then Termurion's bar asks Files or Folders (Windows cannot pick both in one dialog), and the archive is extracted by tar.exe into the current or given folder (extra arguments go to tar); a native console build (`utilities\it2ul.exe`) on each new session's PATH for PowerShell and cmd; iTerm2's bash script still works in WSL, Git Bash and over ssh, since Termurion reads its sequences. |
 | Utilities | it2universion | Sets/pushes/pops the terminal's reported unicode version, for compatibility with apps sensitive to grapheme width rules. | have | Milestone 11e: a port of iTerm2's script (`set`, `push`, `pop`, named or not); Termurion keeps and reports the version, but character widths do not change with it (the OSC 1337 UnicodeVersion row); a native console build (`utilities\it2universion.exe`) on each new session's PATH for PowerShell and cmd; iTerm2's bash script still works in WSL, Git Bash and over ssh, since Termurion reads its sequences. |
 
+## 4. Settings window surfaces
+
+One row per control or editor of iTerm2's Settings window that had no row in 01 to 03 (the UI parity sweep, package S, `superpowers/plans/2026-10-14-ui-parity-sweep.md`). The labels of every Settings row are held to iTerm2's xib wording by `src/ui_labels.rs` (generated table `schema/ui_labels.toml`, `scripts/gen-ui-labels.py`).
+
+| Surface | Control | What it does | Termurion status | Windows note |
+|---|---|---|---|---|
+| Settings window | Search field and results list | Typing in the toolbar field lists the settings whose name holds every word (prefix or stem); Up, Down and Enter, or a click, open its pane and tab and mark the control. | have | `settings_search` (`field`, `search`, `flash_if_marked`). Documents are the schema rows' labels, the Advanced pane's descriptions and no other text. |
+| Settings window | Search Options menu | "Show indicators for non-default values". | have | `settings_ui::SHOW_INDICATORS`; the magnifier at the right of the page bar. |
+| Settings window | Field menu | The right-click menu of a text or number field: "Reset to <default>" ("Reset to Empty Default" for an empty one) and a separator while the value is not the default, then Cut, Copy and Paste. | have | `settings_keys::field_menu`, `field` and `apply_field_op`, on every Settings text and number field; the macOS services of the standard menu (Spelling, Substitutions, Speech) are not there. |
+| Profiles list | Search field menu | A magnifier menu: the heading "Tags", every tag (adds " tag:<tag>" to the query), then "Search Syntax Help". | have | `profile_list_ui::profile_list`; the help opens Termurion's `search-syntax` page, not iterm2.com. |
+| Profiles list | Other Actions... menu | Set as Default, Duplicate Profile, Bulk Copy from Selected Profile..., Save Profile as JSON..., Save All Profiles as JSON..., Import JSON Profiles.... | have | `settings_profile_actions`; "Import from iTerm2..." stays below them as Termurion's own item. |
+| Profiles list | Bulk Copy sheet | "Copy these settings from profile "<name>":" with Colors, Text, Window, Terminal, Keys, Session and Advanced, "To these profiles:" (a multi-select profile list), Copy and Cancel. | have | `settings_profile_actions::show` and `bulk_copy`. No Web box: Termurion's Browser rows are on General. A hotkey is never copied. |
+| Profiles > General | Tags | Token field. | have | `settings_lists::token_field`. |
+| Profiles > General | Title | Popup of check items and script title functions. | have | `settings_title`. |
+| Profiles > General | Subtitle and Enable Tall Tab Bar | The subtitle needs a tab bar 28 points tall or the Minimal theme; the button sets the height. | have | `settings_ui::subtitles_allowed`, `ENABLE_TALL_TAB_BAR`. |
+| Profiles > Text | Font and Non-ASCII Font | Family, member (weight) and size, spacings, Anti-aliased with its hint, ligatures with its hint. | have | `settings_fonts`; weight by `Renderer::resolve_weight`. |
+| Profiles > Text | Font features button | A menu beside the size while the font's ligatures switch is on: Contextual Alternates, then the font's stylistic sets. | have | `settings_fonts::picker`; stored after the size as iTerm2 stores it (`{"featureSettings":[...]}`, `profile::FontFeatures`), the sets read from the font's GSUB table (`fonts::stylistic_sets`) and applied as `ssNN` and `calt` when shaping (`fonts::features_with`). |
+| Profiles > Window | Screen | Popup of No Preference, Screen with Cursor and the monitors. | have | `settings_ui::screen_row`. |
+| Profiles > Session | Note under Buffer Input by Default | "You may want a trigger to stop buffering". | have | `settings_ui::BUFFERING_NOTE`. |
+| Profiles > Advanced | Snippets Filter | Token field. | have | `settings_lists::tokens_row`. |
+| Smart Selection editor | Rule table, +, -, Load Defaults | The rules as name, /regex/ and precision with the action count; Load Defaults puts the built-in list back. | have | `settings_advanced::smart_selection_rules`. |
+| Smart Selection editor | Name, Regular expression, Precision, Actions... | The selected rule's fields; Precision is Very Low to Very High. | have | Same function; Actions... opens the actions block under the fields. |
+| Smart Selection editor | Syntax Help | Opens help on the expressions. | have | Opens Termurion's `smart-selection` page (the dialect is Rust's, not ICU). |
+| Smart Selection editor | Open Regular Expression Visualizer | Draws the expression as a railroad diagram. | have | `regex_railroad`: iTerm2's converter (`ICURegexToRailroadConverter`) ported, the diagram drawn with the `railroad` crate into a page that opens in the system browser (iTerm2 shows it in a popover). |
+| Smart Selection editor | Playground | Click in sample text to see which rule wins there. | have | `settings_advanced::playground_result`. |
+| Smart Selection editor | Log debug info to Console.app | Logs each smart selection decision. | n/a | Console.app is macOS only. |
+| Pointer | Load Defaults | Puts the factory pointer bindings back. | have | `settings_keys::LOAD_DEFAULTS`. |
+| General | Window restoration policy | One popup over the two startup switches. | have | `settings_keys::restoration_row`. |
+| General | Allow sending of clipboard contents? | Ask Each Time, Never or Always. | have | `settings_keys::clipboard_sending_row`. |
+| General | Memory usage per session, tmux pause limit | Integer fields. | have | `settings_keys::global_control`. |
+| Appearance | New tabs open at end of tab bar | Checkbox; off puts a new tab next to the current one. | have | `AddNewTabAtEndOfTabs`, `App::add_tab`. |
+| General | GPU rendering | A master switch for the GPU renderer. | n/a | Termurion has no renderer but the GPU one. |
+| Profiles > Colors | Row headers and captions | Defaults:, Cursor:, Selection: with a Background and a Foreground well each, the ANSI wells in a Normal and a Bright column, Bold:, Underlines:, Marks: and the rest, under Modes:, Editing: and Color Preset:. | have | `settings_colors::body` and `settings_presets::colors_header`. |
+| Settings window | Pane row order | Every pane draws its controls in the order of iTerm2's xib; the profile panes have no section headings. | have | `scripts/order-schema.py` writes the schema's order from `schema/ui_labels.toml`; `ui_labels::rows_are_in_the_xibs_order` holds it. |
+| Profiles list | Import JSON Profiles: Abort | A file that fails to import raises "Could not Import Profile" with OK, and Abort while more files follow; Abort stops the rest. | have | `settings_profile_actions::import_json_files`, `App::import_json_profiles`; the alert is temporarily silenceable (NoSyncJSONImportFailed). |
+| Profiles list | Duplicate Profile | The copy is named "Copy of <name>", is not the default, and has no shortcut, bound hosts or hotkey. | have | `Store::duplicate`. |
+| Settings window | Search result frame | The control a result names is framed for a moment, whichever function draws it. | have | `settings_search::flash_if_marked` and `RowFlash`. |
+
 ## Counts
 
 Updated after milestone 3a (2026-09-24).
