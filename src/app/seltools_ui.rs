@@ -35,7 +35,7 @@ impl App {
         self.remember_paste(&text);
         let Some(p) = self.panes.get(&id) else { return };
         let screen = &p.screen;
-        let font = self.profile_of(id).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0 });
+        let font = self.profile_of(id).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0, features: Default::default() });
         let rows = p.styled_rows();
         let html = crate::styled_copy::cf_html(&crate::styled_copy::html(&rows, &font.family, font.size_pt, screen.palette.bg, crate::styled_copy::StyleOptions::from_globals(&self.globals)));
         let rtf = crate::styled_copy::rtf(&rows, &font.family, font.size_pt, crate::styled_copy::StyleOptions::from_globals(&self.globals));
@@ -59,7 +59,7 @@ impl App {
         let mut rows = crate::print::rows(screen, what);
         let cols = { use alacritty_terminal::grid::Dimensions; screen.term().columns() };
         let title = screen.title().unwrap_or("Termurion").to_string();
-        let font = self.profile_of(id).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0 });
+        let font = self.profile_of(id).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0, features: Default::default() });
         // iTerm2 keeps "Black and white" in its print panel; Termurion asks first.
         let default = if self.globals.bool("Print In Black And White") { MB_DEFBUTTON1 } else { MB_DEFBUTTON2 };
         let answer = super::msgbox::show(Some(hwnd as isize), "Print", "Print in black and white?\n\nYes leaves out colors; No prints the terminal's colors.", MB_YESNOCANCEL | MB_ICONQUESTION | default);

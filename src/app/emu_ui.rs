@@ -161,7 +161,7 @@ impl App {
         };
         let cols = { use alacritty_terminal::grid::Dimensions; screen.term().columns() };
         let title = screen.title().unwrap_or("Termurion").to_string();
-        let font = self.profile_of(pane).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0 });
+        let font = self.profile_of(pane).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0, features: Default::default() });
         if self.globals.bool("Print In Black And White") {
             crate::print::black_and_white(&mut rows);
         }

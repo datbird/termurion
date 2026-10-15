@@ -43,16 +43,79 @@ fn shown_in_menu(key: &str) -> bool {
 pub struct FontSpec {
     pub family: String,
     pub size_pt: f32,
+    pub features: FontFeatures,
 }
 
-/// Parses iTerm2's font form, "<family> <size>". A missing size reads as 12.
+/// The font features the Settings font menu sets, as iTerm2 keeps them in a font descriptor
+/// (`OptionsButtonController`): the stylistic alternate sets that are on (the AAT type 35 "on"
+/// selectors, 2 for set 1, 4 for set 2, and so on) and whether Contextual Alternates are turned off
+/// (type 36, selector 1).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct FontFeatures {
+    pub stylistic: Vec<u32>,
+    pub calt_off: bool,
+}
+
+/// `kStylisticAlternativesType`, `kContextualAlternatesType` and `kContextualAlternatesOffSelector`.
+const STYLISTIC_TYPE: i64 = 35;
+const CALT_TYPE: i64 = 36;
+const CALT_OFF: i64 = 1;
+const TYPE_KEY: &str = "CTFeatureTypeIdentifier";
+const SELECTOR_KEY: &str = "CTFeatureSelectorIdentifier";
+
+impl FontFeatures {
+    pub fn is_empty(&self) -> bool {
+        self.stylistic.is_empty() && !self.calt_off
+    }
+
+    /// The suffix of iTerm2's stored font string: a space and the JSON of the descriptor's
+    /// `featureSettings` (`NSFont+iTerm.m stringValue`); empty with no feature.
+    pub fn suffix(&self) -> String {
+        if self.is_empty() {
+            return String::new();
+        }
+        let mut list: Vec<serde_json::Value> = Vec::new();
+        for s in &self.stylistic {
+            list.push(serde_json::json!({ SELECTOR_KEY: s, TYPE_KEY: STYLISTIC_TYPE }));
+        }
+        if self.calt_off {
+            list.push(serde_json::json!({ SELECTOR_KEY: CALT_OFF, TYPE_KEY: CALT_TYPE }));
+        }
+        format!(" {}", serde_json::json!({ "featureSettings": list }))
+    }
+
+    /// Reads the JSON after a font's size. The "off" halves of the stylistic pairs and the baseline
+    /// selector add nothing (`set(font:)` drops them), so only the "on" selectors are kept.
+    fn from_json(text: &str) -> Option<FontFeatures> {
+        let v: serde_json::Value = serde_json::from_str(text).ok()?;
+        let list = v.get("featureSettings")?.as_array()?;
+        let mut f = FontFeatures::default();
+        for item in list {
+            let (Some(t), Some(s)) = (item.get(TYPE_KEY).and_then(|v| v.as_i64()), item.get(SELECTOR_KEY).and_then(|v| v.as_i64())) else { continue };
+            if t == STYLISTIC_TYPE && s >= 2 && s % 2 == 0 && !f.stylistic.contains(&(s as u32)) {
+                f.stylistic.push(s as u32);
+            } else if t == CALT_TYPE && s == CALT_OFF {
+                f.calt_off = true;
+            }
+        }
+        f.stylistic.sort_unstable();
+        Some(f)
+    }
+}
+
+/// Parses iTerm2's font form, "<family> <size>" and, when the font has features, " {json}" after
+/// the size. A missing size reads as 12.
 pub fn parse_font(s: &str) -> FontSpec {
     let s = s.trim();
+    let (s, features) = match s.find(" {").map(|i| (i, FontFeatures::from_json(&s[i + 1..]))) {
+        Some((i, Some(f))) => (s[..i].trim_end(), f),
+        _ => (s, FontFeatures::default()),
+    };
     match s.rsplit_once(' ') {
         Some((family, size)) if size.parse::<f32>().is_ok() => {
-            FontSpec { family: family.trim().to_string(), size_pt: size.parse().unwrap() }
+            FontSpec { family: family.trim().to_string(), size_pt: size.parse().unwrap(), features }
         }
-        _ => FontSpec { family: s.to_string(), size_pt: 12.0 },
+        _ => FontSpec { family: s.to_string(), size_pt: 12.0, features },
     }
 }
 
@@ -63,7 +126,7 @@ pub fn grow_font_value(value: &str, delta: f32) -> String {
     let f = parse_font(value);
     // The size is first seen as drawn (4 to 128), as `Profile::font` reads it.
     let size = (f.size_pt.clamp(4.0, 128.0) + delta).trunc().clamp(4.0, 128.0);
-    format!("{} {}", f.family, size as u32)
+    format!("{} {}{}", f.family, size as u32, f.features.suffix())
 }
 
 /// How many points `current` is bigger than `original` (what an Automatic Profile Switch keeps).
@@ -544,6 +607,26 @@ mod tests {
         assert_eq!(command_line(&p, "pwsh.exe", Some(u)), "pwsh.exe");
     }
 
+    /// The font menu's features are stored as iTerm2 stores them: JSON after the size
+    /// (`NSFont+iTerm.m stringValue`), read back by `fontValueWithLigaturesEnabled:`.
+    #[test]
+    fn font_features_are_iterm2s_stored_form() {
+        let f = FontFeatures { stylistic: vec![2, 6], calt_off: true };
+        let stored = format!("Cascadia Code 13{}", f.suffix());
+        assert_eq!(
+            stored,
+            r#"Cascadia Code 13 {"featureSettings":[{"CTFeatureSelectorIdentifier":2,"CTFeatureTypeIdentifier":35},{"CTFeatureSelectorIdentifier":6,"CTFeatureTypeIdentifier":35},{"CTFeatureSelectorIdentifier":1,"CTFeatureTypeIdentifier":36}]}"#
+        );
+        let back = parse_font(&stored);
+        assert_eq!((back.family.as_str(), back.size_pt, &back.features), ("Cascadia Code", 13.0, &f));
+        assert_eq!(FontFeatures::default().suffix(), "");
+        // The off halves and the baseline selector are what the picker drops; a file from iTerm2 may hold them.
+        let theirs = r#"Monaco 12 {"featureSettings":[{"CTFeatureTypeIdentifier":35,"CTFeatureSelectorIdentifier":0},{"CTFeatureTypeIdentifier":35,"CTFeatureSelectorIdentifier":3},{"CTFeatureTypeIdentifier":35,"CTFeatureSelectorIdentifier":4}]}"#;
+        assert_eq!(parse_font(theirs).features, FontFeatures { stylistic: vec![4], calt_off: false });
+        assert_eq!(parse_font("Monaco 12 {not json").family, "Monaco 12 {not json", "text that is not the JSON stays in the name");
+        assert_eq!(grow_font_value(&stored, 1.0), format!("Cascadia Code 14{}", f.suffix()), "a size change keeps the features");
+    }
+
     #[test]
     fn ssh_initial_directory_follows_windows() {
         let s = |v: &str| toml::Value::String(v.into());
@@ -598,9 +681,9 @@ mod tests {
 
     #[test]
     fn fonts_parse_family_and_size() {
-        assert_eq!(parse_font("MesloLGS NF 13"), FontSpec { family: "MesloLGS NF".into(), size_pt: 13.0 });
-        assert_eq!(parse_font("Cascadia Mono 12.5"), FontSpec { family: "Cascadia Mono".into(), size_pt: 12.5 });
-        assert_eq!(parse_font("Consolas"), FontSpec { family: "Consolas".into(), size_pt: 12.0 });
+        assert_eq!(parse_font("MesloLGS NF 13"), FontSpec { family: "MesloLGS NF".into(), size_pt: 13.0, features: Default::default() });
+        assert_eq!(parse_font("Cascadia Mono 12.5"), FontSpec { family: "Cascadia Mono".into(), size_pt: 12.5, features: Default::default() });
+        assert_eq!(parse_font("Consolas"), FontSpec { family: "Consolas".into(), size_pt: 12.0, features: Default::default() });
     }
 
     #[test]

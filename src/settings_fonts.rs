@@ -23,6 +23,34 @@ pub fn font_string(family: &str, size_pt: f32) -> String {
     if size_pt.fract() == 0.0 { format!("{family} {}", size_pt as u32) } else { format!("{family} {size_pt}") }
 }
 
+/// `font_string` with the features the font menu set after the size, as iTerm2 stores them.
+pub fn font_string_with(family: &str, size_pt: f32, features: &crate::profile::FontFeatures) -> String {
+    format!("{}{}", font_string(family, size_pt), features.suffix())
+}
+
+/// The title of the menu button beside a font's size (`OptionsButtonController`'s accessibility description).
+pub const FEATURES_TOOLTIP: &str = "Choose font features";
+/// The first item of that menu: a switch, on unless Contextual Alternates are turned off.
+pub const CONTEXTUAL_ALTERNATES: &str = "Contextual Alternates";
+
+/// The features after the menu item for `selector` (or Contextual Alternates, when None) was chosen.
+pub fn toggled(features: &crate::profile::FontFeatures, selector: Option<u32>) -> crate::profile::FontFeatures {
+    let mut f = features.clone();
+    match selector {
+        None => f.calt_off = !f.calt_off,
+        Some(s) => match f.stylistic.iter().position(|x| *x == s) {
+            Some(i) => {
+                f.stylistic.remove(i);
+            }
+            None => {
+                f.stylistic.push(s);
+                f.stylistic.sort_unstable();
+            }
+        },
+    }
+    f
+}
+
 /// The families containing `needle`, ignoring case; all of them for an empty needle.
 pub fn filtered<'a>(families: &'a [String], needle: &str) -> Vec<&'a String> {
     let n = needle.trim().to_lowercase();
@@ -58,13 +86,16 @@ pub fn member_title(info: &crate::render::FontInfo) -> String {
 
 /// One font picker: its label, the family menu with a search box, the member (weight) menu of the
 /// family, and the size.
-fn picker(ui: &mut egui::Ui, profile: &mut Profile, key: &str, families: &[String], facts: Facts) -> bool {
+fn picker(ui: &mut egui::Ui, profile: &mut Profile, key: &str, families: &[String], facts: Facts, ligatures_on: bool) -> bool {
     let s = setting(key);
     let spec = profile.font(key);
     let info = facts(&spec.family);
     let shown_family = info.as_ref().map_or_else(|| spec.family.clone(), |i| i.family.clone());
     let mut size = spec.size_pt;
     let mut picked: Option<String> = None;
+    // Choosing another family starts its font features over (`OptionsButtonController.set(familyName:)`).
+    let mut other_family = false;
+    let mut features_picked: Option<crate::profile::FontFeatures> = None;
     let mut size_changed = false;
     let mut rect = None;
     ui.horizontal(|ui| {
@@ -76,6 +107,7 @@ fn picker(ui: &mut egui::Ui, profile: &mut Profile, key: &str, families: &[Strin
             rect = Some(r.rect);
             if r.changed() {
                 picked = Some(family);
+                other_family = true;
             }
         } else {
             let filter_id = egui::Id::new(("font-filter", key));
@@ -88,6 +120,7 @@ fn picker(ui: &mut egui::Ui, profile: &mut Profile, key: &str, families: &[Strin
                     for f in &list[range] {
                         if ui.selectable_label(f.eq_ignore_ascii_case(&shown_family), f.as_str()).clicked() {
                             picked = Some((*f).clone());
+                            other_family = true;
                         }
                     }
                 });
@@ -108,15 +141,41 @@ fn picker(ui: &mut egui::Ui, profile: &mut Profile, key: &str, families: &[Strin
         }
         let d = crate::settings_keys::field(ui, egui::DragValue::new(&mut size).range(4.0..=128.0).speed(0.25).suffix(" pt"));
         size_changed = d.changed();
+        // The font features button shows while ligatures are on (`updateLigatureWarning`): Contextual
+        // Alternates, then the font's stylistic sets (`OptionsButtonController`).
+        if ligatures_on {
+            let glyph = crate::settings_keys::icon_text(ui.ctx(), '\u{E712}');
+            let title = glyph.map_or_else(|| egui::RichText::new("\u{2026}"), |g| g);
+            let sets = info.as_ref().map(|i| i.sets.clone()).unwrap_or_default();
+            ui.menu_button(title, |ui| {
+                let mark = |on: bool, name: &str| format!("{}{name}", if on { "\u{2713} " } else { "    " });
+                if ui.button(mark(!spec.features.calt_off, CONTEXTUAL_ALTERNATES)).clicked() {
+                    features_picked = Some(toggled(&spec.features, None));
+                    ui.close();
+                }
+                if !sets.is_empty() {
+                    ui.separator();
+                }
+                for (selector, name) in &sets {
+                    if ui.button(mark(spec.features.stylistic.contains(selector), name)).clicked() {
+                        features_picked = Some(toggled(&spec.features, Some(*selector)));
+                        ui.close();
+                    }
+                }
+            })
+            .response
+            .on_hover_text(FEATURES_TOOLTIP);
+        }
     })
     .response
     .on_hover_text(&s.help);
     if let Some(r) = rect.filter(|_| crate::settings_keys::indicate_non_default() && !crate::settings_ui::profile_is_default(profile, s, key)) {
         crate::settings_keys::non_default_bar(ui, r, ui.is_enabled());
     }
-    if picked.is_some() || size_changed {
+    if picked.is_some() || size_changed || features_picked.is_some() {
         let family = picked.unwrap_or(spec.family);
-        profile.set(key, Value::String(font_string(&family, size)));
+        let features = features_picked.unwrap_or(if other_family { Default::default() } else { spec.features });
+        profile.set(key, Value::String(font_string_with(&family, size, &features)));
         return true;
     }
     false
@@ -159,7 +218,7 @@ fn switch_with_hint(ui: &mut egui::Ui, profile: &mut Profile, key: &str, hint: O
 /// `bidi` is the right-to-left switch, and `recommended(family)` whether the font asks for
 /// anti-aliasing.
 pub fn group(ui: &mut egui::Ui, profile: &mut Profile, families: &[String], bidi: bool, recommended: &dyn Fn(&str, f32) -> bool, facts: Facts) -> bool {
-    let mut changed = picker(ui, profile, "Normal Font", families, facts);
+    let mut changed = picker(ui, profile, "Normal Font", families, facts, profile.bool("ASCII Ligatures"));
     changed |= spacings(ui, profile);
     let normal = profile.font("Normal Font");
     let ascii = normal.family.clone();
@@ -169,7 +228,7 @@ pub fn group(ui: &mut egui::Ui, profile: &mut Profile, families: &[String], bidi
     changed |= switch_with_hint(ui, profile, "ASCII Ligatures", lig);
     changed |= check(ui, profile, "Use Non-ASCII Font");
     if profile.bool("Use Non-ASCII Font") {
-        changed |= picker(ui, profile, "Non Ascii Font", families, facts);
+        changed |= picker(ui, profile, "Non Ascii Font", families, facts, profile.bool("Non-ASCII Ligatures"));
         let non_ascii = profile.font("Non Ascii Font");
         let other = non_ascii.family.clone();
         let rec = recommended(&other, non_ascii.size_pt).then_some((RECOMMENDED_HINT, false));
@@ -199,6 +258,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_features_menu_toggles_one_choice_and_keeps_the_rest() {
+        let f = crate::profile::FontFeatures::default();
+        let a = toggled(&f, Some(6));
+        let b = toggled(&a, Some(2));
+        assert_eq!(b.stylistic, vec![2, 6]);
+        assert_eq!(toggled(&b, Some(6)).stylistic, vec![2]);
+        assert!(toggled(&b, None).calt_off && toggled(&b, None).stylistic == vec![2, 6]);
+        assert_eq!(font_string_with("Cascadia Code", 12.0, &f), "Cascadia Code 12");
+        let stored = font_string_with("Cascadia Code", 12.0, &b);
+        assert_eq!(crate::profile::parse_font(&stored).features, b);
+    }
+
+    #[test]
     fn a_font_is_its_family_and_size() {
         assert_eq!(font_string("Cascadia Mono", 12.0), "Cascadia Mono 12");
         assert_eq!(font_string("Consolas", 11.5), "Consolas 11.5");
@@ -207,7 +279,7 @@ mod tests {
 
     #[test]
     fn the_member_menu_names_the_current_weight() {
-        let info = crate::render::FontInfo { family: "Cascadia Mono".into(), weight: 300, members: vec![("Light".into(), "CascadiaMono-Light".into(), 300), ("Regular".into(), "Cascadia Mono".into(), 400), ("Bold".into(), "CascadiaMono-Bold".into(), 700)] };
+        let info = crate::render::FontInfo { family: "Cascadia Mono".into(), weight: 300, sets: Vec::new(), members: vec![("Light".into(), "CascadiaMono-Light".into(), 300), ("Regular".into(), "Cascadia Mono".into(), 400), ("Bold".into(), "CascadiaMono-Bold".into(), 700)] };
         assert_eq!(member_title(&info), "Light");
         let regular = crate::render::FontInfo { weight: 400, ..info.clone() };
         assert_eq!(member_title(&regular), "Regular");

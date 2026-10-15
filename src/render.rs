@@ -343,11 +343,15 @@ pub struct FaceKey {
     /// The weight of the regular face, 400 unless the profile's font names another member of the
     /// family ("CascadiaMono-Light"); bold is picked relative to it.
     pub weight: u16,
+    /// The Normal Font's and the Non-ASCII Font's stylistic sets and Contextual Alternates choice
+    /// (Settings' font menu); they shape text that ligatures.
+    pub ascii_features: crate::profile::FontFeatures,
+    pub non_ascii_features: crate::profile::FontFeatures,
 }
 
 impl FaceKey {
     pub fn new(family: &str, alt_family: Option<&str>, px: f32, h: f32, v: f32) -> FaceKey {
-        FaceKey { family: family.to_string(), alt_family: alt_family.map(str::to_string), px_bits: quantize_px(px).to_bits(), h_bits: h.to_bits(), v_bits: v.to_bits(), profile_bits: 0, use_bold: true, use_italic: true, ascii_ligatures: false, non_ascii_ligatures: false, ascii_aa: true, non_ascii_aa: true, thin: 4, powerline: false, table: None, weight: 400 }
+        FaceKey { family: family.to_string(), alt_family: alt_family.map(str::to_string), px_bits: quantize_px(px).to_bits(), h_bits: h.to_bits(), v_bits: v.to_bits(), profile_bits: 0, use_bold: true, use_italic: true, ascii_ligatures: false, non_ascii_ligatures: false, ascii_aa: true, non_ascii_aa: true, thin: 4, powerline: false, table: None, weight: 400, ascii_features: Default::default(), non_ascii_features: Default::default() }
     }
 
     pub fn px(&self) -> f32 {
@@ -371,6 +375,8 @@ pub fn quantize_px(px: f32) -> f32 {
 pub struct FontInfo {
     pub family: String,
     pub weight: u16,
+    /// The stylistic sets the font offers: (AAT selector, name), by name (`fonts::stylistic_sets`).
+    pub sets: Vec<(u32, String)>,
     /// (title, the name a profile stores, weight), lightest first.
     pub members: Vec<(String, String, u16)>,
 }
@@ -884,7 +890,10 @@ impl Renderer {
             .into_iter()
             .map(|(w, ps)| (fonts::weight_name(w), if Some(w) == regular { family.clone() } else { ps }, w))
             .collect();
-        FontInfo { family, weight, members }
+        // The sets come from the regular face's GSUB table.
+        let first = db.faces().find(|f| f.style == glyphon::fontdb::Style::Normal && f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(&family))).map(|f| f.id);
+        let sets = first.and_then(|id| db.with_face_data(id, |data, index| fonts::stylistic_sets(data, index))).unwrap_or_default();
+        FontInfo { family, weight, sets, members }
     }
 
     /// A porthole run's width: the cell width per column for the profile's font, the shaped
@@ -1406,7 +1415,8 @@ impl Renderer {
                 // Terminal text shapes with its ligature level's features. Non-ASCII text at level 0
                 // is one cell per piece (or a joined run of a cursive script), so it keeps the
                 // shaper's own features: nothing can ligate there and Arabic keeps its forms.
-                let start = if terminal && (s.ligatures > 0 || s.text.is_ascii()) { start.font_features(fonts::features(s.ligatures)) } else { start };
+                let chosen = if s.alt_font { &face.key.non_ascii_features } else { &face.key.ascii_features };
+                let start = if terminal && (s.ligatures > 0 || s.text.is_ascii()) { start.font_features(fonts::features_with(s.ligatures, chosen)) } else { start };
                 // Terminal text carries its mask mode in the glyph cache key (`from_bits_retain`
                 // keeps Termurion's bits), so each mode is cached apart and filtered in glyphon.
                 let start = if terminal { start.cache_key_flags(CacheKeyFlags::from_bits_retain(fonts::MaskMode::from_code(s.mask).flags())) } else { start };
@@ -2069,6 +2079,31 @@ mod tests {
         report("LIGATURES level 0", &off);
         assert_eq!(off, alone, "features(0) must shape each character as it does alone in {family}");
         assert!(off.iter().take(2).all(|v| v.len() == 2), "each pair is two glyphs with features(0) in {family}");
+    }
+
+    /// The font menu on a real font: Cascadia Code lists stylistic sets, a chosen set changes the
+    /// glyphs, and turning Contextual Alternates off changes how its ligatures form.
+    #[test]
+    fn font_menu_choices_shape_a_real_font() {
+        let mut fs = FontSystem::new();
+        let id = fs.db().faces().find(|f| f.style == glyphon::fontdb::Style::Normal && f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case("Cascadia Code"))).map(|f| f.id);
+        let Some(id) = id else {
+            println!("skip: Cascadia Code is not installed");
+            return;
+        };
+        let sets = fs.db().with_face_data(id, |data, index| fonts::stylistic_sets(data, index)).unwrap_or_default();
+        println!("STYLISTIC SETS: {sets:?}");
+        assert!(!sets.is_empty(), "Cascadia Code has stylistic sets");
+        let text = "abcdefghijklmnopqrstuvwxyz0123456789@&$%*{}<>|\\~`^";
+        let plain = glyph_ids(&mut fs, "Cascadia Code", text, Some(fonts::features_with(2, &Default::default())));
+        let changes = sets.iter().any(|(sel, _)| {
+            let chosen = crate::profile::FontFeatures { stylistic: vec![*sel], calt_off: false };
+            glyph_ids(&mut fs, "Cascadia Code", text, Some(fonts::features_with(2, &chosen))) != plain
+        });
+        assert!(changes, "a stylistic set the font lists must change some glyph");
+        let ligated = glyph_ids(&mut fs, "Cascadia Code", "<=>->!=", Some(fonts::features_with(2, &Default::default())));
+        let off = glyph_ids(&mut fs, "Cascadia Code", "<=>->!=", Some(fonts::features_with(2, &crate::profile::FontFeatures { stylistic: Vec::new(), calt_off: true })));
+        assert_ne!(ligated, off, "Contextual Alternates off changes the ligatures");
     }
 
     #[test]
