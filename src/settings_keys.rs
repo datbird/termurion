@@ -1795,12 +1795,14 @@ pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &m
                 sections.push(&s.section);
             }
         }
+        let mut framing = crate::settings_search::RowFlash::default();
         for section in sections {
             ui.strong(section);
             for s in rows.iter().copied().filter(|s| s.section == section) {
                 if !row_visible(g, &s.key) {
                     continue;
                 }
+                framing.row(ui, &s.key);
                 if s.key == "CustomScriptsFolder" {
                     // The typed text is saved and applied when editing ends, not per key.
                     let (_, ended) = custom_scripts_folder_row(ui, g, &home);
@@ -1856,6 +1858,7 @@ pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &m
                     ui.ctx().data_mut(|d| d.remove_temp::<bool>(folder_pending_id()));
                 }
             }
+            framing.finish(ui);
             ui.add_space(8.0);
         }
         changed |= extra(ui, g);

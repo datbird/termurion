@@ -1333,10 +1333,12 @@ impl SettingsWindow {
                             ui.add_space(8.0);
                             ui.strong(&section);
                         }
+                        let mut framing = crate::settings_search::RowFlash::default();
                         for s in list {
                             if !crate::browser::settings_visible(s.mode.as_deref(), s.hidden_mode, browser, browser_profiles) {
                                 continue;
                             }
+                            framing.row(ui, &s.key);
                             // The zoom commands set the page zoom; it has no row.
                             // The extension keys are written by the approval window, never by a control.
                             if s.key == "Browser Zoom" || s.key == "Touch Bar Map" || s.key == crate::browser_extensions::ROOT_KEY || s.key == crate::browser_extensions::ACTIVE_KEY {
@@ -1607,6 +1609,7 @@ impl SettingsWindow {
                                 edit = Edit::Changed(selected.clone());
                             }
                         }
+                        framing.finish(ui);
                     }
                     // iTerm2's "URL schemes:" sits at the bottom of the General tab.
                     if schema::TABS[tab] == "General" {

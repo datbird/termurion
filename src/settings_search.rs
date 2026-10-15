@@ -140,13 +140,64 @@ pub fn mark(ctx: &egui::Context, key: &str) {
     ctx.request_repaint();
 }
 
+/// The row that draws `key`'s control when several keys share one drawing (the font block, the
+/// window size line, the title popup, the hotkey recorders, the startup popup): the row the
+/// marked control is framed at.
+pub fn lead(key: &str) -> &str {
+    if crate::settings_fonts::GROUPED.contains(&key) {
+        return "Normal Font";
+    }
+    match key {
+        "Rows" | "Width Percentage" | "Height Percentage" => "Columns",
+        "Title Function" => "Title Components",
+        "Session Hotkey" => "Has Hotkey",
+        "OpenNoWindowsAtStartup" => "OpenArrangementAtStartup",
+        "PrefsCustomFolder" => "LoadPrefsFromCustomFolder",
+        "HotkeyChar" | "HotkeyModifiers" | "HotkeyCode" => "Hotkey",
+        "OpenQuicklyHotkeyChar" | "OpenQuicklyHotkeyModifiers" => "OpenQuicklyHotkeyCode",
+        k if k.starts_with("HotKey ") => "Has Hotkey",
+        k => k,
+    }
+}
+
+/// Frames the marked control for a loop that draws rows with functions of their own: `row` is
+/// called as each row starts, and `finish` after the last; a row's frame is drawn when the next
+/// starts (so a `continue` in the loop cannot skip it).
+#[derive(Default)]
+pub struct RowFlash {
+    prev: Option<(String, f32)>,
+}
+
+impl RowFlash {
+    pub fn row(&mut self, ui: &mut egui::Ui, key: &str) {
+        self.finish(ui);
+        if marked(ui.ctx()).is_some() {
+            self.prev = Some((key.to_string(), ui.cursor().top()));
+        }
+    }
+
+    pub fn finish(&mut self, ui: &mut egui::Ui) {
+        if let Some((key, top)) = self.prev.take() {
+            flash_if_marked(ui, &key, top);
+        }
+    }
+}
+
 /// Called after a row `key` drew from `top` down to the cursor: if it is the marked control, frames
 /// it and scrolls it into view, and keeps the window drawing until the mark fades.
 pub fn flash_if_marked(ui: &mut egui::Ui, key: &str, top: f32) {
     let Some((marked_key, until)) = marked(ui.ctx()) else { return };
-    if marked_key != key {
+    if lead(&marked_key) != lead(key) {
         return;
     }
+    // A row drawn with no height (its rows are drawn with another's) has nothing to frame, and a
+    // control that framed itself this pass is not framed again by its loop.
+    let pass = ui.ctx().cumulative_pass_nr();
+    let framed_id = egui::Id::new("settings-search-framed");
+    if ui.cursor().top() <= top + 0.5 || ui.ctx().data(|d| d.get_temp::<u64>(framed_id)) == Some(pass) {
+        return;
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(framed_id, pass));
     let now = ui.ctx().input(|i| i.time);
     if now >= until {
         ui.ctx().data_mut(|d| d.remove::<(String, f64)>(egui::Id::new("settings-search-mark")));
@@ -230,6 +281,33 @@ pub fn field(ui: &mut egui::Ui, st: &mut SearchState) -> Option<&'static Doc> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whether a loop that draws `drawn` as it goes (a row of its own each) framed the marked `key`.
+    fn framed(key: &str, drawn: &[&str]) -> bool {
+        let ctx = egui::Context::default();
+        mark(&ctx, key);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut framing = RowFlash::default();
+            for k in drawn {
+                framing.row(ui, k);
+                if *k != "Rows" {
+                    ui.label(*k);
+                }
+            }
+            framing.finish(ui);
+        });
+        out.textures_delta.clear();
+        ctx.data(|d| d.get_temp::<u64>(egui::Id::new("settings-search-framed"))).is_some()
+    }
+
+    #[test]
+    fn a_control_drawn_by_a_function_of_its_own_is_framed_too() {
+        assert!(framed("Columns", &["Window Type", "Columns", "Rows"]));
+        assert!(framed("Rows", &["Window Type", "Columns", "Rows"]), "the size line is framed for its Rows field");
+        assert!(framed("Non-ASCII Ligatures", &["Normal Font", "Non Ascii Font"]), "the font block is framed for a key it draws");
+        assert!(!framed("Rows", &["Window Type", "Transparency"]), "a key no row draws is framed nowhere");
+        assert_eq!((lead("HotKey Code"), lead("Title Function"), lead("Name")), ("Has Hotkey", "Title Components", "Name"));
+    }
 
     fn names(q: &str) -> Vec<&'static str> {
         search(q).into_iter().map(|d| d.name.as_str()).collect()
