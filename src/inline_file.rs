@@ -283,7 +283,7 @@ impl Screen {
         let grid = (self.term().columns(), self.term().screen_lines());
         let col = self.term().grid().cursor.point.column.0;
         let (cols, rows) = images::size_in_cells((d.width, d.height), args.width, args.height, args.keep_aspect, (cw as f32, ch as f32), grid, col);
-        let image = Image { width_px: d.width, height_px: d.height, cols, rows, frames: d.frames, broken: d.broken, keep_aspect: args.keep_aspect, uid: 0 };
+        let image = Image { width_px: d.width, height_px: d.height, cols, rows, frames: d.frames, broken: d.broken, keep_aspect: args.keep_aspect, uid: 0, filename: args.named.then(|| args.name.clone()), paused: None };
         self.place_image(image, true);
     }
 

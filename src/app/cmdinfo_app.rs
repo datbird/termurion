@@ -164,7 +164,7 @@ impl App {
 
     /// Types `text` into the pane through the guard (B5): a control character or a very long
     /// text is refused with a banner, an ended session says so (13q).
-    fn cmdinfo_write(&mut self, pane: PaneId, text: &str) {
+    pub(super) fn cmdinfo_write(&mut self, pane: PaneId, text: &str) {
         let text = match cmdinfo::writable(text) {
             Ok(t) => t.to_string(),
             Err(why) => return self.banners.set("action", why),

@@ -1,0 +1,36 @@
+ui-sweep-a rulings (the terminal right-click menu, package A of the UI parity sweep)
+
+Source of truth: iTerm2 `sources/ContextMenu/iTermTextViewContextMenuHelper.m` (CMH) at 64791fc, with `iTermContextMenuUtilities.m`, `PseudoTerminal.m menuForEvent:menu:` (PT:7200-7266), `PTYSession.m textViewAddContextMenuItems:` (PS:14841-14856), `PTYTextView+ARC.m` (the delegate half) and `PTYTextView.m validateMenuItem:`. The menu is now data (`src/ctx_menu.rs`, `build`), held to iTerm2's order, separators, titles and conditions by tests with file:line comments; `src/app/ctx_menu_app.rs` fills it from the pane and runs the picks. The old hand copy (`commands::CONTEXT`, `context_layout`) is gone, with its Maximize Active Pane entry that iTerm2's menu does not have.
+
+R-A1 Order and sections. Top to bottom: Command Info; named mark name and Remove Named Mark; Fold or Unfold; New Window, New Tab, Select; helpers and replacements; one-cell description; Download; web items; Smart Selection actions; script items; Split Pane Vertically and Horizontally; the move group; Copy group; Select All group; Edit Session…; Toggle Broadcasting Input and the lock items; Close and Restart; Bury; Terminal State; tmux pause. Menu labels are iTerm2's own (… not ...); no shortcut text.
+R-A2 Right click off the selection selects the Smart Selection match, else the word, under the pointer first (CMH:177-195); all white space undoes it and the old selection returns. Over an image it does not.
+R-A3 Every item is always built and greyed by iTerm2's validation (CMH:271-376; PTYTextView.m:479-560; PT:13884-13892), except the conditional ones iTerm2 builds only sometimes (Move Session to Tab, the tab-wide lock items, Stop Coprocess, Copy Link Address, Copy URL, the Open URL splits, Quick Look Link, the tmux item, Select).
+R-A4 Actions: a menu command (Copy, Paste, Save, Select All, Clear Buffer, Annotate Selection, Edit Session…, Close, Restart, Bury, the splits, the moves, Add Trigger…, the three Replace items, the Terminal State items, the tmux pause) runs the main menu's command on the menu's pane (focus moves for the command and returns), so there is one implementation of each. A command whose main menu item is not built shows greyed.
+R-A5 Select Command Output, Re-run Command (`menuForMark:`) have no caller in iTerm2 at 64791fc: not built.
+R-A6 macOS only, not built: Main Menu submenu for UI-element mode (CMH:822-840), SF Symbol images on the split items (kPreferenceKeyMenuActionImages), the Control-click bypass preference, the DEBUG aid item.
+R-A7 Smart Selection actions are those of every rule whose regex matches the SELECTED text (CMH:864-896, under 400 characters), not of the click point as the old copy did; titles take their captures, \d, \h, \u. Greyed in a remote pane (P10).
+R-A8 Helpers (CMH:434-505): synonyms, color, Base64 preview for a short selection (at most the pane's width, minimum 80); numeric rows and Base64 copies for a reasonable one (up to 1,000,000). Labels are made inert and cut. Copy Base64-Decoded and -Encoded come from the same text (Termurion has no separate unstripped form).
+R-A9 Replace items (CMH:473-499): only for whole lines, one selection, not in a view or full-screen app: the check is Replace Selection's own (`replace_source`). JSON needs several lines and an object or array.
+R-A10 One selected cell is described as ScreenCharDescription does, with a hyperlink and underline color as the external attributes. Direction is always Dir-Unk.
+R-A11 Download (CMH:528-548, 271-286) uses the existing SSH file transfer; see FLAG 1.
+R-A12 Send Email to Selected Address opens `mailto:` + the selection through `guard_open`, after the remote-text rule and a control-character refusal.
+R-A13 Send Selection types the selection through Command Info's guarded writer (`cmdinfo_write`): control characters and over-long text are refused with a banner, an ended or password-prompt pane is refused, broadcast applies.
+R-A14 Save Selection as Snippet adds a snippet titled and valued with the selection, no tags, no escaping (CMH:1269-1273 via PTYTextView+ARC.m:1858) through `cmdinfo_add_snippet`, so it passes the same text guard.
+R-A15 Reveal Annotation shows the hidden annotations under the click (CMH:355-364, 1284); enabled only then, and never in the title bar's menu.
+R-A16 Lock items: Lock Pane is a check; with several panes, Unlock All Panes in Tab alone when all are locked, else Lock All Panes in Tab and, when any is locked, Unlock All Panes in Tab as well. iTerm2 hides the Unlock behind Option; a Windows popup has no Option, so both show (the earlier decision, kept).
+R-A17 Images (CMH:385-427): Save Image As… (dialog, PNG, BMP, GIF, JPEG or TIFF by extension), Copy Image (clipboard picture), Open Image (a temporary PNG in Termurion's own folder, opened by its default app), Inspect (Filename and Dimensions), Stop/Resume Animating (holds the shown frame). Images keep their file name when the program gave one.
+R-A18 Timestamp margin menu (CMH:139-158, PTYTextView+ARC.m:2722-2755): a right click on a label block gives Set Baseline for Relative Timestamps and Disable Relative Timestamps; with a baseline the labels read as iTerm2's compact distances ("Baseline", "+1.250s", "+5m3s", "-1y1w"; the week quirk is iTerm2's, ported).
+R-A19 The workgroup toolbar's git item: a right click while it shows a plain branch name offers Copy, which copies the branch (iTermSessionToolbarView.swift:925-966).
+R-A20 Fold folds the command's output rows (the Fold button's `cmd_fold`); iTerm2 folds the command and its output keeping the prompt length. It is not offered when the rows hold the cursor's line (the fold would refuse).
+R-A21 Parity: a "Terminal context menu" row set in docs/parity/03; the counts sentence in docs/parity/00-roadmap.md follows it.
+
+FLAGS FOR ROBERT (decisions that differ from iTerm2 or that iTerm2 cannot answer on Windows):
+1. Download with scp is greyed unless the pane has SSH integration that can take the path. Termurion has no scp transfer, so a path iTerm2 would fetch with scp stays greyed here (the title still says "Download with scp from <host>"). Alternative: shell out to Windows' scp.exe.
+2. A color in the selection shows as a swatch icon plus its text; iTerm2 shows only a swatch view, which a Windows popup cannot host.
+3. Send Selection refuses control characters (a newline included) and very long text, where iTerm2 sends anything. A multi-line selection is not sent.
+4. Save Selection as Snippet uses the same text guard, so a multi-line selection is refused.
+5. Relative-timestamp baselines are kept per pane while the app runs, not saved with arrangements as iTerm2 does.
+6. Both Lock All and Unlock All Panes in Tab show when some panes are locked (no Option key in a popup).
+7. Fold takes the output rows only, not the command line (see R-A20).
+8. The one-cell description always reads Dir-Unk for direction.
+9. The parity counts line in docs/parity/00-roadmap.md changed (03: 676 have, 25 partial, 2 missing, 13 n/a); other packages that add rows will conflict on that one line and must add their own counts.

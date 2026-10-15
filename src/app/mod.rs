@@ -92,6 +92,7 @@ mod fold_ui;
 mod labels_ui;
 mod screenshot_ui;
 mod semantic_ui;
+mod ctx_menu_app;
 mod url_handler_ui;
 mod cmdinfo_app;
 mod cmdbuttons_ui;
@@ -553,7 +554,9 @@ pub struct App {
     /// until its pick arrives. App-wide: the popup is modal, one at a time.
     color_pick: Option<(menu::ColorTarget, Vec<crate::palette::Rgb>)>,
     /// What the right-click menu's own items act on.
-    ctx_pending: Option<semantic_ui::CtxPending>,
+    ctx_pending: Option<ctx_menu_app::CtxPending>,
+    /// Each pane's baseline for relative timestamps (Unix seconds), set from the timestamp margin's menu.
+    ts_baseline: HashMap<PaneId, f64>,
     /// The Find Globally window.
     global_find: Option<crate::global_find_ui::GlobalFindWindow>,
     /// Find Globally's terminal hits for the current query, and the browser panes' hits that have
@@ -2245,6 +2248,7 @@ pub fn run() {
         note_win: None,
         note_pos: HashMap::new(),
         ctx_pending: None,
+        ts_baseline: HashMap::new(),
         prompt: None,
         pending_mark_prompt: None,
         mark_prompt_focused: false,
@@ -5953,6 +5957,9 @@ impl App {
         if let Some(pane) = self.workgroup_toolbar_at(x, y) {
             if button == MouseButton::Left && self.workgroup_toolbar_press(pane, x, y, event_loop) {
                 return;
+            }
+            if button == MouseButton::Right {
+                self.workgroup_toolbar_menu(pane, x, y);
             }
             if button != MouseButton::Left {
                 return;

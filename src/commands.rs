@@ -182,22 +182,6 @@ fn owner(item: &Item) -> u8 {
     }
 }
 
-/// iTerm2's right-click menu, by menu item id. An empty entry is a separator.
-pub const CONTEXT: [&str; 12] = [
-    "Edit > Copy",
-    "Edit > Paste",
-    "",
-    "Shell > Split Vertically with Current Profile",
-    "Shell > Split Horizontally with Current Profile",
-    "",
-    "View > Maximize Active Pane",
-    "Edit > Select All",
-    "Edit > Clear Buffer",
-    "",
-    "Session > Edit Session...",
-    "Shell > Close",
-];
-
 /// Extra chords for commands whose iTerm2 chord is awkward on a Windows keyboard:
 /// Cmd+= for Make Text Bigger (iTerm2's is Cmd++, which is Shift+= here).
 const EXTRA_CHORDS: [(Chord, &str); 1] =
@@ -386,13 +370,6 @@ mod tests {
         let item = command_for_chord(&chord).unwrap();
         assert_eq!(item.selector, "toggleShowInlineChat:");
         assert_eq!(status(item), Status::Done);
-    }
-
-    #[test]
-    fn every_context_menu_id_resolves() {
-        for id in CONTEXT {
-            assert!(id.is_empty() || crate::menus::by_id(id).is_some(), "{id}");
-        }
     }
 
     #[test]

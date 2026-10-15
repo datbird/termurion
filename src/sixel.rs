@@ -171,7 +171,7 @@ impl crate::screen::Screen {
         let col = self.term().grid().cursor.point.column;
         let (cols, rows) = crate::images::size_in_cells((w, h), crate::images::Dim::Auto, crate::images::Dim::Auto, true, (cw as f32, ch as f32), grid, col.0);
         let frame = crate::images::Frame { rgba: std::sync::Arc::new(px), delay_ms: 0 };
-        let image = crate::images::Image { width_px: w, height_px: h, cols, rows, frames: vec![frame], broken: false, keep_aspect: true, uid: 0 };
+        let image = crate::images::Image { width_px: w, height_px: h, cols, rows, frames: vec![frame], broken: false, keep_aspect: true, uid: 0, filename: None, paused: None };
         self.place_image(image, true);
         self.term_mut().grid_mut().cursor.point.column = col;
     }

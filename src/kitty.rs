@@ -253,7 +253,7 @@ impl Screen {
         let dim = |v: Option<u32>| v.filter(|n| *n > 0).map_or(Dim::Auto, Dim::Cells);
         let keep = cols.is_none() || rows.is_none();
         let (c, r) = crate::images::size_in_cells((pw, ph), dim(cols), dim(rows), keep, (cw as f32, ch as f32), grid, col);
-        let image = Image { width_px: pw, height_px: ph, cols: c, rows: r, frames: vec![Frame { rgba: pixels, delay_ms: 0 }], broken: false, keep_aspect: keep, uid: 0 };
+        let image = Image { width_px: pw, height_px: ph, cols: c, rows: r, frames: vec![Frame { rgba: pixels, delay_ms: 0 }], broken: false, keep_aspect: keep, uid: 0, filename: None, paused: None };
         let store_id = self.place_image(image, cmd.num('C') != Some(1));
         self.kitty.placements.push((id, cmd.num('p').unwrap_or(0), store_id));
         Ok(())

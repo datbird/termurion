@@ -474,6 +474,25 @@ impl App {
         Click::Nothing
     }
 
+    /// A right press on a member's strip (`provideMenu`, `iTermSessionToolbarView.swift:925-942`): over the git
+    /// item while it shows a plain branch name (not a repository state), a menu with Copy, which puts the branch
+    /// on the clipboard. Nothing elsewhere.
+    pub(super) fn workgroup_toolbar_menu(&mut self, pane: PaneId, x: f32, y: f32) {
+        if !self.workgroup_toolbar_member(pane) {
+            return;
+        }
+        let Some((_, strip)) = self.toolbar_strips().into_iter().find(|(id, _)| *id == pane) else { return };
+        if !self.toolbar_laid(pane, strip, self.pane_cell(pane)).into_iter().any(|l| l.rect.contains(x, y) && matches!(l.view, View::Git(_))) {
+            return;
+        }
+        let branch = self.workgroup_of(pane).and_then(|inst| inst.git.as_ref()?.poller.state.as_ref()).filter(|s| s.repo_state == crate::git_state::RepoState::None && !s.branch.is_empty()).map(|s| s.branch.clone());
+        let Some(branch) = branch else { return };
+        let mut pend = super::ctx_menu_app::CtxPending::for_pane(pane, Vec::new());
+        pend.set_copy(branch);
+        self.ctx_pending = Some(pend);
+        self.show_context_rows(&[crate::ctx_menu::item("copytext", "Copy", true)]);
+    }
+
     /// A left press on a member's strip. Always taken (nothing under it is the program's); the
     /// item acts on the press and only on the person's pointer, never on anything a program prints.
     pub(super) fn workgroup_toolbar_press(&mut self, pane: PaneId, x: f32, y: f32, _event_loop: &ActiveEventLoop) -> bool {

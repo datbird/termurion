@@ -2492,7 +2492,7 @@ mod tests {
         let url = search_url("https://x.test/?q=%@", &search_query("a&b=c d#e").unwrap());
         assert!(url.starts_with("https://x.test/?q=") && !url.contains(' ') && !url.contains('#'), "{url}");
         // The menu keeps the whole selection for the item, apart from the short one.
-        let src = include_str!("app/semantic_ui.rs");
+        let src = include_str!("app/ctx_menu_app.rs");
         let arm = &src[src.find("item == \"searchweb\"").unwrap()..];
         let arm = &arm[..arm.find("item == \"copylink\"").unwrap()];
         assert!(arm.contains("pend.search") && !arm.contains("pend.selection"), "{arm}");

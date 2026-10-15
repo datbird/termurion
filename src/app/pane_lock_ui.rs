@@ -2,24 +2,7 @@
 //! its context menu items and its title bar lock mark.
 
 use super::*;
-use super::semantic_ui::CtxItem;
 use crate::close_rules::LOCKED_REASON;
-
-/// The lock items after Toggle Broadcasting Input: Lock Pane, then for a tab with several
-/// panes Unlock All Panes in Tab when all are locked, else Lock All Panes in Tab and, when
-/// any is locked, Unlock All Panes in Tab too (iTerm2 hides that one behind Option).
-pub(super) fn lock_items(tab_panes: usize, locked: bool, all_locked: bool, any_locked: bool) -> Vec<(&'static str, CtxItem)> {
-    let mut out = vec![("Lock Pane", CtxItem::LockPane(locked))];
-    if tab_panes > 1 {
-        if !all_locked {
-            out.push(("Lock All Panes in Tab", CtxItem::LockAll));
-        }
-        if any_locked {
-            out.push(("Unlock All Panes in Tab", CtxItem::UnlockAll));
-        }
-    }
-    out
-}
 
 /// A pane move, swap or drag is refused under Lock Layout or a locked pane
 /// (`MovePaneController.m:69-93`, `:128-135`, `:313-322`).
@@ -130,11 +113,12 @@ impl App {
         self.redraw();
     }
 
-    /// The lock items for the menu of `pane`: its lock state and its tab's.
-    pub(super) fn lock_items_for(&self, pane: PaneId) -> Vec<(&'static str, CtxItem)> {
+    /// What the pane menu's lock items depend on for `pane` (`CMH:673-712`): whether its tab has several
+    /// panes, whether it is locked, and whether all and any of its tab's panes are.
+    pub(super) fn lock_facts_for(&self, pane: PaneId) -> (bool, bool, bool, bool) {
         let ids = self.tabs.iter().find(|t| t.layout.panes().contains(&pane)).map(|t| t.layout.panes()).unwrap_or_else(|| vec![pane]);
         let locks: Vec<bool> = ids.iter().map(|id| self.panes.get(id).is_some_and(|p| p.locked)).collect();
-        lock_items(ids.len(), self.panes.get(&pane).is_some_and(|p| p.locked), locks.iter().all(|l| *l), locks.iter().any(|l| *l))
+        (ids.len() > 1, self.panes.get(&pane).is_some_and(|p| p.locked), locks.iter().all(|l| *l), locks.iter().any(|l| *l))
     }
 }
 
@@ -161,20 +145,6 @@ mod tests {
         let titles = include_str!("pane_title_ui.rs");
         assert!(titles.contains("pane_title::ordinal_of(&panes, id)"), "so do the title bars");
         assert!(tool.contains("self.ordered_panes(t).hash(h)"), "the Status hash follows the pane order");
-    }
-
-    #[test]
-    fn lock_items_follow_iterm2() {
-        let ids = |a, b, c, d| lock_items(a, b, c, d).into_iter().map(|(l, i)| (l, i.id())).collect::<Vec<_>>();
-        assert_eq!(ids(1, false, false, false), vec![("Lock Pane", CtxItem::LockPane(false).id())]);
-        assert_eq!(ids(3, false, false, false), vec![("Lock Pane", CtxItem::LockPane(false).id()), ("Lock All Panes in Tab", CtxItem::LockAll.id())]);
-        assert_eq!(
-            ids(3, true, false, true),
-            vec![("Lock Pane", CtxItem::LockPane(true).id()), ("Lock All Panes in Tab", CtxItem::LockAll.id()), ("Unlock All Panes in Tab", CtxItem::UnlockAll.id())]
-        );
-        assert!(matches!(lock_items(1, true, true, true)[0].1, CtxItem::LockPane(true)), "the check follows the lock");
-        assert!(matches!(lock_items(1, false, false, false)[0].1, CtxItem::LockPane(false)));
-        assert_eq!(ids(3, true, true, true), vec![("Lock Pane", CtxItem::LockPane(true).id()), ("Unlock All Panes in Tab", CtxItem::UnlockAll.id())]);
     }
 
     #[test]

@@ -1049,7 +1049,7 @@ pub fn pane_with(
             if let Some(img) = screen.images.by_id.get(&t.image) {
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
                 let r = Rect { x: rect.x + col as f32 * cw, y: rect.y + row as f32 * ch, w: cw, h: ch };
-                if let Some(q) = tile_quad(img, t, r, frame_at(&img.frames, now)) {
+                if let Some(q) = tile_quad(img, t, r, img.paused.unwrap_or_else(|| frame_at(&img.frames, now))) {
                     frame.images.push(q);
                 }
             }
@@ -8402,6 +8402,8 @@ mod tests {
             broken: false,
             keep_aspect: false,
             uid: 0,
+            filename: None,
+            paused: None,
         };
         s.place_image(img, true);
         let mut f = Frame::default();
@@ -8425,6 +8427,8 @@ mod tests {
             broken: false,
             keep_aspect: true,
             uid: 7,
+            filename: None,
+            paused: None,
         };
         let t = alacritty_terminal::term::cell::Tile { image: 1, x: 1, y: 0 };
         let q = tile_quad(&img, t, Rect { x: 110.0, y: 40.0, w: 10.0, h: 20.0 }, 0).unwrap();
