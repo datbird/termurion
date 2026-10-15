@@ -182,6 +182,12 @@ impl App {
             WindowEvent::CloseRequested => None,
             WindowEvent::RedrawRequested => match w.redraw() {
                 KeyResult::Open => return true,
+                KeyResult::Link(url) => {
+                    if let Err(e) = super::semantic_ui::shell_open(&url, false) {
+                        self.banners.set("action", e);
+                    }
+                    return true;
+                }
                 KeyResult::Cancel => None,
                 KeyResult::Ok(key) => Some(key),
             },

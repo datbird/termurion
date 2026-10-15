@@ -5,7 +5,25 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
 
 use crate::egui_host::EguiHost;
-use crate::find::{Match, Pos};
+use crate::find::{Match, Mode, Pos};
+
+/// The stored mode (`iTermUserDefaults.globalSearchMode`).
+pub const MODE_KEY: &str = "NoSyncGlobalSearchMode";
+
+/// The match-mode popup's items in order (`iTermGlobalSearch.xib:151-157`); a separator stands
+/// after the first and after the third.
+pub const MODE_ITEMS: [(Mode, &str); 5] = [
+    (Mode::SmartCase, "Substring \u{2014} Automatic"),
+    (Mode::CaseSensitive, "Substring \u{2014} Case Sensitive"),
+    (Mode::CaseInsensitive, "Substring \u{2014} Case Insensitive"),
+    (Mode::RegexSensitive, "Regex \u{2014} Case Sensitive"),
+    (Mode::RegexInsensitive, "Regex \u{2014} Case Insensitive"),
+];
+
+/// The popup's text for a mode.
+pub fn mode_title(mode: Mode) -> &'static str {
+    MODE_ITEMS.iter().find(|(m, _)| *m == mode).map_or(MODE_ITEMS[0].1, |(_, t)| t)
+}
 
 /// One match in one session: where it is, and a snippet of its line with the match marked.
 #[derive(Clone, Debug, PartialEq)]
@@ -90,6 +108,8 @@ pub enum GlobalEvent {
     None,
     /// The query or the mode changed.
     Search(String),
+    /// The popup picked another match mode: the search runs again with it.
+    Mode(Mode),
     /// A result was clicked: its session and match.
     Pick(u64, Match),
     /// A browser pane's result was clicked: its pane and the page's match identifier.
@@ -103,6 +123,7 @@ pub struct GlobalFindWindow {
     groups: Vec<(u64, String, Vec<Hit>)>,
     error: Option<String>,
     first: bool,
+    mode: Mode,
 }
 
 impl GlobalFindWindow {
@@ -113,9 +134,10 @@ impl GlobalFindWindow {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         query: &str,
+        mode: Mode,
     ) -> Result<GlobalFindWindow, String> {
         let host = EguiHost::open(event_loop, instance, adapter, device, queue, "Find Globally", 560.0, 420.0)?;
-        Ok(GlobalFindWindow { host, query: query.into(), groups: Vec::new(), error: None, first: true })
+        Ok(GlobalFindWindow { host, query: query.into(), groups: Vec::new(), error: None, first: true, mode })
     }
 
     pub fn id(&self) -> WindowId {
@@ -124,6 +146,11 @@ impl GlobalFindWindow {
 
     pub fn focus(&self) {
         self.host.focus();
+    }
+
+    /// The text in the search field.
+    pub fn query(&self) -> &str {
+        &self.query
     }
 
     pub fn event(&mut self, event: &WindowEvent) -> bool {
@@ -138,9 +165,21 @@ impl GlobalFindWindow {
 
     pub fn redraw(&mut self) -> GlobalEvent {
         let mut out = GlobalEvent::None;
-        let (query, groups, error, first) = (&mut self.query, &self.groups, &self.error, &mut self.first);
+        let (query, groups, error, first, mode) = (&mut self.query, &self.groups, &self.error, &mut self.first, &mut self.mode);
         self.host.paint(|ui| {
             egui::CentralPanel::default().show(ui, |ui| {
+                let before = *mode;
+                egui::ComboBox::from_id_salt("global-find-mode").selected_text(mode_title(*mode)).width(213.0).show_ui(ui, |ui| {
+                    for (i, (m, title)) in MODE_ITEMS.iter().enumerate() {
+                        ui.selectable_value(mode, *m, *title);
+                        if i == 0 || i == 2 {
+                            ui.separator();
+                        }
+                    }
+                });
+                if *mode != before {
+                    out = GlobalEvent::Mode(*mode);
+                }
                 let r = ui.add(egui::TextEdit::singleline(query).hint_text("Search all sessions").desired_width(f32::INFINITY));
                 if *first {
                     r.request_focus();
@@ -252,6 +291,15 @@ mod tests {
         // The row handler.
         assert!(matches!(pick_of(&web_hit(7, "w", &result("", "x", ""))), GlobalEvent::PickWeb(7, v) if v == serde_json::json!({"index": 3})));
         assert!(matches!(pick_of(&hit(2, 5)), GlobalEvent::Pick(2, m) if m.start.row == 5));
+    }
+
+    #[test]
+    fn the_mode_popup_follows_the_xib() {
+        let titles: Vec<&str> = MODE_ITEMS.iter().map(|(_, t)| *t).collect();
+        assert_eq!(titles, ["Substring \u{2014} Automatic", "Substring \u{2014} Case Sensitive", "Substring \u{2014} Case Insensitive", "Regex \u{2014} Case Sensitive", "Regex \u{2014} Case Insensitive"]);
+        // The item tags are `iTermFindMode` values.
+        assert_eq!(MODE_ITEMS.map(|(m, _)| m as i64), [0, 1, 2, 3, 4]);
+        assert_eq!(mode_title(Mode::RegexInsensitive), "Regex \u{2014} Case Insensitive");
     }
 
     #[test]

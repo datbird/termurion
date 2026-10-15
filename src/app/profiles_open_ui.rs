@@ -6,9 +6,12 @@ use super::*;
 use crate::settings_ui::{asks_before_opening, CLOSE_AFTER_OPENING, closes_after, open_plan, How, Opener, Step};
 
 
-/// The question that asks before many sessions start (P6): its heading and text.
-pub(super) fn open_many_text(count: usize) -> (String, &'static str) {
-    (format!("Open {count} sessions?"), "Each profile starts a session of its own.")
+/// The question that asks before many sessions start (`iTermController.m:928-946`): no heading,
+/// the count, and a permanent-silence choice under this identifier.
+pub(super) const OPEN_MANY_ID: &str = "AboutToOpenManyProfiles";
+
+pub(super) fn open_many_text(count: usize) -> (&'static str, String) {
+    ("", format!("You are about to open {count} profiles."))
 }
 
 /// `guids` as a crowd may open them: when more than one opens at once (Open All, a multiple
@@ -32,7 +35,7 @@ impl App {
         }
         if asks_before_opening(guids.len()) {
             let (heading, text) = open_many_text(guids.len());
-            let ask = scripts_alerts::ask(&heading, text, &[crate::api_auth::OK, crate::api_auth::CANCEL], None, crate::warnings::Kind::Persistent, scripts_alerts::Then::OpenProfiles(guids, how, from));
+            let ask = scripts_alerts::ask(heading, &text, &[crate::api_auth::OK, crate::api_auth::CANCEL], Some(OPEN_MANY_ID), crate::warnings::Kind::Permanent, scripts_alerts::Then::OpenProfiles(guids, how, from));
             return self.ask_scripts(ask);
         }
         self.open_selected_now(guids, how, from);
@@ -87,13 +90,14 @@ mod tests {
         assert_eq!(crowd_guids(&s, vec![dynamic.clone()]), [dynamic.clone()], "a single pick is the person's choice");
     }
 
-    /// More than eight profiles ask first (P6); closing the question is Cancel, never OK.
+    /// More than ten profiles ask first, as `shouldOpenManyProfiles:` does; closing the question is
+    /// Cancel, never OK.
     #[test]
-    fn opening_many_asks_a_persistent_question() {
-        let (heading, _) = open_many_text(9);
-        assert_eq!(heading, "Open 9 sessions?");
-        let guids: Vec<String> = (0..9).map(|i| i.to_string()).collect();
-        let ask = scripts_alerts::ask(&heading, "t", &[crate::api_auth::OK, crate::api_auth::CANCEL], None, crate::warnings::Kind::Persistent, scripts_alerts::Then::OpenProfiles(guids, How::Tab, Opener::ProfilesWindow));
+    fn opening_many_asks_a_question() {
+        let (heading, text) = open_many_text(11);
+        assert_eq!((heading, text.as_str()), ("", "You are about to open 11 profiles."));
+        let guids: Vec<String> = (0..11).map(|i| i.to_string()).collect();
+        let ask = scripts_alerts::ask(heading, &text, &[crate::api_auth::OK, crate::api_auth::CANCEL], Some(OPEN_MANY_ID), crate::warnings::Kind::Permanent, scripts_alerts::Then::OpenProfiles(guids, How::Tab, Opener::ProfilesWindow));
         assert_eq!(scripts_alerts::on_close(&ask.then, 1), scripts_alerts::Answer::Button(1));
         assert_eq!(ask.spec.cancel, Some(1));
     }

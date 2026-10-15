@@ -230,6 +230,8 @@ pub(super) enum Then {
     /// A paste's question for the pane: the button runs what the paste's bar did (Paste, Paste
     /// Without Newline, Convert tabs to spaces, Advanced..., Cancel); dropped, the paste stops.
     Paste(crate::layout::PaneId),
+    /// Files or an image on the clipboard: how to paste them (`app/nontext_paste_ui`); dropped, the paste stops.
+    NonText(crate::layout::PaneId),
     /// Closing tmux tabs or a window with them: the pane the question is about (its window is
     /// the one closed) and the question's identifier (`CLOSE_TAB`, `tmux_persist::close_win_id`);
     /// Hide, Kill, Detach tmux Session or Cancel.
@@ -485,6 +487,7 @@ impl App {
             // The finished download keeps both files.
             Then::SshKeepOrReplace { .. } => self.scripts_answered(then, 0),
             Then::Paste(pane) => self.paste_answered(pane, None),
+            Then::NonText(pane) => self.nontext_answered(pane, None),
             // The question could not open: a restored workgroup is not rebuilt unasked.
             Then::RestoreWorkgroup { token, workgroup, approved } => self.restore_answered(token, *workgroup, approved, false),
             Then::DynamicProfilesError(_) => self.dynamic_errors_pending = 0,
@@ -580,6 +583,10 @@ impl App {
                 if matches!(ask.then, Then::BrowserExtension { .. }) {
                     w.require_read(0);
                 }
+                // The tabs question holds the tab size field.
+                if matches!(ask.then, Then::Paste(_)) && ask.spec.labels.iter().any(|l| l == "Convert tabs to spaces") {
+                    w.with_tab_size(self.globals.int("PasteTabToStringTabStopSize") as i32);
+                }
                 self.scripts_alert = Some((w, ask));
             }
             Err(e) => {
@@ -620,7 +627,15 @@ impl App {
             // An `actions` window answers only with an action.
             ConfirmResult::Ok { .. } | ConfirmResult::Cancel => return true,
         };
+        let tab_size = self.scripts_alert.as_ref().and_then(|(w, _)| w.tab_size());
         let Some((_, mut ask)) = self.scripts_alert.take() else { return true };
+        // The tabs question's tab size is kept when Convert tabs to spaces is chosen (`saveToUserDefaults`).
+        if let (Some(n), Then::Paste(_)) = (tab_size, &ask.then) {
+            if ask.spec.labels.get(index).is_some_and(|l| l == "Convert tabs to spaces") {
+                self.globals.set("PasteTabToStringTabStopSize", toml::Value::Integer(n as i64));
+                self.save_globals();
+            }
+        }
         // "Permanently Forget Saved Selection": the saved answer goes and the same alert shows
         // again, next, without the remembered mode (`iTermWarning.m:526-541`).
         if self.warning_window_answered(&ask.spec, ask.remembered.is_some(), index, suppress) {
@@ -670,6 +685,7 @@ impl App {
             Then::LogStyle { pane, path, append } => self.log_style_answered(pane, path, append, index),
             Then::TurnOnOsc7 { was_silenced } => self.osc7_answered(was_silenced, index),
             Then::Paste(pane) => self.paste_answered(pane, Some(index)),
+            Then::NonText(pane) => self.nontext_answered(pane, Some(index)),
             Then::PrintGuard { pane, job } => self.print_guard_answered(pane, job, index),
             Then::TmuxClose(anchor, id) => self.tmux_close_answered(anchor, &id, index),
             Then::BroadcastInput(anchor, selector) => {

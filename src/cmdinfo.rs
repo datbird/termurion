@@ -25,6 +25,8 @@ pub const TIP_COPY_DIRECTORY: &str = "Copy directory";
 pub const TIP_COPY_OUTPUT: &str = "Copy command\u{2019}s output";
 pub const TIP_SELECT_OUTPUT: &str = "Select command\u{2019}s output";
 pub const TIP_COMPOSER: &str = "Open command in Composer";
+/// The button on a Command Info opened from the offscreen command line (`CommandInfoViewController.xib:404`).
+pub const DISABLE_OFFSCREEN: &str = "Disable showing offscreen command";
 pub const ADD_SNIPPET: &str = "Add Command as Snippet";
 pub const COPY_URL: &str = "Copy Command URL to Clipboard";
 pub const SNIPPET_ADDED: &str = "Snippet Added";

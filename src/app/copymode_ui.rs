@@ -61,8 +61,26 @@ impl App {
         }
     }
 
+    /// The first time Copy Mode is ever used, a notification says what it is; a click opens the
+    /// manual (`setEnabledWithoutCleverness:`, `educateAboutCopyMode`, `iTermCopyModeHandler.m:187-194`).
+    fn educate_about_copy_mode(&mut self) {
+        if self.globals.raw(crate::copymode::USED_KEY).is_none() {
+            match crate::notify::show_with(crate::copymode::NOTIFICATION_TITLE, crate::copymode::NOTIFICATION_DETAIL, self.globals.bool("SilentUserNotifications")) {
+                Ok(()) => {
+                    self.last_notified_link = Some((crate::notify::shown_count(), crate::links::HELP_COPY_MODE.to_string()));
+                    self.last_notified = None;
+                    self.last_notified_script = None;
+                }
+                Err(e) => self.banners.set("notify", format!("Could not show a notification: {e}")),
+            }
+        }
+        self.globals.set(crate::copymode::USED_KEY, toml::Value::Boolean(true));
+        self.save_globals();
+    }
+
     /// Copy Mode starts at the selection's end, else at the terminal cursor.
     fn enter_copy_mode(&mut self, id: PaneId) {
+        self.educate_about_copy_mode();
         let Some(p) = self.panes.get(&id) else { return };
         let term = p.screen.term();
         let at = match term.selection.as_ref().and_then(|s| s.to_range(term)) {
@@ -89,6 +107,7 @@ impl App {
             let (Some(backward), Some((a, b)), true) = (backward, selection, self.globals.bool("EnterCopyModeAutomatically")) else {
                 return false;
             };
+            self.educate_about_copy_mode();
             let mut state = State::new(if backward { a } else { b });
             state.anchor = Some(if backward { b } else { a });
             self.copy_modes.insert(id, state);

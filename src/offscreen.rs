@@ -13,6 +13,8 @@ pub const PADDING: f32 = 8.0;
 /// history).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PromptFacts {
+    /// The prompt mark's id, for the Command Info a click on the band opens.
+    pub mark: u32,
     pub prompt_line: i32,
     pub command_line: Option<i32>,
     pub command_end_line: Option<i32>,
@@ -143,7 +145,7 @@ mod tests {
     use crate::palette::rgb;
 
     fn prompt() -> PromptFacts {
-        PromptFacts { prompt_line: -60, command_line: Some(-60), command_end_line: Some(-60), has_code: true, running: false, ended: true, output_rows: 30, command_empty: false }
+        PromptFacts { mark: 1, prompt_line: -60, command_line: Some(-60), command_end_line: Some(-60), has_code: true, running: false, ended: true, output_rows: 30, command_empty: false }
     }
 
     /// S12: the alternate screen (13o: its own history) shows no main-screen prompt, so the
@@ -238,7 +240,7 @@ mod tests {
         assert_eq!(command_line(&two((false, true))), Some(-60));
         // An older prompt is not covered by the rule.
         let mut three = two((false, false));
-        three.prompts.insert(0, PromptFacts { prompt_line: -90, command_line: Some(-90), command_end_line: Some(-41), ..prompt() });
+        three.prompts.insert(0, PromptFacts { mark: 2, prompt_line: -90, command_line: Some(-90), command_end_line: Some(-41), ..prompt() });
         three.prompts[1].prompt_line = -70;
         three.prompts[1].command_line = Some(-70);
         three.top_line = -80;

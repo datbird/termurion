@@ -94,6 +94,10 @@ mod screenshot_ui;
 mod semantic_ui;
 mod url_handler_ui;
 mod cmdinfo_app;
+mod panels_app;
+mod announce_ui;
+mod nontext_paste_ui;
+mod disclosure_ui;
 mod cmdbuttons_ui;
 mod session_end_ui;
 mod log_ui;
@@ -554,6 +558,24 @@ pub struct App {
     color_pick: Option<(menu::ColorTarget, Vec<crate::palette::Rgb>)>,
     /// What the right-click menu's own items act on.
     ctx_pending: Option<semantic_ui::CtxPending>,
+    /// The xib-style windows (`panel_ui`): Crash Reporter, What's New, the installers.
+    panels: Vec<crate::panel_ui::Panel>,
+    /// The session an Install Shell Integration pick asked a window for (opened on the next pass).
+    shell_wizard_due: Option<PaneId>,
+    /// Where the shell installer's last typed text began and how far its answer has been read, by session.
+    wizard_watch: HashMap<PaneId, (i64, i64)>,
+    /// The Crash Reporter looked for a new dump this run.
+    crash_checked: bool,
+    /// The dump the open Crash Reporter is about (Discard deletes it).
+    crash_dump: Option<PathBuf>,
+    /// The import's extraction worker, while the Importing window shows.
+    import_stage: Option<std::sync::mpsc::Receiver<settings_export_ui::StageMsg>>,
+    /// Hover text for the toolbelt's buttons drawn this frame (rectangle, text).
+    belt_tips: Vec<(Rect, String)>,
+    /// The statistics the slow-triggers offer of each pane shows on View Stats.
+    slow_stats: HashMap<PaneId, String>,
+    /// A refused resize waiting for the person's answer, by session.
+    resize_pending: HashMap<PaneId, (f64, f64, f64, f64)>,
     /// The Find Globally window.
     global_find: Option<crate::global_find_ui::GlobalFindWindow>,
     /// Find Globally's terminal hits for the current query, and the browser panes' hits that have
@@ -1076,6 +1098,8 @@ pub struct App {
     /// Literal writes waiting for a pane's pastes to drain (13y1 Task 7: the auto-send's Return).
     paste_after: Vec<paste_ui::LiteralAfter>,
     paste_asks: HashMap<PaneId, paste_ui::Asking>,
+    /// The open question of a file or image paste, by session.
+    nontext: HashMap<PaneId, nontext_paste_ui::NonText>,
     /// Paste history (read on first use), its popup, Advanced Paste (the pane it pastes
     /// into; whether it came from the menu), and an "Advanced..." waiting for the loop.
     paste_history: Option<crate::paste_history::History>,
@@ -1397,6 +1421,8 @@ pub struct App {
     /// requests waiting for an environment already being asked about or built.
     provisioner: Option<crate::script_provision::Provisioner>,
     provision_after: HashMap<u64, script_runtime_ui::After>,
+    /// The jobs that show a window while they run (the runtime installer, the environment build).
+    provision_long: HashMap<u64, panels_app::Long>,
     provision_needs: HashMap<u64, u64>,
     provision_targets: HashMap<u64, crate::script_provision::Target>,
     provision_waiting: Vec<script_runtime_ui::Waiting>,
@@ -1696,6 +1722,8 @@ pub struct App {
     last_notified_script: Option<String>,
     /// The last notification was "Debug logging turned on": a click on it turns logging off.
     last_notified_debug: Option<u64>,
+    /// A notification whose click opens a page: what `shown_count` was when it showed, and the address.
+    last_notified_link: Option<(u64, String)>,
     /// The pane the debug log last named as focused (app-wide: a window switch changes it too).
     focus_logged: Option<PaneId>,
     /// The automatic-start notification shows once per launch (`AD:1309-1324`).
@@ -2365,6 +2393,15 @@ pub fn run() {
         dropped: Vec::new(),
         dnd_dropped: Vec::new(),
         coprocess_errors: HashMap::new(),
+        panels: Vec::new(),
+        resize_pending: HashMap::new(),
+        slow_stats: HashMap::new(),
+        belt_tips: Vec::new(),
+        import_stage: None,
+        crash_checked: false,
+        shell_wizard_due: None,
+        wizard_watch: HashMap::new(),
+        crash_dump: None,
         global_find: None,
         global_hits: Vec::new(),
         global_web: Vec::new(),
@@ -2472,6 +2509,7 @@ pub fn run() {
         pastes: HashMap::new(),
         paste_after: Vec::new(),
         paste_asks: HashMap::new(),
+        nontext: HashMap::new(),
         paste_history: None,
         snippets: snippets_ui::load_snippets(),
         clips: HashMap::new(),
@@ -2641,6 +2679,7 @@ pub fn run() {
         script_alert: None,
         provisioner: None,
         provision_after: HashMap::new(),
+        provision_long: HashMap::new(),
         provision_needs: HashMap::new(),
         provision_targets: HashMap::new(),
         provision_waiting: Vec::new(),
@@ -2799,6 +2838,7 @@ pub fn run() {
         script_console_reveal: None,
         last_notified_script: None,
         last_notified_debug: None,
+        last_notified_link: None,
         focus_logged: None,
         debug_notice_shown: false,
         unread_counts: HashMap::new(),
@@ -5437,14 +5477,24 @@ impl App {
             return;
         }
         self.remember_paste(&text);
+        let copied = text.clone();
         if let Some(cb) = &mut self.clipboard {
             if let Err(e) = cb.set_text(text) {
                 self.banners.set("clipboard", format!("Copy failed: {e}"));
+                return;
             }
         }
+        // A hard-to-read JSON copy is offered to be pretty-printed (once ever).
+        self.json_promotion(id, &copied);
     }
 
     fn paste(&mut self) {
+        // No text on the clipboard: files or an image get their question (`attemptNonTextPaste`).
+        if let Some(id) = self.focused_id() {
+            if self.clipboard.as_mut().is_some_and(|cb| cb.get_text().is_err()) && self.nontext_paste(id) {
+                return;
+            }
+        }
         let Some(text) = self.clipboard_text() else { return self.redraw() };
         if let Some(id) = self.focused_id() {
             self.user_paste(id, &text, crate::broadcast::Write::Paste);
@@ -5984,6 +6034,9 @@ impl App {
         // The offscreen command line scrolls to its command (`PTYTextView.m:7885-7896`): after
         // every Termurion surface that can sit over its strip, a single click that did not activate
         // the window (`clickCount == 1`); the band covers the pane's scrollbar, so it comes first.
+        if button == MouseButton::Right && self.offscreen_info_click(x, y, event_loop) {
+            return;
+        }
         if button == MouseButton::Left && offscreen_ui::click_allowed(first, self.next_os_clicks(0)) && self.offscreen_click(x, y) {
             self.os_clicks(0);
             return;
@@ -6840,6 +6893,20 @@ impl App {
             let (x, y) = self.cursor;
             tip_rect = Some(scene::tab_tooltip(&mut frame, &text, (x, y + TIP_POINTER_PT * self.scale()), Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell));
         }
+        // A locked pane's lock mark (`SessionTitleView` lockButton_ toolTip).
+        if tip_rect.is_none() {
+            let (x, y) = self.cursor;
+            if self.title_bars.iter().any(|(_, g)| g.lock.is_some_and(|r| r.contains(x, y))) {
+                tip_rect = Some(scene::tab_tooltip(&mut frame, crate::pane_title::LOCK_TIP, (x, y + TIP_POINTER_PT * self.scale()), Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell));
+            }
+        }
+        // A toolbelt button's hover text (Session Status' Snooze and Notify).
+        if tip_rect.is_none() {
+            let (x, y) = self.cursor;
+            if let Some((_, text)) = self.belt_tips.iter().find(|(r, _)| r.contains(x, y)) {
+                tip_rect = Some(scene::tab_tooltip(&mut frame, text, (x, y + TIP_POINTER_PT * self.scale()), Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell));
+            }
+        }
         // A pinned hotkey window's pin shows its hover text (the tab tip wins while it shows).
         if tip_rect.is_none() {
             let (x, y) = self.cursor;
@@ -7296,6 +7363,7 @@ impl ApplicationHandler<UserEvent> for App {
         // Nothing queued: the restoration ended with the first window.
         if self.restoring_windows && self.pending_windows.is_empty() {
             self.restoring_windows = false;
+            self.restore_count_reset();
             self.browser_restoration_done();
         }
     }
@@ -7345,6 +7413,7 @@ impl ApplicationHandler<UserEvent> for App {
         // After the last saved window: the restored pages load.
         if self.restoring_windows {
             self.restoring_windows = false;
+            self.restore_count_reset();
             self.browser_restoration_done();
         }
         self.api_tmux_tabs_opened();
@@ -7449,6 +7518,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.scripts_scan_tick();
         self.update_tick(event_loop);
         self.tips_tick(event_loop);
+        self.crash_check_tick(event_loop);
+        let panels_due = self.panels_tick(event_loop);
         let dynamic_due = self.dynamic_profiles_tick();
         self.access_tick();
         // What WebView2 views posted (before the wake times below are worked out).
@@ -7538,7 +7609,7 @@ impl ApplicationHandler<UserEvent> for App {
         let command_due = self.command_click_tick();
         // Update and Tip of the Day deadlines wake no resident Termurion (the 13v1 merge).
         let (update_wake, tip_of_day_wake) = (update_app::idle_due(self.update_due, self.resident), update_app::idle_due(self.tip_due, self.resident));
-        let wake = [tray_due, workgroup_due, jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let wake = [tray_due, workgroup_due, jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, panels_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -7661,7 +7732,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.param_prompt_event(id, &event) || self.mark_confirm_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.review_window_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.bookmark_editor_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.autofill_card_event(id, &event) || self.basic_auth_window_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.browser_tip_event(id, &event) || self.web_popover_event(id, &event) || self.web_replay_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) {
+        if self.prompt_event(id, &event) || self.param_prompt_event(id, &event) || self.mark_confirm_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.review_window_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.bookmark_editor_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.autofill_card_event(id, &event) || self.basic_auth_window_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.browser_tip_event(id, &event) || self.web_popover_event(id, &event) || self.web_replay_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) || self.panels_event(event_loop, id, &event) {
             return;
         }
         let window_exists = self.current_window().is_some() && !self.resident;

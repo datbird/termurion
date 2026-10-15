@@ -114,6 +114,16 @@ impl Histogram {
         self.count += 1;
     }
 
+    /// The values kept (a reservoir of at most 100), for a chart.
+    pub fn samples(&self) -> &[f64] {
+        &self.samples
+    }
+
+    /// The mean of every value added.
+    pub fn mean(&self) -> f64 {
+        if self.count == 0 { 0.0 } else { self.sum / self.count as f64 }
+    }
+
     #[cfg(test)]
     fn stored(&self) -> usize {
         self.samples.len()

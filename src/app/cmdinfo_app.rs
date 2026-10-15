@@ -19,6 +19,12 @@ impl App {
     /// Win-click on a prompt's command: the Command Info window at the click (`at`, window
     /// pixels). A mark that is gone shows nothing.
     pub(super) fn show_command_info(&mut self, pane: PaneId, mark: u32, at: (f32, f32), event_loop: &ActiveEventLoop) {
+        self.show_command_info_from(pane, mark, at, false, event_loop);
+    }
+
+    /// The same, opened from the offscreen command line when `from_offscreen` (it then has the
+    /// button that disables the line, `CIV:129-131`).
+    pub(super) fn show_command_info_from(&mut self, pane: PaneId, mark: u32, at: (f32, f32), from_offscreen: bool, event_loop: &ActiveEventLoop) {
         self.cmdinfo = None;
         let Some((info, started)) = self.command_info(pane, mark) else { return };
         let dark = self.dark();
@@ -26,7 +32,7 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         let origin = g.window.inner_position().unwrap_or_default();
         let at = (f64::from(origin.x) + f64::from(at.0), f64::from(origin.y) + f64::from(at.1));
-        match CmdInfoWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, pane, info, started, at, work, dark) {
+        match CmdInfoWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, pane, info, started, from_offscreen, at, work, dark) {
             Ok(w) => self.cmdinfo = Some(w),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
@@ -130,6 +136,10 @@ impl App {
                 if let Some(r) = self.panes.get(&pane).and_then(|p| p.screen.output_range_of(info.mark)) {
                     self.select(pane, r);
                 }
+            }
+            Act::DisableOffscreen => {
+                self.cmdinfo = None;
+                self.disable_offscreen_command_line(pane);
             }
             Act::AddSnippet => {
                 self.cmdinfo_add_snippet(&info.command);

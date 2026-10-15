@@ -279,9 +279,19 @@ impl App {
             crate::chrome::resize_permission(p.bool("Disable Window Resizing"), p.bool("Disable Window Resizing by Unfocused Sessions"), focused)
         });
         let Some(g) = &self.gpu else { return };
-        if permission != ResizePermission::Allowed || g.window.fullscreen().is_some() {
+        if g.window.fullscreen().is_some() {
             return;
         }
+        // A refusal is announced on the session, with Allow Once (`askToEnableTerminalInitiatedResizing:`).
+        if permission != ResizePermission::Allowed {
+            return self.ask_to_resize(pane, permission, (x, y, w, h));
+        }
+        self.apply_window_frame(x, y, w, h);
+    }
+
+    /// Moves and sizes the window to a frame in points, as the program asked (`reallySetPointSize:`).
+    pub(super) fn apply_window_frame(&mut self, x: f64, y: f64, w: f64, h: f64) {
+        let Some(g) = &self.gpu else { return };
         let (x, y, w, h) = osc1337::from_points(x, y, w, h, primary_height(), g.window.scale_factor());
         // The frame includes the title bar and borders; the inner size leaves them out.
         let (outer, inner) = (g.window.outer_size(), g.window.inner_size());

@@ -584,13 +584,23 @@ impl App {
                 // Snooze needs a row; it and the bell light when on (`TS:595-625,1239-1255`).
                 Shown::Status(_) => {
                     let selected = self.status_selected();
+                    let snoozed = selected.is_some_and(|p| self.belt.snoozed.contains_key(&p));
                     match selected {
-                        Some(p) if self.belt.snoozed.contains_key(&p) => lit.push(ToolButton::Snooze),
+                        Some(_) if snoozed => lit.push(ToolButton::Snooze),
                         Some(_) => {}
                         None => disabled.push(ToolButton::Snooze),
                     }
-                    if self.status_bell_lit() {
+                    let armed = self.status_bell_lit();
+                    if armed {
                         lit.push(ToolButton::Bell);
+                    }
+                    // Their hover text (`updateSnoozeButtonAppearance`, `updateNotifyButtonAppearance`).
+                    for (b, r) in &l.buttons {
+                        match b {
+                            ToolButton::Snooze => self.belt_tips.push((*r, crate::status_tool::snooze_tip(selected.is_some(), snoozed).to_string())),
+                            ToolButton::Bell => self.belt_tips.push((*r, crate::status_tool::notify_tip(selected.is_some(), armed).to_string())),
+                            _ => {}
+                        }
                     }
                 }
                 _ => {}

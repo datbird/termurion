@@ -554,7 +554,7 @@ impl App {
         std::thread::spawn(move || {
             // Finding an installed Python runs it, so this is off the UI thread as well.
             let minors = super::script_runtime_ui::find_backend().map_or_else(Vec::new, |backend| {
-                let mut runner = RealRunner { lines: std::sync::mpsc::channel().0, timeout: crate::script_provision::PROBE_TIMEOUT };
+                let mut runner = RealRunner { lines: std::sync::mpsc::channel().0, timeout: crate::script_provision::PROBE_TIMEOUT, cancel: None };
                 match crate::script_provision::run_job(&Job::Minors { backend }, &super::script_runtime_ui::uv_dir(), &mut runner) {
                     Ok(Outcome::Minors(v)) => v,
                     _ => Vec::new(),

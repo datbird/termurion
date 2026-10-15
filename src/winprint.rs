@@ -16,6 +16,64 @@ use windows_sys::Win32::UI::Controls::Dialogs::{
 
 use crate::styled_copy::Row;
 
+/// The print dialog's extra page: iTerm2's print accessory (`iTermPrintAccessoryViewController.xib`),
+/// one checkbox, "Black and white". The page's checkbox writes here as it is clicked; `print` sets
+/// it before the dialog opens and reads it after.
+static BLACK_AND_WHITE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// The checkbox's text (`iTermPrintAccessoryViewController.xib:23`) and the page's tab title.
+pub const BLACK_AND_WHITE_LABEL: &str = "Black and white";
+pub const PAGE_TITLE: &str = "Options";
+const ID_BLACK_AND_WHITE: i32 = 1001;
+
+/// The dialog template of the page in memory: a child dialog holding one automatic checkbox.
+/// (`DLGTEMPLATE` then one `DLGITEMTEMPLATE`, words in little endian; the item starts on a
+/// four-byte boundary.)
+pub fn page_template() -> Vec<u16> {
+    const WS_CHILD: u32 = 0x4000_0000;
+    const WS_VISIBLE: u32 = 0x1000_0000;
+    const WS_TABSTOP: u32 = 0x0001_0000;
+    const DS_3DLOOK: u32 = 0x0004;
+    const DS_CONTROL: u32 = 0x0400;
+    const BS_AUTOCHECKBOX: u32 = 0x0003;
+    let mut w: Vec<u16> = Vec::new();
+    let push32 = |w: &mut Vec<u16>, v: u32| {
+        w.push((v & 0xffff) as u16);
+        w.push((v >> 16) as u16);
+    };
+    // DLGTEMPLATE: style, extended style, item count, x, y, cx, cy, menu, class, title.
+    push32(&mut w, WS_CHILD | WS_VISIBLE | DS_CONTROL | DS_3DLOOK);
+    push32(&mut w, 0);
+    w.extend([1, 8, 8, 200, 40]);
+    w.extend([0, 0, 0]);
+    // DLGITEMTEMPLATE: style, extended style, x, y, cx, cy, id, class (button), text, no data.
+    push32(&mut w, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX);
+    push32(&mut w, 0);
+    w.extend([8, 8, 150, 12, ID_BLACK_AND_WHITE as u16]);
+    w.extend([0xffff, 0x0080]);
+    w.extend(BLACK_AND_WHITE_LABEL.encode_utf16());
+    w.push(0);
+    w.push(0);
+    w
+}
+
+unsafe extern "system" fn page_proc(hwnd: HWND, msg: u32, wparam: usize, _lparam: isize) -> isize {
+    use std::sync::atomic::Ordering::SeqCst;
+    use windows_sys::Win32::UI::Controls::{BST_CHECKED, BST_UNCHECKED, CheckDlgButton, IsDlgButtonChecked};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{BN_CLICKED, WM_COMMAND, WM_INITDIALOG};
+    match msg {
+        WM_INITDIALOG => {
+            let state = if BLACK_AND_WHITE.load(SeqCst) { BST_CHECKED } else { BST_UNCHECKED };
+            unsafe { CheckDlgButton(hwnd, ID_BLACK_AND_WHITE, state) };
+            1
+        }
+        WM_COMMAND if (wparam & 0xffff) as i32 == ID_BLACK_AND_WHITE && (wparam >> 16) as u32 == BN_CLICKED => {
+            BLACK_AND_WHITE.store(unsafe { IsDlgButtonChecked(hwnd, ID_BLACK_AND_WHITE) } == BST_CHECKED, SeqCst);
+            0
+        }
+        _ => 0,
+    }
+}
+
 /// The printer, paper, and margins chosen in Page Setup, kept while Termurion runs (as
 /// iTerm2's shared print info is).
 pub struct Setup {
@@ -57,8 +115,28 @@ fn colorref(c: alacritty_terminal::vte::ansi::Rgb) -> u32 {
 }
 
 /// The print dialog, then the pages. Ok(false) when the user cancelled.
-pub fn print(owner: HWND, setup: &mut Setup, title: &str, rows: &[Row], cols: usize, family: &str, size_pt: f32) -> Result<bool, String> {
+/// `black_and_white` is the box's state going in and coming out; when it is checked after the
+/// dialog the colors are dropped from `rows` (`print::black_and_white`).
+pub fn print(owner: HWND, setup: &mut Setup, title: &str, rows: &mut [Row], black_and_white: &mut bool, cols: usize, family: &str, size_pt: f32) -> Result<bool, String> {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::Controls::{CreatePropertySheetPageW, PROPSHEETPAGEW, PSP_DLGINDIRECT, PSP_USETITLE};
+    BLACK_AND_WHITE.store(*black_and_white, std::sync::atomic::Ordering::SeqCst);
+    // The page, when Windows makes it; without it the dialog is the plain one and the stored choice stands.
+    let mut template = page_template();
+    let title_w = wide(PAGE_TITLE);
+    let mut page: PROPSHEETPAGEW = unsafe { std::mem::zeroed() };
+    page.dwSize = std::mem::size_of::<PROPSHEETPAGEW>() as u32;
+    page.dwFlags = PSP_DLGINDIRECT | PSP_USETITLE;
+    page.hInstance = unsafe { GetModuleHandleW(std::ptr::null()) };
+    page.Anonymous1.pResource = template.as_mut_ptr().cast();
+    page.pszTitle = title_w.as_ptr();
+    page.pfnDlgProc = Some(page_proc);
+    let mut handles = [unsafe { CreatePropertySheetPageW(&mut page) }];
     let mut p: PRINTDLGEXW = unsafe { std::mem::zeroed() };
+    if !handles[0].is_null() {
+        p.nPropertyPages = 1;
+        p.lphPropertyPages = handles.as_mut_ptr();
+    }
     p.lStructSize = std::mem::size_of::<PRINTDLGEXW>() as u32;
     p.hwndOwner = owner;
     p.hDevMode = setup.dev_mode;
@@ -80,6 +158,12 @@ pub fn print(owner: HWND, setup: &mut Setup, title: &str, rows: &[Row], cols: us
     }
     if dc.is_null() {
         return Err("the printer gave no drawing surface".into());
+    }
+    if !handles[0].is_null() {
+        *black_and_white = BLACK_AND_WHITE.load(std::sync::atomic::Ordering::SeqCst);
+    }
+    if *black_and_white {
+        crate::print::black_and_white(rows);
     }
     let result = draw_pages(dc, setup, title, rows, cols, family, size_pt);
     unsafe { DeleteDC(dc) };
@@ -194,4 +278,26 @@ fn draw_pages(dc: HDC, setup: &Setup, title: &str, rows: &[Row], cols: usize, fa
     }
     unsafe { EndDoc(dc) };
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The print dialog's extra page holds one checkbox named as iTerm2's accessory names it, and
+    /// the template is laid out as a dialog template must be (the item on a four-byte boundary).
+    #[test]
+    fn the_print_page_holds_the_black_and_white_box() {
+        assert_eq!(BLACK_AND_WHITE_LABEL, "Black and white");
+        let t = page_template();
+        // One item; the header is 12 words, so the item starts at byte 24.
+        assert_eq!(t[4], 1, "one control");
+        let item = 12;
+        let style = u32::from(t[item]) | u32::from(t[item + 1]) << 16;
+        assert_eq!(style & 0xf, 3, "an automatic checkbox");
+        assert_eq!(&t[item + 9..item + 11], &[0xffff, 0x0080], "the button class");
+        let text: Vec<u16> = BLACK_AND_WHITE_LABEL.encode_utf16().collect();
+        assert_eq!(&t[item + 11..item + 11 + text.len()], &text[..]);
+        assert_eq!((item * 2) % 4, 0);
+    }
 }

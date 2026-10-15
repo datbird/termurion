@@ -66,6 +66,14 @@ pub mod status_tool;
 pub mod seltools;
 pub mod dll;
 pub mod crashdump;
+pub mod crash_report;
+pub mod panel_ui;
+pub mod panel_views;
+pub mod whats_new;
+pub mod shell_wizard;
+pub mod announce;
+pub mod nontext_paste;
+pub mod shell_utilities;
 pub mod webhost;
 #[cfg(windows)]
 pub mod webhost_win;

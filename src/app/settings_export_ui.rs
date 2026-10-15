@@ -232,7 +232,10 @@ fn alias_entry(dir: &Path) -> Option<PathBuf> {
 /// second parser and no reopen by path, final findings r2) into a fresh
 /// `<temp>\.termurion-import-<uuid>`, refused when it holds a link after all (`staged_links`), then
 /// the marker in `appdata` naming it. On a failure nothing is left behind.
-fn stage_import(file: &Path, temp: &Path, appdata: &Path) -> Result<(), String> {
+/// `stage_import`, saying what it is doing to `status` (the Importing window's line,
+/// `ImportExport.swift:Importer.setStatus`).
+fn stage_import_with(file: &Path, temp: &Path, appdata: &Path, status: &mut dyn FnMut(&str)) -> Result<(), String> {
+    status(se::STATUS_EXTRACTING);
     // The archive came from outside: judged before it is read (as a script zip is), read once.
     let archive = crate::extract::read_whole(file, crate::extract::MAX_ARCHIVE)?;
     let staging = se::staging_dir(temp, &uuid::Uuid::new_v4().to_string());
@@ -244,6 +247,12 @@ fn stage_import(file: &Path, temp: &Path, appdata: &Path) -> Result<(), String> 
         let _ = std::fs::remove_dir_all(&staging);
     }
     staged
+}
+
+/// What the import's extraction worker sends.
+pub(super) enum StageMsg {
+    Status(String),
+    Done(Result<(), String>),
 }
 
 /// The staged User Defaults entity applied to the files on disk, as a custom folder's settings
@@ -411,7 +420,39 @@ impl App {
     /// start, then Termurion quits (no quit confirmation; sessions are kept as after any quit) and
     /// starts again. A failure says "Problem Importing" with the reason.
     pub(super) fn import_confirmed(&mut self, file: PathBuf) {
-        match stage_import(&file, &std::env::temp_dir(), &appdata_termurion()) {
+        if self.import_stage.is_some() {
+            return;
+        }
+        // The extraction runs on a worker, so the Importing window can draw while it does.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let wake = self.notify.clone();
+        std::thread::spawn(move || {
+            let say = |line: &str| {
+                let _ = tx.send(StageMsg::Status(line.to_string()));
+                wake();
+            };
+            let result = stage_import_with(&file, &std::env::temp_dir(), &appdata_termurion(), &mut |l| say(l));
+            let _ = tx.send(StageMsg::Done(result));
+            wake();
+        });
+        self.import_stage = Some(rx);
+    }
+
+    /// What the extraction worker said: lines for the Importing window, then the result.
+    pub(super) fn import_stage_tick(&mut self) {
+        let Some(rx) = self.import_stage.as_ref() else { return };
+        let msgs: Vec<StageMsg> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let mut done = None;
+        for msg in msgs {
+            match msg {
+                StageMsg::Status(line) => self.panel_status(crate::panel_ui::Kind::Importing, &line),
+                StageMsg::Done(r) => done = Some(r),
+            }
+        }
+        let Some(result) = done else { return };
+        self.import_stage = None;
+        self.close_panel(crate::panel_ui::Kind::Importing, None);
+        match result {
             Ok(()) => self.relaunch_due = true,
             Err(e) => self.alert_ok(se::PROBLEM_IMPORTING, e, Then::Nothing),
         }
@@ -523,6 +564,10 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stage_import(file: &Path, temp: &Path, appdata: &Path) -> Result<(), String> {
+        stage_import_with(file, temp, appdata, &mut |_| {})
+    }
 
     fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("termurion-export-test-{name}-{}", crate::api_auth::fresh_key()));

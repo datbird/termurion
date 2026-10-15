@@ -10,6 +10,25 @@ use crate::triggers::{self, Trigger};
 /// `UserNotificationTriggerRateLimit` says (B5/P18: a default of 0 is no flood guard).
 const NOTIFY_FLOOR: Duration = Duration::from_millis(250);
 const ALERT_BAR: &str = "trigger-alert";
+/// The slow-triggers offer (`NaggingController.m:689-738`): its id, the stored "Stop Asking", its
+/// buttons (a leading underscore marks the shortcut key) and text.
+const SLOW_BAR: &str = "kTurnOffSlowTriggersOfferUserDefaultsKey";
+const SLOW_KEY: &str = "kTurnOffSlowTriggersOfferUserDefaultsKey";
+const SLOW_TEXT: &str = "This session\u{2019}s triggers are pretty slow. Disable them in interactive apps?";
+const SLOW_BUTTONS: [&str; 4] = ["_Yes", "Stop Asking", "View Stats", "Help"];
+/// The notifications after Yes (`PTYSession.m:24059-24071`).
+pub(super) const SESSION_UPDATED: &str = "Session Updated";
+pub(super) const PROFILE_UPDATED: &str = "Profile Updated";
+pub(super) const TRIGGERS_OFF_SESSION: &str = "Triggers disabled in interactive apps. You can change this in Edit Session > Advanced.";
+pub(super) const TRIGGERS_OFF_PROFILE: &str = "Triggers disabled in interactive apps. You can change this in Settings > Profiles > Advanced.";
+/// The parameter error (`Trigger.m:477-488`): its heading, the stored silence id and the text.
+pub(super) const PARAMETER_HEADING: &str = "Error in Trigger Parameter";
+pub(super) const PARAMETER_ID: &str = "NoSyncErrorInTriggerParameter";
+
+/// `Trigger.ParameterEvaluationFailed`.
+pub(super) fn parameter_text(title: &str, expression: &str, error: &str) -> String {
+    format!("The following parameter for a \u{201c}{title}\u{201d} trigger could not be evaluated:\n\n{expression}\n\nThe error was:\n\n{error}")
+}
 
 /// `AlertTriggerRateLimit` and `UserNotificationTriggerRateLimit` (iTerm2: 1 s and 0 s), read
 /// each time a trigger fires so a change applies at once.
@@ -155,13 +174,85 @@ impl App {
             // Held until the pass is over; Enter asks the person before any command runs.
             TriggerRequest::EnterWorkgroup { param } => self.queue_workgroup_trigger(pane, super::workgroup_app::TriggerWork::Enter(param)),
             TriggerRequest::ExitWorkgroup { leader_only } => self.queue_workgroup_trigger(pane, super::workgroup_app::TriggerWork::Exit(leader_only)),
-            TriggerRequest::ParameterError { trigger, text } => self.tell_once(pane, &format!("parameter-{trigger}"), &format!("Error in Trigger Parameter: {text}")),
+            TriggerRequest::ParameterError { trigger, text } => {
+                // Said once for each trigger; a temporarily silenceable warning, as iTerm2's.
+                if self.trigger_told.insert((pane, format!("parameter-{trigger}"))) {
+                    let (title, expression) = self.panes.get(&pane).and_then(|p| p.screen.trigger_title_and_parameter(trigger)).unwrap_or(("", String::new()));
+                    let text = parameter_text(title, &expression, &text);
+                    self.ask_scripts(super::scripts_alerts::ask(PARAMETER_HEADING, &text, &[crate::api_auth::OK], Some(PARAMETER_ID), crate::warnings::Kind::Temporary, super::scripts_alerts::Then::Nothing));
+                }
+            }
+            TriggerRequest::SlowOffer { stats } => {
+                if self.globals.optional_bool(SLOW_KEY) != Some(false) {
+                    self.slow_stats.insert(pane, stats);
+                    self.ask(pane, SLOW_BAR, SLOW_TEXT, &SLOW_BUTTONS, true);
+                }
+            }
             TriggerRequest::TooSlow => self.tell_once(pane, "too-slow", "Triggers are taking too long and were skipped for some output."),
             TriggerRequest::PatternTooSlow { trigger } => self.tell_once(pane, &format!("pattern-slow-{trigger}"), &format!("The pattern of trigger {} took too long to match, so the trigger was turned off for this session.", trigger + 1)),
             TriggerRequest::Unavailable { title, milestone, .. } => {
                 let text = if milestone == 0 { format!("The trigger action \u{201c}{title}\u{201d} is not available in Termurion yet.") } else { format!("The trigger action \u{201c}{title}\u{201d} comes in milestone {milestone}.") };
                 self.tell_once(pane, &title, &text);
             }
+        }
+    }
+
+    /// The slow-triggers offer's answer (`offerToDisableTriggersInInteractiveAppsWithStats:`): Yes
+    /// turns the profile's (or a private copy's) interactive triggers off and says so; Stop Asking
+    /// is remembered; View Stats opens the numbers and asks again; Help opens the triggers page.
+    fn slow_offer_answered(&mut self, pane: PaneId, button: Option<&str>) {
+        match button {
+            Some("_Yes") | Some("Yes") => {
+                let divorced = self.panes.get(&pane).is_some_and(|p| self.store.shared_guid(&p.profile) != p.profile);
+                let key = "Enable Triggers in Interactive Apps";
+                if divorced {
+                    self.set_session_values(pane, &[(key.to_string(), Some(toml::Value::Boolean(false)))]);
+                } else if let Some(guid) = self.panes.get(&pane).map(|p| p.profile.clone()) {
+                    if let Some(p) = self.store.get_mut(&guid) {
+                        p.set(key, toml::Value::Boolean(false));
+                    }
+                    self.store.merge_sessions();
+                    self.refresh_panes();
+                    self.save_due = Some(Instant::now());
+                }
+                let (title, body) = if divorced { (SESSION_UPDATED, TRIGGERS_OFF_SESSION) } else { (PROFILE_UPDATED, TRIGGERS_OFF_PROFILE) };
+                if let Err(e) = crate::notify::show_with(title, body, self.globals.bool("SilentUserNotifications")) {
+                    self.banners.set("notify", format!("Could not show a notification: {e}"));
+                }
+                self.slow_stats.remove(&pane);
+            }
+            Some("Stop Asking") => {
+                self.globals.set(SLOW_KEY, toml::Value::Boolean(false));
+                self.save_globals();
+                self.slow_stats.remove(&pane);
+            }
+            Some("View Stats") => {
+                if let Some(stats) = self.slow_stats.get(&pane).cloned() {
+                    self.show_trigger_stats(&stats);
+                    self.ask(pane, SLOW_BAR, SLOW_TEXT, &SLOW_BUTTONS, true);
+                }
+            }
+            Some("Help") => {
+                if let Err(e) = super::semantic_ui::shell_open(crate::links::HELP_TRIGGERS, false) {
+                    self.banners.set("action", e);
+                }
+                self.slow_stats.remove(&pane);
+            }
+            _ => {
+                self.slow_stats.remove(&pane);
+            }
+        }
+    }
+
+    /// `showStats:`: the numbers in a text file in the temporary folder, opened in the default editor.
+    fn show_trigger_stats(&mut self, stats: &str) {
+        let path = std::env::temp_dir().join(format!("trigger-stats-{}.txt", uuid::Uuid::new_v4()));
+        let result = crate::localfs::LocalPath::judge(&path).ok_or_else(|| "the temporary folder is not a local folder".to_string()).and_then(|lp| {
+            crate::localfs::write(&lp, stats).map_err(|e| e.to_string())?;
+            crate::localfs::open_with_shell(&lp, None, false).map_err(|e| e.to_string())
+        });
+        if let Err(e) = result {
+            self.banners.set("action", format!("Could not show the statistics: {e}"));
         }
     }
 
@@ -206,8 +297,12 @@ impl App {
     }
 
     /// The bar answers for Show Alert: Disable This Alert turns that trigger off in this
-    /// session only (iTerm2 does not save it). False for other bars.
+    /// session only (iTerm2 does not save it), and the slow-triggers offer. False for other bars.
     pub(super) fn trigger_bar(&mut self, pane: PaneId, id: &str, button: Option<&str>) -> bool {
+        if id == SLOW_BAR {
+            self.slow_offer_answered(pane, button);
+            return true;
+        }
         if id != ALERT_BAR {
             return false;
         }

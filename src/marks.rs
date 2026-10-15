@@ -927,6 +927,7 @@ impl Screen {
                 None => (cursor_line + 1).max(first),
             };
             out.push(crate::offscreen::PromptFacts {
+                mark: m.id,
                 prompt_line: *line,
                 command_line: start,
                 command_end_line: end,

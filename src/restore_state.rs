@@ -167,6 +167,13 @@ pub fn cap_lines(text: &str, n: usize) -> &str {
     &text[end + 1..]
 }
 
+/// The count of restorations begun and not finished (`iTermRestorableStateDriver.m:16`), and the
+/// question after a failed one (`:91-96`; Persistent, so always asked, with OK and Cancel).
+pub const COUNT_KEY: &str = "NoSyncRestoreWindowsCount";
+pub const TROUBLE_ID: &str = "RestoreWindows";
+pub const TROUBLE_HEADING: &str = "Restore Windows?";
+pub const TROUBLE_TEXT: &str = "Some windows had trouble restoring last time Termurion launched. Try again?";
+
 pub fn banner_text(date: &str) -> String {
     format!("Session Contents Restored on {date}")
 }

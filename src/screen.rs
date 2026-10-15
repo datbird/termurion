@@ -1248,6 +1248,23 @@ impl Screen {
     /// Feeds app output. Returns the bytes the terminal must send back, such as
     /// answers to device, color, and size queries. An app that gets no answer may hang.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        if self.triggers.list.is_empty() || self.triggers.busy {
+            return self.feed_untimed(bytes);
+        }
+        // The time the output took against the time its triggers took (the slow-triggers offer).
+        let started = std::time::Instant::now();
+        let before = self.triggers.slow.trig_total;
+        let reply = self.feed_untimed(bytes);
+        let now = std::time::Instant::now();
+        let in_triggers = self.triggers.slow.trig_total.saturating_sub(before);
+        let enabled = self.term.mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN) && self.triggers.prefs.interactive;
+        if self.triggers.slow.record(now, now.saturating_duration_since(started).saturating_sub(in_triggers), in_triggers, enabled) {
+            self.requests.push(Request::Trigger(crate::trigger_eval::TriggerRequest::SlowOffer { stats: self.trigger_stats() }));
+        }
+        reply
+    }
+
+    fn feed_untimed(&mut self, bytes: &[u8]) -> Vec<u8> {
         self.answerback_sent = false;
         self.title_sent = false;
         self.decrqcra_sent = 0;

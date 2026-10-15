@@ -183,7 +183,9 @@ pub fn quit_body(keep: bool) -> &'static str {
     if keep { "Sessions will be restored automatically when Termurion is relaunched." } else { "All sessions will be closed." }
 }
 
-pub fn quit_text(reasons: &[Reason], keep: bool) -> String {
+/// The quit question as two parts: what happens to the sessions, and the reasons the disclosure
+/// "Why am I being prompted?" opens (`iTermApplicationDelegate.m:1043-1057`).
+pub fn quit_parts(reasons: &[Reason], keep: bool) -> (String, String) {
     let mut sorted: Vec<&Reason> = reasons.iter().collect();
     sorted.sort_by_key(|r| r.priority);
     sorted.dedup_by(|a, b| a.text == b.text);
@@ -203,7 +205,13 @@ pub fn quit_text(reasons: &[Reason], keep: bool) -> String {
     if let Some(f) = previous.and_then(footer) {
         lines.push(f.to_string());
     }
-    format!("{}\n\nYou are being prompted because:\n\n{}", quit_body(keep), lines.join("\n"))
+    (quit_body(keep).to_string(), format!("You are being prompted because:\n\n{}", lines.join("\n")))
+}
+
+/// The quit question as one text (the plain box's, when the disclosure dialog cannot open).
+pub fn quit_text(reasons: &[Reason], keep: bool) -> String {
+    let (body, why) = quit_parts(reasons, keep);
+    format!("{body}\n\n{why}")
 }
 
 #[cfg(test)]

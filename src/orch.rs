@@ -40,6 +40,9 @@ pub const ENABLE_DESCRIPTION: &str = "Ask the user to enable orchestration mode 
 
 pub const APPROVED: &str = "Orchestration is now active for the rest of this conversation. The orchestration toolset (send_text, get_state, list_workgroups, register_watch, start_code_review, etc.) is available to you now and you may call those tools in the continuation of this turn or any subsequent turn.";
 pub const DECLINED: &str = "User declined to enable orchestration.";
+/// The notices the chat shows when the mode changes (`ChatViewController.swift:4085-4086`).
+pub const ENABLED_NOTICE: &str = "Orchestration enabled. Agent can see content of all sessions.";
+pub const DISABLED_NOTICE: &str = "Orchestration disabled.";
 
 pub fn persist_failed(e: &str) -> String {
     format!("Failed to enable orchestration: {e}. The chat remains in its current mode.")

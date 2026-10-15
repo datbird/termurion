@@ -46,7 +46,6 @@ impl App {
 
     /// Shell > Print > Screen, Selection, or Buffer.
     pub(super) fn print(&mut self, id: PaneId, what: crate::print::What) {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{IDCANCEL, IDYES, MB_DEFBUTTON1, MB_DEFBUTTON2, MB_ICONQUESTION, MB_YESNOCANCEL};
         use windows_sys::Win32::System::Diagnostics::Debug::MessageBeep;
         let Some(hwnd) = self.hwnd() else { return };
         let Some(p) = self.panes.get(&id) else { return };
@@ -60,22 +59,15 @@ impl App {
         let cols = { use alacritty_terminal::grid::Dimensions; screen.term().columns() };
         let title = screen.title().unwrap_or("Termurion").to_string();
         let font = self.profile_of(id).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0 });
-        // iTerm2 keeps "Black and white" in its print panel; Termurion asks first.
-        let default = if self.globals.bool("Print In Black And White") { MB_DEFBUTTON1 } else { MB_DEFBUTTON2 };
-        let answer = super::msgbox::show(Some(hwnd as isize), "Print", "Print in black and white?\n\nYes leaves out colors; No prints the terminal's colors.", MB_YESNOCANCEL | MB_ICONQUESTION | default);
-        if answer == IDCANCEL {
-            return;
+        // "Black and white" is a box on the print dialog's own page (the print accessory).
+        let stored = self.globals.bool("Print In Black And White");
+        let mut bw = stored;
+        if let Err(e) = crate::winprint::print(hwnd as _, &mut self.print_setup, &title, &mut rows, &mut bw, cols, &font.family, font.size_pt) {
+            self.banners.set("print", format!("Printing failed: {e}"));
         }
-        let bw = answer == IDYES;
-        if bw != self.globals.bool("Print In Black And White") {
+        if bw != stored {
             self.globals.set("Print In Black And White", toml::Value::Boolean(bw));
             self.save_globals();
-        }
-        if bw {
-            crate::print::black_and_white(&mut rows);
-        }
-        if let Err(e) = crate::winprint::print(hwnd as _, &mut self.print_setup, &title, &rows, cols, &font.family, font.size_pt) {
-            self.banners.set("print", format!("Printing failed: {e}"));
         }
     }
 
@@ -174,7 +166,7 @@ impl App {
 
     /// Replace Selection: the selected whole lines are replaced in Termurion's buffer (not
     /// sent to the shell), as iTerm2 does.
-    fn replace_selection(&mut self, id: PaneId, f: impl Fn(&str) -> Result<String, String>) {
+    pub(super) fn replace_selection(&mut self, id: PaneId, f: impl Fn(&str) -> Result<String, String>) {
         let Some((a, b)) = self.selection_pos(id) else { return self.banners.set("action", "Select whole lines first.") };
         let Some(p) = self.panes.get_mut(&id) else { return };
         if p.live.is_some() {

@@ -86,6 +86,9 @@ pub enum TriggerRequest {
     ParameterError { trigger: usize, text: String },
     /// Trigger checks of some output were skipped for cost (said once per pane).
     TooSlow,
+    /// The session's triggers are costly in an interactive app: offer to turn them off there. The
+    /// text is the per-trigger statistics "View Stats" shows (`PTYTriggerEvaluator.stats`).
+    SlowOffer { stats: String },
     /// A backtracking pattern passed its step or time budget and is off for this session.
     PatternTooSlow { trigger: usize },
 }
@@ -210,6 +213,8 @@ pub struct Compiled {
     pub off_here: bool,
     /// An event trigger's timer state.
     pub events: crate::trigger_events::EventState,
+    /// How long each check of the regex took, in microseconds (`Trigger.performanceHistogram`).
+    pub cpu: crate::perf_stats::Histogram,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -243,6 +248,52 @@ pub struct TriggerState {
     idem_last: Option<Instant>,
     idem_digest: u64,
     idem_pass: bool,
+    /// Time in triggers against time in the terminal's own work, for the slow-triggers offer.
+    pub(crate) slow: SlowDetector,
+}
+
+/// iTerm2's triggers slowness detector (`PTYTriggerEvaluator.m:221-241`, `iTermSlownessDetector`): over
+/// windows longer than a second, in an interactive app, are triggers at least half as costly as
+/// the work of reading the output, and together at least a tenth of the time?
+#[derive(Clone, Debug, Default)]
+pub struct SlowDetector {
+    since: Option<Instant>,
+    exec: Duration,
+    trig: Duration,
+    /// Every trigger check's time so far (the feed that measures it takes the difference).
+    pub(crate) trig_total: Duration,
+}
+
+/// The rule: the shares of the window the triggers and the work took.
+pub fn slow_verdict(window: Duration, exec: Duration, trig: Duration) -> bool {
+    let total = window.as_secs_f64();
+    if total <= 1.0 {
+        return false;
+    }
+    let (exec, trig) = (exec.as_secs_f64() / total, trig.as_secs_f64() / total);
+    trig > exec * 0.5 && (exec + trig) > 0.1
+}
+
+impl SlowDetector {
+    /// Adds one feed's times. True when the window is over and the verdict is slow; the window starts again.
+    pub fn record(&mut self, now: Instant, exec: Duration, trig: Duration, enabled: bool) -> bool {
+        if !enabled {
+            self.since = None;
+            (self.exec, self.trig) = (Duration::ZERO, Duration::ZERO);
+            return false;
+        }
+        let since = *self.since.get_or_insert(now - exec - trig);
+        self.exec += exec;
+        self.trig += trig;
+        let window = now.saturating_duration_since(since);
+        if window.as_secs_f64() <= 1.0 {
+            return false;
+        }
+        let slow = slow_verdict(window, self.exec, self.trig);
+        self.since = Some(now);
+        (self.exec, self.trig) = (Duration::ZERO, Duration::ZERO);
+        slow
+    }
 }
 
 /// A logical line's text and, for each character, its byte offset and cell.
@@ -391,7 +442,7 @@ impl Screen {
                     Ok(re) => (Some(re), None),
                     Err(e) => (None, Some(e)),
                 };
-                Compiled { trigger, re, error, last_line: None, off_here: false, events: Default::default() }
+                Compiled { trigger, re, error, last_line: None, off_here: false, events: Default::default(), cpu: Default::default() }
             })
             .collect();
         self.triggers.prefs = prefs;
@@ -742,6 +793,32 @@ impl Screen {
     }
 
     fn evaluate_line(&mut self, end: i32, instant: bool) {
+        let started = Instant::now();
+        self.evaluate_line_untimed(end, instant);
+        self.triggers.slow.trig_total += started.elapsed();
+    }
+
+    /// `PTYTriggerEvaluator.stats`: for each trigger its name and regex and how long checking it took.
+    pub fn trigger_stats(&self) -> String {
+        let mut out = String::new();
+        for c in &self.triggers.list {
+            out.push_str(&format!("Trigger \u{201c}{}\u{201d} with regex \u{201c}{}\u{201d}\n  CPU time in \u{b5}s: {}\n", c.trigger.name, c.trigger.regex, c.cpu.summary()));
+        }
+        out
+    }
+
+    /// Each trigger's kept check times in microseconds, in list order (the editor's histogram).
+    pub fn trigger_cpu(&self) -> Vec<Vec<f64>> {
+        self.triggers.list.iter().map(|c| c.cpu.samples().to_vec()).collect()
+    }
+
+    /// The action title and parameter of trigger `i`, for the message about its parameter.
+    pub fn trigger_title_and_parameter(&self, i: usize) -> Option<(&'static str, String)> {
+        let t = &self.triggers.list.get(i)?.trigger;
+        Some((triggers::action_info(&t.action).map_or("", |a| a.title), t.parameter.clone()))
+    }
+
+    fn evaluate_line_untimed(&mut self, end: i32, instant: bool) {
         let line = self.logical_line(end);
         let row = self.row_number(end);
         if !instant && !self.triggers.idem_pass {
@@ -772,7 +849,9 @@ impl Screen {
             let mut fired = false;
             let mut stop = false;
             let own = Instant::now() + self.triggers.pattern_budget.unwrap_or(TRIGGER_BUDGET);
+            let matching = Instant::now();
             let found = re.matches(&line.text, own, self.triggers.deadline);
+            self.triggers.list[i].cpu.add(matching.elapsed().as_secs_f64() * 1e6);
             // A pattern of either engine that passed its step limit or used a whole budget by
             // itself is off for this session and the person is told (B5).
             if matches!(found, Err(_) | Ok((_, Stop::Pattern))) {

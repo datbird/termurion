@@ -410,6 +410,8 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct RealRunner {
     pub lines: std::sync::mpsc::Sender<String>,
     pub timeout: Duration,
+    /// Set from outside to stop the running program (the installer window's Cancel).
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// A Job Object whose processes all end when it is closed (provisioning runs and launched
@@ -555,7 +557,7 @@ pub fn system_directory() -> Option<PathBuf> {
 impl RealRunner {
     /// A runner with `BUILD_TIMEOUT`.
     pub fn new(lines: std::sync::mpsc::Sender<String>) -> RealRunner {
-        RealRunner { lines, timeout: BUILD_TIMEOUT }
+        RealRunner { lines, timeout: BUILD_TIMEOUT, cancel: None }
     }
 
     /// A Windows tool from System32 (curl.exe, tar.exe), found with `GetSystemDirectoryW`
@@ -581,6 +583,8 @@ impl RealRunner {
 
 /// What `run_watched` fails with when its watch stopped the program.
 pub const STOPPED: &str = "stopped by the watch";
+/// What a job fails with after `Provisioner::cancel`.
+pub const CANCELED: &str = "Canceled";
 
 #[cfg(windows)]
 impl RealRunner {
@@ -689,7 +693,10 @@ impl RealRunner {
 #[cfg(windows)]
 impl Runner for RealRunner {
     fn run(&mut self, step: &Step) -> Result<String, String> {
-        self.run_watched(step, None)
+        match self.cancel.clone() {
+            Some(flag) => self.run_watched(step, Some(&move || flag.load(std::sync::atomic::Ordering::SeqCst))),
+            None => self.run_watched(step, None),
+        }
     }
 
     fn download(&mut self, url: &str, to: &Path) -> Result<(), String> {
@@ -770,6 +777,9 @@ pub struct Provisioner {
     next: std::cell::Cell<u64>,
     /// Jobs submitted and not yet ended.
     pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Set by `cancel`: the running program stops and the jobs behind it end as canceled, until
+    /// the queue is empty.
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(windows)]
@@ -793,18 +803,28 @@ impl Provisioner {
             }
         });
         let left = pending.clone();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop = cancel.clone();
         std::thread::spawn(move || {
             let mut runner = RealRunner::new(line_tx);
+            runner.cancel = Some(stop.clone());
             for (id, job) in job_rx {
-                let result = run_job(&job, &uv_dir, &mut runner);
-                left.fetch_sub(1, SeqCst);
+                let result = if stop.load(SeqCst) { Err(CANCELED.to_string()) } else { run_job(&job, &uv_dir, &mut runner) };
+                // A run the cancel stopped reads as canceled, whatever text the stop left.
+                let result = match result {
+                    Err(_) if stop.load(SeqCst) => Err(CANCELED.to_string()),
+                    other => other,
+                };
+                if left.fetch_sub(1, SeqCst) == 1 {
+                    stop.store(false, SeqCst);
+                }
                 if done_tx.send((id, result)).is_err() {
                     break;
                 }
                 notify();
             }
         });
-        Provisioner { jobs, done, lines, next: std::cell::Cell::new(1), pending }
+        Provisioner { jobs, done, lines, next: std::cell::Cell::new(1), pending, cancel }
     }
 
     /// Queues a job; its result comes back from `try_done` with this id.
@@ -824,6 +844,11 @@ impl Provisioner {
 
     pub fn try_line(&self) -> Option<String> {
         self.lines.try_recv().ok()
+    }
+
+    /// Stops the running program and ends every waiting job as `CANCELED`.
+    pub fn cancel(&self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Whether a job is running or waiting.
@@ -1295,7 +1320,7 @@ mod tests {
     #[test]
     fn runner_ends_the_process_tree() {
         let started = std::time::Instant::now();
-        let mut r = RealRunner { lines: std::sync::mpsc::channel().0, timeout: Duration::from_secs(2) };
+        let mut r = RealRunner { lines: std::sync::mpsc::channel().0, timeout: Duration::from_secs(2), cancel: None };
         // A grandchild that outlives its parent and holds the output pipe: the run still ends
         // when cmd.exe does, and the grandchild with it.
         let orphan = Step { program: p("cmd.exe"), args: s(&["/c", "start /b ping -n 30 127.0.0.1 & echo left"]), env: vec![] };

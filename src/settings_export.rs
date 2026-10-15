@@ -245,6 +245,9 @@ pub fn script_import_failed(zip: &Path, error: &str) -> String {
 }
 
 /// Import texts (`IE:81-110`, `GP:4089`).
+/// The Importing window's status lines (`ImportExport.swift:Importer.importEntities`).
+pub const STATUS_EXTRACTING: &str = "Extracting Archive";
+
 pub const IMPORT_HEADING: &str = "Importing Settings and Data";
 pub const IMPORT_BODY: &str = "Any needed Python runtimes will be installed and secure settings will be updated, which may require you to enter your password. Then Termurion will restart and finish importing. This can take several minutes.";
 pub const PROBLEM_IMPORTING: &str = "Problem Importing";

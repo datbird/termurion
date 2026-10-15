@@ -3,6 +3,17 @@
 /// The title of a window with nothing else to show.
 pub const UNTITLED: &str = "Untitled";
 
+/// The title dialogs (`PseudoTerminal.m:3835-3836`, `:8740-8741`): their heading, which is the
+/// window's title, and the explanation shown above the field.
+pub const SET_WINDOW_TITLE: &str = "Set Window Title";
+pub const SET_TAB_TITLE: &str = "Set Tab Title";
+pub const WINDOW_TITLE_HELP: &str = "If this is empty, the window takes the active session\u{2019}s title. Variables and function calls enclosed in \\(\u{2026}) will be replaced with their evaluation. This interpolated string is evaluated in the window\u{2019}s context.";
+pub const TAB_TITLE_HELP: &str = "If this is empty, the tab takes the active session\u{2019}s title. Variables and function calls enclosed in \\(\u{2026}) will be replaced with their evaluation. This interpolated string is evaluated in the tab\u{2019}s context.";
+/// The warning iTerm2 shows when the text names a session variable without the context's path
+/// (`PseudoTerminal.m:3843`, `:8748`); Termurion has no variable history to tell, so it is not shown (ruling W11).
+pub const WINDOW_TITLE_CONTEXT_MISTAKE: &str = "This interpolated string is evaluated in the window\u{2019}s context, not the session\u{2019}s context. To access variables in the current session, use currentTab.currentSession.sessionVariableNameHere";
+pub const TAB_TITLE_CONTEXT_MISTAKE: &str = "This interpolated string is evaluated in the tab\u{2019}s context, not the session\u{2019}s context. To access variables in the current session, use currentSession.sessionVariableNameHere";
+
 /// The text a window's caption shows before its number and client name (iTerm2's
 /// `undecoratedWindowTitle`, `PT:13636-13644`): a custom title whose FORMAT is not empty (Edit Window Title or
 /// the profile's), even when it evaluates to nothing; with the tab bar hidden and `show_window_title`
