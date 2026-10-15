@@ -161,6 +161,12 @@ mod icu {
 #[cfg(windows)]
 pub struct IcuSegmenter;
 
+#[cfg(all(windows, test))]
+thread_local! {
+    /// Break iterators this thread has open (the session guard's lifetime, for the tests).
+    static OPEN_ITERATORS: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
+}
+
 #[cfg(windows)]
 impl Segmenter for IcuSegmenter {
     fn word(&self, text: &str, at: usize) -> Range<usize> {
@@ -185,18 +191,31 @@ impl Segmenter for IcuSegmenter {
             it: *mut std::ffi::c_void,
             _units: Vec<u16>,
         }
+        impl Guard {
+            /// `ubrk_preceding(at + 1)` and `ubrk_following(at)`. A method on the whole guard, so
+            /// the closure below captures the guard itself: with edition 2021+ precise capture,
+            /// reading `guard.it` and `guard.api` there would copy just those two fields and drop
+            /// the guard (closing the iterator and freeing its text) when `session` returns.
+            fn edges(&self, at16: i32) -> (i32, i32) {
+                // SAFETY: `it` stays open, and `_units` alive, as long as `self`.
+                unsafe { ((self.api.preceding)(self.it, at16 + 1), (self.api.following)(self.it, at16)) }
+            }
+        }
         impl Drop for Guard {
             fn drop(&mut self) {
+                #[cfg(test)]
+                OPEN_ITERATORS.with(|n| n.set(n.get() - 1));
                 // SAFETY: `it` came from `ubrk_open` and is closed once.
                 unsafe { (self.api.close)(self.it) }
             }
         }
+        #[cfg(test)]
+        OPEN_ITERATORS.with(|n| n.set(n.get() + 1));
         let guard = Guard { api, it, _units: units };
         let text_len = text.len();
         Box::new(move |at| {
             let Some(at16) = Some(byte_of.partition_point(|b| *b < at)).filter(|i| *i < byte_of.len()) else { return whole.clone() };
-            // SAFETY: the iterator lives as long as `guard`, which this closure owns.
-            let (start, end) = unsafe { ((guard.api.preceding)(guard.it, at16 as i32 + 1), (guard.api.following)(guard.it, at16 as i32)) };
+            let (start, end) = guard.edges(at16 as i32);
             let back = |i: i32| if i == icu::UBRK_DONE { None } else { byte_of.get(i as usize).copied() };
             match (back(start).or(Some(0)), back(end).or(Some(text_len))) {
                 (Some(a), Some(b)) if a <= at && at < b => a..b,
@@ -416,6 +435,25 @@ pub fn window_at(rows: &[Vec<char>], row: usize, col: usize, width: usize) -> Op
 mod tests {
     use super::*;
     use crate::find::Pos;
+
+    /// The session owns its break iterator: open while the session lives, closed when it drops.
+    /// (It was closed as soon as `session` returned, and every word lookup used freed memory.)
+    #[cfg(windows)]
+    #[test]
+    fn the_icu_session_keeps_its_iterator_open_until_dropped() {
+        if icu::api().is_none() {
+            return;
+        }
+        let text = "hello wide world";
+        let before = OPEN_ITERATORS.with(|n| n.get());
+        let session = IcuSegmenter.session(text);
+        assert_eq!(OPEN_ITERATORS.with(|n| n.get()), before + 1, "the iterator closed while the session lives");
+        for _ in 0..3 {
+            assert_eq!(session(7), 6..10);
+        }
+        drop(session);
+        assert_eq!(OPEN_ITERATORS.with(|n| n.get()), before);
+    }
 
     fn rule(chars: &str) -> Rule {
         Rule { regex_mode: false, chars: chars.into(), regex: None }
