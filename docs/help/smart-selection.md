@@ -50,15 +50,17 @@ The built-in rules have no actions.
 
 Rules belong to a profile. Open Settings (Ctrl+Shift+,), choose Profiles, pick a profile, then open the Advanced tab and find the Smart Selection section.
 
-- Press + to add a rule, or select a rule and press - to remove it.
-- Set Notes (a label), Regular expression, and Precision.
+- Press + to add a rule, or select a rule and press - to remove it. Load Defaults puts the built-in rules back.
+- Select a rule, then set its Name, Regular expression, and Precision (Very Low to Very High).
+- Syntax Help opens this page. Open Regular Expression Visualizer draws the expression as nested boxes: a sequence, "one of" for alternatives, and boxes for groups and repeats.
+- Click in the sample text at the bottom to see which rule wins at that spot and what it matches.
 - If the expression does not compile, the editor shows the error in red and the rule is skipped until you fix it.
 
 Expressions are ICU style. Termurion reads `[:letter:]` and `[:number:]` classes as Unicode letters and numbers.
 
 ## Actions
 
-Select a rule and press Add action. Each action has a title, a type, and a parameter. The types are:
+Select a rule and press Actions…, then +. Each action has a title, a type, and a parameter. The types are:
 
 - Open File
 - Open URL

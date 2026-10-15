@@ -14,7 +14,7 @@ One row per control or editor of iTerm2's Settings window that had no row in 01 
 | Profiles > General | Title | Popup of check items and script title functions. | have | `settings_title`. |
 | Profiles > General | Subtitle and Enable Tall Tab Bar | The subtitle needs a tab bar 28 points tall or the Minimal theme; the button sets the height. | have | `settings_ui::subtitles_allowed`, `ENABLE_TALL_TAB_BAR`. |
 | Profiles > Text | Font and Non-ASCII Font | Family, member (weight) and size, spacings, Anti-aliased with its hint, ligatures with its hint. | have | `settings_fonts`; weight by `Renderer::resolve_weight`. |
-| Profiles > Text | Font features button | Stylistic sets and contextual alternates per font. | n/a | The features are CoreText settings stored in iTerm2's font string; Termurion stores a family and a size, and Contextual Alternates is the global Advanced setting `EnableContextualAlternates`. |
+| Profiles > Text | Font features button | Stylistic sets and contextual alternates per font. | missing | Not on the sweep's list. iTerm2 keeps CoreText feature settings in the font descriptor; Termurion's font string is a name and a size, and Contextual Alternates is the global Advanced setting `EnableContextualAlternates`. Owner: the sweep rulings (S-8). |
 | Profiles > Window | Screen | Popup of No Preference, Screen with Cursor and the monitors. | have | `settings_ui::screen_row`. |
 | Profiles > Session | Note under Buffer Input by Default | "You may want a trigger to stop buffering". | have | `settings_ui::BUFFERING_NOTE`. |
 | Profiles > Advanced | Snippets Filter | Token field. | have | `settings_lists::tokens_row`. |
