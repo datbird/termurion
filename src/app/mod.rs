@@ -7701,10 +7701,15 @@ impl ApplicationHandler<UserEvent> for App {
                     let edit = win.redraw(&mut self.store, &mut self.globals, &mut self.snippets);
                     // "(recommended for this font)" is answered from the font's own table.
                     let asked = std::mem::take(&mut win.font_questions);
-                    if let (false, Some(g)) = (asked.is_empty(), self.gpu.as_ref()) {
+                    let named = std::mem::take(&mut win.font_info_questions);
+                    if let (false, Some(g)) = (asked.is_empty() && named.is_empty(), self.gpu.as_ref()) {
                         for (family, ppem) in asked {
                             let wants = g.renderer.font_wants_antialiasing(&family, ppem);
                             win.font_hints.insert(format!("{family}@{ppem}"), wants);
+                        }
+                        for name in named {
+                            let info = g.renderer.describe_font(&name);
+                            win.font_info.insert(name, info);
                         }
                         win.request_redraw();
                     }

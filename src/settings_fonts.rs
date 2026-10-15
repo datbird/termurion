@@ -45,10 +45,24 @@ fn check(ui: &mut egui::Ui, profile: &mut Profile, key: &str) -> bool {
     crate::settings_ui::control(ui, profile, setting(key), false)
 }
 
-/// One font picker: its label, the family menu with a search box, and the size.
-fn picker(ui: &mut egui::Ui, profile: &mut Profile, key: &str, families: &[String]) -> bool {
+/// What the window knows of a font name: see `Facts`.
+pub type Facts<'a> = &'a dyn Fn(&str) -> Option<crate::render::FontInfo>;
+
+/// The title the member menu shows for a weight: the member of that weight, else the nearest.
+pub fn member_title(info: &crate::render::FontInfo) -> String {
+    info.members
+        .iter()
+        .min_by_key(|m| ((m.2 as i32 - info.weight as i32).abs(), m.2))
+        .map_or_else(|| crate::fonts::weight_name(info.weight), |m| m.0.clone())
+}
+
+/// One font picker: its label, the family menu with a search box, the member (weight) menu of the
+/// family, and the size.
+fn picker(ui: &mut egui::Ui, profile: &mut Profile, key: &str, families: &[String], facts: Facts) -> bool {
     let s = setting(key);
     let spec = profile.font(key);
+    let info = facts(&spec.family);
+    let shown_family = info.as_ref().map_or_else(|| spec.family.clone(), |i| i.family.clone());
     let mut size = spec.size_pt;
     let mut picked: Option<String> = None;
     let mut size_changed = false;
@@ -65,14 +79,14 @@ fn picker(ui: &mut egui::Ui, profile: &mut Profile, key: &str, families: &[Strin
             }
         } else {
             let filter_id = egui::Id::new(("font-filter", key));
-            let r = egui::ComboBox::from_id_salt((key, "family")).selected_text(spec.family.clone()).width(220.0).show_ui(ui, |ui| {
+            let r = egui::ComboBox::from_id_salt((key, "family")).selected_text(shown_family.clone()).width(220.0).show_ui(ui, |ui| {
                 let mut filter: String = ui.data_mut(|d| d.get_temp::<String>(filter_id)).unwrap_or_default();
                 ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Search fonts").desired_width(200.0));
                 let list = filtered(families, &filter);
                 let row = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
                 egui::ScrollArea::vertical().max_height(260.0).show_rows(ui, row, list.len(), |ui, range| {
                     for f in &list[range] {
-                        if ui.selectable_label(f.eq_ignore_ascii_case(&spec.family), f.as_str()).clicked() {
+                        if ui.selectable_label(f.eq_ignore_ascii_case(&shown_family), f.as_str()).clicked() {
                             picked = Some((*f).clone());
                         }
                     }
@@ -80,6 +94,17 @@ fn picker(ui: &mut egui::Ui, profile: &mut Profile, key: &str, families: &[Strin
                 ui.data_mut(|d| d.insert_temp(filter_id, filter));
             });
             rect = Some(r.response.rect);
+        }
+        // The family's members, by weight (`FontFamilyMemberPickerView`): the menu shows when it has a choice.
+        if let Some(i) = info.as_ref().filter(|i| i.members.len() > 1) {
+            let now = member_title(i);
+            egui::ComboBox::from_id_salt((key, "member")).selected_text(now.clone()).width(110.0).show_ui(ui, |ui| {
+                for (title, stored, _) in &i.members {
+                    if ui.selectable_label(*title == now, title.as_str()).clicked() {
+                        picked = Some(stored.clone());
+                    }
+                }
+            });
         }
         let d = ui.add(egui::DragValue::new(&mut size).range(4.0..=128.0).speed(0.25).suffix(" pt"));
         size_changed = d.changed();
@@ -135,8 +160,8 @@ fn switch_with_hint(ui: &mut egui::Ui, profile: &mut Profile, key: &str, hint: O
 /// The font block. `families` are the installed families (empty until the app has listed them),
 /// `bidi` is the right-to-left switch, and `recommended(family)` whether the font asks for
 /// anti-aliasing.
-pub fn group(ui: &mut egui::Ui, profile: &mut Profile, families: &[String], bidi: bool, recommended: &dyn Fn(&str, f32) -> bool) -> bool {
-    let mut changed = picker(ui, profile, "Normal Font", families);
+pub fn group(ui: &mut egui::Ui, profile: &mut Profile, families: &[String], bidi: bool, recommended: &dyn Fn(&str, f32) -> bool, facts: Facts) -> bool {
+    let mut changed = picker(ui, profile, "Normal Font", families, facts);
     changed |= spacings(ui, profile);
     let normal = profile.font("Normal Font");
     let ascii = normal.family.clone();
@@ -146,7 +171,7 @@ pub fn group(ui: &mut egui::Ui, profile: &mut Profile, families: &[String], bidi
     changed |= switch_with_hint(ui, profile, "ASCII Ligatures", lig);
     changed |= check(ui, profile, "Use Non-ASCII Font");
     if profile.bool("Use Non-ASCII Font") {
-        changed |= picker(ui, profile, "Non Ascii Font", families);
+        changed |= picker(ui, profile, "Non Ascii Font", families, facts);
         let non_ascii = profile.font("Non Ascii Font");
         let other = non_ascii.family.clone();
         let rec = recommended(&other, non_ascii.size_pt).then_some((RECOMMENDED_HINT, false));
@@ -180,6 +205,16 @@ mod tests {
         assert_eq!(font_string("Cascadia Mono", 12.0), "Cascadia Mono 12");
         assert_eq!(font_string("Consolas", 11.5), "Consolas 11.5");
         assert_eq!(crate::profile::parse_font(&font_string("Cascadia Mono", 12.0)).family, "Cascadia Mono");
+    }
+
+    #[test]
+    fn the_member_menu_names_the_current_weight() {
+        let info = crate::render::FontInfo { family: "Cascadia Mono".into(), weight: 300, members: vec![("Light".into(), "CascadiaMono-Light".into(), 300), ("Regular".into(), "Cascadia Mono".into(), 400), ("Bold".into(), "CascadiaMono-Bold".into(), 700)] };
+        assert_eq!(member_title(&info), "Light");
+        let regular = crate::render::FontInfo { weight: 400, ..info.clone() };
+        assert_eq!(member_title(&regular), "Regular");
+        let between = crate::render::FontInfo { weight: 600, ..info };
+        assert_eq!(member_title(&between), "Bold", "the nearest member");
     }
 
     #[test]

@@ -1016,6 +1016,7 @@ pub fn clipboard_sending_row(ui: &mut egui::Ui, g: &mut Globals, s: &Setting) ->
 
 /// A control for one global setting (checkbox, menu, or text).
 pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: bool) -> bool {
+    let top = ui.cursor().top();
     let mut changed = false;
     ui.add_enabled_ui(enabled && !s.macos_only, |ui| {
         let control = match s.kind {
@@ -1174,6 +1175,7 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
     })
     .response
     .on_hover_text(if s.macos_only { format!("{} (macOS only)", s.help) } else { s.help.clone() });
+    crate::settings_search::flash_if_marked(ui, &s.key, top);
     changed
 }
 

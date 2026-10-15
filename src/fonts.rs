@@ -60,7 +60,46 @@ pub fn range_weights(min: u16, max: u16) -> Vec<u16> {
 
 /// The weight the "regular" face of a family has: the one nearest 400, the lighter on a tie.
 pub fn regular_weight(available: &[u16]) -> Option<u16> {
-    available.iter().copied().min_by_key(|w| ((*w as i32 - 400).abs(), *w))
+    nearest_weight(available, 400)
+}
+
+/// The weight of `available` nearest `target`, the lighter on a tie: the face a profile's font asks
+/// for when its family has no face at exactly that weight.
+pub fn nearest_weight(available: &[u16], target: u16) -> Option<u16> {
+    available.iter().copied().min_by_key(|w| ((*w as i32 - target as i32).abs(), *w))
+}
+
+/// The weight a PostScript name's style word asks for ("CascadiaMono-Light" is 300). A name with no
+/// style word, or one this does not know, is regular.
+pub fn weight_from_style_word(postscript: &str) -> u16 {
+    let word = postscript.rsplit_once('-').map_or("", |(_, w)| w).to_lowercase();
+    match word.trim_end_matches("italic").trim_end_matches("oblique") {
+        "thin" | "hairline" => 100,
+        "extralight" | "ultralight" => 200,
+        "light" => 300,
+        "medium" => 500,
+        "semibold" | "demibold" => 600,
+        "bold" => 700,
+        "extrabold" | "ultrabold" | "heavy" => 800,
+        "black" => 900,
+        _ => 400,
+    }
+}
+
+/// What the font menu calls a weight.
+pub fn weight_name(css: u16) -> String {
+    match css {
+        100 => "Thin".into(),
+        200 => "ExtraLight".into(),
+        300 => "Light".into(),
+        400 => "Regular".into(),
+        500 => "Medium".into(),
+        600 => "SemiBold".into(),
+        700 => "Bold".into(),
+        800 => "ExtraBold".into(),
+        900 => "Black".into(),
+        w => format!("Weight {w}"),
+    }
 }
 
 /// The bold weight for a regular face (`boldVersionOfFont:`): the lightest of `available` whose
@@ -320,6 +359,20 @@ pub fn double_strike_shift(mode: MaskMode, scale: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_postscript_name_asks_for_its_weight() {
+        assert_eq!(weight_from_style_word("CascadiaMono-Light"), 300);
+        assert_eq!(weight_from_style_word("CascadiaMono-SemiBold"), 600);
+        assert_eq!(weight_from_style_word("CascadiaMono-BoldItalic"), 700);
+        assert_eq!(weight_from_style_word("Consolas"), 400);
+        assert_eq!(weight_from_style_word("Foo-Regular"), 400);
+        assert_eq!(nearest_weight(&[300, 500], 400), Some(300), "the lighter wins a tie");
+        assert_eq!(nearest_weight(&[300, 700], 600), Some(700));
+        assert_eq!(nearest_weight(&[], 400), None);
+        assert_eq!(weight_name(300), "Light");
+        assert_eq!(weight_name(450), "Weight 450");
+    }
+
     #[test]
     fn gasp_decides_the_antialiasing_hint() {
         // version 1, two ranges: grid-fit only up to 8 ppem, gray-scale and grid-fit beyond.

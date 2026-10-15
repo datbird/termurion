@@ -227,7 +227,12 @@ impl App {
     /// The face key of `p` in this window (`face_key_for`, with the renderer's memoized lookup).
     pub(super) fn face_key(&self, p: &Profile) -> FaceKey {
         let renderer = self.gpu.as_ref().map(|g| &g.renderer);
-        face_key_for(p, self.scale(), &|name| renderer.map_or_else(|| name.to_string(), |r| r.resolve_family(name)))
+        let mut key = face_key_for(p, self.scale(), &|name| renderer.map_or_else(|| name.to_string(), |r| r.resolve_family(name)));
+        // A font that names a member of its family (a PostScript name) asks for that weight.
+        if let Some(r) = renderer {
+            key.weight = r.resolve_weight(&p.font("Normal Font").family);
+        }
+        key
     }
 
     /// Measures the face of every pane of this window, at the window's scale. Called at the top

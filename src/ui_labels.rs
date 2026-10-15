@@ -415,7 +415,7 @@ fn the_font_block_draws() {
     let mut p = crate::profile::Profile::new("ui-labels-test");
     p.set("Use Non-ASCII Font", toml::Value::Boolean(true));
     let drawn = headless_height(&mut |ui| {
-        crate::settings_fonts::group(ui, &mut p, &[], false, &|_, _| false);
+        crate::settings_fonts::group(ui, &mut p, &[], false, &|_, _| false, &|_| None);
     });
     assert!(drawn > 0.0);
 }

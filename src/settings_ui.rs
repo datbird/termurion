@@ -446,6 +446,8 @@ pub struct SettingsWindow {
     dynamic_warned: std::collections::HashSet<String>,
     /// `show_shortcuts_editor`'s sheet, opened on the next frame.
     open_editor: Option<(crate::settings_shortcuts::Tab, Option<usize>)>,
+    /// The search field's text and highlighted result.
+    search: crate::settings_search::SearchState,
     /// Profiles > Bulk Copy from Selected Profile\u{2026}, while its sheet is open.
     bulk: Option<pa::BulkCopy>,
     /// Alerts for JSON files that did not import, shown one after another.
@@ -460,6 +462,10 @@ pub struct SettingsWindow {
     /// Fonts the Text tab wants a hint for, as (family, pixels per em); the app answers after
     /// each frame.
     pub font_questions: Vec<(String, u16)>,
+    /// What the app found out about a font name: its family and the members of it.
+    pub font_info: std::collections::HashMap<String, crate::render::FontInfo>,
+    /// Font names the Text tab wants described; the app answers after each frame.
+    pub font_info_questions: Vec<String>,
     /// The registered session title providers as (display name, unique id), for the Title
     /// Function popup; the app sets them when the window opens and when they change.
     pub title_providers: Vec<(String, String)>,
@@ -643,12 +649,15 @@ impl SettingsWindow {
             dynamic_request: None,
             dynamic_warned: Default::default(),
             open_editor: None,
+            search: Default::default(),
             bulk: None,
             json_alerts: Default::default(),
             json_reveal: None,
             fonts: Vec::new(),
             font_hints: Default::default(),
             font_questions: Vec::new(),
+            font_info: Default::default(),
+            font_info_questions: Vec::new(),
             title_providers: Vec::new(),
             session_hotkey: None,
             session_hotkey_waiting: false,
@@ -800,10 +809,20 @@ impl SettingsWindow {
         let mut shortcut_take: Option<(String, Option<char>)> = None;
         let title_providers = &self.title_providers;
         let fonts = &self.fonts;
+        let search = &mut self.search;
         let bulk = &mut self.bulk;
         let json_alerts = &mut self.json_alerts;
         let json_reveal = &mut self.json_reveal;
         let font_hints = &self.font_hints;
+        let font_info = &self.font_info;
+        let info_questions = std::cell::RefCell::new(Vec::<String>::new());
+        let facts = |name: &str| match font_info.get(name) {
+            Some(i) => Some(i.clone()),
+            None => {
+                info_questions.borrow_mut().push(name.to_string());
+                None
+            }
+        };
         let questions = std::cell::RefCell::new(Vec::<(String, u16)>::new());
         let recommended = |family: &str, size_pt: f32| match font_hints.get(&crate::settings_fonts::hint_key(family, size_pt)) {
             Some(v) => *v,
@@ -921,6 +940,7 @@ impl SettingsWindow {
                     }
                 }
             }
+            let mut revealed: Option<&'static crate::settings_search::Doc> = None;
             if mode == Mode::Settings {
                 egui::Panel::top("pages").show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -941,9 +961,28 @@ impl SettingsWindow {
                             })
                             .response
                             .on_hover_text(SEARCH_OPTIONS);
+                            // The search field, with its results under it (`PreferencePanel.m` search toolbar item).
+                            if let Some(doc) = crate::settings_search::field(ui, search) {
+                                revealed = Some(doc);
+                            }
                         });
                     });
                 });
+                // A result of the search field opens its pane and tab and marks the control.
+                if let Some(doc) = revealed {
+                    match &doc.at {
+                        crate::settings_search::Where::ProfileTab(t) => {
+                            page = Page::Profiles;
+                            tab = *t;
+                        }
+                        crate::settings_search::Where::Pane(p) => page = *p,
+                        crate::settings_search::Where::Advanced(q) => {
+                            page = Page::Advanced;
+                            advanced.query = q.clone();
+                        }
+                    }
+                    crate::settings_search::mark(ui.ctx(), &doc.key);
+                }
                 if page != Page::Profiles {
                     egui::CentralPanel::default().show(ui, |ui| {
                         let changed = match page {
@@ -1467,7 +1506,7 @@ impl SettingsWindow {
                             // The font block: the pickers, spacings, anti-aliasing and ligatures (iTerm2's
                             // font pickers), drawn once at the first of its rows.
                             if s.key == "Normal Font" {
-                                if crate::settings_fonts::group(ui, profile, fonts, globals.bool("Bidi"), &recommended) {
+                                if crate::settings_fonts::group(ui, profile, fonts, globals.bool("Bidi"), &recommended, &facts) {
                                     edit = Edit::Changed(selected.clone());
                                 }
                                 continue;
@@ -1628,6 +1667,10 @@ impl SettingsWindow {
         asked.sort();
         asked.dedup();
         self.font_questions = asked;
+        let mut named = info_questions.into_inner();
+        named.sort();
+        named.dedup();
+        self.font_info_questions = named;
         self.tab = tab;
         // Leaving a page applies a custom scripts folder typed there (iTerm2's
         // `willDeselectTab`, `GP:3432-3434`); the field is no longer drawn to lose the focus.
@@ -2252,6 +2295,7 @@ fn contrast_warning(key: &str, value: f64) -> Option<&'static str> {
 /// checkboxes, pickers, and colors; when a drag ends for sliders; when the field loses
 /// focus (or Enter) for text. Uncommitted edits still update the profile in memory.
 pub(crate) fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool) -> bool {
+    let top = ui.cursor().top();
     let key = edit_key(profile, s, dark);
     let current = if key == s.key {
         profile.get(&s.key)
@@ -2403,6 +2447,7 @@ pub(crate) fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dar
     if let Some((rect, enabled)) = widget.filter(|_| settings_keys::indicate_non_default() && !profile_is_default(profile, s, &key)) {
         settings_keys::non_default_bar(ui, rect, enabled);
     }
+    crate::settings_search::flash_if_marked(ui, &s.key, top);
     commit
 }
 
@@ -2730,7 +2775,7 @@ mod tests {
     fn space_row_follows_windows() {
         let s = crate::schema::profile().iter().find(|x| x.key == "Space").unwrap();
         assert!(!s.macos_only);
-        assert_eq!(s.label, "Desktop");
+        assert_eq!(s.label, "Desktop:");
         let got: Vec<(Value, String)> = s.choices.iter().map(|c| (c.value.clone(), c.label.clone())).collect();
         let mut want = vec![(Value::Integer(0), "Current Desktop".to_string()), (Value::Integer(-1), "All Desktops".to_string())];
         for n in 1..=9 {
