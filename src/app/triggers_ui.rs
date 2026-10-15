@@ -25,6 +25,24 @@ fn notify_allowed(limits: &mut crate::triggers::RateLimit<(PaneId, usize)>, pane
 }
 
 /// A profile's triggers and switches.
+/// Menu ids of Session > Triggers' per-trigger items.
+pub(super) const SESSION_TRIGGER_ID: &str = "session-trigger:";
+
+/// The title of a trigger with nothing to call it (`PTYSession.UnnamedTrigger`, `PS:4498-4500`).
+pub(super) const UNNAMED_TRIGGER: &str = "(Unnamed trigger)";
+
+/// A trigger's title in Session > Triggers (`triggerTuples`, `PS:4485-4504`): its name, else its
+/// regex, else what its action is called; "(Unnamed trigger)" when there is none.
+pub(super) fn trigger_menu_title(t: &Trigger) -> String {
+    if !t.name.is_empty() {
+        t.name.clone()
+    } else if !t.regex.is_empty() {
+        t.regex.clone()
+    } else {
+        triggers::action_info(&t.action).map_or_else(|| UNNAMED_TRIGGER.to_string(), |a| a.title.to_string())
+    }
+}
+
 pub(super) fn triggers_of(p: &crate::profile::Profile) -> (Vec<Trigger>, TriggerPrefs) {
     // A terminal screen never evaluates a browser action, and a browser pane's screen evaluates
     // nothing (the browser list is read by the page engine).
@@ -292,6 +310,46 @@ impl App {
         wake
     }
 
+    /// Session > Triggers, below its fixed items: a line and one check item per trigger of the
+    /// focused session's profile (`menuNeedsUpdate:`, `AD:4277-4298`), checked while enabled.
+    pub(super) fn refresh_triggers_menu(&mut self) {
+        let items: Vec<(usize, String, bool)> = self
+            .focused_id()
+            .and_then(|pane| self.profile_of(pane))
+            .and_then(|p| p.get("Triggers"))
+            .map(|v| triggers::parse_indexed(&v).into_iter().map(|(i, t)| (i, trigger_menu_title(&t), t.enabled)).collect())
+            .unwrap_or_default();
+        for bar in self.menu_bars_mut() {
+            if bar.trigger_items == items {
+                continue;
+            }
+            let Some((sub, fixed)) = &bar.triggers else { continue };
+            while sub.remove_at(*fixed).is_some() {}
+            if !items.is_empty() {
+                let _ = sub.append(&muda::PredefinedMenuItem::separator());
+            }
+            for (i, title, on) in &items {
+                let _ = sub.append(&muda::CheckMenuItem::with_id(format!("{SESSION_TRIGGER_ID}{i}"), title.replace('&', "&&"), true, *on, None));
+            }
+            bar.trigger_items = items.clone();
+        }
+    }
+
+    /// A pick from the per-trigger items: that trigger's `disabled` flips in the session's profile
+    /// (`toggleTriggerEnabled:`). False for other ids.
+    pub(super) fn trigger_item_picked(&mut self, id: &str) -> bool {
+        let Some(index) = id.strip_prefix(SESSION_TRIGGER_ID).and_then(|i| i.parse::<usize>().ok()) else { return false };
+        if let Some(pane) = self.focused_id() {
+            self.toggle_session_trigger(pane, index);
+        }
+        // The pick toggled its own check: the items are rebuilt from the profile.
+        for bar in self.menu_bars_mut() {
+            bar.trigger_items.clear();
+        }
+        self.refresh_triggers_menu();
+        true
+    }
+
     /// Session > Triggers commands. False for other selectors.
     pub(super) fn run_trigger_command_menu(&mut self, selector: &str, event_loop: &ActiveEventLoop) -> bool {
         let Some(id) = self.focused_id() else { return false };
@@ -350,6 +408,19 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `triggerTuples` (`PS:4485-4504`): the name, else the regex, else the action's title, else
+    /// "(Unnamed trigger)" for an action nobody knows.
+    #[test]
+    fn session_trigger_titles_follow_iterm2() {
+        let t = |name: &str, regex: &str, action: &str| Trigger { regex: regex.into(), action: action.into(), parameter: String::new(), instant: false, enabled: true, name: name.into(), job: String::new(), match_type: 0, extra: toml::Table::new() };
+        assert_eq!(trigger_menu_title(&t("Build", "error", "BounceTrigger")), "Build");
+        assert_eq!(trigger_menu_title(&t("", "error", "BounceTrigger")), "error");
+        let known = triggers::action_info("BounceTrigger").unwrap().title;
+        assert_eq!(trigger_menu_title(&t("", "", "BounceTrigger")), known);
+        assert_eq!(trigger_menu_title(&t("", "", "NoSuchTrigger")), "(Unnamed trigger)");
+        assert_eq!(UNNAMED_TRIGGER, "(Unnamed trigger)");
+    }
 
     #[test]
     fn browser_actions_skip_terminals() {

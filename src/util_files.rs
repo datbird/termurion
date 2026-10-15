@@ -820,7 +820,7 @@ mod tests {
             assert_eq!(h.run("it2dl", &["notes.txt"]), 0);
             let mut s = Screen::new(80, 24);
             s.feed(&h.out);
-            assert_eq!(s.downloads, vec![Download { name: "notes.txt".into(), bytes: b"hello\n".to_vec() }], "{term:?}");
+            assert_eq!(s.downloads, vec![Download { name: "notes.txt".into(), bytes: b"hello\n".to_vec(), dest: None }], "{term:?}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

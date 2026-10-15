@@ -148,6 +148,7 @@ mod tmux_tabs_ui;
 mod tmux_dashboard_app;
 mod tmux_launch_app;
 mod bury_ui;
+mod transfers_ui;
 mod statusbar_ui;
 mod pane_title_ui;
 mod pane_move_ui;
@@ -1070,6 +1071,8 @@ pub struct App {
     /// OpenURL requests waiting for an answer, by pane and host; uploads being sent.
     pending_urls: HashMap<(PaneId, String), String>,
     uploads: HashMap<PaneId, prompted_ui::Upload>,
+    /// The Downloads and Uploads menus' transfers.
+    transfers: crate::transfers::Transfers,
     /// Each pane's pastes being written (the queue, how they are written, and whether the
     /// progress bar shows), and pastes waiting on a question.
     pastes: HashMap<PaneId, (crate::paste::Queue, crate::broadcast::Write, bool)>,
@@ -2469,6 +2472,7 @@ pub fn run() {
         idle_sent: HashMap::new(),
         started: Instant::now(),
         uploads: HashMap::new(),
+        transfers: crate::transfers::Transfers::default(),
         pastes: HashMap::new(),
         paste_after: Vec::new(),
         paste_asks: HashMap::new(),
@@ -4666,6 +4670,7 @@ impl App {
                 self.prefs_offer_copy();
             }
             Edit::PrefsSaveNow => self.prefs_save_now(true),
+            Edit::Unsaved(action) => self.unsaved_action(action),
             Edit::ExportAll => self.export_all(),
             Edit::ImportAll => self.import_all(),
             Edit::EraseAll => self.erase_all(),
@@ -7665,6 +7670,8 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         let window_exists = self.current_window().is_some() && !self.resident;
+        // The unsaved settings notice compares every setting: only for the Settings window's own redraw.
+        let unsaved_notice = if matches!(event, WindowEvent::RedrawRequested) && self.settings.as_ref().is_some_and(|s| s.id() == id) { self.prefs_unsaved(false) } else { None };
         for profiles in [false, true] {
             let slot = if profiles { &mut self.profiles_win } else { &mut self.settings };
             if !slot.as_ref().is_some_and(|s| s.id() == id) {
@@ -7690,6 +7697,7 @@ impl ApplicationHandler<UserEvent> for App {
                     let win = slot.as_mut().unwrap();
                     win.show_remembered = self.show_remembered;
                     win.window_exists = window_exists;
+                    win.unsaved = unsaved_notice.filter(|_| win.edit_session.is_none());
                     let edit = win.redraw(&mut self.store, &mut self.globals, &mut self.snippets);
                     let answered = std::mem::take(&mut win.answered);
                     // Profiles > Session's "Configure Status Bar" opens the setup window.

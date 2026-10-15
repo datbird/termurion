@@ -123,6 +123,8 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         Then::ClaudeEditedWorkgroup => Answer::Button(0),
         // Cancel (the first button, the default): a closed window never starts a workgroup's commands.
         Then::EnterWorkgroup { .. } | Then::RestoreWorkgroup { .. } | Then::UsageReport { .. } => Answer::Button(0),
+        // Save to Downloads: the question after it still asks, and a closed one is No.
+        Then::DownloadWhere(..) => Answer::Button(0),
         // No, Deny, Don't Copy and Discard Local Changes.
         Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::PrefsCopyNow | Then::PrefsOverwrite | Then::SessionHotkey { .. } => Answer::Button(1),
         _ => Answer::Button(fallback),
@@ -244,6 +246,9 @@ pub(super) enum Then {
     /// when asked: Yes (0) saves it, after the large file question when that follows; No (1)
     /// drops it.
     Download(crate::layout::PaneId, crate::inline_file::Download, bool),
+    /// "Where would you like to save this download?" for the pane's download: Save to Downloads (0)
+    /// goes on to the download question, Choose\u{2026} (1) picks the file first (`TerminalFile.m:80-93`).
+    DownloadWhere(crate::layout::PaneId, crate::inline_file::Download),
     /// "Allow Large File Download?" for the pane's download: Allow (0) saves it; Deny (1)
     /// drops it.
     BigDownload(crate::layout::PaneId, crate::inline_file::Download),
@@ -417,7 +422,7 @@ impl Then {
     /// these count against the queue's cap, so a flood of them never drops a question the
     /// person asked for (a paste, Restart Session, Clear with broadcast, the quit question).
     fn capped(&self) -> bool {
-        matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::SessionHotkey { .. } | Then::UpdatePermission | Then::TipPermission | Then::DynamicProfilesError(_) | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_) | Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::OpenRenamedProfile { .. } | Then::TriggerImportMarked(_) | Then::BrowserPermission(_))
+        matches!(self, Then::Download(..) | Then::DownloadWhere(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::SessionHotkey { .. } | Then::UpdatePermission | Then::TipPermission | Then::DynamicProfilesError(_) | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_) | Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::OpenRenamedProfile { .. } | Then::TriggerImportMarked(_) | Then::BrowserPermission(_))
             || matches!(self, Then::EnterWorkgroup { how: crate::workgroup_run::Mechanism::Trigger | crate::workgroup_run::Mechanism::BrowserTrigger, .. })
     }
 }
@@ -682,12 +687,15 @@ impl App {
                     self.restart_answered(pane, &about);
                 }
             }
+            Then::DownloadWhere(pane, d) => self.download_where_answered(pane, d, index),
             Then::Download(pane, d, was_silenced) => self.download_answered(pane, d, was_silenced, index),
             Then::Inline { pane, serial, name, size, was_silenced } => self.inline_answered(pane, serial, &name, size, was_silenced, index),
             Then::BigInline(pane, serial) => self.inline_released(pane, serial, index == 0),
             Then::BigDownload(_, d) => {
                 if index == 0 {
                     self.save_download(d);
+                } else {
+                    self.download_declined(&d);
                 }
             }
             Then::Broadcast { clear, me, targets } => self.clear_or_reset_answered(clear, me, super::broadcast_ui::broadcast_targets(index, me, targets)),
@@ -924,7 +932,7 @@ mod tests {
     #[test]
     fn closing_a_consent_question_refuses_it() {
         use crate::prompt_ui::close_index;
-        let d = || crate::inline_file::Download { name: "a.txt".into(), bytes: b"abc".to_vec() };
+        let d = || crate::inline_file::Download { name: "a.txt".into(), bytes: b"abc".to_vec(), dest: None };
         let download = ask("", "", &["Yes", "No"], None, Kind::Permanent, Then::Download(3, d(), false));
         let big = ask("", "", &["Allow", "Deny"], None, Kind::Permanent, Then::BigDownload(3, d()));
         let inline = ask("", "", &["Yes", "No"], None, Kind::Permanent, Then::Inline { pane: 3, serial: 1, name: "a.png".into(), size: 5, was_silenced: false });
@@ -972,7 +980,7 @@ mod tests {
     #[test]
     fn the_persons_questions_are_never_dropped() {
         let ask = |then| ask("", "", &[], None, crate::warnings::Kind::Persistent, then);
-        let d = |pane| Then::Download(pane, crate::inline_file::Download { name: "a".into(), bytes: Vec::new() }, false);
+        let d = |pane| Then::Download(pane, crate::inline_file::Download { name: "a".into(), bytes: Vec::new(), dest: None }, false);
         let mut q = VecDeque::new();
         for pane in 0..LIMIT as u64 {
             assert!(push_capped(&mut q, ask(d(pane))).is_none());

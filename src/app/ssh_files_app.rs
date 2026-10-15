@@ -155,6 +155,8 @@ impl App {
     fn ssh_size(&mut self, job: u64, size: Option<u64>) -> Option<String> {
         let l = self.ssh_locals.get_mut(&job)?;
         l.total = size;
+        self.transfer_job_progress(job);
+        let l = self.ssh_locals.get_mut(&job)?;
         let size = size?;
         match local::free_space(&Self::ssh_temp_dir(l)) {
             Ok(free) if has_room(free, size) => None,
@@ -186,6 +188,8 @@ impl App {
     fn ssh_progress(&mut self, job: u64, n: u64) {
         let Some(l) = self.ssh_locals.get_mut(&job) else { return };
         l.written += n;
+        self.transfer_job_progress(job);
+        let Some(l) = self.ssh_locals.get_mut(&job) else { return };
         let step = l.percent().map_or(l.written >> 20, |p| p / 10);
         if l.shown == 0 || step > l.shown - 1 {
             l.shown = step + 1;
@@ -284,6 +288,7 @@ impl App {
         l.place = Place::Downloads { temp, dir };
         let (job, actions) = self.ssh_transfers.download(pane, remote);
         self.ssh_locals.insert(job, l);
+        self.transfer_job_began(job);
         self.ssh_transfer_apply(actions);
     }
 
@@ -446,6 +451,7 @@ impl App {
         l.total = Some(data.len() as u64);
         let (job, actions) = self.ssh_transfers.upload(pane, &dest, data, &uuid::Uuid::new_v4().to_string().to_uppercase());
         self.ssh_locals.insert(job, l);
+        self.transfer_job_began(job);
         self.ssh_transfer_apply(actions);
     }
 
@@ -456,8 +462,17 @@ impl App {
         if self.ssh_locals.get(&job).is_some_and(|l| l.upload) {
             let l = self.ssh_locals.remove(&job).unwrap();
             match result {
-                Ok(_) => Self::ssh_notify(&local::upload_finished(&l.short_name), ""),
-                Err(why) => Self::ssh_notify(&local::upload_failed(&l.short_name), &why),
+                Ok(_) => {
+                    Self::ssh_notify(&local::upload_finished(&l.short_name), "");
+                    self.transfer_job_ended(job, Ok(None));
+                }
+                Err(why) => {
+                    // A transfer the person stopped is Cancelled, not a failure, and says nothing.
+                    if !self.transfer_stopping(job) {
+                        Self::ssh_notify(&local::upload_failed(&l.short_name), &why);
+                    }
+                    self.transfer_job_ended(job, Err(why));
+                }
             }
             return;
         }
@@ -467,10 +482,13 @@ impl App {
             Err(why) => {
                 let l = self.ssh_locals.remove(&job).unwrap();
                 let _ = crate::localfs::judge_io(l.place.temp()).and_then(|t| crate::localfs::remove_file(&t));
+                let stopped = self.transfer_stopping(job);
+                self.transfer_job_ended(job, Err(why.clone()));
                 // A Download Files item reports to its batch, which notifies once it is over.
                 match &l.place {
                     Place::Temp { batch, .. } => self.ssh_batch_item_ended(*batch, &l.short_name, Err(why)),
-                    Place::Downloads { .. } => Self::ssh_notify(&local::download_failed(&l.short_name), &why),
+                    Place::Downloads { .. } if !stopped => Self::ssh_notify(&local::download_failed(&l.short_name), &why),
+                    Place::Downloads { .. } => {}
                 }
                 return;
             }
@@ -510,6 +528,7 @@ impl App {
                 if let Err(why) = &result {
                     Self::ssh_note_unremoved(why, temp);
                 }
+                self.transfer_job_ended(job, result.clone().map(Some));
                 self.ssh_batch_item_ended(*batch, &l.short_name, result);
             }
         }
@@ -523,6 +542,7 @@ impl App {
         if let Err(why) = &result {
             Self::ssh_note_unremoved(why, temp);
         }
+        self.transfer_job_ended(job, result.clone().map(Some));
         self.ssh_batch_item_ended(*batch, &l.short_name, result);
     }
 
@@ -543,10 +563,14 @@ impl App {
             _ => free,
         };
         match local::finish(temp, &dest, &l.url()) {
-            Ok(path) => Self::ssh_notify(&local::download_finished(&path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()), ""),
+            Ok(path) => {
+                Self::ssh_notify(&local::download_finished(&path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()), "");
+                self.transfer_job_ended(job, Ok(Some(path)));
+            }
             Err(why) => {
                 Self::ssh_note_unremoved(&why, temp);
                 Self::ssh_notify(&local::download_failed(&l.short_name), &why);
+                self.transfer_job_ended(job, Err(why));
             }
         }
     }

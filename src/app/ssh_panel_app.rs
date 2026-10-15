@@ -461,6 +461,7 @@ impl App {
             let l = Local::new(Place::Temp { temp, dest, batch: id }, pane, &f.absolute_path, &host_text, host.username.as_deref());
             let (job, actions) = self.ssh_transfers.download_chunked(pane, &f.absolute_path, &host_text);
             self.ssh_locals.insert(job, l);
+            self.transfer_job_began(job);
             self.ssh_transfer_apply(actions);
         }
     }

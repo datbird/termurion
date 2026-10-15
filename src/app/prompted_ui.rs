@@ -19,12 +19,21 @@ pub(super) const ASK_ABORT_UPLOAD: &str = "AbortUploadOnKeyPressAnnouncement";
 pub(super) const UPLOAD_KIND: &str = "UploadChooseFilesOrFolders";
 
 
+/// The alert when the archive could not be made (`PTYSession.m:17108-17114`).
+pub(super) const TAR_FAILED_TITLE: &str = "Error Preparing Upload";
+
+pub(super) fn tar_failed(message: &str) -> String {
+    format!("tar failed with this message: {message}")
+}
+
 /// An upload being sent to a pane.
 pub(super) struct Upload {
     data: Vec<u8>,
     sent: usize,
     name: String,
     shown_pct: usize,
+    /// Its place in the Uploads menu.
+    transfer: u64,
 }
 
 fn b64_text(s: &str) -> Option<String> {
@@ -178,10 +187,11 @@ impl App {
             }
             (ASK_ABORT_UPLOAD, answer) => {
                 if answer == Some("OK") {
-                    self.uploads.remove(&pane);
-                    self.show_toast("Upload aborted");
+                    self.upload_abort(pane);
                 }
             }
+            (super::transfers_ui::ASK_ABORT_DOWNLOAD, answer) => self.abort_download_answered(pane, answer),
+            (super::transfers_ui::ASK_OVERSIZE, _) => {}
             (id, answer) if id.starts_with(ASK_VARIABLE) => {
                 let name = &id[ASK_VARIABLE.len()..];
                 if let Some(b) = answer {
@@ -529,6 +539,14 @@ impl App {
 
     /// RequestUpload: ask whether files or folders are chosen (`upload_pick` goes on).
     pub(super) fn upload_request(&mut self, pane: PaneId, params: String) {
+        // One upload at a time (`uploadFilesAndPastePaths:`): the program is told to stop waiting.
+        if self.uploads.contains_key(&pane) {
+            self.upload_in_progress_alert();
+            if let Some(p) = self.panes.get_mut(&pane) {
+                p.reply(prompted::UPLOAD_CANCEL);
+            }
+            return;
+        }
         if !prompted::upload_format_ok(&params) {
             self.ask(pane, UPLOAD_FORMAT, "An upload with an unsupported archive format was requested. You may need a newer version of iTerm2.", &[], false);
             return;
@@ -558,12 +576,15 @@ impl App {
             Ok(archive) => {
                 let first = paths[0].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 let name = if paths.len() > 1 { format!("{first} plus {} more", paths.len() - 1) } else { first };
-                self.uploads.insert(pane, Upload { data: prompted::upload_lines(&archive), sent: 0, name, shown_pct: 0 });
+                let data = prompted::upload_lines(&archive);
+                let transfer = self.transfer_upload_began(pane, &name, data.len());
+                self.uploads.insert(pane, Upload { data, sent: 0, name, shown_pct: 0, transfer });
                 self.upload_due = Some(Instant::now());
             }
             Err(e) => {
                 // The program already has "ok"; as in iTerm2 it waits until the user presses Ctrl+C.
-                files_ui::message(&format!("Error Preparing Upload\n\nThe archive could not be made: {e}"));
+                let a = super::scripts_alerts::ask(TAR_FAILED_TITLE, &tar_failed(&e), &[crate::api_auth::OK], None, crate::warnings::Kind::Persistent, super::scripts_alerts::Then::Nothing);
+                self.ask_scripts(a);
             }
         }
     }
@@ -580,6 +601,7 @@ impl App {
         let pace = prompted::upload_pace(self.globals.bool("AccelerateUploads"), self.paste_speed(false));
         let chunk = pace.units;
         let mut done = Vec::new();
+        let mut moved = Vec::new();
         let mut progress = None;
         for (id, up) in self.uploads.iter_mut() {
             let end = (up.sent + chunk).min(up.data.len());
@@ -590,16 +612,23 @@ impl App {
             }
             up.sent = end;
             let pct = up.sent * 100 / up.data.len().max(1);
-            if pct / 10 != up.shown_pct / 10 || up.sent == up.data.len() {
+            let step = pct / 10 != up.shown_pct / 10 || up.sent == up.data.len();
+            if step {
                 up.shown_pct = pct;
                 progress = Some(format!("Uploading {}: {pct}%", up.name));
             }
+            moved.push((up.transfer, up.sent, step));
             if up.sent >= up.data.len() {
                 done.push(*id);
             }
         }
+        for (transfer, sent, step) in moved {
+            self.transfer_upload_progress(transfer, sent, step);
+        }
         for id in done {
-            self.uploads.remove(&id);
+            if let Some(up) = self.uploads.remove(&id) {
+                self.transfer_upload_finished(up.transfer);
+            }
         }
         if let Some(text) = progress {
             self.show_toast(&text);
@@ -608,9 +637,20 @@ impl App {
         self.upload_due
     }
 
+    /// Ends the pane's upload: the rest is not sent (`naggingControllerAbortUpload`, and Stop in the
+    /// Uploads menu).
+    pub(super) fn upload_abort(&mut self, pane: PaneId) {
+        if let Some(up) = self.uploads.remove(&pane) {
+            self.transfer_upload_cancelled(up.transfer);
+            self.show_toast("Upload aborted");
+        }
+    }
+
     /// Ctrl+C while the focused pane is uploading asks before stopping it. True when the key
     /// was used.
     pub(super) fn upload_key(&mut self, ev: &KeyEvent) -> bool {
+        // A file arriving asks first too, and the key still reaches the program.
+        self.download_key(ev);
         let Some(pane) = self.focused_id().filter(|id| self.uploads.contains_key(id)) else { return false };
         let is_c = matches!(&ev.key_without_modifiers(), winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("c"));
         if !(self.mods.ctrl && is_c) {
@@ -651,6 +691,13 @@ mod tests {
         let production = include_str!("prompted_ui.rs").split("\n#[cfg(test)]\nmod tests").next().unwrap();
         assert!(!production.contains(concat!("insert(\"un", "ame\"")));
         assert!(production.contains("conductor_framer::session_values"));
+    }
+
+    /// `PTYSession.m:17108-17114`: the alert's title and body.
+    #[test]
+    fn the_archive_error_reads_like_iterm2() {
+        assert_eq!(TAR_FAILED_TITLE, "Error Preparing Upload");
+        assert_eq!(tar_failed("No such file"), "tar failed with this message: No such file");
     }
 
     #[test]
