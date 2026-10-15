@@ -146,10 +146,8 @@ fn switch_with_hint(ui: &mut egui::Ui, profile: &mut Profile, key: &str, hint: O
     ui.horizontal(|ui| {
         changed = check(ui, profile, key);
         if let Some((text, warning)) = hint {
-            if warning {
-                if let Some(g) = crate::settings_keys::icon_text(ui.ctx(), crate::scripts::WARNING_GLYPH) {
-                    ui.label(g.color(ui.visuals().warn_fg_color));
-                }
+            if warning && let Some(g) = crate::settings_keys::icon_text(ui.ctx(), crate::scripts::WARNING_GLYPH) {
+                ui.label(g.color(ui.visuals().warn_fg_color));
             }
             ui.label(egui::RichText::new(text).small());
         }

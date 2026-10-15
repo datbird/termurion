@@ -7693,10 +7693,10 @@ impl ApplicationHandler<UserEvent> for App {
                     win.show_remembered = self.show_remembered;
                     win.window_exists = window_exists;
                     // The installed fonts are listed once, for the Text tab's font menus.
-                    if win.fonts.is_empty() {
-                        if let Some(g) = self.gpu.as_ref() {
-                            win.fonts = g.renderer.installed_families();
-                        }
+                    if win.fonts.is_empty()
+                        && let Some(g) = self.gpu.as_ref()
+                    {
+                        win.fonts = g.renderer.installed_families();
                     }
                     let edit = win.redraw(&mut self.store, &mut self.globals, &mut self.snippets);
                     // "(recommended for this font)" is answered from the font's own table.

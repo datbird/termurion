@@ -147,40 +147,57 @@ pub fn file_name_for(profile_name: &str) -> String {
     if cleaned.is_empty() { "UnknownProfile".to_string() } else { cleaned }
 }
 
-/// Asks where to save and writes `text` there (`saveProfileAsJSON:`, `saveAllProfilesAsJSON:`). A saved
-/// file is shown in Explorer through `reveal`; a failure is the alert iTerm2 shows.
+/// The largest JSON file an import reads.
+pub const MAX_JSON: usize = 16 * 1024 * 1024;
+
+/// Asks where to save and writes `text` there (`saveProfileAsJSON:`, `saveAllProfilesAsJSON:`), as a
+/// new file readable by this user alone moved over the target (`settings_triggers::write_export`). A
+/// saved file is shown in Explorer through `reveal`; a failure is the alert iTerm2 shows.
 pub fn save_json(default_name: &str, text: &str, reveal: &mut Option<String>) -> crate::settings_ui::Edit {
     use crate::settings_ui::Edit;
     let name = match default_name.strip_suffix(".json") {
         Some(stem) => format!("{}.json", file_name_for(stem)),
         None => file_name_for(default_name),
     };
-    let Some(path) = rfd::FileDialog::new().set_directory(crate::profile::home()).set_file_name(name).add_filter("JSON", &["json"]).save_file() else { return Edit::None };
-    match std::fs::write(&path, text) {
+    let dialog = rfd::FileDialog::new().set_directory(crate::profile::home()).set_file_name(name).add_filter("JSON", &["json"]);
+    let Some(path) = crate::localfs::save_file(dialog) else { return Edit::None };
+    match crate::settings_triggers::write_export(&path, text) {
         Ok(()) => {
-            *reveal = Some(path.to_string_lossy().into_owned());
+            *reveal = Some(path.path().to_string_lossy().into_owned());
             Edit::None
         }
         Err(e) => {
-            let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+            let file = crate::inert_files::shown_name(&path.path().file_name().map_or_else(String::new, |f| f.to_string_lossy().into_owned()));
             let host = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "this computer".to_string());
             Edit::Alert { heading: "Error".to_string(), text: save_failed(&file, &host, &e.to_string()) }
         }
     }
 }
 
+/// A JSON file the person picked, at most `MAX_JSON` bytes, as UTF-8.
+fn read_json(p: &crate::localfs::LocalPath) -> Result<String, String> {
+    use std::io::Read;
+    let file = crate::localfs::open(p).map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    file.take(MAX_JSON as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_JSON {
+        return Err("the file is too large".to_string());
+    }
+    String::from_utf8(bytes).map_err(|_| "the file is not valid UTF-8".to_string())
+}
+
 /// Asks for JSON files and imports each (`importJSONProfiles:`); a file that fails queues its alert
 /// (`import_failed`), and the others still import.
 pub fn import_json_files(store: &mut Store, alerts: &mut std::collections::VecDeque<(String, String)>) -> crate::settings_ui::Edit {
     use crate::settings_ui::Edit;
-    let Some(files) = rfd::FileDialog::new().set_directory(crate::profile::home()).add_filter("JSON", &["json"]).pick_files() else { return Edit::None };
+    let dialog = rfd::FileDialog::new().set_directory(crate::profile::home()).add_filter("JSON", &["json"]);
     let mut imported = 0;
-    for file in files {
-        let shown = file.to_string_lossy().into_owned();
-        let text = match std::fs::read_to_string(&file) {
+    for file in crate::localfs::pick_files(dialog) {
+        let shown = crate::inert_files::shown_name(&file.path().to_string_lossy());
+        let text = match read_json(&file) {
             Ok(t) => t,
             Err(e) => {
-                alerts.push_back(import_failed(&shown, &e.to_string()));
+                alerts.push_back(import_failed(&shown, &e));
                 continue;
             }
         };

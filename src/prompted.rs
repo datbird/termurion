@@ -90,7 +90,7 @@ pub fn property_decision(keys: &[String], stored: impl Fn(&str) -> Option<i64>) 
 
 /// SetProfileProperty's bar text.
 pub fn property_text(keys: &[String]) -> String {
-    let name = |k: &String| schema::find(k).map_or_else(|| k.clone(), |s| s.label.clone());
+    let name = |k: &String| schema::find(k).map_or_else(|| k.clone(), |s| s.name().to_string());
     match keys {
         [one] => format!("An app tried to change the profile property {}.", name(one)),
         many => format!("An app tried to change multiple profile properties: {}.", many.iter().map(name).collect::<Vec<_>>().join(", ")),
@@ -367,7 +367,7 @@ mod tests {
         assert_eq!(property_decision(&keys, |k| if k == "Blend" { Some(0) } else { None }), Decision::Ask);
         assert_eq!(property_decision(&keys, |k| if k == "Blend" { Some(0) } else { Some(1) }), Decision::Deny, "any deny drops it all");
         assert_eq!(property_text(&keys[..1]), "An app tried to change the profile property Blending.");
-        assert_eq!(property_text(&keys), "An app tried to change multiple profile properties: Blending, Cursor style.");
+        assert_eq!(property_text(&keys), "An app tried to change multiple profile properties: Blending, Cursor.");
     }
 
     #[test]

@@ -47,10 +47,10 @@ pub fn tokens(text: &str) -> Vec<String> {
 /// A word cut back to its stem (`it_stem`, in a small way): common endings go, down to three letters.
 pub fn stem(word: &str) -> String {
     for ending in ["ing", "ed", "es", "s"] {
-        if let Some(root) = word.strip_suffix(ending) {
-            if root.chars().count() >= 3 {
-                return root.to_string();
-            }
+        if let Some(root) = word.strip_suffix(ending)
+            && root.chars().count() >= 3
+        {
+            return root.to_string();
         }
     }
     word.to_string()

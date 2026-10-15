@@ -171,11 +171,11 @@ pub fn smart_selection_rules(ui: &mut egui::Ui, profile: &mut Profile, open_url:
             selected = Some(rules.len() - 1);
             changed = true;
         }
-        if ui.add_enabled(selected.is_some(), egui::Button::new("\u{2212}")).clicked() {
-            if let Some(i) = selected.take() {
-                rules.remove(i);
-                changed = true;
-            }
+        if ui.add_enabled(selected.is_some(), egui::Button::new("\u{2212}")).clicked()
+            && let Some(i) = selected.take()
+        {
+            rules.remove(i);
+            changed = true;
         }
         if ui.button(LOAD_DEFAULTS).clicked() {
             rules = default_rules();
@@ -265,11 +265,11 @@ pub fn smart_selection_rules(ui: &mut egui::Ui, profile: &mut Profile, open_url:
     ui.separator();
     let mut sample: String = ui.data(|d| d.get_temp(play_id)).unwrap_or_else(|| PLAYGROUND_SAMPLE.to_string());
     let out = egui::TextEdit::multiline(&mut sample).code_editor().desired_rows(4).desired_width(f32::INFINITY).show(ui);
-    if out.response.clicked() || out.response.changed() {
-        if let Some(range) = out.cursor_range {
-            let said = playground_result(&sample, range.primary.index.into(), &rules);
-            ui.data_mut(|d| d.insert_temp(result_id, said));
-        }
+    if (out.response.clicked() || out.response.changed())
+        && let Some(range) = out.cursor_range
+    {
+        let said = playground_result(&sample, range.primary.index.into(), &rules);
+        ui.data_mut(|d| d.insert_temp(result_id, said));
     }
     let said: String = ui.data(|d| d.get_temp(result_id)).unwrap_or_else(|| PLAYGROUND_PROMPT.to_string());
     ui.label(egui::RichText::new(said).small());

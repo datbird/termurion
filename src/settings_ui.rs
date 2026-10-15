@@ -1655,10 +1655,10 @@ impl SettingsWindow {
             self.host.request_redraw();
         }
         // A JSON import's alerts, one a frame.
-        if matches!(edit, Edit::None) {
-            if let Some((heading, text)) = self.json_alerts.pop_front() {
-                edit = Edit::Alert { heading, text };
-            }
+        if matches!(edit, Edit::None)
+            && let Some((heading, text)) = self.json_alerts.pop_front()
+        {
+            edit = Edit::Alert { heading, text };
         }
         if !self.json_alerts.is_empty() {
             self.host.request_redraw();

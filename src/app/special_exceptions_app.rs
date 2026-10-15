@@ -167,7 +167,7 @@ mod tests {
         let app = include_str!("mod.rs");
         assert!(app.contains("self.open_special_exceptions(guid, event_loop)") && app.contains("self.special_exceptions_event(id, &event)"));
         let schema = crate::schema::find(crate::font_table::KEY).expect("the key");
-        assert_eq!((schema.tab.as_str(), schema.label.as_str()), ("Text", "Manage Special Exceptions"));
+        assert_eq!((schema.tab.as_str(), schema.label.as_str()), ("Text", "Manage Special Exceptions\u{2026}"));
         assert!(include_str!("special_exceptions_app.rs").contains("self.apply_edit(Edit::Changed(o.guid))"));
     }
 }

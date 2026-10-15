@@ -340,6 +340,10 @@ mod tests {
             ("NoSyncEnableAutomaticProfileSwitchingLogging", "Script Console", Kind::Bool, bool(false)),
             ("Use background pattern indicator", "Broadcast", Kind::Bool, bool(false)),
             ("NoSyncHideDefaultValuedSettings", "Settings", Kind::Bool, bool(false)),
+            // Set from menus, never drawn in a pane (their Settings tab was Marks and Find; UI sweep S).
+            ("Mark Alert Action", "Alerts", Kind::Enum, text("Post Notification")),
+            ("Alert On Marks in Offscreen Sessions", "Alerts", Kind::Bool, bool(false)),
+            ("findMode_iTerm", "Find", Kind::Enum, int(0)),
             ("NoSyncNeverRemindPrefsChangesLostForFile_selection", "Settings", Kind::Int, int(0)),
             ("NoSyncPromptBeforeLoadingPrefsFromURL", "Settings", Kind::String, text("")),
             ("HotkeyMigratedFromSingleToMulti", "Hotkey", Kind::Bool, bool(false)),

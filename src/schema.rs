@@ -73,6 +73,11 @@ fn number(v: &toml::Value) -> Option<f64> {
 }
 
 impl Setting {
+    /// The label as a sentence names the setting: iTerm2's caption without its trailing colon.
+    pub fn name(&self) -> &str {
+        self.label.trim_end().trim_end_matches(':')
+    }
+
     pub fn min_f64(&self) -> Option<f64> {
         self.min.as_ref().and_then(number)
     }

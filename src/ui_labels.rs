@@ -271,10 +271,10 @@ fn schema_choices_are_iterm2s() {
         for choice in &s.choices {
             let Some(v) = choice.value.as_integer() else { continue };
             let theirs = tags.iter().position(|t| *t == v).map(|i| mac_words(&c.choices[i].1));
-            if let Some(want) = theirs {
-                if want != choice.label {
-                    bad.push(format!("{scope} {} [{v}]: have {:?}, iTerm2 has {:?}", s.key, choice.label, want));
-                }
+            if let Some(want) = theirs
+                && want != choice.label
+            {
+                bad.push(format!("{scope} {} [{v}]: have {:?}, iTerm2 has {:?}", s.key, choice.label, want));
             }
         }
     }
