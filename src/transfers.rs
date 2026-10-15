@@ -222,10 +222,8 @@ impl Transfer {
     /// a Windows menu item holds one line, so the pieces are joined (Decision).
     pub fn title(&self) -> String {
         let mut text = format!("{} - {}", self.short_name, self.message());
-        if self.status == Status::Transferring {
-            if let Some(size) = self.size.filter(|s| *s > 0) {
-                text.push_str(&format!(" {}%", (self.bytes.min(size) as u128 * 100 / size as u128) as u64));
-            }
+        if let (Status::Transferring, Some(size)) = (self.status, self.size.filter(|s| *s > 0)) {
+            text.push_str(&format!(" {}%", (self.bytes.min(size) as u128 * 100 / size as u128) as u64));
         }
         text
     }
