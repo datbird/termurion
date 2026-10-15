@@ -96,6 +96,7 @@ mod url_handler_ui;
 mod cmdinfo_app;
 mod panels_app;
 mod announce_ui;
+mod paste_view_ui;
 mod nontext_paste_ui;
 mod disclosure_ui;
 mod cmdbuttons_ui;
@@ -574,6 +575,15 @@ pub struct App {
     belt_tips: Vec<(Rect, String)>,
     /// The statistics the slow-triggers offer of each pane shows on View Stats.
     slow_stats: HashMap<PaneId, String>,
+    /// When Launch Script ran for a failed component (by unique id) and for which script.
+    fix_launches: HashMap<String, (Instant, std::path::PathBuf)>,
+    /// Each pane's paste view state (keystroke passthrough, the hint) and what the last frame drew of it.
+    paste_view: HashMap<PaneId, crate::paste_view::State>,
+    paste_hits: Vec<(PaneId, scene::PasteHits)>,
+    /// Keys typed while a paste runs, held until it ends or passthrough turns on.
+    queued_keys: HashMap<PaneId, Vec<KeyEvent>>,
+    /// Passthrough just turned on: send the held keys now.
+    flush_queued_keys: bool,
     /// A refused resize waiting for the person's answer, by session.
     resize_pending: HashMap<PaneId, (f64, f64, f64, f64)>,
     /// The Find Globally window.
@@ -2395,6 +2405,11 @@ pub fn run() {
         coprocess_errors: HashMap::new(),
         panels: Vec::new(),
         resize_pending: HashMap::new(),
+        paste_view: HashMap::new(),
+        paste_hits: Vec::new(),
+        flush_queued_keys: false,
+        queued_keys: HashMap::new(),
+        fix_launches: HashMap::new(),
         slow_stats: HashMap::new(),
         belt_tips: Vec::new(),
         import_stage: None,
@@ -5733,7 +5748,7 @@ impl App {
                 return self.run_chord(&chord, event_loop);
             }
         }
-        if self.bar_key(ev, event_loop) || self.upload_key(ev) {
+        if self.bar_key(ev, event_loop) || self.upload_key(ev) || self.paste_view_key(ev) {
             return;
         }
         self.alt_infer_key(ev);
@@ -6023,6 +6038,9 @@ impl App {
             if self.title_press(button, clicks, x, y, event_loop) {
                 return;
             }
+        }
+        if button == MouseButton::Left && self.paste_view_press(x, y) {
+            return;
         }
         if button == MouseButton::Left && self.find_press(x, y) {
             return;
@@ -6855,6 +6873,9 @@ impl App {
                 self.find_mode_rect = Some(mode_rect);
                 self.find_old_buttons = old;
             }
+            // The paste progress view of each pane being pasted into.
+            let hits = self.paste_view_draw(&mut frame, tab);
+            self.paste_hits = hits;
         }
         for (id, held, until) in held_updates {
             if let Some(p) = self.panes.get_mut(&id) {
@@ -6898,6 +6919,13 @@ impl App {
             let (x, y) = self.cursor;
             if self.title_bars.iter().any(|(_, g)| g.lock.is_some_and(|r| r.contains(x, y))) {
                 tip_rect = Some(scene::tab_tooltip(&mut frame, crate::pane_title::LOCK_TIP, (x, y + TIP_POINTER_PT * self.scale()), Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell));
+            }
+        }
+        // The paste view's keyboard button (`PasteView.KeystrokeToolTip`).
+        if tip_rect.is_none() {
+            let (x, y) = self.cursor;
+            if let Some(text) = self.paste_view_tip(x, y) {
+                tip_rect = Some(scene::tab_tooltip(&mut frame, text, (x, y + TIP_POINTER_PT * self.scale()), Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell));
             }
         }
         // A toolbelt button's hover text (Session Status' Snooze and Notify).

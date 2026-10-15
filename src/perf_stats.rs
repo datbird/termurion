@@ -124,6 +124,62 @@ impl Histogram {
         if self.count == 0 { 0.0 } else { self.sum / self.count as f64 }
     }
 
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    pub fn sum(&self) -> f64 {
+        self.sum
+    }
+
+    /// `value_for_percentile` (`iTermHistogram.mm:150-165`): the kept values sorted, the one at
+    /// floor(n * p), at most the last. 0 when nothing is kept.
+    pub fn percentile(&self, p: f64) -> f64 {
+        if self.samples.is_empty() {
+            return 0.0;
+        }
+        let mut s = self.samples.clone();
+        s.sort_by(|a, b| a.total_cmp(b));
+        let i = ((s.len() as f64 * p).floor() as usize).min(s.len() - 1);
+        s[i]
+    }
+
+    /// `graphString` (`iTermHistogram.mm:572-583`): one block glyph a bucket, with the buckets
+    /// of the Freedman-Diaconis rule (at most 15), tall as the bucket's share of the largest.
+    pub fn graph_string(&self) -> String {
+        let n = self.samples.len();
+        if n == 0 {
+            return String::new();
+        }
+        let mut buckets: Vec<usize> = Vec::new();
+        let mut width = 2.0 * (self.percentile(0.75) - self.percentile(0.25)) / (n as f64).cbrt();
+        if width <= 0.0 {
+            buckets.push(n);
+        } else {
+            let min = self.percentile(0.0);
+            let range = self.percentile(1.0) - min;
+            if range / width > 15.0 {
+                width = range / 15.0;
+            }
+            for v in &self.samples {
+                let b = ((v - min) / width) as usize;
+                if buckets.len() <= b {
+                    buckets.resize(b + 1, 0);
+                }
+                buckets[b] += 1;
+            }
+        }
+        let largest = buckets.iter().copied().max().unwrap_or(1) as f64;
+        const GLYPHS: [char; 8] = ['\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+        buckets
+            .iter()
+            .map(|c| {
+                let f = (*c as f64 / largest).min(1.0);
+                if f <= 0.0 { ' ' } else { GLYPHS[(f * 7.0).round() as usize] }
+            })
+            .collect()
+    }
+
     #[cfg(test)]
     fn stored(&self) -> usize {
         self.samples.len()
@@ -151,6 +207,48 @@ impl Histogram {
             num(pct(0.95)),
             num(self.sum)
         )
+    }
+}
+
+/// `TabularFormatter.swift`: columns of padded text, a header line first, joined with two spaces.
+pub struct Tabular {
+    columns: Vec<(String, bool)>,
+    rows: Vec<Vec<String>>,
+}
+
+impl Tabular {
+    /// `iTermHistogram.tabularFormatterTime` (`iTermHistogram.swift:10-30`).
+    pub fn time() -> Tabular {
+        let c = |l: &str, left: bool| (l.to_string(), left);
+        Tabular { columns: vec![c("Min Time", false), c("Distribution", true), c("Max Time", false), c("# Samples", false), c("Mean Time", false), c("P50", false), c("P95", false), c("Total Time", false), c("", true)], rows: Vec::new() }
+    }
+
+    /// `add(to:precision:units:label:)` (`iTermHistogram.swift:32-52`): nothing for an empty histogram.
+    pub fn add_histogram(&mut self, h: &Histogram, precision: usize, units: &str, label: &str) {
+        if h.count() == 0 {
+            return;
+        }
+        let f = |v: f64| format!("{v:.precision$} {units}");
+        self.rows.push(vec![f(h.percentile(0.0)), h.graph_string(), f(h.percentile(1.0)), h.count().to_string(), f(h.sum() / h.count() as f64), f(h.percentile(0.5)), f(h.percentile(0.95)), f(h.sum()), label.to_string()]);
+    }
+
+    pub fn text(&self) -> String {
+        let width = |i: usize| self.rows.iter().map(|r| r[i].chars().count()).chain(Some(self.columns[i].0.chars().count())).max().unwrap_or(0);
+        let widths: Vec<usize> = (0..self.columns.len()).map(width).collect();
+        let pad = |cells: Vec<&str>| {
+            cells
+                .iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    let gap = widths[i].saturating_sub(s.chars().count());
+                    if self.columns[i].1 { format!("{s}{}", " ".repeat(gap)) } else { format!("{}{s}", " ".repeat(gap)) }
+                })
+                .collect::<Vec<_>>()
+                .join("  ")
+        };
+        let mut lines = vec![pad(self.columns.iter().map(|c| c.0.as_str()).collect())];
+        lines.extend(self.rows.iter().map(|r| pad(r.iter().map(String::as_str).collect())));
+        lines.join("\n")
     }
 }
 
@@ -226,6 +324,25 @@ impl FrameStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_time_table_follows_iterm2() {
+        let mut h = Histogram::default();
+        for v in [1.0, 2.0, 2.0, 3.0, 10.0] {
+            h.add(v);
+        }
+        assert_eq!((h.percentile(0.0), h.percentile(0.5), h.percentile(1.0)), (1.0, 2.0, 10.0));
+        let mut t = Tabular::time();
+        t.add_histogram(&Histogram::default(), 2, "\u{b5}s", "empty");
+        t.add_histogram(&h, 2, "\u{b5}s", "Trigger \u{201c}a\u{201d} with regex \u{201c}b\u{201d}");
+        let text = t.text();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "an empty histogram adds no row");
+        let head = lines[0].split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(head, "Min Time Distribution Max Time # Samples Mean Time P50 P95 Total Time");
+        assert!(lines[1].contains("1.00 \u{b5}s") && lines[1].contains("10.00 \u{b5}s") && lines[1].contains("18.00 \u{b5}s"), "{}", lines[1]);
+        assert!(lines[1].contains('\u{2588}'), "the graph has a full block");
+    }
 
     #[test]
     fn fps_meter_follows_iterm2() {

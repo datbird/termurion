@@ -402,7 +402,7 @@ pub(super) enum Alert {
     Result(String),
     /// A failed script status bar component's text and buttons (`RPC:533-555`): persistent;
     /// with Launch Script and Reveal in Explorer, the script's path.
-    Component { text: String, buttons: Vec<&'static str>, path: Option<std::path::PathBuf> },
+    Component { text: String, buttons: Vec<&'static str>, path: Option<std::path::PathBuf>, id: String },
 }
 
 impl Alert {
@@ -977,10 +977,58 @@ impl App {
             let owner = self.api_fns.owner(&script_fn::reg_signature(reg));
             self.script_log(owner, text.clone());
         }
+        // A success right after Launch Script fixed it: offer to launch it at every start.
+        if shown.is_ok() {
+            self.offer_autolaunch(id);
+        }
         let Some(entry) = self.script_components.get_mut(&(pane, id.to_string())) else { return };
         if entry.finish(nth, shown, missed) {
             self.redraw();
             self.redraw_all();
+        }
+    }
+
+    /// `maybeOfferToMoveScriptToAutoLaunch` (`RPC:386-411`): within a second of Launch Script, when
+    /// the script is not in the AutoLaunch folder yet and could move there without replacing a
+    /// script of that name.
+    fn offer_autolaunch(&mut self, unique_id: &str) {
+        let Some((at, path)) = self.fix_launches.remove(unique_id) else { return };
+        if at.elapsed() >= std::time::Duration::from_secs(1) {
+            return;
+        }
+        let folder = crate::scripts::autolaunch_folder(&self.scripts_folder());
+        if path.starts_with(&folder) {
+            return;
+        }
+        let Some(name) = path.file_name() else { return };
+        let (Some(from), Some(dir)) = (crate::localfs::judge(&path), crate::localfs::judge(&folder)) else { return };
+        if !crate::localfs::exists(&from) || crate::localfs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        if dir.join(name).is_some_and(|d| crate::localfs::exists(&d)) {
+            return;
+        }
+        self.ask_scripts(super::scripts_alerts::ask(
+            crate::script_statusbar::AUTOLAUNCH_HEADING,
+            crate::script_statusbar::AUTOLAUNCH_TEXT,
+            &[crate::api_auth::OK, crate::api_auth::CANCEL],
+            Some(&crate::script_statusbar::autolaunch_id(&path.to_string_lossy())),
+            crate::warnings::Kind::Permanent,
+            super::scripts_alerts::Then::MoveToAutoLaunch(path),
+        ));
+    }
+
+    /// OK of that offer: `moveScriptToAutoLaunch:`.
+    pub(super) fn move_to_autolaunch(&mut self, path: std::path::PathBuf) {
+        let folder = crate::scripts::autolaunch_folder(&self.scripts_folder());
+        let Some(name) = path.file_name() else { return };
+        let moved = crate::localfs::judge(&path).zip(crate::localfs::judge(&folder)).and_then(|(from, dir)| {
+            crate::localfs::create_dir_all(&dir).ok()?;
+            let to = dir.join(name)?;
+            crate::localfs::rename(&from, &to).ok()
+        });
+        if moved.is_none() {
+            self.banners.set("script", "Could not move the script into the AutoLaunch folder.".to_string());
         }
     }
 
@@ -1023,7 +1071,7 @@ impl App {
         let (text, buttons) = script_statusbar::recovery(text, path.is_some(), running, could_launch);
         let path = path.filter(|_| buttons.len() > 1);
         let showing = self.script_alert.as_ref().map(|(_, a, _)| a);
-        queue_alert(&mut self.script_alerts, showing, Alert::Component { text, buttons, path });
+        queue_alert(&mut self.script_alerts, showing, Alert::Component { text, buttons, path, id: unique_id.to_string() });
     }
 
     /// A status bar component registration (`didRegisterStatusBarComponent:`, `RPC:456-462`):
@@ -1279,7 +1327,11 @@ impl App {
             // "Reveal in Script Console" (`H:588-590`).
             (Alert::Failed { reveal: Some(id), .. }, Some(1)) => self.reveal_script_entry(&id),
             // Launch Script, explicitly (`RPC:509-523`), and Reveal in Explorer (`RPC:525-531`).
-            (Alert::Component { path: Some(path), .. }, Some(1)) => self.launch_script(crate::script_launch::Request { path, args: Vec::new(), explicit: true }),
+            (Alert::Component { path: Some(path), id, .. }, Some(1)) => {
+                // Remembered for the offer to keep it (`_dateOfLaunchToFix`, `RPC:521`).
+                self.fix_launches.insert(id, (Instant::now(), path.clone()));
+                self.launch_script(crate::script_launch::Request { path, args: Vec::new(), explicit: true });
+            }
             (Alert::Component { path: Some(path), .. }, Some(2)) => self.reveal_path(&path),
             _ => {}
         }
@@ -1578,7 +1630,7 @@ mod tests {
         c.start(32);
         c.finish(32, Ok(vec!["new".into()]), None);
         assert!(c.texts.is_none());
-        let component = Alert::Component { text: "x".into(), buttons: vec!["OK"], path: None };
+        let component = Alert::Component { text: "x".into(), buttons: vec!["OK"], path: None, id: String::new() };
         assert_eq!(script_statusbar::ERROR_HEADING, component.form().0);
         assert_eq!(component.buttons(), ["OK"]);
         assert_eq!(CLICK_TIMEOUT_SECS, 30.0);

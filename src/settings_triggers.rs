@@ -28,6 +28,37 @@ pub fn take_reveal() -> Option<String> {
     REVEAL.with(|r| r.borrow_mut().take())
 }
 
+/// The regex fields' visualization button (`toggleVisualization:`, `iTermAddTriggerViewController.m:1475`):
+/// "Show visualization" opens the diagram in a popover, "Hide visualization" closes it.
+pub const SHOW_VISUALIZATION: &str = "Show visualization";
+pub const HIDE_VISUALIZATION: &str = "Hide visualization";
+
+thread_local! {
+    /// A press of a visualization button, for the app to open or close the popover on its next tick.
+    static VISUALIZE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    static VISUALIZING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The regex whose diagram the person asked for (the press consumed); an empty request closes.
+pub fn take_visualization() -> Option<String> {
+    VISUALIZE.with(|v| v.borrow_mut().take())
+}
+
+/// The app says whether the popover is open now (the button's label and what a press does).
+pub fn set_visualizing(open: bool) {
+    VISUALIZING.with(|v| v.set(open));
+}
+
+fn visualization_button(ui: &mut egui::Ui, regex: &str) {
+    let open = VISUALIZING.with(|v| v.get());
+    let label = if open { HIDE_VISUALIZATION } else { SHOW_VISUALIZATION };
+    if ui.button("\u{25a4}").on_hover_text(label).clicked() {
+        // Closing sends nothing: the app sees the open popover and closes it; opening sends the regex.
+        VISUALIZE.with(|v| *v.borrow_mut() = Some(if open { String::new() } else { regex.to_string() }));
+        ui.ctx().request_repaint();
+    }
+}
+
 /// The CPU Time row (`iTermAddTriggerViewController.m:425-470`): its label and the help the (?)
 /// button shows. The row appears only when the session being edited has timed this trigger.
 pub const CPU_TIME_LABEL: &str = "CPU Time:";
@@ -888,11 +919,9 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
         }
     });
     // The "Copied" toast, a second long (`ToastWindowController`).
-    if let Some(at) = ui.data(|d| d.get_temp::<std::time::Instant>(egui::Id::new("trigger-copied"))) {
-        if at.elapsed() < std::time::Duration::from_secs(1) {
-            ui.label(egui::RichText::new(crate::trigger_file::COPIED).strong());
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
-        }
+    if ui.data(|d| d.get_temp::<std::time::Instant>(egui::Id::new("trigger-copied"))).filter(|at| at.elapsed() < std::time::Duration::from_secs(1)).is_some() {
+        ui.label(egui::RichText::new(crate::trigger_file::COPIED).strong());
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
     }
     ui.horizontal(|ui| {
         if ui.button("+").clicked() {
@@ -965,15 +994,21 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
                     Some(e) => changed |= event_params(ui, e, t),
                     None => {
                         ui.label(regex_label(browser, t.match_type));
-                        changed |= ui.add(egui::TextEdit::singleline(&mut t.regex).code_editor().char_limit(triggers::MAX_PATTERN).desired_width(360.0)).changed();
+                        ui.horizontal(|ui| {
+                            changed |= ui.add(egui::TextEdit::singleline(&mut t.regex).code_editor().char_limit(triggers::MAX_PATTERN).desired_width(360.0)).changed();
+                            visualization_button(ui, &t.regex);
+                        });
                         ui.end_row();
                         if browser && t.match_type == triggers::PAGE_CONTENT_REGEX {
                             let mut content = t.extra.get(CONTENT_REGEX_KEY).and_then(|v| v.as_str()).unwrap_or("").to_string();
                             ui.label(CONTENT_REGEX_LABEL);
-                            if ui.add(egui::TextEdit::singleline(&mut content).code_editor().char_limit(triggers::MAX_PATTERN).desired_width(360.0)).changed() {
-                                t.extra.insert(CONTENT_REGEX_KEY.into(), content.into());
-                                changed = true;
-                            }
+                            ui.horizontal(|ui| {
+                                if ui.add(egui::TextEdit::singleline(&mut content).code_editor().char_limit(triggers::MAX_PATTERN).desired_width(360.0)).changed() {
+                                    t.extra.insert(CONTENT_REGEX_KEY.into(), content.clone().into());
+                                    changed = true;
+                                }
+                                visualization_button(ui, &content);
+                            });
                             ui.end_row();
                         }
                     }

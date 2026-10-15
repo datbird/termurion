@@ -117,6 +117,7 @@ fn colorref(c: alacritty_terminal::vte::ansi::Rgb) -> u32 {
 /// The print dialog, then the pages. Ok(false) when the user cancelled.
 /// `black_and_white` is the box's state going in and coming out; when it is checked after the
 /// dialog the colors are dropped from `rows` (`print::black_and_white`).
+#[allow(clippy::too_many_arguments)]
 pub fn print(owner: HWND, setup: &mut Setup, title: &str, rows: &mut [Row], black_and_white: &mut bool, cols: usize, family: &str, size_pt: f32) -> Result<bool, String> {
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::Controls::{CreatePropertySheetPageW, PROPSHEETPAGEW, PSP_DLGINDIRECT, PSP_USETITLE};

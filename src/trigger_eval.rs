@@ -800,11 +800,12 @@ impl Screen {
 
     /// `PTYTriggerEvaluator.stats`: for each trigger its name and regex and how long checking it took.
     pub fn trigger_stats(&self) -> String {
-        let mut out = String::new();
+        let mut table = crate::perf_stats::Tabular::time();
         for c in &self.triggers.list {
-            out.push_str(&format!("Trigger \u{201c}{}\u{201d} with regex \u{201c}{}\u{201d}\n  CPU time in \u{b5}s: {}\n", c.trigger.name, c.trigger.regex, c.cpu.summary()));
+            let label = format!("Trigger \u{201c}{}\u{201d} with regex \u{201c}{}\u{201d}", c.trigger.name, c.trigger.regex);
+            table.add_histogram(&c.cpu, 2, "\u{b5}s", &label);
         }
-        out
+        table.text()
     }
 
     /// Each trigger's kept check times in microseconds, in list order (the editor's histogram).

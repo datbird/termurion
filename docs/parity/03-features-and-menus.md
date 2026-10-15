@@ -839,9 +839,9 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Termurion's VT e
 
 ## 4. Windows and alerts (UI parity sweep, package W)
 
-Each row names iTerm2's source (under `sources/`) and Termurion's state; the texts are pinned by `src/win_texts.rs`. Rulings: `docs/superpowers/rulings/ui-sweep-w-rulings.txt`. This table is not in the parity audit's counts (the roadmap's counts sentence is the parent's to change); its states are have, partial, missing or n/a.
+Each row names iTerm2's source (under `sources/`) and Termurion's state; the texts are pinned by `src/win_texts.rs`. Rulings: `docs/superpowers/rulings/ui-sweep-w-rulings.txt`.
 
-| Surface | iTerm2 source | State in Termurion |
+| Surface | iTerm2 source | Termurion status |
 |---|---|---|
 | Crash Reporter window | ThirdParty/UKCrashReporter | have (W1): shown at the next launch after a crash dump; Send opens a new GitHub issue with private paths removed, Discard deletes the dump, Remind Me Later keeps it |
 | What's New carousel | AppLaunch/iTermOnboardingWindowController | have (W2): four pages; the Companion page is ruled out (R12) |
@@ -858,8 +858,9 @@ Each row names iTerm2's source (under `sources/`) and Termurion's state; the tex
 | Global search mode popup | Find globally window | have (W12) |
 | AI key registration window | AITerm/AITerm.xib | have (W13) |
 | Session Status tooltips, orchestration notices, Copy Mode notification | Toolbelt, ChatViewController, iTermCopyModeHandler | have (W14) |
-| Triggers editor event fields, CPU Time histogram, Copy Trigger as URL | Settings/iTermAddTriggerViewController, TriggerController | have (W15); regex visualization not built |
+| Triggers editor event fields, CPU Time histogram, Copy Trigger as URL | Settings/iTermAddTriggerViewController, TriggerController | have (W15, W38, W39): event fields, CPU Time histogram, Copy Trigger as URL, View Stats table, regex visualization in a WebView2 popover |
 | Slow triggers offer | PTYSession/iTermNaggingController.m | have (W15) |
+| RPC status bar AutoLaunch offer | StatusBar/Components/iTermStatusBarRPCProvidedTextComponent.m | have (W40) |
 | Error in Trigger Parameter alert | Triggers/Trigger.m | have (W16) |
 | Resize refusal announcements | PTYSession.m | have (W17) |
 | Gnarly JSON offer | iTermNaggingController.m | have (W17) |
@@ -868,11 +869,12 @@ Each row names iTerm2's source (under `sources/`) and Termurion's state; the tex
 | File and image paste choices, Large Paste | Pasting/iTermNonTextPasteHelper.swift | have (W20) without the Upload buttons |
 | Tabs paste question "Tab size in spaces:" | Pasting/NumberOfSpacesAccessoryView.xib | have (W21) |
 | Empty background image folder alert | Settings/ProfilesWindowPreferencesViewController.m | have (W22) |
+| iterm2: URL command alerts | AppKit/CommandURLHandler.swift | n/a, Termurion registers only ftp, ssh and telnet and handles no iterm2: or termurion: URL from outside (W29) |
 | Horizontal scroll announcement | PTYSession.m | n/a, a trackpad swipe switching tabs (W24); Windows has no such swipe |
 | Option key frustration offer | TryingTooHard/iTermMetaFrustrationDetector | n/a, Normal already sends Esc+ on Windows (W25), so there is nothing to offer |
 | Session picker help popover, inspector pick button | Help/iTermHelpMessageViewController, API/iTermScriptInspector | n/a, a macOS menu bar stop icon popover (W26, W27); Termurion's picker is in the pane |
 | Save Contents "Include timestamps" accessory | TerminalView/PTYTextView.m | missing, see ruling W35 (no accessory hook in the Windows save dialog) |
-| Paste progress keyboard toggle | Pasting/PasteViewController.m | missing, see ruling W31 (paste progress is the info bar by an earlier ruling) |
+| Paste progress view with the keystroke queue toggle | Pasting/PasteViewController.m | have (W41), by Robert's override of 2026-10-15; the status bar progress component has no keyboard toggle |
 
 ## Counts
 

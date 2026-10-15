@@ -245,24 +245,18 @@ impl App {
         for (id, chunk, what) in writes {
             self.user_write(id, chunk.as_bytes(), what);
         }
-        // With a status bar shown for the pane, the progress is its temporary right
-        // component (`iTermPasteViewManager.m:70-89`); without one, the info bar.
+        // With a status bar shown for the pane, the progress is its temporary right component
+        // (`iTermPasteViewManager.m:70-89`); without one, the paste view is drawn (`paste_view_ui`).
         for (id, pct) in bars {
             let on_bar = self.bar_shown_for(id);
-            match pct {
-                Some(pct) if !on_bar => {
-                    // Both styles say it in the xibs' words ("Pasting\u{2026}"); the bar widget is not drawn in either.
-                    let layout = crate::dropdown_views::paste_layout(self.dropdown_views.old_style());
-                    let text = format!("{} {pct}%", layout.label_text);
-                    self.ask(id, PASTE_BAR, &text, &["Cancel"], true);
-                }
-                _ => {
-                    self.drop_bar(id, PASTE_BAR);
-                    if on_bar {
-                        self.redraw();
-                        self.redraw_all();
-                    }
-                }
+            if pct.is_none() {
+                self.drop_bar(id, PASTE_BAR);
+            }
+            if pct.is_some() || on_bar {
+                self.redraw();
+            }
+            if pct.is_none() && on_bar {
+                self.redraw_all();
             }
         }
         due.map(|t| self.started + std::time::Duration::from_secs_f64(t.max(now)))

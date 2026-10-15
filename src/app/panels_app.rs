@@ -77,6 +77,8 @@ impl App {
         self.sync_panel(event_loop, Kind::BuildingScript, building, || Box::new(BuildingScriptView));
         let importing = self.import_stage.is_some();
         self.sync_panel(event_loop, Kind::Importing, importing, || Box::new(ImportingView::new()));
+        self.regex_visualization(event_loop);
+        let hint_until = self.paste_view_tick(event_loop);
         // The trigger check times of the session Edit Session points at, for the editor's CPU Time row.
         let editing = self.settings.as_ref().and_then(|s| s.edit_session);
         crate::settings_triggers::set_cpu(editing.and_then(|p| self.panes.get(&p)).map(|p| p.screen.trigger_cpu()).unwrap_or_default());
@@ -90,7 +92,7 @@ impl App {
             moving = true;
         }
         let spin = moving.then(|| Instant::now() + Duration::from_millis(33));
-        [spin, watching].into_iter().flatten().min()
+        [spin, watching, hint_until].into_iter().flatten().min()
     }
 
     /// Types the installer's text into the session (the keyboard's Enter for each line end) and
@@ -127,6 +129,33 @@ impl App {
             }
         }
         again.then(|| Instant::now() + Duration::from_millis(100))
+    }
+
+    /// The trigger editor's visualization button: the diagram in a popover (iTerm2's
+    /// `iTermRegexVisualizationViewController` in an NSPopover), or closed again. Without the web
+    /// runtime the page opens in the browser, as Smart Selection's does.
+    fn regex_visualization(&mut self, event_loop: &ActiveEventLoop) {
+        use crate::web_popover::Kind as PopKind;
+        let showing = matches!(&self.web_popover, Some((None, p)) if matches!(p.kind(), PopKind::Html { .. }));
+        if let Some(regex) = crate::settings_triggers::take_visualization() {
+            if regex.is_empty() && showing {
+                self.web_popover = None;
+            } else {
+                let dark = self.dark();
+                if self.web_runtime() == crate::webhost::Runtime::Missing {
+                    if let Err(e) = crate::regex_railroad::open(&regex, dark) {
+                        self.banners.set("action", format!("Could not show the visualization: {e}"));
+                    }
+                } else {
+                    let html = crate::regex_railroad::page(&regex, dark);
+                    let size = crate::regex_railroad::page_size(&html);
+                    let at = self.pointer_screen();
+                    self.open_web_popover(None, PopKind::Html { html }, size, at, event_loop);
+                }
+            }
+        }
+        let showing = matches!(&self.web_popover, Some((None, p)) if matches!(p.kind(), PopKind::Html { .. }));
+        crate::settings_triggers::set_visualizing(showing);
     }
 
     pub(super) fn close_panel(&mut self, kind: Kind, pane: Option<PaneId>) {

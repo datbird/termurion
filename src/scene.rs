@@ -731,6 +731,68 @@ pub fn find_bar_old(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f3
     OldFind { mode: Rect { x: field.x, y: field.y, w: (cell.0 * 2.0).min(field.w), h: field.h }, previous, next, close }
 }
 
+/// What a click on the paste view lands on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PasteHits {
+    pub view: Rect,
+    pub cancel: Rect,
+    /// The keyboard button, drawn only while the paste waits for the prompt.
+    pub keyboard: Option<Rect>,
+    /// The hint callout under the button.
+    pub hint: Option<Rect>,
+}
+
+/// The paste progress view at the pane's top right, in `PasteView.xib`'s (old) or
+/// `MinimalPasteView.xib`'s (new) frames (`dropdown_views::paste_layout`, origin bottom-left, so y is
+/// flipped): the label, the bar filled to `fraction`, Cancel, and while `waiting` the keyboard button
+/// (lit when `passthrough`) a gap left of Cancel with the queued-keystrokes `hint` under it.
+#[allow(clippy::too_many_arguments)]
+pub fn paste_view(frame: &mut Frame, pane: Rect, cell: (f32, f32), scale: f32, old_style: bool, label: &str, fraction: f32, waiting: bool, passthrough: bool, hint: Option<&str>) -> PasteHits {
+    let l = crate::dropdown_views::paste_layout(old_style);
+    let (w, h) = ((l.size.0 * scale).min(pane.w), l.size.1 * scale);
+    let r = Rect { x: pane.x + pane.w - w, y: pane.y, w, h };
+    let at = |f: crate::dropdown_views::Frame| Rect { x: r.x + f.x * scale, y: r.y + (h - (f.y + f.h) * scale), w: f.w * scale, h: f.h * scale };
+    frame.quads.push(Quad { rect: r, color: rgba(FIND_BAR, 1.0) });
+    cut_rows_from(frame, r, cell.1);
+    let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+    let text_y = |b: Rect| b.y + ((b.h - cell.1) / 2.0).max(0.0);
+    let text_at = |frame: &mut Frame, b: Rect, text: &str, color: Rgb, clip: Rect| frame.rows.push(TextRow { x: b.x + ((b.w - text.chars().count() as f32 * cell.0) / 2.0).max(0.0), y: text_y(b), spans: vec![span(text.to_string(), color)], clip, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    let lab = at(l.label);
+    frame.rows.push(TextRow { x: lab.x, y: text_y(lab), spans: vec![span(label.to_string(), TAB_TEXT)], clip: lab, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    let bar = at(l.bar);
+    let mut bar_w = bar.w;
+    let cancel = at(l.cancel);
+    // The bar gives up the room of the keyboard button while it shows (`setWaitingForPrompt:`).
+    let keyboard = waiting.then_some(Rect { x: cancel.x - cancel.w - crate::paste_view::BUTTON_GAP * scale, y: cancel.y, w: cancel.w, h: cancel.h });
+    if let Some(k) = keyboard {
+        bar_w = (bar_w - (k.w + crate::paste_view::BUTTON_GAP * scale)).max(0.0);
+    }
+    frame.quads.push(Quad { rect: Rect { w: bar_w, ..bar }, color: rgba(rgb(0, 0, 0), 0.35) });
+    frame.quads.push(Quad { rect: Rect { w: bar_w * fraction.clamp(0.0, 1.0), ..bar }, color: rgba(rgb(0x3b, 0x78, 0xd8), 1.0) });
+    text_at(frame, cancel, l.cancel_text, TAB_TEXT, r);
+    if let Some(k) = keyboard {
+        if passthrough {
+            frame.quads.push(Quad { rect: k, color: rgba(rgb(0x3b, 0x78, 0xd8), 0.45) });
+        }
+        text_at(frame, k, "\u{2328}", if passthrough { TAB_TEXT } else { TAB_TEXT_DIM }, r);
+    }
+    // The callout: under the button, pointing up (the view is at the top).
+    let hint_rect = keyboard.zip(hint).map(|(k, text)| {
+        let cols = ((crate::paste_view::HINT_MAX_WIDTH * scale) / cell.0).floor().max(8.0) as usize;
+        let lines = wrap_words(text, cols);
+        let (hw, hh) = (lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f32 * cell.0 + cell.0, lines.len() as f32 * cell.1 + cell.1 / 2.0);
+        let x = (k.x + k.w / 2.0 - hw / 2.0).clamp(pane.x + 2.0, (pane.x + pane.w - hw - 2.0).max(pane.x + 2.0));
+        let hr = Rect { x, y: k.y + k.h + 1.0, w: hw, h: hh };
+        frame.quads.push(Quad { rect: hr, color: rgba(rgb(0x1a, 0x1a, 0x1a), 0.95) });
+        cut_rows_from(frame, hr, cell.1);
+        for (i, line) in lines.into_iter().enumerate() {
+            frame.rows.push(TextRow { x: hr.x + cell.0 / 2.0, y: hr.y + cell.1 / 4.0 + i as f32 * cell.1, spans: vec![span(line, TAB_TEXT)], clip: hr, scale: 1.0, face: crate::render::DEFAULT_FACE });
+        }
+        hr
+    });
+    PasteHits { view: r, cancel, keyboard, hint: hint_rect }
+}
+
 /// iTerm2's Copy Mode cursor: a flag in the lower third of the cell at `row`, `col` (on
 /// screen), white, or light blue while selecting, with a black edge.
 pub fn copy_cursor(frame: &mut Frame, rect: Rect, cell: (f32, f32), row: usize, col: usize, selecting: bool) {

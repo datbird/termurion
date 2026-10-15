@@ -47,6 +47,16 @@ mod tests {
             ("CopyMode/iTermCopyModeHandler.m:502", "Copy Mode lets you make a selection with the keyboard. Click to view the manual.", copymode::NOTIFICATION_DETAIL),
             ("TerminalView/SessionTitleView.m:99", "This pane is locked. It cannot be moved, swapped, or dragged, and closing it requires confirmation. Right-click to unlock.", pane_title::LOCK_TIP),
             ("AITerm/ChatViewController.swift:4086", "Orchestration disabled.", orch::DISABLED_NOTICE),
+            ("StatusBar/Components/iTermStatusBarRPCProvidedTextComponent.m:407", "Always launch this script when Termurion starts?", crate::script_statusbar::AUTOLAUNCH_HEADING),
+            ("StatusBar/Components/iTermStatusBarRPCProvidedTextComponent.m:402", "This will move the script into the AutoLaunch folder.", crate::script_statusbar::AUTOLAUNCH_TEXT),
+            ("StatusBar/Components/iTermStatusBarRPCProvidedTextComponent.m:540", "Launch Script", crate::script_statusbar::LAUNCH_SCRIPT),
+            ("Settings/iTermAddTriggerViewController.m:628", "Show visualization", settings_triggers::SHOW_VISUALIZATION),
+            ("Settings/iTermAddTriggerViewController.m:1487", "Hide visualization", settings_triggers::HIDE_VISUALIZATION),
+            ("Pasting/Base.lproj/PasteView.xib:25", "Pasting\u{2026}", crate::paste_view::PASTING),
+            ("Pasting/PasteViewController.m:97", "Sending\u{2026}", crate::paste_view::SENDING),
+            ("Pasting/PasteViewController.m:139", "Send keystrokes to terminal", crate::paste_view::KEYSTROKES_ACCESSIBILITY),
+            ("Pasting/PasteViewController.m:143", "Type directly to the terminal (for example to answer a password prompt) instead of queueing your keystrokes until the paste finishes.", crate::paste_view::KEYSTROKES_TOOLTIP),
+            ("Pasting/PasteViewController.m:218", "Typing is queued while pasting. Click the keyboard to toggle queueing.", crate::paste_view::QUEUED_HINT),
             ("Pasting/iTermNonTextPasteHelper.swift", "Paste Failed", nontext_paste::FAILED_HEADING),
             ("Pasting/iTermNonTextPasteHelper.swift", "The copied file no longer exists.", nontext_paste::COPIED_FILE_MISSING),
         ]
@@ -60,6 +70,18 @@ mod tests {
     }
 
     /// The row's text is never one of the Mac words iTerm2 uses for what is Windows here.
+    /// The statistics table has iTerm2's column titles in iTerm2's order (`iTermHistogram.swift:10-30`).
+    #[test]
+    fn trigger_stats_table_has_iterm2_columns() {
+        let mut t = crate::perf_stats::Tabular::time();
+        let mut h = crate::perf_stats::Histogram::default();
+        h.add(5.0);
+        t.add_histogram(&h, 2, "\u{b5}s", "label");
+        let head = t.text();
+        let head = head.lines().next().unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(head, "Min Time Distribution Max Time # Samples Mean Time P50 P95 Total Time");
+    }
+
     #[test]
     fn no_mac_words_remain_in_these_texts() {
         for (at, _, got) in rows() {

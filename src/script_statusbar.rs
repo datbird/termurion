@@ -38,6 +38,15 @@ pub const NOT_RUNNING_SUFFIX: &str = "It looks like the script is not running. L
 pub const LAUNCH_SCRIPT: &str = "Launch Script";
 pub const REVEAL_IN_EXPLORER: &str = "Reveal in Explorer";
 
+/// The offer after Launch Script fixed a component (`RPC:404-409`).
+pub const AUTOLAUNCH_HEADING: &str = "Always launch this script when Termurion starts?";
+pub const AUTOLAUNCH_TEXT: &str = "This will move the script into the AutoLaunch folder.";
+
+/// The silence key of that offer, one per script.
+pub fn autolaunch_id(full_path: &str) -> String {
+    format!("NoSyncAutoLaunchScript_{full_path}")
+}
+
 /// The setting that remembers which script registered a component (its full path), written
 /// at registration (`H:1880-1896`, `H:1385-1387`).
 pub fn script_path_key(unique_id: &str) -> String {

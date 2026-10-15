@@ -72,6 +72,8 @@ pub mod panel_views;
 pub mod whats_new;
 pub mod shell_wizard;
 pub mod announce;
+pub mod paste_view;
+pub mod regex_railroad;
 pub mod win_texts;
 pub mod nontext_paste;
 pub mod shell_utilities;

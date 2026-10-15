@@ -232,6 +232,8 @@ pub(super) enum Then {
     Paste(crate::layout::PaneId),
     /// Files or an image on the clipboard: how to paste them (`app/nontext_paste_ui`); dropped, the paste stops.
     NonText(crate::layout::PaneId),
+    /// "Always launch this script when Termurion starts?": OK (0) moves the script into the AutoLaunch folder.
+    MoveToAutoLaunch(std::path::PathBuf),
     /// Closing tmux tabs or a window with them: the pane the question is about (its window is
     /// the one closed) and the question's identifier (`CLOSE_TAB`, `tmux_persist::close_win_id`);
     /// Hide, Kill, Detach tmux Session or Cancel.
@@ -630,11 +632,10 @@ impl App {
         let tab_size = self.scripts_alert.as_ref().and_then(|(w, _)| w.tab_size());
         let Some((_, mut ask)) = self.scripts_alert.take() else { return true };
         // The tabs question's tab size is kept when Convert tabs to spaces is chosen (`saveToUserDefaults`).
-        if let (Some(n), Then::Paste(_)) = (tab_size, &ask.then) {
-            if ask.spec.labels.get(index).is_some_and(|l| l == "Convert tabs to spaces") {
-                self.globals.set("PasteTabToStringTabStopSize", toml::Value::Integer(n as i64));
-                self.save_globals();
-            }
+        let converts = ask.spec.labels.get(index).is_some_and(|l| l == "Convert tabs to spaces");
+        if let (Some(n), Then::Paste(_), true) = (tab_size, &ask.then, converts) {
+            self.globals.set("PasteTabToStringTabStopSize", toml::Value::Integer(n as i64));
+            self.save_globals();
         }
         // "Permanently Forget Saved Selection": the saved answer goes and the same alert shows
         // again, next, without the remembered mode (`iTermWarning.m:526-541`).
@@ -686,6 +687,11 @@ impl App {
             Then::TurnOnOsc7 { was_silenced } => self.osc7_answered(was_silenced, index),
             Then::Paste(pane) => self.paste_answered(pane, Some(index)),
             Then::NonText(pane) => self.nontext_answered(pane, Some(index)),
+            Then::MoveToAutoLaunch(path) => {
+                if index == 0 {
+                    self.move_to_autolaunch(path);
+                }
+            }
             Then::PrintGuard { pane, job } => self.print_guard_answered(pane, job, index),
             Then::TmuxClose(anchor, id) => self.tmux_close_answered(anchor, &id, index),
             Then::BroadcastInput(anchor, selector) => {

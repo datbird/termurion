@@ -1250,6 +1250,7 @@ mod tests {
     /// Callers of a sink whose input is not text a remote host wrote, and why.
     const NOT_PANE_TEXT: &[(&str, &str, &str)] = &[
         ("app/browser_extensions_app.rs", "browser_extensions_reveal", "only SELECTS the extensions folder in Explorer: a local drive path (root_ok, judged) the profile or the default names, never pane text; nothing is opened or run"),
+        ("regex_railroad.rs", "open", "opens a page Termurion just wrote itself in the temp folder (the diagram of a regular expression the person is editing), never pane text"),
         ("app/ai_app.rs", "ai_key_event", "opens a vendor page from Termurion's own text table (settings_ai::registration_message), never pane text"),
         ("app/alerts_ui.rs", "reveal_notified", "opens Termurion's own help page (links::HELP_COPY_MODE) after its own notification was clicked, never pane text"),
         ("app/panels_app.rs", "panel_act", "opens links Termurion's own windows carry (the issue page, What's New pages), never pane text"),
