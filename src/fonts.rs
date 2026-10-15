@@ -224,7 +224,7 @@ fn name_string(table: &[u8], id: u16) -> Option<String> {
         let (platform, language, len, off) = (be16(rec)?, be16(rec + 4)?, be16(rec + 8)? as usize, be16(rec + 10)? as usize);
         let raw = table.get(strings + off..strings + off + len)?;
         let (rank, text) = match platform {
-            3 | 0 => (if language == 0x0409 { 0 } else { 2 }, String::from_utf16_lossy(&raw.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect::<Vec<_>>())),
+            3 | 0 => (if language == 0x0409 { 0 } else { 2 }, String::from_utf16_lossy(&raw.chunks(2).filter(|c| c.len() == 2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect::<Vec<_>>())),
             1 => (if language == 0 { 1 } else { 3 }, raw.iter().map(|b| *b as char).collect()),
             _ => continue,
         };

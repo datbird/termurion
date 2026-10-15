@@ -145,7 +145,7 @@ fn picker(ui: &mut egui::Ui, profile: &mut Profile, key: &str, families: &[Strin
         // Alternates, then the font's stylistic sets (`OptionsButtonController`).
         if ligatures_on {
             let glyph = crate::settings_keys::icon_text(ui.ctx(), '\u{E712}');
-            let title = glyph.map_or_else(|| egui::RichText::new("\u{2026}"), |g| g);
+            let title = glyph.unwrap_or_else(|| egui::RichText::new("\u{2026}"));
             let sets = info.as_ref().map(|i| i.sets.clone()).unwrap_or_default();
             ui.menu_button(title, |ui| {
                 let mark = |on: bool, name: &str| format!("{}{name}", if on { "\u{2713} " } else { "    " });
