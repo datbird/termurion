@@ -75,6 +75,7 @@ pub mod browser_world;
 pub mod browser_js;
 pub mod browser_ctx;
 pub mod ctx_help;
+pub mod ctx_menu;
 pub mod browser_smart;
 pub mod browser_tip;
 pub mod browser_keys;
