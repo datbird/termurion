@@ -612,7 +612,10 @@ impl Screen {
 
     /// Stops the file that is arriving and drops the rest of it (`stopReceivingFile`).
     pub fn abort_file(&mut self) {
-        self.osc.abort_file();
+        // The terminal's own parser is inside the string too: a CAN ends it, as at the size cap.
+        if self.osc.abort_file() {
+            let _ = self.feed_raw(&[0x18]);
+        }
         self.multipart = None;
     }
 
