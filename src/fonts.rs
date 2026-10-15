@@ -83,6 +83,38 @@ pub fn blacklisted(postscript: &str) -> bool {
     LIST.iter().any(|prefix| postscript.starts_with(prefix))
 }
 
+/// One table of an OpenType font file: `index` picks the font of a collection. Reads only the
+/// table directory.
+pub fn sfnt_table<'a>(data: &'a [u8], index: u32, tag: &[u8; 4]) -> Option<&'a [u8]> {
+    let be16 = |o: usize| data.get(o..o + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+    let be32 = |o: usize| data.get(o..o + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+    let base = if data.get(0..4)? == b"ttcf" { be32(12 + 4 * index as usize)? as usize } else { 0 };
+    for i in 0..be16(base + 4)? as usize {
+        let rec = base + 12 + 16 * i;
+        if data.get(rec..rec + 4)? == tag {
+            let (off, len) = (be32(rec + 8)? as usize, be32(rec + 12)? as usize);
+            return data.get(off..off.checked_add(len)?);
+        }
+    }
+    None
+}
+
+/// Whether a font's `gasp` table asks for smoothed (anti-aliased) drawing at `ppem` pixels per em:
+/// the first range whose largest size reaches `ppem` has the gray-scale or symmetric-smoothing
+/// bit. This is what Settings' "(recommended for this font)" reads on Windows, where there is no
+/// CoreText `CTFontShouldAntiAlias`.
+pub fn gasp_smooths(table: &[u8], ppem: u16) -> bool {
+    let be16 = |o: usize| table.get(o..o + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+    let n = be16(2).unwrap_or(0) as usize;
+    for i in 0..n {
+        let (Some(max), Some(behavior)) = (be16(4 + 4 * i), be16(6 + 4 * i)) else { return false };
+        if ppem <= max {
+            return behavior & 0x0002 != 0 || behavior & 0x0008 != 0;
+        }
+    }
+    false
+}
+
 /// The ligature level of a font (`it_ligatureLevel`): 0 blacklisted, 2 with contextual
 /// alternates (`EnableContextualAlternates`), else 1.
 pub fn ligature_level(blacklisted: bool, calt: bool) -> u8 {
@@ -288,6 +320,26 @@ pub fn double_strike_shift(mode: MaskMode, scale: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gasp_decides_the_antialiasing_hint() {
+        // version 1, two ranges: grid-fit only up to 8 ppem, gray-scale and grid-fit beyond.
+        let table = [0, 1, 0, 2, 0, 8, 0, 1, 0xFF, 0xFF, 0, 3];
+        assert!(!gasp_smooths(&table, 8));
+        assert!(gasp_smooths(&table, 9));
+        assert!(!gasp_smooths(&[], 12), "no table, no hint");
+    }
+
+    #[test]
+    fn a_font_file_table_is_found_by_its_tag() {
+        // A one-table sfnt: the directory says "gasp" is 4 bytes at offset 28.
+        let mut f = vec![0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        f.extend_from_slice(b"gasp");
+        f.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 28, 0, 0, 0, 4]);
+        f.extend_from_slice(&[1, 2, 3, 4]);
+        assert_eq!(sfnt_table(&f, 0, b"gasp"), Some(&[1u8, 2, 3, 4][..]));
+        assert_eq!(sfnt_table(&f, 0, b"cmap"), None);
+    }
+
     use super::*;
 
     const M: Metrics = Metrics { ascent: 12.4, descent: 3.2, leading: 0.0, advance_w: 7.6 };

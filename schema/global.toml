@@ -44,7 +44,7 @@ help = "The keys that stand for iTerm2's Cmd in Termurion's shortcuts, menus and
 key = "SwitchTabModifier"
 tab = "Keys"
 section = "Navigation Shortcuts"
-label = "Shortcut to select a tab"
+label = "Shortcut to select a tab:"
 type = "enum"
 default = 4
 choices = [ { value = 9, label = "No Shortcut" }, { value = 5, label = "Alt+Number" }, { value = 4, label = "Win+Number" }, { value = 6, label = "Win+Alt+Number" }, { value = 1, label = "Ctrl+Number" } ]
@@ -54,7 +54,7 @@ help = "Modifier held with a number key to switch to tab N."
 key = "SwitchPaneModifier"
 tab = "Keys"
 section = "Navigation Shortcuts"
-label = "Shortcut to choose a split pane"
+label = "Shortcut to choose a split pane:"
 type = "enum"
 default = 9
 choices = [ { value = 9, label = "No Shortcut" }, { value = 5, label = "Alt+Number" }, { value = 4, label = "Win+Number" }, { value = 6, label = "Win+Alt+Number" }, { value = 1, label = "Ctrl+Number" } ]
@@ -64,7 +64,7 @@ help = "Modifier held with a number key to jump to split pane N."
 key = "SwitchWindowModifier"
 tab = "Keys"
 section = "Navigation Shortcuts"
-label = "Shortcut to activate a window"
+label = "Shortcut to activate a window:"
 type = "enum"
 default = 6
 choices = [ { value = 9, label = "No Shortcut" }, { value = 5, label = "Alt+Number" }, { value = 4, label = "Win+Number" }, { value = 6, label = "Win+Alt+Number" }, { value = 1, label = "Ctrl+Number" } ]
@@ -83,7 +83,7 @@ help = "Number shortcuts use the U.S. positions of the digit keys, whatever the 
 key = "LeftControl"
 tab = "Keys"
 section = "Remap Modifiers"
-label = "Remap left Control key to"
+label = "Remap left Ctrl key to:"
 type = "enum"
 default = 11
 choices = [ { value = 11, label = "Left Control" }, { value = 12, label = "Right Control" }, { value = 2, label = "Left Alt" }, { value = 3, label = "Right Alt" }, { value = 7, label = "Left Win" }, { value = 8, label = "Right Win" }, { value = 9, label = "None" } ]
@@ -93,7 +93,7 @@ help = "What the physical left Control key acts as."
 key = "RightControl"
 tab = "Keys"
 section = "Remap Modifiers"
-label = "Remap right Control key to"
+label = "Remap right Ctrl key to:"
 type = "enum"
 default = 12
 choices = [ { value = 11, label = "Left Control" }, { value = 12, label = "Right Control" }, { value = 2, label = "Left Alt" }, { value = 3, label = "Right Alt" }, { value = 7, label = "Left Win" }, { value = 8, label = "Right Win" }, { value = 9, label = "None" } ]
@@ -103,7 +103,7 @@ help = "What the physical right Control key acts as."
 key = "LeftOption"
 tab = "Keys"
 section = "Remap Modifiers"
-label = "Remap left Alt key to"
+label = "Remap left Alt key to:"
 type = "enum"
 default = 2
 choices = [ { value = 11, label = "Left Control" }, { value = 12, label = "Right Control" }, { value = 2, label = "Left Alt" }, { value = 3, label = "Right Alt" }, { value = 7, label = "Left Win" }, { value = 8, label = "Right Win" }, { value = 9, label = "None" } ]
@@ -113,7 +113,7 @@ help = "What the physical left Alt (Option) key acts as."
 key = "RightOption"
 tab = "Keys"
 section = "Remap Modifiers"
-label = "Remap right Alt key to"
+label = "Remap right Alt key to:"
 type = "enum"
 default = 3
 choices = [ { value = 11, label = "Left Control" }, { value = 12, label = "Right Control" }, { value = 2, label = "Left Alt" }, { value = 3, label = "Right Alt" }, { value = 7, label = "Left Win" }, { value = 8, label = "Right Win" }, { value = 9, label = "None" } ]
@@ -123,7 +123,7 @@ help = "What the physical right Alt (Option) key acts as."
 key = "LeftCommand"
 tab = "Keys"
 section = "Remap Modifiers"
-label = "Remap left Win key to"
+label = "Remap left Win key to:"
 type = "enum"
 default = 7
 choices = [ { value = 11, label = "Left Control" }, { value = 12, label = "Right Control" }, { value = 2, label = "Left Alt" }, { value = 3, label = "Right Alt" }, { value = 7, label = "Left Win" }, { value = 8, label = "Right Win" }, { value = 9, label = "None" } ]
@@ -133,7 +133,7 @@ help = "What the physical left Win (Command) key acts as."
 key = "RightCommand"
 tab = "Keys"
 section = "Remap Modifiers"
-label = "Remap right Win key to"
+label = "Remap right Win key to:"
 type = "enum"
 default = 8
 choices = [ { value = 11, label = "Left Control" }, { value = 12, label = "Right Control" }, { value = 2, label = "Left Alt" }, { value = 3, label = "Right Alt" }, { value = 7, label = "Left Win" }, { value = 8, label = "Right Win" }, { value = 9, label = "None" } ]
@@ -143,7 +143,7 @@ help = "What the physical right Win (Command) key acts as."
 key = "FunctionKey"
 tab = "Keys"
 section = "Remap Modifiers"
-label = "Remap fn key to"
+label = "Remap fn key to:"
 type = "enum"
 default = 10
 choices = [ { value = 10, label = "Function" } ]
@@ -199,28 +199,10 @@ help = "Win shortcuts Windows keeps for itself go to Windows instead of a key ma
 key = "CommandSelection"
 tab = "Pointer"
 section = "General"
-label = "Win-click opens filename/URL"
+label = "Win-Click opens filename/URL (semantic history)"
 type = "bool"
 default = true
 help = "Win-click opens the clicked file, folder, or URL (Semantic History)."
-
-[[setting]]
-key = "DoubleClickPerformsSmartSelection"
-tab = "Pointer"
-section = "Selection"
-label = "Double-click performs smart selection"
-type = "bool"
-default = false
-help = "A double click makes a Smart Selection and a quadruple click selects a word, the other way round from the default. iTerm2 keeps this under General > Selection."
-
-[[setting]]
-key = "EnterCopyModeAutomatically"
-tab = "Pointer"
-section = "Selection"
-label = "Automatically enter copy mode on Shift+Arrow key with selection"
-type = "bool"
-default = true
-help = "With text selected, Shift with an arrow, Home, End, Page Up, or Page Down starts Copy Mode at that end of the selection."
 
 [[setting]]
 key = "Selection Respects Soft Boundaries"
@@ -235,7 +217,7 @@ help = "Double-click and Smart Selection stop at vertical pane dividers drawn by
 key = "PassOnControlClick"
 tab = "Pointer"
 section = "General"
-label = "Ctrl-click reported to apps, does not open menu"
+label = "Ctrl-Click reported to apps, does not open menu"
 type = "bool"
 default = false
 help = "A Ctrl-click goes to a mouse-reporting app instead of opening the context menu."
@@ -253,7 +235,7 @@ help = "A right click goes to a mouse-reporting app instead of running its bindi
 key = "OptionClickMovesCursor"
 tab = "Pointer"
 section = "General"
-label = "Alt-click moves cursor"
+label = "Alt-Click moves cursor"
 type = "bool"
 default = true
 help = "An Alt-click moves the cursor to the clicked cell with arrow keys."
@@ -307,8 +289,8 @@ help = "Mouse button and click count bindings."
 
 [[setting]]
 key = "Mark Alert Action"
-tab = "Marks"
-section = "Alerts"
+tab = "Stored"
+section = ""
 label = "Mark alert"
 type = "enum"
 default = "Post Notification"
@@ -317,8 +299,8 @@ help = "What Alert on Next Mark does when a mark is set (Edit > Marks and Annota
 
 [[setting]]
 key = "Alert On Marks in Offscreen Sessions"
-tab = "Marks"
-section = "Alerts"
+tab = "Stored"
+section = ""
 label = "Alert on Marks in Offscreen Sessions"
 type = "bool"
 default = false
@@ -326,8 +308,8 @@ help = "Alerts on every mark in a session that is not in the selected tab."
 
 [[setting]]
 key = "findMode_iTerm"
-tab = "Find"
-section = "Find"
+tab = "Stored"
+section = ""
 label = "Find mode"
 type = "enum"
 default = 0
@@ -360,6 +342,25 @@ label = "Applications in terminal may access clipboard"
 type = "bool"
 default = false
 help = "Lets programs put text on the clipboard with OSC 52 and OSC 1337 Copy. A program that asks to read the clipboard is asked about separately."
+
+[[setting]]
+key = "PhonyAllowSendingClipboardContents"
+tab = "General"
+section = "Selection"
+label = "Allow sending of clipboard contents?"
+type = "enum"
+default = 2
+choices = [ { value = 2, label = "Ask Each Time" }, { value = 0, label = "Never" }, { value = 1, label = "Always" } ]
+help = "Whether a program may read the clipboard with OSC 52. A synthetic row: Never stores NoSyncNeverAllowPaste and Always stores NoSyncAllowPaste, as iTerm2's pasteboard reporter does; this key itself is never stored."
+
+[[setting]]
+key = "DoubleClickPerformsSmartSelection"
+tab = "General"
+section = "Selection"
+label = "Double-click performs smart selection"
+type = "bool"
+default = false
+help = "A double click makes a Smart Selection and a quadruple click selects a word, the other way round from the default. iTerm2 keeps this under General > Selection."
 
 [[setting]]
 key = "WordSelectionMode"
@@ -415,6 +416,15 @@ label = "When pasting a dropped filename, wrap it in double quotes"
 type = "bool"
 default = false
 help = "When pasting a dropped filename, wrap it in double quotes"
+
+[[setting]]
+key = "EnterCopyModeAutomatically"
+tab = "General"
+section = "Selection"
+label = "Automatically enter copy mode on Shift+Arrow key with selection"
+type = "bool"
+default = true
+help = "With text selected, Shift with an arrow, Home, End, Page Up, or Page Down starts Copy Mode at that end of the selection."
 
 [[setting]]
 key = "MaximumBytesToProvideToPythonAPI"
@@ -594,7 +604,7 @@ help = "The following tags are recognized: <u>, <i>, and <b>. You can also use &
 key = "ScrollableSideTabBar"
 tab = "Appearance"
 section = "Tabs"
-label = "Tab bar scrolls when tabs don\u2019t fit"
+label = "Tab bar scrolls when tabs don’t fit"
 type = "bool"
 default = true
 help = "When the tabs do not fit, the tab bar scrolls; off, the tabs that do not fit go in a menu at the bar's end."
@@ -639,10 +649,19 @@ help = "When the tab bar appears or goes away the window keeps its size and the 
 key = "PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges"
 tab = "Appearance"
 section = "Tabs"
-label = "\u2026but only if it would cause the window to go off-screen"
+label = "…but only if it would cause the window to go off-screen"
 type = "bool"
 default = false
 help = "The window keeps its size only when growing for the tab bar would take it past the edge of the screen; it then also keeps its size when the bar goes away again."
+
+[[setting]]
+key = "AddNewTabAtEndOfTabs"
+tab = "Appearance"
+section = "Tabs"
+label = "New tabs open at end of tab bar"
+type = "bool"
+default = true
+help = "On, a new tab goes at the end of the tab bar; off, it goes next to the current tab."
 
 [[setting]]
 key = "PerPaneBackgroundImage"
@@ -738,7 +757,7 @@ help = "Each Automatic Profile Switching decision goes to the Script Console's \
 key = "WindowNumber"
 tab = "Appearance"
 section = "Windows"
-label = "Show window number"
+label = "Show window number in title bar"
 type = "bool"
 default = true
 help = "A window with a title bar shows its number (1, 2, ...) as a label at the right of the title, with its switch shortcut. A window without a title bar, in full screen, or with Show window number in titlebar accessory? off, starts its title with \"N. \" instead."
@@ -754,9 +773,9 @@ help = "Choosing a profile from the \u201cProfiles\u201d menu opens a new window
 
 [[setting]]
 key = "WindowPlacement"
-tab = "Appearance"
-section = "Windows"
-label = "New window placement"
+tab = "General"
+section = "Window"
+label = "New window placement:"
 type = "enum"
 default = 3
 choices = [ { value = 0, label = "Let Windows decide the position of new windows and use size from profile" }, { value = 1, label = "Smart Window Placement" }, { value = 2, label = "Remember the size and position of previously closed windows" }, { value = 3, label = "Remember the position of previously closed windows and use size from profile" } ]
@@ -901,7 +920,7 @@ help = "The Profiles window also opens when Termurion starts."
 key = "OpenArrangementAtStartup"
 tab = "General"
 section = "Startup"
-label = "Open default window arrangement"
+label = "Window restoration policy:"
 type = "bool"
 default = false
 help = "Termurion starts with the default window arrangement (Window > Arrangements) instead of one window."
@@ -957,7 +976,7 @@ help = "Runs the Python API server on 127.0.0.1 and [::1] port 1912 so scripts c
 key = "API Authentication Method"
 tab = "General"
 section = "Python API"
-label = "Authentication method for Python API"
+label = "Python API:"
 type = "enum"
 choices = [{ value = 0, label = "Require a cookie" }, { value = 1, label = "Allow all apps to connect" }]
 default = 0
@@ -1999,7 +2018,7 @@ help = "Where tmux windows open when Termurion attaches. Tabs in the attaching w
 key = "TmuxUsesDedicatedProfile"
 tab = "General"
 section = "tmux"
-label = "Use \"tmux\" profile rather than profile of the connecting session"
+label = "Use “tmux” profile rather than profile of the connecting session"
 type = "bool"
 default = true
 help = "tmux panes use a profile named tmux, made from the default profile the first time."
@@ -2298,10 +2317,10 @@ help = "Max response tokens\nSet by the AI Model popup and the model editor."
 key = "AI Timeout"
 tab = "General"
 section = "AI"
-label = "AI timeout"
+label = "Timeout:"
 type = "int"
 default = 1200
-help = "AI timeout\nSet by Settings > General > AI."
+help = "Timeout:\nSet by Settings > General > AI."
 
 [[setting]]
 key = "AitermURL"
@@ -2451,10 +2470,10 @@ help = "Custom header list (legacy)\nLegacy; copied once into each manual model.
 key = "AIZeroDataRetention"
 tab = "General"
 section = "AI"
-label = "Enable \u201czero data retention\u201d (send whole conversation every time)"
+label = "Enable “zero data retention” (send whole conversation every time)"
 type = "bool"
 default = false
-help = "Enable \u201czero data retention\u201d (send whole conversation every time)\nSet by Settings > General > AI."
+help = "Enable \u201czero data retention\u201d\u00a0(send whole conversation every time)\nSet by Settings > General > AI."
 
 [[setting]]
 key = "AIModelUpdatesEnabled"
@@ -2845,7 +2864,7 @@ help = "The window edge the tab bar sits on: the top or bottom, or a column of t
 key = "StatusBarPosition"
 tab = "Appearance"
 section = "General"
-label = "Status bar location"
+label = "Status bar location:"
 type = "enum"
 default = 0
 choices = [ { value = 0, label = "Top" }, { value = 1, label = "Bottom" } ]
@@ -2873,7 +2892,7 @@ help = "Shows a small title bar above each split pane, with the session's title,
 key = "ShowPaneTitlesEvenIfOnlyOnePane"
 tab = "Appearance"
 section = "Panes"
-label = "\u2026even if there is only one pane"
+label = "…even if there is only one pane"
 type = "bool"
 default = false
 help = "Keeps the title bar on a pane that is alone in its tab."
@@ -3830,7 +3849,7 @@ help = "Termurion's windows get no taskbar button and do not appear in Alt+Tab; 
 key = "UIElementRequiresHotkeys"
 tab = "Appearance"
 section = "General"
-label = "\u2026but only if all windows are hotkey windows"
+label = "…but only if all windows are hotkey windows"
 type = "bool"
 default = false
 help = "Leaves the taskbar and Alt+Tab only while every open window is a hotkey window."
@@ -4361,7 +4380,7 @@ help = "Extend background color into margins in alternate screen mode?"
 key = "TerminalMargin"
 tab = "Appearance"
 section = "Panes"
-label = "Side margins"
+label = "Side margins:"
 type = "int"
 default = 5
 help = "Space between the terminal text and the left and right edges of a pane, in points."
@@ -4370,7 +4389,7 @@ help = "Space between the terminal text and the left and right edges of a pane, 
 key = "TerminalVMargin"
 tab = "Appearance"
 section = "Panes"
-label = "Top & bottom margins"
+label = "Top & bottom margins:"
 type = "int"
 default = 2
 help = "Space between the terminal text and the top and bottom edges of a pane, in points."

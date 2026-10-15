@@ -337,6 +337,12 @@ pub mod session_profile;
 
 #[cfg(windows)]
 pub mod settings_ui;
+pub mod settings_title;
+pub mod settings_fonts;
+pub mod regex_outline;
+pub mod settings_profile_actions;
+#[cfg(test)]
+mod ui_labels;
 pub mod settings_presets;
 
 #[cfg(windows)]

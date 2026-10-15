@@ -732,6 +732,19 @@ impl Renderer {
         names
     }
 
+    /// Whether `family`'s regular face asks to be smoothed at `ppem` pixels per em, from its `gasp`
+    /// table (Settings' "(recommended for this font)"). A font with no such table does not ask.
+    pub fn font_wants_antialiasing(&self, family: &str, ppem: u16) -> bool {
+        let resolved = self.resolve_family(family);
+        let db = self.font_system.db();
+        let face = db
+            .faces()
+            .filter(|f| f.style == glyphon::fontdb::Style::Normal && f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(&resolved)))
+            .min_by_key(|f| ((f.weight.0 as i32 - 400).abs(), f.weight.0))
+            .map(|f| f.id);
+        face.and_then(|id| db.with_face_data(id, |data, index| fonts::sfnt_table(data, index, b"gasp").is_some_and(|t| fonts::gasp_smooths(t, ppem)))).unwrap_or(false)
+    }
+
     /// Whether face `id`'s profile draws Powerline symbols itself.
     pub fn face_powerline(&self, id: u16) -> bool {
         self.face_of(id).key.powerline

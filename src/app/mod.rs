@@ -5025,9 +5025,11 @@ impl App {
                 let profile = self.store.get(&p.profile)?;
                 crate::wintitle::custom_tab_format(profile.bool("Use Custom Tab Title"), &profile.string("Custom Tab Title"), p.tmux_io().is_some())
             });
-            self.tabs.push(Tab { title, ..Tab::new(self.next_tab_id, Layout::new(id), id) });
+            // "New tabs open at end of tab bar": off puts it next to the current tab (`PT:12174`).
+            let at = if self.globals.bool("AddNewTabAtEndOfTabs") || self.tabs.is_empty() { self.tabs.len() } else { (self.active + 1).min(self.tabs.len()) };
+            self.tabs.insert(at, Tab { title, ..Tab::new(self.next_tab_id, Layout::new(id), id) });
             self.next_tab_id += 1;
-            self.active = self.tabs.len() - 1;
+            self.active = at;
             self.check_alpha_surfaces();
             self.relayout();
         }
@@ -7690,7 +7692,22 @@ impl ApplicationHandler<UserEvent> for App {
                     let win = slot.as_mut().unwrap();
                     win.show_remembered = self.show_remembered;
                     win.window_exists = window_exists;
+                    // The installed fonts are listed once, for the Text tab's font menus.
+                    if win.fonts.is_empty() {
+                        if let Some(g) = self.gpu.as_ref() {
+                            win.fonts = g.renderer.installed_families();
+                        }
+                    }
                     let edit = win.redraw(&mut self.store, &mut self.globals, &mut self.snippets);
+                    // "(recommended for this font)" is answered from the font's own table.
+                    let asked = std::mem::take(&mut win.font_questions);
+                    if let (false, Some(g)) = (asked.is_empty(), self.gpu.as_ref()) {
+                        for (family, ppem) in asked {
+                            let wants = g.renderer.font_wants_antialiasing(&family, ppem);
+                            win.font_hints.insert(format!("{family}@{ppem}"), wants);
+                        }
+                        win.request_redraw();
+                    }
                     let answered = std::mem::take(&mut win.answered);
                     // Profiles > Session's "Configure Status Bar" opens the setup window.
                     let setup = slot.as_mut().and_then(|s| s.configure_status_bar.take());
