@@ -180,6 +180,11 @@ impl EguiHost {
             });
             self.probed = Some(found);
         }
+        // egui asks for the next frame itself (a popup's sizing pass, its fade-in, a pressed
+        // button): without the redraw those frames only came with the next mouse move.
+        if wants_redraw_now(&out) {
+            self.window.request_redraw();
+        }
         self.state.handle_platform_output(&self.window, out.platform_output);
         let jobs = self.ctx.tessellate(out.shapes, out.pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [self.config.width, self.config.height], pixels_per_point: out.pixels_per_point };
@@ -224,6 +229,11 @@ impl EguiHost {
     }
 }
 
+/// True when egui wants another frame at once (a popup's sizing pass, a fade, a pressed button).
+pub fn wants_redraw_now(out: &egui::FullOutput) -> bool {
+    out.viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.repaint_delay.is_zero())
+}
+
 /// What a selection probe does with a frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProbePlan {
@@ -257,5 +267,65 @@ mod tests {
         assert_eq!(probe_plan(true, false), ProbePlan::Wait, "a real Ctrl+C or a Copy click is never swallowed");
         assert_eq!(probe_plan(true, true), ProbePlan::Wait);
         assert_eq!(probe_plan(false, true), ProbePlan::Skip, "the focused field would answer with its own text");
+    }
+
+    /// One frame of a ComboBox the way the host runs it: a frame per input batch, then more only
+    /// while `again` says the last frame asked for one. Returns (popup open, popup shapes, asked).
+    fn frame(ctx: &egui::Context, events: Vec<egui::Event>, t: f64) -> (bool, usize, bool) {
+        let mut input = egui::RawInput { time: Some(t), screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0))), events, ..Default::default() };
+        input.viewport_id = egui::ViewportId::ROOT;
+        let mut v = 0;
+        let mut out = ctx.run_ui(input, |ui| {
+            egui::ComboBox::from_id_salt("theme").selected_text("Regular").show_ui(ui, |ui| {
+                for n in ["Regular", "Light", "Dark", "Minimal", "Compact"] {
+                    ui.selectable_value(&mut v, 0, n);
+                }
+            });
+        });
+        out.textures_delta.clear();
+        let shapes = out.shapes.len();
+        let asked = wants_redraw_now(&out);
+        (egui::Popup::is_any_open(ctx), shapes, asked)
+    }
+
+    fn click(ctx: &egui::Context, t: &mut f64, honor: bool) -> Vec<(bool, usize, bool)> {
+        let at = egui::pos2(40.0, 12.0);
+        let ev = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut log = Vec::new();
+        for events in [vec![egui::Event::PointerMoved(at)], vec![ev(true)], vec![ev(false)]] {
+            *t += 0.016;
+            let mut r = frame(ctx, events, *t);
+            log.push(r);
+            // A real host redraws at once when the last frame asked for it.
+            let mut n = 0;
+            while honor && r.2 && n < 30 {
+                *t += 0.016;
+                r = frame(ctx, vec![], *t);
+                log.push(r);
+                n += 1;
+            }
+        }
+        log
+    }
+
+    #[test]
+    fn a_combo_box_popup_finishes_opening_when_the_host_draws_the_frames_egui_asks_for() {
+        let ctx = egui::Context::default();
+        let mut t = 0.0;
+        frame(&ctx, vec![], t);
+        frame(&ctx, vec![], t + 0.016);
+        let log = click(&ctx, &mut t, true);
+        let opened = log.iter().position(|f| f.0).expect("the click opens the popup");
+        assert!(log[opened].2, "the opening frame is a sizing pass: egui asks for the next frame at once");
+        let last = log.last().unwrap();
+        assert!(last.0 && last.1 > log[opened].1, "the popup is fully drawn once the asked frames ran: {log:?}");
+        assert!(!last.2, "and the window goes idle after it");
+    }
+
+    #[test]
+    fn paint_redraws_when_egui_asks_for_a_frame() {
+        let source = include_str!("egui_host.rs").split("#[cfg(test)]").next().unwrap().to_string();
+        let paint = source.split("pub fn paint").nth(1).unwrap();
+        assert!(paint.contains("wants_redraw_now(&out)"), "a host that drops egui's repaint requests shows popups half drawn");
     }
 }
