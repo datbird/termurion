@@ -10,6 +10,10 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 
 ## In progress
 
+(none)
+
+## Done
+
 9. **After a resize, typed text lands mid-screen, not at the prompt.** Seen 2026-10-15 in
    PowerShell: a long `dir`, then a window resize, then typing; the echo appeared about 15 rows
    above the prompt. Cause: after a resize the grid pulled scrollback down and moved the prompt
@@ -17,10 +21,11 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
    the cursor, so the shell drew at ConPTY's row. Fixed for a resize at a quiet prompt in
    3f57288f (alacritty_terminal patch 34: on a pty-backed screen, growth adds rows below the
    cursor and pulls nothing from history), with live ConPTY tests in `src/resize_live.rs` and a
-   `pty: resize` line in host.log. Still open: a resize while output is printing can still leave
-   the cursor on the wrong row.
-
-## Done
+   `pty: resize` line in host.log. A resize while output is printing: 19444cd0 ships ConPTY
+   1.25.260930003, which asks the terminal for its cursor after a resize and takes the answer
+   (microsoft/terminal PR 19535), so the grid is the authority. Seeded live walks: 0 mismatches at
+   an idle prompt over 6 seeds, 0 to 1 with output in flight (only a key typed during a size
+   change; Windows Terminal has no sync for that case either).
 
 10. **The menu bar flashed on a Minimal window during a resize.** Seen 2026-10-15. Cause: the
     app kept a note that the bar was hidden, and paths that attach a bar (a menu rebuild, a

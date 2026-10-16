@@ -69,7 +69,7 @@ In tmux mode, one `pty` runs `tmux -CC` and `tmuxcc` feeds every pane's `core` f
 
 - Uses ConPTY through the `windows` crate.
 - Ships `conpty.dll` and `OpenConsole.exe` from Microsoft's ConPTY NuGet package (MIT) beside the exe.
-  Pinned version: `Microsoft.Windows.Console.ConPTY` 1.24.260710001.
+  Pinned version: `Microsoft.Windows.Console.ConPTY` 1.25.260930003 (1.24.260710001 until 2026-10-16).
   The copy of ConPTY built into Windows lags behind and has a history of mouse input bugs.
   The shipped copy gets the newest fixes. (Current ConPTY has no separate "passthrough mode" flag.
   Its only creation flags are cursor inheritance and glyph width.)
