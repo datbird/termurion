@@ -5,7 +5,7 @@ use crate::chrome;
 use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_EXTENDED_FRAME_BOUNDS, DWMWA_WINDOW_CORNER_PREFERENCE, DwmGetWindowAttribute, DwmSetWindowAttribute};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_SHIFT};
-use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetMenu, GetWindowRect};
 
 const THEME_SUBCLASS_ID: usize = 0x7468_656D;
 
@@ -57,6 +57,19 @@ pub(super) fn set_corners(hwnd: isize, preference: i32) {
 /// size, so the client area grows by the bar and a Resized event lays the window out.
 pub(super) fn hide_menu(menu: &muda::Menu, hwnd: isize) -> Result<(), String> {
     unsafe { menu.hide_for_hwnd(hwnd) }.map_err(|e| e.to_string())
+}
+
+/// Whether the window has a menu bar attached right now (the system's answer, not a note kept
+/// by the app).
+pub(super) fn menu_attached(hwnd: isize) -> bool {
+    // SAFETY: a plain query of a window of this thread.
+    !unsafe { GetMenu(hwnd as _) }.is_null()
+}
+
+/// Whether the window's menu bar has to change to be as wanted: a bar that should be hidden but
+/// is attached, or one that should show but is not.
+pub(super) fn menu_needs_change(hide: bool, attached: bool) -> bool {
+    hide == attached
 }
 
 /// Puts the menu bar back on the window.
@@ -121,21 +134,28 @@ impl App {
         set_outer_frame(&w, Rect { y: target.y - top, h: target.h + top + bottom, ..target });
     }
 
-    /// Hides the current window's menu bar in full screen with `HideMenuBarInFullscreen`, and
-    /// shows it again otherwise (`menu_should_hide`). Every way in or out of full screen draws
-    /// a frame after it, so this runs from `render`; the setting's change reaches each window
-    /// on its next frame.
+    /// Whether the current window's menu bar is to be hidden: in full screen with
+    /// `HideMenuBarInFullscreen` (`menu_should_hide`), and always in a Minimal or Compact window,
+    /// which has no room for the native bar: its caption strip is where the title bar and menu
+    /// bar were (`caption_ui`).
+    pub(super) fn want_menu_hidden(&self) -> bool {
+        menu_should_hide(self.full_screen(), self.globals.bool("HideMenuBarInFullscreen")) || self.compact_window()
+    }
+
+    /// Makes the current window's menu bar as `want_menu_hidden` says, by what the window has
+    /// now. Every way in or out of full screen draws a frame after it, so this runs from
+    /// `render`, and from a resize, where a bar attached behind the app's back would otherwise be
+    /// painted over the client (muda draws the dark bar on the window's whole DC). A bar that is
+    /// built or rebuilt is hidden as it is attached (`menu::replace_menu_bar`).
     pub(super) fn sync_menu_hidden(&mut self) {
-        // A Minimal or Compact window has no room for the native menu bar: its caption strip is
-        // where the title bar and menu bar were (`caption_ui`).
-        let hide = menu_should_hide(self.full_screen(), self.globals.bool("HideMenuBarInFullscreen")) || self.compact_window();
-        if hide == self.menu_hidden {
+        let hide = self.want_menu_hidden();
+        let (Some(hwnd), Some(bar)) = (self.hwnd(), self.menu_bar.as_ref()) else { return };
+        if !menu_needs_change(hide, menu_attached(hwnd)) || self.menu_refused == Some(hide) {
             return;
         }
-        // Noted even when it fails, so a refused call is not retried every frame.
-        self.menu_hidden = hide;
-        let (Some(hwnd), Some(bar)) = (self.hwnd(), self.menu_bar.as_ref()) else { return };
         let done = if hide { hide_menu(&bar.menu, hwnd) } else { show_menu(&bar.menu, hwnd) };
+        // Noted when it fails, so a refused call is not retried every frame.
+        self.menu_refused = done.is_err().then_some(hide);
         if let Err(e) = done {
             let what = if hide { "hide" } else { "show" };
             self.banners.set("menu", format!("Could not {what} the menu bar: {e}"));
@@ -289,3 +309,7 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "menu_hold_tests.rs"]
+mod menu_hold_tests;

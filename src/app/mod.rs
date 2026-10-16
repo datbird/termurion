@@ -660,8 +660,11 @@ pub struct App {
     /// The mode (dark or not) the current window last followed (`apply_theme`), so a change of
     /// it is known without asking winit, which does not track a forced theme.
     theme_applied: Option<bool>,
-    /// The current window's menu bar is hidden (full screen, `HideMenuBarInFullscreen`).
-    menu_hidden: bool,
+    /// The state (hidden or shown) the system refused to give the current window's menu bar, so a
+    /// refused call is not retried every frame. What the window has is read from the window
+    /// (`chrome_ui::menu_attached`), never remembered: a remembered flag went stale when a bar
+    /// was attached behind it.
+    menu_refused: Option<bool>,
     /// The last press was the click that activated its window, so its release, drags and hover
     /// are not reported either (`PTYMouseHandler.m:1511`); the next press clears it (13r and 13s read it).
     pub(super) first_mouse_down: bool,
@@ -2322,7 +2325,7 @@ pub fn run() {
         window_menu_text: Default::default(),
         border_applied: None,
         theme_applied: None,
-        menu_hidden: false,
+        menu_refused: None,
         first_mouse_down: false,
         caption_hover: None,
         caption_pressed: None,
@@ -7953,6 +7956,9 @@ impl ApplicationHandler<UserEvent> for App {
                 self.tmux_save_all_windows();
                 // Entering or leaving full screen resizes the window: the border goes or comes back.
                 self.apply_border();
+                // A bar attached behind the app's back would be painted over the client by this
+                // resize's non-client repaint.
+                self.sync_menu_hidden();
             }
             WindowEvent::ScaleFactorChanged { mut inner_size_writer, .. } => {
                 // winit is about to size the window for a title bar the caption subclass removes:

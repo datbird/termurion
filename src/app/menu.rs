@@ -323,7 +323,8 @@ impl App {
         // The window's earlier bar (a resident window woken, a rebuild) comes off first: dropped
         // after the new one is attached, muda takes the window's menu away, the new bar with it.
         let earlier = self.menu_bar.take().map(|b| b.menu);
-        if let Err(e) = unsafe { replace_menu_bar(earlier, &menu, hwnd) } {
+        self.menu_refused = None;
+        if let Err(e) = unsafe { replace_menu_bar(earlier, &menu, hwnd, self.want_menu_hidden()) } {
             self.banners.set("menu", format!("Could not attach the menu bar: {e}"));
         }
         // Tips beside highlighted items, after the delay `MenuTipDelay` sets (iTerm2 reads it per tip).
@@ -1502,13 +1503,20 @@ fn choose_color(hwnd: isize, initial: Option<crate::palette::Rgb>, swatches: &[c
 ///
 /// # Safety
 /// `hwnd` is a live window of this thread.
-unsafe fn replace_menu_bar(earlier: Option<Menu>, menu: &Menu, hwnd: isize) -> muda::Result<()> {
+///
+/// A bar for a window that is to hide it (`hide`: Minimal, Compact, full screen) is taken off
+/// again at once, so it is never attached while the app believes it hidden.
+unsafe fn replace_menu_bar(earlier: Option<Menu>, menu: &Menu, hwnd: isize, hide: bool) -> muda::Result<()> {
     if let Some(old) = earlier {
         // Not on this window (another window's bar): its drop takes it off that one.
         let _ = unsafe { old.remove_for_hwnd(hwnd) };
         drop(old);
     }
-    unsafe { menu.init_for_hwnd_with_theme(hwnd, MenuTheme::Auto) }
+    unsafe { menu.init_for_hwnd_with_theme(hwnd, MenuTheme::Auto) }?;
+    if hide {
+        unsafe { menu.hide_for_hwnd(hwnd) }?;
+    }
+    Ok(())
 }
 
 /// The resident wake's menu bar (TWEAKS 8 follow-up): a window that gets a second bar keeps it.
@@ -1539,7 +1547,7 @@ mod menu_bar_replace_tests {
         let first = bar();
         unsafe { first.init_for_hwnd(w) }.unwrap();
         let second = bar();
-        unsafe { replace_menu_bar(Some(first), &second, w) }.unwrap();
+        unsafe { replace_menu_bar(Some(first), &second, w, false) }.unwrap();
         assert!(!unsafe { GetMenu(w as _) }.is_null(), "the new bar is on the window after the old one is gone");
         drop(second);
         unsafe { DestroyWindow(w as _) };
@@ -1559,11 +1567,26 @@ mod menu_bar_replace_tests {
         unsafe { DestroyWindow(w as _) };
     }
 
+    /// A bar built for a window that is to hide it never shows: it is detached as it attaches.
+    #[test]
+    fn a_rebuilt_bar_for_a_hidden_window_stays_off_it() {
+        let w = window();
+        let first = bar();
+        unsafe { first.init_for_hwnd(w) }.unwrap();
+        let second = bar();
+        unsafe { replace_menu_bar(Some(first), &second, w, true) }.unwrap();
+        assert!(unsafe { GetMenu(w as _) }.is_null(), "no bar on the window");
+        assert!(unsafe { second.show_for_hwnd(w) }.is_ok(), "but the bar is still the window's, to be shown again");
+        assert!(!unsafe { GetMenu(w as _) }.is_null());
+        drop(second);
+        unsafe { DestroyWindow(w as _) };
+    }
+
     #[test]
     fn install_menus_replaces_through_the_helper() {
         let src = include_str!("menu.rs");
         let body = src.split("pub(super) fn install_menus").nth(1).unwrap().split("muda::MenuEvent::set_event_handler").next().unwrap();
-        assert!(body.contains("replace_menu_bar(earlier, &menu, hwnd)") && !body.contains("menu.init_for_hwnd"));
+        assert!(body.contains("replace_menu_bar(earlier, &menu, hwnd, self.want_menu_hidden())") && !body.contains("menu.init_for_hwnd"));
     }
 }
 
