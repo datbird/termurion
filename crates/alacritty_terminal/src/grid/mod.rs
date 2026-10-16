@@ -145,6 +145,13 @@ pub struct Grid<T> {
     /// not count, as in iTerm2's scrollback overflow.
     #[cfg_attr(feature = "serde", serde(default))]
     dropped: u64,
+
+    /// Termurion patch: growing the screen adds blank rows at the bottom and leaves the
+    /// cursor row alone, instead of pulling scrollback rows down (the default). ConPTY keeps
+    /// its own screen this way, so a terminal that pulled history would put the prompt on
+    /// another row than the one ConPTY addresses (patch 34).
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub grow_keeps_rows: bool,
 }
 
 impl<T: GridCell + Default + PartialEq> Grid<T> {
@@ -154,6 +161,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             max_scroll_limit,
             scrolled_off: 0,
             dropped: 0,
+            grow_keeps_rows: false,
             display_offset: 0,
             saved_cursor: Cursor::default(),
             cursor: Cursor::default(),

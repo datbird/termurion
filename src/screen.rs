@@ -996,6 +996,9 @@ impl Screen {
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
         self.bump_ticks();
+        // ConPTY adds rows below its cursor and pulls no scrollback down; the grid must do the
+        // same or its prompt sits on another row than the one ConPTY addresses.
+        self.term.set_grow_keeps_rows(self.pty_backed);
         self.term.resize(GridSize { cols, rows });
         self.sync_selection();
         // Reflow moved rows: triggers go on from the cursor.
@@ -3153,6 +3156,80 @@ mod tests {
         s.resize(10, 5);
         assert_eq!(runs(&s), vec![(2, 0, 9)], "the rows grown back are not selected");
         assert_eq!(copied(&s), Some(vec!["r2 \u{5d0}\u{5d1}".to_string()]));
+    }
+
+    /// ConPTY adds rows below its cursor when the window grows and pulls no scrollback down, so a
+    /// pty-backed screen does the same: the prompt stays on the row ConPTY addresses.
+    #[test]
+    fn a_pty_screen_grows_below_its_cursor_without_pulling_history() {
+        let fill = |pty: bool| {
+            let mut s = Screen::new(10, 3);
+            s.pty_backed = pty;
+            s.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\n$ ");
+            s
+        };
+        let rows = |s: &Screen| (0..s.term().screen_lines() as i32).map(|l| s.line_text(l)).collect::<Vec<_>>();
+        let mut s = fill(true);
+        assert_eq!(rows(&s), ["d", "e", "$"]);
+        let history = s.term().history_size();
+        s.resize(10, 6);
+        assert_eq!(rows(&s), ["d", "e", "$", "", "", ""]);
+        assert_eq!(s.term().grid().cursor.point.line.0, 2, "the cursor stays on its row");
+        assert_eq!(s.term().history_size(), history, "the scrollback is untouched");
+        // Shrinking pushes the top out, as ConPTY's does with the cursor at the bottom.
+        s.resize(10, 2);
+        assert_eq!(rows(&s), ["e", "$"]);
+        // Other screens keep the usual behavior: history comes back into view.
+        let mut s = fill(false);
+        s.resize(10, 6);
+        assert_eq!(rows(&s), ["a", "b", "c", "d", "e", "$"]);
+        assert_eq!(s.term().grid().cursor.point.line.0, 5);
+    }
+
+    /// Widening unwraps lines. ConPTY keeps the top of its screen where it is and the prompt moves
+    /// up with its text, so a pty-backed screen pulls nothing down from history either.
+    #[test]
+    fn a_pty_screen_widens_without_pulling_history() {
+        let fill = |pty: bool| {
+            let mut s = Screen::new(5, 4);
+            s.pty_backed = pty;
+            s.feed(b"aaaaabbbbb\r\nccccceeeee\r\nfffff\r\n$ ");
+            s
+        };
+        let rows = |s: &Screen| (0..s.term().screen_lines() as i32).map(|l| s.line_text(l)).collect::<Vec<_>>();
+        let mut s = fill(true);
+        assert_eq!(rows(&s), ["ccccceeeee", "eeeee", "fffff", "$"], "rows are joined with their wrapped rest");
+        s.resize(10, 4);
+        assert_eq!(rows(&s), ["ccccceeeee", "fffff", "$", ""]);
+        assert_eq!(s.term().grid().cursor.point.line.0, 2, "the prompt moved up with its text");
+        let mut s = fill(false);
+        s.resize(10, 4);
+        assert_eq!(rows(&s), ["aaaaabbbbb", "ccccceeeee", "fffff", "$"]);
+        assert_eq!(s.term().grid().cursor.point.line.0, 3);
+    }
+
+    /// Narrowing wraps lines. ConPTY keeps the top of its screen where it is: the text moves down
+    /// into the blank rows under the cursor first, and the cursor goes with it.
+    #[test]
+    fn a_pty_screen_narrows_into_the_rows_below_its_cursor() {
+        let fill = |pty: bool| {
+            let mut s = Screen::new(10, 6);
+            s.pty_backed = pty;
+            s.feed(b"aaaaabbbbb\r\n$ ");
+            s
+        };
+        let rows = |s: &Screen| (0..s.term().screen_lines() as i32).map(|l| s.line_text(l)).collect::<Vec<_>>();
+        let mut s = fill(true);
+        s.resize(5, 6);
+        assert_eq!(rows(&s), ["aaaaabbbbb", "bbbbb", "$", "", "", ""]);
+        assert_eq!(s.term().grid().cursor.point.line.0, 2, "the prompt moved down with its text");
+        // Filled to the bottom, the top rows go into history instead.
+        let mut s = Screen::new(10, 3);
+        s.pty_backed = true;
+        s.feed(b"x\r\naaaaabbbbb\r\n$ ");
+        s.resize(5, 3);
+        assert_eq!(s.term().grid().cursor.point.line.0, 2);
+        assert_eq!(s.line_text(2), "$");
     }
 
     /// The alternate screen without scrollback keeps no history: a shrink with the cursor at the bottom pushes
