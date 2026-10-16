@@ -846,7 +846,9 @@ pub(crate) mod tests {
             let pty = spawn(&api, "cmd.exe /d /k", 80, 24).unwrap();
             let pid = pty.pid();
             let start = Instant::now();
-            while console_mode(pid).is_err() && start.elapsed() < secs(5) {
+            // The shell sets its own input mode as it starts: before that the console is readable
+            // but not yet in the mode of a shell at its prompt.
+            while !console_mode(pid).is_ok_and(|m| m & 0x4 != 0) && start.elapsed() < secs(5) {
                 std::thread::sleep(Duration::from_millis(10));
             }
             assert!(console_mode(pid).is_ok_and(|m| m & 0x4 != 0), "a shell at its prompt echoes");
@@ -983,13 +985,15 @@ pub(crate) mod tests {
     fn a_close_never_happens_while_attached() {
         use std::os::windows::process::CommandExt;
         const DETACHED_PROCESS: u32 = 0x0000_0008;
+        // What the child prints when it panics, for the failure message.
+        let log = std::env::temp_dir().join(format!("termurion-close-child-{}.log", std::process::id()));
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "pty::tests::close_while_reading_child", "--ignored", "--test-threads=1"])
+            .args(["--exact", "pty::tests::close_while_reading_child", "--ignored", "--test-threads=1", "--nocapture"])
             .env("TERMURION_CLOSE_CHILD", "1")
             .creation_flags(DETACHED_PROCESS)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::fs::File::create(&log).unwrap())
             .spawn()
             .unwrap();
         // A hang fails the suite instead of holding it.
@@ -1005,7 +1009,9 @@ pub(crate) mod tests {
             }
             std::thread::sleep(Duration::from_millis(50));
         };
-        assert!(status.success(), "the reading process survived every close: {status:?}");
+        let said = std::fs::read_to_string(&log).unwrap_or_default();
+        let _ = std::fs::remove_file(&log);
+        assert!(status.success(), "the reading process survived every close: {status:?}: {said}");
     }
 
     #[test]

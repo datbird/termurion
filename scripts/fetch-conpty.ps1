@@ -1,7 +1,7 @@
 # Downloads the pinned ConPTY package and copies the x64 files to vendor\conpty.
 $ErrorActionPreference = 'Stop'
-$version = '1.24.260710001'
-$sha256 = '175640566A3B59C4B132070EE96C2C77E5AB7EDD2E92732A5EB3610BBF63D90E'
+$version = '1.25.260930003'
+$sha256 = '02B07B349AF66D801159BDF9E440D4A1CE78BB951F37FC8609731665AFDAE7EE'
 $root = Split-Path -Parent $PSScriptRoot
 $dest = Join-Path $root 'vendor\conpty'
 $tmp = Join-Path $env:TEMP "conpty-$version"
