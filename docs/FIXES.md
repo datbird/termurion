@@ -10,9 +10,34 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 
 ## In progress
 
-(none)
+9. **After a resize, typed text lands mid-screen, not at the prompt.** Seen 2026-10-15 in
+   PowerShell: a long `dir`, then a window resize, then typing; the echo appeared about 15 rows
+   above the prompt. Cause: after a resize the grid pulled scrollback down and moved the prompt
+   to the bottom row, while ConPTY keeps the top of its screen in place and adds blank rows under
+   the cursor, so the shell drew at ConPTY's row. Fixed for a resize at a quiet prompt in
+   3f57288f (alacritty_terminal patch 34: on a pty-backed screen, growth adds rows below the
+   cursor and pulls nothing from history), with live ConPTY tests in `src/resize_live.rs` and a
+   `pty: resize` line in host.log. Still open: a resize while output is printing can still leave
+   the cursor on the wrong row.
 
 ## Done
+
+10. **The menu bar flashed on a Minimal window during a resize.** Seen 2026-10-15. Cause: the
+    app kept a note that the bar was hidden, and paths that attach a bar (a menu rebuild, a
+    window made again for transparency) did not check it, so a bar stayed attached under the
+    client area and showed each time a resize redrew the frame. A probe confirmed a menu on the
+    live Minimal window. Done 2026-10-16 in 977bc21a: the app asks the window (`GetMenu`) each
+    frame and on each resize, and a bar built for a hidden window is detached as it attaches.
+
+8. **Settings drop-downs flashed, closed, or opened slowly.** Seen 2026-10-15 in Settings >
+   General. Cause: the egui windows ignored egui's request for another frame, so a popup's
+   sizing pass and fade-in were drawn only at the next input. Done 2026-10-15 in 12608761 (draw
+   the frames egui asks for now) and 722822b5 (delayed repaint requests wake the loop on time).
+
+7. **Copy Base64-Decoded did not show for a selected word.** Seen 2026-10-15. Cause: the port
+   required base64 padding, which iTerm2's decoder does not. Done 2026-10-15 in 96aba6aa: APR's
+   lenient decoder, as iTerm2 links it (strip line breaks, decode the leading run of alphabet
+   characters, try the URL-safe alphabet only when the standard one gives nothing).
 
 6. **Selecting text crashed Termurion.** Seen 2026-10-15 (access violation, call to address 0
    from word selection). Cause: with edition 2024 precise capture, the ICU word-break session
