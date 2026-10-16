@@ -903,6 +903,12 @@ impl<T> Term<T> {
         &mut self.grid
     }
 
+    /// Termurion patch 34: whether growing the screen keeps the cursor row (see `Grid`).
+    pub fn set_grow_keeps_rows(&mut self, on: bool) {
+        self.grid.grow_keeps_rows = on;
+        self.inactive_grid.grow_keeps_rows = on;
+    }
+
     /// Resize terminal to new dimensions.
     pub fn resize<S: Dimensions>(&mut self, size: S) {
         let old_cols = self.columns();
@@ -923,6 +929,10 @@ impl<T> Term<T> {
         let mut delta = num_lines as i32 - old_lines as i32;
         let min_delta = cmp::min(0, num_lines as i32 - self.grid.cursor.point.line.0 - 1);
         delta = cmp::min(cmp::max(delta, min_delta), history_size as i32);
+        // Termurion patch 34: no row is pulled from history, so nothing moves.
+        if self.grid.grow_keeps_rows && num_lines > old_lines {
+            delta = 0;
+        }
         self.vi_mode_cursor.point.line += delta;
 
         let is_alt = self.mode.contains(TermMode::ALT_SCREEN);

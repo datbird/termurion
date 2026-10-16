@@ -19,10 +19,12 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         // Use empty template cell for resetting cells due to resize.
         let template = mem::take(&mut self.cursor.template);
 
-        match self.lines.cmp(&lines) {
-            Ordering::Less => self.grow_lines(lines),
-            Ordering::Greater => self.shrink_lines(lines),
-            Ordering::Equal => (),
+        // Termurion patch 34: ConPTY reflows the old screen into the new size in one step, so
+        // with fewer rows the columns change first (at the old height, where the text still
+        // fits) and the rows after; otherwise the rows come first, as upstream does.
+        let columns_first = self.grow_keeps_rows && reflow && lines < self.lines;
+        if !columns_first {
+            self.resize_lines(lines);
         }
 
         match self.columns.cmp(&columns) {
@@ -31,8 +33,24 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             Ordering::Equal => (),
         }
 
+        if columns_first {
+            self.resize_lines(lines);
+        }
+
         // Restore template cell.
         self.cursor.template = template;
+    }
+
+    fn resize_lines<D>(&mut self, lines: usize)
+    where
+        T: ResetDiscriminant<D>,
+        D: PartialEq,
+    {
+        match self.lines.cmp(&lines) {
+            Ordering::Less => self.grow_lines(lines),
+            Ordering::Greater => self.shrink_lines(lines),
+            Ordering::Equal => (),
+        }
     }
 
     /// Add lines to the visible area.
@@ -52,7 +70,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         self.lines = target;
 
         let history_size = self.history_size();
-        let from_history = min(history_size, lines_added);
+        let from_history = if self.grow_keeps_rows { 0 } else { min(history_size, lines_added) };
 
         // Move existing lines up for every line that couldn't be pulled from history.
         if from_history != lines_added {
@@ -179,6 +197,10 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         let mut reversed: Vec<Row<T>> = Vec::with_capacity(self.raw.len());
         let mut cursor_line_delta = 0;
+        // Termurion patch 34: rows of the screen merged away, and rows the viewport had to
+        // pad because the history ran out. The difference was pulled down from history.
+        let mut removed_visible = 0usize;
+        let mut padded = 0usize;
 
         // Remove the linewrap special case, by moving the cursor outside of the grid.
         if self.cursor.input_needs_wrap && reflow {
@@ -190,8 +212,11 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         for (i, mut row) in rows.drain(..).enumerate().rev() {
             // Check if reflowing should be performed.
+            // Termurion patch 34: ConPTY has no history, so the top row of the screen is the
+            // start of its text there even when it continues a line above the screen.
+            let at_top_of_screen = self.grow_keeps_rows && reflow && i + 1 == self.lines;
             let last_row = match reversed.last_mut() {
-                Some(last_row) if should_reflow(last_row) => last_row,
+                Some(last_row) if should_reflow(last_row) && !at_top_of_screen => last_row,
                 _ => {
                     reversed.push(row);
                     continue;
@@ -254,6 +279,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                 if line_delta != 0 && row.is_clear() {
                     // Termurion patch: a merged-away continuation row's ids and time move up.
                     last_row.absorb_tags(&row);
+                    removed_visible += usize::from(i < self.lines);
                     continue;
                 }
 
@@ -270,6 +296,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                 if i < cursor_buffer_line {
                     self.cursor.point.line += 1;
                 }
+                removed_visible += usize::from(i < self.lines);
 
                 // Don't push line into the new buffer.
                 continue;
@@ -286,6 +313,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         // Make sure we have at least the viewport filled.
         if reversed.len() < self.lines {
             let delta = (self.lines - reversed.len()) as i32;
+            padded = delta as usize;
             self.cursor.point.line = max(self.cursor.point.line - delta, Line(0));
             reversed.resize_with(self.lines, || Row::new(columns));
         }
@@ -309,6 +337,15 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             new_raw.push(row);
         }
 
+        // Termurion patch 34: ConPTY keeps the top of its screen where it is when lines merge,
+        // so the rows the reflow pulled down from history go back up into it, and blank rows
+        // take their place below; the cursor stays with its text.
+        let pulled = removed_visible.saturating_sub(padded);
+        if self.grow_keeps_rows && reflow && pulled > 0 {
+            new_raw.splice(0..0, (0..pulled).map(|_| Row::new(columns)));
+            self.cursor.point.line = max(self.cursor.point.line - pulled, Line(0));
+        }
+
         self.raw.replace_inner(new_raw);
 
         // Clamp display offset in case lines above it got merged.
@@ -327,6 +364,8 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         let mut new_raw = Vec::with_capacity(self.raw.len());
         let mut buffered: Option<Vec<T>> = None;
+        // Termurion patch 34: rows the wrapping added above the cursor, on the screen.
+        let mut added_above_cursor = 0usize;
 
         let mut rows = self.raw.take_all();
         for (i, mut row) in rows.drain(..).enumerate().rev() {
@@ -414,6 +453,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                     {
                         self.cursor.point.line = max(self.cursor.point.line - 1, Line(0));
                     }
+                    added_above_cursor += usize::from(i > cursor_buffer_line && i < self.lines);
 
                     // Reflow the cursor if it is on this line beyond the width.
                     if i == cursor_buffer_line && self.cursor.point.column >= columns {
@@ -446,6 +486,18 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // Reverse iterator and use it as the new grid storage.
         let mut reversed: Vec<Row<T>> = new_raw.drain(..).rev().collect();
+        // Termurion patch 34: ConPTY keeps the top of its screen where it is when lines wrap,
+        // so the text below the wrapped lines moves down into the blank rows under the cursor
+        // before anything is pushed into history, and the cursor goes with it.
+        if self.grow_keeps_rows && reflow && added_above_cursor > 0 {
+            let below = self.lines - 1 - (self.cursor.point.line.0 as usize).min(self.lines - 1);
+            let mut moved = 0;
+            while moved < added_above_cursor.min(below) && reversed.get(moved).is_some_and(|r| r.is_clear()) {
+                moved += 1;
+            }
+            reversed.drain(..moved);
+            self.cursor.point.line += moved;
+        }
         // Termurion patch: rows past the history limit are lost.
         self.add_dropped(reversed.len().saturating_sub(self.max_scroll_limit + self.lines));
         reversed.truncate(self.max_scroll_limit + self.lines);

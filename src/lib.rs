@@ -412,6 +412,8 @@ pub mod dropdown_views;
 mod tmux_probe;
 #[cfg(test)]
 mod tmux_live;
+#[cfg(test)]
+mod resize_live;
 pub mod tmux_hook;
 pub mod tmux_launch;
 pub mod conductor_parser;

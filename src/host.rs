@@ -439,11 +439,18 @@ fn handle(host: &Shared, m: Msg, api: &Api, wake: &mpsc::Sender<u64>) {
         Msg::Write { id, bytes } => with_pty(host, id, |p| p.write(&bytes)),
         Msg::Resize { id, cols, rows } => {
             let mut h = host.lock().unwrap();
+            let mut line = None;
             if let Some(s) = h.sessions.get_mut(&id) {
+                line = resize_log_line((s.cols, s.rows), (cols, rows), id);
                 (s.cols, s.rows) = (cols, rows);
             }
             drop(h);
             with_pty(host, id, |p| p.resize(cols, rows));
+            // One line per size that reaches ConPTY, so a report of a prompt in the wrong row
+            // can be traced to the resizes around it.
+            if let Some(line) = line {
+                log(&line);
+            }
         }
         Msg::Clear { id } => with_pty(host, id, |p| p.clear()),
         // A pause waits out a prompt read in flight, so none runs on a paused console.
@@ -501,6 +508,11 @@ fn with_pty(host: &Shared, id: u64, f: impl FnOnce(&Pty) -> Result<(), String>) 
     }
 }
 
+/// The `host.log` line for a session's size going from `old` to `new`: None when it did not change.
+fn resize_log_line(old: (u16, u16), new: (u16, u16), id: u64) -> Option<String> {
+    (old != new).then(|| format!("pty: resize {}x{} (session {id})", new.0, new.1))
+}
+
 /// `host.log` beside Termurion's settings.
 pub fn log_path() -> std::path::PathBuf {
     crate::globals::default_path().with_file_name("host.log")
@@ -518,6 +530,13 @@ pub fn log(line: &str) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn a_size_change_is_logged_once() {
+        assert_eq!(resize_log_line((100, 30), (120, 40), 3).as_deref(), Some("pty: resize 120x40 (session 3)"));
+        assert_eq!(resize_log_line((120, 40), (120, 40), 3), None, "the same size again is not a line");
+        assert_eq!(resize_log_line((120, 40), (120, 41), 3).as_deref(), Some("pty: resize 120x41 (session 3)"));
+    }
     use crate::host_proto::{Decoder, Live, Msg, encode};
     use crate::winpipe::{self, Pipe};
     use std::sync::Arc;

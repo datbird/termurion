@@ -184,4 +184,11 @@ test data) is left out. Changes:
     DECRST set and clear it (also inside a parameter list), DECRQM answers set or reset, RIS clears it
     (`mode &= VI`). DECSTR clears it too (Termurion's byte list in `Screen::soft_reset` sends `?1036l`, as iTerm2's softReset does). Termurion reads it in `KeyOptions::effective`.
 
+34. `grid/mod.rs`, `grid/resize.rs`: `Grid.grow_keeps_rows`. When set, growing the screen adds blank rows
+    at the bottom and keeps the cursor row, instead of pulling scrollback down. Termurion sets it for
+    a pty-backed screen, because ConPTY does the same and the two must agree on the prompt's row.
+    `grow_columns` (lines merging) and `shrink_columns` (lines wrapping) likewise keep the top of the
+    screen in place: the rows a merge would pull from history are not pulled, and the rows a wrap adds
+    above the cursor move the text down into the blank rows under it before history takes any.
+
 To update alacritty_terminal, copy the new version here and apply these changes again.
