@@ -137,6 +137,12 @@ rows until they read `have`. Where iTerm2 has a quirk, Termurion keeps it and wr
 
 ## Screenshots
 
+<p align="center"><img src="docs/assets/screenshots/acid.gif" width="900" alt="Termurion running its render test: the wordmark in a moving gradient, a half-block plasma, a test card of colors, text styles and Unicode, and a spinning shaded torus"></p>
+
+The render test, [`scripts/acid.py`](scripts/acid.py): 24-bit color, half-block pixels, every text
+style and underline kind, box drawing, braille, wide and combining characters, and links. Run it
+with `python scripts/acid.py` (add `--loop` to repeat). [Full-size video](docs/assets/acid.mp4).
+
 <table>
 <tr>
 <td width="50%"><img src="docs/assets/screenshots/menu-shell.png" alt="The Shell menu: windows, tabs, splits, archives, workgroups, broadcast input, tmux and ssh"></td>

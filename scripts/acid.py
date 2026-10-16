@@ -445,7 +445,8 @@ def scene_torus(f, t):
     zbuf = [[0.0] * w for _ in range(h)]
     lum = [[-1.0] * w for _ in range(h)]
     K2 = 5.0
-    K1 = min(w, h * 2) * K2 * 3 / (8 * 3)
+    # A fixed largest size: the sample steps below fill about 70 columns without gaps.
+    K1 = min(w, h * 2, 70) * K2 * 3 / (8 * 3)
     th = 0.0
     while th < math.tau:
         ct, st = math.cos(th), math.sin(th)
@@ -464,8 +465,8 @@ def scene_torus(f, t):
             if 0 <= xp < w and 0 <= yp < h and ooz > zbuf[yp][xp]:
                 zbuf[yp][xp] = ooz
                 lum[yp][xp] = L
-            ph += 0.025
-        th += 0.08
+            ph += 0.015
+        th += 0.05
     shades = ".,-~:;=!*#$@"
     for y in range(h):
         for x in range(w):
