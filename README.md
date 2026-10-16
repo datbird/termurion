@@ -150,6 +150,10 @@ rows until they read `have`. Where iTerm2 has a quirk, Termurion keeps it and wr
 
 iTerm2's menu bar, settings window and key bindings, on Windows. The Shortcut Key (iTerm2's Cmd) is Ctrl+Shift by default.
 
+<p align="center"><img src="docs/assets/screenshots/tmux-over-ssh.png" width="900" alt="tmux over ssh with Claude Code running, a header row of colored status chips above and two status lines below"></p>
+
+tmux over ssh, with Claude Code in the pane and a busy custom header and status line: 256 colors, bold, and box and block glyphs drawn cell for cell.
+
 ## How it compares
 
 Termurion is the only Windows terminal we found that has the full iTerm2 set. The deciding feature
