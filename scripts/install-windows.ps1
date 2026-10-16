@@ -24,6 +24,14 @@ foreach ($f in $files) {
 }
 
 $exe = Join-Path $dest 'termurion.exe'
+$built = (Get-Item $exe).LastWriteTime
+# Installed by the release installer (Inno Setup, its AppId key): its shortcuts and its Apps entry
+# stay, and its uninstaller still removes these files (same names). Only the files are replaced.
+$inno = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{329D8970-182C-40BF-A034-89D8AAFB8063}_is1'
+if (Test-Path -LiteralPath $inno) {
+    Write-Output "Installed to $dest over the release install (built $built)"
+    exit 0
+}
 $shell = New-Object -ComObject WScript.Shell
 $startMenu = [Environment]::GetFolderPath('Programs')
 foreach ($dir in [Environment]::GetFolderPath('Desktop'), $startMenu) {
@@ -37,7 +45,6 @@ foreach ($dir in [Environment]::GetFolderPath('Desktop'), $startMenu) {
     Write-Output "Shortcut $link"
 }
 
-$built = (Get-Item $exe).LastWriteTime
 $uninst = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Termurion'
 New-Item -Path $uninst -Force | Out-Null
 Set-ItemProperty -Path $uninst -Name 'DisplayName' -Value 'Termurion'
