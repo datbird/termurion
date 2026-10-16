@@ -198,7 +198,7 @@ Get the newest beta from [Releases](https://github.com/datbird/termurion/release
 - `Termurion-<version>-setup.exe` installs for your user (no admin) and adds Start menu entries.
 - `Termurion-<version>-windows-x64.zip` runs from any folder.
 
-Windows 10 or 11, x64. Report bugs in [Issues](https://github.com/datbird/termurion/issues).
+Windows 10 or 11, x64. [Installing](docs/help/installing.md) shows each installer page. Report bugs in [Issues](https://github.com/datbird/termurion/issues).
 
 ## Building
 
