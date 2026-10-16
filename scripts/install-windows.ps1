@@ -8,7 +8,8 @@ $src = Join-Path $env:USERPROFILE 'src\termurion\target\release'
 $dest = Join-Path $env:LOCALAPPDATA 'Programs\Termurion'
 $files = 'termurion.exe', 'termurion-host.exe', 'termurion-git.exe', 'termurion-utils.exe', 'cc-status.exe', 'conpty.dll', 'OpenConsole.exe'
 
-$running = @(Get-Process -Name 'tandem*', 'termurion*' -ErrorAction SilentlyContinue)
+# Test binaries (target\debug\deps\termurion-<hash>.exe) share the name but lock nothing here.
+$running = @(Get-Process -Name 'tandem*', 'termurion*' -ErrorAction SilentlyContinue | Where-Object { $_.Path -notlike '*\target\debug\deps\*' })
 if ($running.Count -gt 0) {
     Write-Output ("Still running: " + (($running | ForEach-Object { $_.ProcessName + ' ' + $_.Id }) -join ', ') + ". Close it and run this again.")
     exit 2
