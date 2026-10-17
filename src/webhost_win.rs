@@ -3196,7 +3196,7 @@ mod tests {
         let live = src.split("#[cfg(test)]\nmod tests").next().unwrap();
         let events = &live[live.find("fn register_page_events").unwrap()..live.find("fn register_policy").unwrap()];
         let at = events.find("add_FaviconChanged(").expect("the handler is registered");
-        assert!(events[..at].contains("if setup_favicon {"), "only for views that show a favicon");
+        assert!(events[..at].contains("if setup_favicon"), "only for views that show a favicon");
         let get = events.find("GetFavicon(COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG").expect("the view's own favicon, as PNG");
         let read = events.find("read_stream(&stream, webhost::MAX_FAVICON)").expect("read with the bound");
         let ok = events.find("webhost::favicon_ok(&bytes)").expect("judged in the host");

@@ -1166,7 +1166,7 @@ mod tests {
     #[test]
     fn draw_fns_return_their_rects() {
         assert!(include_str!("infobar_ui.rs").contains("fn draw_info_bar(&self, frame: &mut Frame, pane: PaneId, rect: Rect, cell: (f32, f32)) -> Option<Rect>"));
-        assert!(include_str!("completion_ui.rs").contains("-> Option<Rect> {\n        let Some((rows, selected, footer, at, bounds)) = self.completion_box"));
+        assert!(include_str!("completion_ui.rs").contains("-> Option<Rect> {\n        let (rows, selected, footer, at, bounds) = self.completion_box(pane, rect, cell)?;"));
         assert!(include_str!("composer_ui.rs").contains("fn draw_composer(&self, frame: &mut Frame, pane: PaneId, rect: Rect, cell: (f32, f32)) -> Vec<(crate::mouse::Overlay, Rect)>"));
         assert!(include_str!("pane_move_ui.rs").contains("fn draw_pane_move(&self, frame: &mut scene::Frame, cell: (f32, f32)) -> Vec<Rect>"));
     }
