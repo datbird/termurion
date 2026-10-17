@@ -560,6 +560,21 @@ impl Renderer {
         r
     }
 
+    /// Makes every GPU resource again on a new device (after a device loss): the pipelines, the glyph
+    /// atlas, the viewport and the image textures (re-uploaded when next drawn). Fonts, faces and
+    /// settings are kept.
+    pub fn rebuild_gpu(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) {
+        let cache = Cache::new(device);
+        self.viewport = Viewport::new(device, &cache);
+        self.atlas = TextAtlas::new(device, queue, &cache, format);
+        self.text = TextRenderer::new(&mut self.atlas, device, wgpu::MultisampleState::default(), None);
+        self.quads = QuadPipeline::new(device, format);
+        self.images = ImagePipeline::new(device, format, &self.quads.uniform);
+        self.device = device.clone();
+        self.queue = queue.clone();
+        self.format = format;
+    }
+
     /// Sets the font size and measures the cell: the advance of "W" by the font's own line
     /// height (`fonts::cell_size`; R3, it was 1.2 times the size).
     /// The width is not rounded. Glyphs advance by the exact width, so a rounded cell
@@ -1782,8 +1797,8 @@ mod tests {
                 None => continue,
             };
             let n = test_part.matches(call).count();
-            // render.rs: the shared helper (1) and adapters_are_recorded (2), nothing else.
-            let allowed = if is_render { 3 } else { 0 };
+            // render.rs: the shared helper (1), adapters_are_recorded (2) and each_api_honors_the_gpu_preference_and_draws (1), nothing else.
+            let allowed = if is_render { 4 } else { 0 };
             if is_render && !test_part.contains("mod test_gpu") {
                 bad.push("render.rs: the shared test_gpu module is gone".to_string());
             }
@@ -1818,6 +1833,111 @@ mod tests {
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         let data = buf.slice(..).get_mapped_range().unwrap().to_vec();
         data
+    }
+
+    /// Device loss, simulated with `Device::destroy`: the loss is reported to `gpu_pick::take_lost`, and the
+    /// same renderer (its fonts and faces kept) draws again on a new device after `rebuild_gpu`.
+    #[test]
+    fn a_destroyed_device_is_reported_and_the_renderer_rebuilds() {
+        // The shared adapter first: making it takes the lock.
+        let (_instance, adapter, _shared, _queue) = super::test_gpu::shared_all();
+        let _gpu = super::test_gpu::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let make = || pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let frame = Frame {
+            clear: rgba(rgb(0, 0, 255), 1.0),
+            quads: vec![Quad { rect: Rect { x: 0.0, y: 0.0, w: 10.0, h: 5.0 }, color: rgba(rgb(255, 0, 0), 1.0) }],
+            ..Default::default()
+        };
+        let (device, queue) = make();
+        crate::gpu_pick::next_generation();
+        crate::gpu_pick::watch(&device, crate::gpu_pick::current_generation());
+        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let cell = r.cell;
+        assert_eq!(&r.draw_offscreen(&frame, 64, 8).unwrap()[0..4], &[255, 0, 0, 255]);
+        assert!(crate::gpu_pick::take_lost().is_none(), "no loss yet");
+        device.destroy();
+        let mut why = None;
+        for _ in 0..100 {
+            let _ = device.poll(wgpu::PollType::Poll);
+            why = crate::gpu_pick::take_lost();
+            if why.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let why = why.expect("the destroyed device is reported lost");
+        assert!(why.contains("device lost"), "{why}");
+        // Recovery: a new generation, a new device, the same renderer.
+        crate::gpu_pick::next_generation();
+        let (device2, queue2) = make();
+        crate::gpu_pick::watch(&device2, crate::gpu_pick::current_generation());
+        r.rebuild_gpu(&device2, &queue2, format);
+        assert_eq!(r.cell, cell, "fonts and metrics are kept");
+        let px = r.draw_offscreen(&frame, 64, 8).unwrap();
+        assert_eq!(&px[0..4], &[255, 0, 0, 255], "draws again");
+        assert!(crate::gpu_pick::take_lost().is_none(), "the replaced device's late reports are ignored");
+        std::mem::forget((device, queue, device2, queue2));
+    }
+
+    /// Every API the build host offers, headless: the adapters each lists, the one a preference lands
+    /// on (the choice logic's `honored` check against what wgpu really handed out), and the time of
+    /// a 1200 x 800 offscreen frame with 40 rows of text on each (printed; compare with --nocapture).
+    #[test]
+    fn each_api_honors_the_gpu_preference_and_draws() {
+        let _gpu = super::test_gpu::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut drew = 0;
+        for (backends, label) in crate::gpu_pick::backend_order(cfg!(windows), None) {
+            let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+            desc.backends = backends;
+            let instance = wgpu::Instance::new(desc);
+            let list: Vec<_> = pollster::block_on(instance.enumerate_adapters(backends)).iter().map(|a| crate::gpu_pick::Facts::of(&a.get_info())).collect();
+            println!("API {label}: {}", crate::gpu_pick::describe(&list));
+            for prefer_integrated in [true, false] {
+                let pref = crate::gpu_pick::preference(prefer_integrated);
+                let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: pref, ..Default::default() })) else {
+                    println!("API {label}: no adapter for {pref:?}");
+                    continue;
+                };
+                let got = crate::gpu_pick::Facts::of(&adapter.get_info());
+                println!("API {label} prefer_integrated={prefer_integrated}: {}", crate::gpu_pick::why(pref, &list, &got));
+                assert!(crate::gpu_pick::honored(&list, pref, &got), "{label} ignored {pref:?}: got {got:?} of {list:?}");
+                let Ok((device, queue)) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())) else { continue };
+                // OpenGL cannot make the renderer's offscreen target (no view formats): it is the last resort only.
+                if !adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::VIEW_FORMATS) {
+                    println!("API {label}: no view formats, frame not drawn");
+                    continue;
+                }
+                let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 16.0);
+                let rows = (0..40)
+                    .map(|i| TextRow {
+                        x: 4.0,
+                        y: i as f32 * 18.0,
+                        spans: vec![Span { text: format!("row {i} the quick brown fox jumps over the lazy dog 0123456789"), color: rgb(220, 220, 220), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }],
+                        clip: Rect { x: 0.0, y: i as f32 * 18.0, w: 1200.0, h: 18.0 },
+                        scale: 1.0,
+                        face: crate::render::DEFAULT_FACE,
+                    })
+                    .collect();
+                let frame = Frame { clear: rgba(rgb(10, 10, 10), 1.0), rows, ..Default::default() };
+                let px = r.draw_offscreen(&frame, 1200, 800).unwrap();
+                assert!(px.chunks(4).any(|p| p[0] > 150), "{label} drew no text");
+                for _ in 0..5 {
+                    r.draw_offscreen(&frame, 1200, 800).unwrap();
+                }
+                let n = 100;
+                let t = std::time::Instant::now();
+                for _ in 0..n {
+                    r.draw_offscreen(&frame, 1200, 800).unwrap();
+                }
+                println!("FRAMETIME {label} on {} ({pref:?}): {:.2} ms per frame (1200x800, 40 rows, with readback)", got.name, t.elapsed().as_secs_f64() * 1000.0 / n as f64);
+                drew += 1;
+                std::mem::forget((device, queue));
+            }
+            // An instance is never dropped here: see `test_gpu`.
+            std::mem::forget(instance);
+        }
+        assert!(drew > 0, "no API drew a frame");
     }
 
     /// Today's backend per adapter, and whether a default instance and a DX12 `DxgiFromVisual` one

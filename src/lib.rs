@@ -39,6 +39,7 @@ pub mod underline;
 pub mod url_guess;
 pub mod fonts;
 pub mod margins;
+pub mod gpu_pick;
 pub mod power;
 pub mod osc;
 pub mod osc1337;

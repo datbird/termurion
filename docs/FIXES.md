@@ -14,6 +14,32 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 
 ## Done
 
+15. **The renderer drew through Vulkan, on the Intel GPU, by accident.** Seen 2026-10-17: host.log
+    said `renderer: Vulkan on Intel(R) UHD Graphics 770` on a computer with an RTX 4080 SUPER.
+    Cause: the first window used wgpu's default instance, which lists Vulkan first, while the
+    see-through windows already used DirectX 12; and with "Prefer integrated to discrete GPU" off
+    the request was "no preference", which leaves the pick to the enumeration order. Done
+    2026-10-17: every window uses DirectX 12 (`gpu_pick.rs`), falling back to Vulkan and then OpenGL
+    only when DirectX 12 makes no adapter, surface or device; host.log names the API used, every
+    adapter (once), why a fallback happened, and whether the GPU setting was honored. The GPU
+    follows iTerm2's `preferIntegratedGPU` (default on, so the Intel GPU stays the default; the row
+    is live only with both kinds of GPU): on asks for the low-power GPU, off asks for the
+    high-performance one (it was "no preference"). A lost device (driver
+    update or reset, timeout, GPU removed, laptop switching GPUs) is now recovered, not only
+    logged: every terminal window gets a new adapter, device, surface and renderer resources
+    (pipelines, glyph atlas, image textures; fonts and settings are kept) through the same API
+    order and GPU preference as start-up, and redraws (`gpu_recovery_ui.rs`, state machine
+    `gpu_pick::Recovery`). Up to 3 tries per API with a 0.5 s to 4 s backoff, then the next API;
+    a loss within a minute of a recovery moves to the next API too, and when none is left a banner
+    says to restart. host.log: `renderer: device lost`, `renderer: recovered on <API> <GPU>` or
+    `renderer: recovery on <API> failed`. Settings and prompt windows keep the device they were
+    opened on, so they are closed and reopened after a loss. Set
+    `TERMURION_RENDERER` to `dx12`, `vulkan` or `gl` to try one first. Measured headless (test
+    `each_api_honors_the_gpu_preference_and_draws`, 1200 x 800, 40 text rows, with readback):
+    DirectX 12 3.38 ms on the Intel GPU and 3.79 ms on the RTX; Vulkan 3.64 ms and 3.93 ms. OpenGL
+    cannot make the renderer's offscreen target (no view formats), so it is the last resort only.
+    Help: `help/gpu-renderer.md`.
+
 14. **Window flag decisions built: the Alt key offer, Save Contents timestamps, the horizontal scroll note, and the paste view animation (FLAG W8, W14).**
    Done 2026-10-17. The three items iTerm2 has and ui-w left for a Windows design call are built
    (decisions in `docs/superpowers/rulings/ui-sweep-w-rulings.txt`, FLAG W8). The Alt key offer
