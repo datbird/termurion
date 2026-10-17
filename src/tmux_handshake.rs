@@ -125,7 +125,40 @@ pub struct Handshake {
     pub psmux: bool,
 }
 
+/// Whether the tmux server runs on this machine as a process Termurion can see (iTerm2's
+/// `didLoadServerPID`: the process behind `#{pid}` is named tmux). The pid is only meaningful
+/// to this machine when the server is native Windows psmux; the pid of WSL tmux or of tmux
+/// over ssh belongs to another pid space, and a Windows process with that number would be a
+/// stranger. `name` is the file name of the Windows process with the server's pid.
+pub fn server_is_local(psmux: bool, pid: Option<u32>, name: Option<&str>) -> bool {
+    if !psmux || pid.is_none() {
+        return false;
+    }
+    let Some(name) = name else { return false };
+    let stem = name.rsplit(['\\', '/']).next().unwrap_or(name);
+    let stem = stem.strip_suffix(".exe").or_else(|| stem.strip_suffix(".EXE")).unwrap_or(stem).to_ascii_lowercase();
+    // psmux installs itself as psmux.exe, pmux.exe and tmux.exe.
+    matches!(stem.as_str(), "psmux" | "pmux" | "tmux")
+}
+
+/// The file name of the Windows process `pid`, when this machine has one and it can be read.
+#[cfg(windows)]
+pub fn windows_process_name(pid: u32) -> Option<String> {
+    crate::api_peer::process_name(pid)
+}
+
+#[cfg(not(windows))]
+pub fn windows_process_name(_pid: u32) -> Option<String> {
+    None
+}
+
 impl Handshake {
+    /// The server is local (see `server_is_local`); `name_of` reads a Windows process's file name.
+    pub fn server_local(&self, name_of: &dyn Fn(u32) -> Option<String>) -> bool {
+        let name = self.server_pid.and_then(name_of);
+        server_is_local(self.psmux, self.server_pid, name.as_deref())
+    }
+
     /// The kick-off, in iTerm2's order; the phony command must be first.
     pub fn kick_off(&mut self, gw: &mut Gateway, now: Instant) {
         if self.kicked {
@@ -403,6 +436,26 @@ mod tests {
         assert!(h.psmux && g.psmux, "psmux: it succeeds");
         // psmux says 3.3.8 for its version, which reads as tmux 3.3.
         assert_eq!(parse_version("3.3.8"), Version::Exact { number: 3.3, tab_bug: false });
+    }
+
+    /// iTerm2 calls a server local when the process behind `#{pid}` is named tmux. Here only
+    /// psmux can be: a WSL or ssh server's pid is not a Windows process.
+    #[test]
+    fn only_a_psmux_process_is_a_local_server() {
+        assert!(server_is_local(true, Some(10), Some("psmux.exe")));
+        assert!(server_is_local(true, Some(10), Some("tmux.exe")));
+        assert!(server_is_local(true, Some(10), Some("PMUX.EXE")));
+        assert!(server_is_local(true, Some(10), Some("C:\\Tools\\psmux.exe")));
+        assert!(!server_is_local(true, Some(10), Some("notepad.exe")), "a stranger with that pid");
+        assert!(!server_is_local(true, Some(10), None), "no such process here");
+        assert!(!server_is_local(true, None, Some("psmux.exe")), "no pid");
+        assert!(!server_is_local(false, Some(10), Some("tmux.exe")), "a WSL or ssh server is never local, whatever Windows has at that pid");
+        let mut g = started();
+        let mut h = Handshake::default();
+        h.reply(Ask::Phony, Some(""), &mut g);
+        h.reply(Ask::ServerPid, Some("4242"), &mut g);
+        assert!(h.server_local(&|pid| (pid == 4242).then(|| "psmux.exe".to_string())));
+        assert!(!h.server_local(&|_| None));
     }
 
     #[test]

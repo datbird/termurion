@@ -395,7 +395,7 @@ impl App {
         if let Some(io) = p.tmux_io() {
             let info = io.info.borrow();
             v.session.insert("tmuxPaneTitle", info.title.clone());
-            if !info.job.is_empty() {
+            if !info.job.is_empty() && s.shell.job.is_none() {
                 v.session.insert("jobName", info.job.clone());
             }
             if !info.cwd.is_empty() && s.shell.cwd.is_none() {

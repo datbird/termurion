@@ -8,6 +8,7 @@
 #   XT_MOUNT          local mount root of that host's C: drive parent (the folder holding c/)
 #   XT_WIN_HOME       the Windows home folder, for example C:\Users\name
 #   XT_MOUNT_SERVICE  systemd user unit that keeps the mount up (named in the error message)
+#   XT_PASS_ENV       optional: names of environment variables to hand to the build host's run
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 if [ -f "$repo/scripts/xt.local" ]; then
@@ -40,4 +41,12 @@ rsync -rt --delete --exclude target/ --exclude vendor/ --exclude .git/ --exclude
 if [ "$name" != termurion ] && [ ! -d "$dest/vendor" ]; then
     ssh "$XT_HOST" "Copy-Item -Recurse '$XT_WIN_HOME\\src\\termurion\\vendor' '$win\\vendor'"
 fi
-ssh "$XT_HOST" "cd '$win'; cargo $*; exit \$LASTEXITCODE"
+# Variables named in XT_PASS_ENV (space separated, for example TERMURION_TMUX_SSH_HOST) are set on the build
+# host for this run, with the values they have here. The live ssh tests read their target this way.
+pass_env=""
+for v in ${XT_PASS_ENV:-}; do
+    if [ -n "${!v:-}" ]; then
+        pass_env+="\$env:$v='${!v//\'/\'\'}'; "
+    fi
+done
+ssh "$XT_HOST" "${pass_env}cd '$win'; cargo $*; exit \$LASTEXITCODE"

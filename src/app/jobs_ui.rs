@@ -11,9 +11,11 @@ impl App {
             Some(e) => self.banners.set("jobs", format!("Could not read the running programs: {e}")),
             None => self.banners.clear("jobs"),
         }
+        self.tmux_forget_pids();
         let ids: Vec<PaneId> = self.panes.keys().copied().collect();
         for id in ids {
-            let Some(pid) = self.panes.get(&id).and_then(|p| p.shell_pid()) else { continue };
+            // A local tmux pane's job is read from its own process, as iTerm2 reads it from tmuxClientProcessID.
+            let Some(pid) = self.panes.get(&id).and_then(|p| p.shell_pid().or_else(|| p.tmux_local_pid())) else { continue };
             let now = self.jobs.job(pid);
             let Some(p) = self.panes.get_mut(&id) else { continue };
             // A framing session's job is on its remote, never ssh.exe.
@@ -82,7 +84,8 @@ impl App {
         if let Some(io) = p.tmux_io() {
             let info = io.info.borrow();
             parts.tmux_pane_title = info.title.clone();
-            if !info.job.is_empty() {
+            // The process tree of a local server's pane names the job; tmux's name is the fallback.
+            if !info.job.is_empty() && s.shell.job.is_none() {
                 parts.job = info.job.clone();
                 parts.cmdline = info.job.clone();
             }

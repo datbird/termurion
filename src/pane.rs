@@ -86,6 +86,9 @@ pub struct TmuxIo {
     pub info: std::cell::RefCell<TmuxInfo>,
     /// This client answers the pane's OSC 4 color queries (tmux 3.6 and later elect one).
     pub answers_osc4: std::cell::Cell<bool>,
+    /// The pane's process on this machine, when the tmux server is local (iTerm2's
+    /// `tmuxClientProcessID`): the foreground job is read from its process tree.
+    pub local_pid: std::cell::Cell<Option<u32>>,
 }
 
 /// A tmux pane's title, foreground job, and working directory (remote paths), from tmux.
@@ -110,7 +113,7 @@ impl TmuxInfo {
 
 impl TmuxIo {
     pub fn new(gateway: PaneId, pane: u32) -> TmuxIo {
-        TmuxIo { gateway, pane, inbox: Default::default(), outbox: Default::default(), ended: Default::default(), info: Default::default(), answers_osc4: Default::default() }
+        TmuxIo { gateway, pane, inbox: Default::default(), outbox: Default::default(), ended: Default::default(), info: Default::default(), answers_osc4: Default::default(), local_pid: Default::default() }
     }
 
     /// Output from tmux for this pane.
@@ -121,6 +124,11 @@ impl TmuxIo {
     /// What was typed since the last call.
     pub fn take_input(&self) -> Vec<u8> {
         std::mem::take(&mut self.outbox.borrow_mut())
+    }
+
+    /// The gateway detached or tmux closed the pane (it was `end`ed).
+    pub fn has_ended(&self) -> bool {
+        self.ended.get().is_some()
     }
 
     /// The gateway detached or tmux closed the pane.
@@ -634,6 +642,19 @@ impl Pane {
     pub fn set_tmux_size(&mut self, cols: u16, rows: u16) {
         self.tmux_size = Some((cols, rows));
         self.resize(cols, rows);
+    }
+
+    /// A tmux pane's own process on this machine (a local server only), while the pane lives.
+    /// Not `shell_pid`: Termurion neither owns that process nor signals it.
+    pub fn tmux_local_pid(&self) -> Option<u32> {
+        if self.exited.is_some() {
+            return None;
+        }
+        let io = self.tmux_io()?;
+        if io.has_ended() {
+            return None;
+        }
+        io.local_pid.get()
     }
 
     pub fn tmux_io(&self) -> Option<&TmuxIo> {
@@ -2507,6 +2528,19 @@ mod tests {
         p.tmux_io().unwrap().push_output(b"\x1b[c");
         assert!(p.pump());
         assert!(p.composer.probe.is_none(), "the DA reply cancels it");
+    }
+
+    /// A local tmux server's pane process is read for the job but is never the pane's shell
+    /// (Termurion does not own it): no pid until the server told it, none once the pane ended.
+    #[test]
+    fn a_local_tmux_pane_has_a_process_to_read_but_no_shell() {
+        let p = Pane::tmux(5, 1, 3, 20, 4);
+        assert_eq!(p.tmux_local_pid(), None, "a remote or not yet answered server");
+        p.tmux_io().unwrap().local_pid.set(Some(4242));
+        assert_eq!(p.tmux_local_pid(), Some(4242));
+        assert_eq!(p.shell_pid(), None, "never signaled or waited on as a shell");
+        p.tmux_io().unwrap().end();
+        assert_eq!(p.tmux_local_pid(), None, "the pid may be a stranger's after the pane ended");
     }
 
     #[test]

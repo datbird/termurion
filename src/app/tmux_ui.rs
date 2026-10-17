@@ -172,6 +172,12 @@ impl App {
                                 }
                             }
                         }
+                        if ask == tmux_handshake::Ask::ServerPid {
+                            // iTerm2's didLoadServerPID: a server whose process is here is local.
+                            let Some(t) = self.tmux.get_mut(&pane) else { return };
+                            let local = t.hs.server_local(&tmux_handshake::windows_process_name);
+                            t.ctl.set_server_local(local, &mut t.gw);
+                        }
                         if ask == tmux_handshake::Ask::SetTitles {
                             let Some(t) = self.tmux.get_mut(&pane) else { return };
                             let on = t.hs.set_titles;
@@ -261,6 +267,7 @@ impl App {
         self.tmux.remove(&pane);
         self.tmux_status.retain(|(g, _), _| *g != pane);
         self.tmux_end_panes(pane);
+        self.tmux_forget_pids();
         if let Some(p) = self.panes.get_mut(&pane) {
             p.own_mut().print_message("Detached");
             p.gateway = false;

@@ -1,11 +1,17 @@
-//! The live tmux suite: a real tmux server (psmux on Windows, or tmux in WSL) behind the
-//! shipped ConPTY, driven by the same gateway, handshake, and controller the app uses.
+//! The live tmux suite: a real tmux server (psmux on Windows, tmux in WSL, or tmux on another
+//! machine over ssh) behind the shipped ConPTY, driven by the same gateway, handshake, and
+//! controller the app uses.
 //! Nothing here opens a window. Every test is ignored and uses its own server name
 //! (`-L termurion-test-...`), so it never touches a running multiplexer.
 //!
 //! Run by hand: `scripts/xt test --release --lib tmux_live -- --ignored --nocapture --test-threads=1`.
 //! The tests print one line per fact (`LIVE ...`); docs/probe/2026-10-14-psmux-wsl-tmux-results.md
 //! is made from them.
+//!
+//! The ssh tests need a host: `TERMURION_TMUX_SSH_HOST` (an ssh alias or address; the user's
+//! ssh config applies), optionally `TERMURION_TMUX_SSH_USER` and `TERMURION_TMUX_SSH_PORT`. The
+//! login must work without a prompt (keys or an agent) and the host needs tmux 3.2 or later.
+//! With the host unset those tests print `LIVE ssh SKIP` and pass.
 
 #[cfg(test)]
 mod tests {
@@ -24,6 +30,75 @@ mod tests {
     pub enum Flavor {
         Psmux,
         Wsl,
+        /// tmux on another machine, reached with ssh.
+        Ssh,
+    }
+
+    /// The ssh options for the test host, from the environment (None: no host named).
+    fn ssh_args() -> Option<Vec<String>> {
+        let host = std::env::var("TERMURION_TMUX_SSH_HOST").ok().filter(|h| !h.trim().is_empty())?;
+        let mut a: Vec<String> = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15"].iter().map(|s| s.to_string()).collect();
+        if let Some(port) = std::env::var("TERMURION_TMUX_SSH_PORT").ok().filter(|p| !p.trim().is_empty()) {
+            a.extend(["-p".into(), port]);
+        }
+        if let Some(user) = std::env::var("TERMURION_TMUX_SSH_USER").ok().filter(|u| !u.trim().is_empty()) {
+            a.extend(["-l".into(), user]);
+        }
+        a.push(host);
+        Some(a)
+    }
+
+    /// A short random suffix for a remote server's name, so two runs never meet.
+    fn random_name(prefix: &str) -> String {
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        format!("{prefix}{:06x}", (t ^ (std::process::id() as u128) << 20) & 0xff_ffff)
+    }
+
+    /// One tmux call on the ssh host. Windows' ssh.exe does not leave when its output goes to a
+    /// pipe (the remote command is long done), so the output goes to a file and the call is
+    /// capped; stdin is closed.
+    fn ssh_cli(ssh: &[String], server: &str, args: &[&str]) -> String {
+        use std::process::{Command, Stdio};
+        let file = std::env::temp_dir().join(format!("termurion-live-ssh-{}-{server}.txt", std::process::id()));
+        let Ok(out) = std::fs::File::create(&file) else { return "no temp file".into() };
+        let Ok(err) = out.try_clone() else { return "no temp file".into() };
+        let child = Command::new("ssh.exe").arg("-n").args(ssh).args(["tmux", "-L", server]).args(args).stdin(Stdio::null()).stdout(out).stderr(err).spawn();
+        let mut child = match child {
+            Ok(c) => c,
+            Err(e) => return format!("spawn error {e}"),
+        };
+        let end = Instant::now() + Duration::from_secs(30);
+        let finished = loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break true,
+                Ok(None) if Instant::now() < end => std::thread::sleep(Duration::from_millis(100)),
+                _ => break false,
+            }
+        };
+        if !finished {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let text = std::fs::read_to_string(&file).unwrap_or_default();
+        let _ = std::fs::remove_file(&file);
+        text.trim().to_string()
+    }
+
+    /// One tmux CLI call against a test server, whatever the flavor: stdout and stderr, trimmed.
+    fn server_cli(flavor: Flavor, server: &str, args: &[&str]) -> String {
+        use std::process::Command;
+        let out = match flavor {
+            Flavor::Psmux => Command::new("psmux").args(["-L", server]).args(args).output(),
+            Flavor::Wsl => Command::new("wsl.exe").args(["-e", "tmux", "-L", server]).args(args).output(),
+            Flavor::Ssh => {
+                let Some(a) = ssh_args() else { return "no ssh host".into() };
+                return ssh_cli(&a, server, args);
+            }
+        };
+        match out {
+            Ok(o) => format!("{} {}", String::from_utf8_lossy(&o.stdout).trim(), String::from_utf8_lossy(&o.stderr).trim()),
+            Err(e) => format!("spawn error {e}"),
+        }
     }
 
     impl Flavor {
@@ -31,6 +106,7 @@ mod tests {
             match self {
                 Flavor::Psmux => "psmux",
                 Flavor::Wsl => "wsl",
+                Flavor::Ssh => "ssh",
             }
         }
 
@@ -38,6 +114,8 @@ mod tests {
             match self {
                 Flavor::Psmux => format!("psmux.exe -L {server} -CC new-session -s {session}"),
                 Flavor::Wsl => format!("wsl.exe -e tmux -L {server} -f /dev/null -CC new-session -s {session}"),
+                // A pty on the far side (-tt), as typing `ssh host tmux -CC` does.
+                Flavor::Ssh => format!("ssh.exe -tt {} tmux -L {server} -f /dev/null -CC new-session -s {session}", ssh_args().expect("TERMURION_TMUX_SSH_HOST").join(" ")),
             }
         }
 
@@ -51,6 +129,9 @@ mod tests {
                 }
                 Flavor::Wsl => {
                     let _ = Command::new("wsl.exe").args(["-e", "tmux", "-L", server, "kill-server"]).output();
+                }
+                Flavor::Ssh => {
+                    server_cli(self, server, &["kill-server"]);
                 }
             }
         }
@@ -97,6 +178,12 @@ mod tests {
         pub screen: Vec<u8>,
         /// The handshake's replies by question, raw.
         pub asks: Vec<(String, String)>,
+        /// The server is a process on this machine (the app's `set_server_local`).
+        pub server_local: bool,
+        /// A local server's pane pids, as the controller reported them.
+        pub pane_pids: HashMap<u32, u32>,
+        /// The text of each paste buffer the controller fetched for the clipboard.
+        pub clipboard: Vec<String>,
     }
 
     fn tag_text(s: &str) -> Option<(String, bool, String)> {
@@ -120,7 +207,7 @@ mod tests {
             gw.logging = true;
             let mut ctl = Controller::new(tmux_handshake::FIRST_FREE_TAG);
             ctl.client = (TAB.0, TAB.1);
-            Live { flavor, session: server.clone(), server, p, hook: Hook::default(), gw, hs: Handshake::default(), ctl, t0: Instant::now(), last_tick: 0.0, done: Vec::new(), aborts: Vec::new(), notes: Vec::new(), actions: Vec::new(), exited: false, gone: false, left: false, entered: false, out: HashMap::new(), replies: HashMap::new(), next_typed: TYPED, sizes: HashMap::new(), lines: Vec::new(), screen: Vec::new(), asks: Vec::new() }
+            Live { flavor, session: server.clone(), server, p, hook: Hook::default(), gw, hs: Handshake::default(), ctl, t0: Instant::now(), last_tick: 0.0, done: Vec::new(), aborts: Vec::new(), notes: Vec::new(), actions: Vec::new(), exited: false, gone: false, left: false, entered: false, out: HashMap::new(), replies: HashMap::new(), next_typed: TYPED, sizes: HashMap::new(), lines: Vec::new(), screen: Vec::new(), asks: Vec::new(), server_local: false, pane_pids: HashMap::new(), clipboard: Vec::new() }
         }
 
         /// Attaches and waits for the first windows to open.
@@ -194,6 +281,10 @@ mod tests {
                                     }
                                 }
                             }
+                            if ask == tmux_handshake::Ask::ServerPid {
+                                self.server_local = self.hs.server_local(&tmux_handshake::windows_process_name);
+                                self.ctl.set_server_local(self.server_local, &mut self.gw);
+                            }
                             if ask == tmux_handshake::Ask::SetTitles {
                                 self.ctl.set_titles_known(self.hs.set_titles, &mut self.gw);
                             }
@@ -250,6 +341,12 @@ mod tests {
                         }
                     }
                     Action::Output(pane, data) => self.out.entry(*pane).or_default().extend(data),
+                    Action::PanePid { pane, pid } => {
+                        self.pane_pids.insert(*pane, *pid);
+                    }
+                    // What the app does with TmuxSyncClipboard on.
+                    Action::PasteBuffer(name) => self.ctl.fetch_buffer(name, &mut self.gw),
+                    Action::Clipboard(text) => self.clipboard.push(text.clone()),
                     Action::Close(w) => {
                         self.sizes.remove(w);
                     }
@@ -536,6 +633,8 @@ mod tests {
 
     fn result(l: &Live, feature: &str, ok: bool, note: &str) {
         l.say(&format!("RESULT | {feature} | {} | {note}", if ok { "pass" } else { "FAIL" }));
+        // The server still goes: `Live` ends it when the panic unwinds.
+        assert!(ok, "{} {feature}: {note}", l.flavor.label());
     }
 
     /// The features of the plan's live suite, through the real gateway and controller.
@@ -592,7 +691,7 @@ mod tests {
         // Keys round trip.
         let marker = match flavor {
             Flavor::Psmux => "echo ('ROUND'+'TRIP')\r",
-            Flavor::Wsl => "echo ROUND''TRIP\r",
+            Flavor::Wsl | Flavor::Ssh => "echo ROUND''TRIP\r",
         };
         let focus = l.ctl.windows.get(&w).and_then(|p| p.first().copied()).unwrap_or(pane);
         l.out.clear();
@@ -626,14 +725,14 @@ mod tests {
         let ended = l.pump_until(Duration::from_secs(5), |l| l.p.exit_code().is_some());
         result(&l, "detach", sent && ok && ended, &format!("gateway ended {ok} (client dropped {}), client exit {:?} after {:?}", l.left, l.p.exit_code(), t.elapsed()));
         // Detach leaves the session running on the server.
-        let listing = match flavor {
-            Flavor::Psmux => psmux_cli(&l.server, &["list-sessions"]),
-            Flavor::Wsl => match std::process::Command::new("wsl.exe").args(["-e", "tmux", "-L", &l.server, "list-sessions"]).output() {
-                Ok(o) => format!("{} {}", String::from_utf8_lossy(&o.stdout).trim(), String::from_utf8_lossy(&o.stderr).trim()),
-                Err(e) => format!("spawn error {e}"),
-            },
-        };
+        let listing = server_cli(flavor, &l.server, &["list-sessions"]);
         result(&l, "session survives the detach", listing.contains(&l.session), &listing.chars().take(80).collect::<String>());
+        // The test's own server goes, and nothing of it is left.
+        l.flavor.stop(&l.server, &l.session);
+        l.settle(Duration::from_millis(500));
+        let left = server_cli(flavor, &l.server, &["list-sessions"]);
+        let gone = left.contains("no server running") || left.contains("error connecting") || !left.contains(&format!("{}:", l.session));
+        result(&l, "kill-server cleanup", gone, &left.chars().take(80).collect::<String>());
         l.finish();
     }
 
@@ -647,6 +746,23 @@ mod tests {
     #[ignore]
     fn suite_wsl() {
         suite(Flavor::Wsl, "su");
+    }
+
+    /// The ssh tests run only with a host named in the environment.
+    fn ssh_ready() -> bool {
+        if ssh_args().is_some() {
+            return true;
+        }
+        println!("LIVE ssh SKIP TERMURION_TMUX_SSH_HOST is not set");
+        false
+    }
+
+    #[test]
+    #[ignore]
+    fn suite_ssh() {
+        if ssh_ready() {
+            suite(Flavor::Ssh, &random_name("su"));
+        }
     }
 
     /// A shell command on the host that prints to the test's output (own `-L` name only).
@@ -773,6 +889,112 @@ mod tests {
     #[ignore]
     fn session_end_wsl() {
         session_end(Flavor::Wsl, "se");
+    }
+
+    #[test]
+    #[ignore]
+    fn session_end_ssh() {
+        if ssh_ready() {
+            session_end(Flavor::Ssh, &random_name("se"));
+        }
+    }
+
+    /// tmux's paste buffer reaches the local clipboard: `%paste-buffer-changed`, `show-buffer`.
+    fn clipboard(flavor: Flavor, name: &str) {
+        let mut l = Live::attach(flavor, name);
+        let ok = l.audit("set-buffer \"CLIPTEXT 123\"");
+        let got = l.pump_until(Duration::from_secs(if flavor == Flavor::Psmux { 4 } else { 10 }), |l| l.clipboard.iter().any(|c| c.contains("CLIPTEXT 123")));
+        let notices = l.count(|n| matches!(n, Note::PasteBufferChanged(_)));
+        if flavor == Flavor::Psmux && !got {
+            // psmux refuses `set-buffer` in control mode and sends no %paste-buffer-changed, so its
+            // paste buffer never reaches the clipboard. Recorded, not asserted.
+            let (shown, text) = l.run("show-buffer");
+            l.say(&format!("NOTE | clipboard | not available | set-buffer ok {ok}, buffer notices {notices}, clipboard {:?}, show-buffer ok {shown} {text:?}", l.clipboard));
+        } else {
+            result(&l, "clipboard", ok && got, &format!("buffer notices {notices} clipboard {:?}", l.clipboard));
+        }
+        l.finish();
+    }
+
+    #[test]
+    #[ignore]
+    fn clipboard_psmux() {
+        clipboard(Flavor::Psmux, "cb");
+    }
+
+    #[test]
+    #[ignore]
+    fn clipboard_wsl() {
+        clipboard(Flavor::Wsl, "cb");
+    }
+
+    #[test]
+    #[ignore]
+    fn clipboard_ssh() {
+        if ssh_ready() {
+            clipboard(Flavor::Ssh, &random_name("cb"));
+        }
+    }
+
+    /// Which servers count as local (iTerm2's serverIsLocal): psmux only; its panes' pids are
+    /// read and name real processes of this machine. A WSL or ssh server is not local and is
+    /// never asked for a pane pid.
+    fn locality(flavor: Flavor, name: &str) {
+        let mut l = Live::attach(flavor, name);
+        l.settle(Duration::from_secs(2));
+        let (_, pane) = first_pane(&l);
+        let want_local = flavor == Flavor::Psmux;
+        result(&l, "server local", l.server_local == want_local, &format!("server pid {:?}, local {}", l.hs.server_pid, l.server_local));
+        if want_local {
+            let server = l.hs.server_pid.and_then(tmux_handshake::windows_process_name);
+            let pid = l.pane_pids.get(&pane).copied();
+            let name = pid.and_then(tmux_handshake::windows_process_name);
+            let tree = pid.and_then(|p| crate::jobwatch::descendants_now(p).ok()).map_or(0, |t| t.len());
+            result(&l, "server process is psmux", server.is_some(), &format!("{server:?}"));
+            result(&l, "pane pid is a process here", pid.is_some() && name.is_some(), &format!("pid {pid:?} {name:?} ({tree} below it)"));
+            // A program started in the pane shows up under that pid.
+            let focus = pane;
+            for cmd in crate::tmux_keys::encode(b"ping -n 20 127.0.0.1\r", focus, l.hs.min, l.hs.max).unwrap() {
+                l.run(&cmd);
+            }
+            let found = pid.is_some_and(|p| {
+                let end = Instant::now() + Duration::from_secs(15);
+                loop {
+                    let procs = crate::jobwatch::descendants_now(p).unwrap_or_default();
+                    if procs.iter().any(|q| q.name.to_ascii_lowercase().starts_with("ping")) {
+                        break true;
+                    }
+                    if Instant::now() > end {
+                        break false;
+                    }
+                    l.settle(Duration::from_millis(300));
+                }
+            });
+            result(&l, "job read from the pane's process tree", found, "ping below the pane's shell");
+        } else {
+            result(&l, "no pane pid asked", l.pane_pids.is_empty(), &format!("{:?}", l.pane_pids));
+        }
+        l.finish();
+    }
+
+    #[test]
+    #[ignore]
+    fn locality_psmux() {
+        locality(Flavor::Psmux, "lo");
+    }
+
+    #[test]
+    #[ignore]
+    fn locality_wsl() {
+        locality(Flavor::Wsl, "lo");
+    }
+
+    #[test]
+    #[ignore]
+    fn locality_ssh() {
+        if ssh_ready() {
+            locality(Flavor::Ssh, &random_name("lo"));
+        }
     }
 
     /// More of what psmux does, for the notes: kill-pane's window, join-pane, the command list.
