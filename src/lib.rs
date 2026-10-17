@@ -458,6 +458,7 @@ pub mod open_file;
 pub mod reg;
 pub mod default_term;
 #[cfg(windows)]
+#[allow(clippy::too_many_arguments)] // the ITerminalHandoff3 method list is fixed by the COM interface, and the #[interface] macro rejects attributes on it
 pub mod handoff_win;
 pub mod url_launch;
 pub mod links;
