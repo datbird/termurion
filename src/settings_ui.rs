@@ -1041,17 +1041,17 @@ impl SettingsWindow {
                             Page::Advanced => crate::settings_advanced_pane::page(ui, globals, advanced),
                             Page::Appearance => settings_keys::schema_page(ui, globals, "Appearance").0,
                             Page::Arrangements => crate::settings_arrangements::page(ui, globals, &profile_tables, keys, arr),
-                            Page::Shortcuts => match {
+                            Page::Shortcuts => {
                                 crate::color_presets::remember_names(globals);
-                                crate::settings_shortcuts::page(ui, globals, snippets, shortcuts, &profiles)
-                            } {
-                                crate::settings_shortcuts::Changed::None => false,
-                                crate::settings_shortcuts::Changed::Actions => true,
-                                crate::settings_shortcuts::Changed::Snippets => {
-                                    edit = Edit::SnippetsChanged;
-                                    false
+                                match crate::settings_shortcuts::page(ui, globals, snippets, shortcuts, &profiles) {
+                                    crate::settings_shortcuts::Changed::None => false,
+                                    crate::settings_shortcuts::Changed::Actions => true,
+                                    crate::settings_shortcuts::Changed::Snippets => {
+                                        edit = Edit::SnippetsChanged;
+                                        false
+                                    }
                                 }
-                            },
+                            }
                             _ => settings_keys::pointer_page(ui, globals, keys, &profiles),
                         };
                         if changed {

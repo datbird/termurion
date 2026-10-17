@@ -368,6 +368,7 @@ pub struct BatteryView {
 /// `"100%"` only when `show_percentage` (the time-as-left-text gets no left inset, kept,
 /// `BAT:160-166`). Right reserve reserves the charging icon's room even when not charging,
 /// kept (`BAT:176-183`).
+#[allow(clippy::if_same_then_else)] // each branch states its own case; merging them would hide the cases
 pub fn battery_view(current: Option<&PowerState>, connected: bool, has_battery: bool, show_percentage: bool, show_time: bool) -> BatteryView {
     let is_charging = has_battery && connected;
     // `currentEstimate` reads the percentage as 0 when unset (`doubleValue` on nil is 0,

@@ -260,6 +260,7 @@ impl App {
 
     /// Runs the newest hover or toast that waits, and ends a toast whose time is over. Called from
     /// `web_tick`.
+    #[allow(clippy::collapsible_match)] // the arm names the case and carries the rationale; a match guard would fold both into the pattern line
     pub(super) fn browser_tip_tick(&mut self, event_loop: &ActiveEventLoop) {
         match self.browser_tip_next.take() {
             Some(TipAsk::Hover(pane, hover)) => self.browser_hover_now(pane, hover, event_loop),

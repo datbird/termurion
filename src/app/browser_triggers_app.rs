@@ -308,6 +308,7 @@ mod tests {
     /// Reader Mode enters through 13x4's one entry point; the workgroup actions never enter directly,
     /// they join the terminal trigger queue and its guards (B6: a hostile page cannot spam questions).
     #[test]
+    #[allow(clippy::assertions_on_constants)] // the test pins a constant's value on purpose
     fn workgroup_effects_follow_iterm2() {
         let me = prod(include_str!("browser_triggers_app.rs"));
         let effect = between(me, "pub(super) fn browser_trigger_effect", "\n    }\n");
@@ -319,7 +320,6 @@ mod tests {
         let run = between(wg, "fn run_workgroup_triggers", "/// Ends the members a teardown queued");
         assert!(run.contains("self.enter_workgroup(&id, pane, Mechanism::BrowserTrigger)") && !run.contains("enter_workgroup_now"));
         assert!(run.contains("TriggerWork::ExitBrowser =>") && run.contains("self.exit_workgroup(pane)"));
-        #[allow(clippy::assertions_on_constants)] // the test pins a constant's value on purpose
         let guard = between(wg, "fn trigger_enter_id", "\n    }\n");
         for need in ["is_restoring_session(pane)", "can_enter_from_ui(in_group, &d)", "refused for workgroup", "restoring.declined(pane, &id)", "scripts_alerts::waits("] {
             assert!(guard.contains(need), "{need}");

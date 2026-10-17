@@ -299,6 +299,7 @@ fn best_view_to_remove(candidates: &[usize], items: &[Item]) -> usize {
 /// `viewToRemoveAdjacentToViewBeingRemoved:` (`SLA:148-166`): if the removed view has
 /// spacers (spring or fixed spacer) on both sides, remove the one with the larger spring
 /// constant; ties go to the right neighbor in the first half of the list, else the left.
+#[allow(clippy::if_same_then_else)] // each branch states its own case; merging them would hide the cases
 fn adjacent_to_remove(removed: usize, ordered: &[usize], items: &[Item]) -> Option<usize> {
     let idx = ordered.iter().position(|&x| x == removed)?;
     if idx == 0 || idx + 1 == ordered.len() {

@@ -230,6 +230,7 @@ pub fn format(items: &[&Clipping], separator: &str) -> String {
 }
 
 /// The detail's Markdown as the plain text the panel draws.
+#[allow(clippy::collapsible_match)] // the arm names the case and carries the rationale; a match guard would fold both into the pattern line
 pub fn plain(markdown: &str) -> String {
     use pulldown_cmark::{Event, Parser, TagEnd};
     let mut out = String::new();

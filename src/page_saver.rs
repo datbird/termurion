@@ -153,6 +153,7 @@ pub fn default_name(url: &str) -> String {
 /// The saved name of a resource (`PSV:234-250`). The extension follows Termurion's MIME table when a
 /// MIME is known and the page's own extension is missing or would run; a MIME that maps to a
 /// runnable extension is saved as `bin`.
+#[allow(clippy::collapsible_match)] // the arm names the case and carries the rationale; a match guard would fold both into the pattern line
 pub fn base_filename(url: &str, mime: Option<&str>) -> String {
     let path = url.split(['?', '#']).next().unwrap_or("");
     let path = path.split_once("://").map_or(path, |(_, r)| r.find('/').map_or("", |i| &r[i..]));

@@ -1487,6 +1487,7 @@ impl Controller {
     }
 
     /// A notification the gateway passed on.
+    #[allow(clippy::collapsible_match)] // the arm names the case and carries the rationale; a match guard would fold both into the pattern line
     pub fn note(&mut self, note: Note, gw: &mut Gateway) -> Vec<Action> {
         match note {
             Note::Pause(pane) => {

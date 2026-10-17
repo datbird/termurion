@@ -3583,6 +3583,7 @@ impl App {
 
     /// The release that ends a press on the tab bar (`PSM handleMouseUp:`, `otherMouseUp:`).
     /// False when no press on the bar waits for this button.
+    #[allow(clippy::collapsible_match)] // the arm names the case and carries the rationale; a match guard would fold both into the pattern line
     fn tab_bar_release(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) -> bool {
         use tab_layout::{Hit, Release};
         let Some((down, clicks, _, _)) = self.tab_press else { return false };

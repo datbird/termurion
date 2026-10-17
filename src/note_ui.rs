@@ -108,12 +108,12 @@ impl NoteWindow {
                             if ui.button(&spec.labels[1]).clicked() {
                                 *confirming = false;
                             }
-                        } else if {
+                        } else {
                             let r = ui.button("Delete");
                             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, DELETE_ACCESSIBILITY));
-                            r.clicked()
-                        } {
-                            out = NoteEvent::RequestDelete;
+                            if r.clicked() {
+                                out = NoteEvent::RequestDelete;
+                            }
                         }
                     });
                     if *confirming
