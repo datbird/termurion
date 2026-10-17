@@ -22,11 +22,10 @@ pub fn is_display_message(msg: u32, wparam: usize) -> bool {
 }
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
-    if is_display_message(msg, wparam) {
-        if let Some(f) = ON_CHANGE.get() {
+    if is_display_message(msg, wparam)
+        && let Some(f) = ON_CHANGE.get() {
             f();
         }
-    }
     if msg == WM_NCDESTROY {
         // SAFETY: removing this proc from the window being destroyed.
         unsafe { RemoveWindowSubclass(hwnd, Some(proc), SUBCLASS_ID) };

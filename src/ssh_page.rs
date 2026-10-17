@@ -107,16 +107,14 @@ pub fn identity_matches(id: &Identity, host: &str, user: Option<&str>, port: Opt
     if !id.hostname.eq_ignore_ascii_case(host) && !id.host.eq_ignore_ascii_case(host) {
         return false;
     }
-    if let (Some(url_user), Some(session_user)) = (user, id.username.as_deref()) {
-        if url_user != session_user {
+    if let (Some(url_user), Some(session_user)) = (user, id.username.as_deref())
+        && url_user != session_user {
             return false;
         }
-    }
-    if let Some(p) = port.filter(|p| *p != 0) {
-        if id.port != p || (id.port == 0 && p == 22) {
+    if let Some(p) = port.filter(|p| *p != 0)
+        && (id.port != p || (id.port == 0 && p == 22)) {
             return false;
         }
-    }
     true
 }
 

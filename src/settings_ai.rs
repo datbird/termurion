@@ -800,21 +800,18 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
         });
         ui.end_row();
     });
-    if let Some(d) = st.keys.as_mut() {
-        if key_dialog(ui.ctx(), d, &mut st.error) {
+    if let Some(d) = st.keys.as_mut()
+        && key_dialog(ui.ctx(), d, &mut st.error) {
             st.keys = None;
             st.key_failure = st.error.clone();
         }
-    }
     // The App's answer goes to whoever asked: the probe sheet, else the editor's fetch.
     let now = ui.ctx().cumulative_frame_nr();
-    if st.probing.is_none() {
-        if let Some(o) = st.probe.take() {
-            if let Some(e) = st.editor.as_mut() {
+    if st.probing.is_none()
+        && let Some(o) = st.probe.take()
+            && let Some(e) = st.editor.as_mut() {
                 e.take_answer(o, &st.found, now);
             }
-        }
-    }
     if let Some(sh) = st.sheet.as_mut() {
         let (closed, sheet_changed) = sheet_modal(ui.ctx(), g, sh, &mut st.editor, catalog, &st.found);
         changed |= sheet_changed;
@@ -846,11 +843,10 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
             changed = true;
         }
     }
-    if let Some((text, opened)) = &st.tell {
-        if notice_modal(ui.ctx(), "ai-ollama-unreachable", ad::UNREACHABLE_TITLE, text, now != *opened) {
+    if let Some((text, opened)) = &st.tell
+        && notice_modal(ui.ctx(), "ai-ollama-unreachable", ad::UNREACHABLE_TITLE, text, now != *opened) {
             st.tell = None;
         }
-    }
     changed
 }
 
@@ -1296,12 +1292,11 @@ fn editor_modal(ctx: &egui::Context, g: &Globals, e: &mut Editor, models: &[Manu
                         e.focus_header = e.header;
                     }
                     let selected = e.header.filter(|i| *i < form.headers.len());
-                    if ui.add_enabled(selected.is_some(), egui::Button::new("\u{2212}").min_size(egui::vec2(34.0, 22.0))).clicked() {
-                        if let Some(i) = selected {
+                    if ui.add_enabled(selected.is_some(), egui::Button::new("\u{2212}").min_size(egui::vec2(34.0, 22.0))).clicked()
+                        && let Some(i) = selected {
                             form.headers.remove(i);
                             e.header = None;
                         }
-                    }
                 });
             });
             ui.end_row();
@@ -1340,24 +1335,21 @@ fn editor_modal(ctx: &egui::Context, g: &Globals, e: &mut Editor, models: &[Manu
             });
         });
     });
-    if let Some(msg) = e.failure.clone() {
-        if notice_modal(ctx, "ai-model-invalid", am::INVALID_TITLE, &msg, blocked) {
+    if let Some(msg) = e.failure.clone()
+        && notice_modal(ctx, "ai-model-invalid", am::INVALID_TITLE, &msg, blocked) {
             e.failure = None;
         }
-    }
-    if let Some((title, text, opened)) = e.alert.clone() {
-        if notice_modal(ctx, "ai-model-fetch", &title, &text, now != opened) {
+    if let Some((title, text, opened)) = e.alert.clone()
+        && notice_modal(ctx, "ai-model-fetch", &title, &text, now != opened) {
             e.alert = None;
         }
-    }
-    if let Some(names) = e.menu.clone() {
-        if let Some(picked) = names_menu(ctx, &names) {
+    if let Some(names) = e.menu.clone()
+        && let Some(picked) = names_menu(ctx, &names) {
             e.menu = None;
             if let Some(name) = picked {
                 e.form.name = name;
             }
         }
-    }
     out
 }
 
@@ -1435,11 +1427,10 @@ fn prompts(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
             edit(&mut text.as_str());
         }
     });
-    if let Some(opened) = st.help {
-        if help_modal(ui.ctx(), opened) {
+    if let Some(opened) = st.help
+        && help_modal(ui.ctx(), opened) {
             st.help = None;
         }
-    }
     changed
 }
 

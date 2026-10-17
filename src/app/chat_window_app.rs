@@ -461,11 +461,10 @@ impl App {
         self.chat_load_messages();
         // A chat whose last state is Active with nothing streaming it was left on by an earlier
         // run: it says so (`CVC:1006-1011`).
-        if let Some(shown) = self.chat_shown.clone() {
-            if crate::chat_menu::stale_streaming(crate::chat_menu::last_streaming(&self.chat_msgs), self.streaming_chats.contains(&shown)) {
+        if let Some(shown) = self.chat_shown.clone()
+            && crate::chat_menu::stale_streaming(crate::chat_menu::last_streaming(&self.chat_msgs), self.streaming_chats.contains(&shown)) {
                 self.client_local(&shown, ClientLocal::StreamingChanged(crate::chat_message::Streaming::StoppedAutomatically));
             }
-        }
         self.chat_toolbar_dirty = true;
         self.chat_rows_dirty = true;
         self.chat_window_refresh();
@@ -545,11 +544,10 @@ impl App {
             Some(m) if m.vendor == Vendor::Llama => found.default_models().iter().map(|x| x.name.clone()).collect(),
             Some(m) => catalog.models.iter().filter(|x| x.vendor == m.vendor).map(|x| x.name.clone()).collect(),
         };
-        if let Some(m) = &model {
-            if !models.contains(&m.name) {
+        if let Some(m) = &model
+            && !models.contains(&m.name) {
                 models.insert(0, m.name.clone());
             }
-        }
         let model_popup = tb::model_popup(models.len(), chat.is_some());
 
         let has = |f: Feature| model.as_ref().is_some_and(|m| crate::ai_model::has(m, f));
@@ -919,11 +917,10 @@ impl App {
 
     /// Text on the clipboard.
     pub(super) fn chat_copy(&mut self, text: String) {
-        if let Some(cb) = &mut self.clipboard {
-            if let Err(e) = cb.set_text(text) {
+        if let Some(cb) = &mut self.clipboard
+            && let Err(e) = cb.set_text(text) {
                 self.banners.set("clipboard", format!("Copy failed: {e}"));
             }
-        }
     }
 
     /// Copy in the message menu: the rendered text (`Doc::plain` for markdown).
@@ -998,16 +995,14 @@ impl App {
         let Some(fork) = self.chat_create(&title, source.terminal_session_guid.as_deref(), source.browser_session_guid.as_deref(), &source.permissions, clones) else { return };
         let verbose = self.globals.bool("AiChatVerboseConsoleLogging");
         // The icon: not fatal when it cannot be copied (`CWC:920-932`); the row is read again first.
-        if let Some(icon) = source.icon.clone() {
-            if !self.chat_update(&fork, |c| c.icon = Some(icon)) {
+        if let Some(icon) = source.icon.clone()
+            && !self.chat_update(&fork, |c| c.icon = Some(icon)) {
                 crate::ai_wire_log::console(verbose, "fork: the icon could not be copied");
             }
-        }
-        if let Some(db) = self.chat_db.as_mut() {
-            if let Err(e) = fork_blobs(db, &source_id, &fork, retained, &ids) {
+        if let Some(db) = self.chat_db.as_mut()
+            && let Err(e) = fork_blobs(db, &source_id, &fork, retained, &ids) {
                 crate::ai_wire_log::console(verbose, &format!("fork: the blobs could not be copied: {e}"));
             }
-        }
         // The panel hosts one chat per session, so a fork from it shows in the window
         // (`CVC:3858-3864`); the window shows it in place.
         if view != ChatView::Window && !self.chat_window_enter(event_loop) {

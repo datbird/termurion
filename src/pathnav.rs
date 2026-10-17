@@ -208,13 +208,12 @@ pub fn list(path: &str, subfolders: &[String]) -> Vec<(String, String)> {
     let sep = if path.contains('\\') { '\\' } else { '/' };
     let mut out = Vec::new();
     // A drive root (`C:`) and the root (empty) have no parent.
-    if !trimmed.is_empty() && !trimmed.ends_with(':') {
-        if let Some(i) = trimmed.rfind(['\\', '/']) {
+    if !trimmed.is_empty() && !trimmed.ends_with(':')
+        && let Some(i) = trimmed.rfind(['\\', '/']) {
             let parent = &trimmed[..i];
             let parent = if parent.is_empty() { sep.to_string() } else if parent.ends_with(':') { format!("{parent}{sep}") } else { parent.to_string() };
             out.push((parent, "Parent directory".to_string()));
         }
-    }
     let mut names: Vec<&String> = subfolders.iter().collect();
     names.sort();
     for n in names {

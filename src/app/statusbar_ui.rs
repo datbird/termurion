@@ -544,11 +544,10 @@ impl App {
             let empty = Content::text(Vec::new());
             items.push(s.piece.item(&s.component, algorithm, s.content.as_ref().unwrap_or(&empty), &s.widths, s.min_text_pt));
         }
-        if search {
-            if let Some(k) = shown.iter().position(|s| !s.temporary && s.piece == Piece::Content(Kind::SearchTool)) {
+        if search
+            && let Some(k) = shown.iter().position(|s| !s.temporary && s.piece == Piece::Content(Kind::SearchTool)) {
                 items[k].mandatory = true;
             }
-        }
         let width_pt = bar.rect.w / scale;
         let placed = sbl::layout(&items, width_pt, algorithm, layout.advanced.remove_empty);
         // A `tail` content draws its first variant cut to the room beside its icon.
@@ -631,12 +630,11 @@ impl App {
                 };
                 // A button's face: its room, inset from the bar's edges, and its label 6
                 // points in (`FN`: a borderless rounded button sized to fit).
-                if content.button {
-                    if let Some((c, a)) = s.component.background_color().as_ref().and_then(color_of) {
+                if content.button
+                    && let Some((c, a)) = s.component.background_color().as_ref().and_then(color_of) {
                         let inset = (BUTTON_INSET_PT * scale).round();
                         buttons.push((Rect { y: clip.y + inset, h: (clip.h - 2.0 * inset).max(0.0), ..clip }, c, a, BUTTON_RADIUS_PT * scale));
                     }
-                }
                 let pad_pt = if content.button { BUTTON_PAD_PT / 2.0 } else { 0.0 };
                 let dy = if content.button { BUTTON_DY_PT * scale } else { 0.0 };
                 // The icon's 17 point column at the left, tinted with the text color.
@@ -727,11 +725,10 @@ impl App {
                 let click = hit.and_then(|i| p.shown[i].content.as_ref()).map_or(Click::None, |c| c.click.clone());
                 // A click on the bar anywhere but a field gives the keyboard back to the
                 // terminal, as a click in the terminal does.
-                if click != Click::Field {
-                    if let Some(f) = self.finds.get_mut(&bar.pane) {
+                if click != Click::Field
+                    && let Some(f) = self.finds.get_mut(&bar.pane) {
                         f.typing = false;
                     }
-                }
                 match click {
                     Click::Configure => self.configure_status_bar(bar.pane, event_loop),
                     Click::Menu(kind) => {

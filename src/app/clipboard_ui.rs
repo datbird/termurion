@@ -77,11 +77,10 @@ impl App {
             }
             return;
         }
-        if let Some(cb) = &mut self.clipboard {
-            if let Err(e) = cb.set_text(text) {
+        if let Some(cb) = &mut self.clipboard
+            && let Err(e) = cb.set_text(text) {
                 self.banners.set("clipboard", format!("Copy failed: {e}"));
             }
-        }
     }
 
     fn clipboard_read(&mut self, pane: PaneId, pc: String) {
@@ -98,11 +97,10 @@ impl App {
     /// Sends the clipboard's text to the program that asked.
     fn report_clipboard(&mut self, pane: PaneId, pc: &str) {
         // A tmux pane: only the client tmux leaves it to answers (iTerm2 drops it silently).
-        if let Some(gw) = self.panes.get(&pane).and_then(|p| p.tmux_io()).map(|io| io.gateway) {
-            if !self.tmux.get(&gw).is_some_and(|t| t.ctl.answers_osc52()) {
+        if let Some(gw) = self.panes.get(&pane).and_then(|p| p.tmux_io()).map(|io| io.gateway)
+            && !self.tmux.get(&gw).is_some_and(|t| t.ctl.answers_osc52()) {
                 return;
             }
-        }
         let text = match self.clipboard.as_mut().map(|cb| cb.get_text()) {
             Some(Ok(t)) => t,
             // An empty or non-text clipboard reports as empty text.

@@ -217,11 +217,10 @@ impl App {
         if let Some(l) = self.orch_watchers.get_mut(chat) {
             l.retain(|w| w.watcher_id != id);
         }
-        if let Some(mut p) = self.orch_polls.remove(id) {
-            if let Some(f) = p.flight.as_mut() {
+        if let Some(mut p) = self.orch_polls.remove(id)
+            && let Some(f) = p.flight.as_mut() {
                 f.runner.cancel();
             }
-        }
         if self.orch_watchers.get(chat).map_or(0, Vec::len) != before {
             self.orch_watch_persist(chat);
         }
@@ -461,11 +460,10 @@ impl App {
     }
 
     fn orch_drop_poll(&mut self, id: &str) {
-        if let Some(mut p) = self.orch_polls.remove(id) {
-            if let Some(f) = p.flight.as_mut() {
+        if let Some(mut p) = self.orch_polls.remove(id)
+            && let Some(f) = p.flight.as_mut() {
                 f.runner.cancel();
             }
-        }
     }
 
     /// Everything the chat's watchers and timers hold ends, nothing said (ruling P7: Stop, AI

@@ -57,11 +57,10 @@ impl App {
             }
             self.browser_js_call(pane, &cm::disable_js(&secret), json!({}), Box::new(|_, _, _| {}));
             self.browser_world_update(pane, &cm::keys_on_js(&secret, false));
-            if self.browser_page_may_focus(pane) {
-                if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
+            if self.browser_page_may_focus(pane)
+                && let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
                     v.focus();
                 }
-            }
         }
         self.browser_gate_refresh(pane);
         self.sync_checks();

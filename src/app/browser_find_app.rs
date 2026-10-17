@@ -132,11 +132,10 @@ impl App {
             bv.bar.call = None;
         }
         let Some(hwnd) = self.hwnd() else { return };
-        if crate::webhost_win::foreground_root() != Some(hwnd) {
-            if let Some(g) = self.gpu.as_ref() {
+        if crate::webhost_win::foreground_root() != Some(hwnd)
+            && let Some(g) = self.gpu.as_ref() {
                 g.window.focus_window();
             }
-        }
         crate::webhost_win::focus_window(hwnd);
         if self.web_focus_held.is_some() && self.web_focus_held == self.current_window() {
             self.web_focus_held = None;
@@ -198,11 +197,10 @@ impl App {
     /// keyboard back (`takeFocus`, `PS:8850-8853`), unless the address field has it.
     pub(super) fn browser_find_closed(&mut self, pane: PaneId) {
         self.browser_find_clear(pane);
-        if self.browser_page_may_focus(pane) {
-            if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
+        if self.browser_page_may_focus(pane)
+            && let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
                 v.focus();
             }
-        }
         self.redraw();
     }
 
@@ -254,11 +252,10 @@ impl App {
         match urls_commands(&self.globals, &mut bv.find, &secret) {
             Ok(cmds) => {
                 self.browser_find_send(pane, cmds);
-                if self.browser_page_may_focus(pane) {
-                    if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
+                if self.browser_page_may_focus(pane)
+                    && let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
                         v.focus();
                     }
-                }
             }
             Err(banner) => {
                 self.banners.set("action", banner);

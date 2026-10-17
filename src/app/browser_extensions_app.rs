@@ -304,11 +304,10 @@ impl App {
             for f in &approved {
                 if let Some(id) = self.browser_ext.ids.get(&(Store::Browser, f.key.clone())) {
                     added.push((f.key.clone(), id.clone()));
-                } else if let Some(Some(id)) = &f.approval {
-                    if !s.active.contains(id) {
+                } else if let Some(Some(id)) = &f.approval
+                    && !s.active.contains(id) {
                         added.push((f.key.clone(), id.clone()));
                     }
-                }
             }
             let installed: Vec<(String, bool)> = list.iter().map(|(i, _, on)| (i.clone(), *on)).collect();
             let plan = be::sync_plan(&installed, &added, &folders, &s.active);
@@ -381,11 +380,10 @@ impl App {
                 }
             }
         }
-        if done {
-            if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
+        if done
+            && let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
                 v.list_extensions();
             }
-        }
     }
 
     /// THE removal: WebView2 forgets the extension, and Termurion's approval, active id and folder map
@@ -481,8 +479,8 @@ impl App {
     /// an approval, and only if the manifest is still the one that was shown.
     pub(super) fn browser_extension_answered(&mut self, pane: PaneId, folder: PathBuf, hash: String, index: usize) {
         self.browser_ext.asking = false;
-        if index == 0 && self.browser_ext_pane_ok(pane) {
-            if let Some(profile) = self.browser_ext_profile(pane) {
+        if index == 0 && self.browser_ext_pane_ok(pane)
+            && let Some(profile) = self.browser_ext_profile(pane) {
                 let tx = self.browser_ext.chan.get_or_insert_with(channel).0.clone();
                 let notify = self.notify.clone();
                 std::thread::spawn(move || {
@@ -492,7 +490,6 @@ impl App {
                     notify();
                 });
             }
-        }
         self.browser_ext_next_ask();
     }
 

@@ -560,11 +560,10 @@ impl App {
             return self.redraw_here();
         }
         for (_, slot) in self.windows.parked() {
-            if slot.tabs.iter().any(|t| t.layout.panes().contains(&pane)) {
-                if let Some(g) = &slot.gpu {
+            if slot.tabs.iter().any(|t| t.layout.panes().contains(&pane))
+                && let Some(g) = &slot.gpu {
                     g.window.request_redraw();
                 }
-            }
         }
     }
 
@@ -2016,11 +2015,10 @@ impl App {
             (Some(f), Some(name)) => self.tmux_rename(f, name),
             _ => false,
         };
-        if !renamed {
-            if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
+        if !renamed
+            && let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
                 t.title = text;
             }
-        }
     }
 
     /// Events for the title window. False when `window` is not it.
@@ -2079,14 +2077,13 @@ impl App {
         }
         let placed = crate::placement::arrange_horizontally(work, &frames.iter().map(|f| f.1).collect::<Vec<_>>());
         for ((id, _), r) in frames.iter().zip(placed) {
-            if self.enter(*id) {
-                if let Some(g) = &self.gpu {
+            if self.enter(*id)
+                && let Some(g) = &self.gpu {
                     let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
                     let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
                     g.window.set_outer_position(PhysicalPosition::new(r.x as i32, r.y as i32));
                     let _ = super::caption_ui::request_inner_size(&g.window, PhysicalSize::new((r.w as u32).saturating_sub(dw).max(1), (r.h as u32).saturating_sub(dh).max(1)));
                 }
-            }
         }
     }
 }

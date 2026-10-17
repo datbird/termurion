@@ -286,14 +286,13 @@ fn process_alive(pid: u32) -> bool {
 pub fn cleanup_files() {
     let Some(base) = local_appdata() else { return };
     // Saved Instant Replay movies are page pictures: they do not outlive the run that made them (P16).
-    if let Some(dir) = crate::localfs::LocalPath::judge(crate::web_replay::replay_folder(&base)) {
-        if let Ok(entries) = crate::localfs::entries(&dir) {
+    if let Some(dir) = crate::localfs::LocalPath::judge(crate::web_replay::replay_folder(&base))
+        && let Ok(entries) = crate::localfs::entries(&dir) {
             for e in entries.iter().filter(|e| !e.stat.is_dir) {
                 // A link is removed as a link, never followed.
                 let _ = e.unlink();
             }
         }
-    }
     let tmp = webhost::tmp_folder(&base);
     let Some(dir) = crate::localfs::LocalPath::judge(&tmp) else { return };
     let Ok(entries) = crate::localfs::entries(&dir) else { return };
@@ -1109,11 +1108,10 @@ impl WebView {
     /// The profile is the view's store's: a Dev Null view clears Dev Null's, never the persistent one.
     pub fn delete_all_cookies(&self) {
         self.with(|c| {
-            if let Ok(v2) = c.view.cast::<ICoreWebView2_2>() {
-                if let Ok(cookies) = unsafe { v2.CookieManager() } {
+            if let Ok(v2) = c.view.cast::<ICoreWebView2_2>()
+                && let Ok(cookies) = unsafe { v2.CookieManager() } {
                     let _ = unsafe { cookies.DeleteAllCookies() };
                 }
-            }
         });
     }
 
@@ -1419,13 +1417,11 @@ impl WebView {
         let Some(p) = pending else { return };
         let poster = self.inner.borrow().poster.clone();
         let total = self.inner.clone();
-        if let Some(path) = path {
-            if let Some(active) = start_download(&p, id, path, &poster, Rc::downgrade(&total)) {
-                if let Ok(mut i) = total.try_borrow_mut() {
+        if let Some(path) = path
+            && let Some(active) = start_download(&p, id, path, &poster, Rc::downgrade(&total))
+                && let Ok(mut i) = total.try_borrow_mut() {
                     i.dl_active.insert(id, active);
                 }
-            }
-        }
         let _ = unsafe { p.deferral.Complete() };
     }
 
@@ -1749,23 +1745,20 @@ fn configure(inner: &Rc<RefCell<Inner>>, core: &Core, bounds: (i32, i32, i32, i3
             let _ = s4.SetIsGeneralAutofillEnabled(false);
             let _ = s4.SetIsPasswordAutosaveEnabled(false);
         }
-        if let Some(setting) = &setup.user_agent {
-            if let Ok(s2) = s.cast::<ICoreWebView2Settings2>() {
+        if let Some(setting) = &setup.user_agent
+            && let Ok(s2) = s.cast::<ICoreWebView2Settings2>() {
                 let engine = pwstr_out(|p| s2.UserAgent(p)).unwrap_or_default();
                 let ua = wide(&webhost::user_agent(setting, &engine));
                 let _ = s2.SetUserAgent(PCWSTR(ua.as_ptr()));
             }
-        }
-        if setup.transparent {
-            if let Ok(c2) = ctrl.cast::<ICoreWebView2Controller2>() {
+        if setup.transparent
+            && let Ok(c2) = ctrl.cast::<ICoreWebView2Controller2>() {
                 let _ = c2.SetDefaultBackgroundColor(COREWEBVIEW2_COLOR { A: 0, R: 0, G: 0, B: 0 });
             }
-        }
-        if let Some(scale) = setup.scale {
-            if let Ok(c3) = ctrl.cast::<ICoreWebView2Controller3>() {
+        if let Some(scale) = setup.scale
+            && let Ok(c3) = ctrl.cast::<ICoreWebView2Controller3>() {
                 let _ = c3.SetRasterizationScale(scale);
             }
-        }
     }
     for script in &setup.scripts {
         let w = wide(script);
@@ -1896,11 +1889,10 @@ fn decorate_menu(args: &ICoreWebView2ContextMenuRequestedEventArgs, env: &Env, p
     let mut at = count(&list);
     while at > 0 {
         at -= 1;
-        if let Ok(item) = unsafe { list.GetValueAtIndex(at) } {
-            if webhost::REMOVED_NATIVE.contains(&menu_item_info(&item).1.as_str()) {
+        if let Ok(item) = unsafe { list.GetValueAtIndex(at) }
+            && webhost::REMOVED_NATIVE.contains(&menu_item_info(&item).1.as_str()) {
                 let _ = unsafe { list.RemoveValueAtIndex(at) };
             }
-        }
     }
     let mut at = count(&list);
     while at > 0 {
@@ -2287,8 +2279,8 @@ fn register_page_events(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token:
     // GetFavicon hands it over as PNG, read with the 256 KiB bound and posted only when it decodes
     // within 256 by 256 (B5: the cap is the host's, not the consumer's). A newer runtime only.
     let setup_favicon = inner.borrow().setup.favicon;
-    if setup_favicon {
-        if let Ok(v15) = view.cast::<ICoreWebView2_15>() {
+    if setup_favicon
+        && let Ok(v15) = view.cast::<ICoreWebView2_15>() {
             let weak = Rc::downgrade(inner);
             let changed = FaviconChangedEventHandler::create(Box::new(move |sender, _| guard(|| {
                 let (Some(inner), Some(v)) = (weak.upgrade(), sender) else { return Ok(()) };
@@ -2312,7 +2304,6 @@ fn register_page_events(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, token:
             })));
             unsafe { v15.add_FaviconChanged(&changed, token) }?;
         }
-    }
     Ok(())
 }
 
@@ -2368,12 +2359,11 @@ fn register_notifications(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2) {
             let Some(inner) = w2.upgrade() else { return Ok(()) };
             let Ok(mut i) = inner.try_borrow_mut() else { return Ok(()) };
             let id = i.id;
-            if let Some(h) = i.notes.get_mut(&t) {
-                if !h.closed_posted {
+            if let Some(h) = i.notes.get_mut(&t)
+                && !h.closed_posted {
                     h.closed_posted = true;
                     i.poster.post(Event::NotificationClosed { view: id, token: t });
                 }
-            }
             Ok(())
         })));
         let mut close_token = 0i64;
@@ -2870,11 +2860,10 @@ fn start_download(p: &PendingDownload, id: u64, path: &Path, poster: &Poster, ow
         }
         // The operation has ended: the view forgets it (the cap counts running downloads only), then the
         // app hears. The registrations die with the operation when its last reference goes.
-        if let Some(inner) = owner.upgrade() {
-            if let Ok(mut i) = inner.try_borrow_mut() {
+        if let Some(inner) = owner.upgrade()
+            && let Ok(mut i) = inner.try_borrow_mut() {
                 download_ended(&mut i.dl_active, id);
             }
-        }
         post.post(Event::DownloadDone { view: post.view, id, result });
         Ok(())
     })));
@@ -2919,14 +2908,13 @@ fn register_main_responses(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, tok
         if crate::browser_basic_auth::strip_fragment(&uri) != crate::browser_basic_auth::strip_fragment(last) {
             return Ok(());
         }
-        if let Ok(h) = unsafe { request.Headers() } {
-            if bool_out(|b| unsafe { h.Contains(windows::core::w!("Sec-Fetch-Dest"), b) }) {
+        if let Ok(h) = unsafe { request.Headers() }
+            && bool_out(|b| unsafe { h.Contains(windows::core::w!("Sec-Fetch-Dest"), b) }) {
                 let dest = pwstr_out(|p| unsafe { h.GetHeader(windows::core::w!("Sec-Fetch-Dest"), p) }).unwrap_or_default();
                 if !dest.eq_ignore_ascii_case("document") {
                     return Ok(());
                 }
             }
-        }
         let mut status = 0i32;
         if let Ok(r) = unsafe { args.Response() } {
             let _ = unsafe { r.StatusCode(&mut status) };
@@ -4356,12 +4344,11 @@ mod probe {
                     Some((frame, origin, payload)) => {
                         // As the app routes it (`browser_devtools_event`): Client, and the graph's
                         // messages to the production `Frames`.
-                        if let Some(routed) = crate::browser_js::route(&payload, crate::browser_js::World::Client, frame, &origin) {
-                            if routed.handler == crate::browser_frames::HANDLER {
+                        if let Some(routed) = crate::browser_js::route(&payload, crate::browser_js::World::Client, frame, &origin)
+                            && routed.handler == crate::browser_frames::HANDLER {
                                 let acts = self.graph.as_mut().map(|g| g.handle(&routed, true, &mut crate::browser_js::new_secret)).unwrap_or_default();
                                 self.graph_run(acts);
                             }
-                        }
                         self.routed.push(Routed { via: Via::Client, frame, from: origin, body: payload });
                     }
                     None => self.rejected_bindings += 1,

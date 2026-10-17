@@ -374,11 +374,10 @@ impl JobWatch {
                             for r in roots {
                                 let now = ShellJob { job: proctree::display_job(&procs, r), ancestors: proctree::ancestors(&procs, r), root: proctree::root_name(&procs, r) };
                                 if s.roots.contains(&r) && s.jobs.get(&r) != Some(&now) {
-                                    if s.ancestry_diagnostics {
-                                        if let Some(old) = s.jobs.get(&r) {
+                                    if s.ancestry_diagnostics
+                                        && let Some(old) = s.jobs.get(&r) {
                                             log_ancestry_shrink(&procs, r, &old.ancestors, &now);
                                         }
-                                    }
                                     s.jobs.insert(r, now);
                                     changed = true;
                                 }

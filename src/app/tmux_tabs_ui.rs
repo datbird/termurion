@@ -50,11 +50,10 @@ impl App {
                     }
                 }
                 Action::Clipboard(text) => {
-                    if let Some(cb) = &mut self.clipboard {
-                        if let Err(e) = cb.set_text(text) {
+                    if let Some(cb) = &mut self.clipboard
+                        && let Err(e) = cb.set_text(text) {
                             self.banners.set("clipboard", format!("Copy failed: {e}"));
                         }
-                    }
                 }
                 // A local server's pane process: the job watcher reads its tree.
                 Action::PanePid { pane, pid } => {
@@ -97,11 +96,10 @@ impl App {
                 // AutoHideTmuxClientSession: once the attach's windows have opened (they may
                 // still wait to become windows), the gateway is buried.
                 Action::InitialWindowsOpened => {
-                    if self.globals.bool("AutoHideTmuxClientSession") {
-                        if let Some(t) = self.tmux.get_mut(&gw) {
+                    if self.globals.bool("AutoHideTmuxClientSession")
+                        && let Some(t) = self.tmux.get_mut(&gw) {
                             t.bury_pending = !t.auto_buried;
                         }
-                    }
                 }
                 Action::Relayout { window, node, added, removed, kept, zoomed } => {
                     let first = kept.first().copied();
@@ -259,13 +257,11 @@ impl App {
                     }
                 }
                 Action::SelectWindow(window) => {
-                    if let Some(first) = self.tmux_window_panes(gw, window).first().copied() {
-                        if self.enter_pane_window(first) {
-                            if let Some(i) = self.tabs.iter().position(|t| t.layout.panes().contains(&first)) {
+                    if let Some(first) = self.tmux_window_panes(gw, window).first().copied()
+                        && self.enter_pane_window(first)
+                            && let Some(i) = self.tabs.iter().position(|t| t.layout.panes().contains(&first)) {
                                 self.select_tab(i);
                             }
-                        }
-                    }
                 }
             }
         }
@@ -697,11 +693,10 @@ impl App {
                         self.tmux_disconnected(other, true);
                     }
                     answer => {
-                        if answer == Some("Reveal") {
-                            if let Some(first) = self.tmux.get(&other).and_then(|t| t.panes.values().map(|(id, _)| *id).min()) {
+                        if answer == Some("Reveal")
+                            && let Some(first) = self.tmux.get(&other).and_then(|t| t.panes.values().map(|(id, _)| *id).min()) {
                                 self.reveal_pane(first);
                             }
-                        }
                         // iTerm2 detaches this connection when the other one stays.
                         if let Some(t) = self.tmux.get_mut(&gw) {
                             t.gw.detach();
@@ -735,11 +730,10 @@ impl App {
 
     /// Runs `f` on the tab that holds `pane`, in whichever window has it.
     fn with_tab_of(&mut self, pane: PaneId, f: impl FnOnce(&mut Tab)) {
-        if self.enter_pane_window(pane) {
-            if let Some(t) = self.tabs.iter_mut().find(|t| t.layout.panes().contains(&pane)) {
+        if self.enter_pane_window(pane)
+            && let Some(t) = self.tabs.iter_mut().find(|t| t.layout.panes().contains(&pane)) {
                 f(t);
             }
-        }
     }
 
     /// tmuxTitlePrefix before the window's name.
@@ -826,11 +820,10 @@ impl App {
         let tmux_panes: Vec<u32> = panes.iter().map(|p| p.pane).collect();
         let restore = self.tmux.get_mut(&gw).map(|t| t.ctl.restore_of(window.id, &tmux_panes)).unwrap_or_default();
         let variable = self.tmux.get(&gw).is_some_and(|t| t.ctl.variable_sizes());
-        if let Some(title) = restore.tab_title.clone() {
-            if let Some(t) = self.tmux.get_mut(&gw) {
+        if let Some(title) = restore.tab_title.clone()
+            && let Some(t) = self.tmux.get_mut(&gw) {
                 t.tab_overrides.insert(window.id, title);
             }
-        }
         for (p, c) in &restore.tab_colors {
             if let (Some((r, g, b)), Some(id)) = (c, ids.get(p)) {
                 self.tab_colors.insert(*id, crate::palette::rgb(*r, *g, *b));
@@ -885,12 +878,11 @@ impl App {
             // arrives in one read): the tab joins it there.
             Some(anchor) if self.pending_windows.iter().any(|w| matches!(w, windows_ui::NewWindow::Tabs(ts) if ts.iter().any(|t| t.layout.panes().contains(&anchor)))) => {
                 for w in self.pending_windows.iter_mut() {
-                    if let windows_ui::NewWindow::Tabs(ts) = w {
-                        if ts.iter().any(|t| t.layout.panes().contains(&anchor)) {
+                    if let windows_ui::NewWindow::Tabs(ts) = w
+                        && ts.iter().any(|t| t.layout.panes().contains(&anchor)) {
                             ts.push(tab);
                             break;
                         }
-                    }
                 }
             }
             _ => {

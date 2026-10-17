@@ -404,11 +404,10 @@ pub fn remote_doc_link(link: &str) -> RemoteDocLink {
         return if path.starts_with('/') { RemoteDocLink::Download(path.to_string()) } else { RemoteDocLink::Refuse };
     }
     // A scheme (two characters or more; "C:" is a drive) that is not a web link.
-    if let Some((scheme, _)) = link.split_once(':') {
-        if scheme.len() > 1 && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c)) {
+    if let Some((scheme, _)) = link.split_once(':')
+        && scheme.len() > 1 && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c)) {
             return RemoteDocLink::Refuse;
         }
-    }
     if link.is_empty() { RemoteDocLink::Refuse } else { RemoteDocLink::Download(link.to_string()) }
 }
 

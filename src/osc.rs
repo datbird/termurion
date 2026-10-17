@@ -303,11 +303,10 @@ impl Scanner {
         let mut i = 0;
         while i < bytes.len() {
             let b = bytes[i];
-            if let Some(d) = self.deferred.take() {
-                if b == b'\\' {
+            if let Some(d) = self.deferred.take()
+                && b == b'\\' {
                     out.push((d.began, i + 1, d.ev));
                 }
-            }
             let before = self.parser.state();
             // Runs the parser would only buffer or print are taken at once; the parser sees the
             // byte that ends them, so it never holds a string's text.
@@ -353,11 +352,10 @@ impl Scanner {
     /// What the byte at `i` did in the parser.
     fn react(&mut self, before: VState, after: VState, b: u8, i: usize, began: usize, out: &mut Vec<(usize, usize, Osc)>) {
         let tap = std::mem::take(&mut self.tap);
-        if let Some(csi) = &tap.csi {
-            if let Some(ev) = csi.held(self.cup_armed).or_else(|| csi.query()) {
+        if let Some(csi) = &tap.csi
+            && let Some(ev) = csi.held(self.cup_armed).or_else(|| csi.query()) {
                 out.push((began, i + 1, ev));
             }
-        }
         if tap.enq && before == VState::Ground {
             out.push((i, i + 1, Osc::Held(crate::emu::Held::Enq)));
         }
@@ -428,11 +426,10 @@ impl Scanner {
             self.string = Str::None;
             return;
         };
-        if b == 0x1b {
-            if let Some(body) = buf.strip_prefix(b"G") {
+        if b == 0x1b
+            && let Some(body) = buf.strip_prefix(b"G") {
                 self.deferred = Some(Deferred { ev: Osc::Kitty(body.to_vec()), began: self.sbegan });
             }
-        }
     }
 
     /// Bytes inside the string the parser is in, up to (not including) its terminator.

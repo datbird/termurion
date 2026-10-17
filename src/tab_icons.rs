@@ -134,11 +134,10 @@ pub fn normalized(command: &str) -> String {
     if command.starts_with("Emacs-") || command.starts_with("emacs-") {
         return "emacs".into();
     }
-    if let Some(suffix) = command.strip_prefix("Python").or_else(|| command.strip_prefix("python")) {
-        if !suffix.chars().any(char::is_alphabetic) {
+    if let Some(suffix) = command.strip_prefix("Python").or_else(|| command.strip_prefix("python"))
+        && !suffix.chars().any(char::is_alphabetic) {
             return "python".into();
         }
-    }
     command.to_string()
 }
 

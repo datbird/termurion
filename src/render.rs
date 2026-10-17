@@ -847,11 +847,10 @@ impl Renderer {
         if let Some(f) = db.faces().flat_map(|f| f.families.iter()).find(|(n, _)| n.eq_ignore_ascii_case(name)) {
             return f.0.clone();
         }
-        if let Some(face) = db.faces().find(|f| f.post_script_name.eq_ignore_ascii_case(name)) {
-            if let Some((family, _)) = face.families.first() {
+        if let Some(face) = db.faces().find(|f| f.post_script_name.eq_ignore_ascii_case(name))
+            && let Some((family, _)) = face.families.first() {
                 return family.clone();
             }
-        }
         // "CascadiaMono-Regular" or "JetBrainsMono-Bold": drop the style word, then match
         // family names with spaces removed ("Cascadia Mono", "JetBrains Mono").
         let guess = crate::import::family_from_postscript(name);

@@ -119,12 +119,11 @@ pub fn convert(messages: &[Message]) -> Vec<Value> {
         if m.role == Some(Role::System) {
             continue;
         }
-        if let (Some(Role::Function), Body::FunctionOutput { output, .. }) = (m.role, &m.body) {
-            if let Some(id) = pending.pop() {
+        if let (Some(Role::Function), Body::FunctionOutput { output, .. }) = (m.role, &m.body)
+            && let Some(id) = pending.pop() {
                 out.push(message("user", json!([tool_result(&id, output)])));
                 continue;
             }
-        }
         let Some(converted) = converted(m) else {
             continue;
         };
@@ -135,19 +134,17 @@ pub fn convert(messages: &[Message]) -> Vec<Value> {
                 }
             }
         }
-        if is_role(&converted, "user") {
-            if let Some(text) = converted["content"].as_str() {
+        if is_role(&converted, "user")
+            && let Some(text) = converted["content"].as_str() {
                 // A tool's output written as text.
-                if text.starts_with("Function ") {
-                    if let (Some(at), Some(id)) = (text.find(" output: "), pending.last()) {
+                if text.starts_with("Function ")
+                    && let (Some(at), Some(id)) = (text.find(" output: "), pending.last()) {
                         out.push(message("user", json!([tool_result(id, &text[at + " output: ".len()..])])));
                         pending.pop();
                         continue;
                     }
-                }
                 pending.clear();
             }
-        }
         out.push(converted);
     }
     coalesce_assistants(tool_results_follow_calls(out))

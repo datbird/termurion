@@ -147,11 +147,10 @@ pub fn list_dir(root: &crate::localfs::LocalPath, local: &dyn Fn(&Path) -> bool,
             if out.len() > max {
                 return out;
             }
-            if entry.stat.is_dir && !entry.stat.is_link && !entry.stat.is_reparse && depth < MAX_DEPTH {
-                if let Some(sub) = entry.local() {
+            if entry.stat.is_dir && !entry.stat.is_link && !entry.stat.is_reparse && depth < MAX_DEPTH
+                && let Some(sub) = entry.local() {
                     stack.push((sub, rel, depth + 1));
                 }
-            }
         }
     }
     out
@@ -811,14 +810,13 @@ pub fn rewritten(on_disk: &Entry, updated: &Profile, parent: &Profile, add_tag: 
         }
     }
     out.remove(DYNAMIC_KEY);
-    if add_tag {
-        if let Some(Json::Array(tags)) = out.get_mut("Tags") {
+    if add_tag
+        && let Some(Json::Array(tags)) = out.get_mut("Tags") {
             tags.retain(|t| t.as_str() != Some(TAG));
             if tags.is_empty() {
                 out.remove("Tags");
             }
         }
-    }
     out
 }
 

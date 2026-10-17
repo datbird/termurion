@@ -445,8 +445,8 @@ impl Panel {
             }
             return out;
         }
-        if status == 0 {
-            if let Ok(files) = remote_file::parse_list(content) {
+        if status == 0
+            && let Ok(files) = remote_file::parse_list(content) {
                 let children = list == base;
                 let child_prefix = if lower_base == "/" { "/".to_string() } else { format!("{lower_base}/") };
                 for f in files.iter().filter(|f| f.is_folder()) {
@@ -464,7 +464,6 @@ impl Panel {
                     }
                 }
             }
-        }
         self.comp_pending = self.comp_pending.saturating_sub(1);
         if self.comp_pending == 0 {
             self.completing = false;

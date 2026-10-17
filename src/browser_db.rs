@@ -174,14 +174,13 @@ pub(crate) fn clean_url(url: &str) -> Option<String> {
     if url.is_empty() || url.len() > MAX_URL || url.chars().any(char::is_control) {
         return None;
     }
-    if let Some((scheme, rest)) = url.split_once("://") {
-        if !scheme.is_empty() && !scheme.contains('/') {
+    if let Some((scheme, rest)) = url.split_once("://")
+        && !scheme.is_empty() && !scheme.contains('/') {
             let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
             if let Some((_, hostport)) = rest[..end].rsplit_once('@') {
                 return Some(format!("{scheme}://{hostport}{}", &rest[end..]));
             }
         }
-    }
     Some(url.to_string())
 }
 

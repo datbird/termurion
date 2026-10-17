@@ -152,11 +152,10 @@ fn write_licenses(out: &Path) {
         };
         let Some(dir) = dir else { continue };
         let files = license_files(&dir);
-        if files.is_empty() {
-            if let Some(spdx) = spdx_of(&dir) {
+        if files.is_empty()
+            && let Some(spdx) = spdx_of(&dir) {
                 text.push_str(&entry(&name, &version, "license", &spdx));
             }
-        }
         for (file, body) in files {
             text.push_str(&entry(&name, &version, &file, &body));
         }

@@ -183,11 +183,10 @@ impl App {
                     run.start_line = super::ai_exec_app::rebased_start(run.start_line, api_from, by);
                 }
                 // The Captured Output tool's Clear line names a row the same way an entry does.
-                if let Some(st) = self.belt.tools.get_mut(&crate::toolbelt::ToolId::CapturedOutput) {
-                    if st.cleared_pane == Some(pane) && st.cleared.abs_line != i64::MIN && st.cleared.abs_line < below {
+                if let Some(st) = self.belt.tools.get_mut(&crate::toolbelt::ToolId::CapturedOutput)
+                    && st.cleared_pane == Some(pane) && st.cleared.abs_line != i64::MIN && st.cleared.abs_line < below {
                         st.cleared.abs_line -= by;
                     }
-                }
             }
             Request::SetProfile(name) => self.set_profile_request(pane, name),
             Request::SetProfileProperty(pairs) => self.set_property_request(pane, pairs),

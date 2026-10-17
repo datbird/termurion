@@ -625,11 +625,10 @@ pub enum Registered {
 /// Adds a watcher to a chat's list: a session watch with the same (session, target_state,
 /// condition) is the existing one; the list is bounded.
 pub fn register(list: &mut Vec<Watcher>, w: Watcher) -> Result<Registered, OrchError> {
-    if w.effective_mode() != Mode::Timer {
-        if let Some(e) = list.iter().find(|e| e.effective_mode() != Mode::Timer && e.session_guid == w.session_guid && e.target_state == w.target_state && e.condition == w.condition) {
+    if w.effective_mode() != Mode::Timer
+        && let Some(e) = list.iter().find(|e| e.effective_mode() != Mode::Timer && e.session_guid == w.session_guid && e.target_state == w.target_state && e.condition == w.condition) {
             return Ok(Registered::Existing(e.clone()));
         }
-    }
     if list.len() >= MAX_WATCHERS {
         return Err(OrchError::Unsupported(TOO_MANY.to_string()));
     }

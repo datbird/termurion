@@ -87,11 +87,10 @@ fn remote_answer(cache: &std::sync::Mutex<[Option<bool>; 26]>, letter: usize, as
         return true;
     }
     let remote = ask() == DRIVE_REMOTE;
-    if remote {
-        if let Ok(mut c) = cache.lock() {
+    if remote
+        && let Ok(mut c) = cache.lock() {
             c[letter] = Some(true);
         }
-    }
     remote
 }
 

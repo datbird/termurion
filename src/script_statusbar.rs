@@ -375,13 +375,12 @@ pub fn html_text(html: &str) -> String {
         if c == '&' {
             // An entity's name is short: only its first characters are searched, so a long
             // run of `&` stays linear.
-            if let Some(semi) = rest.char_indices().take(11).find(|&(_, ch)| ch == ';').map(|(i, _)| i).filter(|&i| i <= 10) {
-                if let Some(ch) = entity(&rest[..semi]) {
+            if let Some(semi) = rest.char_indices().take(11).find(|&(_, ch)| ch == ';').map(|(i, _)| i).filter(|&i| i <= 10)
+                && let Some(ch) = entity(&rest[..semi]) {
                     out.push(ch);
                     rest = &rest[semi + 1..];
                     continue;
                 }
-            }
         }
         out.push(c);
     }

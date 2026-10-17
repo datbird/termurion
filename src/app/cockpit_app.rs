@@ -160,11 +160,10 @@ impl App {
             self.cockpit_save_due = None;
             self.save_globals();
         }
-        if self.cockpit_view.tip.expire(now) {
-            if let Some(w) = self.cockpit.as_ref() {
+        if self.cockpit_view.tip.expire(now)
+            && let Some(w) = self.cockpit.as_ref() {
                 w.request_redraw();
             }
-        }
         let refresh = self.cockpit.as_mut().and_then(|w| w.refresh(now));
         [self.cockpit_save_due, self.cockpit_view.tip.next_change(), refresh].into_iter().flatten().min()
     }

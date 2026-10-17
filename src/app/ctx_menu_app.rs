@@ -130,13 +130,11 @@ impl App {
         if self.smart_select(id, point, false).is_none() {
             self.select_word_at(id, point);
         }
-        if self.selected_text(id).is_none_or(|t| t.trim().is_empty()) {
-            if let Some(p) = self.panes.get_mut(&id) {
-                if saved.is_empty() || !p.screen.set_subs(saved) {
+        if self.selected_text(id).is_none_or(|t| t.trim().is_empty())
+            && let Some(p) = self.panes.get_mut(&id)
+                && (saved.is_empty() || !p.screen.set_subs(saved)) {
                     p.clear_selection();
                 }
-            }
-        }
     }
 
     /// The label a tab has in the Select submenu: its title and number (`PT:7222-7248`).
@@ -224,13 +222,12 @@ impl App {
             pend.fold = Some(f);
         }
         let on_line = p.screen.term().grid()[Line(line)].mark();
-        if on_line != 0 {
-            if let Some(m) = p.screen.command_mark(on_line) {
+        if on_line != 0
+            && let Some(m) = p.screen.command_mark(on_line) {
                 c.command_info = !m.command.trim().is_empty();
                 c.mark_name = m.name.clone();
                 pend.mark = Some(m.id);
             }
-        }
         if c.fold == Fold::None {
             // The command at or above the line folds when it has output the fold can take (`CMH:255-266`).
             let cursor = p.screen.term().grid().cursor.point.line.0;
@@ -264,22 +261,20 @@ impl App {
             c.replacements = self.replacement_kinds(id);
         }
         // One selected cell is described (`CMH:507-523`).
-        if let (Some((a, b)), Some(p)) = (self.selection_pos(id), self.panes.get(&id)) {
-            if a == b {
+        if let (Some((a, b)), Some(p)) = (self.selection_pos(id), self.panes.get(&id))
+            && a == b {
                 c.char_description = ctx_menu::char_description(&p.screen.term().grid()[to_point(&p.screen, a)]);
             }
-        }
         // Download (`CMH:528-548`): Termurion's file transfer is the SSH integration's, so the item
         // is enabled only when this pane's conductor can take the path.
         let integration = self.scp_path_for(id, "placeholder").is_some_and(|to| self.transfer_pane(id, &to));
         c.scp_title = if integration { "Download using SSH Integration" } else { "Download with scp" }.to_string();
-        if let Some(text) = short.as_deref().map(str::trim).filter(|t| !t.is_empty() && !t.contains('\n')) {
-            if let Some(path) = self.scp_path_for(id, text) {
+        if let Some(text) = short.as_deref().map(str::trim).filter(|t| !t.is_empty() && !t.contains('\n'))
+            && let Some(path) = self.scp_path_for(id, text) {
                 c.scp_title = format!("{} from {}", c.scp_title, shown_name(&path.hostname));
                 c.scp_enabled = integration;
                 pend.scp = Some(text.to_string());
             }
-        }
         // The web items (`CMH:549-563`).
         if let Some(text) = &short {
             c.locally_openable = self.link_locally_openable(text);
@@ -423,21 +418,19 @@ impl App {
                 self.open_selection_mail(pend.pane, &text);
             }
         } else if item == "scp" {
-            if let Some(text) = pend.scp {
-                if !self.secure_copy_text(pend.pane, Some(&text)) {
+            if let Some(text) = pend.scp
+                && !self.secure_copy_text(pend.pane, Some(&text)) {
                     self.banners.set("action", "Termurion could not download this file: the session cannot take transfers.");
                 }
-            }
         } else if item == "sendselection" {
             if let Some(text) = pend.full {
                 self.cmdinfo_write(pend.pane, &text);
             }
         } else if item == "snippet" {
-            if let Some(text) = pend.full {
-                if self.cmdinfo_add_snippet(&text) {
+            if let Some(text) = pend.full
+                && self.cmdinfo_add_snippet(&text) {
                     self.show_toast(crate::cmdinfo::SNIPPET_ADDED);
                 }
-            }
         } else if item == "reveal" {
             if let Some(point) = pend.point {
                 for n in self.hidden_notes_at(pend.pane, point) {
@@ -453,11 +446,10 @@ impl App {
                 self.execute(pend.pane, semantic::guard_open(&url, has_code()), None, false);
             }
         } else if item == "copylink" {
-            if let (Some(link), Some(cb)) = (pend.link, &mut self.clipboard) {
-                if let Err(e) = cb.set_text(link) {
+            if let (Some(link), Some(cb)) = (pend.link, &mut self.clipboard)
+                && let Err(e) = cb.set_text(link) {
                     self.banners.set("clipboard", format!("Copy failed: {e}"));
                 }
-            }
         } else if let Some((a, captures)) = item.strip_prefix("action.").and_then(|n| n.parse::<usize>().ok()).and_then(|n| pend.actions.get(n).cloned()) {
             let cwd_path = (!pend.cwd.is_empty()).then(|| std::path::PathBuf::from(&pend.cwd));
             // Asked again at the pick: the pane may have started framing since the menu showed.
@@ -469,11 +461,10 @@ impl App {
         } else if item.starts_with("img.") {
             self.context_image_picked(item, &pend);
         } else if item == "copytext" {
-            if let (Some(text), Some(cb)) = (pend.copy, &mut self.clipboard) {
-                if let Err(e) = cb.set_text(text) {
+            if let (Some(text), Some(cb)) = (pend.copy, &mut self.clipboard)
+                && let Err(e) = cb.set_text(text) {
                     self.banners.set("clipboard", format!("Copy failed: {e}"));
                 }
-            }
         } else if item == "tsbaseline" || item == "tsdisable" {
             self.set_timestamp_baseline(pend.pane, if item == "tsdisable" { 0.0 } else { pend.stamp.unwrap_or(0.0) });
         }
@@ -517,11 +508,10 @@ impl App {
                 info_box(&format!("Filename: {shown}\nDimensions: {w} x {h}"));
             }
             "img.copy" => {
-                if let Some(cb) = &mut self.clipboard {
-                    if let Err(e) = cb.set_image(arboard::ImageData { width: w as usize, height: h as usize, bytes: std::borrow::Cow::Owned(rgba) }) {
+                if let Some(cb) = &mut self.clipboard
+                    && let Err(e) = cb.set_image(arboard::ImageData { width: w as usize, height: h as usize, bytes: std::borrow::Cow::Owned(rgba) }) {
                         self.banners.set("clipboard", format!("Copy failed: {e}"));
                     }
-                }
             }
             "img.save" => {
                 let base = name.as_deref().and_then(|n| std::path::Path::new(n).file_stem()).map_or_else(|| "image".to_string(), |s| s.to_string_lossy().into_owned());

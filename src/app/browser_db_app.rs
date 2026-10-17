@@ -144,11 +144,10 @@ impl App {
             source
         } else if scheme == "iterm2-about" { browser_pages::answer(url, context, top_url) } else { self.adblock_answer(url, context, top_url) };
         // The main document the blocker refused: remembered, so its failed load shows Termurion's page.
-        if matches!(answer, Answer::Block) && context == browser_pages::CONTEXT_DOCUMENT {
-            if let Some(bv) = self.browser_views.get_mut(&pane) {
+        if matches!(answer, Answer::Block) && context == browser_pages::CONTEXT_DOCUMENT
+            && let Some(bv) = self.browser_views.get_mut(&pane) {
                 bv.blocked_url = Some(url.to_string());
             }
-        }
         if let Some(v) = self.browser_views.get(&pane).and_then(|b| b.view.as_ref()) {
             v.answer_request(token, answer);
         }

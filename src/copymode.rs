@@ -162,12 +162,11 @@ pub fn action_for(key: &str) -> Action {
 /// The count rule: 1-9 start a count, 0 continues one (else it is the line start), capped at
 /// 100000. True when the key was a count digit.
 pub fn accrue(count: &mut usize, key: &str) -> bool {
-    if let Some(d) = key.chars().next().filter(|_| key.len() == 1).and_then(|c| c.to_digit(10)) {
-        if d != 0 || *count > 0 {
+    if let Some(d) = key.chars().next().filter(|_| key.len() == 1).and_then(|c| c.to_digit(10))
+        && (d != 0 || *count > 0) {
             *count = (*count * 10 + d as usize).min(100_000);
             return true;
         }
-    }
     false
 }
 

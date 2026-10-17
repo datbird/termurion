@@ -280,11 +280,10 @@ impl ShortcutKey {
         if let Some(i) = self.pairs().iter().position(|h| *h == held) {
             out.push(Chord { key: key.clone(), cmd: true, shift: i == 1, alt: i == 2, ctrl: i == 3 });
         }
-        if let (true, ChordKey::Char(k)) = (held == CSA, key) {
-            if k.is_ascii_alphanumeric() {
+        if let (true, ChordKey::Char(k)) = (held == CSA, key)
+            && k.is_ascii_alphanumeric() {
                 out.push(Chord { key: key.clone(), cmd: true, alt: true, shift: false, ctrl: true });
             }
-        }
         out
     }
 

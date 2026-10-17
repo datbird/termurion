@@ -1174,15 +1174,14 @@ pub fn pane_with(
             // A fading cursor (smooth blink) takes the text color part of the way.
             fg = if look.alpha < 1.0 { blend(fg, cursor_text, look.alpha) } else { cursor_text };
         }
-        if let Some(t) = c.image() {
-            if let Some(img) = screen.images.by_id.get(&t.image) {
+        if let Some(t) = c.image()
+            && let Some(img) = screen.images.by_id.get(&t.image) {
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
                 let r = Rect { x: rect.x + col as f32 * cw, y: rect.y + row as f32 * ch, w: cw, h: ch };
                 if let Some(q) = tile_quad(img, t, r, img.paused.unwrap_or_else(|| frame_at(&img.frames, now))) {
                     frame.images.push(q);
                 }
             }
-        }
         // Blinking text hides in the off phase when the profile allows it
         // (`iTermMetalPerFrameState.m:1691`); the background keeps drawing, and so do the
         // neighbors' lines, but the cell's own underline and strikethrough go with its glyph.
@@ -1245,11 +1244,10 @@ pub fn pane_with(
         for (logical, &visual) in o.lut.iter().enumerate() {
             let cell = &mut new[visual as usize];
             let first = cell.text.chars().next();
-            if o.mirrored[logical] {
-                if let Some(c) = first {
+            if o.mirrored[logical]
+                && let Some(c) = first {
                     cell.text.replace_range(..c.len_utf8(), &crate::bidi::mirror(c).to_string());
                 }
-            }
             cell.joins = o.rtl[logical] && first.is_some_and(crate::bidi::joins);
         }
         grid[row] = new;
@@ -1321,8 +1319,8 @@ pub fn pane_with(
             // is the mirrored one on a right-to-left row (S4); `c.fg` is the color after minimum
             // contrast, blocks exempt (S2); a blinked-out or hidden cell's text is a space (S7).
             let mut chars = c.text.chars();
-            if let (true, Some(drawn), None) = (draw.custom_boxes, chars.next(), chars.next()) {
-                if crate::boxdraw::drawn_with(drawn, draw.powerline, draw.powerline_extended, false) {
+            if let (true, Some(drawn), None) = (draw.custom_boxes, chars.next(), chars.next())
+                && crate::boxdraw::drawn_with(drawn, draw.powerline, draw.powerline_extended, false) {
                     flush(&mut piece, frame);
                     // A wide Powerline symbol draws over the next cell too; the grid keeps one cell
                     // (the next cell's text still lays out at its own column), as in iTerm2.
@@ -1331,7 +1329,6 @@ pub fn pane_with(
                     before = None;
                     continue;
                 }
-            }
             let ascii = c.text.is_ascii();
             let joinable = group && groupable(c);
             // What the cell draws: the table's code point in place of the sent one.
@@ -1765,22 +1762,19 @@ pub fn doc_lines(frame: &mut Frame, origin: (f32, f32), lines: &[crate::porthole
     }
     for l in lines {
         let y = oy + l.y;
-        if l.code_bg {
-            if let Some(r) = cut(Rect { x: band.0, y, w: band.1, h: l.h }, area) {
+        if l.code_bg
+            && let Some(r) = cut(Rect { x: band.0, y, w: band.1, h: l.h }, area) {
                 frame.quads.push(Quad { rect: r, color: rgba(blend(back, fg, 0.08), 1.0) });
             }
-        }
-        if l.rule {
-            if let Some(r) = cut(Rect { x: ox + l.x, y: y + l.h / 2.0, w: band.1 - PORTHOLE_MARGIN - l.x, h: 1.0 }, area) {
+        if l.rule
+            && let Some(r) = cut(Rect { x: ox + l.x, y: y + l.h / 2.0, w: band.1 - PORTHOLE_MARGIN - l.x, h: 1.0 }, area) {
                 frame.quads.push(Quad { rect: r, color: rgba(fg, 0.5) });
             }
-        }
         for (run, (sx, sw)) in l.runs.iter().zip(&l.spans) {
-            if run.underline {
-                if let Some(r) = cut(Rect { x: ox + l.x + sx, y: y + l.h - 2.0, w: *sw, h: 1.0 }, area) {
+            if run.underline
+                && let Some(r) = cut(Rect { x: ox + l.x + sx, y: y + l.h - 2.0, w: *sw, h: 1.0 }, area) {
                     frame.quads.push(Quad { rect: r, color: rgba(run.color, 1.0) });
                 }
-            }
         }
         let spans = l
             .runs
@@ -1963,11 +1957,10 @@ pub fn progress_bar(frame: &mut Frame, rect: Rect, look: &ProgressLook, bg: Opti
     use crate::progress::{self, Progress};
     let (p, anim, scheme, dark) = (look.0, &look.1, look.2.as_str(), look.3);
     let Some(clip) = cut(rect, clip).filter(|_| p != Progress::Stopped) else { return };
-    if let Some(bg) = bg {
-        if let Some(r) = cut(rect, clip) {
+    if let Some(bg) = bg
+        && let Some(r) = cut(rect, clip) {
             frame.overlay.push(Quad { rect: r, color: rgba(bg, 1.0) });
         }
-    }
     match p {
         Progress::Stopped => {}
         Progress::Error => {
@@ -3716,11 +3709,10 @@ const BUBBLE_USER: Rgb = LIST_SELECTED;
 pub fn inline_chat_body(frame: &mut Frame, d: &InlineBodyDraw, cell: (f32, f32), scale: f32) {
     let agent_bubble = blend(CLIP_BG, rgb(128, 128, 128), 0.25);
     for row in &d.rows {
-        if row.bubble.w > 0.0 {
-            if let Some(r) = cut(row.bubble, d.area) {
+        if row.bubble.w > 0.0
+            && let Some(r) = cut(row.bubble, d.area) {
                 frame.quads.push(Quad { rect: r, color: rgba(if row.user { BUBBLE_USER } else { agent_bubble }, 1.0) });
             }
-        }
         if let Some(label) = row.date {
             if let Some(c) = cut(row.text, d.area) {
                 let w = label.chars().count() as f32 * cell.0 * 0.9;
@@ -3752,11 +3744,10 @@ pub fn inline_chat_body(frame: &mut Frame, d: &InlineBodyDraw, cell: (f32, f32),
                 frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(crate::chat_view::COPY_GLYPH.to_string(), fg, false, true)], clip: c, scale: 1.0, face: crate::render::DEFAULT_FACE });
             }
         }
-        if let Some(r) = row.copied {
-            if let Some(c) = cut(r, d.area) {
+        if let Some(r) = row.copied
+            && let Some(c) = cut(r, d.area) {
                 frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(crate::chat_view::COPIED.to_string(), blend(back, fg, 0.6), false, false)], clip: c, scale: 0.85, face: crate::render::DEFAULT_FACE });
             }
-        }
         for (r, title, title_w, destructive, enabled) in &row.buttons {
             let Some(c) = cut(*r, d.area) else { continue };
             let alpha = if *enabled { 1.0 } else { 0.5 };

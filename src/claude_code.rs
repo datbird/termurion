@@ -325,11 +325,10 @@ pub fn merge(existing: Option<&str>, command: &str) -> Result<String, String> {
     for event in missing {
         hooks.insert(event.into(), Value::Array(vec![fresh_group(command)]));
     }
-    if root == original {
-        if let Some(t) = existing {
+    if root == original
+        && let Some(t) = existing {
             return Ok(t.to_string());
         }
-    }
     Ok(pretty(&root))
 }
 

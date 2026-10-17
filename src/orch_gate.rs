@@ -106,8 +106,8 @@ pub fn plan(prior: &str, decoded: &str, append_newline: bool, screen_aware: bool
         return Plan { route: Route::ScreenAware, new_buffer: None, contaminated: false };
     }
     // A full-line kill (Ctrl-C always; Ctrl-U only on a clean prompt) resets the line.
-    if !submits {
-        if let Some(i) = decoded.rfind(['\u{3}', '\u{15}']) {
+    if !submits
+        && let Some(i) = decoded.rfind(['\u{3}', '\u{15}']) {
             let ctrl_c = decoded[i..].starts_with('\u{3}');
             if ctrl_c || !contaminated {
                 let after_kill = &decoded[i + 1..];
@@ -118,7 +118,6 @@ pub fn plan(prior: &str, decoded: &str, append_newline: bool, screen_aware: bool
             }
             return Plan { route: Route::ScreenAware, new_buffer: None, contaminated: true };
         }
-    }
     if disturbing || contaminated {
         return Plan { route: Route::ScreenAware, new_buffer: if submits { next_buffer } else { None }, contaminated: next_contaminated };
     }
@@ -126,11 +125,10 @@ pub fn plan(prior: &str, decoded: &str, append_newline: bool, screen_aware: bool
         return Plan { route: Route::AccumulateOnly, new_buffer: next_buffer, contaminated: false };
     }
     let fresh = |upto: &str| prior.is_empty() || upto.ends_with(prior);
-    if let (Some(f), Some(u)) = (full, up_to_cursor) {
-        if prompt_context(f, u).is_some() && !fresh(u) && !prior.is_empty() && u.starts_with(prior) {
+    if let (Some(f), Some(u)) = (full, up_to_cursor)
+        && prompt_context(f, u).is_some() && !fresh(u) && !prior.is_empty() && u.starts_with(prior) {
             return Plan { route: Route::ScreenAware, new_buffer: next_buffer, contaminated: next_contaminated };
         }
-    }
     let (line, proven) = match (full, up_to_cursor) {
         (Some(f), Some(u)) if prompt_context(f, u).is_some() && fresh(u) => {
             let (prefix, suffix) = prompt_context(f, u).unwrap_or_default();

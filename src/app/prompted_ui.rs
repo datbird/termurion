@@ -552,11 +552,10 @@ impl App {
             return;
         }
         // A bar refused (too many waiting) cancels, so the program never waits for nothing.
-        if !self.ask(pane, UPLOAD_KIND, "Upload files or folders?", &["Files", "Folders"], false) {
-            if let Some(p) = self.panes.get_mut(&pane) {
+        if !self.ask(pane, UPLOAD_KIND, "Upload files or folders?", &["Files", "Folders"], false)
+            && let Some(p) = self.panes.get_mut(&pane) {
                 p.reply(prompted::UPLOAD_CANCEL);
             }
-        }
     }
 
     /// The Files/Folders answer: pick them, answer, and send the archive.

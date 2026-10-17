@@ -150,11 +150,10 @@ impl ScriptProcess {
 
     /// The exit code once the script ended and all its output was taken.
     pub fn exit_code(&mut self) -> Option<u32> {
-        if self.stash.is_empty() {
-            if let Some(b) = self.receive() {
+        if self.stash.is_empty()
+            && let Some(b) = self.receive() {
                 self.stash.push_back(b);
             }
-        }
         if self.stash.is_empty() { self.exit } else { None }
     }
 

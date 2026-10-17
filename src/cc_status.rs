@@ -164,11 +164,10 @@ pub fn background_count(event: &Value, excluding: Option<&str>) -> Option<i64> {
         Value::Array(items) => {
             let active = items.iter().filter(|e| {
                 let Some(o) = e.as_object() else { return true };
-                if let (Some(skip), Some(id)) = (excluding, o.get("id").and_then(Value::as_str)) {
-                    if skip == id {
+                if let (Some(skip), Some(id)) = (excluding, o.get("id").and_then(Value::as_str))
+                    && skip == id {
                         return false;
                     }
-                }
                 !o.get("status").and_then(Value::as_str).is_some_and(|st| FINISHED.contains(&st.to_lowercase().as_str()))
             });
             Some(active.count() as i64)
@@ -309,11 +308,10 @@ pub fn run(term_session_id: Option<&str>, stdin: &str, api: &mut dyn Api, err: &
         _ => 0,
     };
     let Some(update) = map(&event, &mut stored) else { return 0 };
-    if let Err(reason) = api.invoke(&session, &update.invocation()) {
-        if reason != DROPPED {
+    if let Err(reason) = api.invoke(&session, &update.invocation())
+        && reason != DROPPED {
             let _ = writeln!(err, "cc-status: could not update Termurion for {}: {reason}", crate::inert_files::shown_name(&name));
         }
-    }
     0
 }
 

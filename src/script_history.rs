@@ -262,8 +262,8 @@ impl Entry {
             out.insert_str(0, &format!("{stamp}: "));
         }
         let mut lines = out.split('\n').map(str::to_string);
-        if continuation {
-            if let Some(first) = lines.next() {
+        if continuation
+            && let Some(first) = lines.next() {
                 match self.log_lines.pop() {
                     Some(mut last) => {
                         last.push_str(&first);
@@ -272,7 +272,6 @@ impl Entry {
                     None => self.log_lines.extend(break_long(first, stamp)),
                 }
             }
-        }
         for line in lines {
             self.log_lines.extend(break_long(line, stamp));
         }

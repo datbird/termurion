@@ -173,11 +173,10 @@ impl App {
 
     /// The WebView2 Runtime, cached for 30 seconds (iTerm2's gateway cache).
     pub(super) fn web_runtime(&self) -> Runtime {
-        if let Some((at, r)) = self.web_envs.runtime.borrow().as_ref() {
-            if at.elapsed() < RUNTIME_TTL {
+        if let Some((at, r)) = self.web_envs.runtime.borrow().as_ref()
+            && at.elapsed() < RUNTIME_TTL {
                 return r.clone();
             }
-        }
         let (r, fixed, refusal) = runtime_now(&self.globals.string("BrowserPluginPathHint"));
         let changed = self.web_envs.runtime.borrow().as_ref().is_none_or(|(_, old)| *old != r);
         if changed {
@@ -381,11 +380,10 @@ impl App {
             return;
         }
         let facts = crate::webhost::FocusFacts { held: p.no_focus_reports > 0, gateway: p.gateway, wants: p.screen.term().mode().contains(TermMode::FOCUS_IN_OUT) };
-        if self.focus_reported.report(pane, gained, facts) {
-            if let Some(p) = self.panes.get_mut(&pane) {
+        if self.focus_reported.report(pane, gained, facts)
+            && let Some(p) = self.panes.get_mut(&pane) {
                 p.focus_report(gained);
             }
-        }
     }
 
     /// Once per pass for the entered window: when the active pane changed while the window is in

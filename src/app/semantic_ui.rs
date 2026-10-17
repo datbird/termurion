@@ -345,11 +345,10 @@ impl App {
             "runCoprocess:" => Run::Coprocess(param),
             "sendText:" => Run::Send(param),
             "copy:" => {
-                if let Some(cb) = &mut self.clipboard {
-                    if let Err(e) = cb.set_text(param) {
+                if let Some(cb) = &mut self.clipboard
+                    && let Err(e) = cb.set_text(param) {
                         self.banners.set("clipboard", format!("Copy failed: {e}"));
                     }
-                }
                 return None;
             }
             other => {
@@ -643,11 +642,10 @@ impl App {
     pub(super) fn copy_link_at(&mut self, id: PaneId, point: Point) {
         let Some(c) = self.clicked(id, point) else { return };
         let Some(link) = c.ctx.link.clone().or_else(|| semantic::url_like_in(&c.ctx.before, &c.ctx.after, &c.ctx.urls)) else { return };
-        if let Some(cb) = &mut self.clipboard {
-            if let Err(e) = cb.set_text(link) {
+        if let Some(cb) = &mut self.clipboard
+            && let Err(e) = cb.set_text(link) {
                 self.banners.set("clipboard", format!("Copy failed: {e}"));
             }
-        }
     }
 }
 
@@ -950,12 +948,11 @@ mod tests {
             if let Some(rest) = bare.strip_prefix("fn ") {
                 let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
                 out.push((name, String::new()));
-            } else if let Some((_, body)) = out.last_mut() {
-                if !t.starts_with("//") {
+            } else if let Some((_, body)) = out.last_mut()
+                && !t.starts_with("//") {
                     body.push_str(line);
                     body.push('\n');
                 }
-            }
         }
         out
     }

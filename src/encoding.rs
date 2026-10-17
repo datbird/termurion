@@ -285,11 +285,10 @@ fn utf16_text_runs(text: &str, out: &mut Vec<u8>, sys: &dyn CodePage) {
                 None => {}
             }
             // SS3: ESC O and the one character after it.
-            if rest[..end].ends_with("\x1bO") {
-                if let Some(c) = rest[end..].chars().next() {
+            if rest[..end].ends_with("\x1bO")
+                && let Some(c) = rest[end..].chars().next() {
                     end += c.len_utf8();
                 }
-            }
         }
         out.extend_from_slice(rest[..end].as_bytes());
         rest = &rest[end..];

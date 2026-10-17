@@ -608,11 +608,10 @@ fn sanitize(list: Vec<Workgroup>) -> Vec<Workgroup> {
             break;
         }
         let id = w.unique_identifier.clone();
-        if let Some(w) = sanitize_workgroup(w) {
-            if seen.insert(id) {
+        if let Some(w) = sanitize_workgroup(w)
+            && seen.insert(id) {
                 out.push(w);
             }
-        }
     }
     out
 }

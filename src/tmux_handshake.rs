@@ -215,15 +215,14 @@ impl Handshake {
             Ask::Ping | Ask::CopyMode => {}
             Ask::AggressiveResize => {
                 for line in text.unwrap_or("").split('\n') {
-                    if let [option, value] = line.split(' ').collect::<Vec<_>>()[..] {
-                        if option == "aggressive-resize" && value == "on" {
+                    if let [option, value] = line.split(' ').collect::<Vec<_>>()[..]
+                        && option == "aggressive-resize" && value == "on" {
                             steps.push(Step::Abort(
                                 "Unsupported tmux option".into(),
                                 "The \u{201c}aggressive-resize\u{201d} option is turned on in tmux. It is not compatible with the Termurion-tmux integration. Please disable it and try again.".into(),
                             ));
                             return steps;
                         }
-                    }
                 }
             }
             Ask::Status => self.status_bar = text == Some("on"),

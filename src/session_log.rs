@@ -929,11 +929,10 @@ impl Logger {
                     if html {
                         out.push_str(&html_run(&text, &attr, palette, &format_date(HTML_TITLE_PATTERN, now.0, now.1)));
                     } else {
-                        if self.line_start {
-                            if let Some(pattern) = &self.timestamps {
+                        if self.line_start
+                            && let Some(pattern) = &self.timestamps {
                                 out.push_str(&plain_timestamp(pattern, now.0, now.1));
                             }
-                        }
                         out.push_str(&text);
                     }
                     self.line_start = false;

@@ -409,11 +409,10 @@ fn role(s: &SessionConfig) -> String {
 /// one and the URL is one a saved arrangement may keep (S1); anything else is the profile as is.
 pub fn member_profile(profile: &Profile, url_string: &str) -> Profile {
     let mut p = profile.clone();
-    if crate::browser::is_browser(&p.string("Custom Command")) {
-        if let Some(url) = (!url_string.is_empty()).then(|| crate::browser::arrangement_url(url_string)).flatten() {
+    if crate::browser::is_browser(&p.string("Custom Command"))
+        && let Some(url) = (!url_string.is_empty()).then(|| crate::browser::arrangement_url(url_string)).flatten() {
             p.set("Initial URL", toml::Value::String(url));
         }
-    }
     p
 }
 

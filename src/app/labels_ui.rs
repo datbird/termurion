@@ -224,11 +224,10 @@ impl App {
             let (pane, text) = (sc.pane, sc.items[i].2.clone());
             self.shortcuts = None;
             if self.mods.alt {
-                if let Some(cb) = &mut self.clipboard {
-                    if let Err(e) = cb.set_text(text) {
+                if let Some(cb) = &mut self.clipboard
+                    && let Err(e) = cb.set_text(text) {
                         self.banners.set("clipboard", format!("Copy failed: {e}"));
                     }
-                }
                 self.banners.set("action", "Copied.");
             } else {
                 self.open_text(pane, &text);

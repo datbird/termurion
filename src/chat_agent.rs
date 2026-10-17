@@ -230,11 +230,10 @@ fn parts_body(parts: &[Subpart], user: bool) -> Body {
             },
         }
     }
-    if user && out.iter().any(|b| matches!(b, Body::Attachment(_))) {
-        if let Some(Body::Text(s)) = out.iter_mut().find(|b| matches!(b, Body::Text(_))) {
+    if user && out.iter().any(|b| matches!(b, Body::Attachment(_)))
+        && let Some(Body::Text(s)) = out.iter_mut().find(|b| matches!(b, Body::Text(_))) {
             s.insert_str(0, ATTACHED_FILES);
         }
-    }
     Body::Multipart(out)
 }
 

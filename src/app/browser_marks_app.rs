@@ -94,11 +94,10 @@ impl App {
         if !self.is_browser_pane(pane) {
             return;
         }
-        if let Some((guid, epoch)) = prompt.guid() {
-            if !self.mark_edit_valid(pane, guid, epoch) {
+        if let Some((guid, epoch)) = prompt.guid()
+            && !self.mark_edit_valid(pane, guid, epoch) {
                 return;
             }
-        }
         if self.mark_window_open_for(pane) {
             self.focus_mark_window(pane);
             return;
@@ -139,11 +138,10 @@ impl App {
     }
 
     fn focus_mark_window(&self, pane: PaneId) {
-        if let Some((w, p, _)) = &self.prompt {
-            if *p == pane || self.mark_confirm.is_none() {
+        if let Some((w, p, _)) = &self.prompt
+            && (*p == pane || self.mark_confirm.is_none()) {
                 return w.focus();
             }
-        }
         if let Some((w, ..)) = &self.mark_confirm {
             w.focus();
         }

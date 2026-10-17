@@ -487,11 +487,10 @@ fn input_area(ui: &mut egui::Ui, d: &ChatData, st: &mut InputUi, icons: bool, ou
             }
         });
     }
-    if !d.input.chips.is_empty() {
-        if let Some(i) = mention_picker_ui::chip_strip(ui, &d.input.chips) {
+    if !d.input.chips.is_empty()
+        && let Some(i) = mention_picker_ui::chip_strip(ui, &d.input.chips) {
             out.push(ChatEvent::RemoveMention(i));
         }
-    }
     if d.input.focus != st.focus_seen {
         st.focus_seen = d.input.focus;
         ui.memory_mut(|m| m.request_focus(id));
@@ -665,11 +664,10 @@ fn toolbar(ui: &mut egui::Ui, t: &ToolbarData, icons: bool, list_visible: &mut b
             if glyph_button(ui, icons, tb::WEB_GLYPH, "Web", tb::WEB_SEARCH_TIP, t.web_search_enabled, t.web_search && t.web_search_enabled) {
                 out.push(ChatEvent::ToggleWebSearch);
             }
-            if let Some(on) = t.thinking {
-                if glyph_button(ui, icons, tb::THINKING_GLYPH, "Think", tb::THINKING_TIP, true, on) {
+            if let Some(on) = t.thinking
+                && glyph_button(ui, icons, tb::THINKING_GLYPH, "Think", tb::THINKING_TIP, true, on) {
                     out.push(ChatEvent::ToggleThinking);
                 }
-            }
         });
     });
 }
@@ -779,11 +777,10 @@ fn sidebar(ui: &mut egui::Ui, d: &ChatData, st: &mut ListState, icons: bool, out
     // The list follows the shown chat when something else changed it.
     if d.chat != st.last_shown {
         st.last_shown = d.chat.clone();
-        if let Some(c) = &d.chat {
-            if st.selection.first() != Some(c.as_str()) {
+        if let Some(c) = &d.chat
+            && st.selection.first() != Some(c.as_str()) {
                 st.selection.set(&d.rows, c);
             }
-        }
     }
     st.selection.retain(&d.rows);
     // The app clears the search when another chat is chosen (`CL:315-322`).
@@ -828,22 +825,20 @@ fn sidebar(ui: &mut egui::Ui, d: &ChatData, st: &mut ListState, icons: bool, out
         }
     });
     // The list's selection shows its first chat (`CL:490-506`).
-    if let Some(first) = st.selection.first().map(str::to_string) {
-        if st.last_shown.as_deref() != Some(first.as_str()) {
+    if let Some(first) = st.selection.first().map(str::to_string)
+        && st.last_shown.as_deref() != Some(first.as_str()) {
             st.last_shown = Some(first.clone());
             out.push(ChatEvent::Select(first));
         }
-    }
     // Delete and Forward Delete delete; Return and keypad Enter rename (`CL:47-58`).
     if ui.memory(|m| m.has_focus(list_id)) && !st.selection.ids.is_empty() {
         let (delete, rename) = ui.input(|i| (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace), i.key_pressed(egui::Key::Enter)));
         if delete {
             out.push(ChatEvent::Delete(st.selection.ids.clone()));
-        } else if rename {
-            if let Some(first) = st.selection.first() {
+        } else if rename
+            && let Some(first) = st.selection.first() {
                 out.push(ChatEvent::Rename(first.to_string()));
             }
-        }
     }
 }
 
@@ -1129,11 +1124,10 @@ fn message_row(ui: &mut egui::Ui, row: &RowData, st: &mut ConvoState, icons: boo
         .inner
     };
     // Right click on the message: its menu, unless a file or code item inside took the click.
-    if !st.taken && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary)) && ui.rect_contains_pointer(rect) {
-        if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+    if !st.taken && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary)) && ui.rect_contains_pointer(rect)
+        && let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
             out.push(ChatEvent::MessageMenu { at: screen_pixels(ui, p), id: row.id.clone() });
         }
-    }
     rect
 }
 
@@ -1363,23 +1357,21 @@ fn draw_block(ui: &mut egui::Ui, block: &Block, base: usize, segment: usize, ink
         ui.painter().rect_filled(rect, 0.0, ink.code_bg);
     }
     let origin = rect.min + egui::vec2(indent + if block.code_bg { 4.0 } else { 0.0 }, 0.0);
-    if st.match_due {
-        if let Some((range, _)) = marks.iter().find(|(_, current)| *current) {
+    if st.match_due
+        && let Some((range, _)) = marks.iter().find(|(_, current)| *current) {
             let text: String = block.runs.iter().map(|r| r.text.as_str()).collect();
             ui.scroll_to_rect(match_rect(&galley, &text, range.clone(), origin), None);
             st.match_due = false;
             st.match_scrolled = true;
         }
-    }
     egui::text_selection::LabelSelectionState::label_text_selection(ui, &resp, origin, galley.clone(), ink.text, egui::Stroke::NONE);
-    if st.row.open && resp.clicked() {
-        if let Some(p) = resp.interact_pointer_pos() {
+    if st.row.open && resp.clicked()
+        && let Some(p) = resp.interact_pointer_pos() {
             let chars = galley.cursor_from_pos(p - origin).index.0;
             let text: String = block.runs.iter().map(|r| r.text.as_str()).collect();
             let byte = text.char_indices().nth(chars).map_or(text.len(), |(b, _)| b);
             out.push(ChatEvent::FindClick(Cursor { item: st.row.item, segment, at: base + byte }));
         }
-    }
     if !links.is_empty() {
         let at = resp.hover_pos().or_else(|| resp.interact_pointer_pos());
         let url = at.and_then(|p| {
@@ -1391,15 +1383,14 @@ fn draw_block(ui: &mut egui::Ui, block: &Block, base: usize, segment: usize, ink
             // The text of a link can differ from its target; the target shows while pointing.
             resp.clone().on_hover_text(u);
         }
-        if resp.clicked() {
-            if let Some(u) = url {
+        if resp.clicked()
+            && let Some(u) = url {
                 if row.in_app.route(&u).is_some() {
                     out.push(ChatEvent::RevealInApp { message: row.id.clone(), url: u });
                 } else {
                     out.push(ChatEvent::OpenUrl(u));
                 }
             }
-        }
     }
     if let Some(cb) = copy {
         copy_button(ui, rect, &row.id, copy_slot(part, cb.first), &cb.text, ink, st, icons, out);

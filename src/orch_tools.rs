@@ -133,11 +133,10 @@ pub fn mirror(decl: &ToolDecl) -> ToolDecl {
             p.insert("session_guid".into(), json!({"type": "string", "description": MIRROR_GUID}));
         }
         let required = o.entry("required").or_insert_with(|| Value::Array(Vec::new()));
-        if let Some(r) = required.as_array_mut() {
-            if !r.iter().any(|v| v == "session_guid") {
+        if let Some(r) = required.as_array_mut()
+            && !r.iter().any(|v| v == "session_guid") {
                 r.push("session_guid".into());
             }
-        }
     }
     ToolDecl { name: format!("session_{}", decl.name), description: format!("{}{MIRROR_SUFFIX}", decl.description), parameters }
 }

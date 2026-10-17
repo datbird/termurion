@@ -533,11 +533,10 @@ impl App {
             c.keys = false;
         }
         if button != MouseButton::Left {
-            if let BeltHit::Content(i) = tbl::hit(&l, x, y) {
-                if let (Some(&tool), Some(area)) = (self.belt.split.tools.get(i), l.wrappers.get(i).and_then(|w| w.content)) {
+            if let BeltHit::Content(i) = tbl::hit(&l, x, y)
+                && let (Some(&tool), Some(area)) = (self.belt.split.tools.get(i), l.wrappers.get(i).and_then(|w| w.content)) {
                     self.tool_press(tool, area, button, x, y, event_loop);
                 }
-            }
             return true;
         }
         let scale = self.scale();

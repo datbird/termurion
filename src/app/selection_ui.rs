@@ -433,11 +433,10 @@ impl App {
         let point = self.grid_point(pane, col, row);
         let end = visual.then(|| self.visual_pos(pane, rect, x, y));
         self.extend_live_to(pane, point, side);
-        if let Some(b) = end {
-            if let Some(p) = self.panes.get_mut(&pane) {
+        if let Some(b) = end
+            && let Some(p) = self.panes.get_mut(&pane) {
                 p.screen.drag_visual_to(b);
             }
-        }
         self.redraw();
     }
 

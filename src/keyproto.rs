@@ -337,13 +337,11 @@ pub fn kitty(ev: &KeyEvent, flags: u8) -> Option<Vec<u8>> {
     match form {
         Form::U(code) => {
             out += &code.to_string();
-            if flags & ALTERNATE_KEYS != 0 && shift && !ev.altgr {
-                if let (Some(t), Some(b)) = (text_char(ev), base_char(ev)) {
-                    if t != b {
+            if flags & ALTERNATE_KEYS != 0 && shift && !ev.altgr
+                && let (Some(t), Some(b)) = (text_char(ev), base_char(ev))
+                    && t != b {
                         out += &format!(":{}", t as u32);
                     }
-                }
-            }
             let text: Vec<String> = match ev.text {
                 Some(t) if flags & ASSOCIATED_TEXT != 0 && all && ev.kind != Kind::Release && !others => {
                     t.chars().filter(|c| !c.is_control()).map(|c| (c as u32).to_string()).collect()

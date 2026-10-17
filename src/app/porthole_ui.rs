@@ -208,11 +208,10 @@ impl App {
         for (pane, pid, rows) in resize {
             if let Some(s) = self.panes.get_mut(&pane).map(|p| &mut p.screen) {
                 // Refused while the alternate screen is up: try again after.
-                if s.set_porthole_rows(pid, rows) {
-                    if let Some(ph) = s.portholes.get_mut(&pid) {
+                if s.set_porthole_rows(pid, rows)
+                    && let Some(ph) = s.portholes.get_mut(&pid) {
                         ph.sized = true;
                     }
-                }
             }
         }
         self.porthole_views.retain(|k, _| keep.contains(k) || self.panes.get(&k.0).is_some_and(|p| p.screen.portholes.contains_key(&k.1)));
@@ -459,11 +458,10 @@ impl App {
             return self.banners.set("link", format!("Termurion opens web and mail links and local files only, not {link:?}."));
         };
         // The judge before the question: a link it refuses is not asked about (and is judged again at the answer).
-        if let crate::porthole::LinkTarget::File(f) = &target {
-            if crate::localfs::LocalPath::judge(f).is_none() {
+        if let crate::porthole::LinkTarget::File(f) = &target
+            && crate::localfs::LocalPath::judge(f).is_none() {
                 return self.banners.set("link", crate::localfs::refused().to_string());
             }
-        }
         let (text, key) = crate::porthole::link_prompt(&target);
         if self.globals.bool(key) {
             return self.open_link_target(pane, &target);

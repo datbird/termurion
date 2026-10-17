@@ -136,13 +136,11 @@ pub fn header_value(name: &str, value: &str) -> String {
     if is_safe(name) {
         return scrub(value);
     }
-    if SCHEME_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
-        if let Some((at, _)) = value.char_indices().find(|(_, c)| *c == ' ') {
-            if value[..at].chars().count() <= 16 {
+    if SCHEME_HEADERS.contains(&name.to_ascii_lowercase().as_str())
+        && let Some((at, _)) = value.char_indices().find(|(_, c)| *c == ' ')
+            && value[..at].chars().count() <= 16 {
                 return format!("{} {}", &value[..at], fingerprint(&value[at + 1..]));
             }
-        }
-    }
     fingerprint(value)
 }
 

@@ -254,11 +254,10 @@ impl Broker {
                 unstored(m, writes)
             }
             Content::Commit(uuid) => {
-                if m.author == Participant::Agent {
-                    if let Some(table) = self.rewrite.get_mut(chat) {
+                if m.author == Participant::Agent
+                    && let Some(table) = self.rewrite.get_mut(chat) {
                         table.remove(&uuid);
                     }
-                }
                 // The commit is the settling point: status updates leave the body
                 // (`ChatListModel.swift:329-345`). The commit itself is not stored.
                 let writes = target

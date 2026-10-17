@@ -502,11 +502,10 @@ impl App {
         if !full.is_empty() {
             self.ask_scripts(failed_ask(&format!("These profiles have too many triggers to add two more: {}.", full.join(", "))));
         }
-        if full.is_empty() && !done.is_empty() {
-            if let Some(w) = self.cc_onboarding.as_mut() {
+        if full.is_empty() && !done.is_empty()
+            && let Some(w) = self.cc_onboarding.as_mut() {
                 w.mark_done(Step::InstallTriggers);
             }
-        }
         self.refresh_claude_menu();
     }
 

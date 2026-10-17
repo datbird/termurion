@@ -69,16 +69,15 @@ pub fn wheel(ui: &mut egui::Ui, colors: &[(String, Rgb)], drag: &mut Option<(Str
     let mut changed = None;
     if radius > 0.0 {
         let labs: Vec<OkLab> = colors.iter().map(|(_, c)| lab_of(*c)).collect();
-        if response.drag_started() {
-            if let Some(p) = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos()) {
+        if response.drag_started()
+            && let Some(p) = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos()) {
                 *drag = colors.iter().zip(&labs).rev().find_map(|((key, _), lab)| {
                     let at = point_center(center, radius, *lab);
                     ((at.0 - p.x).hypot(at.1 - p.y) <= POINT_RADIUS).then(|| (key.clone(), at, (p.x, p.y)))
                 });
             }
-        }
-        if response.dragged() {
-            if let (Some((key, original, start)), Some(p)) = (drag.as_ref(), response.interact_pointer_pos()) {
+        if response.dragged()
+            && let (Some((key, original, start)), Some(p)) = (drag.as_ref(), response.interact_pointer_pos()) {
                 let moved = (original.0 + p.x - start.0, original.1 + p.y - start.1);
                 let (chroma, hue) = chroma_hue(center, radius, moved);
                 if let Some((_, from)) = colors.iter().find(|(k, _)| k == key) {
@@ -88,7 +87,6 @@ pub fn wheel(ui: &mut egui::Ui, colors: &[(String, Rgb)], drag: &mut Option<(Str
                     }
                 }
             }
-        }
         if response.drag_stopped() || (!response.dragged() && !response.drag_started()) {
             *drag = None;
         }

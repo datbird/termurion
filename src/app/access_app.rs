@@ -374,8 +374,8 @@ impl App {
         let Some(key) = self.windows.current() else { return };
         let mut raised: Vec<(PaneId, Vec<Event>)> = Vec::new();
         for (id, st) in self.access_trackers.iter_mut() {
-            if st.tracker.due().is_some_and(|d| d <= now) {
-                if let Some(p) = self.panes.get(id) {
+            if st.tracker.due().is_some_and(|d| d <= now)
+                && let Some(p) = self.panes.get(id) {
                     // A pane that turned secure inside the build hold says nothing: drop the burst.
                     if p.text_is_secure() {
                         st.tracker = access::Tracker::default();
@@ -384,7 +384,6 @@ impl App {
                     let ev = st.tracker.settle(now, &|a| access_screen(p).abs_line_text(a), access_screen(p).cursor_abs());
                     raised.push((*id, ev));
                 }
-            }
         }
         if let Some(h) = self.uia_hosts.get(&key) {
             for (id, events) in &raised {

@@ -72,22 +72,20 @@ fn parts(v: &str) -> Vec<(Kind, &str)> {
     let mut kind = None;
     for (i, c) in v.char_indices() {
         let k = kind_of(c);
-        if let Some(prev) = kind {
-            if prev != k || k == Kind::Separator {
+        if let Some(prev) = kind
+            && (prev != k || k == Kind::Separator) {
                 out.push((prev, &v[start..i]));
                 start = i;
                 if out.len() >= MAX_PARTS {
                     return out;
                 }
             }
-        }
         kind = Some(k);
     }
-    if let Some(k) = kind {
-        if out.len() < MAX_PARTS {
+    if let Some(k) = kind
+        && out.len() < MAX_PARTS {
             out.push((k, &v[start..]));
         }
-    }
     out
 }
 

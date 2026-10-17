@@ -259,14 +259,13 @@ impl App {
 
     /// One `pip show` came back: the table's row, or what follows a command.
     fn deps_version_known(&mut self, container: &Path, dep: &str, purpose: Purpose, result: Result<Option<String>, String>, shown: bool) {
-        if shown {
-            if let Some(row) = self.script_deps_state.packages.iter_mut().find(|(d, _)| d == dep) {
+        if shown
+            && let Some(row) = self.script_deps_state.packages.iter_mut().find(|(d, _)| d == dep) {
                 row.1 = match &result {
                     Ok(v) => v.clone().unwrap_or_default(),
                     Err(_) => sd::ERROR_VERSION.to_string(),
                 };
             }
-        }
         // Installed means `pip show` succeeded and named a version (uv and pip differ in the
         // exit status for a missing package; both print no "Version: " line).
         let installed = result.ok().flatten();
@@ -485,11 +484,10 @@ impl App {
                 let cfg = rt::SetupCfg::parse(&t)?;
                 sd::setup_cfg_with(&t, &cfg.dependencies, &built)
             });
-            if let Some(text) = written {
-                if let Err(e) = std::fs::write(&path, text) {
+            if let Some(text) = written
+                && let Err(e) = std::fs::write(&path, text) {
                     self.banners.set("scripts", format!("Could not write {}: {e}", path.display()));
                 }
-            }
         }
         self.deps_refresh(container);
     }

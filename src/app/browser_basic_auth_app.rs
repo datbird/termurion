@@ -83,11 +83,10 @@ impl AuthPane {
         let sink = slots.clone();
         coordinator.on_drop(Box::new(move |fx| {
             for e in fx {
-                if let Effect::Cancel(id) | Effect::DefaultHandling(id) = e {
-                    if let Some(token) = sink.lock().unwrap().remove(&id.0) {
+                if let Effect::Cancel(id) | Effect::DefaultHandling(id) = e
+                    && let Some(token) = sink.lock().unwrap().remove(&id.0) {
                         DROPPED.lock().unwrap().push((pane, view, token));
                     }
-                }
             }
         }));
         let mut p = AuthPane { view, coordinator, tracker: NavTracker::default(), slots, want: None, prompt: None, picker: None, lookups: HashMap::new(), shown: None };

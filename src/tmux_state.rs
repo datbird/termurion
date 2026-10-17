@@ -102,13 +102,12 @@ pub fn pending_bytes(capture: &[u8]) -> Vec<u8> {
     let mut i = 0;
     while i < capture.len() {
         let c = capture[i];
-        if c == b'\\' && capture.len() >= i + 4 {
-            if let Some(v) = octal(&capture[i + 1..]) {
+        if c == b'\\' && capture.len() >= i + 4
+            && let Some(v) = octal(&capture[i + 1..]) {
                 out.push(v);
                 i += 4;
                 continue;
             }
-        }
         out.push(c);
         i += 1;
     }

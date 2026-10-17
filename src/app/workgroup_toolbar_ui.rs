@@ -391,8 +391,8 @@ impl App {
                         outline(frame, r, if *editing { fg } else { line }, s);
                         let field = Rect { w: (r.w - chevron.w).max(0.0), ..r };
                         let ty = centered_y(r, ch);
-                        if *editing {
-                            if let Some(e) = self.workgroups.base_edit.as_ref() {
+                        if *editing
+                            && let Some(e) = self.workgroups.base_edit.as_ref() {
                                 let caret_x = width_of(&text[..e.edit.caret.min(text.len())], cw) * s;
                                 if let Some(sel) = e.edit.selection().filter(|sel| sel.end <= text.len()) {
                                     let (a, b) = (width_of(&text[..sel.start], cw) * s, width_of(&text[..sel.end], cw) * s);
@@ -400,7 +400,6 @@ impl App {
                                 }
                                 frame.quads.push(Quad { rect: Rect { x: r.x + 6.0 * s + caret_x, y: ty, w: s.max(1.0), h: ch }, color: scene::rgba(fg, 1.0) });
                             }
-                        }
                         frame.rows.push(row(r.x + 6.0 * s, ty, vec![span(text.clone(), fg, false)], field, 1.0));
                         frame.rows.push(row(chevron.x + (chevron.w - cw) / 2.0, ty, vec![span(GLYPH_CHEVRON.to_string(), dim, true)], *chevron, 1.0));
                     }

@@ -201,11 +201,10 @@ impl PromptWindow {
                             result = PromptResult::Ok(text.clone());
                         }
                     }
-                    if let Some(x) = extra {
-                        if ui.button(x.as_str()).clicked() {
+                    if let Some(x) = extra
+                        && ui.button(x.as_str()).clicked() {
                             result = PromptResult::Extra(text.clone());
                         }
-                    }
                     if (!ok_only && ui.button("Cancel").clicked()) || escape {
                         result = PromptResult::Cancel;
                     }
@@ -642,11 +641,10 @@ impl ConfirmWindow {
                         return;
                     }
                     if enter_cancels {
-                        if let Some(c) = cancel {
-                            if ui.button(c.as_str()).clicked() || enter {
+                        if let Some(c) = cancel
+                            && (ui.button(c.as_str()).clicked() || enter) {
                                 result = ConfirmResult::Cancel;
                             }
-                        }
                         if ui.button(ok.as_str()).clicked() {
                             result = ConfirmResult::Ok { suppress: *suppress };
                         }

@@ -43,11 +43,10 @@ pub fn tristate_write(g: &mut Globals, key: &str, index: usize) {
 /// An enum popup (`ASVC:268-291`): the chosen option's value is stored, and the default leaves
 /// the file.
 pub fn enum_write(g: &mut Globals, row: &Row, index: usize) {
-    if let RowKind::Enum(choices) = &row.kind {
-        if let Some((value, _)) = choices.get(index) {
+    if let RowKind::Enum(choices) = &row.kind
+        && let Some((value, _)) = choices.get(index) {
             g.set(row.key, value.clone());
         }
-    }
 }
 
 /// A text field's text as stored on each keystroke (`ASVC:578-621`): integers as

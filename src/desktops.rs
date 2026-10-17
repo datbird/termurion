@@ -235,11 +235,10 @@ pub mod win {
 
         /// The current desktop: Explorer's value on Windows 11, else the foreground window's.
         pub fn current(&self) -> Option<DesktopId> {
-            if let Some(b) = reg_binary(REG_CURRENT) {
-                if let Some(id) = ids_from_registry(&b).first() {
+            if let Some(b) = reg_binary(REG_CURRENT)
+                && let Some(id) = ids_from_registry(&b).first() {
                     return Some(*id);
                 }
-            }
             let fg = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
             if fg.is_null() { None } else { self.window_desktop(fg as isize) }
         }

@@ -271,13 +271,12 @@ impl TipWindow {
 
     /// The pane's rectangle in screen pixels, the tip's room.
     pub fn bound(&mut self, pane: R) {
-        if let Spot::Link { anchor, .. } = self.spot {
-            if self.spot != (Spot::Link { pane, anchor }) {
+        if let Spot::Link { anchor, .. } = self.spot
+            && self.spot != (Spot::Link { pane, anchor }) {
                 self.spot = Spot::Link { pane, anchor };
                 self.dirty = true;
                 self.host.request_redraw();
             }
-        }
     }
 
     /// A toast: `text` centered above the screen point `at` for `secs`.

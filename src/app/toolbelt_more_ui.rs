@@ -372,11 +372,10 @@ pub(super) fn edit_key(key: &WKey, text: Option<&str>, mods: Mods) -> Option<(Ed
         }
         return Some((k, mods.ctrl, mods.alt));
     }
-    if let WKey::Character(c) = key {
-        if mods.ctrl && !mods.alt {
+    if let WKey::Character(c) = key
+        && mods.ctrl && !mods.alt {
             return c.chars().next().and_then(|c| text_edit::ctrl_key(c, mods.shift)).map(|k| (k, true, false));
         }
-    }
     let printable = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control))?;
     let altgr = mods.ctrl && mods.alt;
     Some((EditKey::Text(printable.to_string()), mods.ctrl && !altgr, mods.alt && !altgr))
@@ -548,16 +547,14 @@ impl App {
         if self.belt.split.tools.contains(&ToolId::CommandHistory) {
             let row = self.belt.tools.get(&ToolId::CommandHistory).and_then(|t| t.selection.rows.first().copied());
             let shown = self.belt.shown.get(&ToolId::CommandHistory).map(|(_, s)| s.clone());
-            if let (Some(row), Some(shown)) = (row, shown) {
-                if let Shown::Commands(rows) = &*shown {
-                    if let Some(r) = rows.get(row) {
+            if let (Some(row), Some(shown)) = (row, shown)
+                && let Shown::Commands(rows) = &*shown
+                    && let Some(r) = rows.get(row) {
                         let used = p.screen.marks.records.values().find(|m| m.command.trim() == r.command && m.start.map(unix) == Some(r.time));
                         if let Some(m) = used {
                             return Some((pane, m.id));
                         }
                     }
-                }
-            }
         }
         p.screen.marks.last_command.map(|id| (pane, id))
     }
@@ -1456,11 +1453,10 @@ impl App {
         let Shown::Jobs(j) = &*shown else { return };
         let Some(p) = j.proc(pid).filter(|p| p.created == created) else { return };
         let text = if command { p.cmdline.clone().filter(|c| !c.is_empty()).unwrap_or_else(|| p.name.clone()) } else { pid.to_string() };
-        if let Some(cb) = self.clipboard.as_mut() {
-            if let Err(e) = cb.set_text(text) {
+        if let Some(cb) = self.clipboard.as_mut()
+            && let Err(e) = cb.set_text(text) {
                 self.banners.set("clipboard", format!("Could not copy: {e}"));
             }
-        }
     }
 
     /// Notify on Termination: watches the process (its pid and creation time), or stops; one
@@ -1553,11 +1549,10 @@ impl App {
                 if let Some(p) = self.panes.get_mut(&pane) {
                     p.session_note = text.clone();
                 }
-                if let Some((w, p, None)) = self.note_win.as_mut() {
-                    if *p == pane {
+                if let Some((w, p, None)) = self.note_win.as_mut()
+                    && *p == pane {
                         w.set_text(&text);
                     }
-                }
             }
             _ => {}
         }
@@ -1576,11 +1571,10 @@ impl App {
 
     /// Puts an editor's Copy or Cut on the clipboard; a failure shows as a banner.
     pub(super) fn set_clipboard_text(&mut self, text: String) {
-        if let Some(cb) = self.clipboard.as_mut() {
-            if let Err(e) = cb.set_text(text) {
+        if let Some(cb) = self.clipboard.as_mut()
+            && let Err(e) = cb.set_text(text) {
                 self.banners.set("clipboard", format!("Could not copy: {e}"));
             }
-        }
     }
 
     /// Keys while the Notes editor has the keyboard (`text_edit::takes`): typing, Enter, Tab,

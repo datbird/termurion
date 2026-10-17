@@ -150,14 +150,13 @@ pub fn detect(text: &str, hint: Option<&str>, filename: Option<&str>) -> Detecte
         }
         candidates = c;
     }
-    if candidates.is_empty() {
-        if let Some(c) = filename.map(for_path).filter(|c| !c.is_empty()) {
+    if candidates.is_empty()
+        && let Some(c) = filename.map(for_path).filter(|c| !c.is_empty()) {
             if c.len() == 1 {
                 return Detected { language: Some(c[0].clone()), candidates: c };
             }
             candidates = c;
         }
-    }
     if candidates.is_empty() {
         if looks_like_markdown(text) {
             return Detected { language: Some(Language::Markdown), candidates };

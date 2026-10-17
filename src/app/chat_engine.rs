@@ -270,12 +270,11 @@ impl Engine {
                 // queued. Only the person's own send carries that mark: a watcher's or timer's
                 // event, a streamed terminal command and anything code publishes never
                 // abandon the approval or reset the machine-turn cap (Task 11 fix rounds 1-2).
-                if by_person {
-                    if let Some(a) = cx.agents.get_mut(chat) {
+                if by_person
+                    && let Some(a) = cx.agents.get_mut(chat) {
                         a.machine_turns = 0;
                         a.machine_paused = false;
                     }
-                }
                 if by_person && cx.agents.get(chat).is_some_and(Agent::is_awaiting_approval) {
                     fx.extend(Self::halt(cx, chat));
                 }
@@ -369,8 +368,8 @@ impl Engine {
             cx.broker.turn_done(chat);
             return Self::next(cx, chat);
         };
-        if let Some(a) = cx.agents.get_mut(chat) {
-            if !a.in_turn {
+        if let Some(a) = cx.agents.get_mut(chat)
+            && !a.in_turn {
                 a.in_turn = true;
                 a.gate_refused = false;
                 a.files_failed = false;
@@ -378,7 +377,6 @@ impl Engine {
                 cx.broker.typing(chat, true, Participant::Agent);
                 cx.broker.turn(chat, TurnEvent::Started);
             }
-        }
         let Some(model) = (cx.model_for)(&row) else {
             Self::agent_says(cx, chat, Content::Markdown(crate::ai_turn::NO_MODEL.to_string()));
             return Self::end_turn(cx, chat);
@@ -799,13 +797,12 @@ impl Engine {
         let Some(passed) = chat_gate::pass(cx.globals, &endpoint) else { return Self::refuse(cx, chat, endpoint) };
         let row = cx.store.chat(chat).ok().flatten();
         let retool = row.filter(|r| r.orchestration_enabled && cx.agents.get(chat).is_some_and(|a| !a.orch_tooled)).map(|r| ((cx.orch_system)(&r), (cx.orch_tools)(&r, cx.overrides)));
-        if let Some(a) = cx.agents.get_mut(chat) {
-            if let (Some((system, tools)), Some(d)) = (retool, a.driver.as_mut()) {
+        if let Some(a) = cx.agents.get_mut(chat)
+            && let (Some((system, tools)), Some(d)) = (retool, a.driver.as_mut()) {
                 d.reconfigure(&system, tools);
                 a.orch_tooled = true;
                 a.update_system(system);
             }
-        }
         cx.broker.typing(chat, true, Participant::Agent);
         let outs = match cx.agents.get_mut(chat).and_then(|a| a.driver.as_mut()) {
             Some(d) => send_tool_done(&mut **d, passed, result),
@@ -874,11 +871,10 @@ impl Engine {
         };
         // A change that holds for this run but was not written is reported to the person.
         let mut fx = Vec::new();
-        if let Some(p) = always {
-            if set_permission_in(cx.store, cx.overrides, Key { chat: chat.to_string(), guid: key_guid, category }, p).is_some_and(|(_, saved)| !saved) {
+        if let Some(p) = always
+            && set_permission_in(cx.store, cx.overrides, Key { chat: chat.to_string(), guid: key_guid, category }, p).is_some_and(|(_, saved)| !saved) {
                 fx.push(EngineEffect::PermissionNotSaved);
             }
-        }
         fx.extend(match c {
             Choice::AllowOnce | Choice::AlwaysAllow => {
                 let rc = cx.store.message(request_id).ok().flatten().and_then(|m| classic(&m).cloned());

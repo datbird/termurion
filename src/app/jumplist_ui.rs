@@ -167,12 +167,11 @@ impl App {
             self.banners.set(BANNER, e);
             self.redraw();
         }
-        if let (true, Some(dir)) = (tick.save_removed, recents_dir()) {
-            if let Err(e) = store_removed(&dir, &self.jump_sync.removed) {
+        if let (true, Some(dir)) = (tick.save_removed, recents_dir())
+            && let Err(e) = store_removed(&dir, &self.jump_sync.removed) {
                 self.banners.set(BANNER, format!("Termurion could not save the removed Jump List items: {e}"));
                 self.redraw();
             }
-        }
         tick.wake
     }
 

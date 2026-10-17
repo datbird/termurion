@@ -838,11 +838,10 @@ impl App {
 
     /// Puts text on the clipboard for a status bar item.
     pub(super) fn copy_status_text(&mut self, text: String) {
-        if let Some(cb) = self.clipboard.as_mut() {
-            if let Err(err) = cb.set_text(text) {
+        if let Some(cb) = self.clipboard.as_mut()
+            && let Err(err) = cb.set_text(text) {
                 self.banners.set("clipboard", format!("Could not copy: {err}"));
             }
-        }
     }
 
     /// The status bars' clocks: the Clock's, the graphs' (`tick_meters`), the git
@@ -859,11 +858,10 @@ impl App {
     /// The Clock's cadence (`CLK`, 1 s): while a bar on screen shows a Clock, every window
     /// redraws on each whole second.
     fn tick_clock(&mut self, now: Instant) -> Option<Instant> {
-        if let Some(due) = self.status_clock_due {
-            if now < due {
+        if let Some(due) = self.status_clock_due
+            && now < due {
                 return Some(due);
             }
-        }
         let was_due = self.status_clock_due.take().is_some();
         if !self.any_clock_shown() {
             return None;

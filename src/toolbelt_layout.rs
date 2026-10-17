@@ -468,11 +468,10 @@ pub fn hit(l: &BeltLayout, x: f32, y: f32) -> BeltHit {
         if w.title.contains(x, y) {
             return BeltHit::Title(i);
         }
-        if let Some(c) = w.content {
-            if c.contains(x, y) {
+        if let Some(c) = w.content
+            && c.contains(x, y) {
                 return BeltHit::Content(i);
             }
-        }
     }
     for (i, d) in l.dividers.iter().enumerate() {
         if d.contains(x, y) {

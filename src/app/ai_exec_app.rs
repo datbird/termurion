@@ -107,11 +107,10 @@ impl App {
         for pane in self.ai_execs.keys().copied().collect::<Vec<_>>() {
             let Some(running) = self.ai_execs.get(&pane) else { continue };
             let done = capture(self.panes.get(&pane).map(|p| p.own()), running);
-            if let Some(outcome) = done {
-                if let Some(r) = self.ai_execs.remove(&pane) {
+            if let Some(outcome) = done
+                && let Some(r) = self.ai_execs.remove(&pane) {
                     out.push((r.chat, r.request_id, outcome));
                 }
-            }
         }
         out
     }

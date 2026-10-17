@@ -172,11 +172,10 @@ pub fn ranges(subs: &[Sub], width: usize) -> Vec<(Pos, Pos, bool)> {
     let mut connectors = std::collections::HashSet::new();
     for sub in subs {
         let parts = intervals(sub, width);
-        if sub.connected {
-            if let Some(last) = parts.last() {
+        if sub.connected
+            && let Some(last) = parts.last() {
                 connectors.insert(last.1);
             }
-        }
         for (a, b) in parts {
             events.push(a);
             events.push(b + 1);

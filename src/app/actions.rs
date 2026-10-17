@@ -140,11 +140,10 @@ impl App {
     }
 
     fn swap_with(&mut self, other: Option<PaneId>) {
-        if let (Some(f), Some(o)) = (self.tabs.get(self.active).map(|t| t.focused), other) {
-            if self.tmux_swap(f, o) {
+        if let (Some(f), Some(o)) = (self.tabs.get(self.active).map(|t| t.focused), other)
+            && self.tmux_swap(f, o) {
                 return;
             }
-        }
         if let (Some(t), Some(o)) = (self.tabs.get_mut(self.active), other) {
             t.layout.swap(t.focused, o);
         }
@@ -435,20 +434,17 @@ impl App {
         }
         let target = pointer_target(&b.action);
         let before = self.focused_pane_id();
-        if target != Target::Focused {
-            if let Some(t) = self.tabs.get_mut(self.active) {
+        if target != Target::Focused
+            && let Some(t) = self.tabs.get_mut(self.active) {
                 t.focused = pane;
             }
-        }
         self.run_pointer_action_here(b, pane, cell, event_loop);
         // Text actions leave focus where it was; the click itself did not move it.
-        if target == Target::Clicked {
-            if let (Some(t), Some(prev)) = (self.tabs.get_mut(self.active), before) {
-                if t.layout.panes().contains(&prev) {
+        if target == Target::Clicked
+            && let (Some(t), Some(prev)) = (self.tabs.get_mut(self.active), before)
+                && t.layout.panes().contains(&prev) {
                     t.focused = prev;
                 }
-            }
-        }
     }
 
     fn run_pointer_action_here(&mut self, b: &PointerBinding, pane: PaneId, cell: (u32, u32), event_loop: &ActiveEventLoop) {

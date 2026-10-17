@@ -165,15 +165,14 @@ impl ReplayWindow {
                 let rect = egui::Rect::from_min_size(at(slider_x, SLIDER_Y), egui::vec2(slider_w, SLIDER_H));
                 let resp = ui.interact(rect, ui.id().with("ir-slider"), egui::Sense::click_and_drag());
                 let travel = (slider_w - 2.0 * KNOB_R).max(1.0);
-                if resp.dragged() || resp.clicked() {
-                    if let Some(p) = resp.interact_pointer_pos() {
+                if (resp.dragged() || resp.clicked())
+                    && let Some(p) = resp.interact_pointer_pos() {
                         let f = ((p.x - rect.left() - KNOB_R) / travel).clamp(0.0, 1.0);
                         if f != *slider {
                             *slider = f;
                             acts.push(PanelAct::Seek(f));
                         }
                     }
-                }
                 let track_y = rect.center().y + 2.0;
                 let track = egui::Rect::from_min_max(egui::pos2(rect.left() + KNOB_R, track_y - 1.5), egui::pos2(rect.right() - KNOB_R, track_y + 1.5));
                 painter.rect_filled(track, 1.5, ui.visuals().widgets.inactive.bg_fill);
@@ -210,12 +209,11 @@ impl ReplayWindow {
                 if button(ui, BUTTON_Y[0], first) {
                     acts.extend(panel.export_button(view.current_ts));
                 }
-                if let Some(label) = second {
-                    if button(ui, BUTTON_Y[1], label) {
+                if let Some(label) = second
+                    && button(ui, BUTTON_Y[1], label) {
                         panel.cancel();
                         cancelled = true;
                     }
-                }
             });
         });
         // Cancel hides itself and the band: one more frame shows it.

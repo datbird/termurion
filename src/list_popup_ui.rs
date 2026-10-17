@@ -85,11 +85,10 @@ impl ListPopup {
             if esc {
                 out = PopupEvent::Close;
             }
-            if enter {
-                if let Some((i, _)) = shown.get(*selected) {
+            if enter
+                && let Some((i, _)) = shown.get(*selected) {
                     out = PopupEvent::Pick(*i);
                 }
-            }
             egui::CentralPanel::default().show(ui, |ui| {
                 if !filter.text().is_empty() {
                     ui.label(format!("Filter: {}", filter.text()));

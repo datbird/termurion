@@ -324,11 +324,10 @@ impl App {
         if id != ALERT_BAR {
             return false;
         }
-        if let (Some("Disable This Alert"), Some(i)) = (button, self.trigger_alerts.remove(&pane)) {
-            if let Some(p) = self.panes.get_mut(&pane) {
+        if let (Some("Disable This Alert"), Some(i)) = (button, self.trigger_alerts.remove(&pane))
+            && let Some(p) = self.panes.get_mut(&pane) {
                 p.own_mut().disable_trigger_here(i);
             }
-        }
         true
     }
 

@@ -306,11 +306,10 @@ impl SetupCfg {
         let ok = ini_parse(text, |section, name, value| match (section, name) {
             ("metadata", "name") => cfg.name = value.to_string(),
             ("options", "python_requires") => {
-                if let Some(v) = value.strip_prefix('=') {
-                    if v.split('.').all(numeric) {
+                if let Some(v) = value.strip_prefix('=')
+                    && v.split('.').all(numeric) {
                         cfg.python_version = Some(v.to_string());
                     }
-                }
             }
             ("options", "install_requires") => {
                 let trimmed = value.trim();

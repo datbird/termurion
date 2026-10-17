@@ -193,12 +193,11 @@ pub fn quit_parts(reasons: &[Reason], keep: bool) -> (String, String) {
     let mut lines: Vec<String> = Vec::new();
     let mut previous = sorted.first().map(|r| r.kind);
     for r in &sorted {
-        if Some(r.kind) != previous {
-            if let Some(f) = previous.and_then(footer) {
+        if Some(r.kind) != previous
+            && let Some(f) = previous.and_then(footer) {
                 lines.push(f.to_string());
                 lines.push(String::new());
             }
-        }
         lines.push(format!("\u{2022} {}", r.text));
         previous = Some(r.kind);
     }

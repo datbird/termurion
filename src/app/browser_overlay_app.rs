@@ -301,11 +301,10 @@ impl App {
         let Some(bv) = self.browser_views.get_mut(&pane) else { return done(self, pane, None) };
         bv.bars.insert(id.to_string(), (buttons.iter().map(|b| b.to_string()).collect(), done));
         let shown = crate::inert_files::display_text(text, BAR_CHARS, false);
-        if !self.ask(pane, id, &shown, buttons, true) {
-            if let Some((_, refused)) = self.browser_views.get_mut(&pane).and_then(|b| b.bars.remove(id)) {
+        if !self.ask(pane, id, &shown, buttons, true)
+            && let Some((_, refused)) = self.browser_views.get_mut(&pane).and_then(|b| b.bars.remove(id)) {
                 refused(self, pane, None);
             }
-        }
     }
 
     /// A bar's answer (`bar_answered` asks this first): true when it was a browser announcement.

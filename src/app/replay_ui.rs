@@ -95,11 +95,10 @@ impl App {
 
     /// Back to the live screen (`showLiveSession:inPlaceOf:`, `PT:10736-10765`).
     pub(super) fn end_replay(&mut self, pane: PaneId) {
-        if let Some(p) = self.panes.get_mut(&pane) {
-            if p.replay.take().is_some() {
+        if let Some(p) = self.panes.get_mut(&pane)
+            && p.replay.take().is_some() {
                 p.end_view();
             }
-        }
         self.redraw();
     }
 
@@ -286,11 +285,10 @@ impl App {
         if self.panes.get(&id).is_some_and(|p| p.replay.is_none()) && !self.replay_session(id, event_loop) {
             return;
         }
-        if let Some(p) = self.panes.get_mut(&id) {
-            if let Some(r) = p.replay.as_mut() {
+        if let Some(p) = self.panes.get_mut(&id)
+            && let Some(r) = p.replay.as_mut() {
                 replay::seek_fraction(r, &p.dvr, f);
             }
-        }
         self.show_frame(id);
         self.update_replay_panel();
     }
@@ -496,11 +494,10 @@ impl App {
     /// Opens the warnings queued since the last pass and starts a loaded recording's replay
     /// (`replaySession:`; nothing when it holds no frame).
     pub(super) fn open_recording_windows(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(id) = self.recording_replay.take() {
-            if self.enter_pane_window(id) && self.panes.contains_key(&id) {
+        if let Some(id) = self.recording_replay.take()
+            && self.enter_pane_window(id) && self.panes.contains_key(&id) {
                 self.replay_session(id, event_loop);
             }
-        }
         let Some(g) = self.gpu.as_ref() else { return };
         let mut failed = None;
         for (slot, heading, text) in self.recording_warnings.iter_mut().filter(|(w, _, _)| w.is_none()) {

@@ -291,11 +291,10 @@ fn snippets_tab(ui: &mut egui::Ui, store: &mut Store, st: &mut State) -> Changed
     rects.retain(|(_, r)| clip.intersects(*r));
     let inside = |p: egui::Pos2| clip.contains(p);
     if let Some(from) = st.drag {
-        if let Some(p) = ui.ctx().pointer_interact_pos().filter(|p| inside(*p)) {
-            if let Some(&(_, r)) = rects.iter().find(|(_, r)| r.y_range().contains(p.y)) {
+        if let Some(p) = ui.ctx().pointer_interact_pos().filter(|p| inside(*p))
+            && let Some(&(_, r)) = rects.iter().find(|(_, r)| r.y_range().contains(p.y)) {
                 ui.painter().hline(r.x_range(), if p.y < r.center().y { r.top() } else { r.bottom() }, egui::Stroke::new(2.0, ui.visuals().selection.stroke.color));
             }
-        }
         if ui.input(|i| i.pointer.any_released()) {
             st.drag = None;
             let to = ui.ctx().pointer_interact_pos().filter(|p| inside(*p)).and_then(|p| rects.iter().find(|(_, r)| r.y_range().contains(p.y)).map(|&(i, r)| if p.y < r.center().y { i } else { i + 1 }));
@@ -323,11 +322,10 @@ fn snippets_tab(ui: &mut egui::Ui, store: &mut Store, st: &mut State) -> Changed
         }
         if ui.add_enabled(!st.snippets_selected.is_empty(), egui::Button::new("Export...")).clicked() {
             let picked: Vec<&Snippet> = shown.iter().filter(|i| st.snippets_selected.contains(i)).map(|&i| &store.snippets[i]).collect();
-            if let Some(path) = crate::localfs::save_file(rfd::FileDialog::new().add_filter("Snippets", &["it2snippets"]).set_file_name("snippets.it2snippets")) {
-                if let Err(e) = crate::localfs::write(&path, snippets::export(&picked)) {
+            if let Some(path) = crate::localfs::save_file(rfd::FileDialog::new().add_filter("Snippets", &["it2snippets"]).set_file_name("snippets.it2snippets"))
+                && let Err(e) = crate::localfs::write(&path, snippets::export(&picked)) {
                     st.alert = Some(("Export Failed".into(), format!("Error saving to {}: {e}", path.path().display())));
                 }
-            }
         }
         if ui.button("Import...").clicked() {
             for path in rfd::FileDialog::new().add_filter("Snippets", &["it2snippets"]).pick_files().unwrap_or_default() {
@@ -502,11 +500,10 @@ fn actions_tab(ui: &mut egui::Ui, g: &mut Globals, st: &mut State, _profiles: &[
         }
         if ui.add_enabled(!st.actions_selected.is_empty(), egui::Button::new("Export...")).clicked() {
             let picked: Vec<&UserAction> = (0..list.len()).filter(|i| st.actions_selected.contains(i)).map(|i| &list[i]).collect();
-            if let Some(path) = crate::localfs::save_file(rfd::FileDialog::new().add_filter("Actions", &["it2actions"]).set_file_name("actions.it2actions")) {
-                if let Err(e) = crate::localfs::write(&path, user_actions::export(&picked)) {
+            if let Some(path) = crate::localfs::save_file(rfd::FileDialog::new().add_filter("Actions", &["it2actions"]).set_file_name("actions.it2actions"))
+                && let Err(e) = crate::localfs::write(&path, user_actions::export(&picked)) {
                     st.alert = Some(("Export Failed".into(), format!("Error saving to {}: {e}", path.path().display())));
                 }
-            }
         }
     });
     let no_typing = !ui.ctx().egui_wants_keyboard_input();

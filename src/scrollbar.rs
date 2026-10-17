@@ -237,11 +237,10 @@ pub struct TickCache {
 impl TickCache {
     /// The ticks for `key`, built by `build` when the key is not the one last built for.
     pub fn get(&mut self, key: u64, build: impl FnOnce() -> Ticks) -> std::rc::Rc<Ticks> {
-        if let Some((k, ticks)) = &self.slot {
-            if *k == key {
+        if let Some((k, ticks)) = &self.slot
+            && *k == key {
                 return ticks.clone();
             }
-        }
         let ticks = std::rc::Rc::new(build());
         self.slot = Some((key, ticks.clone()));
         ticks

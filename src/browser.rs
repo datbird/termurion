@@ -1206,15 +1206,14 @@ pub fn geometry_status(bar: Rect, scale: f32, dev_null: bool, proxy: bool, n: us
     let mut strip = Rect { x: menu.x, y: bar.y, w: 0.0, h: bar.h };
     let mut status = [Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 }; MAX_STATUS];
     let n = n.min(MAX_STATUS);
-    if n > 0 {
-        if let Some(w) = strip_width(fx / sc, menu.x / sc).map(|w| w * sc) {
+    if n > 0
+        && let Some(w) = strip_width(fx / sc, menu.x / sc).map(|w| w * sc) {
             let right = menu.x - STRIP_SPACING * sc;
             strip = Rect { x: right - w, y: bar.y, w, h: bar.h };
             for (i, px) in place(n, (strip.x / sc, right / sc)).into_iter().enumerate() {
                 status[i] = Rect { x: px * sc, y: bar.y, w: BUTTON_W * sc, h: bar.h };
             }
         }
-    }
     let status_n = if strip.w > 0.0 { n } else { 0 };
     let field_end = if strip.w > 0.0 { strip.x - gap } else { menu.x - gap };
     let field = Rect { x: fx, y: bar.y + 4.0 * scale, w: (field_end - fx).max(0.0), h: (bar.h - 8.0 * scale).max(0.0) };
@@ -1231,11 +1230,10 @@ pub fn hit(g: &Geometry, x: f32, y: f32) -> Option<Hit> {
         return Some(Hit::Button(*b));
     }
     // A button the strip clips away is not there.
-    if g.strip.w > 0.0 && g.strip.contains(x, y) {
-        if let Some(i) = g.status[..g.status_n].iter().position(|r| r.contains(x, y)) {
+    if g.strip.w > 0.0 && g.strip.contains(x, y)
+        && let Some(i) = g.status[..g.status_n].iter().position(|r| r.contains(x, y)) {
             return Some(Hit::Status(i));
         }
-    }
     if g.dev_null.is_some_and(|r| r.contains(x, y)) {
         return Some(Hit::DevNull);
     }

@@ -375,11 +375,10 @@ mod tests {
         while out.is_empty() && step < 100 {
             let now = t0 + Duration::from_millis(100 * step);
             out = r.poll(now);
-            if let Some(due) = r.next_due() {
-                if dues.last() != Some(&(due - t0)) {
+            if let Some(due) = r.next_due()
+                && dues.last() != Some(&(due - t0)) {
                     dues.push(due - t0);
                 }
-            }
             step += 1;
         }
         (out, t.requests(), dues)

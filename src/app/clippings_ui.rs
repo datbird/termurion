@@ -104,8 +104,8 @@ impl App {
             };
             let d = scene::ClipDraw { layout: &layout, panel, rows: &rows, selected: &c.selected, enabled: c.model.enabled(c.selected.len()), status: status.as_deref(), drop_y };
             scene::clippings_panel(frame, &d, cell, self.scale());
-            if c.preview {
-                if let (Some(&row), Some(tab)) = (c.selected.first(), self.tabs.get(self.active)) {
+            if c.preview
+                && let (Some(&row), Some(tab)) = (c.selected.first(), self.tabs.get(self.active)) {
                     let term = self.visible(tab).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r);
                     if let (Some(k), Some(term)) = (c.model.shown().get(row), term) {
                         let cols = ((700.0 * self.scale()).min(term.w) / cell.0).floor().max(10.0) as usize - 3;
@@ -113,7 +113,6 @@ impl App {
                         scene::clip_preview(frame, term, &k.title, &lines, cell, self.scale());
                     }
                 }
-            }
         }
     }
 
@@ -229,11 +228,10 @@ impl App {
             ClipButton::Add => return self.open_add_clipping(event_loop, id),
             ClipButton::Send => return self.user_paste(id, &text, crate::broadcast::Write::Paste),
             ClipButton::Copy => {
-                if let Some(cb) = self.clipboard.as_mut() {
-                    if let Err(err) = cb.set_text(text) {
+                if let Some(cb) = self.clipboard.as_mut()
+                    && let Err(err) = cb.set_text(text) {
                         self.banners.set("clipboard", format!("Could not copy: {err}"));
                     }
-                }
                 return;
             }
             _ => {}
@@ -297,12 +295,11 @@ impl App {
                     return self.redraw();
                 }
                 let (to, _) = self.clip_drop(&layout, self.cursor.1);
-                if let Some(c) = self.clips.get_mut(&pane) {
-                    if let Some(at) = c.model.move_row(from, to) {
+                if let Some(c) = self.clips.get_mut(&pane)
+                    && let Some(at) = c.model.move_row(from, to) {
                         c.selected = vec![at];
                         self.mark_state_dirty();
                     }
-                }
             }
         }
         self.redraw();
@@ -465,10 +462,9 @@ impl App {
         let Some(panel) = self.clip_panels().into_iter().find(|(p, _)| *p == id).map(|(_, r)| r) else { return };
         let (layout, _) = self.clip_layout(id, panel);
         let now = layout.rows.first().map_or(0.0, |r| layout.list.y - r.y);
-        if let Some(c) = self.clips.get_mut(&id) {
-            if let Some(&row) = c.selected.first() {
+        if let Some(c) = self.clips.get_mut(&id)
+            && let Some(&row) = c.selected.first() {
                 c.scroll = clippings::reveal(now, &layout, row);
             }
-        }
     }
 }

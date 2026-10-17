@@ -98,11 +98,10 @@ impl Broadcast {
     /// Whether `p` is in a broadcast domain; with `sender`, whether that sender may send
     /// there (a domain with a source takes input only from it).
     pub fn should_broadcast_to(&self, v: &View, p: PaneId, sender: Option<PaneId>) -> bool {
-        if let (Some(sender), Some(d)) = (sender, self.domain_containing(v, p)) {
-            if self.sources.iter().any(|s| d.contains(s)) && !self.sources.contains(&sender) {
+        if let (Some(sender), Some(d)) = (sender, self.domain_containing(v, p))
+            && self.sources.iter().any(|s| d.contains(s)) && !self.sources.contains(&sender) {
                 return false;
             }
-        }
         match self.raw {
             Mode::Off => false,
             Mode::AllTabs => true,

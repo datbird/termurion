@@ -994,11 +994,10 @@ impl Runner {
             }
             out.extend(kept);
             // A call the turn no longer reads (a tool runs, or it failed) stops.
-            if !done && !self.turn.waiting_for_http() {
-                if let Some(mut call) = self.call.take() {
+            if !done && !self.turn.waiting_for_http()
+                && let Some(mut call) = self.call.take() {
                     call.cancel();
                 }
-            }
         }
         out
     }

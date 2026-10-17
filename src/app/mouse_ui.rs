@@ -369,11 +369,10 @@ impl App {
         let watch = self.globals.bool("AutodetectMouseReportingStuck")
             && !self.globals.bool("NoSyncNeverAskAboutMouseReportingFrustration")
             && !self.bars.get(&pane).is_some_and(|b| b.has(super::host_offers_ui::bar_id(super::host_offers_ui::Offer::Mouse)));
-        if let Some(p) = self.panes.get_mut(&pane) {
-            if watch {
+        if let Some(p) = self.panes.get_mut(&pane)
+            && watch {
                 p.stuck.get_or_insert_with(Default::default).armed(bytes, Instant::now());
             }
-        }
         if let Some(p) = self.panes.get_mut(&pane) {
             p.input(bytes);
         }
@@ -545,12 +544,11 @@ impl App {
         if now == self.alt_infer_focus {
             return;
         }
-        if let Some(old) = std::mem::replace(&mut self.alt_infer_focus, now) {
-            if let Some(inf) = self.alt_infer.get_mut(&old) {
+        if let Some(old) = std::mem::replace(&mut self.alt_infer_focus, now)
+            && let Some(inf) = self.alt_infer.get_mut(&old) {
                 let change = inf.reset();
                 self.alt_infer_changed(old, change);
             }
-        }
     }
 
     /// The question's answer. False for other bars. Yes turns the Advanced switch on; Don't

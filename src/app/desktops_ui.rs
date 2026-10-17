@@ -90,13 +90,11 @@ impl App {
     }
 
     fn follow(m: &crate::desktops::win::Manager, hwnd: isize) {
-        if m.on_current(hwnd) == Some(false) {
-            if let Some(now) = m.current() {
-                if let Err(e) = m.move_window(hwnd, now) {
+        if m.on_current(hwnd) == Some(false)
+            && let Some(now) = m.current()
+                && let Err(e) = m.move_window(hwnd, now) {
                     eprintln!("could not follow the current desktop: {e}");
                 }
-            }
-        }
     }
 
     /// After `SWITCH_RECHECK`: the window activated on its desktop should now be on the current

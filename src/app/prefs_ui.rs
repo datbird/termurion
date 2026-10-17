@@ -373,12 +373,11 @@ impl App {
     fn prefs_write_settings(&mut self) -> bool {
         let snap = self.prefs_local();
         let file = self.prefs_file();
-        if let Some(f) = &file {
-            if write_snapshot(&snap, f, &crate::netpath::read_reparse).is_ok() {
+        if let Some(f) = &file
+            && write_snapshot(&snap, f, &crate::netpath::read_reparse).is_ok() {
                 self.prefs_saved = Some(snap);
                 return true;
             }
-        }
         let shown = file.map_or_else(|| self.prefs_location().1, |f| f.display().to_string());
         self.ask_scripts(ask(rp::FAILED_COPY, &rp::tried_to_copy(&shown, &shown), &[crate::api_auth::OK], None, Kind::Persistent, Then::Nothing));
         false

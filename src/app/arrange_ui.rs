@@ -216,11 +216,10 @@ impl App {
         // hops to reconnect through, each with its directory (`PS:7342-7347`), as Duplicate
         // Session takes them (`reconnect_hops`: vouched and validated, final review I1).
         // Restoration with contents keeps the conductor itself instead (F16).
-        if let (Contents::None | Contents::Plain, Some(hops), Some(t)) = (contents, p.conductor.as_deref().and_then(|c| c.reconnect_hops()), v.as_table_mut()) {
-            if self.store.get(&p.profile).is_some_and(crate::profile::is_ssh) {
+        if let (Contents::None | Contents::Plain, Some(hops), Some(t)) = (contents, p.conductor.as_deref().and_then(|c| c.reconnect_hops()), v.as_table_mut())
+            && self.store.get(&p.profile).is_some_and(crate::profile::is_ssh) {
                 t.insert(crate::ssh_jumps::PENDING_JUMPS_KEY.into(), crate::ssh_jumps::jumps_value(&hops));
             }
-        }
         // Session restoration: the host session, so a later launch can take the shell back.
         if let (Contents::Styled(_) | Contents::KeysOnly, Some((host_id, offset)), Some(pid), Some(t)) = (contents, p.host_session().filter(|_| p.exited.is_none()), p.shell_pid(), v.as_table_mut()) {
             t.insert(crate::restore_state::HOST_KEY.into(), super::restore_ui::host_key_value(host_id, pid, offset));

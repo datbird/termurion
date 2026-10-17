@@ -594,11 +594,10 @@ impl Coordinator {
     }
 
     fn space_mut(&mut self, key: &SpaceKey) -> &mut SpaceState {
-        if !self.spaces.contains_key(key) && self.spaces.len() >= MAX_SPACES {
-            if let Some(old) = self.spaces.keys().next().cloned() {
+        if !self.spaces.contains_key(key) && self.spaces.len() >= MAX_SPACES
+            && let Some(old) = self.spaces.keys().next().cloned() {
                 self.spaces.remove(&old);
             }
-        }
         self.spaces.entry(key.clone()).or_default()
     }
 

@@ -218,11 +218,10 @@ impl Invocation {
         let outcome = match r {
             Ok(v) => Outcome::Done(v),
             Err(f) => {
-                if f.kind == FailKind::Unregistered {
-                    if let Some(sig) = self.signatures.get(&key) {
+                if f.kind == FailKind::Unregistered
+                    && let Some(sig) = self.signatures.get(&key) {
                         self.missing.insert(sig.clone());
                     }
-                }
                 Outcome::Failed(f)
             }
         };

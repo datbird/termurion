@@ -188,11 +188,10 @@ impl TextEdit {
     /// each (Up and Down as `MCTV` does, dropping a caret with no line to go to), Copy and Cut
     /// take every caret's piece joined by line ends, and Select All leaves one selection.
     pub fn key(&mut self, k: EditKey, shift: bool, lines: &[VisualLine], width: &dyn Fn(&str) -> f32) -> EditOut {
-        if !self.extra.is_empty() {
-            if let Some(out) = self.key_multi(&k, shift, lines, width) {
+        if !self.extra.is_empty()
+            && let Some(out) = self.key_multi(&k, shift, lines, width) {
                 return out;
             }
-        }
         self.key_one(k, shift, lines, width)
     }
 

@@ -340,11 +340,10 @@ impl ConsoleWindow {
                     // out text is kept until the text, the theme or the scale changes.
                     let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
                         let key = layout_key(text_rev, ui.visuals().dark_mode, ui.ctx().pixels_per_point());
-                        if let Some((k, g)) = galley.as_ref() {
-                            if *k == key {
+                        if let Some((k, g)) = galley.as_ref()
+                            && *k == key {
                                 return g.clone();
                             }
-                        }
                         let job = egui::text::LayoutJob::simple(buf.as_str().to_owned(), egui::FontId::monospace(12.0), ui.visuals().text_color(), f32::INFINITY);
                         let g = ui.fonts_mut(|f| f.layout_job(job));
                         *galley = Some((key, g.clone()));

@@ -194,13 +194,12 @@ impl EguiHost {
 
     /// Feeds a window event to egui. Returns true when the window should redraw.
     pub fn event(&mut self, event: &WindowEvent) -> bool {
-        if let WindowEvent::Resized(s) = event {
-            if s.width > 0 && s.height > 0 {
+        if let WindowEvent::Resized(s) = event
+            && s.width > 0 && s.height > 0 {
                 self.config.width = s.width;
                 self.config.height = s.height;
                 self.surface.configure(&self.device, &self.config);
             }
-        }
         let r = self.state.on_window_event(&self.window, event);
         if r.repaint {
             self.window.request_redraw();

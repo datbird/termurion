@@ -116,11 +116,10 @@ impl NoteWindow {
                             out = NoteEvent::RequestDelete;
                         }
                     });
-                    if *confirming {
-                        if let Some(label) = crate::warnings::checkbox_label(&spec) {
+                    if *confirming
+                        && let Some(label) = crate::warnings::checkbox_label(&spec) {
                             ui.checkbox(suppress, label);
                         }
-                    }
                 }
                 let r = ui.add_sized(ui.available_size(), egui::TextEdit::multiline(text));
                 if *first {

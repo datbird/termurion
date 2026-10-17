@@ -353,14 +353,13 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         // Run it here: Windows may end the process as soon as this returns. The lock is not held
         // while it runs.
         let on_end = armed().lock().ok().and_then(|a| a.clone());
-        if let Some(f) = on_end {
-            if !RAN.swap(true, Ordering::SeqCst) {
+        if let Some(f) = on_end
+            && !RAN.swap(true, Ordering::SeqCst) {
                 // "Shut down anyway" while the quit question is open: the question goes first (as
                 // Cancel), then the write-out runs; it never waits behind the question.
                 close_question(QUESTION_CLOSE_LIMIT);
                 f();
             }
-        }
     } else if msg == WM_ENDSESSION {
         // A cancelled logoff: the next one runs again, and no block reason stays standing (the app's
         // record of it included, Task 8 M2). A question still open stays open: its answer decides.

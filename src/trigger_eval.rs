@@ -1026,11 +1026,10 @@ impl Screen {
                 Flow::More
             }
             "AnnotateTrigger" => {
-                if let (Some((l0, c0)), Some((l1, c1))) = (first, cells.last().copied()) {
-                    if !self.term.mode().contains(TermMode::ALT_SCREEN) && !value.is_empty() {
+                if let (Some((l0, c0)), Some((l1, c1))) = (first, cells.last().copied())
+                    && !self.term.mode().contains(TermMode::ALT_SCREEN) && !value.is_empty() {
                         self.add_note(l0, c0, l1, c1 + 1, value, false);
                     }
-                }
                 Flow::Done
             }
             "MarkTrigger" => {

@@ -301,11 +301,10 @@ impl App {
     fn inline_title(&self, s: &InlineState) -> String {
         let Some(chat) = s.binding.chat.as_deref() else { return ic::TITLE.to_string() };
         let mut cache = s.title.borrow_mut();
-        if let Some((at, title)) = cache.as_ref() {
-            if at.elapsed() < Duration::from_secs(1) {
+        if let Some((at, title)) = cache.as_ref()
+            && at.elapsed() < Duration::from_secs(1) {
                 return title.clone();
             }
-        }
         let title = self.chat_db.as_ref().and_then(|db| db.chat(chat).ok().flatten()).map(|c| c.title).filter(|t| !t.trim().is_empty()).map(|t| tb::drop_unsafe(&t)).unwrap_or_else(|| ic::TITLE.to_string());
         *cache = Some((Instant::now(), title.clone()));
         title
@@ -384,11 +383,10 @@ impl App {
                     copy_hits.push(PanelHit::Copy(id, row.id.clone(), *block, c));
                 }
             }
-            if matches!(row.item, Item::Message(_)) {
-                if let Some(c) = clip_to(bubble, v.area) {
+            if matches!(row.item, Item::Message(_))
+                && let Some(c) = clip_to(bubble, v.area) {
                     bubble_hits.push(PanelHit::Bubble(id, row.id.clone(), c));
                 }
-            }
             rows.push(scene::InlineRowDraw { bubble, text, user: b.user, lines, date, typing, buttons: button_rects, copies: copies.iter().map(|(_, r)| *r).collect(), copied });
         }
         let status = s.copied.as_ref().filter(|(_, _, at)| at.elapsed() < chat_view::COPIED_FOR).map(|_| chat_view::COPIED.to_string());
@@ -497,11 +495,10 @@ impl App {
     /// again), then answered through `chat_button_pressed`, which re-checks it against the store.
     fn inline_button(&mut self, pane: PaneId, message: &str, button: &str, event_loop: &ActiveEventLoop) {
         let Some(chat) = self.view_chat(ChatView::Panel(pane)) else { return };
-        if let Some(s) = self.inline.get_mut(&pane) {
-            if !s.convo.iter().any(|r| r.id == message && crate::chat_window_ui::stays_live(r)) {
+        if let Some(s) = self.inline.get_mut(&pane)
+            && !s.convo.iter().any(|r| r.id == message && crate::chat_window_ui::stays_live(r)) {
                 s.pressed.insert(message.to_string());
             }
-        }
         self.chat_button_pressed(&chat, message, button, event_loop);
         if let Some(s) = self.inline.get_mut(&pane) {
             s.dirty = true;

@@ -266,11 +266,10 @@ impl App {
                 self.tip_refresh();
             }
             Action::Share => {
-                if let Some(cb) = self.clipboard.as_mut() {
-                    if let Err(e) = cb.set_text(tip_ui::share_text(&tip)) {
+                if let Some(cb) = self.clipboard.as_mut()
+                    && let Err(e) = cb.set_text(tip_ui::share_text(&tip)) {
                         self.banners.set("action", format!("Could not copy the tip: {e}"));
                     }
-                }
             }
             Action::ToggleFrequency => {
                 let next = tips::toggled_frequency(tips::between_of(&self.globals));

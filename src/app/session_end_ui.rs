@@ -137,13 +137,12 @@ impl App {
         // screen, never a Filter or Zoom view or a replay frame (B9).
         p.own_mut().program_ended();
         let ssh = p.conductor.is_some() || p.was_ssh_session();
-        if ssh {
-            if let Some(mut p) = self.panes.remove(&id) {
+        if ssh
+            && let Some(mut p) = self.panes.remove(&id) {
                 self.ssh_pane_dropped(&p);
                 p.drop_ssh_at_exit();
                 self.panes.insert(id, p);
             }
-        }
         self.close_inline_questions_of(id);
         // A git command's window ends its command here, and stays (R3).
         let short_lived = self.short_lived(id);

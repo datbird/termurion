@@ -518,11 +518,10 @@ impl Worker {
         self.call(|h| unsafe {
             WinHttpQueryHeaders(h, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, std::ptr::null(), (&mut status as *mut u32).cast(), &mut size, std::ptr::null_mut())
         })?;
-        if matches!(status, 301 | 302 | 303 | 307 | 308) {
-            if let Some(location) = self.location()? {
+        if matches!(status, 301 | 302 | 303 | 307 | 308)
+            && let Some(location) = self.location()? {
                 return Ok(HopEnd::Redirect(status, location));
             }
-        }
         *delivery = Delivery::limited(status, stream, self.limit);
         let buf = hop.ctx.buf.get();
         loop {

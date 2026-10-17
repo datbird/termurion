@@ -188,16 +188,14 @@ pub fn names_for(locales: &[String]) -> (std::collections::HashMap<String, Strin
     let mut countries = std::collections::HashMap::new();
     for l in locales {
         let Some((lang, cc)) = l.split_once('_') else { continue };
-        if !languages.contains_key(lang) {
-            if let Some(n) = language_name(lang) {
+        if !languages.contains_key(lang)
+            && let Some(n) = language_name(lang) {
                 languages.insert(lang.to_string(), n);
             }
-        }
-        if !countries.contains_key(cc) && plain_code(cc) {
-            if let Some(n) = info(&l.replace('_', "-"), LOCALE_SLOCALIZEDCOUNTRYNAME) {
+        if !countries.contains_key(cc) && plain_code(cc)
+            && let Some(n) = info(&l.replace('_', "-"), LOCALE_SLOCALIZEDCOUNTRYNAME) {
                 countries.insert(cc.to_string(), n);
             }
-        }
     }
     (languages, countries)
 }

@@ -498,11 +498,10 @@ impl App {
                 }
                 Act::Fail(text) => {
                     // A folder made while the save failed, its answer still on the way, goes too.
-                    if let Some(saving) = self.page_saves.remove(&pane) {
-                        if let Some(w) = &saving.worker {
+                    if let Some(saving) = self.page_saves.remove(&pane)
+                        && let Some(w) = &saving.worker {
                             let _ = w.send(saving.abandon_op());
                         }
-                    }
                     self.save_remote_staged_failed(pane);
                     self.page_save_alert(&text);
                 }

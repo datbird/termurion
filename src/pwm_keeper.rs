@@ -286,14 +286,13 @@ fn parse_listing_payload(data: &[u8]) -> Vec<Rec> {
         }
     }
     for p in &payloads {
-        if p.get("command").and_then(Value::as_str) == Some("ls") {
-            if let Some(rows) = p.pointer("/data/records").and_then(Value::as_array).filter(|r| !r.is_empty()) {
+        if p.get("command").and_then(Value::as_str) == Some("ls")
+            && let Some(rows) = p.pointer("/data/records").and_then(Value::as_array).filter(|r| !r.is_empty()) {
                 let recs: Vec<Rec> = rows.iter().filter_map(|r| r.get("title").and_then(Value::as_str)).filter_map(parse_ls_record_line).collect();
                 if !recs.is_empty() {
                     return recs;
                 }
             }
-        }
         if p.get("status").and_then(Value::as_str) == Some("success") {
             let rows = p.pointer("/data/records").and_then(Value::as_array).or_else(|| p.get("data").and_then(Value::as_array));
             if let Some(rows) = rows.filter(|r| !r.is_empty()) {
@@ -380,25 +379,23 @@ fn password_from_raw_get(data: &[u8]) -> Option<String> {
             Value::Object(o) => {
                 let status = o.get("status").and_then(Value::as_str).map(str::to_lowercase);
                 let done = matches!(status.as_deref(), Some("success" | "completed"));
-                if done {
-                    if let Some(t) = o.get("result").and_then(Value::as_str).and_then(trimmed) {
+                if done
+                    && let Some(t) = o.get("result").and_then(Value::as_str).and_then(trimmed) {
                         return Some(t);
                     }
-                }
                 if o.contains_key("error") || status.is_some() && !done {
                     return None;
                 }
                 if let Some(t) = o.get("result").and_then(Value::as_str).and_then(trimmed) {
                     return Some(t);
                 }
-                if done {
-                    if let Some(t) = o.get("message").and_then(Value::as_array).and_then(|m| m.first()).and_then(Value::as_str).and_then(trimmed) {
+                if done
+                    && let Some(t) = o.get("message").and_then(Value::as_array).and_then(|m| m.first()).and_then(Value::as_str).and_then(trimmed) {
                         let lower = t.to_lowercase();
                         if !lower.starts_with("command executed successfully") && !lower.contains("no output") {
                             return Some(t);
                         }
                     }
-                }
                 return None;
             }
             Value::Array(_) => return None,
@@ -430,11 +427,10 @@ fn source_from_label(label: Option<&str>) -> Option<Source> {
 /// Bare UIDs and the legacy `classic:` / `nested:` prefixes.
 fn parse_account_identifier(raw: &str) -> (Option<Source>, String) {
     let t = raw.trim();
-    if let Some((prefix, rest)) = t.split_once(':') {
-        if let Some(s) = source_from_label(Some(prefix)).filter(|_| !rest.is_empty()) {
+    if let Some((prefix, rest)) = t.split_once(':')
+        && let Some(s) = source_from_label(Some(prefix)).filter(|_| !rest.is_empty()) {
             return (Some(s), rest.to_string());
         }
-    }
     (None, t.to_string())
 }
 

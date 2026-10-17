@@ -206,11 +206,10 @@ pub fn on_up(button: u8, clicks: u8, m: Mods, reportable: bool, app_tracking: bo
         0 if emulates_right_click(button, clicks, m, reportable, p) => bound().map_or(Up::Native, Up::Perform),
         0 => Up::Native,
         1 => {
-            if !(p.report_right_click && reportable) {
-                if let Some(b) = bound() {
+            if !(p.report_right_click && reportable)
+                && let Some(b) = bound() {
                     return Up::Perform(b);
                 }
-            }
             if reportable { Up::Report } else { Up::Native }
         }
         _ if reportable => Up::Report,

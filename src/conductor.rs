@@ -2920,11 +2920,10 @@ mod tests {
                 }
                 for effect in taken {
                     // What was typed while connecting (nothing here) goes through sendKeys.
-                    if effect == Effect::StopQueueingInput {
-                        if let Some(c) = current.as_mut() {
+                    if effect == Effect::StopQueueingInput
+                        && let Some(c) = current.as_mut() {
                             c.send_keys(b"");
                         }
-                    }
                     effects.push(effect);
                 }
             }

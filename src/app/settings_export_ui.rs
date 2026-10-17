@@ -216,11 +216,10 @@ fn alias_entry(dir: &Path) -> Option<PathBuf> {
         if se::aliased(&name) {
             return Some(path);
         }
-        if stat == crate::script_archive::Stat::Dir {
-            if let Some(found) = alias_entry(&path) {
+        if stat == crate::script_archive::Stat::Dir
+            && let Some(found) = alias_entry(&path) {
                 return Some(found);
             }
-        }
     }
     None
 }

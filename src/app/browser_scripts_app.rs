@@ -449,11 +449,10 @@ impl App {
 
     /// The view reloaded after a process failure: its world is verified in a few seconds.
     pub(super) fn browser_world_expect(&mut self, pane: PaneId) {
-        if let Some(bv) = self.browser_views.get_mut(&pane) {
-            if bv.client_world == ClientWorld::Ready {
+        if let Some(bv) = self.browser_views.get_mut(&pane)
+            && bv.client_world == ClientWorld::Ready {
                 bv.world.verify_at = Some(Instant::now());
             }
-        }
     }
 
     /// The world did not come back after a reload: take the old scripts off and set it up once more.
@@ -506,11 +505,10 @@ impl App {
         }
         let late = self.browser_views.get(&pane).is_some_and(|b| b.world.timed_out(Instant::now()));
         if late {
-            if let Some(bv) = self.browser_views.get_mut(&pane) {
-                if let Some(setup) = bv.world.setup.as_mut() {
+            if let Some(bv) = self.browser_views.get_mut(&pane)
+                && let Some(setup) = bv.world.setup.as_mut() {
                     setup.fail("the setup took too long");
                 }
-            }
             self.browser_world_finish(pane);
         }
     }
@@ -614,11 +612,10 @@ impl App {
             "Runtime.bindingCalled" => {
                 // A message is the Termurion world's only when the binding was called from a context the
                 // table knows as Termurion's; the JSON never says so.
-                if let Some((frame, origin, payload)) = bv.contexts.binding_called(session, json) {
-                    if let Some(r) = browser_js::route(&payload, World::Client, frame, &origin) {
+                if let Some((frame, origin, payload)) = bv.contexts.binding_called(session, json)
+                    && let Some(r) = browser_js::route(&payload, World::Client, frame, &origin) {
                         self.browser_message(pane, r);
                     }
-                }
             }
             _ => {}
         }
@@ -664,11 +661,10 @@ impl App {
         if let Some((method, params)) = s.next_call() {
             let owned = session.to_string();
             self.devtools_send(pane, Some(session), method, &params, Box::new(move |app, pane, r| {
-                if let Some(bv) = app.browser_views.get_mut(&pane) {
-                    if let Some(s) = bv.world.sessions.get_mut(&owned) {
+                if let Some(bv) = app.browser_views.get_mut(&pane)
+                    && let Some(s) = bv.world.sessions.get_mut(&owned) {
                         s.answered(r.map(|v| v.to_string()));
                     }
-                }
                 app.browser_session_pump(pane, &owned);
             }));
         } else if s.done() {
@@ -869,11 +865,10 @@ impl App {
                 true
             }
             Event::FrameCreated { frame, .. } => {
-                if let Some(bv) = self.browser_views.get_mut(&pane) {
-                    if bv.page_frames.len() < MAX_PAGE_FRAMES && !bv.page_frames.contains(frame) {
+                if let Some(bv) = self.browser_views.get_mut(&pane)
+                    && bv.page_frames.len() < MAX_PAGE_FRAMES && !bv.page_frames.contains(frame) {
                         bv.page_frames.push(*frame);
                     }
-                }
                 true
             }
             Event::FrameGone { frame, .. } => {
@@ -962,13 +957,12 @@ impl App {
             h if h == crate::browser_password::HANDLER => self.browser_password_message(pane, &r),
             _ if browser_js::always_on(&r, self.browser_view_secret(pane).unwrap_or(""), self.browser_views.get(&pane).map_or("", |b| b.dom_secret.as_str())).is_some() => self.browser_always_on(pane, &r),
             _ => {
-                if let Some(bv) = self.browser_views.get_mut(&pane) {
-                    if bv.world.drop_logged.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
+                if let Some(bv) = self.browser_views.get_mut(&pane)
+                    && bv.world.drop_logged.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
                         bv.world.drop_logged = Some(Instant::now());
                         let world: &'static str = if r.world == World::Client { "client" } else { "page" };
                         crate::rlog!("browser message dropped: {} world", world);
                     }
-                }
             }
         }
     }
@@ -1020,11 +1014,10 @@ impl App {
             self.browser_pointer(pane, p);
         }
         // Only a pane that is a broadcast source now, with no replay in flight to it, sends.
-        if let Some(e) = broadcast {
-            if self.browser_broadcast_accepts(pane, &e) {
+        if let Some(e) = broadcast
+            && self.browser_broadcast_accepts(pane, &e) {
                 self.browser_broadcast(pane, e);
             }
-        }
     }
 
     // --- The one funnel for a URL a page supplied ---

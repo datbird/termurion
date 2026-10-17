@@ -864,14 +864,13 @@ impl App {
         if self.browser_command(sel) {
             return;
         }
-        if crate::replay::blocks_command(sel) {
-            if let Some(id) = self.focused_id() {
+        if crate::replay::blocks_command(sel)
+            && let Some(id) = self.focused_id() {
                 if self.panes.get(&id).is_some_and(|p| p.replay.is_some()) {
                     return;
                 }
                 self.end_view(id);
             }
-        }
         if self.run_trigger_command_menu(&item.selector, event_loop) {
             return self.relayout();
         }
@@ -927,11 +926,10 @@ impl App {
             "moveTabToNewWindow:" if self.layout_allowed(crate::winmodel::LayoutOp::MoveTab) => self.move_tab_to_new_window(),
             // Disabled while a pick is on (`PTYTextView.m:587-591`).
             "movePane:" => {
-                if self.pane_move.is_none() {
-                    if let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) {
+                if self.pane_move.is_none()
+                    && let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) {
                         self.start_pane_move(pane, true, event_loop);
                     }
-                }
             }
             "moveSessionToWindow:" if self.layout_allowed(crate::winmodel::LayoutOp::MovePane) => self.move_session_to_window(),
             "moveSessionToTab:" if self.layout_allowed(crate::winmodel::LayoutOp::MovePane) => self.move_session_to_tab(),
@@ -1226,12 +1224,11 @@ impl App {
                 }
             }
             s if s.starts_with("terminalStateToggle") => {
-                if let Some((_, on, off, flag)) = TOGGLES.iter().find(|t| t.0 == label) {
-                    if let Some(p) = self.focused_pane() {
+                if let Some((_, on, off, flag)) = TOGGLES.iter().find(|t| t.0 == label)
+                    && let Some(p) = self.focused_pane() {
                         let now = p.screen.term().mode().intersects(*flag);
                         p.screen.feed(if now { off.as_bytes() } else { on.as_bytes() });
                     }
-                }
             }
             "biggerFont:" => self.adjust_font_size(1),
             "smallerFont:" => self.adjust_font_size(-1),

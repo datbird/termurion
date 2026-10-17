@@ -776,15 +776,14 @@ impl Job {
             return self.pump();
         }
         let is_css = mime.as_deref().map(|m| m.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("text/css")).unwrap_or(false);
-        if is_css {
-            if let Ok(text) = String::from_utf8(bytes.clone()) {
+        if is_css
+            && let Ok(text) = String::from_utf8(bytes.clone()) {
                 // Nesting is bounded: a sheet at the deepest level is kept, its references are not
                 // followed (Task 9 review I2).
                 let refs = if self.stack.len() + 1 >= MAX_CSS_DEPTH { VecDeque::new() } else { css_urls(&text).into_iter().collect() };
                 self.stack.push(CssFrame { url: url.to_string(), text, refs });
                 return self.pump();
             }
-        }
         let base = base_filename(url, mime.as_deref());
         let issued = &self.issued;
         let name = unique_filename(&base, &|n| issued.contains(&folded(n)) || taken(n));

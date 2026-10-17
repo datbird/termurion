@@ -122,16 +122,14 @@ pub fn frame_for(tree: &Value, url: &str) -> Option<String> {
 /// The `mimeType` of the first frame resource, or frame document, whose `url` is this one.
 pub fn resource_mime(tree: &Value, url: &str) -> Option<String> {
     for n in frames(tree) {
-        if n.pointer("/frame/url").and_then(Value::as_str) == Some(url) {
-            if let Some(m) = n.pointer("/frame/mimeType").and_then(Value::as_str) {
+        if n.pointer("/frame/url").and_then(Value::as_str) == Some(url)
+            && let Some(m) = n.pointer("/frame/mimeType").and_then(Value::as_str) {
                 return Some(m.to_string());
             }
-        }
-        if let Some(r) = resources(n).find(|r| r.get("url").and_then(Value::as_str) == Some(url)) {
-            if let Some(m) = r.get("mimeType").and_then(Value::as_str) {
+        if let Some(r) = resources(n).find(|r| r.get("url").and_then(Value::as_str) == Some(url))
+            && let Some(m) = r.get("mimeType").and_then(Value::as_str) {
                 return Some(m.to_string());
             }
-        }
     }
     None
 }

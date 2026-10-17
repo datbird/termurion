@@ -119,11 +119,10 @@ impl App {
         match self.focused_id() {
             // iTerm2 puts the escaped text on the pasteboard and opens Advanced Paste on it.
             Some(pane) if option => {
-                if let Some(cb) = self.clipboard.as_mut() {
-                    if let Err(e) = cb.set_text(text) {
+                if let Some(cb) = self.clipboard.as_mut()
+                    && let Err(e) = cb.set_text(text) {
                         return self.banners.set("clipboard", format!("Could not copy: {e}"));
                     }
-                }
                 self.open_advanced_paste(event_loop, pane, None);
             }
             Some(_) => self.send_to_focused(text.as_bytes()),

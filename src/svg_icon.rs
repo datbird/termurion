@@ -138,11 +138,10 @@ pub fn candidates(reply: &str) -> Vec<String> {
             }
         }
     }
-    if results.is_empty() {
-        if let Some((a, b)) = self_closing {
+    if results.is_empty()
+        && let Some((a, b)) = self_closing {
             results.push(reply[a..b].to_string());
         }
-    }
     results
 }
 

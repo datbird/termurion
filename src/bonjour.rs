@@ -550,11 +550,10 @@ mod browser {
             // The records are the system's: copy what is needed, then free the list.
             while !r.is_null() {
                 let rec = unsafe { &*r };
-                if rec.wType == DNS_TYPE_PTR {
-                    if let Some(full) = unsafe { read_wide(rec.Data.PTR.pNameHost) } {
+                if rec.wType == DNS_TYPE_PTR
+                    && let Some(full) = unsafe { read_wide(rec.Data.PTR.pNameHost) } {
                         send(Msg::Browsed { id, full, gone: rec.dwTtl == 0 });
                     }
-                }
                 r = rec.pNext;
             }
             if !record.is_null() {

@@ -465,12 +465,11 @@ impl App {
             PointerAct::QuickLook => {
                 let script = self.browser_point_script("urls-at-point.js", js, &[]);
                 self.browser_eval_in_frame(pane, None, &script, Box::new(|a, p, r| {
-                    if let Some(url) = r.ok().and_then(|v| browser_pointer::first_url_of(&v)) {
-                        if crate::web_popover::quick_look_scheme_ok(&url) {
+                    if let Some(url) = r.ok().and_then(|v| browser_pointer::first_url_of(&v))
+                        && crate::web_popover::quick_look_scheme_ok(&url) {
                             let at = crate::browser_tip::pointer_now().unwrap_or_else(|| a.pointer_screen());
                             a.browser_queue_open_gated(p, &url, PageOpen::QuickLook(at));
                         }
-                    }
                 }));
             }
             PointerAct::SmartSelect => {

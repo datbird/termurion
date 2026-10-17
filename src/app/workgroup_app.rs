@@ -473,14 +473,12 @@ impl App {
         }
         // A dynamic or Bonjour profile never takes part in a crowd (P4); a missing one is the default.
         let guid = cfg.profile_guid.clone().filter(|g| self.store.get(g).is_some());
-        if w.sessions.len() > 1 {
-            if let Some(p) = guid.as_deref().and_then(|g| self.store.get(g)) {
-                if p.bool(crate::dynamic_profiles::DYNAMIC_KEY) || self.is_bonjour_profile(&p) {
+        if w.sessions.len() > 1
+            && let Some(p) = guid.as_deref().and_then(|g| self.store.get(g))
+                && (p.bool(crate::dynamic_profiles::DYNAMIC_KEY) || self.is_bonjour_profile(&p)) {
                     self.banners.set("workgroup", format!("A member was left out: its profile {} is not a saved one.", crate::inert_files::display_text(&p.name(), 64, false)));
                     return Made::Skipped;
                 }
-            }
-        }
         // A Diff member has no program until git reports changes (`WI:1316-1385`).
         let diff = matches!(cfg.mode, Mode::Diff | Mode::CodeReview);
         let command = match (diff, self.plan_command(&cfg.command, "HEAD")) {
@@ -684,14 +682,13 @@ impl App {
                 // The leader's tab may sit in another window now (the shown member was moved, or its
                 // tab torn off): the group goes back where the leader is.
                 let home = self.current_window();
-                if self.enter_pane_window(inst.leader) {
-                    if let Some(at) = self.tabs.iter().position(|t| t.layout.panes().contains(&inst.leader)) {
+                if self.enter_pane_window(inst.leader)
+                    && let Some(at) = self.tabs.iter().position(|t| t.layout.panes().contains(&inst.leader)) {
                         let gid = before.as_ref().map(|g| g.id.clone());
                         self.tabs[at].group = before;
                         self.set_tab_group(at, gid);
                         self.group_changed();
                     }
-                }
                 if let Some(h) = home.filter(|h| self.current_window() != Some(*h)) {
                     self.enter(h);
                 }

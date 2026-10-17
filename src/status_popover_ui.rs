@@ -236,13 +236,12 @@ impl StatusPopover {
                         out = PopoverEvent::AddPattern;
                     }
                     let can_remove = selected.is_some_and(|i| i < patterns.len());
-                    if ui.add_enabled(can_remove, egui::Button::new("\u{2212}")).clicked() {
-                        if let Some(i) = selected.take() {
+                    if ui.add_enabled(can_remove, egui::Button::new("\u{2212}")).clicked()
+                        && let Some(i) = selected.take() {
                             patterns.remove(i);
                             *dirty = false;
                             changed = true;
                         }
-                    }
                 });
                 if changed {
                     out = PopoverEvent::Patterns(patterns.clone());

@@ -162,13 +162,12 @@ fn draw_row(ui: &mut egui::Ui, view: &View, depth: usize, row: &Row, expanded: b
     }
     let title = painter.with_clip_rect(egui::Rect::from_min_max(rect.min, egui::pos2(right.max(x), rect.max.y)));
     title.text(egui::pos2(x, top), egui::Align2::LEFT_CENTER, &row.title, egui::TextStyle::Body.resolve(ui.style()), text);
-    if row_height(row) > cockpit::ROW_HEIGHT {
-        if let Some(d) = &row.detail {
+    if row_height(row) > cockpit::ROW_HEIGHT
+        && let Some(d) = &row.detail {
             let job = detail_job(ui, d, (rect.max.x - 8.0 - x).max(10.0));
             let galley = ui.painter().layout_job(job);
             painter.galley(egui::pos2(x, rect.min.y + cockpit::ROW_HEIGHT - 4.0), galley, weak);
         }
-    }
     let on_triangle = resp.interact_pointer_pos().is_some_and(|p| tri.contains(p)) && !row.children.is_empty();
     if resp.double_clicked() && !on_triangle {
         acts.push(Act::Jump(row.key.clone()));
@@ -473,8 +472,8 @@ impl CockpitWindow {
                     view.picker = query.as_deref().map(|q| mention::Picker::new(world, q));
                     *last_query = query;
                 }
-                if let Some(p) = &view.picker {
-                    if let Some(i) = mention_picker_ui::show(ui, p, response.rect.left_top() + egui::vec2(0.0, line + 6.0)) {
+                if let Some(p) = &view.picker
+                    && let Some(i) = mention_picker_ui::show(ui, p, response.rect.left_top() + egui::vec2(0.0, line + 6.0)) {
                         if let Some(p) = view.picker.as_mut() {
                             p.selected = i;
                         }
@@ -484,7 +483,6 @@ impl CockpitWindow {
                         *last_query = None;
                         ui.memory_mut(|m| m.request_focus(id));
                     }
-                }
             });
         });
         let frame = self.frame();

@@ -643,11 +643,10 @@ impl Waits {
     /// The navigation the load started (from its own `Starting` event): set once.
     pub fn bind_nav(&mut self, pane: u64, nav: u64) {
         for (p, _, k) in &mut self.entries {
-            if *p == pane {
-                if let Kind::Load { nav: slot @ None } = k {
+            if *p == pane
+                && let Kind::Load { nav: slot @ None } = k {
                     *slot = Some(nav);
                 }
-            }
         }
     }
 

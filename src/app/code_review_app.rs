@@ -650,11 +650,10 @@ impl App {
         *flag = !*flag;
         let on = *flag;
         // Turned off: a Return already waiting for an auto-send goes too.
-        if !on && which == Toggle::AutoSend {
-            if let Some(i) = self.workgroup_of(pane).map(|i| i.id.clone()) {
+        if !on && which == Toggle::AutoSend
+            && let Some(i) = self.workgroup_of(pane).map(|i| i.id.clone()) {
                 self.cancel_paste_after(&i);
             }
-        }
         let text = match (which, on) {
             (Toggle::AutoSend, true) => "Auto-send clippings to the main session when idle: on",
             (Toggle::AutoSend, false) => "Auto-send clippings to the main session when idle: off",
@@ -739,12 +738,11 @@ impl App {
         self.paste_literal_after(main, "\r", delay, instance);
         // The sent clippings are history now: this is what ends the request and send loop. The archive
         // happens before the main session takes the group's slot (the clippings travel with it).
-        if let Some(c) = self.clips.get_mut(&home) {
-            if c.model.archive_all() {
+        if let Some(c) = self.clips.get_mut(&home)
+            && c.model.archive_all() {
                 c.selected.clear();
                 c.scroll = 0.0;
             }
-        }
         self.mark_state_dirty();
         self.reveal_as_peer(main);
         self.redraw();
@@ -786,11 +784,10 @@ fn write_review_settings(tmp: &crate::localfs::LocalPath) -> Result<std::path::P
 
 /// Removes a review file this run made (judged: it is in the tmp folder).
 fn remove_review_file(path: &std::path::Path) {
-    if let Some(dir) = path.parent().and_then(crate::localfs::LocalPath::judge) {
-        if let Some(entry) = path.file_name().and_then(|n| dir.unfollowed(n)) {
+    if let Some(dir) = path.parent().and_then(crate::localfs::LocalPath::judge)
+        && let Some(entry) = path.file_name().and_then(|n| dir.unfollowed(n)) {
             let _ = crate::localfs::remove_unfollowed(&entry);
         }
-    }
 }
 
 #[cfg(test)]

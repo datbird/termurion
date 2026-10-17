@@ -229,11 +229,10 @@ impl App {
     pub(super) fn codecierge_invoke(&mut self, guid: &str, id: u64, call: crate::ai_msg::Message) {
         let (name, arguments) = call.function_call().map(|(c, _)| (c.name.clone().unwrap_or_default(), c.arguments.clone().unwrap_or_default())).unwrap_or_default();
         let (name, arguments) = (name.as_str(), arguments.as_str());
-        if let Some(s) = self.codecierge.get_mut(guid) {
-            if s.request == Some(id) {
+        if let Some(s) = self.codecierge.get_mut(guid)
+            && s.request == Some(id) {
                 s.call = Some(call);
             }
-        }
         let Some(s) = self.codecierge.get(guid) else { return };
         let (open, _) = self.codecierge_gate();
         let Some(pane) = pane_for_ref(&self.panes, guid) else {

@@ -412,13 +412,11 @@ impl App {
 
     /// Cancel on the queued-reload overlay: the reload is abandoned and the old output stays.
     pub(super) fn diff_cancel_reload(&mut self, pane: PaneId) {
-        if let Some((instance, config)) = self.member_config(pane) {
-            if let Some(git) = self.workgroups.get_mut(&instance).and_then(|i| i.git.as_mut()) {
-                if git.pending.get(&config).is_some_and(|p| p.queued) {
+        if let Some((instance, config)) = self.member_config(pane)
+            && let Some(git) = self.workgroups.get_mut(&instance).and_then(|i| i.git.as_mut())
+                && git.pending.get(&config).is_some_and(|p| p.queued) {
                     git.pending.remove(&config);
                 }
-            }
-        }
         self.redraw();
     }
 

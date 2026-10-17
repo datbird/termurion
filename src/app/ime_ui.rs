@@ -102,13 +102,12 @@ impl App {
         }
         // An owner that had no text entry after all hands the text to the terminal, as its key would.
         // The key would reach Clippings next: any other key gives the panel's keyboard back.
-        if !owners.belt {
-            if let Some(c) = self.clips.get_mut(&id).filter(|c| c.keys && c.model.visible) {
+        if !owners.belt
+            && let Some(c) = self.clips.get_mut(&id).filter(|c| c.keys && c.model.visible) {
                 c.keys = false;
                 c.preview = false;
                 self.redraw();
             }
-        }
         match ime::after_refusal(first, false) {
             Dest::Drop => {}
             Dest::Find => self.find_type_text(id, text),

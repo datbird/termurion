@@ -153,11 +153,10 @@ impl App {
         let registry = toolbelt::dynamic_tools(self.globals.get(toolbelt::DYNAMIC_TOOLS_KEY).as_ref());
         let mut wanted = Vec::new();
         for (w, tool) in layout.wrappers.iter().zip(tools) {
-            if let ToolId::Dynamic(name) = tool {
-                if let Some(d) = registry.iter().find(|d| d.name == *name) {
+            if let ToolId::Dynamic(name) = tool
+                && let Some(d) = registry.iter().find(|d| d.name == *name) {
                     wanted.push(Wanted { name: d.name.clone(), url: d.url.clone(), content: w.content });
                 }
-            }
         }
         if wanted.is_empty() && self.tool_views.is_empty() {
             return;

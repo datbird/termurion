@@ -836,11 +836,10 @@ impl Screen {
         let key = tests::FORCE_KEY.with(|f| f.get()).unwrap_or(key);
         // The 64-bit digest only picks a bucket: a hit must hold this very row, so a crafted
         // collision can never show one row in another row's order.
-        if let Some(hit) = self.bidi_cache.borrow().get(&key) {
-            if hit.sig == sig && hit.texts == texts {
+        if let Some(hit) = self.bidi_cache.borrow().get(&key)
+            && hit.sig == sig && hit.texts == texts {
                 return hit.order.clone();
             }
-        }
         let made = crate::bidi::order(&texts, rules, alternate).map(|o| std::sync::Arc::new(if rules.right_justify && used < cols { crate::bidi::pad(&o, cols) } else { o }));
         let mut cache = self.bidi_cache.borrow_mut();
         if cache.len() >= 4 * grid.screen_lines().max(1) {

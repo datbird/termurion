@@ -16,11 +16,10 @@ pub fn check(line: &str, kind: ShellKind) -> Option<String> {
     if let Some(r) = floor(line) {
         return Some(r);
     }
-    if matches!(kind, ShellKind::Posix | ShellKind::Unknown) {
-        if let Some(r) = posix(line) {
+    if matches!(kind, ShellKind::Posix | ShellKind::Unknown)
+        && let Some(r) = posix(line) {
             return Some(r);
         }
-    }
     if matches!(kind, ShellKind::Cmd | ShellKind::PowerShell | ShellKind::Unknown) {
         return windows(line, kind);
     }
@@ -51,13 +50,11 @@ pub fn posix(line: &str) -> Option<String> {
     if line.starts_with('^') {
         return Some(HISTORY.to_string());
     }
-    if let Some(rest) = line.strip_prefix('!') {
-        if let Some(second) = rest.chars().next() {
-            if !matches!(second, ' ' | '\t' | '=' | '(' | '\n') {
+    if let Some(rest) = line.strip_prefix('!')
+        && let Some(second) = rest.chars().next()
+            && !matches!(second, ' ' | '\t' | '=' | '(' | '\n') {
                 return Some(HISTORY.to_string());
             }
-        }
-    }
     // Any LF defers: the classifier reads a heredoc or a loop in full.
     if line.contains('\n') {
         return None;
@@ -589,24 +586,22 @@ fn scan_win_marked(line: &str, f: Flavor) -> Result<Vec<(String, bool, bool)>, (
             continue;
         }
         // PowerShell's `${name}` is a variable, not a script block.
-        if f == Flavor::Ps && c == '$' && next == Some('{') {
-            if let Some(end) = braced_var_end(&chars, i) {
+        if f == Flavor::Ps && c == '$' && next == Some('{')
+            && let Some(end) = braced_var_end(&chars, i) {
                 cur.extend(&chars[i..end]);
                 i = end;
                 continue;
             }
-        }
         // A literal array `@('-enc','AAAA')` is its elements, so a command's argument list keeps
         // them (`Start-Process powershell -ArgumentList @(..)`).
-        if f == Flavor::Ps && c == '@' && next == Some('(') {
-            if let Some(end) = literal_array_end(&chars, i) {
+        if f == Flavor::Ps && c == '@' && next == Some('(')
+            && let Some(end) = literal_array_end(&chars, i) {
                 cur.push(' ');
                 cur.extend(&chars[i + 2..end - 1]);
                 cur.push(' ');
                 i = end;
                 continue;
             }
-        }
         let mut split = |after_pipe: bool, bracket: bool, cur: &mut String, cur_pipe: &mut bool, cur_bracket: &mut bool| {
             segs.push((std::mem::take(cur), *cur_pipe, *cur_bracket));
             *cur_pipe = after_pipe;
@@ -800,13 +795,12 @@ fn flatten_brackets(line: &str, f: Flavor) -> String {
     let mut out = String::with_capacity(line.len());
     let mut i = 0;
     while i < chars.len() {
-        if f == Flavor::Ps && chars[i] == '$' && chars.get(i + 1) == Some(&'{') {
-            if let Some(end) = braced_var_end(&chars, i) {
+        if f == Flavor::Ps && chars[i] == '$' && chars.get(i + 1) == Some(&'{')
+            && let Some(end) = braced_var_end(&chars, i) {
                 out.extend(&chars[i..end]);
                 i = end;
                 continue;
             }
-        }
         out.push(if matches!(chars[i], '(' | ')' | '{' | '}') { ' ' } else { chars[i] });
         i += 1;
     }

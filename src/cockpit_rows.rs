@@ -274,11 +274,10 @@ pub fn counts(mode: GroupMode, world: &World, patterns: &[Pattern], search: &str
 }
 
 fn collect(row: &Row, out: &mut Vec<PaneId>) {
-    if let RowKey::Session(p) = row.key {
-        if !out.contains(&p) {
+    if let RowKey::Session(p) = row.key
+        && !out.contains(&p) {
             out.push(p);
         }
-    }
     for c in &row.children {
         collect(c, out);
     }

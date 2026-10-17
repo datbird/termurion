@@ -468,8 +468,8 @@ impl Screen {
         self.clear_selection();
         let cur = self.marks.current;
         // A prompt mark above the cursor row (a two-line prompt) moves down to it.
-        if let Some(cur) = cur.filter(|_| saved.mark() == 0) {
-            if let Some(ml) = self.mark_line(cur).filter(|ml| *ml >= line && *ml < cursor.line.0) {
+        if let Some(cur) = cur.filter(|_| saved.mark() == 0)
+            && let Some(ml) = self.mark_line(cur).filter(|ml| *ml >= line && *ml < cursor.line.0) {
                 let skipped = self.anchor_at(cur, Point::new(cursor.line, Column(0))).map_or(0, |a| a.lines);
                 let m = &mut self.marks;
                 for a in [&mut m.command_start, &mut m.output_start, &mut m.prompt_anchors.0, &mut m.prompt_anchors.1].into_iter().flatten() {
@@ -483,7 +483,6 @@ impl Screen {
                 let _ = ml;
                 saved.set_mark(cur);
             }
-        }
         self.term.grid_mut().cut_from(Line(line));
         if line > 0 {
             self.term.scroll_up(line as usize);
@@ -803,11 +802,10 @@ impl Screen {
         if !self.prompt_state.enabled || !self.prompt_state.entering() || !self.marks.in_command || self.alt_screen() {
             return;
         }
-        if let crate::prompt_state::State::Accruing { so_far, .. } = &self.prompt_state.state {
-            if so_far.encode_utf16().count() >= crate::prompt_state::MAX_ACCRUED {
+        if let crate::prompt_state::State::Accruing { so_far, .. } = &self.prompt_state.state
+            && so_far.encode_utf16().count() >= crate::prompt_state::MAX_ACCRUED {
                 return;
             }
-        }
         let Some(from) = self.composer_from else { return };
         let cursor = self.abs_cursor();
         self.composer_from = Some(cursor);
@@ -891,11 +889,10 @@ impl Screen {
     /// (`tick_digest`), so a frame never scans the buffer or prunes records (P11).
     pub fn offscreen_facts(&mut self) -> Vec<crate::offscreen::PromptFacts> {
         let digest = self.tick_digest();
-        if let Some((d, facts)) = &self.offscreen_cache {
-            if *d == digest {
+        if let Some((d, facts)) = &self.offscreen_cache
+            && *d == digest {
                 return facts.clone();
             }
-        }
         let facts = self.compute_offscreen_facts();
         self.offscreen_cache = Some((digest, facts.clone()));
         facts
@@ -1093,11 +1090,10 @@ impl Screen {
     /// is the frozen contract (S6, S9: the region may be cached off `tick_digest`).
     pub fn command_region(&mut self, id: u32) -> Option<(usize, usize)> {
         let digest = self.tick_digest();
-        if let Some((d, m, r)) = self.region_cache {
-            if d == digest && m == id {
+        if let Some((d, m, r)) = self.region_cache
+            && d == digest && m == id {
                 return r;
             }
-        }
         let region = self.command_grid_lines(id).map(|(first, last)| {
             let history = self.term.primary_grid().history_size() as i32;
             ((first + history).max(0) as usize, (last + history).max(0) as usize)
@@ -1604,11 +1600,10 @@ impl Screen {
                 // Only a command with captures counts a clear (`terminalClearCapturedOutput`);
                 // the tool refreshes either way, with no warning (`screenClearCapturedOutput`).
                 "ClearCapturedOutput" => {
-                    if let Some(id) = self.marks.last_command {
-                        if let Some(m) = self.marks.records.get_mut(&id).filter(|m| !m.captured.is_empty()) {
+                    if let Some(id) = self.marks.last_command
+                        && let Some(m) = self.marks.records.get_mut(&id).filter(|m| !m.captured.is_empty()) {
                             m.clear_count += 1;
                         }
-                    }
                     self.requests.push(crate::screen::Request::Trigger(crate::trigger_eval::TriggerRequest::CapturedCleared));
                 }
                 "File" | "MultipartFile" | "FilePart" | "FileEnd" => self.file_osc(&key, &value),
@@ -1638,11 +1633,10 @@ impl Screen {
                 "ReportScreenFrames" if self.trusted => self.requests.push(Request::ReportScreenFrames),
                 "SetWindowFrame" => {
                     let n: Vec<f64> = value.split(';').filter_map(|v| v.trim().parse().ok()).collect();
-                    if let [x, y, w, h] = n[..] {
-                        if value.split(';').count() == 4 {
+                    if let [x, y, w, h] = n[..]
+                        && value.split(';').count() == 4 {
                             self.requests.push(Request::SetWindowFrame(x, y, w, h));
                         }
-                    }
                 }
                 "UnicodeVersion" => {
                     self.unicode.apply(&value);
@@ -1753,13 +1747,12 @@ impl Screen {
                             if let Some(n) = self.blocks.by_id.get(id).copied() {
                                 self.term.block = self.blocks.end(id);
                                 // render=1: the block's rows, through the cursor's, show rendered.
-                                if crate::blocks::get(&args, "render") == Some("1") && !alt {
-                                    if let Some((first, last)) = self.block_rows(id) {
+                                if crate::blocks::get(&args, "render") == Some("1") && !alt
+                                    && let Some((first, last)) = self.block_rows(id) {
                                         let last = last.max(self.term.grid().cursor.point.line.0);
                                         let source = crate::porthole::store::Source { hint: self.blocks.types.get(&n).cloned(), filename: None, wide: self.porthole_wide_default };
                                         self.render_range_estimated(first, last, source);
                                     }
-                                }
                             }
                         }
                         _ => {}

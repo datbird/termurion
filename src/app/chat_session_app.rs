@@ -415,11 +415,10 @@ impl App {
             Press::StopStreaming => self.stop_streaming(chat),
             Press::Link { terminal, guid } => {
                 // The offered session, if it is still open and of the offered kind.
-                if let Some(pane) = self.ref_pane(&guid).filter(|p| self.is_browser_pane(*p) != terminal) {
-                    if let Err(e) = self.link_chat(chat, pane) {
+                if let Some(pane) = self.ref_pane(&guid).filter(|p| self.is_browser_pane(*p) != terminal)
+                    && let Err(e) = self.link_chat(chat, pane) {
                         self.banners.set("chat_link", e);
                     }
-                }
             }
             Press::Permission(c) => self.toggle_permission(chat, c),
             Press::Decline { request } => self.ai_session_selected(chat, &request, None),
@@ -660,11 +659,10 @@ impl App {
     /// them (a draw asks every pane every frame).
     fn chat_links(&self) -> Vec<(String, String)> {
         let mut cache = self.chat_links.borrow_mut();
-        if let Some((at, links)) = cache.as_ref() {
-            if at.elapsed() < Duration::from_secs(1) {
+        if let Some((at, links)) = cache.as_ref()
+            && at.elapsed() < Duration::from_secs(1) {
                 return links.clone();
             }
-        }
         let links = self.chat_db.as_ref().and_then(|db| db.linked_sessions().ok()).unwrap_or_default();
         *cache = Some((Instant::now(), links.clone()));
         links
@@ -736,11 +734,10 @@ impl App {
     /// A pick from the Chat Info menu or the indicator menu. False for other ids.
     pub(super) fn chat_menu_picked(&mut self, id: &str, event_loop: &ActiveEventLoop) -> bool {
         if let Some(n) = id.strip_prefix(INDICATOR_ID) {
-            if let (Some((_, routes)), Ok(n)) = (self.chat_indicator_menu.take(), n.parse::<usize>()) {
-                if let Some(route) = routes.get(n) {
+            if let (Some((_, routes)), Ok(n)) = (self.chat_indicator_menu.take(), n.parse::<usize>())
+                && let Some(route) = routes.get(n) {
                     self.run_chat_route(route, event_loop);
                 }
-            }
             return true;
         }
         if !id.starts_with(chat_menu::MENU_PREFIX) {
@@ -815,11 +812,10 @@ impl App {
             Route::RevealChatForSession(session) => {
                 // The most recent chat linked to it, in the chat window.
                 let chat = self.chat_db.as_ref().and_then(|db| db.chats().ok()).and_then(|chats| chats.into_iter().find(|c| c.terminal_session_guid.as_deref() == Some(session.as_str())));
-                if let Some(c) = chat {
-                    if self.chat_window_enter(event_loop) {
+                if let Some(c) = chat
+                    && self.chat_window_enter(event_loop) {
                         self.show_chat(Some(c.id));
                     }
-                }
             }
             Route::DisableStreaming(session) => {
                 let streaming: Vec<String> = self.streaming_chats.iter().filter(|c| self.chat_row(c).and_then(|r| r.terminal_session_guid).as_deref() == Some(session.as_str())).cloned().collect();

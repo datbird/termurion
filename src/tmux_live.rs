@@ -1036,7 +1036,7 @@ mod tests {
     #[test]
     #[ignore]
     fn explore_psmux_detach_raw() {
-        let mut l = Live::attach(Flavor::Psmux, "dr");
+        let l = Live::attach(Flavor::Psmux, "dr");
         let _ = l.p.write(b"detach\r");
         let t = Instant::now();
         let mut all = Vec::new();
