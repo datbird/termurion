@@ -12,11 +12,11 @@ Choose Edit > Find > Find... (Ctrl+Shift+F). Type in the find bar. Termurion sea
 | Find Next | Edit > Find > Find Next | Ctrl+Shift+G |
 | Find Previous | Edit > Find > Find Previous | Ctrl+Shift+Alt+G |
 | Use Selection for Find | Edit > Find > Use Selection for Find | Ctrl+Shift+E |
-| Clear Find | Edit > Find > Clear Find | Win+Alt+Shift+E |
+| Clear Find | Edit > Find > Clear Find | Menu only (Win+Alt+Shift+E with the Win Shortcut Key) |
 | Find Globally... | Edit > Find > Find Globally... | Ctrl+Shift+Alt+F |
 | Select Matches | Edit > Find > Select Matches | Alt+Shift+Enter |
 | Find URLs | Edit > Find > Find URLs | Alt+Shift+U |
-| Filter | Edit > Find > Filter | Win+Alt+Shift+F |
+| Filter | Edit > Find > Filter | Menu only (Win+Alt+Shift+F with the Win Shortcut Key) |
 
 By default, Find Next searches toward older text (up) and Find Previous searches down. This is iTerm2's behavior. To get the usual Windows direction, turn off "Swap Find Next and Find Previous" in Settings > Advanced > General.
 

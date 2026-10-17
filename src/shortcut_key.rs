@@ -3,9 +3,11 @@
 //! Every Termurion shortcut, key mapping and menu item keeps iTerm2's Cmd notation (`Chord::cmd`,
 //! the COMMAND flag in a key binding). This is the one place that says what Cmd is pressed as:
 //! Ctrl+Shift (the default), Win, or Ctrl+Alt. Cmd+Shift+X cannot be Ctrl+Shift+Shift+X, so the
-//! three modifiers Ctrl, Shift and Alt are shared out as three pairs: Cmd is the chosen pair,
-//! Cmd+Shift is all three, Cmd+Option is the remaining pair. A Cmd chord with no such pair
-//! (Cmd+Ctrl, Cmd+Option+Shift) stays on the Win key in every mode, so nothing is lost.
+//! three modifiers Ctrl, Shift and Alt are shared out as pairs: Cmd is the chosen pair, Cmd+Shift
+//! is all three, Cmd+Option is the second pair, and Cmd+Ctrl is the third (the one pair left).
+//! Cmd+Ctrl+Shift, Cmd+Option+Shift and Cmd+Ctrl+Option have no pair left. Those chords are not
+//! shown in a menu outside the Win mode (the Win key form still works where Windows passes it),
+//! and the command stays in its menu.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -28,7 +30,7 @@ pub enum ShortcutKey {
 }
 
 /// The physical Ctrl, Shift and Alt held (the Win key is not part of it).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Held {
     pub ctrl: bool,
     pub shift: bool,
@@ -70,12 +72,13 @@ impl ShortcutKey {
         ShortcutKey::from_value(g.get(KEY).and_then(|v| v.as_integer()).unwrap_or(0))
     }
 
-    /// The pairs for Cmd, Cmd+Shift and Cmd+Option; None in Win mode.
-    fn pairs(self) -> Option<[Held; 3]> {
+    /// The pairs for Cmd, Cmd+Shift, Cmd+Option and Cmd+Ctrl; None in Win mode. The last is the
+    /// one pair of Ctrl, Shift and Alt the other three leave free.
+    fn pairs(self) -> Option<[Held; 4]> {
         let h = |ctrl, shift, alt| Held { ctrl, shift, alt };
         match self {
-            ShortcutKey::CtrlShift => Some([h(true, true, false), h(true, true, true), h(false, true, true)]),
-            ShortcutKey::CtrlAlt => Some([h(true, false, true), h(true, true, true), h(true, true, false)]),
+            ShortcutKey::CtrlShift => Some([h(true, true, false), h(true, true, true), h(false, true, true), h(true, false, true)]),
+            ShortcutKey::CtrlAlt => Some([h(true, false, true), h(true, true, true), h(true, true, false), h(false, true, true)]),
             ShortcutKey::Win => None,
         }
     }
@@ -88,6 +91,7 @@ impl ShortcutKey {
             (false, false, false) => Some(p[0]),
             (false, true, false) => Some(p[1]),
             (false, false, true) => Some(p[2]),
+            (true, false, false) => Some(p[3]),
             _ => None,
         }
     }
@@ -101,12 +105,12 @@ impl ShortcutKey {
         }
         let now = Held { ctrl: phys.ctrl, shift: phys.shift, alt: phys.alt };
         match p.iter().position(|h| *h == now) {
-            Some(i) => Mods { cmd: true, shift: i == 1, alt: i == 2, ctrl: false },
+            Some(i) => Mods { cmd: true, shift: i == 1, alt: i == 2, ctrl: i == 3 },
             None => phys,
         }
     }
 
-    /// The Cmd (with Shift and Option) a key press makes with this mode's own modifiers, or None
+    /// The Cmd (with Shift, Option and Control) a key press makes with this mode's own modifiers, or None
     /// when it is not one: the Win key is down (that is Cmd anyway), the modifiers are no pair, or
     /// the press types a character with Ctrl+Alt held, which is AltGr on a layout that has one.
     pub fn press_as_cmd(self, phys: Mods, types_a_character: bool) -> Option<Mods> {
@@ -124,9 +128,10 @@ impl ShortcutKey {
 
     /// The Cmd chord a key press makes in a Termurion window that has no menu of its own (the
     /// password manager, AI Chat): the shortcut key's own modifiers with `key`. None in Win mode
-    /// (the hook carries the Win chord) and when the press is no pair or is AltGr typing.
+    /// (the hook carries the Win chord), when the press is no pair or is AltGr typing, and for
+    /// Cmd+Ctrl (those windows have no such command).
     pub fn window_chord(self, phys: Mods, types_a_character: bool, key: crate::menus::ChordKey) -> Option<Chord> {
-        let l = self.press_as_cmd(phys, types_a_character)?;
+        let l = self.press_as_cmd(phys, types_a_character).filter(|l| !l.ctrl)?;
         Some(Chord { key, cmd: true, alt: l.alt, shift: l.shift, ctrl: false })
     }
 
@@ -135,10 +140,12 @@ impl ShortcutKey {
         !c.cmd || self == ShortcutKey::Win || self.held_for(c.shift, c.alt, c.ctrl).is_some()
     }
 
-    /// Whether the chord reaches Termurion: Windows keeps Win+L, but Ctrl+Shift+L is Termurion's.
+    /// Whether a menu shows the chord: Windows keeps Win+L, but Ctrl+Shift+L is Termurion's. In a
+    /// mode other than Win a Cmd chord with no free pair (Cmd+Option+Shift) is not shown: the
+    /// Win key form is not something to teach, and the command stays in its menu.
     pub fn reaches(self, c: &Chord) -> bool {
-        if c.cmd && self != ShortcutKey::Win && self.reachable(c) {
-            return true;
+        if c.cmd && self != ShortcutKey::Win {
+            return self.reachable(c);
         }
         crate::menus::reaches_termurion(c)
     }
@@ -163,6 +170,22 @@ impl ShortcutKey {
         let rest: Vec<&str> = tokens.into_iter().filter(|t| !matches!(*t, "Win" | "Ctrl" | "Alt" | "Shift")).collect();
         held_label(h) + &rest.join("+")
     }
+}
+
+/// The key that toggles full screen in every mode, as Windows Terminal and browsers do. iTerm2's
+/// own chord (Cmd+Ctrl+F) works beside it.
+pub const FULL_SCREEN_KEY: &str = "F11";
+
+/// The View > Toggle Full Screen command.
+pub fn is_full_screen_command(selector: &str) -> bool {
+    selector == "toggleFullScreenMode:"
+}
+
+/// Whether a bare F11 press toggles full screen: no modifier is held, and no key mapping (the
+/// profile's, the global ones or the Leader) claims the key, which keeps it for a program that
+/// wants F11 through such a mapping.
+pub fn f11_toggles_full_screen(is_f11: bool, mods: Mods, claimed_by_mapping: bool) -> bool {
+    is_f11 && !(mods.shift || mods.alt || mods.ctrl || mods.cmd) && !claimed_by_mapping
 }
 
 /// The modifiers a window without menus (password manager, AI Chat) has seen, and the Cmd chord a
@@ -259,11 +282,15 @@ mod tests {
         assert_eq!(m.held_for(true, false, false), Some(held(true, true, true)), "Cmd+Shift+X is Ctrl+Shift+Alt+X");
         assert_eq!(m.held_for(false, true, false), Some(held(false, true, true)), "Cmd+Option+X is Alt+Shift+X");
         assert_eq!(m.held_for(true, true, false), None, "no pair is left for Cmd+Option+Shift");
-        assert_eq!(m.held_for(false, false, true), None, "Cmd+Ctrl stays on Win");
+        assert_eq!(m.held_for(false, false, true), Some(held(true, false, true)), "Cmd+Ctrl is the one pair left: Ctrl+Alt");
+        assert_eq!(m.held_for(true, false, true), None, "Cmd+Ctrl+Shift has no pair");
+        assert_eq!(m.held_for(false, true, true), None, "Cmd+Ctrl+Option has no pair");
+        assert_eq!(m.held_for(true, true, true), None, "four modifiers have no pair");
         let a = ShortcutKey::CtrlAlt;
         assert_eq!(a.held_for(false, false, false), Some(held(true, false, true)));
         assert_eq!(a.held_for(true, false, false), Some(held(true, true, true)));
         assert_eq!(a.held_for(false, true, false), Some(held(true, true, false)));
+        assert_eq!(a.held_for(false, false, true), Some(held(false, true, true)), "Cmd+Ctrl is Shift+Alt in Ctrl+Alt mode");
         assert_eq!(ShortcutKey::Win.held_for(false, false, false), None);
     }
 
@@ -271,13 +298,13 @@ mod tests {
     fn no_two_chords_share_a_press() {
         for mode in [ShortcutKey::CtrlShift, ShortcutKey::CtrlAlt] {
             let mut seen = Vec::new();
-            for (s, a) in [(false, false), (true, false), (false, true), (true, true)] {
-                if let Some(h) = mode.held_for(s, a, false) {
-                    assert!(!seen.contains(&h), "{mode:?} {s} {a}");
+            for (s, a, c) in [(false, false, false), (true, false, false), (false, true, false), (true, true, false), (false, false, true)] {
+                if let Some(h) = mode.held_for(s, a, c) {
+                    assert!(!seen.contains(&h), "{mode:?} {s} {a} {c}");
                     seen.push(h);
                 }
             }
-            assert_eq!(seen.len(), 3);
+            assert_eq!(seen.len(), 4, "{mode:?}: four pairs, none shared");
         }
     }
 
@@ -290,8 +317,10 @@ mod tests {
         assert_eq!((l.cmd, l.shift, l.alt, l.ctrl), (true, true, false, false));
         let l = m.logical(phys(false, true, true, false));
         assert_eq!((l.cmd, l.shift, l.alt, l.ctrl), (true, false, true, false));
-        // Ctrl alone, Shift alone, Ctrl+Alt: not Cmd, untouched.
-        for p in [phys(true, false, false, false), phys(false, true, false, false), phys(true, false, true, false)] {
+        let l = m.logical(phys(true, false, true, false));
+        assert_eq!((l.cmd, l.shift, l.alt, l.ctrl), (true, false, false, true), "Ctrl+Alt is Cmd+Ctrl");
+        // Ctrl alone, Shift alone, Alt alone: not Cmd, untouched.
+        for p in [phys(true, false, false, false), phys(false, true, false, false), phys(false, false, true, false)] {
             assert_eq!(m.logical(p), p);
         }
         // The Win key is Cmd in every mode.
@@ -300,6 +329,8 @@ mod tests {
         assert_eq!(ShortcutKey::Win.logical(phys(true, true, false, false)), phys(true, true, false, false));
         let l = ShortcutKey::CtrlAlt.logical(phys(true, false, true, false));
         assert_eq!((l.cmd, l.shift, l.alt, l.ctrl), (true, false, false, false));
+        let l = ShortcutKey::CtrlAlt.logical(phys(false, true, true, false));
+        assert_eq!((l.cmd, l.shift, l.alt, l.ctrl), (true, false, false, true), "Shift+Alt is Cmd+Ctrl in Ctrl+Alt mode");
     }
 
     #[test]
@@ -366,10 +397,15 @@ mod tests {
         assert_eq!(ShortcutKey::CtrlShift.label(&chord('d', false, true, false)), "Alt+Shift+D");
         assert_eq!(ShortcutKey::CtrlAlt.label(&d), "Ctrl+Alt+D");
         assert_eq!(ShortcutKey::Win.label(&sd), "Win+Shift+D");
-        // Not reachable without Win: the Win spelling, and it says it is reachable only there.
         let cc = chord('d', false, false, true);
-        assert!(!ShortcutKey::CtrlShift.reachable(&cc));
-        assert_eq!(ShortcutKey::CtrlShift.label(&cc), "Win+Ctrl+D");
+        assert!(ShortcutKey::CtrlShift.reachable(&cc));
+        assert_eq!(ShortcutKey::CtrlShift.label(&cc), "Ctrl+Alt+D");
+        assert_eq!(ShortcutKey::CtrlAlt.label(&cc), "Alt+Shift+D");
+        // No pair left (Cmd+Option+Shift): not shown outside Win mode, the Win spelling in it.
+        let none = chord('d', true, true, false);
+        assert!(!ShortcutKey::CtrlShift.reachable(&none) && !ShortcutKey::CtrlShift.reaches(&none) && !ShortcutKey::CtrlAlt.reaches(&none));
+        assert_eq!(ShortcutKey::Win.label(&none), "Win+Alt+Shift+D");
+        assert!(ShortcutKey::Win.reaches(&none));
         // A chord without Cmd is untouched.
         let plain = Chord { cmd: false, ..d.clone() };
         assert_eq!(ShortcutKey::CtrlShift.label(&plain), "D");
@@ -378,7 +414,8 @@ mod tests {
         let l = chord('l', false, false, false);
         assert!(ShortcutKey::CtrlShift.reaches(&l) && ShortcutKey::CtrlAlt.reaches(&l));
         assert!(!ShortcutKey::Win.reaches(&l));
-        assert!(!ShortcutKey::CtrlShift.reaches(&chord('l', false, false, true)), "Cmd+Ctrl+L is still Win+Ctrl+L");
+        assert!(ShortcutKey::CtrlShift.reaches(&chord('l', false, false, true)), "Cmd+Ctrl+L is Ctrl+Alt+L");
+        assert!(!ShortcutKey::Win.reaches(&chord('l', false, false, true)), "Win+Ctrl+L is Windows'");
     }
 
     #[test]
@@ -392,7 +429,9 @@ mod tests {
         assert_eq!(m.show("Ctrl+F1"), "Ctrl+F1");
         assert_eq!(ShortcutKey::Win.show("Win+Shift+B"), "Win+Shift+B");
         assert_eq!(ShortcutKey::CtrlAlt.show("Win+Y"), "Ctrl+Alt+Y");
-        assert_eq!(m.show("Ctrl+Win+3"), "Ctrl+Win+3", "no pair for Cmd+Ctrl: stays on Win");
+        assert_eq!(m.show("Ctrl+Win+3"), "Ctrl+Alt+3", "Cmd+Ctrl is the free pair");
+        assert_eq!(ShortcutKey::CtrlAlt.show("Ctrl+Win+3"), "Alt+Shift+3");
+        assert_eq!(m.show("Ctrl+Alt+Win+3"), "Ctrl+Alt+Win+3", "no pair for Cmd+Ctrl+Option: stays on Win");
     }
 
     /// The wiring: the shortcut key is read before the first menu text and key, an unbound press
@@ -432,5 +471,153 @@ mod tests {
         let ui = include_str!("app/keyproto_ui.rs");
         let f = ui.split("fn shortcut_chord(").nth(1).and_then(|r| r.split("\n    }\n").next()).expect("shortcut_chord");
         assert!(f.find("literal_wins(").expect("literal_wins") < f.find("chord_bound(").expect("chord_bound"));
+    }
+
+    /// Every chord Termurion ships as a default, as (what it is, chord).
+    fn default_chords() -> Vec<(String, Chord)> {
+        use crate::keystroke::{COMMAND, CONTROL, OPTION, SHIFT};
+        let mut out: Vec<(String, Chord)> = Vec::new();
+        for i in crate::menus::shown_items() {
+            if let Some(c) = i.chord().filter(|c| c.cmd) {
+                out.push((i.id(), c));
+            }
+        }
+        // The extra chord for Make Text Bigger.
+        out.push(("Make Text Bigger (Cmd+=)".into(), chord('=', false, false, false)));
+        // The shipped global key mappings and the key mapping presets with Cmd in them.
+        let globals = crate::globals::keymaps::factory_global().iter();
+        let presets = crate::globals::keymaps::presets().iter().flat_map(|(_, t)| t.iter());
+        for (k, _) in globals.chain(presets) {
+            let Some(st) = crate::keystroke::parse(k) else { continue };
+            if st.flags & COMMAND == 0 {
+                continue;
+            }
+            let Some(key) = char::from_u32(st.ch).map(|c| ChordKey::Char(c.to_ascii_lowercase())).filter(|_| st.ch < 0xF000).or_else(|| match st.ch {
+                0xF700 => Some(ChordKey::Up),
+                0xF701 => Some(ChordKey::Down),
+                0xF702 => Some(ChordKey::Left),
+                0xF703 => Some(ChordKey::Right),
+                0xF729 => Some(ChordKey::Home),
+                0xF72B => Some(ChordKey::End),
+                0xF72C => Some(ChordKey::PageUp),
+                0xF72D => Some(ChordKey::PageDown),
+                _ => None,
+            }) else {
+                continue;
+            };
+            out.push((format!("key mapping {k}"), Chord { key, cmd: true, alt: st.flags & OPTION != 0, shift: st.flags & SHIFT != 0, ctrl: st.flags & CONTROL != 0 }));
+        }
+        out
+    }
+
+    /// The Cmd chords with a modifier set no pair covers: Cmd with two or more of Ctrl, Shift and
+    /// Option, except Cmd+Shift (all three) and Cmd+Option (the pair) which have a pair.
+    fn has_no_pair(c: &Chord) -> bool {
+        (c.ctrl && (c.shift || c.alt)) || (c.shift && c.alt)
+    }
+
+    #[test]
+    fn every_default_chord_without_win_is_reachable_and_no_two_collide() {
+        let chords = default_chords();
+        assert!(chords.len() > 100, "the enumeration found the menus: {}", chords.len());
+        for mode in [ShortcutKey::CtrlShift, ShortcutKey::CtrlAlt] {
+            let mut seen: std::collections::HashMap<(Held, ChordKey), Chord> = std::collections::HashMap::new();
+            for (what, c) in &chords {
+                let h = mode.held_for(c.shift, c.alt, c.ctrl);
+                // Reachable exactly when the modifiers are one of Cmd, Cmd+Shift, Cmd+Option, Cmd+Ctrl.
+                // Cmd+Shift here is all three and Cmd+Option the pair, whatever the others hold.
+                let expect_pair = !(c.ctrl && (c.shift || c.alt)) && !(c.shift && c.alt);
+                assert_eq!(h.is_some(), expect_pair, "{mode:?} {what} {}", chord_label(c));
+                assert_eq!(mode.reachable(c), h.is_some());
+                assert_eq!(mode.reaches(c), h.is_some(), "{what}");
+                let Some(h) = h else { continue };
+                match seen.get(&(h, c.key.clone())) {
+                    Some(other) if other != c => panic!("{mode:?}: {what} {} and {} are the same press", chord_label(c), chord_label(other)),
+                    _ => {
+                        seen.insert((h, c.key.clone()), c.clone());
+                    }
+                }
+                // The label names no Win key.
+                assert!(!mode.label(c).contains("Win"), "{mode:?} {what}: {}", mode.label(c));
+            }
+        }
+    }
+
+    /// The chords that stay without a non-Win form, by modifier set: nothing else may be in it.
+    #[test]
+    fn only_chords_with_no_free_pair_are_left_on_win() {
+        for (what, c) in default_chords() {
+            let left = ShortcutKey::CtrlShift.held_for(c.shift, c.alt, c.ctrl).is_none();
+            assert_eq!(left, has_no_pair(&c), "{what}");
+            assert_eq!(left, ShortcutKey::CtrlAlt.held_for(c.shift, c.alt, c.ctrl).is_none(), "{what}: both modes leave the same chords");
+            if left {
+                // Cmd+Option+Shift, Cmd+Ctrl+Shift, or all four.
+                assert!(c.shift || c.alt, "{what}");
+            }
+        }
+        // The command the user was stuck on, Toggle Full Screen (Cmd+Ctrl+F), and Move Divider
+        // (Cmd+Ctrl+arrows) are no longer among them.
+        for (what, c) in default_chords() {
+            if what == "View > Toggle Full Screen" {
+                assert_eq!(ShortcutKey::CtrlShift.label(&c), "Ctrl+Alt+F");
+                assert_eq!(ShortcutKey::CtrlAlt.label(&c), "Alt+Shift+F");
+            }
+            if what.starts_with("Session > Move Divider") || what.contains("Move Divider") {
+                assert!(ShortcutKey::CtrlShift.reachable(&c), "{what}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_number_shortcuts_and_profile_shortcuts_keep_a_non_win_form() {
+        use crate::keyroute::tag_mask;
+        use crate::keystroke::{COMMAND, OPTION};
+        // Switch Tab, Switch Pane, Switch Window: Cmd, Cmd+Option (the shipped tags).
+        for tag in [4, 6, 9, 10] {
+            let Some(mask) = tag_mask(tag) else { continue };
+            let (alt, ctrl) = (mask & OPTION != 0, mask & crate::keystroke::CONTROL != 0);
+            assert!(mask & COMMAND == 0 || ShortcutKey::CtrlShift.held_for(false, alt, ctrl).is_some(), "tag {tag}");
+        }
+        // A profile shortcut is Ctrl+Win+<key>, Cmd+Ctrl+<key> here: Ctrl+Alt+<key>.
+        let profile = Chord { key: ChordKey::Char('1'), cmd: true, alt: false, shift: false, ctrl: true };
+        assert_eq!(ShortcutKey::CtrlShift.label(&profile), "Ctrl+Alt+1");
+        // The alternate (a new window) is Cmd+Ctrl+Option: no pair.
+        let alt_form = Chord { alt: true, ..profile };
+        assert!(!ShortcutKey::CtrlShift.reachable(&alt_form));
+    }
+
+    #[test]
+    fn a_ctrl_alt_press_is_cmd_ctrl_unless_it_types_a_character() {
+        let m = ShortcutKey::CtrlShift;
+        let l = m.press_as_cmd(phys(true, false, true, false), false).expect("Ctrl+Alt+F is Cmd+Ctrl+F");
+        assert_eq!((l.cmd, l.ctrl, l.shift, l.alt), (true, true, false, false));
+        assert!(m.press_as_cmd(phys(true, false, true, false), true).is_none(), "AltGr typing is left to typing");
+        // The windows without menus have no Cmd+Ctrl command.
+        assert!(m.window_chord(phys(true, false, true, false), false, ChordKey::Char('f')).is_none());
+    }
+
+    #[test]
+    fn f11_toggles_full_screen_only_bare_and_unclaimed() {
+        let none = Mods::default();
+        assert!(f11_toggles_full_screen(true, none, false));
+        assert!(!f11_toggles_full_screen(false, none, false), "another key");
+        assert!(!f11_toggles_full_screen(true, Mods { shift: true, ..none }, false), "Shift+F11 is not it");
+        assert!(!f11_toggles_full_screen(true, Mods { ctrl: true, ..none }, false));
+        assert!(!f11_toggles_full_screen(true, Mods { alt: true, ..none }, false));
+        assert!(!f11_toggles_full_screen(true, Mods { cmd: true, ..none }, false));
+        assert!(!f11_toggles_full_screen(true, none, true), "a key mapping for F11 wins");
+        // F11 is bound by no shipped menu item, key mapping or preset: it is free to take.
+        let f11 = Chord { key: ChordKey::F(11), cmd: false, alt: false, shift: false, ctrl: false };
+        assert!(crate::menus::items_for(&f11).is_empty());
+        for (k, _) in crate::globals::keymaps::factory_global().iter().chain(crate::globals::keymaps::presets().iter().flat_map(|(_, t)| t.iter())) {
+            assert!(crate::keystroke::parse(k).is_none_or(|s| !(s.ch == crate::keystroke::F1 + 10 && s.flags & !crate::keystroke::NUMPAD == 0)), "{k} binds F11");
+        }
+        assert!(is_full_screen_command("toggleFullScreenMode:") && !is_full_screen_command("maximizePane:"));
+        assert_eq!(FULL_SCREEN_KEY, "F11");
+        let ui = include_str!("app/keyproto_ui.rs");
+        let key = ui.split("fn full_screen_key(").nth(1).and_then(|r| r.split("\n    }\n").next()).expect("full_screen_key");
+        assert!(key.contains("keyroute::route(") && key.contains("Route::Terminal"), "a key mapping, the Leader or a number shortcut claims F11 first");
+        let app = include_str!("app/mod.rs");
+        assert!(app.contains("self.full_screen_key(ev)") && app.contains("\"View > Toggle Full Screen\""), "the key path runs the menu command");
     }
 }

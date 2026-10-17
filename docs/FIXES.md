@@ -34,6 +34,27 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
     live Minimal window. Done 2026-10-16 in 977bc21a: the app asks the window (`GetMenu`) each
     frame and on each resize, and a bar built for a hidden window is detached as it attaches.
 
+11. **Full screen could not be left: its hotkey needed the Win key.** Seen 2026-10-16. View >
+    Toggle Full Screen is iTerm2's Cmd+Ctrl+F, and with the default Shortcut Key (Ctrl+Shift) a
+    Cmd chord that no pair of Ctrl, Shift and Alt covered stayed on the Win key. Windows keeps many
+    Win chords, and a Win chord is also lost over remote desktop, a KVM or a keyboard sharing
+    tool. The menu bar is hidden in full screen, so with the chord lost there was no way out.
+    The hook's own decision for Win+Ctrl+F was checked and is right (test
+    `the_full_screen_chord_is_taken_by_the_hook_in_win_mode_only`: the Win mode takes the press and
+    its key-up), so the fault was the design, not one bug in the hook. Done 2026-10-16: no default
+    shortcut needs the Win key now. Cmd+Ctrl is the free pair, Ctrl+Alt in Ctrl+Shift mode (so
+    Toggle Full Screen is Ctrl+Alt+F and Move Divider is Ctrl+Alt+arrows) and Shift+Alt in Ctrl+Alt
+    mode; an AltGr press that types a character is still left to typing. F11 toggles full screen
+    in every mode unless a key mapping claims F11, and the menu shows both. In full screen,
+    pressing and releasing Alt alone, or moving the pointer to the top edge of the window, brings
+    the menu bar back (`menu_peek.rs`); a second Alt tap or any menu command sends it away.
+    Chords that ask for three of iTerm2's modifiers (Cmd+Option+Shift, Cmd+Ctrl+Shift) have no pair
+    left in either mode (34 menu items in a release build; nearly all would collide with a
+    Cmd+Shift chord on the same key): they have no shortcut outside the Win mode, the menu does not show one, and the Win form
+    still works where Windows lets the hook have it. Test
+    `every_default_chord_without_win_is_reachable_and_no_two_collide` walks every menu item, shipped
+    key mapping and preset.
+
 8. **Settings drop-downs flashed, closed, or opened slowly.** Seen 2026-10-15 in Settings >
    General. Cause: the egui windows ignored egui's request for another frame, so a popup's
    sizing pass and fade-in were drawn only at the next input. Done 2026-10-15 in 12608761 (draw

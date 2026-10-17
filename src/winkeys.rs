@@ -1335,7 +1335,30 @@ mod tests {
         let sd = win_is_cmd_for(CtrlShift, &c(ChordKey::Char('d'), false, false, true));
         let cd = win_is_cmd_for(CtrlShift, &c(ChordKey::Char('d'), true, false, false));
         assert!(!d && !sd, "Win+D and Win+Shift+D stay with Windows");
-        assert!(cd, "Cmd+Ctrl+D has no pair: the Win key still carries it");
+        assert!(!cd, "Cmd+Ctrl+D is Ctrl+Alt+D now: Win+Ctrl+D stays with Windows (virtual desktops)");
+        // Cmd+Option+Shift has no pair: the Win key still carries it where Windows lets it through.
+        assert!(win_is_cmd_for(CtrlShift, &c(ChordKey::Char('n'), false, true, true)));
+        assert!(win_is_cmd_for(CtrlShift, &c(ChordKey::Char('n'), true, false, true)), "Cmd+Ctrl+Shift has no pair either");
+    }
+
+    /// The report: Win+Ctrl+F (View > Toggle Full Screen) did nothing. The hook's decision for it,
+    /// built from the same pieces the app wires (`win_is_cmd_for`, `keyroute::win_chord_bound`, the
+    /// gate): in Win mode the hook takes the press, its key-up and no Start menu opens; in the other
+    /// modes Windows keeps Win+Ctrl+F because Ctrl+Alt+F is Termurion's chord.
+    #[test]
+    fn the_full_screen_chord_is_taken_by_the_hook_in_win_mode_only() {
+        use crate::shortcut_key::ShortcutKey::{CtrlAlt, CtrlShift, Win};
+        let snapshot = crate::keyroute::Snapshot::default();
+        let f = |vk| KeyEvent { ctrl: true, ..key(vk, true) };
+        let chord = Chord { key: ChordKey::Char('f'), cmd: true, alt: false, shift: false, ctrl: true };
+        let bound = |mode| { let snapshot = snapshot.clone(); move |c: &Chord| win_is_cmd_for(mode, c) && crate::keyroute::win_chord_bound(&snapshot, c) };
+        let mut g = Gate::default();
+        assert_eq!(g.on_key(f(0x46), &bound(Win)), Verdict::Take(Some(chord.clone())));
+        assert_eq!(g.on_key(KeyEvent { down: false, ..f(0x46) }, &bound(Win)), Verdict::Take(None), "the key-up is taken too");
+        for mode in [CtrlShift, CtrlAlt] {
+            assert_eq!(g.on_key(f(0x46), &bound(mode)), Verdict::Pass, "{mode:?}: Windows keeps Win+Ctrl+F");
+            assert!(mode.reachable(&chord));
+        }
     }
 
     /// TWEAKS 9 review I3: with a pair chosen the hook leaves Win+E, Win+F, Win+G, Win+U, Win+C and

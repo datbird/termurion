@@ -73,3 +73,5 @@ In Settings > Keys, a key binding can use the "Copy Mode Commands" action. Its p
 ## Shortcut keys on Windows
 
 In these docs, "Shortcut Key" is the modifier that stands in for iTerm2's Cmd. It is Ctrl+Shift by default. You can change it to Win or Ctrl+Alt in Settings > Keys. Alt stands in for iTerm2's Option. A menu always shows the keys that apply to your choice.
+
+With Ctrl+Shift as the Shortcut Key, no default shortcut needs the Win key. Cmd is Ctrl+Shift, Cmd+Shift is Ctrl+Shift+Alt, Cmd+Option is Shift+Alt, and Cmd+Ctrl is Ctrl+Alt (for example View > Toggle Full Screen is Ctrl+Alt+F). With Ctrl+Alt as the Shortcut Key, Cmd is Ctrl+Alt, Cmd+Shift is Ctrl+Shift+Alt, Cmd+Option is Ctrl+Shift, and Cmd+Ctrl is Shift+Alt. A chord that asks for three of iTerm2's modifiers at once (Cmd+Option+Shift, Cmd+Ctrl+Shift) has no key pair left. Those commands have no shortcut in these two modes, and the menu does not show one; choose them from the menu, or bind your own key in Settings > Keys.
