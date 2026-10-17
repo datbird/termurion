@@ -223,12 +223,9 @@ impl Io {
     pub fn end_client(&self) {
         match self {
             Io::Local(p) => p.terminate(),
-            // A hosted client gets Ctrl+C and then a blank line: psmux's control client only
-            // notices that its session is gone on its next input, then prints %exit and ends.
-            Io::Hosted(p) => {
-                let _ = p.signal(false);
-                let _ = p.write(b"\r");
-            }
+            // psmux's control client does not leave on `detach` or on a gone session until it
+            // reads more input (and keeps writing %output meanwhile): the host kills it.
+            Io::Hosted(p) => p.terminate(),
             Io::Tmux(_) | Io::Browser(_) => {}
         }
     }
@@ -1038,6 +1035,11 @@ impl Pane {
     /// Ends tmux control mode here without an `%exit`.
     pub fn unhook_tmux(&mut self) {
         self.tmux_hook.unhook();
+    }
+
+    /// The client of this pane is being ended: its last control-mode text is dropped.
+    pub fn seal_tmux(&mut self) {
+        self.tmux_hook.seal();
     }
 
     /// Ends the program of this pane (a psmux client that outlives its session).
