@@ -1532,11 +1532,10 @@ mod tests {
         }
 
         fn settle(&mut self) {
-            if std::mem::take(&mut self.stop_wanted) {
-                if let Some(s) = self.server.take() {
+            if std::mem::take(&mut self.stop_wanted)
+                && let Some(s) = self.server.take() {
                     s.stop();
                 }
-            }
         }
     }
 

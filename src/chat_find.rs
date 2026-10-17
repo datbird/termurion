@@ -105,6 +105,7 @@ impl Finder {
     }
 
     /// The first match at or after the click, else the one after the current, wrapping.
+    #[allow(clippy::should_implement_trait)] // a cursor-style method with its own return type, not an Iterator
     pub fn next(&mut self) -> Option<&Match> {
         if self.matches.is_empty() {
             self.current = None;

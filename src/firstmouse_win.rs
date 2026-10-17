@@ -54,13 +54,11 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
     if msg == WM_MOUSEACTIVATE {
         // SAFETY: a plain query.
         let front = unsafe { GetForegroundWindow() } as isize;
-        if marks((lparam & 0xFFFF) as u32, front, hwnd as isize) {
-            if let Ok(mut w) = WINDOWS.lock() {
-                if let Some(e) = w.iter_mut().find(|(h, _)| *h == hwnd as isize) {
+        if marks((lparam & 0xFFFF) as u32, front, hwnd as isize)
+            && let Ok(mut w) = WINDOWS.lock()
+                && let Some(e) = w.iter_mut().find(|(h, _)| *h == hwnd as isize) {
                     e.1 = true;
                 }
-            }
-        }
     } else if msg == WM_NCDESTROY {
         if let Ok(mut w) = WINDOWS.lock() {
             w.retain(|(h, _)| *h != hwnd as isize);

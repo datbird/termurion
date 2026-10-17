@@ -286,14 +286,14 @@ mod tests {
         assert_eq!(m.captures[0], "bob@example.com");
         // With an action required the email rule still wins; only the actionless rule gives nothing.
         assert_eq!(first_match("mail bob@ex", "ample.com now", &rules, true).unwrap().rule, 0);
-        assert_eq!(first_match("say hel", "lo there", &[word.clone()], false).unwrap().captures[0], "hello");
-        assert!(first_match("say hel", "lo there", &[word.clone()], true).is_none());
+        assert_eq!(first_match("say hel", "lo there", std::slice::from_ref(&word), false).unwrap().captures[0], "hello");
+        assert!(first_match("say hel", "lo there", std::slice::from_ref(&word), true).is_none());
         // A match wholly before or wholly after the click is ignored.
-        assert!(first_match("bob@ex.com ", "tail", &[email.clone()], false).is_none());
-        assert!(first_match("head ", "bob@ex.com", &[email.clone()], false).is_none());
+        assert!(first_match("bob@ex.com ", "tail", std::slice::from_ref(&email), false).is_none());
+        assert!(first_match("head ", "bob@ex.com", std::slice::from_ref(&email), false).is_none());
         // A surrogate pair before the click counts two units, and a start inside it is skipped.
         let emoji = rule(r"\S+", 1.0);
-        let m = first_match("a \u{1f600}b", "cd e", &[emoji.clone()], false).unwrap();
+        let m = first_match("a \u{1f600}b", "cd e", std::slice::from_ref(&emoji), false).unwrap();
         assert_eq!((m.before, m.after), (3, 2), "the pair is two units: the word is b + the pair");
         let m = first_match("\u{1f600}", "x", &[rule(r".+", 1.0)], false).unwrap();
         assert_eq!((m.before, m.after), (2, 1));
@@ -306,7 +306,7 @@ mod tests {
         let m = first_match("ab", "cd", &[rule("(", 1.0), rule(r"\w+", 1.0)], false).unwrap();
         assert_eq!(m.rule, 1);
         // Empty text and an empty match give nothing.
-        assert!(first_match("", "", &[word.clone()], false).is_none());
+        assert!(first_match("", "", std::slice::from_ref(&word), false).is_none());
         assert!(first_match("a", "b", &[rule("x*", 1.0)], false).is_none());
         // The text around the point is bounded (P20): a match that needs more than the cap is not found.
         let far = format!("w{}", "x".repeat(MAX_UNITS + 10));

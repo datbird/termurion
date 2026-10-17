@@ -1,5 +1,11 @@
 //! Termurion: an iTerm2-style terminal for Windows.
 
+// Crate-wide, because they conflict with the repo's style at dozens of sites:
+// - type_complexity: tuple and callback types are spelled inline next to their one use (a named alias per site hides the shape).
+// - field_reassign_with_default: tests (and settings code) build a value from Default and set only the fields under test.
+#![allow(clippy::type_complexity)]
+#![allow(clippy::field_reassign_with_default)]
+
 pub mod mouse;
 pub mod scrollbar;
 pub mod cursor_look;
@@ -452,6 +458,7 @@ pub mod open_file;
 pub mod reg;
 pub mod default_term;
 #[cfg(windows)]
+#[allow(clippy::too_many_arguments)] // the ITerminalHandoff3 method list is fixed by the COM interface, and the #[interface] macro rejects attributes on it
 pub mod handoff_win;
 pub mod url_launch;
 pub mod links;

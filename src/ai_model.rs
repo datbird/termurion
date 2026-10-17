@@ -243,11 +243,10 @@ pub fn recommended(vendor: Vendor, g: &Globals, catalog: &Catalog, found: &Disco
 /// The default model for new chats (`MD:203-216`): the vendor's recommended model, else the
 /// manual model named by `AiModel`, else the first manual model.
 pub fn configured(g: &Globals, catalog: &Catalog, found: &Discovered) -> Option<Model> {
-    if g.bool(ai::USE_RECOMMENDED) {
-        if let Some(v) = Vendor::from_raw(g.int(ai::VENDOR)) {
+    if g.bool(ai::USE_RECOMMENDED)
+        && let Some(v) = Vendor::from_raw(g.int(ai::VENDOR)) {
             return recommended(v, g, catalog, found);
         }
-    }
     let mut models = manual_models(g, catalog, found);
     let name = g.string(ai::MODEL);
     let pick = models.iter().position(|m| m.name == name).unwrap_or(0);
@@ -292,11 +291,10 @@ pub fn economy(g: &Globals, catalog: &Catalog, found: &Discovered) -> Option<Mod
         return found.default_models().iter().find(|m| m.name == chosen).cloned();
     }
     let designated = g.string(ai::ECONOMY_MODEL);
-    if !designated.is_empty() {
-        if let Some(m) = manual_models(g, catalog, found).into_iter().find(|m| m.name == designated) {
+    if !designated.is_empty()
+        && let Some(m) = manual_models(g, catalog, found).into_iter().find(|m| m.name == designated) {
             return Some(m);
         }
-    }
     catalog.economy_for(&configured(g, catalog, found)?)
 }
 
@@ -613,7 +611,7 @@ mod tests {
         assert!(m.features.is_empty());
         assert!(m.custom_headers.is_empty());
         assert_eq!(m.vendor, Vendor::OpenAI);
-        assert_eq!(manual_models(&g, c, &none), [m.clone()]);
+        assert_eq!(manual_models(&g, c, &none), std::slice::from_ref(&m));
 
         g.set(ai::FEATURE_STREAMING, Value::Boolean(true));
         g.set(ai::FEATURE_FUNCTION_CALLING, Value::Boolean(true));

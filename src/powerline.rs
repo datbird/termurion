@@ -448,7 +448,7 @@ fn stroke_all(mask: &mut [u8], w: u16, h: u16, strokes: &[(f32, Piece)]) {
         let mut stroke = Stroke::new(width);
         stroke.cap(Cap::Square).join(Join::Miter);
         let mut render = Mask::new(&commands[..]);
-        render.size(u32::from(w), u32::from(h)).style(&stroke);
+        render.size(u32::from(w), u32::from(h)).style(stroke);
         render.render_into(&mut out, None);
         merge(mask, &out);
     }
@@ -478,7 +478,7 @@ mod tests {
             mask
         };
         let ln = draw('\u{E0A1}');
-        assert!(ln.iter().any(|v| *v == 255), "the symbol has ink");
+        assert!(ln.contains(&255), "the symbol has ink");
         assert!(ln.iter().all(|v| *v == 0 || *v == 255), "no partial coverage: {:?}", ln.iter().filter(|v| **v != 0 && **v != 255).count());
         let branch = draw('\u{E0A0}');
         assert!(branch.iter().any(|v| *v != 0 && *v != 255), "the branch symbol keeps its anti-aliased edges");
@@ -543,7 +543,7 @@ mod tests {
         // A wide symbol covers both halves of its two cells.
         let w = boxdraw::rasterize('\u{E0B8}', 20, 20, 1.0);
         assert!(col(&w, 20, 0, 20).iter().all(|a| *a == 255) && w[19 * 20 + 19] > 100, "the triangle spans 20 px");
-        assert!(w[19 * 20 + 10] > 200 && w[1 * 20 + 3] == 0, "lower left triangle");
+        assert!(w[19 * 20 + 10] > 200 && w[20 + 3] == 0, "lower left triangle");
         // A mirrored symbol is the unmirrored mask flipped left to right.
         let (a, b) = (boxdraw::rasterize('\u{E0C0}', 20, 20, 1.0), boxdraw::rasterize('\u{E0C2}', 20, 20, 1.0));
         assert!(a.iter().any(|v| *v > 0));

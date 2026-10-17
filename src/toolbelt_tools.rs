@@ -72,10 +72,7 @@ pub fn command_filter(rows: &[CommandRow], query: &str) -> Vec<usize> {
 /// Shift appends a newline.
 pub fn command_insert(command: &str, dir: Option<&str>, alt: bool, shift: bool) -> Option<String> {
     let mut text = if alt {
-        match dir {
-            Some(d) => format!("cd {d}"),
-            None => return None,
-        }
+        format!("cd {}", dir?)
     } else {
         command.to_string()
     };
@@ -298,7 +295,7 @@ fn add_snippet_tag(build: &mut SnippetFolderBuild, parts: &[&str], parent_path: 
 
 fn finish_snippet_tree(build: SnippetFolderBuild) -> Vec<SnippetNode> {
     let mut folders = build.folders;
-    folders.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    folders.sort_by_key(|a| a.name.to_lowercase());
     let mut out: Vec<SnippetNode> = build.items.into_iter().map(SnippetNode::Snippet).collect();
     out.extend(folders.into_iter().map(|f| {
         let name = f.name.clone();

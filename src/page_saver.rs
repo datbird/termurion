@@ -153,6 +153,7 @@ pub fn default_name(url: &str) -> String {
 /// The saved name of a resource (`PSV:234-250`). The extension follows Termurion's MIME table when a
 /// MIME is known and the page's own extension is missing or would run; a MIME that maps to a
 /// runnable extension is saved as `bin`.
+#[allow(clippy::collapsible_match)] // the arm names the case and carries the rationale; a match guard would fold both into the pattern line
 pub fn base_filename(url: &str, mime: Option<&str>) -> String {
     let path = url.split(['?', '#']).next().unwrap_or("");
     let path = path.split_once("://").map_or(path, |(_, r)| r.find('/').map_or("", |i| &r[i..]));
@@ -776,15 +777,14 @@ impl Job {
             return self.pump();
         }
         let is_css = mime.as_deref().map(|m| m.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("text/css")).unwrap_or(false);
-        if is_css {
-            if let Ok(text) = String::from_utf8(bytes.clone()) {
+        if is_css
+            && let Ok(text) = String::from_utf8(bytes.clone()) {
                 // Nesting is bounded: a sheet at the deepest level is kept, its references are not
                 // followed (Task 9 review I2).
                 let refs = if self.stack.len() + 1 >= MAX_CSS_DEPTH { VecDeque::new() } else { css_urls(&text).into_iter().collect() };
                 self.stack.push(CssFrame { url: url.to_string(), text, refs });
                 return self.pump();
             }
-        }
         let base = base_filename(url, mime.as_deref());
         let issued = &self.issued;
         let name = unique_filename(&base, &|n| issued.contains(&folded(n)) || taken(n));
@@ -1050,7 +1050,7 @@ mod tests {
         ok(&("a".repeat(233) + ".url." + &"y".repeat(30)));
         assert_eq!(ok("a.pdf.exe"), "a.pdf.exe.download");
         assert_eq!(ok("a.exe.pdf"), "a.exe.pdf");
-        let trail = ok(&("a".repeat(236) + " . " + &".".repeat(1) + &"z".repeat(20)));
+        let trail = ok(&("a".repeat(236) + " . " + "." + &"z".repeat(20)));
         assert!(trail.chars().all(|c| c == 'a'), "{trail:?}");
         // The neutralize step still has room after the cut.
         let long = ok(&("c".repeat(300) + ".exe"));

@@ -169,11 +169,10 @@ pub fn layouts_cached() -> Vec<(String, String)> {
     use std::time::{Duration, Instant};
     static CACHE: Mutex<Option<(Instant, Vec<(String, String)>)>> = Mutex::new(None);
     let Ok(mut c) = CACHE.lock() else { return layouts() };
-    if let Some((at, list)) = c.as_ref() {
-        if at.elapsed() < Duration::from_secs(5) {
+    if let Some((at, list)) = c.as_ref()
+        && at.elapsed() < Duration::from_secs(5) {
             return list.clone();
         }
-    }
     let list = layouts();
     *c = Some((Instant::now(), list.clone()));
     list
@@ -220,11 +219,10 @@ pub fn arm_restore(id: Option<String>) {
 /// Called by the panic hook on the main (UI) thread: the person's layout comes back.
 pub fn restore_after_panic() {
     #[cfg(windows)]
-    if let Ok(mut r) = PANIC_RESTORE.try_lock() {
-        if let Some(id) = r.take() {
+    if let Ok(mut r) = PANIC_RESTORE.try_lock()
+        && let Some(id) = r.take() {
             win::activate(&id);
         }
-    }
 }
 
 #[cfg(windows)]
@@ -268,7 +266,7 @@ mod win {
         let name = wide(name);
         let mut bytes = 0u32;
         let rc = unsafe { RegGetValueW(key, std::ptr::null(), name.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), std::ptr::null_mut(), &mut bytes) };
-        if rc != 0 || bytes < 2 || bytes > 4096 {
+        if rc != 0 || !(2..=4096).contains(&bytes) {
             return None;
         }
         let mut buf = vec![0u16; bytes as usize / 2 + 1];

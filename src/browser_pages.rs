@@ -634,7 +634,7 @@ pub fn file_path_of(url: &str) -> Result<PathBuf, &'static str> {
     if !drive {
         return Err(INVALID);
     }
-    let mut out = format!("{}:\\", path[1..2].to_string());
+    let mut out = format!("{}:\\", &path[1..2]);
     let tail = path.get(4..).unwrap_or("");
     // One trailing slash is dropped (`FH:35-38`); any other empty component is refused.
     let tail = tail.strip_suffix('/').unwrap_or(tail);
@@ -733,11 +733,10 @@ fn shown(name: &str) -> String {
 /// absolute `iterm2-file:` URL built by `file_url_of`. More than `MAX_LISTED` entries end in a note.
 pub fn directory_page(path: &Path, entries: &[Entry]) -> String {
     let mut items = String::new();
-    if !drive_root(path) {
-        if let Some(parent) = path.parent() {
+    if !drive_root(path)
+        && let Some(parent) = path.parent() {
             items.push_str(&format!("<li><a href=\"{}\">..</a></li>\n", escape_slot(&file_url_of(parent, true))));
         }
-    }
     let mut shown_entries: Vec<&Entry> = entries.iter().filter(|e| !e.hidden).collect();
     shown_entries.sort_by(|a, b| b.dir.cmp(&a.dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())).then_with(|| a.name.cmp(&b.name)));
     for e in shown_entries.iter().take(MAX_LISTED) {

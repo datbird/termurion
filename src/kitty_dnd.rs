@@ -121,11 +121,10 @@ impl Reassembler {
         let (metadata, payload) = split(body);
         let more = metadata.get("m").map(String::as_str) == Some("1");
         // A different `t` mid-transfer is its own message (a query during a chunked transfer).
-        if let (Some((first, ..)), Some(t)) = (&self.pending, metadata.get("t")) {
-            if first.get("t") != Some(t) {
+        if let (Some((first, ..)), Some(t)) = (&self.pending, metadata.get("t"))
+            && first.get("t") != Some(t) {
                 return Some(Message { metadata, payload });
             }
-        }
         if self.draining {
             if !more {
                 self.reset();
@@ -142,7 +141,9 @@ impl Reassembler {
             self.overflow = true;
             if more {
                 self.draining = true;
-                self.pending.as_mut().map(|p| p.1 = String::new());
+                if let Some(p) = self.pending.as_mut() {
+                    p.1 = String::new();
+                }
             } else {
                 self.reset();
             }

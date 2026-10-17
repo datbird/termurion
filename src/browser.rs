@@ -537,7 +537,7 @@ pub fn rank(query: &str, bookmarks: &[(String, Option<String>, i64)], history: &
         let score = if strongly_url_like(query) { SCORE_STRONG_URL } else { SCORE_WEAK_URL };
         rows.push(Suggestion { text: format!("Navigate to \u{201c}{}\u{201d}", display_url(&n)), url: n, detail: "URL".into(), score });
     }
-    rows.sort_by(|a, b| b.score.cmp(&a.score));
+    rows.sort_by_key(|b| std::cmp::Reverse(b.score));
     rows
 }
 
@@ -1206,15 +1206,14 @@ pub fn geometry_status(bar: Rect, scale: f32, dev_null: bool, proxy: bool, n: us
     let mut strip = Rect { x: menu.x, y: bar.y, w: 0.0, h: bar.h };
     let mut status = [Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 }; MAX_STATUS];
     let n = n.min(MAX_STATUS);
-    if n > 0 {
-        if let Some(w) = strip_width(fx / sc, menu.x / sc).map(|w| w * sc) {
+    if n > 0
+        && let Some(w) = strip_width(fx / sc, menu.x / sc).map(|w| w * sc) {
             let right = menu.x - STRIP_SPACING * sc;
             strip = Rect { x: right - w, y: bar.y, w, h: bar.h };
             for (i, px) in place(n, (strip.x / sc, right / sc)).into_iter().enumerate() {
                 status[i] = Rect { x: px * sc, y: bar.y, w: BUTTON_W * sc, h: bar.h };
             }
         }
-    }
     let status_n = if strip.w > 0.0 { n } else { 0 };
     let field_end = if strip.w > 0.0 { strip.x - gap } else { menu.x - gap };
     let field = Rect { x: fx, y: bar.y + 4.0 * scale, w: (field_end - fx).max(0.0), h: (bar.h - 8.0 * scale).max(0.0) };
@@ -1231,11 +1230,10 @@ pub fn hit(g: &Geometry, x: f32, y: f32) -> Option<Hit> {
         return Some(Hit::Button(*b));
     }
     // A button the strip clips away is not there.
-    if g.strip.w > 0.0 && g.strip.contains(x, y) {
-        if let Some(i) = g.status[..g.status_n].iter().position(|r| r.contains(x, y)) {
+    if g.strip.w > 0.0 && g.strip.contains(x, y)
+        && let Some(i) = g.status[..g.status_n].iter().position(|r| r.contains(x, y)) {
             return Some(Hit::Status(i));
         }
-    }
     if g.dev_null.is_some_and(|r| r.contains(x, y)) {
         return Some(Hit::DevNull);
     }
@@ -2053,7 +2051,7 @@ mod tests {
             assert!(!e.is_empty() && e.is_ascii() && e.to_ascii_lowercase() == *e && !e.starts_with('.') && !e.ends_with('.') && e.contains('.'), "{e}");
         }
         for (_, suffix) in cases {
-            assert!(PUBLIC_SUFFIXES.iter().any(|e| *e == suffix) || suffix_labels(&suffix.split('.').collect::<Vec<_>>()) == suffix.split('.').count(), "{suffix}");
+            assert!(PUBLIC_SUFFIXES.contains(&suffix) || suffix_labels(&suffix.split('.').collect::<Vec<_>>()) == suffix.split('.').count(), "{suffix}");
         }
     }
 
@@ -2460,7 +2458,7 @@ mod tests {
         assert_eq!((OPEN_LINKS_ID, OPEN_FILE_LINKS_ID, UPSELL_ID), ("NoSyncOpenLinksInApp", "NoSyncOpenLinksInAppForFileURL", "NoSyncBrowserUpsell"));
         // Microsoft's own page and nothing else: https, the developer.microsoft.com host.
         assert_eq!(PLUGIN_URL, "https://developer.microsoft.com/microsoft-edge/webview2/");
-        assert_eq!(crate::toolbelt::url_host(PLUGIN_URL).as_deref(), Some("developer.microsoft.com"));
+        assert_eq!(crate::toolbelt::url_host(PLUGIN_URL), Some("developer.microsoft.com"));
         let u = upsell_spec();
         assert_eq!((u.id.as_deref(), u.kind, u.heading.as_str(), u.text.as_str()), (Some("NoSyncBrowserUpsell"), crate::warnings::Kind::Permanent, UPSELL_HEADING, UPSELL_TEXT));
         assert_eq!(u.labels, vec!["Download", "Use System Browser", "Cancel"]);

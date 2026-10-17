@@ -264,14 +264,13 @@ impl App {
         }
         pane.cookie = cookie;
         self.install_pane(id, pane, &p, false);
-        if dropped {
-            if let Some(pane) = self.panes.get_mut(&id) {
+        if dropped
+            && let Some(pane) = self.panes.get_mut(&id) {
                 // A visible mark where output is missing, then a repaint.
                 let grays = restore_state::banner_grays(pane.screen.palette.bg);
                 pane.screen.feed_restored("", None, Some(("Output was cut short while Termurion was closed.", grays)));
                 pane.jiggle();
             }
-        }
         Ok(id)
     }
 

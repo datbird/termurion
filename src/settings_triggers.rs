@@ -953,12 +953,11 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
             selected = Some(list.len() - 1);
             changed = true;
         }
-        if ui.add_enabled(selected.is_some(), egui::Button::new("-")).clicked() {
-            if let Some(i) = selected.take() {
+        if ui.add_enabled(selected.is_some(), egui::Button::new("-")).clicked()
+            && let Some(i) = selected.take() {
                 list.remove(i);
                 changed = true;
             }
-        }
         if ui.button(crate::trigger_file::IMPORT_TITLE).clicked() && import_button(profile) {
             // The list changed under the editor: it reads the stored one again next frame.
             imported = true;
@@ -1162,11 +1161,10 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile, workgroups: &[(String, S
                 ui.colored_label(egui::Color32::from_rgb(0xff, 0x6b, 0x6b), format!("This expression does not compile, so the trigger never fires: {e}"));
             }
             // An interpolated parameter that cannot be evaluated (iTerm2: Error in Trigger Parameter).
-            if interpolated && t.parameter.contains("\\(") {
-                if let Err(e) = crate::interp::check(&t.parameter) {
+            if interpolated && t.parameter.contains("\\(")
+                && let Err(e) = crate::interp::check(&t.parameter) {
                     ui.colored_label(egui::Color32::from_rgb(0xff, 0x6b, 0x6b), format!("Error in Trigger Parameter: {e}"));
                 }
-            }
         }
     }
     ui.data_mut(|d| match selected {

@@ -134,11 +134,10 @@ pub fn normalized(command: &str) -> String {
     if command.starts_with("Emacs-") || command.starts_with("emacs-") {
         return "emacs".into();
     }
-    if let Some(suffix) = command.strip_prefix("Python").or_else(|| command.strip_prefix("python")) {
-        if !suffix.chars().any(char::is_alphabetic) {
+    if let Some(suffix) = command.strip_prefix("Python").or_else(|| command.strip_prefix("python"))
+        && !suffix.chars().any(char::is_alphabetic) {
             return "python".into();
         }
-    }
     command.to_string()
 }
 
@@ -269,7 +268,7 @@ pub fn user_png_path(dir: &Path, logical: &str) -> PathBuf {
 
 /// `it_imageWithTintColor:`: every pixel painted the tint, its alpha kept.
 pub fn tinted(rgba: &[u8], tint: Rgb) -> Vec<u8> {
-    rgba.chunks_exact(4).flat_map(|p| [tint.r, tint.g, tint.b, p[3]]).collect()
+    rgba.as_chunks::<4>().0.iter().flat_map(|p| [tint.r, tint.g, tint.b, p[3]]).collect()
 }
 
 /// `hashWithDJB2` over the string's UTF-16 units, 64-bit wrapping.
@@ -443,6 +442,12 @@ pub fn plain_logical(logical: &str) -> bool {
     !logical.is_empty() && !logical.contains(['\\', '/', ':']) && !logical.contains("..")
 }
 
+/// Whether bytes are a JSON object, as the user's icon and color maps must be (`parse`); the
+/// check a map pulled from the settings folder passes before it is written.
+pub fn is_map_file(bytes: &[u8]) -> bool {
+    parse(bytes).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,10 +581,4 @@ mod tests {
         assert_eq!(first_letter("vim").as_deref(), Some("V"));
         assert_eq!(first_letter(""), None);
     }
-}
-
-/// Whether bytes are a JSON object, as the user's icon and color maps must be (`parse`); the
-/// check a map pulled from the settings folder passes before it is written.
-pub fn is_map_file(bytes: &[u8]) -> bool {
-    parse(bytes).is_some()
 }

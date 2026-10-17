@@ -444,6 +444,7 @@ pub struct Adapter<R: Runner> {
 }
 
 impl<R: Runner> Adapter<R> {
+    #[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
     pub fn new(
         runner: R,
         kind: Kind,

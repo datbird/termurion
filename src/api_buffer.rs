@@ -131,7 +131,7 @@ fn link_id(id: &str) -> Option<String> {
 
 /// A cell's style (`protoStyleForCharacter:externalAttributes:`, `PS:22176-22315`), `repeats`
 /// 1. An image cell has no colors and is an iTerm2 image. Alacritty keeps no guarded
-/// attribute: it is false.
+///    attribute: it is false.
 pub fn style_of(cell: &Cell) -> pb::CellStyle {
     use pb::cell_style::{BgColor, FgColor};
     let alt = pb::AlternateColor::Default as i32;

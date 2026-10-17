@@ -8,6 +8,7 @@ use super::*;
 use crate::undo_close::{self, Kind, Where};
 
 /// A closed thing waiting in the undo stack.
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 pub(super) enum Undone {
     Session { pane: Pane, tab: u64, window: Option<WindowId> },
     Tab { tab: Tab, panes: Vec<Pane>, index: usize, window: Option<WindowId> },

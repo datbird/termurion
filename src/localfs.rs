@@ -536,7 +536,7 @@ pub fn rename_no_replace(from: &LocalPath, to: &LocalPath) -> io::Result<()> {
         }
         let e = io::Error::last_os_error();
         // ERROR_ALREADY_EXISTS (183) and ERROR_FILE_EXISTS (80).
-        return Err(if matches!(e.raw_os_error(), Some(183) | Some(80)) { io::Error::from(io::ErrorKind::AlreadyExists) } else { e });
+        Err(if matches!(e.raw_os_error(), Some(183) | Some(80)) { io::Error::from(io::ErrorKind::AlreadyExists) } else { e })
     }
     #[cfg(not(windows))]
     {

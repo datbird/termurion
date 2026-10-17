@@ -306,11 +306,10 @@ impl SetupCfg {
         let ok = ini_parse(text, |section, name, value| match (section, name) {
             ("metadata", "name") => cfg.name = value.to_string(),
             ("options", "python_requires") => {
-                if let Some(v) = value.strip_prefix('=') {
-                    if v.split('.').all(numeric) {
+                if let Some(v) = value.strip_prefix('=')
+                    && v.split('.').all(numeric) {
                         cfg.python_version = Some(v.to_string());
                     }
-                }
             }
             ("options", "install_requires") => {
                 let trimmed = value.trim();
@@ -878,6 +877,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)] // the test pins a constant's value on purpose
     fn uv_source_is_pinned() {
         assert_eq!(uv_zip_url(Arch::X64), format!("https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/uv-x86_64-pc-windows-msvc.zip"));
         assert_eq!(uv_zip_url(Arch::Arm64), format!("https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/uv-aarch64-pc-windows-msvc.zip"));

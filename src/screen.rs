@@ -836,11 +836,10 @@ impl Screen {
         let key = tests::FORCE_KEY.with(|f| f.get()).unwrap_or(key);
         // The 64-bit digest only picks a bucket: a hit must hold this very row, so a crafted
         // collision can never show one row in another row's order.
-        if let Some(hit) = self.bidi_cache.borrow().get(&key) {
-            if hit.sig == sig && hit.texts == texts {
+        if let Some(hit) = self.bidi_cache.borrow().get(&key)
+            && hit.sig == sig && hit.texts == texts {
                 return hit.order.clone();
             }
-        }
         let made = crate::bidi::order(&texts, rules, alternate).map(|o| std::sync::Arc::new(if rules.right_justify && used < cols { crate::bidi::pad(&o, cols) } else { o }));
         let mut cache = self.bidi_cache.borrow_mut();
         if cache.len() >= 4 * grid.screen_lines().max(1) {
@@ -1089,7 +1088,7 @@ impl Screen {
 
     /// Whether the live selection covers no cell (a press with no drag).
     pub fn live_is_empty(&self) -> bool {
-        self.term.selection.as_ref().map_or(true, |s| s.runs.is_empty() && s.to_range(&self.term).is_none())
+        self.term.selection.as_ref().is_none_or(|s| s.runs.is_empty() && s.to_range(&self.term).is_none())
     }
 
     /// The extras alone, as buffer rows (the live selection is alacritty's).
@@ -2351,7 +2350,7 @@ impl Screen {
         // Now and then, forget folds and notes whose rows scrolled out of the buffer.
         self.feeds = self.feeds.wrapping_add(1);
         self.fed = true;
-        if self.feeds % 256 == 0 && (!self.folds.is_empty() || !self.notes.by_id.is_empty() || !self.images.by_id.is_empty() || !self.portholes.is_empty()) {
+        if self.feeds.is_multiple_of(256) && (!self.folds.is_empty() || !self.notes.by_id.is_empty() || !self.images.by_id.is_empty() || !self.portholes.is_empty()) {
             self.prune_tags();
         }
         self.sync_selection();
@@ -2936,7 +2935,7 @@ mod tests {
         // The next move sweeps from the same text, not from whatever now sits on grid line 0.
         assert!(s.drag_visual_to((-2, 4, true)));
         assert_eq!(s.term().selection_to_string().as_deref(), Some("ab \u{5d0}\u{5d1}"));
-        assert_eq!(s.term().selection.as_ref().unwrap().covers(Point::new(Line(0), Column(0))), false);
+        assert!(!s.term().selection.as_ref().unwrap().covers(Point::new(Line(0), Column(0))));
     }
 
     #[test]
@@ -5178,7 +5177,7 @@ mod tests {
         // A flood adds no marks to the first cell, and no cell holds more than the cap.
         let mut s = Screen::new(20, 3);
         s.feed("e\u{301}\x1b[65535b\x1b[65535b".as_bytes());
-        assert_eq!(s.term.grid()[Line(0)][Column(0)].zerowidth().map(<[char]>::len).unwrap_or(0) <= 1, true);
+        assert!(s.term.grid()[Line(0)][Column(0)].zerowidth().map(<[char]>::len).unwrap_or(0) <= 1);
         let mut s = Screen::new(20, 3);
         s.feed(format!("e{}", "\u{301}".repeat(100)).as_bytes());
         let marks = s.term.grid()[Line(0)][Column(0)].zerowidth().map(<[char]>::len).unwrap_or(0);

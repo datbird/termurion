@@ -64,7 +64,7 @@ pub fn fill(r: &mut dyn std::io::Read, buf: &mut [u8]) -> (usize, bool) {
 /// base64 of each `piece` bytes read (a multiple of 3, so the pieces join into the whole
 /// input's text). A read error ends the data there. Returns the number of bytes read.
 pub fn stream_b64(r: &mut dyn std::io::Read, piece: usize, each: &mut dyn FnMut(&str)) -> u64 {
-    debug_assert!(piece > 0 && piece % 3 == 0);
+    debug_assert!(piece > 0 && piece.is_multiple_of(3));
     let mut buf = vec![0u8; piece];
     let mut total = 0u64;
     loop {

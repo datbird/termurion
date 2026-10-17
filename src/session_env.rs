@@ -494,7 +494,7 @@ mod tests {
     fn merge_drops_entries_with_a_nul() {
         // B3: a NUL inside an extra entry would split the environment block.
         let evil = "ITERM_PROFILE=a\0PATH=x".to_string();
-        assert_eq!(merge(pairs(&[("Path", "a")]), &[evil.clone()]), pairs(&[("Path", "a")]));
+        assert_eq!(merge(pairs(&[("Path", "a")]), std::slice::from_ref(&evil)), pairs(&[("Path", "a")]));
         assert_eq!(merge(Vec::new(), &["LANG=x\0PATH=C:\\evil".into(), "OK=1".into(), "A\0B=1".into()]), pairs(&[("OK", "1")]));
         // A name ends at its first `=` after its first character, so a value holding `=` is
         // one variable, never two.

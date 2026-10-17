@@ -200,11 +200,10 @@ impl Window {
 
     /// Edit: a sheet with the selected row.
     pub fn begin_edit(&mut self) {
-        if let Some(row) = self.selected {
-            if let Some(e) = self.config.entries.get(row) {
+        if let Some(row) = self.selected
+            && let Some(e) = self.config.entries.get(row) {
                 self.sheet = Some(Sheet::for_entry(Some(row), e));
             }
-        }
     }
 
     /// The entries a sheet's range is checked against: all but the row being edited
@@ -344,16 +343,14 @@ impl Window {
                         self.begin_edit();
                     }
                     ui.separator();
-                    if ui.button("Import\u{2026}").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().add_filter("Special Exceptions", &["json", "itse"]).pick_file() {
+                    if ui.button("Import\u{2026}").clicked()
+                        && let Some(path) = rfd::FileDialog::new().add_filter("Special Exceptions", &["json", "itse"]).pick_file() {
                             self.import_file(&path);
                         }
-                    }
-                    if ui.button("Export\u{2026}").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().add_filter("Special Exceptions", &["json", "itse"]).set_file_name("special-exceptions.json").save_file() {
+                    if ui.button("Export\u{2026}").clicked()
+                        && let Some(path) = rfd::FileDialog::new().add_filter("Special Exceptions", &["json", "itse"]).set_file_name("special-exceptions.json").save_file() {
                             self.export_file(&path);
                         }
-                    }
                 });
                 // Termurion does not download fonts (Decision): the button is there, disabled.
                 ui.add_enabled(false, egui::Button::new(INSTALL_NERD)).on_disabled_hover_text(font_table::NERD_DISABLED);
@@ -413,12 +410,10 @@ impl Window {
                     ui.add(egui::TextEdit::singleline(&mut sheet.filter).hint_text("Filter").desired_width(220.0));
                     let needle = sheet.filter.to_lowercase();
                     egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-                        let mut shown = 0;
-                        for f in self.fonts.iter().filter(|f| needle.is_empty() || f.to_lowercase().contains(&needle)) {
+                        for (shown, f) in self.fonts.iter().filter(|f| needle.is_empty() || f.to_lowercase().contains(&needle)).enumerate() {
                             if shown == MAX_SHOWN {
                                 break;
                             }
-                            shown += 1;
                             if ui.selectable_label(sheet.font.eq_ignore_ascii_case(f), f).clicked() {
                                 sheet.font = f.clone();
                                 ui.close();

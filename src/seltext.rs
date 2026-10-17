@@ -172,11 +172,10 @@ pub fn ranges(subs: &[Sub], width: usize) -> Vec<(Pos, Pos, bool)> {
     let mut connectors = std::collections::HashSet::new();
     for sub in subs {
         let parts = intervals(sub, width);
-        if sub.connected {
-            if let Some(last) = parts.last() {
+        if sub.connected
+            && let Some(last) = parts.last() {
                 connectors.insert(last.1);
             }
-        }
         for (a, b) in parts {
             events.push(a);
             events.push(b + 1);
@@ -197,7 +196,7 @@ pub fn ranges(subs: &[Sub], width: usize) -> Vec<(Pos, Pos, bool)> {
         i = j;
     }
     let pos = |i: usize| Pos { row: i / width, col: i % width };
-    let mut runs: Vec<(usize, usize)> = flips.chunks_exact(2).map(|c| (c[0], c[1] - 1)).collect();
+    let mut runs: Vec<(usize, usize)> = flips.as_chunks::<2>().0.iter().map(|c| (c[0], c[1] - 1)).collect();
     // Cells joined end to end are one run.
     runs.dedup_by(|b, a| {
         if a.1 + 1 == b.0 {
@@ -383,14 +382,14 @@ mod tests {
     fn extract_follows_iterm2() {
         let cells = FakeCells::new(4, &[("ab  ", false), ("cd  ", false)]);
         let run = sub((0, 0), (1, 1), Mode::Character);
-        assert_eq!(extract(&cells, &[run.clone()], TRIM), "ab\ncd");
-        assert_eq!(extract(&cells, &[run.clone()], Options { trim: false, ..TRIM }), "ab  \ncd");
+        assert_eq!(extract(&cells, std::slice::from_ref(&run), TRIM), "ab\ncd");
+        assert_eq!(extract(&cells, std::slice::from_ref(&run), Options { trim: false, ..TRIM }), "ab  \ncd");
         // A row wrapped into the next joins without a newline.
         let wrapped = FakeCells::new(4, &[("abcd", true), ("ef  ", false)]);
         assert_eq!(extract(&wrapped, &[sub((0, 0), (1, 1), Mode::Character)], TRIM), "abcdef");
         // The last row ending at its last column: no newline unless CopyLastNewline.
         let to_end = sub((0, 0), (1, 3), Mode::Character);
-        assert_eq!(extract(&cells, &[to_end.clone()], TRIM), "ab\ncd");
+        assert_eq!(extract(&cells, std::slice::from_ref(&to_end), TRIM), "ab\ncd");
         assert_eq!(extract(&cells, &[to_end], Options { last_newline: true, ..TRIM }), "ab\ncd\n");
         // R3: a Line sub over one row used to end with a newline (alacritty added one).
         assert_eq!(extract(&cells, &[sub((0, 0), (0, 3), Mode::Line)], TRIM), "ab");
@@ -426,7 +425,7 @@ mod tests {
     #[test]
     fn ranges_follow_iterm2() {
         let one = sub((0, 0), (0, 4), Mode::Character);
-        assert_eq!(ranges(&[one.clone()], 10), vec![(one.start, one.end, false)]);
+        assert_eq!(ranges(std::slice::from_ref(&one), 10), vec![(one.start, one.end, false)]);
         // The overlap cancels.
         let p = |r, c| Pos { row: r, col: c };
         let got = ranges(&[sub((0, 0), (0, 4), Mode::Character), sub((0, 2), (0, 7), Mode::Character)], 10);

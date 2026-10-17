@@ -278,8 +278,8 @@ impl App {
         let bar = (self.per_pane_bars(tab) && self.shows_status_bar(id)).then(|| (self.status_bar_height(), self.status_bar_position()));
         let c = chrome(rect, self.title_height(), self.tab_shows_titles(tab), bar, self.scale());
         let scale = self.scale();
-        let toolbar = self.workgroup_toolbar_member(id).then(|| crate::workgroup_toolbar::TOOLBAR_H * scale);
-        let browser = self.is_browser_pane(id).then(|| crate::browser::TOOLBAR_H * scale);
+        let toolbar = self.workgroup_toolbar_member(id).then_some(crate::workgroup_toolbar::TOOLBAR_H * scale);
+        let browser = self.is_browser_pane(id).then_some(crate::browser::TOOLBAR_H * scale);
         take_strips(c, toolbar, browser)
     }
 }

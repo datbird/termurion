@@ -205,11 +205,10 @@ impl App {
             Ok(t) => t,
             Err(e) => return self.banners.set("action", format!("Copy Interpolated String: {e}")),
         };
-        if let Some(cb) = &mut self.clipboard {
-            if let Err(e) = cb.set_text(text) {
+        if let Some(cb) = &mut self.clipboard
+            && let Err(e) = cb.set_text(text) {
                 self.banners.set("clipboard", format!("Copy failed: {e}"));
             }
-        }
     }
 
     /// Files dropped on the window: a silent coprocess when `fileDropCoprocess` is set,

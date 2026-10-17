@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(drop_text(&two, true, None).as_deref(), Ok("\"C:\\a b\\c.txt\" \"D:\\x\""));
         for c in [',', '=', '+'] {
             let name = format!("D:\\a{c}b");
-            assert_eq!(drop_text(&[name.clone()], false, None), Ok(format!("\"{name}\"")), "{c}");
+            assert_eq!(drop_text(std::slice::from_ref(&name), false, None), Ok(format!("\"{name}\"")), "{c}");
         }
         assert_eq!(drop_text(&[], false, None).as_deref(), Ok(""));
     }
@@ -253,8 +253,8 @@ mod tests {
         for c in ['&', '(', ')', ';', '^', '%', '!', '[', '`', '$', '\'', '"', '\u{2019}', '\u{ff02}'] {
             let name = format!("D:\\a{c}b");
             for shell in [None, Some("cmd"), Some("pwsh"), Some("bash")] {
-                assert_eq!(drop_text(&[name.clone()], false, shell), Err(UNION_REFUSED.to_string()), "{c:?} {shell:?}");
-                assert_eq!(drop_text(&[name.clone()], true, shell), Err(UNION_REFUSED.to_string()), "{c:?} {shell:?}");
+                assert_eq!(drop_text(std::slice::from_ref(&name), false, shell), Err(UNION_REFUSED.to_string()), "{c:?} {shell:?}");
+                assert_eq!(drop_text(std::slice::from_ref(&name), true, shell), Err(UNION_REFUSED.to_string()), "{c:?} {shell:?}");
             }
         }
         // One bad name refuses the whole drop: nothing is typed.

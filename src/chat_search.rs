@@ -251,12 +251,11 @@ impl State {
                 let map = read.into_iter().map(|m| (m.unique_id, (m.content, m.author == Participant::User))).collect();
                 self.loaded.insert(chat.clone(), map);
             }
-            if let Some((content, user)) = self.loaded.get(&chat).and_then(|m| m.get(&id)) {
-                if let Some(snippet) = result_snippet(content, &self.query) {
+            if let Some((content, user)) = self.loaded.get(&chat).and_then(|m| m.get(&id))
+                && let Some(snippet) = result_snippet(content, &self.query) {
                     self.hits.push(Hit { chat, message: id, user: *user, snippet });
                     out.changed = true;
                 }
-            }
             if start.elapsed() >= SLICE {
                 break;
             }

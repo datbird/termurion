@@ -785,7 +785,7 @@ pub(crate) mod tests {
 
         // Every type that is not a file or a folder: hard link, symlink, devices, fifo, contiguous,
         // GNU long link, pax global, sparse, multi-volume, dump dir, vendor letters.
-        for kind in [b'1', b'2', b'3', b'4', b'6', b'7', b'K', b'g', b'S', b'M', b'D', b'V', b'N', b'A', b'X'] {
+        for kind in *b"123467KgSMDVNAX" {
             assert!(ok(&[base.clone(), tar_entry("app-support/z", kind, b"", "")].concat()).is_err(), "{}", kind as char);
         }
         // A link name on any entry, in the header or as pax linkpath, data or not.

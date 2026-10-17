@@ -95,11 +95,10 @@ impl App {
                 .map(|rows| rows.iter().map(|w| model::WindowRow { open: data.attached == s && t.ctl.windows.contains_key(&w.id), ..w.clone() }).collect())
                 .unwrap_or_default();
         }
-        if let Some(w) = self.tmux_dash.as_mut() {
-            if w.data != data {
+        if let Some(w) = self.tmux_dash.as_mut()
+            && w.data != data {
                 w.set_data(data);
             }
-        }
     }
 
     /// Events for the Dashboard window. False when `window` is not it.
@@ -193,11 +192,10 @@ impl App {
             }
         }
         self.tmux_flush(gw);
-        if let Some(w) = reveal {
-            if let Some(first) = self.tmux.get(&gw).and_then(|t| t.panes.iter().filter(|(_, (_, win))| *win == w).map(|(_, (id, _))| *id).min()) {
+        if let Some(w) = reveal
+            && let Some(first) = self.tmux.get(&gw).and_then(|t| t.panes.iter().filter(|(_, (_, win))| *win == w).map(|(_, (id, _))| *id).min()) {
                 self.reveal_pane(first);
             }
-        }
         if !actions.is_empty() {
             self.tmux_actions(gw, actions, event_loop);
         }

@@ -343,14 +343,11 @@ impl Perform for CookState {
     }
 
     fn execute(&mut self, byte: u8) {
-        match byte {
-            0x0a => {
-                self.flush();
-                self.out.push(Cooked::Newline);
-            }
-            // A tab is never logged: iTerm2's `appendTabAtCursor` moves the cursor and never calls
-            // `logCooked:` (`MS:2795-2860`), so no control but the line feed reaches a cooked log.
-            _ => {}
+        // A tab is never logged: iTerm2's `appendTabAtCursor` moves the cursor and never calls
+        // `logCooked:` (`MS:2795-2860`), so no control but the line feed reaches a cooked log.
+        if byte == 0x0a {
+            self.flush();
+            self.out.push(Cooked::Newline);
         }
     }
 
@@ -402,7 +399,7 @@ pub fn format_date(pattern: &str, p: &Parts, millis: u16) -> String {
         while chars.get(i + n) == Some(&c) {
             n += 1;
         }
-        let hour12 = if p.hour % 12 == 0 { 12 } else { p.hour % 12 };
+        let hour12 = if p.hour.is_multiple_of(12) { 12 } else { p.hour % 12 };
         let piece = match (c, n) {
             ('y', 4) => Some(format!("{:04}", p.year)),
             ('y', 2) => Some(format!("{:02}", p.year % 100)),
@@ -424,7 +421,7 @@ pub fn format_date(pattern: &str, p: &Parts, millis: u16) -> String {
         };
         match piece {
             Some(s) => out.push_str(&s),
-            None => out.extend(std::iter::repeat(c).take(n)),
+            None => out.extend(std::iter::repeat_n(c, n)),
         }
         i += n;
     }
@@ -929,11 +926,10 @@ impl Logger {
                     if html {
                         out.push_str(&html_run(&text, &attr, palette, &format_date(HTML_TITLE_PATTERN, now.0, now.1)));
                     } else {
-                        if self.line_start {
-                            if let Some(pattern) = &self.timestamps {
+                        if self.line_start
+                            && let Some(pattern) = &self.timestamps {
                                 out.push_str(&plain_timestamp(pattern, now.0, now.1));
                             }
-                        }
                         out.push_str(&text);
                     }
                     self.line_start = false;

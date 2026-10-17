@@ -652,11 +652,10 @@ impl Contexts {
             return;
         }
         let Ok(v) = serde_json::from_str::<Value>(json) else { return };
-        if v.pointer("/frame/parentId").is_none() {
-            if let Some(id) = v.pointer("/frame/id").and_then(Value::as_str) {
+        if v.pointer("/frame/parentId").is_none()
+            && let Some(id) = v.pointer("/frame/id").and_then(Value::as_str) {
                 self.main = Some(id.to_string());
             }
-        }
     }
 
     pub fn detached(&mut self, session: &str) {

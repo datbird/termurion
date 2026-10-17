@@ -591,11 +591,10 @@ impl App {
                 self.forget_tab(id);
             }
         }
-        if matches!(applied, Applied::Moved { .. }) {
-            if let Some(at) = self.tabs.iter().position(|t| t.layout.panes().contains(&source)) {
+        if matches!(applied, Applied::Moved { .. })
+            && let Some(at) = self.tabs.iter().position(|t| t.layout.panes().contains(&source)) {
                 self.active = at;
             }
-        }
         self.active = self.active.min(self.tabs.len().saturating_sub(1));
         self.refresh_route();
         self.relayout();

@@ -2156,11 +2156,10 @@ pub fn run() {
     let (prefs_saved, prefs_startup) = prefs_ui::load_at_start(&mut globals, &mut store, &prefs_ui::curl_fetch);
     let trigger_pool_width = globals.int("MaximumNumberOfTriggerCommands");
     // iTerm2 drops bindings whose profile is gone when it loads them (P11).
-    if crate::url_schemes::prune_globals(&mut globals, &store) {
-        if let Err(e) = globals.save() {
+    if crate::url_schemes::prune_globals(&mut globals, &store)
+        && let Err(e) = globals.save() {
             banners.set("globals", format!("Could not save settings: {e}"));
         }
-    }
     // Termurion's own scheme registrations follow the exe when it moved (only schemes the person bound).
     crate::url_schemes::repair_at_start(&globals);
     // A crash mid-download leaves a hidden `.Termurion.*` temp: older ones are swept with the
@@ -2188,11 +2187,10 @@ pub fn run() {
     }
     // The legacy global AI headers move into each manual model once (`iTermMigrationHelper.m:458`).
     // After the custom settings folder or URL load, so headers arriving from there move too.
-    if crate::ai_models::migrate_legacy_headers(&mut globals) {
-        if let Err(e) = globals.save() {
+    if crate::ai_models::migrate_legacy_headers(&mut globals)
+        && let Err(e) = globals.save() {
             banners.set("globals", format!("Could not save settings: {e}"));
         }
-    }
     // The workgroups, with their one-time migrations; written back only when something changed.
     let (mut workgroup_model, workgroups_changed) = crate::workgroup::Model::load(&globals);
     if workgroups_changed {
@@ -3158,11 +3156,10 @@ impl App {
         }
         let mut wake = flash_wake(&self.tab_flash, now);
         for (_, s) in self.windows.parked_mut() {
-            if tick_flash(&mut s.tab_flash, now) {
-                if let Some(g) = &s.gpu {
+            if tick_flash(&mut s.tab_flash, now)
+                && let Some(g) = &s.gpu {
                     g.window.request_redraw();
                 }
-            }
             wake = wake.into_iter().chain(flash_wake(&s.tab_flash, now)).min();
         }
         wake
@@ -3550,11 +3547,10 @@ impl App {
                 let clicks = self.count_tab_click(hit);
                 self.tab_press = Some((hit, clicks, alt, id));
                 self.tab_drag_press(hit);
-                if let Hit::Tab(i) = hit {
-                    if tab_layout::press_selects(self.tab_selects_on_down, alt, clicks) {
+                if let Hit::Tab(i) = hit
+                    && tab_layout::press_selects(self.tab_selects_on_down, alt, clicks) {
                         self.select_tab(i);
                     }
-                }
                 self.redraw();
             }
             MouseButton::Middle => self.tab_press = Some((hit, 0, alt, id)),
@@ -3587,6 +3583,7 @@ impl App {
 
     /// The release that ends a press on the tab bar (`PSM handleMouseUp:`, `otherMouseUp:`).
     /// False when no press on the bar waits for this button.
+    #[allow(clippy::collapsible_match)] // the arm names the case and carries the rationale; a match guard would fold both into the pattern line
     fn tab_bar_release(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) -> bool {
         use tab_layout::{Hit, Release};
         let Some((down, clicks, _, _)) = self.tab_press else { return false };
@@ -3626,11 +3623,10 @@ impl App {
         // a chip dragged is no click.
         if let (Hit::Chip(k), Some(Hit::Chip(j)), 1, false) = (down, up, clicks, began) {
             let group = self.bar_chip_at(x, y);
-            if k == j {
-                if let Some(g) = group {
+            if k == j
+                && let Some(g) = group {
                     self.toggle_group_collapsed(&g);
                 }
-            }
         }
         let clicked = tab_layout::release(Some(down), up, clicks, self.globals.bool("DoubleClickTabToEdit"), self.globals.bool("TabCloseButtonsAlwaysVisible"));
         // A drag that began drops the tab; one that never began leaves the click.
@@ -5256,11 +5252,10 @@ impl App {
                 self.replay_event(crate::replay::ReplayEvent::PaneClosed, focused, event_loop);
             }
         }
-        if let Some(p) = self.panes.get_mut(&id) {
-            if p.replay.take().is_some() {
+        if let Some(p) = self.panes.get_mut(&id)
+            && p.replay.take().is_some() {
                 p.end_view();
             }
-        }
         self.tmux_pane_closed(id);
         self.session_hotkey_pane_gone(id);
         self.aps.remove(&id);
@@ -5549,23 +5544,21 @@ impl App {
         }
         self.remember_paste(&text);
         let copied = text.clone();
-        if let Some(cb) = &mut self.clipboard {
-            if let Err(e) = cb.set_text(text) {
+        if let Some(cb) = &mut self.clipboard
+            && let Err(e) = cb.set_text(text) {
                 self.banners.set("clipboard", format!("Copy failed: {e}"));
                 return;
             }
-        }
         // A hard-to-read JSON copy is offered to be pretty-printed (once ever).
         self.json_promotion(id, &copied);
     }
 
     fn paste(&mut self) {
         // No text on the clipboard: files or an image get their question (`attemptNonTextPaste`).
-        if let Some(id) = self.focused_id() {
-            if self.clipboard.as_mut().is_some_and(|cb| cb.get_text().is_err()) && self.nontext_paste(id) {
+        if let Some(id) = self.focused_id()
+            && self.clipboard.as_mut().is_some_and(|cb| cb.get_text().is_err()) && self.nontext_paste(id) {
                 return;
             }
-        }
         let Some(text) = self.clipboard_text() else { return self.redraw() };
         if let Some(id) = self.focused_id() {
             self.user_paste(id, &text, crate::broadcast::Write::Paste);
@@ -5798,16 +5791,14 @@ impl App {
             return self.run_chord(&chord, event_loop);
         }
         // F11 toggles full screen in every mode, unless a key mapping claims it.
-        if self.full_screen_key(ev) {
-            if let Some(item) = crate::menus::by_id("View > Toggle Full Screen") {
+        if self.full_screen_key(ev)
+            && let Some(item) = crate::menus::by_id("View > Toggle Full Screen") {
                 return self.run_command(item, event_loop);
             }
-        }
-        if self.remap_in_app_on() && self.mods.cmd && !self.phys_mods.cmd {
-            if let Some(chord) = crate::winkeys::vk_to_key(crate::winkeys::vk_of(ev.physical_key)).map(|key| crate::menus::Chord { key, cmd: true, alt: self.mods.alt, shift: self.mods.shift, ctrl: self.mods.ctrl }) {
+        if self.remap_in_app_on() && self.mods.cmd && !self.phys_mods.cmd
+            && let Some(chord) = crate::winkeys::vk_to_key(crate::winkeys::vk_of(ev.physical_key)).map(|key| crate::menus::Chord { key, cmd: true, alt: self.mods.alt, shift: self.mods.shift, ctrl: self.mods.ctrl }) {
                 return self.run_chord(&chord, event_loop);
             }
-        }
         if self.bar_key(ev, event_loop) || self.upload_key(ev) || self.paste_view_key(ev) {
             return;
         }
@@ -5893,12 +5884,11 @@ impl App {
                     self.relayout();
                     return;
                 }
-                if let Some(pane) = self.focused_id().filter(|p| self.workgroup_toolbar_member(*p)) {
-                    if self.workgroup_toolbar_shortcut(pane, &press.stroke) {
+                if let Some(pane) = self.focused_id().filter(|p| self.workgroup_toolbar_member(*p))
+                    && self.workgroup_toolbar_shortcut(pane, &press.stroke) {
                         self.relayout();
                         return;
                     }
-                }
                 if let Some(c) = chord {
                     // A menu chord, then a profile's Ctrl+Win shortcut (`keyroute::terminal_chord`);
                     // neither sends bytes to the session, so neither clears a selection (S10).
@@ -5938,6 +5928,7 @@ impl App {
     }
 
     /// A key with no binding: the Windows extras, movement-key scrolling, else the pane.
+    #[allow(clippy::wrong_self_convention)] // the name follows the iTerm2 method it ports
     fn to_terminal(&mut self, key: &Key, base: Option<&Key>, bytes: Option<Vec<u8>>, event_loop: &ActiveEventLoop) {
         if let Some(action) = base.and_then(|b| keys::shortcut(b, self.mods)) {
             return self.action(action, event_loop);
@@ -5965,11 +5956,10 @@ impl App {
             // A key for the session removes a finished selection, not one being dragged (R3).
             // Only a key with bytes: a bare Win press for a Win-drag keeps it (B4).
             let live = matches!(&self.drag, Drag::Select { pane: dragged, .. } if *dragged == sender);
-            if selection_ui::typing_clears(live, self.globals.bool("TypingClearsSelection")) {
-                if let Some(p) = self.panes.get_mut(&sender) {
+            if selection_ui::typing_clears(live, self.globals.bool("TypingClearsSelection"))
+                && let Some(p) = self.panes.get_mut(&sender) {
                     p.clear_selection();
                 }
-            }
             if self.tmux_key_by_name(sender, key) {
                 return;
             }
@@ -6411,11 +6401,10 @@ impl App {
             // A click on the selection with no drag clears it (R3, `MH:692-700`); a drag that
             // started cleared `Drag::Out` before it ran, so its release never gets here.
             Drag::Out(d) => {
-                if selection_ui::release_clears_selection(selection_ui::PressKind::MaybeDrag, false) {
-                    if let Some(p) = self.panes.get_mut(&d.pane) {
+                if selection_ui::release_clears_selection(selection_ui::PressKind::MaybeDrag, false)
+                    && let Some(p) = self.panes.get_mut(&d.pane) {
                         p.clear_selection();
                     }
-                }
                 // The press did not remove a selection (it was on one), so the click selects the command too.
                 if d.command {
                     self.click_after_release(d.pane, false);
@@ -6627,11 +6616,10 @@ impl App {
         self.update_progress_anims(Instant::now());
         if let Some(area) = self.tab_bar_rect() {
             let mut looks: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
-            if let Some(i) = held_close(self.tab_press) {
-                if let Some(l) = looks.get_mut(i) {
+            if let Some(i) = held_close(self.tab_press)
+                && let Some(l) = looks.get_mut(i) {
                     l.close_pressed = true;
                 }
-            }
             // Kept unscrolled for hits; the scroll offset applies at each use.
             self.tab_bar = self.layout_tab_bar(&looks, area, 0.0);
             let vertical = self.tab_bar.vertical;
@@ -6901,11 +6889,10 @@ impl App {
                 // them is cut out.
                 overlay_drawn.extend(self.draw_composer(&mut frame, id, rect, cell));
                 overlay_drawn.extend(self.draw_completion(&mut frame, id, rect, cell).map(|r| (mouse::Overlay::Completion, r)));
-                if id == tab.focused {
-                    if let Some(text) = self.fps_overlay() {
+                if id == tab.focused
+                    && let Some(text) = self.fps_overlay() {
                         fps_rect = scene::fps_meter(&mut frame, &text, self.text_rect(id, rect), cell);
                     }
-                }
                 self.draw_inline_progress(&mut frame, id, rect);
                 for row in frame.rows[rows_from..].iter_mut().filter(|r| r.face == crate::render::DEFAULT_FACE) {
                     row.face = face;
@@ -7241,11 +7228,10 @@ impl ApplicationHandler<UserEvent> for App {
         }
         // Disable App Nap: opt out of EcoQoS once at start (effective after a restart).
         #[cfg(windows)]
-        if self.globals.bool("DisableAppNap") {
-            if let Err(e) = power::opt_out_of_power_throttling() {
+        if self.globals.bool("DisableAppNap")
+            && let Err(e) = power::opt_out_of_power_throttling() {
                 eprintln!("power throttling opt-out unavailable: {e}");
             }
-        }
         if self.snippets.broken {
             self.banners.set("snippets", format!("Could not read the snippets in {}. The file stays as it is until a snippet is added.", snippets_ui::snippets_path().display()));
         }
@@ -7364,11 +7350,10 @@ impl ApplicationHandler<UserEvent> for App {
             .bool("OpenArrangementAtStartup")
             .then_some(())
             .filter(|_| self.start_handoff.is_none())
-            .map(|_| {
+            .and_then(|_| {
                 let store = self.arrangements();
                 store.default_name().and_then(|n| store.get(n).cloned().map(|w| (Some(n.to_string()), w)))
             })
-            .flatten()
             .filter(|(_, w)| !w.is_empty());
         let has_arrangement = default_arrangement.is_some();
         // The saved state's windows are the launch's own restoration (`launch` true); a default
@@ -7472,8 +7457,8 @@ impl ApplicationHandler<UserEvent> for App {
         // An `-Embedding` start waits for its handoff with no window. Work that reached it (a launch,
         // a link, files) makes it the main instance; with none it stops serving the pipe after
         // `IDLE_EXIT` and ends on the next pass, once what the pipe took has arrived (review I3).
-        if self.gpu.is_none() {
-            if let Some(t0) = self.embedding {
+        if self.gpu.is_none()
+            && let Some(t0) = self.embedding {
                 use crate::default_term::Idle;
                 let serving = self.url_listener.as_ref().is_some_and(|s| !s.stopped());
                 match crate::default_term::embedding_next(t0, Instant::now(), self.handoffs_seen, self.embedding_waiting_work(), serving) {
@@ -7490,7 +7475,6 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
             }
-        }
         self.handoff_banner_tick();
         // Timers (blink, bells, activity, marks, animations) act for the window the person
         // uses; the window that drew last may be another one.
@@ -7922,11 +7906,10 @@ impl ApplicationHandler<UserEvent> for App {
                     if let Some(path) = reveal {
                         self.reveal_in_explorer(&path);
                     }
-                    if let Some(url) = url {
-                        if let Err(e) = semantic_ui::shell_open(&url, false) {
+                    if let Some(url) = url
+                        && let Err(e) = semantic_ui::shell_open(&url, false) {
                             self.banners.set("window", format!("Could not open {url}: {e}"));
                         }
-                    }
                     // Settings > General > AI's discovery requests (ruling R12ab-3).
                     self.drain_ai_requests(event_loop);
                 }
@@ -8021,12 +8004,11 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.update_hover();
                 // Cycle Tabs ends when the chord's modifiers come up.
-                if let Some(c) = self.mru_mods {
-                    if !((c.ctrl && self.mods.ctrl) || (c.alt && self.mods.alt) || (c.cmd && self.mods.cmd)) {
+                if let Some(c) = self.mru_mods
+                    && !((c.ctrl && self.mods.ctrl) || (c.alt && self.mods.alt) || (c.cmd && self.mods.cmd)) {
                         self.mru_mods = None;
                         self.mru.commit();
                     }
-                }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 // A key that ends find typing, a tool's focus, Copy Mode, the completion list
@@ -8500,11 +8482,10 @@ impl App {
             self.hotkey_focus_lost();
         }
         // Focus reporting (DECSET 1004), before the password manager's hold ends below: tell the app the window gained or lost focus.
-        if let Some(gained) = a.report {
-            if let Some(pane) = self.focused_pane_id() {
+        if let Some(gained) = a.report
+            && let Some(pane) = self.focused_pane_id() {
                 self.report_focus_to(pane, gained);
             }
-        }
         if a.gain_stamps {
             self.last_window = Some(id);
             self.stamp_focus();

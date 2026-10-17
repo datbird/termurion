@@ -105,11 +105,10 @@ fn show(ctx: &egui::Context, sh: &mut Sheet, open_url: &mut Option<String>, home
                     }
                 }
             });
-            if ui.add_enabled(remove_on, egui::Button::new("\u{2212}")).clicked() {
-                if let Some(i) = sh.selected.take().filter(|&i| i < sh.cfg.files_to_copy.len()) {
+            if ui.add_enabled(remove_on, egui::Button::new("\u{2212}")).clicked()
+                && let Some(i) = sh.selected.take().filter(|&i| i < sh.cfg.files_to_copy.len()) {
                     sh.cfg.files_to_copy.remove(i);
                 }
-            }
         });
         let mut done = None;
         if let Some((paths, dest)) = &mut sh.adding {

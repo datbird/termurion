@@ -59,7 +59,7 @@ pub fn all() -> &'static [Tip] {
 pub fn next_key(all: &[Tip], after: Option<&str>, unshowable: &[String]) -> Option<String> {
     all.iter()
         .filter(|t| !unshowable.contains(&t.key))
-        .find(|t| after.map_or(true, |a| t.key.as_bytes() > a.as_bytes()))
+        .find(|t| after.is_none_or(|a| t.key.as_bytes() > a.as_bytes()))
         .map(|t| t.key.clone())
 }
 

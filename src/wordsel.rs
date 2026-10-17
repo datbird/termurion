@@ -315,7 +315,7 @@ pub fn word_at_counted(line: &Logical, click: usize, rule: &Rule, seg: &dyn Segm
     let reach = if rule.regex.is_some() { REGEX_REACH } else { LONG_MAX };
     let first = click_cell.saturating_sub(reach);
     let mut atoms = Atoms { line, rule, list: Vec::new(), next: first, budget: ATOM_BUDGET, calls: 0 };
-    while atoms.list.last().map_or(true, |a| a.end <= click_cell) {
+    while atoms.list.last().is_none_or(|a| a.end <= click_cell) {
         if !atoms.grow() {
             break;
         }

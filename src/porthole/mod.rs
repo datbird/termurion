@@ -22,12 +22,11 @@ pub fn link_target(link: &str, base_dir: Option<&str>) -> Option<LinkTarget> {
         let path = windows(rest.trim_start_matches('/'));
         return drive_path(&path).then_some(LinkTarget::File(path));
     }
-    if let Some((scheme, rest)) = link.split_once(':') {
-        if scheme.len() > 1 && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c)) {
+    if let Some((scheme, rest)) = link.split_once(':')
+        && scheme.len() > 1 && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c)) {
             let ok = matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https" | "ftp" | "mailto") && !rest.is_empty();
             return ok.then(|| LinkTarget::Url(link.to_string()));
         }
-    }
     let path = windows(link);
     if drive_path(&path) {
         return Some(LinkTarget::File(path));

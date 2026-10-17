@@ -377,10 +377,8 @@ pub fn info(code: i64) -> Option<&'static ActionInfo> {
 }
 
 /// Whether an action works now, or the milestone that brings it.
-pub fn status(code: i64) -> Status {
-    match code {
-        _ => Status::Done,
-    }
+pub fn status(_code: i64) -> Status {
+    Status::Done
 }
 
 #[cfg(test)]

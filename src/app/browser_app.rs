@@ -586,13 +586,12 @@ impl App {
                         io.favicon = None;
                     }
                 }
-                if *on {
-                    if let Some(bv) = self.browser_views.get_mut(&pane) {
+                if *on
+                    && let Some(bv) = self.browser_views.get_mut(&pane) {
                         bv.settled = false;
                         bv.last_title = None;
                         bv.bar.favicon = None;
                     }
-                }
                 self.redraw();
             }
             // The navigation of the world's isolation check: it answers the check and is nothing else.
@@ -1273,15 +1272,14 @@ impl App {
             if steps != 0 && steps.abs() <= 100 && self.browser_history_fresh(pane, steps) {
                 return true;
             }
-            if let Some(bv) = self.browser_views.get_mut(&pane) {
-                if steps != 0 && steps.abs() <= 100 {
+            if let Some(bv) = self.browser_views.get_mut(&pane)
+                && steps != 0 && steps.abs() <= 100 {
                     bv.bar.nav.expect(steps);
                     bv.bar.transition = Some(browser::TRANSITION_BACK_FORWARD);
                     if let Some(v) = &bv.view {
                         v.execute_script(&format!("history.go({steps})"), 0);
                     }
                 }
-            }
             return true;
         }
         let Some(rest) = id.strip_prefix(MENU_ID) else { return false };
@@ -1400,11 +1398,10 @@ impl App {
         bv.bar.suggestions.clear();
         bv.bar.selected = None;
         bv.bar.call = None;
-        if to_page {
-            if let Some(v) = &bv.view {
+        if to_page
+            && let Some(v) = &bv.view {
                 v.focus();
             }
-        }
         self.redraw();
     }
 
@@ -1511,11 +1508,10 @@ impl App {
                 old.cancel();
             }
             bv.bar.call = Some((call, query.clone()));
-        } else if !asks {
-            if let Some((mut old, _)) = bv.bar.call.take() {
+        } else if !asks
+            && let Some((mut old, _)) = bv.bar.call.take() {
                 old.cancel();
             }
-        }
         let open = if asks { bv.bar.cache.get(&query).unwrap_or_else(|| bv.bar.cache.fallback(&query)) } else { Vec::new() };
         let mut rows = browser::rank(text, &bookmarks, &history, &open, &search);
         rows.truncate(browser::MAX_SUGGESTIONS);
@@ -1674,11 +1670,10 @@ impl App {
             "paste:" => {
                 // The person's own clipboard into the page's focused field; the page is never
                 // given permission to read it.
-                if let Some(text) = self.clipboard_text().filter(|t| t.len() <= 1_048_576) {
-                    if let (Ok(json), Some(v)) = (serde_json::to_string(&text), self.browser_views.get(&pane).and_then(|b| b.view.as_ref())) {
+                if let Some(text) = self.clipboard_text().filter(|t| t.len() <= 1_048_576)
+                    && let (Ok(json), Some(v)) = (serde_json::to_string(&text), self.browser_views.get(&pane).and_then(|b| b.view.as_ref())) {
                         v.execute_script(&format!("document.execCommand('insertText', false, {json})"), 0);
                     }
-                }
             }
             _ => return false,
         }
@@ -1751,11 +1746,10 @@ impl App {
 
     /// The system opens a link the old way: only what `shell_url` allows.
     fn open_link_system(&mut self, url: &str, background: bool) {
-        if crate::semantic::shell_url(url).is_some() {
-            if let Err(e) = super::semantic_ui::shell_open(url, background) {
+        if crate::semantic::shell_url(url).is_some()
+            && let Err(e) = super::semantic_ui::shell_open(url, background) {
                 self.banners.set("action", format!("Could not open {url}: {e}"));
             }
-        }
     }
 
     /// The answer of the open-links ask: Use Default Browser (0) opens with the system, Open in
@@ -1773,11 +1767,10 @@ impl App {
     pub(super) fn upsell_answered(&mut self, url: &str, index: usize) {
         match index {
             0 => {
-                if let crate::semantic::Run::Open(t) = crate::semantic::guard_open(browser::PLUGIN_URL, false) {
-                    if let Err(e) = super::semantic_ui::shell_open(&t, false) {
+                if let crate::semantic::Run::Open(t) = crate::semantic::guard_open(browser::PLUGIN_URL, false)
+                    && let Err(e) = super::semantic_ui::shell_open(&t, false) {
                         self.banners.set("action", format!("Could not open {t}: {e}"));
                     }
-                }
             }
             1 => self.open_link_system(url, false),
             _ => {}
@@ -1830,11 +1823,10 @@ impl App {
                 self.redraw();
             }
             browser::Style::Vertical | browser::Style::Horizontal => {
-                if let (Some(n), Some(t)) = (near, self.tabs.get_mut(self.active)) {
-                    if t.layout.panes().contains(&n) {
+                if let (Some(n), Some(t)) = (near, self.tabs.get_mut(self.active))
+                    && t.layout.panes().contains(&n) {
                         t.focused = n;
                     }
-                }
                 self.split(if style == browser::Style::Vertical { Axis::Row } else { Axis::Column }, Some(&guid));
             }
         }

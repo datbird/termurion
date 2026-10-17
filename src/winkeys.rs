@@ -662,7 +662,7 @@ fn register(registered: &mut Vec<(i32, Vec<u32>)>, chords: &[(u32, crate::hotkey
     let mut system = Vec::new();
     const MAPVK_VSC_TO_VK_EX: u32 = 3;
     const MOD_NOREPEAT: u32 = 0x4000;
-    for (i, (chord, ids)) in group_chords(&chords).into_iter().enumerate() {
+    for (i, (chord, ids)) in group_chords(chords).into_iter().enumerate() {
         let vk = match chord.key {
             crate::hotkey::ChordKey::Scan(s) => unsafe { MapVirtualKeyW(s, MAPVK_VSC_TO_VK_EX) },
             crate::hotkey::ChordKey::Char(c) => (unsafe { VkKeyScanW(c as u16) } as u32) & 0xFF,
@@ -871,9 +871,7 @@ mod tests {
     #[test]
     fn every_poisoned_hook_thread_lock_still_registers_and_passes_keys() {
         // One test owns the module's statics, so no other test sees them poisoned.
-        for m in [&WINDOWS] {
-            poison(m);
-        }
+        poison(&WINDOWS);
         poison(&GLOBAL);
         poison(&PENDING);
         // The window list still answers (a poisoned list read as empty would drop every remap).
@@ -897,9 +895,7 @@ mod tests {
         apply_pending(&mut registered, &mut last);
         assert_eq!(rx.try_recv().ok(), Some(Vec::new()), "the settings side gets its answer");
         *locked(&GLOBAL) = None;
-        for m in [&WINDOWS] {
-            m.clear_poison();
-        }
+        WINDOWS.clear_poison();
         GLOBAL.clear_poison();
         PENDING.clear_poison();
     }

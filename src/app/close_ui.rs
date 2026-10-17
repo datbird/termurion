@@ -20,11 +20,10 @@ impl App {
         let mut out = Vec::new();
         for id in panes {
             let Some(p) = self.panes.get(id) else { continue };
-            if let Some(reason) = super::pane_lock_ui::close_reason_for(p.exited.is_some(), p.locked) {
-                if !out.iter().any(|r| r == reason) {
+            if let Some(reason) = super::pane_lock_ui::close_reason_for(p.exited.is_some(), p.locked)
+                && !out.iter().any(|r| r == reason) {
                     out.push(reason.to_string());
                 }
-            }
             // What an exited shell left running ends with the pane (13q B7).
             let left = p.live_survivors();
             if !left.is_empty() {
@@ -54,11 +53,10 @@ impl App {
                 }
                 None => Vec::new(),
             };
-            if let Some(r) = close_prompt::close_reason(mode, &close_prompt::ignore_list(profile), &profile.name(), &jobs) {
-                if !out.contains(&r) {
+            if let Some(r) = close_prompt::close_reason(mode, &close_prompt::ignore_list(profile), &profile.name(), &jobs)
+                && !out.contains(&r) {
                     out.push(r);
                 }
-            }
         }
         out
     }

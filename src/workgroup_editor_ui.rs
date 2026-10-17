@@ -169,12 +169,11 @@ pub fn page(ui: &mut egui::Ui, g: &mut Globals, profiles: &[(String, String)], k
     let mut cmd: Option<Cmd> = None;
 
     // The recorder delivered a key.
-    if let Some((rec, k)) = recorded_key(keys, st) {
-        if let (Some(w), Some(sid)) = (st.selected.as_deref().and_then(|id| model.get(id)), st.session.clone()) {
+    if let Some((rec, k)) = recorded_key(keys, st)
+        && let (Some(w), Some(sid)) = (st.selected.as_deref().and_then(|id| model.get(id)), st.session.clone()) {
             let new = Some(Shortcut { serialized: k.serialized() });
             cmd = Some(shortcut_cmd(w, &sid, rec, new, st.item));
         }
-    }
 
     // Undo and redo, when no text field has the focus (a field has its own).
     if ui.memory(|m| m.focused()).is_none() {
@@ -249,11 +248,10 @@ fn left_column(ui: &mut egui::Ui, model: &Model, st: &mut EditorState, cmd: &mut
             *cmd = Some(Cmd::AddWorkgroup);
         }
         let sel = st.selected.clone().filter(|id| model.get(id).is_some());
-        if ui.add_enabled(sel.is_some(), egui::Button::new("\u{2212}")).on_hover_text("Delete").clicked() {
-            if let Some(id) = sel {
+        if ui.add_enabled(sel.is_some(), egui::Button::new("\u{2212}")).on_hover_text("Delete").clicked()
+            && let Some(id) = sel {
                 *cmd = Some(Cmd::RemoveWorkgroup(id));
             }
-        }
         ui.menu_button(ed::ADD_PRESET, |ui| {
             for (id, title) in wg::presets::all() {
                 if ui.button(title).clicked() {
@@ -356,11 +354,10 @@ fn detail(ui: &mut egui::Ui, model: &Model, profiles: &[(String, String)], keys:
             });
         });
         let removable = sel.is_some_and(|s| s.kind != Kind::Root);
-        if ui.add_enabled(removable, egui::Button::new("\u{2212}")).on_hover_text("Remove the session and everything under it").clicked() {
-            if let Some(s) = sel {
+        if ui.add_enabled(removable, egui::Button::new("\u{2212}")).on_hover_text("Remove the session and everything under it").clicked()
+            && let Some(s) = sel {
                 *cmd = Some(Cmd::Edit { wg: ed::remove_session(w, &s.unique_identifier), action: ed::REMOVE_SESSION, coalesce: false });
             }
-        }
         if !can {
             ui.weak("A workgroup holds at most 32 sessions.");
         }
@@ -566,12 +563,11 @@ fn toolbar_items(ui: &mut egui::Ui, w: &Workgroup, s: &SessionConfig, keys: &mut
             }
         });
         let removable = st.item.is_some_and(|i| i < s.toolbar_items.len() && !ed::is_required_switcher(w, s, i));
-        if ui.add_enabled(removable, egui::Button::new("\u{2212}")).on_hover_text("Remove the item").clicked() {
-            if let Some(i) = st.item {
+        if ui.add_enabled(removable, egui::Button::new("\u{2212}")).on_hover_text("Remove the item").clicked()
+            && let Some(i) = st.item {
                 *cmd = Some(edit(with_session(w, &sid, |s| drop(s.toolbar_items.remove(i))), ed::REMOVE_ITEM, false));
                 st.item = None;
             }
-        }
     });
     let Some(i) = st.item else { return };
     let Some(item) = s.toolbar_items.get(i) else { return };

@@ -536,7 +536,7 @@ pub fn located(rows: &dyn Rows, start: (usize, i32), end: (usize, i32)) -> Locat
         }
         for (x, c) in line {
             string.push(c);
-            coords.extend(std::iter::repeat((x as i32, y)).take(c.len_utf16()));
+            coords.extend(std::iter::repeat_n((x as i32, y), c.len_utf16()));
         }
         if !soft && y != end.1 {
             string.push('\n');

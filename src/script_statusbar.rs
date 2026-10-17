@@ -279,7 +279,7 @@ pub fn count_text(n: i64) -> String {
     let digits = n.unsigned_abs().to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -375,13 +375,12 @@ pub fn html_text(html: &str) -> String {
         if c == '&' {
             // An entity's name is short: only its first characters are searched, so a long
             // run of `&` stays linear.
-            if let Some(semi) = rest.char_indices().take(11).find(|&(_, ch)| ch == ';').map(|(i, _)| i).filter(|&i| i <= 10) {
-                if let Some(ch) = entity(&rest[..semi]) {
+            if let Some(semi) = rest.char_indices().take(11).find(|&(_, ch)| ch == ';').map(|(i, _)| i).filter(|&i| i <= 10)
+                && let Some(ch) = entity(&rest[..semi]) {
                     out.push(ch);
                     rest = &rest[semi + 1..];
                     continue;
                 }
-            }
         }
         out.push(c);
     }
@@ -523,12 +522,10 @@ mod tests {
         // The script's knobs by type, then the class's.
         let tail = vec![statusbar::priority_knob()];
         let k = knobs(&r, tail.clone());
-        let want = vec![
-            Knob { label: "Seconds".into(), kind: KnobKind::Checkbox, key: "sec".into(), placeholder: None, default: Some(toml::Value::Boolean(true)) },
+        let want = [Knob { label: "Seconds".into(), kind: KnobKind::Checkbox, key: "sec".into(), placeholder: None, default: Some(toml::Value::Boolean(true)) },
             Knob { label: "Label".into(), kind: KnobKind::Text, key: "lbl".into(), placeholder: Some("x".into()), default: None },
             Knob { label: "Rate".into(), kind: KnobKind::Double, key: "rate".into(), placeholder: None, default: None },
-            Knob { label: "Tint".into(), kind: KnobKind::Color, key: "tint".into(), placeholder: None, default: None },
-        ];
+            Knob { label: "Tint".into(), kind: KnobKind::Color, key: "tint".into(), placeholder: None, default: None }];
         assert_eq!(k[..4], want[..]);
         assert_eq!(k[4..], tail[..]);
 

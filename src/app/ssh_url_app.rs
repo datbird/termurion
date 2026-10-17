@@ -8,9 +8,7 @@ use super::*;
 /// falls back to the default profile). Only `ssh:`, `telnet:` and `ftp:` URLs (any case): None for
 /// anything else.
 pub(super) fn url_plan(url: &str, bound: Option<&str>, default_guid: &str) -> Option<(String, bool)> {
-    if crate::url_open::scheme_of(url).is_none() {
-        return None;
-    }
+    crate::url_open::scheme_of(url)?;
     Some(match bound {
         Some(g) => (g.to_string(), true),
         None => (default_guid.to_string(), false),
@@ -80,7 +78,7 @@ pub(super) fn session_values(base: &crate::profile::Profile, url: &str, s: &crat
 /// Whether a launch URL can open at all (a good host, a legal user name). A URL that fails here
 /// must not queue a hotkey window's first session, nor raise an "opening" banner.
 pub(super) fn url_accepted(base: &crate::profile::Profile, url: &str, s: &crate::ssh_url::Settings) -> bool {
-    !matches!(session_values(base, url, s), Err(_))
+    !session_values(base, url, s).is_err()
 }
 
 /// Drops the launch URL kept for a hotkey window that was not made, so a later press of the
@@ -261,7 +259,7 @@ mod tests {
         let src = include_str!("windows_ui.rs");
         let at = src.find("// A tab on its way to the new window stays").unwrap();
         assert!(src[at - 200..at].contains("forget_hotkey_url("));
-        let open = &include_str!("ssh_url_app.rs")[..];
+        let open = include_str!("ssh_url_app.rs");
         assert!(open[open.find("UrlHome::HotkeyNew => {").unwrap()..].contains("url_accepted("));
     }
 

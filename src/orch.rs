@@ -486,7 +486,7 @@ mod tests {
         let unknown = synthetic(&PaneFacts { status: Status::default(), changed_secs_ago: None, name: "vim".into(), ..facts() });
         assert_eq!((unknown.workgroup_name.as_str(), unknown.sessions[0].status.as_str(), unknown.sessions[0].status_source.as_str()), ("vim", "unknown", "inferred"));
         assert_eq!(unknown.sessions[0].screen_last_changed, None);
-        let text = snapshot(&[unknown.clone()]);
+        let text = snapshot(std::slice::from_ref(&unknown));
         assert!(text.starts_with("<workgroups>\n[\n  {\n    \"sessions\""), "{text}");
         assert!(!text.contains("screen_last_changed"));
         assert!(text.ends_with("\n]\n</workgroups>"));

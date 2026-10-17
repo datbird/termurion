@@ -108,19 +108,18 @@ impl NoteWindow {
                             if ui.button(&spec.labels[1]).clicked() {
                                 *confirming = false;
                             }
-                        } else if {
+                        } else {
                             let r = ui.button("Delete");
                             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, DELETE_ACCESSIBILITY));
-                            r.clicked()
-                        } {
-                            out = NoteEvent::RequestDelete;
+                            if r.clicked() {
+                                out = NoteEvent::RequestDelete;
+                            }
                         }
                     });
-                    if *confirming {
-                        if let Some(label) = crate::warnings::checkbox_label(&spec) {
+                    if *confirming
+                        && let Some(label) = crate::warnings::checkbox_label(&spec) {
                             ui.checkbox(suppress, label);
                         }
-                    }
                 }
                 let r = ui.add_sized(ui.available_size(), egui::TextEdit::multiline(text));
                 if *first {

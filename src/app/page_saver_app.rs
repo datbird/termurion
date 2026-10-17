@@ -498,11 +498,10 @@ impl App {
                 }
                 Act::Fail(text) => {
                     // A folder made while the save failed, its answer still on the way, goes too.
-                    if let Some(saving) = self.page_saves.remove(&pane) {
-                        if let Some(w) = &saving.worker {
+                    if let Some(saving) = self.page_saves.remove(&pane)
+                        && let Some(w) = &saving.worker {
                             let _ = w.send(saving.abandon_op());
                         }
-                    }
                     self.save_remote_staged_failed(pane);
                     self.page_save_alert(&text);
                 }
@@ -862,6 +861,7 @@ mod tests {
     /// `MAX_PAGE_RESULT` (a page whose HTML with its stylesheets passes the runner's 4 MiB default is
     /// saved), its reads up to `MAX_REPLY_BYTES`, and the runner honours a call's own cap.
     #[test]
+    #[allow(clippy::assertions_on_constants)] // the test pins a constant's value on purpose
     fn the_saver_reads_carry_its_stated_caps() {
         let src = include_str!("page_saver_app.rs");
         let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").unwrap()];

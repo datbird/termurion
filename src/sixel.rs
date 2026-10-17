@@ -125,7 +125,7 @@ pub fn decode(data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     }
     // Pixels no sixel set are opaque black, as iTerm2 shows them.
     let mut out = vec![0u8; w * h * 4];
-    for px in out.chunks_exact_mut(4) {
+    for px in out.as_chunks_mut::<4>().0 {
         px[3] = 0xff;
     }
     for (y, row) in rows.iter().enumerate().take(h) {

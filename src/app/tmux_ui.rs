@@ -188,11 +188,10 @@ impl App {
                         for line in text.split('\n') {
                             self.tmux_print(pane, &line.replace('\r', ""));
                         }
-                    } else if let Some(actions) = t.ctl.reply(tag, ok, &text, &data, &mut t.gw) {
-                        if !self.tmux_actions(pane, actions, event_loop) {
+                    } else if let Some(actions) = t.ctl.reply(tag, ok, &text, &data, &mut t.gw)
+                        && !self.tmux_actions(pane, actions, event_loop) {
                             return;
                         }
-                    }
                 }
                 Event::Initialized => t.hs.kick_off(&mut t.gw, Instant::now()),
                 Event::Note(n) => {

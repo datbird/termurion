@@ -96,11 +96,10 @@ pub fn inputs(line: &str, full_suffix: &str, remote_path: Option<&str>, cwd: Opt
     let (first, prefix) = crate::composer_suggest::word_to_complete(line);
     let directories: Vec<String> = if first {
         let mut dirs: Vec<String> = remote_path.map(|p| p.split(':').map(str::to_string).collect()).unwrap_or_default();
-        if line.contains('/') && !dirs.is_empty() {
-            if let Some(cwd) = cwd {
+        if line.contains('/') && !dirs.is_empty()
+            && let Some(cwd) = cwd {
                 dirs.insert(0, cwd.to_string());
             }
-        }
         dirs
     } else {
         cwd.or(home).map(|d| vec![d.to_string()]).unwrap_or_default()
@@ -398,7 +397,7 @@ mod tests {
             w.answered("S1");
         }
         assert_eq!(w.out("S1"), 0);
-        assert!(w.out.get("S1").is_none());
+        assert!(!w.out.contains_key("S1"));
         assert_eq!(w.dropped, 85);
     }
 }

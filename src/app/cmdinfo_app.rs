@@ -197,11 +197,10 @@ impl App {
     }
 
     pub(super) fn cmdinfo_copy(&mut self, text: String) {
-        if let Some(cb) = &mut self.clipboard {
-            if let Err(e) = cb.set_text(text) {
+        if let Some(cb) = &mut self.clipboard
+            && let Err(e) = cb.set_text(text) {
                 self.banners.set("clipboard", format!("Copy failed: {e}"));
             }
-        }
     }
 
     /// "Add Command as Snippet" (`CIV:334-341`): a snippet titled and valued with the command,

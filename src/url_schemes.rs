@@ -564,7 +564,7 @@ impl SchemeRegistry for WinRegistry {
     fn trusted_folders(&self) -> crate::link_scheme::TrustedFolders {
         use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_Windows};
         crate::link_scheme::TrustedFolders {
-            program_files: [&FOLDERID_ProgramFiles, &FOLDERID_ProgramFilesX86].into_iter().filter_map(|id| known_folder(id)).collect(),
+            program_files: [&FOLDERID_ProgramFiles, &FOLDERID_ProgramFilesX86].into_iter().filter_map(known_folder).collect(),
             windows: known_folder(&FOLDERID_Windows),
         }
     }
@@ -612,7 +612,7 @@ mod tests {
         assert_eq!(executable_path(r"C:\Program Files\Code\Code.exe").as_deref(), Some(r"C:\Program Files\Code\Code.exe"), "spaces are kept");
         // Never split at the first space: an unquoted answer with arguments stays one string, which the plan then refuses (not an .exe).
         assert_eq!(executable_path(r"C:\Tools\a.exe -c %1").as_deref(), Some(r"C:\Tools\a.exe -c %1"));
-        assert!(matches!(crate::link_scheme::exe_stem(r"C:\Tools\a.exe -c %1"), Err(_)));
+        assert!(crate::link_scheme::exe_stem(r"C:\Tools\a.exe -c %1").is_err());
         assert_eq!(executable_path(r#""C:\a.exe"#), None, "an unterminated quote names nothing");
         assert_eq!(executable_path("   "), None);
         assert_eq!(executable_path(r#""""#), None);
@@ -996,7 +996,7 @@ mod registration_tests {
         // and the record follows the new path.
         let mut moved = FakeScheme { command: Some(termurion_command(&old)), classes: Some(termurion_command(&old)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
         assert_eq!(stale_schemes(&t, &moved, &exe(), &gone), vec!["ssh".to_string()]);
-        assert_eq!(asked.borrow().as_slice(), [old.clone()], "only the recorded path is probed");
+        assert_eq!(asked.borrow().as_slice(), std::slice::from_ref(&old), "only the recorded path is probed");
         assert_eq!(repair(&t, &mut moved, &exe(), &gone), vec!["ssh".to_string()]);
         assert_eq!(moved.registered, ["ssh"]);
         assert_eq!(moved.recorded.as_deref(), Some(r"C:\T\termurion.exe"));

@@ -470,11 +470,10 @@ impl App {
                 PwmTarget::Session => None,
             };
             // A picker that cannot open ends its challenge (the prompt comes back with what was typed).
-            if !self.open_pwm_now(event_loop, o, &mut handled) {
-                if let Some(n) = challenge {
+            if !self.open_pwm_now(event_loop, o, &mut handled)
+                && let Some(n) = challenge {
                     self.basic_auth_picked(n, None);
                 }
-            }
         }
         if let Some(email) = self.pwm.lp_terminal.take() {
             self.open_lp_login(event_loop, &email);
@@ -699,11 +698,10 @@ impl App {
                 }
             }
             other => {
-                if let Some(w) = self.pwm_window.as_mut() {
-                    if w.window.event(other) {
+                if let Some(w) = self.pwm_window.as_mut()
+                    && w.window.event(other) {
                         w.window.request_redraw();
                     }
-                }
             }
         }
         true
@@ -989,11 +987,10 @@ impl App {
             }
             GearItem::Source(k) => self.pwm_choose(k),
             GearItem::Reset => {
-                if caps.can_reset {
-                    if let Some(w) = self.pwm_window.as_mut() {
+                if caps.can_reset
+                    && let Some(w) = self.pwm_window.as_mut() {
                         w.push_alert(Alert::reset(), AlertFor::Reset);
                     }
-                }
             }
             GearItem::SwitchAccount => {
                 if caps.multiple_accounts {
@@ -1002,11 +999,10 @@ impl App {
             }
             GearItem::Settings => {
                 let fields: Vec<(Field, Secret)> = caps.settings.iter().map(|f| (f.clone(), self.adapter_setting(f))).collect();
-                if !fields.is_empty() {
-                    if let Some(w) = self.pwm_window.as_mut() {
+                if !fields.is_empty()
+                    && let Some(w) = self.pwm_window.as_mut() {
                         w.push_alert(Alert::settings(&name, fields), AlertFor::Settings);
                     }
-                }
             }
             GearItem::Command(c) => self.pwm_job(Work::Command(c), true),
             GearItem::Reload => self.pwm_job(Work::Reload, true),
@@ -1049,11 +1045,10 @@ impl App {
                 }
             }
             AlertFor::Reveal => {
-                if button == Some(1) {
-                    if let Some(s) = alert.secret.as_ref() {
+                if button == Some(1)
+                    && let Some(s) = alert.secret.as_ref() {
                         self.pwm_copy(s);
                     }
-                }
             }
             AlertFor::Reset => {
                 if ok {
@@ -1083,11 +1078,10 @@ impl App {
                 }
             }
             AlertFor::CannotFind(kind, choosing) => {
-                if button == Some(2) && kind == Kind::LastPass {
-                    if let Some(p) = self.focused_id() {
+                if button == Some(2) && kind == Kind::LastPass
+                    && let Some(p) = self.focused_id() {
                         self.open_url(p, LP_HELP_URL);
                     }
-                }
                 let picked = if button == Some(0) { locate_cli(kind) } else { None };
                 match picked {
                     Some(path) => {
@@ -1126,11 +1120,10 @@ impl App {
     /// string (`copyPasswordToClipboard:`), and macOS keeps no history to leak it into.
     fn pwm_copy(&mut self, s: &Secret) {
         use arboard::SetExtWindows;
-        if let Some(cb) = &mut self.clipboard {
-            if let Err(e) = cb.set().exclude_from_history().exclude_from_cloud().text(s.expose()) {
+        if let Some(cb) = &mut self.clipboard
+            && let Err(e) = cb.set().exclude_from_history().exclude_from_cloud().text(s.expose()) {
                 self.banners.set("clipboard", format!("Copy failed: {e}"));
             }
-        }
     }
 
     /// Reset <name> Configuration: an adapter forgets its paths and settings.
@@ -1313,11 +1306,10 @@ impl App {
         if lock::take() {
             self.pwm_screen_locked();
         }
-        if lock::watched() == 0 && (self.pwm.auth.authenticated || self.pwm.browser_auth.authenticated) {
-            if let Some(h) = self.hwnd() {
+        if lock::watched() == 0 && (self.pwm.auth.authenticated || self.pwm.browser_auth.authenticated)
+            && let Some(h) = self.hwnd() {
                 lock::watch(h, self.notify.clone());
             }
-        }
         let replies: Vec<Reply> = [&self.pwm.worker, &self.pwm.browser_worker].into_iter().flatten().flat_map(|w| w.rx.try_iter()).collect();
         // Pickers that closed without a choice end their challenges.
         for n in std::mem::take(&mut *ORPHANED.lock().unwrap()) {
@@ -1464,11 +1456,10 @@ impl App {
     }
 
     fn restore_window(&mut self, here: Option<WindowId>) {
-        if let Some(h) = here {
-            if self.current_window() != Some(h) {
+        if let Some(h) = here
+            && self.current_window() != Some(h) {
                 self.enter(h);
             }
-        }
     }
 
     fn pwm_done(&mut self, done: Done) {
@@ -1505,11 +1496,10 @@ impl App {
                         w.selected = Some(i);
                     }
                 }
-                if let Some((name, user)) = w.select_pair.take() {
-                    if let Some(i) = w.accounts.iter().position(|a| a.account_name == name && a.user_name == user) {
+                if let Some((name, user)) = w.select_pair.take()
+                    && let Some(i) = w.accounts.iter().position(|a| a.account_name == name && a.user_name == user) {
                         w.selected = Some(i);
                     }
-                }
                 if let (Some(text), Some(id)) = (warning, adapter_identifier(kind)) {
                     let spec = adapter_warning_spec(id, &text);
                     let remembered = match self.warning_preempt(&spec) {
@@ -1525,11 +1515,10 @@ impl App {
             }
             Done::Unavailable { error, choosing } => {
                 self.forget_unusable_cli(kind);
-                if let Some((a, f)) = unavailable_alert(kind, &error) {
-                    if let Some(w) = self.pwm_window.as_mut() {
+                if let Some((a, f)) = unavailable_alert(kind, &error)
+                    && let Some(w) = self.pwm_window.as_mut() {
                         w.push_alert(a, f);
                     }
-                }
                 if choosing {
                     self.pwm_fall_back();
                 } else {
@@ -1863,11 +1852,10 @@ impl App {
     /// A new probe replaces a session's old one: its password is dropped and its round, whose
     /// delegate changed, ends without sending (`echoProbeDelegateWillChange:`).
     fn end_probe_of(&mut self, pane: PaneId) {
-        if self.pwm.entries.remove(&pane).is_some() {
-            if let Some(p) = self.panes.get_mut(&pane) {
+        if self.pwm.entries.remove(&pane).is_some()
+            && let Some(p) = self.panes.get_mut(&pane) {
                 p.no_focus_reports = p.no_focus_reports.saturating_sub(1);
             }
-        }
         self.pwm.rounds.retain(|r| !r.panes.contains(&pane));
         if let Some(p) = self.panes.get_mut(&pane).and_then(|p| p.echo_probe.as_mut()) {
             p.reset();

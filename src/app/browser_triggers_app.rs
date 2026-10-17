@@ -308,6 +308,7 @@ mod tests {
     /// Reader Mode enters through 13x4's one entry point; the workgroup actions never enter directly,
     /// they join the terminal trigger queue and its guards (B6: a hostile page cannot spam questions).
     #[test]
+    #[allow(clippy::assertions_on_constants)] // the test pins a constant's value on purpose
     fn workgroup_effects_follow_iterm2() {
         let me = prod(include_str!("browser_triggers_app.rs"));
         let effect = between(me, "pub(super) fn browser_trigger_effect", "\n    }\n");

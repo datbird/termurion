@@ -101,13 +101,11 @@ pub fn sanitize(job: &Job, prefs: &Prefs) -> String {
         };
     }
     // 7. Regex substitution (a bad expression changes nothing).
-    if job.flags & REGEX != 0 && !job.regex.is_empty() {
-        if let Ok(re) = fancy_regex::Regex::new(&job.regex) {
-            if let Ok(out) = re.try_replacen(&t, 0, expand_vim(&job.substitution).as_str()) {
+    if job.flags & REGEX != 0 && !job.regex.is_empty()
+        && let Ok(re) = fancy_regex::Regex::new(&job.regex)
+            && let Ok(out) = re.try_replacen(&t, 0, expand_vim(&job.substitution).as_str()) {
                 t = out.into_owned();
             }
-        }
-    }
     // 8. Base64.
     if job.flags & BASE64 != 0 {
         t = base64_lines(t.as_bytes());
@@ -268,11 +266,10 @@ pub fn next_chunk(text: &[u16], at: usize, units: usize, block_at_newline: bool)
     if end < text.len() && (0xd800..0xdc00).contains(&text[end - 1]) {
         end += 1;
     }
-    if block_at_newline {
-        if let Some(i) = text[at..end].iter().position(|c| *c == b'\n' as u16 || *c == b'\r' as u16) {
+    if block_at_newline
+        && let Some(i) = text[at..end].iter().position(|c| *c == b'\n' as u16 || *c == b'\r' as u16) {
             end = at + i + 1;
         }
-    }
     end
 }
 

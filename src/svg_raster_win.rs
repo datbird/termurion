@@ -229,11 +229,10 @@ mod tests {
                 }
             }
             while let Ok(p) = rx.try_recv() {
-                if let Some(e) = &p.event {
-                    if on(e) {
+                if let Some(e) = &p.event
+                    && on(e) {
                         return true;
                     }
-                }
             }
             std::thread::sleep(Duration::from_millis(10));
         }

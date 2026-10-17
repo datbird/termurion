@@ -121,7 +121,7 @@ pub fn status_key(st: &Status) -> String {
 }
 
 /// Buckets by priority, then lower-cased text, then the raw text; "No status" last.
-pub fn bucket_order(keys: &mut Vec<String>, patterns: &[Pattern]) {
+pub fn bucket_order(keys: &mut [String], patterns: &[Pattern]) {
     keys.sort_by(|a, b| {
         let rank = |k: &String| (k == NO_STATUS, priority(Some(k), patterns), k.to_lowercase(), k.clone());
         rank(a).cmp(&rank(b))
@@ -274,11 +274,10 @@ pub fn counts(mode: GroupMode, world: &World, patterns: &[Pattern], search: &str
 }
 
 fn collect(row: &Row, out: &mut Vec<PaneId>) {
-    if let RowKey::Session(p) = row.key {
-        if !out.contains(&p) {
+    if let RowKey::Session(p) = row.key
+        && !out.contains(&p) {
             out.push(p);
         }
-    }
     for c in &row.children {
         collect(c, out);
     }

@@ -31,6 +31,7 @@ pub fn fresh_id() -> String {
 /// `canonicalOrder` (`ORD`). The tab bar's two ordering invariants:
 ///   1. Pinned tabs form a prefix (pinned-left, unpinned-right).
 ///   2. A group's members are contiguous.
+///
 /// When both cannot hold (a group with pinned and unpinned members), the pinned invariant
 /// wins: the repair never moves a tab across the pinned boundary, so such a group spans the
 /// boundary as at most two runs.
@@ -72,6 +73,7 @@ pub fn canonical_order(groups: &[Option<&str>], pinned: &[bool]) -> Vec<usize> {
 ///   - otherwise (at a group's edge, or not near a group): leave any group, so dragging a
 ///     member out removes it, including a one-tab group's sole member, whose group dissolves
 ///     when its last tab is dragged out.
+///
 /// Only the dragged tab's membership ever changes, so neighbors are never absorbed.
 pub fn resolved_group(index: usize, order: &[Option<&str>]) -> Option<String> {
     if index >= order.len() {
@@ -338,7 +340,7 @@ pub const PALETTE: [Rgb; 7] = [
 /// changes, keeping pinned tabs in front: one past the last pinned tab other than itself.
 /// The index is `moveTabAtIndex:toIndex:`'s (the tab is taken out, then put back there).
 pub fn pin_target(pinned: &[bool], index: usize) -> usize {
-    pinned.iter().enumerate().filter(|&(i, p)| *p && i != index).map(|(i, _)| i + 1).last().unwrap_or(0)
+    pinned.iter().enumerate().filter(|&(i, p)| *p && i != index).map(|(i, _)| i + 1).next_back().unwrap_or(0)
 }
 
 /// `togglePinTab` (`PTS:355-397`) applied to an order: the tabs `members` (input indices, in

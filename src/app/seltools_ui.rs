@@ -146,11 +146,10 @@ impl App {
                     return true;
                 }
                 let text = self.panes.get(&id).map(|p| p.sgr_copy());
-                if let (Some(text), Some(cb)) = (text, self.clipboard.as_mut()) {
-                    if let Err(e) = cb.set_text(text) {
+                if let (Some(text), Some(cb)) = (text, self.clipboard.as_mut())
+                    && let Err(e) = cb.set_text(text) {
                         self.banners.set("clipboard", format!("Copy failed: {e}"));
                     }
-                }
             }
             "toggleSelectionRespectsSoftBoundaries:" => {
                 let on = !self.globals.bool("Selection Respects Soft Boundaries");

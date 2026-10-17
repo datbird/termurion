@@ -847,11 +847,10 @@ impl Renderer {
         if let Some(f) = db.faces().flat_map(|f| f.families.iter()).find(|(n, _)| n.eq_ignore_ascii_case(name)) {
             return f.0.clone();
         }
-        if let Some(face) = db.faces().find(|f| f.post_script_name.eq_ignore_ascii_case(name)) {
-            if let Some((family, _)) = face.families.first() {
+        if let Some(face) = db.faces().find(|f| f.post_script_name.eq_ignore_ascii_case(name))
+            && let Some((family, _)) = face.families.first() {
                 return family.clone();
             }
-        }
         // "CascadiaMono-Regular" or "JetBrainsMono-Bold": drop the style word, then match
         // family names with spaces removed ("Cascadia Mono", "JetBrains Mono").
         let guess = crate::import::family_from_postscript(name);
@@ -907,7 +906,7 @@ impl Renderer {
             .collect();
         // The sets come from the regular face's GSUB table.
         let first = db.faces().find(|f| f.style == glyphon::fontdb::Style::Normal && f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(&family))).map(|f| f.id);
-        let sets = first.and_then(|id| db.with_face_data(id, |data, index| fonts::stylistic_sets(data, index))).unwrap_or_default();
+        let sets = first.and_then(|id| db.with_face_data(id, fonts::stylistic_sets)).unwrap_or_default();
         FontInfo { family, weight, sets, members }
     }
 
@@ -1190,7 +1189,7 @@ impl Renderer {
         for y in 0..h as usize {
             let line = &data[y * padded as usize..y * padded as usize + row as usize];
             if bgra {
-                for p in line.chunks_exact(4) {
+                for p in line.as_chunks::<4>().0 {
                     out.extend_from_slice(&[p[2], p[1], p[0], p[3]]);
                 }
             } else {
@@ -1831,8 +1830,7 @@ mod tests {
         queue.submit(Some(enc.finish()));
         buf.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        let data = buf.slice(..).get_mapped_range().unwrap().to_vec();
-        data
+        buf.slice(..).get_mapped_range().unwrap().to_vec()
     }
 
     /// Device loss, simulated with `Device::destroy`: the loss is reported to `gpu_pick::take_lost`, and the
@@ -2154,7 +2152,7 @@ mod tests {
         let bold = shot(&mut r, plain, true, false, 1);
         let (l0, r0) = cols(&regular);
         let (l1, r1) = cols(&bold);
-        assert!(r1 - l1 >= r0 - l0 + 1 && l1 == l0, "{family}: regular {l0}..{r0}, bold {l1}..{r1}");
+        assert!(r1 - l1 > r0 - l0 && l1 == l0, "{family}: regular {l0}..{r0}, bold {l1}..{r1}");
     }
 
     /// The glyph ids `text` shapes to in `family` with `features` (None: the attributes the
@@ -2211,7 +2209,7 @@ mod tests {
             println!("skip: Cascadia Code is not installed");
             return;
         };
-        let sets = fs.db().with_face_data(id, |data, index| fonts::stylistic_sets(data, index)).unwrap_or_default();
+        let sets = fs.db().with_face_data(id, fonts::stylistic_sets).unwrap_or_default();
         println!("STYLISTIC SETS: {sets:?}");
         assert!(!sets.is_empty(), "Cascadia Code has stylistic sets");
         let text = "abcdefghijklmnopqrstuvwxyz0123456789@&$%*{}<>|\\~`^";

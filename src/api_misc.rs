@@ -260,7 +260,7 @@ mod tests {
         // Two runs on one line (a bidi split): both Character, the first connected.
         let got = from_runs(&[((2, 0), (2, 1)), ((2, 4), (2, 6)), ((3, 2), (3, 3))], 10, 80);
         let span = |s: &pb::SubSelection| {
-            let r = s.windowed_coord_range.clone().unwrap().coord_range.unwrap();
+            let r = s.windowed_coord_range.unwrap().coord_range.unwrap();
             (r.start.unwrap().y(), r.start.unwrap().x(), r.end.unwrap().y(), r.end.unwrap().x())
         };
         assert_eq!(got.len(), 3);

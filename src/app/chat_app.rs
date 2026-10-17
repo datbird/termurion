@@ -64,11 +64,10 @@ fn write_effect(db: &mut Store, effect: &Effect) -> Result<(), String> {
 /// Answers the hand-off to the chat's agent.
 pub(super) fn publish_in(db: &mut Store, broker: &mut Broker, chat: &str, message: Message, partial: bool) -> Result<Vec<Effect>, String> {
     // Read once per chat; a failed read leaves the chat unknown, to be read again.
-    if !broker.knows(chat) {
-        if let Ok(id) = db.newest_id(chat) {
+    if !broker.knows(chat)
+        && let Ok(id) = db.newest_id(chat) {
             broker.seed_newest(chat, id);
         }
-    }
     let target = match &message.content {
         // A row of another chat is never a target.
         Content::Append { uuid, .. } | Content::AppendAttachment { uuid, .. } | Content::Commit(uuid) => db.message(&broker.append_target(chat, uuid)).ok().flatten().filter(|t| t.chat_id == chat),
@@ -509,13 +508,13 @@ impl App {
     pub(super) fn chat_tick(&mut self) -> Option<Instant> {
         let busy = |a: &Agent| a.in_turn || a.driver.is_some() || a.files.is_some();
         if self.chat_db.is_some() && self.chat_agents.values().any(busy) {
-            let fx = self.engine(|cx| Engine::gate_tick(cx)).unwrap_or_default();
+            let fx = self.engine(Engine::gate_tick).unwrap_or_default();
             self.chat_apply(fx);
             let reading: Vec<String> = self.chat_agents.iter().filter(|(_, a)| a.driver.is_some()).map(|(c, _)| c.clone()).collect();
             for chat in reading {
                 self.ai_refresh_volatile(&chat);
             }
-            let fx = self.engine(|cx| Engine::poll(cx)).unwrap_or_default();
+            let fx = self.engine(Engine::poll).unwrap_or_default();
             self.chat_apply(fx);
         }
         for (chat, request, send, safe) in self.ai_check_tick() {
@@ -706,12 +705,11 @@ impl App {
     pub(super) fn ai_run_tool(&mut self, chat: &str, request_id: &str, pane: PaneId, call: &Call, send: Option<String>) {
         // The kind first, before any terminal state is touched (`ai_prompt_text` reads a terminal).
         let browser_call = call.category().is_browser();
-        if self.panes.contains_key(&pane) {
-            if let Some(o) = crate::ai_browser::kind_refusal(browser_call, self.is_browser_pane(pane)) {
+        if self.panes.contains_key(&pane)
+            && let Some(o) = crate::ai_browser::kind_refusal(browser_call, self.is_browser_pane(pane)) {
                 let o = crate::ai_browser::mirror_kind(o, self.orch_mirrors.keys().any(|(c, r)| c == chat && r == request_id));
                 return self.ai_tool_finished(chat, request_id, o);
             }
-        }
         if browser_call {
             // R13xai-2: with the chat's gate closed nothing starts; the answer is dropped by the
             // engine's own continuation gate. A new call never cancels a waiting browser call.

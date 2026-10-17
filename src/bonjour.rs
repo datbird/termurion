@@ -245,6 +245,12 @@ pub struct Ended {
     changed: std::sync::Condvar,
 }
 
+impl Default for Ended {
+    fn default() -> Ended {
+        Ended::new()
+    }
+}
+
 impl Ended {
     pub const fn new() -> Ended {
         Ended { ids: std::sync::Mutex::new(Vec::new()), changed: std::sync::Condvar::new() }
@@ -314,6 +320,10 @@ impl<A: DnsSd> Requests<A> {
     /// Open requests, cancelled ones whose last callback has not run included.
     pub fn len(&self) -> usize {
         self.open.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.open.is_empty()
     }
 
     /// Cancels a request once; one that already ended (a completed resolve) is not cancelled.
@@ -513,7 +523,7 @@ mod browser {
         let mut cancel = Box::new(DNS_SERVICE_CANCEL { reserved: std::ptr::null_mut() });
         // SAFETY: as in `browse`.
         let status = unsafe { DnsServiceResolve(&*request, &mut *cancel) };
-        (status == DNS_REQUEST_PENDING).then(|| Request::Resolve { _request: request, _name: name, cancel })
+        (status == DNS_REQUEST_PENDING).then_some(Request::Resolve { _request: request, _name: name, cancel })
     }
 
     pub struct Browser {
@@ -550,11 +560,10 @@ mod browser {
             // The records are the system's: copy what is needed, then free the list.
             while !r.is_null() {
                 let rec = unsafe { &*r };
-                if rec.wType == DNS_TYPE_PTR {
-                    if let Some(full) = unsafe { read_wide(rec.Data.PTR.pNameHost) } {
+                if rec.wType == DNS_TYPE_PTR
+                    && let Some(full) = unsafe { read_wide(rec.Data.PTR.pNameHost) } {
                         send(Msg::Browsed { id, full, gone: rec.dwTtl == 0 });
                     }
-                }
                 r = rec.pNext;
             }
             if !record.is_null() {

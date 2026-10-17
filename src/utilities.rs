@@ -130,11 +130,10 @@ pub fn ensure(exe_dir: &Path) -> Result<Ensured, String> {
     }
     let api = folder.join(API_SCRIPT);
     let script = crate::util_api::script();
-    if std::fs::read(&api).ok().as_deref() != Some(script.as_bytes()) {
-        if let Err(e) = std::fs::write(&api, script) {
+    if std::fs::read(&api).ok().as_deref() != Some(script.as_bytes())
+        && let Err(e) = std::fs::write(&api, script) {
             failed.push(format!("{API_SCRIPT}: {e}"));
         }
-    }
     Ok(Ensured { folder, failed })
 }
 

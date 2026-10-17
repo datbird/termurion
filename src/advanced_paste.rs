@@ -221,7 +221,7 @@ fn decimal(n: f64) -> String {
     let digits: Vec<char> = whole.chars().collect();
     let mut grouped = String::new();
     for (i, c) in digits.iter().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             grouped.push(',');
         }
         grouped.push(*c);

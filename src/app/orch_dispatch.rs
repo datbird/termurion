@@ -93,6 +93,7 @@ pub(super) enum Proposed {
 }
 
 /// A check's progress.
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 pub(super) enum Run {
     Running(Runner, Endpoint),
     Done(Verdict),
@@ -463,8 +464,8 @@ impl App {
                 let is_review = self.member_config(pane).is_some_and(|(i, c)| self.workgroups.get(&i).and_then(|inst| inst.workgroup.session(&c)).is_some_and(|s| s.mode == crate::workgroup::Mode::CodeReview));
                 // With no prompt overlay up, the review restarts its program: only from idle (`DI:3177-3189`),
                 // so a model never kills a review under way.
-                if is_review {
-                    if let Some((i, c)) = self.member_config(pane) {
+                if is_review
+                    && let Some((i, c)) = self.member_config(pane) {
                         let overlay = self.workgroups.get(&i).is_some_and(|inst| inst.review.overlays.contains_key(&c));
                         let state = self.panes.get(&pane).map_or(crate::session_state::State::Unknown, |p| crate::session_state::state(&p.own().tab_status));
                         if !overlay && state != crate::session_state::State::Idle {
@@ -475,7 +476,6 @@ impl App {
                             return Err(OrchError::Unsupported(ot::review_busy(&role, &wg, state.word())));
                         }
                     }
-                }
                 match instance.filter(|_| is_review) {
                     Some(i) if self.request_review_with(&i, prompt) => Ok(done(ot::ack_json())),
                     Some(_) => Err(OrchError::Unsupported("The code review session could not start a review now (it needs to be live and restartable).".to_string())),
@@ -1076,11 +1076,10 @@ impl App {
             return done(crate::ai_browser::NOT_OFFERED.to_string());
         }
         if ot::mirror_needs_claim(category) {
-            if !category.is_browser() {
-                if let Err(e) = typeable(&guid, self.orch_pane_state(pane)) {
+            if !category.is_browser()
+                && let Err(e) = typeable(&guid, self.orch_pane_state(pane)) {
                     return done(e.message());
                 }
-            }
             let scope = self.claim_scope_of(pane);
             if let Some(o) = self.orch_claim(chat, call_id, &scope, name, args, Some(&guid)) {
                 return o;
@@ -1166,11 +1165,10 @@ impl App {
             None => None,
         };
         let cwd = spawn_cwd(a.cwd.as_deref())?;
-        if let Some(d) = &cwd {
-            if !crate::localfs::is_local_dir(std::path::Path::new(d)) {
+        if let Some(d) = &cwd
+            && !crate::localfs::is_local_dir(std::path::Path::new(d)) {
                 return Err(OrchError::Malformed(format!("cwd is not a folder: {d}")));
             }
-        }
         let before: HashSet<PaneId> = self.panes.keys().copied().collect();
         self.start_command_override = a.command.clone();
         self.start_dir_override = cwd.map(crate::arrangement::Folder::Forced);

@@ -214,12 +214,11 @@ pub fn op_patch_item(original: &str, name: Option<&str>, user: Option<&str>, p: 
                 f["value"] = serde_json::Value::String(user.to_string());
                 patched_user = true;
             }
-        } else if is_password {
-            if let Some(p) = p {
+        } else if is_password
+            && let Some(p) = p {
                 f["value"] = serde_json::Value::String(p.expose().to_string());
                 patched_password = true;
             }
-        }
     }
     if let Some(user) = user.filter(|_| !patched_user) {
         fields.push(serde_json::json!({"id": "username", "type": "STRING", "purpose": "USERNAME", "label": "username", "value": user}));
@@ -523,6 +522,7 @@ pub fn resolve_op<R: Runner>(runner: &mut R, candidates: &[String], exists: &mut
 /// LastPass's counterpart to `resolve_op`: since `lpass_paths` is always empty on Windows, there
 /// is nothing to probe, so this is a placeholder for symmetry with `resolve_op` (the window's
 /// wiring calls one or the other by kind); the real search is entirely Locate.
+#[allow(clippy::result_unit_err)] // the caller only needs to know it failed; the error carries nothing to name
 pub fn resolve_lpass() -> Result<String, ()> {
     Err(())
 }

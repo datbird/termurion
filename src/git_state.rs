@@ -1249,8 +1249,8 @@ fn extra_runs(run: &dyn GitRun, git: &Path, dir: &Path, vet: &Vetted, state: &mu
     };
     let base = base.map(str::trim).filter(|b| !b.is_empty() && *b != "HEAD" && !b.starts_with('-') && b.chars().count() <= 256 && !b.chars().any(char::is_control));
     let mut statuses = None;
-    if let Some(b) = base {
-        if !left().is_zero() {
+    if let Some(b) = base
+        && !left().is_zero() {
             let mut args = with_extra(BASE_TREE_ARGS, &vet.args);
             args.push(format!("{b}^{{tree}}"));
             let tree = exit0(run.run(git, dir, &args, left(), Some(SMALL_CAP))).map(|o| String::from_utf8_lossy(&o).trim().to_string());
@@ -1260,7 +1260,6 @@ fn extra_runs(run: &dyn GitRun, git: &Path, dir: &Path, vet: &Vetted, state: &mu
                 statuses = exit0(run.run(git, dir, &args, left(), Some(STATUS_CAP))).map(|o| parse_base_diff(&o));
             }
         }
-    }
     if statuses.is_none() && !left().is_zero() {
         statuses = exit0(run.run(git, dir, &with_extra(FILES_ARGS, &vet.args), left(), Some(STATUS_CAP))).map(|o| parse_file_statuses(&o));
     }
@@ -1381,11 +1380,10 @@ pub enum Lookup {
 
 impl WorkerCache {
     pub fn lookup(&mut self, path: &str, now: Instant) -> Lookup {
-        if let Some((s, made)) = self.cache.get(path) {
-            if now.saturating_duration_since(*made) < CACHE_TTL {
+        if let Some((s, made)) = self.cache.get(path)
+            && now.saturating_duration_since(*made) < CACHE_TTL {
                 return Lookup::Cached(Some(s.clone()));
             }
-        }
         match self.pending.get_mut(path) {
             Some(n) if *n > 0 => {
                 *n += 1;
@@ -1404,11 +1402,10 @@ impl WorkerCache {
     /// that stops being a repository shows its last state until `invalidate`, kept).
     pub fn finish(&mut self, path: &str, fetched: Fetched, now: Instant) -> Fetched {
         self.pending.remove(path);
-        if let Some((cached, made)) = self.cache.get(path) {
-            if fetched.state.is_none() || *made > now {
+        if let Some((cached, made)) = self.cache.get(path)
+            && (fetched.state.is_none() || *made > now) {
                 return Fetched { state: Some(cached.clone()), timed_out: fetched.timed_out };
             }
-        }
         if let Some(s) = &fetched.state {
             self.cache.insert(path.to_string(), (s.clone(), now));
         }
@@ -2905,7 +2902,7 @@ u UU N... 100644 100644 100644 100644 aaaa bbbb cccc d.rs\0";
             "a copy and an unknown letter are skipped"
         );
 
-        assert_eq!(diff_stats(b"M\0a\0A\0b\0D\0c\0T\0d\0", b"3\t1\ta\010\t0\tb\01\t1\td\0", 2), (3, 2, 1, 4, 2));
+        assert_eq!(diff_stats(b"M\0a\0A\0b\0D\0c\0T\0d\0", b"3\t1\ta\x0010\t0\tb\x001\t1\td\0", 2), (3, 2, 1, 4, 2));
         assert_eq!(diff_stats(b"M\0bin\0", b"-\t-\tbin\0", 0), (0, 1, 0, 0, 0), "a binary file adds no lines");
         assert_eq!(diff_stats(b"", b"", 5), (5, 0, 0, 0, 0), "untracked files count as added");
 

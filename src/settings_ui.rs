@@ -625,11 +625,10 @@ impl SettingsWindow {
         let host = crate::egui_host::EguiHost::open(event_loop, instance, adapter, device, queue, title, w, h)?;
         let host_dark = host.window.theme().is_none_or(|t| t == winit::window::Theme::Dark);
         settings_keys::add_icon_font(host.ctx());
-        if mode == Mode::Settings {
-            if let Some(h) = host.hwnd() {
+        if mode == Mode::Settings
+            && let Some(h) = host.hwnd() {
                 crate::winkeys::set_settings_window(h);
             }
-        }
         Ok(SettingsWindow {
             host,
             selected: None,
@@ -732,8 +731,8 @@ impl SettingsWindow {
             let s = m.state();
             self.mods = Mods { shift: s.shift_key(), alt: s.alt_key(), ctrl: s.control_key(), cmd: s.super_key() };
         }
-        if let WindowEvent::KeyboardInput { event: k, .. } = event {
-            if self.keys.recording() {
+        if let WindowEvent::KeyboardInput { event: k, .. } = event
+            && self.keys.recording() {
                 if k.state == winit::event::ElementState::Pressed {
                     let types = k.text.as_deref().is_some_and(|t| t.chars().any(|c| !c.is_control()));
                     let key = crate::winkeys::vk_to_key(crate::winkeys::vk_of(k.physical_key));
@@ -756,7 +755,6 @@ impl SettingsWindow {
                 self.host.window.request_redraw();
                 return true;
             }
-        }
         self.host.event(event)
     }
 
@@ -866,28 +864,26 @@ impl SettingsWindow {
             if sheet.is_none() {
                 *sheet = keys.ask.take();
             }
-            if let Some(w) = sheet.as_mut() {
-                if let Some(answer) = settings_keys::sheet_warning(ui.ctx(), globals, w, show_remembered) {
+            if let Some(w) = sheet.as_mut()
+                && let Some(answer) = settings_keys::sheet_warning(ui.ctx(), globals, w, show_remembered) {
                     // Forget shows the warning again; any other answer ends it.
                     if answer.index < answer.spec.labels.len() {
                         // "Update Which Modes?": load the preset the click was about (P21).
-                        if crate::settings_presets::is_question_id(answer.spec.id.as_deref()) {
-                            if let Some((name, _)) = presets.pending.take() {
-                                if let Some(preset) = crate::color_presets::find(globals, &name) {
+                        if crate::settings_presets::is_question_id(answer.spec.id.as_deref())
+                            && let Some((name, _)) = presets.pending.take()
+                                && let Some(preset) = crate::color_presets::find(globals, &name) {
                                     if let (Some(pane), false) = (edit_session, store.is_session(&page_guid)) {
                                         // A session with no copy yet: load into a scratch profile; the app divorces.
                                         if let Some(base) = store.get(&page_guid).cloned() {
                                             let mut p = base.clone();
-                                            crate::settings_presets::load(&preset, &mut p, answer.index == 0, presets.editing.dark, dark);
+                                            crate::settings_presets::load(preset, &mut p, answer.index == 0, presets.editing.dark, dark);
                                             edit = Edit::SessionEdit(pane, session_diff(&base, &p));
                                         }
                                     } else if let Some(p) = store.get_mut(&page_guid) {
-                                        crate::settings_presets::load(&preset, p, answer.index == 0, presets.editing.dark, dark);
+                                        crate::settings_presets::load(preset, p, answer.index == 0, presets.editing.dark, dark);
                                         edit = Edit::Changed(page_guid.clone());
                                     }
                                 }
-                            }
-                        }
                         // Copy to Profile's question: Replace copies (the app does it), anything else
                         // changes nothing; a dynamic destination then shows its warning.
                         let replacing = answer.spec.id.as_deref() == Some("NoSyncReplaceProfileWarning");
@@ -930,16 +926,14 @@ impl SettingsWindow {
                             },
                             Some(settings_keys::SheetThen::Nothing) | None => {}
                         }
-                        if let Some(guid) = then_dynamic {
-                            if let Some(spec) = store.get(&guid).and_then(settings_keys::dynamic_profile_spec) {
+                        if let Some(guid) = then_dynamic
+                            && let Some(spec) = store.get(&guid).and_then(settings_keys::dynamic_profile_spec) {
                                 *sheet = Some(settings_keys::SheetWarning::new(spec, settings_keys::SheetThen::DynamicProfile(guid)));
                             }
-                        }
                     }
                     answered.push(answer);
                     ui.ctx().request_repaint();
                 }
-            }
             // Bulk Copy's sheet.
             if let Some(b) = bulk.as_mut() {
                 match pa::show(ui.ctx(), b, &list_rows, &store.default_guid) {
@@ -1047,17 +1041,17 @@ impl SettingsWindow {
                             Page::Advanced => crate::settings_advanced_pane::page(ui, globals, advanced),
                             Page::Appearance => settings_keys::schema_page(ui, globals, "Appearance").0,
                             Page::Arrangements => crate::settings_arrangements::page(ui, globals, &profile_tables, keys, arr),
-                            Page::Shortcuts => match {
+                            Page::Shortcuts => {
                                 crate::color_presets::remember_names(globals);
-                                crate::settings_shortcuts::page(ui, globals, snippets, shortcuts, &profiles)
-                            } {
-                                crate::settings_shortcuts::Changed::None => false,
-                                crate::settings_shortcuts::Changed::Actions => true,
-                                crate::settings_shortcuts::Changed::Snippets => {
-                                    edit = Edit::SnippetsChanged;
-                                    false
+                                match crate::settings_shortcuts::page(ui, globals, snippets, shortcuts, &profiles) {
+                                    crate::settings_shortcuts::Changed::None => false,
+                                    crate::settings_shortcuts::Changed::Actions => true,
+                                    crate::settings_shortcuts::Changed::Snippets => {
+                                        edit = Edit::SnippetsChanged;
+                                        false
+                                    }
                                 }
-                            },
+                            }
                             _ => settings_keys::pointer_page(ui, globals, keys, &profiles),
                         };
                         if changed {
@@ -1346,21 +1340,19 @@ impl SettingsWindow {
                         let points: Vec<(String, crate::palette::Rgb)> = crate::hue_wheel_ui::KEYS.iter().map(|k| ((*k).to_string(), profile.color_for(k, dark))).collect();
                         let moved = crate::hue_wheel_ui::wheel(&mut child, &points, &mut drag);
                         child.data_mut(|d| d.insert_temp(id, drag));
-                        if let Some((key, c)) = moved {
-                            if let Some(s) = schema::find(&key) {
+                        if let Some((key, c)) = moved
+                            && let Some(s) = schema::find(&key) {
                                 let key = edit_key(profile, s, dark);
                                 profile.set(&key, value_of_rgb([c.r, c.g, c.b]));
                                 crate::bindings::drop_for_write(profile, &key);
                                 edit = Edit::Changed(selected.clone());
                             }
-                        }
                     }
                     // The Colors tab is iTerm2's grid of row headers and wells, not a list of sections.
-                    if colors {
-                        if crate::settings_colors::body(ui, profile, dark) {
+                    if colors
+                        && crate::settings_colors::body(ui, profile, dark) {
                             edit = Edit::Changed(selected.clone());
                         }
-                    }
                     for (section, list) in sections(schema::TABS[tab]).into_iter().filter(|_| !colors) {
                         if !section.is_empty() && section != "Key Mappings" {
                             ui.add_space(8.0);
@@ -1417,11 +1409,10 @@ impl SettingsWindow {
                             }
                             // The session's own hotkey: a row only while Settings edits a session.
                             if s.key == "Session Hotkey" {
-                                if let Some(pane) = crate::settings_hotkey::session_row_pane(edit_session, &selected, edit_session_profile.as_deref()) {
-                                    if let Some(e) = crate::settings_hotkey::session_row(ui, pane, session_hotkey.as_ref(), session_hotkey_waiting, session_hotkey_refused, hk, keys) {
+                                if let Some(pane) = crate::settings_hotkey::session_row_pane(edit_session, &selected, edit_session_profile.as_deref())
+                                    && let Some(e) = crate::settings_hotkey::session_row(ui, pane, session_hotkey.as_ref(), session_hotkey_waiting, session_hotkey_refused, hk, keys) {
                                         edit = e;
                                     }
-                                }
                                 continue;
                             }
                             if s.key == "Keyboard Map" {
@@ -1662,15 +1653,13 @@ impl SettingsWindow {
         });
         // The first edit of a dynamic profile that is not rewritable asks "Changes Will Be Lost"
         // (`PPV:1196-1253`), once per profile in this window; the edit itself stands.
-        if let Edit::Changed(guid) = &edit {
-            if !guid.is_empty() && self.sheet.is_none() && !self.dynamic_warned.contains(guid) {
-                if let Some(spec) = store.profiles.iter().find(|p| p.guid() == *guid).and_then(settings_keys::dynamic_profile_spec) {
+        if let Edit::Changed(guid) = &edit
+            && !guid.is_empty() && self.sheet.is_none() && !self.dynamic_warned.contains(guid)
+                && let Some(spec) = store.profiles.iter().find(|p| p.guid() == *guid).and_then(settings_keys::dynamic_profile_spec) {
                     self.dynamic_warned.insert(guid.clone());
                     self.sheet = Some(settings_keys::SheetWarning::new(spec, settings_keys::SheetThen::DynamicProfile(guid.clone())));
                     self.host.request_redraw();
                 }
-            }
-        }
         // The shortcut a profile took leaves every other profile (`setShortcutValueToSelectedItem`).
         if let Some((guid, key)) = shortcut_take {
             crate::profile_menu::take_shortcut(&mut store.profiles, &guid, key);
@@ -1683,11 +1672,10 @@ impl SettingsWindow {
             edit = Edit::Error(e);
         }
         // The Triggers editor's Import and Export alerts, one a frame.
-        if matches!(edit, Edit::None) {
-            if let Some((heading, text)) = crate::settings_triggers::take_alert() {
+        if matches!(edit, Edit::None)
+            && let Some((heading, text)) = crate::settings_triggers::take_alert() {
                 edit = Edit::Alert { heading, text };
             }
-        }
         if crate::settings_triggers::alerts_pending() {
             self.host.request_redraw();
         }
@@ -2307,8 +2295,8 @@ fn background_image_row(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
                 changed = true;
             }
         }
-        if ui.button("Folder...").on_hover_text(BACKGROUND_PICKER_MESSAGE).clicked() {
-            if let Some(path) = rfd::FileDialog::new().set_title(BACKGROUND_PICKER_MESSAGE).pick_folder() {
+        if ui.button("Folder...").on_hover_text(BACKGROUND_PICKER_MESSAGE).clicked()
+            && let Some(path) = rfd::FileDialog::new().set_title(BACKGROUND_PICKER_MESSAGE).pick_folder() {
                 if crate::bgimage::folder_images(&path).is_empty() {
                     // An empty folder is not taken (`applyBackgroundImageSelectionAtPath:`).
                     let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -2318,7 +2306,6 @@ fn background_image_row(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
                     changed = true;
                 }
             }
-        }
     });
     changed
 }
@@ -3455,7 +3442,7 @@ mod tests {
         let c = copied_profile(&session, &dest);
         assert_eq!((c.guid(), c.name()), ("d".to_string(), "Work".to_string()));
         for gone in [crate::session_profile::ORIGINAL_GUID, "Session Hotkey", "Bonjour Service Address", "Is Dynamic Profile"] {
-            assert!(c.values.get(gone).is_none(), "{gone}");
+            assert!(!c.values.contains_key(gone), "{gone}");
         }
         assert_eq!(c.string("Ansi 1 Color"), "changed");
         assert_eq!(c.string("Shortcut"), "W", "the destination keeps its own shortcut");
@@ -3494,7 +3481,7 @@ mod tests {
         marked.set("Is Dynamic Profile", Value::Boolean(true));
         let mut plain = Profile::new("P");
         plain.set("Guid", Value::String("p".into()));
-        assert!(copied_profile(&marked, &plain).values.get("Is Dynamic Profile").is_none());
+        assert!(!copied_profile(&marked, &plain).values.contains_key("Is Dynamic Profile"));
     }
 }
 

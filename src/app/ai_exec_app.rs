@@ -33,7 +33,7 @@ fn prompt_capture(screen: &Screen, running: &Running) -> Option<Outcome> {
 /// from the oldest line kept, which answers the lost-output notice (iTerm2).
 fn marker_capture(screen: &Screen, running: &Running, uuid: &str) -> Option<Outcome> {
     let from = running.start_line.max(screen.oldest_abs_line());
-    let Some(text) = screen.abs_text(from, screen.abs_cursor_line() + 1) else { return None };
+    let text = screen.abs_text(from, screen.abs_cursor_line() + 1)?;
     match ai_exec::marker_output(&text, uuid) {
         MarkerFound::Waiting => None,
         MarkerFound::Output(t) => Some(ai_exec::output_outcome(&running.command, t)),
@@ -107,11 +107,10 @@ impl App {
         for pane in self.ai_execs.keys().copied().collect::<Vec<_>>() {
             let Some(running) = self.ai_execs.get(&pane) else { continue };
             let done = capture(self.panes.get(&pane).map(|p| p.own()), running);
-            if let Some(outcome) = done {
-                if let Some(r) = self.ai_execs.remove(&pane) {
+            if let Some(outcome) = done
+                && let Some(r) = self.ai_execs.remove(&pane) {
                     out.push((r.chat, r.request_id, outcome));
                 }
-            }
         }
         out
     }
@@ -162,7 +161,7 @@ mod tests {
         s.feed(b"\x1b[?1049lback\r\n\x1b]133;D;0\x07\x1b]133;A\x07\x1b]133;B\x07");
         for req in s.take_requests() {
             if let crate::screen::Request::HistoryRebased { api_from, by, .. } = req {
-                r.start_line = rebased_start(r.start_line, api_from, by as i64);
+                r.start_line = rebased_start(r.start_line, api_from, by);
             }
         }
         let o = prompt_capture(&s, &r).expect("the new prompt ended the command");

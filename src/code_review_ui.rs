@@ -79,13 +79,12 @@ impl ManagerWindow {
                             out = ManagerEvent::Changed(prompts.clone());
                         }
                         let can_remove = selected.is_some();
-                        if ui.add_enabled(can_remove, egui::Button::new("\u{2212}")).clicked() {
-                            if let Some(i) = selected.take().filter(|i| *i < prompts.len()) {
+                        if ui.add_enabled(can_remove, egui::Button::new("\u{2212}")).clicked()
+                            && let Some(i) = selected.take().filter(|i| *i < prompts.len()) {
                                 prompts.remove(i);
                                 *selected = (!prompts.is_empty()).then(|| i.min(prompts.len() - 1));
                                 out = ManagerEvent::Changed(prompts.clone());
                             }
-                        }
                     });
                     // Right: the name and the prompt, or the placeholder.
                     let ui = &mut cols[1];

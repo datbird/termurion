@@ -114,8 +114,7 @@ const BLOB_INDEX: &str = "create index if not exists ChatBlob_chatID_seq on Chat
 
 fn column_names(conn: &Connection, pragma: &str) -> rusqlite::Result<Vec<String>> {
     let mut stmt = conn.prepare(pragma)?;
-    let names = stmt.query_map([], |row| row.get::<_, String>(1))?.collect();
-    names
+    stmt.query_map([], |row| row.get::<_, String>(1))?.collect()
 }
 
 /// Creates the table and adds its missing columns, in one transaction; returns the columns

@@ -142,11 +142,10 @@ impl App {
 
     fn toggle_block_fold(&mut self, pane: PaneId, n: u32) {
         let Some(id) = self.block_id(pane, n) else { return };
-        if let Some(p) = self.panes.get_mut(&pane) {
-            if !p.screen.unfold_block(&id) {
+        if let Some(p) = self.panes.get_mut(&pane)
+            && !p.screen.unfold_block(&id) {
                 p.screen.fold_block(&id);
             }
-        }
         self.block_hover = None;
         self.redraw();
     }

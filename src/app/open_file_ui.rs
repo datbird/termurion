@@ -59,11 +59,10 @@ pub(super) enum ColorImport {
 /// file's name (`Added(the name used)`).
 pub(super) fn import_color_preset(g: &mut Globals, path: &Path, bytes: &[u8], add_duplicate: bool) -> ColorImport {
     let Some(preset) = crate::color_presets::read_itermcolors(bytes) else { return ColorImport::Failed };
-    if !add_duplicate {
-        if let Some(name) = crate::color_presets::duplicate_of(g, &preset) {
+    if !add_duplicate
+        && let Some(name) = crate::color_presets::duplicate_of(g, &preset) {
             return ColorImport::Duplicate(name);
         }
-    }
     match crate::color_presets::add_custom(g, &crate::color_presets::name_from_file(path), preset) {
         Ok(name) => ColorImport::Added(name),
         Err(_) => ColorImport::Failed,
@@ -104,8 +103,8 @@ impl App {
     /// answers act, and the scripts the person said OK to run. Returns when to come back. No file
     /// system call here: they are all on the worker.
     pub(super) fn open_tick(&mut self, event_loop: &ActiveEventLoop) -> Option<Instant> {
-        if self.gpu.is_some() {
-            if let Some((paths, ignored)) = self.open_batch.take(Instant::now()) {
+        if self.gpu.is_some()
+            && let Some((paths, ignored)) = self.open_batch.take(Instant::now()) {
                 if ignored > 0 {
                     self.open_files_ignored(ignored);
                 }
@@ -113,7 +112,6 @@ impl App {
                     self.open_paths(paths, event_loop);
                 }
             }
-        }
         while let Ok(done) = self.open_work.rx.try_recv() {
             match done {
                 Done::Inspected(list) => {

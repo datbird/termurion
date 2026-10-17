@@ -212,11 +212,10 @@ pub fn budget(entries: &[Entry], max_entries: usize, max_chars: usize) -> Vec<En
     let mut kept: std::collections::BTreeMap<usize, Entry> = std::collections::BTreeMap::new();
     let mut remaining = max_chars;
     let mut reserved = vec![newest];
-    if let Some(user) = by_count.iter().rposition(|e| matches!(e, Entry::UserText(_))) {
-        if user != newest {
+    if let Some(user) = by_count.iter().rposition(|e| matches!(e, Entry::UserText(_)))
+        && user != newest {
             reserved.push(user);
         }
-    }
     for idx in reserved {
         let capped = truncated_keeping_ends(&by_count[idx], remaining);
         // An older reserved turn with no budget left is skipped; the newest is always kept.

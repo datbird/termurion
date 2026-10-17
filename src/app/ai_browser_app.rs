@@ -130,12 +130,11 @@ impl Calls {
 
     fn begin_load(&mut self, pane: PaneId, url: String, step: Step) -> Started {
         let token = self.mint(pane, step);
-        if let Some(old) = self.waits.start_load(pane, token) {
-            if let Some(step) = self.calls.get(&old).map(|c| &c.step) {
+        if let Some(old) = self.waits.start_load(pane, token)
+            && let Some(step) = self.calls.get(&old).map(|c| &c.step) {
                 let o = load_failed(step, &crate::ai_browser::Loaded::Interrupted);
                 self.push_plain(old, o);
             }
-        }
         Started::Wait(token, Act::Navigate { pane, token, url })
     }
 

@@ -129,14 +129,13 @@ pub fn from_plist_bytes(bytes: &[u8]) -> Result<Vec<Profile>, String> {
         .and_then(|d| d.get("New Bookmarks"))
         .and_then(|v| v.as_array())
         .ok_or("no New Bookmarks (profiles) in this file")?;
-    Ok(bookmarks
+    Ok(unique(bookmarks
         .iter()
         .filter_map(|b| match from_plist(b) {
             Some(Value::Table(t)) => Some(scrubbed(t)),
             _ => None,
         })
-        .collect::<Vec<_>>())
-    .map(unique)
+        .collect::<Vec<_>>()))
 }
 
 /// An imported profile: a start folder naming a network path is emptied (it did not come from
@@ -156,14 +155,13 @@ fn unique(mut list: Vec<Profile>) -> Vec<Profile> {
 pub fn from_dynamic_json(text: &str) -> Result<Vec<Profile>, String> {
     let root: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("not a Dynamic Profiles file: {e}"))?;
     let list = root.get("Profiles").and_then(|v| v.as_array()).ok_or("no Profiles list in this file")?;
-    Ok(list
+    Ok(unique(list
         .iter()
         .filter_map(|b| match from_json(b) {
             Some(Value::Table(t)) => Some(scrubbed(t)),
             _ => None,
         })
-        .collect::<Vec<_>>())
-    .map(unique)
+        .collect::<Vec<_>>()))
 }
 
 /// The user-defaults key iTerm2 stores an Advanced setting under: its name with the first
@@ -455,12 +453,12 @@ mod tests {
         want.push(("LeftControl".to_string(), int(2)));
         want.push(("RightControl".to_string(), int(2)));
         assert_eq!(values, want);
-        assert!(profiles[0].values.get("Has Hotkey").is_none());
+        assert!(!profiles[0].values.contains_key("Has Hotkey"));
         // Not a dedicated window: no profile changes and the app hotkey stays; the flag is set.
         let mut values = hotkey();
         let mut profiles = [profile("G")];
         migrate_legacy(&mut values, &Legacy { toggles_window: false, ..legacy.clone() }, &mut profiles);
-        assert!(profiles[0].values.get("Has Hotkey").is_none());
+        assert!(!profiles[0].values.contains_key("Has Hotkey"));
         assert_eq!(get(&values, "Hotkey"), Some(Value::Boolean(true)));
         assert_eq!(get(&values, "HotkeyCode"), Some(int(50)));
         assert_eq!(get(&values, "HotkeyMigratedFromSingleToMulti"), Some(Value::Boolean(true)));
@@ -468,7 +466,7 @@ mod tests {
         let mut values = vec![("Hotkey".to_string(), Value::Boolean(false))];
         let mut profiles = [profile("G")];
         migrate_legacy(&mut values, &legacy, &mut profiles);
-        assert!(profiles[0].values.get("Has Hotkey").is_none());
+        assert!(!profiles[0].values.contains_key("Has Hotkey"));
         assert_eq!(get(&values, "HotkeyMigratedFromSingleToMulti"), Some(Value::Boolean(true)));
 
         // The flag's row (`PREF:216`, default NO `PREF:914`).

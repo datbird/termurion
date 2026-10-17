@@ -188,11 +188,10 @@ impl TextEdit {
     /// each (Up and Down as `MCTV` does, dropping a caret with no line to go to), Copy and Cut
     /// take every caret's piece joined by line ends, and Select All leaves one selection.
     pub fn key(&mut self, k: EditKey, shift: bool, lines: &[VisualLine], width: &dyn Fn(&str) -> f32) -> EditOut {
-        if !self.extra.is_empty() {
-            if let Some(out) = self.key_multi(&k, shift, lines, width) {
+        if !self.extra.is_empty()
+            && let Some(out) = self.key_multi(&k, shift, lines, width) {
                 return out;
             }
-        }
         self.key_one(k, shift, lines, width)
     }
 
@@ -868,6 +867,7 @@ impl WrapCache {
 /// Each visual line measures only text near its own length (`fit_end`), never the rest of the
 /// paragraph, so a long pasted line wraps in O(n log n) measuring rather than O(n^2). This
 /// relies on the width growing with the text (a longer prefix is never narrower).
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 fn wrap_hard(text: &str, start: usize, end: usize, max_w: f32, indent: f32, break_before: bool, width: &dyn Fn(&str) -> f32, lines: &mut Vec<VisualLine>) {
     let bytes = text.as_bytes();
     let mut line = start;
@@ -1616,6 +1616,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init)] // a one-element range list is what this API takes (or what the test expects)
     fn carets_follow_iterm2() {
         // Ctrl+Shift+Down twice from the caret after "a": one caret per line at its x
         // (`MCTV:1163-1183`); none past the last line.
@@ -1872,6 +1873,7 @@ mod tests {
     }
 
     /// The wrap as it was before the bounded measure, the reference for the test above.
+    #[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
     fn old_wrap_hard(text: &str, start: usize, end: usize, max_w: f32, indent: f32, break_before: bool, width: &dyn Fn(&str) -> f32, lines: &mut Vec<VisualLine>) {
         let mut line = start;
         let mut room = max_w - indent;

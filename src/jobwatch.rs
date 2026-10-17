@@ -180,10 +180,7 @@ pub fn snapshot_trees(roots: &[u32], trees: &[u32], cache: &mut Cache) -> Result
     let mut line_of = |p: &mut Proc, cache: &mut Cache| {
         let key = (p.pid, p.created);
         live.insert(key);
-        if !cache.lines.contains_key(&key) {
-            let line = open(p.pid).and_then(|h| command_line(&h));
-            cache.lines.insert(key, line);
-        }
+        cache.lines.entry(key).or_insert_with(|| open(p.pid).and_then(|h| command_line(&h)));
         p.cmdline = cache.lines[&key].clone();
     };
     for &root in roots {
@@ -374,11 +371,10 @@ impl JobWatch {
                             for r in roots {
                                 let now = ShellJob { job: proctree::display_job(&procs, r), ancestors: proctree::ancestors(&procs, r), root: proctree::root_name(&procs, r) };
                                 if s.roots.contains(&r) && s.jobs.get(&r) != Some(&now) {
-                                    if s.ancestry_diagnostics {
-                                        if let Some(old) = s.jobs.get(&r) {
+                                    if s.ancestry_diagnostics
+                                        && let Some(old) = s.jobs.get(&r) {
                                             log_ancestry_shrink(&procs, r, &old.ancestors, &now);
                                         }
-                                    }
                                     s.jobs.insert(r, now);
                                     changed = true;
                                 }

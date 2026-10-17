@@ -231,12 +231,11 @@ pub fn press_bytes_with(
         AltSide::Right => opts.right_option,
     };
     let e = Enc { alt_sends, alt_param: if opts.option_is_alt { 2 } else { 8 } };
-    if keypad && app_keypad && opts.app_keypad_allowed {
-        if let Some(c) = keypad_code(key) {
+    if keypad && app_keypad && opts.app_keypad_allowed
+        && let Some(c) = keypad_code(key) {
             let m = if has_mods(mods) { mod_param(mods, e).to_string() } else { String::new() };
             return Some(format!("\x1bO{m}{c}").into_bytes());
         }
-    }
     let typed = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control));
     if let (Key::Text(_), Some(t)) = (key, typed) {
         let base_char = match base {

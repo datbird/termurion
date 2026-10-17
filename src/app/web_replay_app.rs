@@ -154,13 +154,12 @@ impl App {
         let now = Instant::now();
         match (token, r.stage) {
             (web_replay::PROBE_TOKEN, Stage::Probing(_)) => {
-                if wanted && web_replay::probe_allows(json) {
-                    if let Some(v) = &bv.view {
+                if wanted && web_replay::probe_allows(json)
+                    && let Some(v) = &bv.view {
                         v.capture(web_replay::CAPTURE_TOKEN, true);
                         r.stage = Stage::Capturing(now);
                         return;
                     }
-                }
                 // A sensitive page stays sensitive until it navigates: ask again slowly.
                 r.stage = Stage::Idle;
                 r.wait = web_replay::backoff(r.wait, interval, true);

@@ -11,12 +11,12 @@ use windows::Win32::UI::Shell::SHCreateStdEnumFmtEtc;
 
 /// The one format offered.
 fn unicode_format() -> FORMATETC {
-    FORMATETC { cfFormat: CF_UNICODETEXT.0, ptd: std::ptr::null_mut(), dwAspect: DVASPECT_CONTENT.0 as u32, lindex: -1, tymed: TYMED_HGLOBAL.0 as u32 }
+    FORMATETC { cfFormat: CF_UNICODETEXT.0, ptd: std::ptr::null_mut(), dwAspect: DVASPECT_CONTENT.0, lindex: -1, tymed: TYMED_HGLOBAL.0 as u32 }
 }
 
 /// Whether a request names CF_UNICODETEXT in global memory.
 fn wants_text(f: &FORMATETC) -> bool {
-    f.cfFormat == CF_UNICODETEXT.0 && f.dwAspect == DVASPECT_CONTENT.0 as u32 && f.tymed & TYMED_HGLOBAL.0 as u32 != 0
+    f.cfFormat == CF_UNICODETEXT.0 && f.dwAspect == DVASPECT_CONTENT.0 && f.tymed & TYMED_HGLOBAL.0 as u32 != 0
 }
 
 #[implement(IDataObject)]
@@ -155,7 +155,7 @@ mod tests {
     use windows::Win32::System::Ole::{ReleaseStgMedium, CF_HDROP, CF_UNICODETEXT};
 
     fn format(cf: u16) -> FORMATETC {
-        FORMATETC { cfFormat: cf, ptd: std::ptr::null_mut(), dwAspect: DVASPECT_CONTENT.0 as u32, lindex: -1, tymed: TYMED_HGLOBAL.0 as u32 }
+        FORMATETC { cfFormat: cf, ptd: std::ptr::null_mut(), dwAspect: DVASPECT_CONTENT.0, lindex: -1, tymed: TYMED_HGLOBAL.0 as u32 }
     }
 
     #[test]

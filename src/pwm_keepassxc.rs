@@ -210,8 +210,8 @@ fn list_accounts_within(stdin: &[u8], runner: &mut dyn Runner, budget: Duration)
         if !in_time {
             unread += 1;
         }
-        if let Some(out) = in_time.then(|| kx.run("show", &["-s"], &[&path], &[]).ok()).flatten() {
-            if out.code == 0 && out.stdout.expose().len() <= MAX_CLI_JSON {
+        if let Some(out) = in_time.then(|| kx.run("show", &["-s"], &[&path], &[]).ok()).flatten()
+            && out.code == 0 && out.stdout.expose().len() <= MAX_CLI_JSON {
                 for line in out.stdout.expose().lines() {
                     let line = line.trim();
                     if let Some(v) = line.strip_prefix("UserName: ") {
@@ -222,7 +222,6 @@ fn list_accounts_within(stdin: &[u8], runner: &mut dyn Runner, budget: Duration)
                     }
                 }
             }
-        }
         accounts.push(Account {
             identifier: AccountIdentifier { account_id: path },
             user_name,

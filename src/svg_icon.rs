@@ -138,11 +138,10 @@ pub fn candidates(reply: &str) -> Vec<String> {
             }
         }
     }
-    if results.is_empty() {
-        if let Some((a, b)) = self_closing {
+    if results.is_empty()
+        && let Some((a, b)) = self_closing {
             results.push(reply[a..b].to_string());
         }
-    }
     results
 }
 
@@ -332,23 +331,23 @@ pub fn check(svg: &str) -> Result<(), Refusal> {
             continue;
         }
         let rest = &svg[i..];
-        if rest.starts_with("<!--") {
-            let Some(n) = rest[4..].find("-->") else { return Err(Refusal::Malformed) };
+        if let Some(body) = rest.strip_prefix("<!--") {
+            let Some(n) = body.find("-->") else { return Err(Refusal::Malformed) };
             i += 4 + n + 3;
-        } else if rest.starts_with("<![CDATA[") {
-            let Some(n) = rest[9..].find("]]>") else { return Err(Refusal::Malformed) };
+        } else if let Some(body) = rest.strip_prefix("<![CDATA[") {
+            let Some(n) = body.find("]]>") else { return Err(Refusal::Malformed) };
             if stack.is_empty() {
                 return Err(Refusal::Malformed);
             }
             if stack.last().is_some_and(|n| local_name(n) == "style") {
-                style_text.push_str(&rest[9..9 + n]);
+                style_text.push_str(&body[..n]);
             }
             i += 9 + n + 3;
         } else if rest.starts_with("<!") {
             return Err(Refusal::Declaration);
-        } else if rest.starts_with("<?") {
+        } else if let Some(decl) = rest.strip_prefix("<?") {
             let Some(n) = rest.find("?>") else { return Err(Refusal::Malformed) };
-            let target: String = rest[2..].chars().take_while(|c| !c.is_whitespace() && *c != '?').collect();
+            let target: String = decl.chars().take_while(|c| !c.is_whitespace() && *c != '?').collect();
             if target != "xml" {
                 return Err(Refusal::Declaration);
             }
@@ -356,10 +355,10 @@ pub fn check(svg: &str) -> Result<(), Refusal> {
                 return Err(Refusal::Malformed);
             }
             i += n + 2;
-        } else if rest.starts_with("</") {
-            let name_end = rest[2..].find(|c: char| c.is_whitespace() || c == '>').map_or(rest.len(), |n| n + 2);
-            let name = &rest[2..name_end];
-            let after = rest[name_end..].trim_start();
+        } else if let Some(tail) = rest.strip_prefix("</") {
+            let name_end = tail.find(|c: char| c.is_whitespace() || c == '>').unwrap_or(tail.len());
+            let name = &tail[..name_end];
+            let after = tail[name_end..].trim_start();
             if name.is_empty() || !after.starts_with('>') {
                 return Err(Refusal::Malformed);
             }
@@ -693,7 +692,7 @@ mod tests {
     #[test]
     fn hostile_svg_is_refused() {
         let laughs = "<?xml version=\"1.0\"?><!DOCTYPE lolz [<!ENTITY lol \"lol\"><!ENTITY lol2 \"&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;\"><!ENTITY lol3 \"&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;\">]><svg xmlns=\"http://www.w3.org/2000/svg\"><text>&lol3;</text></svg>";
-        let hostile = format!("<svg xmlns=\"http://www.w3.org/2000/svg\" onload=\"alert(1)\"><script>alert(2)</script><image xlink:href=\"https://evil.test/x.png\"/></svg>");
+        let hostile = "<svg xmlns=\"http://www.w3.org/2000/svg\" onload=\"alert(1)\"><script>alert(2)</script><image xlink:href=\"https://evil.test/x.png\"/></svg>".to_string();
         assert!(check(&hostile).is_err());
         assert_eq!(check(laughs), Err(Refusal::Declaration));
         let refused = [

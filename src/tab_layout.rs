@@ -1377,11 +1377,10 @@ pub enum Release {
 pub fn release(down: Option<Hit>, up: Option<Hit>, clicks: u8, double_click_edits: bool, close_always: bool) -> Release {
     let (Some(down), Some(up)) = (down, up) else { return Release::Nothing };
     // The close button that was pressed.
-    if let (Hit::Close(a), Hit::Close(b)) = (down, up) {
-        if a == b {
+    if let (Hit::Close(a), Hit::Close(b)) = (down, up)
+        && a == b {
             return Release::Close(a);
         }
-    }
     // Two clicks off any tab, a group chip included (a chip is no cell, `PSM:3912-3914`):
     // iTerm2's New Tab (`tabViewDoubleClickTabBar:`).
     if matches!(up, Hit::Bar | Hit::Chip(_)) {

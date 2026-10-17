@@ -30,6 +30,7 @@ const MODE_GLYPHS: [char; 3] = ['\u{E8FD}', '\u{E737}', '\u{E716}'];
 const TOOLBAR_H: f32 = 24.0;
 
 /// A toolbar button: the glyph (or `fallback` text without the icon font), `width` wide.
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 fn tool_button(ui: &mut egui::Ui, glyph: char, fallback: &str, width: f32, on: bool, enabled: bool, tip: &str, a11y: &str) -> egui::Response {
     let text = crate::settings_keys::icon_text(ui.ctx(), glyph).unwrap_or_else(|| egui::RichText::new(fallback));
     let button = egui::Button::new(text).selected(on).min_size(egui::vec2(width, TOOLBAR_H));
@@ -162,13 +163,12 @@ fn draw_row(ui: &mut egui::Ui, view: &View, depth: usize, row: &Row, expanded: b
     }
     let title = painter.with_clip_rect(egui::Rect::from_min_max(rect.min, egui::pos2(right.max(x), rect.max.y)));
     title.text(egui::pos2(x, top), egui::Align2::LEFT_CENTER, &row.title, egui::TextStyle::Body.resolve(ui.style()), text);
-    if row_height(row) > cockpit::ROW_HEIGHT {
-        if let Some(d) = &row.detail {
+    if row_height(row) > cockpit::ROW_HEIGHT
+        && let Some(d) = &row.detail {
             let job = detail_job(ui, d, (rect.max.x - 8.0 - x).max(10.0));
             let galley = ui.painter().layout_job(job);
             painter.galley(egui::pos2(x, rect.min.y + cockpit::ROW_HEIGHT - 4.0), galley, weak);
         }
-    }
     let on_triangle = resp.interact_pointer_pos().is_some_and(|p| tri.contains(p)) && !row.children.is_empty();
     if resp.double_clicked() && !on_triangle {
         acts.push(Act::Jump(row.key.clone()));
@@ -473,8 +473,8 @@ impl CockpitWindow {
                     view.picker = query.as_deref().map(|q| mention::Picker::new(world, q));
                     *last_query = query;
                 }
-                if let Some(p) = &view.picker {
-                    if let Some(i) = mention_picker_ui::show(ui, p, response.rect.left_top() + egui::vec2(0.0, line + 6.0)) {
+                if let Some(p) = &view.picker
+                    && let Some(i) = mention_picker_ui::show(ui, p, response.rect.left_top() + egui::vec2(0.0, line + 6.0)) {
                         if let Some(p) = view.picker.as_mut() {
                             p.selected = i;
                         }
@@ -484,7 +484,6 @@ impl CockpitWindow {
                         *last_query = None;
                         ui.memory_mut(|m| m.request_focus(id));
                     }
-                }
             });
         });
         let frame = self.frame();

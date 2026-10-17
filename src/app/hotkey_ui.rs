@@ -110,11 +110,10 @@ impl App {
         let mut chords = Vec::new();
         let mut taps = Vec::new();
         self.hotkey_ids.clear();
-        if self.globals.bool("Hotkey") {
-            if let Some(c) = hotkey::chord(&self.app_hotkey()) {
+        if self.globals.bool("Hotkey")
+            && let Some(c) = hotkey::chord(&self.app_hotkey()) {
                 chords.push((APP_HOTKEY, c));
             }
-        }
         // Registered whenever it is set (`iTermOpenQuicklyHotKeyProvider`: no leader, no switch).
         if let Some(c) = crate::settings_hotkey::quickly_hotkey(&self.globals).as_ref().and_then(hotkey::chord) {
             chords.push((OPEN_QUICKLY_HOTKEY, c));
@@ -525,11 +524,10 @@ impl App {
             h.roll = None;
             h.previous.take()
         });
-        if by_key {
-            if let Some(p) = previous.filter(|p| unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindow(*p as _) } != 0) {
+        if by_key
+            && let Some(p) = previous.filter(|p| unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindow(*p as _) } != 0) {
                 unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(p as _) };
             }
-        }
     }
 
     /// Moves every sliding hotkey window; the next wake while any still moves.
@@ -742,12 +740,11 @@ impl App {
                 self.app_hidden.clear();
                 for w in regular {
                     self.enter(w);
-                    if let Some(g) = &self.gpu {
-                        if !g.window.is_minimized().unwrap_or(false) {
+                    if let Some(g) = &self.gpu
+                        && !g.window.is_minimized().unwrap_or(false) {
                             g.window.set_minimized(true);
                             self.app_hidden.push(w);
                         }
-                    }
                 }
                 for w in hotkeys {
                     self.enter(w);
@@ -760,11 +757,10 @@ impl App {
             hotkey::AppAct::ShowAll => {
                 let back = std::mem::take(&mut self.app_hidden);
                 for w in &back {
-                    if self.enter(*w) {
-                        if let Some(g) = &self.gpu {
+                    if self.enter(*w)
+                        && let Some(g) = &self.gpu {
                             g.window.set_minimized(false);
                         }
-                    }
                 }
                 if let Some(w) = self.last_window.filter(|w| regular.contains(w)).or_else(|| regular.last().copied()) {
                     self.focus_terminal_window(w);

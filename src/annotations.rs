@@ -213,7 +213,7 @@ mod tests {
         let m = s.set_named_mark(10, "gone");
         assert!(s.rename_named_mark(m, None));
         assert!(s.notes_in_order().is_empty());
-        assert!(s.marks.records.get(&m).is_none());
+        assert!(!s.marks.records.contains_key(&m));
         // A command mark keeps the mark and has no note.
         let c = s.new_mark(11, crate::marks::Kind::Prompt);
         s.rename_mark(c, Some("cmd".into()));

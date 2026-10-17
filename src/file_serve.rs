@@ -44,8 +44,7 @@ pub fn not_found() -> Answer {
 pub fn inside(root: &Path, p: &Path) -> bool {
     fn norm(p: &Path) -> String {
         let s = p.to_string_lossy().replace('/', "\\").to_lowercase();
-        let s = s.strip_prefix(r"\\?\").unwrap_or(&s).trim_end_matches('\\').to_string();
-        s
+        s.strip_prefix(r"\\?\").unwrap_or(&s).trim_end_matches('\\').to_string()
     }
     let (r, p) = (norm(root), norm(p));
     !r.is_empty() && p.len() > r.len() && p.starts_with(&r) && p.as_bytes()[r.len()] == b'\\'

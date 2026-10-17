@@ -147,11 +147,10 @@ pub fn list_dir(root: &crate::localfs::LocalPath, local: &dyn Fn(&Path) -> bool,
             if out.len() > max {
                 return out;
             }
-            if entry.stat.is_dir && !entry.stat.is_link && !entry.stat.is_reparse && depth < MAX_DEPTH {
-                if let Some(sub) = entry.local() {
+            if entry.stat.is_dir && !entry.stat.is_link && !entry.stat.is_reparse && depth < MAX_DEPTH
+                && let Some(sub) = entry.local() {
                     stack.push((sub, rel, depth + 1));
                 }
-            }
         }
     }
     out
@@ -811,14 +810,13 @@ pub fn rewritten(on_disk: &Entry, updated: &Profile, parent: &Profile, add_tag: 
         }
     }
     out.remove(DYNAMIC_KEY);
-    if add_tag {
-        if let Some(Json::Array(tags)) = out.get_mut("Tags") {
+    if add_tag
+        && let Some(Json::Array(tags)) = out.get_mut("Tags") {
             tags.retain(|t| t.as_str() != Some(TAG));
             if tags.is_empty() {
                 out.remove("Tags");
             }
         }
-    }
     out
 }
 
@@ -958,12 +956,12 @@ mod tests {
         let merged = merge(&child, &parent, false);
         assert_eq!(merged.values.get("Font"), Some(&s("Consolas 12")), "the child's key wins");
         assert_eq!(merged.values.get("Columns"), Some(&toml::Value::Integer(100)), "the parent supplies the rest");
-        assert!(merged.values.get("Default Bookmark").is_none(), "never inherited, never taken from the child");
+        assert!(!merged.values.contains_key("Default Bookmark"), "never inherited, never taken from the child");
         let linked = obj(json!({"Guid": "D1", "Name": "Dev", "Original Guid": "Z"}));
-        assert!(merge(&linked, &parent, false).values.get("Original Guid").is_none(), "a session link is never taken from a file");
+        assert!(!merge(&linked, &parent, false).values.contains_key("Original Guid"), "a session link is never taken from a file");
         assert_eq!(merged.guid(), "D1");
         assert_eq!(merged.values.get(DYNAMIC_KEY), Some(&toml::Value::Boolean(true)));
-        assert!(merged.values.get("Tags").is_none());
+        assert!(!merged.values.contains_key("Tags"));
 
         let tagged = merge(&child, &parent, true);
         assert_eq!(tagged.values.get("Tags"), Some(&toml::Value::Array(vec![s(TAG)])));
@@ -975,7 +973,7 @@ mod tests {
         // The dynamic keys of a dynamic parent are not the child's.
         let dyn_parent = profile(&[("Guid", s("P2")), (REWRITABLE_KEY, toml::Value::Boolean(true)), (FILENAME_KEY, s("other.json"))]);
         let inherited = merge(&child, &dyn_parent, false);
-        assert!(inherited.values.get(REWRITABLE_KEY).is_none() && inherited.values.get(FILENAME_KEY).is_none());
+        assert!(!inherited.values.contains_key(REWRITABLE_KEY) && !inherited.values.contains_key(FILENAME_KEY));
 
         // Separate colors: plain color keys over a parent that splits colors by mode.
         let splitting = profile(&[("Guid", s("P")), (SEPARATE_COLORS_KEY, toml::Value::Boolean(true))]);
@@ -990,7 +988,7 @@ mod tests {
         let uncolored = obj(json!({"Guid": "D5", "Name": "Plain"}));
         assert_eq!(merge(&uncolored, &splitting, false).values.get(SEPARATE_COLORS_KEY), Some(&toml::Value::Boolean(true)));
         let flat = profile(&[("Guid", s("P"))]);
-        assert!(merge(&plain, &flat, false).values.get(SEPARATE_COLORS_KEY).is_none(), "a parent that does not split leaves it alone");
+        assert!(!merge(&plain, &flat, false).values.contains_key(SEPARATE_COLORS_KEY), "a parent that does not split leaves it alone");
 
         // Parents.
         let exists = |g: &str| g == "P1";

@@ -594,11 +594,10 @@ impl Coordinator {
     }
 
     fn space_mut(&mut self, key: &SpaceKey) -> &mut SpaceState {
-        if !self.spaces.contains_key(key) && self.spaces.len() >= MAX_SPACES {
-            if let Some(old) = self.spaces.keys().next().cloned() {
+        if !self.spaces.contains_key(key) && self.spaces.len() >= MAX_SPACES
+            && let Some(old) = self.spaces.keys().next().cloned() {
                 self.spaces.remove(&old);
             }
-        }
         self.spaces.entry(key.clone()).or_default()
     }
 
@@ -741,7 +740,7 @@ pub fn parse_challenge(header: &str) -> (String, String) {
     let h = header.trim_start();
     let end = h.find(|c: char| c.is_ascii_whitespace()).unwrap_or(h.len());
     let scheme = h[..end].to_string();
-    let b = h[end..].as_bytes();
+    let b = &h.as_bytes()[end..];
     let rest = &h[end..];
     let mut i = 0;
     while i < b.len() {
@@ -1552,7 +1551,7 @@ mod tests {
             c.reduce_at(Event::PromptResult { id: id(n + 1), outcome: PromptOutcome::Cancelled }, t);
             assert!(c.cancelled.len() <= crate::cooldown::KEPT);
         }
-        assert!(c.cancelled.len() > 0);
+        assert!(!c.cancelled.is_empty());
         let src = include_str!("browser_basic_auth.rs");
         assert!(!src.contains(&format!("cancelled: {}", "HashMap")), "one cooldown owner");
     }

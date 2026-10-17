@@ -390,11 +390,10 @@ pub fn select_provider(g: &mut Globals, v: Vendor, catalog: &Catalog) {
     g.set(ai::USE_RECOMMENDED, Value::Boolean(true));
     g.set(ai::VENDOR, Value::Integer(v.raw()));
     // The recommended model's name, never a discovered tag's (`G:3188-3197`).
-    if let Some(e) = default_endpoint(g, catalog, &crate::ai_model::Discovered::default()) {
-        if e.model != OLLAMA_PENDING {
+    if let Some(e) = default_endpoint(g, catalog, &crate::ai_model::Discovered::default())
+        && e.model != OLLAMA_PENDING {
             g.set(ai::MODEL, Value::String(e.model));
         }
-    }
     model_did_change(g, catalog);
 }
 
@@ -504,8 +503,8 @@ pub fn migrate_legacy_headers(g: &mut Globals) -> bool {
                 .collect::<Vec<_>>(),
             _ => Vec::new(),
         };
-        if let (false, Some(Value::Array(configs))) = (headers.is_empty(), g.get(ai::MANUAL_MODELS)) {
-            if !configs.is_empty() {
+        if let (false, Some(Value::Array(configs))) = (headers.is_empty(), g.get(ai::MANUAL_MODELS))
+            && !configs.is_empty() {
                 let migrated = configs
                     .into_iter()
                     .map(|entry| match entry {
@@ -525,7 +524,6 @@ pub fn migrate_legacy_headers(g: &mut Globals) -> bool {
                     .collect();
                 g.set(ai::MANUAL_MODELS, Value::Array(migrated));
             }
-        }
     }
     g.set(MIGRATION_FLAG, Value::Boolean(true));
     true
@@ -993,12 +991,11 @@ impl EditorForm {
         if on && !self.dynamic {
             self.stash = Some((std::mem::take(&mut self.name), self.api));
             self.api = Api::Llama.raw();
-        } else if !on && self.dynamic {
-            if let Some((name, api)) = self.stash.take() {
+        } else if !on && self.dynamic
+            && let Some((name, api)) = self.stash.take() {
                 self.name = name;
                 self.api = api;
             }
-        }
         self.dynamic = on;
     }
 

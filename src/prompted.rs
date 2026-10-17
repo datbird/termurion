@@ -520,7 +520,7 @@ mod tests {
         let top = dir.join("top");
         // One folder alone: relative to its parent, so the folder's own name leads.
         assert_eq!(entries(&upload_archive(&[top.join("a")]).unwrap()), ["a", "a/deep", "a/deep/x.txt"]);
-        assert_eq!(entries(&upload_archive(&[top.clone()]).unwrap()), ["top", "top/a", "top/a/deep", "top/a/deep/x.txt", "top/b", "top/b/y.txt", "top/f.txt"]);
+        assert_eq!(entries(&upload_archive(std::slice::from_ref(&top)).unwrap()), ["top", "top/a", "top/a/deep", "top/a/deep/x.txt", "top/b", "top/b/y.txt", "top/f.txt"]);
         // Two folders: relative to their lowest common folder.
         assert_eq!(entries(&upload_archive(&[top.join("a"), top.join("b")]).unwrap()), ["a", "a/deep", "a/deep/x.txt", "b", "b/y.txt"]);
         assert_eq!(entries(&upload_archive(&[top.join("a").join("deep"), top.join("b")]).unwrap()), ["a/deep", "a/deep/x.txt", "b", "b/y.txt"]);

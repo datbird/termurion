@@ -608,11 +608,10 @@ fn sanitize(list: Vec<Workgroup>) -> Vec<Workgroup> {
             break;
         }
         let id = w.unique_identifier.clone();
-        if let Some(w) = sanitize_workgroup(w) {
-            if seen.insert(id) {
+        if let Some(w) = sanitize_workgroup(w)
+            && seen.insert(id) {
                 out.push(w);
             }
-        }
     }
     out
 }
@@ -832,7 +831,7 @@ fn add_item_once(list: &mut [Workgroup], session: &str, item: ToolbarItem) -> bo
 
 /// Applies each migration whose latch is not set, then sets every latch. True when the data changed
 /// or a latch was set (`persist()` and the `defer` of `WM`).
-pub fn migrate(list: &mut Vec<Workgroup>, latches: &mut Latches) -> bool {
+pub fn migrate(list: &mut [Workgroup], latches: &mut Latches) -> bool {
     let before = *latches;
     let data = migrate_data(list, latches);
     data || *latches != before
@@ -890,7 +889,7 @@ fn migrate_data(list: &mut [Workgroup], latches: &mut Latches) -> bool {
 
 // --- The model ---
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Model {
     pub workgroups: Vec<Workgroup>,
     pub latches: Latches,
@@ -899,12 +898,6 @@ pub struct Model {
     dirty: bool,
     /// The stored value failed to decode: it stays untouched until the first edit.
     kept_undecodable: bool,
-}
-
-impl Default for Model {
-    fn default() -> Model {
-        Model { workgroups: Vec::new(), latches: Latches::default(), sources: BTreeMap::new(), dirty: false, kept_undecodable: false }
-    }
 }
 
 impl Model {
@@ -1172,7 +1165,7 @@ mod tests {
         let mut peer = session("p", Some("r"), Kind::Peer);
         peer.peer_switch_shortcut = Some(Shortcut { serialized: RELOAD.into() });
         let w = wg("X", vec![session("r", None, Kind::Root), split, tab, peer]);
-        let v = parsed(&encode(&[w.clone()]));
+        let v = parsed(&encode(std::slice::from_ref(&w)));
         let sessions = &v[0]["sessions"];
         assert_eq!(sessions[1]["kind"], json!({"kind": "split", "split": {"orientation": "vertical", "side": "leadingOrTop", "location": 0.5}}));
         assert_eq!(sessions[1]["toolbarItems"], json!([{"kind": "spacer", "minWidth": 8, "maxWidth": 100}, {"kind": "usage", "provider": "anthropicClaudeCode", "command": "", "intervalSeconds": 60}]));
@@ -1180,7 +1173,7 @@ mod tests {
         assert_eq!(sessions[2]["profileGUID"], json!("0F3C5E3A-1D2B-4C6A-9E8F-123456789ABC"));
         assert!(sessions[0].get("parentID").is_none() && sessions[0].get("profileGUID").is_none() && sessions[0].get("peerSwitchShortcut").is_none());
         assert_eq!(sessions[3]["peerSwitchShortcut"], json!({"serialized": RELOAD}));
-        assert_eq!(decode(&encode(&[w.clone()])).unwrap(), vec![w]);
+        assert_eq!(decode(&encode(std::slice::from_ref(&w))).unwrap(), vec![w]);
         assert_eq!(decode(&encode(&[cc()])).unwrap(), vec![cc()]);
         // iTerm2's own bytes decode to the same model.
         assert_eq!(decode(&claude_json().to_string()).unwrap(), vec![cc()]);
@@ -1706,7 +1699,8 @@ mod tests {
     fn workgroups_stored_row_cannot_bypass_the_bound() {
         // The Stored tab writes through Globals::set like every writer; the row is a plain string
         // (no `hidden` attribute exists) and the latch rows are bools.
-        for key in ["Workgroups"] {
+        {
+            let key = "Workgroups";
             let row = crate::schema::find_global(key).expect(key);
             assert_eq!((row.tab.as_str(), row.kind), ("Stored", crate::schema::Kind::String), "{key}");
             assert_eq!(row.default, Some(toml::Value::String(String::new())));

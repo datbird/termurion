@@ -104,7 +104,7 @@ pub fn outline_edges(pane: Rect, cell_h: f32, visible_top: usize, rows: usize, r
         out.push((layer, Rect { h: one, ..f }));
         out.push((layer, Rect { y: f.y + f.h - one, h: one, ..f }));
         out.push((layer, Rect { y: f.y + one, w: one, h: inner_h, ..f }));
-        out.push((layer, Rect { x: f.x + f.w - one, y: f.y + one, w: one, h: inner_h, ..f }));
+        out.push((layer, Rect { x: f.x + f.w - one, y: f.y + one, w: one, h: inner_h }));
         frame = Rect { x: f.x + one, y: f.y + one, w: (f.w - 2.0 * one).max(0.0), h: (f.h - 2.0 * one).max(0.0) };
     }
     out

@@ -286,14 +286,13 @@ fn usage_line(line: &str) -> Option<UsageBar> {
         ("Session".to_string(), "S".to_string())
     } else if line.starts_with("Current week (all models):") {
         ("Week".to_string(), "W".to_string())
-    } else if let Some(rest) = line.strip_prefix("Current week (") {
+    } else {
+        let rest = line.strip_prefix("Current week (")?;
         let inner = rest.split("):").next().unwrap_or(rest);
         // `W` and the model's first ASCII letter or digit, uppercased; none leaves the short empty
         // for the caption's own fallback.
         let initial = inner.trim_start_matches(|c: char| !c.is_ascii_alphanumeric()).chars().next().filter(char::is_ascii_alphanumeric);
         (format!("Week ({inner})"), initial.map_or(String::new(), |c| format!("W{}", c.to_ascii_uppercase())))
-    } else {
-        return None;
     };
     // The number ending just before "% used": digits with an optional fraction.
     let before = &line[..used];

@@ -16,8 +16,8 @@ impl App {
         for (id, rect) in self.visible(tab) {
             let under = self.panes.get(&id).map_or(crate::palette::rgb(0, 0, 0), |p| p.screen.palette.bg);
             let anim = self.paste_anim.get(&id).copied().unwrap_or_else(|| pv::Anim::new(now));
-            if let Some((q, _, shows)) = self.pastes.get(&id) {
-                if let Some((sent, total)) = q.progress().filter(|_| *shows && !self.bar_shown_for(id)) {
+            if let Some((q, _, shows)) = self.pastes.get(&id)
+                && let Some((sent, total)) = q.progress().filter(|_| *shows && !self.bar_shown_for(id)) {
                     let state = self.paste_view.get(&id).copied().unwrap_or_default();
                     let hint = state.look(now);
                     let fraction = sent as f32 / total.max(1) as f32;
@@ -27,13 +27,11 @@ impl App {
                     hits.push((id, h));
                     continue;
                 }
-            }
             // The paste ended: the view fades out where it was, with nothing to click.
-            if anim.closed.is_some() {
-                if let Some(look) = anim.look(now) {
+            if anim.closed.is_some()
+                && let Some(look) = anim.look(now) {
                     scene::paste_view(frame, rect, self.pane_cell(id), self.scale(), self.dropdown_views.old_style(), pv::PASTING, anim.fraction, false, false, None, look, under);
                 }
-            }
         }
         hits
     }

@@ -126,6 +126,7 @@ fn backup(local: &LocalPath, name: &str) -> bool {
 /// The folder's copy replaces the local one: each folder file that passes `valid_content` is
 /// written, a folder that lacks a file removes the local one, a refused or invalid folder file
 /// leaves the local file alone. Returns whether anything changed.
+#[cfg(test)] // only the tests ask for the changed flag alone
 pub(super) fn apply_pull(local: &Path, remote: &Set) -> bool {
     pull(local, remote).0
 }

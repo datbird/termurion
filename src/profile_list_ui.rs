@@ -125,11 +125,10 @@ pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, Stri
             event = ListEvent::Picked(g.clone());
         }
     }
-    if enter_pressed && (shown.len() == 1 || !st.selection.is_empty()) {
-        if let Some(g) = st.selection.first() {
+    if enter_pressed && (shown.len() == 1 || !st.selection.is_empty())
+        && let Some(g) = st.selection.first() {
             event = ListEvent::Activated(g.clone());
         }
-    }
     let mods = ui.input(|i| i.modifiers);
     ui.horizontal_top(|ui| {
         if st.tags_open {

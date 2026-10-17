@@ -2,7 +2,7 @@
 //! are scored against every profile's rules, and the session's profile follows.
 
 use super::*;
-use crate::aps::{Candidate, Facts, Switcher};
+use crate::aps::{Candidate, Facts};
 
 pub(super) const LOG_KEY: &str = "NoSyncEnableAutomaticProfileSwitchingLogging";
 
@@ -77,7 +77,7 @@ impl App {
             }
         };
         let facts = Facts { host: Some(&host), user: Some(&user), path: path.as_deref(), job: job.as_deref(), cmdline: cmdline.as_deref() };
-        let switcher = self.aps.entry(pane).or_insert_with(Switcher::default);
+        let switcher = self.aps.entry(pane).or_default();
         let decision = switcher.decide(&current, &facts, candidates, &expr);
         let stack = switcher.stack().join(" ");
         if let Some(e) = failed.into_inner() {

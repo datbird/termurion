@@ -203,11 +203,10 @@ static OURS_COMPUTED: std::sync::atomic::AtomicUsize = std::sync::atomic::Atomic
 pub fn cached_ours(fake: &str, real: Option<&str>) -> Option<String> {
     static LAST: std::sync::Mutex<Option<(String, Option<String>, Option<String>)>> = std::sync::Mutex::new(None);
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((f, r, out)) = last.as_ref() {
-        if f == fake && r.as_deref() == real {
+    if let Some((f, r, out)) = last.as_ref()
+        && f == fake && r.as_deref() == real {
             return out.clone();
         }
-    }
     OURS_COMPUTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let out = our_value(fake, real);
     *last = Some((fake.to_string(), real.map(str::to_string), out.clone()));

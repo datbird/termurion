@@ -121,11 +121,10 @@ fn vendor_option(v: Vendor) -> ProviderOption {
 /// after them when it still has models, then a separator and every manual model.
 pub fn provider_options(available: &[Vendor], current: Option<Vendor>, current_has_models: bool, manual: &[String]) -> Vec<ProviderOption> {
     let mut out: Vec<ProviderOption> = available.iter().copied().map(vendor_option).collect();
-    if let Some(v) = current {
-        if current_has_models && !available.contains(&v) {
+    if let Some(v) = current
+        && current_has_models && !available.contains(&v) {
             out.push(vendor_option(v));
         }
-    }
     if !manual.is_empty() && !out.is_empty() {
         out.push(ProviderOption::Separator);
     }

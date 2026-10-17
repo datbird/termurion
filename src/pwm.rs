@@ -139,7 +139,7 @@ pub fn matches(a: &Account, filter: &str) -> bool {
 
 /// iTerm2 sorts the fetched account list by `displayString`, case-insensitively.
 pub fn sorted(mut v: Vec<Account>) -> Vec<Account> {
-    v.sort_by(|a, b| a.display.to_lowercase().cmp(&b.display.to_lowercase()));
+    v.sort_by_key(|a| a.display.to_lowercase());
     v
 }
 
@@ -1086,8 +1086,8 @@ mod tests {
         assert_eq!(item(&gear_menu(&every), GearItem::RequireLock), (true, false));
         assert_eq!(item(&gear_menu(&every), GearItem::RequireEvery), (true, true));
         let open_off = Gear { require_open: false, ..gear.clone() };
-        assert_eq!(item(&gear_menu(&open_off), GearItem::RequireLock).1, false);
-        assert_eq!(item(&gear_menu(&open_off), GearItem::RequireEvery).1, false);
+        assert!(!item(&gear_menu(&open_off), GearItem::RequireLock).1);
+        assert!(!item(&gear_menu(&open_off), GearItem::RequireEvery).1);
         let locked = Gear { authenticated: false, ..gear.clone() };
         assert!(gear_menu(&locked).iter().all(|e| !matches!(e, Entry::Item { enabled: true, .. })));
 

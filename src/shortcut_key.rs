@@ -280,11 +280,10 @@ impl ShortcutKey {
         if let Some(i) = self.pairs().iter().position(|h| *h == held) {
             out.push(Chord { key: key.clone(), cmd: true, shift: i == 1, alt: i == 2, ctrl: i == 3 });
         }
-        if let (true, ChordKey::Char(k)) = (held == CSA, key) {
-            if k.is_ascii_alphanumeric() {
+        if let (true, ChordKey::Char(k)) = (held == CSA, key)
+            && k.is_ascii_alphanumeric() {
                 out.push(Chord { key: key.clone(), cmd: true, alt: true, shift: false, ctrl: true });
             }
-        }
         out
     }
 
@@ -763,7 +762,7 @@ mod tests {
             if st.flags & COMMAND == 0 {
                 continue;
             }
-            let Some(key) = char::from_u32(st.ch).map(|c| ChordKey::Char(c.to_ascii_lowercase())).filter(|_| st.ch < 0xF000).or_else(|| match st.ch {
+            let Some(key) = char::from_u32(st.ch).map(|c| ChordKey::Char(c.to_ascii_lowercase())).filter(|_| st.ch < 0xF000).or(match st.ch {
                 0xF700 => Some(ChordKey::Up),
                 0xF701 => Some(ChordKey::Down),
                 0xF702 => Some(ChordKey::Left),

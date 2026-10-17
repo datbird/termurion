@@ -262,7 +262,7 @@ impl TipWindow {
             let _ = self.host.window.request_inner_size(LogicalSize::new(WIDTH, want as f64));
             let s = self.host.window.scale_factor() as f32;
             if let Ok(p) = self.host.window.outer_position() {
-                let (x, y) = clamp_origin((p.x as f32, p.y as f32), (WIDTH as f32 * s, want * s as f32), self.work);
+                let (x, y) = clamp_origin((p.x as f32, p.y as f32), (WIDTH as f32 * s, want * s), self.work);
                 self.host.window.set_outer_position(PhysicalPosition::new(x as f64, y as f64));
             }
             self.host.request_redraw();

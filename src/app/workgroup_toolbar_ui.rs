@@ -391,8 +391,8 @@ impl App {
                         outline(frame, r, if *editing { fg } else { line }, s);
                         let field = Rect { w: (r.w - chevron.w).max(0.0), ..r };
                         let ty = centered_y(r, ch);
-                        if *editing {
-                            if let Some(e) = self.workgroups.base_edit.as_ref() {
+                        if *editing
+                            && let Some(e) = self.workgroups.base_edit.as_ref() {
                                 let caret_x = width_of(&text[..e.edit.caret.min(text.len())], cw) * s;
                                 if let Some(sel) = e.edit.selection().filter(|sel| sel.end <= text.len()) {
                                     let (a, b) = (width_of(&text[..sel.start], cw) * s, width_of(&text[..sel.end], cw) * s);
@@ -400,7 +400,6 @@ impl App {
                                 }
                                 frame.quads.push(Quad { rect: Rect { x: r.x + 6.0 * s + caret_x, y: ty, w: s.max(1.0), h: ch }, color: scene::rgba(fg, 1.0) });
                             }
-                        }
                         frame.rows.push(row(r.x + 6.0 * s, ty, vec![span(text.clone(), fg, false)], field, 1.0));
                         frame.rows.push(row(chevron.x + (chevron.w - cw) / 2.0, ty, vec![span(GLYPH_CHEVRON.to_string(), dim, true)], *chevron, 1.0));
                     }
@@ -542,7 +541,7 @@ impl App {
     /// The toolbar's Reload (`WPP:754-791`): a Regular member starts its program again (a running one
     /// asks first, as Restart Session does). Diff and Code Review members reload through Tasks 6 and 7.
     pub(super) fn workgroup_reload(&mut self, pane: PaneId) {
-        let mode = self.workgroup_of(pane).and_then(|i| i.config_of(pane).or_else(|| i.non_peers.iter().find(|(_, p)| *p == pane).map(|(c, _)| c.as_str())).and_then(|c| i.workgroup.session(c)).map(|s| s.mode.clone()));
+        let mode = self.workgroup_of(pane).and_then(|i| i.config_of(pane).or_else(|| i.non_peers.iter().find(|(_, p)| *p == pane).map(|(c, _)| c.as_str())).and_then(|c| i.workgroup.session(c)).map(|s| s.mode));
         if mode == Some(Mode::Diff) {
             self.diff_reload(pane);
             return;
@@ -654,6 +653,7 @@ impl App {
 
     /// Runs and collects the AI Usage commands. Each item runs at most once in flight, every
     /// `interval_seconds` (never under 5), and only while its member is shown in the active tab.
+    #[allow(clippy::manual_clamp)] // f32/f64 max().min() drops a NaN where clamp keeps it
     pub(super) fn usage_tick(&mut self) {
         if self.workgroups.is_empty() {
             return;

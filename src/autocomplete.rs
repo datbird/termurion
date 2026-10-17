@@ -162,11 +162,10 @@ impl Model {
             e.score += score * e.mult;
             return;
         }
-        if self.entries.len() >= self.max {
-            if let Some(i) = self.entries.iter().enumerate().min_by(|a, b| a.1.score.total_cmp(&b.1.score)).map(|(i, _)| i) {
+        if self.entries.len() >= self.max
+            && let Some(i) = self.entries.iter().enumerate().min_by(|a, b| a.1.score.total_cmp(&b.1.score)).map(|(i, _)| i) {
                 self.entries.remove(i);
             }
-        }
         self.entries.push(Candidate { value: value.to_string(), prefix: prefix.to_string(), score, mult: 1.0 });
     }
 

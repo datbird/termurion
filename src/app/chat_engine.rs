@@ -75,6 +75,7 @@ pub(super) struct Ctx<'a> {
 
 /// What the App does once the engine's borrow ends, in order.
 #[derive(Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 pub(super) enum EngineEffect {
     /// The one dispatch of a tool call, after the gate answered Run or the person allowed it.
     RunTool { chat: String, request_id: String, pane: PaneId, call: Call, send: Option<String> },
@@ -270,12 +271,11 @@ impl Engine {
                 // queued. Only the person's own send carries that mark: a watcher's or timer's
                 // event, a streamed terminal command and anything code publishes never
                 // abandon the approval or reset the machine-turn cap (Task 11 fix rounds 1-2).
-                if by_person {
-                    if let Some(a) = cx.agents.get_mut(chat) {
+                if by_person
+                    && let Some(a) = cx.agents.get_mut(chat) {
                         a.machine_turns = 0;
                         a.machine_paused = false;
                     }
-                }
                 if by_person && cx.agents.get(chat).is_some_and(Agent::is_awaiting_approval) {
                     fx.extend(Self::halt(cx, chat));
                 }
@@ -369,8 +369,8 @@ impl Engine {
             cx.broker.turn_done(chat);
             return Self::next(cx, chat);
         };
-        if let Some(a) = cx.agents.get_mut(chat) {
-            if !a.in_turn {
+        if let Some(a) = cx.agents.get_mut(chat)
+            && !a.in_turn {
                 a.in_turn = true;
                 a.gate_refused = false;
                 a.files_failed = false;
@@ -378,7 +378,6 @@ impl Engine {
                 cx.broker.typing(chat, true, Participant::Agent);
                 cx.broker.turn(chat, TurnEvent::Started);
             }
-        }
         let Some(model) = (cx.model_for)(&row) else {
             Self::agent_says(cx, chat, Content::Markdown(crate::ai_turn::NO_MODEL.to_string()));
             return Self::end_turn(cx, chat);
@@ -799,13 +798,12 @@ impl Engine {
         let Some(passed) = chat_gate::pass(cx.globals, &endpoint) else { return Self::refuse(cx, chat, endpoint) };
         let row = cx.store.chat(chat).ok().flatten();
         let retool = row.filter(|r| r.orchestration_enabled && cx.agents.get(chat).is_some_and(|a| !a.orch_tooled)).map(|r| ((cx.orch_system)(&r), (cx.orch_tools)(&r, cx.overrides)));
-        if let Some(a) = cx.agents.get_mut(chat) {
-            if let (Some((system, tools)), Some(d)) = (retool, a.driver.as_mut()) {
+        if let Some(a) = cx.agents.get_mut(chat)
+            && let (Some((system, tools)), Some(d)) = (retool, a.driver.as_mut()) {
                 d.reconfigure(&system, tools);
                 a.orch_tooled = true;
                 a.update_system(system);
             }
-        }
         cx.broker.typing(chat, true, Participant::Agent);
         let outs = match cx.agents.get_mut(chat).and_then(|a| a.driver.as_mut()) {
             Some(d) => send_tool_done(&mut **d, passed, result),
@@ -874,11 +872,10 @@ impl Engine {
         };
         // A change that holds for this run but was not written is reported to the person.
         let mut fx = Vec::new();
-        if let Some(p) = always {
-            if set_permission_in(cx.store, cx.overrides, Key { chat: chat.to_string(), guid: key_guid, category }, p).is_some_and(|(_, saved)| !saved) {
+        if let Some(p) = always
+            && set_permission_in(cx.store, cx.overrides, Key { chat: chat.to_string(), guid: key_guid, category }, p).is_some_and(|(_, saved)| !saved) {
                 fx.push(EngineEffect::PermissionNotSaved);
             }
-        }
         fx.extend(match c {
             Choice::AllowOnce | Choice::AlwaysAllow => {
                 let rc = cx.store.message(request_id).ok().flatten().and_then(|m| classic(&m).cloned());
@@ -1752,7 +1749,7 @@ mod tests {
         assert_eq!(h.run(|cx| Engine::tool_finished(cx, &chat, "R2", ran("late", None))), vec![], "an orphan is dropped");
         assert_eq!(h.run(|cx| Engine::answer_request(cx, &chat, &parked, Choice::AllowOnce)), vec![]);
         h.log.borrow_mut().on_poll.push_back(vec![Out::Delta("late".into())]);
-        assert_eq!(h.run(|cx| Engine::poll(cx)), vec![]);
+        assert_eq!(h.run(Engine::poll), vec![]);
         assert_eq!(h.messages(&chat).len(), before, "no second write");
         assert_eq!(h.events().last(), Some(&Ev::Cancel));
     }
@@ -1764,7 +1761,7 @@ mod tests {
     /// Ends the running turn the way the model does when it has nothing more to say.
     fn finish_turn(h: &mut H) {
         h.log.borrow_mut().on_poll.push_back(vec![Out::StreamEnd]);
-        h.run(|cx| Engine::poll(cx));
+        h.run(Engine::poll);
     }
 
     /// Task 11 fix round 1, ruling 1: a turn a watcher or timer starts never abandons the
@@ -1907,7 +1904,7 @@ mod tests {
         h.say(&chat, "b");
         assert_eq!((h.count(&Ev::Start), h.count(&Ev::Cancel)), (1, 0));
         h.log.borrow_mut().on_poll.push_back(vec![Out::StreamEnd]);
-        h.run(|cx| Engine::poll(cx));
+        h.run(Engine::poll);
         assert_eq!(h.count(&Ev::Start), 2);
         assert_eq!(h.log.borrow().inputs[1].messages.last(), Some(&crate::ai_msg::Message::text(Role::User, "b")));
     }
@@ -1945,7 +1942,7 @@ mod tests {
         h.say(&chat, "b");
         h.say(&chat, "c");
         h.log.borrow_mut().on_poll.push_back(vec![Out::Choice("A".into())]);
-        h.run(|cx| Engine::poll(cx));
+        h.run(Engine::poll);
         let started = h.log.borrow();
         let messages = &started.inputs[1].messages;
         assert_eq!(messages.last(), Some(&crate::ai_msg::Message::text(Role::User, "b")));
@@ -2188,13 +2185,13 @@ mod tests {
         assert_eq!(h.log.borrow().jobs, vec![Job::CreateStore { name: "T".into() }]);
         assert_eq!(h.count(&Ev::Start), 0, "the turn waits for the flow");
         h.log.borrow_mut().file_poll.push_back(vec![FileOut::Created("vs_1".into())]);
-        h.run(|cx| Engine::poll(cx));
+        h.run(Engine::poll);
         assert!(h.messages(&chat).iter().any(|m| m.author == Participant::Agent && m.content == Content::VectorStoreCreated("vs_1".into())));
         assert_eq!(h.store.chat(&chat).unwrap().unwrap().vector_store.as_deref(), Some("vs_1"));
         h.log.borrow_mut().file_poll.push_back(vec![FileOut::Uploaded("file_1".into())]);
-        h.run(|cx| Engine::poll(cx));
+        h.run(Engine::poll);
         h.log.borrow_mut().file_poll.push_back(vec![FileOut::Added]);
-        h.run(|cx| Engine::poll(cx));
+        h.run(Engine::poll);
         assert_eq!(h.log.borrow().jobs[1..], [Job::Upload { name: "a.txt".into(), content: b"hi".to_vec() }, Job::AddFiles { ids: vec!["file_1".into()], store: "vs_1".into() }]);
         assert_eq!(h.log.borrow().inputs[0].hosted.file_search_vector_stores, vec!["vs_1".to_string()]);
 
@@ -2217,7 +2214,7 @@ mod tests {
         let chat = h.chat(Some("7"));
         h.send(&chat, with_file());
         h.log.borrow_mut().file_poll.push_back(vec![FileOut::Failed("e".into())]);
-        h.run(|cx| Engine::poll(cx));
+        h.run(Engine::poll);
         assert_eq!(h.notices(&chat), vec!["e".to_string()]);
         assert_eq!(h.count(&Ev::Start), 1);
         assert!(h.log.borrow().inputs[0].hosted.file_search_vector_stores.is_empty());
@@ -2325,15 +2322,15 @@ mod tests {
         h.script(vec![screen("c1")]);
         h.say(&chat, "hi");
         h.agents.get_mut(&chat).unwrap().running = Some(("R2".into(), "7".into()));
-        assert_eq!(h.run(|cx| Engine::gate_tick(cx)), vec![], "an open gate stops nothing");
+        assert_eq!(h.run(Engine::gate_tick), vec![], "an open gate stops nothing");
         h.off();
         let idle_before = h.messages(&idle).len();
-        let fx = h.run(|cx| Engine::gate_tick(cx));
+        let fx = h.run(Engine::gate_tick);
         assert_eq!(fx, vec![EngineEffect::CancelExec(7), EngineEffect::CancelChecks(chat.clone()), EngineEffect::GateRefused { endpoint: endpoint_of(&h.model), silent: true }]);
         assert_eq!(h.count(&Ev::Cancel), 1);
         assert!(h.park_ids(&chat).is_empty() && !h.in_turn(&chat));
         assert!(!h.broker.is_typing(&chat, Participant::Agent) && !h.broker.turn_in_progress(&chat));
-        assert_eq!(h.run(|cx| Engine::gate_tick(cx)), vec![]);
+        assert_eq!(h.run(Engine::gate_tick), vec![]);
         assert_eq!(h.messages(&idle).len(), idle_before, "the idle chat is untouched");
     }
 
@@ -2353,7 +2350,7 @@ mod tests {
         assert_eq!(h.log.borrow().jobs, vec![Job::CreateStore { name: "T".into() }]);
         h.off();
         h.log.borrow_mut().file_poll.push_back(vec![FileOut::Created("vs_1".into())]);
-        h.run(|cx| Engine::poll(cx));
+        h.run(Engine::poll);
         assert_eq!(h.count(&Ev::FileCancel), 1);
         assert_eq!(h.log.borrow().jobs.len(), 1, "no next job");
     }
@@ -2806,7 +2803,7 @@ mod tests {
         let fx = h.say(&chat, "hi");
         let rid = run_ids(&fx)[0].0.clone();
         h.off();
-        h.run(|cx| Engine::gate_tick(cx));
+        h.run(Engine::gate_tick);
         assert!(!h.in_turn(&chat));
         let before = h.log.borrow().events.len();
         let fx = h.run(|cx| Engine::tool_finished(cx, &chat, &rid, ran("{}", None)));

@@ -117,12 +117,11 @@ impl App {
         let mut drew = false;
         let (front, back) = self.tab_panes_here();
         let active = self.window_active();
-        if let Some((gap, typing)) = self.output_decision(&front, &back, outputs, active, now, with_output) {
-            if self.pacer.output(now, gap, typing) {
+        if let Some((gap, typing)) = self.output_decision(&front, &back, outputs, active, now, with_output)
+            && self.pacer.output(now, gap, typing) {
                 self.redraw_here();
                 drew = true;
             }
-        }
         let parked: Vec<(u64, Vec<PaneId>, Vec<PaneId>)> = self
             .windows
             .parked()
@@ -134,14 +133,13 @@ impl App {
             .collect();
         for (key, front, back) in parked {
             let Some((gap, typing)) = self.output_decision(&front, &back, outputs, false, now, with_output) else { continue };
-            if let Some((_, s)) = self.windows.parked_mut().find(|(k, _)| **k == key) {
-                if s.pacer.output(now, gap, typing) {
+            if let Some((_, s)) = self.windows.parked_mut().find(|(k, _)| **k == key)
+                && s.pacer.output(now, gap, typing) {
                     if let Some(g) = &s.gpu {
                         g.window.request_redraw();
                     }
                     drew = true;
                 }
-            }
         }
         // The screenshot panel's buttons follow the pane's selection.
         if let Some(s) = self.shot.as_ref().filter(|_| drew) {
@@ -215,11 +213,10 @@ impl App {
             due = [due, forced_frame(self.pacer.last(), period, now, || self.redraw_here())].into_iter().flatten().min();
         }
         for (_, s) in self.windows.parked_mut() {
-            if s.pacer.take_due(now) {
-                if let Some(g) = &s.gpu {
+            if s.pacer.take_due(now)
+                && let Some(g) = &s.gpu {
                     g.window.request_redraw();
                 }
-            }
             due = [due, s.pacer.due()].into_iter().flatten().min();
             if let Some(g) = s.gpu.as_ref().filter(|g| on_screen(&g.window, s.hotkey.as_ref())) {
                 due = [due, forced_frame(s.pacer.last(), period, now, || g.window.request_redraw())].into_iter().flatten().min();

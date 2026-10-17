@@ -106,11 +106,10 @@ impl App {
         let scan = ev.physical_key.to_scancode()?;
         let mut out = ev.clone();
         out.text = crate::winkeys::text_for(vk, scan, self.mods).map(Into::into);
-        if matches!(out.logical_key, WKey::Character(_)) {
-            if let Some(t) = crate::winkeys::text_for(vk, scan, Mods { ctrl: false, ..self.mods }) {
+        if matches!(out.logical_key, WKey::Character(_))
+            && let Some(t) = crate::winkeys::text_for(vk, scan, Mods { ctrl: false, ..self.mods }) {
                 out.logical_key = WKey::Character(t.into());
             }
-        }
         Some(out)
     }
 

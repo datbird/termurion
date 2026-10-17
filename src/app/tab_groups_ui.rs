@@ -908,11 +908,10 @@ impl App {
             }
         };
         let key = IconKey { setting: profile.int("Icon"), custom: profile.string("Custom Icon Path"), chain, fallback, letters: self.globals.bool("DefaultIconsUsingLetters") };
-        if let Some((k, image)) = self.tab_icon_cache.borrow().get(&pane) {
-            if *k == key || p.exited.is_some() {
+        if let Some((k, image)) = self.tab_icon_cache.borrow().get(&pane)
+            && (*k == key || p.exited.is_some()) {
                 return image.clone();
             }
-        }
         let icon = crate::tab_icons::resolve(&self.tab_icon_maps, key.setting, &key.custom, &key.chain, key.fallback.as_deref(), key.letters, &|l| self.has_icon_picture(l));
         let image = match icon {
             crate::tab_icons::Icon::None => None,

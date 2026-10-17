@@ -126,21 +126,6 @@ pub fn access_denied(code: i32) -> bool {
     code as u32 == 0x8007_0005
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_access_denied_skips_the_categories() {
-        assert!(access_denied(0x8007_0005_u32 as i32));
-        assert!(!access_denied(0x8000_4005_u32 as i32));
-        // The commit still adds the tasks and commits when the categories are refused.
-        let src = include_str!("jumplist_win.rs");
-        let live = src.split("#[cfg(test)]\nmod tests").next().unwrap();
-        assert!(live.contains("Err(e) if access_denied(e.code().0)") && live.contains("Err(e) => return Err(e),"));
-    }
-}
-
 /// One CoInitializeEx, balanced by CoUninitialize when it succeeded (S_OK or S_FALSE both count;
 /// final review item 16, Task 6 M1: one apartment reference leaked per commit before).
 struct ComInit(bool);
@@ -164,4 +149,19 @@ pub fn clear_recent_destinations() -> Result<(), String> {
     let _com = ComInit::new();
     let all: IApplicationDestinations = unsafe { CoCreateInstance(&ApplicationDestinations, None, CLSCTX_INPROC_SERVER) }.map_err(|e| format!("Jump List: {e}"))?;
     unsafe { all.RemoveAllDestinations() }.map_err(|e| format!("Jump List: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_access_denied_skips_the_categories() {
+        assert!(access_denied(0x8007_0005_u32 as i32));
+        assert!(!access_denied(0x8000_4005_u32 as i32));
+        // The commit still adds the tasks and commits when the categories are refused.
+        let src = include_str!("jumplist_win.rs");
+        let live = src.split("#[cfg(test)]\nmod tests").next().unwrap();
+        assert!(live.contains("Err(e) if access_denied(e.code().0)") && live.contains("Err(e) => return Err(e),"));
+    }
 }

@@ -518,13 +518,13 @@ pub fn colors_header(ui: &mut egui::Ui, st: &mut State, g: &Globals, profile: &m
             }
             None => {}
         }
-        if open {
-            if let Some((name, since)) = st.hover.clone() {
+        if open
+            && let Some((name, since)) = st.hover.clone() {
                 let waited = now.duration_since(since);
                 if waited < PREVIEW_DELAY {
                     ui.ctx().request_repaint_after(PREVIEW_DELAY - waited);
-                } else if st.preview.as_ref().is_none_or(|p| p.name != name) {
-                    if let Some(p) = all_presets(g).get(name.as_str()).copied() {
+                } else if st.preview.as_ref().is_none_or(|p| p.name != name)
+                    && let Some(p) = all_presets(g).get(name.as_str()).copied() {
                         let pre = st.preview.take().unwrap_or_else(|| Preview::begin(profile, guid, editing_dark, &name));
                         // The preview loads without asking, as `loadColorPresetWithName:prompt:NO`.
                         pre.restore(profile);
@@ -532,9 +532,7 @@ pub fn colors_header(ui: &mut egui::Ui, st: &mut State, g: &Globals, profile: &m
                         st.preview = Some(Preview { name, ..pre });
                         out.previewed = true;
                     }
-                }
             }
-        }
         // A click ends the preview first: the load starts from the saved colors.
         if out.clicked.is_some() || !open {
             st.hover = None;

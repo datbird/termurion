@@ -465,12 +465,11 @@ impl App {
             PointerAct::QuickLook => {
                 let script = self.browser_point_script("urls-at-point.js", js, &[]);
                 self.browser_eval_in_frame(pane, None, &script, Box::new(|a, p, r| {
-                    if let Some(url) = r.ok().and_then(|v| browser_pointer::first_url_of(&v)) {
-                        if crate::web_popover::quick_look_scheme_ok(&url) {
+                    if let Some(url) = r.ok().and_then(|v| browser_pointer::first_url_of(&v))
+                        && crate::web_popover::quick_look_scheme_ok(&url) {
                             let at = crate::browser_tip::pointer_now().unwrap_or_else(|| a.pointer_screen());
                             a.browser_queue_open_gated(p, &url, PageOpen::QuickLook(at));
                         }
-                    }
                 }));
             }
             PointerAct::SmartSelect => {
@@ -843,7 +842,7 @@ mod tests {
         assert!(b.contains("echo.note(") && b.contains("browser_keys::broadcast_verdict(&mut bv.echo, e, Instant::now(), sends, receiving, since)"), "no ordering is relied on: hold-off and echo guard (review I1)");
         let scripts = include_str!("browser_scripts_app.rs");
         let router = &scripts[scripts.find("fn browser_always_on").unwrap()..scripts.find("pub(super) fn browser_page_open").unwrap()];
-        assert!(router.contains("if self.browser_broadcast_accepts(pane, &e)"), "the router drops a broadcast message unless the pane sends");
+        assert!(router.contains("&& self.browser_broadcast_accepts(pane, &e)"), "the router drops a broadcast message unless the pane sends");
         assert!(router.contains("if !open &&"), "and only the proven isolated world speaks");
         let js = include_str!("../browser_js.rs");
         assert!(js.contains("BROADCAST_HANDLER if secret_ok(&r.body, secret) && r.frame.is_none()"), "the view's secret, main frame");

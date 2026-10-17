@@ -562,7 +562,7 @@ mod tests {
         s.get_mut(&guid).unwrap().set("Dynamic Profile Parent Name", Value::String("Default".into()));
         let copy = s.duplicate(&guid).unwrap();
         assert!(!s.unsaved(&copy));
-        assert!(s.get(&copy).unwrap().values.get("Dynamic Profile Parent Name").is_none());
+        assert!(!s.get(&copy).unwrap().values.contains_key("Dynamic Profile Parent Name"));
         assert_eq!(s.file_profiles().len(), 2);
     }
 

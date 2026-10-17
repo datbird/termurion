@@ -204,11 +204,10 @@ fn assign(model: &mut Model, slot: HotkeySlot, s: Option<Shortcut>) {
         HotkeySlot::Primary => {
             model.primary = s;
             // Clearing the primary shortcut promotes the first additional one (iTerm2).
-            if model.primary.is_none() {
-                if let Some(i) = model.alternates.iter().position(Option::is_some) {
+            if model.primary.is_none()
+                && let Some(i) = model.alternates.iter().position(Option::is_some) {
                     model.primary = model.alternates.remove(i);
                 }
-            }
         }
         HotkeySlot::Alternate(i) => {
             if let Some(a) = model.alternates.get_mut(i) {
@@ -275,15 +274,14 @@ pub fn session_row(ui: &mut egui::Ui, pane: crate::layout::PaneId, current: Opti
 
 /// The HotKey Window Preferences sheet.
 fn sheet(ctx: &egui::Context, sh: &mut Sheet, keys: &mut KeysState, others: &[(String, Prefs)], error: Option<&str>) -> Outcome {
-    if let Some((slot, k)) = keys.hotkey_recorded.take() {
-        if let Some(s) = shortcut_of(&k) {
+    if let Some((slot, k)) = keys.hotkey_recorded.take()
+        && let Some(s) = shortcut_of(&k) {
             if hotkey::smells_accidental(&s) {
                 sh.confirm = Some((slot, s));
             } else {
                 assign(&mut sh.model, slot, Some(s));
             }
         }
-    }
     let mut out = Outcome::Open;
     let me = sh.guid.clone().unwrap_or_default();
     let (chord_taken, tap_taken) = hotkey::conflicts(&me, &sh.model.prefs(), others);
@@ -372,13 +370,11 @@ fn sheet(ctx: &egui::Context, sh: &mut Sheet, keys: &mut KeysState, others: &[(S
                 if ui.button("+").clicked() {
                     sh.model.alternates.push(None);
                 }
-                if ui.add_enabled(sh.selected_alternate.is_some(), egui::Button::new("-")).clicked() {
-                    if let Some(i) = sh.selected_alternate.take() {
-                        if i < sh.model.alternates.len() {
+                if ui.add_enabled(sh.selected_alternate.is_some(), egui::Button::new("-")).clicked()
+                    && let Some(i) = sh.selected_alternate.take()
+                        && i < sh.model.alternates.len() {
                             sh.model.alternates.remove(i);
                         }
-                    }
-                }
                 if ui.button("OK").clicked() {
                     open = false;
                 }
@@ -526,11 +522,10 @@ pub fn keys_section(ui: &mut egui::Ui, g: &mut Globals, store: &mut Store, st: &
         }
     });
     if on {
-        if let Some(c) = &current {
-            if others.iter().any(|(_, p)| p.active() && p.shortcuts().iter().any(|s| (s.keycode, s.flags) == (c.keycode, c.flags))) {
+        if let Some(c) = &current
+            && others.iter().any(|(_, p)| p.active() && p.shortcuts().iter().any(|s| (s.keycode, s.flags) == (c.keycode, c.flags))) {
                 ui.colored_label(WARN, "Warning: A profile also uses this shortcut");
             }
-        }
         if let Some(e) = st.errors.get("App Hotkey") {
             ui.colored_label(WARN, format!("Warning: {e}"));
         }
@@ -559,11 +554,10 @@ pub fn keys_section(ui: &mut egui::Ui, g: &mut Globals, store: &mut Store, st: &
         ui.add_space(96.0);
         ui.weak(OPEN_QUICKLY_HELP);
     });
-    if quickly.is_some() {
-        if let Some(e) = st.errors.get("Open Quickly Hotkey") {
+    if quickly.is_some()
+        && let Some(e) = st.errors.get("Open Quickly Hotkey") {
             ui.colored_label(WARN, format!("Warning: {e}"));
         }
-    }
     if let Some(s) = st.quickly_confirm.clone() {
         let (heading, text) = hotkey::confirm_text_for(&label(&s), true);
         egui::Window::new(heading).id(egui::Id::new("open-quickly-confirm")).collapsible(false).resizable(false).show(ui.ctx(), |ui| {

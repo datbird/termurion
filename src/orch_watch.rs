@@ -617,6 +617,7 @@ pub fn description(w: &Watcher, note: Option<&str>) -> Value {
 
 /// What `register` did.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 pub enum Registered {
     New,
     Existing(Watcher),
@@ -625,11 +626,10 @@ pub enum Registered {
 /// Adds a watcher to a chat's list: a session watch with the same (session, target_state,
 /// condition) is the existing one; the list is bounded.
 pub fn register(list: &mut Vec<Watcher>, w: Watcher) -> Result<Registered, OrchError> {
-    if w.effective_mode() != Mode::Timer {
-        if let Some(e) = list.iter().find(|e| e.effective_mode() != Mode::Timer && e.session_guid == w.session_guid && e.target_state == w.target_state && e.condition == w.condition) {
+    if w.effective_mode() != Mode::Timer
+        && let Some(e) = list.iter().find(|e| e.effective_mode() != Mode::Timer && e.session_guid == w.session_guid && e.target_state == w.target_state && e.condition == w.condition) {
             return Ok(Registered::Existing(e.clone()));
         }
-    }
     if list.len() >= MAX_WATCHERS {
         return Err(OrchError::Unsupported(TOO_MANY.to_string()));
     }
@@ -794,7 +794,7 @@ mod tests {
         let none = Watcher { linked: None, ..w() };
         assert!(link_holds(&none, None), "an orchestration chat's watcher with no link");
         assert!(!link_holds(&none, Some("A")), "a link made after it");
-        assert!(!records_json(&[a.clone()]).contains("\"A\""), "Termurion's own, never stored");
+        assert!(!records_json(std::slice::from_ref(&a)).contains("\"A\""), "Termurion's own, never stored");
         assert_eq!(records(&records_json(&[a])), vec![w()]);
     }
 
@@ -1127,7 +1127,7 @@ mod tests {
         assert_eq!(o["mode"], "tabStatus");
         assert_eq!(records(&text), vec![w()]);
         let full = Watcher { condition: Some("c".into()), fire_date: Some(5.0), note: Some("n".into()), screen_read_consented: Some(true), notify_user: Some(false), ..w() };
-        assert_eq!(records(&records_json(&[full.clone()])), vec![full]);
+        assert_eq!(records(&records_json(std::slice::from_ref(&full))), vec![full]);
         assert!(records("{bad").is_empty());
         assert!(records("").is_empty());
         assert_eq!(iso8601(0.0), "1970-01-01T00:00:00Z");

@@ -261,11 +261,10 @@ impl App {
             due.push(g.window.id());
         }
         for (_, s) in self.windows.parked() {
-            if let Some(g) = &s.gpu {
-                if transparency::recreate_due(s.win_alpha_surface, &facts(&s.tabs, &self.panes, &self.store), s.win_alpha_failed) {
+            if let Some(g) = &s.gpu
+                && transparency::recreate_due(s.win_alpha_surface, &facts(&s.tabs, &self.panes, &self.store), s.win_alpha_failed) {
                     due.push(g.window.id());
                 }
-            }
         }
         for id in due {
             if !self.alpha_pending.contains(&id) {
@@ -405,13 +404,11 @@ impl App {
             window.set_maximized(true);
         }
         // Before the window shows, so it never appears on the wrong desktop (P18b: our own window).
-        if let (Some(id), Some(h)) = (old_desktop, menu::hwnd_of(&window)) {
-            if let Some(m) = self.desktops() {
-                if let Err(e) = m.move_window(h, id) {
+        if let (Some(id), Some(h)) = (old_desktop, menu::hwnd_of(&window))
+            && let Some(m) = self.desktops()
+                && let Err(e) = m.move_window(h, id) {
                     eprintln!("transparency: could not move the new window to its desktop: {e}");
                 }
-            }
-        }
         if carried.show {
             match menu::hwnd_of(&window) {
                 // Minimized shows without activation, over the frame set above.

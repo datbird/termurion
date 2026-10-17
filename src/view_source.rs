@@ -411,7 +411,7 @@ mod tests {
         assert!(apply_patches(t, &[("gone", "Z", "x")]).unwrap_err().starts_with(PATCH_MISSED));
         assert!(apply_patches("A A", &[("twice", "A", "x")]).unwrap_err().starts_with(PATCH_MISSED));
         // The served path: a patch that misses makes `render` produce no page, and `request` Unavailable.
-        let broken = apply_patches(&resource("view-source.html").unwrap(), &[("gone", "no such text in the template", "x")]);
+        let broken = apply_patches(resource("view-source.html").unwrap(), &[("gone", "no such text in the template", "x")]);
         assert!(broken.is_err());
         let src = include_str!("view_source.rs");
         let prod = &src[..src.find("#[cfg(test)]").unwrap()];

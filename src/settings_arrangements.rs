@@ -104,12 +104,11 @@ fn arrangements_page(ui: &mut egui::Ui, g: &mut Globals, profiles: &[(String, St
             changed = true;
         }
         crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut st.rename).desired_width(220.0));
-        if ui.button("Rename").clicked() && st.rename != sel {
-            if store.rename(&sel, &st.rename) {
+        if ui.button("Rename").clicked() && st.rename != sel
+            && store.rename(&sel, &st.rename) {
                 st.selected = Some(arrangements::clean_name(&st.rename));
                 changed = true;
             }
-        }
     });
     ui.horizontal(|ui| {
         let shown = st.profile.as_ref().and_then(|g| profiles.iter().find(|p| &p.0 == g)).map_or("Choose a profile", |p| p.1.as_str()).to_string();
@@ -121,14 +120,13 @@ fn arrangements_page(ui: &mut egui::Ui, g: &mut Globals, profiles: &[(String, St
             }
         });
         let pick = st.profile.as_ref().and_then(|g| profiles.iter().find(|p| &p.0 == g));
-        if ui.add_enabled(pick.is_some(), egui::Button::new("Change Profile in Arrangement")).clicked() {
-            if let (Some(p), Some(windows)) = (pick, store.get(&sel).cloned()) {
+        if ui.add_enabled(pick.is_some(), egui::Button::new("Change Profile in Arrangement")).clicked()
+            && let (Some(p), Some(windows)) = (pick, store.get(&sel).cloned()) {
                 let mut windows = windows;
                 arrangement::change_profile(&mut windows, &p.2);
                 store.replace(&sel, windows);
                 changed = true;
             }
-        }
     });
     // A preview: each window as a box, with its selected tab's panes.
     if let Some(windows) = store.get(&sel) {

@@ -54,7 +54,7 @@ pub trait CodePage {
 }
 
 pub fn utf16le_decode(bytes: &[u8]) -> String {
-    char::decode_utf16(bytes.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]]))).map(|r| r.unwrap_or('\u{fffd}')).collect()
+    char::decode_utf16(bytes.as_chunks::<2>().0.iter().map(|p| u16::from_le_bytes([p[0], p[1]]))).map(|r| r.unwrap_or('\u{fffd}')).collect()
 }
 
 pub fn utf16le_encode(text: &str) -> Vec<u8> {
@@ -240,7 +240,7 @@ pub fn encode_stream(cp: u32, bytes: &[u8], sys: &dyn CodePage) -> Vec<u8> {
                 let ascii = rest.starts_with(|c: char| c.is_ascii());
                 let n = rest.find(|c: char| c.is_ascii() != ascii).unwrap_or(rest.len());
                 if ascii {
-                    out.extend_from_slice(rest[..n].as_bytes());
+                    out.extend_from_slice(&rest.as_bytes()[..n]);
                 } else {
                     out.extend_from_slice(&sys.encode(cp, &rest[..n]));
                 }
@@ -285,13 +285,12 @@ fn utf16_text_runs(text: &str, out: &mut Vec<u8>, sys: &dyn CodePage) {
                 None => {}
             }
             // SS3: ESC O and the one character after it.
-            if rest[..end].ends_with("\x1bO") {
-                if let Some(c) = rest[end..].chars().next() {
+            if rest[..end].ends_with("\x1bO")
+                && let Some(c) = rest[end..].chars().next() {
                     end += c.len_utf8();
                 }
-            }
         }
-        out.extend_from_slice(rest[..end].as_bytes());
+        out.extend_from_slice(&rest.as_bytes()[..end]);
         rest = &rest[end..];
     }
 }

@@ -95,6 +95,7 @@ impl Mechanism {
         }
     }
 
+    #[allow(clippy::wrong_self_convention)] // the name follows the iTerm2 method it ports
     fn from_trigger(self) -> bool {
         matches!(self, Mechanism::Trigger | Mechanism::BrowserTrigger)
     }
@@ -409,11 +410,10 @@ fn role(s: &SessionConfig) -> String {
 /// one and the URL is one a saved arrangement may keep (S1); anything else is the profile as is.
 pub fn member_profile(profile: &Profile, url_string: &str) -> Profile {
     let mut p = profile.clone();
-    if crate::browser::is_browser(&p.string("Custom Command")) {
-        if let Some(url) = (!url_string.is_empty()).then(|| crate::browser::arrangement_url(url_string)).flatten() {
+    if crate::browser::is_browser(&p.string("Custom Command"))
+        && let Some(url) = (!url_string.is_empty()).then(|| crate::browser::arrangement_url(url_string)).flatten() {
             p.set("Initial URL", toml::Value::String(url));
         }
-    }
     p
 }
 
@@ -1013,6 +1013,6 @@ mod tests {
         // Labels are the names made inert and cut.
         let mut long = a.clone();
         long.name = "x".repeat(300);
-        assert_eq!(menu_entries(&[long], None, true, false)[0].label.chars().count() <= 129, true);
+        assert!(menu_entries(&[long], None, true, false)[0].label.chars().count() <= 129);
     }
 }

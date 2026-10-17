@@ -167,6 +167,7 @@ impl Flow {
     }
 
     /// Next: the following step; true when it was the last (the window closes).
+    #[allow(clippy::should_implement_trait)] // a cursor-style method with its own return type, not an Iterator
     pub fn next(&mut self) -> bool {
         if self.is_last() {
             return true;

@@ -36,11 +36,10 @@ pub fn encode(text: &[u8], pane: u32, min: Option<f64>, max: Option<f64>) -> Res
         // tmux 2.1 and earlier: each UTF-8 byte is its own key.
         text.iter().map(|b| *b as u32).collect()
     };
-    if min == Some(2.2) && max == Some(2.2) {
-        if let Some(c) = points.iter().find(|c| **c > 0xffff).and_then(|c| char::from_u32(*c)) {
+    if min == Some(2.2) && max == Some(2.2)
+        && let Some(c) = points.iter().find(|c| **c > 0xffff).and_then(|c| char::from_u32(*c)) {
             return Err(c);
         }
-    }
     // tmux 3.0a is the first with send-keys -H.
     let raw_controls = min.is_some_and(|v| v >= 3.01);
     let mut out = Vec::new();

@@ -258,11 +258,10 @@ pub enum TabOpen {
 
 pub fn tab_open(guid: &str, name: &str, profile_name_of: &dyn Fn(&str) -> Option<String>, guid_of_name: &dyn Fn(&str) -> Option<String>) -> TabOpen {
     let Some(new) = profile_name_of(guid) else { return TabOpen::Missing };
-    if new != name {
-        if let Some(by_name) = guid_of_name(name) {
+    if new != name
+        && let Some(by_name) = guid_of_name(name) {
             return TabOpen::Ask { by_guid: guid.to_string(), by_name, old: name.to_string(), new };
         }
-    }
     TabOpen::Guid(guid.to_string())
 }
 

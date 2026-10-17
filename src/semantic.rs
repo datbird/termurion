@@ -178,11 +178,10 @@ pub fn resolve_in(ctx: &ClickContext) -> Option<(Target, Option<std::ops::Range<
                     return Some((Target::File { path, line, column }, Some(range), Pass::Detect));
                 }
                 // ExistingFileRespectingHardNewlines (`UAF:291-297`).
-                if let Some((b, a)) = &ctx.respecting {
-                    if let Some((path, line, column, range)) = path_in(b, a, ctx.cwd.as_deref(), set, &ctx.probe, &budget) {
+                if let Some((b, a)) = &ctx.respecting
+                    && let Some((path, line, column, range)) = path_in(b, a, ctx.cwd.as_deref(), set, &ctx.probe, &budget) {
                         return Some((Target::File { path, line, column }, Some(range), Pass::Respecting));
                     }
-                }
             }
             Phase::File => {}
             Phase::SmartAction => {
@@ -913,13 +912,12 @@ pub(crate) fn file_url_path(url: &str) -> Option<String> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(b) = u8::from_str_radix(&rest[i + 1..i + 3], 16) {
+        if bytes[i] == b'%' && i + 2 < bytes.len()
+            && let Ok(b) = u8::from_str_radix(&rest[i + 1..i + 3], 16) {
                 out.push(b);
                 i += 3;
                 continue;
             }
-        }
         out.push(bytes[i]);
         i += 1;
     }
@@ -1444,7 +1442,7 @@ mod tests {
         let url = "https://a/b";
         assert_eq!(handler_plan(&format!("open.exe {t0} {URL_TOKEN}"), url, &v(&["My Title  with spaces"]), &fake_resolve), spawn_of(r"C:\t\open.exe", &["My Title  with spaces", url]));
         assert_eq!(handler_plan(&format!("open.exe --t={t0} --p={t1}"), url, &v(&["a b", "C:\\x y"]), &fake_resolve), spawn_of(r"C:\t\open.exe", &["--t=a b", "--p=C:\\x y", url]));
-        for program in [format!("{t0}"), format!("{t0}\\open.exe"), format!("\"{t0}\"")] {
+        for program in [t0.to_string(), format!("{t0}\\open.exe"), format!("\"{t0}\"")] {
             assert_eq!(handler_plan(&format!("{program} {URL_TOKEN}"), url, &v(&["C:\\t"]), &fake_resolve), Err(Refusal::VariableInProgram), "{program}");
         }
         for bad in ["a&calc", "a\"b", "x\n", "a\\", "a\u{E000}b"] {

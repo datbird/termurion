@@ -670,14 +670,12 @@ impl App {
         if !self.ssh_search_acks.entry(pane).or_default().admit(&id) {
             return;
         }
-        if let (Some(g), true) = (generation, current_id.as_deref() == Some(id.as_str())) {
-            if let Ok(file) = crate::remote_file::RemoteFile::parse(&json) {
-                if let Some((w, p)) = self.ssh_panel.as_mut() {
+        if let (Some(g), true) = (generation, current_id.as_deref() == Some(id.as_str()))
+            && let Ok(file) = crate::remote_file::RemoteFile::parse(&json)
+                && let Some((w, p)) = self.ssh_panel.as_mut() {
                     p.search_result(g, file);
                     w.request_redraw();
                 }
-            }
-        }
         let waiter = Waiter::SearchAck { id: id.clone() };
         if !self.ssh_send(pane, FileSub::Search(crate::ssh_files::SearchSub::Ack { id: id.clone(), count: 1 }), false, waiter) {
             self.ssh_search_acked(pane, &id);

@@ -215,11 +215,10 @@ pub fn zone_of(text: &str) -> Option<u32> {
         let line = line.trim();
         if line.starts_with('[') {
             in_section = line.eq_ignore_ascii_case("[ZoneTransfer]");
-        } else if in_section {
-            if let Some(v) = line.strip_prefix("ZoneId=") {
+        } else if in_section
+            && let Some(v) = line.strip_prefix("ZoneId=") {
                 return v.trim().parse().ok();
             }
-        }
     }
     None
 }

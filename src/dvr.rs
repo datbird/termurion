@@ -198,7 +198,7 @@ impl Dvr {
         if !eligible || {
             let c = self.count;
             self.count = self.count.wrapping_add(1);
-            c % KEY_FRAME_EVERY == 0
+            c.is_multiple_of(KEY_FRAME_EVERY)
         } {
             kind = Kind::Key;
         }

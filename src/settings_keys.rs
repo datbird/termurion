@@ -1747,13 +1747,12 @@ pub fn custom_scripts_folder_row(ui: &mut egui::Ui, g: &mut Globals, home: &std:
             if field.lost_focus() {
                 ended = true;
             }
-            if ui.button("Browse").clicked() {
-                if let Some(picked) = choose_scripts_folder(g) {
+            if ui.button("Browse").clicked()
+                && let Some(picked) = choose_scripts_folder(g) {
                     text = picked;
                     changed = true;
                     ended = true;
                 }
-            }
         });
         if ended {
             ui.ctx().data_mut(|d| d.remove_temp::<bool>(folder_pending_id()));
@@ -1975,11 +1974,10 @@ fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path
     use crate::remote_prefs::{self as rp, SaveMode};
     let mut action = PrefsAction::None;
     let was_on = g.bool(rp::LOAD_KEY);
-    if let Some(s) = schema::find_global(rp::LOAD_KEY) {
-        if global_control(ui, g, s, true) {
+    if let Some(s) = schema::find_global(rp::LOAD_KEY)
+        && global_control(ui, g, s, true) {
             action = PrefsAction::Changed;
         }
-    }
     let on = g.bool(rp::LOAD_KEY);
     if on && !was_on && g.string(rp::FOLDER_KEY).is_empty() && choose_prefs_folder(g).is_some() && rp::location_valid(&g.string(rp::FOLDER_KEY), home, &crate::netpath::read_reparse, &rp::writable) {
         action = PrefsAction::CopyNow;
@@ -1997,12 +1995,11 @@ fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path
             if setting.is_some_and(|s| indicate_non_default() && !global_is_default(g, s)) {
                 non_default_bar(ui, field.rect, ui.is_enabled());
             }
-            if ui.button(rp::BROWSE).clicked() {
-                if let Some(picked) = choose_prefs_folder(g) {
+            if ui.button(rp::BROWSE).clicked()
+                && let Some(picked) = choose_prefs_folder(g) {
                     text = picked;
                     action = action.max_changed();
                 }
-            }
         });
         let cached = ui.ctx().data(|d| d.get_temp::<(String, bool)>(prefs_valid_id()));
         valid = match cached {
@@ -2534,7 +2531,7 @@ mod tests {
         // Ruling R3: iTerm2's default is on (`iTermPreferences.m:827`).
         // The second row follows the first (`APV:228-231`).
         let mut g = Globals::empty(std::path::Path::new("pane-title-rows-test.toml"));
-        assert_eq!(g.bool("ShowPaneTitles"), true);
+        assert!(g.bool("ShowPaneTitles"));
         g.set("ShowPaneTitles", Value::Boolean(false));
         assert!(!row_enabled(&g, "ShowPaneTitlesEvenIfOnlyOnePane"));
         g.set("ShowPaneTitles", Value::Boolean(true));
@@ -3429,7 +3426,7 @@ mod tests {
         assert_eq!(EXPERIMENTAL_NOTE, "This setting also enables ligature support in the GPU renderer.");
         assert_eq!(RTL_TOOLTIP, "Buried sessions appear under Session > Buried Sessions. When this setting is enabled, window sizes are restored when attaching to an existing tmux session.");
         // Experimental is the General pane's last section, as in iTerm2's xib.
-        let last = schema::global().iter().filter(|s| s.tab == "General").last().unwrap();
+        let last = schema::global().iter().rfind(|s| s.tab == "General").unwrap();
         assert_eq!(last.section, "Experimental");
     }
 

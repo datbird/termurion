@@ -475,11 +475,10 @@ impl App {
         let anchor_window = self.pane_window_id(anchor);
         let mut found: HashMap<String, PaneId> = HashMap::new();
         for (pid, pane) in &self.panes {
-            if pane.workgroup.is_none() && !panes.values().any(|m| m == pid) {
-                if let Some(config) = by_guid.get(pane.session_guid.as_str()).filter(|_| anchor_window.is_some() && self.pane_window_id(*pid) == anchor_window) {
+            if pane.workgroup.is_none() && !panes.values().any(|m| m == pid)
+                && let Some(config) = by_guid.get(pane.session_guid.as_str()).filter(|_| anchor_window.is_some() && self.pane_window_id(*pid) == anchor_window) {
                     found.entry(config.to_string()).or_insert(*pid);
                 }
-            }
         }
         for step in run::spawn_plan(&w) {
             let config = match &step {
@@ -498,12 +497,11 @@ impl App {
         }
         for config in &plan.fresh {
             let Some(cfg) = w.session(config).cloned() else { continue };
-            if self.enter_pane_window(anchor) {
-                if let Some(pid) = self.spawn_restored_peer(&w, &cfg, &id, anchor, &inst.approved) {
+            if self.enter_pane_window(anchor)
+                && let Some(pid) = self.spawn_restored_peer(&w, &cfg, &id, anchor, &inst.approved) {
                     inst.peers.iter_mut().filter(|(c, _)| c == config).for_each(|(_, slot)| *slot = Some(pid));
                     waiting.push(config.clone());
                 }
-            }
         }
         if let Some(h) = home.filter(|h| self.current_window() != Some(*h)) {
             self.enter(h);

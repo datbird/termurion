@@ -209,7 +209,7 @@ pub fn shortcut_label(tab_index: usize, current_tab: bool, pane_ordinal: usize, 
             None => format!("Pane {pane_ordinal}"),
         });
     }
-    if tab_index < 1 || tab_index > 9 {
+    if !(1..=9).contains(&tab_index) {
         return None;
     }
     Some(match modifier_prefix(tab_tag) {

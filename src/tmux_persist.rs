@@ -64,11 +64,10 @@ pub fn parse_per_window(value: &str) -> std::collections::HashMap<String, Window
                 Some(("size", "fs")) => w.size = Some(WinSize::FullScreen),
                 Some(("size", v)) => {
                     let nums: Vec<f64> = v.trim_matches(['{', '}']).split(',').filter_map(|n| n.trim().parse().ok()).collect();
-                    if let [x, y] = nums[..] {
-                        if x > 0.0 && y > 0.0 {
+                    if let [x, y] = nums[..]
+                        && x > 0.0 && y > 0.0 {
                             w.size = Some(WinSize::Size(x as i64, y as i64));
                         }
-                    }
                 }
                 _ => {}
             }

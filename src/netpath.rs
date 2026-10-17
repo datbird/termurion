@@ -14,6 +14,7 @@
 //!    point itself opened (`FILE_FLAG_OPEN_REPARSE_POINT`, nothing followed) on components already
 //!    found local; a link's target is judged again from step 1 (root first) before anything below
 //!    the link is read, and a reparse point Termurion cannot read is refused.
+//!
 //! Semantic History's ignore list and `EnableSemanticHistoryOnNetworkMounts` add to this (mapped
 //! drives allowed only when the setting says so); a UNC path is never touched at all.
 
@@ -87,11 +88,10 @@ fn remote_answer(cache: &std::sync::Mutex<[Option<bool>; 26]>, letter: usize, as
         return true;
     }
     let remote = ask() == DRIVE_REMOTE;
-    if remote {
-        if let Ok(mut c) = cache.lock() {
+    if remote
+        && let Ok(mut c) = cache.lock() {
             c[letter] = Some(true);
         }
-    }
     remote
 }
 
@@ -279,7 +279,7 @@ fn link_target(buf: &[u8]) -> Option<PathBuf> {
         _ => return None,
     };
     let bytes = buf.get(path_buffer + offset..path_buffer + offset + len)?;
-    let wide: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    let wide: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
     let name = String::from_utf16(&wide).ok()?;
     if name.is_empty() {
         return None;

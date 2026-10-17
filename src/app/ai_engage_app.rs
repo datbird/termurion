@@ -205,14 +205,13 @@ impl App {
     /// Opens the dialog queued by `engage_ai`, and the wait window of a run that is going.
     pub(super) fn open_ai_engage_windows(&mut self, event_loop: &ActiveEventLoop) {
         let Some(g) = self.gpu.as_ref() else { return };
-        if self.ai_engage.is_none() {
-            if let Some((pane, ask)) = self.ai_engage_open.take() {
+        if self.ai_engage.is_none()
+            && let Some((pane, ask)) = self.ai_engage_open.take() {
                 match EngageWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &ask) {
                     Ok(w) => self.ai_engage = Some((w, pane, ask)),
                     Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
                 }
             }
-        }
         if self.ai_wait.is_none() {
             let live = self.ai_engage_pending.keys().copied().filter(|id| self.ai_runs.contains_key(id)).min();
             if let Some(id) = live {
@@ -259,12 +258,11 @@ impl App {
                     WaitResult::Open
                 }
             };
-            if answer == WaitResult::Cancel {
-                if let Some((_, id)) = self.ai_wait.take() {
+            if answer == WaitResult::Cancel
+                && let Some((_, id)) = self.ai_wait.take() {
                     pending_after_cancel(&mut self.ai_engage_pending, id);
                     self.ai_run_cancel(id);
                 }
-            }
             return true;
         }
         false

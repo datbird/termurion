@@ -701,17 +701,17 @@ fn add_sessions(items: &mut Vec<Item>, query: &str, s: &Sources) {
         let (title, title_bold) = title_from(&docs, name_result);
 
         let mut features: Vec<Feature> = Vec::new();
-        push_feature(&mut features, "Badge", &[sess.badge.clone()], SESSION_BADGE_MULT, cap, query, &mut score);
+        push_feature(&mut features, "Badge", std::slice::from_ref(&sess.badge), SESSION_BADGE_MULT, cap, query, &mut score);
         push_feature(&mut features, "Command", &sess.commands, COMMAND_MULT, cap, query, &mut score);
         push_feature(&mut features, "Directory", &sess.dirs, DIRECTORY_MULT, cap, query, &mut score);
         push_feature(&mut features, "Host", &sess.hosts, HOSTNAME_MULT, cap, query, &mut score);
         push_feature(&mut features, "User", &sess.users, USERNAME_MULT, cap, query, &mut score);
-        push_feature(&mut features, "Profile", &[sess.profile.clone()], PROFILE_NAME_MULT, cap, query, &mut score);
-        push_feature(&mut features, "Git Branch", &[sess.git_branch.clone()], GIT_BRANCH_MULT, cap, query, &mut score);
+        push_feature(&mut features, "Profile", std::slice::from_ref(&sess.profile), PROFILE_NAME_MULT, cap, query, &mut score);
+        push_feature(&mut features, "Git Branch", std::slice::from_ref(&sess.git_branch), GIT_BRANCH_MULT, cap, query, &mut score);
         for (name, value) in &sess.user_vars {
-            push_feature(&mut features, name, &[value.clone()], USER_VAR_MULT, cap, query, &mut score);
+            push_feature(&mut features, name, std::slice::from_ref(value), USER_VAR_MULT, cap, query, &mut score);
         }
-        push_feature(&mut features, "pid", &[sess.pid.clone()], OTHER_VAR_MULT, cap, query, &mut score);
+        push_feature(&mut features, "pid", std::slice::from_ref(&sess.pid), OTHER_VAR_MULT, cap, query, &mut score);
 
         if score <= 0.0 {
             continue;

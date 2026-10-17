@@ -1374,6 +1374,7 @@ impl ViewGate {
     /// Room for `event`? A droppable event over the caps is refused and counted (the newest is
     /// dropped: a std channel cannot drop its oldest); an event that must not be dropped is always
     /// admitted. The Charge returned is released on drop.
+    #[allow(clippy::result_unit_err)] // the caller only needs to know it failed; the error carries nothing to name
     pub fn admit(self: &Arc<Self>, event: &Event) -> Result<Charge, ()> {
         let weight = event.weight();
         let console = event.is_console();
@@ -1605,11 +1606,10 @@ pub fn nav_verdict(info: &NavInfo, policy: &NavPolicy, file_ok: &dyn Fn(&str) ->
     if info.by_model && private_host(info.target) {
         return false;
     }
-    if let Some(list) = &policy.allowed_schemes {
-        if !info.by_termurion && !scheme_ok(info.target, list) {
+    if let Some(list) = &policy.allowed_schemes
+        && !info.by_termurion && !scheme_ok(info.target, list) {
             return false;
         }
-    }
     if !policy.guard_local_schemes {
         return true;
     }
@@ -1716,11 +1716,10 @@ impl FocusLedger {
     pub fn out_of_step(&self, active: Option<crate::layout::PaneId>, mine: impl Fn(crate::layout::PaneId) -> bool) -> Vec<(crate::layout::PaneId, bool)> {
         let mut out: Vec<(crate::layout::PaneId, bool)> = self.told.iter().filter(|(p, told)| **told && Some(**p) != active && mine(**p)).map(|(p, _)| (*p, false)).collect();
         out.sort();
-        if let Some(a) = active {
-            if !self.told.get(&a).copied().unwrap_or(false) {
+        if let Some(a) = active
+            && !self.told.get(&a).copied().unwrap_or(false) {
                 out.push((a, true));
             }
-        }
         out
     }
 }

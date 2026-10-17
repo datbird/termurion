@@ -104,6 +104,7 @@ pub fn path(local_appdata: &Path, user: &str) -> PathBuf {
 /// Deletes the database file and its journals (Clear All Data, `BD:147-167`); a file already gone is
 /// fine. Judged local first and removed as themselves (a link is deleted, never followed). The caller
 /// has dropped its connection. Err holds nothing: the caller names the path.
+#[allow(clippy::result_unit_err)] // the caller only needs to know it failed; the error carries nothing to name
 pub fn erase_files(path: &Path) -> Result<(), ()> {
     let judged = LocalPath::judge(path).ok_or(())?;
     let dir = judged.parent().ok_or(())?;
@@ -174,14 +175,13 @@ pub(crate) fn clean_url(url: &str) -> Option<String> {
     if url.is_empty() || url.len() > MAX_URL || url.chars().any(char::is_control) {
         return None;
     }
-    if let Some((scheme, rest)) = url.split_once("://") {
-        if !scheme.is_empty() && !scheme.contains('/') {
+    if let Some((scheme, rest)) = url.split_once("://")
+        && !scheme.is_empty() && !scheme.contains('/') {
             let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
             if let Some((_, hostport)) = rest[..end].rsplit_once('@') {
                 return Some(format!("{scheme}://{hostport}{}", &rest[end..]));
             }
         }
-    }
     Some(url.to_string())
 }
 
@@ -283,7 +283,7 @@ impl Db {
             let mut head = [0u8; 16];
             let mut f = localfs::open(&judged).map_err(err)?;
             let n = f.read(&mut head).map_err(err)?;
-            if n > 0 && &head[..n] != &b"SQLite format 3\0"[..n] {
+            if n > 0 && head[..n] != b"SQLite format 3\0"[..n] {
                 return Err("the browser database file is not a database".to_string());
             }
         }

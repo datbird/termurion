@@ -109,7 +109,7 @@ pub fn kills_session(cmd: &str, session: Option<&(u32, String)>) -> bool {
         Some(&"kill-session") => {}
         _ => return false,
     }
-    if words.iter().any(|w| *w == "-a") {
+    if words.contains(&"-a") {
         return false;
     }
     let Some(at) = words.iter().position(|w| *w == "-t") else { return true };
@@ -339,11 +339,10 @@ impl Gateway {
             // %noop, %pane-mode-changed, and notifications Termurion does not know are logged only.
             Ok(Note::Other(_)) => {}
             Ok(n) => {
-                if let Note::SessionRenamed { session, name } = &n {
-                    if self.session.as_ref().is_some_and(|(s, _)| s == session) {
+                if let Note::SessionRenamed { session, name } = &n
+                    && self.session.as_ref().is_some_and(|(s, _)| s == session) {
                         self.session = Some((*session, name.clone()));
                     }
-                }
                 ev.push(Event::Note(n));
             }
         }
@@ -393,11 +392,10 @@ impl Gateway {
                 let (text, data) = if error { (String::new(), Vec::new()) } else { (cur.text.clone(), cur.data.clone()) };
                 ev.push(Event::Reply { tag, ok: !error, text, data });
             }
-            if !error && self.logging {
-                if let Some(c) = &cur.cmd {
+            if !error && self.logging
+                && let Some(c) = &cur.cmd {
                     ev.push(Event::Print(format!("[Normal response to \u{201c}{}\u{201d}]", c.text)));
                 }
-            }
             // psmux answers the kill of the attached session and says nothing more.
             if !error && self.psmux && !self.disconnected && cur.cmd.as_ref().is_some_and(|c| kills_session(&c.text, self.session.as_ref())) {
                 self.disconnected = true;

@@ -426,7 +426,7 @@ mod tests {
         let perms = msg(Participant::Agent, Content::SetPermissions(vec![]));
         let (q, a) = (text(Participant::User, "q"), markdown("a"));
         assert!(needs_title(&[perms.clone(), q.clone(), a.clone()]));
-        assert!(!needs_title(&[q.clone()]), "no reply yet");
+        assert!(!needs_title(std::slice::from_ref(&q)), "no reply yet");
         assert!(!needs_title(&[q.clone(), a.clone(), text(Participant::User, "q2"), markdown("b")]), "not the first turn");
         let notice = msg(Participant::User, Content::ClientLocal(ClientLocal::Notice("n".into())));
         assert!(needs_title(&[notice, q, a]), "a notice is not a message the model reads");

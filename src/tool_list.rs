@@ -151,11 +151,10 @@ impl Selection {
     /// The button went up after `press`: a held selection becomes the pressed row alone,
     /// unless a drag happened.
     pub fn release(&mut self, dragged: bool) {
-        if let Some(row) = self.held.take() {
-            if !dragged {
+        if let Some(row) = self.held.take()
+            && !dragged {
                 self.rows = vec![row];
             }
-        }
     }
 
     /// The list was rebuilt (a folder opened or closed): each selected row follows its item,
@@ -415,16 +414,14 @@ pub enum ListHit {
 }
 
 pub fn hit(l: &ListLayout, x: f32, y: f32) -> ListHit {
-    if let Some(r) = l.field {
-        if r.contains(x, y) {
+    if let Some(r) = l.field
+        && r.contains(x, y) {
             return ListHit::Field;
         }
-    }
-    if let Some(r) = l.popup {
-        if r.contains(x, y) {
+    if let Some(r) = l.popup
+        && r.contains(x, y) {
             return ListHit::Popup;
         }
-    }
     if let Some((b, _)) = l.top.iter().find(|(_, r)| r.contains(x, y)) {
         return ListHit::Button(*b);
     }

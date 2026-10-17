@@ -282,11 +282,10 @@ fn row_text(label: &str, icons: egui::FontFamily) -> egui::text::LayoutJob {
         _ => (None, label),
     };
     let body = egui::TextFormat { font_id: egui::FontId::proportional(14.0), ..Default::default() };
-    if let Some(c) = glyph {
-        if icons != egui::FontFamily::Proportional {
+    if let Some(c) = glyph
+        && icons != egui::FontFamily::Proportional {
             job.append(&c.to_string(), 0.0, egui::TextFormat { font_id: egui::FontId::new(14.0, icons), ..Default::default() });
         }
-    }
     job.append(rest, 0.0, body);
     job
 }

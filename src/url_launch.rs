@@ -534,7 +534,7 @@ mod tests {
         for bad in ["ssh://h\n", "ssh://h\r", "ssh://h\0"] {
             assert_eq!(pipe_message(bad), None, "{bad:?}");
         }
-        assert_eq!(pipe_message(&format!("ssh://{}", "a".repeat(MAX_URL - 6))).is_some(), true);
+        assert!(pipe_message(&format!("ssh://{}", "a".repeat(MAX_URL - 6))).is_some());
         assert_eq!(pipe_message(&format!("ssh://{}", "a".repeat(MAX_URL))), None);
         assert_eq!(parse_message(b"open-url\nssh://h\n").as_deref(), Some("ssh://h"));
         assert_eq!(parse_message(b"open-url\nssh://h"), None);

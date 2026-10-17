@@ -102,12 +102,11 @@ impl App {
         let spec = w.spec(w.heading(), &w.text());
         // Issue 5115 (`iTermPasteHelper.m:850`): a multi-line question silenced with Cancel
         // asks again.
-        if let (Warning::Lines { .. } | Warning::OneLine { .. }, Some(id)) = (&w, spec.id.as_deref()) {
-            if warnings::is_silenced(&self.globals, id, super::warnings_app::unix_now()) && spec.cancel == Some(warnings::saved_selection(&self.globals, id)) {
+        if let (Warning::Lines { .. } | Warning::OneLine { .. }, Some(id)) = (&w, spec.id.as_deref())
+            && warnings::is_silenced(&self.globals, id, super::warnings_app::unix_now()) && spec.cancel == Some(warnings::saved_selection(&self.globals, id)) {
                 self.globals.unset(id);
                 self.save_globals();
             }
-        }
         self.ask_scripts(scripts_alerts::ask(&spec.heading, &spec.text, w.buttons(), spec.id.as_deref(), spec.kind, scripts_alerts::Then::Paste(pane)));
     }
 
@@ -137,11 +136,10 @@ impl App {
         }
         entry.2 |= paste::shows_progress(total, speed, commands);
         // iTerm2: pasting clears the selection (PastingClearsSelection).
-        if self.globals.bool("PastingClearsSelection") {
-            if let Some(p) = self.panes.get_mut(&sender) {
+        if self.globals.bool("PastingClearsSelection")
+            && let Some(p) = self.panes.get_mut(&sender) {
                 p.clear_selection();
             }
-        }
         self.paste_tick();
     }
 

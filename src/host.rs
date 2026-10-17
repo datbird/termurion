@@ -293,14 +293,13 @@ fn pump(host: &Shared, id: u64) {
             msgs.push(Msg::Pending { id, bytes: pending as u64 });
         }
         s.pending = pending;
-        if s.exited.is_none() {
-            if let Some(code) = p.exit_code() {
+        if s.exited.is_none()
+            && let Some(code) = p.exit_code() {
                 s.exited = Some(code);
                 if s.attached {
                     msgs.push(Msg::Exited { id, code });
                 }
             }
-        }
     }
     for m in &msgs {
         h.send(m);
@@ -501,11 +500,10 @@ fn handle(host: &Shared, m: Msg, api: &Api, wake: &mpsc::Sender<u64>) {
 /// Runs `f` on a session's pty. The host has no window, so a failure goes to its log.
 fn with_pty(host: &Shared, id: u64, f: impl FnOnce(&Pty) -> Result<(), String>) {
     let h = host.lock().unwrap();
-    if let Some(p) = h.sessions.get(&id).and_then(|s| s.pty.as_ref()) {
-        if let Err(e) = f(p) {
+    if let Some(p) = h.sessions.get(&id).and_then(|s| s.pty.as_ref())
+        && let Err(e) = f(p) {
             log(&format!("session {id}: {e}"));
         }
-    }
 }
 
 /// The `host.log` line for a session's size going from `old` to `new`: None when it did not change.
@@ -631,11 +629,10 @@ pub(crate) mod tests {
         pub(crate) fn output_until(&self, id: u64, needle: &str) -> String {
             let mut all = String::new();
             self.wait(|m| {
-                if let Msg::Output { id: i, bytes, .. } = m {
-                    if *i == id {
+                if let Msg::Output { id: i, bytes, .. } = m
+                    && *i == id {
                         all.push_str(&String::from_utf8_lossy(bytes));
                     }
-                }
                 all.contains(needle).then_some(())
             });
             all

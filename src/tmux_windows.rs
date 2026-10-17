@@ -256,6 +256,7 @@ pub enum Place {
 /// `open`: the tmux windows already showing; `prevent_tab`: the profile's "Prevent Opening
 /// in a Tab"; `anonymous`: made by `tmux new-window`, not by Termurion;
 /// `anonymous_location`: anonymousTmuxWindowsOpenInCurrentWindow (0 new, 1 focused, 2 topmost).
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 pub fn place(window: u32, aff: &Affinities, open: &[u32], prevent_tab: bool, initial: bool, anonymous: bool, open_in: OpenIn, anonymous_location: i64) -> Place {
     if !prevent_tab {
         let class = aff.class_of(&window.to_string());

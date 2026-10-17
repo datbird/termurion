@@ -518,11 +518,10 @@ pub fn kinds_to_fill(fields: &[Field], card: &Card) -> Vec<&'static str> {
     let values = card_values(card);
     let mut out: Vec<&'static str> = Vec::new();
     for f in fields {
-        if let Some((k, _)) = values.iter().find(|(k, _)| *k == f.kind) {
-            if !out.contains(k) {
+        if let Some((k, _)) = values.iter().find(|(k, _)| *k == f.kind)
+            && !out.contains(k) {
                 out.push(k);
             }
-        }
     }
     out
 }

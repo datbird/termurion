@@ -365,7 +365,7 @@ impl App {
             }
             Ok(()) => {}
         }
-        let toolbelt = subs.get(&["View", "Toolbelt"].map(str::to_string).to_vec()).cloned().map(|s| {
+        let toolbelt = subs.get(&["View", "Toolbelt"].map(str::to_string)[..]).cloned().map(|s| {
             let fixed = s.items().len();
             (s, fixed)
         });
@@ -383,7 +383,7 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_browser: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), profile_cache: Default::default(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, archives: subs.get(&["Shell", "Archives"].map(str::to_string).to_vec()).cloned(), archive_items: Vec::new(), buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], workgroups: subs.get(&["Shell", "Workgroups"].map(str::to_string).to_vec()).cloned().map(WorkgroupsMenu::new), peer_items, snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, make_default, explain_ai, tip_item, move_to_window, move_to_tab, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new(), tab_color, tab_color_swatches: Vec::new(), triggers: subs.get(&["Session", "Triggers"].map(str::to_string).to_vec()).cloned().map(|s| { let fixed = s.items().len(); (s, fixed) }), trigger_items: Vec::new(), transfer_menus: [None, None], transfer_rows: [Vec::new(), Vec::new()] });
+        self.menu_bar = Some(MenuBar { menu, checks, named, named_items: Vec::new(), named_browser: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), profile_cache: Default::default(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string)[..]).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string)[..]).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, archives: subs.get(&["Shell", "Archives"].map(str::to_string)[..]).cloned(), archive_items: Vec::new(), buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string)[..]).cloned(), buried_items: vec![(String::from("-"), String::new())], workgroups: subs.get(&["Shell", "Workgroups"].map(str::to_string)[..]).cloned().map(WorkgroupsMenu::new), peer_items, snippets: subs.get(&["Edit", "Snippets"].map(str::to_string)[..]).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string)[..]).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, engage_ai, make_default, explain_ai, tip_item, move_to_window, move_to_tab, ssh_disconnect, ssh_download_files, claude_items: match claude { [Some(a), Some(b), Some(c)] => Some([a, b, c]), _ => None }, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new(), tab_color, tab_color_swatches: Vec::new(), triggers: subs.get(&["Session", "Triggers"].map(str::to_string)[..]).cloned().map(|s| { let fixed = s.items().len(); (s, fixed) }), trigger_items: Vec::new(), transfer_menus: [None, None], transfer_rows: [Vec::new(), Vec::new()] });
         self.runtime_menu_title();
         self.refresh_claude_menu();
         self.retitle_suppressed_menu();
@@ -864,14 +864,13 @@ impl App {
         if self.browser_command(sel) {
             return;
         }
-        if crate::replay::blocks_command(sel) {
-            if let Some(id) = self.focused_id() {
+        if crate::replay::blocks_command(sel)
+            && let Some(id) = self.focused_id() {
                 if self.panes.get(&id).is_some_and(|p| p.replay.is_some()) {
                     return;
                 }
                 self.end_view(id);
             }
-        }
         if self.run_trigger_command_menu(&item.selector, event_loop) {
             return self.relayout();
         }
@@ -927,11 +926,10 @@ impl App {
             "moveTabToNewWindow:" if self.layout_allowed(crate::winmodel::LayoutOp::MoveTab) => self.move_tab_to_new_window(),
             // Disabled while a pick is on (`PTYTextView.m:587-591`).
             "movePane:" => {
-                if self.pane_move.is_none() {
-                    if let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) {
+                if self.pane_move.is_none()
+                    && let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) {
                         self.start_pane_move(pane, true, event_loop);
                     }
-                }
             }
             "moveSessionToWindow:" if self.layout_allowed(crate::winmodel::LayoutOp::MovePane) => self.move_session_to_window(),
             "moveSessionToTab:" if self.layout_allowed(crate::winmodel::LayoutOp::MovePane) => self.move_session_to_tab(),
@@ -1226,12 +1224,11 @@ impl App {
                 }
             }
             s if s.starts_with("terminalStateToggle") => {
-                if let Some((_, on, off, flag)) = TOGGLES.iter().find(|t| t.0 == label) {
-                    if let Some(p) = self.focused_pane() {
+                if let Some((_, on, off, flag)) = TOGGLES.iter().find(|t| t.0 == label)
+                    && let Some(p) = self.focused_pane() {
                         let now = p.screen.term().mode().intersects(*flag);
                         p.screen.feed(if now { off.as_bytes() } else { on.as_bytes() });
                     }
-                }
             }
             "biggerFont:" => self.adjust_font_size(1),
             "smallerFont:" => self.adjust_font_size(-1),

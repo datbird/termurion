@@ -340,7 +340,7 @@ mod tests {
         let mut pending = vec![a.clone(), b.clone()];
         let plan = hook_plan(&mut pending, Some("/p".into()), false, &[]);
         assert_eq!((plan.directory.as_deref(), plan.start), (Some("/da"), Start::Jump(vec![b.clone()])));
-        assert_eq!(pending, [b.clone()]);
+        assert_eq!(pending, std::slice::from_ref(&b));
         // One pending: nothing left to jump to.
         let mut pending = vec![a.clone()];
         let plan = hook_plan(&mut pending, Some("/p".into()), false, &[]);
@@ -354,7 +354,7 @@ mod tests {
         assert_eq!((plan.directory.as_deref(), plan.start), (Some("/p"), Start::Plain));
         assert_eq!(hook_plan(&mut Vec::new(), Some("/p".into()), true, &[]).directory, None);
         // A previous conductor with jumps left hands them on.
-        let plan = hook_plan(&mut Vec::new(), None, true, &[c.clone()]);
+        let plan = hook_plan(&mut Vec::new(), None, true, std::slice::from_ref(&c));
         assert_eq!(plan.start, Start::ParentJumps(vec![c.clone()]));
         // ... and pending [a, b] with a previous conductor and no jumps of its own: a's
         // directory, a plain start.
@@ -437,20 +437,20 @@ mod tests {
     fn saved_hops_must_be_quoted_as_it2ssh_quotes() {
         let list = |args: &str| jumps_value(&[r("-p 22 h ", None), r(args, Some("/x"))]);
         for good in ["-p 2222 user@host ", "h", "-J a\\,b h"] {
-            assert_eq!(jumps_from(&list(&good)).len(), 2, "{good}");
+            assert_eq!(jumps_from(&list(good)).len(), 2, "{good}");
         }
         assert_eq!(jumps_from(&list(&crate::util_it2ssh::requote(&["-J".into(), "a,b:22".into(), "[::1]".into()]))).len(), 2, "what it2ssh writes for allowed words");
         // In it2ssh's form but outside the allowlist (residual round 2).
         for bad in ["-o ProxyJump=a\\,b h", "a\\*c\\?d h ", "-l '' h ", "\\~u h", "-o ServerAliveInterval=30 h"] {
-            assert!(jumps_from(&list(&bad)).is_empty(), "{bad}");
+            assert!(jumps_from(&list(bad)).is_empty(), "{bad}");
         }
         // Escaped metacharacters and spaces are in it2ssh's form, but final review I1's screen
         // and residual 2 refuse them in any word (`words_are_safe`).
         for bad in ["a\\ b\\*c\\?d h ", "a\\ b\\;c\\|d h ", "\\$HOME h", "it\\'s h", "\\{x\\} h"] {
-            assert!(jumps_from(&list(&bad)).is_empty(), "{bad}");
+            assert!(jumps_from(&list(bad)).is_empty(), "{bad}");
         }
         for bad in ["h; curl x|sh", "h && rm -rf ~", "$(id) h", "`id` h", "h > /tmp/x", "h | sh", "'a b' h", "\"a\" h", "h &", "h\\", "*", "h #x", "~/x h", "a  b", " h"] {
-            assert!(jumps_from(&list(&bad)).is_empty(), "{bad}");
+            assert!(jumps_from(&list(bad)).is_empty(), "{bad}");
         }
     }
 

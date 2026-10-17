@@ -87,7 +87,7 @@ mod tests {
         let other_guid = other.guid();
         s.add(other);
         assert_eq!(crowd_guids(&s, vec![saved.clone(), dynamic.clone(), other_guid.clone()]), [saved.clone(), other_guid]);
-        assert_eq!(crowd_guids(&s, vec![dynamic.clone()]), [dynamic.clone()], "a single pick is the person's choice");
+        assert_eq!(crowd_guids(&s, vec![dynamic.clone()]), std::slice::from_ref(&dynamic), "a single pick is the person's choice");
     }
 
     /// More than ten profiles ask first, as `shouldOpenManyProfiles:` does; closing the question is

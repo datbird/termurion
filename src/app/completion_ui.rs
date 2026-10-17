@@ -28,14 +28,13 @@ impl App {
     /// Session > Open Autocomplete... (again while it shows: "more", as iTerm2).
     pub(super) fn open_autocomplete(&mut self) {
         let Some(pane) = self.focused_id() else { return };
-        if let Some((p, list)) = self.completion.as_mut() {
-            if *p == pane && list.kind == Kind::Autocomplete {
+        if let Some((p, list)) = self.completion.as_mut()
+            && *p == pane && list.kind == Kind::Autocomplete {
                 if list.key(CKey::Tab) == Reply::Search {
                     self.autocomplete_search(false);
                 }
                 return self.redraw();
             }
-        }
         let extra = self.word_chars(pane);
         let word = move |c: char| c.is_alphanumeric() || extra.contains(c);
         let Some((lines, row, col)) = self.panes.get(&pane).map(|p| p.own().char_rows(ROWS)) else { return };
@@ -82,12 +81,11 @@ impl App {
         let Some((pane, list)) = self.completion.as_mut() else { return };
         let pane = *pane;
         let reply = list.key(CKey::Other);
-        if let Kind::Commands { typed } = &list.kind {
-            if !matches!(reply, Reply::Pass | Reply::Handled | Reply::Search) {
+        if let Kind::Commands { typed } = &list.kind
+            && !matches!(reply, Reply::Pass | Reply::Handled | Reply::Search) {
                 let typed = typed.clone();
                 self.auto.1.dismissed(&typed);
             }
-        }
         if matches!(reply, Reply::CloseAndPass) && self.focused_id() == Some(pane) {
             self.completion = None;
         }
@@ -119,12 +117,11 @@ impl App {
         let Some((_, list)) = self.completion.as_mut() else { return false };
         let reply = list.key(key);
         // A closed Auto Command Completion list stays closed until the typed text changes.
-        if let Kind::Commands { typed } = &list.kind {
-            if !matches!(reply, Reply::Pass | Reply::Handled | Reply::Search) {
+        if let Kind::Commands { typed } = &list.kind
+            && !matches!(reply, Reply::Pass | Reply::Handled | Reply::Search) {
                 let typed = typed.clone();
                 self.auto.1.dismissed(&typed);
             }
-        }
         self.redraw();
         match reply {
             Reply::Insert(text) => {
@@ -220,7 +217,7 @@ impl App {
 
     /// Draws the list at the cursor of its pane and returns the box it drew.
     pub(super) fn draw_completion(&self, frame: &mut Frame, pane: PaneId, rect: Rect, cell: (f32, f32)) -> Option<Rect> {
-        let Some((rows, selected, footer, at, bounds)) = self.completion_box(pane, rect, cell) else { return None };
+        let (rows, selected, footer, at, bounds) = self.completion_box(pane, rect, cell)?;
         scene::completion_list(frame, &rows, selected, footer, at, bounds, cell)
     }
 }

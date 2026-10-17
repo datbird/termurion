@@ -19,6 +19,7 @@ pub type SubId = u64;
 
 /// What a subscription hears (`ChatBroker.Update`).
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 pub enum Update {
     Delivery { message: Message, partial: bool },
     Typing { on: bool, who: Participant },
@@ -254,11 +255,10 @@ impl Broker {
                 unstored(m, writes)
             }
             Content::Commit(uuid) => {
-                if m.author == Participant::Agent {
-                    if let Some(table) = self.rewrite.get_mut(chat) {
+                if m.author == Participant::Agent
+                    && let Some(table) = self.rewrite.get_mut(chat) {
                         table.remove(&uuid);
                     }
-                }
                 // The commit is the settling point: status updates leave the body
                 // (`ChatListModel.swift:329-345`). The commit itself is not stored.
                 let writes = target

@@ -264,14 +264,13 @@ fn proc_body(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRE
         WM_EXITMENULOOP => hide(h),
         WM_NCDESTROY => {
             hide(h);
-            if let Ok(mut s) = STATE.lock() {
-                if let Some((tip, owner)) = s.tip.filter(|(_, o)| *o == h) {
+            if let Ok(mut s) = STATE.lock()
+                && let Some((tip, owner)) = s.tip.filter(|(_, o)| *o == h) {
                     let _ = owner;
                     // SAFETY: the tip is a child popup of the window being destroyed.
                     unsafe { DestroyWindow(tip as HWND) };
                     s.tip = None;
                 }
-            }
             // SAFETY: removing this proc from the window being destroyed.
             unsafe { RemoveWindowSubclass(hwnd, Some(proc), SUBCLASS_ID) };
         }

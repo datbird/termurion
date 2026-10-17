@@ -410,14 +410,12 @@ impl Tracker {
         let old_abs = self.last_abs;
         // A deletion is announced before anything else.
         let mut deleted = false;
-        if let (Some(last), Some(old)) = (&self.last_line, old_abs) {
-            if old == cursor_abs {
-                if let Some(d) = deletion(self.last_x, cursor_x, last, cursor_line) {
+        if let (Some(last), Some(old)) = (&self.last_line, old_abs)
+            && old == cursor_abs
+                && let Some(d) = deletion(self.last_x, cursor_x, last, cursor_line) {
                     out.push(Event::AnnounceDeleted(d));
                     deleted = true;
                 }
-            }
-        }
         let moved_down = !deleted && old_abs.is_some_and(|o| cursor_abs > o);
         let mut pending = self.pending.is_some();
         // Moving up while output is pending is someone reviewing history: cancel.
@@ -426,8 +424,8 @@ impl Tracker {
             self.deadline = None;
             pending = false;
         }
-        if moved_down {
-            if let Some(old) = old_abs {
+        if moved_down
+            && let Some(old) = old_abs {
                 if !pending {
                     let text = self.last_line.as_ref().map(|l| l.iter().map(|(_, s)| s.as_str()).collect()).unwrap_or_default();
                     self.pending = Some((old, text));
@@ -435,7 +433,6 @@ impl Tracker {
                 self.deadline = Some(now + SETTLE);
                 pending = true;
             }
-        }
         if !deleted && !pending {
             out.push(Event::TextChanged);
         }

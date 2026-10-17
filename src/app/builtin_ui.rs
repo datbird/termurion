@@ -120,11 +120,10 @@ impl App {
     /// (`iTermObject.m:73-91`). A synchronous evaluation cannot wait, so a built-in that
     /// waits for an answer answers null there without acting.
     pub(super) fn builtin(&mut self, b: &'static Builtin, args: BTreeMap<String, Value>, receiver: Option<(On, u64)>, side_effects: bool, sync: bool) -> HostOutcome {
-        if !side_effects && receiver.is_none() {
-            if let Some(p) = b.placeholder {
+        if !side_effects && receiver.is_none()
+            && let Some(p) = b.placeholder {
                 return HostOutcome::Done(json!(p));
             }
-        }
         let waits = matches!((b.on, b.name), (On::Function, "alert" | "get_string" | "move_tab_to_window") | (On::Session, "run_tmux_command" | "get_time_offset"));
         if sync && waits {
             return HostOutcome::Done(Value::Null);
@@ -138,11 +137,10 @@ impl App {
             _ => HostOutcome::Done(Value::Null),
         };
         // Only `focus` changes the window the person uses.
-        if b.name != "focus" {
-            if let Some(w) = back {
+        if b.name != "focus"
+            && let Some(w) = back {
                 self.enter(w);
             }
-        }
         out
     }
 
@@ -242,12 +240,11 @@ impl App {
                     Err(e) => return failed(e),
                 };
                 let home = self.clip_home(pane);
-                if let Some(c) = self.clips.get_mut(&home) {
-                    if c.model.archive_all() {
+                if let Some(c) = self.clips.get_mut(&home)
+                    && c.model.archive_all() {
                         c.selected.clear();
                         c.scroll = 0.0;
                     }
-                }
                 self.mark_state_dirty();
                 self.redraw_all();
                 HostOutcome::Done(Value::Null)

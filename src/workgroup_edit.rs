@@ -192,7 +192,7 @@ pub fn enforce_mode_switcher(w: &mut Workgroup) {
         need.extend(peers.iter().map(|p| p.unique_identifier.clone()));
     }
     for s in &mut w.sessions {
-        let has = s.toolbar_items.iter().any(|i| *i == ToolbarItem::ModeSwitcher);
+        let has = s.toolbar_items.contains(&ToolbarItem::ModeSwitcher);
         if need.contains(&s.unique_identifier) {
             if !has {
                 s.toolbar_items.insert(0, ToolbarItem::ModeSwitcher);
@@ -277,7 +277,7 @@ pub fn item_label(item: &ToolbarItem) -> String {
 /// The items the Add menu offers this session (`WSDV:1110-1160`). The peer mode switcher is left
 /// out: the peer-group rule manages it (iTerm2 skips it in this menu although the registry has it).
 pub fn offered_items(s: &SessionConfig) -> Vec<&'static str> {
-    let has_files = s.toolbar_items.iter().any(|i| *i == ToolbarItem::ChangedFileSelector);
+    let has_files = s.toolbar_items.contains(&ToolbarItem::ChangedFileSelector);
     REGISTRY
         .into_iter()
         .filter(|n| match *n {
@@ -346,7 +346,7 @@ fn fields(s: &SessionConfig, in_group: bool, browser: bool) -> Vec<Field> {
             out.push(Field::Command);
         }
     }
-    if !root && !browser && s.toolbar_items.iter().any(|i| *i == ToolbarItem::ChangedFileSelector) {
+    if !root && !browser && s.toolbar_items.contains(&ToolbarItem::ChangedFileSelector) {
         out.push(Field::FileCommand);
     }
     if !root && browser {
@@ -481,7 +481,7 @@ mod tests {
         w.sessions.iter().all(|s| {
             let host = if s.kind == Kind::Peer { s.parent_id.clone() } else { Some(s.unique_identifier.clone()) };
             let in_group = host.as_deref().is_some_and(|h| w.sessions.iter().any(|c| c.parent_id.as_deref() == Some(h) && c.kind == Kind::Peer));
-            let has = s.toolbar_items.iter().any(|i| *i == ToolbarItem::ModeSwitcher);
+            let has = s.toolbar_items.contains(&ToolbarItem::ModeSwitcher);
             let first = s.toolbar_items.first() == Some(&ToolbarItem::ModeSwitcher);
             if in_group { has && (first || !s.toolbar_items.is_empty()) } else { !has }
         })

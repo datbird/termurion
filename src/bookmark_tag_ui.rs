@@ -41,11 +41,10 @@ const MAX_FIELD: usize = MAX_TAGS_PER * 66;
 pub fn parse_tokens(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for piece in text.split(',').take(MAX_TAGS_PER * 4) {
-        if let Some(tag) = clean_tag(piece) {
-            if !out.contains(&tag) {
+        if let Some(tag) = clean_tag(piece)
+            && !out.contains(&tag) {
                 out.push(tag);
             }
-        }
         if out.len() == MAX_TAGS_PER {
             break;
         }

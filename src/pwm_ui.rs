@@ -240,13 +240,12 @@ impl PwmWindow {
         if self.pointer_only && pointer_only_drops(e) {
             return false;
         }
-        if let Some(c) = self.keys.chord(e) {
-            if let (true, crate::menus::ChordKey::Char(k)) = (crate::winkeys::pwm_chord(&c), c.key) {
+        if let Some(c) = self.keys.chord(e)
+            && let (true, crate::menus::ChordKey::Char(k)) = (crate::winkeys::pwm_chord(&c), c.key) {
                 self.chords.push(k);
                 self.host.request_redraw();
                 return true;
             }
-        }
         // iTerm2 makes the search field first responder whenever the window becomes key.
         if let WindowEvent::Focused(true) = e {
             self.focus_search = true;

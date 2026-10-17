@@ -171,11 +171,10 @@ impl ShotWindow {
                             out = ShotEvent::Changed;
                         }
                         if ui.add_enabled(selected.is_some(), egui::Button::new("-")).clicked() {
-                            if let Some(i) = selected.take() {
-                                if i < panel.annotations.len() {
+                            if let Some(i) = selected.take()
+                                && i < panel.annotations.len() {
                                     panel.annotations.remove(i);
                                 }
-                            }
                             out = ShotEvent::Changed;
                         }
                     });
@@ -280,8 +279,8 @@ fn minimap_view(ui: &mut egui::Ui, panel: &mut Panel, tex: Option<&egui::Texture
     for y in [top, bottom] {
         p.rect_filled(egui::Rect::from_center_size(egui::pos2(inner.center().x, y), egui::vec2(inner.width(), 4.0)), 1.0, accent);
     }
-    if resp.drag_started() {
-        if let Some(pos) = resp.interact_pointer_pos() {
+    if resp.drag_started()
+        && let Some(pos) = resp.interact_pointer_pos() {
             *drag = if (pos.y - top).abs() <= 12.0 {
                 Some(Drag::Top)
             } else if (pos.y - bottom).abs() <= 12.0 {
@@ -292,7 +291,6 @@ fn minimap_view(ui: &mut egui::Ui, panel: &mut Panel, tex: Option<&egui::Texture
                 None
             };
         }
-    }
     if let (Some(d), Some(pos)) = (*drag, resp.interact_pointer_pos()) {
         let at = line_of(pos.y);
         let (s, e) = panel.range;

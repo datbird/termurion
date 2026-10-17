@@ -61,11 +61,10 @@ pub fn telnet_change(url: &SshUrl, s: &Settings) -> Result<Change, UrlError> {
 /// and host checks as the others and no control or invisible character in its decoded path (a decoded space stays encoded).
 pub fn ftp_change(text: &str, url: &SshUrl, s: &Settings) -> Result<Change, UrlError> {
     let Some(host) = &url.host else { return Err(UrlError::NoHost) };
-    if let Some(user) = &url.user {
-        if !username_ok(user, &s.valid_user_chars) {
+    if let Some(user) = &url.user
+        && !username_ok(user, &s.valid_user_chars) {
             return Err(UrlError::IllegalUsername(user.clone()));
         }
-    }
     if !hostname_ok(host) {
         return Err(UrlError::BadHostname);
     }
@@ -234,7 +233,7 @@ mod tests {
             "telnet://h:23 -x",
         ] {
             let r = change_for(bad, &settings());
-            assert!(matches!(r, Err(_)), "{bad}: {r:?}");
+            assert!(r.is_err(), "{bad}: {r:?}");
         }
         for u in ["ftp://h/a%20b", "ftp://h//attacker.example/share", "ftp://h/%5C%5Cattacker%5Cshare", "ftp://u:p@h/x"] {
             let c = change_for(u, &settings()).unwrap().unwrap().command;

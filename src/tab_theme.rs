@@ -546,11 +546,10 @@ pub fn toward_gray(c: Rgb, amount: f32, gray: f32) -> Rgb {
 /// (2/3) for the light styles, dark grey (1/3) for the dark ones, by the `resolved` style.
 pub fn divider_color(style: TabStyle, resolved: TabStyle, decoration_bg: Rgb, prominence: f32, invisible: Option<Rgb>) -> Rgb {
     if style == TabStyle::Minimal {
-        if prominence == 0.0 {
-            if let Some(c) = invisible {
+        if prominence == 0.0
+            && let Some(c) = invisible {
                 return c;
             }
-        }
         let target = if perceived(decoration_bg) < 0.5 { 1.0 } else { 0.0 };
         return toward_gray(decoration_bg, prominence, target);
     }

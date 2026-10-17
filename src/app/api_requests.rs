@@ -45,6 +45,7 @@ use pb::client_originated_message::Submessage as Req;
 use pb::server_originated_message::Submessage as Resp;
 
 /// A request's answer: sent now, or later by whatever finishes it (tmux replies).
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 pub(super) enum Answer {
     Now(pb::ServerOriginatedMessage),
     Later,
@@ -311,23 +312,19 @@ impl App {
             }
             self.bring_forward();
         }
-        if plan.raise {
-            if let Some(w) = window {
+        if plan.raise
+            && let Some(w) = window {
                 self.order_front(w);
             }
-        }
-        if plan.select_tab {
-            if let Some(tab) = plan.tab {
-                if window.is_some_and(|w| self.enter(w)) {
-                    if let Some(i) = self.tabs.iter().position(|t| t.id == tab) {
+        if plan.select_tab
+            && let Some(tab) = plan.tab
+                && window.is_some_and(|w| self.enter(w))
+                    && let Some(i) = self.tabs.iter().position(|t| t.id == tab) {
                         self.select_tab(i);
                         self.relayout();
                     }
-                }
-            }
-        }
-        if plan.select_session {
-            if let Some(pane) = plan.pane.filter(|p| self.enter_pane_window(*p)) {
+        if plan.select_session
+            && let Some(pane) = plan.pane.filter(|p| self.enter_pane_window(*p)) {
                 if let Some(t) = self.tabs.iter_mut().find(|t| t.layout.panes().contains(&pane)) {
                     // A maximized tab stays maximized, on the new session.
                     if t.zoomed.is_some() {
@@ -337,7 +334,6 @@ impl App {
                 }
                 self.relayout();
             }
-        }
         self.redraw();
         answer(plan.error.unwrap_or(Status::Ok))
     }
@@ -1120,11 +1116,10 @@ impl App {
             }
             let Some(at) = self.tabs.iter().position(|t| t.id == tab) else { continue };
             let moving = self.take_tab(at);
-            if let Some((gw, _, _)) = self.tmux_of(moving.focused) {
-                if !gateways.contains(&gw) {
+            if let Some((gw, _, _)) = self.tmux_of(moving.focused)
+                && !gateways.contains(&gw) {
                     gateways.push(gw);
                 }
-            }
             self.active = crate::close_rules::active_after_close(self.active, at, self.tabs.len(), self.globals.bool("MoveLeftAfterClosingTab"));
             if self.tabs.is_empty() {
                 // The moving tab's browser views follow it before this window goes (N1).
@@ -1349,8 +1344,8 @@ impl App {
     fn api_fns_changed(&mut self, conn: u64, r: &pb::NotificationRequest, status: pb::notification_response::Status) {
         self.script_registry_changed();
         let Some(pb::notification_request::Arguments::RpcRegistrationRequest(reg)) = &r.arguments else { return };
-        if status == pb::notification_response::Status::Ok && r.subscribe == Some(true) {
-            if let Some(id) = crate::script_statusbar::unique_id(reg).filter(|_| crate::script_statusbar::registration_is_component(reg)) {
+        if status == pb::notification_response::Status::Ok && r.subscribe == Some(true)
+            && let Some(id) = crate::script_statusbar::unique_id(reg).filter(|_| crate::script_statusbar::registration_is_component(reg)) {
                 let id = id.to_string();
                 self.script_component_registered(&id);
                 let full = self.api_keys.get(&conn).and_then(|(key, _)| self.script_history.find(key)).and_then(|e| e.full_path.clone());
@@ -1361,7 +1356,6 @@ impl App {
                     self.save_globals();
                 }
             }
-        }
     }
 
     /// StatusBarComponentRequest (`H:4101-4140`): its status over the session (buried ones

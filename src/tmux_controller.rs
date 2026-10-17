@@ -566,12 +566,11 @@ impl Controller {
 
     /// The Dashboard's window list of the attached session goes stale: list it again.
     fn windows_changed(&mut self) {
-        if let Some((s, _)) = self.session {
-            if self.session_windows.contains_key(&s) {
+        if let Some((s, _)) = self.session
+            && self.session_windows.contains_key(&s) {
                 let now = self.clock;
                 self.dashboard_windows(s, now);
             }
-        }
     }
 
     /// Sends the lists that are due (the Dashboard's; iTerm2's timers).
@@ -633,13 +632,12 @@ impl Controller {
             self.unbury(*w);
         }
         gw.send(&crate::tmux_persist::hidden_command(s, &self.hidden), None, Flags::default());
-        if tabs {
-            if let Some(first) = windows.first() {
+        if tabs
+            && let Some(first) = windows.first() {
                 for w in &windows[1..] {
                     self.affinities.set_equal(&w.to_string(), &first.to_string());
                 }
             }
-        }
         let format = tmux_windows::detailed_format(self.v());
         for w in windows {
             self.intentional.insert(*w);
@@ -837,12 +835,11 @@ impl Controller {
     /// 0.01 s later, once per window's pair (accelerateUpdateIfStringContainsNotReady). A
     /// late reply for a window no longer watched does nothing.
     fn status_not_ready(&mut self, key: Key, raw: &str) {
-        if let Key::Status(w, _) = key {
-            if self.monitors.contains_key(&key) && !self.accelerated.contains(&w) && crate::tmux_monitor::not_ready(raw) {
+        if let Key::Status(w, _) = key
+            && self.monitors.contains_key(&key) && !self.accelerated.contains(&w) && crate::tmux_monitor::not_ready(raw) {
                 self.accelerated.insert(w);
                 self.accelerated_due.push((w, self.clock + 0.01));
             }
-        }
     }
 
     fn install(&mut self, key: Key, target: &str, format: &str, timer: Option<f64>, gw: &mut Gateway) {
@@ -1254,11 +1251,10 @@ impl Controller {
                     self.status_not_ready(key, text);
                 }
                 let value = self.monitors.get_mut(&key).and_then(|m| m.fetched(ok.then_some(text)));
-                if let Key::Pane(p, Info::Cwd) = key {
-                    if ok {
+                if let Key::Pane(p, Info::Cwd) = key
+                    && ok {
                         self.cwd_gates.entry(p).or_default().known();
                     }
-                }
                 out.extend(value.and_then(|v| self.monitor_value(key, v)));
             }
             Req::NewWindow(affinity) => {
@@ -1365,12 +1361,11 @@ impl Controller {
                 }
             }
             Req::DisplayOne => {
-                if let Some(w) = tmux_windows::parse_windows(text, self.v(), self.tab_bug).into_iter().next() {
-                    if !self.windows.contains_key(&w.id) && !self.openers.values().any(|o| o.window.id == w.id) {
+                if let Some(w) = tmux_windows::parse_windows(text, self.v(), self.tab_bug).into_iter().next()
+                    && !self.windows.contains_key(&w.id) && !self.openers.values().any(|o| o.window.id == w.id) {
                         let anonymous = !self.intentional.remove(&w.id);
                         out.extend(self.open_window(w, false, anonymous, gw));
                     }
-                }
             }
             Req::Capture { opener, pane, part } => {
                 let Some(o) = self.openers.get_mut(&opener) else { return Some(out) };
@@ -1492,6 +1487,7 @@ impl Controller {
     }
 
     /// A notification the gateway passed on.
+    #[allow(clippy::collapsible_match)] // the arm names the case and carries the rationale; a match guard would fold both into the pattern line
     pub fn note(&mut self, note: Note, gw: &mut Gateway) -> Vec<Action> {
         match note {
             Note::Pause(pane) => {
@@ -1570,11 +1566,10 @@ impl Controller {
                 }
             }
             Note::SessionRenamed { session, name } => {
-                if let Some((s, n)) = &mut self.session {
-                    if *s == session {
+                if let Some((s, n)) = &mut self.session
+                    && *s == session {
                         *n = name;
                     }
-                }
             }
             Note::WindowPaneChanged { window, pane } => {
                 if self.windows.get(&window).is_some_and(|ps| ps.contains(&pane)) {

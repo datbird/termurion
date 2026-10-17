@@ -148,11 +148,10 @@ impl App {
     pub(super) fn ai_has_key(&mut self) -> bool {
         let found = self.ai_found();
         let catalog = crate::ai_catalog::bundled();
-        if let Some(m) = crate::ai_model::configured(&self.globals, catalog, &found) {
-            if crate::ai_policy::key_policy(&m.url, m.api) != crate::ai_policy::KeyPolicy::VendorKey {
+        if let Some(m) = crate::ai_model::configured(&self.globals, catalog, &found)
+            && crate::ai_policy::key_policy(&m.url, m.api) != crate::ai_policy::KeyPolicy::VendorKey {
                 return true;
             }
-        }
         let vendor = crate::ai_models::effective_vendor(&self.globals, catalog, &found);
         crate::ai_keys::shared().lock().unwrap_or_else(|e| e.into_inner()).is_set(vendor, &mut *crate::ai_keys::system_store())
     }
@@ -318,12 +317,11 @@ impl App {
                 self.ask_ai_key(vendor, Some(&endpoint), KeyThen::Run(id));
             }
             // A tool call comes only from a run that offers tools: Codecierge's.
-            if let Out::Invoke { call, id: call_id } = out {
-                if let Owner::Codecierge(guid) = owner {
+            if let Out::Invoke { call, id: call_id } = out
+                && let Owner::Codecierge(guid) = owner {
                     let kept = self.ai_runs.get(&id).and_then(|r| r.runner.call_message().cloned());
                     self.codecierge_invoke(&guid, id, stored_call(kept, call, call_id));
                 }
-            }
         }
     }
 

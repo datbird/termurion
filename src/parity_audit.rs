@@ -121,6 +121,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::collapsible_match)] // the arm names the case and carries the rationale; a match guard would fold both into the pattern line
     fn parity_files_follow_the_audit() {
         let mut bad = Vec::new();
         for (f, rs) in files() {

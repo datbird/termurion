@@ -411,11 +411,10 @@ impl Session {
     /// to the closure of the request that started the call).
     pub fn answer_call(&mut self, text: &str) {
         let append = self.sent.as_ref().is_some_and(|(_, a)| *a);
-        if let Some((prev, _)) = self.sent.take() {
-            if !prev.is_empty() {
+        if let Some((prev, _)) = self.sent.take()
+            && !prev.is_empty() {
                 self.messages.push(crate::ai_msg::Message::text(crate::ai_msg::Role::User, &prev));
             }
-        }
         if let Some(call) = self.call.take() {
             use crate::ai_msg::{Body, Message, Role};
             let (name, id) = match &call.body {

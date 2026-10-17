@@ -140,7 +140,7 @@ fn decode_payload(cmd: &Command) -> Result<(u32, u32, Vec<u8>), String> {
             if bytes.len() != w as usize * h as usize * px {
                 return Err("EINVAL:The data does not match the image size".into());
             }
-            let rgba = if px == 4 { bytes } else { bytes.chunks_exact(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect() };
+            let rgba = if px == 4 { bytes } else { bytes.as_chunks::<3>().0.iter().flat_map(|c| [c[0], c[1], c[2], 255]).collect() };
             Ok((w, h, rgba))
         }
         _ => Err("EINVAL:Unknown format".into()),
@@ -440,7 +440,7 @@ mod tests {
         assert!(send(&mut s, "a=t,f=24,s=9,v=9,i=1,q=1", &[1]).contains("EINVAL"));
         assert_eq!(send(&mut s, "a=t,f=24,s=9,v=9,i=1,q=2", &[1]), "");
         assert_eq!(send(&mut s, "a=q,f=32,s=1,v=1,i=31", &[1, 2, 3, 4]), "\x1b_Gi=31;OK\x1b\\");
-        assert!(s.kitty.images.get(&31).is_none(), "a query stores nothing");
+        assert!(!s.kitty.images.contains_key(&31), "a query stores nothing");
     }
 
     #[test]

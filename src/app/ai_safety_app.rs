@@ -15,6 +15,7 @@ use crate::globals::Globals;
 use crate::pwm::Secret;
 
 /// One command's check.
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 pub(super) enum CheckState {
     /// Held behind the one-time question (ruling R12cd-3).
     Nag,
@@ -40,6 +41,7 @@ pub(super) struct Check {
 
 /// Where the check's one-shot goes.
 #[derive(Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 pub(super) enum Backend {
     /// With the proof, spent on the check's first send, that the gate was open for it.
     Run(Model, Endpoint, Passed),

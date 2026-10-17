@@ -43,11 +43,10 @@ pub fn ordinals(n: usize) -> Vec<u32> {
             }
         })
         .collect();
-    if i == 9 {
-        if let Some(last) = out.last_mut() {
+    if i == 9
+        && let Some(last) = out.last_mut() {
             *last = 9;
         }
-    }
     out
 }
 
@@ -255,11 +254,10 @@ fn background(p: &Parts) -> Rgb {
         return if p.dimmed && p.dim_inactive { hexcolor::dim_by(custom, 0.3) } else { custom };
     }
     let minimal = p.style == TabStyle::Minimal;
-    if minimal {
-        if let Some(tab) = p.tab_color.filter(|_| p.distinct_tab_colors) {
+    if minimal
+        && let Some(tab) = p.tab_color.filter(|_| p.distinct_tab_colors) {
             return if p.dimmed { hexcolor::dim_by(tab, 0.3) } else { tab };
         }
-    }
     match p.tab_color {
         Some(tab) if !minimal => {
             let c = tinted(tab, p.resolved);

@@ -43,6 +43,7 @@ pub(super) enum ScopeSpec {
 /// with the origin's name, or one of the callers (triggers, bindings, the status bar, title
 /// providers, menus).
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 pub(super) enum Origin {
     Api {
         conn: u64,
@@ -1307,12 +1308,11 @@ impl App {
             ConfirmResult::Action { index, suppress } => {
                 // A failure's checkbox (`iTermWarning.m:571-593`), or Forget, which shows the
                 // same alert again, next, without the remembered mode.
-                if let Some(spec) = alert.spec() {
-                    if self.warning_window_answered(&spec, remembered, index, suppress) {
+                if let Some(spec) = alert.spec()
+                    && self.warning_window_answered(&spec, remembered, index, suppress) {
                         self.script_alerts.push_front(alert);
                         return true;
                     }
-                }
                 Some(index)
             }
             _ => None,

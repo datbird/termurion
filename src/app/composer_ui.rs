@@ -100,11 +100,10 @@ fn decode(key: &WKey, text: Option<&str>, m: CMods) -> Option<(CKey, CMods)> {
     if let Some(k) = named {
         return Some((CKey::Edit(k), m));
     }
-    if let WKey::Character(c) = key {
-        if m.ctrl && !m.alt {
+    if let WKey::Character(c) = key
+        && m.ctrl && !m.alt {
             return c.chars().next().map(|c| (CKey::Ctrl(c), m));
         }
-    }
     let printable = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control))?;
     Some((CKey::Edit(EditKey::Text(printable.to_string())), m))
 }
@@ -282,6 +281,7 @@ fn prefix_runs(c: &composer::Composer) -> Vec<(Range<usize>, Rgb, bool, Rgb)> {
 /// strikethrough, link dashes) inside the rows `cover` spans: the rows under an Auto Composer
 /// are skipped, and so are the box glyphs (`glyphs` from `glyph_from`) in those rows. A quad reaching
 /// past them (the dimming over the whole pane) stays.
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 pub(super) fn skip_covered(overlay: &mut Vec<scene::Quad>, from: usize, underlines: &mut Vec<scene::Quad>, underline_from: usize, strikes: &mut Vec<scene::Quad>, strike_from: usize, glyphs: &mut Vec<scene::CellGlyph>, glyph_from: usize, cover: Rect) {
     let tail = glyphs.split_off(glyph_from.min(glyphs.len()));
     glyphs.extend(tail.into_iter().filter(|g| !(g.rect.y >= cover.y - 0.5 && g.rect.y + g.rect.h <= cover.y + cover.h + 0.5)));
@@ -1244,13 +1244,11 @@ impl App {
         if edit.text != text {
             p.composer.field_pick = None;
         }
-        if let Some(t) = copied {
-            if let Some(cb) = self.clipboard.as_mut() {
-                if let Err(e) = cb.set_text(t) {
+        if let Some(t) = copied
+            && let Some(cb) = self.clipboard.as_mut()
+                && let Err(e) = cb.set_text(t) {
                     self.banners.set("clipboard", format!("Could not copy: {e}"));
                 }
-            }
-        }
         self.redraw();
     }
 
@@ -1394,11 +1392,10 @@ impl App {
         let moved = c.edit.caret != before.1 || c.edit.carets() != before.2;
         if let Some((text, g)) = copied {
             self.composer_clip = g.map(|g| (text.clone(), g));
-            if let Some(cb) = self.clipboard.as_mut() {
-                if let Err(e) = cb.set_text(text) {
+            if let Some(cb) = self.clipboard.as_mut()
+                && let Err(e) = cb.set_text(text) {
                     self.banners.set("clipboard", format!("Could not copy: {e}"));
                 }
-            }
         }
         if changed {
             self.composer_changed(pane);
@@ -1570,7 +1567,7 @@ impl App {
             return;
         }
         v.ghost = suggest::ghost(&items, !f.explicit).map(|g| suggest::shown_ghost(&g, at_end).to_string()).filter(|g| !g.is_empty());
-        v.popup = f.explicit.then(|| Popup { items, typed: f.line, selected: 0 });
+        v.popup = f.explicit.then_some(Popup { items, typed: f.line, selected: 0 });
         self.redraw();
     }
 
@@ -1606,7 +1603,7 @@ impl App {
         let items = crate::ai_complete::with_first(f.first, ai_items);
         let (rows, ghost) = crate::ai_complete::shown(&items, &f.history);
         v.ghost = ghost.map(|g| suggest::shown_ghost(&g, at_end).to_string()).filter(|g| !g.is_empty());
-        v.popup = (!rows.is_empty()).then(|| Popup { items: rows, typed: f.line, selected: 0 });
+        v.popup = (!rows.is_empty()).then_some(Popup { items: rows, typed: f.line, selected: 0 });
         self.redraw();
     }
 
@@ -1685,11 +1682,10 @@ impl App {
                         p.composer.shown = Shown::Hidden;
                         p.composer.saved = None;
                     }
-                    if let Some(cb) = self.clipboard.as_mut() {
-                        if let Err(e) = cb.set_text(text) {
+                    if let Some(cb) = self.clipboard.as_mut()
+                        && let Err(e) = cb.set_text(text) {
                             self.banners.set("clipboard", format!("Could not copy: {e}"));
                         }
-                    }
                     self.composer_windows.advanced_paste = Some(pane);
                 }
                 Act::Completions { .. } => {
@@ -1732,8 +1728,8 @@ impl App {
         let mut out = command.to_string();
         let mut auto = false;
         let mut log_command = false;
-        if let Some(p) = self.panes.get_mut(&pane) {
-            if p.composer.auto {
+        if let Some(p) = self.panes.get_mut(&pane)
+            && p.composer.auto {
                 auto = true;
                 log_command = true;
                 if p.composer.shell_provided {
@@ -1744,7 +1740,6 @@ impl App {
                 p.composer.set_string(&contents, false);
                 p.own_mut().prompt_state.will_send();
             }
-        }
         // Compact logging writes the sent command (`PS:24561-24566`).
         if log_command {
             self.log_compact_command(pane, &out);
@@ -1895,13 +1890,12 @@ impl App {
             if let Some(hit) = self.composer_popup_hit(pane, rect, x, y) {
                 self.composer_focus_pane(button, pane);
                 if let (Some(row), MouseButton::Left) = (hit, button) {
-                    if let Some(v) = self.composers.get_mut(&pane) {
-                        if let Some(pop) = v.popup.as_mut() {
+                    if let Some(v) = self.composers.get_mut(&pane)
+                        && let Some(pop) = v.popup.as_mut() {
                             pop.selected = row;
                             let item = pop.items[row].clone();
                             v.ghost = (!item.replacement).then_some(item.value).filter(|g| !g.is_empty());
                         }
-                    }
                     self.composer_accept(pane);
                 }
                 return true;
@@ -2431,17 +2425,15 @@ impl App {
         };
         let spans = command_syntax::highlight(&text, start..end, &colors, &command_ok, &file_exists);
         let requests = checker.borrow_mut().requests();
-        drop(checker);
         v.spans = utf16_to_bytes(&text, &spans);
         v.highlighted = Some(now);
         v.highlight_due = pending.get().then(|| now + command_syntax::RECHECK);
         for request in requests {
             let job = Job::Check { pane, request, cwd: cwd.clone() };
-            if let Err(Job::Check { request, .. }) = self.composer_worker.send(job) {
-                if let Some(v) = self.composers.get_mut(&pane) {
+            if let Err(Job::Check { request, .. }) = self.composer_worker.send(job)
+                && let Some(v) = self.composers.get_mut(&pane) {
                     v.checker.lost(request);
                 }
-            }
         }
     }
 
@@ -2454,8 +2446,8 @@ impl App {
         if let Some((pane, prefix, chronological)) = self.composer_windows.history.take() {
             self.open_command_history_with(event_loop, pane, &prefix, chronological, true);
         }
-        if let Some(at) = self.composer_windows.help_at.take() {
-            if self.composer_windows.help.take().is_none() {
+        if let Some(at) = self.composer_windows.help_at.take()
+            && self.composer_windows.help.take().is_none() {
                 let ai = self.globals.bool("GenerativeAIAllowed");
                 let lines: Vec<(String, String)> = composer::help_lines(ai).into_iter().map(|(k, d)| (crate::shortcut_key::mode().show(k), d.to_string())).collect();
                 let dark = self.dark();
@@ -2467,7 +2459,6 @@ impl App {
                     }
                 }
             }
-        }
         if let Some((pane, url, browser)) = self.composer_windows.explain_ask.take() {
             let text = composer::explain_text(&url, &browser);
             if let Some(g) = self.gpu.as_ref() {

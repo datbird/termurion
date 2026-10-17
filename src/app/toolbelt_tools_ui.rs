@@ -389,11 +389,10 @@ impl App {
             None => self.shown_extra(tool, pane),
         };
         let key = ShownKey { query, pane, host, generation: self.tool_gen, april_first, extra };
-        if let Some((k, shown)) = self.belt.shown.get(&tool) {
-            if *k == key {
+        if let Some((k, shown)) = self.belt.shown.get(&tool)
+            && *k == key {
                 return shown.clone();
             }
-        }
         let query = key.query.clone();
         let shown = Rc::new(match tool {
             ToolId::Profiles => Shown::Profiles(self.profile_shown(&query)),
@@ -415,7 +414,7 @@ impl App {
             ToolId::Jobs => self.jobs_shown(),
             // Never read: a web tool draws no list.
             ToolId::Notes | ToolId::Dynamic(_) => Shown::Notes,
-            ToolId::Codecierge => Shown::Codecierge(cc_view.unwrap_or_else(|| crate::codecierge::View::Onboarding(crate::codecierge::CodeciergeState::Ready))),
+            ToolId::Codecierge => Shown::Codecierge(cc_view.unwrap_or(crate::codecierge::View::Onboarding(crate::codecierge::CodeciergeState::Ready))),
         });
         // Jobs' selection follows its processes, not its row numbers.
         if let Shown::Jobs(new) = &*shown {
@@ -644,8 +643,8 @@ impl App {
         let (l, _, _, shown) = self.tool_layout(tool, area);
         let hit = tool_list::hit(&l, x, y);
         // A parent's disclosure hides or shows its subtree, and selects nothing (NSOutlineView).
-        if let (ListHit::Row(i), MouseButton::Left, Shown::Jobs(j)) = (hit, button, &*shown) {
-            if let (Some(r), Some(rect)) = (j.rows.get(i).filter(|r| r.has_children), l.rows.get(i)) {
+        if let (ListHit::Row(i), MouseButton::Left, Shown::Jobs(j)) = (hit, button, &*shown)
+            && let (Some(r), Some(rect)) = (j.rows.get(i).filter(|r| r.has_children), l.rows.get(i)) {
                 let scale = self.scale();
                 let glyph_w = (self.list_metrics().row_h - 2.0 * tool_list_inset(scale)) / 1.2;
                 let lead = if r.watched { scene::lead_width(&[(ToolButton::Bell.glyph(), scene::LIST_SELECTED)], scale) } else { 0.0 };
@@ -657,10 +656,9 @@ impl App {
                     return self.redraw();
                 }
             }
-        }
         // A folder's disclosure glyph opens or closes it, and selects nothing (NSOutlineView).
-        if let (ListHit::Row(i), MouseButton::Left, Shown::Snippets { rows, paths, .. }) = (hit, button, &*shown) {
-            if let (Some(path), Some(r), Some(rect)) = (&paths[i], rows.get(i), l.rows.get(i)) {
+        if let (ListHit::Row(i), MouseButton::Left, Shown::Snippets { rows, paths, .. }) = (hit, button, &*shown)
+            && let (Some(path), Some(r), Some(rect)) = (&paths[i], rows.get(i), l.rows.get(i)) {
                 let scale = self.scale();
                 let glyph_w = (self.list_metrics().row_h - 2.0 * tool_list_inset(scale)) / 1.2;
                 let left = rect.x + tool_list_inset(scale) + r.depth as f32 * scene::LIST_INDENT * scale;
@@ -670,7 +668,6 @@ impl App {
                     return self.redraw();
                 }
             }
-        }
         let activated = self.tool_click(tool, hit, button, event_loop);
         // A row pressed in Snippets or Actions may be dragged to a new place.
         if button == MouseButton::Left && !activated && matches!(hit, ListHit::Row(_)) && matches!(tool, ToolId::Snippets | ToolId::Actions) {
@@ -896,11 +893,10 @@ impl App {
                     self.history().clear();
                     self.tools_changed();
                     let path = super::history_ui::history_path();
-                    if let Err(e) = std::fs::remove_file(&path) {
-                        if e.kind() != std::io::ErrorKind::NotFound {
+                    if let Err(e) = std::fs::remove_file(&path)
+                        && e.kind() != std::io::ErrorKind::NotFound {
                             self.banners.set("history", format!("Could not delete the paste history: {e}"));
                         }
-                    }
                     self.tool_state(tool).selection.rows.clear();
                 }
             }
@@ -1029,12 +1025,11 @@ impl App {
             // Choosing opens at once, and Open repeats it (the popup's items carry the
             // actions, `ToolProfiles.m:65-80`).
             "open" => {
-                if let Ok(i) = arg.parse::<usize>() {
-                    if i < tt::PROFILE_OPENS.len() {
+                if let Ok(i) = arg.parse::<usize>()
+                    && i < tt::PROFILE_OPENS.len() {
                         self.tool_state(ToolId::Profiles).popup = i;
                         self.open_profiles(tt::PROFILE_OPENS[i].0);
                     }
-                }
             }
             "paste-copy" | "paste-advanced" => {
                 let value = arg.parse::<usize>().ok().and_then(|i| self.history().entries.get(i).map(|e| e.value.clone()));
@@ -1050,18 +1045,16 @@ impl App {
             }
             "captured-check" => {
                 let f: Vec<&str> = arg.split(':').collect();
-                if let [pane, mark, line, nth] = f[..] {
-                    if let (Ok(pane), Ok(mark), Ok(line), Ok(nth)) = (pane.parse::<PaneId>(), mark.parse::<u32>(), line.parse::<i64>(), nth.parse::<usize>()) {
+                if let [pane, mark, line, nth] = f[..]
+                    && let (Ok(pane), Ok(mark), Ok(line), Ok(nth)) = (pane.parse::<PaneId>(), mark.parse::<u32>(), line.parse::<i64>(), nth.parse::<usize>()) {
                         self.toggle_captured_check(pane, mark, (line, nth));
                     }
-                }
             }
             "signal" => {
-                if let Ok(i) = arg.parse::<usize>() {
-                    if i < tt::SIGNALS.len() {
+                if let Ok(i) = arg.parse::<usize>()
+                    && i < tt::SIGNALS.len() {
                         self.tool_state(ToolId::Jobs).signal = i;
                     }
-                }
             }
             "job-copy" | "job-pid" | "job-notify" => {
                 let process = arg.split_once(':').and_then(|(p, c)| Some((p.parse::<u32>().ok()?, c.parse::<u64>().ok()?)));
@@ -1229,11 +1222,10 @@ impl App {
             ListKey::Right | ListKey::Left if tool == ToolId::Snippets => {
                 let row = self.belt.tools.get(&tool).and_then(|t| t.selection.rows.first().copied());
                 let shown = self.tool_shown(tool);
-                if let (Some(row), Shown::Snippets { paths, .. }) = (row, &*shown) {
-                    if let Some(Some(path)) = paths.get(row) {
+                if let (Some(row), Shown::Snippets { paths, .. }) = (row, &*shown)
+                    && let Some(Some(path)) = paths.get(row) {
                         self.toggle_folder(path, Some(key == ListKey::Right));
                     }
-                }
             }
             _ => {}
         }
@@ -1258,13 +1250,11 @@ impl App {
     /// (Return in the field). The keyboard goes back to the session.
     fn apply_snippets(&mut self, pick: SnippetPick, only_match: bool, event_loop: &ActiveEventLoop) {
         let mut picked = self.selected_snippets();
-        if picked.is_empty() && only_match {
-            if let Shown::Snippets { filtered, .. } = &*self.tool_shown(ToolId::Snippets) {
-                if filtered.len() == 1 {
+        if picked.is_empty() && only_match
+            && let Shown::Snippets { filtered, .. } = &*self.tool_shown(ToolId::Snippets)
+                && filtered.len() == 1 {
                     picked = filtered.clone();
                 }
-            }
-        }
         if picked.is_empty() {
             return;
         }
@@ -1280,12 +1270,11 @@ impl App {
                 // Advanced Paste on it.
                 SnippetPick::AdvancedPaste => {
                     let text = keyaction::expand(&s.value, s.escaping);
-                    if let Some(cb) = self.clipboard.as_mut() {
-                        if let Err(e) = cb.set_text(text) {
+                    if let Some(cb) = self.clipboard.as_mut()
+                        && let Err(e) = cb.set_text(text) {
                             self.banners.set("clipboard", format!("Could not copy: {e}"));
                             continue;
                         }
-                    }
                     self.open_advanced_paste(event_loop, pane, None);
                 }
                 // `TS:581-582`: appended to the dropdown, escaped by the snippet's mode.

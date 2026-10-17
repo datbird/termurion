@@ -162,12 +162,11 @@ impl App {
     }
 
     fn browser_color_apply(&mut self, pane: PaneId, color: Option<(u8, u8, u8)>) {
-        if let Some(io) = self.panes.get_mut(&pane).and_then(|p| p.browser_io_mut()) {
-            if io.page_color != color {
+        if let Some(io) = self.panes.get_mut(&pane).and_then(|p| p.browser_io_mut())
+            && io.page_color != color {
                 io.page_color = color;
                 self.redraw();
             }
-        }
     }
 
     /// A restored pane takes the link target its arrangement kept (`PS:334`), bounded and clean.

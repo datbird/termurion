@@ -255,13 +255,12 @@ fn tokenize(chars: &[char], used: &mut usize) -> Result<Vec<Token>, String> {
             i += 1;
             continue;
         }
-        if c == '"' {
-            if let Some(end) = swifty(&chars[i + 1..], true).end {
+        if c == '"'
+            && let Some(end) = swifty(&chars[i + 1..], true).end {
                 out.push(Token { tok: Tok::Str(chars[i + 1..i + 1 + end].iter().collect()), at: i });
                 i += end + 2;
                 continue;
             }
-        }
         out.push(Token { tok: Tok::Bad, at: i });
         break;
     }
@@ -1366,13 +1365,11 @@ impl<'a> Ev<'a> {
             },
             Expr::Str(parts) => {
                 for p in parts {
-                    if let Part::Expr(x) = p {
-                        if let Some(f) = self.whole(x) {
-                            if !(self.cx.lax && bare(x)) {
+                    if let Part::Expr(x) = p
+                        && let Some(f) = self.whole(x)
+                            && !(self.cx.lax && bare(x)) {
                                 return Stat::Err(f);
                             }
-                        }
-                    }
                 }
                 Stat::Ok
             }
@@ -1635,15 +1632,14 @@ impl<'a> Ev<'a> {
     fn run_template(&self, parts: &[Part], calls: &mut dyn Calls) -> R {
         let mut skip = vec![false; parts.len()];
         for (i, p) in parts.iter().enumerate() {
-            if let Part::Expr(x) = p {
-                if let Some(f) = self.whole(x) {
+            if let Part::Expr(x) = p
+                && let Some(f) = self.whole(x) {
                     if self.cx.lax && bare(x) {
                         skip[i] = true;
                     } else {
                         return R::Fail(f);
                     }
                 }
-            }
         }
         let results = parts
             .iter()

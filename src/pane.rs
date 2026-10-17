@@ -559,6 +559,7 @@ impl Pane {
         self.stable_id = id.to_string();
     }
 
+    #[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
     pub fn start(id: PaneId, api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
         Pane::start_transport(id, api, Transport::Conpty, cmdline, cwd, env, cols, rows, notify)
     }
@@ -578,6 +579,7 @@ impl Pane {
     }
 
     /// A pane whose shell the session host runs.
+    #[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
     pub fn start_hosted(id: PaneId, host: &crate::host_client::Client, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
         Pane::start_hosted_transport(id, host, Transport::Conpty, cmdline, cwd, env, cols, rows, notify)
     }
@@ -598,11 +600,10 @@ impl Pane {
         pane.needs_forced_layout = false;
         // The host's pty may have another size (a resize just before a crash, another
         // monitor now): it takes the pane's, as iTerm2 sets the grid size after an attach.
-        if let Some(io) = &pane.pty {
-            if let Err(e) = io.resize(cols, rows) {
+        if let Some(io) = &pane.pty
+            && let Err(e) = io.resize(cols, rows) {
                 pane.error = Some(e);
             }
-        }
         pane
     }
 
@@ -747,8 +748,7 @@ impl Pane {
         }
         if self.coprocess.is_some() {
             // Its output goes to the shell as typed, while the shell keeps up.
-            loop {
-                let Some(pty) = &self.pty else { break };
+            while let Some(pty) = &self.pty {
                 let budget = crate::coprocess::budget(pty.pending());
                 // A framed link answers slowly: what is queued for it holds the coprocess back
                 // until replies come (F20), so its output cannot grow the queue without end.
@@ -766,17 +766,16 @@ impl Pane {
                     break;
                 }
             }
-            if let Some(c) = self.coprocess.as_mut() {
-                if self.co_out.is_empty() && c.finished() {
+            if let Some(c) = self.coprocess.as_mut()
+                && self.co_out.is_empty() && c.finished() {
                     self.co_end = Some((c.command.clone(), c.stderr()));
                     self.coprocess = None;
                     changed = true;
                 }
-            }
         }
         let Some(pty) = &self.pty else { return changed };
-        if self.exited.is_none() {
-            if let Some(code) = pty.exit_code() {
+        if self.exited.is_none()
+            && let Some(code) = pty.exit_code() {
                 self.exited = Some(code);
                 self.shell_gen += 1;
                 self.exit_pid = pty.pid();
@@ -786,7 +785,6 @@ impl Pane {
                 self.survey_survivors();
                 changed = true;
             }
-        }
         // The session ended: its coprocess ends too (iTerm2's mainProcessDidTerminate).
         if self.exited.is_some() && self.coprocess.is_some() {
             self.stop_coprocess();
@@ -846,11 +844,10 @@ impl Pane {
 
     /// Output is looked at for a mouse report echoed back (`PTYSession.m:14102-14120`).
     fn watch_stuck(&mut self, bytes: &[u8]) {
-        if let Some(d) = self.stuck.as_mut() {
-            if d.output(bytes, Instant::now()) {
+        if let Some(d) = self.stuck.as_mut()
+            && d.output(bytes, Instant::now()) {
                 self.stuck_seen = Some(d.kind());
             }
-        }
     }
 
     /// Depth 0 output of a conductor's session reaches the coprocess only while it has one.
@@ -2157,12 +2154,11 @@ impl Pane {
         if self.exited.is_some() {
             return true;
         }
-        if let Some(pty) = &self.pty {
-            if let Err(e) = pty.write(bytes) {
+        if let Some(pty) = &self.pty
+            && let Err(e) = pty.write(bytes) {
                 self.error = Some(e);
                 return false;
             }
-        }
         true
     }
 
@@ -2197,11 +2193,10 @@ impl Pane {
         if let Some(live) = &mut self.live {
             live.resize(cols as usize, rows as usize);
         }
-        if let Some(pty) = self.pty.as_ref().filter(|_| self.exited.is_none()) {
-            if let Err(e) = pty.resize(cols, rows) {
+        if let Some(pty) = self.pty.as_ref().filter(|_| self.exited.is_none())
+            && let Err(e) = pty.resize(cols, rows) {
                 self.error = Some(e);
             }
-        }
         if let (Some(log), Some(started)) = (self.log.as_mut(), self.log_started) {
             log.resize(cols, rows, started.elapsed().as_secs_f64());
         }
@@ -2227,11 +2222,10 @@ impl Pane {
         let start = crate::marks::clear_start(&lines, self.screen.current_prompt_line(), cursor);
         self.screen.clear_from(start);
         self.screen.clear_selection();
-        if let Some(pty) = self.pty.as_ref().filter(|_| self.exited.is_none()) {
-            if let Err(e) = pty.clear() {
+        if let Some(pty) = self.pty.as_ref().filter(|_| self.exited.is_none())
+            && let Err(e) = pty.clear() {
                 self.error = Some(e);
             }
-        }
     }
 
     /// The Auto Composer's Ctrl+L (`clearForComposer`, `MS:2371-2417`): while a command is
@@ -2255,11 +2249,10 @@ impl Pane {
         self.end_view();
         self.screen.clear_from(line);
         self.screen.clear_selection();
-        if let Some(pty) = &self.pty {
-            if let Err(e) = pty.clear() {
+        if let Some(pty) = &self.pty
+            && let Err(e) = pty.clear() {
                 self.error = Some(e);
             }
-        }
     }
 
     /// iTerm2's Clear Buffer: the screen and ConPTY both clear, keeping the cursor line.
@@ -2267,11 +2260,10 @@ impl Pane {
         self.end_view();
         self.screen.clear(false);
         // A dead console has nothing to clear (13q B8).
-        if let Some(pty) = self.pty.as_ref().filter(|_| self.exited.is_none()) {
-            if let Err(e) = pty.clear() {
+        if let Some(pty) = self.pty.as_ref().filter(|_| self.exited.is_none())
+            && let Err(e) = pty.clear() {
                 self.error = Some(e);
             }
-        }
     }
 
     pub fn scroll(&mut self, scroll: Scroll) {
@@ -2292,7 +2284,7 @@ impl Pane {
     pub fn restyle(&mut self, palette: crate::palette::Palette, look: crate::screen::Look) {
         if let Some(live) = &mut self.live {
             live.set_palette(palette.clone());
-            live.set_look(look.clone());
+            live.set_look(look);
         }
         self.screen.set_palette(palette);
         self.screen.set_look(look);

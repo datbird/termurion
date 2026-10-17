@@ -64,7 +64,7 @@ pub fn divider_columns(rows: &[Vec<char>], row: usize) -> Vec<usize> {
             let up = (0..=row).rev().take_while(|r| same(*r, *col, **c)).count();
             let down = (row..rows.len()).take_while(|r| same(*r, *col, **c)).count();
             // The run through this row, both ways.
-            up + down - 1 >= DIVIDER_RUN
+            up + down > DIVIDER_RUN
         })
         .map(|(col, _)| col)
         .collect()
@@ -151,6 +151,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::if_same_then_else)] // each branch states its own case; merging them would hide the cases
     fn dividers_need_eight_rows() {
         let grid = |n: usize| (0..12).map(|r| format!("{} left \u{2502} right", if r < n { "" } else { "" }).chars().collect::<Vec<char>>()).collect::<Vec<_>>();
         let rows = grid(12);

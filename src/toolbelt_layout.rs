@@ -302,6 +302,7 @@ fn parse_entry(e: &Value) -> Option<(String, f32)> {
 /// the tools it names (`NSArray+iTerm.m:627-633`, kept). A named tool below its minimum at its
 /// fraction is raised to it, the shortfall taken proportionally from the others' room above
 /// their own minimums (among the named tools only); refused if that room is not enough.
+#[allow(clippy::needless_range_loop)] // the index is used on more than one array (or is the loop's own end marker)
 pub fn apply_proportions(split: &Split, v: &Value, total: f32) -> Option<Split> {
     if total <= 0.0 {
         return None;
@@ -377,6 +378,7 @@ pub struct BeltLayout {
     pub dividers: Vec<Rect>,
 }
 
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 fn wrapper_layout(frame: Rect, collapsed: bool, top: f32, close: f32, close_x: f32, title_h: f32, title_gap: f32, side: f32, bottom: f32) -> WrapperLayout {
     let side_margin = close_x + close;
     let close_r = Rect { x: frame.x + close_x, y: frame.y + top, w: close, h: close };
@@ -468,11 +470,10 @@ pub fn hit(l: &BeltLayout, x: f32, y: f32) -> BeltHit {
         if w.title.contains(x, y) {
             return BeltHit::Title(i);
         }
-        if let Some(c) = w.content {
-            if c.contains(x, y) {
+        if let Some(c) = w.content
+            && c.contains(x, y) {
                 return BeltHit::Content(i);
             }
-        }
     }
     for (i, d) in l.dividers.iter().enumerate() {
         if d.contains(x, y) {

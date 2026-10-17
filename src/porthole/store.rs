@@ -343,7 +343,7 @@ mod tests {
         assert_eq!(s.fold_count(), 1, "the fold inside the porthole is kept");
         assert!(s.close_porthole(id));
         assert!(s.unfold(fold));
-        let (a, b) = s.porthole_rows(id).map_or((0, 0), |r| r);
+        let (a, b) = s.porthole_rows(id).unwrap_or((0, 0));
         assert_eq!((a, b), (0, 0));
         let id2 = s.render_range(0, 1, Source::default(), &two_rows).unwrap();
         let (p0, _) = s.porthole_rows(id2).unwrap();

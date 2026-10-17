@@ -112,11 +112,10 @@ pub fn repair_at_start() {
     let Ok(exe) = std::env::current_exe() else { return };
     let mut r = crate::reg::HkcuRegistry;
     let fix = server_repair(&r, &exe, &|p| crate::localfs::judged(p) && !crate::localfs::local_exists(p));
-    if !fix.is_empty() {
-        if let Err(e) = crate::reg::apply(&mut r, &fix) {
+    if !fix.is_empty()
+        && let Err(e) = crate::reg::apply(&mut r, &fix) {
             crate::host::log(&format!("default terminal: could not repair the handoff class: {e}"));
         }
-    }
 }
 
 /// The pair put back: the saved one, else "Let Windows decide".

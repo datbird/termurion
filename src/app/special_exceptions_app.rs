@@ -93,11 +93,10 @@ impl App {
             None => {}
             Some(Outcome::Cancel) => self.special_exceptions = None,
             Some(outcome) => {
-                if let Some(o) = self.special_exceptions.take() {
-                    if apply_outcome(&mut self.store, &o.guid, &outcome) {
+                if let Some(o) = self.special_exceptions.take()
+                    && apply_outcome(&mut self.store, &o.guid, &outcome) {
                         self.apply_edit(Edit::Changed(o.guid));
                     }
-                }
             }
         }
         true

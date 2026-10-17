@@ -129,7 +129,7 @@ mod tests {
         for needle in ["fn save_remote_finish", "fn save_remote_cancel", "fn save_remote_staged_failed"] {
             assert!(prod.contains(needle), "{needle}");
         }
-        assert_eq!(prod.matches("self.save_remote_unstage(").count() >= 3, true);
+        assert!(prod.matches("self.save_remote_unstage(").count() >= 3);
         let _ = std::fs::remove_dir_all(&t);
     }
 

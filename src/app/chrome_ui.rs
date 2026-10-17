@@ -95,7 +95,7 @@ pub(super) fn set_outer_frame(w: &winit::window::Window, r: Rect) {
     let (outer, inner) = (w.outer_size(), w.inner_size());
     let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
     w.set_outer_position(winit::dpi::PhysicalPosition::new(r.x.round() as i32, r.y.round() as i32));
-    let _ = super::caption_ui::request_inner_size(&w, winit::dpi::PhysicalSize::new((r.w.round() as u32).saturating_sub(dw).max(1), (r.h.round() as u32).saturating_sub(dh).max(1)));
+    let _ = super::caption_ui::request_inner_size(w, winit::dpi::PhysicalSize::new((r.w.round() as u32).saturating_sub(dw).max(1), (r.h.round() as u32).saturating_sub(dh).max(1)));
 }
 
 impl App {

@@ -133,6 +133,7 @@ impl PlaybackWindow {
         self.texture = Some(ctx.load_texture("web-replay", image, egui::TextureOptions::LINEAR));
     }
 
+    #[allow(clippy::manual_clamp)] // f32/f64 max().min() drops a NaN where clamp keeps it
     fn redraw(&mut self) -> Option<ReplayAct> {
         let now = Instant::now();
         self.clock.tick(now.duration_since(self.last).as_secs_f64());

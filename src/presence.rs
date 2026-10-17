@@ -233,11 +233,10 @@ pub enum Reopen<T> {
 /// window comes forward unless it is a hidden hotkey window (the preference says "Don't do
 /// anything special"); with no window on screen a new one opens.
 pub fn reopen_target<T: Copy + PartialEq>(last: Option<T>, states: &[(T, Option<bool>, bool)]) -> Reopen<T> {
-    if let Some(w) = last {
-        if states.iter().any(|(id, h, _)| *id == w && *h != Some(false)) {
+    if let Some(w) = last
+        && states.iter().any(|(id, h, _)| *id == w && *h != Some(false)) {
             return Reopen::Focus(w);
         }
-    }
     if states.iter().all(|(_, _, on)| !on) {
         Reopen::NewWindow
     } else {

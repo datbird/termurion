@@ -228,6 +228,6 @@ mod tests {
         assert_eq!(message_scale(600.0, 300.0, 16.0), 8.0 / 16.0);
         assert_eq!(message_scale(10.0, 300.0, 16.0), 24.0 / 16.0);
         let s = message_scale(400.0, 300.0, 16.0);
-        assert!((s * 400.0 - 300.0).abs() < 0.01 && s >= 0.5 && s <= 1.5);
+        assert!((s * 400.0 - 300.0).abs() < 0.01 && (0.5..=1.5).contains(&s));
     }
 }

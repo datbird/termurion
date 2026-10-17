@@ -144,11 +144,10 @@ impl App {
         if crate::bell_badge::clear_on(self.globals.bool("ClearBellIconAggressively")) != crate::bell_badge::ClearOn::Activation {
             return;
         }
-        if let Some(id) = self.tabs.get(self.active).map(|t| t.focused).filter(|_| self.focused) {
-            if self.bell_icons.remove(&id) {
+        if let Some(id) = self.tabs.get(self.active).map(|t| t.focused).filter(|_| self.focused)
+            && self.bell_icons.remove(&id) {
                 self.redraw();
             }
-        }
     }
 
     /// The count goes onto every terminal window's taskbar button when it changed (one badge per

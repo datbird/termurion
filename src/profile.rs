@@ -205,11 +205,10 @@ impl Profile {
         if let Some(b) = values.remove(crate::bindings::KEY).and_then(crate::bindings::clean) {
             values.insert(crate::bindings::KEY.to_string(), b);
         }
-        if let Some(t) = values.remove(TAGS_KEY) {
-            if let Some(t) = crate::profile_list::clean_tags(t) {
+        if let Some(t) = values.remove(TAGS_KEY)
+            && let Some(t) = crate::profile_list::clean_tags(t) {
                 values.insert(TAGS_KEY.to_string(), t);
             }
-        }
         if let Some(t) = values.remove(TRIGGERS_KEY) {
             values.insert(TRIGGERS_KEY.to_string(), crate::triggers::clean(&t));
         }

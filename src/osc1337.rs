@@ -128,10 +128,7 @@ impl Unicode {
                     }
                 }
             }
-            n => match n.trim().parse::<u8>() {
-                Ok(v @ (0 | 8 | 9)) => self.version = v,
-                _ => {}
-            },
+            n => if let Ok(v @ (0 | 8 | 9)) = n.trim().parse::<u8>() { self.version = v },
         }
     }
 }

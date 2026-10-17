@@ -26,8 +26,8 @@ pub(super) fn decide(result: FeedResult, manual: bool, current: &str, skipped: O
             Err(_) => manual.then(|| View::Error(update::PARSE_ERROR.to_string())),
             Ok(list) => match update::outcome(&list, test, current, skipped, manual) {
                 update::Found::Update(r) => Some(View::Found(r)),
-                update::Found::UpToDate { newest } => manual.then(|| View::UpToDate(newest, false)),
-                update::Found::Newer { newest } => manual.then(|| View::UpToDate(newest, true)),
+                update::Found::UpToDate { newest } => manual.then_some(View::UpToDate(newest, false)),
+                update::Found::Newer { newest } => manual.then_some(View::UpToDate(newest, true)),
             },
         },
     }

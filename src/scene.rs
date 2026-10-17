@@ -305,6 +305,7 @@ pub fn margin_fill(frame: &mut Frame, outer: Rect, inner: Rect, cell_h: f32, fil
 
 /// `margin_fill` for a see-through window: each strip is one layer at the pane's `alpha`, or
 /// opaque when it is a non-default color (not `pane_bg`) and `opaque_colors` is on (13g).
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 pub fn margin_fill_alpha(frame: &mut Frame, outer: Rect, inner: Rect, cell_h: f32, fill: &crate::margins::Fill, pane_bg: Rgb, alpha: f32, opaque_colors: bool, bg_image: bool) {
     for (rect, color) in margin_strips(outer, inner, cell_h, fill) {
         if bg_image && color == pane_bg {
@@ -1015,6 +1016,8 @@ fn match_text(bg: Rgb) -> Rgb {
     if lum > 127.5 { rgb(0, 0, 0) } else { rgb(0xff, 0xff, 0xff) }
 }
 
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
+#[allow(clippy::single_range_in_vec_init)] // a one-element range list is what this API takes (or what the test expects)
 pub fn pane_with(
     frame: &mut Frame,
     screen: &Screen,
@@ -1155,7 +1158,7 @@ pub fn pane_with(
         let mut selected = false;
         // A visual selection (bidi rows) is its runs inside the hull.
         let in_extra = || extra_runs[row].iter().any(|&(a, b)| col >= a && col <= b);
-        if (content.selection.as_ref().is_some_and(|s| s.contains(indexed.point)) && term.selection.as_ref().map_or(true, |s| s.covers(indexed.point))) || in_extra() {
+        if (content.selection.as_ref().is_some_and(|s| s.contains(indexed.point)) && term.selection.as_ref().is_none_or(|s| s.covers(indexed.point))) || in_extra() {
             // The text is adjusted against the selection color; `fg` is already muted otherwise.
             fg = match palette.selected_text {
                 Some(t) => crate::cursor_look::mute(adjust(t, palette.selection), palette.bg, look.boost),
@@ -1174,15 +1177,14 @@ pub fn pane_with(
             // A fading cursor (smooth blink) takes the text color part of the way.
             fg = if look.alpha < 1.0 { blend(fg, cursor_text, look.alpha) } else { cursor_text };
         }
-        if let Some(t) = c.image() {
-            if let Some(img) = screen.images.by_id.get(&t.image) {
+        if let Some(t) = c.image()
+            && let Some(img) = screen.images.by_id.get(&t.image) {
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
                 let r = Rect { x: rect.x + col as f32 * cw, y: rect.y + row as f32 * ch, w: cw, h: ch };
                 if let Some(q) = tile_quad(img, t, r, img.paused.unwrap_or_else(|| frame_at(&img.frames, now))) {
                     frame.images.push(q);
                 }
             }
-        }
         // Blinking text hides in the off phase when the profile allows it
         // (`iTermMetalPerFrameState.m:1691`); the background keeps drawing, and so do the
         // neighbors' lines, but the cell's own underline and strikethrough go with its glyph.
@@ -1245,11 +1247,10 @@ pub fn pane_with(
         for (logical, &visual) in o.lut.iter().enumerate() {
             let cell = &mut new[visual as usize];
             let first = cell.text.chars().next();
-            if o.mirrored[logical] {
-                if let Some(c) = first {
+            if o.mirrored[logical]
+                && let Some(c) = first {
                     cell.text.replace_range(..c.len_utf8(), &crate::bidi::mirror(c).to_string());
                 }
-            }
             cell.joins = o.rtl[logical] && first.is_some_and(crate::bidi::joins);
         }
         grid[row] = new;
@@ -1321,8 +1322,8 @@ pub fn pane_with(
             // is the mirrored one on a right-to-left row (S4); `c.fg` is the color after minimum
             // contrast, blocks exempt (S2); a blinked-out or hidden cell's text is a space (S7).
             let mut chars = c.text.chars();
-            if let (true, Some(drawn), None) = (draw.custom_boxes, chars.next(), chars.next()) {
-                if crate::boxdraw::drawn_with(drawn, draw.powerline, draw.powerline_extended, false) {
+            if let (true, Some(drawn), None) = (draw.custom_boxes, chars.next(), chars.next())
+                && crate::boxdraw::drawn_with(drawn, draw.powerline, draw.powerline_extended, false) {
                     flush(&mut piece, frame);
                     // A wide Powerline symbol draws over the next cell too; the grid keeps one cell
                     // (the next cell's text still lays out at its own column), as in iTerm2.
@@ -1331,7 +1332,6 @@ pub fn pane_with(
                     before = None;
                     continue;
                 }
-            }
             let ascii = c.text.is_ascii();
             let joinable = group && groupable(c);
             // What the cell draws: the table's code point in place of the sent one.
@@ -1630,7 +1630,7 @@ pub fn scrollbar_ticks(frame: &mut Frame, track: Rect, series: &[(crate::scrollb
             // The outline is half a point stroked, so a point wide at each side: `scale` px. The
             // side edges stop at the top and bottom edges so no corner draws twice.
             let o = scale.max(1.0);
-            for edge in [Rect { h: o, ..t }, Rect { y: t.y + t.h - o, h: o, ..t }, Rect { y: t.y + o, h: (t.h - 2.0 * o).max(0.0), w: o, ..t }, Rect { x: t.x + t.w - o, y: t.y + o, h: (t.h - 2.0 * o).max(0.0), w: o, ..t }] {
+            for edge in [Rect { h: o, ..t }, Rect { y: t.y + t.h - o, h: o, ..t }, Rect { y: t.y + o, h: (t.h - 2.0 * o).max(0.0), w: o, ..t }, Rect { x: t.x + t.w - o, y: t.y + o, h: (t.h - 2.0 * o).max(0.0), w: o }] {
                 frame.scrollbars.push(Quad { rect: edge, color: c });
             }
             let inner = Rect { x: t.x + o, y: t.y + o, w: (t.w - 2.0 * o).max(0.0), h: (t.h - 2.0 * o).max(0.0) };
@@ -1755,6 +1755,7 @@ pub const PORTHOLE_MARGIN: f32 = 8.0;
 /// band, rule, underlines and runs. `origin` is where the text's top left sits; `band` is the
 /// left edge and width a code band and a rule are drawn in (a rule stops `PORTHOLE_MARGIN` short
 /// of the band's right edge); `back` and `fg` are the document's background and text colors.
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 pub fn doc_lines(frame: &mut Frame, origin: (f32, f32), lines: &[crate::porthole::render::VisualLine], marks: &[(Rect, Rgb, f32)], area: Rect, band: (f32, f32), back: Rgb, fg: Rgb) {
     let (ox, oy) = origin;
     // Selection and find marks, from the text's top left, under the text.
@@ -1765,22 +1766,19 @@ pub fn doc_lines(frame: &mut Frame, origin: (f32, f32), lines: &[crate::porthole
     }
     for l in lines {
         let y = oy + l.y;
-        if l.code_bg {
-            if let Some(r) = cut(Rect { x: band.0, y, w: band.1, h: l.h }, area) {
+        if l.code_bg
+            && let Some(r) = cut(Rect { x: band.0, y, w: band.1, h: l.h }, area) {
                 frame.quads.push(Quad { rect: r, color: rgba(blend(back, fg, 0.08), 1.0) });
             }
-        }
-        if l.rule {
-            if let Some(r) = cut(Rect { x: ox + l.x, y: y + l.h / 2.0, w: band.1 - PORTHOLE_MARGIN - l.x, h: 1.0 }, area) {
+        if l.rule
+            && let Some(r) = cut(Rect { x: ox + l.x, y: y + l.h / 2.0, w: band.1 - PORTHOLE_MARGIN - l.x, h: 1.0 }, area) {
                 frame.quads.push(Quad { rect: r, color: rgba(fg, 0.5) });
             }
-        }
         for (run, (sx, sw)) in l.runs.iter().zip(&l.spans) {
-            if run.underline {
-                if let Some(r) = cut(Rect { x: ox + l.x + sx, y: y + l.h - 2.0, w: *sw, h: 1.0 }, area) {
+            if run.underline
+                && let Some(r) = cut(Rect { x: ox + l.x + sx, y: y + l.h - 2.0, w: *sw, h: 1.0 }, area) {
                     frame.quads.push(Quad { rect: r, color: rgba(run.color, 1.0) });
                 }
-            }
         }
         let spans = l
             .runs
@@ -1963,11 +1961,10 @@ pub fn progress_bar(frame: &mut Frame, rect: Rect, look: &ProgressLook, bg: Opti
     use crate::progress::{self, Progress};
     let (p, anim, scheme, dark) = (look.0, &look.1, look.2.as_str(), look.3);
     let Some(clip) = cut(rect, clip).filter(|_| p != Progress::Stopped) else { return };
-    if let Some(bg) = bg {
-        if let Some(r) = cut(rect, clip) {
+    if let Some(bg) = bg
+        && let Some(r) = cut(rect, clip) {
             frame.overlay.push(Quad { rect: r, color: rgba(bg, 1.0) });
         }
-    }
     match p {
         Progress::Stopped => {}
         Progress::Error => {
@@ -2561,7 +2558,7 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
                     line_quad(frame, Rect { y: cell.y + 1.0, w: 1.0, h: cell.h - 1.0, ..cell }, pal.between);
                 }
                 let x = if k == last { cell.x + cell.w } else { cell.x + cell.w - 1.0 };
-                line_quad(frame, Rect { x, y: cell.y + 1.0, w: 1.0, h: cell.h - 1.0, ..cell }, pal.between);
+                line_quad(frame, Rect { x, y: cell.y + 1.0, w: 1.0, h: cell.h - 1.0 }, pal.between);
             }
             // The top line: a top bar (attached to the title bar) leaves it off the selected tab;
             // the other positions draw it on every tab (a side bar once per kind).
@@ -2954,7 +2951,7 @@ fn tab_graphic(frame: &mut Frame, image: &TabImage, g: Rect, alpha: f32, back: R
             let pixels = if level == 0 {
                 pixels.clone()
             } else {
-                std::sync::Arc::new(pixels.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2], (f32::from(p[3]) * alpha).round() as u8]).collect())
+                std::sync::Arc::new(pixels.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2], (f32::from(p[3]) * alpha).round() as u8]).collect())
             };
             frame.images.push(ImageQuad { rect, uv, key: (*key, level), pixels, size: *size, repeat: false });
         }
@@ -3464,6 +3461,7 @@ pub fn command_buttons(frame: &mut Frame, pane_inner: Rect, cell: (f32, f32), ro
 /// `overlay`, which draws over text. `colors` is `offscreen::band_colors` (sRGB). `holes` are
 /// Termurion's surfaces already drawn over the band's strip (info bar, find bar, indicators): the
 /// band is drawn around them, so it is called last.
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 pub fn offscreen_band(frame: &mut Frame, screen: &Screen, band: Rect, text_origin: (f32, f32), cell: (f32, f32), line: i32, colors: ([f32; 4], [f32; 4]), face: u16, holes: &[Rect]) {
     let lin = |c: [f32; 4]| [srgb_to_linear((c[0] * 255.0).round() as u8), srgb_to_linear((c[1] * 255.0).round() as u8), srgb_to_linear((c[2] * 255.0).round() as u8), c[3]];
     // Around Termurion's own surfaces over the pane's top, which keep their pixels.
@@ -3716,11 +3714,10 @@ const BUBBLE_USER: Rgb = LIST_SELECTED;
 pub fn inline_chat_body(frame: &mut Frame, d: &InlineBodyDraw, cell: (f32, f32), scale: f32) {
     let agent_bubble = blend(CLIP_BG, rgb(128, 128, 128), 0.25);
     for row in &d.rows {
-        if row.bubble.w > 0.0 {
-            if let Some(r) = cut(row.bubble, d.area) {
+        if row.bubble.w > 0.0
+            && let Some(r) = cut(row.bubble, d.area) {
                 frame.quads.push(Quad { rect: r, color: rgba(if row.user { BUBBLE_USER } else { agent_bubble }, 1.0) });
             }
-        }
         if let Some(label) = row.date {
             if let Some(c) = cut(row.text, d.area) {
                 let w = label.chars().count() as f32 * cell.0 * 0.9;
@@ -3752,11 +3749,10 @@ pub fn inline_chat_body(frame: &mut Frame, d: &InlineBodyDraw, cell: (f32, f32),
                 frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(crate::chat_view::COPY_GLYPH.to_string(), fg, false, true)], clip: c, scale: 1.0, face: crate::render::DEFAULT_FACE });
             }
         }
-        if let Some(r) = row.copied {
-            if let Some(c) = cut(r, d.area) {
+        if let Some(r) = row.copied
+            && let Some(c) = cut(r, d.area) {
                 frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(crate::chat_view::COPIED.to_string(), blend(back, fg, 0.6), false, false)], clip: c, scale: 0.85, face: crate::render::DEFAULT_FACE });
             }
-        }
         for (r, title, title_w, destructive, enabled) in &row.buttons {
             let Some(c) = cut(*r, d.area) else { continue };
             let alpha = if *enabled { 1.0 } else { 0.5 };
@@ -5333,7 +5329,7 @@ mod tests {
         assert!(!f.quads.iter().any(|q| q.color == outline && q.rect.x >= second.x && q.rect.x < second.x + second.w && q.rect.w > 1.0), "open under the selected tab");
         assert!(f.quads.iter().all(|q| q.color != rgba(rgb(0, 0, 0), 1.0) || q.rect.h != 1.0), "no black edge line");
         // The room before the first tab is drawn as an unselected tab.
-        let bar_at = |x: f32| tab_layout::Bar { cells: bar.cells.iter().map(|(i, c, r)| (*i, c.clone(), Rect { x: r.x + x, ..*r })).collect(), ..bar.clone() };
+        let bar_at = |x: f32| tab_layout::Bar { cells: bar.cells.iter().map(|(i, c, r)| (*i, *c, Rect { x: r.x + x, ..*r })).collect(), ..bar.clone() };
         let shifted = bar_at(30.0);
         let inset = |f: &Frame| f.quads.iter().any(|q| q.rect == Rect { x: area.x, y: area.y, w: 30.0, h: area.h } && q.color == rgba(rgb(13, 13, 13), 1.0));
         assert!(inset(&draw(&looks, &pal, 1, &shifted)), "the left inset in the unselected color");
@@ -5930,6 +5926,7 @@ mod tests {
     /// `TV:1743`: blue prompt, green command, red excluded ranges, each a 1-pixel outline of four
     /// overlay quads (Termurion records no excluded range, so the red kind is only drawn when given).
     #[test]
+    #[allow(clippy::assertions_on_constants)] // the test pins a constant's value on purpose
     fn prompt_outlines_follow_iterm2() {
         let mut f = Frame::default();
         let r = |x| Rect { x, y: 10.0, w: 40.0, h: 16.0 };
@@ -6227,7 +6224,7 @@ mod tests {
         assert_eq!(f.rows[0].spans[0].font, 1);
         // A box character inside a range stays a glyph.
         let boxes = crate::font_table::Entry { start: 0x2500, count: 0x80, destination: None, font_name: "Consolas".into(), point_size: None };
-        let f = draw("\u{2500}", &table_prefs(false, &[boxes.clone()]));
+        let f = draw("\u{2500}", &table_prefs(false, std::slice::from_ref(&boxes)));
         assert_eq!((f.glyphs.len(), f.rows.len()), (1, 0));
         // With the font drawing boxes (DisableCustomBoxDrawing) it is text in the table's font.
         let f = draw("\u{2500}", &DrawPrefs { custom_boxes: false, ..table_prefs(false, &[boxes]) });
@@ -7238,7 +7235,7 @@ mod tests {
         assert_eq!(area, 800.0, "the 40 by 20 hexagon is filled");
         let mut none = Frame::default();
         pane(&mut none, &s, RECT, CELL, true, &CursorLook::shown(true));
-        assert_eq!(f.overlay.len() > none.overlay.len(), true);
+        assert!(f.overlay.len() > none.overlay.len());
     }
 
     #[test]
@@ -7363,7 +7360,7 @@ mod tests {
         let outer = Rect { x: 0.0, y: 0.0, w: 820.0, h: 500.0 };
         let inner = Rect { x: 10.0, y: 10.0, w: 800.0, h: 480.0 };
         let (bg, red) = (rgb(0, 0, 0), rgb(255, 0, 0));
-        let mut fill = crate::margins::fill(&vec![(None, None); 24], bg, true, true);
+        let mut fill = crate::margins::fill(&[(None, None); 24], bg, true, true);
         fill.rows[2] = (red, bg);
         let mut f = Frame::default();
         margin_fill_alpha(&mut f, outer, inner, 20.0, &fill, bg, 0.7, false, false);
@@ -7388,16 +7385,16 @@ mod tests {
         let inner = Rect { x: 10.0, y: 10.0, w: 800.0, h: 480.0 };
         let (bg, red) = (rgb(10, 20, 30), rgb(255, 0, 0));
         let mut f = Frame { clear: rgba(bg, 1.0), ..Default::default() };
-        margin_fill(&mut f, outer, inner, 20.0, &crate::margins::fill(&vec![(None, None); 24], bg, true, true), None);
+        margin_fill(&mut f, outer, inner, 20.0, &crate::margins::fill(&[(None, None); 24], bg, true, true), None);
         assert!(f.quads.is_empty(), "{:?}", f.quads);
-        let mut fill = crate::margins::fill(&vec![(None, None); 24], bg, true, true);
+        let mut fill = crate::margins::fill(&[(None, None); 24], bg, true, true);
         fill.rows[1] = (red, bg);
         fill.rows[2] = (red, bg);
         margin_fill(&mut f, outer, inner, 20.0, &fill, None);
         assert_eq!(f.quads, vec![Quad { rect: Rect { x: 0.0, y: 30.0, w: 10.0, h: 40.0 }, color: rgba(red, 1.0) }], "two red rows join into one strip");
         // Another pane's color over the window's clear color is drawn everywhere.
         let mut g = Frame { clear: rgba(red, 1.0), ..Default::default() };
-        margin_fill(&mut g, outer, inner, 20.0, &crate::margins::fill(&vec![(None, None); 24], bg, true, true), None);
+        margin_fill(&mut g, outer, inner, 20.0, &crate::margins::fill(&[(None, None); 24], bg, true, true), None);
         let area: f32 = g.quads.iter().map(|q| q.rect.w * q.rect.h).sum();
         assert_eq!(area, 820.0 * 500.0 - 800.0 * 480.0);
     }
@@ -7410,7 +7407,7 @@ mod tests {
         let inner = Rect { x: 10.0, y: 10.0, w: 800.0, h: 480.0 };
         let (bg, red) = (rgb(10, 20, 30), rgb(255, 0, 0));
         let mut f = Frame { clear: rgba(red, 1.0), ..Default::default() };
-        let mut fill = crate::margins::fill(&vec![(None, None); 24], bg, true, true);
+        let mut fill = crate::margins::fill(&[(None, None); 24], bg, true, true);
         margin_fill(&mut f, outer, inner, 20.0, &fill, Some(bg));
         assert!(f.quads.is_empty(), "the veil shows the image: {:?}", f.quads);
         fill.rows[1] = (red, bg);

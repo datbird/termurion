@@ -88,7 +88,7 @@ impl PromptWindow {
     /// A checkbox that starts checked when the text is one of `checked_for`, and follows
     /// the text as it changes.
     pub fn with_check(mut self, label: &str, checked_for: Vec<String>) -> PromptWindow {
-        let on = checked_for.iter().any(|c| *c == self.text);
+        let on = checked_for.contains(&self.text);
         self.check = Some((label.into(), on, checked_for));
         self
     }
@@ -201,11 +201,10 @@ impl PromptWindow {
                             result = PromptResult::Ok(text.clone());
                         }
                     }
-                    if let Some(x) = extra {
-                        if ui.button(x.as_str()).clicked() {
+                    if let Some(x) = extra
+                        && ui.button(x.as_str()).clicked() {
                             result = PromptResult::Extra(text.clone());
                         }
-                    }
                     if (!ok_only && ui.button("Cancel").clicked()) || escape {
                         result = PromptResult::Cancel;
                     }
@@ -642,11 +641,10 @@ impl ConfirmWindow {
                         return;
                     }
                     if enter_cancels {
-                        if let Some(c) = cancel {
-                            if ui.button(c.as_str()).clicked() || enter {
+                        if let Some(c) = cancel
+                            && (ui.button(c.as_str()).clicked() || enter) {
                                 result = ConfirmResult::Cancel;
                             }
-                        }
                         if ui.button(ok.as_str()).clicked() {
                             result = ConfirmResult::Ok { suppress: *suppress };
                         }

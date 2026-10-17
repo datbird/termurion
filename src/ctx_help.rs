@@ -84,12 +84,12 @@ pub fn human_size(value: u64) -> String {
     let mut exact = true;
     while num >= 1024 * 1024 {
         pow += 1;
-        if num % 1024 != 0 {
+        if !num.is_multiple_of(1024) {
             exact = false;
         }
         num /= 1024;
     }
-    if 100 * num % 1024 != 0 {
+    if !(100 * num).is_multiple_of(1024) {
         exact = false;
     }
     num = 100 * num / 1024;
@@ -364,11 +364,10 @@ fn one_grapheme(text: &str) -> bool {
         return it.next().is_none_or(|c| c == '\n') && it.next().is_none();
     }
     let ri = |c: char| ('\u{1f1e6}'..='\u{1f1ff}').contains(&c);
-    if ri(first) {
-        if it.peek().is_some_and(|c| ri(*c)) {
+    if ri(first)
+        && it.peek().is_some_and(|c| ri(*c)) {
             it.next();
         }
-    }
     while let Some(c) = it.next() {
         let joins = c == '\u{200d}';
         let extend = matches!(c, '\u{fe00}'..='\u{fe0f}' | '\u{1f3fb}'..='\u{1f3ff}' | '\u{e0020}'..='\u{e007f}' | '\u{200c}') || (!c.is_control() && c.width() == Some(0));
@@ -491,8 +490,8 @@ fn apr_base64_decode(input: &[u8]) -> Option<Vec<u8>> {
 /// `NSD:385-421`: UTF-8 text with control characters escaped, unless it is all white space or not
 /// UTF-8, then hex bytes.
 pub fn friendly(bytes: &[u8]) -> String {
-    if let Ok(s) = std::str::from_utf8(bytes) {
-        if s.chars().any(|c| !c.is_whitespace()) {
+    if let Ok(s) = std::str::from_utf8(bytes)
+        && s.chars().any(|c| !c.is_whitespace()) {
             let mut out = String::new();
             for c in s.chars() {
                 match c {
@@ -505,7 +504,6 @@ pub fn friendly(bytes: &[u8]) -> String {
             }
             return out;
         }
-    }
     bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ")
 }
 
@@ -598,11 +596,10 @@ pub fn numeric_conversions(text: &str) -> Vec<Helper> {
 /// the unstripped selection in 76-character lines separated by CR LF.
 pub fn copy_base64(unstripped: &str) -> Vec<Helper> {
     let mut out = Vec::new();
-    if may_be_base64(unstripped) {
-        if let Some(decoded) = decode_base64(unstripped).filter(|d| d.len() <= MAX_DECODED) {
+    if may_be_base64(unstripped)
+        && let Some(decoded) = decode_base64(unstripped).filter(|d| d.len() <= MAX_DECODED) {
             out.push(helper("Copy Base64-Decoded".to_string(), Some(Copy::Bytes(decoded))));
         }
-    }
     let encoded = base64::engine::general_purpose::STANDARD.encode(unstripped.as_bytes());
     let lines: Vec<&str> = encoded.as_bytes().chunks(76).filter_map(|c| std::str::from_utf8(c).ok()).collect();
     out.push(helper("Copy Base64-Encoded".to_string(), Some(Copy::Text(lines.join("\r\n")))));
@@ -643,12 +640,11 @@ pub fn groups_in(short: Option<&str>, reasonable: Option<(&str, &str)>, tz_offse
         g.color = color(trimmed);
         g.preview = base64_preview(trimmed);
     }
-    if let Some((text, unstripped)) = reasonable {
-        if unstripped.chars().count() < MAX_LONG {
+    if let Some((text, unstripped)) = reasonable
+        && unstripped.chars().count() < MAX_LONG {
             g.numeric = numeric_conversions(text.trim());
             g.copy = copy_base64(unstripped);
         }
-    }
     g
 }
 
