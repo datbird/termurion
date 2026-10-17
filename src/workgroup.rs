@@ -831,7 +831,7 @@ fn add_item_once(list: &mut [Workgroup], session: &str, item: ToolbarItem) -> bo
 
 /// Applies each migration whose latch is not set, then sets every latch. True when the data changed
 /// or a latch was set (`persist()` and the `defer` of `WM`).
-pub fn migrate(list: &mut Vec<Workgroup>, latches: &mut Latches) -> bool {
+pub fn migrate(list: &mut [Workgroup], latches: &mut Latches) -> bool {
     let before = *latches;
     let data = migrate_data(list, latches);
     data || *latches != before
@@ -889,7 +889,7 @@ fn migrate_data(list: &mut [Workgroup], latches: &mut Latches) -> bool {
 
 // --- The model ---
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Model {
     pub workgroups: Vec<Workgroup>,
     pub latches: Latches,
@@ -898,12 +898,6 @@ pub struct Model {
     dirty: bool,
     /// The stored value failed to decode: it stays untouched until the first edit.
     kept_undecodable: bool,
-}
-
-impl Default for Model {
-    fn default() -> Model {
-        Model { workgroups: Vec::new(), latches: Latches::default(), sources: BTreeMap::new(), dirty: false, kept_undecodable: false }
-    }
 }
 
 impl Model {
@@ -1705,7 +1699,8 @@ mod tests {
     fn workgroups_stored_row_cannot_bypass_the_bound() {
         // The Stored tab writes through Globals::set like every writer; the row is a plain string
         // (no `hidden` attribute exists) and the latch rows are bools.
-        for key in ["Workgroups"] {
+        {
+            let key = "Workgroups";
             let row = crate::schema::find_global(key).expect(key);
             assert_eq!((row.tab.as_str(), row.kind), ("Stored", crate::schema::Kind::String), "{key}");
             assert_eq!(row.default, Some(toml::Value::String(String::new())));

@@ -231,7 +231,7 @@ fn tool_results_follow_calls(messages: Vec<Value>) -> Vec<Value> {
 /// The rolling history breakpoint (`markLastMessageForCaching`, `AN:1058-1075`): the last block
 /// of the last message is marked, a string content first becoming one text block, so the whole
 /// conversation up to it is cached for the next turn.
-pub fn mark_cache(messages: &mut Vec<Value>) {
+pub fn mark_cache(messages: &mut [Value]) {
     let Some(last) = messages.last_mut() else {
         return;
     };

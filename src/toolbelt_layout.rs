@@ -302,6 +302,7 @@ fn parse_entry(e: &Value) -> Option<(String, f32)> {
 /// the tools it names (`NSArray+iTerm.m:627-633`, kept). A named tool below its minimum at its
 /// fraction is raised to it, the shortfall taken proportionally from the others' room above
 /// their own minimums (among the named tools only); refused if that room is not enough.
+#[allow(clippy::needless_range_loop)] // the index is used on more than one array (or is the loop's own end marker)
 pub fn apply_proportions(split: &Split, v: &Value, total: f32) -> Option<Split> {
     if total <= 0.0 {
         return None;

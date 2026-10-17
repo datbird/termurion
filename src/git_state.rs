@@ -2902,7 +2902,7 @@ u UU N... 100644 100644 100644 100644 aaaa bbbb cccc d.rs\0";
             "a copy and an unknown letter are skipped"
         );
 
-        assert_eq!(diff_stats(b"M\0a\0A\0b\0D\0c\0T\0d\0", b"3\t1\ta\010\t0\tb\01\t1\td\0", 2), (3, 2, 1, 4, 2));
+        assert_eq!(diff_stats(b"M\0a\0A\0b\0D\0c\0T\0d\0", b"3\t1\ta\x0010\t0\tb\x001\t1\td\0", 2), (3, 2, 1, 4, 2));
         assert_eq!(diff_stats(b"M\0bin\0", b"-\t-\tbin\0", 0), (0, 1, 0, 0, 0), "a binary file adds no lines");
         assert_eq!(diff_stats(b"", b"", 5), (5, 0, 0, 0, 0), "untracked files count as added");
 

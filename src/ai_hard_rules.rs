@@ -168,6 +168,7 @@ fn has_history_expansion(segment: &str) -> bool {
 
 /// The segments of a line split on unquoted `|`, `&`, `;`, each with whether a pipe started it.
 /// Err when the line ends inside a quote or on a dangling backslash.
+#[allow(clippy::result_unit_err)] // the caller only needs to know it failed; the error carries nothing to name
 pub fn split_posix(line: &str) -> Result<Vec<(String, bool)>, ()> {
     let chars: Vec<char> = line.chars().collect();
     let mut segs: Vec<(String, bool)> = Vec::new();
@@ -532,6 +533,7 @@ pub fn windows(line: &str, kind: ShellKind) -> Option<String> {
 
 /// The line split on the shell's separators with whether a pipe started each segment. Unknown
 /// splits as PowerShell. Err on an unbalanced quote or a dangling escape.
+#[allow(clippy::result_unit_err)] // the caller only needs to know it failed; the error carries nothing to name
 pub fn split_windows(line: &str, kind: ShellKind) -> Result<Vec<(String, bool)>, ()> {
     scan_win(line, if kind == ShellKind::Cmd { Flavor::Cmd } else { Flavor::Ps })
 }

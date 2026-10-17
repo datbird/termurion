@@ -5927,6 +5927,7 @@ impl App {
     }
 
     /// A key with no binding: the Windows extras, movement-key scrolling, else the pane.
+    #[allow(clippy::wrong_self_convention)] // the name follows the iTerm2 method it ports
     fn to_terminal(&mut self, key: &Key, base: Option<&Key>, bytes: Option<Vec<u8>>, event_loop: &ActiveEventLoop) {
         if let Some(action) = base.and_then(|b| keys::shortcut(b, self.mods)) {
             return self.action(action, event_loop);

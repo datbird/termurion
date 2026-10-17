@@ -78,6 +78,7 @@ pub(super) enum Piece {
 
 /// What a left click on a component does.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::enum_variant_names)] // the variant names mirror iTerm2's component kinds
 pub(super) enum Click {
     None,
     /// Opens the profile's status bar settings (the placeholder's click).

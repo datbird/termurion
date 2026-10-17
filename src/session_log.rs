@@ -343,14 +343,11 @@ impl Perform for CookState {
     }
 
     fn execute(&mut self, byte: u8) {
-        match byte {
-            0x0a => {
-                self.flush();
-                self.out.push(Cooked::Newline);
-            }
-            // A tab is never logged: iTerm2's `appendTabAtCursor` moves the cursor and never calls
-            // `logCooked:` (`MS:2795-2860`), so no control but the line feed reaches a cooked log.
-            _ => {}
+        // A tab is never logged: iTerm2's `appendTabAtCursor` moves the cursor and never calls
+        // `logCooked:` (`MS:2795-2860`), so no control but the line feed reaches a cooked log.
+        if byte == 0x0a {
+            self.flush();
+            self.out.push(Cooked::Newline);
         }
     }
 

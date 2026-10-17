@@ -240,7 +240,7 @@ pub fn encode_stream(cp: u32, bytes: &[u8], sys: &dyn CodePage) -> Vec<u8> {
                 let ascii = rest.starts_with(|c: char| c.is_ascii());
                 let n = rest.find(|c: char| c.is_ascii() != ascii).unwrap_or(rest.len());
                 if ascii {
-                    out.extend_from_slice(rest[..n].as_bytes());
+                    out.extend_from_slice(&rest.as_bytes()[..n]);
                 } else {
                     out.extend_from_slice(&sys.encode(cp, &rest[..n]));
                 }
@@ -290,7 +290,7 @@ fn utf16_text_runs(text: &str, out: &mut Vec<u8>, sys: &dyn CodePage) {
                     end += c.len_utf8();
                 }
         }
-        out.extend_from_slice(rest[..end].as_bytes());
+        out.extend_from_slice(&rest.as_bytes()[..end]);
         rest = &rest[end..];
     }
 }

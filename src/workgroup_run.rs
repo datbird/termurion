@@ -95,6 +95,7 @@ impl Mechanism {
         }
     }
 
+    #[allow(clippy::wrong_self_convention)] // the name follows the iTerm2 method it ports
     fn from_trigger(self) -> bool {
         matches!(self, Mechanism::Trigger | Mechanism::BrowserTrigger)
     }

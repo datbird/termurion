@@ -265,8 +265,8 @@ pub fn composite(quads: &[Quad], x: f32, y: f32) -> [f32; 4] {
     let mut px = [0.0f32; 4];
     for q in quads.iter().filter(|q| q.rect.contains(x, y)) {
         let a = q.color[3];
-        for i in 0..3 {
-            px[i] = q.color[i] * a + px[i] * (1.0 - a);
+        for (p, c) in px.iter_mut().zip(q.color).take(3) {
+            *p = c * a + *p * (1.0 - a);
         }
         px[3] = a + px[3] * (1.0 - a);
     }

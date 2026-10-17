@@ -871,9 +871,7 @@ mod tests {
     #[test]
     fn every_poisoned_hook_thread_lock_still_registers_and_passes_keys() {
         // One test owns the module's statics, so no other test sees them poisoned.
-        for m in [&WINDOWS] {
-            poison(m);
-        }
+        poison(&WINDOWS);
         poison(&GLOBAL);
         poison(&PENDING);
         // The window list still answers (a poisoned list read as empty would drop every remap).
@@ -897,9 +895,7 @@ mod tests {
         apply_pending(&mut registered, &mut last);
         assert_eq!(rx.try_recv().ok(), Some(Vec::new()), "the settings side gets its answer");
         *locked(&GLOBAL) = None;
-        for m in [&WINDOWS] {
-            m.clear_poison();
-        }
+        WINDOWS.clear_poison();
         GLOBAL.clear_poison();
         PENDING.clear_poison();
     }

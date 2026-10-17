@@ -1264,6 +1264,7 @@ impl Conductor {
 
     /// handleCommandBegin (`CD:2468-2472`): iTerm2 only logs it; Termurion's command clock
     /// restarts. A begin from a deeper framed conductor is its parent's, as a line.
+    #[allow(clippy::only_used_in_recursion)] // the id/kind/status mirror iTerm2's signature (it only logs them); kept for parity
     pub fn handle_begin(&mut self, id: &str, depth: i32) {
         if depth != self.depth && self.framing() {
             self.via_parent(|parent| parent.handle_begin(id, depth));
@@ -1301,6 +1302,7 @@ impl Conductor {
     }
 
     /// handleCommandEnd (`CD:2475-2537`): `kind` is "f" for framer.py, "r" for conductor.sh.
+    #[allow(clippy::only_used_in_recursion)] // the id/kind/status mirror iTerm2's signature (it only logs them); kept for parity
     pub fn handle_end(&mut self, id: &str, kind: &str, status: u8, depth: i32) {
         let expect_framing = self.framing() || matches!(&self.state, State::Executing(c, _) if c.command.is_framer());
         if (!expect_framing && kind == "f") || (self.framing() && depth != self.depth) {
@@ -2694,7 +2696,7 @@ mod tests {
         let mut c = at_python();
         c.handle_unhook();
         assert_eq!(c.take_effects(), [Effect::StopQueueingInput]);
-        assert_eq!(c.queue.iter().map(|q| q.command.clone()).collect::<Vec<_>>(), [login.clone()]);
+        assert_eq!(c.queue.iter().map(|q| q.command.clone()).collect::<Vec<_>>(), std::slice::from_ref(&login));
     }
 
     #[test]

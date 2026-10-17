@@ -121,7 +121,7 @@ pub fn status_key(st: &Status) -> String {
 }
 
 /// Buckets by priority, then lower-cased text, then the raw text; "No status" last.
-pub fn bucket_order(keys: &mut Vec<String>, patterns: &[Pattern]) {
+pub fn bucket_order(keys: &mut [String], patterns: &[Pattern]) {
     keys.sort_by(|a, b| {
         let rank = |k: &String| (k == NO_STATUS, priority(Some(k), patterns), k.to_lowercase(), k.clone());
         rank(a).cmp(&rank(b))

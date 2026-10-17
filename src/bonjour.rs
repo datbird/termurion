@@ -245,6 +245,12 @@ pub struct Ended {
     changed: std::sync::Condvar,
 }
 
+impl Default for Ended {
+    fn default() -> Ended {
+        Ended::new()
+    }
+}
+
 impl Ended {
     pub const fn new() -> Ended {
         Ended { ids: std::sync::Mutex::new(Vec::new()), changed: std::sync::Condvar::new() }
@@ -314,6 +320,10 @@ impl<A: DnsSd> Requests<A> {
     /// Open requests, cancelled ones whose last callback has not run included.
     pub fn len(&self) -> usize {
         self.open.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.open.is_empty()
     }
 
     /// Cancels a request once; one that already ended (a completed resolve) is not cancelled.

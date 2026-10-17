@@ -104,6 +104,7 @@ pub fn path(local_appdata: &Path, user: &str) -> PathBuf {
 /// Deletes the database file and its journals (Clear All Data, `BD:147-167`); a file already gone is
 /// fine. Judged local first and removed as themselves (a link is deleted, never followed). The caller
 /// has dropped its connection. Err holds nothing: the caller names the path.
+#[allow(clippy::result_unit_err)] // the caller only needs to know it failed; the error carries nothing to name
 pub fn erase_files(path: &Path) -> Result<(), ()> {
     let judged = LocalPath::judge(path).ok_or(())?;
     let dir = judged.parent().ok_or(())?;

@@ -43,7 +43,7 @@ pub fn num_ctx(prompt_tokens: i64, num_predict: i64, context_window: i64, overri
         return override_ctx;
     }
     let window = if context_window > 0 { context_window } else { DEFAULT_CONTEXT };
-    let reserve = num_predict.max(512).min(MAX_RESPONSE_RESERVE);
+    let reserve = num_predict.clamp(512, MAX_RESPONSE_RESERVE);
     let desired = prompt_tokens + reserve + HEADROOM;
     power_of_two_at_least(desired.max(MIN_NUM_CTX)).min(window)
 }

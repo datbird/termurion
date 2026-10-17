@@ -285,7 +285,7 @@ impl Conductor {
     /// nested hook is text the hop above printed and could name any user, port or host. And
     /// only names `identity_is_safe` takes.
     pub fn split_identity(&self) -> Option<crate::ssh_args::Identity> {
-        Some(self.identity()).filter(|_| self.setup.local_origin).filter(crate::ssh_jumps::identity_is_safe)
+        self.setup.local_origin.then(|| self.identity()).filter(crate::ssh_jumps::identity_is_safe)
     }
 
     /// finalizeFraming (`CD:2398-2411`): the login's answer is the shell's pid, or why there is
@@ -1725,7 +1725,7 @@ mod tests {
         let mut first = Conductor::new(sequence_setup(), None, "P");
         first.start_jumping(vec![a.clone(), b.clone()]);
         assert_eq!(first.my_jump, Some(a.clone()));
-        assert_eq!(first.subsequent_jumps, [b.clone()]);
+        assert_eq!(first.subsequent_jumps, std::slice::from_ref(&b));
         let started = first.take_effects();
         assert!(matches!(started.first(), Some(Effect::Write(w)) if w.starts_with(b"\x03P")), "start writes the line prefix first: {started:?}");
         // The framing sequence queues the jump at once and uses the jump up.
@@ -1735,7 +1735,7 @@ mod tests {
         let script = base64::engine::general_purpose::STANDARD.encode(jump_script(IT2SSH, "-p 1 a"));
         let fx = answer(&mut c, &["/usr/bin:/bin"], 0, "r");
         assert_eq!(fx, [Effect::Write(framer_cmd(&["eval", &script]))]);
-        assert_eq!(c.subsequent_jumps, [b.clone()], "the rest wait for the next hop");
+        assert_eq!(c.subsequent_jumps, std::slice::from_ref(&b), "the rest wait for the next hop");
         // Its reply finalizes framing exactly as a login's.
         let fx = answer(&mut c, &["4300"], 0, "f");
         assert!(c.framing());

@@ -908,6 +908,7 @@ unsafe extern "system" fn proc(hwnd: windows_sys::Win32::Foundation::HWND, msg: 
 impl Host {
     /// Subclasses `hwnd`: `WM_GETOBJECT` for `UiaRootObjectId` returns the root provider.
     /// `send` is called on UI Automation's threads and must only post.
+    #[allow(clippy::arc_with_non_send_sync)] // the Arc is shared with the window procedure on the owning thread (the refdata pointer), never sent across threads
     pub fn install(hwnd: isize, send: Box<dyn Fn(Request) + Send + Sync>) -> std::result::Result<Host, String> {
         let shared = Arc::new(Shared { hwnd, snap: Mutex::new(Arc::default()), send, root: Mutex::new(None), panes: Mutex::new(HashMap::new()), closed: AtomicBool::new(false), unhooked: AtomicBool::new(false) });
         let root: IRawElementProviderSimple = RootProvider { shared: shared.clone() }.into();

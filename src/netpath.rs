@@ -14,6 +14,7 @@
 //!    point itself opened (`FILE_FLAG_OPEN_REPARSE_POINT`, nothing followed) on components already
 //!    found local; a link's target is judged again from step 1 (root first) before anything below
 //!    the link is read, and a reparse point Termurion cannot read is refused.
+//!
 //! Semantic History's ignore list and `EnableSemanticHistoryOnNetworkMounts` add to this (mapped
 //! drives allowed only when the setting says so); a UNC path is never touched at all.
 

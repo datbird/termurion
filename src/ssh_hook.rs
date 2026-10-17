@@ -986,7 +986,7 @@ mod tests {
         out.iter().filter_map(|o| if let Out::Ssh(t, _) = o { Some(t) } else { None }).collect()
     }
 
-    fn lines<'a>(out: &'a [Out]) -> Vec<&'a str> {
+    fn lines(out: &[Out]) -> Vec<&str> {
         tokens(out).into_iter().filter_map(|t| if let Token::Line(l) = t { Some(l.as_str()) } else { None }).collect()
     }
 

@@ -751,8 +751,7 @@ impl Pane {
         }
         if self.coprocess.is_some() {
             // Its output goes to the shell as typed, while the shell keeps up.
-            loop {
-                let Some(pty) = &self.pty else { break };
+            while let Some(pty) = &self.pty {
                 let budget = crate::coprocess::budget(pty.pending());
                 // A framed link answers slowly: what is queued for it holds the coprocess back
                 // until replies come (F20), so its output cannot grow the queue without end.

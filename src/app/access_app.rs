@@ -543,9 +543,7 @@ mod tests {
     /// screenshot too), the model, the digest, the cursor and the settle read the own screen.
     #[test]
     fn the_own_screen_is_read_while_a_view_shows() {
-        let mut views: Vec<(&str, Box<dyn Fn(&mut Pane, Screen)>)> = Vec::new();
-        views.push(("view", Box::new(|p, v| p.show_view(v))));
-        views.push(("freeze", Box::new(|p, v| p.freeze(v))));
+        let views: Vec<(&str, Box<dyn Fn(&mut Pane, Screen)>)> = vec![("view", Box::new(|p, v| p.show_view(v))), ("freeze", Box::new(|p, v| p.freeze(v)))];
         for (name, show) in &views {
             let mut p = Pane::recording(1, 20, 4);
             p.screen.feed(b"live secret line\r\nlive 2");

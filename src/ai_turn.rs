@@ -813,10 +813,7 @@ fn reparse(dialect: &dyn Dialect, body: &str, response_id: Option<&str>) -> Opti
     let mut at = ai_sse::Cursor::default();
     let mut message = Message::new(None, Body::Uninitialized);
     let mut started = false;
-    loop {
-        let Some(event) = dialect.split(body, &mut at) else {
-            break;
-        };
+    while let Some(event) = dialect.split(body, &mut at) {
         if event == DONE {
             break;
         }

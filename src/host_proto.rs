@@ -273,6 +273,7 @@ impl Decoder {
 
     /// The next whole message, None while one is incomplete. After an error the stream is
     /// broken and every later call gives the error again.
+    #[allow(clippy::should_implement_trait)] // a cursor-style method with its own return type, not an Iterator
     pub fn next(&mut self) -> Option<Result<Msg, String>> {
         if self.broken {
             return Some(Err("the host connection is broken".into()));

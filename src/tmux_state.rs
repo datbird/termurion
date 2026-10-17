@@ -96,7 +96,7 @@ pub fn pending_bytes(capture: &[u8]) -> Vec<u8> {
             }
             v = v * 8 + (c - b'0') as u32;
         }
-        Some(v as u8).filter(|_| v < 0x20)
+        (v < 0x20).then_some(v as u8)
     };
     let mut out = Vec::with_capacity(capture.len());
     let mut i = 0;

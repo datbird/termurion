@@ -844,7 +844,12 @@ impl Screen {
                 let r = &grid[Line(row as i32 - offset)];
                 [(row, r.mark()), (row, r.manual())]
             })
-            .filter_map(|(row, id)| Some((row, self.marks.records.get(&id)?.clone())).filter(|_| id != 0))
+            .filter_map(|(row, id)| {
+                if id == 0 {
+                    return None;
+                }
+                Some((row, self.marks.records.get(&id)?.clone()))
+            })
             .collect()
     }
 

@@ -1374,6 +1374,7 @@ impl ViewGate {
     /// Room for `event`? A droppable event over the caps is refused and counted (the newest is
     /// dropped: a std channel cannot drop its oldest); an event that must not be dropped is always
     /// admitted. The Charge returned is released on drop.
+    #[allow(clippy::result_unit_err)] // the caller only needs to know it failed; the error carries nothing to name
     pub fn admit(self: &Arc<Self>, event: &Event) -> Result<Charge, ()> {
         let weight = event.weight();
         let console = event.is_console();

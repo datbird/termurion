@@ -2425,7 +2425,6 @@ impl App {
         };
         let spans = command_syntax::highlight(&text, start..end, &colors, &command_ok, &file_exists);
         let requests = checker.borrow_mut().requests();
-        drop(checker);
         v.spans = utf16_to_bytes(&text, &spans);
         v.highlighted = Some(now);
         v.highlight_due = pending.get().then(|| now + command_syntax::RECHECK);

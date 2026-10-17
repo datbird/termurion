@@ -14,6 +14,7 @@
 //!   network path.
 //! - One owner removes an extension: `browser_extension_remove` asks WebView2 and drops Termurion's records
 //!   (approval id, active id, this run's folder map) together.
+//!
 //! Nothing is logged but counts; names and paths never reach a log line. App-wide state only (never in
 //! `swap_live`): the persistent store is the one extension profile.
 

@@ -410,12 +410,10 @@ impl Window {
                     ui.add(egui::TextEdit::singleline(&mut sheet.filter).hint_text("Filter").desired_width(220.0));
                     let needle = sheet.filter.to_lowercase();
                     egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-                        let mut shown = 0;
-                        for f in self.fonts.iter().filter(|f| needle.is_empty() || f.to_lowercase().contains(&needle)) {
+                        for (shown, f) in self.fonts.iter().filter(|f| needle.is_empty() || f.to_lowercase().contains(&needle)).enumerate() {
                             if shown == MAX_SHOWN {
                                 break;
                             }
-                            shown += 1;
                             if ui.selectable_label(sheet.font.eq_ignore_ascii_case(f), f).clicked() {
                                 sheet.font = f.clone();
                                 ui.close();

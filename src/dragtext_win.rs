@@ -155,7 +155,7 @@ mod tests {
     use windows::Win32::System::Ole::{ReleaseStgMedium, CF_HDROP, CF_UNICODETEXT};
 
     fn format(cf: u16) -> FORMATETC {
-        FORMATETC { cfFormat: cf, ptd: std::ptr::null_mut(), dwAspect: DVASPECT_CONTENT.0 as u32, lindex: -1, tymed: TYMED_HGLOBAL.0 as u32 }
+        FORMATETC { cfFormat: cf, ptd: std::ptr::null_mut(), dwAspect: DVASPECT_CONTENT.0, lindex: -1, tymed: TYMED_HGLOBAL.0 as u32 }
     }
 
     #[test]

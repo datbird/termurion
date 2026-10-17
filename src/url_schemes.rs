@@ -996,7 +996,7 @@ mod registration_tests {
         // and the record follows the new path.
         let mut moved = FakeScheme { command: Some(termurion_command(&old)), classes: Some(termurion_command(&old)), recorded: Some(old_s.clone()), ..FakeScheme::default() };
         assert_eq!(stale_schemes(&t, &moved, &exe(), &gone), vec!["ssh".to_string()]);
-        assert_eq!(asked.borrow().as_slice(), [old.clone()], "only the recorded path is probed");
+        assert_eq!(asked.borrow().as_slice(), std::slice::from_ref(&old), "only the recorded path is probed");
         assert_eq!(repair(&t, &mut moved, &exe(), &gone), vec!["ssh".to_string()]);
         assert_eq!(moved.registered, ["ssh"]);
         assert_eq!(moved.recorded.as_deref(), Some(r"C:\T\termurion.exe"));

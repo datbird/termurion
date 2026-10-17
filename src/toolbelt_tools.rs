@@ -72,10 +72,7 @@ pub fn command_filter(rows: &[CommandRow], query: &str) -> Vec<usize> {
 /// Shift appends a newline.
 pub fn command_insert(command: &str, dir: Option<&str>, alt: bool, shift: bool) -> Option<String> {
     let mut text = if alt {
-        match dir {
-            Some(d) => format!("cd {d}"),
-            None => return None,
-        }
+        format!("cd {}", dir?)
     } else {
         command.to_string()
     };

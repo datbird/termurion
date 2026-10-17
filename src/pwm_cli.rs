@@ -522,6 +522,7 @@ pub fn resolve_op<R: Runner>(runner: &mut R, candidates: &[String], exists: &mut
 /// LastPass's counterpart to `resolve_op`: since `lpass_paths` is always empty on Windows, there
 /// is nothing to probe, so this is a placeholder for symmetry with `resolve_op` (the window's
 /// wiring calls one or the other by kind); the real search is entirely Locate.
+#[allow(clippy::result_unit_err)] // the caller only needs to know it failed; the error carries nothing to name
 pub fn resolve_lpass() -> Result<String, ()> {
     Err(())
 }

@@ -297,7 +297,7 @@ mod tests {
                 assert_eq!(checksum(&l[5..]), l, "{name}: the checksum is tmux's");
             }
             // The list-windows reply is the last layout.
-            let listed = text.lines().map(|l| l.trim_end_matches('\r')).filter(|l| l.len() > 5 && l.as_bytes()[4] == b',' && l.contains('x') && !l.starts_with('%') && !l.starts_with(' ')).next_back().unwrap_or_else(|| panic!("{name}: no list-windows reply"));
+            let listed = text.lines().map(|l| l.trim_end_matches('\r')).rfind(|l| l.len() > 5 && l.as_bytes()[4] == b',' && l.contains('x') && !l.starts_with('%') && !l.starts_with(' ')).unwrap_or_else(|| panic!("{name}: no list-windows reply"));
             assert!(parse(listed).is_some(), "{name}: {listed}");
         }
     }

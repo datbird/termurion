@@ -31,6 +31,7 @@ pub fn fresh_id() -> String {
 /// `canonicalOrder` (`ORD`). The tab bar's two ordering invariants:
 ///   1. Pinned tabs form a prefix (pinned-left, unpinned-right).
 ///   2. A group's members are contiguous.
+///
 /// When both cannot hold (a group with pinned and unpinned members), the pinned invariant
 /// wins: the repair never moves a tab across the pinned boundary, so such a group spans the
 /// boundary as at most two runs.
@@ -72,6 +73,7 @@ pub fn canonical_order(groups: &[Option<&str>], pinned: &[bool]) -> Vec<usize> {
 ///   - otherwise (at a group's edge, or not near a group): leave any group, so dragging a
 ///     member out removes it, including a one-tab group's sole member, whose group dissolves
 ///     when its last tab is dragged out.
+///
 /// Only the dragged tab's membership ever changes, so neighbors are never absorbed.
 pub fn resolved_group(index: usize, order: &[Option<&str>]) -> Option<String> {
     if index >= order.len() {

@@ -84,7 +84,7 @@ mod tests {
         r.remove("g1");
         assert_eq!(r.identities(), [a.clone(), b.clone()], "an unknown guid is harmless");
         r.remove("g2");
-        assert_eq!(r.identities(), [b.clone()]);
+        assert_eq!(r.identities(), std::slice::from_ref(&b));
         r.remove("g3");
         assert!(!r.any() && r.identities().is_empty());
 

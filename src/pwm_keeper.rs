@@ -1104,6 +1104,7 @@ mod tests {
         url: String,
         headers: Vec<(String, String)>,
         body: String,
+        #[allow(dead_code)] // recorded with each request for tests that want to assert on it
         timeout: Duration,
     }
 

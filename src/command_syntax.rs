@@ -292,6 +292,7 @@ impl Parser {
 /// and the shell-word components a send would see (`CP:54-72`). Only the first word gets the
 /// `Command` role, including its own leading and trailing whitespace; every later word is
 /// `Other`, `Quoted` or a paren/subshell role instead, regardless of position (`CP:87-90`).
+#[allow(clippy::needless_range_loop)] // the index is used on more than one array (or is the loop's own end marker)
 pub fn parse(command: &[u16]) -> (Vec<Role>, Vec<String>) {
     let len = command.len();
     let mut p = Parser::new(len);

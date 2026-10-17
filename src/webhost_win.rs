@@ -443,6 +443,7 @@ impl Env {
         unsafe {
             // The browser stores only: an extension is still added only after the person approved it.
             options.set_are_browser_extensions_enabled(opts.extensions);
+            #[allow(clippy::unnecessary_literal_unwrap)] // `control` is None outside test builds; a probe sets it there
             options.set_additional_browser_arguments(control.unwrap_or_else(|| webhost::browser_arguments(&opts.args)));
             // Windows single sign-on with the OS primary account is off (it is also WebView2's default).
             options.set_allow_single_sign_on_using_os_primary_account(false);
@@ -2760,7 +2761,9 @@ struct PendingDownload {
 /// A download the app accepted: the operation and its two registrations, removed when it ends.
 struct ActiveDownload {
     op: ICoreWebView2DownloadOperation,
+    #[allow(dead_code)] // the registration is kept with the operation for its removal
     bytes_token: i64,
+    #[allow(dead_code)] // the registration is kept with the operation for its removal
     state_token: i64,
 }
 
@@ -6676,7 +6679,7 @@ window.addEventListener('message', function (e) {
         // The document's own grant: WebView2 raises the event (the app releases it: no saved row).
         p.settle(2000);
         println!("probe: notifications raised after the unsaved Allow: {:?}", &p.notes[before..]);
-        for n in p.notes[before..].to_vec() {
+        for n in &p.notes[before..] {
             p.view().notification_report(n.0, NoteReport::Release);
         }
         p.view().read_permission_states();

@@ -340,7 +340,7 @@ mod tests {
         let mut pending = vec![a.clone(), b.clone()];
         let plan = hook_plan(&mut pending, Some("/p".into()), false, &[]);
         assert_eq!((plan.directory.as_deref(), plan.start), (Some("/da"), Start::Jump(vec![b.clone()])));
-        assert_eq!(pending, [b.clone()]);
+        assert_eq!(pending, std::slice::from_ref(&b));
         // One pending: nothing left to jump to.
         let mut pending = vec![a.clone()];
         let plan = hook_plan(&mut pending, Some("/p".into()), false, &[]);

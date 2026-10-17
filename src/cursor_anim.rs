@@ -206,7 +206,7 @@ impl Slide {
     /// passed (or when it is not positive).
     pub fn offset(&self, now: Instant, duration: Duration) -> Option<(f32, f32)> {
         let p = now.saturating_duration_since(self.start).as_secs_f64() / duration.as_secs_f64();
-        if !(p < 1.0) {
+        if p.is_nan() || p >= 1.0 {
             return None;
         }
         let left = 1.0 - ease_out(p.max(0.0)) as f32;
@@ -300,7 +300,7 @@ impl Smear {
     /// positive). The timing is easeInEaseOut.
     pub fn polygon(&self, now: Instant, duration: Duration) -> Option<[(f32, f32); 6]> {
         let p = now.saturating_duration_since(self.start).as_secs_f64() / duration.as_secs_f64();
-        if !(p < 1.0) {
+        if p.is_nan() || p >= 1.0 {
             return None;
         }
         Some(smear_at(&self.keys, ease_in_out_ca(p)))

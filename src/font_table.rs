@@ -422,7 +422,7 @@ mod tests {
         assert_eq!(Config::parse(r#"{"entries":[]}"#).unwrap().version, LATEST_VERSION);
         // Lookups on a full table are a binary search and stay right at every edge.
         let big = Config::parse(&one(&many(MAX_ENTRIES as i64))).unwrap();
-        assert_eq!(big.find(0x100).map(|(i, d)| (i, d)), Some((0, 0x100)));
+        assert_eq!(big.find(0x100), Some((0, 0x100)));
         assert_eq!(big.find(0x100 + 511).map(|(i, _)| i), Some(511));
         assert!(big.find(0x100 + 512).is_none() && big.find(0xFF).is_none());
         // The face key's text: one spelling for one table, none for no usable table.

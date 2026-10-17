@@ -141,7 +141,9 @@ impl Reassembler {
             self.overflow = true;
             if more {
                 self.draining = true;
-                self.pending.as_mut().map(|p| p.1 = String::new());
+                if let Some(p) = self.pending.as_mut() {
+                    p.1 = String::new();
+                }
             } else {
                 self.reset();
             }

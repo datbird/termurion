@@ -611,7 +611,7 @@ mod tests {
         assert!(m.features.is_empty());
         assert!(m.custom_headers.is_empty());
         assert_eq!(m.vendor, Vendor::OpenAI);
-        assert_eq!(manual_models(&g, c, &none), [m.clone()]);
+        assert_eq!(manual_models(&g, c, &none), std::slice::from_ref(&m));
 
         g.set(ai::FEATURE_STREAMING, Value::Boolean(true));
         g.set(ai::FEATURE_FUNCTION_CALLING, Value::Boolean(true));

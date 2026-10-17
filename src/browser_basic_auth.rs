@@ -740,7 +740,7 @@ pub fn parse_challenge(header: &str) -> (String, String) {
     let h = header.trim_start();
     let end = h.find(|c: char| c.is_ascii_whitespace()).unwrap_or(h.len());
     let scheme = h[..end].to_string();
-    let b = h[end..].as_bytes();
+    let b = &h.as_bytes()[end..];
     let rest = &h[end..];
     let mut i = 0;
     while i < b.len() {

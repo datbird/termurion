@@ -653,6 +653,7 @@ impl App {
 
     /// Runs and collects the AI Usage commands. Each item runs at most once in flight, every
     /// `interval_seconds` (never under 5), and only while its member is shown in the active tab.
+    #[allow(clippy::manual_clamp)] // f32/f64 max().min() drops a NaN where clamp keeps it
     pub(super) fn usage_tick(&mut self) {
         if self.workgroups.is_empty() {
             return;

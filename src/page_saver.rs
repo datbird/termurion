@@ -1049,7 +1049,7 @@ mod tests {
         ok(&("a".repeat(233) + ".url." + &"y".repeat(30)));
         assert_eq!(ok("a.pdf.exe"), "a.pdf.exe.download");
         assert_eq!(ok("a.exe.pdf"), "a.exe.pdf");
-        let trail = ok(&("a".repeat(236) + " . " + &".".repeat(1) + &"z".repeat(20)));
+        let trail = ok(&("a".repeat(236) + " . " + "." + &"z".repeat(20)));
         assert!(trail.chars().all(|c| c == 'a'), "{trail:?}");
         // The neutralize step still has room after the cut.
         let long = ok(&("c".repeat(300) + ".exe"));

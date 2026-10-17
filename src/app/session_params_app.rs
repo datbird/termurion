@@ -42,6 +42,7 @@ pub(super) enum Gate {
 }
 
 /// `p` with the answers in its command, name and custom folder.
+#[cfg(test)] // production goes through restart_profile and answered_name
 pub(super) fn answered(p: &Profile, answers: &[(String, String)]) -> Profile {
     answered_keys(p, answers, &["Command", "Name", "Working Directory"])
 }

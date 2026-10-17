@@ -2152,7 +2152,7 @@ mod tests {
         let bold = shot(&mut r, plain, true, false, 1);
         let (l0, r0) = cols(&regular);
         let (l1, r1) = cols(&bold);
-        assert!(r1 - l1 >= r0 - l0 + 1 && l1 == l0, "{family}: regular {l0}..{r0}, bold {l1}..{r1}");
+        assert!(r1 - l1 > r0 - l0 && l1 == l0, "{family}: regular {l0}..{r0}, bold {l1}..{r1}");
     }
 
     /// The glyph ids `text` shapes to in `family` with `features` (None: the attributes the

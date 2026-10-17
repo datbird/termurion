@@ -217,7 +217,7 @@ impl App {
 
     /// Draws the list at the cursor of its pane and returns the box it drew.
     pub(super) fn draw_completion(&self, frame: &mut Frame, pane: PaneId, rect: Rect, cell: (f32, f32)) -> Option<Rect> {
-        let Some((rows, selected, footer, at, bounds)) = self.completion_box(pane, rect, cell) else { return None };
+        let (rows, selected, footer, at, bounds) = self.completion_box(pane, rect, cell)?;
         scene::completion_list(frame, &rows, selected, footer, at, bounds, cell)
     }
 }

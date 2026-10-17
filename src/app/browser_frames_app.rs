@@ -89,7 +89,7 @@ mod tests {
         let nav = &ev[ev.find("Event::Starting { redirect: false, .. } =>").unwrap()..];
         assert!(nav.contains("bv.editing = false") && nav.contains("graph.will_navigate()") && nav.contains("bv.selection = None"));
         let d = &router[router.find("fn browser_devtools_event").unwrap()..router.find("fn browser_attached").unwrap()];
-        assert!(d.contains("graph.gone(") && d.contains("fn_frames_lost") == false);
+        assert!(d.contains("graph.gone(") && !d.contains("fn_frames_lost"));
         // The new files' log sites are listed.
         assert!(include_str!("../dlog.rs").contains("(\"app/browser_scripts_app.rs\", 5)"));
     }

@@ -537,7 +537,7 @@ pub fn rank(query: &str, bookmarks: &[(String, Option<String>, i64)], history: &
         let score = if strongly_url_like(query) { SCORE_STRONG_URL } else { SCORE_WEAK_URL };
         rows.push(Suggestion { text: format!("Navigate to \u{201c}{}\u{201d}", display_url(&n)), url: n, detail: "URL".into(), score });
     }
-    rows.sort_by(|a, b| b.score.cmp(&a.score));
+    rows.sort_by_key(|b| std::cmp::Reverse(b.score));
     rows
 }
 
@@ -2458,7 +2458,7 @@ mod tests {
         assert_eq!((OPEN_LINKS_ID, OPEN_FILE_LINKS_ID, UPSELL_ID), ("NoSyncOpenLinksInApp", "NoSyncOpenLinksInAppForFileURL", "NoSyncBrowserUpsell"));
         // Microsoft's own page and nothing else: https, the developer.microsoft.com host.
         assert_eq!(PLUGIN_URL, "https://developer.microsoft.com/microsoft-edge/webview2/");
-        assert_eq!(crate::toolbelt::url_host(PLUGIN_URL).as_deref(), Some("developer.microsoft.com"));
+        assert_eq!(crate::toolbelt::url_host(PLUGIN_URL), Some("developer.microsoft.com"));
         let u = upsell_spec();
         assert_eq!((u.id.as_deref(), u.kind, u.heading.as_str(), u.text.as_str()), (Some("NoSyncBrowserUpsell"), crate::warnings::Kind::Permanent, UPSELL_HEADING, UPSELL_TEXT));
         assert_eq!(u.labels, vec!["Download", "Use System Browser", "Cancel"]);

@@ -180,10 +180,7 @@ pub fn snapshot_trees(roots: &[u32], trees: &[u32], cache: &mut Cache) -> Result
     let mut line_of = |p: &mut Proc, cache: &mut Cache| {
         let key = (p.pid, p.created);
         live.insert(key);
-        if !cache.lines.contains_key(&key) {
-            let line = open(p.pid).and_then(|h| command_line(&h));
-            cache.lines.insert(key, line);
-        }
+        cache.lines.entry(key).or_insert_with(|| open(p.pid).and_then(|h| command_line(&h)));
         p.cmdline = cache.lines[&key].clone();
     };
     for &root in roots {

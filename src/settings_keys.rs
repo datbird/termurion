@@ -3426,7 +3426,7 @@ mod tests {
         assert_eq!(EXPERIMENTAL_NOTE, "This setting also enables ligature support in the GPU renderer.");
         assert_eq!(RTL_TOOLTIP, "Buried sessions appear under Session > Buried Sessions. When this setting is enabled, window sizes are restored when attaching to an existing tmux session.");
         // Experimental is the General pane's last section, as in iTerm2's xib.
-        let last = schema::global().iter().filter(|s| s.tab == "General").next_back().unwrap();
+        let last = schema::global().iter().rfind(|s| s.tab == "General").unwrap();
         assert_eq!(last.section, "Experimental");
     }
 
