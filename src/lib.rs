@@ -42,6 +42,8 @@ pub mod osc1337;
 pub mod marks;
 pub mod mime_ext;
 pub mod page_saver;
+pub mod page_save_remote;
+pub mod save_stage;
 pub mod captured;
 pub mod find;
 pub mod smartsel;

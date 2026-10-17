@@ -273,6 +273,18 @@ pub fn scp_path(file: &str, cwd: Option<&str>, host: Option<&str>, user: Option<
     Some(ScpPath { path, hostname: host.to_string(), username: user.to_string() })
 }
 
+/// The folder a Save Page As to an SSH host writes into (TWEAKS 7b), judged by `scp_path` like every
+/// remote path: absolute, at most 4096 characters, no control character and no `..` component. The
+/// host and user are the session's identity. None when the folder text is not such a path.
+pub fn folder_target(path: &str, id: &crate::ssh_args::Identity) -> Option<ScpPath> {
+    if !path.starts_with('/') || path.chars().count() > 4096 || path.chars().any(char::is_control) || path.split('/').any(|c| c == "..") {
+        return None;
+    }
+    let host = if id.hostname.is_empty() { id.host.as_str() } else { id.hostname.as_str() };
+    let user = id.username.clone().unwrap_or_else(crate::ssh_args::local_user);
+    scp_path(path, Some("/"), Some(host), Some(&user), false)
+}
+
 /// `canTransferFilesTo` (`PS:15250-15289`): the conductor frames, the host is the identity's
 /// host, hostname or discovered hostname, and the user is the identity's (any when it has none).
 pub fn can_transfer(framing: bool, identity: &crate::ssh_args::Identity, discovered: Option<&str>, to: &ScpPath) -> bool {

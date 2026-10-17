@@ -56,7 +56,12 @@ const ROW: f32 = 20.0;
 
 impl SshPanelWindow {
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<SshPanelWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, m::TITLE, 860.0, 520.0)?;
+        Self::open_titled(event_loop, instance, adapter, device, queue, m::TITLE)
+    }
+
+    /// The same window under another title (the folder picker of Save Page As).
+    pub fn open_titled(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, title: &str) -> Result<SshPanelWindow, String> {
+        let host = EguiHost::open(event_loop, instance, adapter, device, queue, title, 860.0, 520.0)?;
         Ok(SshPanelWindow { host, local_user: crate::ssh_args::local_user(), path_text: String::new(), path_shown: None, search: String::new(), goto: None })
     }
 
@@ -143,11 +148,11 @@ impl SshPanelWindow {
             egui::Panel::bottom("buttons").show(ui, |ui| {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button(m::USE_SYSTEM_PANEL).clicked() {
+                    if !panel.choose_folder && ui.button(m::USE_SYSTEM_PANEL).clicked() {
                         out = PanelEvent::SystemPanel;
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add_enabled(panel.open_enabled(), egui::Button::new(m::OPEN)).clicked() {
+                        if ui.add_enabled(panel.open_enabled(), egui::Button::new(if panel.choose_folder { m::CHOOSE } else { m::OPEN })).clicked() {
                             out = PanelEvent::Open;
                         }
                         if ui.button(m::CANCEL).clicked() {

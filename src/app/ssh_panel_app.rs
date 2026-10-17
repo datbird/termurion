@@ -198,13 +198,13 @@ impl App {
     }
 
     /// The home directory the host's framer reported.
-    fn panel_home(&self, id: &Identity) -> Option<String> {
+    pub(super) fn panel_home(&self, id: &Identity) -> Option<String> {
         let pane = self.pane_for_identity(id)?;
         self.framing(pane)?.home_directory.clone()
     }
 
     /// The path saved for the host (`FP:1608-1670`), only under a key P15 allows.
-    fn panel_saved(&self, id: &Identity) -> Option<String> {
+    pub(super) fn panel_saved(&self, id: &Identity) -> Option<String> {
         let key = model::saved_path_key_checked(id, &crate::ssh_args::local_user())?;
         crate::ssh_jumps::clean_directory(&self.globals.string(&key))
     }
@@ -234,7 +234,7 @@ impl App {
 
     /// Sends what the panel asked: each file request to the pane that answers for its host, with
     /// the panel as its waiter. A host with no pane answers -1 at once. (Search is Task 8.)
-    fn ssh_panel_send(&mut self, requests: Vec<Request>) {
+    pub(super) fn ssh_panel_send(&mut self, requests: Vec<Request>) {
         let mut work: std::collections::VecDeque<Request> = requests.into();
         while let Some(r) = work.pop_front() {
             let (generation, host, op, sub) = match r {
@@ -316,6 +316,7 @@ impl App {
 
     /// Closes the panel, saving its path (`FP:220`).
     fn ssh_panel_close(&mut self) {
+        self.ssh_save_pick = None;
         self.ssh_panel_save_path();
         // Closing the panel stops its search.
         self.ssh_search_stop();
@@ -399,6 +400,7 @@ impl App {
         }
         w.request_redraw();
         let chosen = p.chosen();
+        let folder = p.chosen_folder();
         let host = p.host.clone();
         self.ssh_panel = Some((w, p));
         match then {
@@ -410,8 +412,14 @@ impl App {
                 let _ = rfd::FileDialog::new().pick_files();
             }
             Then::Open => {
+                // The folder picker of Save Page As (TWEAKS 7b) chooses a folder, not files.
+                let pick = self.ssh_save_pick.take();
                 self.ssh_panel_close();
-                if let Some(host) = host {
+                if let Some(pick) = pick {
+                    if let Some(folder) = folder {
+                        self.save_remote_chosen(pick, folder);
+                    }
+                } else if let Some(host) = host {
                     self.ssh_download_files(host, chosen);
                 }
             }

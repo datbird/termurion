@@ -396,7 +396,7 @@ impl App {
         if url.is_empty() {
             return;
         }
-        if self.page_saves.contains_key(&pane) {
+        if self.page_saves.contains_key(&pane) || self.page_save_remote.contains_key(&pane) {
             self.page_save_cancel(pane);
             self.banners.set("action", "Save Page As cancelled.".to_string());
             return;
@@ -404,6 +404,15 @@ impl App {
         // The page is the one shown when the item was chosen: its epoch is bound before the modal
         // dialog and rechecked after it (Task 10 review minor 7).
         let epoch = self.page_save_epoch(pane);
+        // A page of a session on an SSH host may also be saved into a folder of that host (TWEAKS 7b).
+        if self.save_remote_offered(pane, &url) {
+            return self.save_where_ask(pane, url, epoch);
+        }
+        self.save_page_local(pane, url, epoch);
+    }
+
+    /// The usual Save Page As: the person names a new folder on this computer.
+    pub(super) fn save_page_local(&mut self, pane: PaneId, url: String, epoch: u64) {
         let dialog = rfd::FileDialog::new().set_file_name(page_saver::default_name(&url));
         let Some(picked) = crate::localfs::save_file(dialog) else { return };
         self.start_page_save(pane, picked.into_path_buf(), url, epoch);
@@ -443,7 +452,7 @@ impl App {
         self.page_save_do(pane, |s, now| s.begin(now));
     }
 
-    fn page_save_epoch(&self, pane: PaneId) -> u64 {
+    pub(super) fn page_save_epoch(&self, pane: PaneId) -> u64 {
         // A pane with no view cannot be on the page it started on: an epoch no save was bound to.
         self.browser_views.get(&pane).map_or(u64::MAX, |b| b.reader.epoch)
     }
@@ -480,7 +489,12 @@ impl App {
                 }
                 Act::Reveal(path) => {
                     self.page_saves.remove(&pane);
-                    self.reveal_in_explorer(&path.to_string_lossy());
+                    // A save for an SSH host was staged here: the upload is next, nothing is revealed.
+                    if self.page_save_remote.contains_key(&pane) {
+                        self.save_remote_finish(pane);
+                    } else {
+                        self.reveal_in_explorer(&path.to_string_lossy());
+                    }
                 }
                 Act::Fail(text) => {
                     // A folder made while the save failed, its answer still on the way, goes too.
@@ -489,6 +503,7 @@ impl App {
                             let _ = w.send(saving.abandon_op());
                         }
                     }
+                    self.save_remote_staged_failed(pane);
                     self.page_save_alert(&text);
                 }
             }
@@ -519,17 +534,20 @@ impl App {
     /// the removals), nothing more is written, no alert.
     pub(super) fn page_save_cancel(&mut self, pane: PaneId) {
         let now = self.page_save_epoch(pane);
-        let Some(mut saving) = self.page_saves.remove(&pane) else { return };
-        let ops = saving.cancel_ops(now);
-        if let Some(w) = &saving.worker {
-            for op in ops {
-                let _ = w.send(op);
+        if let Some(mut saving) = self.page_saves.remove(&pane) {
+            let ops = saving.cancel_ops(now);
+            if let Some(w) = &saving.worker {
+                for op in ops {
+                    let _ = w.send(op);
+                }
             }
         }
+        // A save for an SSH host: its upload stops and its staging folder goes.
+        self.save_remote_cancel(pane);
     }
 
     /// "Save Failed": heading and text, one OK, nothing else.
-    fn page_save_alert(&mut self, text: &str) {
+    pub(super) fn page_save_alert(&mut self, text: &str) {
         let text = crate::inert_files::display_text(text, 500, false);
         self.ask_scripts(ask(page_saver::SAVE_FAILED, &text, &["OK"], None, Kind::Persistent, Then::Nothing));
     }
@@ -1113,7 +1131,8 @@ mod tests {
         assert!(ctx.find("self.save_page_as(pane)").unwrap() > ctx.find("self.in_pane_window(pane,").unwrap());
         // The one Explorer reveal, for the job's own Done path; nothing is opened or run.
         assert_eq!(prod.matches("self.reveal_in_explorer(").count(), 1);
-        assert!(prod.contains("Act::Reveal(path) => {\n                    self.page_saves.remove(&pane);\n                    self.reveal_in_explorer(&path.to_string_lossy());"));
+        assert!(prod.contains("Act::Reveal(path) => {\n                    self.page_saves.remove(&pane);"));
+        assert!(prod.contains("self.save_remote_finish(pane);\n                    } else {\n                        self.reveal_in_explorer(&path.to_string_lossy());"), "a save for an SSH host uploads instead of revealing");
         let m = include_str!("mod.rs");
         assert!(m.contains("self.page_save_cancel(id);") && m.contains("UserEvent::PageSaveFile { pane, id, done }"));
     }

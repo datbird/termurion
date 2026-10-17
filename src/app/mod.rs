@@ -178,6 +178,7 @@ mod browser_reader_app;
 mod devtools_read_app;
 mod view_source_app;
 mod page_saver_app;
+mod page_save_remote_app;
 mod browser_test_seam;
 mod browser_scripts_app;
 mod browser_ctx_app;
@@ -1857,6 +1858,12 @@ pub struct App {
     browser_views: HashMap<PaneId, browser_app::BrowserView>,
     /// The Save Page As job of each browser pane (13x4 Task 10). App-wide: pane ids are.
     page_saves: HashMap<PaneId, page_saver_app::Saving>,
+    /// Save Page As to an SSH host (TWEAKS 7b): the remote saves by browser pane, the folder picker
+    /// waiting to open and showing, and the transfer engine jobs that belong to an upload.
+    page_save_remote: HashMap<PaneId, page_save_remote_app::RemoteSave>,
+    ssh_save_pick_pending: Option<page_save_remote_app::SavePickWait>,
+    ssh_save_pick: Option<page_save_remote_app::SavePick>,
+    ssh_save_jobs: HashMap<u64, PaneId>,
     /// The last save's number, so a cancelled save's worker events are ignored.
     page_save_seq: u64,
     /// Commands a person confirmed from a page's Smart Selection action, each run in a single-use
@@ -2918,6 +2925,10 @@ pub fn run() {
         tool_restarts: HashMap::new(),
         browser_views: HashMap::new(),
         page_saves: HashMap::new(),
+        page_save_remote: HashMap::new(),
+        ssh_save_pick_pending: None,
+        ssh_save_pick: None,
+        ssh_save_jobs: HashMap::new(),
         page_save_seq: 0,
         browser_runs: Vec::new(),
         browser_next: Vec::new(),
@@ -7458,6 +7469,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.pane_focus_tick();
         self.session_hotkeys_flush();
         self.open_pending_mark_prompt(event_loop);
+        self.open_save_pick(event_loop);
         self.flush_dropped();
         self.ssh_suggest_purge();
         // The queue is taken whole: a wake's index into it means nothing after this.

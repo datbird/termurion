@@ -10,6 +10,12 @@ use crate::ssh_args::Identity;
 use crate::ssh_files::{self, FileSub, Sorting};
 
 pub const TITLE: &str = "Open";
+/// The folder picker's title and button (TWEAKS 7b): the panel iTerm2 opens with `canChooseDirectories`.
+pub const CHOOSE_TITLE: &str = "Choose a Folder";
+pub const CHOOSE: &str = "Choose";
+/// The most rows the folder picker lists, and its notice when a folder holds more (Termurion's).
+pub const PICKER_MAX: usize = 500;
+pub const PICKER_TRUNCATED: &str = "Only the first 500 folders are shown.";
 pub const BACK: &str = "Back";
 pub const FORWARD: &str = "Forward";
 pub const SEARCH: &str = "Search";
@@ -104,6 +110,9 @@ struct Nav {
 }
 
 pub struct Panel {
+    /// Choosing a folder for Save Page As (TWEAKS 7b): only folders and links are listed, a link is
+    /// shown and never entered, and Open becomes Choose.
+    pub choose_folder: bool,
     pub hosts: Vec<Identity>,
     pub host: Option<Identity>,
     pub path: Option<String>,
@@ -150,6 +159,7 @@ impl Panel {
     pub fn new(hosts: Vec<Identity>, preferred: Option<Identity>) -> Panel {
         let host = preferred.filter(|p| hosts.contains(p)).or_else(|| hosts.first().cloned());
         Panel {
+            choose_folder: false,
             hosts,
             host,
             path: None,
@@ -178,6 +188,13 @@ impl Panel {
             order: std::cell::RefCell::new(None),
             sorts: std::cell::Cell::new(0),
         }
+    }
+
+    /// The folder picker of Save Page As: the one host the page's session is on.
+    pub fn folder_picker(host: Identity) -> Panel {
+        let mut p = Panel::new(vec![host.clone()], Some(host));
+        p.choose_folder = true;
+        p
     }
 
     fn bump(&mut self) -> u64 {
@@ -306,6 +323,9 @@ impl Panel {
                                 self.notice = Some(TRUNCATED.to_string());
                             }
                             self.files = files;
+                            if self.choose_folder && self.files.iter().filter(|f| f.is_folder() || matches!(f.kind, remote_file::Kind::Symlink(_))).count() > PICKER_MAX {
+                                self.notice = Some(PICKER_TRUNCATED.to_string());
+                            }
                             self.dirty();
                             if let Some(h) = self.host.clone() {
                                 self.last.retain(|(x, _)| *x != h);
@@ -604,7 +624,7 @@ impl Panel {
     }
 
     fn build_order(&self) -> Vec<usize> {
-        let mut rows: Vec<usize> = (0..self.files.len()).filter(|&i| self.show_hidden || !self.files[i].is_hidden()).collect();
+        let mut rows: Vec<usize> = (0..self.files.len()).filter(|&i| self.show_hidden || !self.files[i].is_hidden()).filter(|&i| !self.choose_folder || self.shown_in_picker(&self.files[i])).collect();
         let names: Vec<String> = self.files.iter().map(RemoteFile::name).collect();
         let lower: Vec<String> = names.iter().map(|n| n.to_lowercase()).collect();
         match self.sort {
@@ -625,7 +645,29 @@ impl Panel {
         if !self.ascending {
             rows.reverse();
         }
+        if self.choose_folder {
+            rows.truncate(PICKER_MAX);
+        }
         rows
+    }
+
+    /// A folder, or a link (shown as a link and never entered).
+    fn shown_in_picker(&self, f: &RemoteFile) -> bool {
+        f.is_folder() || matches!(f.kind, remote_file::Kind::Symlink(_))
+    }
+
+    /// The folder Choose picks: the one selected folder, else the folder shown. None while no
+    /// folder is shown, or when the selection is not exactly one real folder.
+    pub fn chosen_folder(&self) -> Option<String> {
+        if !self.choose_folder {
+            return None;
+        }
+        let picked = self.chosen();
+        match picked.as_slice() {
+            [] => self.path.clone(),
+            [one] if one.is_folder() => Some(one.absolute_path.clone()),
+            _ => None,
+        }
     }
 
     pub fn is_selected(&self, path: &str) -> bool {
@@ -661,6 +703,9 @@ impl Panel {
 
     /// `FP:1969-1976`: one item of any kind opens; several only when none is a folder.
     pub fn open_enabled(&self) -> bool {
+        if self.choose_folder {
+            return self.chosen_folder().is_some() && !self.loading;
+        }
         let mut shown = self.visible().into_iter().filter(|f| self.is_selected(&f.absolute_path));
         match (shown.next(), shown.next()) {
             (None, _) => false,
@@ -671,6 +716,10 @@ impl Panel {
 
     /// `FP:1981-1991`: a folder is entered, a file opens.
     pub fn double_click(&mut self, path: &str) -> DoubleClick {
+        // A link is never followed out of what the picker shows.
+        if self.choose_folder && self.files.iter().any(|f| f.absolute_path == path && !f.is_folder()) {
+            return DoubleClick::Navigate(Vec::new());
+        }
         let folder = self.files.iter().find(|f| f.absolute_path == path).is_some_and(RemoteFile::is_folder);
         match (folder, self.host.clone()) {
             (true, Some(host)) => DoubleClick::Navigate(self.navigate(&host, path, true)),
@@ -1111,5 +1160,53 @@ mod tests {
         }
         assert_eq!(p.visible().len(), SEARCH_MAX);
         assert_eq!(p.notice.as_deref(), Some(SEARCH_TRUNCATED));
+    }
+
+    #[test]
+    fn picker_is_bounded() {
+        let mut items: Vec<String> = (0..PICKER_MAX + 50).map(|i| folder(&format!("/home/a/d{i:04}"), 1.0)).collect();
+        items.push(file("/home/a/readme", 1, 1.0));
+        items.push(entry("/home/a/lnk", r#"{"symlink":{"_0":"/etc"}}"#, 1.0));
+        let mut p = Panel::folder_picker(a());
+        assert!(p.choose_folder && p.hosts == vec![a()]);
+        let (g, op, _) = first(&p.start(&none, &home_a));
+        let (g2, op2, _) = first(&p.answered(g, &op, &folder("/home/a", 1.0), 0));
+        p.answered(g2, &op2, &list(&items), 0);
+        let rows = p.visible();
+        assert_eq!(rows.len(), PICKER_MAX, "never more than the cap");
+        assert!(rows.iter().all(|f| f.is_folder() || matches!(f.kind, remote_file::Kind::Symlink(_))), "no file is listed");
+        assert_eq!(p.notice.as_deref(), Some(PICKER_TRUNCATED));
+        // A link is listed as a link and a double click does not enter it.
+        let mut q = Panel::folder_picker(a());
+        let (g, op, _) = first(&q.start(&none, &home_a));
+        let (g2, op2, _) = first(&q.answered(g, &op, &folder("/home/a", 1.0), 0));
+        q.answered(g2, &op2, &list(&[folder("/home/a/d", 1.0), entry("/home/a/lnk", r#"{"symlink":{"_0":"/etc"}}"#, 2.0), file("/home/a/f", 1, 1.0)]), 0);
+        let names: Vec<String> = q.visible().iter().map(|f| remote_file::kind_text(f)).collect();
+        assert_eq!(q.visible().len(), 2, "{names:?}");
+        assert_eq!(q.double_click("/home/a/lnk"), DoubleClick::Navigate(Vec::new()));
+        assert!(!q.loading, "nothing was asked");
+        // Choose: the shown folder, or the one selected folder; not a link.
+        assert_eq!(q.chosen_folder().as_deref(), Some("/home/a"));
+        q.click("/home/a/d", false, false);
+        assert_eq!(q.chosen_folder().as_deref(), Some("/home/a/d"));
+        q.click("/home/a/lnk", false, false);
+        assert_eq!(q.chosen_folder(), None);
+        assert!(!q.open_enabled());
+        // A folder double click still enters.
+        assert!(matches!(q.double_click("/home/a/d"), DoubleClick::Navigate(r) if !r.is_empty()));
+        // Download Files is unchanged: a plain panel lists files and is never a picker.
+        assert!(!shown(&[file("/home/a/x", 1, 1.0)]).choose_folder);
+    }
+
+    #[test]
+    fn picker_path_is_judged() {
+        let id = ident("h");
+        let ok = ssh_files::folder_target("/home/u/pages", &id).unwrap();
+        assert_eq!((ok.path.as_str(), ok.hostname.as_str(), ok.username.as_str()), ("/home/u/pages", "h", "u"));
+        for bad in ["", "rel/x", "~/x", "/a/../b", "/a\nb", "/a\u{7}b"] {
+            assert!(ssh_files::folder_target(bad, &id).is_none(), "{bad:?}");
+        }
+        assert!(ssh_files::folder_target(&format!("/{}", "a".repeat(4096)), &id).is_none());
+        assert!(ssh_files::folder_target("/", &id).is_some());
     }
 }

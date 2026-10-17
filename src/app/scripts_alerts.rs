@@ -86,7 +86,9 @@ pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
         // Keep Both: a closed window never replaces a file (P9).
         Then::SshKeepOrReplace { .. } => Answer::Button(0),
         // Cancel: a closed window never uploads the person's files (P9).
-        Then::SshUpload { .. } | Then::BindScheme { .. } | Then::OpenProfiles(..) => Answer::Button(1),
+        Then::SshUpload { .. } | Then::SaveRemote { .. } | Then::BindScheme { .. } | Then::OpenProfiles(..) => Answer::Button(1),
+        // Cancel (the third button): a closed window saves nothing, here or on the host.
+        Then::SavePageWhere { .. } => Answer::Button(2),
         // Cancel: a closed window never runs an opened script or adds a preset (B6).
         Then::RunOpenedFile(_) | Then::AddDuplicateColorPreset(_) | Then::TriggerImportMarked(_) => Answer::Button(1),
         // Cancel: a closed window opens no link and downloads nothing.
@@ -295,6 +297,12 @@ pub(super) enum Then {
     /// remembered (a remembered Download would repeat a failed download without asking). A closed
     /// window cancels. Not capped: the person's own click.
     SshViewOrDownload { pane: crate::layout::PaneId, to: crate::ssh_files::ScpPath, mime: String },
+    /// "Save Page As" for a page of an SSH session (TWEAKS 7b): Remote Folder... (0) opens the folder
+    /// picker, This Computer... (1) the usual dialog, Cancel (2). A closed window cancels.
+    SavePageWhere { pane: crate::layout::PaneId, url: String, epoch: u64 },
+    /// "OK to save the page ... to ...?" (TWEAKS 7b): OK (0) saves the page into a new folder of the
+    /// host folder `to`; Cancel (1) does nothing. A closed window cancels; never capped.
+    SaveRemote { pane: crate::layout::PaneId, url: String, epoch: u64, to: crate::ssh_files::ScpPath },
     /// "Uninstall Claude Code Integration?": Uninstall (0) strips the hook; Cancel (1) does
     /// nothing. A closed window cancels (P10).
     ClaudeUninstall,
@@ -845,6 +853,12 @@ impl App {
             Then::BindScheme { guid, scheme } => {
                 if index == 0 {
                     self.bind_scheme_confirmed(&guid, &scheme);
+                }
+            }
+            Then::SavePageWhere { pane, url, epoch } => self.save_where_answered(pane, url, epoch, index),
+            Then::SaveRemote { pane, url, epoch, to } => {
+                if index == 0 {
+                    self.save_remote_confirmed(pane, url, epoch, to);
                 }
             }
             Then::SshUpload { pane, files, to } => {
