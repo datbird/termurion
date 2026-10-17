@@ -14,6 +14,23 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 
 ## Done
 
+11. **After a program left the alternate screen, the prompt drew far from where the shell wrote.**
+    Seen 2026-10-16 in PowerShell: ssh to a Linux box, tmux (alternate screen), the window
+    resized many times (272x70, 80x23, 272x70 and drag steps), tmux detached, ssh exited, and the
+    prompt drew on row 6 while PSReadLine echoed `exit` on row 19. Cause: while the alternate
+    screen was up, every resize also resized the main screen behind it. A shrink pushed main rows
+    into history, and the next growth pulled none back (a pty-backed grid keeps its rows, item 9),
+    so the main screen, and the saved cursor the program restores on leaving, sat on other rows
+    than ConPTY's. conhost leaves the main buffer alone while the alternate one is up and resizes
+    it once, to the final size, when the program leaves (`_handleDeferredResize`). Done
+    2026-10-16: alacritty_terminal patch 35 does the same. New live tests in
+    `src/resize_live.rs`: a PowerShell stand-in for tmux (alternate screen, status line, scroll
+    region, redraw on resize) resized in steps, in a fast drag and as it leaves, real tmux in WSL
+    (skipped when absent), and seeded walks that enter and leave the alternate screen among
+    resizes. With ConPTY 1.25 and no fix the first stand-in test failed (the grid's prompt on row 13,
+    ConPTY's on row 69); with the fix the stand-in, drag, leave-resize and tmux tests pass and the
+    idle and in-flight walks still show 0 problems over 6 seeds. Alternate-screen walks (6 seeds): 0 problems when resizes come once the program is up; 2 over 6 seeds when a resize also lands while the program is still starting (the shell's in-flight case, same bound as item 9).
+
 9. **After a resize, typed text lands mid-screen, not at the prompt.** Seen 2026-10-15 in
    PowerShell: a long `dir`, then a window resize, then typing; the echo appeared about 15 rows
    above the prompt. Cause: after a resize the grid pulled scrollback down and moved the prompt

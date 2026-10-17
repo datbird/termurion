@@ -937,7 +937,14 @@ impl<T> Term<T> {
 
         let is_alt = self.mode.contains(TermMode::ALT_SCREEN);
         self.grid.resize(!is_alt, num_lines, num_cols);
-        self.inactive_grid.resize(is_alt, num_lines, num_cols);
+        // Termurion patch 35: while the alternate screen is up, the main screen is left as it
+        // is, as conhost does (`SCREEN_INFORMATION::_handleDeferredResize`): it is resized once,
+        // to the size in force, when the alternate screen ends. Resizing it step by step (a
+        // shrink pushes rows into history, the next growth does not pull them back) leaves the
+        // grid's main screen, and the prompt on it, on other rows than ConPTY's.
+        if !is_alt {
+            self.inactive_grid.resize(false, num_lines, num_cols);
+        }
 
         // Invalidate selection and tabs only when necessary.
         if old_cols != num_cols {
@@ -976,6 +983,15 @@ impl<T> Term<T> {
     }
 
     /// Swap primary and alternate screen buffer.
+    /// Termurion patch 35: brings the main screen, held while the alternate screen is up, to the
+    /// current size (one reflow, from the size it had when the alternate screen began).
+    fn resize_main_to_current(&mut self) {
+        let (cols, lines) = (self.grid.columns(), self.grid.screen_lines());
+        if self.inactive_grid.columns() != cols || self.inactive_grid.screen_lines() != lines {
+            self.inactive_grid.resize(true, lines, cols);
+        }
+    }
+
     pub fn swap_alt(&mut self) {
         if !self.mode.contains(TermMode::ALT_SCREEN) {
             // Set alt screen cursor to the current primary screen cursor.
@@ -989,6 +1005,8 @@ impl<T> Term<T> {
             // Termurion patch: and its history, from the last time.
             self.inactive_grid.clear_history();
         } else {
+            // Termurion patch 35: the main screen takes the size that came while it was away.
+            self.resize_main_to_current();
             // Termurion patch: the alternate screen's history goes above the main history.
             let rows = self.grid.take_history();
             let by = rows.len();
@@ -2382,6 +2400,7 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn reset_state(&mut self) {
         if self.mode.contains(TermMode::ALT_SCREEN) {
+            self.resize_main_to_current();
             mem::swap(&mut self.grid, &mut self.inactive_grid);
         }
         self.active_charset = Default::default();

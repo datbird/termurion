@@ -191,4 +191,10 @@ test data) is left out. Changes:
     screen in place: the rows a merge would pull from history are not pulled, and the rows a wrap adds
     above the cursor move the text down into the blank rows under it before history takes any.
 
+35. `term/mod.rs`: `Term::resize` leaves the main screen alone while the alternate screen is up, and
+    `resize_main_to_current` resizes it once, to the size in force, when the alternate screen ends
+    (`swap_alt` back, RIS). conhost does the same (`SCREEN_INFORMATION::_handleDeferredResize`). Step by
+    step, a shrink pushed main rows into history and the next growth pulled none back, so after the
+    program left, the grid's prompt sat far above ConPTY's.
+
 To update alacritty_terminal, copy the new version here and apply these changes again.
