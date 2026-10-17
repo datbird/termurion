@@ -168,7 +168,7 @@ impl App {
     /// `WS_EX_NOREDIRECTIONBITMAP`). None, with `transparency_unavailable` set, when no DX12 adapter answers.
     pub(super) fn alpha_gpu(&mut self, event_loop: &ActiveEventLoop, window: &Arc<Window>) -> Option<&AlphaGpu> {
         if self.alpha_gpu.is_none() && !self.transparency_unavailable {
-            match make_alpha_gpu(event_loop, window) {
+            match make_alpha_gpu(&event_loop.owned_display_handle(), window) {
                 Ok(a) => self.alpha_gpu = Some(a),
                 Err(e) => {
                     eprintln!("transparency unavailable: {e}");
@@ -494,8 +494,8 @@ fn placement_of(hwnd: isize) -> Option<transparency::Placed> {
 /// The second instance: DX12 only, DirectComposition swapchains (the only kind that offers a premultiplied
 /// alpha mode), its adapter chosen against `window`'s surface. The probe surface is dropped before the
 /// window's real one is made.
-fn make_alpha_gpu(event_loop: &ActiveEventLoop, window: &Arc<Window>) -> Result<AlphaGpu, String> {
-    let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(event_loop.owned_display_handle()));
+pub(super) fn make_alpha_gpu(display: &winit::event_loop::OwnedDisplayHandle, window: &Arc<Window>) -> Result<AlphaGpu, String> {
+    let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display.clone()));
     desc.backends = wgpu::Backends::DX12;
     desc.backend_options.dx12.presentation_system = wgpu::Dx12SwapchainKind::DxgiFromVisual;
     let instance = wgpu::Instance::new(desc);
@@ -504,6 +504,7 @@ fn make_alpha_gpu(event_loop: &ActiveEventLoop, window: &Arc<Window>) -> Result<
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: power::chosen(), compatible_surface: Some(&probe), ..Default::default() })).map_err(|e| e.to_string())?
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).map_err(|e| e.to_string())?;
+    crate::gpu_pick::watch(&device, crate::gpu_pick::current_generation());
     Ok(GpuHandles { instance, adapter, device, queue })
 }
 

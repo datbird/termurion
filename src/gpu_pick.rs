@@ -106,6 +106,181 @@ pub fn both_kinds(list: &[Facts]) -> bool {
     list.iter().any(|f| f.kind == DeviceType::IntegratedGpu) && list.iter().any(|f| f.kind == DeviceType::DiscreteGpu)
 }
 
+/// Whether a device-lost report is a real loss. A device that was dropped on purpose (a recovery
+/// replacing it) reports "Dropped" and is not one.
+pub fn loss_is_real(reason: &str) -> bool {
+    !reason.eq_ignore_ascii_case("dropped")
+}
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// The device generation: a device made now reports its loss only while it is still the newest.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+static LOST: Mutex<Option<String>> = Mutex::new(None);
+static WAKE: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
+
+/// Gives the loss reporter a way to wake the event loop (a loss arrives on a driver thread).
+pub fn set_wake(f: Arc<dyn Fn() + Send + Sync>) {
+    let _ = WAKE.set(f);
+}
+
+/// Starts a new device generation; call once when the run's devices are made again; `current_generation` serves devices made later.
+pub fn next_generation() -> u64 {
+    GENERATION.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+/// The generation devices made now belong to (a second device made later for the same run, such as
+/// the see-through instance's, shares it).
+pub fn current_generation() -> u64 {
+    GENERATION.load(Ordering::SeqCst)
+}
+
+fn report_lost(generation: u64, text: String) {
+    if generation != GENERATION.load(Ordering::SeqCst) {
+        return;
+    }
+    crate::host::log(&format!("renderer: {text}"));
+    let mut slot = LOST.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_none() {
+        *slot = Some(text);
+    }
+    drop(slot);
+    if let Some(wake) = WAKE.get() {
+        wake();
+    }
+}
+
+/// Reports `device`'s loss (and an uncaptured error that says the device is lost) for `take_lost`.
+/// Other uncaptured errors are logged, not fatal: a dead device must not abort the program.
+pub fn watch(device: &wgpu::Device, generation: u64) {
+    device.set_device_lost_callback(move |reason, message| {
+        let reason = format!("{reason:?}");
+        if loss_is_real(&reason) {
+            report_lost(generation, format!("device lost ({reason}): {message}"));
+        }
+    });
+    device.on_uncaptured_error(Arc::new(move |e| {
+        let text = e.to_string();
+        if text.to_ascii_lowercase().contains("lost") {
+            report_lost(generation, format!("device lost (error): {text}"));
+        } else {
+            crate::host::log(&format!("renderer: GPU error: {text}"));
+        }
+    }));
+}
+
+/// Whether a loss has been reported and not yet taken.
+pub fn lost_pending() -> bool {
+    LOST.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+}
+
+/// Takes the pending device-lost report, if any.
+pub fn take_lost() -> Option<String> {
+    LOST.lock().unwrap_or_else(|e| e.into_inner()).take()
+}
+
+/// Tries per API before the next one, and the delay after a failure.
+pub const MAX_TRIES: u32 = 3;
+const BACKOFF_MS: u64 = 250;
+const BACKOFF_CAP_MS: u64 = 4000;
+/// A loss this soon after a recovery counts as the same trouble: the next try moves down the API order.
+pub const STABLE: std::time::Duration = std::time::Duration::from_secs(60);
+
+pub fn backoff(failures: u32) -> std::time::Duration {
+    std::time::Duration::from_millis((BACKOFF_MS << failures.min(8)).min(BACKOFF_CAP_MS))
+}
+
+/// What the loss handler should do now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    Idle,
+    /// Nothing to do before this moment (the backoff).
+    WaitUntil(std::time::Instant),
+    /// Rebuild on API number `api` of the order (an index into `backend_order`).
+    Attempt { api: usize },
+    /// Every API failed its tries: stop, and tell the person.
+    GaveUp,
+}
+
+/// The recovery state machine, over plain values (no GPU, no clock of its own).
+#[derive(Clone, Debug)]
+pub struct Recovery {
+    apis: usize,
+    api: usize,
+    failures: u32,
+    pending: bool,
+    gave_up: bool,
+    due: Option<std::time::Instant>,
+    recovered_at: Option<std::time::Instant>,
+}
+
+impl Recovery {
+    pub fn new(apis: usize) -> Recovery {
+        Recovery { apis: apis.max(1), api: 0, failures: 0, pending: false, gave_up: false, due: None, recovered_at: None }
+    }
+
+    /// The device was lost. A first loss starts again at the top of the order; a loss soon after a
+    /// recovery moves to the next API, so a flapping driver cannot loop on one.
+    pub fn lost(&mut self, now: std::time::Instant) {
+        if self.gave_up {
+            return;
+        }
+        let quick = self.recovered_at.is_some_and(|t| now.saturating_duration_since(t) < STABLE);
+        if quick {
+            self.api += 1;
+        } else {
+            self.api = 0;
+        }
+        self.failures = 0;
+        self.pending = true;
+        self.due = None;
+        if self.api >= self.apis {
+            self.gave_up = true;
+            self.pending = false;
+        }
+    }
+
+    pub fn poll(&self, now: std::time::Instant) -> Action {
+        if self.gave_up {
+            return Action::GaveUp;
+        }
+        if !self.pending {
+            return Action::Idle;
+        }
+        match self.due {
+            Some(t) if t > now => Action::WaitUntil(t),
+            _ => Action::Attempt { api: self.api },
+        }
+    }
+
+    /// The attempt failed: wait, try again, or move down the order.
+    pub fn failed(&mut self, now: std::time::Instant) {
+        self.failures += 1;
+        if self.failures >= MAX_TRIES {
+            self.api += 1;
+            self.failures = 0;
+            if self.api >= self.apis {
+                self.gave_up = true;
+                self.pending = false;
+                return;
+            }
+        }
+        self.due = Some(now + backoff(self.failures));
+    }
+
+    pub fn recovered(&mut self, now: std::time::Instant) {
+        self.pending = false;
+        self.failures = 0;
+        self.due = None;
+        self.recovered_at = Some(now);
+    }
+
+    pub fn gave_up(&self) -> bool {
+        self.gave_up
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +371,77 @@ mod tests {
         let one = vec![l[0].clone()];
         assert!(why(preference(false), &one, &one[0]).contains("only one GPU"));
         assert!(describe(&l).contains("Dx12 Intel(R) UHD Graphics 770 (IntegratedGpu)"));
+    }
+
+    #[test]
+    fn a_dropped_device_is_not_a_loss() {
+        assert!(!loss_is_real("Dropped"));
+        assert!(loss_is_real("Unknown"));
+        assert!(loss_is_real("Destroyed"));
+    }
+
+    #[test]
+    fn backoff_doubles_then_caps() {
+        let ms = |n| backoff(n).as_millis();
+        assert_eq!((ms(0), ms(1), ms(2), ms(3), ms(4)), (250, 500, 1000, 2000, 4000));
+        assert_eq!(ms(30), 4000);
+    }
+
+    #[test]
+    fn a_loss_is_retried_at_once_then_recovers() {
+        let t0 = std::time::Instant::now();
+        let mut r = Recovery::new(3);
+        assert_eq!(r.poll(t0), Action::Idle);
+        r.lost(t0);
+        assert_eq!(r.poll(t0), Action::Attempt { api: 0 });
+        r.recovered(t0);
+        assert_eq!(r.poll(t0), Action::Idle);
+    }
+
+    #[test]
+    fn failures_back_off_then_move_down_the_order() {
+        let t0 = std::time::Instant::now();
+        let mut r = Recovery::new(2);
+        r.lost(t0);
+        r.failed(t0);
+        assert_eq!(r.poll(t0), Action::WaitUntil(t0 + backoff(1)));
+        assert_eq!(r.poll(t0 + backoff(1)), Action::Attempt { api: 0 });
+        r.failed(t0);
+        r.failed(t0);
+        assert_eq!(r.poll(t0 + std::time::Duration::from_secs(10)), Action::Attempt { api: 1 }, "three failures: the next API");
+        for _ in 0..3 {
+            r.failed(t0);
+        }
+        assert!(r.gave_up());
+        assert_eq!(r.poll(t0), Action::GaveUp);
+        r.lost(t0);
+        assert_eq!(r.poll(t0), Action::GaveUp, "giving up is final for the run");
+    }
+
+    #[test]
+    fn a_quick_second_loss_moves_to_the_next_api() {
+        let t0 = std::time::Instant::now();
+        let mut r = Recovery::new(3);
+        r.lost(t0);
+        r.recovered(t0);
+        r.lost(t0 + std::time::Duration::from_secs(5));
+        assert_eq!(r.poll(t0), Action::Attempt { api: 1 });
+        r.recovered(t0 + std::time::Duration::from_secs(5));
+        r.lost(t0 + std::time::Duration::from_secs(6));
+        assert_eq!(r.poll(t0), Action::Attempt { api: 2 });
+        r.recovered(t0 + std::time::Duration::from_secs(6));
+        r.lost(t0 + std::time::Duration::from_secs(7));
+        assert_eq!(r.poll(t0), Action::GaveUp, "a loop of quick losses ends");
+    }
+
+    #[test]
+    fn a_loss_after_a_stable_minute_starts_over_at_the_top() {
+        let t0 = std::time::Instant::now();
+        let mut r = Recovery::new(3);
+        r.lost(t0);
+        r.lost(t0);
+        r.recovered(t0);
+        r.lost(t0 + STABLE + std::time::Duration::from_secs(1));
+        assert_eq!(r.poll(t0), Action::Attempt { api: 0 });
     }
 }

@@ -560,6 +560,21 @@ impl Renderer {
         r
     }
 
+    /// Makes every GPU resource again on a new device (after a device loss): the pipelines, the glyph
+    /// atlas, the viewport and the image textures (re-uploaded when next drawn). Fonts, faces and
+    /// settings are kept.
+    pub fn rebuild_gpu(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) {
+        let cache = Cache::new(device);
+        self.viewport = Viewport::new(device, &cache);
+        self.atlas = TextAtlas::new(device, queue, &cache, format);
+        self.text = TextRenderer::new(&mut self.atlas, device, wgpu::MultisampleState::default(), None);
+        self.quads = QuadPipeline::new(device, format);
+        self.images = ImagePipeline::new(device, format, &self.quads.uniform);
+        self.device = device.clone();
+        self.queue = queue.clone();
+        self.format = format;
+    }
+
     /// Sets the font size and measures the cell: the advance of "W" by the font's own line
     /// height (`fonts::cell_size`; R3, it was 1.2 times the size).
     /// The width is not rounded. Glyphs advance by the exact width, so a rounded cell
@@ -1818,6 +1833,51 @@ mod tests {
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         let data = buf.slice(..).get_mapped_range().unwrap().to_vec();
         data
+    }
+
+    /// Device loss, simulated with `Device::destroy`: the loss is reported to `gpu_pick::take_lost`, and the
+    /// same renderer (its fonts and faces kept) draws again on a new device after `rebuild_gpu`.
+    #[test]
+    fn a_destroyed_device_is_reported_and_the_renderer_rebuilds() {
+        // The shared adapter first: making it takes the lock.
+        let (_instance, adapter, _shared, _queue) = super::test_gpu::shared_all();
+        let _gpu = super::test_gpu::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let make = || pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let frame = Frame {
+            clear: rgba(rgb(0, 0, 255), 1.0),
+            quads: vec![Quad { rect: Rect { x: 0.0, y: 0.0, w: 10.0, h: 5.0 }, color: rgba(rgb(255, 0, 0), 1.0) }],
+            ..Default::default()
+        };
+        let (device, queue) = make();
+        crate::gpu_pick::next_generation();
+        crate::gpu_pick::watch(&device, crate::gpu_pick::current_generation());
+        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let cell = r.cell;
+        assert_eq!(&r.draw_offscreen(&frame, 64, 8).unwrap()[0..4], &[255, 0, 0, 255]);
+        assert!(crate::gpu_pick::take_lost().is_none(), "no loss yet");
+        device.destroy();
+        let mut why = None;
+        for _ in 0..100 {
+            let _ = device.poll(wgpu::PollType::Poll);
+            why = crate::gpu_pick::take_lost();
+            if why.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let why = why.expect("the destroyed device is reported lost");
+        assert!(why.contains("device lost"), "{why}");
+        // Recovery: a new generation, a new device, the same renderer.
+        crate::gpu_pick::next_generation();
+        let (device2, queue2) = make();
+        crate::gpu_pick::watch(&device2, crate::gpu_pick::current_generation());
+        r.rebuild_gpu(&device2, &queue2, format);
+        assert_eq!(r.cell, cell, "fonts and metrics are kept");
+        let px = r.draw_offscreen(&frame, 64, 8).unwrap();
+        assert_eq!(&px[0..4], &[255, 0, 0, 255], "draws again");
+        assert!(crate::gpu_pick::take_lost().is_none(), "the replaced device's late reports are ignored");
+        std::mem::forget((device, queue, device2, queue2));
     }
 
     /// Every API the build host offers, headless: the adapters each lists, the one a preference lands

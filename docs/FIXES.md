@@ -24,8 +24,16 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
     adapter (once), why a fallback happened, and whether the GPU setting was honored. The GPU
     follows iTerm2's `preferIntegratedGPU` (default on, so the Intel GPU stays the default; the row
     is live only with both kinds of GPU): on asks for the low-power GPU, off asks for the
-    high-performance one (it was "no preference"). A lost device is now logged
-    (`renderer: device lost`); the surface-lost path still remakes the swapchain. Set
+    high-performance one (it was "no preference"). A lost device (driver
+    update or reset, timeout, GPU removed, laptop switching GPUs) is now recovered, not only
+    logged: every terminal window gets a new adapter, device, surface and renderer resources
+    (pipelines, glyph atlas, image textures; fonts and settings are kept) through the same API
+    order and GPU preference as start-up, and redraws (`gpu_recovery_ui.rs`, state machine
+    `gpu_pick::Recovery`). Up to 3 tries per API with a 0.5 s to 4 s backoff, then the next API;
+    a loss within a minute of a recovery moves to the next API too, and when none is left a banner
+    says to restart. host.log: `renderer: device lost`, `renderer: recovered on <API> <GPU>` or
+    `renderer: recovery on <API> failed`. Settings and prompt windows keep the device they were
+    opened on, so they are closed and reopened after a loss. Set
     `TERMURION_RENDERER` to `dx12`, `vulkan` or `gl` to try one first. Measured headless (test
     `each_api_honors_the_gpu_preference_and_draws`, 1200 x 800, 40 text rows, with readback):
     DirectX 12 3.38 ms on the Intel GPU and 3.79 ms on the RTX; Vulkan 3.64 ms and 3.93 ms. OpenGL

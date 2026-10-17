@@ -129,6 +129,7 @@ mod coprocess_ui;
 mod dlog_ui;
 mod aps_ui;
 mod windows_ui;
+mod gpu_recovery_ui;
 #[cfg(windows)]
 mod chrome_ui;
 mod desktops_ui;
@@ -893,6 +894,9 @@ pub struct App {
     host_welcome: Option<crate::host_client::Welcome>,
     shell: String,
     gpu: Option<Gpu>,
+    /// Kept to make a new instance after a device loss, when no event loop is at hand.
+    display_handle: Option<winit::event_loop::OwnedDisplayHandle>,
+    gpu_recovery: gpu_pick::Recovery,
     tabs: Vec<Tab>,
     active: usize,
     panes: HashMap<PaneId, Pane>,
@@ -2068,6 +2072,7 @@ pub fn run() {
     let notify: Notify = Arc::new(move || {
         let _ = wake.lock().unwrap().send_event(UserEvent::Wake);
     });
+    gpu_pick::set_wake(notify.clone());
 
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_default();
     let mut banners = Banners::default();
@@ -2899,6 +2904,8 @@ pub fn run() {
         prefs_startup,
         prefs_reveal: false,
         prefs_gpu: None,
+        display_handle: None,
+        gpu_recovery: gpu_pick::Recovery::new(gpu_pick::backend_order(cfg!(windows), None).len()),
         alpha_gpu: None,
         transparency_unavailable: false,
         alpha_pending: Vec::new(),
@@ -7034,6 +7041,10 @@ impl App {
     }
 
     fn render_frame(&mut self, timing: bool) {
+        // A lost device draws nothing; the recovery remakes it and asks every window to draw.
+        if self.gpu_recovery_blocks() {
+            return;
+        }
         // Focus moves between windows and panes, as the debug log reports them.
         if crate::dlog::is_on() {
             let focus = self.focused_id();
@@ -7245,6 +7256,7 @@ impl ApplicationHandler<UserEvent> for App {
         // Every terminal window allows the IME (winit leaves it off otherwise).
         window.set_ime_allowed(true);
         let prefer = power::chosen_preference(self.globals.bool("preferIntegratedGPU"));
+        self.display_handle = Some(event_loop.owned_display_handle());
         match init_gpu(window, event_loop, prefer) {
             Ok(gpu) => {
                 let k = windows_ui::key(gpu.window.id());
@@ -7667,7 +7679,8 @@ impl ApplicationHandler<UserEvent> for App {
         // Update and Tip of the Day deadlines wake no resident Termurion (the 13v1 merge).
         let (update_wake, tip_of_day_wake) = (update_app::idle_due(self.update_due, self.resident), update_app::idle_due(self.tip_due, self.resident));
         let egui_due = crate::egui_host::delayed_repaints(Instant::now());
-        let wake = [egui_due, tray_due, workgroup_due, jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, panels_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let gpu_due = self.gpu_recovery_tick();
+        let wake = [gpu_due, egui_due, tray_due, workgroup_due, jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, panels_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -8069,10 +8082,11 @@ fn log_adapters_once(list: &[gpu_pick::Facts]) {
 /// made no adapter, surface or device (the reason goes to host.log). `power_preference` is iTerm2's
 /// "Prefer integrated to discrete GPU".
 fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference: wgpu::PowerPreference) -> Result<Gpu, String> {
+    let display = event_loop.owned_display_handle();
     let forced = std::env::var(gpu_pick::FORCE_ENV).ok();
     let mut failures: Vec<String> = Vec::new();
     for (backends, label) in gpu_pick::backend_order(cfg!(windows), forced.as_deref()) {
-        match init_gpu_on(window.clone(), event_loop, power_preference, backends) {
+        match init_gpu_on(window.clone(), &display, power_preference, backends) {
             Ok(gpu) => {
                 if !failures.is_empty() {
                     crate::host::log(&format!("renderer: fell back to {label} because {}", failures.join("; ")));
@@ -8088,8 +8102,10 @@ fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference:
     Err(failures.join("; "))
 }
 
-fn init_gpu_on(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference: wgpu::PowerPreference, backends: wgpu::Backends) -> Result<Gpu, String> {
-    let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(event_loop.owned_display_handle()));
+/// One API's instance, adapter, device and queue for `window`, with the unconfigured surface it was
+/// matched against and the adapters the instance lists.
+fn make_handles(window: &Arc<Window>, display: &winit::event_loop::OwnedDisplayHandle, power_preference: wgpu::PowerPreference, backends: wgpu::Backends) -> Result<(GpuHandles, wgpu::Surface<'static>, Vec<gpu_pick::Facts>), String> {
+    let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display.clone()));
     desc.backends = backends;
     let instance = wgpu::Instance::new(desc);
     let surface = instance.create_surface(window.clone()).map_err(|e| format!("no surface: {e}"))?;
@@ -8104,9 +8120,16 @@ fn init_gpu_on(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preferen
     let info = adapter.get_info();
     eprintln!("renderer adapter: backend={:?} name={} vendor={:#06x} device_type={:?}", info.backend, info.name, info.vendor, info.device_type);
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).map_err(|e| format!("no device: {e}"))?;
-    // A lost device (driver reset, GPU removed) arrives on a driver thread: the log says so, and the
-    // surface-lost path below remakes the swapchain.
-    device.set_device_lost_callback(|reason, message| crate::host::log(&format!("renderer: device lost ({reason:?}): {message}")));
+    // A lost device (driver reset, GPU removed) arrives on a driver thread: it is reported for the
+    // recovery in `gpu_recovery_ui`, and a stray GPU error is logged instead of aborting.
+    gpu_pick::watch(&device, gpu_pick::current_generation());
+    Ok((GpuHandles { instance, adapter, device, queue }, surface, facts))
+}
+
+fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHandle, power_preference: wgpu::PowerPreference, backends: wgpu::Backends) -> Result<Gpu, String> {
+    gpu_pick::next_generation();
+    let (GpuHandles { instance, adapter, device, queue }, surface, facts) = make_handles(&window, display, power_preference, backends)?;
+    let info = adapter.get_info();
     // Once per run in host.log too, so a desktop report says which renderer drew (FIXES 4).
     static LOGGED: std::sync::Once = std::sync::Once::new();
     LOGGED.call_once(|| {
