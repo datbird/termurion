@@ -2,7 +2,7 @@
 //! are scored against every profile's rules, and the session's profile follows.
 
 use super::*;
-use crate::aps::{Candidate, Facts, Switcher};
+use crate::aps::{Candidate, Facts};
 
 pub(super) const LOG_KEY: &str = "NoSyncEnableAutomaticProfileSwitchingLogging";
 
