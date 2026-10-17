@@ -448,7 +448,7 @@ fn stroke_all(mask: &mut [u8], w: u16, h: u16, strokes: &[(f32, Piece)]) {
         let mut stroke = Stroke::new(width);
         stroke.cap(Cap::Square).join(Join::Miter);
         let mut render = Mask::new(&commands[..]);
-        render.size(u32::from(w), u32::from(h)).style(&stroke);
+        render.size(u32::from(w), u32::from(h)).style(stroke);
         render.render_into(&mut out, None);
         merge(mask, &out);
     }

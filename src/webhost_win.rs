@@ -2112,20 +2112,19 @@ fn register_navigation_rest(inner: &Rc<RefCell<Inner>>, view: &ICoreWebView2, to
         let ok = bool_out(|b| unsafe { args.IsSuccess(b) });
         let mut nav = 0u64;
         let _ = unsafe { args.NavigationId(&mut nav) };
-        let status;
         // The HTTP status, read on a failure too: a server that answered 4xx or 5xx ends with
         // IsSuccess false, and its own page is what the person sees (13x8 Task 2 review I1).
         let mut http = 0i32;
         if let Ok(a2) = args.cast::<ICoreWebView2NavigationCompletedEventArgs2>() {
             let _ = unsafe { a2.HttpStatusCode(&mut http) };
         }
-        if ok {
-            status = http;
+        let status = if ok {
+            http
         } else {
             let mut web = COREWEBVIEW2_WEB_ERROR_STATUS(0);
             let _ = unsafe { args.WebErrorStatus(&mut web) };
-            status = web.0;
-        }
+            web.0
+        };
         let mut i = inner.borrow_mut();
         let http = webhost::completed_http(http, i.main_response, nav);
         if i.main_response.is_some_and(|(n, _)| n == nav) {

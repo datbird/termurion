@@ -634,7 +634,7 @@ pub fn file_path_of(url: &str) -> Result<PathBuf, &'static str> {
     if !drive {
         return Err(INVALID);
     }
-    let mut out = format!("{}:\\", path[1..2].to_string());
+    let mut out = format!("{}:\\", &path[1..2]);
     let tail = path.get(4..).unwrap_or("");
     // One trailing slash is dropped (`FH:35-38`); any other empty component is refused.
     let tail = tail.strip_suffix('/').unwrap_or(tail);

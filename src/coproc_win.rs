@@ -185,10 +185,7 @@ impl Coprocess {
         if let Some(h) = self.held.take() {
             return Some(h);
         }
-        match self.output.try_recv() {
-            Ok(c) => Some(c),
-            Err(TryRecvError::Empty | TryRecvError::Disconnected) => None,
-        }
+        self.output.try_recv().ok()
     }
 
     /// Its stdout closed (it exited) and every piece was taken.

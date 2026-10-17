@@ -233,7 +233,7 @@ pub fn dedupe(items: Vec<Item>) -> Vec<Item> {
 }
 
 fn single_line(s: &str) -> String {
-    s.replace("\r\n", "\u{21a9}").replace('\n', "\u{21a9}").replace('\r', "\u{21a9}")
+    s.replace("\r\n", "\u{21a9}").replace(['\n', '\r'], "\u{21a9}")
 }
 
 /// A popup row's display text and the byte range of its bold typed-prefix part

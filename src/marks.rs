@@ -596,7 +596,7 @@ impl Screen {
                 r += 1;
             }
             r += 1;
-            if r >= bottom + 1 {
+            if r > bottom {
                 return None;
             }
         }

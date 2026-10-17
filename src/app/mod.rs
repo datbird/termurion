@@ -7348,11 +7348,10 @@ impl ApplicationHandler<UserEvent> for App {
             .bool("OpenArrangementAtStartup")
             .then_some(())
             .filter(|_| self.start_handoff.is_none())
-            .map(|_| {
+            .and_then(|_| {
                 let store = self.arrangements();
                 store.default_name().and_then(|n| store.get(n).cloned().map(|w| (Some(n.to_string()), w)))
             })
-            .flatten()
             .filter(|(_, w)| !w.is_empty());
         let has_arrangement = default_arrangement.is_some();
         // The saved state's windows are the launch's own restoration (`launch` true); a default

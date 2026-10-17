@@ -64,7 +64,7 @@ pub fn divider_columns(rows: &[Vec<char>], row: usize) -> Vec<usize> {
             let up = (0..=row).rev().take_while(|r| same(*r, *col, **c)).count();
             let down = (row..rows.len()).take_while(|r| same(*r, *col, **c)).count();
             // The run through this row, both ways.
-            up + down - 1 >= DIVIDER_RUN
+            up + down > DIVIDER_RUN
         })
         .map(|(col, _)| col)
         .collect()

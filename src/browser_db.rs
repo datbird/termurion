@@ -282,7 +282,7 @@ impl Db {
             let mut head = [0u8; 16];
             let mut f = localfs::open(&judged).map_err(err)?;
             let n = f.read(&mut head).map_err(err)?;
-            if n > 0 && &head[..n] != &b"SQLite format 3\0"[..n] {
+            if n > 0 && head[..n] != b"SQLite format 3\0"[..n] {
                 return Err("the browser database file is not a database".to_string());
             }
         }

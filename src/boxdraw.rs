@@ -568,7 +568,7 @@ pub(crate) fn draw_path(mask: &mut [u8], w: u16, h: u16, components: &str, solid
     } else {
         let mut stroke = Stroke::new(scale);
         stroke.cap(Cap::Square).join(Join::Miter);
-        render.style(&stroke).render_into(mask, None);
+        render.style(stroke).render_into(mask, None);
     }
 }
 

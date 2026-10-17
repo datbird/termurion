@@ -49,7 +49,7 @@ pub fn command_line(f: &Facts) -> Option<i32> {
         return None;
     }
     // The band would sit over the cursor (`cursorY <= 3`, 1-based, `VSS:481-483`).
-    if !f.user_scrolled && f.cursor_row + 1 <= 3 {
+    if !f.user_scrolled && f.cursor_row < 3 {
         return None;
     }
     if !f.enabled {
