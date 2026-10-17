@@ -21,6 +21,7 @@ use crate::conpty::{self, Api, Source};
 use crate::globals::{self, Globals};
 use crate::margins;
 use crate::scrollbar;
+use crate::gpu_pick;
 use crate::power;
 use crate::input::{self, Clicks};
 use crate::keyroute::{self, Route};
@@ -8051,39 +8052,66 @@ impl ApplicationHandler<UserEvent> for App {
     }
 }
 
-/// Lists the adapters once per run (name, backend, device type; P19) and records whether both
-/// kinds of GPU exist for the settings sheet.
-fn log_adapters_once(instance: &wgpu::Instance) {
+/// Lists the adapters of the API in use once per run (backend, name, device type) in host.log and on
+/// stderr, and records whether both kinds of GPU exist for the settings sheet.
+fn log_adapters_once(list: &[gpu_pick::Facts]) {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
-        for a in &adapters {
-            let i = a.get_info();
-            eprintln!("adapter available: backend={:?} name={} device_type={:?}", i.backend, i.name, i.device_type);
+        for f in list {
+            eprintln!("adapter available: backend={:?} name={} device_type={:?}", f.backend, f.name, f.kind);
         }
-        let kinds: Vec<wgpu::DeviceType> = adapters.iter().map(|a| a.get_info().device_type).collect();
-        power::set_both_gpu_kinds(power::both_gpu_kinds(&kinds));
+        crate::host::log(&format!("adapters: {}", gpu_pick::describe(list)));
+        power::set_both_gpu_kinds(gpu_pick::both_kinds(list));
     });
 }
 
+/// The first window's GPU: DirectX 12, then Vulkan, then OpenGL, each only when the one before it
+/// made no adapter, surface or device (the reason goes to host.log). `power_preference` is iTerm2's
+/// "Prefer integrated to discrete GPU".
 fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference: wgpu::PowerPreference) -> Result<Gpu, String> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
-        event_loop.owned_display_handle(),
-    )));
-    let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
-    log_adapters_once(&instance);
+    let forced = std::env::var(gpu_pick::FORCE_ENV).ok();
+    let mut failures: Vec<String> = Vec::new();
+    for (backends, label) in gpu_pick::backend_order(cfg!(windows), forced.as_deref()) {
+        match init_gpu_on(window.clone(), event_loop, power_preference, backends) {
+            Ok(gpu) => {
+                if !failures.is_empty() {
+                    crate::host::log(&format!("renderer: fell back to {label} because {}", failures.join("; ")));
+                }
+                return Ok(gpu);
+            }
+            Err(e) => {
+                crate::host::log(&format!("renderer: {label} unavailable: {e}"));
+                failures.push(format!("{label}: {e}"));
+            }
+        }
+    }
+    Err(failures.join("; "))
+}
+
+fn init_gpu_on(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference: wgpu::PowerPreference, backends: wgpu::Backends) -> Result<Gpu, String> {
+    let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(event_loop.owned_display_handle()));
+    desc.backends = backends;
+    let instance = wgpu::Instance::new(desc);
+    let surface = instance.create_surface(window.clone()).map_err(|e| format!("no surface: {e}"))?;
+    let facts: Vec<gpu_pick::Facts> = pollster::block_on(instance.enumerate_adapters(backends)).iter().map(|a| gpu_pick::Facts::of(&a.get_info())).collect();
+    log_adapters_once(&facts);
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference,
         compatible_surface: Some(&surface),
         ..Default::default()
     }))
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| format!("no adapter: {e}"))?;
     let info = adapter.get_info();
     eprintln!("renderer adapter: backend={:?} name={} vendor={:#06x} device_type={:?}", info.backend, info.name, info.vendor, info.device_type);
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).map_err(|e| format!("no device: {e}"))?;
+    // A lost device (driver reset, GPU removed) arrives on a driver thread: the log says so, and the
+    // surface-lost path below remakes the swapchain.
+    device.set_device_lost_callback(|reason, message| crate::host::log(&format!("renderer: device lost ({reason:?}): {message}")));
     // Once per run in host.log too, so a desktop report says which renderer drew (FIXES 4).
     static LOGGED: std::sync::Once = std::sync::Once::new();
-    LOGGED.call_once(|| crate::host::log(&format!("renderer: {:?} on {}", info.backend, info.name)));
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).map_err(|e| e.to_string())?;
+    LOGGED.call_once(|| {
+        crate::host::log(&format!("renderer: {:?} on {} ({})", info.backend, info.name, gpu_pick::why(power_preference, &facts, &gpu_pick::Facts::of(&info))));
+    });
     let caps = surface.get_capabilities(&adapter);
     let format = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0]);
     let size = window.inner_size();

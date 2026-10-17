@@ -55,7 +55,7 @@ impl Poll {
 
 /// `SessionView.m:862-895`: Prefer integrated takes the low-power device, else the system default.
 pub fn adapter_preference(prefer_integrated: bool) -> wgpu::PowerPreference {
-    if prefer_integrated { wgpu::PowerPreference::LowPower } else { wgpu::PowerPreference::None }
+    crate::gpu_pick::preference(prefer_integrated)
 }
 
 /// The GPU sheet enables "Prefer integrated" only when an integrated and a discrete GPU exist
@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn adapter_preference_follows_iterm2() {
         assert_eq!(adapter_preference(true), wgpu::PowerPreference::LowPower);
-        assert_eq!(adapter_preference(false), wgpu::PowerPreference::None);
+        assert_eq!(adapter_preference(false), wgpu::PowerPreference::HighPerformance);
         assert!(both_gpu_kinds(&[IntegratedGpu, DiscreteGpu]));
         assert!(!both_gpu_kinds(&[DiscreteGpu]));
         assert!(!both_gpu_kinds(&[IntegratedGpu, Cpu]));
@@ -157,8 +157,8 @@ mod tests {
         let first = chosen_preference_in(&std::sync::OnceLock::new(), true);
         assert_eq!(first, wgpu::PowerPreference::LowPower);
         let cell = std::sync::OnceLock::new();
-        assert_eq!(chosen_preference_in(&cell, false), wgpu::PowerPreference::None);
-        assert_eq!(chosen_preference_in(&cell, true), wgpu::PowerPreference::None);
+        assert_eq!(chosen_preference_in(&cell, false), wgpu::PowerPreference::HighPerformance);
+        assert_eq!(chosen_preference_in(&cell, true), wgpu::PowerPreference::HighPerformance);
     }
 
     /// Final review 6: the power line is read lazily and at most once a second.

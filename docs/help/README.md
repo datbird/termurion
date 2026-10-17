@@ -15,6 +15,7 @@ View > Toggle Full Screen is F11 in every Shortcut Key mode, and also Ctrl+Alt+F
 - [Coprocesses](coprocesses.md): a program wired to a session's input and output.
 - [Copy Mode](copy-mode.md): select and copy text from the keyboard.
 - [Dynamic Profiles](dynamic-profiles.md): define profiles in JSON or property list files.
+- [GPU Renderer](gpu-renderer.md): which graphics API and which GPU Termurion draws with.
 - [Installing](installing.md): the installer, page by page, and the portable zip.
 - [Inline Images](inline-images.md): show pictures in the terminal with imgcat, sixel, and kitty graphics.
 - [Paste Bracketing](paste-bracketing.md): how Termurion marks pasted text for the shell.

@@ -1820,6 +1820,66 @@ mod tests {
         data
     }
 
+    /// Every API the build host offers, headless: the adapters each lists, the one a preference lands
+    /// on (the choice logic's `honored` check against what wgpu really handed out), and the time of
+    /// a 1200 x 800 offscreen frame with 40 rows of text on each (printed; compare with --nocapture).
+    #[test]
+    fn each_api_honors_the_gpu_preference_and_draws() {
+        let _gpu = super::test_gpu::LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut drew = 0;
+        for (backends, label) in crate::gpu_pick::backend_order(cfg!(windows), None) {
+            let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+            desc.backends = backends;
+            let instance = wgpu::Instance::new(desc);
+            let list: Vec<_> = pollster::block_on(instance.enumerate_adapters(backends)).iter().map(|a| crate::gpu_pick::Facts::of(&a.get_info())).collect();
+            println!("API {label}: {}", crate::gpu_pick::describe(&list));
+            for prefer_integrated in [true, false] {
+                let pref = crate::gpu_pick::preference(prefer_integrated);
+                let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: pref, ..Default::default() })) else {
+                    println!("API {label}: no adapter for {pref:?}");
+                    continue;
+                };
+                let got = crate::gpu_pick::Facts::of(&adapter.get_info());
+                println!("API {label} prefer_integrated={prefer_integrated}: {}", crate::gpu_pick::why(pref, &list, &got));
+                assert!(crate::gpu_pick::honored(&list, pref, &got), "{label} ignored {pref:?}: got {got:?} of {list:?}");
+                let Ok((device, queue)) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())) else { continue };
+                // OpenGL cannot make the renderer's offscreen target (no view formats): it is the last resort only.
+                if !adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::VIEW_FORMATS) {
+                    println!("API {label}: no view formats, frame not drawn");
+                    continue;
+                }
+                let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 16.0);
+                let rows = (0..40)
+                    .map(|i| TextRow {
+                        x: 4.0,
+                        y: i as f32 * 18.0,
+                        spans: vec![Span { text: format!("row {i} the quick brown fox jumps over the lazy dog 0123456789"), color: rgb(220, 220, 220), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }],
+                        clip: Rect { x: 0.0, y: i as f32 * 18.0, w: 1200.0, h: 18.0 },
+                        scale: 1.0,
+                        face: crate::render::DEFAULT_FACE,
+                    })
+                    .collect();
+                let frame = Frame { clear: rgba(rgb(10, 10, 10), 1.0), rows, ..Default::default() };
+                let px = r.draw_offscreen(&frame, 1200, 800).unwrap();
+                assert!(px.chunks(4).any(|p| p[0] > 150), "{label} drew no text");
+                for _ in 0..5 {
+                    r.draw_offscreen(&frame, 1200, 800).unwrap();
+                }
+                let n = 100;
+                let t = std::time::Instant::now();
+                for _ in 0..n {
+                    r.draw_offscreen(&frame, 1200, 800).unwrap();
+                }
+                println!("FRAMETIME {label} on {} ({pref:?}): {:.2} ms per frame (1200x800, 40 rows, with readback)", got.name, t.elapsed().as_secs_f64() * 1000.0 / n as f64);
+                drew += 1;
+                std::mem::forget((device, queue));
+            }
+            // An instance is never dropped here: see `test_gpu`.
+            std::mem::forget(instance);
+        }
+        assert!(drew > 0, "no API drew a frame");
+    }
+
     /// Today's backend per adapter, and whether a default instance and a DX12 `DxgiFromVisual` one
     /// make devices in one process (13g renderer ruling). Headless: no event loop, so both
     /// instances are built without a display handle.
