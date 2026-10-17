@@ -33,7 +33,7 @@ impl Model {
         Model {
             primary: f.primary,
             tap_on: f.double_tap.is_some(),
-            tap: p.int("HotKey Modifier Activation").clamp(0, 3) as u8,
+            tap: crate::hotkey::tap_key(p.int("HotKey Modifier Activation")),
             alternates: f.alternates.into_iter().map(Some).collect(),
             pinned: !f.auto_hides,
             reopens: f.reopens,
@@ -187,6 +187,10 @@ fn recorder(ui: &mut egui::Ui, keys: &mut KeysState, slot: HotkeySlot, current: 
         let text = if keys.hotkey_recording == Some(slot) { "Recording".to_string() } else { current.map_or("Click to Set".to_string(), label) };
         if ui.add_enabled(enabled, egui::Button::new(text).min_size(egui::vec2(160.0, 0.0))).clicked() {
             keys.hotkey_recording = if keys.hotkey_recording == Some(slot) { None } else { Some(slot) };
+            keys.win_note = false;
+        }
+        if keys.hotkey_recording == Some(slot) && keys.win_note {
+            ui.weak(crate::settings_keys::WIN_NOTE);
         }
         if current.is_some() && ui.add_enabled(enabled, egui::Button::new("x")).on_hover_text("Clear").clicked() {
             cleared = true;
@@ -307,8 +311,8 @@ fn sheet(ctx: &egui::Context, sh: &mut Sheet, keys: &mut KeysState, others: &[(S
         ui.horizontal(|ui| {
             ui.checkbox(&mut m.tap_on, "Double-tap key:");
             ui.add_enabled_ui(m.tap_on, |ui| {
-                egui::ComboBox::from_id_salt("hotkey-tap").selected_text(["Control", "Shift", "Alt", "Win"][m.tap as usize % 4]).show_ui(ui, |ui| {
-                    for (i, name) in ["Control", "Shift", "Alt", "Win"].iter().enumerate() {
+                egui::ComboBox::from_id_salt("hotkey-tap").selected_text(["Control", "Shift", "Alt"][m.tap as usize % 3]).show_ui(ui, |ui| {
+                    for (i, name) in ["Control", "Shift", "Alt"].iter().enumerate() {
                         ui.selectable_value(&mut m.tap, i as u8, *name);
                     }
                 });

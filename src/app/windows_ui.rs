@@ -400,14 +400,6 @@ impl App {
         self.pwm_window.iter().chain(self.windows.parked().filter_map(|(_, s)| s.pwm_window.as_ref())).collect()
     }
 
-    /// The password manager window whose Win32 handle is `hwnd`, and its terminal window.
-    pub(super) fn pwm_of_hwnd(&self, hwnd: isize) -> Option<WindowId> {
-        if self.pwm_window.as_ref().is_some_and(|w| w.hwnd() == Some(hwnd)) {
-            return self.current_window();
-        }
-        self.windows.parked().find(|(_, s)| s.pwm_window.as_ref().is_some_and(|w| w.hwnd() == Some(hwnd))).and_then(|(_, s)| s.gpu.as_ref().map(|g| g.window.id()))
-    }
-
     /// The terminal window whose Instant Replay panel is `panel`, when it is parked.
     pub(super) fn window_of_replay_panel(&self, panel: WindowId) -> Option<WindowId> {
         self.windows.parked().find(|(_, s)| s.replay_window.as_ref().is_some_and(|w| w.id() == panel)).and_then(|(_, s)| s.gpu.as_ref().map(|g| g.window.id()))
@@ -1253,7 +1245,7 @@ impl App {
         self.open_selected_profiles(guids, if window { crate::settings_ui::How::TabsInNewWindow } else { crate::settings_ui::How::Tab }, crate::settings_ui::Opener::Menu);
     }
 
-    /// The saved profile a Ctrl+Win shortcut key opens: the first one holding it (P8).
+    /// The saved profile a Cmd+Ctrl shortcut key opens: the first one holding it (P8).
     pub(super) fn profile_for_shortcut(&self, key: char) -> Option<String> {
         self.store.profiles.iter().find(|p| crate::profile_menu::stored_key(&p.string("Shortcut")) == Some(key)).map(|p| p.guid())
     }
@@ -1263,7 +1255,7 @@ impl App {
 fn profile_menu_text(name: &str, shortcut: Option<char>) -> String {
     let name = name.replace('&', "&&");
     match shortcut {
-        Some(k) => format!("{name}\tCtrl+Win+{k}"),
+        Some(k) => format!("{name}\t{}", crate::shortcut_key::mode().show(&format!("Ctrl+Win+{k}"))),
         None => name,
     }
 }
@@ -2190,7 +2182,7 @@ mod tests {
 
     #[test]
     fn profile_menu_item_shows_its_shortcut() {
-        assert_eq!(profile_menu_text("Work & Play", Some('Q')), "Work && Play\tCtrl+Win+Q");
+        assert_eq!(profile_menu_text("Work & Play", Some('Q')), "Work && Play\tCtrl+Alt+Q");
         assert_eq!(profile_menu_text("Work", None), "Work");
     }
 }

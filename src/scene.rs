@@ -7541,7 +7541,7 @@ mod tests {
         let long: Vec<&TextRow> = f.rows.iter().filter(|r| r.y >= 48.0 && r.spans.iter().any(|s| s.text.contains('\u{2026}'))).collect();
         assert_eq!(long.len(), 1, "one line");
         let text: String = long[0].spans.iter().map(|s| s.text.as_str()).collect();
-        assert!(text.starts_with("a title"), "{text}");
+        assert!(text.starts_with("a tit"), "{text}");
         let short = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "two")).expect("a title that fits");
         assert!(rects[1].contains(short.x, short.y));
         // A row is a tab: its number, in the prose font at the tab label size.
@@ -7722,8 +7722,8 @@ mod tests {
 
         // The number centered in its box, iTerm2's floor.
         let counter = px(bar.cells[0].1.counter.unwrap());
-        let win1 = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "Win+1")).expect("the number");
-        assert_eq!(win1.x, counter.x + ((counter.w - 60.0) / 2.0).floor());
+        let win1 = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "Ctrl+Shift+1")).expect("the number");
+        assert_eq!(win1.x, counter.x + ((counter.w - 144.0) / 2.0).floor());
 
         // The status dot is the tab's icon, in the icon rect.
         let icon = px(bar.cells[0].1.icon.unwrap());

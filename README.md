@@ -42,7 +42,7 @@ rows until they read `have`. Where iTerm2 has a quirk, Termurion keeps it and wr
 - **Your Mac settings, as they are.** Termurion reads iTerm2's own plist. Profiles, colors, keys,
   triggers, and arrangements come across without a conversion step.
 - **Your scripts, unchanged.** The stock `iterm2` pip package connects to Termurion and works.
-- **Your muscle memory.** iTerm2's menu bar, key actions, and pointer actions, with Ctrl+Shift in place of Cmd (or Win, your pick).
+- **Your muscle memory.** iTerm2's menu bar, key actions, and pointer actions, with Ctrl+Shift in place of Cmd (or Ctrl+Alt, your pick). No shortcut uses the Win key.
 
 ## Features
 

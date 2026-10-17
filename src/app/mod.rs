@@ -265,8 +265,6 @@ mod session_params_app;
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
     Wake,
-    /// A Win chord from the keyboard hook.
-    Chord(crate::menus::Chord),
     /// The debug log was written on its worker thread: the file's path or the reason it failed,
     /// and whether to say it stopped (`dlog_ui`).
     DebugLogSaved(Result<PathBuf, String>, bool),
@@ -5607,7 +5605,6 @@ impl App {
     fn refresh_route(&mut self) {
         let mut snapshot = self.with_route(keyroute::Snapshot::new);
         snapshot.composer = self.composer_has_keys();
-        snapshot.respect_system = self.globals.bool("AllowSymbolicHotKeys");
         snapshot.profile_shortcuts = keyroute::claimed_shortcuts(self.store.profiles.iter().map(|p| crate::profile_menu::stored_key(&p.string("Shortcut"))));
         (snapshot.peer_digits, snapshot.peer_keys) = self.peer_route_keys();
         snapshot.peer_keys.extend(self.toolbar_route_keys());
@@ -5759,8 +5756,7 @@ impl App {
         if self.protocol_key_event(ev) || ev.state != ElementState::Pressed {
             return;
         }
-        // A Win chord made by an in-app remap never passed the hook, which takes real Win chords
-        // for the menu commands: it takes the same road.
+        // The shortcut key's own chord (Ctrl+Shift+D is Cmd+D; a moved chord is its table key).
         if let Some(chord) = self.shortcut_chord(ev) {
             return self.run_chord(&chord, event_loop);
         }
@@ -7681,23 +7677,6 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             UserEvent::Hotkey(ids) => self.hotkey_pressed(&ids, event_loop),
             UserEvent::Uia(r) => self.uia_request(r),
-            UserEvent::Chord(c) => {
-                // Win+B, Win+U and Win+C in a password manager window are its own keys.
-                if self.pwm_take_chord(&c) {
-                    return;
-                }
-                // Win+W, Shift+Win+Y and the find chords in the AI Chat window are its own keys.
-                if self.chat_take_chord(&c, event_loop) {
-                    return;
-                }
-                if let Some(w) = self.last_window {
-                    self.enter(w);
-                }
-                if let Some(s) = self.settings.as_mut().filter(|s| s.recording()) {
-                    return s.record_chord(&c);
-                }
-                return self.run_chord(&c, event_loop);
-            }
             UserEvent::Menu(id) => {
                 // A menu command ends a peek at the bar: it goes away again.
                 self.menu_peek.clear();

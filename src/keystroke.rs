@@ -108,7 +108,7 @@ impl Keystroke {
         self.ch == other.ch && self.flags == other.flags
     }
 
-    /// "Win+Shift+Left": how the key reads on Windows.
+    /// "Ctrl+Shift+Alt+Left": how the key reads on Windows.
     pub fn label(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         for (flag, name) in [(COMMAND, "Win"), (CONTROL, "Ctrl"), (OPTION, "Alt"), (SHIFT, "Shift")] {
@@ -378,10 +378,10 @@ mod tests {
 
     #[test]
     fn labels_use_windows_names() {
-        assert_eq!(parse("0xf702-0x320000").unwrap().label(), "Win+Shift+Left");
+        assert_eq!(parse("0xf702-0x320000").unwrap().label(), "Ctrl+Shift+Alt+Left");
         assert_eq!(parse("0x9-0x40000").unwrap().label(), "Ctrl+Tab");
         assert_eq!(parse("0x19-0x60000").unwrap().label(), "Ctrl+Shift+Tab");
-        assert_eq!(parse("0x61-0x1100000").unwrap().label(), "Leader, Win+A");
+        assert_eq!(parse("0x61-0x1100000").unwrap().label(), "Leader, Ctrl+Shift+A");
         assert_eq!(parse("0x35-0x200000").unwrap().label(), "Keypad 5");
         assert_eq!(parse("0xf704-0x80000").unwrap().label(), "Alt+F1");
     }

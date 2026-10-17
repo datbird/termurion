@@ -233,6 +233,7 @@ pub struct CockpitWindow {
     last_query: Option<String>,
     /// The "@query" an Escape closed: the picker stays closed until the target changes.
     dismissed: Option<(usize, String)>,
+    keys: crate::shortcut_key::WindowKeys,
 }
 
 /// The picker's choice becomes a chip and the typed "@query" leaves the text.
@@ -274,7 +275,7 @@ impl CockpitWindow {
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
         host.follow_theme(Some(dark));
         crate::settings_keys::add_icon_font(host.ctx());
-        Ok(CockpitWindow { host, shown: false, shown_at: None, reported: frame, painted: Instant::now(), last_query: None, dismissed: None })
+        Ok(CockpitWindow { host, shown: false, shown_at: None, reported: frame, painted: Instant::now(), last_query: None, dismissed: None, keys: Default::default() })
     }
 
     pub fn id(&self) -> WindowId {
@@ -354,6 +355,11 @@ impl CockpitWindow {
     }
 
     /// Feeds a window event to egui. True when the window should redraw.
+    /// The shortcut key's own chord (Alt+Shift+F8 for Window > Cockpit) this event makes.
+    pub fn shortcut(&mut self, event: &WindowEvent) -> Option<crate::menus::Chord> {
+        self.keys.chord(event)
+    }
+
     pub fn event(&mut self, e: &WindowEvent) -> bool {
         if matches!(e, WindowEvent::Moved(_) | WindowEvent::Resized(_)) {
             self.host.request_redraw();

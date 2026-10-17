@@ -15,10 +15,10 @@ You can have it open at the right moment too:
 ## Use it
 
 1. Pick a row in the list. The list has the columns Account Name, User Name, and Password. Type in the search field to filter by account name.
-2. Press one of the Enter buttons: Enter Password, Enter User Name, or Enter Username & Password. The text goes to the session that had focus when you opened the window. The window shows hints for Win key shortcuts, for example Win+U for the user name.
+2. Press one of the Enter buttons: Enter Password, Enter User Name, or Enter Username & Password. The text goes to the session that had focus when you opened the window. The window shows hints for the shortcuts, for example Ctrl+Shift+U for the user name with the default Shortcut Key.
 3. Close the window.
 
-A row also offers Copy Password, Reveal Password, and, for sources with one-time codes, Append OTP. A "2-Factor Code" field adds a code to the end of the password. The Broadcast check box (Win+B) sends the password to several sessions at once. The echo probe decides which of them are at a password prompt.
+A row also offers Copy Password, Reveal Password, and, for sources with one-time codes, Append OTP. A "2-Factor Code" field adds a code to the end of the password. The Broadcast check box (Ctrl+Shift+B) sends the password to several sessions at once. The echo probe decides which of them are at a password prompt.
 
 The + and - buttons add and remove accounts. Edit changes the account name, user name, or password. The window warns "Are you sure you want to delete this password?" before it deletes.
 

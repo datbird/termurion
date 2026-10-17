@@ -37,8 +37,8 @@ section = "Shortcut Key"
 label = "Shortcut key"
 type = "enum"
 default = 0
-choices = [ { value = 0, label = "Ctrl+Shift" }, { value = 1, label = "Win" }, { value = 2, label = "Ctrl+Alt (AltGr on many European layouts)" } ]
-help = "The keys that stand for iTerm2's Cmd in Termurion's shortcuts, menus and key bindings. Cmd+Shift+X becomes Ctrl+Shift+Alt+X. Win collides with Windows shortcuts (Win+L, Win+D, Win+arrows). Ctrl+Alt is AltGr on many European layouts, so it can swallow characters you type; prefer Ctrl+Shift there."
+choices = [ { value = 0, label = "Ctrl+Shift" }, { value = 2, label = "Ctrl+Alt (AltGr on many European layouts)" } ]
+help = "The keys that stand for iTerm2's Cmd in Termurion's shortcuts, menus and key bindings. Cmd+Shift+X becomes Ctrl+Shift+Alt+X. Windows keeps the Win key, so no shortcut uses it. Ctrl+Alt is AltGr on many European layouts, so it can swallow characters you type; prefer Ctrl+Shift there."
 
 [[setting]]
 key = "SwitchWindowModifier"
@@ -47,7 +47,7 @@ section = "Navigation Shortcuts"
 label = "Shortcut to activate a window:"
 type = "enum"
 default = 6
-choices = [ { value = 9, label = "No Shortcut" }, { value = 5, label = "Alt+Number" }, { value = 4, label = "Win+Number" }, { value = 6, label = "Win+Alt+Number" }, { value = 1, label = "Ctrl+Number" } ]
+choices = [ { value = 9, label = "No Shortcut" }, { value = 5, label = "Alt+Number" }, { value = 4, label = "Shortcut key+Number" }, { value = 6, label = "Shortcut key+Alt+Number" }, { value = 1, label = "Ctrl+Number" } ]
 help = "Modifier held with a number key to switch to window N."
 
 [[setting]]
@@ -57,7 +57,7 @@ section = "Navigation Shortcuts"
 label = "Shortcut to select a tab:"
 type = "enum"
 default = 4
-choices = [ { value = 9, label = "No Shortcut" }, { value = 5, label = "Alt+Number" }, { value = 4, label = "Win+Number" }, { value = 6, label = "Win+Alt+Number" }, { value = 1, label = "Ctrl+Number" } ]
+choices = [ { value = 9, label = "No Shortcut" }, { value = 5, label = "Alt+Number" }, { value = 4, label = "Shortcut key+Number" }, { value = 6, label = "Shortcut key+Alt+Number" }, { value = 1, label = "Ctrl+Number" } ]
 help = "Modifier held with a number key to switch to tab N."
 
 [[setting]]
@@ -67,7 +67,7 @@ section = "Navigation Shortcuts"
 label = "Shortcut to choose a split pane:"
 type = "enum"
 default = 9
-choices = [ { value = 9, label = "No Shortcut" }, { value = 5, label = "Alt+Number" }, { value = 4, label = "Win+Number" }, { value = 6, label = "Win+Alt+Number" }, { value = 1, label = "Ctrl+Number" } ]
+choices = [ { value = 9, label = "No Shortcut" }, { value = 5, label = "Alt+Number" }, { value = 4, label = "Shortcut key+Number" }, { value = 6, label = "Shortcut key+Alt+Number" }, { value = 1, label = "Ctrl+Number" } ]
 help = "Modifier held with a number key to jump to split pane N."
 
 [[setting]]

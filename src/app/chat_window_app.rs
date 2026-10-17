@@ -151,8 +151,8 @@ pub(super) enum ChatChord {
     UseSelection,
 }
 
-/// Win+W closes (`CWC:481-501`); Shift+Win+Y focuses (Window > AI Chats); Win+F, Win+G,
-/// Shift+Win+G and Win+E are the find chords.
+/// Cmd+W closes (`CWC:481-501`); Cmd+Shift+Y focuses (Window > AI Chats); Cmd+F, Cmd+G,
+/// Cmd+Shift+G and Cmd+E are the find chords.
 pub(super) fn chat_chord(c: &crate::menus::Chord) -> Option<ChatChord> {
     match c.key {
         crate::menus::ChordKey::Char('w') if crate::winkeys::chat_chord(c) => Some(ChatChord::Close),
@@ -287,9 +287,6 @@ impl App {
                 w.follow_theme(crate::tab_theme::forced_dark(self.tab_style()));
                 if let Some(m) = g.window.current_monitor() {
                     w.center_on(&m);
-                }
-                if let Some(hwnd) = w.hwnd() {
-                    crate::winkeys::add_chat_window(hwnd);
                 }
                 self.chat_window = Some(w);
             }
@@ -1097,7 +1094,7 @@ impl App {
         }
     }
 
-    /// Closing, or Close (Win+W): streaming stops, the subscription ends, the window goes
+    /// Closing, or Close (Cmd+W): streaming stops, the subscription ends, the window goes
     /// (`CWC:481-501`). Nothing restores it at relaunch.
     pub(super) fn close_chat_window(&mut self) {
         self.pick_window_closed();
@@ -1109,9 +1106,6 @@ impl App {
         if let Some(sub) = self.chat_sub.take() {
             self.chat_broker.unsubscribe(sub);
         }
-        if let Some(hwnd) = self.chat_window.as_ref().and_then(|w| w.hwnd()) {
-            crate::winkeys::remove_chat_window(hwnd);
-        }
         self.chat_window = None;
         self.chat_find = Default::default();
         self.chat_shown = None;
@@ -1121,19 +1115,7 @@ impl App {
         self.chat_search.set_query("", Instant::now());
     }
 
-    /// Win+W and Shift+Win+Y from the key hook with the chat window in front. True when taken;
-    /// asked before the terminal's own chords, as `pwm_take_chord` is.
-    pub(super) fn chat_take_chord(&mut self, c: &crate::menus::Chord, _event_loop: &ActiveEventLoop) -> bool {
-        let Some(chord) = chat_chord(c) else { return false };
-        let Some(hwnd) = self.chat_window.as_ref().and_then(|w| w.hwnd()) else { return false };
-        // The window in front when the hook took the chord, not now.
-        if crate::winkeys::chord_foreground() != hwnd {
-            return false;
-        }
-        self.chat_run_chord(chord)
-    }
-
-    /// What a chat window chord does, from the hook (Win) or the window's own keys (the shortcut key).
+    /// What a chat window chord does, from the window's own keys (the shortcut key).
     fn chat_run_chord(&mut self, chord: ChatChord) -> bool {
         match chord {
             ChatChord::Close => self.close_chat_window(),
@@ -1161,7 +1143,7 @@ impl App {
         if w.id() != window {
             return false;
         }
-        // The shortcut key's own chords (Ctrl+Shift+W); the hook carries the Win form.
+        // The shortcut key's own chords (Ctrl+Shift+W).
         if let Some(chord) = w.shortcut(event).filter(crate::winkeys::chat_chord).and_then(|c| chat_chord(&c)) {
             self.chat_run_chord(chord);
             return true;

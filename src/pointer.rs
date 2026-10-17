@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn keys_read_like_iterm2_rows() {
         assert_eq!(key_label("Button,1,1,,"), "Right button, single click");
-        assert_eq!(key_label("Button,0,2,cs,"), "Left button, double click, Win+Shift");
+        assert_eq!(key_label("Button,0,2,cs,"), "Left button, double click, Ctrl+Shift+Alt");
         assert_eq!(key_label("Button,4,1,,"), "Button #5, single click");
         assert_eq!(key_label("Gesture,ThreeFingerSwipeUp,,"), "ThreeFingerSwipeUp");
     }

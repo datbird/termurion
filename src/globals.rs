@@ -172,6 +172,10 @@ impl Globals {
     /// snapshot), as `set` does for one value.
     pub fn bound_values(&mut self) {
         self.migrate_renamed();
+        // The Win shortcut key is retired (FIXES 13): a saved Win (1) is the default, Ctrl+Shift.
+        if self.values.get(crate::shortcut_key::KEY).and_then(|v| v.as_integer()) == Some(1) {
+            self.values.remove(crate::shortcut_key::KEY);
+        }
         match self.values.remove(crate::color_presets::CUSTOM_KEY) {
             Some(v) => self.set(crate::color_presets::CUSTOM_KEY, v),
             None => self.custom_presets = Default::default(),

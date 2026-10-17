@@ -36,7 +36,7 @@ impl App {
     }
 
     /// The modifiers a pointer press sees: the shortcut key's own keys held with a click are Cmd
-    /// (Cmd+click opens a link), as the Win key is in every mode.
+    /// (Cmd+click opens a link).
     pub(super) fn pointer_mods(&self) -> Mods {
         let l = crate::shortcut_key::mode().logical(self.mods);
         // Cmd+Ctrl is a keyboard chord only: Ctrl+Alt held with a click is what it always was.
@@ -44,7 +44,7 @@ impl App {
     }
 
     /// The Cmd chord a key press makes with the shortcut key's own modifiers (Ctrl+Shift+D is
-    /// Cmd+D), when Termurion has a command, mapping or shortcut for it. Anything else is not a
+    /// Cmd+D; Alt+Shift+PgUp is Cmd+Option+Shift+[, a chord with no pair of its own), when Termurion has a command, mapping or shortcut for it. Anything else is not a
     /// shortcut and goes on to the terminal with the keys as pressed, whatever key reporting the
     /// program asked for: iTerm2's menu key equivalents come before the terminal's key handler
     /// too (`PTYTextView.m:731`), so a bound shortcut is never sent to the program.
@@ -53,16 +53,19 @@ impl App {
             return None;
         }
         let types = ev.text.as_deref().is_some_and(|t| t.chars().any(|c| !c.is_control()));
-        let l = crate::shortcut_key::mode().press_as_cmd(self.mods, types)?;
         let key = crate::winkeys::vk_to_key(crate::winkeys::vk_of(ev.physical_key))?;
-        let chord = crate::menus::Chord { key, cmd: true, alt: l.alt, shift: l.shift, ctrl: l.ctrl };
+        // The chords this press can be, the moved ones first: the Win key is held for none of them.
+        let candidates = crate::shortcut_key::mode().press_chords(self.mods, types, &key);
+        if candidates.is_empty() {
+            return None;
+        }
         let snapshot = self.route_snapshot.read().unwrap_or_else(|e| e.into_inner());
         // The person's own mapping for these very keys (a literal Ctrl+Shift+X) runs first, as
         // iTerm2 runs key mappings before the menu's key equivalents: it is not the Cmd chord.
         if crate::keystroke::from_key_event(ev, self.mods).is_some_and(|pressed| snapshot.literal_wins(&pressed)) {
             return None;
         }
-        crate::keyroute::chord_bound(&snapshot, &chord, false).then_some(chord)
+        candidates.into_iter().find(|chord| crate::keyroute::chord_bound(&snapshot, chord))
     }
 
     /// Whether this press is F11 with nothing claiming it: full screen in every shortcut key mode

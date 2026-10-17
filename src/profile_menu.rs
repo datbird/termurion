@@ -242,15 +242,15 @@ pub fn shortcut_key(tag: i32) -> Option<char> {
     }
 }
 
-/// The popup's items as (tag, title), none first (`updateShortcutTitles`): "Ctrl+Win+A", and
-/// "Ctrl+Win+A (Name)" for a key a profile holds.
+/// The popup's items as (tag, title), none first (`updateShortcutTitles`): iTerm2's Cmd+Ctrl+A
+/// as the shortcut key presses it ("Ctrl+Alt+A"), and "Ctrl+Alt+A (Name)" for a key a profile holds.
 pub fn shortcut_titles(profiles: &[(String, String, Option<char>)]) -> Vec<(i32, String)> {
     let tags = std::iter::once(-1).chain(0..=25).chain(100..=109);
     tags.map(|tag| {
         let Some(key) = shortcut_key(tag) else { return (tag, String::new()) };
         let title = match profiles.iter().find(|(_, _, k)| k.is_some_and(|k| shortcut_tag(k) == tag)) {
-            Some((_, name, _)) => format!("Ctrl+Win+{key} ({})", crate::profile_list::display_text(name)),
-            None => format!("Ctrl+Win+{key}"),
+            Some((_, name, _)) => format!("{} ({})", crate::shortcut_key::mode().show(&format!("Ctrl+Win+{key}")), crate::profile_list::display_text(name)),
+            None => crate::shortcut_key::mode().show(&format!("Ctrl+Win+{key}")),
         };
         (tag, title)
     })
@@ -434,8 +434,8 @@ mod tests {
         assert_eq!(profiles[1].string("Shortcut"), "");
         let titles = shortcut_titles(&[(a, "A".into(), None), (b, "B".into(), Some('Q'))]);
         assert_eq!(titles.len(), 37, "none, A-Z and 0-9");
-        assert!(titles.contains(&(16, "Ctrl+Win+Q (B)".to_string())));
-        assert!(titles.contains(&(0, "Ctrl+Win+A".to_string())));
+        assert!(titles.contains(&(16, "Ctrl+Alt+Q (B)".to_string())));
+        assert!(titles.contains(&(0, "Ctrl+Alt+A".to_string())));
         assert!(titles.contains(&(-1, String::new())));
     }
 
