@@ -27,6 +27,8 @@ pub(super) enum Waiter {
     SearchStart { generation: u64 },
     /// An acknowledgement of a result of search `id`: its answer frees a place in the window.
     SearchAck { id: String },
+    /// A request of the remote Save Page As upload of browser pane `pane` (save `id`).
+    SaveRemote { pane: PaneId, id: u64, step: super::page_save_remote_app::Step },
 }
 
 // Used by the transfer, panel, suggestion and search tasks that follow.
@@ -92,6 +94,7 @@ impl App {
             Waiter::Suggest { generation, inputs, name } => self.ssh_suggested(pane, generation, inputs, &name, &content, status),
             Waiter::SearchStart { generation } => self.ssh_search_started(pane, generation, &content, status),
             Waiter::SearchAck { id } => self.ssh_search_acked(pane, &id),
+            Waiter::SaveRemote { pane: view, id, step } => self.save_remote_replied(view, id, step, status),
         }
     }
 
@@ -105,6 +108,10 @@ impl App {
         while let Some(action) = work.pop_front() {
             // A remote file shown in a browser tab is a page job's: it never touches Downloads.
             if self.ssh_page_job(&action) {
+                continue;
+            }
+            // An upload of a saved page is the save's, not a transfer of the panel.
+            if self.ssh_save_job(&action) {
                 continue;
             }
             match action {

@@ -1,0 +1,30 @@
+TWEAKS 7b rulings: Save Page As to an SSH destination (2026-10-17)
+
+The user approved building it and left the design points to the builder. The full reasons are in
+docs/superpowers/plans/2026-10-20-tw7b-save-page-to-ssh.md, section "Decisions (made 2026-10-17)". Each ruling
+below says what was chosen and what it costs if it turns out wrong.
+
+R7b-1 Offered only for an `iterm2-ssh:` page of an open session. A browser pane keeps no record of the pane it
+  was opened from, so that URL is the one link between a page and a session. Cost if wrong: other pages cannot
+  yet be saved to a host; they save locally as before.
+R7b-2 The folder picker is the remote file panel in folder mode (title "Choose a Folder", button "Choose", folders
+  and links only, at most 500 rows, links never entered), as iTerm2 uses its panel with canChooseDirectories.
+  No "Make folder": the save makes its own new folder. Cost if wrong: one more button in the panel's toolbar.
+R7b-3 Staging is `%TEMP%\Termurion-<UUID>` (create-new), removed on every end; the launch sweep that already
+  removes that name after a day covers a crash. Cost if wrong: up to 256 MiB of temp disk during a save.
+R7b-4 Files go one at a time through the transfer engine's existing upload (hidden temp, append chunks, probe,
+  move); entry cap 2003 (the saver's most), 256 MiB, 64 MiB a file. Cost if wrong: a large page takes as long as
+  an Alt-drop upload of the same size (1 KiB per request).
+R7b-5 Create-new: the folder name is probed with stat and made with mkdir (which the host refuses when the
+  name exists); files are made under fresh temp names inside that new folder. The host's move replaces an
+  existing target, so the one unguarded case is another program writing the same name inside the new folder
+  between the probe and the move. Cost if wrong: that file could be replaced; the save reports it when the file
+  owner sees it land under another name.
+R7b-6 Cleanup removes exactly the paths this save made, deepest first, with non-recursive rm (a folder only while
+  empty). Cost if wrong: after a dropped connection some made paths may remain on the host, since a host that is
+  gone cannot be cleaned; they are only this save's partial copy.
+R7b-7 No Mark of the Web on the host: inert names (the saver's `.download`), refused stream forms, no mode set
+  by the save (the host's umask default, never an execute bit on a created file), and the confirm question says
+  "The host will not mark the saved files as downloaded from the web." Cost if wrong: none beyond the wording.
+R7b-8 Tests: unit tests with a fake host that refuses what the bundled framer.py refuses; there is no live SSH
+  file-transfer test in the repo to follow, so none was added (Probe: PENDING for a desktop try).
