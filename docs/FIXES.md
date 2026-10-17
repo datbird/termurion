@@ -51,7 +51,7 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
     live Minimal window. Done 2026-10-16 in 977bc21a: the app asks the window (`GetMenu`) each
     frame and on each resize, and a bar built for a hidden window is detached as it attaches.
 
-11. **Full screen could not be left: its hotkey needed the Win key.** Seen 2026-10-16. View >
+12. **Full screen could not be left: its hotkey needed the Win key.** Seen 2026-10-16. View >
     Toggle Full Screen is iTerm2's Cmd+Ctrl+F, and with the default Shortcut Key (Ctrl+Shift) a
     Cmd chord that no pair of Ctrl, Shift and Alt covered stayed on the Win key. Windows keeps many
     Win chords, and a Win chord is also lost over remote desktop, a KVM or a keyboard sharing
