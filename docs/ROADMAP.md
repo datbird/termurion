@@ -9,15 +9,15 @@ beta is out.
 
 | | |
 |---|---|
-| Release | 0.0.1-beta4 (2026-10-16) |
+| Release | 0.0.1-beta5 (2026-10-17) |
 | Milestones done | 0 to 14, including 13a to 13y2 and the AI browser tools |
-| Tests | 6,695 |
-| Rust | about 491,000 lines |
-| Commits | about 2,180 |
+| Tests | 6,759 |
+| Rust | about 496,000 lines |
+| Commits | about 2,220 |
 
 ## Next
 
-- tmux on Windows: psmux (native) and WSL tmux are now tested with a live suite (see FIXES item 3). tmux over ssh has no live suite yet.
+- tmux on Windows: psmux (native), WSL tmux, and tmux over ssh each have a live suite (FIXES item 3, and `docs/probe/2026-10-14-psmux-wsl-tmux-results.md`).
 - Fixes from beta testers. File bugs at https://github.com/datbird/termurion/issues.
 - The open items in [`FIXES.md`](FIXES.md) (found after the beta) and [`TWEAKS.md`](TWEAKS.md).
 - The rows still marked `partial` or `missing` in the parity inventory.
