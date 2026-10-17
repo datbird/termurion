@@ -72,6 +72,54 @@ In Settings > Keys, a key binding can use the "Copy Mode Commands" action. Its p
 
 ## Shortcut keys on Windows
 
-In these docs, "Shortcut Key" is the modifier that stands in for iTerm2's Cmd. It is Ctrl+Shift by default. You can change it to Win or Ctrl+Alt in Settings > Keys. Alt stands in for iTerm2's Option. A menu always shows the keys that apply to your choice.
+In these docs, "Shortcut Key" is the modifier pair that stands in for iTerm2's Cmd. It is Ctrl+Shift by default. You can change it to Ctrl+Alt in Settings > Keys. Alt stands in for iTerm2's Option. A menu always shows the keys that apply to your choice.
 
-With Ctrl+Shift as the Shortcut Key, no default shortcut needs the Win key. Cmd is Ctrl+Shift, Cmd+Shift is Ctrl+Shift+Alt, Cmd+Option is Shift+Alt, and Cmd+Ctrl is Ctrl+Alt (for example View > Toggle Full Screen is Ctrl+Alt+F). With Ctrl+Alt as the Shortcut Key, Cmd is Ctrl+Alt, Cmd+Shift is Ctrl+Shift+Alt, Cmd+Option is Ctrl+Shift, and Cmd+Ctrl is Shift+Alt. A chord that asks for three of iTerm2's modifiers at once (Cmd+Option+Shift, Cmd+Ctrl+Shift) has no key pair left. Those commands have no shortcut in these two modes, and the menu does not show one; choose them from the menu, or bind your own key in Settings > Keys.
+No Termurion shortcut uses the Win key. Windows keeps it. A setting saved as Win becomes Ctrl+Shift.
+
+With Ctrl+Shift as the Shortcut Key, Cmd is Ctrl+Shift, Cmd+Shift is Ctrl+Shift+Alt, Cmd+Option is Shift+Alt, and Cmd+Ctrl is Ctrl+Alt (for example View > Toggle Full Screen is Ctrl+Alt+F). With Ctrl+Alt as the Shortcut Key, Cmd is Ctrl+Alt, Cmd+Shift is Ctrl+Shift+Alt, Cmd+Option is Ctrl+Shift, and Cmd+Ctrl is Shift+Alt.
+
+A chord that asks for three of iTerm2's modifiers at once (Cmd+Option+Shift, Cmd+Ctrl+Shift) has no pair left, so these commands use a key of their own, the same in both modes. Where Windows Terminal has a shortcut, Termurion uses it (Alt+Shift+- and Alt+Shift+= split a pane). The keys never use a letter or digit with Ctrl+Alt or Shift+Alt, because a profile's own shortcut (Cmd+Ctrl+key) uses those.
+
+| Command | iTerm2 | Keys |
+|---|---|---|
+| Shell > New Window with Current Profile | Cmd+Option+Shift+N | Ctrl+Shift+Alt+N |
+| Shell > New Tab with Current Profile | Cmd+Option+Shift+T | Ctrl+Shift+F11 |
+| Shell > Split Horizontally... | Cmd+Option+Shift+H | Alt+Shift+- |
+| Shell > Split Vertically... | Cmd+Option+Shift+V | Alt+Shift+= |
+| Shell > Print > Buffer | Cmd+Option+Shift+P | Ctrl+Shift+F10 |
+| Shell > Broadcast Input > Send Input to Current Session Only | Cmd+Option+Shift+I | Alt+Shift+F1 |
+| Shell > Broadcast Input > Toggle Broadcast Input to Current Session | Cmd+Ctrl+Option+Shift+I | Alt+Shift+F2 |
+| Termurion > Make Termurion Default Term | Cmd+Ctrl+Shift+\ | Ctrl+Shift+Alt+F10 |
+| Termurion > Make Terminal Default Term | Cmd+Ctrl+Option+Shift+\ | Ctrl+Shift+Alt+F11 |
+| Shell > tmux > Detach | Cmd+Ctrl+Shift+D | Ctrl+Alt+F1 |
+| Shell > tmux > New Tmux Window | Cmd+Ctrl+Shift+N | Ctrl+Alt+F2 |
+| Shell > tmux > New Tmux Tab | Cmd+Ctrl+Shift+T | Ctrl+Alt+F3 |
+| Shell > tmux > Pause Pane | Cmd+Ctrl+Shift+P | Ctrl+Alt+F4 |
+| Shell > tmux > Dashboard | Cmd+Ctrl+Shift+Enter | Ctrl+Alt+F5 |
+| Edit > Selection Respects Soft Boundaries | Cmd+Option+Shift+A | Ctrl+Shift+F5 |
+| Edit > Find > Clear Find | Cmd+Option+Shift+E | Ctrl+Shift+F2 |
+| Edit > Find > Find All Smart Selection Matches | Cmd+Option+Shift+U | Ctrl+Shift+F3 |
+| Edit > Find > Pick Result to Open | Cmd+Option+Shift+O | Ctrl+Shift+F4 |
+| Edit > Find > Filter | Cmd+Option+Shift+F | Ctrl+Shift+F1 |
+| Edit > Marks and Annotations > Next Annotation | Cmd+Option+Shift+Down | Ctrl+Shift+F7 |
+| Edit > Marks and Annotations > Previous Annotation | Cmd+Option+Shift+Up | Ctrl+Shift+F8 |
+| Edit > Set Named Mark | Cmd+Option+Shift+M | Ctrl+Shift+F6 |
+| Edit > Fold All | Cmd+Option+Shift+L | Ctrl+Shift+F9 |
+| View > Auto Command Completion | Cmd+Option+Shift+Y | Alt+Shift+F3 |
+| View > Auto Composer | Cmd+Option+Shift+. | Alt+Shift+F4 |
+| Session > Stop Coprocess | Cmd+Option+Shift+R | Alt+Shift+F5 |
+| Session > Bury Session | Cmd+Option+Shift+B | Alt+Shift+F6 |
+| Session > Open AI Chat... | Cmd+Ctrl+Shift+Y | Alt+Shift+F7 |
+| Window > Cockpit | Cmd+Option+Shift+C | Alt+Shift+F8 |
+| Window > Arrangements > Save Current Window as Arrangement | Cmd+Option+Shift+S | Alt+Shift+F9 |
+| Window > Select Tab > Select Next Tab Group | Cmd+Ctrl+Shift+] | Ctrl+Shift+Alt+PgDn |
+| Window > Select Tab > Select Previous Tab Group | Cmd+Ctrl+Shift+[ | Ctrl+Shift+Alt+PgUp |
+| Window > Move Tab > Move Tab Left | Cmd+Option+Shift+[ | Alt+Shift+PgUp |
+| Window > Move Tab > Move Tab Right | Cmd+Option+Shift+] | Alt+Shift+PgDn |
+| Debug build only: Capture GPU Frame | Cmd+Ctrl+Option+Shift+G | Ctrl+Shift+Alt+F12 |
+| Workgroup peer 1 to 9 | Cmd+Option+Shift+1 to 9 | Ctrl+Shift+Alt+F1 to F9 |
+| A profile's new-window shortcut | Cmd+Ctrl+Option+key | Ctrl+Shift+Alt+key |
+
+A profile's new-window shortcut is Ctrl+Shift+Alt+key. That press is also Cmd+Shift+key, so a key that Cmd+Shift already uses for a command keeps the command, and that profile opens in a tab with its Ctrl+Alt+key shortcut (Alt+Shift+key with Ctrl+Alt as the Shortcut Key). The keys Q, R, X and 1 to 9 are free for a window.
+
+Settings > Keys does not record a Win key press. It shows a note instead.

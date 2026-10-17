@@ -1,9 +1,7 @@
-//! Win chords for Termurion. Windows keeps many Win chords for itself (Win+D, Win+T), so
-//! a low-level keyboard hook takes Win chords while a Termurion window has focus and sends
-//! them to the app as Cmd chords. Only chords with an enabled Termurion command are taken;
-//! the rest stay with Windows. Win+L is never taken (Windows does not allow it), and a
-//! harmless key is sent with each taken chord, so the Start menu does not open after it.
-//! The same hook remaps modifiers (Keys > Remap Modifiers) while a Termurion window is in front.
+//! The low-level keyboard hook. Termurion takes no chords with it: no shortcut uses the Win key,
+//! which Windows keeps for itself (FIXES 13), and every shortcut is read from the window's own
+//! key events (`shortcut_key`). The hook stays for what a window cannot do: the modifier remap
+//! (Keys > Remap Modifiers) while a Termurion window is in front, and the system-wide hotkeys.
 
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -65,87 +63,7 @@ pub fn vk_to_key(vk: u16) -> Option<ChordKey> {
     })
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum Verdict {
-    /// Let Windows have the key.
-    Pass,
-    /// Termurion takes the key; on a key down, this is the chord to run.
-    Take(Option<Chord>),
-}
-
-/// One key event as the hook sees it, with the live state of Win and the other modifiers.
-#[derive(Clone, Copy, Debug)]
-pub struct KeyEvent {
-    pub vk: u16,
-    pub down: bool,
-    /// Win is physically down now (read live, so a Win release the hook missed,
-    /// after Win+L for example, cannot stick).
-    pub win_held: bool,
-    /// A Termurion window is in front.
-    pub focused: bool,
-    pub shift: bool,
-    pub alt: bool,
-    pub ctrl: bool,
-}
-
-/// The hook's decisions, kept apart from Win32 so they can be tested.
-#[derive(Default)]
-pub struct Gate {
-    /// Keys whose key-down Termurion took; their key-ups are taken too.
-    taken: std::collections::HashSet<u16>,
-}
-
-impl Gate {
-    /// `bound` says whether Termurion has an enabled command for a chord. Unbound Win chords
-    /// (Win+Shift+S, snapping, virtual desktops) stay with Windows.
-    pub fn on_key(&mut self, e: KeyEvent, bound: &dyn Fn(&Chord) -> bool) -> Verdict {
-        if e.vk == VK_LWIN || e.vk == VK_RWIN {
-            return Verdict::Pass;
-        }
-        if !e.down {
-            return if self.taken.remove(&e.vk) { Verdict::Take(None) } else { Verdict::Pass };
-        }
-        // Win+L locks the workstation; Windows never lets an app take it.
-        if !e.win_held || !e.focused || e.vk == 0x4C {
-            return Verdict::Pass;
-        }
-        let Some(key) = vk_to_key(e.vk) else { return Verdict::Pass };
-        let chord = Chord { key, cmd: true, alt: e.alt, shift: e.shift, ctrl: e.ctrl };
-        if !bound(&chord) {
-            return Verdict::Pass;
-        }
-        self.taken.insert(e.vk);
-        Verdict::Take(Some(chord))
-    }
-}
-
-/// Whether the Win key stands for Cmd in a Termurion window for this chord: always with the Win
-/// shortcut key, else only for a chord the shortcut key's own modifiers cannot press
-/// (`shortcut_key`), so Win+D and the other Windows chords stay with Windows.
-fn win_is_cmd(c: &Chord) -> bool {
-    win_is_cmd_for(crate::shortcut_key::mode(), c)
-}
-
-/// `win_is_cmd` for a given mode (the mode itself is process-wide, so tests pass it in).
-fn win_is_cmd_for(mode: crate::shortcut_key::ShortcutKey, c: &Chord) -> bool {
-    mode == crate::shortcut_key::ShortcutKey::Win || !mode.reachable(c)
-}
-
-/// What the hook takes in a password manager window: its Win chord, unless the shortcut key's own
-/// modifiers reach it (then the window reads Ctrl+Shift+B itself and Windows keeps Win+B).
-fn pwm_hook_takes(mode: crate::shortcut_key::ShortcutKey, c: &Chord) -> bool {
-    pwm_chord(c) && win_is_cmd_for(mode, c)
-}
-
-/// The same for the AI Chat window.
-fn chat_hook_takes(mode: crate::shortcut_key::ShortcutKey, c: &Chord) -> bool {
-    chat_chord(c) && win_is_cmd_for(mode, c)
-}
-
 struct Hook {
-    gate: Mutex<Gate>,
-    send: Box<dyn Fn(Chord) + Send + Sync>,
-    bound: Box<dyn Fn(&Chord) -> bool + Send + Sync>,
     remapper: Mutex<Remapper>,
     tags: Arc<RwLock<Tags>>,
     /// True when a key with these physical modifiers is bound to Do Not Remap Modifiers.
@@ -186,83 +104,20 @@ fn termurion_has_keyboard(foreground: isize) -> bool {
 pub fn remove_window(hwnd: isize) {
     locked(&WINDOWS).retain(|h| *h != hwnd);
 }
-/// Password manager windows: Win+B, Win+U and Win+C go to them (Windows keeps those chords
-/// for itself otherwise).
-static PWM_WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
-
-pub fn add_pwm_window(hwnd: isize) {
-    let mut w = locked(&PWM_WINDOWS);
-    if !w.contains(&hwnd) {
-        w.push(hwnd);
-    }
-}
-
-pub fn remove_pwm_window(hwnd: isize) {
-    locked(&PWM_WINDOWS).retain(|h| *h != hwnd);
-}
-
-/// The AI Chat window: Win+W and Shift+Win+Y go to it (Windows keeps Win+W for itself).
-static CHAT_WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
-
-pub fn add_chat_window(hwnd: isize) {
-    let mut w = locked(&CHAT_WINDOWS);
-    if !w.contains(&hwnd) {
-        w.push(hwnd);
-    }
-}
-
-pub fn remove_chat_window(hwnd: isize) {
-    locked(&CHAT_WINDOWS).retain(|h| *h != hwnd);
-}
-
-fn is_chat(hwnd: isize) -> bool {
-    locked(&CHAT_WINDOWS).contains(&hwnd)
-}
-
-/// The Cockpit window: Window > Cockpit (Alt+Win+Shift+C) works while it has the focus.
-static COCKPIT_WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
-
-pub fn add_cockpit_window(hwnd: isize) {
-    let mut w = locked(&COCKPIT_WINDOWS);
-    if !w.contains(&hwnd) {
-        w.push(hwnd);
-    }
-}
-
-pub fn remove_cockpit_window(hwnd: isize) {
-    locked(&COCKPIT_WINDOWS).retain(|h| *h != hwnd);
-}
-
-fn is_cockpit(hwnd: isize) -> bool {
-    locked(&COCKPIT_WINDOWS).contains(&hwnd)
-}
-
-/// The one chord the Cockpit window takes: Window > Cockpit, Alt+Win+Shift+C.
+/// The one chord the Cockpit window takes: Window > Cockpit, Cmd+Option+Shift+C (Alt+Shift+F8).
 pub fn cockpit_chord(c: &Chord) -> bool {
     c.cmd && c.alt && c.shift && !c.ctrl && matches!(c.key, ChordKey::Char('c'))
 }
 
-/// The window in front when the hook last took a chord, read by the app when the chord arrives
-/// (the focus may have moved by then).
-static CHORD_FOREGROUND: AtomicIsize = AtomicIsize::new(0);
-
-pub fn chord_foreground() -> isize {
-    CHORD_FOREGROUND.load(Ordering::Acquire)
-}
-
-fn is_pwm(hwnd: isize) -> bool {
-    locked(&PWM_WINDOWS).contains(&hwnd)
-}
-
-/// The chords a password manager window takes: Win+B, Win+U, Win+C with no other modifier
-/// (its key equivalents, `WX:138-219`).
+/// The chords a password manager window takes: Cmd+B, Cmd+U, Cmd+C with no other modifier
+/// (its key equivalents, `WX:138-219`), pressed as the shortcut key.
 pub fn pwm_chord(c: &Chord) -> bool {
     matches!(c.key, ChordKey::Char('b' | 'u' | 'c')) && c.cmd && !c.alt && !c.shift && !c.ctrl
 }
 
-/// The chords the AI Chat window takes, with no other modifier: Win+W (close), Shift+Win+Y
-/// (focus) (`CWC:481-501`), and the find chords Win+F, Win+G, Shift+Win+G and Win+E
-/// (`CVC:2917-2960`).
+/// The chords the AI Chat window takes, with no other modifier: Cmd+W (close), Cmd+Shift+Y
+/// (focus) (`CWC:481-501`), and the find chords Cmd+F, Cmd+G, Cmd+Shift+G and Cmd+E
+/// (`CVC:2917-2960`), pressed as the shortcut key.
 pub fn chat_chord(c: &Chord) -> bool {
     c.cmd
         && !c.alt
@@ -498,41 +353,13 @@ unsafe fn hook_body(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
             if kb.dwExtraInfo != MAGIC {
                 match global_hotkeys(kb, down) {
                     HookVerdict::Swallow { .. } => return 1,
-                    // Windows delivers a registered chord; no remap or Win-chord gate may take it.
+                    // Windows delivers a registered chord; no remap may take it.
                     HookVerdict::ToSystem => return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) },
                     HookVerdict::Continue => {}
                 }
             }
             if kb.dwExtraInfo != MAGIC && remap(h, kb, down) {
                 return 1;
-            }
-            if kb.dwExtraInfo != MAGIC {
-                let fg = unsafe { GetForegroundWindow() } as isize;
-                let recording = RECORDING.load(Ordering::Relaxed) && fg == SETTINGS.load(Ordering::Relaxed);
-                let pwm = is_pwm(fg);
-                let chat = is_chat(fg);
-                let cockpit = is_cockpit(fg);
-                let e = KeyEvent {
-                    vk: kb.vkCode as u16,
-                    down,
-                    // Remapping off and a Win side remapped away: that key is read in the app as its
-                    // target, so it makes no Win chord here (`APP:252-285`).
-                    win_held: crate::remap::win_chord_held(&read_tags(&h.tags), REMAP_GLOBAL.load(Ordering::Relaxed), held(VK_LWIN as i32), held(VK_RWIN as i32)),
-                    focused: termurion_has_keyboard(fg) || recording || pwm || chat || cockpit,
-                    shift: held(0x10),
-                    alt: held(0x12),
-                    ctrl: held(0x11),
-                };
-                let bound = |c: &Chord| recording || if pwm { pwm_hook_takes(crate::shortcut_key::mode(), c) } else if chat { chat_hook_takes(crate::shortcut_key::mode(), c) } else if cockpit { cockpit_chord(c) } else { win_is_cmd(c) && (h.bound)(c) };
-                let verdict = locked(&h.gate).on_key(e, &bound);
-                if let Verdict::Take(chord) = verdict {
-                    if let Some(c) = chord {
-                        mask_start_menu();
-                        CHORD_FOREGROUND.store(fg, Ordering::Release);
-                        (h.send)(c);
-                    }
-                    return 1;
-                }
             }
         }
     }
@@ -541,13 +368,10 @@ unsafe fn hook_body(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
 
 /// Installs the hook for Termurion's main window, on a thread of its own: a low-level hook
 /// runs on the installing thread's message loop, and every keystroke on the machine waits
-/// for it, so it must never wait for Termurion's drawing. `bound` says which chords Termurion
-/// takes; taken chords go to `send`. `tags` are the Remap Modifiers settings, and `exempt`
-/// says which keys are bound to Do Not Remap Modifiers.
+/// for it, so it must never wait for Termurion's drawing. `tags` are the Remap Modifiers
+/// settings, and `exempt` says which keys are bound to Do Not Remap Modifiers.
 pub fn install(
     hwnd: isize,
-    send: Box<dyn Fn(Chord) + Send + Sync>,
-    bound: Box<dyn Fn(&Chord) -> bool + Send + Sync>,
     tags: Arc<RwLock<Tags>>,
     exempt: Box<dyn Fn(u16, Mods) -> bool + Send + Sync>,
 ) -> Result<(), String> {
@@ -557,7 +381,7 @@ pub fn install(
             w.push(hwnd);
         }
     }
-    let hook = Hook { gate: Mutex::new(Gate::default()), send, bound, remapper: Mutex::new(Remapper::default()), tags, exempt, exempting: Mutex::new(None) };
+    let hook = Hook { remapper: Mutex::new(Remapper::default()), tags, exempt, exempting: Mutex::new(None) };
     if HOOK.set(hook).is_err() {
         return Ok(());
     }
@@ -767,47 +591,6 @@ pub fn shell_owned(chord: crate::hotkey::Chord) -> bool {
     }
 }
 
-/// `shell_owned` for a Win chord as the hook reports it, with no Win32 call: the hook thread
-/// asks this for every Win chord, so the key goes to its (U.S. layout independent) scan code
-/// through a table. A key with no entry is not the shell's.
-pub fn shell_owned_chord(c: &crate::menus::Chord) -> bool {
-    use crate::hotkey::{Chord as HChord, ChordKey as HKey, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN};
-    use crate::menus::ChordKey as K;
-    if !c.cmd {
-        return false;
-    }
-    let scan: u32 = match c.key {
-        K::Char(ch) => {
-            // U.S. scan codes (set 1): the top row, then the three letter rows.
-            const ROWS: [(&str, u32); 5] = [("1234567890-=", 0x02), ("qwertyuiop", 0x10), ("asdfghjkl;", 0x1E), ("zxcvbnm,.", 0x2C), ("/", 0x35)];
-            match ROWS.iter().find_map(|(row, base)| row.find(ch.to_ascii_lowercase()).map(|i| base + i as u32)) {
-                Some(n) => n,
-                None => return false,
-            }
-        }
-        K::Space => 0x39,
-        K::Tab => 0x0F,
-        K::Enter => 0x1C,
-        K::Escape => 0x01,
-        K::Backspace => 0x0E,
-        K::Left => 0xE04B,
-        K::Right => 0xE04D,
-        K::Up => 0xE048,
-        K::Down => 0xE050,
-        K::Home => 0xE047,
-        K::End => 0xE04F,
-        K::PageUp => 0xE049,
-        K::PageDown => 0xE051,
-        K::Delete => 0xE053,
-        K::F(n @ 1..=10) => 0x3A + n as u32,
-        K::F(11) => 0x57,
-        K::F(12) => 0x58,
-        K::F(_) => return false,
-    };
-    let mods = MOD_WIN | if c.shift { MOD_SHIFT } else { 0 } | if c.ctrl { MOD_CONTROL } else { 0 } | if c.alt { MOD_ALT } else { 0 };
-    shell_owned(HChord { key: HKey::Scan(scan), mods })
-}
-
 type Global = HookHotkeys;
 
 static GLOBAL: Mutex<Option<Global>> = Mutex::new(None);
@@ -959,21 +742,9 @@ mod tests {
         assert_eq!(text_for_layout(hkl, 0x10, 0x2A, none), None);
     }
 
-    fn key(vk: u16, down: bool) -> KeyEvent {
-        KeyEvent { vk, down, win_held: true, focused: true, shift: false, alt: false, ctrl: false }
-    }
-
-    fn all(_: &Chord) -> bool {
-        true
-    }
-
-    fn none(_: &Chord) -> bool {
-        false
-    }
-
     /// 13u seam (13x Task 1a fix, security): while keyboard focus is inside a web view of the
-    /// foreground Termurion window, the terminal does not have the keyboard. The hook passes every key
-    /// on (no Win-chord command, no remap), so Win+V pastes into the page and never the shell.
+    /// foreground Termurion window, the terminal does not have the keyboard. The remapper passes every key
+    /// on, so a page keeps its own keys.
     #[test]
     fn a_web_view_with_the_keyboard_is_not_the_terminal() {
         // One predicate: a Termurion window in front, and not the one a web view holds.
@@ -981,16 +752,10 @@ mod tests {
         assert!(!terminal_has_keyboard(true, 10, 10), "the web view in front has it");
         assert!(terminal_has_keyboard(true, 10, 20), "another window's web view does not matter");
         assert!(!terminal_has_keyboard(false, 10, 0), "not a Termurion window");
-        let mut g = Gate::default();
-        let v = KeyEvent { focused: terminal_has_keyboard(true, 10, 10), ..key(0x56, true) };
-        assert_eq!(g.on_key(v, &all), Verdict::Pass, "Win+V with web focus goes to the page");
-        let v = KeyEvent { focused: terminal_has_keyboard(true, 10, 0), ..key(0x56, true) };
-        assert!(matches!(g.on_key(v, &all), Verdict::Take(Some(_))), "and to the terminal without it");
         // The hook and the remapper both ask it; the global hotkeys run before it and ask nothing.
         let src = include_str!("winkeys.rs");
         let hook = &src[src.find("unsafe fn hook_body").unwrap()..];
         let hook = &hook[..hook.find("\n}\n").unwrap()];
-        assert!(hook.contains("termurion_has_keyboard(fg)"), "the Win-chord gate uses the predicate");
         assert!(!hook.contains("is_termurion(fg)"), "no second foreground test beside it");
         assert!(hook.find("global_hotkeys(kb, down)").unwrap() < hook.find("remap(h, kb, down)").unwrap());
         let remap = &src[src.find("fn remap(h: &Hook").unwrap()..];
@@ -1040,67 +805,6 @@ mod tests {
     }
 
     #[test]
-    fn shell_owned_chord_matches_shell_owned() {
-        use crate::hotkey::{Chord as HChord, ChordKey as HKey, MOD_CONTROL, MOD_WIN};
-        use crate::menus::{Chord, ChordKey as MKey};
-        let chord = |key, ctrl, alt, shift| Chord { key, cmd: true, alt, shift, ctrl };
-        let chars = |s: &str| s.chars().map(MKey::Char).collect::<Vec<_>>();
-        // Win+letter: the shell keeps every letter but Y.
-        for k in chars("abcdefghijklmnopqrstuvwxz") {
-            assert!(shell_owned_chord(&chord(k.clone(), false, false, false)), "Win+{k:?}");
-        }
-        // Win+Shift is exact: the shell's own few, not every letter.
-        for k in [MKey::Char('s'), MKey::Char('m'), MKey::Char('v'), MKey::Char('t'), MKey::Space, MKey::Left, MKey::Right, MKey::Up, MKey::Down, MKey::Char('3')] {
-            assert!(shell_owned_chord(&chord(k.clone(), false, false, true)), "Win+Shift+{k:?}");
-        }
-        for k in "qwazxe".chars() {
-            assert!(!shell_owned_chord(&chord(MKey::Char(k), false, false, true)), "Win+Shift+{k}");
-        }
-        assert!(shell_owned_chord(&chord(MKey::Char('b'), true, false, true)), "Win+Ctrl+Shift+B");
-        assert!(!shell_owned_chord(&chord(MKey::Char('y'), false, false, false)), "Win+Y is free");
-        for k in chars("1234567890") {
-            assert!(shell_owned_chord(&chord(k, false, false, false)));
-        }
-        for k in [MKey::Space, MKey::Tab, MKey::Enter, MKey::Escape, MKey::Up, MKey::Down, MKey::Left, MKey::Right, MKey::Home, MKey::Char(','), MKey::Char('.'), MKey::Char(';'), MKey::Char('-'), MKey::Char('=')] {
-            assert!(shell_owned_chord(&chord(k.clone(), false, false, false)), "Win+{k:?}");
-        }
-        assert!(!shell_owned_chord(&chord(MKey::End, false, false, false)));
-        assert!(!shell_owned_chord(&chord(MKey::PageUp, false, false, false)));
-        assert!(!shell_owned_chord(&chord(MKey::Backspace, false, false, false)));
-        // Win+Ctrl: virtual desktops and the like.
-        for k in [MKey::Char('d'), MKey::F(4), MKey::Left, MKey::Right, MKey::Enter, MKey::Char('f'), MKey::Char('b'), MKey::Char('c')] {
-            assert!(shell_owned_chord(&chord(k.clone(), true, false, false)), "Win+Ctrl+{k:?}");
-        }
-        // Windows 11: Quick Assist, Narrator, speech, sound output, the input language, the last
-        // window of a pinned app.
-        for k in [MKey::Char('q'), MKey::Char('n'), MKey::Char('s'), MKey::Char('v'), MKey::Space, MKey::Char('1'), MKey::Char('9')] {
-            assert!(shell_owned_chord(&chord(k.clone(), true, false, false)), "Win+Ctrl+{k:?}");
-        }
-        assert!(!shell_owned_chord(&chord(MKey::Char('e'), true, false, false)));
-        assert!(!shell_owned_chord(&chord(MKey::Char('0'), true, false, false)), "Win+Ctrl+0 is nobody's");
-        // Win+Alt: Game Bar and pen.
-        for k in "grtmbdkh".chars() {
-            assert!(shell_owned_chord(&chord(MKey::Char(k), false, true, false)), "Win+Alt+{k}");
-        }
-        for k in ['1', '5', '9'] {
-            assert!(shell_owned_chord(&chord(MKey::Char(k), false, true, false)), "Win+Alt+{k} (jump list)");
-        }
-        assert!(!shell_owned_chord(&chord(MKey::Char('e'), false, true, false)));
-        assert!(!shell_owned_chord(&chord(MKey::Char('d'), true, true, false)), "Win+Ctrl+Alt+D");
-        // The hotkey form agrees on the new chords.
-        let scan = |key, mods| shell_owned(HChord { key: HKey::Scan(key), mods });
-        assert!(scan(0x39, MOD_WIN | MOD_CONTROL) && scan(0x10, MOD_WIN | MOD_CONTROL) && scan(0x02, MOD_WIN | crate::hotkey::MOD_ALT));
-        assert!(!scan(0x10, MOD_WIN | crate::hotkey::MOD_SHIFT), "Win+Shift+Q");
-        // Not a Win chord at all.
-        assert!(!shell_owned_chord(&Chord { cmd: false, ..chord(MKey::Char('d'), false, false, false) }));
-        // The two agree on every scan code both can name.
-        for (key, scan) in [(MKey::Char('a'), 0x1E_u32), (MKey::Char('t'), 0x14), (MKey::Char('y'), 0x15), (MKey::Left, 0xE04B), (MKey::Space, 0x39)] {
-            let h = HChord { key: HKey::Scan(scan), mods: MOD_WIN };
-            assert_eq!(shell_owned_chord(&chord(key, false, false, false)), shell_owned(h));
-        }
-    }
-
-    #[test]
     fn a_poisoned_hook_lock_is_recovered() {
         let m = Mutex::new(5u8);
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1137,92 +841,20 @@ mod tests {
         assert_eq!(vk_to_key(0x10), None); // Shift alone is a modifier, not a key
     }
 
+    /// The chords the windows without menus take are fixed sets of Cmd chords (FIXES 13): the
+    /// password manager's Cmd+B, U and C, the chat window's close, focus and find chords, and the
+    /// Cockpit's Window > Cockpit.
     #[test]
-    fn a_bound_chord_is_taken_and_its_key_up_too() {
-        let mut g = Gate::default();
-        assert!(matches!(g.on_key(key(0x44, true), &all), Verdict::Take(Some(_))));
-        assert_eq!(g.on_key(key(0x44, false), &all), Verdict::Take(None));
-    }
-
-    #[test]
-    fn only_the_focused_termurion_window_takes_win_chords() {
-        let mut g = Gate::default();
-        assert_eq!(g.on_key(KeyEvent { focused: false, ..key(0x44, true) }, &all), Verdict::Pass);
-    }
-
-    #[test]
-    fn a_missed_win_release_does_not_stick() {
-        // After Win+L the lock screen eats the Win key-up. The live key state says Win is up.
-        let mut g = Gate::default();
-        assert_eq!(g.on_key(KeyEvent { win_held: false, ..key(0x44, true) }, &all), Verdict::Pass);
-    }
-
-    #[test]
-    fn unbound_win_chords_stay_with_windows() {
-        // Win+Shift+S (screenshot) and friends: Termurion has no command there.
-        let mut g = Gate::default();
-        assert_eq!(g.on_key(key(0x53, true), &none), Verdict::Pass);
-        assert_eq!(g.on_key(key(0x53, false), &none), Verdict::Pass);
-    }
-
-    #[test]
-    fn win_l_is_never_taken() {
-        let mut g = Gate::default();
-        assert_eq!(g.on_key(key(0x4C, true), &all), Verdict::Pass);
-    }
-
-    #[test]
-    fn win_itself_always_passes() {
-        let mut g = Gate::default();
-        assert_eq!(g.on_key(key(0x5B, true), &all), Verdict::Pass);
-        assert_eq!(g.on_key(key(0x5B, false), &all), Verdict::Pass);
-    }
-
-    #[test]
-    fn the_chord_carries_the_other_modifiers() {
-        let mut g = Gate::default();
-        let Verdict::Take(Some(c)) = g.on_key(KeyEvent { shift: true, ..key(0x44, true) }, &all) else { panic!() };
-        assert_eq!(c, crate::menus::Chord { key: ChordKey::Char('d'), cmd: true, alt: false, shift: true, ctrl: false });
-    }
-
-    #[test]
-    fn password_manager_windows_take_their_win_chords() {
-        let c = |k: char, shift: bool| Chord { key: ChordKey::Char(k), cmd: true, alt: false, shift, ctrl: false };
-        assert!(pwm_chord(&c('b', false)) && pwm_chord(&c('u', false)) && pwm_chord(&c('c', false)));
-        assert!(!pwm_chord(&c('b', true)) && !pwm_chord(&c('x', false)));
-        let mut g = Gate::default();
-        assert!(matches!(g.on_key(key(0x42, true), &|ch| pwm_chord(ch)), Verdict::Take(Some(_))), "Win+B in the manager");
-        assert!(matches!(g.on_key(key(0x42, false), &|ch| pwm_chord(ch)), Verdict::Take(None)));
-        assert!(matches!(g.on_key(key(0x44, true), &|ch| pwm_chord(ch)), Verdict::Pass), "Win+D stays with Windows");
-        add_pwm_window(77);
-        assert!(is_pwm(77));
-        remove_pwm_window(77);
-        assert!(!is_pwm(77));
-    }
-
-    #[test]
-    fn the_chat_window_takes_win_w_and_shift_win_y() {
-        let c = |k: char, shift: bool| Chord { key: ChordKey::Char(k), cmd: true, alt: false, shift, ctrl: false };
-        assert!(chat_chord(&c('w', false)) && chat_chord(&c('y', true)));
-        assert!(!chat_chord(&c('w', true)) && !chat_chord(&c('y', false)) && !chat_chord(&c('x', false)));
-        assert!(!chat_chord(&Chord { ctrl: true, ..c('w', false) }));
-        assert!(matches!(Gate::default().on_key(key(0x57, true), &|ch| chat_chord(ch)), Verdict::Take(Some(_))), "Win+W in the chat window");
-        add_chat_window(78);
-        assert!(is_chat(78));
-        remove_chat_window(78);
-        assert!(!is_chat(78));
-    }
-
-    #[test]
-    fn the_cockpit_window_takes_window_cockpit() {
+    fn the_windows_without_menus_take_their_own_chords() {
         let c = |k: char, alt: bool, shift: bool| Chord { key: ChordKey::Char(k), cmd: true, alt, shift, ctrl: false };
+        assert!(pwm_chord(&c('b', false, false)) && pwm_chord(&c('u', false, false)) && pwm_chord(&c('c', false, false)));
+        assert!(!pwm_chord(&c('b', false, true)) && !pwm_chord(&c('x', false, false)));
+        assert!(chat_chord(&c('w', false, false)) && chat_chord(&c('y', false, true)));
+        assert!(!chat_chord(&c('w', false, true)) && !chat_chord(&c('y', false, false)) && !chat_chord(&c('x', false, false)));
+        assert!(!chat_chord(&Chord { ctrl: true, ..c('w', false, false) }));
         assert!(cockpit_chord(&c('c', true, true)));
         assert!(!cockpit_chord(&c('c', false, true)) && !cockpit_chord(&c('c', true, false)) && !cockpit_chord(&c('x', true, true)));
         assert!(!cockpit_chord(&Chord { ctrl: true, ..c('c', true, true) }));
-        add_cockpit_window(79);
-        assert!(is_cockpit(79));
-        remove_cockpit_window(79);
-        assert!(!is_cockpit(79));
     }
 
     /// Leaves `m` poisoned, as a panic while holding it would.
@@ -1241,22 +873,16 @@ mod tests {
     #[test]
     fn every_poisoned_hook_thread_lock_still_registers_and_passes_keys() {
         // One test owns the module's statics, so no other test sees them poisoned.
-        for m in [&WINDOWS, &PWM_WINDOWS, &CHAT_WINDOWS, &COCKPIT_WINDOWS] {
+        for m in [&WINDOWS] {
             poison(m);
         }
         poison(&GLOBAL);
         poison(&PENDING);
-        // The window lists still answer (a poisoned list read as empty would drop Win chords).
-        add_pwm_window(91);
-        add_chat_window(92);
-        add_cockpit_window(93);
+        // The window list still answers (a poisoned list read as empty would drop every remap).
         locked(&WINDOWS).push(94);
-        assert!(is_pwm(91) && is_chat(92) && is_cockpit(93) && is_termurion(94));
-        remove_pwm_window(91);
-        remove_chat_window(92);
-        remove_cockpit_window(93);
+        assert!(is_termurion(94));
         remove_window(94);
-        assert!(!is_pwm(91) && !is_chat(92) && !is_cockpit(93) && !is_termurion(94));
+        assert!(!is_termurion(94));
         // A key press reads the hotkeys through the poison (empty chords: nothing registers for real).
         *locked(&GLOBAL) = Some(Global::default());
         assert_eq!(global_hotkeys(&kb(0x41), true), HookVerdict::Continue);
@@ -1273,7 +899,7 @@ mod tests {
         apply_pending(&mut registered, &mut last);
         assert_eq!(rx.try_recv().ok(), Some(Vec::new()), "the settings side gets its answer");
         *locked(&GLOBAL) = None;
-        for m in [&WINDOWS, &PWM_WINDOWS, &CHAT_WINDOWS, &COCKPIT_WINDOWS] {
+        for m in [&WINDOWS] {
             m.clear_poison();
         }
         GLOBAL.clear_poison();
@@ -1289,9 +915,6 @@ mod tests {
         }));
         assert!(tags.is_poisoned());
         let h = Hook {
-            gate: Mutex::new(Gate::default()),
-            send: Box::new(|_| {}),
-            bound: Box::new(|_| false),
             remapper: Mutex::new(Remapper::default()),
             tags,
             exempt: Box::new(|_, _| false),
@@ -1299,7 +922,6 @@ mod tests {
         };
         poison(&h.remapper);
         poison(&h.exempting);
-        poison(&h.gate);
         // Identity tags and a plain letter: nothing is replaced, so nothing is injected.
         assert!(!remap(&h, &kb(0x41), true));
         assert!(!remap(&h, &kb(0x41), false));
@@ -1323,66 +945,11 @@ mod tests {
         assert!(pump.contains("OnEnd::new("), "the hook thread holds an unhook guard");
     }
 
-    /// TWEAKS 9: with Ctrl+Shift or Ctrl+Alt the hook leaves Win+D and every other Win chord that has
-    /// a pair of its own to Windows, and still takes the Cmd chords no pair reaches (Cmd+Ctrl+...).
-    /// The mode is passed in: the process-wide one is shared by every test in the binary.
-    #[test]
-    fn win_is_cmd_only_where_the_shortcut_key_cannot_reach() {
-        use crate::shortcut_key::ShortcutKey::{CtrlShift, Win};
-        let c = |key, ctrl, alt, shift| Chord { key, cmd: true, alt, shift, ctrl };
-        assert!(win_is_cmd_for(Win, &c(ChordKey::Char('d'), false, false, false)));
-        let d = win_is_cmd_for(CtrlShift, &c(ChordKey::Char('d'), false, false, false));
-        let sd = win_is_cmd_for(CtrlShift, &c(ChordKey::Char('d'), false, false, true));
-        let cd = win_is_cmd_for(CtrlShift, &c(ChordKey::Char('d'), true, false, false));
-        assert!(!d && !sd, "Win+D and Win+Shift+D stay with Windows");
-        assert!(!cd, "Cmd+Ctrl+D is Ctrl+Alt+D now: Win+Ctrl+D stays with Windows (virtual desktops)");
-        // Cmd+Option+Shift has no pair: the Win key still carries it where Windows lets it through.
-        assert!(win_is_cmd_for(CtrlShift, &c(ChordKey::Char('n'), false, true, true)));
-        assert!(win_is_cmd_for(CtrlShift, &c(ChordKey::Char('n'), true, false, true)), "Cmd+Ctrl+Shift has no pair either");
-    }
-
-    /// The report: Win+Ctrl+F (View > Toggle Full Screen) did nothing. The hook's decision for it,
-    /// built from the same pieces the app wires (`win_is_cmd_for`, `keyroute::win_chord_bound`, the
-    /// gate): in Win mode the hook takes the press, its key-up and no Start menu opens; in the other
-    /// modes Windows keeps Win+Ctrl+F because Ctrl+Alt+F is Termurion's chord.
-    #[test]
-    fn the_full_screen_chord_is_taken_by_the_hook_in_win_mode_only() {
-        use crate::shortcut_key::ShortcutKey::{CtrlAlt, CtrlShift, Win};
-        let snapshot = crate::keyroute::Snapshot::default();
-        let f = |vk| KeyEvent { ctrl: true, ..key(vk, true) };
-        let chord = Chord { key: ChordKey::Char('f'), cmd: true, alt: false, shift: false, ctrl: true };
-        let bound = |mode| { let snapshot = snapshot.clone(); move |c: &Chord| win_is_cmd_for(mode, c) && crate::keyroute::win_chord_bound(&snapshot, c) };
-        let mut g = Gate::default();
-        assert_eq!(g.on_key(f(0x46), &bound(Win)), Verdict::Take(Some(chord.clone())));
-        assert_eq!(g.on_key(KeyEvent { down: false, ..f(0x46) }, &bound(Win)), Verdict::Take(None), "the key-up is taken too");
-        for mode in [CtrlShift, CtrlAlt] {
-            assert_eq!(g.on_key(f(0x46), &bound(mode)), Verdict::Pass, "{mode:?}: Windows keeps Win+Ctrl+F");
-            assert!(mode.reachable(&chord));
-        }
-    }
-
-    /// TWEAKS 9 review I3: with a pair chosen the hook leaves Win+E, Win+F, Win+G, Win+U, Win+C and
-    /// Win+B to Windows in the password manager and AI Chat windows; Win mode takes them as before.
-    #[test]
-    fn the_pwm_and_chat_windows_keep_win_chords_only_in_win_mode() {
-        use crate::shortcut_key::ShortcutKey::{CtrlAlt, CtrlShift, Win};
-        let c = |k: char, shift: bool| Chord { key: ChordKey::Char(k), cmd: true, alt: false, shift, ctrl: false };
-        for k in ['b', 'u', 'c'] {
-            assert!(pwm_hook_takes(Win, &c(k, false)), "{k}");
-            assert!(!pwm_hook_takes(CtrlShift, &c(k, false)) && !pwm_hook_takes(CtrlAlt, &c(k, false)), "{k}");
-        }
-        for (k, shift) in [('w', false), ('f', false), ('e', false), ('g', false), ('g', true), ('y', true)] {
-            assert!(chat_hook_takes(Win, &c(k, shift)), "{k}");
-            assert!(!chat_hook_takes(CtrlShift, &c(k, shift)), "{k} {shift}");
-        }
-        assert!(!pwm_hook_takes(Win, &c('x', false)) && !chat_hook_takes(Win, &c('x', false)), "only their own chords");
-    }
-
     #[test]
     fn the_hook_closures_read_their_locks_through_a_poison() {
-        // `send`, `bound`, `exempt` and the hotkey sink run on the hook thread, inside every key.
+        // `exempt` and the hotkey sink run on the hook thread, inside every key.
         let src = include_str!("app/menu.rs");
-        let start = src.find("let send = Box::new(").expect("send");
+        let start = src.find("These closures run on the hook thread").expect("the closures");
         let end = src.find("crate::winkeys::set_remap_global(").expect("set_remap_global");
         let closures = &src[start..end];
         assert!(closures.contains("set_hotkey_sink("));

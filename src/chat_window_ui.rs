@@ -362,7 +362,7 @@ impl ChatWindow {
         self.host.event(event)
     }
 
-    /// The shortcut key's own chord (Ctrl+Shift+W) this event makes; the hook carries the Win form.
+    /// The shortcut key's own chord (Ctrl+Shift+W) this event makes.
     pub fn shortcut(&mut self, event: &WindowEvent) -> Option<crate::menus::Chord> {
         self.keys.chord(event)
     }

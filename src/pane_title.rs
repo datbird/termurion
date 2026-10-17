@@ -368,9 +368,9 @@ mod tests {
         assert_eq!(title_text("bash", 0, 5), "bash");
         assert_eq!(title_text("bash", 2, 9), "bash");
         assert_eq!(title_text("bash", 2, 5), "Alt+2   bash");
-        assert_eq!(title_text("vim", 9, 6), "Win+Alt+9   vim");
+        assert_eq!(title_text("vim", 9, 6), "Alt+Shift+9   vim");
         assert_eq!(title_text("x", 1, 1), "Ctrl+1   x");
-        assert_eq!(title_text("x", 3, 4), "Win+3   x");
+        assert_eq!(title_text("x", 3, 4), "Ctrl+Shift+3   x");
         // P1: a title is untrusted program text.
         let hostile = title_text("a\u{202e}b\u{200b}\r\nc", 2, 5);
         assert_eq!(hostile, "Alt+2   abc");

@@ -321,6 +321,8 @@ pub struct KeyEditor {
     pub stroke: Option<Keystroke>,
     pub binding: Binding,
     pub recording: bool,
+    /// The recorder refused a Win press: the note says why.
+    pub note: bool,
 }
 
 pub struct PointerEditor {
@@ -362,6 +364,8 @@ pub struct KeysState {
     pub leader: Option<Keystroke>,
     /// The recorder has seen the Leader and waits for the key after it.
     leader_seen: bool,
+    /// A recorder refused a Win press (Windows keeps that key): the recorder shows `WIN_NOTE`.
+    pub win_note: bool,
     /// A warning an editor raised, for the settings window to show (`SettingsWindow::sheet`).
     pub ask: Option<SheetWarning>,
     /// A binding whose save waits for the override warning's OK.
@@ -381,7 +385,20 @@ impl KeysState {
         self.leader_recording || self.hotkey_recording.is_some() || self.key_editor.as_ref().is_some_and(|e| e.recording)
     }
 
+    /// A Win press while recording: shortcuts do not use the Win key, so nothing is recorded and
+    /// the recorder says so.
+    pub fn refuse_win(&mut self) {
+        self.win_note = true;
+        if let Some(e) = self.key_editor.as_mut().filter(|e| e.recording) {
+            e.note = true;
+        }
+    }
+
     pub fn deliver(&mut self, k: Keystroke) {
+        self.win_note = false;
+        if let Some(e) = self.key_editor.as_mut() {
+            e.note = false;
+        }
         if let Some(slot) = self.hotkey_recording.take() {
             // Modifiers alone do not make a hotkey; keep recording.
             if k.keycode.is_some_and(|c| matches!(c, 0x37 | 0x38 | 0x3A | 0x3B | 0x3C | 0x3D | 0x3E | 0x36)) {
@@ -692,6 +709,9 @@ pub enum Outcome {
     Save,
 }
 
+/// What a recorder says when the Win key is pressed in it.
+pub const WIN_NOTE: &str = "Windows keeps the Win key for itself, so a shortcut cannot use it. Use Ctrl, Shift or Alt.";
+
 /// The Edit Key Binding window.
 pub fn key_editor(ctx: &egui::Context, e: &mut KeyEditor, profiles: &[(String, String)]) -> Outcome {
     let mut out = Outcome::Open;
@@ -705,8 +725,12 @@ pub fn key_editor(ctx: &egui::Context, e: &mut KeyEditor, profiles: &[(String, S
             };
             if ui.button(text).clicked() {
                 e.recording = !e.recording;
+                e.note = false;
             }
         });
+        if e.recording && e.note {
+            ui.weak(WIN_NOTE);
+        }
         ui.horizontal(|ui| {
             ui.label("Action:");
             if action_combo(ui, "key-action", &mut e.binding.action, true) {
@@ -752,7 +776,7 @@ pub fn pointer_editor(ctx: &egui::Context, e: &mut PointerEditor, profiles: &[(S
             });
         });
         ui.horizontal(|ui| {
-            ui.checkbox(&mut e.mods.cmd, "Win");
+            ui.checkbox(&mut e.mods.cmd, crate::shortcut_key::mode().show("Win+").trim_end_matches('+')).on_hover_text("iTerm2's Command, pressed as these keys. Windows keeps the Win key.");
             ui.checkbox(&mut e.mods.alt, "Alt");
             ui.checkbox(&mut e.mods.shift, "Shift");
             ui.checkbox(&mut e.mods.ctrl, "Ctrl");
@@ -1250,7 +1274,7 @@ pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profile
         ui.strong("Key Bindings");
         let mut map = g.table("GlobalKeyMap");
         match table(ui, "global-keys", &rows(&map), &mut st.selected) {
-            TableAction::Add => st.key_editor = Some(KeyEditor { target: Target::Global, old_key: None, stroke: None, binding: Binding::new(-1, ""), recording: false }),
+            TableAction::Add => st.key_editor = Some(KeyEditor { target: Target::Global, old_key: None, stroke: None, binding: Binding::new(-1, ""), recording: false, note: false }),
             TableAction::Edit(k) => st.key_editor = editor_for(&map, &k, Target::Global),
             TableAction::Remove(k) => {
                 map.remove(&k);
@@ -1273,6 +1297,7 @@ pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profile
             let button = ui.button(text);
             if button.clicked() {
                 st.leader_recording = !st.leader_recording;
+                st.win_note = false;
             }
             // Marked while a Leader is set (`KeysPreferencesViewController.m:116`).
             if indicate_non_default() && leader.is_some() {
@@ -1283,6 +1308,9 @@ pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profile
                 changed = true;
             }
         });
+        if st.leader_recording && st.win_note {
+            ui.weak(WIN_NOTE);
+        }
         for s in globals_in("Key Bindings").into_iter().filter(|s| s.kind == Kind::Bool) {
             changed |= global_control(ui, g, s, true);
         }
@@ -1326,7 +1354,7 @@ pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profile
 
 fn editor_for(map: &toml::Table, key: &str, target: Target) -> Option<KeyEditor> {
     let binding = Binding::from_value(map.get(key)?)?;
-    Some(KeyEditor { target, old_key: Some(key.to_string()), stroke: keystroke::parse(key), binding, recording: false })
+    Some(KeyEditor { target, old_key: Some(key.to_string()), stroke: keystroke::parse(key), binding, recording: false, note: false })
 }
 
 /// Shows the key editor; on OK writes the binding into `map`. True when `map` changed.
@@ -2097,7 +2125,7 @@ pub fn profile_key_mappings(ui: &mut egui::Ui, p: &mut Profile, st: &mut KeysSta
     ui.add_space(8.0);
     ui.strong("Key Mappings");
     match table(ui, "profile-keys", &rows(&map), &mut st.profile_selected) {
-        TableAction::Add => st.key_editor = Some(KeyEditor { target: Target::Profile, old_key: None, stroke: None, binding: Binding::new(-1, ""), recording: false }),
+        TableAction::Add => st.key_editor = Some(KeyEditor { target: Target::Profile, old_key: None, stroke: None, binding: Binding::new(-1, ""), recording: false, note: false }),
         TableAction::Edit(k) => st.key_editor = editor_for(&map, &k, Target::Profile),
         TableAction::Remove(k) => {
             map.remove(&k);
@@ -2275,7 +2303,7 @@ mod tests {
             ("ForceKeyboardOncePerSession", "Keys", "Remap Modifiers", Kind::Bool, b(false), "Only force once per session when it first receives keyboard focus", force_once.into()),
             ("KeyboardLocale", "Keys", "Remap Modifiers", Kind::String, Value::String(String::new()), "Keyboard locale", "Keyboard locale".into()),
             ("AllowSymbolicHotKeys", "Keys", "Remap Modifiers", Kind::Bool, b(true), "Respect shortcuts from Windows keyboard shortcuts", "Win shortcuts Windows keeps for itself go to Windows instead of a key mapping; Termurion's own menu shortcuts still work.".into()),
-            ("ShortcutKey", "Keys", "Shortcut Key", Kind::Enum, Value::Integer(0), "Shortcut key", "The keys that stand for iTerm2's Cmd in Termurion's shortcuts, menus and key bindings. Cmd+Shift+X becomes Ctrl+Shift+Alt+X. Win collides with Windows shortcuts (Win+L, Win+D, Win+arrows). Ctrl+Alt is AltGr on many European layouts, so it can swallow characters you type; prefer Ctrl+Shift there.".into()),
+            ("ShortcutKey", "Keys", "Shortcut Key", Kind::Enum, Value::Integer(0), "Shortcut key", "The keys that stand for iTerm2's Cmd in Termurion's shortcuts, menus and key bindings. Cmd+Shift+X becomes Ctrl+Shift+Alt+X. Windows keeps the Win key, so no shortcut uses it. Ctrl+Alt is AltGr on many European layouts, so it can swallow characters you type; prefer Ctrl+Shift there.".into()),
             ("RemapModifiersGlobally", "Keys", "Remap Modifiers", Kind::Bool, b(true), "Remap modifiers globally", "When off, Termurion remaps modifiers only for keys it receives, so Windows' own shortcuts see the physical keys.".into()),
         ];
         for (key, tab, section, kind, default, label, help) in rows {
@@ -2407,7 +2435,7 @@ mod tests {
     fn the_recorder_takes_a_leader_sequence() {
         let ctrl_b = Keystroke::new(0x62, keystroke::CONTROL, None, 0x62);
         let mut st = KeysState { leader: Some(ctrl_b.clone()), ..KeysState::default() };
-        st.key_editor = Some(KeyEditor { target: Target::Global, old_key: None, stroke: None, binding: Binding::new(-1, ""), recording: true });
+        st.key_editor = Some(KeyEditor { target: Target::Global, old_key: None, stroke: None, binding: Binding::new(-1, ""), recording: true, note: false });
         st.deliver(ctrl_b);
         assert!(st.recording());
         st.deliver(Keystroke::new(0x73, 0, None, 0x73));

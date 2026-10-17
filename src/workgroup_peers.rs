@@ -12,9 +12,6 @@ use crate::workgroup::{Kind, Shortcut, Workgroup};
 /// A member's label when its display name is empty (`WPP:94`).
 pub const EMPTY_LABEL: &str = "Peer";
 
-/// The built-in shortcut's words for position `n` (Windows names for iTerm2's option, shift, command).
-const DIGIT_PREFIX: &str = "Alt+Shift+Win+";
-
 /// The peer group of `w`: the root then its peers, each (config id, label, custom shortcut)
 /// (`WPP:86-96`: the port's members are the peers' configs, the leader's first).
 pub fn members(w: &Workgroup) -> Vec<(String, String, Option<Shortcut>)> {
@@ -27,7 +24,7 @@ pub fn members(w: &Workgroup) -> Vec<(String, String, Option<Shortcut>)> {
     out
 }
 
-/// The member index Alt+Shift+Win+`digit` picks among `count`: 1 to 8 directly when in range, 9
+/// The member index Cmd+Option+Shift+`digit` picks among `count`: 1 to 8 directly when in range, 9
 /// the last (`WPP:461-485`).
 pub fn by_digit(count: usize, digit: u32) -> Option<usize> {
     if count == 0 {
@@ -61,7 +58,14 @@ pub fn by_offset(ids: &[String], active: &str, offset: i32, alive: &dyn Fn(&str)
 /// The built-in shortcut's text for member `position` (1-based) when it is one of the first
 /// eight. The ninth-key rule for the last member needs the count (`segment_label`).
 pub fn digit_label(position: usize) -> Option<String> {
-    (1..=8).contains(&position).then(|| format!("{DIGIT_PREFIX}{position}"))
+    (1..=8).contains(&position).then(|| digit_text(position as u32))
+}
+
+/// The keys that pick peer `digit` (1 to 9): iTerm2's Cmd+Option+Shift+digit, pressed as
+/// Ctrl+Shift+Alt+F<digit> (`shortcut_key`).
+fn digit_text(digit: u32) -> String {
+    let chord = Chord { key: ChordKey::Char(char::from_digit(digit, 10).unwrap_or('1')), cmd: true, alt: true, shift: true, ctrl: false };
+    crate::shortcut_key::mode().label(&chord)
 }
 
 /// A segment's text: the label, an em space, then the custom shortcut or the built-in one
@@ -69,7 +73,7 @@ pub fn digit_label(position: usize) -> Option<String> {
 pub fn segment_label(label: &str, custom: Option<&str>, position: usize, count: usize) -> String {
     let suffix = match custom {
         Some(c) => Some(c.to_string()),
-        None => digit_label(position).or_else(|| (position == count && position > 8).then(|| format!("{DIGIT_PREFIX}9"))),
+        None => digit_label(position).or_else(|| (position == count && position > 8).then(|| digit_text(9))),
     };
     match suffix.filter(|s| !s.is_empty()) {
         Some(s) => format!("{label}\u{2003}{s}"),
@@ -86,10 +90,10 @@ pub fn switch_label(w: &Workgroup, config: &str) -> Option<String> {
     if let Some(custom) = shortcut.as_ref().and_then(custom_label).filter(|c| !c.is_empty()) {
         return Some(custom);
     }
-    digit_label(i + 1).or_else(|| (i + 1 == all.len() && i + 1 > 8).then(|| format!("{DIGIT_PREFIX}9")))
+    digit_label(i + 1).or_else(|| (i + 1 == all.len() && i + 1 > 8).then(|| digit_text(9)))
 }
 
-/// The digit of an Alt+Shift+Win+digit chord (1 to 9); Alt+Win+digit selects a window and takes no part.
+/// The digit of a Cmd+Option+Shift+digit chord (1 to 9); Cmd+Option+digit selects a window and takes no part.
 pub fn chord_digit(c: &Chord) -> Option<u32> {
     if !(c.alt && c.shift && c.cmd && !c.ctrl) {
         return None;
@@ -207,12 +211,12 @@ mod tests {
         assert_eq!(by_digit(12, 8), Some(7));
         assert_eq!(by_digit(12, 9), Some(11));
         assert_eq!(by_digit(8, 8), Some(7));
-        assert_eq!(digit_label(1).as_deref(), Some("Alt+Shift+Win+1"));
-        assert_eq!(digit_label(8).as_deref(), Some("Alt+Shift+Win+8"));
+        assert_eq!(digit_label(1).as_deref(), Some("Ctrl+Shift+Alt+F1"));
+        assert_eq!(digit_label(8).as_deref(), Some("Ctrl+Shift+Alt+F8"));
         assert_eq!(digit_label(9), None, "the 9 rule needs the count");
         assert_eq!(digit_label(0), None);
-        assert_eq!(segment_label("Diff", None, 2, 3), "Diff\u{2003}Alt+Shift+Win+2");
-        assert_eq!(segment_label("Last", None, 12, 12), "Last\u{2003}Alt+Shift+Win+9", "the last of nine or more");
+        assert_eq!(segment_label("Diff", None, 2, 3), "Diff\u{2003}Ctrl+Shift+Alt+F2");
+        assert_eq!(segment_label("Last", None, 12, 12), "Last\u{2003}Ctrl+Shift+Alt+F9", "the last of nine or more");
         assert_eq!(segment_label("Mid", None, 10, 12), "Mid", "no shortcut for it");
         assert_eq!(segment_label("Diff", Some("Ctrl+D"), 2, 3), "Diff\u{2003}Ctrl+D", "a custom shortcut replaces the digit");
         assert_eq!(segment_label("Diff", Some(""), 2, 3), "Diff");
@@ -223,11 +227,11 @@ mod tests {
     }
 
     #[test]
-    fn the_digit_chord_is_alt_shift_win_only() {
+    fn the_digit_chord_is_cmd_option_shift_only() {
         assert_eq!(chord_digit(&chord('3', true, true, true, false)), Some(3));
         assert_eq!(chord_digit(&chord('9', true, true, true, false)), Some(9));
         assert_eq!(chord_digit(&chord('0', true, true, true, false)), None);
-        assert_eq!(chord_digit(&chord('3', true, false, true, false)), None, "Alt+Win+3 is Select Window");
+        assert_eq!(chord_digit(&chord('3', true, false, true, false)), None, "Cmd+Option+3 is Select Window");
         assert_eq!(chord_digit(&chord('3', true, true, true, true)), None);
         assert_eq!(chord_digit(&chord('a', true, true, true, false)), None);
         assert_eq!(chord_digit(&chord('3', false, true, true, false)), None);

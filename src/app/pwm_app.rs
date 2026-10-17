@@ -106,10 +106,6 @@ impl PwmWin {
         self.window.id()
     }
 
-    pub(super) fn hwnd(&self) -> Option<isize> {
-        self.window.hwnd()
-    }
-
     fn selected_account(&self) -> Option<&Account> {
         self.selected.and_then(|i| self.accounts.get(i))
     }
@@ -121,11 +117,7 @@ impl PwmWin {
 }
 
 impl Drop for PwmWin {
-    /// However it goes (closed, or with its terminal window), the key hook forgets it.
     fn drop(&mut self) {
-        if let Some(h) = self.window.hwnd() {
-            crate::winkeys::remove_pwm_window(h);
-        }
         // A picker closed any way at all (or with its window) without a choice ends its challenge once.
         if let Some(n) = take_challenge(&mut self.target) {
             ORPHANED.lock().unwrap().push(n);
@@ -602,9 +594,6 @@ impl App {
                 return session;
             }
         };
-        if let Some(h) = window.hwnd() {
-            crate::winkeys::add_pwm_window(h);
-        }
         lock::watch(owner_hwnd, self.notify.clone());
         self.pwm.instances += 1;
         self.pwm_window = Some(PwmWin {
@@ -832,23 +821,6 @@ impl App {
         if !waited {
             pane.echo_probe = None;
         }
-    }
-
-    /// Win+B, Win+U or Win+C from the key hook with a manager in front. True when taken.
-    pub(super) fn pwm_take_chord(&mut self, c: &crate::menus::Chord) -> bool {
-        let crate::menus::ChordKey::Char(key) = c.key else { return false };
-        if !crate::winkeys::pwm_chord(c) {
-            return false;
-        }
-        // The window in front when the hook took the chord, not now.
-        let Some(owner) = self.pwm_of_hwnd(crate::winkeys::chord_foreground()) else { return false };
-        if !self.enter(owner) {
-            return false;
-        }
-        if let Some(w) = self.pwm_window.as_mut() {
-            w.window.win_chord(key);
-        }
-        true
     }
 
     /// What the user did in the manager.

@@ -187,6 +187,10 @@ fn recorder(ui: &mut egui::Ui, keys: &mut KeysState, slot: HotkeySlot, current: 
         let text = if keys.hotkey_recording == Some(slot) { "Recording".to_string() } else { current.map_or("Click to Set".to_string(), label) };
         if ui.add_enabled(enabled, egui::Button::new(text).min_size(egui::vec2(160.0, 0.0))).clicked() {
             keys.hotkey_recording = if keys.hotkey_recording == Some(slot) { None } else { Some(slot) };
+            keys.win_note = false;
+        }
+        if keys.hotkey_recording == Some(slot) && keys.win_note {
+            ui.weak(crate::settings_keys::WIN_NOTE);
         }
         if current.is_some() && ui.add_enabled(enabled, egui::Button::new("x")).on_hover_text("Clear").clicked() {
             cleared = true;

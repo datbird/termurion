@@ -91,10 +91,6 @@ impl App {
         let dark = self.dark();
         match CockpitWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, frame, dark) {
             Ok(mut w) => {
-                if let Some(hwnd) = w.hwnd() {
-                    // The key hook takes Win chords only for registered windows.
-                    crate::winkeys::add_cockpit_window(hwnd);
-                }
                 w.show_and_focus();
                 self.cockpit = Some(w);
             }
@@ -116,6 +112,11 @@ impl App {
         let Some(w) = self.cockpit.as_mut() else { return false };
         if w.id() != window {
             return false;
+        }
+        // Window > Cockpit again while the Cockpit has the keyboard: its own chord shows and focuses it.
+        if w.shortcut(event).is_some_and(|c| crate::winkeys::cockpit_chord(&c)) {
+            self.reveal_cockpit(event_loop);
+            return true;
         }
         match event {
             WindowEvent::CloseRequested => self.cockpit_acts(event_loop, vec![Act::Closed]),
@@ -174,9 +175,6 @@ impl App {
         for act in acts {
             match act {
                 Act::Closed => {
-                    if let Some(hwnd) = self.cockpit.as_ref().and_then(|w| w.hwnd()) {
-                        crate::winkeys::remove_cockpit_window(hwnd);
-                    }
                     self.cockpit = None;
                     self.cockpit_save_due = None;
                     self.save_globals();

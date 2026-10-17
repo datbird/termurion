@@ -17,7 +17,7 @@
 
 use std::time::Instant;
 
-use winit::event::{ElementState, WindowEvent};
+use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::Key;
 use winit::window::{Window, WindowId};
@@ -122,7 +122,6 @@ pub struct PwmWindow {
     focus_password: bool,
     /// The search field takes the focus once the window is authenticated.
     focus_search: bool,
-    win_down: bool,
     /// The shortcut key's own chords (Ctrl+Shift+B) for the window's keys; the hook carries Win.
     keys: crate::shortcut_key::WindowKeys,
     /// Win chords (b, u, c) waiting for the next redraw.
@@ -174,7 +173,6 @@ impl PwmWindow {
             shake: None,
             focus_password: false,
             focus_search: true,
-            win_down: false,
             keys: Default::default(),
             chords: Vec::new(),
             guard: None,
@@ -201,16 +199,6 @@ impl PwmWindow {
     }
 
     pub fn request_redraw(&self) {
-        self.host.request_redraw();
-    }
-
-    /// A Win chord for the window (Win+B, Win+U, Win+C), from the low-level key hook: Windows
-    /// keeps those chords for itself unless the hook takes them.
-    pub fn win_chord(&mut self, key: char) {
-        if chord_dropped(self.pointer_only, self.guard.as_ref(), Instant::now()) {
-            return;
-        }
-        self.chords.push(key.to_ascii_lowercase());
         self.host.request_redraw();
     }
 
@@ -259,21 +247,9 @@ impl PwmWindow {
                 return true;
             }
         }
-        match e {
-            WindowEvent::ModifiersChanged(m) => self.win_down = m.state().super_key(),
-            WindowEvent::KeyboardInput { event, .. } if self.win_down && event.state == ElementState::Pressed && !event.repeat => {
-                if let Key::Character(c) = &event.logical_key {
-                    let c = c.to_ascii_lowercase();
-                    if matches!(c.as_str(), "b" | "u" | "c") {
-                        self.chords.extend(c.chars());
-                        self.host.request_redraw();
-                    }
-                }
-            }
-            WindowEvent::Focused(false) => self.win_down = false,
-            // iTerm2 makes the search field first responder whenever the window becomes key.
-            WindowEvent::Focused(true) => self.focus_search = true,
-            _ => {}
+        // iTerm2 makes the search field first responder whenever the window becomes key.
+        if let WindowEvent::Focused(true) = e {
+            self.focus_search = true;
         }
         self.host.event(e)
     }
@@ -429,12 +405,6 @@ fn pointer_only_drops(e: &WindowEvent) -> bool {
 fn pointer_only_key_allowed(k: &Key) -> bool {
     use winit::keyboard::NamedKey as K;
     matches!(k, Key::Named(K::ArrowUp | K::ArrowDown | K::ArrowLeft | K::ArrowRight | K::Home | K::End | K::PageUp | K::PageDown | K::Escape))
-}
-
-/// Whether a Win chord from the key hook is dropped: always in a pointer-only window, and in any
-/// guarded one until its guard is armed (the chord skips the window's event stream).
-fn chord_dropped(pointer_only: bool, guard: Option<&crate::prompt_ui::InputGuard>, now: Instant) -> bool {
-    pointer_only || guard.is_some_and(|g| g.drops_chord(now))
 }
 
 fn default_act(b: &Buttons) -> PwmAct {
@@ -884,7 +854,6 @@ mod tests {
     /// from the hook is dropped for it, and for any guarded window until its guard is armed.
     #[test]
     fn a_page_opened_manager_takes_no_keyboard_default() {
-        use std::time::Duration;
         use winit::keyboard::NamedKey as K;
         for k in [Key::Named(K::Enter), Key::Named(K::Space), Key::Named(K::Tab), Key::Named(K::Delete), Key::Named(K::Backspace), Key::Character(" ".into()), Key::Character("u".into()), Key::Character("c".into())] {
             assert!(!pointer_only_key_allowed(&k), "{k:?} must not reach a page-opened manager");
@@ -894,19 +863,10 @@ mod tests {
         }
         assert!(pointer_only_drops(&WindowEvent::Ime(winit::event::Ime::Enabled)));
         assert!(!pointer_only_drops(&WindowEvent::Focused(true)) && !pointer_only_drops(&WindowEvent::RedrawRequested));
-        let t0 = Instant::now();
-        let g = crate::prompt_ui::InputGuard::new(t0);
-        let late = t0 + crate::prompt_ui::GUARD_DELAY + Duration::from_secs(5);
-        assert!(chord_dropped(true, Some(&g), late), "never in a page-opened window, even armed");
-        assert!(chord_dropped(false, Some(&g), t0), "any guarded window holds a chord until armed");
-        assert!(!chord_dropped(false, Some(&g), late));
-        assert!(!chord_dropped(false, None, t0), "an unguarded window keeps its chords");
         let src = include_str!("pwm_ui.rs");
         let prod = &src[..src.find("#[cfg(test)]").unwrap()];
         let ev = &prod[prod.find("pub fn event(&mut self, e: &WindowEvent)").unwrap()..];
         assert!(ev[..ev.find("match e {").unwrap()].contains("if self.pointer_only && pointer_only_drops(e) {"));
-        let wc = &prod[prod.find("pub fn win_chord").unwrap()..];
-        assert!(wc[..200].contains("chord_dropped(self.pointer_only"));
         assert!(prod.contains("self.pointer_only = true;"));
     }
 

@@ -73,16 +73,6 @@ pub fn targets(tag: i64) -> Vec<u16> {
     }
 }
 
-/// Whether the hook's Win-chord gate may treat Win as held: with Remap modifiers globally off, a
-/// Win key remapped to something else is not a Win for Termurion's menu chords (it reaches the window
-/// and is read as its target, `APP:252-285`), so only a Win side still acting as Win counts.
-pub fn win_chord_held(tags: &Tags, global: bool, lwin: bool, rwin: bool) -> bool {
-    // A side counts while it still acts as a Win key: its tag targets Left or Right Win (the
-    // identity, either Command, or the other Win side).
-    let acts = |held: bool, tag: i64| held && (global || targets(tag).iter().any(|v| *v == LWIN || *v == RWIN));
-    acts(lwin, tags.left_command) || acts(rwin, tags.right_command)
-}
-
 /// What Termurion itself reads when Remap modifiers globally is off (`iTermApplication.m:252-285`):
 /// the physical modifiers, rewritten through the tags. Which Alt, Control and Win keys are down comes
 /// from `sides`; a modifier in `physical` with no side known counts as the left key. Shift is never
@@ -324,27 +314,6 @@ mod tests {
         r.on_key(0xA2, 0x1D, true, true, &swapped(), true); // Left Control down, injected as Left Win
         assert_eq!(r.exempt_down(0x43), vec![(0x5B, false), (0xA2, true), (0x43, true)]);
         assert_eq!(r.exempt_up(0x43), vec![(0x43, false), (0xA2, false), (0x5B, true)]);
-    }
-
-    #[test]
-    fn win_chords_follow_the_remap_when_not_global() {
-        let identity = Tags::identity();
-        let win_as_ctrl = Tags { left_command: 11, ..Tags::identity() };
-        // Global on: the hook handles remapping itself; the gate sees the physical Win.
-        assert!(win_chord_held(&win_as_ctrl, true, true, false));
-        // Off, Left Win as Control: it is not a Win for Termurion's menu chords.
-        assert!(!win_chord_held(&win_as_ctrl, false, true, false));
-        // The right Win still acts as Win.
-        assert!(win_chord_held(&win_as_ctrl, false, true, true));
-        assert!(win_chord_held(&win_as_ctrl, false, false, true));
-        // Nothing remapped: unchanged either way.
-        assert!(win_chord_held(&identity, false, true, false));
-        assert!(!win_chord_held(&identity, false, false, false));
-        // Either Command (tag 4) and a side swapped to the other Win still act as Win.
-        assert!(win_chord_held(&Tags { left_command: 4, ..identity }, false, true, false));
-        assert!(win_chord_held(&Tags { left_command: 8, ..identity }, false, true, false));
-        assert!(win_chord_held(&Tags { right_command: 7, ..identity }, false, false, true));
-        assert!(win_chord_held(&Tags { right_command: 4, ..identity }, false, false, true));
     }
 
     #[test]

@@ -37,8 +37,8 @@ section = "Shortcut Key"
 label = "Shortcut key"
 type = "enum"
 default = 0
-choices = [ { value = 0, label = "Ctrl+Shift" }, { value = 1, label = "Win" }, { value = 2, label = "Ctrl+Alt (AltGr on many European layouts)" } ]
-help = "The keys that stand for iTerm2's Cmd in Termurion's shortcuts, menus and key bindings. Cmd+Shift+X becomes Ctrl+Shift+Alt+X. Win collides with Windows shortcuts (Win+L, Win+D, Win+arrows). Ctrl+Alt is AltGr on many European layouts, so it can swallow characters you type; prefer Ctrl+Shift there."
+choices = [ { value = 0, label = "Ctrl+Shift" }, { value = 2, label = "Ctrl+Alt (AltGr on many European layouts)" } ]
+help = "The keys that stand for iTerm2's Cmd in Termurion's shortcuts, menus and key bindings. Cmd+Shift+X becomes Ctrl+Shift+Alt+X. Windows keeps the Win key, so no shortcut uses it. Ctrl+Alt is AltGr on many European layouts, so it can swallow characters you type; prefer Ctrl+Shift there."
 
 [[setting]]
 key = "SwitchWindowModifier"

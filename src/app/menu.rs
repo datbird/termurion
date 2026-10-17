@@ -344,12 +344,6 @@ impl App {
             let _ = proxy.lock().unwrap().send_event(UserEvent::Menu(e.id.0));
         }));
         // These closures run on the hook thread inside every key: a poisoned lock is read through.
-        let proxy = self.proxy.clone();
-        let send = Box::new(move |c| {
-            let _ = proxy.lock().unwrap_or_else(|e| e.into_inner()).send_event(UserEvent::Chord(c));
-        });
-        let snapshot = self.route_snapshot.clone();
-        let bound = Box::new(move |c: &Chord| crate::keyroute::win_chord_bound(&snapshot.read().unwrap_or_else(|e| e.into_inner()), c));
         let exempt_map = self.exempt_map.clone();
         let exempt = Box::new(move |vk: u16, m: crate::mouse::Mods| {
             let Some(key) = crate::winkeys::vk_to_key(vk) else { return false };
@@ -363,8 +357,8 @@ impl App {
         }));
         // Remap modifiers globally, before the hook sees its first key.
         crate::winkeys::set_remap_global(self.globals.bool("RemapModifiersGlobally"));
-        match crate::winkeys::install(hwnd, send, bound, self.remap_tags.clone(), exempt) {
-            Err(e) => self.banners.set("keys", format!("Win chords are unavailable: {e}")),
+        match crate::winkeys::install(hwnd, self.remap_tags.clone(), exempt) {
+            Err(e) => self.banners.set("keys", format!("Modifier remapping and system-wide hotkeys are unavailable: {e}")),
             Ok(()) if !self.hotkeys_registered => {
                 self.hotkeys_registered = true;
                 self.register_hotkeys();
@@ -1911,7 +1905,7 @@ mod tests {
     fn window_list_entries() {
         let entries = [(7, 1, "b".to_string(), "b".to_string()), (3, 0, "a".to_string(), "a".to_string())];
         let list = super::window_list(&entries, Some(3), true, 6);
-        assert_eq!(list, [(3, "a \u{2014} Alt+Win+1".to_string(), true), (7, "b \u{2014} Alt+Win+2".to_string(), false)]);
+        assert_eq!(list, [(3, "a \u{2014} Alt+Shift+1".to_string(), true), (7, "b \u{2014} Alt+Shift+2".to_string(), false)]);
         let list = super::window_list(&entries, Some(7), false, 6);
         assert_eq!(list, [(3, "a".to_string(), false), (7, "b".to_string(), true)]);
     }

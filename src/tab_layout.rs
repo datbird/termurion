@@ -1550,11 +1550,11 @@ mod tests {
         assert_eq!(modifier_string(6), "Alt+Win+");
         assert_eq!(modifier_string(1), "Ctrl+");
         assert_eq!(modifier_string(9), "");
-        assert_eq!(counter_text(1, false, "Win+"), "Win+1");
-        assert_eq!(counter_text(8, false, "Win+"), "Win+8");
+        assert_eq!(counter_text(1, false, "Win+"), "Ctrl+Shift+1");
+        assert_eq!(counter_text(8, false, "Win+"), "Ctrl+Shift+8");
         // Only the last tab past 8 shows "9".
         assert_eq!(counter_text(9, false, "Win+"), "");
-        assert_eq!(counter_text(12, true, "Win+"), "Win+9");
+        assert_eq!(counter_text(12, true, "Win+"), "Ctrl+Shift+9");
         assert_eq!(counter_text(3, false, ""), "");
         // max(20, text + 2 * 7 - 6)
         assert_eq!(counter_width(12.0), 20.0);
@@ -1944,7 +1944,7 @@ mod tests {
         let tabs = [input("one", 1), input("two", 2), input("three", 3)];
         let bar = build(&tabs, 0, 600.0, 0.0, None, &s, &six_per_char);
         assert!(bar.cells.iter().all(|(_, c, _)| c.counter.is_some()));
-        assert_eq!(bar.texts[0].counter, "Win+1");
+        assert_eq!(bar.texts[0].counter, "Ctrl+Shift+1");
 
         let mut g = crate::globals::Globals::empty(std::path::Path::new("unused.toml"));
         g.set("HideTabNumber", toml::Value::Boolean(true));
@@ -1970,15 +1970,15 @@ mod tests {
         assert_eq!(bar.overflow, None);
         assert!(bar.hidden.is_empty());
         assert_eq!(bar.height, 24.0);
-        // The label: 192 - 6 - 4 - (38 + 4) = 140, truncated after the reserved 20: 120 points,
-        // 19 characters and the ellipsis.
+        // The label: 192 - 6 - 4 - (80 + 4) = 98 (the counter reads Ctrl+Shift+1, 12 characters),
+        // truncated after the reserved 20: 78 points, 12 characters and the ellipsis.
         let c = &bar.cells[0].1;
         assert!(c.truncate);
-        assert_eq!(c.label.w, 120.0);
+        assert_eq!(c.label.w, 78.0);
         let t0 = long("one11");
-        let tail: String = t0.chars().skip(40 - 19).collect();
+        let tail: String = t0.chars().skip(40 - 12).collect();
         assert_eq!(bar.titles[0], format!("\u{2026}{tail}"));
-        assert_eq!(bar.texts[0].title_width(), 120.0);
+        assert_eq!(bar.texts[0].title_width(), 78.0);
         // The bar-wide rule: tail truncation with smart truncation off.
         let plain = build(&tabs, 1, 600.0, 0.0, None, &Settings { smart: false, ..s.clone() }, &six_per_char);
         assert!(plain.titles[0].ends_with('\u{2026}'));

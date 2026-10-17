@@ -488,7 +488,7 @@ mod tests {
         assert_eq!(shortcut_label(1, true, 2, 3, 9, 9), Some("Pane 2".to_string()), "pane modifier none");
 
         // Tab 4, another tab.
-        assert_eq!(shortcut_label(4, false, 1, 1, 4, 9), Some("Win+4".to_string()));
+        assert_eq!(shortcut_label(4, false, 1, 1, 4, 9), Some("Ctrl+Shift+4".to_string()));
         assert_eq!(shortcut_label(4, false, 1, 1, 9, 9), Some("Tab 4".to_string()), "tab modifier none");
 
         // Tab 10 and beyond has no shortcut at all.
@@ -496,11 +496,11 @@ mod tests {
 
         // The focused pane of a background tab still gets its tab's label, never a pane label,
         // even though it looks like "the" pane (ordinal 1 of a multi-pane tab).
-        assert_eq!(shortcut_label(2, false, 1, 3, 4, 1), Some("Win+2".to_string()));
+        assert_eq!(shortcut_label(2, false, 1, 3, 4, 1), Some("Ctrl+Shift+2".to_string()));
 
         // A single-pane current tab also falls through to the tab label (iTerm2 only gives a
         // pane shortcut when the current tab has more than one session).
-        assert_eq!(shortcut_label(3, true, 1, 1, 4, 1), Some("Win+3".to_string()));
+        assert_eq!(shortcut_label(3, true, 1, 1, 4, 1), Some("Ctrl+Shift+3".to_string()));
     }
 
     fn srow(pane: u64, changed: u64, status: &str) -> StatusRow {

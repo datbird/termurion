@@ -1624,24 +1624,28 @@ impl App {
         true
     }
 
-    /// A key the page reported (`Event::Key`): a Win chord Termurion has a command for runs, and the
-    /// accelerators that focus the address field. The page keeps every other key.
+    /// A key the page reported (`Event::Key`): a shortcut-key chord Termurion has a command for
+    /// runs, and the accelerators that focus the address field. The page keeps every other key,
+    /// and the Win key, which is Windows'.
     pub(super) fn browser_page_key(&mut self, pane: PaneId, vk: u32, mods: u8, event_loop: &ActiveEventLoop) -> bool {
         let (shift, ctrl, alt, win) = (mods & 1 != 0, mods & 2 != 0, mods & 4 != 0, mods & 8 != 0);
         if (ctrl && !alt && !win && vk == 0x4C) || (alt && !ctrl && !win && vk == 0x44) || vk == 0x75 {
             self.focus_url_bar(pane);
             return true;
         }
-        if !win {
+        if win {
             return false;
         }
         let Some(key) = crate::winkeys::vk_to_key(vk as u16) else { return false };
-        let chord = crate::menus::Chord { key, cmd: true, alt, shift, ctrl };
-        let bound = crate::keyroute::win_chord_bound(&self.route_snapshot.read().unwrap_or_else(|e| e.into_inner()), &chord);
-        if bound {
-            self.in_pane_window(pane, |a| a.run_chord(&chord, event_loop));
+        // Ctrl+Alt with a character key may be AltGr typing in the page: it stays the page's.
+        if ctrl && alt && matches!(key, crate::menus::ChordKey::Char(_)) {
+            return false;
         }
-        bound
+        let phys = crate::mouse::Mods { shift, alt, ctrl, cmd: false };
+        let snapshot = self.route_snapshot.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let Some(chord) = crate::shortcut_key::mode().press_chords(phys, false, &key).into_iter().find(|c| crate::keyroute::chord_bound(&snapshot, c)) else { return false };
+        self.in_pane_window(pane, |a| a.run_chord(&chord, event_loop));
+        true
     }
 
     /// The menu commands that act on a browser pane (View > Make Text Bigger, Smaller, Normal Size,

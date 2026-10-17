@@ -720,13 +720,6 @@ impl SettingsWindow {
         self.keys.recording()
     }
 
-    /// A Win chord the keyboard hook took while recording.
-    pub fn record_chord(&mut self, c: &crate::menus::Chord) {
-        self.keys.deliver(crate::keyroute::press_from_chord(c).stroke);
-        crate::winkeys::set_recording(self.keys.recording());
-        self.host.window.request_redraw();
-    }
-
     /// Feeds a window event to egui. Returns true when the window should redraw.
     pub fn event(&mut self, event: &WindowEvent) -> bool {
         if let WindowEvent::ModifiersChanged(m) = event {
@@ -736,12 +729,22 @@ impl SettingsWindow {
         if let WindowEvent::KeyboardInput { event: k, .. } = event {
             if self.keys.recording() {
                 if k.state == winit::event::ElementState::Pressed {
-                    // The shortcut key's own modifiers are recorded as Cmd (Ctrl+Shift+D is Cmd+D).
                     let types = k.text.as_deref().is_some_and(|t| t.chars().any(|c| !c.is_control()));
-                    let rec = crate::shortcut_key::mode().recorded_mods(self.mods, types);
-                    if let Some(stroke) = crate::keystroke::from_key_event(k, rec) {
-                        self.keys.deliver(crate::shortcut_key::recorded_stroke(stroke, self.mods, rec));
+                    let key = crate::winkeys::vk_to_key(crate::winkeys::vk_of(k.physical_key));
+                    if self.mods.cmd {
+                        // Windows keeps the Win key: nothing is recorded, the recorder says why.
+                        self.keys.refuse_win();
+                    } else if let Some(chord) = key.and_then(|key| crate::shortcut_key::mode().table_chord(self.mods, types, &key)) {
+                        // A chord with no pair of its own (Alt+Shift+PgUp) is recorded as iTerm2's chord.
+                        self.keys.deliver(crate::keyroute::press_from_chord(&chord).stroke);
                         crate::winkeys::set_recording(self.keys.recording());
+                    } else {
+                        // The shortcut key's own modifiers are recorded as Cmd (Ctrl+Shift+D is Cmd+D).
+                        let rec = crate::shortcut_key::mode().recorded_mods(self.mods, types);
+                        if let Some(stroke) = crate::keystroke::from_key_event(k, rec) {
+                            self.keys.deliver(crate::shortcut_key::recorded_stroke(stroke, self.mods, rec));
+                            crate::winkeys::set_recording(self.keys.recording());
+                        }
                     }
                 }
                 self.host.window.request_redraw();
