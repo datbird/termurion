@@ -877,6 +877,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)] // the test pins a constant's value on purpose
     fn uv_source_is_pinned() {
         assert_eq!(uv_zip_url(Arch::X64), format!("https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/uv-x86_64-pc-windows-msvc.zip"));
         assert_eq!(uv_zip_url(Arch::Arm64), format!("https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/uv-aarch64-pc-windows-msvc.zip"));

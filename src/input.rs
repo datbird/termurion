@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn horizontal_wheel_reports_need_the_setting() {
-        let modes = Modes { tracking: Tracking::Click, sgr: true, ..Default::default() };
+        let modes = Modes { tracking: Tracking::Click, sgr: true };
         let m = Mods::default();
         assert!(horizontal_wheel_reports(modes, m, 2, true, false, 2, 1).is_empty(), "setting off: no bytes at all");
         assert!(horizontal_wheel_reports(modes, m, 0, true, true, 2, 1).is_empty());

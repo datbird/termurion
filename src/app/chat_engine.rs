@@ -1749,7 +1749,7 @@ mod tests {
         assert_eq!(h.run(|cx| Engine::tool_finished(cx, &chat, "R2", ran("late", None))), vec![], "an orphan is dropped");
         assert_eq!(h.run(|cx| Engine::answer_request(cx, &chat, &parked, Choice::AllowOnce)), vec![]);
         h.log.borrow_mut().on_poll.push_back(vec![Out::Delta("late".into())]);
-        assert_eq!(h.run(|cx| Engine::poll(cx)), vec![]);
+        assert_eq!(h.run(Engine::poll), vec![]);
         assert_eq!(h.messages(&chat).len(), before, "no second write");
         assert_eq!(h.events().last(), Some(&Ev::Cancel));
     }
@@ -1761,7 +1761,7 @@ mod tests {
     /// Ends the running turn the way the model does when it has nothing more to say.
     fn finish_turn(h: &mut H) {
         h.log.borrow_mut().on_poll.push_back(vec![Out::StreamEnd]);
-        h.run(|cx| Engine::poll(cx));
+        h.run(Engine::poll);
     }
 
     /// Task 11 fix round 1, ruling 1: a turn a watcher or timer starts never abandons the
@@ -1904,7 +1904,7 @@ mod tests {
         h.say(&chat, "b");
         assert_eq!((h.count(&Ev::Start), h.count(&Ev::Cancel)), (1, 0));
         h.log.borrow_mut().on_poll.push_back(vec![Out::StreamEnd]);
-        h.run(|cx| Engine::poll(cx));
+        h.run(Engine::poll);
         assert_eq!(h.count(&Ev::Start), 2);
         assert_eq!(h.log.borrow().inputs[1].messages.last(), Some(&crate::ai_msg::Message::text(Role::User, "b")));
     }
@@ -1942,7 +1942,7 @@ mod tests {
         h.say(&chat, "b");
         h.say(&chat, "c");
         h.log.borrow_mut().on_poll.push_back(vec![Out::Choice("A".into())]);
-        h.run(|cx| Engine::poll(cx));
+        h.run(Engine::poll);
         let started = h.log.borrow();
         let messages = &started.inputs[1].messages;
         assert_eq!(messages.last(), Some(&crate::ai_msg::Message::text(Role::User, "b")));
@@ -2185,13 +2185,13 @@ mod tests {
         assert_eq!(h.log.borrow().jobs, vec![Job::CreateStore { name: "T".into() }]);
         assert_eq!(h.count(&Ev::Start), 0, "the turn waits for the flow");
         h.log.borrow_mut().file_poll.push_back(vec![FileOut::Created("vs_1".into())]);
-        h.run(|cx| Engine::poll(cx));
+        h.run(Engine::poll);
         assert!(h.messages(&chat).iter().any(|m| m.author == Participant::Agent && m.content == Content::VectorStoreCreated("vs_1".into())));
         assert_eq!(h.store.chat(&chat).unwrap().unwrap().vector_store.as_deref(), Some("vs_1"));
         h.log.borrow_mut().file_poll.push_back(vec![FileOut::Uploaded("file_1".into())]);
-        h.run(|cx| Engine::poll(cx));
+        h.run(Engine::poll);
         h.log.borrow_mut().file_poll.push_back(vec![FileOut::Added]);
-        h.run(|cx| Engine::poll(cx));
+        h.run(Engine::poll);
         assert_eq!(h.log.borrow().jobs[1..], [Job::Upload { name: "a.txt".into(), content: b"hi".to_vec() }, Job::AddFiles { ids: vec!["file_1".into()], store: "vs_1".into() }]);
         assert_eq!(h.log.borrow().inputs[0].hosted.file_search_vector_stores, vec!["vs_1".to_string()]);
 
@@ -2214,7 +2214,7 @@ mod tests {
         let chat = h.chat(Some("7"));
         h.send(&chat, with_file());
         h.log.borrow_mut().file_poll.push_back(vec![FileOut::Failed("e".into())]);
-        h.run(|cx| Engine::poll(cx));
+        h.run(Engine::poll);
         assert_eq!(h.notices(&chat), vec!["e".to_string()]);
         assert_eq!(h.count(&Ev::Start), 1);
         assert!(h.log.borrow().inputs[0].hosted.file_search_vector_stores.is_empty());
@@ -2322,15 +2322,15 @@ mod tests {
         h.script(vec![screen("c1")]);
         h.say(&chat, "hi");
         h.agents.get_mut(&chat).unwrap().running = Some(("R2".into(), "7".into()));
-        assert_eq!(h.run(|cx| Engine::gate_tick(cx)), vec![], "an open gate stops nothing");
+        assert_eq!(h.run(Engine::gate_tick), vec![], "an open gate stops nothing");
         h.off();
         let idle_before = h.messages(&idle).len();
-        let fx = h.run(|cx| Engine::gate_tick(cx));
+        let fx = h.run(Engine::gate_tick);
         assert_eq!(fx, vec![EngineEffect::CancelExec(7), EngineEffect::CancelChecks(chat.clone()), EngineEffect::GateRefused { endpoint: endpoint_of(&h.model), silent: true }]);
         assert_eq!(h.count(&Ev::Cancel), 1);
         assert!(h.park_ids(&chat).is_empty() && !h.in_turn(&chat));
         assert!(!h.broker.is_typing(&chat, Participant::Agent) && !h.broker.turn_in_progress(&chat));
-        assert_eq!(h.run(|cx| Engine::gate_tick(cx)), vec![]);
+        assert_eq!(h.run(Engine::gate_tick), vec![]);
         assert_eq!(h.messages(&idle).len(), idle_before, "the idle chat is untouched");
     }
 
@@ -2350,7 +2350,7 @@ mod tests {
         assert_eq!(h.log.borrow().jobs, vec![Job::CreateStore { name: "T".into() }]);
         h.off();
         h.log.borrow_mut().file_poll.push_back(vec![FileOut::Created("vs_1".into())]);
-        h.run(|cx| Engine::poll(cx));
+        h.run(Engine::poll);
         assert_eq!(h.count(&Ev::FileCancel), 1);
         assert_eq!(h.log.borrow().jobs.len(), 1, "no next job");
     }
@@ -2803,7 +2803,7 @@ mod tests {
         let fx = h.say(&chat, "hi");
         let rid = run_ids(&fx)[0].0.clone();
         h.off();
-        h.run(|cx| Engine::gate_tick(cx));
+        h.run(Engine::gate_tick);
         assert!(!h.in_turn(&chat));
         let before = h.log.borrow().events.len();
         let fx = h.run(|cx| Engine::tool_finished(cx, &chat, &rid, ran("{}", None)));

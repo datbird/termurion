@@ -397,7 +397,7 @@ mod tests {
             w.answered("S1");
         }
         assert_eq!(w.out("S1"), 0);
-        assert!(w.out.get("S1").is_none());
+        assert!(!w.out.contains_key("S1"));
         assert_eq!(w.dropped, 85);
     }
 }

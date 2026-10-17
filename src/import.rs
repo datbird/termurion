@@ -453,12 +453,12 @@ mod tests {
         want.push(("LeftControl".to_string(), int(2)));
         want.push(("RightControl".to_string(), int(2)));
         assert_eq!(values, want);
-        assert!(profiles[0].values.get("Has Hotkey").is_none());
+        assert!(!profiles[0].values.contains_key("Has Hotkey"));
         // Not a dedicated window: no profile changes and the app hotkey stays; the flag is set.
         let mut values = hotkey();
         let mut profiles = [profile("G")];
         migrate_legacy(&mut values, &Legacy { toggles_window: false, ..legacy.clone() }, &mut profiles);
-        assert!(profiles[0].values.get("Has Hotkey").is_none());
+        assert!(!profiles[0].values.contains_key("Has Hotkey"));
         assert_eq!(get(&values, "Hotkey"), Some(Value::Boolean(true)));
         assert_eq!(get(&values, "HotkeyCode"), Some(int(50)));
         assert_eq!(get(&values, "HotkeyMigratedFromSingleToMulti"), Some(Value::Boolean(true)));
@@ -466,7 +466,7 @@ mod tests {
         let mut values = vec![("Hotkey".to_string(), Value::Boolean(false))];
         let mut profiles = [profile("G")];
         migrate_legacy(&mut values, &legacy, &mut profiles);
-        assert!(profiles[0].values.get("Has Hotkey").is_none());
+        assert!(!profiles[0].values.contains_key("Has Hotkey"));
         assert_eq!(get(&values, "HotkeyMigratedFromSingleToMulti"), Some(Value::Boolean(true)));
 
         // The flag's row (`PREF:216`, default NO `PREF:914`).

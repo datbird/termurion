@@ -4019,7 +4019,7 @@ mod probe {
             };
             let cell: Rc<RefCell<Option<Result<Env, String>>>> = Rc::new(RefCell::new(None));
             let c2 = cell.clone();
-            let opts = EnvOptions { custom_schemes: schemes.iter().map(|s| s.to_string()).collect(), args: args.to_string(), extensions, ..Default::default() };
+            let opts = EnvOptions { custom_schemes: schemes.iter().map(|s| s.to_string()).collect(), args: args.to_string(), extensions };
             Env::create(Store::Default, &folder, None, &opts, Box::new(move |r| *c2.borrow_mut() = Some(r)));
             assert!(p.wait(20, |_| cell.borrow().is_some()), "an environment within 20 s");
             let env = cell.borrow_mut().take().unwrap().expect("the environment");

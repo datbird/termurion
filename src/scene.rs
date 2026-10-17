@@ -1017,6 +1017,7 @@ fn match_text(bg: Rgb) -> Rgb {
 }
 
 #[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
+#[allow(clippy::single_range_in_vec_init)] // a one-element range list is what this API takes (or what the test expects)
 pub fn pane_with(
     frame: &mut Frame,
     screen: &Screen,
@@ -1629,7 +1630,7 @@ pub fn scrollbar_ticks(frame: &mut Frame, track: Rect, series: &[(crate::scrollb
             // The outline is half a point stroked, so a point wide at each side: `scale` px. The
             // side edges stop at the top and bottom edges so no corner draws twice.
             let o = scale.max(1.0);
-            for edge in [Rect { h: o, ..t }, Rect { y: t.y + t.h - o, h: o, ..t }, Rect { y: t.y + o, h: (t.h - 2.0 * o).max(0.0), w: o, ..t }, Rect { x: t.x + t.w - o, y: t.y + o, h: (t.h - 2.0 * o).max(0.0), w: o, ..t }] {
+            for edge in [Rect { h: o, ..t }, Rect { y: t.y + t.h - o, h: o, ..t }, Rect { y: t.y + o, h: (t.h - 2.0 * o).max(0.0), w: o, ..t }, Rect { x: t.x + t.w - o, y: t.y + o, h: (t.h - 2.0 * o).max(0.0), w: o }] {
                 frame.scrollbars.push(Quad { rect: edge, color: c });
             }
             let inner = Rect { x: t.x + o, y: t.y + o, w: (t.w - 2.0 * o).max(0.0), h: (t.h - 2.0 * o).max(0.0) };
@@ -2557,7 +2558,7 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
                     line_quad(frame, Rect { y: cell.y + 1.0, w: 1.0, h: cell.h - 1.0, ..cell }, pal.between);
                 }
                 let x = if k == last { cell.x + cell.w } else { cell.x + cell.w - 1.0 };
-                line_quad(frame, Rect { x, y: cell.y + 1.0, w: 1.0, h: cell.h - 1.0, ..cell }, pal.between);
+                line_quad(frame, Rect { x, y: cell.y + 1.0, w: 1.0, h: cell.h - 1.0 }, pal.between);
             }
             // The top line: a top bar (attached to the title bar) leaves it off the selected tab;
             // the other positions draw it on every tab (a side bar once per kind).
@@ -5925,6 +5926,7 @@ mod tests {
     /// `TV:1743`: blue prompt, green command, red excluded ranges, each a 1-pixel outline of four
     /// overlay quads (Termurion records no excluded range, so the red kind is only drawn when given).
     #[test]
+    #[allow(clippy::assertions_on_constants)] // the test pins a constant's value on purpose
     fn prompt_outlines_follow_iterm2() {
         let mut f = Frame::default();
         let r = |x| Rect { x, y: 10.0, w: 40.0, h: 16.0 };

@@ -590,7 +590,7 @@ mod tests {
                     }
                 }
                 while let Ok(p) = rx.try_recv() {
-                    if p.event.as_ref().is_some_and(|e| on(e)) {
+                    if p.event.as_ref().is_some_and(&mut *on) {
                         return true;
                     }
                 }

@@ -871,6 +871,7 @@ mod tests {
     /// B2: a find result is capped inside the Client bridge, before it is posted, so the copied find
     /// engine stays unedited and a long page's result still fits `MAX_MESSAGE`.
     #[test]
+    #[allow(clippy::assertions_on_constants)] // the test pins a constant's value on purpose
     fn the_client_bridge_caps_find_results() {
         let c = wrap(&script("window.webkit.messageHandlers.iTermCustomFind.postMessage({a: 1})", World::Client));
         assert!(c.contains("const __termurionCap = function (name, body)"), "{c}");

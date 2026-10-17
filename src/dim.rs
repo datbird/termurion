@@ -97,6 +97,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)] // the test pins a constant's value on purpose
     fn dim_amounts_follow_iterm2() {
         assert!(near(amount(true, false, 0.4), 0.4));
         assert!(near(amount(true, true, 0.4), 0.6));

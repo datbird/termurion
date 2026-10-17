@@ -3442,7 +3442,7 @@ mod tests {
         let c = copied_profile(&session, &dest);
         assert_eq!((c.guid(), c.name()), ("d".to_string(), "Work".to_string()));
         for gone in [crate::session_profile::ORIGINAL_GUID, "Session Hotkey", "Bonjour Service Address", "Is Dynamic Profile"] {
-            assert!(c.values.get(gone).is_none(), "{gone}");
+            assert!(!c.values.contains_key(gone), "{gone}");
         }
         assert_eq!(c.string("Ansi 1 Color"), "changed");
         assert_eq!(c.string("Shortcut"), "W", "the destination keeps its own shortcut");
@@ -3481,7 +3481,7 @@ mod tests {
         marked.set("Is Dynamic Profile", Value::Boolean(true));
         let mut plain = Profile::new("P");
         plain.set("Guid", Value::String("p".into()));
-        assert!(copied_profile(&marked, &plain).values.get("Is Dynamic Profile").is_none());
+        assert!(!copied_profile(&marked, &plain).values.contains_key("Is Dynamic Profile"));
     }
 }
 

@@ -1616,6 +1616,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init)] // a one-element range list is what this API takes (or what the test expects)
     fn carets_follow_iterm2() {
         // Ctrl+Shift+Down twice from the caret after "a": one caret per line at its x
         // (`MCTV:1163-1183`); none past the last line.

@@ -2209,7 +2209,7 @@ mod tests {
             println!("skip: Cascadia Code is not installed");
             return;
         };
-        let sets = fs.db().with_face_data(id, |data, index| fonts::stylistic_sets(data, index)).unwrap_or_default();
+        let sets = fs.db().with_face_data(id, fonts::stylistic_sets).unwrap_or_default();
         println!("STYLISTIC SETS: {sets:?}");
         assert!(!sets.is_empty(), "Cascadia Code has stylistic sets");
         let text = "abcdefghijklmnopqrstuvwxyz0123456789@&$%*{}<>|\\~`^";

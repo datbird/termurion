@@ -869,6 +869,7 @@ mod tests {
         assert!(prod.contains("\"Page.getResourceContent\", params, page_saver::MAX_REPLY_BYTES,"));
         assert!(prod.contains("crate::devtools::Budget::with_limits(page_saver::MAX_REPLY_BYTES, page_saver::MAX_READ_TOTAL)"));
         let r = include_str!("browser_scripts_app.rs");
+        #[allow(clippy::assertions_on_constants)] // the test pins a constant's value on purpose
         let done = &r[r.find("pub(super) fn browser_script_done").unwrap()..];
         let done = &done[..done.find("\n    }\n").unwrap()];
         assert!(done.contains("let cap = bv.result_caps.remove(&token).unwrap_or(MAX_RESULT);") && done.contains("text.len() > cap"), "{done}");

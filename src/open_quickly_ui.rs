@@ -866,6 +866,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init)] // a one-element range list is what this API takes (or what the test expects)
     fn bold_char_indexes_map_to_byte_ranges() {
         assert_eq!(bold_runs("abc", &[1..2]), vec![(0..1, false), (1..2, true), (2..3, false)]);
         assert_eq!(bold_runs("abc", &[]), vec![(0..3, false)]);

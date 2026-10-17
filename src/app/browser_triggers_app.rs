@@ -319,6 +319,7 @@ mod tests {
         let run = between(wg, "fn run_workgroup_triggers", "/// Ends the members a teardown queued");
         assert!(run.contains("self.enter_workgroup(&id, pane, Mechanism::BrowserTrigger)") && !run.contains("enter_workgroup_now"));
         assert!(run.contains("TriggerWork::ExitBrowser =>") && run.contains("self.exit_workgroup(pane)"));
+        #[allow(clippy::assertions_on_constants)] // the test pins a constant's value on purpose
         let guard = between(wg, "fn trigger_enter_id", "\n    }\n");
         for need in ["is_restoring_session(pane)", "can_enter_from_ui(in_group, &d)", "refused for workgroup", "restoring.declined(pane, &id)", "scripts_alerts::waits("] {
             assert!(guard.contains(need), "{need}");

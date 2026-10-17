@@ -440,7 +440,7 @@ mod tests {
         assert!(send(&mut s, "a=t,f=24,s=9,v=9,i=1,q=1", &[1]).contains("EINVAL"));
         assert_eq!(send(&mut s, "a=t,f=24,s=9,v=9,i=1,q=2", &[1]), "");
         assert_eq!(send(&mut s, "a=q,f=32,s=1,v=1,i=31", &[1, 2, 3, 4]), "\x1b_Gi=31;OK\x1b\\");
-        assert!(s.kitty.images.get(&31).is_none(), "a query stores nothing");
+        assert!(!s.kitty.images.contains_key(&31), "a query stores nothing");
     }
 
     #[test]

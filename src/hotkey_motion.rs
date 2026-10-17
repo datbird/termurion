@@ -190,6 +190,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)] // the test pins a constant's value on purpose
     fn opaque_fade_ships_off_until_confirmed() {
         // Ruling: the layered path is unproven on a desktop session (Intel and NVIDIA), so it ships off.
         assert!(!FADE_LAYERED);
