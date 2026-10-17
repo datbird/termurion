@@ -2,6 +2,10 @@
 
 These pages describe what Termurion does on Windows. Open Settings with Ctrl+Shift+, . The app Shortcut Key (the key iTerm2 calls Cmd) defaults to Ctrl+Shift. You can change it to Win or Ctrl+Alt in Settings > Keys. Option is Alt.
 
+## Full screen
+
+View > Toggle Full Screen is F11 in every Shortcut Key mode, and also Ctrl+Alt+F (Win+Ctrl+F with the Win Shortcut Key). A key mapping you make for F11 takes the key from full screen. In full screen the menu bar is hidden when Settings > Appearance > Windows > "Auto-hide menu bar in non-native fullscreen" is on. To get it back, press and release Alt on its own, or move the pointer to the very top edge of the window. Tap Alt again to hide it, or pick a command. Because of this you can always leave full screen from the menu: View > Toggle Full Screen.
+
 ## Pages
 
 - [Badges](badges.md): a large label in the corner of a pane, such as the host name.

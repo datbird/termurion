@@ -53,7 +53,15 @@ pub(super) fn menu_text(item: &Item) -> String {
 /// that reaches Termurion. Menus show it after a tab, so a changed shortcut key swaps only that part.
 pub(super) fn chord_text(item: &Item) -> Option<String> {
     let shortcut = crate::shortcut_key::mode();
-    item.chord().filter(|c| shortcut.reaches(c)).map(|c| shortcut.label(&c))
+    let chord = item.chord().filter(|c| shortcut.reaches(c)).map(|c| shortcut.label(&c));
+    // Full screen has F11 in every mode (the Windows convention) beside iTerm2's chord.
+    if crate::shortcut_key::is_full_screen_command(&item.selector) {
+        return Some(match chord {
+            Some(c) => format!("{}, {c}", crate::shortcut_key::FULL_SCREEN_KEY),
+            None => crate::shortcut_key::FULL_SCREEN_KEY.to_string(),
+        });
+    }
+    chord
 }
 
 /// Rewrites the accelerator text after the tab of every menu item that names a chord, for a

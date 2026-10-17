@@ -38,7 +38,9 @@ impl App {
     /// The modifiers a pointer press sees: the shortcut key's own keys held with a click are Cmd
     /// (Cmd+click opens a link), as the Win key is in every mode.
     pub(super) fn pointer_mods(&self) -> Mods {
-        crate::shortcut_key::mode().logical(self.mods)
+        let l = crate::shortcut_key::mode().logical(self.mods);
+        // Cmd+Ctrl is a keyboard chord only: Ctrl+Alt held with a click is what it always was.
+        if l.cmd && l.ctrl { self.mods } else { l }
     }
 
     /// The Cmd chord a key press makes with the shortcut key's own modifiers (Ctrl+Shift+D is
@@ -53,7 +55,7 @@ impl App {
         let types = ev.text.as_deref().is_some_and(|t| t.chars().any(|c| !c.is_control()));
         let l = crate::shortcut_key::mode().press_as_cmd(self.mods, types)?;
         let key = crate::winkeys::vk_to_key(crate::winkeys::vk_of(ev.physical_key))?;
-        let chord = crate::menus::Chord { key, cmd: true, alt: l.alt, shift: l.shift, ctrl: false };
+        let chord = crate::menus::Chord { key, cmd: true, alt: l.alt, shift: l.shift, ctrl: l.ctrl };
         let snapshot = self.route_snapshot.read().unwrap_or_else(|e| e.into_inner());
         // The person's own mapping for these very keys (a literal Ctrl+Shift+X) runs first, as
         // iTerm2 runs key mappings before the menu's key equivalents: it is not the Cmd chord.
@@ -61,6 +63,22 @@ impl App {
             return None;
         }
         crate::keyroute::chord_bound(&snapshot, &chord, false).then_some(chord)
+    }
+
+    /// Whether this press is F11 with nothing claiming it: full screen in every shortcut key mode
+    /// (`shortcut_key::f11_toggles_full_screen`). A profile or global key mapping, or the Leader,
+    /// for F11 comes first, as it does for every other app-level chord.
+    pub(super) fn full_screen_key(&self, ev: &KeyEvent) -> bool {
+        if ev.state != ElementState::Pressed || ev.repeat || self.leader_on {
+            return false;
+        }
+        let is_f11 = matches!(ev.logical_key, WKey::Named(NamedKey::F11));
+        if !is_f11 || !crate::shortcut_key::f11_toggles_full_screen(true, self.mods, false) {
+            return false;
+        }
+        let Some(stroke) = crate::keystroke::from_key_event(ev, self.mods) else { return false };
+        let claimed = self.with_route(|c| !matches!(crate::keyroute::route(c, &crate::keyroute::Press { stroke, digit: None }), crate::keyroute::Route::Terminal));
+        crate::shortcut_key::f11_toggles_full_screen(true, self.mods, claimed)
     }
 
     /// The Shortcut key setting changed: the hook, the key path and the menu text follow it.

@@ -91,9 +91,9 @@ Everything else the live suite checks (attach, sizing, new window, split, resize
 | New Tmux Window | Makes a new tmux window as a Termurion window. |
 | New Tmux Tab | Makes a new tmux window as a tab. |
 | Pause Pane | Pauses output for the current pane (tmux 3.2 or later). |
-| Dashboard | Opens the tmux Dashboard (Shift+Ctrl+Win+Return). |
+| Dashboard | Opens the tmux Dashboard (menu only; Shift+Ctrl+Win+Return with the Win Shortcut Key). |
 
-Detach, New Tmux Window, New Tmux Tab, and Pause Pane have shortcuts with the Shortcut Key plus Ctrl+Shift. The menu shows the exact keys for your setup.
+Detach, New Tmux Window, New Tmux Tab, and Pause Pane have shortcuts only with the Win Shortcut Key (the Shortcut Key plus Ctrl+Shift). With Ctrl+Shift or Ctrl+Alt as the Shortcut Key, use the menu. The menu shows the exact keys for your setup.
 
 New Tab and New Window ask what you want while a tmux pane is current: a new tmux window, a window or tab with your default profile, or Cancel. Two Advanced settings let you answer once and not be asked again.
 

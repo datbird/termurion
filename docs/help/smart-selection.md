@@ -8,7 +8,7 @@ Quadruple-click text in a terminal session. Termurion tests every rule against t
 
 To swap the clicks, turn on Settings > Pointer > Selection > Double-click performs smart selection. A double click then does Smart Selection and a quadruple click selects a word. A triple click always selects a line.
 
-To select every match on screen at once, choose Edit > Find > Find All Smart Selection Matches (Win+Alt+Shift+U).
+To select every match on screen at once, choose Edit > Find > Find All Smart Selection Matches (menu only with the default Shortcut Key; Win+Alt+Shift+U with the Win Shortcut Key).
 
 Pointer actions named "Smart Selection" and "Smart Selection Ignoring Newlines" are also available for pointer bindings.
 

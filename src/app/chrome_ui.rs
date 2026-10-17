@@ -139,7 +139,42 @@ impl App {
     /// which has no room for the native bar: its caption strip is where the title bar and menu
     /// bar were (`caption_ui`).
     pub(super) fn want_menu_hidden(&self) -> bool {
-        menu_should_hide(self.full_screen(), self.globals.bool("HideMenuBarInFullscreen")) || self.compact_window()
+        (menu_should_hide(self.full_screen(), self.globals.bool("HideMenuBarInFullscreen")) && !self.menu_peek.shown()) || self.compact_window()
+    }
+
+    /// Whether the bar is hidden because of full screen, so Alt or the top edge can bring it back.
+    fn full_screen_hides_menu(&self) -> bool {
+        menu_should_hide(self.full_screen(), self.globals.bool("HideMenuBarInFullscreen")) && !self.compact_window()
+    }
+
+    /// Alt pressed and released alone brings the menu bar back in full screen, and a second tap
+    /// sends it away (`menu_peek`): without it a person who cannot press the full screen chord has
+    /// no way out but the mouse, and a hidden bar has no mouse way.
+    pub(super) fn menu_peek_key(&mut self, ev: &KeyEvent) {
+        if !self.full_screen_hides_menu() && !self.menu_peek.shown() {
+            self.menu_peek.clear();
+            return;
+        }
+        let is_alt = matches!(ev.logical_key, winit::keyboard::Key::Named(winit::keyboard::NamedKey::Alt));
+        if self.menu_peek.key(is_alt, ev.state == ElementState::Pressed, ev.repeat) {
+            self.menu_peek_changed();
+        }
+    }
+
+    /// The pointer moved: at the very top edge of a full screen window the bar comes back, and it
+    /// goes when the pointer is back in the window. Never during a drag (a selection dragged to the
+    /// top edge scrolls, it does not open a menu).
+    pub(super) fn menu_peek_pointer(&mut self, y: f32) {
+        let can_peek = self.full_screen_hides_menu() && matches!(self.drag, Drag::None);
+        if self.menu_peek.pointer(y, can_peek) {
+            self.menu_peek_changed();
+        }
+    }
+
+    fn menu_peek_changed(&mut self) {
+        self.sync_menu_hidden();
+        self.relayout();
+        self.redraw();
     }
 
     /// Makes the current window's menu bar as `want_menu_hidden` says, by what the window has
@@ -148,6 +183,10 @@ impl App {
     /// painted over the client (muda draws the dark bar on the window's whole DC). A bar that is
     /// built or rebuilt is hidden as it is attached (`menu::replace_menu_bar`).
     pub(super) fn sync_menu_hidden(&mut self) {
+        // Leaving full screen ends any peek at the bar.
+        if self.menu_peek.shown() && !self.full_screen() {
+            self.menu_peek.clear();
+        }
         let hide = self.want_menu_hidden();
         let (Some(hwnd), Some(bar)) = (self.hwnd(), self.menu_bar.as_ref()) else { return };
         if !menu_needs_change(hide, menu_attached(hwnd)) || self.menu_refused == Some(hide) {

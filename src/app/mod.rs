@@ -665,6 +665,8 @@ pub struct App {
     /// (`chrome_ui::menu_attached`), never remembered: a remembered flag went stale when a bar
     /// was attached behind it.
     menu_refused: Option<bool>,
+    /// The menu bar is brought back in full screen (Alt tapped, or the pointer at the top edge).
+    menu_peek: crate::menu_peek::MenuPeek,
     /// The last press was the click that activated its window, so its release, drags and hover
     /// are not reported either (`PTYMouseHandler.m:1511`); the next press clears it (13r and 13s read it).
     pub(super) first_mouse_down: bool,
@@ -2326,6 +2328,7 @@ pub fn run() {
         border_applied: None,
         theme_applied: None,
         menu_refused: None,
+        menu_peek: Default::default(),
         first_mouse_down: false,
         caption_hover: None,
         caption_pressed: None,
@@ -5761,6 +5764,12 @@ impl App {
         if let Some(chord) = self.shortcut_chord(ev) {
             return self.run_chord(&chord, event_loop);
         }
+        // F11 toggles full screen in every mode, unless a key mapping claims it.
+        if self.full_screen_key(ev) {
+            if let Some(item) = crate::menus::by_id("View > Toggle Full Screen") {
+                return self.run_command(item, event_loop);
+            }
+        }
         if self.remap_in_app_on() && self.mods.cmd && !self.phys_mods.cmd {
             if let Some(chord) = crate::winkeys::vk_to_key(crate::winkeys::vk_of(ev.physical_key)).map(|key| crate::menus::Chord { key, cmd: true, alt: self.mods.alt, shift: self.mods.shift, ctrl: self.mods.ctrl }) {
                 return self.run_chord(&chord, event_loop);
@@ -5943,6 +5952,7 @@ impl App {
         // last click's hold ends; the terminal part applies it after every UI hit test (B6).
         let first = self.first_mouse();
         self.first_mouse_down = false;
+        self.menu_peek.press();
         // Any press ends a navigator click waiting out the double-click time: a second click
         // cancels it (`TV:7924-7933`).
         self.pathnav_due = None;
@@ -6386,6 +6396,7 @@ impl App {
 
     fn mouse_move(&mut self, x: f32, y: f32) {
         self.cursor = (x, y);
+        self.menu_peek_pointer(y);
         self.pane_move_hover(x, y);
         self.update_tab_hover();
         self.update_side_handle_hover();
@@ -7688,6 +7699,8 @@ impl ApplicationHandler<UserEvent> for App {
                 return self.run_chord(&c, event_loop);
             }
             UserEvent::Menu(id) => {
+                // A menu command ends a peek at the bar: it goes away again.
+                self.menu_peek.clear();
                 let traced = std::mem::take(&mut self.tray_pick);
                 if traced {
                     crate::host::log(&format!("tray: pick {id} (last window {})", self.last_window.is_some()));
@@ -7996,6 +8009,7 @@ impl ApplicationHandler<UserEvent> for App {
                 // or the labels gives the terminal the keyboard back (`notifyActive`).
                 let elsewhere = self.focused_keys_elsewhere();
                 let focused = self.focused_id();
+                self.menu_peek_key(&event);
                 self.key(&event, event_loop);
                 self.composer_take_back(elsewhere);
                 // Any key ends a drag-then-Copy episode; Copy itself has already looked at it
@@ -8338,6 +8352,9 @@ impl App {
     /// `apply_focus` runs only what `focus_actions` names. A held focus is re-checked by
     /// `web_focus_recheck`, because the real deactivation sends the parent nothing.
     fn window_focus(&mut self, id: WindowId, f: bool) {
+        if !f {
+            self.menu_peek.clear();
+        }
         let held = self.web_focus_held == Some(id);
         let step = match self.hwnd() {
             Some(hwnd) => crate::webhost::focus_step(f, hwnd, crate::webhost_win::foreground_root(), held),
