@@ -153,6 +153,16 @@ pub fn pinned_header(headers: &[(f32, f32)], top: f32) -> Option<(usize, f32)> {
     Some((i, top.min(pushed)))
 }
 
+/// The pinned header's rectangles: the fill spans the visible width, but its text starts where
+/// the rows' text starts (the scroll content's left edge), not at the clip rectangle's left,
+/// which lies a margin further out (the heading sat left of the rows once the pane scrolled).
+/// Returns (fill, text area).
+pub fn pinned_rects(visible: egui::Rect, content: egui::Rect, y: f32, height: f32) -> (egui::Rect, egui::Rect) {
+    let fill = egui::Rect::from_x_y_ranges(visible.x_range(), y..=y + height);
+    let text = egui::Rect::from_x_y_ranges(content.left()..=visible.right().max(content.left()), y..=y + height);
+    (fill, text)
+}
+
 /// The Advanced pane: the search field and "Show only non-default values" above a list of
 /// every Advanced setting under its category (`ASVC`, `XIB:10672-10767`). Returns true when a
 /// change should be saved.
@@ -224,11 +234,11 @@ pub fn page(ui: &mut egui::Ui, g: &mut Globals, st: &mut AdvancedState) -> bool 
         let visible = ui.clip_rect();
         if let Some((i, y)) = pinned_header(&tops, visible.top()) {
             let (category, _, height) = headers[i];
-            let rect = egui::Rect::from_x_y_ranges(visible.x_range(), y..=y + height);
+            let (rect, text_rect) = pinned_rects(visible, ui.max_rect(), y, height);
             // The pinned header covers the rows under it and takes their clicks.
             ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
             ui.interact(rect, ui.id().with("advanced-pinned-header"), egui::Sense::click());
-            let mut pinned = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
+            let mut pinned = ui.new_child(egui::UiBuilder::new().max_rect(text_rect).layout(egui::Layout::top_down(egui::Align::Min)));
             header_row(&mut pinned, category);
         }
     });
@@ -316,6 +326,17 @@ mod tests {
         let default = prefix.default.as_ref().and_then(Value::as_str).unwrap().to_string();
         text_write(&mut g, &prefix, &default);
         assert!(!g.values.contains_key("TmuxTitlePrefix"));
+    }
+
+    /// The pinned heading starts at the rows' left edge, not the clip rectangle's.
+    #[test]
+    fn the_pinned_heading_aligns_with_the_rows() {
+        let visible = egui::Rect::from_min_max(egui::pos2(92.0, 40.0), egui::pos2(900.0, 600.0));
+        let content = egui::Rect::from_min_max(egui::pos2(100.0, -300.0), egui::pos2(890.0, 900.0));
+        let (fill, text) = pinned_rects(visible, content, 40.0, 30.0);
+        assert_eq!(fill.left(), 92.0, "the fill covers the whole visible width");
+        assert_eq!(text.left(), 100.0, "the text starts where the rows start");
+        assert_eq!((text.top(), text.height()), (40.0, 30.0));
     }
 
     /// NSTableView floats group rows (iTerm2's pane is an NSTableView with group rows,

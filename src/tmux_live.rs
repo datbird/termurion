@@ -717,6 +717,9 @@ mod tests {
         l.audit(&tmux_edits::kill_pane(victim));
         let ok = l.pump_until(Duration::from_secs(10), |l| panes(l) == 2);
         result(&l, "kill-pane", ok, &format!("panes {:?}", l.ctl.windows.get(&w)));
+        // Before the detach the server counts the control client as attached.
+        let before = server_cli(flavor, &l.server, &["list-sessions"]);
+        result(&l, "session is attached before the detach", before.contains("(attached)"), &before.chars().take(80).collect::<String>());
         // Detach.
         let sent = l.gw.request_detach();
         l.flush();
@@ -727,6 +730,17 @@ mod tests {
         // Detach leaves the session running on the server.
         let listing = server_cli(flavor, &l.server, &["list-sessions"]);
         result(&l, "session survives the detach", listing.contains(&l.session), &listing.chars().take(80).collect::<String>());
+        // The server drops the client: the session no longer reads as attached (the bug was a
+        // psmux client that stayed alive and attached, writing %output into a tab).
+        let end = Instant::now() + Duration::from_secs(8);
+        let after = loop {
+            let a = server_cli(flavor, &l.server, &["list-sessions"]);
+            if !a.contains("(attached)") || Instant::now() >= end {
+                break a;
+            }
+            l.settle(Duration::from_millis(300));
+        };
+        result(&l, "session is not attached after the detach", after.contains(&l.session) && !after.contains("(attached)"), &after.chars().take(80).collect::<String>());
         // The test's own server goes, and nothing of it is left.
         l.flavor.stop(&l.server, &l.session);
         l.settle(Duration::from_millis(500));
@@ -740,6 +754,21 @@ mod tests {
     #[ignore]
     fn suite_psmux() {
         suite(Flavor::Psmux, "su");
+    }
+
+    /// What the old psmux end did: Ctrl+C and a blank line. Recorded, not asserted: the fact
+    /// that the app ends the client with a kill rests on this.
+    #[test]
+    #[ignore]
+    fn psmux_ctrl_c_and_enter_leave_the_client() {
+        let mut l = Live::attach(Flavor::Psmux, "cc");
+        let _ = l.p.write(b"\x03");
+        let _ = l.p.write(b"\r");
+        l.settle(Duration::from_secs(4));
+        let listing = server_cli(Flavor::Psmux, &l.server, &["list-sessions"]);
+        l.say(&format!("FACT | Ctrl+C and Enter | client exit {:?}, {}", l.p.exit_code(), listing.chars().take(80).collect::<String>()));
+        l.p.terminate();
+        l.finish();
     }
 
     #[test]

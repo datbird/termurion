@@ -27,6 +27,9 @@ pub struct Hook {
     block: Option<(String, String)>,
     /// Reattaching to a live connection: the first line may be half a notification.
     recovery: bool,
+    /// The client behind this hook was ended by Termurion (a psmux detach): whatever it still
+    /// writes is control-mode text, never output for the screen.
+    sealed: bool,
 }
 
 impl Hook {
@@ -45,7 +48,20 @@ impl Hook {
         *self = Hook::default();
     }
 
+    /// Leaves control mode and drops everything after it: the client is being ended, and its
+    /// last writes (`%output` lines) must never reach the screen.
+    pub fn seal(&mut self) {
+        *self = Hook { sealed: true, ..Default::default() };
+    }
+
+    pub fn sealed(&self) -> bool {
+        self.sealed
+    }
+
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Out> {
+        if self.sealed {
+            return Vec::new();
+        }
         let mut data = std::mem::take(&mut self.held);
         data.extend_from_slice(bytes);
         let mut out = Vec::new();
@@ -161,6 +177,21 @@ mod tests {
 
     fn l(b: &str) -> Out {
         Out::Line(b.as_bytes().to_vec())
+    }
+
+    /// A client that Termurion ended (a psmux detach) may still write control-mode lines: they
+    /// never reach the screen, whether they come whole, in pieces, or with a new DCS.
+    #[test]
+    fn a_sealed_hook_drops_everything() {
+        let mut h = Hook::default();
+        h.feed(b"\x1bP1000p%begin 1 2 0\n");
+        assert!(h.active());
+        h.seal();
+        assert!(h.sealed() && !h.active());
+        assert!(h.feed(b"%output %4 \\033[38;5;238m x\r\n").is_empty());
+        assert!(h.feed(b"%output %4 par").is_empty());
+        assert!(h.feed(b"tial\n\x1bP1000p%begin 1 2 0\n").is_empty());
+        assert!(!h.active(), "a sealed hook does not enter control mode again");
     }
 
     #[test]

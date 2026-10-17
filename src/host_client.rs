@@ -441,6 +441,20 @@ impl HostedPty {
         self.slot.lock().unwrap().taken
     }
 
+    /// Ends the program now: the host drops the session, which kills the process. The session
+    /// reads as exited here at once, so the pane closes like any program that ended.
+    pub fn terminate(&self) {
+        let _ = self.inner.send(&Msg::Kill { id: self.id });
+        let notify = {
+            let mut s = self.slot.lock().unwrap();
+            s.exited.get_or_insert(1);
+            s.notify.clone()
+        };
+        if let Some(n) = notify {
+            n();
+        }
+    }
+
     /// The session stays in the host when this goes (quit with jobs kept).
     pub fn detach(&mut self) {
         self.detached = true;

@@ -275,6 +275,7 @@ impl App {
                 p.unhook_tmux();
                 if psmux {
                     p.end_client();
+                    p.seal_tmux();
                 }
             }
         }

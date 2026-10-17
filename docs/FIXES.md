@@ -14,6 +14,28 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 
 ## Done
 
+17. **Settings > Advanced: the pinned heading sat left of the rows.** Seen 2026-10-17: after
+    scrolling the Advanced pane, the "Debugging" heading stood about 8 px left of the rows.
+    Cause: the heading that floats at the top (NSTableView's pinned group row) was laid out from
+    the scroll area's clip rectangle, which reaches a margin past the content on the left, while
+    the rows and the in-place headings start at the content's edge. Done 2026-10-17: the fill
+    still spans the visible width, but the text starts at the content's left edge
+    (`pinned_rects`, test `the_pinned_heading_aligns_with_the_rows`).
+
+16. **Shell > tmux > Detach on a psmux session left a raw control-mode tab.** Seen 2026-10-17:
+    after New psmux Session and Detach, the "psmux" tab stayed open and filled with
+    `%output %4 ...` text, and `psmux ls` still showed the session as attached. Cause (proven
+    by the live test `psmux_ctrl_c_and_enter_leave_the_client`): psmux's control client does
+    not leave on `detach`, so Termurion lets go of the gateway and ends the client. For a
+    client run by the session host that end was Ctrl+C plus a blank line, which psmux's client
+    ignores (still running and attached after 4 s). Unhooked, its `%output` then went to the
+    screen as text. Done 2026-10-17: a hosted client is ended with the host's kill, the pane
+    reads as exited at once and closes like any program that ended, and the hook is sealed
+    after the end so nothing the client still writes reaches a screen (`Hook::seal`, test
+    `a_sealed_hook_drops_everything`). The live suite now checks the server's view: the
+    session is attached before the detach and not attached after, and still exists
+    (psmux and WSL tmux pass).
+
 15. **The renderer drew through Vulkan, on the Intel GPU, by accident.** Seen 2026-10-17: host.log
     said `renderer: Vulkan on Intel(R) UHD Graphics 770` on a computer with an RTX 4080 SUPER.
     Cause: the first window used wgpu's default instance, which lists Vulkan first, while the
