@@ -7,11 +7,6 @@ Each item says what is wrong, what it should do, and where it was seen.
 
 ## Open
 
-7. **Browser Save Page As has no SSH destination (13x4 ruling).** Item 7 (a) is done (see Done).
-   (b) needs a design from Robert before code: a remote folder picker, an upload of a whole saved
-   folder (up to 2000 files, 256 MiB) over the SSH file machinery, and what stands in for the Mark
-   of the Web, create-new and cleanup guarantees the local saver has. Recorded by the 13y2 parity
-   sweep. Plan written 2026-10-12, build after the rename: plan: docs/superpowers/plans/2026-10-20-tw7b-save-page-to-ssh.md
 8. **Termurion stays running with no window.** On the Windows test machine, tandem.exe (started from Explorer at
    17:00 on 2026-10-11) and its tandem-host.exe were still running at 22:10 with no window
    (MainWindowHandle 0), so the installer refused to replace them ("Termurion is running"). Robert
@@ -86,3 +81,4 @@ Each item says what is wrong, what it should do, and where it was seen.
    ruling updated.
 
 7a. **Selection helpers in the terminal context menu.** Done 2026-10-12 (tw-small, 13cae8b).
+7b. **Browser Save Page As has no SSH destination (13x4 ruling).** Done 2026-10-17 (tw7b, 113eab1b): for a page of an open SSH session (an `iterm2-ssh:` page) Save Page As asks Remote Folder... or This Computer...; the remote file panel in folder mode picks the host folder, one question confirms it (and says the host will not mark the files as downloaded from the web), the page is saved into a private staging folder by the same saver and uploaded as a new folder through the session's file owner (the name probed with stat, made with mkdir, each file a hidden temp then a move), and a cancel, error or closed pane removes only what the save made and the staging folder. Local saving is unchanged. Decisions: plan docs/superpowers/plans/2026-10-20-tw7b-save-page-to-ssh.md, "Decisions (made 2026-10-17)"; rulings: docs/superpowers/rulings/tw7b-rulings.txt. Needs a desktop try against a real host (Probe: PENDING).
