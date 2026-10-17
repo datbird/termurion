@@ -1782,8 +1782,8 @@ mod tests {
                 None => continue,
             };
             let n = test_part.matches(call).count();
-            // render.rs: the shared helper (1) and adapters_are_recorded (2), nothing else.
-            let allowed = if is_render { 3 } else { 0 };
+            // render.rs: the shared helper (1), adapters_are_recorded (2) and each_api_honors_the_gpu_preference_and_draws (1), nothing else.
+            let allowed = if is_render { 4 } else { 0 };
             if is_render && !test_part.contains("mod test_gpu") {
                 bad.push("render.rs: the shared test_gpu module is gone".to_string());
             }
