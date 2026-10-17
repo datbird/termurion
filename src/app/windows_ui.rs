@@ -1734,7 +1734,7 @@ impl App {
                 // The frame is the outer frame; the inner size leaves the borders out.
                 let (dw, dh) = if f.decorations { (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height)) } else { (0, 0) };
                 w.set_outer_position(PhysicalPosition::new(f.rect.x.round() as i32, f.rect.y.round() as i32));
-                let _ = super::caption_ui::request_inner_size(&w, PhysicalSize::new((f.rect.w as u32).saturating_sub(dw).max(1), (f.rect.h as u32).saturating_sub(dh).max(1)));
+                let _ = super::caption_ui::request_inner_size(w, PhysicalSize::new((f.rect.w as u32).saturating_sub(dw).max(1), (f.rect.h as u32).saturating_sub(dh).max(1)));
             }
         }
         // Accessory (iTerm2's floating panel) stays above other windows without a taskbar
@@ -1808,7 +1808,7 @@ impl App {
         if (r.w, r.h) != (current.w, current.h) {
             let (outer, inner) = (w.outer_size(), w.inner_size());
             let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
-            let _ = super::caption_ui::request_inner_size(&w, PhysicalSize::new((r.w as u32).saturating_sub(dw).max(1), (r.h as u32).saturating_sub(dh).max(1)));
+            let _ = super::caption_ui::request_inner_size(w, PhysicalSize::new((r.w as u32).saturating_sub(dw).max(1), (r.h as u32).saturating_sub(dh).max(1)));
         }
     }
 

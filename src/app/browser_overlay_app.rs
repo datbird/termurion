@@ -139,21 +139,21 @@ impl App {
             return;
         }
         // The previous owner's page forgets its link when another pane's takes the window.
-        let previous = self.browser_tip.as_ref().and_then(|t| t.owner).filter(|o| *o != pane as u64).map(|o| o as PaneId);
+        let previous = self.browser_tip.as_ref().and_then(|t| t.owner).filter(|o| *o != pane).map(|o| o as PaneId);
         if let Some(old) = previous {
             self.browser_tip_clear(old);
         }
         match self.browser_tip_life.show(Instant::now()) {
             browser_tip::Step::Reuse => {
                 if let Some(tip) = self.browser_tip.as_mut() {
-                    tip.owner = Some(pane as u64);
+                    tip.owner = Some(pane);
                     tip.set(&text, anchor);
                     tip.bound(pane_rect);
                 }
             }
             browser_tip::Step::Create => {
                 if let Some(mut tip) = self.browser_tip_open(&text, anchor, event_loop) {
-                    tip.owner = Some(pane as u64);
+                    tip.owner = Some(pane);
                     tip.bound(pane_rect);
                     self.browser_tip = Some(tip);
                 } else {
@@ -184,7 +184,7 @@ impl App {
         let Some(at) = browser_tip::pointer_now() else { return };
         let text = crate::inert_files::display_text(text, browser_tip::TOAST_CHARS, false);
         if let Some(tip) = self.browser_tip.as_mut() {
-            tip.owner = Some(pane as u64);
+            tip.owner = Some(pane);
             tip.toast(&text, at, secs);
             self.browser_tip_life.show(Instant::now());
             return;
@@ -193,7 +193,7 @@ impl App {
             return;
         }
         if let Some(mut tip) = self.browser_tip_open(&text, (at.0, at.1, 0.0, 0.0), event_loop) {
-            tip.owner = Some(pane as u64);
+            tip.owner = Some(pane);
             tip.toast(&text, at, secs);
             self.browser_tip = Some(tip);
         } else {
@@ -211,7 +211,7 @@ impl App {
     /// Closes the tip of pane `pane` (a toast ends by its time, and goes with its pane).
     pub(super) fn browser_tip_close(&mut self, pane: PaneId) {
         self.browser_tip_cancel(pane);
-        if let Some(t) = self.browser_tip.as_mut().filter(|t| t.owner == Some(pane as u64)) {
+        if let Some(t) = self.browser_tip.as_mut().filter(|t| t.owner == Some(pane)) {
             t.hide();
             self.browser_tip_life.hide();
         }
@@ -227,7 +227,7 @@ impl App {
     /// Drops the window itself (the pane went, the app lost the foreground).
     pub(super) fn browser_tip_drop(&mut self, pane: PaneId) {
         self.browser_tip_cancel(pane);
-        if self.browser_tip.as_ref().is_some_and(|t| t.owner == Some(pane as u64)) {
+        if self.browser_tip.as_ref().is_some_and(|t| t.owner == Some(pane)) {
             self.browser_tip = None;
             self.browser_tip_life.dropped();
         }
@@ -238,7 +238,7 @@ impl App {
     /// frame's Termurion world, where the secret-checking handler lives, never the page world.
     pub(super) fn browser_tip_clear(&mut self, pane: PaneId) {
         self.browser_tip_cancel(pane);
-        if !self.browser_tip.as_ref().is_some_and(|t| t.owner == Some(pane as u64)) {
+        if !self.browser_tip.as_ref().is_some_and(|t| t.owner == Some(pane)) {
             return;
         }
         self.browser_tip_close(pane);

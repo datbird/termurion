@@ -353,7 +353,7 @@ impl App {
         let now = Instant::now();
         let gate = PollGate { visible: true, last_newline: Some(now), last_activity: None };
         let (search, timeout) = (self.git_search_path(), self.git_timeout());
-        let request_base = self.workgroups.get(instance).and_then(|i| Self::base_of(i));
+        let request_base = self.workgroups.get(instance).and_then(Self::base_of);
         let owners: Vec<(String, bool)> = {
             let Some(inst) = self.workgroups.get_mut(instance) else { return };
             let Some(git) = inst.git.as_mut() else { return };

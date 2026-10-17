@@ -84,12 +84,12 @@ pub fn human_size(value: u64) -> String {
     let mut exact = true;
     while num >= 1024 * 1024 {
         pow += 1;
-        if num % 1024 != 0 {
+        if !num.is_multiple_of(1024) {
             exact = false;
         }
         num /= 1024;
     }
-    if 100 * num % 1024 != 0 {
+    if !(100 * num).is_multiple_of(1024) {
         exact = false;
     }
     num = 100 * num / 1024;

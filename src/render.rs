@@ -906,7 +906,7 @@ impl Renderer {
             .collect();
         // The sets come from the regular face's GSUB table.
         let first = db.faces().find(|f| f.style == glyphon::fontdb::Style::Normal && f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(&family))).map(|f| f.id);
-        let sets = first.and_then(|id| db.with_face_data(id, |data, index| fonts::stylistic_sets(data, index))).unwrap_or_default();
+        let sets = first.and_then(|id| db.with_face_data(id, fonts::stylistic_sets)).unwrap_or_default();
         FontInfo { family, weight, sets, members }
     }
 

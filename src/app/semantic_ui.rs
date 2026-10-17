@@ -282,7 +282,7 @@ impl App {
         // text a remote host wrote too (B5); everything it types goes through the guard.
         if let Some((_, Target::CommandInfo(mark), _)) = &found {
             let mark = *mark;
-            self.show_command_info(id, mark, (self.cursor.0 as f32, self.cursor.1 as f32), event_loop);
+            self.show_command_info(id, mark, (self.cursor.0, self.cursor.1), event_loop);
             return true;
         }
         // Text a remote host wrote never builds a local run (P10): only a web or mail link

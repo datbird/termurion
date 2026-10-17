@@ -475,7 +475,7 @@ impl App {
         let guid = cfg.profile_guid.clone().filter(|g| self.store.get(g).is_some());
         if w.sessions.len() > 1
             && let Some(p) = guid.as_deref().and_then(|g| self.store.get(g))
-                && (p.bool(crate::dynamic_profiles::DYNAMIC_KEY) || self.is_bonjour_profile(&p)) {
+                && (p.bool(crate::dynamic_profiles::DYNAMIC_KEY) || self.is_bonjour_profile(p)) {
                     self.banners.set("workgroup", format!("A member was left out: its profile {} is not a saved one.", crate::inert_files::display_text(&p.name(), 64, false)));
                     return Made::Skipped;
                 }

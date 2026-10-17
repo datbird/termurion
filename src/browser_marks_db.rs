@@ -77,7 +77,7 @@ fn row_of(r: &rusqlite::Row) -> rusqlite::Result<Option<Row>> {
         && text.len() <= MAX_TEXT * 4
         && text.chars().count() <= MAX_TEXT
         && date_added.is_finite();
-    Ok(ok.then(|| Row { guid, url, name, sort, text, date_added }))
+    Ok(ok.then_some(Row { guid, url, name, sort, text, date_added }))
 }
 
 fn clean_name(name: &str) -> String {

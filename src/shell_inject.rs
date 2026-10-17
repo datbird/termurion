@@ -49,7 +49,7 @@ fn tokens(cmdline: &str) -> Vec<String> {
 /// Whether the quotes close and none is escaped: an odd count leaves an argument open, and a
 /// `\"` would swallow the `-Command` appended after it (B6).
 fn balanced(cmdline: &str) -> bool {
-    cmdline.matches('"').count() % 2 == 0 && !cmdline.contains("\\\"")
+    cmdline.matches('"').count().is_multiple_of(2) && !cmdline.contains("\\\"")
 }
 
 /// The shell a command line starts: its first token, quotes stripped, the file name

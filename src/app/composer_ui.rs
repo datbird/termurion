@@ -1566,7 +1566,7 @@ impl App {
             return;
         }
         v.ghost = suggest::ghost(&items, !f.explicit).map(|g| suggest::shown_ghost(&g, at_end).to_string()).filter(|g| !g.is_empty());
-        v.popup = f.explicit.then(|| Popup { items, typed: f.line, selected: 0 });
+        v.popup = f.explicit.then_some(Popup { items, typed: f.line, selected: 0 });
         self.redraw();
     }
 
@@ -1602,7 +1602,7 @@ impl App {
         let items = crate::ai_complete::with_first(f.first, ai_items);
         let (rows, ghost) = crate::ai_complete::shown(&items, &f.history);
         v.ghost = ghost.map(|g| suggest::shown_ghost(&g, at_end).to_string()).filter(|g| !g.is_empty());
-        v.popup = (!rows.is_empty()).then(|| Popup { items: rows, typed: f.line, selected: 0 });
+        v.popup = (!rows.is_empty()).then_some(Popup { items: rows, typed: f.line, selected: 0 });
         self.redraw();
     }
 

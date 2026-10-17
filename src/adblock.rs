@@ -351,8 +351,8 @@ fn selector_ok(s: &str) -> bool {
         && s.len() <= MAX_SELECTOR
         && !s.chars().any(|c| c.is_control() || matches!(c, '{' | '}' | ';' | '@' | '<' | '\\'))
         && !s.contains("/*")
-        && s.matches('"').count() % 2 == 0
-        && s.matches('\'').count() % 2 == 0
+        && s.matches('"').count().is_multiple_of(2)
+        && s.matches('\'').count().is_multiple_of(2)
 }
 
 /// The longest run (lower case) of literal characters every match must contain, or None when

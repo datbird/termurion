@@ -158,7 +158,7 @@ fn hex(b: &[u8]) -> String {
 }
 
 fn unhex(s: &[u8]) -> Option<Vec<u8>> {
-    if s.is_empty() || s.len() % 2 != 0 {
+    if s.is_empty() || !s.len().is_multiple_of(2) {
         return None;
     }
     s.chunks(2).map(|p| u8::from_str_radix(std::str::from_utf8(p).ok()?, 16).ok()).collect()

@@ -508,13 +508,13 @@ impl App {
     pub(super) fn chat_tick(&mut self) -> Option<Instant> {
         let busy = |a: &Agent| a.in_turn || a.driver.is_some() || a.files.is_some();
         if self.chat_db.is_some() && self.chat_agents.values().any(busy) {
-            let fx = self.engine(|cx| Engine::gate_tick(cx)).unwrap_or_default();
+            let fx = self.engine(Engine::gate_tick).unwrap_or_default();
             self.chat_apply(fx);
             let reading: Vec<String> = self.chat_agents.iter().filter(|(_, a)| a.driver.is_some()).map(|(c, _)| c.clone()).collect();
             for chat in reading {
                 self.ai_refresh_volatile(&chat);
             }
-            let fx = self.engine(|cx| Engine::poll(cx)).unwrap_or_default();
+            let fx = self.engine(Engine::poll).unwrap_or_default();
             self.chat_apply(fx);
         }
         for (chat, request, send, safe) in self.ai_check_tick() {

@@ -402,7 +402,7 @@ pub fn format_date(pattern: &str, p: &Parts, millis: u16) -> String {
         while chars.get(i + n) == Some(&c) {
             n += 1;
         }
-        let hour12 = if p.hour % 12 == 0 { 12 } else { p.hour % 12 };
+        let hour12 = if p.hour.is_multiple_of(12) { 12 } else { p.hour % 12 };
         let piece = match (c, n) {
             ('y', 4) => Some(format!("{:04}", p.year)),
             ('y', 2) => Some(format!("{:02}", p.year % 100)),

@@ -513,7 +513,7 @@ mod browser {
         let mut cancel = Box::new(DNS_SERVICE_CANCEL { reserved: std::ptr::null_mut() });
         // SAFETY: as in `browse`.
         let status = unsafe { DnsServiceResolve(&*request, &mut *cancel) };
-        (status == DNS_REQUEST_PENDING).then(|| Request::Resolve { _request: request, _name: name, cancel })
+        (status == DNS_REQUEST_PENDING).then_some(Request::Resolve { _request: request, _name: name, cancel })
     }
 
     pub struct Browser {

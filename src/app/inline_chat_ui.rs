@@ -974,7 +974,7 @@ impl App {
             // The strip above the input: "Copied" or the pending attachments' names.
             let has_strip = s.copied.as_ref().is_some_and(|(_, _, at)| at.elapsed() < chat_view::COPIED_FOR) || !s.draft.pending.is_empty();
             let strip_h = if has_strip { line_h } else { 0.0 };
-            let strip = has_strip.then(|| Rect { x: input.x, y: input.y - strip_h - 2.0 * scale, w: input.w, h: strip_h });
+            let strip = has_strip.then_some(Rect { x: input.x, y: input.y - strip_h - 2.0 * scale, w: input.w, h: strip_h });
             let below = strip.map_or(input.y, |r| r.y) - 4.0 * scale;
             let area = Rect { x: panel.x, y: body.y, w: panel.w, h: (below - body.y).max(0.0) };
             // The conversation at the bubble's text width.

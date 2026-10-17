@@ -414,7 +414,7 @@ impl App {
             ToolId::Jobs => self.jobs_shown(),
             // Never read: a web tool draws no list.
             ToolId::Notes | ToolId::Dynamic(_) => Shown::Notes,
-            ToolId::Codecierge => Shown::Codecierge(cc_view.unwrap_or_else(|| crate::codecierge::View::Onboarding(crate::codecierge::CodeciergeState::Ready))),
+            ToolId::Codecierge => Shown::Codecierge(cc_view.unwrap_or(crate::codecierge::View::Onboarding(crate::codecierge::CodeciergeState::Ready))),
         });
         // Jobs' selection follows its processes, not its row numbers.
         if let Shown::Jobs(new) = &*shown {

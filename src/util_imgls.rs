@@ -350,7 +350,7 @@ pub fn strftime(fmt: &str, p: &Parts) -> String {
         ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
     let day = DAYS.get(usize::from(p.weekday)).copied().unwrap_or("?");
     let month = MONTHS.get(usize::from(p.month).wrapping_sub(1)).copied().unwrap_or("?");
-    let h12 = if p.hour % 12 == 0 { 12 } else { p.hour % 12 };
+    let h12 = if p.hour.is_multiple_of(12) { 12 } else { p.hour % 12 };
     let mut out = String::new();
     let mut chars = fmt.chars();
     while let Some(c) = chars.next() {
@@ -644,7 +644,7 @@ impl Ls<'_, '_> {
         }
         if path_true && !o.has('d') && (o.has('s') || o.has('l')) {
             let total = if o.has('k') {
-                if blocks_total % 2 == 0 { (blocks_total / 2).to_string() } else { format!("{}.5", blocks_total / 2) }
+                if blocks_total.is_multiple_of(2) { (blocks_total / 2).to_string() } else { format!("{}.5", blocks_total / 2) }
             } else {
                 blocks_total.to_string()
             };

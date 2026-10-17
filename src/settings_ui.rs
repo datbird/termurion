@@ -876,11 +876,11 @@ impl SettingsWindow {
                                         // A session with no copy yet: load into a scratch profile; the app divorces.
                                         if let Some(base) = store.get(&page_guid).cloned() {
                                             let mut p = base.clone();
-                                            crate::settings_presets::load(&preset, &mut p, answer.index == 0, presets.editing.dark, dark);
+                                            crate::settings_presets::load(preset, &mut p, answer.index == 0, presets.editing.dark, dark);
                                             edit = Edit::SessionEdit(pane, session_diff(&base, &p));
                                         }
                                     } else if let Some(p) = store.get_mut(&page_guid) {
-                                        crate::settings_presets::load(&preset, p, answer.index == 0, presets.editing.dark, dark);
+                                        crate::settings_presets::load(preset, p, answer.index == 0, presets.editing.dark, dark);
                                         edit = Edit::Changed(page_guid.clone());
                                     }
                                 }

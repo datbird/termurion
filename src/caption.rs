@@ -422,9 +422,9 @@ pub fn layout(client_w: f32, bar_h: f32, scale: f32, setting: f32, extra_space: 
     // The setting's difference from 75 scales with the buttons.
     let reserved = reserved_for_buttons(REFERENCE_SETTING + (setting - REFERENCE_SETTING) * scale, 3.0 * bw);
     let room_end = client_w - reserved;
-    let shortcut = (shortcut_w > 0.0).then(|| Rect { x: room_end - shortcut_w, y: 0.0, w: shortcut_w, h: bar_h });
+    let shortcut = (shortcut_w > 0.0).then_some(Rect { x: room_end - shortcut_w, y: 0.0, w: shortcut_w, h: bar_h });
     let end = shortcut.map_or(room_end, |s| s.x) - extra_space * scale;
-    let name = (name_w > 0.0).then(|| Rect { x: NAME_LEFT * scale, y: 0.0, w: name_w, h: bar_h });
+    let name = (name_w > 0.0).then_some(Rect { x: NAME_LEFT * scale, y: 0.0, w: name_w, h: bar_h });
     let start = name.map_or(0.0, |n| n.x + n.w + NAME_RIGHT * scale);
     Layout {
         bar: Rect { x: 0.0, y: 0.0, w: client_w, h: bar_h },

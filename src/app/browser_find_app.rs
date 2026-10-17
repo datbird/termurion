@@ -355,15 +355,15 @@ impl App {
             return;
         }
         let Some(title) = self.global_title(pane) else { return };
-        self.global_web.retain(|h| h.pane != pane as u64);
-        self.global_web.extend(results.iter().map(|r| crate::global_find_ui::web_hit(pane as u64, &title, r)));
+        self.global_web.retain(|h| h.pane != pane);
+        self.global_web.extend(results.iter().map(|r| crate::global_find_ui::web_hit(pane, &title, r)));
         self.global_show();
     }
 
     /// A closed pane or a replaced page: its delivered Find Globally rows go and its stream
     /// no longer answers the current search; the window is shown again.
     pub(super) fn global_pane_gone(&mut self, pane: PaneId) {
-        crate::global_find_ui::drop_pane_rows(&mut self.global_hits, &mut self.global_web, pane as u64);
+        crate::global_find_ui::drop_pane_rows(&mut self.global_hits, &mut self.global_web, pane);
         if let Some(bv) = self.browser_views.get_mut(&pane) {
             bv.global_gen = 0;
         }

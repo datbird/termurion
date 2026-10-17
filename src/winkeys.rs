@@ -662,7 +662,7 @@ fn register(registered: &mut Vec<(i32, Vec<u32>)>, chords: &[(u32, crate::hotkey
     let mut system = Vec::new();
     const MAPVK_VSC_TO_VK_EX: u32 = 3;
     const MOD_NOREPEAT: u32 = 0x4000;
-    for (i, (chord, ids)) in group_chords(&chords).into_iter().enumerate() {
+    for (i, (chord, ids)) in group_chords(chords).into_iter().enumerate() {
         let vk = match chord.key {
             crate::hotkey::ChordKey::Scan(s) => unsafe { MapVirtualKeyW(s, MAPVK_VSC_TO_VK_EX) },
             crate::hotkey::ChordKey::Char(c) => (unsafe { VkKeyScanW(c as u16) } as u32) & 0xFF,

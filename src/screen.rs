@@ -2350,7 +2350,7 @@ impl Screen {
         // Now and then, forget folds and notes whose rows scrolled out of the buffer.
         self.feeds = self.feeds.wrapping_add(1);
         self.fed = true;
-        if self.feeds % 256 == 0 && (!self.folds.is_empty() || !self.notes.by_id.is_empty() || !self.images.by_id.is_empty() || !self.portholes.is_empty()) {
+        if self.feeds.is_multiple_of(256) && (!self.folds.is_empty() || !self.notes.by_id.is_empty() || !self.images.by_id.is_empty() || !self.portholes.is_empty()) {
             self.prune_tags();
         }
         self.sync_selection();

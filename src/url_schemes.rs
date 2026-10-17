@@ -564,7 +564,7 @@ impl SchemeRegistry for WinRegistry {
     fn trusted_folders(&self) -> crate::link_scheme::TrustedFolders {
         use windows_sys::Win32::UI::Shell::{FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_Windows};
         crate::link_scheme::TrustedFolders {
-            program_files: [&FOLDERID_ProgramFiles, &FOLDERID_ProgramFilesX86].into_iter().filter_map(|id| known_folder(id)).collect(),
+            program_files: [&FOLDERID_ProgramFiles, &FOLDERID_ProgramFilesX86].into_iter().filter_map(known_folder).collect(),
             windows: known_folder(&FOLDERID_Windows),
         }
     }
