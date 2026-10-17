@@ -79,6 +79,7 @@ fn lay_doc_in(renderer: &mut Renderer, face: u16, doc: &render::Doc, wide: bool,
     render::layout(doc, width, cell_h, &measure, wide)
 }
 
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 fn lay(renderer: &mut Renderer, face: u16, p: &Porthole, palette: &crate::palette::Palette, dark: bool, theme: &render::Theme, width: f32, cell_h: f32) -> Layout {
     lay_doc_in(renderer, face, &doc_of(p, palette, dark, theme), p.wide, width, cell_h)
 }

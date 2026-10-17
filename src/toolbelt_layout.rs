@@ -377,6 +377,7 @@ pub struct BeltLayout {
     pub dividers: Vec<Rect>,
 }
 
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 fn wrapper_layout(frame: Rect, collapsed: bool, top: f32, close: f32, close_x: f32, title_h: f32, title_gap: f32, side: f32, bottom: f32) -> WrapperLayout {
     let side_margin = close_x + close;
     let close_r = Rect { x: frame.x + close_x, y: frame.y + top, w: close, h: close };

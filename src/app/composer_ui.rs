@@ -281,6 +281,7 @@ fn prefix_runs(c: &composer::Composer) -> Vec<(Range<usize>, Rgb, bool, Rgb)> {
 /// strikethrough, link dashes) inside the rows `cover` spans: the rows under an Auto Composer
 /// are skipped, and so are the box glyphs (`glyphs` from `glyph_from`) in those rows. A quad reaching
 /// past them (the dimming over the whole pane) stays.
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 pub(super) fn skip_covered(overlay: &mut Vec<scene::Quad>, from: usize, underlines: &mut Vec<scene::Quad>, underline_from: usize, strikes: &mut Vec<scene::Quad>, strike_from: usize, glyphs: &mut Vec<scene::CellGlyph>, glyph_from: usize, cover: Rect) {
     let tail = glyphs.split_off(glyph_from.min(glyphs.len()));
     glyphs.extend(tail.into_iter().filter(|g| !(g.rect.y >= cover.y - 0.5 && g.rect.y + g.rect.h <= cover.y + cover.h + 0.5)));

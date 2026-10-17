@@ -1176,6 +1176,7 @@ fn draw_buttons(ui: &mut egui::Ui, row: &RowData, st: &mut ConvoState, out: &mut
     }
 }
 
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 fn draw_body(ui: &mut egui::Ui, body: &Body, row: &RowData, part: usize, ink: &Ink, st: &mut ConvoState, icons: bool, dark: bool, out: &mut Vec<ChatEvent>) {
     match body {
         Body::Plain(t) => {
@@ -1212,6 +1213,7 @@ fn draw_body(ui: &mut egui::Ui, body: &Body, row: &RowData, part: usize, ink: &I
 
 /// A code attachment: a box titled "Code Interpreter" with its own copy button
 /// (`MultipartMessageCellView.swift:387-405`).
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 fn code_attachment(ui: &mut egui::Ui, code: &str, row: &RowData, part: usize, ink: &Ink, st: &mut ConvoState, icons: bool, out: &mut Vec<ChatEvent>) {
     let frame = egui::Frame::new().fill(ink.code_bg).corner_radius(6.0).inner_margin(egui::Margin::same(6));
     let shown = frame.show(ui, |ui| {

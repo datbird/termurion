@@ -562,6 +562,7 @@ impl Pane {
         self.stable_id = id.to_string();
     }
 
+    #[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
     pub fn start(id: PaneId, api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
         Pane::start_transport(id, api, Transport::Conpty, cmdline, cwd, env, cols, rows, notify)
     }
@@ -581,6 +582,7 @@ impl Pane {
     }
 
     /// A pane whose shell the session host runs.
+    #[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
     pub fn start_hosted(id: PaneId, host: &crate::host_client::Client, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
         Pane::start_hosted_transport(id, host, Transport::Conpty, cmdline, cwd, env, cols, rows, notify)
     }

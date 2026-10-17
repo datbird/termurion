@@ -617,6 +617,7 @@ pub fn description(w: &Watcher, note: Option<&str>) -> Value {
 
 /// What `register` did.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 pub enum Registered {
     New,
     Existing(Watcher),

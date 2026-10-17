@@ -30,6 +30,7 @@ const MODE_GLYPHS: [char; 3] = ['\u{E8FD}', '\u{E737}', '\u{E716}'];
 const TOOLBAR_H: f32 = 24.0;
 
 /// A toolbar button: the glyph (or `fallback` text without the icon font), `width` wide.
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 fn tool_button(ui: &mut egui::Ui, glyph: char, fallback: &str, width: f32, on: bool, enabled: bool, tip: &str, a11y: &str) -> egui::Response {
     let text = crate::settings_keys::icon_text(ui.ctx(), glyph).unwrap_or_else(|| egui::RichText::new(fallback));
     let button = egui::Button::new(text).selected(on).min_size(egui::vec2(width, TOOLBAR_H));

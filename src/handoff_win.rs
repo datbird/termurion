@@ -32,6 +32,7 @@ const CLASS: GUID = GUID::from_u128(0x6A1E8D3C_2B7F_4C9E_9D41_5F0B7A2C8E13);
 
 #[interface("6F23DA90-15C5-4203-9DB0-64E73F1B1B00")]
 pub unsafe trait ITerminalHandoff3: IUnknown {
+    #[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
     fn EstablishPtyHandoff(&self, input: *mut HANDLE, output: *mut HANDLE, signal: HANDLE, reference: HANDLE, server: HANDLE, client: HANDLE, startup: *const TerminalStartupInfo) -> HRESULT;
 }
 

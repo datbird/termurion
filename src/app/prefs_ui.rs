@@ -24,6 +24,7 @@ const SAVE_DELAY: Duration = Duration::from_millis(500);
 pub(super) type Fetched = Result<String, (i32, String)>;
 
 /// What the launch found (`freshCopyOfRemotePreferences`, `RP:234-313`).
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 pub(super) enum Start {
     /// The setting is off.
     Off,

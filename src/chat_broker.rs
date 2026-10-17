@@ -19,6 +19,7 @@ pub type SubId = u64;
 
 /// What a subscription hears (`ChatBroker.Update`).
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 pub enum Update {
     Delivery { message: Message, partial: bool },
     Typing { on: bool, who: Participant },

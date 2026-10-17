@@ -13,6 +13,7 @@ use crate::egui_host::EguiHost;
 
 /// What the editor answered. `Debug` shows no value.
 #[derive(PartialEq)]
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 pub enum CardResult {
     Saved(Card),
     Canceled,

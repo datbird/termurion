@@ -75,6 +75,7 @@ pub(super) struct Ctx<'a> {
 
 /// What the App does once the engine's borrow ends, in order.
 #[derive(Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 pub(super) enum EngineEffect {
     /// The one dispatch of a tool call, after the gate answered Run or the person allowed it.
     RunTool { chat: String, request_id: String, pane: PaneId, call: Call, send: Option<String> },

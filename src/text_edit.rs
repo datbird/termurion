@@ -867,6 +867,7 @@ impl WrapCache {
 /// Each visual line measures only text near its own length (`fit_end`), never the rest of the
 /// paragraph, so a long pasted line wraps in O(n log n) measuring rather than O(n^2). This
 /// relies on the width growing with the text (a longer prefix is never narrower).
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 fn wrap_hard(text: &str, start: usize, end: usize, max_w: f32, indent: f32, break_before: bool, width: &dyn Fn(&str) -> f32, lines: &mut Vec<VisualLine>) {
     let bytes = text.as_bytes();
     let mut line = start;
@@ -1871,6 +1872,7 @@ mod tests {
     }
 
     /// The wrap as it was before the bounded measure, the reference for the test above.
+    #[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
     fn old_wrap_hard(text: &str, start: usize, end: usize, max_w: f32, indent: f32, break_before: bool, width: &dyn Fn(&str) -> f32, lines: &mut Vec<VisualLine>) {
         let mut line = start;
         let mut room = max_w - indent;

@@ -213,6 +213,7 @@ struct Done {
 }
 
 /// What threads send: an answer, then (however the thread ends) that it ended.
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 enum Msg {
     Done(Done),
     Ended(Job, u64),

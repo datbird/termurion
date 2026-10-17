@@ -93,6 +93,7 @@ pub(super) enum Proposed {
 }
 
 /// A check's progress.
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 pub(super) enum Run {
     Running(Runner, Endpoint),
     Done(Verdict),

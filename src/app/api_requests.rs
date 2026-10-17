@@ -45,6 +45,7 @@ use pb::client_originated_message::Submessage as Req;
 use pb::server_originated_message::Submessage as Resp;
 
 /// A request's answer: sent now, or later by whatever finishes it (tmux replies).
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 pub(super) enum Answer {
     Now(pb::ServerOriginatedMessage),
     Later,

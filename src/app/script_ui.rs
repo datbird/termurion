@@ -43,6 +43,7 @@ pub(super) enum ScopeSpec {
 /// with the origin's name, or one of the callers (triggers, bindings, the status bar, title
 /// providers, menus).
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 pub(super) enum Origin {
     Api {
         conn: u64,

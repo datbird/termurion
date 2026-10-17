@@ -164,6 +164,7 @@ impl Transactions {
 
 /// Where a request goes.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
 pub enum Route {
     /// Answered here.
     Reply(pb::ServerOriginatedMessage),

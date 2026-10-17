@@ -305,6 +305,7 @@ pub fn margin_fill(frame: &mut Frame, outer: Rect, inner: Rect, cell_h: f32, fil
 
 /// `margin_fill` for a see-through window: each strip is one layer at the pane's `alpha`, or
 /// opaque when it is a non-default color (not `pane_bg`) and `opaque_colors` is on (13g).
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 pub fn margin_fill_alpha(frame: &mut Frame, outer: Rect, inner: Rect, cell_h: f32, fill: &crate::margins::Fill, pane_bg: Rgb, alpha: f32, opaque_colors: bool, bg_image: bool) {
     for (rect, color) in margin_strips(outer, inner, cell_h, fill) {
         if bg_image && color == pane_bg {
@@ -1015,6 +1016,7 @@ fn match_text(bg: Rgb) -> Rgb {
     if lum > 127.5 { rgb(0, 0, 0) } else { rgb(0xff, 0xff, 0xff) }
 }
 
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 pub fn pane_with(
     frame: &mut Frame,
     screen: &Screen,
@@ -1752,6 +1754,7 @@ pub const PORTHOLE_MARGIN: f32 = 8.0;
 /// band, rule, underlines and runs. `origin` is where the text's top left sits; `band` is the
 /// left edge and width a code band and a rule are drawn in (a rule stops `PORTHOLE_MARGIN` short
 /// of the band's right edge); `back` and `fg` are the document's background and text colors.
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 pub fn doc_lines(frame: &mut Frame, origin: (f32, f32), lines: &[crate::porthole::render::VisualLine], marks: &[(Rect, Rgb, f32)], area: Rect, band: (f32, f32), back: Rgb, fg: Rgb) {
     let (ox, oy) = origin;
     // Selection and find marks, from the text's top left, under the text.
@@ -3457,6 +3460,7 @@ pub fn command_buttons(frame: &mut Frame, pane_inner: Rect, cell: (f32, f32), ro
 /// `overlay`, which draws over text. `colors` is `offscreen::band_colors` (sRGB). `holes` are
 /// Termurion's surfaces already drawn over the band's strip (info bar, find bar, indicators): the
 /// band is drawn around them, so it is called last.
+#[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
 pub fn offscreen_band(frame: &mut Frame, screen: &Screen, band: Rect, text_origin: (f32, f32), cell: (f32, f32), line: i32, colors: ([f32; 4], [f32; 4]), face: u16, holes: &[Rect]) {
     let lin = |c: [f32; 4]| [srgb_to_linear((c[0] * 255.0).round() as u8), srgb_to_linear((c[1] * 255.0).round() as u8), srgb_to_linear((c[2] * 255.0).round() as u8), c[3]];
     // Around Termurion's own surfaces over the pane's top, which keep their pixels.
