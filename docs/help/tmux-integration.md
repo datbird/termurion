@@ -58,6 +58,16 @@ The first tab, the one where you typed the command, stays as the gateway. It is 
 - tmux on the host. Termurion detects the version when it connects. Features that need a newer tmux say so below.
 - The ConPTY that ships with Termurion (the `resources\conpty` folder, `conpty.dll` and `OpenConsole.exe`). The ConPTY that comes with Windows drops the start sequence of control mode (`DCS 1000p`), so tmux integration cannot start through it. Termurion loads the shipped ConPTY itself. If you replace or remove that folder, tmux integration stops working.
 
+## Local and remote servers
+
+Like iTerm2, Termurion asks the server for its process id (`#{pid}`) and checks whether that process is on this machine and is the tmux server. A server that is local is treated differently in one way: Termurion also asks for each pane's process id (`#{pane_pid}`) and reads the foreground job, its ancestors, and the job started and ended triggers from that process tree, as iTerm2 does with a local tmux. A server that is not local gets the job name tmux reports (`#{pane_current_command}`).
+
+- psmux is a local server, because it is a Windows process on this machine. Its panes' jobs come from the Windows process tree. `session.jobName` and the session title show the program's name from that tree; tmux's own name is used until the tree has answered.
+- WSL tmux is not local. It runs inside the WSL virtual machine, so its process ids mean nothing to Windows, and the check is never made for it (a Windows process that happens to have the same number would be a stranger). Its job names come from tmux.
+- tmux over ssh is not local, for the same reason.
+
+What stays the same for every server: the pane's working directory comes from tmux (`#{pane_current_path}`) as the server writes it. For psmux that is a Windows path; for WSL tmux and ssh it is a Linux path, and Termurion does not turn it into a `\\wsl$` path. iTerm2 makes no such mapping either: the path is shown, used in titles and new tabs sent back to tmux (`-c`), and not opened as a file on this machine. The Jobs tool in the toolbelt, the close confirmation, and signals still work on Termurion's own shells only.
+
 ## psmux differences
 
 psmux is not tmux, and its control mode does less. Termurion detects psmux when it connects and turns off what psmux cannot do. What you see:
@@ -70,6 +80,7 @@ psmux is not tmux, and its control mode does less. Termurion detects psmux when 
 - If the attached session is killed, Termurion ends the connection itself, because psmux sends no exit notice.
 - Keys sent to a pane may log a "command timed out" error from psmux. The keys still arrive, and Termurion ignores the error.
 - psmux starts a session at 120x30. Termurion resizes it to the tab size when it connects.
+- The tmux paste buffer is not mirrored to the clipboard. psmux refuses `set-buffer` in control mode and sends no notice when its buffer changes.
 - psmux reports version 3.3.8, which Termurion reads as tmux 3.3. Pause mode and per-window sizes are on.
 
 Everything else the live suite checks (attach, sizing, new window, split, resize, layouts, rename, send keys, pause, kill pane, detach) passes on psmux. The full list is in `docs/probe/2026-10-14-psmux-wsl-tmux-results.md`.
@@ -144,9 +155,11 @@ All of these are in Settings (Ctrl+Shift+,), mostly under Advanced and General >
 
 - Native Windows: psmux 3.3.8 (from winget).
 - WSL: tmux 3.4.
-- tmux over ssh: not in the live suite yet. It uses the same code as WSL tmux, and the remote tmux version decides what is on.
+- tmux over ssh: tmux 3.4 on a Linux host, and tmux 3.6 on another (see the results file). The remote tmux version decides what is on.
 
 Termurion's live suite starts a real server of each kind, attaches through the same code the app uses, and checks the features above. It uses its own server names and never touches your default servers. The results are in `docs/probe/2026-10-14-psmux-wsl-tmux-results.md`.
+
+The ssh part of the suite runs only when you name a host. Set `TERMURION_TMUX_SSH_HOST` (an ssh alias or address; your ssh config applies) and, if needed, `TERMURION_TMUX_SSH_USER` and `TERMURION_TMUX_SSH_PORT`. The login must work without a prompt, and the host needs tmux 3.2 or later. With the host unset the ssh tests print `LIVE ssh SKIP` and pass. Each test starts tmux on a private socket with a random name (`-L`, `-f /dev/null`) and ends only that server. `scripts/xt` hands the variables to the build host when they are named in `XT_PASS_ENV`.
 
 ## Related pages
 

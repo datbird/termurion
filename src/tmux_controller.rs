@@ -67,6 +67,8 @@ enum Req {
     LivePanes,
     /// `break-pane -P`: the tmux window whose Termurion window gets the new one (None: a new window).
     BreakPane(Option<u32>),
+    /// `display-message -t %P -p '#{pane_pid}'` on a local server (iTerm2's loadTmuxProcessID).
+    PanePid(u32),
     /// `display-message -p "#{status-interval}"` for the status monitors.
     StatusInterval,
     Ignore,
@@ -166,6 +168,8 @@ pub enum Action {
     RedTabColors,
     /// A window's tmux status line, sanitized (`tmux_monitor::sanitize_status`).
     StatusLine { window: u32, side: Side, value: String },
+    /// A pane's process id on a local server: the process Termurion reads the job from.
+    PanePid { pane: u32, pid: u32 },
 }
 
 /// What Termurion saved about a tmux window's Termurion window and tab.
@@ -336,6 +340,9 @@ pub struct Controller {
     /// The server is psmux: commands it lacks are left out or sent in the form it has
     /// (the app sets this from the handshake before `version_known`).
     pub psmux: bool,
+    /// The server is a process on this machine (iTerm2's `serverIsLocal`): the panes' pids are
+    /// read, so their jobs come from the process tree.
+    pub server_local: bool,
 }
 
 impl Controller {
@@ -398,6 +405,7 @@ impl Controller {
             accelerated: BTreeSet::new(),
             accelerated_due: Vec::new(),
             psmux: false,
+            server_local: false,
         }
     }
 
@@ -726,6 +734,30 @@ impl Controller {
         }
         self.cwd_gates.insert(pane, crate::tmux_monitor::CwdGate::default());
         self.install(Key::Pane(pane, Info::Cwd), &target, "#{pane_current_path}", None, gw);
+        if self.server_local {
+            self.ask_pane_pid(pane, gw);
+        }
+    }
+
+    /// The handshake found the server's pid is a local tmux process: every pane shown so far
+    /// and each one that opens later is asked for its pid.
+    pub fn set_server_local(&mut self, local: bool, gw: &mut Gateway) {
+        if self.server_local == local {
+            return;
+        }
+        self.server_local = local;
+        if local {
+            let panes: BTreeSet<u32> = self.monitors.keys().filter_map(|k| if let Key::Pane(p, _) = k { Some(*p) } else { None }).collect();
+            for pane in panes {
+                self.ask_pane_pid(pane, gw);
+            }
+        }
+    }
+
+    /// iTerm2's loadTmuxProcessID: only a local server's pane pid means anything here.
+    fn ask_pane_pid(&mut self, pane: u32, gw: &mut Gateway) {
+        let t = self.tag(Req::PanePid(pane));
+        gw.send(&format!("display-message -t '%{pane}' -p '#{{pane_pid}}'"), Some(t), Flags { tolerate: true, ..Default::default() });
     }
 
     pub fn unwatch_pane(&mut self, pane: u32, gw: &mut Gateway) {
@@ -1187,6 +1219,11 @@ impl Controller {
                             self.intentional.insert(w);
                         }
                     }
+                }
+            }
+            Req::PanePid(pane) => {
+                if let Some(pid) = ok.then(|| text.trim().parse::<u32>().ok()).flatten().filter(|p| *p > 0) {
+                    out.push(Action::PanePid { pane, pid });
                 }
             }
             Req::ShowBuffer => {
@@ -2319,6 +2356,29 @@ mod tests {
         r.sent();
         r.ctl.poll(13.0, &mut r.gw);
         assert_eq!(r.sent(), "display-message -t '%0' -p '#{pane_current_command}'\r", "PollForTmuxForegroundJob");
+    }
+
+    /// iTerm2's loadTmuxProcessID: a local server is asked for each pane's pid, those already
+    /// shown and those that open later; any other server is never asked.
+    #[test]
+    fn a_local_server_is_asked_for_its_pane_pids() {
+        let mut r = opened();
+        r.ctl.watch_pane(0, true, &mut r.gw);
+        r.sent();
+        for reply in ["t", "bash", "/x"] {
+            r.answer(Some(reply));
+        }
+        r.ctl.set_server_local(true, &mut r.gw);
+        assert_eq!(r.sent(), "display-message -t '%0' -p '#{pane_pid}'\r", "the pane already shown");
+        let a = r.answer(Some("4321"));
+        assert_eq!(a, vec![Action::PanePid { pane: 0, pid: 4321 }]);
+        r.ctl.watch_pane(7, false, &mut r.gw);
+        assert!(r.sent().contains("display-message -t '%7' -p '#{pane_pid}'"), "a pane that opens later");
+        let mut remote = opened();
+        remote.ctl.watch_pane(0, true, &mut remote.gw);
+        assert!(!remote.sent().contains("pane_pid"), "WSL and ssh servers are never asked");
+        remote.ctl.set_server_local(false, &mut remote.gw);
+        assert!(!remote.sent().contains("pane_pid"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-# TW11 live suite: psmux 3.3.8 and WSL tmux 3.4, 2026-10-14
+# TW11 live suite: psmux 3.3.8, WSL tmux 3.4, and tmux over ssh, 2026-10-14
 
 Machine: the Windows test machine, shipped ConPTY (`vendor/conpty`), psmux 3.3.8 from winget (`marlocarlo.psmux`), tmux 3.4 in WSL.
 
@@ -27,6 +27,48 @@ Run: `scripts/xt test --release --lib tmux_live -- --ignored --nocapture --test-
 | kill-session of the attached session | pass | pass | tmux: `%exit`. psmux: a reply and silence; the gateway ends itself and the client is ended. |
 
 Not run: the client list that tmux 3.6 and later answers, and the `refresh-client -r` color reports. tmux 3.4 has no `-r`: the controller sends it from 3.4 on and the error is tolerated. psmux reports 3.3, so it is not sent.
+
+## tmux over ssh live suite, 2026-10-17
+
+The ssh tests in `src/tmux_live.rs` (`suite_ssh`, `session_end_ssh`, `clipboard_ssh`, `locality_ssh`) drive tmux on another machine through `ssh.exe -tt` inside the same headless ConPTY, with the same hook, gateway, handshake, and controller. The host comes from `TERMURION_TMUX_SSH_HOST` (optional `TERMURION_TMUX_SSH_USER` and `TERMURION_TMUX_SSH_PORT`); with it unset each test prints `LIVE ssh SKIP` and passes. Each test starts `tmux -L termurion-test-<name><random> -f /dev/null -CC new-session` on the host and ends only that server (`kill-server`), also when the test panics. A failed fact now fails the test (`result` asserts).
+
+Run: `TERMURION_TMUX_SSH_HOST=<host> XT_PASS_ENV=TERMURION_TMUX_SSH_HOST scripts/xt test --release --lib -- --ignored --nocapture --test-threads=1 tmux_live::tests::suite_ssh` (and the other three).
+
+| Feature | tmux 3.4 over ssh (Linux) | tmux 3.6 over ssh (Linux) | Notes |
+|---|---|---|---|
+| attach | pass | pass | Version read as 3.4 and 3.6; no abort. |
+| size to the tab | pass | pass | `100x28`. |
+| new window, split -h, split -v | pass | pass | |
+| resize pane, select-layout | pass | pass | |
+| resize to a new tab size | pass | pass | `90x26`. |
+| rename-window | pass | pass | |
+| send-keys round trip | pass | pass | The remote shell echoes the marker back as `%output`. |
+| pause and unpause | pass | pass | tmux 3.2 and later. |
+| kill-pane | pass | pass | |
+| detach | pass | pass | `detach`, `%exit`, the ssh client ends with exit 0 (80 to 680 ms). |
+| session survives the detach | pass | pass | `list-sessions` through a second ssh call. |
+| kill-server cleanup | pass | pass | `no server running` afterwards. |
+| kill-session of the attached session | pass | pass | `%exit`, the client ends. |
+| clipboard | pass | pass | `set-buffer` brings `%paste-buffer-changed buffer0`; the controller's `show-buffer` brings the text. Also passes on WSL tmux 3.4. |
+| server is not local | pass | pass | `#{pid}` is a remote pid; no pane pid is asked for. |
+
+Totals of the full run on the 3.4 host: 20 facts on psmux, 19 on WSL tmux, 19 on ssh, 58 pass and 0 fail. The 3.6 host ran the four ssh tests: 4 tests, 0 fail.
+
+Notes on the harness: Windows' `ssh.exe` does not leave when its output goes to a pipe even though the remote command is done, so the helper that calls `tmux` on the host (`list-sessions`, `kill-server`) writes to a file and caps the call at 30 seconds.
+
+## Local and remote servers (psmux, WSL, ssh)
+
+`locality_psmux`, `locality_wsl` and `locality_ssh`. iTerm2 calls a server local when the process behind `#{pid}` is named tmux; a local server is asked for each pane's `#{pane_pid}` and the job comes from that process tree.
+
+| Fact | psmux 3.3.8 | WSL tmux 3.4 | tmux over ssh |
+|---|---|---|---|
+| `#{pid}` names a Windows process here | `psmux.exe` | none, or a stranger's | none |
+| server is local | yes | no | no |
+| `#{pane_pid}` asked for | yes | never | never |
+| pane pid is a Windows process | `powershell.exe` | not asked | not asked |
+| a program started in the pane shows below that pid (job from the process tree) | pass (`ping`) | not applicable | not applicable |
+
+Clipboard on psmux: not available. `set-buffer` is refused in control mode (an error with no text) and psmux sends no `%paste-buffer-changed`, so TmuxSyncClipboard has nothing to mirror. The test records this as a `NOTE` line and does not assert it.
 
 ## What psmux does differently
 

@@ -25,7 +25,7 @@ impl App {
     /// Applies the controller's actions for the gateway `gw`. False when tmux mode ended.
     pub(super) fn tmux_actions(&mut self, gw: PaneId, actions: Vec<Action>, event_loop: &ActiveEventLoop) -> bool {
         // Output and status lines change no pane or tab: no relayout for them.
-        let changes = actions.iter().any(|a| !matches!(a, Action::Output(..) | Action::StatusLine { .. } | Action::NewWindowReply { .. } | Action::Abandoned(..)));
+        let changes = actions.iter().any(|a| !matches!(a, Action::Output(..) | Action::StatusLine { .. } | Action::NewWindowReply { .. } | Action::Abandoned(..) | Action::PanePid { .. }));
         for a in actions {
             match a {
                 Action::Open { window, node, panes, place } => self.tmux_open(gw, window, node, panes, place),
@@ -54,6 +54,17 @@ impl App {
                         if let Err(e) = cb.set_text(text) {
                             self.banners.set("clipboard", format!("Copy failed: {e}"));
                         }
+                    }
+                }
+                // A local server's pane process: the job watcher reads its tree.
+                Action::PanePid { pane, pid } => {
+                    let Some(id) = self.tmux.get(&gw).and_then(|t| t.panes.get(&pane)).map(|(id, _)| *id) else { continue };
+                    if let Some(io) = self.panes.get(&id).and_then(|p| p.tmux_io()) {
+                        io.local_pid.set(Some(pid));
+                        if let Some(old) = self.tmux_pids.insert(id, pid).filter(|old| *old != pid) {
+                            self.jobs.forget(old);
+                        }
+                        self.jobs.watch(pid);
                     }
                 }
                 Action::PaneInfo { pane, what, value } => {
@@ -258,6 +269,7 @@ impl App {
                 }
             }
         }
+        self.tmux_forget_pids();
         if changes {
             self.relayout();
             self.tmux_save_affinities(gw);
@@ -1441,6 +1453,16 @@ impl App {
     }
 
     /// The gateway ended: its panes' sessions end (they follow "After a session ends").
+    /// The job watcher lets go of the process of every local tmux pane that is gone (its pid may
+    /// be a stranger's next).
+    pub(super) fn tmux_forget_pids(&mut self) {
+        let gone: Vec<(PaneId, u32)> = self.tmux_pids.iter().filter(|(id, pid)| self.panes.get(id).and_then(|p| p.tmux_local_pid()) != Some(**pid)).map(|(id, pid)| (*id, *pid)).collect();
+        for (id, pid) in gone {
+            self.tmux_pids.remove(&id);
+            self.jobs.forget(pid);
+        }
+    }
+
     pub(super) fn tmux_end_panes(&mut self, gw: PaneId) {
         let ids: Vec<PaneId> = self.panes.iter().filter(|(_, p)| p.tmux_io().is_some_and(|io| io.gateway == gw)).map(|(id, _)| *id).collect();
         for id in ids {
