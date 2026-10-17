@@ -528,7 +528,7 @@ mod tests {
         assert_eq!(check(&sc(14, COMMAND, "e"), &[]), Err(Refusal::ShellOwned));
         assert_eq!(check(&ok, &[c]), Err(Refusal::Taken), "the app hotkey's chord");
         // The cap: 17 distinct chords register 16.
-        let many: Vec<(PaneId, Shortcut)> = (0..17u64).map(|i| (i + 1, sc(0x7A + 0, CTRL_ALT, "a"))).collect();
+        let many: Vec<(PaneId, Shortcut)> = (0..17u64).map(|i| (i + 1, sc(0x7A, CTRL_ALT, "a"))).collect();
         assert_eq!(plan(&many, &[]).groups.len(), 1, "one chord, however many sessions");
         let codes = [0x7Au16, 0x78, 0x63, 0x76, 0x60, 0x61, 0x62, 0x64, 0x65, 0x6D, 0x67, 0x6F, 18, 19, 20, 21, 23];
         let distinct: Vec<(PaneId, Shortcut)> = codes.iter().enumerate().map(|(i, k)| (i as u64 + 1, sc(*k, CTRL_ALT, "x"))).collect();

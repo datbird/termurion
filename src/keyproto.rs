@@ -207,7 +207,8 @@ pub fn modify_other_keys(ev: &KeyEvent, level: u8) -> Option<Vec<u8>> {
             return None;
         }
         c
-    } else if let Some(c) = text_char(ev) {
+    } else {
+        let c = text_char(ev)?;
         if m.shift && !m.alt && !m.ctrl && c != ' ' {
             return None;
         }
@@ -219,8 +220,6 @@ pub fn modify_other_keys(ev: &KeyEvent, level: u8) -> Option<Vec<u8>> {
             }
         }
         c as u32
-    } else {
-        return None;
     };
     Some(format!("\x1b[27;{};{}~", param(m), code).into_bytes())
 }

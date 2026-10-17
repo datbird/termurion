@@ -338,7 +338,7 @@ pub const PALETTE: [Rgb; 7] = [
 /// changes, keeping pinned tabs in front: one past the last pinned tab other than itself.
 /// The index is `moveTabAtIndex:toIndex:`'s (the tab is taken out, then put back there).
 pub fn pin_target(pinned: &[bool], index: usize) -> usize {
-    pinned.iter().enumerate().filter(|&(i, p)| *p && i != index).map(|(i, _)| i + 1).last().unwrap_or(0)
+    pinned.iter().enumerate().filter(|&(i, p)| *p && i != index).map(|(i, _)| i + 1).next_back().unwrap_or(0)
 }
 
 /// `togglePinTab` (`PTS:355-397`) applied to an order: the tabs `members` (input indices, in

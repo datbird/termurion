@@ -1012,6 +1012,6 @@ mod tests {
         // Labels are the names made inert and cut.
         let mut long = a.clone();
         long.name = "x".repeat(300);
-        assert_eq!(menu_entries(&[long], None, true, false)[0].label.chars().count() <= 129, true);
+        assert!(menu_entries(&[long], None, true, false)[0].label.chars().count() <= 129);
     }
 }

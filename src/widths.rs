@@ -151,7 +151,7 @@ const VS16: &[(u32, u32)] = &[
 ];
 
 fn in_ranges(c: u32, ranges: &[(u32, u32)]) -> bool {
-    match ranges.binary_search_by(|&(lo, hi)| {
+    ranges.binary_search_by(|&(lo, hi)| {
         if c < lo {
             std::cmp::Ordering::Greater
         } else if c > hi {
@@ -159,10 +159,7 @@ fn in_ranges(c: u32, ranges: &[(u32, u32)]) -> bool {
         } else {
             std::cmp::Ordering::Equal
         }
-    }) {
-        Ok(_) => true,
-        Err(_) => false,
-    }
+    }).is_ok()
 }
 
 /// `iTermIsFullWidthCharacter`: East Asian Wide and Fullwidth for the version (9 and up use the

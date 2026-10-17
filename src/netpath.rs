@@ -278,7 +278,7 @@ fn link_target(buf: &[u8]) -> Option<PathBuf> {
         _ => return None,
     };
     let bytes = buf.get(path_buffer + offset..path_buffer + offset + len)?;
-    let wide: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    let wide: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
     let name = String::from_utf16(&wide).ok()?;
     if name.is_empty() {
         return None;

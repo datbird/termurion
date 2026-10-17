@@ -1442,7 +1442,7 @@ mod tests {
         let url = "https://a/b";
         assert_eq!(handler_plan(&format!("open.exe {t0} {URL_TOKEN}"), url, &v(&["My Title  with spaces"]), &fake_resolve), spawn_of(r"C:\t\open.exe", &["My Title  with spaces", url]));
         assert_eq!(handler_plan(&format!("open.exe --t={t0} --p={t1}"), url, &v(&["a b", "C:\\x y"]), &fake_resolve), spawn_of(r"C:\t\open.exe", &["--t=a b", "--p=C:\\x y", url]));
-        for program in [format!("{t0}"), format!("{t0}\\open.exe"), format!("\"{t0}\"")] {
+        for program in [t0.to_string(), format!("{t0}\\open.exe"), format!("\"{t0}\"")] {
             assert_eq!(handler_plan(&format!("{program} {URL_TOKEN}"), url, &v(&["C:\\t"]), &fake_resolve), Err(Refusal::VariableInProgram), "{program}");
         }
         for bad in ["a&calc", "a\"b", "x\n", "a\\", "a\u{E000}b"] {

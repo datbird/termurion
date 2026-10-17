@@ -748,7 +748,7 @@ mod tests {
 
         // A stretchable text component's shared tail, either algorithm.
         let tail_tight = vec!["Text Color:", "Background Color:", "Custom Font", "Compression Resistance:", "Priority:", "Minimum Width:", "Maximum Width:"];
-        let tail_stable = vec!["Text Color:", "Background Color:", "Custom Font", "Size Multiple:", "Priority:", "Minimum Width:", "Maximum Width:"];
+        let tail_stable = ["Text Color:", "Background Color:", "Custom Font", "Size Multiple:", "Priority:", "Minimum Width:", "Maximum Width:"];
 
         for kind in [Kind::ActionsMenu, Kind::SnippetsMenu, Kind::TriggersMenu, Kind::UserName, Kind::JobName, Kind::CurrentDirectory] {
             assert_eq!(labels(&knobs(kind, Algorithm::TightlyPacked)), tail_tight, "{kind:?}");

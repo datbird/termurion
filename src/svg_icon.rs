@@ -692,7 +692,7 @@ mod tests {
     #[test]
     fn hostile_svg_is_refused() {
         let laughs = "<?xml version=\"1.0\"?><!DOCTYPE lolz [<!ENTITY lol \"lol\"><!ENTITY lol2 \"&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;\"><!ENTITY lol3 \"&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;\">]><svg xmlns=\"http://www.w3.org/2000/svg\"><text>&lol3;</text></svg>";
-        let hostile = format!("<svg xmlns=\"http://www.w3.org/2000/svg\" onload=\"alert(1)\"><script>alert(2)</script><image xlink:href=\"https://evil.test/x.png\"/></svg>");
+        let hostile = "<svg xmlns=\"http://www.w3.org/2000/svg\" onload=\"alert(1)\"><script>alert(2)</script><image xlink:href=\"https://evil.test/x.png\"/></svg>".to_string();
         assert!(check(&hostile).is_err());
         assert_eq!(check(laughs), Err(Refusal::Declaration));
         let refused = [

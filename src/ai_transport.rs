@@ -649,7 +649,7 @@ mod tests {
         c.cancel();
         assert_eq!(c.try_event(), None, "nothing after a cancel");
         assert_eq!(t.requests().len(), 3);
-        assert_eq!(t.requests()[2].stream, false);
+        assert!(!t.requests()[2].stream);
     }
 
     #[test]

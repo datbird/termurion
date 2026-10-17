@@ -522,12 +522,10 @@ mod tests {
         // The script's knobs by type, then the class's.
         let tail = vec![statusbar::priority_knob()];
         let k = knobs(&r, tail.clone());
-        let want = vec![
-            Knob { label: "Seconds".into(), kind: KnobKind::Checkbox, key: "sec".into(), placeholder: None, default: Some(toml::Value::Boolean(true)) },
+        let want = [Knob { label: "Seconds".into(), kind: KnobKind::Checkbox, key: "sec".into(), placeholder: None, default: Some(toml::Value::Boolean(true)) },
             Knob { label: "Label".into(), kind: KnobKind::Text, key: "lbl".into(), placeholder: Some("x".into()), default: None },
             Knob { label: "Rate".into(), kind: KnobKind::Double, key: "rate".into(), placeholder: None, default: None },
-            Knob { label: "Tint".into(), kind: KnobKind::Color, key: "tint".into(), placeholder: None, default: None },
-        ];
+            Knob { label: "Tint".into(), kind: KnobKind::Color, key: "tint".into(), placeholder: None, default: None }];
         assert_eq!(k[..4], want[..]);
         assert_eq!(k[4..], tail[..]);
 

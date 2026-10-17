@@ -567,10 +567,10 @@ mod tests {
         s.key(BarKey::PasteMatch, false);
         assert!(s.sent.is_empty());
         // The menu: the swap key decides, as for terminals.
-        assert_eq!(menu_forward(false, false), true, "Find Next, swap off: findNext");
-        assert_eq!(menu_forward(false, true), false, "Find Next, swap on: findPrevious");
-        assert_eq!(menu_forward(true, false), false, "Find Previous, swap off: findPrevious");
-        assert_eq!(menu_forward(true, true), true, "Find Previous, swap on: findNext");
+        assert!(menu_forward(false, false), "Find Next, swap off: findNext");
+        assert!(!menu_forward(false, true), "Find Next, swap on: findPrevious");
+        assert!(!menu_forward(true, false), "Find Previous, swap off: findPrevious");
+        assert!(menu_forward(true, true), "Find Previous, swap on: findNext");
         let up = find_ui::step_direction(false, true);
         assert_eq!(!up, menu_forward(false, true), "the same rule the terminal's step uses");
         let cmds = step_commands(&mut s.m, menu_forward(false, true), SECRET);

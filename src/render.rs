@@ -1189,7 +1189,7 @@ impl Renderer {
         for y in 0..h as usize {
             let line = &data[y * padded as usize..y * padded as usize + row as usize];
             if bgra {
-                for p in line.chunks_exact(4) {
+                for p in line.as_chunks::<4>().0 {
                     out.extend_from_slice(&[p[2], p[1], p[0], p[3]]);
                 }
             } else {
@@ -1830,8 +1830,7 @@ mod tests {
         queue.submit(Some(enc.finish()));
         buf.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        let data = buf.slice(..).get_mapped_range().unwrap().to_vec();
-        data
+        buf.slice(..).get_mapped_range().unwrap().to_vec()
     }
 
     /// Device loss, simulated with `Device::destroy`: the loss is reported to `gpu_pick::take_lost`, and the

@@ -41,7 +41,7 @@ pub fn to_guid_bytes(id: DesktopId) -> [u8; 16] {
 /// short tail are skipped; nothing here panics on odd lengths.
 pub fn ids_from_registry(bytes: &[u8]) -> Vec<DesktopId> {
     bytes
-        .chunks_exact(16)
+        .as_chunks::<16>().0.iter()
         .filter_map(|c| {
             let mut a = [0u8; 16];
             a.copy_from_slice(c);

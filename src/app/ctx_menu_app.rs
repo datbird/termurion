@@ -636,7 +636,7 @@ mod tests {
         assert!(crate::ctx_help::groups(None, None).into_flat().is_empty());
         // A long selection offers the numeric rows and the Base64 copies but not the synonyms.
         let long = crate::ctx_help::groups(None, Some(("01 02 03 04", "01 02 03 04")));
-        assert!(long.synonyms.is_empty() && !long.numeric.is_empty() && long.copy.len() >= 1);
+        assert!(long.synonyms.is_empty() && !long.numeric.is_empty() && !long.copy.is_empty());
     }
 
     /// The wiring: the builder numbers the helpers as the pick reads them, a pick copies and remembers,

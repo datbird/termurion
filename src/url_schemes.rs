@@ -612,7 +612,7 @@ mod tests {
         assert_eq!(executable_path(r"C:\Program Files\Code\Code.exe").as_deref(), Some(r"C:\Program Files\Code\Code.exe"), "spaces are kept");
         // Never split at the first space: an unquoted answer with arguments stays one string, which the plan then refuses (not an .exe).
         assert_eq!(executable_path(r"C:\Tools\a.exe -c %1").as_deref(), Some(r"C:\Tools\a.exe -c %1"));
-        assert!(matches!(crate::link_scheme::exe_stem(r"C:\Tools\a.exe -c %1"), Err(_)));
+        assert!(crate::link_scheme::exe_stem(r"C:\Tools\a.exe -c %1").is_err());
         assert_eq!(executable_path(r#""C:\a.exe"#), None, "an unterminated quote names nothing");
         assert_eq!(executable_path("   "), None);
         assert_eq!(executable_path(r#""""#), None);

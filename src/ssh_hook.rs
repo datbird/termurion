@@ -1291,7 +1291,7 @@ mod tests {
         // Twenty children of pid 5's parser each hold 900,000 bytes of an unfinished init line.
         let mut h = hooked();
         let mut errors = error_depths(&h.feed(&output("r", 5, -1, 0, &dcs_hook("", "v", "YQ==", "Yg=="))));
-        let long = [&START[..], &vec![b'a'; 900_000][..]].concat();
+        let long = [START, &vec![b'a'; 900_000][..]].concat();
         for q in 1..=20 {
             errors.extend(error_depths(&h.feed(&output("r", 5, -1, 0, &output("q", q, -1, 1, &long)))));
             assert!(h.pending_at(2) <= MAX_PENDING, "{}", h.pending_at(2));
@@ -1396,7 +1396,7 @@ mod tests {
         // unfinished init line (under the parser's own 1 MiB cap): 16,000,000 at depth 2.
         let mut h = hooked();
         let mut errors = error_depths(&h.feed(&output("r", 5, -1, 0, &dcs_hook("", "v", "YQ==", "Yg=="))));
-        let long = [&START[..], &vec![b'a'; 1_000_000][..]].concat();
+        let long = [START, &vec![b'a'; 1_000_000][..]].concat();
         for q in 1..=16 {
             errors.extend(error_depths(&h.feed(&output("r", 5, -1, 0, &output("q", q, -1, 1, &long)))));
         }

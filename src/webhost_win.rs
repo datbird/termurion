@@ -5429,7 +5429,7 @@ mod probe {
         p.settle(500);
         assert_eq!(reader_actions(&p), vec!["entered".to_string()], "a page-world post is no Client message: nothing but the reader's own");
         assert!(p.routed.iter().any(|r| r.via == Via::Page && r.body.contains("distractionRemovalEntered")), "the forged post arrived as a page message");
-        assert!(p.routed.iter().filter(|r| r.via == Via::Client).all(|r| r.client().map_or(true, |(h, _)| h == crate::browser_reader::HANDLER)));
+        assert!(p.routed.iter().filter(|r| r.via == Via::Client).all(|r| r.client().is_none_or(|(h, _)| h == crate::browser_reader::HANDLER)));
         p.finish();
     }
 
@@ -6380,7 +6380,7 @@ window.addEventListener('message', function (e) {
                 .unwrap_or(-1)
         };
         let start = line(&mut p);
-        assert!(start >= 0 && start < 3, "the cursor starts on a line with a next one: {start}");
+        assert!((0..3).contains(&start), "the cursor starts on a line with a next one: {start}");
         let mut m = cm::Model::default();
         let before = p.clients(cm::KEY_HANDLER).len();
         copy_press(&mut p, &mut m, &secret, 'j');

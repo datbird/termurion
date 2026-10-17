@@ -1171,7 +1171,7 @@ mod tests {
         let mut peer = session("p", Some("r"), Kind::Peer);
         peer.peer_switch_shortcut = Some(Shortcut { serialized: RELOAD.into() });
         let w = wg("X", vec![session("r", None, Kind::Root), split, tab, peer]);
-        let v = parsed(&encode(&[w.clone()]));
+        let v = parsed(&encode(std::slice::from_ref(&w)));
         let sessions = &v[0]["sessions"];
         assert_eq!(sessions[1]["kind"], json!({"kind": "split", "split": {"orientation": "vertical", "side": "leadingOrTop", "location": 0.5}}));
         assert_eq!(sessions[1]["toolbarItems"], json!([{"kind": "spacer", "minWidth": 8, "maxWidth": 100}, {"kind": "usage", "provider": "anthropicClaudeCode", "command": "", "intervalSeconds": 60}]));
@@ -1179,7 +1179,7 @@ mod tests {
         assert_eq!(sessions[2]["profileGUID"], json!("0F3C5E3A-1D2B-4C6A-9E8F-123456789ABC"));
         assert!(sessions[0].get("parentID").is_none() && sessions[0].get("profileGUID").is_none() && sessions[0].get("peerSwitchShortcut").is_none());
         assert_eq!(sessions[3]["peerSwitchShortcut"], json!({"serialized": RELOAD}));
-        assert_eq!(decode(&encode(&[w.clone()])).unwrap(), vec![w]);
+        assert_eq!(decode(&encode(std::slice::from_ref(&w))).unwrap(), vec![w]);
         assert_eq!(decode(&encode(&[cc()])).unwrap(), vec![cc()]);
         // iTerm2's own bytes decode to the same model.
         assert_eq!(decode(&claude_json().to_string()).unwrap(), vec![cc()]);

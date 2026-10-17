@@ -885,7 +885,7 @@ mod tests {
         assert!(Scanner::default().scan(b"\x1b]72x\x07").is_empty());
         // A list over 64 KiB still arrives, so the controller can answer EFBIG.
         let mut long = b"\x1b]72;t=a;".to_vec();
-        long.extend(std::iter::repeat(b'x').take(70 * 1024));
+        long.extend(std::iter::repeat_n(b'x', 70 * 1024));
         long.push(7);
         assert_eq!(Scanner::default().scan(&long).len(), 1);
     }

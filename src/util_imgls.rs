@@ -1635,7 +1635,7 @@ mod tests {
         let mut names = fs.list(".").unwrap();
         names.sort();
         assert_eq!(names, ["a.png", "b.txt", "ro.txt", "run.CMD", "sub"]);
-        assert_eq!(fs.list("b.txt").is_err(), true);
+        assert!(fs.list("b.txt").is_err());
         assert_eq!(fs.dims("./a.png"), Some((2, 2)));
         assert_eq!(fs.dims("b.txt"), None);
         let mut x = Vec::new();

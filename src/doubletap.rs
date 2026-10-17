@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(feed(&mut m, &[(LCTRL, true, 1000), (LCTRL, false, 1050), (LCTRL, true, 1100), (LCTRL, false, 1150)]), vec![false, false, false, true]);
         // Left then right Control is still Control.
         let mut m = ctrl();
-        assert_eq!(feed(&mut m, &[(LCTRL, true, 0 + 1000), (LCTRL, false, 1050), (RCTRL, true, 1100), (RCTRL, false, 1150)]).last(), Some(&true));
+        assert_eq!(feed(&mut m, &[(LCTRL, true, 1000), (LCTRL, false, 1050), (RCTRL, true, 1100), (RCTRL, false, 1150)]).last(), Some(&true));
         // Again right after: a fresh double tap.
         assert_eq!(feed(&mut m, &[(LCTRL, true, 1300), (LCTRL, false, 1350), (LCTRL, true, 1400), (LCTRL, false, 1450)]).last(), Some(&true));
         assert_eq!((modifier_of(0x5B), modifier_of(0x5C), modifier_of(0x12), modifier_of(0x41)), (Some(3), Some(3), Some(2), None));

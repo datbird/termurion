@@ -793,7 +793,7 @@ mod tests {
         let none = Watcher { linked: None, ..w() };
         assert!(link_holds(&none, None), "an orchestration chat's watcher with no link");
         assert!(!link_holds(&none, Some("A")), "a link made after it");
-        assert!(!records_json(&[a.clone()]).contains("\"A\""), "Termurion's own, never stored");
+        assert!(!records_json(std::slice::from_ref(&a)).contains("\"A\""), "Termurion's own, never stored");
         assert_eq!(records(&records_json(&[a])), vec![w()]);
     }
 
@@ -1126,7 +1126,7 @@ mod tests {
         assert_eq!(o["mode"], "tabStatus");
         assert_eq!(records(&text), vec![w()]);
         let full = Watcher { condition: Some("c".into()), fire_date: Some(5.0), note: Some("n".into()), screen_read_consented: Some(true), notify_user: Some(false), ..w() };
-        assert_eq!(records(&records_json(&[full.clone()])), vec![full]);
+        assert_eq!(records(&records_json(std::slice::from_ref(&full))), vec![full]);
         assert!(records("{bad").is_empty());
         assert!(records("").is_empty());
         assert_eq!(iso8601(0.0), "1970-01-01T00:00:00Z");

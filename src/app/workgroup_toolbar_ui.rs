@@ -541,7 +541,7 @@ impl App {
     /// The toolbar's Reload (`WPP:754-791`): a Regular member starts its program again (a running one
     /// asks first, as Restart Session does). Diff and Code Review members reload through Tasks 6 and 7.
     pub(super) fn workgroup_reload(&mut self, pane: PaneId) {
-        let mode = self.workgroup_of(pane).and_then(|i| i.config_of(pane).or_else(|| i.non_peers.iter().find(|(_, p)| *p == pane).map(|(c, _)| c.as_str())).and_then(|c| i.workgroup.session(c)).map(|s| s.mode.clone()));
+        let mode = self.workgroup_of(pane).and_then(|i| i.config_of(pane).or_else(|| i.non_peers.iter().find(|(_, p)| *p == pane).map(|(c, _)| c.as_str())).and_then(|c| i.workgroup.session(c)).map(|s| s.mode));
         if mode == Some(Mode::Diff) {
             self.diff_reload(pane);
             return;

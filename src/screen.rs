@@ -1088,7 +1088,7 @@ impl Screen {
 
     /// Whether the live selection covers no cell (a press with no drag).
     pub fn live_is_empty(&self) -> bool {
-        self.term.selection.as_ref().map_or(true, |s| s.runs.is_empty() && s.to_range(&self.term).is_none())
+        self.term.selection.as_ref().is_none_or(|s| s.runs.is_empty() && s.to_range(&self.term).is_none())
     }
 
     /// The extras alone, as buffer rows (the live selection is alacritty's).
@@ -2935,7 +2935,7 @@ mod tests {
         // The next move sweeps from the same text, not from whatever now sits on grid line 0.
         assert!(s.drag_visual_to((-2, 4, true)));
         assert_eq!(s.term().selection_to_string().as_deref(), Some("ab \u{5d0}\u{5d1}"));
-        assert_eq!(s.term().selection.as_ref().unwrap().covers(Point::new(Line(0), Column(0))), false);
+        assert!(!s.term().selection.as_ref().unwrap().covers(Point::new(Line(0), Column(0))));
     }
 
     #[test]
@@ -5177,7 +5177,7 @@ mod tests {
         // A flood adds no marks to the first cell, and no cell holds more than the cap.
         let mut s = Screen::new(20, 3);
         s.feed("e\u{301}\x1b[65535b\x1b[65535b".as_bytes());
-        assert_eq!(s.term.grid()[Line(0)][Column(0)].zerowidth().map(<[char]>::len).unwrap_or(0) <= 1, true);
+        assert!(s.term.grid()[Line(0)][Column(0)].zerowidth().map(<[char]>::len).unwrap_or(0) <= 1);
         let mut s = Screen::new(20, 3);
         s.feed(format!("e{}", "\u{301}".repeat(100)).as_bytes());
         let marks = s.term.grid()[Line(0)][Column(0)].zerowidth().map(<[char]>::len).unwrap_or(0);

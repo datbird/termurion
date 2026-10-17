@@ -268,7 +268,7 @@ pub fn user_png_path(dir: &Path, logical: &str) -> PathBuf {
 
 /// `it_imageWithTintColor:`: every pixel painted the tint, its alpha kept.
 pub fn tinted(rgba: &[u8], tint: Rgb) -> Vec<u8> {
-    rgba.chunks_exact(4).flat_map(|p| [tint.r, tint.g, tint.b, p[3]]).collect()
+    rgba.as_chunks::<4>().0.iter().flat_map(|p| [tint.r, tint.g, tint.b, p[3]]).collect()
 }
 
 /// `hashWithDJB2` over the string's UTF-16 units, 64-bit wrapping.

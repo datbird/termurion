@@ -288,10 +288,7 @@ fn sextant_boxes(digits: &str) -> Vec<String> {
 
 fn shape(c: char) -> Option<Shape> {
     let code = u32::from(c);
-    match code {
-        0x1FB00..=0x1FB3B => return Some(Shape::Boxes(sextant_boxes(&sextant_cells(code)))),
-        _ => {}
-    }
+    if let 0x1FB00..=0x1FB3B = code { return Some(Shape::Boxes(sextant_boxes(&sextant_cells(code)))) }
     if let Ok(i) = BLOCKS.binary_search_by_key(&code, |b| b.0) {
         return Some(Shape::Boxes(BLOCKS[i].1.iter().map(|s| s.to_string()).collect()));
     }

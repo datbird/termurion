@@ -395,7 +395,7 @@ mod tests {
         let group = RowKey::Group { scope: "pty-A".into(), status: "Waiting".into() };
         assert_eq!(chips_for_rows(&[group], &world), vec![sess("ptys_1000000000001")]);
         let all_a = RowKey::Window("pty-A".into());
-        assert_eq!(chips_for_rows(&[all_a.clone()], &world), vec![Chip::Window { guid: "pty-A".into() }]);
+        assert_eq!(chips_for_rows(std::slice::from_ref(&all_a), &world), vec![Chip::Window { guid: "pty-A".into() }]);
         assert_eq!(chips_for_rows(&[RowKey::Tab(12), RowKey::Session(4)], &world), vec![Chip::Tab { id: 12 }, sess("ptys_4000000000004")]);
         // The buried root and a buried bucket give one chip per buried session; a workgroup none.
         assert_eq!(chips_for_rows(&[RowKey::BuriedRoot], &world), vec![sess("ptys_9000000000009")]);

@@ -58,7 +58,7 @@ fn node_at(t: &Tree<Value>, x: f64, y: f64, w: f64, h: f64, active: Option<usize
             let subviews = kids
                 .into_iter()
                 .map(|(k, share)| {
-                    let v = if vertical {
+                    if vertical {
                         let cw = (w * share).round();
                         let n = node_at(k, offset, 0.0, cw, h, active, index);
                         offset += cw;
@@ -68,8 +68,7 @@ fn node_at(t: &Tree<Value>, x: f64, y: f64, w: f64, h: f64, active: Option<usize
                         let n = node_at(k, 0.0, offset, w, ch, active, index);
                         offset += ch;
                         n
-                    };
-                    v
+                    }
                 })
                 .collect();
             out.insert("View Type".into(), Value::String("Splitter".into()));

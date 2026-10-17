@@ -402,7 +402,7 @@ mod tests {
         for bad in ["rm; del C:\\", "a b", "x'y", "", "$(x)", "a|b", &"a".repeat(65), "C:x", "C:x.ps1", "Env:Path"] {
             assert_eq!(man_page_plan(bad, ShellKind::PowerShell), None, "{bad:?}");
         }
-        assert_eq!(man_page_plan(&"a".repeat(64), ShellKind::PowerShell).is_some(), true);
+        assert!(man_page_plan(&"a".repeat(64), ShellKind::PowerShell).is_some());
         for k in [ShellKind::Cmd, ShellKind::Posix, ShellKind::Unknown] {
             assert_eq!(man_page_plan("ls", k), None);
         }

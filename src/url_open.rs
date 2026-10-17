@@ -233,7 +233,7 @@ mod tests {
             "telnet://h:23 -x",
         ] {
             let r = change_for(bad, &settings());
-            assert!(matches!(r, Err(_)), "{bad}: {r:?}");
+            assert!(r.is_err(), "{bad}: {r:?}");
         }
         for u in ["ftp://h/a%20b", "ftp://h//attacker.example/share", "ftp://h/%5C%5Cattacker%5Cshare", "ftp://u:p@h/x"] {
             let c = change_for(u, &settings()).unwrap().unwrap().command;

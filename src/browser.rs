@@ -2051,7 +2051,7 @@ mod tests {
             assert!(!e.is_empty() && e.is_ascii() && e.to_ascii_lowercase() == *e && !e.starts_with('.') && !e.ends_with('.') && e.contains('.'), "{e}");
         }
         for (_, suffix) in cases {
-            assert!(PUBLIC_SUFFIXES.iter().any(|e| *e == suffix) || suffix_labels(&suffix.split('.').collect::<Vec<_>>()) == suffix.split('.').count(), "{suffix}");
+            assert!(PUBLIC_SUFFIXES.contains(&suffix) || suffix_labels(&suffix.split('.').collect::<Vec<_>>()) == suffix.split('.').count(), "{suffix}");
         }
     }
 

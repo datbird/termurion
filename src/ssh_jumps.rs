@@ -354,7 +354,7 @@ mod tests {
         assert_eq!((plan.directory.as_deref(), plan.start), (Some("/p"), Start::Plain));
         assert_eq!(hook_plan(&mut Vec::new(), Some("/p".into()), true, &[]).directory, None);
         // A previous conductor with jumps left hands them on.
-        let plan = hook_plan(&mut Vec::new(), None, true, &[c.clone()]);
+        let plan = hook_plan(&mut Vec::new(), None, true, std::slice::from_ref(&c));
         assert_eq!(plan.start, Start::ParentJumps(vec![c.clone()]));
         // ... and pending [a, b] with a previous conductor and no jumps of its own: a's
         // directory, a plain start.

@@ -67,7 +67,7 @@ pub fn shell_words(s: &str) -> Vec<String> {
             single = false;
             double = false;
         }
-        if !single && !double && c.map_or(true, char::is_whitespace) {
+        if !single && !double && c.is_none_or(char::is_whitespace) {
             if !first {
                 out.push(std::mem::take(&mut word));
                 first = true;

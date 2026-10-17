@@ -1558,7 +1558,7 @@ mod tests {
     fn copied_slots_are_per_part_and_the_warning_has_a_word() {
         assert_ne!(copy_slot(1, 0), copy_slot(2, 0), "two parts starting with a code block");
         assert_ne!(copy_slot(1, 3), copy_slot(1, 4));
-        assert_ne!(copy_slot(0, 5), usize::MAX - 0, "never a code attachment's slot");
+        assert_ne!(copy_slot(0, 5), usize::MAX, "never a code attachment's slot");
         assert_eq!(glyph_fallback(chat_view::WARNING_GLYPH), Some("Warning"));
         assert_eq!(glyph_fallback(chat_view::TIMER_GLYPH), None);
     }

@@ -266,7 +266,7 @@ mod win {
         let name = wide(name);
         let mut bytes = 0u32;
         let rc = unsafe { RegGetValueW(key, std::ptr::null(), name.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), std::ptr::null_mut(), &mut bytes) };
-        if rc != 0 || bytes < 2 || bytes > 4096 {
+        if rc != 0 || !(2..=4096).contains(&bytes) {
             return None;
         }
         let mut buf = vec![0u16; bytes as usize / 2 + 1];

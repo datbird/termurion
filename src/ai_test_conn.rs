@@ -150,9 +150,7 @@ impl Tester {
 
     /// The key prompt's answer: None (or a blank key) cancels silently (`CT:69-72`).
     pub fn key_given(&mut self, _: Passed, key: Option<Secret>) -> Option<Outcome> {
-        if self.needs_key().is_none() {
-            return None;
-        }
+        self.needs_key()?;
         match key.filter(|k| !k.expose().trim_start().is_empty()) {
             Some(key) => self.send(key.expose()),
             None => {

@@ -424,7 +424,7 @@ pub fn format_date(pattern: &str, p: &Parts, millis: u16) -> String {
         };
         match piece {
             Some(s) => out.push_str(&s),
-            None => out.extend(std::iter::repeat(c).take(n)),
+            None => out.extend(std::iter::repeat_n(c, n)),
         }
         i += n;
     }

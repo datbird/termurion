@@ -368,9 +368,9 @@ impl Layout {
             let in_first = go(first, pane, axis, toward_second, fraction);
             let (found, moved) = match in_first {
                 Some(m) => (true, m),
-                None => match go(second, pane, axis, toward_second, fraction) {
-                    Some(m) => (false, m),
-                    None => return None,
+                None => {
+                    let m = go(second, pane, axis, toward_second, fraction)?;
+                    (false, m)
                 },
             };
             if moved || *a != axis || found != toward_second {

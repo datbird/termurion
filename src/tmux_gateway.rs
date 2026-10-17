@@ -109,7 +109,7 @@ pub fn kills_session(cmd: &str, session: Option<&(u32, String)>) -> bool {
         Some(&"kill-session") => {}
         _ => return false,
     }
-    if words.iter().any(|w| *w == "-a") {
+    if words.contains(&"-a") {
         return false;
     }
     let Some(at) = words.iter().position(|w| *w == "-t") else { return true };

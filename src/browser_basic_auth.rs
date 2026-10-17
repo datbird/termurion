@@ -1551,7 +1551,7 @@ mod tests {
             c.reduce_at(Event::PromptResult { id: id(n + 1), outcome: PromptOutcome::Cancelled }, t);
             assert!(c.cancelled.len() <= crate::cooldown::KEPT);
         }
-        assert!(c.cancelled.len() > 0);
+        assert!(!c.cancelled.is_empty());
         let src = include_str!("browser_basic_auth.rs");
         assert!(!src.contains(&format!("cancelled: {}", "HashMap")), "one cooldown owner");
     }

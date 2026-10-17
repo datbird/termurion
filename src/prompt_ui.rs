@@ -88,7 +88,7 @@ impl PromptWindow {
     /// A checkbox that starts checked when the text is one of `checked_for`, and follows
     /// the text as it changes.
     pub fn with_check(mut self, label: &str, checked_for: Vec<String>) -> PromptWindow {
-        let on = checked_for.iter().any(|c| *c == self.text);
+        let on = checked_for.contains(&self.text);
         self.check = Some((label.into(), on, checked_for));
         self
     }

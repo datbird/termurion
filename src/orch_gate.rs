@@ -668,7 +668,7 @@ mod tests {
         let p = plan("x", "\u{3}", false, false, None, None, true);
         assert_eq!(p, Plan { route: Route::ScreenAware, new_buffer: None, contaminated: false }, "Ctrl-C resets");
         let p = plan("x", "\u{15}", false, false, None, None, true);
-        assert_eq!(p.contaminated, true, "a contaminated Ctrl-U keeps the flag");
+        assert!(p.contaminated, "a contaminated Ctrl-U keeps the flag");
         // Integration: a caught-up line is reconstructed; one that extends ours is screen-judged.
         assert_eq!(plan("rm", " -rf", true, false, Some("rm"), Some("rm"), false).route, Route::ClassifyLine("rm -rf".into()));
         assert_eq!(plan("rm", " -rf", true, false, Some("rmXY"), Some("rmXY"), false).route, Route::ScreenAware);

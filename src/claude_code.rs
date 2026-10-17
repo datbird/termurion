@@ -724,7 +724,7 @@ mod tests {
         // A current file is left byte for byte.
         let current = merge(None, CMD).unwrap();
         assert_eq!(merge(Some(&current), CMD).unwrap(), current);
-        let odd = format!("{{ \"hooks\":{{}},\n\"b\":1, \"a\":2 }}");
+        let odd = "{ \"hooks\":{},\n\"b\":1, \"a\":2 }".to_string();
         let merged = merge(Some(&odd), CMD).unwrap();
         let keys: Vec<_> = parse(&merged).as_object().unwrap().keys().cloned().collect();
         assert_eq!(keys, ["hooks", "b", "a"], "the person's key order stays");

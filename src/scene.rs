@@ -1155,7 +1155,7 @@ pub fn pane_with(
         let mut selected = false;
         // A visual selection (bidi rows) is its runs inside the hull.
         let in_extra = || extra_runs[row].iter().any(|&(a, b)| col >= a && col <= b);
-        if (content.selection.as_ref().is_some_and(|s| s.contains(indexed.point)) && term.selection.as_ref().map_or(true, |s| s.covers(indexed.point))) || in_extra() {
+        if (content.selection.as_ref().is_some_and(|s| s.contains(indexed.point)) && term.selection.as_ref().is_none_or(|s| s.covers(indexed.point))) || in_extra() {
             // The text is adjusted against the selection color; `fg` is already muted otherwise.
             fg = match palette.selected_text {
                 Some(t) => crate::cursor_look::mute(adjust(t, palette.selection), palette.bg, look.boost),
@@ -2947,7 +2947,7 @@ fn tab_graphic(frame: &mut Frame, image: &TabImage, g: Rect, alpha: f32, back: R
             let pixels = if level == 0 {
                 pixels.clone()
             } else {
-                std::sync::Arc::new(pixels.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2], (f32::from(p[3]) * alpha).round() as u8]).collect())
+                std::sync::Arc::new(pixels.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2], (f32::from(p[3]) * alpha).round() as u8]).collect())
             };
             frame.images.push(ImageQuad { rect, uv, key: (*key, level), pixels, size: *size, repeat: false });
         }
@@ -5324,7 +5324,7 @@ mod tests {
         assert!(!f.quads.iter().any(|q| q.color == outline && q.rect.x >= second.x && q.rect.x < second.x + second.w && q.rect.w > 1.0), "open under the selected tab");
         assert!(f.quads.iter().all(|q| q.color != rgba(rgb(0, 0, 0), 1.0) || q.rect.h != 1.0), "no black edge line");
         // The room before the first tab is drawn as an unselected tab.
-        let bar_at = |x: f32| tab_layout::Bar { cells: bar.cells.iter().map(|(i, c, r)| (*i, c.clone(), Rect { x: r.x + x, ..*r })).collect(), ..bar.clone() };
+        let bar_at = |x: f32| tab_layout::Bar { cells: bar.cells.iter().map(|(i, c, r)| (*i, *c, Rect { x: r.x + x, ..*r })).collect(), ..bar.clone() };
         let shifted = bar_at(30.0);
         let inset = |f: &Frame| f.quads.iter().any(|q| q.rect == Rect { x: area.x, y: area.y, w: 30.0, h: area.h } && q.color == rgba(rgb(13, 13, 13), 1.0));
         assert!(inset(&draw(&looks, &pal, 1, &shifted)), "the left inset in the unselected color");
@@ -6218,7 +6218,7 @@ mod tests {
         assert_eq!(f.rows[0].spans[0].font, 1);
         // A box character inside a range stays a glyph.
         let boxes = crate::font_table::Entry { start: 0x2500, count: 0x80, destination: None, font_name: "Consolas".into(), point_size: None };
-        let f = draw("\u{2500}", &table_prefs(false, &[boxes.clone()]));
+        let f = draw("\u{2500}", &table_prefs(false, std::slice::from_ref(&boxes)));
         assert_eq!((f.glyphs.len(), f.rows.len()), (1, 0));
         // With the font drawing boxes (DisableCustomBoxDrawing) it is text in the table's font.
         let f = draw("\u{2500}", &DrawPrefs { custom_boxes: false, ..table_prefs(false, &[boxes]) });
@@ -7229,7 +7229,7 @@ mod tests {
         assert_eq!(area, 800.0, "the 40 by 20 hexagon is filled");
         let mut none = Frame::default();
         pane(&mut none, &s, RECT, CELL, true, &CursorLook::shown(true));
-        assert_eq!(f.overlay.len() > none.overlay.len(), true);
+        assert!(f.overlay.len() > none.overlay.len());
     }
 
     #[test]
@@ -7354,7 +7354,7 @@ mod tests {
         let outer = Rect { x: 0.0, y: 0.0, w: 820.0, h: 500.0 };
         let inner = Rect { x: 10.0, y: 10.0, w: 800.0, h: 480.0 };
         let (bg, red) = (rgb(0, 0, 0), rgb(255, 0, 0));
-        let mut fill = crate::margins::fill(&vec![(None, None); 24], bg, true, true);
+        let mut fill = crate::margins::fill(&[(None, None); 24], bg, true, true);
         fill.rows[2] = (red, bg);
         let mut f = Frame::default();
         margin_fill_alpha(&mut f, outer, inner, 20.0, &fill, bg, 0.7, false, false);
@@ -7379,16 +7379,16 @@ mod tests {
         let inner = Rect { x: 10.0, y: 10.0, w: 800.0, h: 480.0 };
         let (bg, red) = (rgb(10, 20, 30), rgb(255, 0, 0));
         let mut f = Frame { clear: rgba(bg, 1.0), ..Default::default() };
-        margin_fill(&mut f, outer, inner, 20.0, &crate::margins::fill(&vec![(None, None); 24], bg, true, true), None);
+        margin_fill(&mut f, outer, inner, 20.0, &crate::margins::fill(&[(None, None); 24], bg, true, true), None);
         assert!(f.quads.is_empty(), "{:?}", f.quads);
-        let mut fill = crate::margins::fill(&vec![(None, None); 24], bg, true, true);
+        let mut fill = crate::margins::fill(&[(None, None); 24], bg, true, true);
         fill.rows[1] = (red, bg);
         fill.rows[2] = (red, bg);
         margin_fill(&mut f, outer, inner, 20.0, &fill, None);
         assert_eq!(f.quads, vec![Quad { rect: Rect { x: 0.0, y: 30.0, w: 10.0, h: 40.0 }, color: rgba(red, 1.0) }], "two red rows join into one strip");
         // Another pane's color over the window's clear color is drawn everywhere.
         let mut g = Frame { clear: rgba(red, 1.0), ..Default::default() };
-        margin_fill(&mut g, outer, inner, 20.0, &crate::margins::fill(&vec![(None, None); 24], bg, true, true), None);
+        margin_fill(&mut g, outer, inner, 20.0, &crate::margins::fill(&[(None, None); 24], bg, true, true), None);
         let area: f32 = g.quads.iter().map(|q| q.rect.w * q.rect.h).sum();
         assert_eq!(area, 820.0 * 500.0 - 800.0 * 480.0);
     }
@@ -7401,7 +7401,7 @@ mod tests {
         let inner = Rect { x: 10.0, y: 10.0, w: 800.0, h: 480.0 };
         let (bg, red) = (rgb(10, 20, 30), rgb(255, 0, 0));
         let mut f = Frame { clear: rgba(red, 1.0), ..Default::default() };
-        let mut fill = crate::margins::fill(&vec![(None, None); 24], bg, true, true);
+        let mut fill = crate::margins::fill(&[(None, None); 24], bg, true, true);
         margin_fill(&mut f, outer, inner, 20.0, &fill, Some(bg));
         assert!(f.quads.is_empty(), "the veil shows the image: {:?}", f.quads);
         fill.rows[1] = (red, bg);

@@ -54,7 +54,7 @@ pub trait CodePage {
 }
 
 pub fn utf16le_decode(bytes: &[u8]) -> String {
-    char::decode_utf16(bytes.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]]))).map(|r| r.unwrap_or('\u{fffd}')).collect()
+    char::decode_utf16(bytes.as_chunks::<2>().0.iter().map(|p| u16::from_le_bytes([p[0], p[1]]))).map(|r| r.unwrap_or('\u{fffd}')).collect()
 }
 
 pub fn utf16le_encode(text: &str) -> Vec<u8> {

@@ -295,7 +295,7 @@ mod tests {
         // A batch starting below the cursor's row carries no cursor.
         let mut later = slice(&hidden, 1, 2);
         carry_cursor(&s, &mut later, 5);
-        assert_eq!(later.term().mode().contains(alacritty_terminal::term::TermMode::SHOW_CURSOR), false);
+        assert!(!later.term().mode().contains(alacritty_terminal::term::TermMode::SHOW_CURSOR));
     }
 
     #[test]

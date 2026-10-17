@@ -34,7 +34,7 @@ pub fn marker(rects: &[Rect], slot: usize, bar: Rect, vertical: bool) -> Option<
     let edge = match rects.get(slot).filter(shown) {
         Some(r) => if vertical { r.y } else { r.x },
         None => {
-            let last = rects.iter().filter(shown).last()?;
+            let last = rects.iter().filter(shown).next_back()?;
             if vertical { last.y + last.h } else { last.x + last.w }
         }
     };

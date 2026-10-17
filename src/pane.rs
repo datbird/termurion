@@ -2281,7 +2281,7 @@ impl Pane {
     pub fn restyle(&mut self, palette: crate::palette::Palette, look: crate::screen::Look) {
         if let Some(live) = &mut self.live {
             live.set_palette(palette.clone());
-            live.set_look(look.clone());
+            live.set_look(look);
         }
         self.screen.set_palette(palette);
         self.screen.set_look(look);
