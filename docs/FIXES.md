@@ -41,6 +41,10 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
       PgDn are not free (Cmd+PgUp and Cmd+PgDn scroll a page in the shipped key map), so Move Tab
       takes Alt+Shift+PgUp and PgDn. No letter or digit is used with Ctrl+Alt or Shift+Alt: a
       profile's shortcut (Cmd+Ctrl+key) uses all of them.
+    - The hotkey window's double-tap key offers Control, Shift and Alt (iTerm2's stored 0 to 2 keep
+      their meaning); a saved 3 (Command, the Win key) reads as Control. The Navigation Shortcuts
+      choices read "Shortcut key+Number" and "Shortcut key+Alt+Number" instead of Win. The remap
+      targets "Left Win" and "Right Win" stay: they remap the physical key, they are not shortcuts.
     - Test `every_default_has_a_chord_without_win_and_no_two_collide` walks every menu item, shipped
       key mapping, preset, number shortcut, workgroup peer, profile shortcut and the password manager,
       AI Chat and Cockpit chords in both modes: no chord uses Win, every default has one, no two

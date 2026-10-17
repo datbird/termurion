@@ -72,6 +72,16 @@ impl Shortcut {
     }
 }
 
+/// The double-tap key stored in a profile: 0 Control, 1 Shift, 2 Alt. iTerm2's 3 (Command) is the Win
+/// key here, which no shortcut uses (FIXES 13), so a saved 3 reads as Control.
+pub fn tap_key(stored: i64) -> u8 {
+    match stored {
+        1 => 1,
+        2 => 2,
+        _ => 0,
+    }
+}
+
 impl Prefs {
     pub fn from_profile(p: &Profile) -> Prefs {
         let ignoring = p.string("HotKey Characters Ignoring Modifiers");
@@ -84,7 +94,7 @@ impl Prefs {
         Prefs {
             has_hotkey: p.bool("Has Hotkey"),
             primary,
-            double_tap: p.bool("HotKey Activated By Modifier").then(|| p.int("HotKey Modifier Activation").clamp(0, 3) as u8),
+            double_tap: p.bool("HotKey Activated By Modifier").then(|| tap_key(p.int("HotKey Modifier Activation"))),
             alternates: p.get("HotKey Alternate Shortcuts").and_then(|v| v.as_array().cloned()).unwrap_or_default().iter().filter_map(Shortcut::from_value).collect(),
             auto_hides: p.bool("HotKey Window AutoHides"),
             reopens: p.bool("HotKey Window Reopens On Activation"),
@@ -365,7 +375,8 @@ mod tests {
         assert_eq!(f.primary, Some(Shortcut { keycode: 0x31, flags: OPTION, chars: String::new(), chars_ignoring: " ".into() }));
         assert!(f.active() && f.auto_hides && f.animates && f.floats && !f.reopens, "iTerm2's defaults");
         let tap = Prefs::from_profile(&profile(&[("Has Hotkey", Value::Boolean(true)), ("HotKey Activated By Modifier", Value::Boolean(true)), ("HotKey Modifier Activation", Value::Integer(3))]));
-        assert_eq!((tap.double_tap, tap.active()), (Some(3), true));
+        assert_eq!((tap.double_tap, tap.active()), (Some(0), true), "a saved Win (3) reads as Control");
+        assert_eq!((tap_key(0), tap_key(1), tap_key(2), tap_key(3), tap_key(-1), tap_key(9)), (0, 1, 2, 0, 0, 0));
         let mut alt = toml::Table::new();
         alt.insert("keyCode".into(), Value::Integer(0x7A));
         alt.insert("modifiers".into(), Value::Integer(0));

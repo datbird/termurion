@@ -2284,7 +2284,7 @@ mod tests {
         let s = schema::find("Treat Option as Alt").unwrap();
         assert_eq!(s.label, "Treat Alt as Alt for special keys like arrows");
         let labels: Vec<String> = schema::find("HotKey Modifier Activation").unwrap().choices.iter().map(|c| c.label.clone()).collect();
-        assert_eq!(labels, ["Control", "Shift", "Alt", "Win"]);
+        assert_eq!(labels, ["Control", "Shift", "Alt"]);
     }
 
     /// 13u Task 1 (Review Focus 1): the Advanced rows with iTerm2's sections and help, the Keys

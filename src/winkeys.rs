@@ -344,23 +344,21 @@ fn release_remapped() {
 }
 
 unsafe fn hook_body(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code == HC_ACTION as i32 {
-        if let Some(h) = HOOK.get() {
-            let kb = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
-            let down = wparam as u32 == WM_KEYDOWN || wparam as u32 == WM_SYSKEYDOWN;
-            // System-wide hotkeys first: they act whatever window is in front, and a remap
-            // must not rewrite the physical chord.
-            if kb.dwExtraInfo != MAGIC {
-                match global_hotkeys(kb, down) {
-                    HookVerdict::Swallow { .. } => return 1,
-                    // Windows delivers a registered chord; no remap may take it.
-                    HookVerdict::ToSystem => return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) },
-                    HookVerdict::Continue => {}
-                }
+    if let (true, Some(h)) = (code == HC_ACTION as i32, HOOK.get()) {
+        let kb = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
+        let down = wparam as u32 == WM_KEYDOWN || wparam as u32 == WM_SYSKEYDOWN;
+        // System-wide hotkeys first: they act whatever window is in front, and a remap
+        // must not rewrite the physical chord.
+        if kb.dwExtraInfo != MAGIC {
+            match global_hotkeys(kb, down) {
+                HookVerdict::Swallow { .. } => return 1,
+                // Windows delivers a registered chord; no remap may take it.
+                HookVerdict::ToSystem => return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) },
+                HookVerdict::Continue => {}
             }
-            if kb.dwExtraInfo != MAGIC && remap(h, kb, down) {
-                return 1;
-            }
+        }
+        if kb.dwExtraInfo != MAGIC && remap(h, kb, down) {
+            return 1;
         }
     }
     unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }

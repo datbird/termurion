@@ -280,11 +280,9 @@ impl ShortcutKey {
         if let Some(i) = self.pairs().iter().position(|h| *h == held) {
             out.push(Chord { key: key.clone(), cmd: true, shift: i == 1, alt: i == 2, ctrl: i == 3 });
         }
-        if held == CSA {
-            if let ChordKey::Char(k) = key {
-                if k.is_ascii_alphanumeric() {
-                    out.push(Chord { key: key.clone(), cmd: true, alt: true, shift: false, ctrl: true });
-                }
+        if let (true, ChordKey::Char(k)) = (held == CSA, key) {
+            if k.is_ascii_alphanumeric() {
+                out.push(Chord { key: key.clone(), cmd: true, alt: true, shift: false, ctrl: true });
             }
         }
         out
@@ -346,16 +344,14 @@ impl ShortcutKey {
             return text.to_string();
         }
         let tokens: Vec<&str> = text.split('+').collect();
-        let has = |name: &str| tokens.iter().any(|t| *t == name);
+        let has = |name: &str| tokens.contains(&name);
         let (shift, alt, ctrl) = (has("Shift"), has("Alt"), has("Ctrl"));
         let rest: Vec<&str> = tokens.iter().copied().filter(|t| !matches!(*t, "Win" | "Ctrl" | "Alt" | "Shift")).collect();
         // A whole chord: its key moves with the table.
-        if let [one] = rest[..] {
-            if let Some(key) = parse_key_label(one) {
-                let c = Chord { key, cmd: true, alt, shift, ctrl };
-                if let Some((h, k)) = self.form(&c) {
-                    return held_label(h) + &key_label(&k);
-                }
+        if let Some(key) = (rest.len() == 1).then(|| parse_key_label(rest[0])).flatten() {
+            let c = Chord { key, cmd: true, alt, shift, ctrl };
+            if let Some((h, k)) = self.form(&c) {
+                return held_label(h) + &key_label(&k);
             }
         }
         let Some(h) = self.held_for(shift, alt, ctrl) else { return text.to_string() };

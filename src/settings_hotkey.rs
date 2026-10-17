@@ -33,7 +33,7 @@ impl Model {
         Model {
             primary: f.primary,
             tap_on: f.double_tap.is_some(),
-            tap: p.int("HotKey Modifier Activation").clamp(0, 3) as u8,
+            tap: crate::hotkey::tap_key(p.int("HotKey Modifier Activation")),
             alternates: f.alternates.into_iter().map(Some).collect(),
             pinned: !f.auto_hides,
             reopens: f.reopens,
@@ -311,8 +311,8 @@ fn sheet(ctx: &egui::Context, sh: &mut Sheet, keys: &mut KeysState, others: &[(S
         ui.horizontal(|ui| {
             ui.checkbox(&mut m.tap_on, "Double-tap key:");
             ui.add_enabled_ui(m.tap_on, |ui| {
-                egui::ComboBox::from_id_salt("hotkey-tap").selected_text(["Control", "Shift", "Alt", "Win"][m.tap as usize % 4]).show_ui(ui, |ui| {
-                    for (i, name) in ["Control", "Shift", "Alt", "Win"].iter().enumerate() {
+                egui::ComboBox::from_id_salt("hotkey-tap").selected_text(["Control", "Shift", "Alt"][m.tap as usize % 3]).show_ui(ui, |ui| {
+                    for (i, name) in ["Control", "Shift", "Alt"].iter().enumerate() {
                         ui.selectable_value(&mut m.tap, i as u8, *name);
                     }
                 });

@@ -155,7 +155,7 @@ pub fn window_features(monitors: usize, monitor: Option<&str>, minimized: bool, 
 }
 
 /// A hotkey window's feature: "Hotkey" and its first shortcut, else its double-tap modifier
-/// (0 Control, 1 Shift, 2 Option, 3 Command) named twice with nothing between
+/// (0 Control, 1 Shift, 2 Option) named twice with nothing between
 /// (`Hotkey %1$@%2$@`, kept).
 pub fn hotkey_feature(first: Option<String>, double_tap: Option<u8>) -> Option<String> {
     if let Some(s) = first {
@@ -165,7 +165,6 @@ pub fn hotkey_feature(first: Option<String>, double_tap: Option<u8>) -> Option<S
         0 => "Ctrl",
         1 => "Shift",
         2 => "Alt",
-        3 => "Win",
         _ => return None,
     };
     Some(format!("Hotkey {name}{name}"))
