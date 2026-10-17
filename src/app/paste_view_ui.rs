@@ -14,15 +14,44 @@ impl App {
         let now = Instant::now();
         let mut hits = Vec::new();
         for (id, rect) in self.visible(tab) {
-            let Some((q, _, shows)) = self.pastes.get(&id) else { continue };
-            let Some((sent, total)) = q.progress().filter(|_| *shows && !self.bar_shown_for(id)) else { continue };
-            let state = self.paste_view.get(&id).copied().unwrap_or_default();
-            let hint = state.look(now);
-            let fraction = sent as f32 / total.max(1) as f32;
-            let h = scene::paste_view(frame, rect, self.pane_cell(id), self.scale(), self.dropdown_views.old_style(), pv::PASTING, fraction, q.waiting_for_prompt(), state.passthrough, hint);
-            hits.push((id, h));
+            let under = self.panes.get(&id).map_or(crate::palette::rgb(0, 0, 0), |p| p.screen.palette.bg);
+            let anim = self.paste_anim.get(&id).copied().unwrap_or_else(|| pv::Anim::new(now));
+            if let Some((q, _, shows)) = self.pastes.get(&id) {
+                if let Some((sent, total)) = q.progress().filter(|_| *shows && !self.bar_shown_for(id)) {
+                    let state = self.paste_view.get(&id).copied().unwrap_or_default();
+                    let hint = state.look(now);
+                    let fraction = sent as f32 / total.max(1) as f32;
+                    // A view back for a new paste before the tick restarts its animation starts over.
+                    let look = if anim.closed.is_some() { pv::opening(0.0) } else { anim.look(now).unwrap_or(pv::AT_REST) };
+                    let h = scene::paste_view(frame, rect, self.pane_cell(id), self.scale(), self.dropdown_views.old_style(), pv::PASTING, fraction, q.waiting_for_prompt(), state.passthrough, hint, look, under);
+                    hits.push((id, h));
+                    continue;
+                }
+            }
+            // The paste ended: the view fades out where it was, with nothing to click.
+            if anim.closed.is_some() {
+                if let Some(look) = anim.look(now) {
+                    scene::paste_view(frame, rect, self.pane_cell(id), self.scale(), self.dropdown_views.old_style(), pv::PASTING, anim.fraction, false, false, None, look, under);
+                }
+            }
         }
         hits
+    }
+
+    /// Keeps each pane's view animation: it starts when the view first shows, fades out when the
+    /// paste ends, and goes when the fade is done. True while one is moving.
+    fn paste_anim_tick(&mut self, now: Instant) -> bool {
+        let mut live: Vec<(PaneId, f32)> = Vec::new();
+        for (id, (q, _, shows)) in self.pastes.iter() {
+            if let Some((sent, total)) = q.progress().filter(|_| *shows && !self.bar_shown_for(*id)) {
+                live.push((*id, sent as f32 / total.max(1) as f32));
+            }
+        }
+        for (id, fraction) in &live {
+            self.paste_anim.entry(*id).or_insert_with(|| pv::Anim::new(now)).step(now, true, *fraction);
+        }
+        self.paste_anim.retain(|id, a| live.iter().any(|(l, _)| l == id) || a.step(now, false, 0.0));
+        self.paste_anim.values().any(|a| a.animating(now))
     }
 
     /// The pane's paste is waiting for the shell prompt.
@@ -132,7 +161,8 @@ impl App {
             }
         }
         // The hint animates: a frame about every 16 ms while it is on screen.
-        let animating = self.paste_view.values().any(|s| s.hint_shown(now));
+        let moving = self.paste_anim_tick(now);
+        let animating = moving || self.paste_view.values().any(|s| s.hint_shown(now));
         if !self.paste_hits.is_empty() || !self.paste_status_hits.is_empty() || animating {
             self.redraw();
         }

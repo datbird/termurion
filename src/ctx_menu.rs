@@ -154,6 +154,9 @@ pub struct Ctx {
     pub tab_has_many: bool,
     pub all_locked: bool,
     pub any_locked: bool,
+    /// Alt was held as the menu opened: iTerm2's Option alternate (CMH:704-713), which a Windows
+    /// popup cannot swap in live, shows instead of Lock All Panes in Tab.
+    pub alt: bool,
     pub move_to_tab_ok: bool,
     pub move_to_window_ok: bool,
     pub pasteable: bool,
@@ -397,13 +400,12 @@ fn main_rows(m: &mut Vec<Row>, c: &Ctx) {
     m.push(item("togglebroadcast", "Toggle Broadcasting Input", true));
     m.push(check("lockpane", "Lock Pane", true, c.pane_locked));
     if c.tab_has_many {
-        if c.all_locked {
+        // CMH:683-715: Unlock when all are locked, else Lock, with Unlock as the Option alternate
+        // when any are locked (the alternate replaces the primary while Option is down).
+        if c.all_locked || (c.any_locked && c.alt) {
             m.push(item("unlockall", "Unlock All Panes in Tab", true));
         } else {
             m.push(item("lockall", "Lock All Panes in Tab", true));
-            if c.any_locked {
-                m.push(item("unlockall", "Unlock All Panes in Tab", true));
-            }
         }
     }
     if c.has_coprocess {
@@ -770,9 +772,19 @@ mod tests {
         let got = lines(&c);
         assert_eq!(&got[..4], ["New Window >", "New Tab >", "Select >", "  zsh #1"]);
         assert!(got.contains(&"Move Session to Tab".to_string()));
-        // Lock Pane is checked; not all are locked: Lock All, and Unlock All behind Option, which a popup shows (CMH:696-711).
+        // Lock Pane is checked; not all are locked: Lock All; with Alt held as the menu opens, Unlock All in its place (CMH:696-711).
         let at = got.iter().position(|l| l == "[x] Lock Pane").unwrap();
-        assert_eq!(&got[at..at + 3], ["[x] Lock Pane", "Lock All Panes in Tab", "Unlock All Panes in Tab"]);
+        assert_eq!(&got[at..at + 2], ["[x] Lock Pane", "Lock All Panes in Tab"]);
+        assert!(!got.contains(&"Unlock All Panes in Tab".to_string()));
+        c.alt = true;
+        let alt = lines(&c);
+        assert_eq!(&alt[at..at + 2], ["[x] Lock Pane", "Unlock All Panes in Tab"]);
+        assert!(!alt.contains(&"Lock All Panes in Tab".to_string()));
+        // Alt with nothing locked has no alternate.
+        c.any_locked = false;
+        assert!(lines(&c).contains(&"Lock All Panes in Tab".to_string()));
+        c.any_locked = true;
+        c.alt = false;
         // A locked pane cannot move (CMH:291-295).
         assert!(got.contains(&"Move Session to Split Pane (disabled)".to_string()));
         // All locked: only Unlock (CMH:688-695).

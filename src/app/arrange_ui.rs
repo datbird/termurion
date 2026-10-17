@@ -8,6 +8,16 @@ use crate::prompt_ui::{PromptResult, PromptWindow};
 
 /// Lines of a session's contents kept in a file "with contents" (iTerm2's
 /// maxHistoryLinesToRestore default).
+/// A session's relative-timestamp baseline in its arrangement (`SESSION_ARRANGEMENT_TIMESTAMP_BASELINE`, `PS:333`).
+pub(super) const TIMESTAMP_BASELINE_KEY: &str = "Timestamp Baseline";
+
+/// The baseline a saved session carries: a finite time after zero, as a float or a whole number.
+fn baseline_of(session: &Value) -> Option<f64> {
+    let v = session.get(TIMESTAMP_BASELINE_KEY)?;
+    let b = v.as_float().or_else(|| v.as_integer().map(|i| i as f64))?;
+    (b.is_finite() && b > 0.0).then_some(b)
+}
+
 const CONTENT_LINES: usize = 20_000;
 
 /// What a snapshot keeps of each session's text: nothing, plain text (a file saved "with
@@ -185,6 +195,10 @@ impl App {
         if let Some(t) = v.as_table_mut() {
             // PS:1920: every session saves its lock.
             t.insert("Locked".into(), Value::Boolean(p.locked));
+            // The relative timestamps' baseline (`PS:7339`, written when one is set).
+            if let Some(b) = self.ts_baseline.get(&id).copied().filter(|b| *b != 0.0) {
+                t.insert(TIMESTAMP_BASELINE_KEY.into(), Value::Float(b));
+            }
             t.extend(self.clippings_table(id));
             // The workgroup toolbar toggles, written only when on (`PS:7445-7462`).
             if p.auto_send_clippings {
@@ -720,6 +734,10 @@ impl App {
                     }
                     if let (Some(locked), Some(p)) = (session.get("Locked").and_then(|v| v.as_bool()), self.panes.get_mut(&id)) {
                         p.locked = locked;
+                    }
+                    // `PS:1852`: the baseline for relative timestamps comes back with the pane.
+                    if let Some(b) = baseline_of(&session) {
+                        self.ts_baseline.insert(id, b);
                     }
                     if archive {
                         // No shell, no conductor, nothing to take back.
@@ -1303,5 +1321,24 @@ mod tests {
         assert!(Contents::KeysOnly.restoring());
         assert!(!Contents::None.restoring(), "a saved arrangement, a file or a duplicate mints fresh references");
         assert!(!Contents::Plain.restoring());
+    }
+
+    #[test]
+    fn the_timestamp_baseline_travels_with_the_session() {
+        let with = |v: Value| {
+            let mut t = toml::Table::new();
+            t.insert(TIMESTAMP_BASELINE_KEY.into(), v);
+            Value::Table(t)
+        };
+        assert_eq!(baseline_of(&with(Value::Float(1_760_000_000.25))), Some(1_760_000_000.25));
+        assert_eq!(baseline_of(&with(Value::Integer(1_760_000_000))), Some(1_760_000_000.0));
+        // Zero is no baseline; so is junk.
+        assert_eq!(baseline_of(&with(Value::Float(0.0))), None);
+        assert_eq!(baseline_of(&with(Value::Float(-1.0))), None);
+        assert_eq!(baseline_of(&with(Value::String("x".into()))), None);
+        assert_eq!(baseline_of(&Value::Table(toml::Table::new())), None);
+        assert_eq!(TIMESTAMP_BASELINE_KEY, "Timestamp Baseline");
+        let code = include_str!("arrange_ui.rs");
+        assert!(code.contains("self.ts_baseline.insert(id, b)") && code.contains("self.ts_baseline.get(&id)"), "saved and restored");
     }
 }

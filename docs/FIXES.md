@@ -14,6 +14,24 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 
 ## Done
 
+14. **Window flag decisions built: the Alt key offer, Save Contents timestamps, the horizontal scroll note, and the paste view animation (FLAG W8, W14).**
+   Done 2026-10-17. The three items iTerm2 has and ui-w left for a Windows design call are built
+   (decisions in `docs/superpowers/rulings/ui-sweep-w-rulings.txt`, FLAG W8). The Alt key offer
+   (`meta_frustration.rs`) is iTerm2's detector and bar (Alt and a letter, Backspace, Esc), offered
+   for a side set to Meta because Normal already sends Esc+ on Windows. Save Contents and Save
+   Selected Text (`save_panel.rs`) use the common item dialog's custom controls for iTerm2's
+   "Include timestamps" check box (remembered) and, for Save Contents, a Rich Text format. The
+   horizontal scroll note (`swipe_tabs.rs`) is iTerm2's announcement, and a horizontal swipe no
+   program takes now switches tabs so the note is true. FLAG W14's leftovers are closed: the paste
+   view slides down and fades in over 0.25 s and fades out, and the hint has its drop shadow and a
+   text that fades with the box. The other flags of the A, B, S and W rulings were reviewed:
+   baselines for relative timestamps are saved with arrangements, Alt held on opening the lock menu
+   shows Unlock All Panes in Tab as iTerm2's Option does, and the rest are marked Accepted with a
+   reason. Tests: `meta_frustration`, `app::meta_frustration_ui`, `save_panel`, `swipe_tabs`,
+   `app::swipe_ui`, `paste_view`, `scene` (paste view and hint), `styled_copy`
+   (`selection_line_times`), `ctx_menu` (lock rows), `app::arrange_ui` (baseline). The common item
+   dialog itself needs a person to drive it and was not run.
+
 13. **No shortcut uses the Win key.** Ruled 2026-10-16: no shortcut can use the Win key, a Windows
     limitation (Windows keeps most Win chords, and they are lost over remote desktop, a KVM or a
     keyboard sharing tool). Item 12 left 34 chords (Cmd+Option+Shift, Cmd+Ctrl+Shift, four

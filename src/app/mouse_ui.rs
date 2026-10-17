@@ -484,7 +484,12 @@ impl App {
             };
             if !bytes.is_empty() {
                 self.write_mouse_report(id, &bytes);
+                if !vertical {
+                    self.horizontal_scroll_note(id);
+                }
             }
+        } else if !vertical {
+            self.swipe_tabs(dx, ev.precise);
         } else if vertical {
             let Some(p) = self.panes.get_mut(&id) else { return };
             let lines = p.wheel.scroll.take(dy, ev.precise, cell_pt.1, &prefs);

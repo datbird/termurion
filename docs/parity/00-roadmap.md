@@ -8,8 +8,8 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 |---|---|---|---|---|---|
 | `01-profile-settings.md` | 321 | 305 | 12 | 0 | 4 |
 | `02-global-settings.md` | 826 | 719 | 16 | 1 | 90 |
-| `03-features-and-menus.md` | 785 | 735 | 27 | 3 | 20 |
-| Total | 1,932 | 1,759 | 55 | 4 | 114 |
+| `03-features-and-menus.md` | 785 | 738 | 27 | 2 | 18 |
+| Total | 1,932 | 1,762 | 55 | 3 | 112 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is

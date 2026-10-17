@@ -906,11 +906,11 @@ Each row names iTerm2's source (under `sources/`) and Termurion's state; the tex
 | Tabs paste question "Tab size in spaces:" | Pasting/NumberOfSpacesAccessoryView.xib | have (W21) |
 | Empty background image folder alert | Settings/ProfilesWindowPreferencesViewController.m | have (W22) |
 | iterm2: URL command alerts | AppKit/CommandURLHandler.swift | n/a, Termurion registers only ftp, ssh and telnet and handles no iterm2: or termurion: URL from outside (W29) |
-| Horizontal scroll announcement | PTYSession.m | n/a, a trackpad swipe switching tabs (W24); Windows has no such swipe |
-| Option key frustration offer | TryingTooHard/iTermMetaFrustrationDetector | n/a, Normal already sends Esc+ on Windows (W25), so there is nothing to offer |
+| Horizontal scroll announcement | PTYSession.m | have (W24, FLAG W8): iTerm2's note when a horizontal scroll goes to the program; a horizontal swipe no program takes switches tabs, one per swipe |
+| Option key frustration offer | TryingTooHard/iTermMetaFrustrationDetector | have (W25, FLAG W8): iTerm2's detector and bar, offered for a side set to Meta because Normal already sends Esc+ on Windows |
 | Session picker help popover, inspector pick button | Help/iTermHelpMessageViewController, API/iTermScriptInspector | n/a, a macOS menu bar stop icon popover (W26, W27); Termurion's picker is in the pane |
-| Save Contents "Include timestamps" accessory | TerminalView/PTYTextView.m | missing, see ruling W35 (no accessory hook in the Windows save dialog) |
-| Paste progress view with the keystroke queue toggle | Pasting/PasteViewController.m | have (W41), by Robert's override of 2026-10-15; the status bar progress component has no keyboard toggle |
+| Save Contents "Include timestamps" accessory | TerminalView/PTYTextView.m | have (W35, FLAG W8): a check box and the text and Rich Text formats in the common item dialog's custom controls |
+| Paste progress view with the keystroke queue toggle | Pasting/PasteViewController.m | have (W41, FLAG W14), by Robert's override of 2026-10-15; slides in and fades, the hint has its drop shadow |
 
 ## 5. Settings window surfaces
 

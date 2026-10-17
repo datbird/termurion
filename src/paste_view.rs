@@ -39,7 +39,6 @@ pub const SPRING_TRAVEL: f32 = 14.0;
 const SPEEDUP: f64 = 1.0 / 0.7;
 const FADE_IN: f64 = 0.18;
 const FADE_OUT: f64 = 0.14;
-/// The view slides in from above (`updateFrame`) and out again over this many seconds.
 pub const SPRING_STIFFNESS: f64 = 320.0;
 pub const SPRING_DAMPING: f64 = 15.0;
 
@@ -50,6 +49,102 @@ pub fn spring(t: f64) -> f64 {
     let zeta = SPRING_DAMPING / (2.0 * w);
     let wd = w * (1.0 - zeta * zeta).sqrt();
     1.0 - (-zeta * w * t).exp() * ((wd * t).cos() + zeta * w / wd * (wd * t).sin())
+}
+
+/// The callout's drop shadow (`iTermPasteQueuedHintView.swift`): black at 0.35, blur radius 8,
+/// 2 points down.
+pub const SHADOW_ALPHA: f32 = 0.35;
+pub const SHADOW_BLUR: f32 = 8.0;
+pub const SHADOW_DROP: f32 = 2.0;
+
+/// The shadow as nested layers, outermost first: `(points grown from the box, alpha)`. The
+/// shadow's alpha falls off from `SHADOW_ALPHA` at the edge to nothing `SHADOW_BLUR` away, and
+/// each layer adds the part of that fall between its edge and the next one in.
+pub fn shadow_layers() -> Vec<(f32, f32)> {
+    let n = SHADOW_BLUR as usize;
+    let at = |d: f32| SHADOW_ALPHA * (1.0 - d / SHADOW_BLUR).max(0.0).powi(2);
+    (1..=n).rev().map(|k| (k as f32, at(k as f32 - 1.0) - at(k as f32))).collect()
+}
+
+/// How long the paste view slides and fades in (`updateFrame`) and fades out
+/// (`closeWithCompletion:`): `kAnimationDuration`, `PasteViewController.m:21`.
+pub const VIEW_SECONDS: f64 = 0.25;
+
+/// The animation curve (an ease in and out, Core Animation's default).
+pub fn ease(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// How the paste view looks at an instant: how opaque, and how much of its own height it
+/// still has to slide down from above the pane (1 at the start of opening, 0 at rest).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewLook {
+    pub alpha: f32,
+    pub rise: f32,
+}
+
+pub const AT_REST: ViewLook = ViewLook { alpha: 1.0, rise: 0.0 };
+
+/// The view `age` seconds after it was added: it comes down from above the pane while it fades in.
+pub fn opening(age: f64) -> ViewLook {
+    let p = ease(age / VIEW_SECONDS) as f32;
+    ViewLook { alpha: p, rise: 1.0 - p }
+}
+
+/// The view `age` seconds after the paste ended: it fades out where it is; None once gone.
+pub fn closing(age: f64) -> Option<ViewLook> {
+    (age < VIEW_SECONDS).then(|| ViewLook { alpha: 1.0 - ease(age / VIEW_SECONDS) as f32, rise: 0.0 })
+}
+
+/// One pane's paste view animation: when it opened, the fraction it last showed, and once the
+/// paste ended when it started to fade out.
+#[derive(Clone, Copy, Debug)]
+pub struct Anim {
+    pub opened: Instant,
+    pub fraction: f32,
+    pub closed: Option<Instant>,
+}
+
+impl Anim {
+    pub fn new(now: Instant) -> Anim {
+        Anim { opened: now, fraction: 0.0, closed: None }
+    }
+
+    /// One tick: the view is on screen (`live`) with `fraction` done, or is not. False when
+    /// nothing is left to draw: remove the animation.
+    pub fn step(&mut self, now: Instant, live: bool, fraction: f32) -> bool {
+        if live {
+            if self.closed.is_some() {
+                *self = Anim::new(now);
+            }
+            self.fraction = fraction;
+            return true;
+        }
+        match self.closed {
+            None => {
+                self.closed = Some(now);
+                true
+            }
+            Some(since) => closing(now.saturating_duration_since(since).as_secs_f64()).is_some(),
+        }
+    }
+
+    /// How the view looks now; None when it has faded out.
+    pub fn look(&self, now: Instant) -> Option<ViewLook> {
+        match self.closed {
+            None => Some(opening(now.saturating_duration_since(self.opened).as_secs_f64())),
+            Some(since) => closing(now.saturating_duration_since(since).as_secs_f64()),
+        }
+    }
+
+    /// Still moving: a frame is due.
+    pub fn animating(&self, now: Instant) -> bool {
+        match self.closed {
+            None => now.saturating_duration_since(self.opened).as_secs_f64() < VIEW_SECONDS,
+            Some(since) => closing(now.saturating_duration_since(since).as_secs_f64()).is_some(),
+        }
+    }
 }
 
 /// How the hint looks at an instant: how opaque, and how far it still is from its resting place
@@ -199,5 +294,58 @@ mod tests {
         assert!(!aborts(true, true, true, false), "passthrough: Esc reaches the shell");
         assert!(!aborts(false, false, true, false), "only while waiting for the prompt");
         assert!(queues_keys(true, false) && !queues_keys(true, true) && !queues_keys(false, false));
+    }
+
+    #[test]
+    fn the_view_slides_and_fades_in_over_a_quarter_second() {
+        assert_eq!(VIEW_SECONDS, 0.25);
+        assert_eq!(opening(0.0), ViewLook { alpha: 0.0, rise: 1.0 });
+        assert_eq!(opening(0.25), AT_REST);
+        assert_eq!(opening(5.0), AT_REST);
+        let mid = opening(0.125);
+        assert!((mid.alpha - 0.5).abs() < 1e-6 && (mid.rise - 0.5).abs() < 1e-6, "{mid:?}");
+        assert!(opening(0.05).alpha < opening(0.1).alpha, "it only gets more opaque");
+    }
+
+    #[test]
+    fn the_view_fades_out_in_place_and_goes() {
+        assert_eq!(closing(0.0), Some(ViewLook { alpha: 1.0, rise: 0.0 }));
+        assert!(closing(0.2).is_some_and(|l| l.alpha < 0.2 && l.rise == 0.0));
+        assert_eq!(closing(0.25), None);
+    }
+
+    #[test]
+    fn an_animation_opens_ends_fades_and_is_forgotten() {
+        let t0 = Instant::now();
+        let at = |s: f64| t0 + Duration::from_secs_f64(s);
+        let mut a = Anim::new(t0);
+        assert!(a.step(at(0.1), true, 0.4));
+        assert!(a.animating(at(0.1)) && !a.animating(at(0.3)), "opening takes a quarter second");
+        assert_eq!(a.look(at(1.0)), Some(AT_REST));
+        // The paste ended: it fades from the fraction it last showed.
+        assert!(a.step(at(2.0), false, 0.0));
+        assert_eq!(a.fraction, 0.4);
+        assert!(a.look(at(2.1)).is_some_and(|l| l.alpha < 1.0 && l.alpha > 0.0));
+        assert!(a.step(at(2.2), false, 0.0));
+        assert!(!a.step(at(2.3), false, 0.0), "gone after the fade");
+        assert_eq!(a.look(at(2.3)), None);
+        // A new paste on a fading view starts again.
+        let mut b = Anim::new(t0);
+        b.step(at(1.0), false, 0.0);
+        assert!(b.step(at(1.1), true, 0.2));
+        assert!(b.closed.is_none() && b.opened == at(1.1));
+    }
+
+    #[test]
+    fn the_hint_shadow_falls_off_like_a_blur_of_eight() {
+        let layers = shadow_layers();
+        assert_eq!(layers.len(), 8);
+        assert_eq!(layers[0].0, 8.0, "outermost first");
+        assert_eq!(layers[7].0, 1.0);
+        // At the box's edge the layers add up to about 0.35; the sum of the alphas.
+        let total: f32 = layers.iter().map(|l| l.1).sum();
+        assert!((total - SHADOW_ALPHA).abs() < 1e-4, "{total}");
+        assert!(layers.iter().all(|l| l.1 > 0.0));
+        assert_eq!(SHADOW_DROP, 2.0);
     }
 }

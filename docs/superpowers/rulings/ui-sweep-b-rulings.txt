@@ -24,8 +24,14 @@ B13: Audit item 5 (profile list search menu), 6 (field Reset to...), 7, 8 belong
 
 FLAGS FOR ROBERT
 1. A download whose sequence has no size= is now dropped with "A file transfer was aborted for exceeding its declared size." as soon as it holds more than 5 bytes. That is iTerm2's behaviour (size defaults to 0 in VT100Terminal.m, TerminalFile.m:176-196), but it could break a hand-made script that omits size. it2dl sends size. Say if you want a more lenient rule.
+   Accepted 2026-10-17: this is iTerm2's own behavior.
 2. Every terminal download now asks "Where would you like to save this download?" before "Allow Terminal-Initiated Download?". Ticking "Do not show this again" on it remembers Save to Downloads or Choose..., as in iTerm2.
+   Accepted 2026-10-17: this is iTerm2's own behavior.
 3. The unsaved settings notice was added to the Settings page bar (left of General). Package S edits the same bar (search field, popups); expect a small merge there.
+   Accepted 2026-10-17: a merge note, not a behavior.
 4. Downloads and Uploads items are one line of text, not iTerm2's progress bar view (B9). A drawn row needs an owner-drawn menu, which muda does not offer.
+   Accepted 2026-10-17: Windows allows owner-drawn menu items, but the menu library Termurion builds menus with does not, and a replacement is out of proportion for a progress bar in a list; the line of text carries the same numbers.
 5. A second RequestUpload while one is sending now stops with "Upload in Progress" and a Ctrl+C to the program; before, it silently replaced the first upload (B11).
+   Accepted 2026-10-17: this is iTerm2's own behavior (B11).
 6. Trigger items whose regex and name are both empty are titled by the action ("Highlight Text"); iTerm2 would print an internal description there.
+   Accepted 2026-10-17: iTerm2's internal description is a debugging artifact; a readable title is the better answer and nothing depends on it.

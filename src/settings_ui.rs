@@ -528,6 +528,12 @@ impl SettingsWindow {
         apply
     }
 
+    /// Reveals one setting as a search result does: its pane and the marked control.
+    pub fn reveal_setting(&mut self, key: &str) {
+        self.search.pending = Some(key.to_string());
+        self.host.window.request_redraw();
+    }
+
     /// Shows Settings > General > AI on one of its sub-tabs (the gate's Reveal, Codecierge's
     /// Reveal Setting; iTerm2 opens Settings at `Enable AI`, `GK:61-63`, `CC:741-743`). It turns
     /// the page through `show_page`, so its answer is the same: true when a typed custom scripts
@@ -947,7 +953,7 @@ impl SettingsWindow {
                     }
                 }
             }
-            let mut revealed: Option<&'static crate::settings_search::Doc> = None;
+            let mut revealed: Option<&'static crate::settings_search::Doc> = search.pending.take().and_then(|key| crate::settings_search::documents().iter().find(|d| d.key == key));
             if mode == Mode::Settings {
                 egui::Panel::top("pages").show(ui, |ui| {
                     ui.horizontal(|ui| {

@@ -749,20 +749,46 @@ pub struct PasteHits {
 /// `MinimalPasteView.xib`'s (new) frames (`dropdown_views::paste_layout`, origin bottom-left, so y is
 /// flipped): the label, the bar filled to `fraction`, Cancel, and while `waiting` the keyboard button
 /// (lit when `passthrough`) a gap left of Cancel with the queued-keystrokes `hint` under it.
+/// `view` is how far the view has slid in from above the pane and faded in (`updateFrame`) or
+/// out (`closeWithCompletion:`); the part above the pane's top is cut off, as the pane's view
+/// clips it. `under` is the color behind the view, which text fades toward. The new style has
+/// the view's own drop shadow (`viewDidLoad`).
 #[allow(clippy::too_many_arguments)]
-pub fn paste_view(frame: &mut Frame, pane: Rect, cell: (f32, f32), scale: f32, old_style: bool, label: &str, fraction: f32, waiting: bool, passthrough: bool, hint: Option<crate::paste_view::HintLook>) -> PasteHits {
+pub fn paste_view(frame: &mut Frame, pane: Rect, cell: (f32, f32), scale: f32, old_style: bool, label: &str, fraction: f32, waiting: bool, passthrough: bool, hint: Option<crate::paste_view::HintLook>, view: crate::paste_view::ViewLook, under: Rgb) -> PasteHits {
     let l = crate::dropdown_views::paste_layout(old_style);
     let (w, h) = ((l.size.0 * scale).min((pane.w - PASTE_VIEW_LEFT * scale).max(0.0)), l.size.1 * scale);
+    let alpha = view.alpha.clamp(0.0, 1.0);
     // 20 points in from the pane's left, as `showDropDownInView:` puts it; the find bar is at the right.
-    let r = Rect { x: pane.x + PASTE_VIEW_LEFT * scale, y: pane.y, w, h };
+    let r = Rect { x: pane.x + PASTE_VIEW_LEFT * scale, y: pane.y - view.rise * h, w, h };
     let at = |f: crate::dropdown_views::Frame| Rect { x: r.x + f.x * scale, y: r.y + (h - (f.y + f.h) * scale), w: f.w * scale, h: f.h * scale };
-    frame.quads.push(Quad { rect: r, color: rgba(FIND_BAR, 1.0) });
+    // The pane's top edge clips what has not slid in yet.
+    let crop = |q: Rect| -> Option<Rect> {
+        let top = q.y.max(pane.y);
+        let bottom = q.y + q.h;
+        (bottom > top).then_some(Rect { y: top, h: bottom - top, ..q })
+    };
+    let quad = |frame: &mut Frame, q: Rect, color: [f32; 4]| {
+        if let Some(q) = crop(q) {
+            frame.quads.push(Quad { rect: q, color });
+        }
+    };
+    let clip_of = |c: Rect| crop(c).unwrap_or(Rect { h: 0.0, ..c });
+    if !old_style && alpha > 0.0 {
+        // `shadowOffset` (2, -2), blur 2, black at 0.3: two layers whose falloff is the blur's.
+        let shadow = Rect { x: r.x + 2.0 * scale, y: r.y + 2.0 * scale, ..r };
+        for (grow, a) in [(2.0, 0.075), (1.0, 0.225)] {
+            let g = grow * scale;
+            quad(frame, Rect { x: shadow.x - g, y: shadow.y - g, w: shadow.w + 2.0 * g, h: shadow.h + 2.0 * g }, rgba(rgb(0, 0, 0), a * alpha));
+        }
+    }
+    quad(frame, r, rgba(FIND_BAR, alpha));
     cut_rows_from(frame, r, cell.1);
-    let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+    let text_color = |c: Rgb| blend(under, c, alpha);
+    let span = |text: String, color: Rgb| Span { text, color: text_color(color), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
     let text_y = |b: Rect| b.y + ((b.h - cell.1) / 2.0).max(0.0);
-    let text_at = |frame: &mut Frame, b: Rect, text: &str, color: Rgb, clip: Rect| frame.rows.push(TextRow { x: b.x + ((b.w - text.chars().count() as f32 * cell.0) / 2.0).max(0.0), y: text_y(b), spans: vec![span(text.to_string(), color)], clip, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    let text_at = |frame: &mut Frame, b: Rect, text: &str, color: Rgb, clip: Rect| frame.rows.push(TextRow { x: b.x + ((b.w - text.chars().count() as f32 * cell.0) / 2.0).max(0.0), y: text_y(b), spans: vec![span(text.to_string(), color)], clip: clip_of(clip), scale: 1.0, face: crate::render::DEFAULT_FACE });
     let lab = at(l.label);
-    frame.rows.push(TextRow { x: lab.x, y: text_y(lab), spans: vec![span(label.to_string(), TAB_TEXT)], clip: lab, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    frame.rows.push(TextRow { x: lab.x, y: text_y(lab), spans: vec![span(label.to_string(), TAB_TEXT)], clip: clip_of(lab), scale: 1.0, face: crate::render::DEFAULT_FACE });
     let bar = at(l.bar);
     let mut bar_w = bar.w;
     let cancel = at(l.cancel);
@@ -771,26 +797,29 @@ pub fn paste_view(frame: &mut Frame, pane: Rect, cell: (f32, f32), scale: f32, o
     if let Some(k) = keyboard {
         bar_w = (bar_w - (k.w + crate::paste_view::BUTTON_GAP * scale)).max(0.0);
     }
-    frame.quads.push(Quad { rect: Rect { w: bar_w, ..bar }, color: rgba(rgb(0, 0, 0), 0.35) });
-    frame.quads.push(Quad { rect: Rect { w: bar_w * fraction.clamp(0.0, 1.0), ..bar }, color: rgba(rgb(0x3b, 0x78, 0xd8), 1.0) });
+    quad(frame, Rect { w: bar_w, ..bar }, rgba(rgb(0, 0, 0), 0.35 * alpha));
+    quad(frame, Rect { w: bar_w * fraction.clamp(0.0, 1.0), ..bar }, rgba(rgb(0x3b, 0x78, 0xd8), alpha));
     text_at(frame, cancel, l.cancel_text, TAB_TEXT, r);
     if let Some(k) = keyboard {
         if passthrough {
-            frame.quads.push(Quad { rect: k, color: rgba(rgb(0x3b, 0x78, 0xd8), 0.45) });
+            quad(frame, k, rgba(rgb(0x3b, 0x78, 0xd8), 0.45 * alpha));
         }
         text_at(frame, k, "\u{2328}", if passthrough { TAB_TEXT } else { TAB_TEXT_DIM }, r);
     }
-    let hint_rect = keyboard.zip(hint).map(|(k, look)| paste_hint(frame, k, pane, cell, scale, look));
+    let hint_rect = keyboard.zip(hint).map(|(k, look)| paste_hint(frame, k, pane, cell, scale, look, under));
     PasteHits { view: r, cancel, keyboard, hint: hint_rect }
 }
 
 /// The queued-typing hint (`iTermPasteQueuedHintView`): a rounded callout of the message in
 /// 220 points at most, a triangular pointer to the middle of `target` (the keyboard button), under
 /// the button in the top half of `bounds` and above it elsewhere. It springs in from the
-/// button's side by `look.offset` of 14 points and fades with `look.alpha`. Returns its box.
-pub fn paste_hint(frame: &mut Frame, target: Rect, bounds: Rect, cell: (f32, f32), scale: f32, look: crate::paste_view::HintLook) -> Rect {
+/// button's side by `look.offset` of 14 points and fades with `look.alpha`, the text with the box
+/// (the layer's opacity), over its drop shadow (offset 2 points down, blur 8, black at 0.35).
+/// `under` is the color behind the callout, which the text fades toward. Returns its box.
+pub fn paste_hint(frame: &mut Frame, target: Rect, bounds: Rect, cell: (f32, f32), scale: f32, look: crate::paste_view::HintLook, under: Rgb) -> Rect {
     use crate::paste_view as pv;
-    let span = |text: String| Span { text, color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+    let a = look.alpha.clamp(0.0, 1.0);
+    let span = |text: String| Span { text, color: blend(under, TAB_TEXT, a), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
     let cols = (((pv::HINT_MAX_WIDTH - 2.0 * pv::PADDING_H) * scale) / cell.0).floor().max(8.0) as usize;
     let lines = wrap_words(pv::QUEUED_HINT, cols);
     let text_w = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f32 * cell.0;
@@ -803,12 +832,17 @@ pub fn paste_hint(frame: &mut Frame, target: Rect, bounds: Rect, cell: (f32, f32
     let y = rest + (if below { -1.0 } else { 1.0 }) * pv::SPRING_TRAVEL * scale * look.offset;
     let body = Rect { x, y: if below { y + ph } else { y }, w, h: body_h };
     let tip_x = (target.x + target.w / 2.0).clamp(x + pv::CORNER_RADIUS * scale + hw, x + w - pv::CORNER_RADIUS * scale - hw);
-    let a = look.alpha.clamp(0.0, 1.0);
     let border = rgba(rgb(0x55, 0x55, 0x55), a);
     let fill = rgba(rgb(0x2b, 0x2b, 0x2b), a);
     let radius = pv::CORNER_RADIUS * scale;
     let edge = scale.max(1.0);
     cut_rows_from(frame, Rect { x, y, w, h }, cell.1);
+    // The shadow, outermost layer first: each layer adds what the blur's falloff gains there.
+    for (grow, alpha) in pv::shadow_layers() {
+        let g = grow * scale;
+        let rect = Rect { x: body.x - g, y: body.y + pv::SHADOW_DROP * scale - g, w: body.w + 2.0 * g, h: body.h + 2.0 * g };
+        rounded_box(&mut frame.quads, rect, radius + g, rgba(rgb(0, 0, 0), alpha * a));
+    }
     rounded_box(&mut frame.quads, body, radius, border);
     rounded_box(&mut frame.quads, Rect { x: body.x + edge, y: body.y + edge, w: body.w - 2.0 * edge, h: body.h - 2.0 * edge }, (radius - edge).max(0.0), fill);
     // The pointer: one-pixel slices narrowing toward the tip, over the body's edge.
@@ -820,11 +854,8 @@ pub fn paste_hint(frame: &mut Frame, target: Rect, bounds: Rect, cell: (f32, f32
         frame.quads.push(Quad { rect: Rect { x: tip_x - half - edge, y: sy, w: 2.0 * half + 2.0 * edge, h: sh }, color: border });
         frame.quads.push(Quad { rect: Rect { x: tip_x - half, y: sy, w: 2.0 * half, h: sh }, color: fill });
     }
-    // The text appears once the callout is mostly opaque (a text row has no alpha).
-    if a > 0.5 {
-        for (i, line) in lines.into_iter().enumerate() {
-            frame.rows.push(TextRow { x: body.x + pad_h, y: body.y + pad_v + i as f32 * cell.1, spans: vec![span(line)], clip: body, scale: 1.0, face: crate::render::DEFAULT_FACE });
-        }
+    for (i, line) in lines.into_iter().enumerate() {
+        frame.rows.push(TextRow { x: body.x + pad_h, y: body.y + pad_v + i as f32 * cell.1, spans: vec![span(line)], clip: body, scale: 1.0, face: crate::render::DEFAULT_FACE });
     }
     Rect { x, y, w, h }
 }
@@ -5617,6 +5648,51 @@ mod tests {
 
     /// A button face: the corner rows are inset, the middle is full width, and the box
     /// covers exactly its own rows.
+    #[test]
+    fn the_paste_view_slides_in_clipped_to_its_pane_and_fades_text_with_the_box() {
+        use crate::paste_view::{AT_REST, ViewLook};
+        let pane = Rect { x: 100.0, y: 200.0, w: 800.0, h: 400.0 };
+        let under = rgb(10, 20, 30);
+        let draw = |look: ViewLook, old: bool| {
+            let mut f = Frame::default();
+            paste_view(&mut f, pane, (8.0, 16.0), 1.0, old, "Pasting", 0.5, true, false, None, look, under);
+            f
+        };
+        // Just starting: nothing above the pane's top, and the text is the color behind it.
+        let start = draw(ViewLook { alpha: 0.0, rise: 1.0 }, false);
+        assert!(start.quads.iter().all(|q| q.rect.y >= pane.y), "clipped at the pane's top");
+        assert!(start.rows.iter().all(|r| r.spans.iter().all(|s| s.color == under)), "invisible text at alpha 0");
+        // Half way up: the quads that show are cut at the top edge.
+        let half = draw(ViewLook { alpha: 0.5, rise: 0.5 }, false);
+        assert!(half.quads.iter().all(|q| q.rect.y >= pane.y));
+        assert!(!half.quads.is_empty());
+        // At rest: the text is its own color, and the new style has a shadow (more quads than old).
+        let rest = draw(AT_REST, false);
+        assert!(rest.rows.iter().any(|r| r.spans.iter().any(|s| s.color == TAB_TEXT)));
+        assert!(rest.quads.len() > draw(AT_REST, true).quads.len(), "the new style has a drop shadow");
+    }
+
+    #[test]
+    fn the_hint_has_a_drop_shadow_and_its_text_fades_with_the_box() {
+        use crate::paste_view::HintLook;
+        let target = Rect { x: 300.0, y: 210.0, w: 24.0, h: 20.0 };
+        let bounds = Rect { x: 0.0, y: 200.0, w: 800.0, h: 400.0 };
+        let under = rgb(10, 20, 30);
+        let hint = |alpha: f32| {
+            let mut f = Frame::default();
+            paste_hint(&mut f, target, bounds, (8.0, 16.0), 1.0, HintLook { alpha, offset: 0.0 }, under);
+            f
+        };
+        let faint = hint(0.2);
+        // The text is drawn even while the box is faint, in a color most of the way to what is behind.
+        assert!(!faint.rows.is_empty());
+        let c = faint.rows[0].spans[0].color;
+        assert!(c != under && c != TAB_TEXT, "{c:?}");
+        // A shadow: black quads under the box, fading with it.
+        assert!(faint.quads.iter().any(|q| q.color[0] == 0.0 && q.color[1] == 0.0 && q.color[3] > 0.0 && q.color[3] < 0.35 * 0.2 + 1e-4));
+        assert_eq!(hint(1.0).rows[0].spans[0].color, TAB_TEXT);
+    }
+
     #[test]
     fn rounded_box_trims_corners() {
         use super::*;

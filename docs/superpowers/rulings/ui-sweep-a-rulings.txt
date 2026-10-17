@@ -26,11 +26,20 @@ R-A21 Parity: a "Terminal context menu" row set in docs/parity/03; the counts se
 
 FLAGS FOR ROBERT (decisions that differ from iTerm2 or that iTerm2 cannot answer on Windows):
 1. Download with scp is greyed unless the pane has SSH integration that can take the path. Termurion has no scp transfer, so a path iTerm2 would fetch with scp stays greyed here (the title still says "Download with scp from <host>"). Alternative: shell out to Windows' scp.exe.
+   Accepted 2026-10-17: iTerm2 runs scp through its own libssh2 session with its own password and key prompts; scp.exe has no console here to ask on, so matching means rebuilding that sign-in dialog. The SSH integration route, which Termurion has, is the Windows answer.
 2. A color in the selection shows as a swatch icon plus its text; iTerm2 shows only a swatch view, which a Windows popup cannot host.
+   Accepted 2026-10-17: a Win32 popup menu item cannot host a view, which is the Windows limit.
 3. Send Selection refuses control characters (a newline included) and very long text, where iTerm2 sends anything. A multi-line selection is not sent.
+   Accepted 2026-10-17: Windows would allow iTerm2's behavior, but this is the B5 security guard (program text from a remote host typed into a shell) that the whole Command Info writer shares, a deliberate safe-side difference, not a Windows limit. Relaxing it is a security decision for Robert, so it was left.
 4. Save Selection as Snippet uses the same text guard, so a multi-line selection is refused.
+   Accepted 2026-10-17: the same B5 guard as flag 3, for the same reason; a snippet is typed later by whoever picks it.
 5. Relative-timestamp baselines are kept per pane while the app runs, not saved with arrangements as iTerm2 does.
+   Changed 2026-10-17 to match iTerm2: a session in a saved arrangement or restored window carries its baseline under "Timestamp Baseline" (PTYSession.m:333, 1852, 7339), written when one is set and restored with the pane (app/arrange_ui.rs, test the_timestamp_baseline_travels_with_the_session).
 6. Both Lock All and Unlock All Panes in Tab show when some panes are locked (no Option key in a popup).
+   Changed 2026-10-17 to match iTerm2 as far as Windows allows: Lock All Panes in Tab shows, and with Alt held as the menu opens (a Windows popup cannot swap the alternate in live while the key goes down) Unlock All Panes in Tab shows in its place when any pane is locked (CMH:683-715). All locked still shows only Unlock. Test the_menu_follows_iterm2's lock rows in ctx_menu.rs.
 7. Fold takes the output rows only, not the command line (see R-A20).
+   Accepted 2026-10-17: Termurion's marks live on buffer rows, so a fold that took the prompt row would remove the mark that owns the Unfold button, Command Info and the jumps between prompts; iTerm2 keeps the mark with promptLength. Output-only keeps them all working. Moving marks through folds is a larger change than a menu answer.
 8. The one-cell description always reads Dir-Unk for direction.
+   Accepted 2026-10-17: iTerm2 stores a direction in each cell when bidi writes it (LTR, RTL or unknown); Termurion's cells hold none, and guessing from the letter would print values iTerm2 would not. iTerm2 also says Dir-Unk with bidi off.
 9. The parity counts line in docs/parity/00-roadmap.md changed (03: 676 have, 25 partial, 2 missing, 13 n/a); other packages that add rows will conflict on that one line and must add their own counts.
+   Accepted 2026-10-17: a merge note, not a behavior.
