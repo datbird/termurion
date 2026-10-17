@@ -38,6 +38,10 @@ Ruling: S-28 Termurion's Settings window keeps these differences from iTerm2: th
 
 FLAGS FOR ROBERT
 Flag: S-F1 "(recommended for this font)" is Termurion's own rule (S-16) and the weight menu stores a PostScript name for non-regular members (S-17); an iTerm2 settings file with such a font name draws the weight now.
+   Accepted 2026-10-17: Windows fonts are families with weights where macOS has faces, so a rule that picks the family's suited weight is the Windows form.
 Flag: S-F2 Standing differences kept as Termurion wordings are listed in S-11. "Log debug info to Console.app" (S-7) and the Touch Bar item list (S-9) are macOS only and not built; Page Zoom and the browser extension keys have no control (S-9).
+   Accepted 2026-10-17: iTerm2's Settings window has no control for those keys either (iTermProfilePreferences.m lists them, no pane draws them); the macOS-only items have no Windows counterpart.
 Flag: S-F3 Syntax Help (Smart Selection) and Search Syntax Help open Termurion's help pages, not iterm2.com, because the expression dialect is Rust's and the search syntax is Termurion's (S-22). The regular expression visualizer opens in the trigger editor's WebView2 popover since the merge with ui-w, and in the system browser only without the web runtime (S-23). The global pages keep their section headings (S-24).
+   Accepted 2026-10-17: the regex dialect and the search syntax are Termurion's own, so iterm2.com's pages would describe the wrong thing.
 Flag: S-F4 The 02 "GPU rendering" row is n/a and the Settings window has no control for it (S-6).
+   Accepted 2026-10-17: iTerm2's switch chooses between Metal and its CPU renderer; Termurion has one renderer on the GPU, so a switch would do nothing.

@@ -299,6 +299,7 @@ impl App {
         c.tab_has_many = many;
         c.all_locked = all;
         c.any_locked = any;
+        c.alt = self.mods.alt;
         let may_move = !c.layout_locked && !locked;
         c.move_to_tab_ok = may_move && many;
         c.move_to_window_ok = may_move && self.tabs.iter().map(|t| t.layout.panes().len()).sum::<usize>() > 1;

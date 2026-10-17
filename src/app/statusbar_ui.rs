@@ -704,7 +704,8 @@ impl App {
         let now = Instant::now();
         let hint = self.paste_view.get(&bar.pane).and_then(|s| s.look(now));
         let window = self.gpu.as_ref().map_or(Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 }, |g| Rect { x: 0.0, y: 0.0, w: g.config.width as f32, h: g.config.height as f32 });
-        let hint_rect = keyboard.zip(hint).map(|(k, look)| scene::paste_hint(frame, k, window, cell, scale, look));
+        let under = self.panes.get(&bar.pane).map_or(crate::palette::rgb(0x2b, 0x2b, 0x2b), |p| p.screen.palette.bg);
+        let hint_rect = keyboard.zip(hint).map(|(k, look)| scene::paste_hint(frame, k, window, cell, scale, look, under));
         self.paste_status_hits.push((bar.pane, scene::PasteHits { view, cancel, keyboard, hint: hint_rect }));
     }
 

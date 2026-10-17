@@ -78,6 +78,25 @@ fn spans(screen: &Screen) -> Vec<(i32, usize, usize)> {
         .collect()
 }
 
+/// The write time of the row each logical line of the selection's text starts on, in order
+/// (0 when a row has none): the lines `Screen::selection_text` joins across wrapped rows.
+pub fn selection_line_times(screen: &Screen) -> Vec<u32> {
+    let spans = spans(screen);
+    let mut times = Vec::new();
+    let mut previous: Option<i32> = None;
+    for (i, span) in spans.iter().enumerate() {
+        if i > 0 && same_line(&spans, i - 1) {
+            continue;
+        }
+        let continues = previous.is_some_and(|l| wraps(screen, l));
+        if !continues {
+            times.push(screen.row_time(span.0));
+        }
+        previous = Some(span.0);
+    }
+    times
+}
+
 /// Whether span `i` and the next are runs of one line (they make one row).
 fn same_line(spans: &[(i32, usize, usize)], i: usize) -> bool {
     spans.get(i + 1).is_some_and(|n| n.0 == spans[i].0)
@@ -567,6 +586,22 @@ mod tests {
         select(&mut s, (0, 0), (0, 0));
         assert!(s.drag_visual_selection((0, 3, false), (1, 1, true)));
         assert_eq!(text(&runs(&s)), "\u{5d0}\u{5d1}\npl");
+    }
+
+    /// Save Selected Text with timestamps: one time per line of the copied text, wrapped rows
+    /// counting once (the time of the row the line starts on).
+    #[test]
+    fn selection_line_times_count_the_lines_of_the_copy() {
+        let mut s = Screen::new(5, 4);
+        // "abcdefgh" wraps over rows 0 and 1; "xy" is a second line.
+        s.feed(b"abcdefgh\r\nxy");
+        select(&mut s, (0, 0), (2, 1));
+        let text = s.selection_text().unwrap();
+        assert_eq!(text.lines().count(), 2, "{text:?}");
+        let times = selection_line_times(&s);
+        assert_eq!(times.len(), 2);
+        assert_eq!(times[0], s.row_time(0));
+        assert_eq!(times[1], s.row_time(2));
     }
 
     #[test]

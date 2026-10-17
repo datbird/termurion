@@ -223,6 +223,8 @@ mod suppressed_app;
 mod host_offers_ui;
 mod host_state_app;
 mod frustration_ui;
+mod meta_frustration_ui;
+mod swipe_ui;
 mod mouse_ui;
 mod shell_version_ui;
 mod prefs_ui;
@@ -500,6 +502,11 @@ pub struct App {
     key_click: Option<PaneId>,
     /// The alternate-scroll inferrer of each pane the wheel has scrolled (app-wide; the person's input only).
     alt_infer: HashMap<PaneId, crate::alt_infer::Inferrer>,
+    /// iTerm2's Option key frustration detector of each pane the person has typed in, and the side its bar is about.
+    meta_frustration: HashMap<PaneId, crate::meta_frustration::Detector>,
+    meta_offer: HashMap<PaneId, AltSide>,
+    /// The horizontal swipe that switches tabs (app-wide; one swipe at a time).
+    swipe: crate::swipe_tabs::Swipe,
     /// iTerm2's once-per-process OSC 7 conflict flag (app-wide, never per window).
     osc7_latch: crate::emu::Osc7Latch,
     /// Each pane's escape-sequence print guard (app-wide, not swapped per window).
@@ -582,6 +589,8 @@ pub struct App {
     fix_launches: HashMap<String, (Instant, std::path::PathBuf)>,
     /// Each pane's paste view state (keystroke passthrough, the hint) and what the last frame drew of it.
     paste_view: HashMap<PaneId, crate::paste_view::State>,
+    /// Each pane's paste view sliding in and fading out (`updateFrame`, `closeWithCompletion:`).
+    paste_anim: HashMap<PaneId, crate::paste_view::Anim>,
     paste_hits: Vec<(PaneId, scene::PasteHits)>,
     /// The same for a status bar's Progress component.
     paste_status_hits: Vec<(PaneId, scene::PasteHits)>,
@@ -2270,6 +2279,9 @@ pub fn run() {
         alt_click: None,
         key_click: None,
         alt_infer: HashMap::new(),
+        meta_frustration: HashMap::new(),
+        meta_offer: HashMap::new(),
+        swipe: Default::default(),
         osc7_latch: crate::emu::Osc7Latch::default(),
         print_guards: HashMap::new(),
         alt_infer_focus: None,
@@ -2426,6 +2438,7 @@ pub fn run() {
         panels: Vec::new(),
         resize_pending: HashMap::new(),
         paste_view: HashMap::new(),
+        paste_anim: HashMap::new(),
         paste_hits: Vec::new(),
         paste_status_hits: Vec::new(),
         flush_queued_keys: false,
@@ -4327,6 +4340,8 @@ impl App {
         self.script_titles.remove(&id);
         self.host_stacks.remove(&id);
         self.alt_infer.remove(&id);
+        self.meta_frustration.remove(&id);
+        self.meta_offer.remove(&id);
         self.print_guards.remove(&id);
         self.pending_title_restores.remove(&id);
         if self.text_popover.as_ref().is_some_and(|(p, _)| *p == id) {
@@ -5811,6 +5826,7 @@ impl App {
         if self.api_key_down(&stroke) {
             return;
         }
+        self.meta_frustration_key(ev);
         self.typing = Some(ev.physical_key);
         self.dispatch(keyroute::Press { stroke, digit }, fallback, Some((key, base)), None, event_loop);
         self.typing = None;

@@ -219,6 +219,8 @@ pub struct SearchState {
     pub query: String,
     /// The highlighted result (Up and Down move it).
     pub selected: usize,
+    /// A setting to reveal at the next frame, as a search result does (the horizontal scroll note's Settings button).
+    pub pending: Option<String>,
 }
 
 /// Draws the field and, while it has focus with text in it, the results under it. The returned

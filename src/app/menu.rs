@@ -1324,16 +1324,43 @@ impl App {
         }
     }
 
+    /// Shell > Save Contents (`PseudoTerminal.m:13752`) and Save Selected Text (`PTYTextView.m:4382`):
+    /// the dialog has iTerm2's "Include timestamps" check box, remembered; Save Contents also
+    /// offers Rich Text. Saving the selected text with nothing selected saves the contents.
     fn save_text(&mut self, selection_only: bool) {
-        let Some(p) = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)) else { return };
-        let text = if selection_only { p.screen.selection_text() } else { Some(p.screen.all_text()) };
-        let Some(text) = text.filter(|t| !t.is_empty()) else { return };
-        let name = if selection_only { "selection.txt" } else { "session.txt" };
-        if let Some(path) = crate::localfs::save_file(rfd::FileDialog::new().set_file_name(name)) {
-            match crate::localfs::write(&path, text) {
-                Ok(()) => self.banners.clear("save-text"),
-                Err(e) => self.banners.set("save-text", format!("Could not save {}: {e}", path.path().display())),
+        use crate::save_panel::{self as sp, Format};
+        let Some(id) = self.tabs.get(self.active).map(|t| t.focused) else { return };
+        let Some(p) = self.panes.get(&id) else { return };
+        let selected = if selection_only { p.screen.selection_text().filter(|t| !t.is_empty()) } else { None };
+        if selected.is_none() && p.screen.all_text().trim().is_empty() {
+            return;
+        }
+        let now = crate::stamps::local(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()));
+        let (name, formats): (String, &[Format]) = if selection_only { (sp::log_filename(&now), &[Format::Text]) } else { (sp::session_filename(&now), &[Format::Text, Format::Rtf]) };
+        let Some(pick) = sp::pick(self.hwnd(), &name, formats, self.globals.bool(sp::TIMESTAMPS_KEY)) else { return };
+        self.globals.set(sp::TIMESTAMPS_KEY, toml::Value::Boolean(pick.timestamps));
+        self.save_globals();
+        let Some(p) = self.panes.get(&id) else { return };
+        let bytes = match (pick.format, selected) {
+            (Format::Rtf, _) => {
+                let grid = p.screen.term().grid();
+                let (top, last) = (-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
+                let mut rows = crate::styled_copy::runs_of_lines(&p.screen, top, last);
+                rows.truncate(p.screen.all_text().lines().count());
+                if pick.timestamps {
+                    sp::stamp_rows(&mut rows, &sp::all_text_times(&p.screen), p.screen.palette.fg, p.screen.palette.bg);
+                }
+                let font = self.profile_of(id).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0, features: Default::default() });
+                crate::styled_copy::rtf(&rows, &font.family, font.size_pt, crate::styled_copy::StyleOptions::from_globals(&self.globals)).into_bytes()
             }
+            (Format::Text, Some(text)) if pick.timestamps => sp::stamp_lines(&text, &crate::styled_copy::selection_line_times(&p.screen)).into_bytes(),
+            (Format::Text, Some(text)) => text.into_bytes(),
+            (Format::Text, None) if pick.timestamps => sp::stamp_lines(&p.screen.all_text(), &sp::all_text_times(&p.screen)).into_bytes(),
+            (Format::Text, None) => p.screen.all_text().into_bytes(),
+        };
+        match crate::localfs::write(&pick.path, bytes) {
+            Ok(()) => self.banners.clear("save-text"),
+            Err(e) => self.banners.set("save-text", format!("Could not save {}: {e}", pick.path.path().display())),
         }
     }
 
