@@ -70,6 +70,8 @@ Notes on the harness: Windows' `ssh.exe` does not leave when its output goes to 
 
 Clipboard on psmux: not available. `set-buffer` is refused in control mode (an error with no text) and psmux sends no `%paste-buffer-changed`, so TmuxSyncClipboard has nothing to mirror. The test records this as a `NOTE` line and does not assert it.
 
+Update 2026-10-19: psmux master (9c7c81c1, with fc0a1b5a for psmux issue 813) accepts `set-buffer` in control mode and sends `%paste-buffer-changed`; the clipboard test passes on it. The psmux live tests now start their servers with an empty config (`-f`), as the WSL and ssh tests pass `-f /dev/null`: a user's `~/.tmux.conf` that adds a pane which redraws twice a second (a header bar) kept `settle` from ever seeing quiet. On master, `suite_psmux` fails "pause and unpause": psmux writes `%pause` after the command's `%end`, where tmux 3.4 writes it inside the block, so a pause undone within milliseconds reads as a second pause. psmux 3.4.0 sends no `%pause` for a requested pause and passes.
+
 ## What psmux does differently
 
 | Difference | How Termurion handles it |
