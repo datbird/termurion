@@ -72,6 +72,11 @@ Clipboard on psmux: not available. `set-buffer` is refused in control mode (an e
 
 Update 2026-10-19: psmux master (9c7c81c1, with fc0a1b5a for psmux issue 813) accepts `set-buffer` in control mode and sends `%paste-buffer-changed`; the clipboard test passes on it. The psmux live tests now start their servers with an empty config (`-f`), as the WSL and ssh tests pass `-f /dev/null`: a user's `~/.tmux.conf` that adds a pane which redraws twice a second (a header bar) kept `settle` from ever seeing quiet. On master, `suite_psmux` fails "pause and unpause": psmux writes `%pause` after the command's `%end`, where tmux 3.4 writes it inside the block, so a pause undone within milliseconds reads as a second pause. psmux 3.4.0 sends no `%pause` for a requested pause and passes.
 
+Update 2026-10-19, later: two psmux fixes, sent upstream as psmux PRs 870 and 871. With both on master, all 13 psmux live tests pass, `suite_psmux` included.
+
+- PR 870: `refresh-client -A` writes `%pause` and `%continue` inside its own `%begin`/`%end`, as tmux does. Before, the command thread closed the block without waiting for the server loop.
+- PR 871: `kill-pane` sends `%layout-change` for the window that keeps its other panes, as tmux does. Master sends nothing there. 3.4.0 sent a wrong `%window-close` for the current window, which made the controller re-read `list-windows`, so the kill-pane row above passed by accident. psmux issue 811 removed that line. On master without PR 871, a tab keeps the dead pane's layout until something else refreshes it. The suite never reached this step on master before, because it stopped at "pause and unpause".
+
 ## What psmux does differently
 
 | Difference | How Termurion handles it |
