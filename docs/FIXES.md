@@ -14,6 +14,19 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 
 ## Done
 
+18. **Stuck mouse reporting over a slow ssh link took a screen of junk to notice.** Seen
+    2026-10-19: an ssh session through a tunnel dropped while an app had mouse reporting on.
+    After a new ssh to the same host, every mouse move typed reports into the shell, and the
+    "mouse reporting was left on" bar came up only after many lines. Cause: iTerm2's check
+    looks for the newest 32 bytes of reports echoed within 100 ms. Over the tunnel the echo
+    came back later, and while the mouse kept moving the newest bytes were always ahead of
+    it. That host also had no shell integration, so no host change fired either. Done
+    2026-10-19: beside iTerm2's check, any 16 bytes of the reports sent in the last second
+    count, with the shell's control bytes skipped (`stuck_mouse::SLOW_DEADLINE`, tests
+    `a_slow_echo_is_found_while_the_mouse_keeps_moving`,
+    `a_slow_echo_needs_two_reports_and_a_recent_one`). The host now has iTerm2's shell
+    integration too.
+
 17. **Settings > Advanced: the pinned heading sat left of the rows.** Seen 2026-10-17: after
     scrolling the Advanced pane, the "Debugging" heading stood about 8 px left of the rows.
     Cause: the heading that floats at the top (NSTableView's pinned group row) was laid out from
