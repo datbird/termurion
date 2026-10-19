@@ -84,11 +84,22 @@ mod tests {
         text.trim().to_string()
     }
 
+    /// An empty config file for the test's psmux servers, as the WSL and ssh flavors pass
+    /// `-f /dev/null`: without it psmux loads the user's ~/.tmux.conf, whose hooks can add panes
+    /// (a header bar that redraws twice a second keeps `settle` from ever seeing quiet).
+    fn psmux_no_config() -> String {
+        let p = std::env::temp_dir().join("termurion-live-empty.conf");
+        if !p.exists() {
+            std::fs::write(&p, "").expect("write the empty psmux config");
+        }
+        p.to_string_lossy().into_owned()
+    }
+
     /// One tmux CLI call against a test server, whatever the flavor: stdout and stderr, trimmed.
     fn server_cli(flavor: Flavor, server: &str, args: &[&str]) -> String {
         use std::process::Command;
         let out = match flavor {
-            Flavor::Psmux => Command::new("psmux").args(["-L", server]).args(args).output(),
+            Flavor::Psmux => Command::new("psmux").args(["-f", &psmux_no_config(), "-L", server]).args(args).output(),
             Flavor::Wsl => Command::new("wsl.exe").args(["-e", "tmux", "-L", server]).args(args).output(),
             Flavor::Ssh => {
                 let Some(a) = ssh_args() else { return "no ssh host".into() };
@@ -112,7 +123,7 @@ mod tests {
 
         fn start(self, server: &str, session: &str) -> String {
             match self {
-                Flavor::Psmux => format!("psmux.exe -L {server} -CC new-session -s {session}"),
+                Flavor::Psmux => format!("psmux.exe -f \"{}\" -L {server} -CC new-session -s {session}", psmux_no_config()),
                 Flavor::Wsl => format!("wsl.exe -e tmux -L {server} -f /dev/null -CC new-session -s {session}"),
                 // A pty on the far side (-tt), as typing `ssh host tmux -CC` does.
                 Flavor::Ssh => format!("ssh.exe -tt {} tmux -L {server} -f /dev/null -CC new-session -s {session}", ssh_args().expect("TERMURION_TMUX_SSH_HOST").join(" ")),
@@ -148,6 +159,8 @@ mod tests {
     const TYPED: Tag = 1 << 40;
     /// The size Termurion's tab would have: unlike the ConPTY (80x24) and psmux's first layout (120x30).
     pub const TAB: (u32, u32) = (100, 28);
+    /// The longest `settle` waits for quiet.
+    const SETTLE_MAX: Duration = Duration::from_secs(20);
 
     pub struct Live {
         pub flavor: Flavor,
@@ -184,6 +197,8 @@ mod tests {
         pub pane_pids: HashMap<u32, u32>,
         /// The text of each paste buffer the controller fetched for the clipboard.
         pub clipboard: Vec<String>,
+        /// TERMURION_LIVE_TRACE names a file: every control-mode line in (<) and every write out (>), timed.
+        trace: Option<std::fs::File>,
     }
 
     fn tag_text(s: &str) -> Option<(String, bool, String)> {
@@ -207,7 +222,7 @@ mod tests {
             gw.logging = true;
             let mut ctl = Controller::new(tmux_handshake::FIRST_FREE_TAG);
             ctl.client = (TAB.0, TAB.1);
-            Live { flavor, session: server.clone(), server, p, hook: Hook::default(), gw, hs: Handshake::default(), ctl, t0: Instant::now(), last_tick: 0.0, done: Vec::new(), aborts: Vec::new(), notes: Vec::new(), actions: Vec::new(), exited: false, gone: false, left: false, entered: false, out: HashMap::new(), replies: HashMap::new(), next_typed: TYPED, sizes: HashMap::new(), lines: Vec::new(), screen: Vec::new(), asks: Vec::new(), server_local: false, pane_pids: HashMap::new(), clipboard: Vec::new() }
+            Live { flavor, session: server.clone(), server, p, hook: Hook::default(), gw, hs: Handshake::default(), ctl, t0: Instant::now(), last_tick: 0.0, done: Vec::new(), aborts: Vec::new(), notes: Vec::new(), actions: Vec::new(), exited: false, gone: false, left: false, entered: false, out: HashMap::new(), replies: HashMap::new(), next_typed: TYPED, sizes: HashMap::new(), lines: Vec::new(), screen: Vec::new(), asks: Vec::new(), server_local: false, pane_pids: HashMap::new(), clipboard: Vec::new(), trace: std::env::var_os("TERMURION_LIVE_TRACE").and_then(|p| std::fs::File::create(p).ok()) }
         }
 
         /// Attaches and waits for the first windows to open.
@@ -227,9 +242,18 @@ mod tests {
             self.t0.elapsed().as_secs_f64()
         }
 
+        fn trace(&mut self, dir: char, bytes: &[u8]) {
+            let t = self.clock();
+            if let Some(f) = self.trace.as_mut() {
+                use std::io::Write;
+                let _ = writeln!(f, "{dir}{t:9.3} {}", String::from_utf8_lossy(bytes).escape_debug().to_string().chars().take(4000).collect::<String>());
+            }
+        }
+
         fn flush(&mut self) {
             let w = self.gw.take_writes();
             if !w.is_empty() {
+                self.trace('>', &w);
                 let _ = self.p.write(&w);
             }
             // A psmux detach: the app lets go and ends the client.
@@ -248,6 +272,7 @@ mod tests {
                     Out::Screen(b) => self.screen.extend(b),
                     Out::Enter => self.entered = true,
                     Out::Line(l) | Out::Exit(l) => {
+                        self.trace('<', &l);
                         if self.lines.len() < 20000 {
                             self.lines.push(String::from_utf8_lossy(&l).chars().take(200).collect());
                         }
@@ -387,10 +412,16 @@ mod tests {
             }
         }
 
-        /// Reads until nothing arrives for `quiet`.
+        /// Reads until nothing arrives for `quiet`, or for at most `SETTLE_MAX`: a pane that
+        /// never goes quiet (a clock, a status bar) must not hang the test.
         pub fn settle(&mut self, quiet: Duration) {
             let mut last = Instant::now();
+            let end = Instant::now() + SETTLE_MAX;
             loop {
+                if Instant::now() >= end {
+                    self.say(&format!("settle: no {quiet:?} of quiet within {SETTLE_MAX:?}"));
+                    return;
+                }
                 let now = self.clock();
                 if now - self.last_tick >= 0.25 {
                     self.last_tick = now;
@@ -643,10 +674,14 @@ mod tests {
         let (w, pane) = first_pane(&l);
         let s = session_id(&l);
         result(&l, "attach", !l.ctl.windows.is_empty() && l.aborts.is_empty() && l.actions.iter().any(|a| matches!(a, Action::InitialWindowsOpened)), &format!("version {:?}, aborts {:?}", l.hs.min, l.aborts));
-        // The client size: the window takes the tab's size.
-        let sized = l.pump_until(Duration::from_secs(5), |l| l.notes.iter().any(|n| matches!(n, Note::LayoutChange { layout, .. } if layout.contains(&format!("{}x{}", TAB.0, TAB.1)))));
+        // The client size: the window takes the tab's size. psmux 3.4 resizes at once, so its
+        // %layout-change comes before notifications are accepted and is dropped (as iTerm2 does);
+        // the window's own layout is the proof either way.
+        let tab = format!("{}x{}", TAB.0, TAB.1);
+        let noticed = l.pump_until(Duration::from_secs(5), |l| l.notes.iter().any(|n| matches!(n, Note::LayoutChange { layout, .. } if layout.contains(&tab))));
         let (_, layout) = l.run("list-windows -F \"#{window_id} #{window_layout}\"");
-        result(&l, "size to the tab", sized, &format!("layout {}", layout.replace('\n', " | ")));
+        let sized = layout.lines().next().is_some_and(|w| w.contains(&tab));
+        result(&l, "size to the tab", sized, &format!("layout {}, notice seen {noticed}", layout.replace('\n', " | ")));
         // New window.
         let n = l.ctl.windows.len();
         l.ctl.new_window(None, &Dir::Home, Some(TAB), &mut l.gw);
@@ -796,7 +831,8 @@ mod tests {
 
     /// A shell command on the host that prints to the test's output (own `-L` name only).
     fn psmux_cli(server: &str, args: &[&str]) -> String {
-        let mut full = vec!["-L", server];
+        let conf = psmux_no_config();
+        let mut full = vec!["-f", conf.as_str(), "-L", server];
         full.extend_from_slice(args);
         match std::process::Command::new("psmux").args(&full).output() {
             Ok(o) => format!("{} {}", String::from_utf8_lossy(&o.stdout).trim(), String::from_utf8_lossy(&o.stderr).trim()),
@@ -931,12 +967,14 @@ mod tests {
     /// tmux's paste buffer reaches the local clipboard: `%paste-buffer-changed`, `show-buffer`.
     fn clipboard(flavor: Flavor, name: &str) {
         let mut l = Live::attach(flavor, name);
-        let ok = l.audit("set-buffer \"CLIPTEXT 123\"");
+        let (ok, text) = l.run("set-buffer \"CLIPTEXT 123\"");
+        l.say(&format!("CMD {} set-buffer => {text}", if ok { "ok" } else { "ERR" }));
         let got = l.pump_until(Duration::from_secs(if flavor == Flavor::Psmux { 4 } else { 10 }), |l| l.clipboard.iter().any(|c| c.contains("CLIPTEXT 123")));
         let notices = l.count(|n| matches!(n, Note::PasteBufferChanged(_)));
-        if flavor == Flavor::Psmux && !got {
-            // psmux refuses `set-buffer` in control mode and sends no %paste-buffer-changed, so its
-            // paste buffer never reaches the clipboard. Recorded, not asserted.
+        if flavor == Flavor::Psmux && !ok && text != "timeout" {
+            // psmux up to 3.4.0 refuses `set-buffer` in control mode and sends no
+            // %paste-buffer-changed (psmux master has both since fc0a1b5a). Recorded, not asserted.
+            // No reply at all is a failure, not this.
             let (shown, text) = l.run("show-buffer");
             l.say(&format!("NOTE | clipboard | not available | set-buffer ok {ok}, buffer notices {notices}, clipboard {:?}, show-buffer ok {shown} {text:?}", l.clipboard));
         } else {

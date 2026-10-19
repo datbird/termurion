@@ -80,8 +80,8 @@ psmux is not tmux, and its control mode does less. Termurion detects psmux when 
 - If the attached session is killed, Termurion ends the connection itself, because psmux sends no exit notice.
 - Keys sent to a pane may log a "command timed out" error from psmux. The keys still arrive, and Termurion ignores the error.
 - psmux starts a session at 120x30. Termurion resizes it to the tab size when it connects.
-- The tmux paste buffer is not mirrored to the clipboard. psmux refuses `set-buffer` in control mode and sends no notice when its buffer changes.
-- psmux reports version 3.3.8, which Termurion reads as tmux 3.3. Pause mode and per-window sizes are on.
+- The tmux paste buffer is mirrored to the clipboard only on psmux built from master after 2026-10-15 (commit fc0a1b5a). psmux 3.4.0 and older refuse `set-buffer` in control mode and send no notice when the buffer changes.
+- psmux 3.4.0 reports version 3.4.0, which Termurion reads as tmux 3.4. Pause mode and per-window sizes are on.
 
 Everything else the live suite checks (attach, sizing, new window, split, resize, layouts, rename, send keys, pause, kill pane, detach) passes on psmux. The full list is in `docs/probe/2026-10-14-psmux-wsl-tmux-results.md`.
 
