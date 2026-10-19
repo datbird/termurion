@@ -7,6 +7,14 @@ Each item says what is wrong, what it should do, and where it was seen.
 
 ## Open
 
+(none)
+
+## In progress
+
+(none)
+
+## Done
+
 8. **Termurion stays running with no window.** On the Windows test machine, tandem.exe (started from Explorer at
    17:00 on 2026-10-11) and its tandem-host.exe were still running at 22:10 with no window
    (MainWindowHandle 0), so the installer refused to replace them ("Termurion is running"). Robert
@@ -28,14 +36,8 @@ Each item says what is wrong, what it should do, and where it was seen.
    new one was attached, and muda's drop clears the window's menu (`replace_menu_bar`);
    (c) Settings > Advanced was blank: an unbounded right-to-left row took the whole page
    (same class fixed in shot_ui, pwm_ui, settings_ai, statusbar_setup_ui). host.log now logs
-   each tray menu, pick and quit step. Needs Robert's try: tray Quit and New Window, the menu
-   bar after a tray reopen, Settings > Advanced.
-
-## In progress
-
-(none)
-
-## Done
+   each tray menu, pick and quit step. Done 2026-10-17 (main, 76695a66): Robert's hand checks passed
+   (tray Quit and New Window, the menu bar after a tray reopen, Settings > Advanced).
 
 10. **Help links pointed at iTerm2's site.** Done 2026-10-13 (main): Help and About open the repository; every other iTerm2 link (help pages, bug reports, installers, download.sh, manifest defaults) comes from `src/links.rs` and points at the repo. Help pages are in docs/help, installers and utilities in dist. Downloads 404 while the repository is private. Plan: docs/superpowers/plans/2026-10-13-tw10-repo-links.md.
 
