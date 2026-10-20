@@ -70,12 +70,11 @@ What stays the same for every server: the pane's working directory comes from tm
 
 ## psmux differences
 
-psmux is not tmux, and its control mode does less. Termurion detects psmux when it connects and turns off what psmux cannot do. What you see:
+psmux is not tmux, and its control mode does less. Termurion detects psmux when it connects. It sends psmux the same commands it sends tmux, except where noted below. When psmux refuses something you asked for, a short message at the bottom of the window says why and then goes away. What you see:
 
-- Move Session to Split Pane shows a banner and does nothing. psmux has no `move-pane` or `join-pane` in control mode.
-- You cannot reorder tabs by dragging. psmux has no `swap-window` in control mode, so tabs keep their order.
+- Move Session to Split Pane and dragging tabs into a new order work on psmux built from master. psmux 3.4.0 has no `move-pane` or `swap-window` in control mode and refuses them with a message. Moving a pane next to another pane in the same tab also needs psmux PR 878.
 - In the Dashboard, the + button (new session) and Attach are off. psmux has no `new-session` or `attach-session` in control mode. The Dashboard lists the attached session only.
-- User variables are not saved to tmux. psmux refuses pane options that start with `@`.
+- User variables are saved to tmux on psmux master. psmux 3.4.0 refuses pane options that start with `@`, so there they are not saved.
 - Detach drops the client and leaves the session running in the psmux server, because psmux's client does not leave until it reads more input.
 - If the attached session is killed, Termurion ends the connection itself, because psmux sends no exit notice.
 - Keys sent to a pane may log a "command timed out" error from psmux. The keys still arrive, and Termurion ignores the error.
@@ -83,7 +82,7 @@ psmux is not tmux, and its control mode does less. Termurion detects psmux when 
 - The tmux paste buffer is mirrored to the clipboard only on psmux built from master after 2026-10-15 (commit fc0a1b5a). psmux 3.4.0 and older refuse `set-buffer` in control mode and send no notice when the buffer changes.
 - psmux 3.4.0 reports version 3.4.0, which Termurion reads as tmux 3.4. Pause mode and per-window sizes are on.
 
-Everything else the live suite checks (attach, sizing, new window, split, resize, layouts, rename, send keys, pause, kill pane, detach) passes on psmux. The full list is in `docs/probe/2026-10-14-psmux-wsl-tmux-results.md`.
+Everything else the live suite checks (attach, sizing, new window, split, resize, layouts, rename, send keys, pause, move pane, kill pane, detach) passes on psmux master with psmux PRs 870, 871 and 878. The full list is in `docs/probe/2026-10-14-psmux-wsl-tmux-results.md`.
 
 ## Windows, tabs, and panes
 

@@ -71,6 +71,8 @@ enum Req {
     PanePid(u32),
     /// `display-message -p "#{status-interval}"` for the status monitors.
     StatusInterval,
+    /// A command the person asked for: an error reply says why it did not happen.
+    Refused(&'static str),
     Ignore,
 }
 
@@ -170,6 +172,8 @@ pub enum Action {
     StatusLine { window: u32, side: Side, value: String },
     /// A pane's process id on a local server: the process Termurion reads the job from.
     PanePid { pane: u32, pid: u32 },
+    /// The server refused a command the person asked for: a short message says why.
+    Refused(String),
 }
 
 /// What Termurion saved about a tmux window's Termurion window and tab.
@@ -464,6 +468,19 @@ impl Controller {
         gw.send_list(list, false);
     }
 
+    /// One command line for tmux. psmux 3.4.0 runs the rest of a line after a command fails
+    /// and answers each one, where tmux (and psmux master) stop: the gateway would match those
+    /// replies to the next commands, so psmux gets one command per line.
+    fn send_list_or_each(&self, list: Vec<(String, Option<Tag>, Flags)>, gw: &mut Gateway) {
+        if self.psmux {
+            for (cmd, tag, flags) in list {
+                gw.send(&cmd, tag, flags);
+            }
+        } else {
+            gw.send_list(list, false);
+        }
+    }
+
     /// A command, then the short list whose layouts follow it (iTerm2's edits that relist).
     fn with_relist(&mut self, cmd: String, gw: &mut Gateway) {
         let t = self.tag(Req::Relist);
@@ -490,11 +507,14 @@ impl Controller {
     /// Move Session to Split Pane: `pane` joins `dest`'s window beside it (`side_by_side`) or
     /// above or below it, before it when `before`. Numeric ids only.
     pub fn move_pane(&mut self, src: u32, dst: u32, side_by_side: bool, before: bool, gw: &mut Gateway) {
-        // psmux has neither move-pane nor join-pane in control mode.
-        if self.psmux {
-            return;
-        }
-        self.with_relist(crate::tmux_edits::move_pane(src, dst, side_by_side, before), gw);
+        // Sent to every server: one that lacks move-pane (psmux 3.4.0) says so in a message.
+        let t = self.tag(Req::Refused("move the pane"));
+        let relist = self.tag(Req::Relist);
+        self.outstanding += 1;
+        let refusal = Flags { tolerate: true, wants_error: true, ..Default::default() };
+        let tolerate = Flags { tolerate: true, ..Default::default() };
+        let list = vec![(crate::tmux_edits::move_pane(src, dst, side_by_side, before), Some(t), refusal), (crate::tmux_sizes::short_list(self.v()), Some(relist), tolerate)];
+        self.send_list_or_each(list, gw);
     }
 
     /// New Tmux Tab (`affinity`: the tmux window whose Termurion window gets the tab) or New
@@ -885,8 +905,8 @@ impl Controller {
     /// A pane's variables changed in Termurion: all of them go to `@uservars` (tmux 3.1 and
     /// later), unless tmux has them already.
     pub fn sync_user_vars(&mut self, pane: u32, vars: &BTreeMap<String, String>, gw: &mut Gateway) {
-        // psmux refuses pane options named @...: it would keep nothing.
-        if self.psmux || self.v() < 3.1 || self.user_vars.get(&pane) == Some(vars) {
+        // psmux 3.4.0 refuses pane options named @...; the error is tolerated.
+        if self.v() < 3.1 || self.user_vars.get(&pane) == Some(vars) {
             return;
         }
         self.user_vars.insert(pane, vars.clone());
@@ -1062,10 +1082,6 @@ impl Controller {
 
     /// Tabs moved: tmux's windows take the tabs' order (iTerm2's setPartialWindowIdOrder).
     pub fn reorder(&mut self, wanted: Vec<u32>, gw: &mut Gateway) {
-        // psmux has no swap-window: its tabs keep the order they were made in.
-        if self.psmux {
-            return;
-        }
         let t = self.tag(Req::Reorder(wanted));
         gw.send("list-windows -F \"#{window_id}\"", Some(t), Flags::default());
     }
@@ -1233,6 +1249,13 @@ impl Controller {
                     m.subscribed(ok);
                 }
             }
+            Req::Refused(what) => {
+                if !ok {
+                    let server = if self.psmux { "psmux" } else { "tmux" };
+                    let why = text.trim();
+                    out.push(Action::Refused(if why.is_empty() { format!("{server} could not {what}.") } else { format!("{server} could not {what}: {why}") }));
+                }
+            }
             Req::StatusInterval => {
                 // handleStatusIntervalResponse: `integerValue`, at least 1.
                 if ok {
@@ -1290,7 +1313,14 @@ impl Controller {
             Req::Reorder(wanted) => {
                 let cmds = crate::tmux_edits::reorder(text, &wanted);
                 if !cmds.is_empty() {
-                    gw.send_list(cmds.into_iter().map(|c| (c, None, Flags::default())).collect(), false);
+                    // A server without swap-window (psmux 3.4.0) refuses the first swap, and the
+                    // rest of the list with it: one message, and tmux mode goes on.
+                    let t = self.tag(Req::Refused("reorder the tabs"));
+                    let list = cmds.into_iter().enumerate().map(|(i, c)| {
+                        let flags = Flags { tolerate: true, wants_error: i == 0, ..Default::default() };
+                        (c, (i == 0).then_some(t), flags)
+                    });
+                    self.send_list_or_each(list.collect(), gw);
                 }
             }
             Req::StillThere(window) => {
@@ -2518,40 +2548,55 @@ mod tests {
         assert_eq!(gw.take_writes(), b"refresh-client -fpause-after=120\rshow -v -q -t $1 @iterm2_size\r", "pause mode first, as iTerm2's didGuessVersion");
     }
 
-    /// psmux lacks `move-pane`, `join-pane`, `swap-window`, pane `@` options and `show-buffer` for a deleted
-    /// buffer: the controller leaves out or rewrites those, and real tmux is as before.
+    /// Every server gets move-pane, swap-window and pane `@` options (psmux master has them; psmux
+    /// 3.4.0 refuses them). A refused move or reorder says why in a message and keeps tmux mode;
+    /// `show-buffer` for a deleted buffer is tolerated.
     #[test]
-    fn psmux_gets_the_commands_it_has() {
+    fn psmux_gets_the_commands_and_a_refusal_is_a_message() {
         let mut r = opened();
         r.ctl.psmux = true;
         r.sent();
         r.ctl.move_pane(0, 1, true, true, &mut r.gw);
-        assert_eq!(r.sent(), "", "no move-pane, and psmux has no join-pane in control mode either");
+        assert!(r.sent().starts_with("move-pane -s \"%0\" -t \"%1\" -h -b\rlist-windows"), "psmux: move-pane and the relist on lines of their own");
+        // psmux 3.4.0: the move is refused, and the relist still answers.
+        let mut ev = Vec::new();
+        for l in ["%begin 99 99 1", "unknown command: move-pane", "%error 99 99 1", "%begin 99 100 1", "%end 99 100 1"] {
+            ev.extend(r.gw.line(l.as_bytes()));
+        }
+        assert!(!ev.iter().any(|e| matches!(e, Event::Abort(_))), "no abort: {ev:?}");
+        let mut actions = Vec::new();
+        for e in ev {
+            if let Event::Reply { tag, ok, text, data } = e {
+                actions.extend(r.ctl.reply(tag, ok, &text, &data, &mut r.gw).unwrap_or_default());
+            }
+        }
+        assert_eq!(actions, vec![Action::Refused("psmux could not move the pane: unknown command: move-pane".into())]);
         r.ctl.reorder(vec![2, 0], &mut r.gw);
-        assert_eq!(r.sent(), "", "no swap-window");
+        assert_eq!(r.sent(), "list-windows -F \"#{window_id}\"\r");
+        r.answer(Some(""));
         let mut vars = BTreeMap::new();
         vars.insert("user.a".to_string(), "1".to_string());
         r.ctl.sync_user_vars(0, &vars, &mut r.gw);
-        assert_eq!(r.sent(), "", "no pane @ options");
+        assert!(r.sent().contains("@uservars"), "pane @ options go to psmux too");
+        r.answer(Some(""));
         r.ctl.fetch_buffer("buffer3", &mut r.gw);
         assert_eq!(r.sent(), "show-buffer -b buffer3\r");
-        // The error reply is tolerated: no abort, and no clipboard.
-        let before = r.gw.take_writes();
-        assert!(before.is_empty());
         let mut aborted = false;
-        for l in ["%begin 99 99 1", "no buffer buffer3", "%error 99 99 1"] {
+        for l in ["%begin 98 98 1", "no buffer buffer3", "%error 98 98 1"] {
             aborted |= r.gw.line(l.as_bytes()).iter().any(|e| matches!(e, Event::Abort(_)));
         }
         assert!(!aborted);
-        // Real tmux keeps move-pane, swap-window and the abort.
+        // Real tmux: a refused move names tmux.
         let mut t = opened();
         t.sent();
         t.ctl.move_pane(0, 1, true, true, &mut t.gw);
         assert!(t.sent().starts_with("move-pane -s"));
-        t.answer(Some(""));
-        t.answer(Some(""));
-        t.ctl.reorder(vec![2, 0], &mut t.gw);
-        assert_eq!(t.sent(), "list-windows -F \"#{window_id}\"\r");
+        let mut ev = Vec::new();
+        for l in ["%begin 97 97 1", "source and target panes must be different", "%error 97 97 1"] {
+            ev.extend(t.gw.line(l.as_bytes()));
+        }
+        let refused: Vec<Action> = ev.into_iter().filter_map(|e| if let Event::Reply { tag, ok, text, data } = e { t.ctl.reply(tag, ok, &text, &data, &mut t.gw) } else { None }).flatten().collect();
+        assert_eq!(refused, vec![Action::Refused("tmux could not move the pane: source and target panes must be different".into())]);
     }
 
     /// psmux says `%window-close` when one pane of a window dies and the window stays: the tab

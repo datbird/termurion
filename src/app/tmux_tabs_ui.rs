@@ -25,7 +25,7 @@ impl App {
     /// Applies the controller's actions for the gateway `gw`. False when tmux mode ended.
     pub(super) fn tmux_actions(&mut self, gw: PaneId, actions: Vec<Action>, event_loop: &ActiveEventLoop) -> bool {
         // Output and status lines change no pane or tab: no relayout for them.
-        let changes = actions.iter().any(|a| !matches!(a, Action::Output(..) | Action::StatusLine { .. } | Action::NewWindowReply { .. } | Action::Abandoned(..) | Action::PanePid { .. }));
+        let changes = actions.iter().any(|a| !matches!(a, Action::Output(..) | Action::StatusLine { .. } | Action::NewWindowReply { .. } | Action::Abandoned(..) | Action::PanePid { .. } | Action::Refused(_)));
         for a in actions {
             match a {
                 Action::Open { window, node, panes, place } => self.tmux_open(gw, window, node, panes, place),
@@ -147,6 +147,8 @@ impl App {
                         self.close_pane(id, event_loop);
                     }
                 }
+                // A refusal is about one action: it shows for a moment and goes (a banner stayed).
+                Action::Refused(text) => self.show_toast(&text),
                 Action::Notify(title, text) => {
                     if let Err(e) = crate::notify::show_with(title, text, self.globals.bool("SilentUserNotifications")) {
                         self.banners.set("notify", format!("Could not show a notification: {e}"));
@@ -1170,10 +1172,6 @@ impl App {
             return true;
         }
         let Some(t) = self.tmux.get_mut(&gw) else { return false };
-        if t.ctl.psmux {
-            self.banners.set("window", "psmux cannot move a pane next to another pane.".to_string());
-            return true;
-        }
         t.ctl.move_pane(ps, pd, axis == Axis::Row, before, &mut t.gw);
         self.tmux_flush(gw);
         true

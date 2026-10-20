@@ -747,6 +747,17 @@ mod tests {
         } else {
             result(&l, "pause and unpause", false, "pause mode is off for this server");
         }
+        // Move Session to Split Pane inside the tab: the last pane goes left of the first. A
+        // server without move-pane (psmux 3.4.0) refuses it, and the refusal is a message.
+        let order = l.ctl.windows.get(&w).cloned().unwrap_or_default();
+        if let (Some(&first), Some(&last)) = (order.first(), order.last()) {
+            l.ctl.move_pane(last, first, true, true, &mut l.gw);
+            l.flush();
+            let moved = l.pump_until(Duration::from_secs(10), |l| l.ctl.windows.get(&w).and_then(|p| p.first().copied()) == Some(last));
+            let refusal = l.actions.iter().find_map(|a| if let Action::Refused(t) = a { Some(t.clone()) } else { None });
+            let ok = moved || (flavor == Flavor::Psmux && refusal.as_deref().is_some_and(|t| t.contains("unknown command")));
+            result(&l, "move pane", ok, &format!("{order:?} -> {:?}, refusal {refusal:?}", l.ctl.windows.get(&w)));
+        }
         // Kill a pane.
         let victim = l.ctl.windows.get(&w).and_then(|p| p.last().copied()).unwrap();
         l.audit(&tmux_edits::kill_pane(victim));

@@ -17,6 +17,8 @@ pub struct Flags {
     pub wants_data: bool,
     /// A slow reply offers Force Detach (detach, kill-pane, kill-window, kill-session).
     pub laggy: bool,
+    /// An error reply keeps tmux's text: the reason a refusal shows.
+    pub wants_error: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -389,7 +391,7 @@ impl Gateway {
                 }
             }
             if let Some(tag) = cur.cmd.as_ref().and_then(|c| c.tag) {
-                let (text, data) = if error { (String::new(), Vec::new()) } else { (cur.text.clone(), cur.data.clone()) };
+                let (text, data) = if error && !flags.wants_error { (String::new(), Vec::new()) } else { (cur.text.clone(), cur.data.clone()) };
                 ev.push(Event::Reply { tag, ok: !error, text, data });
             }
             if !error && self.logging
