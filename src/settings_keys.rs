@@ -2577,7 +2577,7 @@ mod tests {
         }
         assert_eq!(
             row("PrefsCustomFolder").help,
-            "The folder (or http:// or https:// URL) holding termurion-settings.toml. Network paths are not supported."
+            "The folder (or http:// or https:// URL) holding termurion-settings.toml, or iTerm2's com.googlecode.iterm2.plist when the folder has no termurion-settings.toml (the same folder iTerm2 on a Mac uses). Network paths are not supported."
         );
         // iTerm2's xib draws the history switch above the external settings rows (`ui_labels` holds the order).
         let general: Vec<&str> = schema::global().iter().filter(|s| s.tab == "General" && s.section == "Settings").map(|s| s.key.as_str()).collect();

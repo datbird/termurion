@@ -194,15 +194,32 @@ fn lower_first(key: &str) -> String {
 pub fn globals_from_file(path: &Path) -> Result<Vec<(String, Value)>, String> {
     let root = plist_file(path)?;
     let dict = root.as_dictionary().ok_or_else(|| format!("{}: not a settings plist", path.display()))?;
-    Ok(crate::schema::global()
+    Ok(globals_from_dict(dict))
+}
+
+/// The global keys a settings plist may carry for Termurion: the schema's, less the consent
+/// switches and the workgroup keys, which never come from a file.
+pub fn readable_globals() -> impl Iterator<Item = &'static str> {
+    crate::schema::global()
         .iter()
         .filter(|s| !crate::ai_settings::guards_consent(&s.key))
         .filter(|s| !crate::workgroup::is_workgroup_key(&s.key))
-        .filter_map(|s| {
-            let v = dict.get(&s.key).or_else(|| dict.get(&defaults_key(&s.key))).or_else(|| dict.get(&lower_first(&s.key)))?;
-            Some((s.key.clone(), from_plist(v)?))
+        .map(|s| s.key.as_str())
+}
+
+/// The spellings a settings plist may hold a global key under, the schema's first.
+pub fn spellings(key: &str) -> [String; 3] {
+    [key.to_string(), defaults_key(key), lower_first(key)]
+}
+
+/// `globals_from_file` for a plist already read.
+pub fn globals_from_dict(dict: &plist::Dictionary) -> Vec<(String, Value)> {
+    readable_globals()
+        .filter_map(|key| {
+            let v = spellings(key).iter().find_map(|k| dict.get(k))?;
+            Some((key.to_string(), from_plist(v)?))
         })
-        .collect())
+        .collect()
 }
 
 /// The legacy iTerm2 keys an old settings plist may carry (`PREF:145`, `:174-176`, `:216`),
@@ -227,17 +244,22 @@ pub struct Legacy {
 pub fn legacy_from_file(path: &Path) -> Result<Legacy, String> {
     let root = plist_file(path)?;
     let dict = root.as_dictionary().ok_or_else(|| format!("{}: not a settings plist", path.display()))?;
+    Ok(legacy_from_dict(dict))
+}
+
+/// `legacy_from_file` for a plist already read.
+pub fn legacy_from_dict(dict: &plist::Dictionary) -> Legacy {
     let value = |k: &str| dict.get(k).and_then(from_plist);
     let int = |v: &Value| v.as_integer().or_else(|| v.as_float().map(|f| f as i64)).or_else(|| v.as_bool().map(i64::from));
     let bool = |k: &str, absent: bool| value(k).map_or(absent, |v| int(&v).is_some_and(|i| i != 0));
-    Ok(Legacy {
+    Legacy {
         control: value("Control").as_ref().and_then(int),
         toggles_window: bool("HotKeyTogglesWindow", false),
         profile_guid: value("HotKeyBookmark").and_then(|v| v.as_str().map(str::to_string)),
         auto_hides: bool("HotkeyAutoHides", true),
         migrated: bool("HotkeyMigratedFromSingleToMulti", false),
         dock_icon_toggles: bool("DockIconTogglesWindow", false),
-    })
+    }
 }
 
 /// iTerm2's legacy right Control tag (`kPreferencesModifierTagLegacyRightControl`), which acts

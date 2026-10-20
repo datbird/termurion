@@ -14,6 +14,14 @@ use toml::Value;
 
 /// iTerm2's `<bundle id>.plist` (`RP:134-142`).
 pub const PREFS_FILE: &str = "termurion-settings.toml";
+/// iTerm2's own file, read and written when the folder holds no `termurion-settings.toml`, so a
+/// folder the Mac's iTerm2 syncs through (iCloud Drive, Dropbox) works as it does on the Mac.
+pub const ITERM2_FILE: &str = "com.googlecode.iterm2.plist";
+/// The plist's profiles and default profile (`kBookmarkArrayKey`, `KEY_DEFAULT_GUID`).
+const BOOKMARKS: &str = "New Bookmarks";
+const DEFAULT_GUID: &str = "Default Bookmark Guid";
+/// iTerm2's hotkey migration flag (`HKM:34-73`).
+const MIGRATED_KEY: &str = "HotkeyMigratedFromSingleToMulti";
 /// `kPreferenceKeyLoadPrefsFromCustomFolder` (`PREF:52`).
 pub const LOAD_KEY: &str = "LoadPrefsFromCustomFolder";
 /// `kPreferenceKeyCustomFolder` (`PREF:67`).
@@ -110,13 +118,20 @@ pub fn expanded(text: &str, home: &Path) -> String {
 }
 
 /// `prefsFilenameWithBaseDir:` (`RP:134-142`): the base itself when it names an existing `.toml`
-/// file (iTerm2's `.plist`), else `termurion-settings.toml` inside it.
+/// or `.plist` file, else `termurion-settings.toml` inside it, else iTerm2's own plist inside it
+/// when only that one is there. Termurion's file wins when the folder holds both.
 pub fn prefs_file(base: &Path, exists: &dyn Fn(&Path) -> bool) -> PathBuf {
-    let named = base.extension().is_some_and(|e| e.eq_ignore_ascii_case("toml"));
+    let named = base.extension().is_some_and(|e| e.eq_ignore_ascii_case("toml") || e.eq_ignore_ascii_case("plist"));
     if named && exists(base) {
         return base.to_path_buf();
     }
-    base.join(PREFS_FILE)
+    let (own, iterm2) = (base.join(PREFS_FILE), base.join(ITERM2_FILE));
+    if !exists(&own) && exists(&iterm2) { iterm2 } else { own }
+}
+
+/// Whether the settings file is a plist (iTerm2's form) rather than Termurion's TOML.
+pub fn is_plist(file: &Path) -> bool {
+    file.extension().is_some_and(|e| e.eq_ignore_ascii_case("plist"))
 }
 
 /// `remoteLocationIsValid` (`RP:315-328`): a URL with a host, or a writable folder. A network path,
@@ -230,6 +245,144 @@ impl Snapshot {
     /// No settings and no profiles. A default Guid alone names nothing.
     pub fn is_empty(&self) -> bool {
         self.settings.is_empty() && self.profiles.is_empty()
+    }
+
+    /// A com.googlecode.iterm2.plist's snapshot, as Import from iTerm2 reads it (legacy keys
+    /// migrated), holding only what `plist_view` keeps. None when it is malformed or holds nothing.
+    pub fn parse_plist(bytes: &[u8]) -> Option<Snapshot> {
+        let root = plist::Value::from_reader(std::io::Cursor::new(bytes)).ok()?;
+        let dict = root.as_dictionary()?;
+        let mut values = crate::import::globals_from_dict(dict);
+        let mut profiles: Vec<crate::profile::Profile> = dict
+            .get(BOOKMARKS)
+            .and_then(plist::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|b| match crate::import::from_plist(b) {
+                Some(Value::Table(t)) => Some(crate::profile::Profile::from_values(t.into_iter().collect())),
+                _ => None,
+            })
+            .collect();
+        crate::import::migrate_legacy(&mut values, &crate::import::legacy_from_dict(dict), &mut profiles);
+        let snap = Snapshot {
+            settings: values.into_iter().collect(),
+            default: dict.get(DEFAULT_GUID).and_then(plist::Value::as_string).unwrap_or_default().to_string(),
+            profiles: profiles.into_iter().map(|p| p.values).collect(),
+        }
+        .plist_view();
+        (!snap.is_empty()).then_some(snap)
+    }
+
+    /// What a plist holds of this snapshot once written and read back: the global keys a plist
+    /// may carry (`import::readable_globals`) that sync, each value as the plist turns it, and
+    /// neither globals nor profile values at their defaults (as `Store::file_profiles` leaves
+    /// profile defaults out). The loaded and the local snapshot compare in this form.
+    pub fn plist_view(&self) -> Snapshot {
+        let round = |v: &Value| crate::import::from_plist(&to_iterm2(v));
+        let readable: std::collections::HashSet<&str> = crate::import::readable_globals().collect();
+        let mut settings: BTreeMap<String, Value> = self
+            .settings
+            .iter()
+            .filter(|(k, _)| readable.contains(k.as_str()) && syncable(k))
+            .filter_map(|(k, v)| Some((k.clone(), round(v)?)))
+            .filter(|(k, v)| crate::schema::find_global(k).and_then(|s| s.default.as_ref()) != Some(v))
+            .collect();
+        // Termurion's settings are past iTerm2's hotkey migration, and a plist read without the
+        // flag gains it (`import::migrate_legacy`), so the plist form always holds it.
+        settings.insert(MIGRATED_KEY.into(), Value::Boolean(true));
+        let profiles = self
+            .profiles
+            .iter()
+            .map(|p| {
+                p.iter()
+                    .filter_map(|(k, v)| Some((k.clone(), round(v)?)))
+                    .filter(|(k, v)| k == crate::profile::GUID || k == crate::profile::NAME || crate::schema::find(k).and_then(|s| s.default.as_ref()) != Some(v))
+                    .collect()
+            })
+            .collect();
+        Snapshot { settings, default: self.default.clone(), profiles }
+    }
+
+    /// The plist this snapshot writes over `existing` (the file as it is now, if any). Every key
+    /// Termurion does not read stays as it was: the Mac's own settings, background image data and
+    /// keys of a newer iTerm2. A key Termurion reads but no longer holds (it went back to its
+    /// default) is removed, so iTerm2 reads its default too; one already at the default stays.
+    pub fn to_plist(&self, existing: Option<&[u8]>) -> Result<Vec<u8>, String> {
+        let view = self.plist_view();
+        let mut root = existing
+            .and_then(|b| plist::Value::from_reader(std::io::Cursor::new(b)).ok())
+            .and_then(plist::Value::into_dictionary)
+            .unwrap_or_default();
+        let at_default = |old: &plist::Value, default: Option<&Value>| crate::import::from_plist(old).is_none_or(|v| Some(&v) == default);
+        for key in crate::import::readable_globals().filter(|k| syncable(k)) {
+            let spellings = crate::import::spellings(key);
+            let held = spellings.iter().find(|n| root.contains_key(n.as_str())).cloned();
+            match (view.settings.get(key), held) {
+                (Some(v), held) => {
+                    root.insert(held.unwrap_or_else(|| key.to_string()), to_iterm2(v));
+                }
+                (None, Some(held)) => {
+                    let default = crate::schema::find_global(key).and_then(|s| s.default.as_ref());
+                    if !root.get(&held).is_some_and(|old| at_default(old, default)) {
+                        root.remove(&held);
+                    }
+                }
+                (None, None) => {}
+            }
+        }
+        let old: Vec<plist::Dictionary> = root
+            .get(BOOKMARKS)
+            .and_then(plist::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|b| b.as_dictionary().cloned())
+            .collect();
+        let bookmarks = view
+            .profiles
+            .iter()
+            .map(|p| {
+                let guid = p.get(crate::profile::GUID).and_then(Value::as_str);
+                let mut b = old.iter().find(|d| d.get(crate::profile::GUID).and_then(plist::Value::as_string) == guid).cloned().unwrap_or_default();
+                let stale: Vec<String> = b
+                    .iter()
+                    .filter(|(k, old)| !p.contains_key(k.as_str()) && crate::schema::find(k).is_some_and(|s| !at_default(old, s.default.as_ref())))
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                for k in stale {
+                    b.remove(&k);
+                }
+                for (k, v) in p {
+                    b.insert(k.clone(), to_iterm2(v));
+                }
+                plist::Value::Dictionary(b)
+            })
+            .collect();
+        root.insert(BOOKMARKS.into(), plist::Value::Array(bookmarks));
+        if !view.default.is_empty() {
+            root.insert(DEFAULT_GUID.into(), plist::Value::String(view.default.clone()));
+        }
+        let mut out = Vec::new();
+        plist::Value::Dictionary(root).to_writer_xml(&mut out).map_err(|e| e.to_string())?;
+        Ok(out)
+    }
+}
+
+/// A value in iTerm2's plist form: a color table (`r`, `g`, `b`, `a`) becomes iTerm2's sRGB color
+/// dictionary, the inverse of `import::from_plist`.
+fn to_iterm2(v: &Value) -> plist::Value {
+    match v {
+        Value::Table(t) if ["r", "g", "b"].iter().all(|k| t.contains_key(*k)) && t.keys().all(|k| ["r", "g", "b", "a"].contains(&k.as_str())) => {
+            let num = |k: &str| t.get(k).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
+            let mut d = plist::Dictionary::new();
+            d.insert("Color Space".into(), plist::Value::String("sRGB".into()));
+            for (name, k) in [("Red Component", "r"), ("Green Component", "g"), ("Blue Component", "b"), ("Alpha Component", "a")] {
+                d.insert(name.into(), plist::Value::Real(num(k).unwrap_or(1.0)));
+            }
+            plist::Value::Dictionary(d)
+        }
+        Value::Table(t) => plist::Value::Dictionary(t.iter().map(|(k, v)| (k.clone(), to_iterm2(v))).collect()),
+        Value::Array(a) => plist::Value::Array(a.iter().map(to_iterm2).collect()),
+        other => crate::arrangement::to_plist_value(other),
     }
 }
 
@@ -671,5 +824,96 @@ mod tests {
                 "NoSyncDownloadPrefsTimeout"
             )
         );
+    }
+
+    /// A Mac's settings plist: two globals, one at its default, a key Termurion does not read, and
+    /// a profile with a color, a non-default size, a default size and an image blob.
+    const MAC_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>QuitWhenAllWindowsClosed</key><true/>
+<key>PromptOnQuit</key><true/>
+<key>SUEnableAutomaticChecks</key><true/>
+<key>MacOnlyFutureKey</key><string>keep me</string>
+<key>HotkeyMigratedFromSingleToMulti</key><true/>
+<key>Default Bookmark Guid</key><string>G1</string>
+<key>New Bookmarks</key><array><dict>
+<key>Guid</key><string>G1</string>
+<key>Name</key><string>Mac</string>
+<key>Columns</key><integer>120</integer>
+<key>Rows</key><integer>25</integer>
+<key>Foreground Color</key><dict><key>Color Space</key><string>sRGB</string><key>Red Component</key><real>0.5</real><key>Green Component</key><real>0.25</real><key>Blue Component</key><real>1</real><key>Alpha Component</key><real>1</real></dict>
+<key>Background Image Data</key><data>AAEC</data>
+</dict></array>
+</dict></plist>"#;
+
+    #[test]
+    fn a_folder_with_only_the_iterm2_plist_uses_it() {
+        let base = Path::new(r"D:\icloud\iterm");
+        let only_plist = |p: &Path| p == base.join(ITERM2_FILE);
+        assert_eq!(prefs_file(base, &only_plist), base.join(ITERM2_FILE));
+        let both = |p: &Path| p == base.join(ITERM2_FILE) || p == base.join(PREFS_FILE);
+        assert_eq!(prefs_file(base, &both), base.join(PREFS_FILE), "Termurion's own file wins");
+        let none = |_: &Path| false;
+        assert_eq!(prefs_file(base, &none), base.join(PREFS_FILE), "a new folder gets Termurion's file");
+        let named = base.join(ITERM2_FILE);
+        let is_named = |p: &Path| p == named;
+        assert_eq!(prefs_file(&named, &is_named), named, "a plist named directly");
+        assert!(is_plist(&named) && !is_plist(&base.join(PREFS_FILE)));
+    }
+
+    #[test]
+    fn the_iterm2_plist_reads_as_import_does() {
+        let snap = Snapshot::parse_plist(MAC_PLIST.as_bytes()).expect("parses");
+        assert_eq!(snap.default, "G1");
+        assert_eq!(snap.settings.get("QuitWhenAllWindowsClosed"), Some(&Value::Boolean(true)));
+        assert!(!snap.settings.contains_key("PromptOnQuit"), "a default is left out");
+        assert!(!snap.settings.contains_key("SUEnableAutomaticChecks") && !snap.settings.contains_key("MacOnlyFutureKey"));
+        let p = &snap.profiles[0];
+        assert_eq!(p.get("Name"), Some(&Value::String("Mac".into())));
+        assert_eq!(p.get("Columns"), Some(&Value::Integer(120)));
+        assert!(!p.contains_key("Rows"), "a profile default is left out, as file_profiles does");
+        assert!(!p.contains_key("Background Image Data"));
+        let fg = p.get("Foreground Color").and_then(Value::as_table).expect("color");
+        assert_eq!(fg.get("r"), Some(&Value::Float(0.5)));
+        assert_eq!(Snapshot::parse_plist(b"not a plist"), None);
+    }
+
+    #[test]
+    fn writing_the_plist_keeps_what_termurion_does_not_read() {
+        let mut snap = Snapshot::parse_plist(MAC_PLIST.as_bytes()).unwrap();
+        snap.settings.remove("QuitWhenAllWindowsClosed");
+        snap.profiles[0].insert("Columns".into(), Value::Integer(100));
+        snap.profiles[0].insert("Name".into(), Value::String("Both".into()));
+        let out = snap.to_plist(Some(MAC_PLIST.as_bytes())).unwrap();
+        let root = plist::Value::from_reader(std::io::Cursor::new(&out)).unwrap().into_dictionary().unwrap();
+        assert_eq!(root.get("MacOnlyFutureKey").and_then(plist::Value::as_string), Some("keep me"));
+        assert_eq!(root.get("SUEnableAutomaticChecks").and_then(plist::Value::as_boolean), Some(true));
+        assert!(!root.contains_key("QuitWhenAllWindowsClosed"), "a key back at its default goes, so iTerm2 reads its default");
+        assert_eq!(root.get("PromptOnQuit").and_then(plist::Value::as_boolean), Some(true), "a key already at its default stays");
+        let b = root.get(BOOKMARKS).and_then(plist::Value::as_array).unwrap()[0].as_dictionary().unwrap();
+        assert_eq!(b.get("Name").and_then(plist::Value::as_string), Some("Both"));
+        assert_eq!(b.get("Columns").and_then(plist::Value::as_signed_integer), Some(100));
+        assert_eq!(b.get("Rows").and_then(plist::Value::as_signed_integer), Some(25));
+        assert!(b.get("Background Image Data").and_then(plist::Value::as_data).is_some(), "image data stays");
+        let fg = b.get("Foreground Color").and_then(plist::Value::as_dictionary).unwrap();
+        assert_eq!(fg.get("Red Component").and_then(plist::Value::as_real), Some(0.5));
+        assert_eq!(fg.get("Color Space").and_then(plist::Value::as_string), Some("sRGB"));
+        // What was written reads back as the snapshot that wrote it, so no change is seen.
+        assert_eq!(Snapshot::parse_plist(&out), Some(snap.plist_view()));
+    }
+
+    #[test]
+    fn a_new_plist_holds_the_local_snapshot() {
+        let snap = Snapshot::from_local(
+            &map(&[("QuitWhenAllWindowsClosed", Value::Boolean(true)), (LOAD_KEY, Value::Boolean(true)), ("NoSyncX", Value::Boolean(true))]),
+            "G2",
+            &[map(&[("Guid", Value::String("G2".into())), ("Name", Value::String("Win".into())), ("Columns", Value::Integer(90))])],
+        );
+        let out = snap.to_plist(None).unwrap();
+        let root = plist::Value::from_reader(std::io::Cursor::new(&out)).unwrap().into_dictionary().unwrap();
+        assert!(!root.contains_key(LOAD_KEY) && !root.contains_key("NoSyncX"), "only syncable keys go");
+        assert_eq!(root.get(DEFAULT_GUID).and_then(plist::Value::as_string), Some("G2"));
+        assert_eq!(Snapshot::parse_plist(&out), Some(snap.plist_view()));
     }
 }

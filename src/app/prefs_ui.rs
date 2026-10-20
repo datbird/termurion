@@ -141,7 +141,7 @@ fn data_quit_ask(folder: &str) -> Ask {
 /// back with the folder's alert, as iTerm2's empty dictionary does, `RP:293-311`).
 fn fetched(text: &str, url: &str, result: Fetched) -> Start {
     match result {
-        Ok(body) => Snapshot::parse(&body).map_or_else(|| Start::Ask(failed_folder(text)), Start::Loaded),
+        Ok(body) => Snapshot::parse(&body).or_else(|| Snapshot::parse_plist(body.as_bytes())).map_or_else(|| Start::Ask(failed_folder(text)), Start::Loaded),
         Err((code, error)) => Start::Ask(failed_url(url, code, &error)),
     }
 }
@@ -171,7 +171,7 @@ fn start(g: &Globals, home: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>,
     if !rp::local_folder(&file, read_link) {
         return Start::Ask(failed_folder(&text));
     }
-    match crate::localfs::judge_io(&file).and_then(|f| crate::localfs::read_to_string(&f)).ok().and_then(|t| Snapshot::parse(&t)) {
+    match read_snapshot(&file) {
         Some(snap) => Start::Loaded(snap),
         None => Start::Ask(failed_folder(&text)),
     }
@@ -246,8 +246,16 @@ pub(super) fn curl_fetch(url: &str, timeout: Option<f64>) -> Fetched {
     }
 }
 
+/// The settings file's snapshot: Termurion's TOML, or iTerm2's plist. None when it cannot be read,
+/// is malformed or holds nothing.
+fn read_snapshot(file: &Path) -> Option<Snapshot> {
+    let bytes = crate::localfs::judge_io(file).and_then(|f| crate::localfs::read(&f)).ok()?;
+    if rp::is_plist(file) { Snapshot::parse_plist(&bytes) } else { Snapshot::parse(&String::from_utf8(bytes).ok()?) }
+}
+
 /// Writes the snapshot through a temporary file and a rename. A network path, or a file reached
-/// through a link to one, is never written.
+/// through a link to one, is never written. A plist is written over what it holds now, so the keys
+/// Termurion does not read stay (`Snapshot::to_plist`).
 fn write_snapshot(snap: &Snapshot, file: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(), String> {
     if !rp::local_folder(file, read_link) {
         return Err(format!("{}: network paths are not supported", file.display()));
@@ -256,7 +264,8 @@ fn write_snapshot(snap: &Snapshot, file: &Path, read_link: &dyn Fn(&Path) -> Opt
     tmp.push(".tmp");
     let judged = |p: &Path| crate::localfs::judge_io(p).map_err(|e| format!("{}: {e}", p.display()));
     let (tmp, file) = (judged(&PathBuf::from(tmp))?, judged(file)?);
-    crate::localfs::write(&tmp, snap.to_toml()).map_err(|e| format!("{}: {e}", tmp.path().display()))?;
+    let bytes = if rp::is_plist(file.path()) { snap.to_plist(crate::localfs::read(&file).ok().as_deref())? } else { snap.to_toml().into_bytes() };
+    crate::localfs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.path().display()))?;
     crate::localfs::rename(&tmp, &file).map_err(|e| format!("{}: {e}", file.path().display()))
 }
 
@@ -279,9 +288,10 @@ impl App {
         Some(rp::prefs_file(Path::new(&location), &|p| crate::localfs::is_local_file(p))).filter(|file| rp::local_folder(file, &read_link))
     }
 
-    /// The local settings as the folder would hold them.
+    /// The local settings as the folder would hold them (a plist's form when the file is iTerm2's).
     fn prefs_local(&self) -> Snapshot {
-        Snapshot::from_local(&self.globals.values, &self.store.saved_default_guid(), &self.store.file_profiles())
+        let snap = Snapshot::from_local(&self.globals.values, &self.store.saved_default_guid(), &self.store.file_profiles());
+        if self.prefs_file().is_some_and(|f| rp::is_plist(&f)) { snap.plist_view() } else { snap }
     }
 
     /// Whether the Settings window shows the unsaved settings notice, and whether the location is a URL
@@ -388,8 +398,7 @@ impl App {
     /// loaded or last written. False when nothing was.
     fn prefs_remote_changed(&self) -> bool {
         let (Some(saved), Some(file)) = (&self.prefs_saved, self.prefs_file()) else { return false };
-        let fresh = crate::localfs::judge_io(file).and_then(|f| crate::localfs::read_to_string(&f)).ok().and_then(|t| Snapshot::parse(&t));
-        fresh.as_ref() != Some(saved)
+        read_snapshot(&file).as_ref() != Some(saved)
     }
 
     /// Save Now, the Copy answers and the save at quit (`saveLocalUserDefaultsToRemotePrefs`,
@@ -868,6 +877,39 @@ mod tests {
         assert_eq!(Snapshot::parse(&std::fs::read_to_string(&file).unwrap()), Some(remote()));
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "the temporary file is renamed");
         assert!(write_snapshot(&remote(), Path::new(r"\\host\share\termurion-settings.toml"), &|_| None).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The Reddit report (2026-10-20): a custom folder iTerm2 on a Mac syncs through holds only
+    /// com.googlecode.iterm2.plist. The launch loads it, and a save writes it back keeping the
+    /// Mac's other keys.
+    #[test]
+    fn a_folder_holding_only_the_iterm2_plist_loads_and_saves_it() {
+        let dir = temp("iterm2-plist");
+        let folder = dir.join("iCloud");
+        std::fs::create_dir_all(&folder).unwrap();
+        let plist = folder.join(rp::ITERM2_FILE);
+        std::fs::write(&plist, concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>"#,
+            r#"<key>FocusFollowsMouse</key><true/><key>MacOnly</key><string>keep</string>"#,
+            r#"<key>Default Bookmark Guid</key><string>m1</string>"#,
+            r#"<key>New Bookmarks</key><array><dict><key>Guid</key><string>m1</string><key>Name</key><string>Mac</string></dict></array>"#,
+            r#"</dict></plist>"#,
+        )).unwrap();
+        let t = folder.display().to_string();
+        let (mut g, mut store) = local(&dir, &t);
+        let (snap, asks) = load_at_start(&mut g, &mut store, &never);
+        assert!(asks.is_empty(), "the plist is found");
+        assert_eq!(names(&store), ["Mac"]);
+        assert_eq!(g.values.get("FocusFollowsMouse"), Some(&Value::Boolean(true)));
+        let snap = snap.expect("loaded");
+        let mut changed = snap.clone();
+        changed.profiles[0].insert("Name".into(), Value::String("Windows".into()));
+        write_snapshot(&changed, &plist, &|_| None).unwrap();
+        let text = std::fs::read_to_string(&plist).unwrap();
+        assert!(text.contains("<string>Windows</string>") && text.contains("<key>MacOnly</key>"), "{text}");
+        assert!(!folder.join(rp::PREFS_FILE).exists(), "no Termurion file is made beside it");
+        assert_eq!(read_snapshot(&plist), Some(changed.plist_view()));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
