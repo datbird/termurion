@@ -14,6 +14,13 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 
 ## Done
 
+19. **Ctrl+V did not paste.** Seen 2026-10-30 on the desktop. Cause: only the Shortcut Key's
+    Paste (iTerm2's Cmd+V, Ctrl+Shift+V by default) pasted; a plain Ctrl+V went to the program
+    as a raw ^V. Done 2026-10-30 (1cf1e621, released in 0.0.1-beta7): Ctrl+V pastes in every
+    Shortcut Key mode, as in Windows Terminal, unless a key mapping claims it or the pane is in
+    Copy Mode (`shortcut_key::ctrl_v_pastes`, `App::paste_key`, test
+    `ctrl_v_pastes_only_alone_and_unclaimed`). The Edit menu shows Ctrl+V beside the chord.
+
 18. **Stuck mouse reporting over a slow ssh link took a screen of junk to notice.** Seen
     2026-10-19: an ssh session through a tunnel dropped while an app had mouse reporting on.
     After a new ssh to the same host, every mouse move typed reports into the shell, and the
