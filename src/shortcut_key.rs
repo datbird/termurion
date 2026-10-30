@@ -400,6 +400,22 @@ pub fn f11_toggles_full_screen(is_f11: bool, mods: Mods, claimed_by_mapping: boo
     is_f11 && !(mods.shift || mods.alt || mods.ctrl || mods.cmd) && !claimed_by_mapping
 }
 
+/// The key that pastes in every mode, as Windows Terminal does. iTerm2's own chord (Cmd+V) works
+/// beside it.
+pub const PASTE_KEY: &str = "Ctrl+V";
+
+/// Edit > Paste (not Paste Slowly, which shares the selector).
+pub fn is_paste_command(id: &str) -> bool {
+    id == "Edit > Paste"
+}
+
+/// Whether a Ctrl+V press pastes: Ctrl alone is held, no key mapping claims the key, and the pane
+/// is not in Copy Mode (where Ctrl+V starts a box selection). A mapping for Ctrl+V keeps the key
+/// for a program that wants its ^V.
+pub fn ctrl_v_pastes(is_v: bool, mods: Mods, claimed_by_mapping: bool, in_copy_mode: bool) -> bool {
+    is_v && mods.ctrl && !(mods.shift || mods.alt || mods.cmd) && !claimed_by_mapping && !in_copy_mode
+}
+
 /// The modifiers a window without menus (password manager, AI Chat, Cockpit) has seen, and the
 /// Cmd chord a key press makes with them.
 #[derive(Default)]
@@ -938,6 +954,21 @@ mod tests {
         assert!(m.press_as_cmd(phys(true, false, true, false), true).is_none(), "AltGr typing is left to typing");
         // The windows without menus have no Cmd+Ctrl command.
         assert!(m.window_chord(phys(true, false, true, false), false, ChordKey::Char('f')).is_none());
+    }
+
+    #[test]
+    fn ctrl_v_pastes_only_alone_and_unclaimed() {
+        let ctrl = Mods { ctrl: true, ..Mods::default() };
+        assert!(ctrl_v_pastes(true, ctrl, false, false));
+        assert!(!ctrl_v_pastes(false, ctrl, false, false), "another key");
+        assert!(!ctrl_v_pastes(true, Mods::default(), false, false), "a bare v types");
+        assert!(!ctrl_v_pastes(true, Mods { shift: true, ..ctrl }, false, false), "Ctrl+Shift+V is the Cmd chord");
+        assert!(!ctrl_v_pastes(true, Mods { alt: true, ..ctrl }, false, false), "Ctrl+Alt is AltGr");
+        assert!(!ctrl_v_pastes(true, Mods { cmd: true, ..ctrl }, false, false));
+        assert!(!ctrl_v_pastes(true, ctrl, true, false), "a key mapping for Ctrl+V wins");
+        assert!(!ctrl_v_pastes(true, ctrl, false, true), "Copy Mode keeps Ctrl+V for a box");
+        assert!(is_paste_command("Edit > Paste") && !is_paste_command("Edit > Paste Special > Paste Slowly"));
+        assert_eq!(PASTE_KEY, "Ctrl+V");
     }
 
     #[test]

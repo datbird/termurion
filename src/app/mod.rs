@@ -5795,6 +5795,11 @@ impl App {
             && let Some(item) = crate::menus::by_id("View > Toggle Full Screen") {
                 return self.run_command(item, event_loop);
             }
+        // Ctrl+V pastes in every mode, unless a key mapping or Copy Mode claims it.
+        if self.paste_key(ev)
+            && let Some(item) = crate::menus::by_id("Edit > Paste") {
+                return self.run_command(item, event_loop);
+            }
         if self.remap_in_app_on() && self.mods.cmd && !self.phys_mods.cmd
             && let Some(chord) = crate::winkeys::vk_to_key(crate::winkeys::vk_of(ev.physical_key)).map(|key| crate::menus::Chord { key, cmd: true, alt: self.mods.alt, shift: self.mods.shift, ctrl: self.mods.ctrl }) {
                 return self.run_chord(&chord, event_loop);

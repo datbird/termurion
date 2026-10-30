@@ -61,6 +61,13 @@ pub(super) fn chord_text(item: &Item) -> Option<String> {
             None => crate::shortcut_key::FULL_SCREEN_KEY.to_string(),
         });
     }
+    // Paste has Ctrl+V in every mode (the Windows convention) beside iTerm2's chord.
+    if crate::shortcut_key::is_paste_command(&item.id()) {
+        return Some(match chord {
+            Some(c) => format!("{c}, {}", crate::shortcut_key::PASTE_KEY),
+            None => crate::shortcut_key::PASTE_KEY.to_string(),
+        });
+    }
     chord
 }
 

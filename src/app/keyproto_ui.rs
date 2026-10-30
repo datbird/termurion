@@ -84,6 +84,23 @@ impl App {
         crate::shortcut_key::f11_toggles_full_screen(true, self.mods, claimed)
     }
 
+    /// Whether this press is Ctrl+V with nothing claiming it: Edit > Paste in every shortcut key
+    /// mode (`shortcut_key::ctrl_v_pastes`). A key mapping or the Leader comes first, and Copy
+    /// Mode keeps Ctrl+V for its box selection.
+    pub(super) fn paste_key(&self, ev: &KeyEvent) -> bool {
+        if ev.state != ElementState::Pressed || self.leader_on {
+            return false;
+        }
+        let is_v = crate::winkeys::vk_to_key(crate::winkeys::vk_of(ev.physical_key)) == Some(crate::menus::ChordKey::Char('v'));
+        if !crate::shortcut_key::ctrl_v_pastes(is_v, self.mods, false, false) {
+            return false;
+        }
+        let Some(stroke) = crate::keystroke::from_key_event(ev, self.mods) else { return false };
+        let claimed = self.with_route(|c| !matches!(crate::keyroute::route(c, &crate::keyroute::Press { stroke, digit: None }), crate::keyroute::Route::Terminal));
+        let in_copy_mode = self.focused_id().is_some_and(|id| self.copy_modes.contains_key(&id));
+        crate::shortcut_key::ctrl_v_pastes(is_v, self.mods, claimed, in_copy_mode)
+    }
+
     /// The Shortcut key setting changed: the hook, the key path and the menu text follow it.
     pub(super) fn shortcut_key_changed(&mut self) {
         let now = crate::shortcut_key::ShortcutKey::from_globals(&self.globals);

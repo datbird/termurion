@@ -6,6 +6,10 @@ These pages describe what Termurion does on Windows. Open Settings with Ctrl+Shi
 
 View > Toggle Full Screen is F11 in every Shortcut Key mode, and also Ctrl+Alt+F. A key mapping you make for F11 takes the key from full screen. In full screen the menu bar is hidden when Settings > Appearance > Windows > "Auto-hide menu bar in non-native fullscreen" is on. To get it back, press and release Alt on its own, or move the pointer to the very top edge of the window. Tap Alt again to hide it, or pick a command. Because of this you can always leave full screen from the menu: View > Toggle Full Screen.
 
+## Paste
+
+Ctrl+V pastes in every Shortcut Key mode, as in Windows Terminal, beside the Shortcut Key's own Paste (Ctrl+Shift+V by default). To send a program a raw Ctrl+V (vim's block selection, a shell's quoted insert), make a key mapping for Ctrl+V with the action Send Hex Code 0x16. Any key mapping you make for Ctrl+V takes the key from paste. In Copy Mode, Ctrl+V still starts a box selection.
+
 ## Pages
 
 - [Badges](badges.md): a large label in the corner of a pane, such as the host name.
