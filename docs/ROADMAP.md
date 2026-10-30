@@ -9,9 +9,9 @@ beta is out.
 
 | | |
 |---|---|
-| Release | 0.0.1-beta6 (2026-10-20) |
+| Release | 0.0.1-beta7 (2026-10-30) |
 | Milestones done | 0 to 14, including 13a to 13y2 and the AI browser tools |
-| Tests | 6,767 |
+| Tests | 6,768 |
 | Rust | about 496,000 lines |
 | Commits | about 2,230 |
 
