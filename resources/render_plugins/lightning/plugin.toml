@@ -1,0 +1,8 @@
+name = "Lightning"
+description = "the cursor crackles with small arcs of current; sparks while typing, faint crackle while idle, a bolt along the line on delete-all. Enter: a surge of current runs from the cursor along the input box lines."
+shaders = ["lightning-cursor.glsl"]
+animation = "always"
+cursor_color = "#9fd0fe"
+author = "AONIR (ghostty-cursor-fx)"
+license = "MIT"
+source = "https://github.com/Avarce/ghostty-cursor-fx/tree/ed2816d0ed0c93ed90a5e6f11a9563fa8fbdeecf"

@@ -1144,6 +1144,26 @@ impl Renderer {
 
     /// Draws a frame into an offscreen texture and returns its pixels as RGBA, row by row.
     pub fn draw_offscreen(&mut self, frame: &Frame, w: u32, h: u32) -> Result<Vec<u8>, String> {
+        self.draw_offscreen_fx(frame, None, w, h)
+    }
+
+    /// Draws `frame` through the render plugin chain: the frame goes into the chain's
+    /// offscreen texture, then the passes write `out`, a non-sRGB view of the target.
+    pub fn draw_fx(&mut self, frame: &Frame, chain: &mut crate::render_fx_gpu::Chain, uniforms: &crate::render_fx::Uniforms, out: &wgpu::TextureView, w: u32, h: u32) -> Result<(), String> {
+        let (view, raw) = chain.frame_views(&self.device, (w, h));
+        let (view, raw) = (view.clone(), raw.clone());
+        self.draw_with(frame, &view, Some(&raw), w, h)?;
+        chain.run(&self.device, &self.queue, uniforms, out);
+        Ok(())
+    }
+
+    /// The device and queue this renderer draws with.
+    pub fn gpu(&self) -> (&wgpu::Device, &wgpu::Queue) {
+        (&self.device, &self.queue)
+    }
+
+    /// `draw_offscreen`, optionally through a render plugin chain.
+    pub fn draw_offscreen_fx(&mut self, frame: &Frame, fx: Option<(&mut crate::render_fx_gpu::Chain, &crate::render_fx::Uniforms)>, w: u32, h: u32) -> Result<Vec<u8>, String> {
         let max = self.device.limits().max_texture_dimension_2d;
         if w == 0 || h == 0 || w > max || h > max {
             return Err(format!("an image of {w} x {h} pixels is larger than the graphics card allows ({max})"));
@@ -1160,7 +1180,10 @@ impl Renderer {
         });
         let view = tex.create_view(&Default::default());
         let raw = tex.create_view(&wgpu::TextureViewDescriptor { format: Some(self.format.remove_srgb_suffix()), ..Default::default() });
-        self.draw_with(frame, &view, Some(&raw), w, h)?;
+        match fx {
+            Some((chain, uniforms)) => self.draw_fx(frame, chain, uniforms, &raw, w, h)?,
+            None => self.draw_with(frame, &view, Some(&raw), w, h)?,
+        }
         // Rows are copied out padded to 256 bytes, then the padding is dropped.
         let row = w * 4;
         let padded = row.div_ceil(256) * 256;
@@ -2388,6 +2411,33 @@ mod tests {
         assert_eq!(r.resolve_family("Cascadia Mono"), "Cascadia Mono");
         // Not installed: the dash heuristic is the best guess.
         assert_eq!(r.resolve_family("MesloLGS-NF-Regular"), "MesloLGS NF");
+    }
+
+    /// Render plugins: the frame goes through each pass in order, with no vertical flip and no
+    /// sRGB round trip (a copy pass gives back the frame's own bytes).
+    #[test]
+    fn render_plugins_run_over_the_frame() {
+        let (device, queue) = device();
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let (w, h) = (64u32, 32u32);
+        let frame = Frame { clear: rgba(rgb(0, 0, 0), 1.0), fade: 1.0, quads: vec![Quad { rect: Rect { x: 0.0, y: 0.0, w: 32.0, h: 16.0 }, color: rgba(rgb(200, 40, 10), 1.0) }], ..Default::default() };
+        let plain = r.draw_offscreen(&frame, w, h).unwrap();
+        let copy = crate::render_fx::compile_glsl("void mainImage(out vec4 c, in vec2 p) { c = texture(iChannel0, p / iResolution.xy); }").unwrap();
+        let swap = crate::render_fx::compile_glsl("void mainImage(out vec4 c, in vec2 p) { c = texture(iChannel0, p / iResolution.xy).bgra; }").unwrap();
+        let mut chain = crate::render_fx_gpu::Chain::new(&device, format, vec![copy, swap]).unwrap();
+        let u = crate::render_fx::Uniforms { resolution: [w as f32, h as f32, 1.0], ..Default::default() };
+        let px = r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), w, h).unwrap();
+        let at = |b: &[u8], x: usize, y: usize| [b[(y * w as usize + x) * 4], b[(y * w as usize + x) * 4 + 1], b[(y * w as usize + x) * 4 + 2]];
+        let [pr, pg, pb] = at(&plain, 5, 5);
+        assert_eq!(at(&px, 5, 5), [pb, pg, pr], "the top-left quad, red and blue swapped, same bytes");
+        assert_eq!(at(&px, 5, 25), at(&plain, 5, 25), "no vertical flip: the bottom stays the clear color");
+        assert_eq!(at(&px, 50, 5), at(&plain, 50, 5));
+        // Every built-in effect builds a pipeline on this device and runs.
+        for p in crate::render_fx::discover(None).0 {
+            let mut c = crate::render_fx_gpu::Chain::new(&device, format, p.compile().unwrap()).unwrap_or_else(|e| panic!("{}: {e}", p.id));
+            r.draw_offscreen_fx(&frame, Some((&mut c, &u)), w, h).unwrap_or_else(|e| panic!("{}: {e}", p.id));
+        }
     }
 
     #[test]

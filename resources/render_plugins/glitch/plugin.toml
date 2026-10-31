@@ -1,0 +1,8 @@
+name = "Glitch"
+description = "the cursor is a corrupted signal that tears now and then; the cursor tears into slices with magenta/cyan copies as you type; small glitch while idle. Enter: the input box lines break into glitch slices, spreading out from the cursor."
+shaders = ["glitch-cursor.glsl"]
+animation = "always"
+cursor_color = "#f85452"
+author = "AONIR (ghostty-cursor-fx)"
+license = "MIT"
+source = "https://github.com/Avarce/ghostty-cursor-fx/tree/ed2816d0ed0c93ed90a5e6f11a9563fa8fbdeecf"

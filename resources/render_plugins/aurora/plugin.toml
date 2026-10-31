@@ -1,0 +1,8 @@
+name = "Aurora"
+description = "the cursor glows with drifting aurora colors; northern lights. Typing sends a wisp of light off the cursor; a jump along the row sweeps a ribbon. Enter: shimmering green, teal and violet curtains hang along the input box lines, out from the cursor; done: in from the edges."
+shaders = ["aurora-cursor.glsl"]
+animation = "always"
+cursor_color = "#7fe0c0"
+author = "AONIR (ghostty-cursor-fx)"
+license = "MIT"
+source = "https://github.com/Avarce/ghostty-cursor-fx/tree/ed2816d0ed0c93ed90a5e6f11a9563fa8fbdeecf"

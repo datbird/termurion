@@ -1,0 +1,8 @@
+name = "Teleport"
+description = "the cursor shimmers like a transporter beam; typing gives the cursor a faint sparkle shimmer. Enter: the input box lines sparkle, then break into glowing pixels that beam up out of the window."
+shaders = ["teleport-cursor.glsl"]
+animation = "always"
+cursor_color = "#3fd8c8"
+author = "AONIR (ghostty-cursor-fx)"
+license = "MIT"
+source = "https://github.com/Avarce/ghostty-cursor-fx/tree/ed2816d0ed0c93ed90a5e6f11a9563fa8fbdeecf"

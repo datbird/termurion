@@ -1,0 +1,8 @@
+name = "Shockwave"
+description = "the cursor resonates with faint ripples; typing sends out a small ring that bends the text; an idle cursor pings like sonar. Enter: a pulse runs out from the cursor along the input box lines, bending the text beside them."
+shaders = ["shockwave-cursor.glsl"]
+animation = "always"
+cursor_color = "#b69cfe"
+author = "AONIR (ghostty-cursor-fx)"
+license = "MIT"
+source = "https://github.com/Avarce/ghostty-cursor-fx/tree/ed2816d0ed0c93ed90a5e6f11a9563fa8fbdeecf"

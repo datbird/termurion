@@ -41,7 +41,7 @@ getrandom = "0.4"
 # The Python API's WebSocket framing only; Termurion does its own HTTP (src/api_http.rs).
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 uuid = { version = "1", features = ["v4"] }
-wgpu = "30"
+wgpu = { version = "30", features = ["glsl", "naga-ir"] }
 winit = "0.30"
 # Box and block drawing rasterizes its paths with zeno (already in the tree through swash).
 zeno = "0.3"

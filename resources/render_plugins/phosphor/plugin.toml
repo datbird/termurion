@@ -1,0 +1,8 @@
+name = "Phosphor"
+description = "old CRT look, green phosphor glow with scanlines and a short fading beam trail as you type. Enter: a CRT beam sweeps out from the cursor along the input box lines, leaving them glowing."
+shaders = ["phosphor-cursor.glsl"]
+animation = "always"
+cursor_color = "#6be894"
+author = "AONIR (ghostty-cursor-fx)"
+license = "MIT"
+source = "https://github.com/Avarce/ghostty-cursor-fx/tree/ed2816d0ed0c93ed90a5e6f11a9563fa8fbdeecf"

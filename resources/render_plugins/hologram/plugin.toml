@@ -1,0 +1,8 @@
+name = "Hologram"
+description = "the cursor is a translucent cyan projection (scanlines, a bright base, a thin frame) and each typed letter is printed by a rising scanline. Enter: a scan runs out from the cursor along the input box, its lines light up and a wireframe grid flickers in; done: the scans come in from both edges and meet."
+shaders = ["hologram-cursor.glsl"]
+animation = "always"
+cursor_color = "#4cc8f0"
+author = "AONIR (ghostty-cursor-fx)"
+license = "MIT"
+source = "https://github.com/Avarce/ghostty-cursor-fx/tree/ed2816d0ed0c93ed90a5e6f11a9563fa8fbdeecf"

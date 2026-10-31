@@ -1,0 +1,8 @@
+name = "Cyber"
+description = "data rain in netrunner green; a living cursor (glyph rain inside, a scanline sweep, a breathing glow), every typed character decrypts (signal lock-in, slot reel, pixel resolve or glyph flicker: pick in cursor-fx edit; Chinese you pick decrypts as a whole, quickly), and your typed text and sent prompts show in green. Enter: sharp glyph rain falls through the input box column by column while an energy sweep runs along its lines; done: the sweeps come in from both edges and flare where they meet."
+shaders = ["cyber-cursor.glsl"]
+animation = "always"
+cursor_color = "#50e080"
+author = "AONIR (ghostty-cursor-fx)"
+license = "MIT"
+source = "https://github.com/Avarce/ghostty-cursor-fx/tree/ed2816d0ed0c93ed90a5e6f11a9563fa8fbdeecf"

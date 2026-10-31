@@ -1,0 +1,8 @@
+name = "Mecha"
+description = "robot style; the cursor is armor (white with blue and red plates, a yellow V crest, sensor eyes that glint) typing fires a short thruster burst behind it and Backspace one from its right side. The prompt mark ❯ is a steel-blue targeting chevron that locks on now and then. Enter: energy blades ignite from the cursor along the input box lines; done: two blades ignite at the window's edges and clash in the middle."
+shaders = ["mecha-cursor.glsl"]
+animation = "always"
+cursor_color = "#bcc8dc"
+author = "AONIR (ghostty-cursor-fx)"
+license = "MIT"
+source = "https://github.com/Avarce/ghostty-cursor-fx/tree/ed2816d0ed0c93ed90a5e6f11a9563fa8fbdeecf"

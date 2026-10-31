@@ -1,0 +1,8 @@
+name = "Neon"
+description = "the cursor glows like a pink neon tube that slowly breathes and flickers back on after every keystroke. Enter: the input box lines light up as neon tubes, igniting outward from the cursor."
+shaders = ["neon-cursor.glsl"]
+animation = "always"
+cursor_color = "#ff5ed2"
+author = "AONIR (ghostty-cursor-fx)"
+license = "MIT"
+source = "https://github.com/Avarce/ghostty-cursor-fx/tree/ed2816d0ed0c93ed90a5e6f11a9563fa8fbdeecf"

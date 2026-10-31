@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "sh \"$HOME/.termurion/fx-signal.sh\" enter '#9fd0fe' >/dev/null 2>&1 || true", "async": true, "timeout": 5 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "sh \"$HOME/.termurion/fx-signal.sh\" done '#9fd0fe' >/dev/null 2>&1 || true", "async": true, "timeout": 5 } ] }
+    ]
+  }
+}
