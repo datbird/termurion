@@ -1046,7 +1046,6 @@ pub fn auto_log_path(raw_dir: &str, name_template: &str, lookup: &dyn Fn(&str) -
 }
 
 /// The local time now and its milliseconds, for timestamps.
-#[cfg(windows)]
 pub fn now_parts() -> (Parts, u16) {
     let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     (crate::stamps::local(d.as_secs()), d.subsec_millis() as u16)

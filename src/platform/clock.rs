@@ -14,3 +14,9 @@ pub fn local_time() -> (u16, u16, u16, u16, u16, u16) {
 pub fn beep() {
     imp::beep()
 }
+
+/// Unix seconds as local time: year, month, day, weekday (0 is Sunday), hour, minute, second.
+/// None when the time does not convert.
+pub fn local_at(secs: u64) -> Option<(u16, u16, u16, u16, u16, u16, u16)> {
+    imp::local_at(secs)
+}

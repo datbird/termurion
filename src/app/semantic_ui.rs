@@ -892,7 +892,7 @@ mod tests {
         ("app/triggers_ui.rs", "start_command", "Run Command for the user's own trigger rule (ruling)"),
         ("bin/termurion-git.rs", "run", "the git menu's wrapper: git with the menu's own command"),
         ("git_run_win.rs", "start", "git for the status bar, Termurion's own arguments"),
-        ("host_client.rs", "start_host_process", "starts Termurion's own session host"),
+        ("platform/windows/proc.rs", "start_detached", "starts Termurion's own session host (host_client::start_host_process passes its fixed file name)"),
         ("host.rs", "reopen_app", "restarts Termurion's own exe, found beside the host's own exe"),
         ("probe.rs", "wsl", "`wsl.exe` with Termurion's own arguments"),
         ("platform/windows/pty.rs", "start", "a pane's shell, from its profile"),

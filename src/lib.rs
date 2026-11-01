@@ -338,7 +338,6 @@ pub mod metrics_win;
 #[cfg(windows)]
 pub mod git_run_win;
 
-#[cfg(windows)]
 pub mod pane;
 
 pub mod render;
@@ -398,10 +397,7 @@ pub mod resident;
 pub mod host_proto;
 pub mod host_watch;
 pub mod host_base;
-// Moved to Task 4: host and host_client need pty/conpty.
-#[cfg(windows)]
 pub mod host;
-#[cfg(windows)]
 pub mod host_client;
 pub mod reattach;
 pub mod hotkey;
@@ -409,10 +405,12 @@ pub mod session_hotkeys;
 pub mod broadcast;
 pub mod dim;
 pub mod dropdown_views;
+// Live tests that drive a real Windows ConPTY.
+#[cfg(windows)]
 mod tmux_probe;
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tmux_live;
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod resize_live;
 pub mod tmux_hook;
 pub mod tmux_launch;

@@ -6,7 +6,7 @@ use alacritty_terminal::term::TermMode;
 use std::time::{Duration, Instant};
 
 use crate::composer;
-use crate::platform::pty::conpty::Api;
+use crate::platform::pty::PtyApi;
 use crate::dvr;
 use crate::layout::PaneId;
 use crate::platform::pty::{self, Notify, Pty, Read};
@@ -306,7 +306,7 @@ pub struct Pane {
     pub fx_signal: crate::render_fx::Signals,
     pub got_output: bool,
     /// Session > Run Coprocess: it reads the raw output and types into the shell.
-    coprocess: Option<crate::coproc_win::Coprocess>,
+    coprocess: Option<crate::platform::coproc::Coprocess>,
     co_out: crate::coprocess::OutQueue,
     /// A coprocess that ended: its command and stderr, for the window.
     co_end: Option<(String, String)>,
@@ -562,13 +562,13 @@ impl Pane {
     }
 
     #[allow(clippy::too_many_arguments)] // a parameter struct would only move the list; callers pass the pieces they already hold
-    pub fn start(id: PaneId, api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
+    pub fn start(id: PaneId, api: &PtyApi, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
         Pane::start_transport(id, api, Transport::Conpty, cmdline, cwd, env, cols, rows, notify)
     }
 
     /// `start` on an SSH transport (`ssh_transport`); `Transport::Conpty` is every other pane's.
     #[allow(clippy::too_many_arguments)]
-    pub fn start_transport(id: PaneId, api: &Api, t: Transport, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
+    pub fn start_transport(id: PaneId, api: &PtyApi, t: Transport, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
         let (cols, rows) = (cols.max(2), rows.max(1));
         let pty = pty::spawn_transport(api, t, cmdline, cwd, env, cols, rows, notify)?;
         Ok(Pane::with_io(id, Io::Local(pty), cols, rows))
@@ -1931,7 +1931,7 @@ impl Pane {
         if self.pty.is_none() {
             return Err("the session has ended".into());
         }
-        self.coprocess = Some(crate::coproc_win::Coprocess::start(command, mute, cwd, notify)?);
+        self.coprocess = Some(crate::platform::coproc::Coprocess::start(command, mute, cwd, notify)?);
         self.co_out = Default::default();
         Ok(())
     }
@@ -2078,7 +2078,7 @@ impl Pane {
     /// and creation time: the creation time guards against a reused pid (13q B7).
     pub fn survey_survivors(&mut self) {
         let Some(pid) = self.exit_pid.filter(|_| self.owns_console() || self.host_session().is_some()) else { return };
-        if let Ok(left) = crate::jobwatch::orphans_of(pid) {
+        if let Ok(left) = crate::platform::proc::orphans_of(pid) {
             self.survivors = left.into_iter().filter(|p| !p.gui).map(|p| (p.pid, p.created)).filter(|(_, made)| *made != 0).collect();
         }
     }
@@ -2094,7 +2094,7 @@ impl Pane {
         if self.survivors.is_empty() {
             return Vec::new();
         }
-        crate::jobwatch::still_running(&self.survivors)
+        crate::platform::proc::still_running(&self.survivors)
     }
 
     /// When the end of an exited session is due: once its output has drained (a short wait after
@@ -2507,7 +2507,6 @@ mod tests {
 
     use super::*;
 
-    use crate::platform::pty::conpty::{self, Source, dev_vendor_dir};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -3788,7 +3787,7 @@ mod tests {
     }
 
     fn start(cmd: &str) -> Pane {
-        let api = conpty::load(&Source::Shipped(dev_vendor_dir())).unwrap();
+        let api = crate::platform::pty::test_api();
         Pane::start(1, &api, cmd, None, &[], 80, 24, Arc::new(|| {})).unwrap()
     }
 

@@ -531,22 +531,7 @@ pub use crate::host_base::HOST_EXE;
 /// Starts `termurion-host.exe` from `exe_dir`, detached from Termurion (its own process group,
 /// out of Termurion's job when Windows allows), so it outlives Termurion.
 pub fn start_host_process(exe_dir: &Path) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-    let exe = exe_dir.join(HOST_EXE);
-    let spawn = |flags: u32| {
-        std::process::Command::new(&exe)
-            .creation_flags(flags)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-    };
-    let base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
-    // A job that forbids breakaway refuses the flag; the host then lives in Termurion's job.
-    spawn(base | CREATE_BREAKAWAY_FROM_JOB).or_else(|_| spawn(base)).map(drop).map_err(|e| format!("could not start {}: {e}", exe.display()))
+    crate::platform::proc::start_detached(&exe_dir.join(HOST_EXE))
 }
 
 /// Connects to this user's host, starting it when none runs, waiting up to `wait`.
@@ -656,7 +641,7 @@ mod tests {
     /// sends it a version 2 message.
     #[test]
     fn an_older_host_is_spoken_to_in_version_one() {
-        let name = crate::platform::windows::ipc::tests::test_name("oldhost");
+        let name = crate::platform::ipc::test_name("oldhost");
         let old_host = older_host(name.clone(), 1);
         let (client, welcome) = Client::connect(&name, Duration::from_secs(5)).unwrap().expect("the old host answers");
         assert_eq!(welcome.version, 1);
@@ -670,7 +655,7 @@ mod tests {
     /// password prompts still work there.
     #[test]
     fn a_version_two_host_keeps_version_two() {
-        let name = crate::platform::windows::ipc::tests::test_name("v2host");
+        let name = crate::platform::ipc::test_name("v2host");
         let old_host = older_host(name.clone(), 2);
         let (client, welcome) = Client::connect(&name, Duration::from_secs(5)).unwrap().expect("the version 2 host answers");
         assert_eq!(welcome.version, 2);
@@ -683,7 +668,7 @@ mod tests {
     /// ConPTY launch still goes out as Launch.
     #[test]
     fn a_version_three_host_is_too_old_for_a_transport() {
-        let name = crate::platform::windows::ipc::tests::test_name("v3host");
+        let name = crate::platform::ipc::test_name("v3host");
         let old_host = older_host(name.clone(), 3);
         let (client, welcome) = Client::connect(&name, Duration::from_secs(5)).unwrap().expect("the version 3 host answers");
         assert_eq!(welcome.version, 3);

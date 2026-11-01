@@ -100,6 +100,13 @@ pub fn thread_peer() -> Result<Peer, String> {
     no()
 }
 
+/// A name no other test run shares.
+#[cfg(test)]
+pub(crate) fn test_name(what: &str) -> String {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    format!("termurion-test-{what}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

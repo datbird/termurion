@@ -601,6 +601,16 @@ pub fn orphans_of(dead: u32) -> Result<Vec<Proc>, String> {
     Ok(out)
 }
 
+/// The full path of the program a process runs, or None when it is gone or off limits.
+pub fn process_image(pid: u32) -> Option<String> {
+    open(pid).as_ref().and_then(image_path)
+}
+
+/// The ids of the processes whose parent is `pid`, right now.
+pub fn children_of(pid: u32) -> Vec<u32> {
+    toolhelp().map(|all| all.into_iter().filter(|(p, ppid, _)| p != ppid && *ppid == pid).map(|(p, _, _)| p).collect()).unwrap_or_default()
+}
+
 /// The names (no ".exe") of those of `set` ((pid, creation time)) that still run: a reused pid
 /// has another creation time and is not counted.
 pub fn still_running(set: &[(u32, u64)]) -> Vec<String> {

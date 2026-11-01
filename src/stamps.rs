@@ -33,28 +33,11 @@ pub fn label(age: u64, p: &Parts) -> String {
     }
 }
 
-/// Unix seconds as local time (Windows' time zone rules, so summer time is right).
-#[cfg(windows)]
+/// Unix seconds as local time (the OS's time zone rules, so summer time is right).
 pub fn local(secs: u64) -> Parts {
-    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
-    use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
-    // FILETIME counts 100 ns steps from 1601.
-    let ticks = (secs + 11_644_473_600) * 10_000_000;
-    let ft = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
-    let mut utc: SYSTEMTIME = unsafe { std::mem::zeroed() };
-    let mut here: SYSTEMTIME = unsafe { std::mem::zeroed() };
-    let ok = unsafe { FileTimeToSystemTime(&ft, &mut utc) != 0 && SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut here) != 0 };
-    if !ok {
-        return Parts::default();
-    }
-    Parts {
-        year: here.wYear,
-        month: here.wMonth,
-        day: here.wDay,
-        weekday: here.wDayOfWeek,
-        hour: here.wHour,
-        minute: here.wMinute,
-        second: here.wSecond,
+    match crate::platform::clock::local_at(secs) {
+        Some((year, month, day, weekday, hour, minute, second)) => Parts { year, month, day, weekday, hour, minute, second },
+        None => Parts::default(),
     }
 }
 

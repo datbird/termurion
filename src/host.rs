@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use crate::platform::pty::conpty::Api;
+use crate::platform::pty::PtyApi;
 use crate::host_proto::{Decoder, Live, MIN_VERSION, Msg, Ring, VERSION, encode};
 use crate::platform::pty::{Pty, Read};
 use crate::ssh_transport::Transport;
@@ -178,7 +178,7 @@ fn drop_later(p: Pty) {
 type Shared = Arc<Mutex<Host>>;
 
 /// Serves `pipe` until the host is idle for `opts.grace`.
-pub fn run(pipe: &str, api: Api, opts: Options) -> Result<(), String> {
+pub fn run(pipe: &str, api: PtyApi, opts: Options) -> Result<(), String> {
     let mut listener = Listener::bind(pipe)?;
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let host: Shared = Arc::new(Mutex::new(Host { sessions: HashMap::new(), next_id: 1, client: None, instance: format!("{}-{nanos}", std::process::id()), prompt_debounce: None, events: Vec::new() }));
@@ -309,7 +309,7 @@ fn pump(host: &Shared, id: u64) {
 }
 
 /// One connection: a writer thread for its frames and a reader thread for its requests.
-fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: Api, wake: mpsc::Sender<u64>) {
+fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: PtyApi, wake: mpsc::Sender<u64>) {
     let (out, frames) = mpsc::channel::<Vec<u8>>();
     let writer = pipe.clone();
     std::thread::spawn(move || {
@@ -383,7 +383,7 @@ fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: Api, wake: mpsc::Sender<
 
 /// Starts a session on transport `t` and answers `Launched` or `LaunchFailed`.
 #[allow(clippy::too_many_arguments)]
-fn launch(host: &Shared, api: &Api, wake: &mpsc::Sender<u64>, t: Transport, tag: u64, cmdline: String, cwd: String, env: Vec<String>, cols: u16, rows: u16) {
+fn launch(host: &Shared, api: &PtyApi, wake: &mpsc::Sender<u64>, t: Transport, tag: u64, cmdline: String, cwd: String, env: Vec<String>, cols: u16, rows: u16) {
     let id = {
         let mut h = host.lock().unwrap();
         h.next_id += 1;
@@ -408,7 +408,7 @@ fn launch(host: &Shared, api: &Api, wake: &mpsc::Sender<u64>, t: Transport, tag:
     }
 }
 
-fn handle(host: &Shared, m: Msg, api: &Api, wake: &mpsc::Sender<u64>) {
+fn handle(host: &Shared, m: Msg, api: &PtyApi, wake: &mpsc::Sender<u64>) {
     match m {
         Msg::Launch { tag, cmdline, cwd, env, cols, rows } => launch(host, api, wake, Transport::Conpty, tag, cmdline, cwd, env, cols, rows),
         // Only a version 4 Termurion sends it (`host_client::launch_transport`).
@@ -469,7 +469,7 @@ fn handle(host: &Shared, m: Msg, api: &Api, wake: &mpsc::Sender<u64>) {
             let target = host.lock().unwrap().sessions.get(&id).filter(|s| s.exited.is_none()).and_then(|s| s.pty.as_ref().map(|p| (s.pid, p.pause_flag())));
             if let Some((pid, paused)) = target {
                 std::thread::spawn(move || {
-                    if let Ok(Err(e)) = crate::jobwatch::console_event(pid, ctrl_break, paused).join() {
+                    if let Ok(Err(e)) = crate::platform::proc::console_event(pid, ctrl_break, paused).join() {
                         log(&format!("session {id}: signal: {e}"));
                     }
                 });
@@ -525,18 +525,17 @@ pub(crate) mod tests {
     }
     use crate::host_proto::{Decoder, Live, Msg, encode};
     use crate::platform::ipc::Pipe;
-    use crate::platform::windows::ipc as winpipe;
     use std::sync::Arc;
     use std::sync::mpsc::{self, Receiver};
     use std::time::Instant;
 
-    pub(crate) fn api() -> Api {
-        crate::platform::pty::conpty::load(&crate::platform::pty::conpty::Source::Shipped(crate::platform::pty::conpty::dev_vendor_dir())).unwrap()
+    pub(crate) fn api() -> PtyApi {
+        crate::platform::pty::test_api()
     }
 
     /// A host on its own pipe, in a thread.
     pub(crate) fn start_host(grace: Duration) -> (String, std::thread::JoinHandle<Result<(), String>>) {
-        let name = winpipe::tests::test_name("host");
+        let name = crate::platform::ipc::test_name("host");
         let n2 = name.clone();
         let t = std::thread::spawn(move || run(&n2, api(), Options { grace, reopen: None }));
         (name, t)
@@ -551,7 +550,7 @@ pub(crate) mod tests {
         pub(crate) fn open(name: &str) -> Conn {
             let end = Instant::now() + Duration::from_secs(5);
             let pipe = loop {
-                if let Some(p) = winpipe::connect(name, Duration::from_secs(1)).unwrap() {
+                if let Some(p) = crate::platform::ipc::connect(name, Duration::from_secs(1)).unwrap() {
                     break Arc::new(p);
                 }
                 assert!(Instant::now() < end, "the host never listened");
@@ -759,6 +758,8 @@ pub(crate) mod tests {
 
     /// The child half of `a_signal_goes_through_the_host`: detached (no console, as
     /// termurion-host runs), so the host can attach to its session's console.
+    // Windows only: it drives a console child with Win32 console calls and PowerShell.
+    #[cfg(windows)]
     #[test]
     #[ignore]
     fn signal_child() {
@@ -782,6 +783,7 @@ pub(crate) mod tests {
         c.send(&Msg::KillAll);
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_signal_goes_through_the_host() {
         use std::os::windows::process::CommandExt;
