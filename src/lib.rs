@@ -203,16 +203,11 @@ pub mod sigarchive;
 pub mod sigarchive_win;
 pub mod script_deps;
 pub mod zip_check;
-#[cfg(windows)]
 pub mod script_deps_ui;
 pub mod suppressed_alerts_ui;
-#[cfg(windows)]
 pub mod script_export_ui;
-#[cfg(windows)]
 pub mod script_new_ui;
-#[cfg(windows)]
 pub mod script_console_ui;
-#[cfg(windows)]
 pub mod script_inspector_ui;
 #[cfg(windows)]
 pub mod script_proc;
@@ -351,7 +346,6 @@ pub mod git_run_win;
 #[cfg(windows)]
 pub mod pane;
 
-#[cfg(windows)]
 pub mod render;
 pub mod render_fx;
 pub mod render_fx_builtin;
@@ -364,7 +358,6 @@ pub mod screenshot;
 pub mod shotimage;
 pub mod session_profile;
 
-#[cfg(windows)]
 pub mod settings_ui;
 pub mod settings_title;
 pub mod settings_fonts;
@@ -375,31 +368,21 @@ pub mod settings_profile_actions;
 mod ui_labels;
 pub mod settings_presets;
 
-#[cfg(windows)]
 pub mod egui_host;
 
-#[cfg(windows)]
 pub mod prompt_ui;
 pub mod basic_auth_ui;
-#[cfg(windows)]
 pub mod note_ui;
-#[cfg(windows)]
 pub mod git_log_ui;
-#[cfg(windows)]
 pub mod status_popover_ui;
 #[cfg(windows)]
 pub mod web_popover;
 pub mod web_replay;
 pub mod web_replay_ui;
-#[cfg(windows)]
 pub mod cmdinfo_ui;
-#[cfg(windows)]
 pub mod shot_ui;
-#[cfg(windows)]
 pub mod global_find_ui;
-#[cfg(windows)]
 pub mod open_quickly_ui;
-#[cfg(windows)]
 pub mod replay_window;
 
 pub mod settings_keys;
@@ -444,7 +427,6 @@ pub mod ssh_local;
 pub mod remote_file;
 pub mod ssh_panel;
 pub mod ssh_suggest;
-#[cfg(windows)]
 pub mod ssh_panel_ui;
 pub mod conductor;
 pub mod framer_script;
@@ -645,14 +627,11 @@ pub mod chat_toolbar;
 pub mod chat_input;
 pub mod chat_find;
 pub mod inline_chat;
-#[cfg(windows)]
 pub mod chat_window_ui;
 pub mod settings_ai;
 pub mod secret_field;
-#[cfg(windows)]
 pub mod ai_key_ui;
 pub mod autofill_card_ui;
-#[cfg(windows)]
 pub mod ai_engage_ui;
 pub mod transparency;
 pub mod presence;

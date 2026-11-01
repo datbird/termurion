@@ -677,17 +677,8 @@ pub(super) fn has_code() -> bool {
 /// Opens a URL with its default app. Only a URL (`semantic::shell_url`): a path, a drive path or a
 /// file link is refused here, so no caller hands the shell an unjudged file; a file opens through
 /// `localfs::open_with_shell` with a judged `LocalPath`. `background` asks the app not to take the focus.
-#[cfg(windows)]
 pub(super) fn shell_open(target: &str, background: bool) -> Result<(), String> {
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, SW_SHOWNORMAL};
-    let Some(url) = crate::semantic::shell_url(target) else { return Err("Termurion opens only links here, not paths.".to_string()) };
-    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    let (verb, file) = (wide("open"), wide(&url));
-    let show = if background { SW_SHOWNOACTIVATE } else { SW_SHOWNORMAL };
-    let r = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), show) };
-    // Values of 32 or less are errors (SE_ERR_*).
-    if r as isize > 32 { Ok(()) } else { Err(format!("ShellExecute error {}", r as isize)) }
+    crate::platform::shell_open::open_with(target, background)
 }
 
 /// Hands a link of another app's scheme to the app Windows registered for it: the URL is judged again
@@ -709,11 +700,6 @@ pub(super) fn shell_open_scheme(url: &str, background: bool) -> Result<(), Strin
 #[cfg(not(windows))]
 pub(super) fn shell_open_scheme(_url: &str, _background: bool) -> Result<(), String> {
     Err("opening a link needs Windows".to_string())
-}
-
-#[cfg(not(windows))]
-pub(super) fn shell_open(target: &str, _background: bool) -> Result<(), String> {
-    Err(format!("opening {target} needs Windows"))
 }
 
 #[cfg(test)]
@@ -836,6 +822,8 @@ mod tests {
         ("app/semantic_ui.rs", "smart_action_run", "builds the Run; its callers are checked"),
         ("app/pathnav_ui.rs", "pathnav_tick", "runs what open_local settled: a Run that came through guard_open or open_file_run, whose callers are checked"),
         ("app/semantic_ui.rs", "shell_open", "the sink itself; its callers are checked"),
+        ("platform/windows/shell_open.rs", "open_url", "the platform half of shell_open: platform::shell_open::open_with judges the target as a URL (semantic::shell_url) first, and shell_open's callers are checked"),
+        ("platform/unix/shell_open.rs", "open_url", "the platform half of shell_open: platform::shell_open::open_with judges the target as a URL (semantic::shell_url) first, and shell_open's callers are checked"),
         ("app/semantic_ui.rs", "shell_open_scheme", "the sink itself; its only caller is link_scheme_app::launch_scheme, after link_scheme::decide and the person's answer"),
         ("app/browser_download_app.rs", "browser_downloads_message", "Show in folder only SELECTS the file Termurion itself finished in the Downloads folder (the id names its own record, never the page's text); nothing is opened or run"),
         ("app/page_saver_app.rs", "page_save_acts", "selects the index.html the saver itself wrote in the folder the person picked in Explorer; nothing is opened or run, and the path is not pane text"),

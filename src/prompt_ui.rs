@@ -13,16 +13,13 @@ pub fn stamp(y: u16, mo: u16, d: u16, h: u16, mi: u16, s: u16) -> String {
 
 /// The local time: year, month, day, hour, minute, second.
 pub fn local_time() -> (u16, u16, u16, u16, u16, u16) {
-    let mut t: windows_sys::Win32::Foundation::SYSTEMTIME = unsafe { std::mem::zeroed() };
-    unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut t) };
-    (t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond)
+    crate::platform::clock::local_time()
 }
 
 /// The local time as a mark name.
 pub fn local_stamp() -> String {
-    let mut t: windows_sys::Win32::Foundation::SYSTEMTIME = unsafe { std::mem::zeroed() };
-    unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut t) };
-    stamp(t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond)
+    let (y, mo, d, h, mi, s) = local_time();
+    stamp(y, mo, d, h, mi, s)
 }
 
 pub enum PromptResult {
@@ -196,7 +193,7 @@ impl PromptWindow {
                 ui.horizontal(|ui| {
                     if ui.button(ok_label.as_str()).clicked() || enter {
                         if refuse_blank && text.trim().is_empty() {
-                            unsafe { windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK) };
+                            crate::platform::clock::beep();
                         } else {
                             result = PromptResult::Ok(text.clone());
                         }

@@ -627,7 +627,7 @@ impl SettingsWindow {
         settings_keys::add_icon_font(host.ctx());
         if mode == Mode::Settings
             && let Some(h) = host.hwnd() {
-                crate::winkeys::set_settings_window(h);
+                crate::platform::key_record::set_settings_window(h);
             }
         Ok(SettingsWindow {
             host,
@@ -735,20 +735,20 @@ impl SettingsWindow {
             && self.keys.recording() {
                 if k.state == winit::event::ElementState::Pressed {
                     let types = k.text.as_deref().is_some_and(|t| t.chars().any(|c| !c.is_control()));
-                    let key = crate::winkeys::vk_to_key(crate::winkeys::vk_of(k.physical_key));
+                    let key = crate::platform::key_record::chord_key(k.physical_key);
                     if self.mods.cmd {
                         // Windows keeps the Win key: nothing is recorded, the recorder says why.
                         self.keys.refuse_win();
                     } else if let Some(chord) = key.and_then(|key| crate::shortcut_key::mode().table_chord(self.mods, types, &key)) {
                         // A chord with no pair of its own (Alt+Shift+PgUp) is recorded as iTerm2's chord.
                         self.keys.deliver(crate::keyroute::press_from_chord(&chord).stroke);
-                        crate::winkeys::set_recording(self.keys.recording());
+                        crate::platform::key_record::set_recording(self.keys.recording());
                     } else {
                         // The shortcut key's own modifiers are recorded as Cmd (Ctrl+Shift+D is Cmd+D).
                         let rec = crate::shortcut_key::mode().recorded_mods(self.mods, types);
                         if let Some(stroke) = crate::keystroke::from_key_event(k, rec) {
                             self.keys.deliver(crate::shortcut_key::recorded_stroke(stroke, self.mods, rec));
-                            crate::winkeys::set_recording(self.keys.recording());
+                            crate::platform::key_record::set_recording(self.keys.recording());
                         }
                     }
                 }
@@ -1706,7 +1706,7 @@ impl SettingsWindow {
             edit = Edit::GlobalsChanged;
         }
         self.page = page;
-        crate::winkeys::set_recording(self.keys.recording());
+        crate::platform::key_record::set_recording(self.keys.recording());
         if let Some(g) = pick {
             self.selected = Some(g);
         }
@@ -2194,18 +2194,24 @@ fn progress_height_row(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, ma
 
 /// The line under "Set Locale Variables" (`PTM:397-445`): `LANG=<locale>` in the fixed font and
 /// the locale's title in gray after three en spaces, or the plain status text.
-#[cfg(windows)]
 fn locale_status_line(ui: &mut egui::Ui, profile: &Profile, fallback: &str) {
     let key = (profile.int("Set Local Environment Vars"), profile.string("Custom Locale"), profile.int("Character Encoding"), fallback.to_string());
     let id = egui::Id::new("locale_status");
     // Windows answers are read once per change, not every frame.
-    let cached: Option<((i64, String, i64, String), crate::locale_win::Status)> = ui.ctx().data(|d| d.get_temp(id));
+    let cached: Option<((i64, String, i64, String), Result<crate::platform::locale::Status, String>)> = ui.ctx().data(|d| d.get_temp(id));
     let status = match cached {
         Some((k, v)) if k == key => v,
         _ => {
-            let v = crate::locale_win::status(key.0, &key.1, key.2, &key.3);
+            let v = crate::platform::locale::status(key.0, &key.1, key.2, &key.3).map_err(String::from);
             ui.ctx().data_mut(|d| d.insert_temp(id, (key, v.clone())));
             v
+        }
+    };
+    let status = match status {
+        Ok(s) => s,
+        Err(why) => {
+            ui.label(egui::RichText::new(why).color(ui.visuals().weak_text_color()));
+            return;
         }
     };
     ui.horizontal_wrapped(|ui| {
@@ -2217,9 +2223,6 @@ fn locale_status_line(ui: &mut egui::Ui, profile: &Profile, fallback: &str) {
         }
     });
 }
-
-#[cfg(not(windows))]
-fn locale_status_line(_ui: &mut egui::Ui, _profile: &Profile, _fallback: &str) {}
 
 /// The title of the smooth-blink presets pull-down (`PreferencePanel.xib:11312`).
 pub const PRESETS_TITLE: &str = "Presets";

@@ -7,6 +7,12 @@ pub mod windows;
 #[cfg(unix)]
 pub mod unix;
 
+pub mod clock;
+pub mod key_record;
+pub mod locale;
+pub mod shell_open;
+pub mod window_style;
+
 /// Name of the OS this build runs on, for messages.
 #[cfg(windows)]
 pub const OS_NAME: &str = "Windows";
@@ -14,6 +20,9 @@ pub const OS_NAME: &str = "Windows";
 pub const OS_NAME: &str = "macOS";
 #[cfg(all(unix, not(target_os = "macos")))]
 pub const OS_NAME: &str = "Linux";
+
+/// True on Windows; for the odd value that only differs by OS (a test's expectation, a backend list).
+pub const IS_WINDOWS: bool = cfg!(windows);
 
 /// A feature that has no implementation on this OS yet.
 #[derive(Debug, Clone, PartialEq, Eq)]

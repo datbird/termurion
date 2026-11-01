@@ -933,7 +933,7 @@ mod tests {
         ("util_console.rs", "open_console", 1, "the console devices CONIN$ and CONOUT$, not paths"),
         ("utilities.rs", "ensure", 5, "Termurion's own utilities folder under %APPDATA%\\Termurion"),
         ("utilities.rs", "refresh", 6, "Termurion's own utilities folder under %APPDATA%\\Termurion"),
-        ("app/semantic_ui.rs", "shell_open", 1, "URL targets only: semantic::shell_url refuses a path, a drive path, a network path and a file: link before ShellExecuteW; a file opens only through localfs::open_with_shell with a LocalPath"),
+        ("platform/windows/shell_open.rs", "open_url", 1, "URL targets only: platform::shell_open::open_with has semantic::shell_url refuse a path, a drive path, a network path and a file: link before ShellExecuteW; a file opens only through localfs::open_with_shell with a LocalPath"),
         ("app/semantic_ui.rs", "shell_open_scheme", 1, "URL targets only: link_scheme::scheme_of and screen judge it again (a path has no scheme, file: is on the blocked list) before ShellExecuteW"),
         ("utilities.rs", "stamp", 1, "Termurion's own utilities folder under %APPDATA%\\Termurion"),
         ("winpipe.rs", "connect_owned", 1, "a named pipe, not a file path"),

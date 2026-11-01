@@ -162,13 +162,7 @@ pub fn country_name(code: &str) -> Option<String> {
     info(&locale.replace('_', "-"), LOCALE_SLOCALIZEDCOUNTRYNAME)
 }
 
-/// The Terminal tab's locale line: the locale shown after `LANG=` (Custom and Automatic) and
-/// the text (its title, or the status).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Status {
-    pub lang: Option<String>,
-    pub text: String,
-}
+pub use crate::platform::locale::Status;
 
 /// The status for a profile's mode value, custom locale, encoding and `FallbackLCCType`.
 pub fn status(mode: i64, custom: &str, ns_encoding: i64, fallback: &str) -> Status {

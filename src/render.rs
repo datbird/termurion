@@ -1911,7 +1911,7 @@ mod tests {
     fn each_api_honors_the_gpu_preference_and_draws() {
         let _gpu = super::test_gpu::LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut drew = 0;
-        for (backends, label) in crate::gpu_pick::backend_order(cfg!(windows), None) {
+        for (backends, label) in crate::gpu_pick::backend_order(crate::platform::IS_WINDOWS, None) {
             let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
             desc.backends = backends;
             let instance = wgpu::Instance::new(desc);

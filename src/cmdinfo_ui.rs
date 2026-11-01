@@ -89,14 +89,13 @@ impl CmdInfoWindow {
         work: Option<Rect>,
         dark: bool,
     ) -> Result<CmdInfoWindow, String> {
-        use winit::platform::windows::WindowAttributesExtWindows;
         let h = cmdinfo::height(started.is_some(), false);
         let attrs = Window::default_attributes()
             .with_title("Command Info")
             .with_decorations(false)
-            .with_skip_taskbar(true)
             .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(cmdinfo::WIDTH, h));
+        let attrs = crate::platform::window_style::skip_taskbar(attrs);
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
         let scale = host.window.scale_factor();
         let (x, y) = cmdinfo::place(at, cmdinfo::WIDTH * scale, h * scale, work, scale);

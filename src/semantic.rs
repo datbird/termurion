@@ -1123,9 +1123,10 @@ mod tests {
         assert_eq!(shell_target(link), "mailto:a@b?x=%22%20/a%20C:%5Csecret.txt%07");
         assert_eq!(shell_target("https://a.b/p%20q"), "https://a.b/p%20q");
         assert_eq!(shell_target("C:\\My Docs\\a b.txt"), "C:\\My Docs\\a b.txt", "a path is not a URL");
-        let sink = include_str!("app/semantic_ui.rs");
-        let body = &sink[sink.find("pub(super) fn shell_open(target: &str, background: bool)").unwrap()..];
-        assert!(body[..body.find("ShellExecuteW(std").unwrap()].contains("crate::semantic::shell_url(target)"), "shell_open encodes through shell_url (shell_target)");
+        let sink = include_str!("platform/shell_open.rs");
+        let body = &sink[sink.find("pub fn open_with(target: &str, background: bool)").unwrap()..];
+        assert!(body.contains("crate::semantic::shell_url(target)"), "shell_open encodes through shell_url (shell_target)");
+        assert!(include_str!("app/semantic_ui.rs").contains("crate::platform::shell_open::open_with(target, background)"), "the app sink goes through the platform sink");
         let porthole = include_str!("app/porthole_ui.rs");
         let f = &porthole[porthole.find("fn open_link_target").unwrap()..];
         assert!(f[..f.find("pub(super) fn porthole_link_bar").unwrap()].contains("shell_open("), "Porthole web links open through shell_open");
@@ -1150,9 +1151,9 @@ mod tests {
         for bad in ["search-ms:query=x&crumb=location:\\\\evil\\s", "shell:startup", "ms-msdt:/id x", "javascript:alert(1)", "vscode://file/c:/x", "ms-word:ofe|u|https://h/x", "itms://x", "res://x.dll/1", "mk:@MSITStore:x"] {
             assert_eq!(shell_url(bad), None, "{bad}");
         }
-        let sink = include_str!("app/semantic_ui.rs");
-        let body = &sink[sink.find("pub(super) fn shell_open(target: &str, background: bool)").unwrap()..];
-        let body = &body[..body.find("ShellExecuteW(std").unwrap()];
+        let sink = include_str!("platform/shell_open.rs");
+        let body = &sink[sink.find("pub fn open_with(target: &str, background: bool)").unwrap()..];
+        let body = &body[..body.find("imp::open_url(").unwrap()];
         assert!(body.contains("crate::semantic::shell_url(target)"), "the sink refuses anything but a URL first");
         let porthole = include_str!("app/porthole_ui.rs");
         let f = &porthole[porthole.find("fn open_link_target").unwrap()..];

@@ -39,13 +39,12 @@ pub enum PopoverEvent {
 /// The window attributes of a popover: frameless, no taskbar button, hidden until placed, `w` by
 /// `h` points of content.
 pub(crate) fn popover_attributes(title: &str, w: f64, h: f64) -> winit::window::WindowAttributes {
-    use winit::platform::windows::WindowAttributesExtWindows;
-    Window::default_attributes()
+    let attrs = Window::default_attributes()
         .with_title(title)
         .with_decorations(false)
-        .with_skip_taskbar(true)
         .with_visible(false)
-        .with_inner_size(winit::dpi::LogicalSize::new(w, h))
+        .with_inner_size(winit::dpi::LogicalSize::new(w, h));
+    crate::platform::window_style::skip_taskbar(attrs)
 }
 
 /// A frameless, taskbar-less window of `w` by `h` points, its bottom centered on `at` (screen

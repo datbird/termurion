@@ -66,25 +66,21 @@ impl ReplayWindow {
         ticks: Vec<i64>,
         forced: Option<bool>,
     ) -> Result<ReplayWindow, String> {
-        use winit::platform::windows::WindowAttributesExtWindows;
         let (w, h) = replay_panel::SIZE;
         let attrs = Window::default_attributes()
             .with_title(replay_panel::TITLE)
             .with_resizable(true)
             .with_enabled_buttons(winit::window::WindowButtons::CLOSE)
-            .with_skip_taskbar(true)
             .with_active(false)
             .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
             .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64))
             .with_min_inner_size(winit::dpi::LogicalSize::new(replay_panel::MIN_WIDTH as f64, h as f64))
             .with_max_inner_size(winit::dpi::LogicalSize::new(100_000.0, h as f64));
+        let attrs = crate::platform::window_style::skip_taskbar(attrs);
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
         host.follow_theme(forced);
-        if let Some(hwnd) = host.hwnd() {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_NOACTIVATE};
-            unsafe { SetWindowLongPtrW(hwnd as _, GWL_EXSTYLE, GetWindowLongPtrW(hwnd as _, GWL_EXSTYLE) | WS_EX_NOACTIVATE as isize) };
-        }
+        crate::platform::window_style::no_activate(&host.window);
         Ok(ReplayWindow { host, panel: Panel { export: Export::Normal, ticks_at_open: ticks }, slider: 1.0, shown: false })
     }
 
@@ -120,10 +116,7 @@ impl ReplayWindow {
         if !on {
             return self.host.window.set_visible(false);
         }
-        if let Some(h) = self.host.hwnd() {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, ShowWindow};
-            unsafe { ShowWindow(h as _, SW_SHOWNOACTIVATE) };
-        }
+        crate::platform::window_style::show_no_activate(&self.host.window);
         self.host.request_redraw();
     }
 

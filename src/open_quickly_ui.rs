@@ -276,22 +276,13 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(defs);
 }
 
-/// The Windows accent color (the DWM colorization color), for the selection
-/// (`isEmphasized`: the selection is always in the accent color).
+/// The system accent color, for the selection (`isEmphasized`: the selection is always in the
+/// accent color).
 fn accent() -> egui::Color32 {
-    let (mut color, mut opaque) = (0u32, 0i32);
-    let ok = unsafe { windows_sys::Win32::Graphics::Dwm::DwmGetColorizationColor(&mut color, &mut opaque) } >= 0;
-    if !ok {
-        return egui::Color32::from_rgb(0x00, 0x67, 0xC0);
+    match crate::platform::window_style::accent_color() {
+        Some((r, g, b)) => egui::Color32::from_rgb(r, g, b),
+        None => egui::Color32::from_rgb(0x00, 0x67, 0xC0),
     }
-    egui::Color32::from_rgb((color >> 16) as u8, (color >> 8) as u8, color as u8)
-}
-
-/// Rounded corners (Windows 11 rounds a borderless window only when asked).
-fn round_corners(hwnd: isize) {
-    use windows_sys::Win32::Graphics::Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute};
-    let v = DWMWCP_ROUND;
-    unsafe { DwmSetWindowAttribute(hwnd as _, DWMWA_WINDOW_CORNER_PREFERENCE as u32, (&v as *const i32).cast(), 4) };
 }
 
 /// A height moving to another over the Open Quickly animation duration.
@@ -357,16 +348,15 @@ impl OpenQuicklyWindow {
         dark: bool,
         duration: f32,
     ) -> Result<OpenQuicklyWindow, String> {
-        use winit::platform::windows::WindowAttributesExtWindows;
         let attrs = Window::default_attributes()
             .with_title("Open Quickly")
             .with_decorations(false)
             .with_resizable(false)
-            .with_skip_taskbar(true)
             .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
             .with_visible(false)
             .with_position(winit::dpi::PhysicalPosition::new(monitor.x as f64, monitor.y as f64))
             .with_inner_size(winit::dpi::LogicalSize::new(WIDTH as f64, NON_TABLE as f64));
+        let attrs = crate::platform::window_style::skip_taskbar(attrs);
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
         let scale = host.window.scale_factor();
         install_fonts(host.ctx());
@@ -374,9 +364,7 @@ impl OpenQuicklyWindow {
         let x = monitor.x as f64 + ((monitor.w as f64 - WIDTH as f64 * scale) / 2.0).floor();
         let y = monitor.y as f64 + ABOVE_WINDOW as f64 * scale;
         host.window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
-        if let Some(h) = host.hwnd() {
-            round_corners(h);
-        }
+        crate::platform::window_style::round_corners(&host.window);
         host.window.set_visible(true);
         host.focus();
         let screen_h = (monitor.h as f64 / scale) as f32;
@@ -668,24 +656,20 @@ pub struct PreviewWindow {
 
 impl PreviewWindow {
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, dark: bool) -> Result<PreviewWindow, String> {
-        use winit::platform::windows::WindowAttributesExtWindows;
         let attrs = Window::default_attributes()
             .with_title("Open Quickly Preview")
             .with_decorations(false)
             .with_resizable(false)
-            .with_skip_taskbar(true)
             .with_active(false)
             .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
             .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(PREVIEW_W as f64, 306.0));
+        let attrs = crate::platform::window_style::skip_taskbar(attrs);
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
         install_fonts(host.ctx());
         host.ctx().set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
-        if let Some(h) = host.hwnd() {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_NOACTIVATE};
-            unsafe { SetWindowLongPtrW(h as _, GWL_EXSTYLE, GetWindowLongPtrW(h as _, GWL_EXSTYLE) | WS_EX_NOACTIVATE as isize) };
-            round_corners(h);
-        }
+        crate::platform::window_style::no_activate(&host.window);
+        crate::platform::window_style::round_corners(&host.window);
         Ok(PreviewWindow { host, title: String::new(), detail: String::new(), pane: None, texture: None, shown: false })
     }
 
@@ -713,10 +697,7 @@ impl PreviewWindow {
         self.host.window.set_outer_position(winit::dpi::PhysicalPosition::new(r.x as f64, r.y as f64));
         let _ = self.host.window.request_inner_size(winit::dpi::PhysicalSize::new(r.w.round() as u32, r.h.round() as u32));
         if !self.shown {
-            if let Some(h) = self.host.hwnd() {
-                use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, ShowWindow};
-                unsafe { ShowWindow(h as _, SW_SHOWNOACTIVATE) };
-            }
+            crate::platform::window_style::show_no_activate(&self.host.window);
             self.shown = true;
         }
         self.host.request_redraw();

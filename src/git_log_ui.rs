@@ -57,16 +57,15 @@ impl GitLogWindow {
         at: LogAt,
         font: LogFont,
     ) -> Result<GitLogWindow, String> {
-        use winit::platform::windows::WindowAttributesExtWindows;
         let w = font.cell_w * COLUMNS + MARGIN_PT * 2.0 * font.scale;
         let h = HEIGHT_PT * font.scale;
         let y = if at.above { at.y - h } else { at.y };
         let attrs = Window::default_attributes()
             .with_title("git log")
             .with_decorations(false)
-            .with_skip_taskbar(true)
             .with_inner_size(winit::dpi::PhysicalSize::new(w, h))
             .with_position(winit::dpi::PhysicalPosition::new(at.x, y));
+        let attrs = crate::platform::window_style::skip_taskbar(attrs);
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
         host.ctx().set_visuals(if font.dark { egui::Visuals::dark() } else { egui::Visuals::light() });
         host.focus();
