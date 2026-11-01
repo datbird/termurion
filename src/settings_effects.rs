@@ -77,7 +77,7 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
             open_folder(&dir);
         }
     });
-    ui.label(egui::RichText::new("The built-in cursor effects are from ghostty-cursor-fx by AONIR (MIT).").small().weak());
+    ui.label(egui::RichText::new("The built-in cursor effects are from ghostty-cursor-fx by AONIR (MIT). Shaders use Ghostty's custom shader uniforms (MIT).").small().weak());
     if let Some(new) = changed {
         list = new;
         crate::settings_lists::store(profile, PROFILE_KEY, list);

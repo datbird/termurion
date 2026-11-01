@@ -257,6 +257,13 @@ Termurion stands on these projects:
   and [glyphon](https://github.com/grovesNL/glyphon), under their own licenses in `crates/`.
 - [Windows Terminal](https://github.com/microsoft/terminal) for ConPTY and OpenConsole.
   The notices are in `resources/conpty/`.
+- [ghostty-cursor-fx](https://github.com/Avarce/ghostty-cursor-fx) by AONIR, the 13 built-in
+  cursor effects, and its `cursor-fx signal` idea for the Enter and done effects, under the MIT
+  license. See [`resources/render_plugins/LICENSE`](resources/render_plugins/LICENSE).
+- [Ghostty](https://github.com/ghostty-org/ghostty) by Mitchell Hashimoto and the Ghostty
+  contributors: render plugins use the uniforms of Ghostty's custom shaders, and Termurion's
+  shader prefix is adapted from Ghostty's, under the MIT license. See
+  [`resources/render_plugins/LICENSE-ghostty`](resources/render_plugins/LICENSE-ghostty).
 
 Termurion shows every bundled license at runtime, gathered at build time into one list.
 

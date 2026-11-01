@@ -1,5 +1,6 @@
 #version 450 core
-// Ghostty's custom shader prefix (src/renderer/shaders/shadertoy_prefix.glsl, MIT), changed for
+// Ghostty's custom shader prefix (src/renderer/shaders/shadertoy_prefix.glsl), copyright (c) 2024
+// Mitchell Hashimoto, Ghostty contributors, MIT (resources/render_plugins/LICENSE-ghostty). Changed for
 // naga: explicit sets, a separate texture and sampler behind the iChannel0 name, and no forward
 // declared mainImage (render_fx.rs adds main() after the shader body).
 
