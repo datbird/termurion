@@ -7,8 +7,11 @@ pub fn local_time() -> (u16, u16, u16, u16, u16, u16) {
     ((t.tm_year + 1900) as u16, (t.tm_mon + 1) as u16, t.tm_mday as u16, t.tm_hour as u16, t.tm_min as u16, t.tm_sec as u16)
 }
 
-/// The terminal bell, since there is no system sound call without a desktop library.
+/// No system sound call yet (P1 replaces this). A GUI app's stderr goes nowhere, so the beep is
+/// logged once through `dlog` as unsupported instead of being dropped.
 pub fn beep() {
-    use std::io::Write;
-    let _ = std::io::stderr().write_all(b"\x07");
+    static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        crate::dlog!("{}", super::super::Unsupported { feature: "System beep" });
+    }
 }

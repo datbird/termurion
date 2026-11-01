@@ -794,6 +794,9 @@ mod tests {
         "semantic::plan(",
         "guard_open(",
         "shell_open(",
+        // The platform funnel: any app file calling it is audited like shell_open itself.
+        "shell_open::open",
+        "imp::open_url(",
         "open_with_shell(",
         "shell_verb(",
         "start_coprocess(",
@@ -822,8 +825,9 @@ mod tests {
         ("app/semantic_ui.rs", "smart_action_run", "builds the Run; its callers are checked"),
         ("app/pathnav_ui.rs", "pathnav_tick", "runs what open_local settled: a Run that came through guard_open or open_file_run, whose callers are checked"),
         ("app/semantic_ui.rs", "shell_open", "the sink itself; its callers are checked"),
-        ("platform/windows/shell_open.rs", "open_url", "the platform half of shell_open: platform::shell_open::open_with judges the target as a URL (semantic::shell_url) first, and shell_open's callers are checked"),
-        ("platform/unix/shell_open.rs", "open_url", "the platform half of shell_open: platform::shell_open::open_with judges the target as a URL (semantic::shell_url) first, and shell_open's callers are checked"),
+        ("platform/shell_open.rs", "open_with", "the platform sink itself: it refuses anything but a URL (semantic::shell_url) first; its callers are checked through the shell_open::open token"),
+        ("platform/windows/shell_open.rs", "open_url", "the backend of platform::shell_open::open_with, which judges the target as a URL (semantic::shell_url) before calling it; only that function reaches it"),
+        ("platform/unix/shell_open.rs", "open_url", "the backend of platform::shell_open::open_with, which judges the target as a URL (semantic::shell_url) before calling it; only that function reaches it"),
         ("app/semantic_ui.rs", "shell_open_scheme", "the sink itself; its only caller is link_scheme_app::launch_scheme, after link_scheme::decide and the person's answer"),
         ("app/browser_download_app.rs", "browser_downloads_message", "Show in folder only SELECTS the file Termurion itself finished in the Downloads folder (the id names its own record, never the page's text); nothing is opened or run"),
         ("app/page_saver_app.rs", "page_save_acts", "selects the index.html the saver itself wrote in the folder the person picked in Explorer; nothing is opened or run, and the path is not pane text"),
@@ -1020,7 +1024,7 @@ mod tests {
     /// `remote_text` and no listing, is reported; the same call in a GATED function is not.
     #[test]
     fn a_planted_ungated_opening_call_fails_the_gate() {
-        for call in ["self.open_link(text, Style::Tab, false, None)", "self.open_link_system(text, false)", "self.open_url_in_browser(text, Style::Tab, None)", "self.open_link_answered(text, Style::Tab, false, None, false, 0)", "self.upsell_answered(text, 1)", "self.execute_with(id, run, None, exec)", "self.browser_page_open(pane, text, PageOpen::Tab, el)"] {
+        for call in ["self.open_link(text, Style::Tab, false, None)", "self.open_link_system(text, false)", "self.open_url_in_browser(text, Style::Tab, None)", "self.open_link_answered(text, Style::Tab, false, None, false, 0)", "self.upsell_answered(text, 1)", "self.execute_with(id, run, None, exec)", "self.browser_page_open(pane, text, PageOpen::Tab, el)", "crate::platform::shell_open::open(text)", "crate::platform::shell_open::open_with(text, false)"] {
             let mut files = real_sources();
             files.push(("app/planted.rs".to_string(), format!("impl App {{\n    fn evil(&mut self, text: &str) {{\n        {call};\n    }}\n}}\n")));
             let (wrong, _) = gate_violations(&files);
