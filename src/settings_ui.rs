@@ -1127,7 +1127,9 @@ impl SettingsWindow {
                 });
                 return;
             }
-            egui::Panel::left("profiles").default_size(220.0).show(ui, |ui| {
+            // The list's search box and rows ask for all the width they get, so an uncapped panel
+            // grows to the whole window and the editor beside it is left with none.
+            egui::Panel::left("profiles").default_size(220.0).size_range(160.0..=360.0).show(ui, |ui| {
                 ui.heading("Profiles");
                 list.selection = vec![selected.clone()];
                 match crate::profile_list_ui::profile_list(ui, list, &list_rows, &store.default_guid, false, None) {
