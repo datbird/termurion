@@ -1549,6 +1549,10 @@ impl SettingsWindow {
                                 }
                                 continue;
                             }
+                            // The effects' shared switches are drawn by the Effects editor, under it.
+                            if crate::render_fx::SWITCHES.iter().any(|(k, ..)| *k == s.key) {
+                                continue;
+                            }
                             if s.key == "Jobs to Ignore" {
                                 if crate::settings_lists::jobs_to_ignore(ui, profile) {
                                     edit = Edit::Changed(selected.clone());

@@ -107,6 +107,9 @@ impl App {
             // The bar appeared or went (the Progress Bar Changed trigger fired with it).
             Request::Progress(_) => self.redraw_pane_window(pane),
             Request::CommandEnded { code, mark } => {
+                if let Some(p) = self.panes.get_mut(&pane) {
+                    p.fx_signal.command_ended(Instant::now());
+                }
                 self.stream_command(pane, code, mark);
                 self.codecierge_command_exited(pane, mark, code);
             }

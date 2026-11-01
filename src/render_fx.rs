@@ -19,6 +19,25 @@ pub const PROFILE_KEY: &str = "Render Plugins";
 /// The user's own plugins, under the config folder.
 pub const USER_FOLDER: &str = "RenderPlugins";
 
+/// The switches every built-in effect shares, as (profile key, shader `const bool`, label,
+/// default, group). Termurion sets them in each shader before it compiles it, so one profile
+/// setting drives every effect. `None` as the constant is Termurion's own signals.
+pub const SWITCHES: &[(&str, Option<&str>, &str, bool, &str)] = &[
+    ("Effects Claude Enter", Some("ENTER_EFFECT"), "Enter surge (a prompt sent, a command run)", true, "Claude Code"),
+    ("Effects Claude Done", Some("DONE_EFFECT"), "Done surge (Claude finished, a long command ended)", true, "Claude Code"),
+    ("Effects Claude Line Color", Some("LINE_TINT"), "Input box lines in the effect's color", true, "Claude Code"),
+    ("Effects Claude Live Lines", Some("LINE_EFFECT"), "Input box lines always alive", false, "Claude Code"),
+    ("Effects Claude Prompt", Some("PROMPT_EFFECT"), "Prompt mark (\u{276f}) look", true, "Claude Code"),
+    ("Effects Signals", None, "Termurion sends the Enter and done signals itself (no hooks needed)", true, "Claude Code"),
+    ("Effects Jumps", Some("JUMP_EFFECTS"), "Bolt when the cursor jumps along its row", true, "General"),
+    ("Effects Idle", Some("IDLE_EFFECTS"), "Idle animation", true, "General"),
+];
+
+/// `text` with each `const bool` switch set, where the shader has it.
+pub fn with_switches(text: &str, on: &[(&str, bool)]) -> String {
+    on.iter().fold(text.to_string(), |t, (name, v)| set_setting(&t, name, if *v { "true" } else { "false" }).unwrap_or(t))
+}
+
 /// The user's own plugins: `RenderPlugins` beside the settings file.
 pub fn user_dir() -> PathBuf {
     crate::globals::default_path().parent().map_or_else(|| PathBuf::from(USER_FOLDER), |d| d.join(USER_FOLDER))
@@ -114,7 +133,12 @@ impl Plugin {
 
     /// Every shader, compiled, in the order the manifest lists them.
     pub fn compile(&self) -> Result<Vec<Compiled>, String> {
-        self.manifest.shaders.iter().map(|f| self.shader_text(f).and_then(|text| compile_named(f, &text).map_err(|e| format!("{} ({f}):\n{e}", self.title())))).collect()
+        self.compile_with(&[])
+    }
+
+    /// `compile` with the shared switches set (`with_switches`).
+    pub fn compile_with(&self, switches: &[(&str, bool)]) -> Result<Vec<Compiled>, String> {
+        self.manifest.shaders.iter().map(|f| self.shader_text(f).and_then(|text| compile_named(f, &with_switches(&text, switches)).map_err(|e| format!("{} ({f}):\n{e}", self.title())))).collect()
     }
 }
 
@@ -465,6 +489,96 @@ impl Clock {
     }
 }
 
+/// How long a signal stays on (cursor-fx's SIGNAL_TIME, longer than the longest Enter effect).
+pub const SIGNAL_TIME: Duration = Duration::from_millis(1900);
+/// Quiet after a busy stretch that counts as "the answer arrived".
+pub const DONE_QUIET: Duration = Duration::from_millis(1200);
+/// Output must keep coming this long after Enter for a done signal: a quick shell command is
+/// not an answer worth a surge (cursor-fx plays done only when a long command ends).
+pub const DONE_BUSY: Duration = Duration::from_millis(1500);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Signal {
+    /// A prompt was sent or a command run.
+    Enter,
+    /// The answer arrived (Claude finished, a long command ended).
+    Done,
+}
+
+/// The Enter and done signals cursor-fx's shaders read, made by Termurion itself so nothing has
+/// to be installed on the host the program runs on: Enter when the person presses Enter, done
+/// when output that kept coming after it goes quiet (Claude Code's spinner draws until the
+/// answer is in) or a shell reports the command ended. They reach the shaders as cursor-fx's
+/// invisible cursor color bits (`apply`), exactly as its hook script sets them over OSC 12.
+#[derive(Clone, Debug, Default)]
+pub struct Signals {
+    on: Option<(Signal, Instant)>,
+    parity: bool,
+    /// Since Enter: (when, the last output after it).
+    waiting: Option<(Instant, Option<Instant>)>,
+}
+
+impl Signals {
+    fn fire(&mut self, s: Signal, now: Instant) {
+        self.parity = !self.parity;
+        self.on = Some((s, now));
+    }
+
+    /// Enter was pressed.
+    pub fn enter(&mut self, now: Instant) {
+        self.fire(Signal::Enter, now);
+        self.waiting = Some((now, None));
+    }
+
+    /// The pane printed something.
+    pub fn output(&mut self, now: Instant) {
+        if let Some((_, last)) = self.waiting.as_mut() {
+            *last = Some(now);
+        }
+    }
+
+    /// A shell reported the command ended (OSC 133;D): done now, if it ran long enough.
+    pub fn command_ended(&mut self, now: Instant) {
+        if let Some((since, _)) = self.waiting.take()
+            && now.saturating_duration_since(since) >= DONE_BUSY
+        {
+            self.fire(Signal::Done, now);
+        }
+    }
+
+    /// Fires done once the output after Enter has gone quiet. True when it fired.
+    pub fn tick(&mut self, now: Instant) -> bool {
+        let Some((since, Some(last))) = self.waiting else { return false };
+        if now.saturating_duration_since(last) < DONE_QUIET {
+            return false;
+        }
+        self.waiting = None;
+        if last.saturating_duration_since(since) >= DONE_BUSY {
+            self.fire(Signal::Done, now);
+            return true;
+        }
+        false
+    }
+
+    /// The signal on now, if any.
+    pub fn current(&self, now: Instant) -> Option<Signal> {
+        self.on.filter(|(_, at)| now.saturating_duration_since(*at) < SIGNAL_TIME).map(|(s, _)| s)
+    }
+
+    /// `rgb` with the signal's bits (`fx-signal.sh`): Enter sets blue's lowest bit and clears
+    /// green's, done the other way round; red's lowest bit flips with every signal, so a new one
+    /// is always a color change. No signal leaves the color as it is.
+    pub fn apply(&self, rgb: [u8; 3], now: Instant) -> [u8; 3] {
+        let Some(s) = self.current(now) else { return rgb };
+        let [r, g, b] = rgb;
+        let r = (r & !1) | self.parity as u8;
+        match s {
+            Signal::Enter => [r, g & !1, b | 1],
+            Signal::Done => [r, g | 1, b & !1],
+        }
+    }
+}
+
 /// A tunable value: a `const <type> NAME = value; // help` line near the top of a shader (the
 /// form cursor-fx uses).
 #[derive(Clone, Debug, PartialEq)]
@@ -687,6 +801,63 @@ mod tests {
         assert!(escape.is_err(), "a manifest cannot reach outside its folder");
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].0, "broken");
+    }
+
+    #[test]
+    fn enter_and_done_signals_follow_cursor_fx() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut s = Signals::default();
+        let base = [0x9f, 0xd0, 0xfe];
+        assert_eq!(s.apply(base, t0), base, "no signal, no change");
+        s.enter(t0);
+        assert_eq!(s.current(ms(100)), Some(Signal::Enter));
+        assert_eq!(s.apply(base, ms(100)), [0x9f, 0xd0, 0xff], "Enter: blue odd, green even, red flipped");
+        // The answer streams for 3 s, then goes quiet.
+        for n in (200..3000).step_by(100) {
+            s.output(ms(n));
+            assert!(!s.tick(ms(n)));
+        }
+        assert!(!s.tick(ms(2900 + 1100)), "not quiet long enough yet");
+        assert!(s.tick(ms(2900 + 1200)));
+        assert_eq!(s.current(ms(4200)), Some(Signal::Done));
+        assert_eq!(s.apply(base, ms(4200)), [0x9e, 0xd1, 0xfe], "done: green odd, blue even, red flipped back");
+        assert_eq!(s.apply(base, ms(4100 + 1900)), base, "a signal ends after SIGNAL_TIME");
+        assert!(!s.tick(ms(9000)), "done fires once per Enter");
+    }
+
+    #[test]
+    fn a_quick_command_gets_no_done() {
+        let t0 = Instant::now();
+        let mut s = Signals::default();
+        s.enter(t0);
+        s.output(t0 + Duration::from_millis(80));
+        assert!(!s.tick(t0 + Duration::from_secs(5)));
+        assert_eq!(s.current(t0 + Duration::from_secs(5)), None);
+        // A shell's command-ended mark after a long run is done at once.
+        s.enter(t0);
+        s.command_ended(t0 + Duration::from_secs(4));
+        assert_eq!(s.current(t0 + Duration::from_secs(4)), Some(Signal::Done));
+    }
+
+    #[test]
+    fn switches_are_set_in_every_builtin_that_has_them() {
+        let (list, _) = discover(None);
+        for p in &list {
+            let text = p.shader_text(&p.manifest.shaders[0]).unwrap();
+            let off = with_switches(&text, &[("ENTER_EFFECT", false), ("LINE_EFFECT", true), ("NO_SUCH", true)]);
+            let s = settings(&off);
+            let get = |n: &str| s.iter().find(|x| x.name == n).map(|x| x.value.clone());
+            assert_eq!(get("ENTER_EFFECT").as_deref(), Some("false"), "{}", p.id);
+            assert_eq!(get("LINE_EFFECT").as_deref(), Some("true"), "{}", p.id);
+            assert!(p.compile_with(&[("ENTER_EFFECT", false), ("DONE_EFFECT", false)]).is_ok(), "{}", p.id);
+        }
+        for (key, constant, _, _, _) in SWITCHES {
+            assert!(crate::schema::find(key).is_some(), "{key} is in the profile schema");
+            if let Some(c) = constant {
+                assert!(list.iter().all(|p| p.shader_text(&p.manifest.shaders[0]).unwrap().contains(&format!(" {c} "))), "{c} is in every built-in");
+            }
+        }
     }
 
     #[test]

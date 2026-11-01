@@ -1941,6 +1941,110 @@ light_dark = false
 macos_only = false
 
 [[setting]]
+key = "Effects Claude Enter"
+tab = "Window"
+mode = "terminal"
+section = "Effects"
+label = "Enter surge (a prompt sent, a command run)"
+type = "bool"
+default = true
+default_note = "Termurion only: a switch every built-in effect shares (render_fx::SWITCHES)."
+help = "Enter surge (a prompt sent, a command run)."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Effects Claude Done"
+tab = "Window"
+mode = "terminal"
+section = "Effects"
+label = "Done surge (Claude finished, a long command ended)"
+type = "bool"
+default = true
+default_note = "Termurion only: a switch every built-in effect shares (render_fx::SWITCHES)."
+help = "Done surge (Claude finished, a long command ended)."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Effects Claude Line Color"
+tab = "Window"
+mode = "terminal"
+section = "Effects"
+label = "Input box lines in the effect's color"
+type = "bool"
+default = true
+default_note = "Termurion only: a switch every built-in effect shares (render_fx::SWITCHES)."
+help = "Input box lines in the effect's color."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Effects Claude Live Lines"
+tab = "Window"
+mode = "terminal"
+section = "Effects"
+label = "Input box lines always alive"
+type = "bool"
+default = false
+default_note = "Termurion only: a switch every built-in effect shares (render_fx::SWITCHES)."
+help = "Input box lines always alive."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Effects Claude Prompt"
+tab = "Window"
+mode = "terminal"
+section = "Effects"
+label = "Prompt mark look"
+type = "bool"
+default = true
+default_note = "Termurion only: a switch every built-in effect shares (render_fx::SWITCHES)."
+help = "Prompt mark look."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Effects Signals"
+tab = "Window"
+mode = "terminal"
+section = "Effects"
+label = "Termurion sends the Enter and done signals itself"
+type = "bool"
+default = true
+default_note = "Termurion only: a switch every built-in effect shares (render_fx::SWITCHES)."
+help = "Termurion sends the Enter and done signals itself."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Effects Jumps"
+tab = "Window"
+mode = "terminal"
+section = "Effects"
+label = "Bolt when the cursor jumps along its row"
+type = "bool"
+default = true
+default_note = "Termurion only: a switch every built-in effect shares (render_fx::SWITCHES)."
+help = "Bolt when the cursor jumps along its row."
+light_dark = false
+macos_only = false
+
+[[setting]]
+key = "Effects Idle"
+tab = "Window"
+mode = "terminal"
+section = "Effects"
+label = "Idle animation"
+type = "bool"
+default = true
+default_note = "Termurion only: a switch every built-in effect shares (render_fx::SWITCHES)."
+help = "Idle animation."
+light_dark = false
+macos_only = false
+
+[[setting]]
 key = "Scrollback Lines"
 tab = "Terminal"
 mode = "terminal"

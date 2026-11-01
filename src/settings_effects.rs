@@ -51,6 +51,22 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
             changed = Some(toggled(&list, &p.id, true));
         }
     }
+    // The switches every built-in effect shares, in their groups, under the list.
+    let mut switched = false;
+    for group in ["Claude Code", "General"] {
+        egui::CollapsingHeader::new(group).id_salt(("effects-switches", group)).default_open(true).show(ui, |ui| {
+            for (key, _, label, _, g) in render_fx::SWITCHES {
+                if *g != group {
+                    continue;
+                }
+                let mut on = profile.bool(key);
+                if ui.checkbox(&mut on, *label).changed() {
+                    profile.set(key, toml::Value::Boolean(on));
+                    switched = true;
+                }
+            }
+        });
+    }
     for (id, e) in &errors {
         ui.colored_label(ui.visuals().warn_fg_color, format!("{id}: {e}"));
     }
@@ -67,7 +83,7 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
         crate::settings_lists::store(profile, PROFILE_KEY, list);
         return true;
     }
-    false
+    switched
 }
 
 /// Shows a folder in the file manager.

@@ -7115,6 +7115,12 @@ impl App {
         // Window numbers show from 1 in the saved logs (P20).
         let window_n = self.window_number() + 1;
         let focused_window = self.focused;
+        // Render plugins: the focused pane's Enter and done signals (done fires on quiet here).
+        let signals_on = self.gpu.as_ref().and_then(|g| g.fx.as_ref()).is_some_and(|f| f.signals);
+        let fx_signals = self.tabs.get(self.active).map(|t| t.focused).and_then(|id| self.panes.get_mut(&id)).filter(|_| signals_on).map(|p| {
+            p.fx_signal.tick(Instant::now());
+            p.fx_signal.clone()
+        });
         let Some(gpu) = self.gpu.as_mut() else { return };
         gpu.window.set_title(&title);
         let wait_start = Instant::now();
@@ -7167,7 +7173,7 @@ impl App {
             Some(fx) => {
                 // The passes write the window through its non-sRGB view (fx_sync made sure it has one).
                 let out = texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(crate::render_fx_gpu::raw_format(gpu.config.format)), ..Default::default() });
-                fx.prepare(frame.fx.as_ref(), (w, h), focused_window, fx_now);
+                fx.prepare(frame.fx.as_ref(), fx_signals.as_ref(), (w, h), focused_window, fx_now);
                 let (chain, uniforms) = fx.chain_mut().expect("active");
                 gpu.renderer.draw_fx(&frame, chain, uniforms, &out, w, h)
             }
@@ -7807,6 +7813,11 @@ impl ApplicationHandler<UserEvent> for App {
         for (id, p) in self.panes.iter() {
             if p.got_output && !outputs.contains(id) {
                 outputs.push(*id);
+            }
+        }
+        for id in &outputs {
+            if let Some(p) = self.panes.get_mut(id) {
+                p.fx_signal.output(now);
             }
         }
         self.stuck_tick();
