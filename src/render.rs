@@ -2417,6 +2417,73 @@ mod tests {
         assert_eq!(r.resolve_family("MesloLGS-NF-Regular"), "MesloLGS NF");
     }
 
+    /// Lightning's Enter surge runs along Claude Code's input box lines (above and below the
+    /// prompt), drawn the way Termurion really draws them, for several fonts and sizes and a
+    /// dark tinted background like a real profile's. The uniforms come from the frame, as the
+    /// app fills them (`fx_ui::prepare`).
+    #[test]
+    fn lightning_enter_surge_finds_the_claude_box_lines() {
+        use crate::render_fx::{Clock, Uniforms, discover};
+        let (device, queue) = device();
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let lightning = discover(None).0.into_iter().find(|p| p.id == "lightning").unwrap();
+        let preset = crate::palette::rgb(0x9f, 0xd0, 0xfe);
+        let unit = |c: crate::palette::Rgb| [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0];
+        let mut report = Vec::new();
+        for family in ["Cascadia Mono", "Consolas", "Courier New"] {
+            for px in [13.0f32, 16.0, 19.0, 24.0] {
+                let mut r = Renderer::new(&device, &queue, format, family, px);
+                let cell = r.cell;
+                let (cols, rows) = (80usize, 8usize);
+                let (w, h) = ((cols as f32 * cell.0).ceil() as u32, (rows as f32 * cell.1).ceil() as u32);
+                let mut s = crate::screen::Screen::new(cols, rows);
+                s.palette.bg = crate::palette::rgb(21, 25, 31);
+                s.palette.fg = crate::palette::rgb(220, 220, 220);
+                let line = "\u{2500}".repeat(cols);
+                let out = format!("\x1b[2J\x1b[3;1H\x1b[38;5;244m{line}\x1b[0m\x1b[4;1H\u{276f} make it shine\x1b[5;1H\x1b[38;5;244m{line}\x1b[0m\x1b[6;1H  status\x1b[4;16H");
+                s.feed(out.as_bytes());
+                let rect = crate::layout::Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
+                let draw = crate::scene::DrawPrefs { fx_cursor: Some(preset), ..Default::default() };
+                let mut frame = Frame { clear: rgba(s.palette.bg, 1.0), fade: 1.0, ..Default::default() };
+                crate::scene::pane_with(&mut frame, &s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE);
+                let fx = frame.fx.clone().expect("the scene records the pane");
+                let mut chain = crate::render_fx_gpu::Chain::new(&device, format, lightning.compile().unwrap(), false).unwrap();
+                let mut clock = Clock::default();
+                let mut u = Uniforms { background: unit(fx.bg), foreground: unit(fx.fg), ..Default::default() };
+                let t0 = std::time::Instant::now();
+                let mut cur = fx.cursor.unwrap();
+                cur.color = [unit(preset)[0], unit(preset)[1], unit(preset)[2], 1.0];
+                clock.frame(&mut u, t0, (w, h), Some(cur), true);
+                // fx-signal.sh's Enter: blue's lowest bit set, red's flipped.
+                cur.color = [(0x9e as f32) / 255.0, (0xd0 as f32) / 255.0, (0xff as f32) / 255.0, 1.0];
+                clock.frame(&mut u, t0 + std::time::Duration::from_millis(500), (w, h), Some(cur), true);
+                clock.frame(&mut u, t0 + std::time::Duration::from_millis(650), (w, h), Some(cur), true);
+                let plain = r.draw_offscreen(&frame, w, h).unwrap();
+                let lit = r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), w, h).unwrap();
+                // Lit pixels per row band: rows 3 and 5 hold the box lines, row 4 the prompt.
+                let band = |row: usize| -> usize {
+                    let (y0, y1) = ((row as f32 * cell.1) as usize, (((row + 1) as f32) * cell.1) as usize);
+                    (y0..y1.min(h as usize)).flat_map(|y| (0..w as usize).map(move |x| (x, y))).filter(|&(x, y)| {
+                        let i = (y * w as usize + x) * 4;
+                        lit[i + 2] as i32 - plain[i + 2] as i32 > 40
+                    }).count()
+                };
+                let (above, prompt, below) = (band(2), band(3), band(4));
+                report.push(format!("{family} {px}px cell {:.1}x{:.1}: above {above} prompt {prompt} below {below}", cell.0, cell.1));
+                if above < 200 || below < 200 {
+                    let _ = image::RgbaImage::from_raw(w, h, lit.clone()).map(|im| im.save(std::env::temp_dir().join(format!("surge-{}-{px}.png", family.replace(' ', "")))));
+                }
+            }
+        }
+        let text = report.join("\n");
+        eprintln!("{text}");
+        assert!(report.iter().all(|l| {
+            let n: Vec<usize> = l.split(|c: char| !c.is_ascii_digit()).filter_map(|x| x.parse().ok()).collect();
+            let k = n.len();
+            n[k - 3] >= 200 && n[k - 1] >= 200
+        }), "{text}");
+    }
+
     /// Render plugins: the frame goes through each pass in order, with no vertical flip and no
     /// sRGB round trip (a copy pass gives back the frame's own bytes).
     #[test]
