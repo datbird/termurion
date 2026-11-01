@@ -15,9 +15,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SWP_NOMOVE, SWP_NOZORDER, SetDlgItemTextW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_COMMAND, WM_INITDIALOG,
 };
 
-/// The disclosure's prompt (`QuitAlert.WhyPrompt`); its lead-in is `close_rules::quit_parts`'.
-pub(super) const WHY_PROMPT: &str = "Why am I being prompted?";
-
 const ID_TEXT: i32 = 100;
 const ID_WHY: i32 = 101;
 const ID_DETAIL: i32 = 102;
@@ -32,13 +29,13 @@ const WRAP: usize = 50;
 const DETAIL_MAX: i32 = 96;
 
 /// How many lines `text` takes at about `WRAP` characters across.
-pub(super) fn lines_for(text: &str) -> i32 {
+pub fn lines_for(text: &str) -> i32 {
     text.split('\n').map(|l| (l.chars().count().max(1) as i32 + WRAP as i32 - 1) / WRAP as i32).sum::<i32>().max(1)
 }
 
 /// Where the parts sit in dialog units for a text of `text_lines` lines, a detail of
 /// `detail_lines` when open: (disclosure y, detail y and height, buttons y, client height).
-pub(super) fn layout(text_lines: i32, detail_lines: i32, expanded: bool) -> (i32, Option<(i32, i32)>, i32, i32) {
+pub fn layout(text_lines: i32, detail_lines: i32, expanded: bool) -> (i32, Option<(i32, i32)>, i32, i32) {
     let why_y = M + LINE * text_lines + 6;
     let (detail, below) = if expanded {
         let h = (LINE * detail_lines + 8).min(DETAIL_MAX);
@@ -192,11 +189,11 @@ static LAST: AtomicIsize = AtomicIsize::new(0);
 
 /// `text`, OK and Cancel, and a collapsed disclosure `prompt` over `detail`. True for OK. `None`
 /// when Windows could not make the dialog (the caller asks another way).
-pub(super) fn confirm(owner: Option<isize>, topmost: bool, title: &str, text: &str, prompt: &str, detail: &str) -> Option<bool> {
+pub fn confirm(owner: Option<isize>, topmost: bool, title: &str, text: &str, prompt: &str, detail: &str) -> Option<bool> {
     let mut ctx = Ctx { text: text.to_string(), prompt: prompt.to_string(), detail: detail.to_string(), expanded: false };
     let words = template(title, topmost, &ctx);
     let parent = owner.map_or(std::ptr::null_mut(), |h| h as HWND);
-    let answer = super::msgbox::run_modal(owner, title, crate::host_base::log, true, || unsafe {
+    let answer = super::dialog::run_modal(owner, title, crate::host_base::log, true, || unsafe {
         DialogBoxIndirectParamW(GetModuleHandleW(std::ptr::null()), words.as_ptr().cast(), parent, Some(proc), &mut ctx as *mut Ctx as LPARAM)
     });
     LAST.store(answer, Ordering::Relaxed);

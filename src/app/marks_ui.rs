@@ -312,8 +312,6 @@ impl App {
     }
 
     fn mark_alert(&mut self, title: &str, failed: bool) {
-        use windows_sys::Win32::System::Diagnostics::Debug::MessageBeep;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONHAND, MB_OK};
         match self.globals.string("Mark Alert Action").as_str() {
             "Modal Alert" => super::menu::info_box(&format!("Mark set in session \"{title}\".")),
             "Ring Bell" => {
@@ -324,8 +322,10 @@ impl App {
                 if self.bell_limiter.beep(std::time::Instant::now()) {
                     let outcome = named.and_then(|n| crate::taskbar_win::play_named(&n));
                     if crate::bell_badge::beeps_after(outcome) {
-                        unsafe {
-                            MessageBeep(if failed { MB_ICONHAND } else { MB_OK });
+                        if failed {
+                            crate::platform::clock::beep_error();
+                        } else {
+                            crate::platform::clock::beep();
                         }
                     }
                 }

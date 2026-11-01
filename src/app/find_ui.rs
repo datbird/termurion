@@ -257,10 +257,7 @@ impl FindState {
 }
 
 pub(super) fn beep() {
-    #[cfg(windows)]
-    unsafe {
-        windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK);
-    }
+    crate::platform::clock::beep();
 }
 
 /// Menu item ids of the find bar's mode menu.

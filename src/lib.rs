@@ -343,7 +343,6 @@ pub mod render_fx;
 pub mod render_fx_builtin;
 pub mod render_fx_gpu;
 
-#[cfg(windows)]
 pub mod app;
 
 pub mod screenshot;

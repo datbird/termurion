@@ -361,7 +361,7 @@ impl App {
     /// before (iTerm2 would use scp, which Termurion does not have).
     pub(super) fn ssh_drop(&mut self, pane: PaneId, files: Vec<String>) -> bool {
         // The Alt read, as everywhere (`GetKeyState(0x12)`).
-        if unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x12) } >= 0 {
+        if !crate::platform::input::alt_down() {
             return false;
         }
         self.ssh_drop_asked(pane, files)

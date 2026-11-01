@@ -108,14 +108,12 @@ pub(super) fn downloads(override_path: &str) -> Downloads {
 #[cfg(windows)]
 /// A message box with an OK button.
 pub(super) fn message(text: &str) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONWARNING, MB_OK};
-    super::msgbox::show(None, "Termurion", text, MB_OK | MB_ICONWARNING);
+    crate::platform::dialog::message(None, "Termurion", text, crate::platform::dialog::Kind::Warning);
 }
 
 /// A yes/no question in a message box.
 pub(super) fn ask(text: &str) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO};
-    super::msgbox::show(None, "Termurion", text, MB_YESNO | MB_ICONQUESTION) == IDYES
+    crate::platform::dialog::message(None, "Termurion", text, crate::platform::dialog::Kind::AskYesNo) == crate::platform::dialog::Answer::Yes
 }
 
 /// Larger than this, a download allowed by a remembered answer asks again

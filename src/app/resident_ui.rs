@@ -99,12 +99,11 @@ impl App {
         self.last_window = self.current_window();
         self.resident = true;
         if let Some(g) = &self.gpu {
-            use winit::platform::windows::WindowExtWindows;
             // The window the next tab wakes is a plain one, not the last window's full screen,
             // maximized or Compact look (its slot starts fresh: style NORMAL).
             g.window.set_fullscreen(None);
             g.window.set_maximized(false);
-            g.window.set_skip_taskbar(true);
+            crate::platform::window_style::set_skip_taskbar(&g.window, true);
             g.window.set_visible(false);
         }
     }
@@ -130,8 +129,7 @@ impl App {
         }
         self.look_seen = None;
         if let Some(g) = &self.gpu {
-            use winit::platform::windows::WindowExtWindows;
-            g.window.set_skip_taskbar(hotkey);
+            crate::platform::window_style::set_skip_taskbar(&g.window, hotkey);
         }
     }
 

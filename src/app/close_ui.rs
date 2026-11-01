@@ -168,7 +168,7 @@ fn pinned_reasons(tabs: &[Tab]) -> Vec<String> {
 /// `topmost` is the shutdown's question, on top and in front.
 pub(super) fn confirm_quit(owner: Option<isize>, topmost: bool, reasons: &[close_rules::Reason], keep: bool) -> bool {
     let (body, why) = close_rules::quit_parts(reasons, keep);
-    super::disclosure_ui::confirm(owner, topmost, "Quit Termurion?", &body, super::disclosure_ui::WHY_PROMPT, &why).unwrap_or_else(|| {
+    crate::platform::dialog::confirm_with_disclosure(owner, topmost, "Quit Termurion?", &body, crate::platform::dialog::WHY_PROMPT, &why).unwrap_or_else(|| {
         let text = close_rules::quit_text(reasons, keep);
         if topmost { confirm_on_top("Quit Termurion?", &text) } else { confirm(owner, "Quit Termurion?", &text) }
     })
@@ -177,12 +177,10 @@ pub(super) fn confirm_quit(owner: Option<isize>, topmost: bool, reasons: &[close
 /// The shutdown's quit question, shown by a thread that owns no window: an OK and Cancel box on
 /// top and in front (no owner, so no window of the app thread is tied to it); true for OK.
 pub(super) fn confirm_on_top(title: &str, text: &str) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDOK, MB_ICONWARNING, MB_OKCANCEL, MB_TOPMOST};
-    super::msgbox::show(None, title, text, MB_OKCANCEL | MB_ICONWARNING | MB_TOPMOST) == IDOK
+    crate::platform::dialog::message(None, title, text, crate::platform::dialog::Kind::ConfirmOkCancelOnTop) == crate::platform::dialog::Answer::Ok
 }
 
 /// An OK and Cancel question; true for OK.
 pub(super) fn confirm(owner: Option<isize>, title: &str, text: &str) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDOK, MB_ICONWARNING, MB_OKCANCEL};
-    super::msgbox::show(owner, title, text, MB_OKCANCEL | MB_ICONWARNING) == IDOK
+    crate::platform::dialog::message(owner, title, text, crate::platform::dialog::Kind::ConfirmOkCancel) == crate::platform::dialog::Answer::Ok
 }

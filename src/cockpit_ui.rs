@@ -260,18 +260,17 @@ impl CockpitWindow {
         frame: Frame,
         dark: bool,
     ) -> Result<CockpitWindow, String> {
-        use winit::platform::windows::WindowAttributesExtWindows;
         let min_h = cockpit::FILTER_BAR_HEIGHT + cockpit::LIST_MIN + cockpit::COMPOSER_MIN + 40.0;
         let attrs = Window::default_attributes()
             .with_title(cockpit::TITLE)
             .with_resizable(true)
             .with_enabled_buttons(winit::window::WindowButtons::CLOSE)
-            .with_skip_taskbar(true)
             .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
             .with_visible(false)
             .with_position(winit::dpi::PhysicalPosition::new(frame.x as f64, frame.y as f64))
             .with_inner_size(winit::dpi::PhysicalSize::new(frame.w as f64, frame.h as f64))
             .with_min_inner_size(winit::dpi::LogicalSize::new(400.0, min_h as f64));
+        let attrs = crate::platform::window_style::skip_taskbar(attrs);
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
         host.follow_theme(Some(dark));
         crate::settings_keys::add_icon_font(host.ctx());
@@ -314,8 +313,7 @@ impl CockpitWindow {
             return self.host.window.set_visible(false);
         }
         if let Some(h) = self.host.hwnd() {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, ShowWindow};
-            unsafe { ShowWindow(h as _, SW_SHOWNOACTIVATE) };
+            crate::platform::window::show(h, crate::platform::window::Show::ShowNoActivate);
         }
         self.host.request_redraw();
     }

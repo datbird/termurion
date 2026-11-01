@@ -528,8 +528,7 @@ fn codecierge_button(s: CodeciergeState) -> (&'static str, bool) {
 
 /// An OK alert with an information icon.
 fn alert(owner: Option<isize>, title: &str, text: &str) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK};
-    super::msgbox::show(owner, title, text, MB_OK | MB_ICONINFORMATION);
+    crate::platform::dialog::message(owner, title, text, crate::platform::dialog::Kind::Info);
 }
 
 

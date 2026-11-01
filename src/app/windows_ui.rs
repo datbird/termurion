@@ -599,8 +599,7 @@ impl App {
         let mut attrs = Window::default_attributes().with_title("Termurion").with_window_icon(crate::presence::window_icon()).with_inner_size(LogicalSize::new(1000.0, 650.0));
         if hotkey {
             // A hotkey window starts hidden and has no taskbar button (a Quake-style window).
-            use winit::platform::windows::WindowAttributesExtWindows;
-            attrs = attrs.with_visible(false).with_skip_taskbar(true);
+            attrs = crate::platform::window_style::skip_taskbar(attrs.with_visible(false));
         }
         // A window whose profiles want transparency is made for alpha (its surface cannot change later).
         // A tmux window opened in the background shows without taking the focus.
@@ -616,8 +615,7 @@ impl App {
             }
             let mut a = attrs.clone();
             if kind == crate::transparency::SurfaceKind::Alpha {
-                use winit::platform::windows::WindowAttributesExtWindows;
-                a = a.with_no_redirection_bitmap(true);
+                a = crate::platform::window_style::no_redirection_bitmap(a);
             }
             let made = event_loop.create_window(a).map_err(|e| e.to_string()).and_then(|w| self.gpu_for(event_loop, Arc::new(w), kind));
             // No second instance on this machine: the window is made again, opaque.
@@ -1216,7 +1214,7 @@ impl App {
 
     /// A profile picked in the Profiles menu: a tab, or a window with Alt held.
     pub(super) fn open_profile_from_menu(&mut self, guid: &str) {
-        let option = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x12) } < 0;
+        let option = crate::platform::input::alt_down();
         self.open_profile(guid, option);
     }
 
@@ -1734,16 +1732,15 @@ impl App {
                 // The frame is the outer frame; the inner size leaves the borders out.
                 let (dw, dh) = if f.decorations { (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height)) } else { (0, 0) };
                 w.set_outer_position(PhysicalPosition::new(f.rect.x.round() as i32, f.rect.y.round() as i32));
-                let _ = super::caption_ui::request_inner_size(w, PhysicalSize::new((f.rect.w as u32).saturating_sub(dw).max(1), (f.rect.h as u32).saturating_sub(dh).max(1)));
+                let _ = crate::platform::caption::request_inner_size(w, PhysicalSize::new((f.rect.w as u32).saturating_sub(dw).max(1), (f.rect.h as u32).saturating_sub(dh).max(1)));
             }
         }
         // Accessory (iTerm2's floating panel) stays above other windows without a taskbar
         // button; leaving it gives both back. A hotkey window keeps its own.
         if self.hotkey.is_none() && (s == frames::ACCESSORY) != (self.win_style == frames::ACCESSORY) {
-            use winit::platform::windows::WindowExtWindows;
             let accessory = s == frames::ACCESSORY;
             w.set_window_level(if accessory { winit::window::WindowLevel::AlwaysOnTop } else { winit::window::WindowLevel::Normal });
-            w.set_skip_taskbar(accessory);
+            crate::platform::window_style::set_skip_taskbar(w, accessory);
         }
         self.win_style = s;
         // The style may enter or leave full screen: the border follows at once.
@@ -1784,10 +1781,11 @@ impl App {
         let others: Vec<R> = self.windows.parked().filter_map(|(_, s)| s.gpu.as_ref().map(Self::outer_rect)).collect();
         let inside = |r: &R, x: f32, y: f32| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
         let window_monitor = monitors.iter().position(|m| inside(m, current.x + current.w / 2.0, current.y + current.h / 2.0)).unwrap_or(0);
-        let mut pt = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
-        let have_cursor = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) } != 0;
         // Without the pointer's position, "Screen with Cursor" uses the window's monitor.
-        let cursor_monitor = if have_cursor { monitors.iter().position(|m| inside(m, pt.x as f32, pt.y as f32)).unwrap_or(window_monitor) } else { window_monitor };
+        let cursor_monitor = match crate::platform::window::cursor_pos() {
+            Some(pt) => monitors.iter().position(|m| inside(m, pt.0 as f32, pt.1 as f32)).unwrap_or(window_monitor),
+            None => window_monitor,
+        };
         let profile = self.store.get(&guid).unwrap_or_else(|| self.store.default_profile());
         let pref = profile.get("Screen").and_then(|v| v.as_integer()).unwrap_or(-1);
         let work = placement::screen_for(pref, &monitors, window_monitor, cursor_monitor);
@@ -1808,7 +1806,7 @@ impl App {
         if (r.w, r.h) != (current.w, current.h) {
             let (outer, inner) = (w.outer_size(), w.inner_size());
             let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
-            let _ = super::caption_ui::request_inner_size(w, PhysicalSize::new((r.w as u32).saturating_sub(dw).max(1), (r.h as u32).saturating_sub(dh).max(1)));
+            let _ = crate::platform::caption::request_inner_size(w, PhysicalSize::new((r.w as u32).saturating_sub(dw).max(1), (r.h as u32).saturating_sub(dh).max(1)));
         }
     }
 
@@ -1821,9 +1819,10 @@ impl App {
         let current = Self::outer_rect(g);
         let inside = |r: &R, x: f32, y: f32| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
         let window_monitor = monitors.iter().position(|m| inside(m, current.x + current.w / 2.0, current.y + current.h / 2.0)).unwrap_or(0);
-        let mut pt = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
-        let have_cursor = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) } != 0;
-        let cursor_monitor = if have_cursor { monitors.iter().position(|m| inside(m, pt.x as f32, pt.y as f32)).unwrap_or(window_monitor) } else { window_monitor };
+        let cursor_monitor = match crate::platform::window::cursor_pos() {
+            Some(pt) => monitors.iter().position(|m| inside(m, pt.0 as f32, pt.1 as f32)).unwrap_or(window_monitor),
+            None => window_monitor,
+        };
         let pref = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).get("Screen").and_then(|v| v.as_integer()).unwrap_or(-1);
         self.win_anchor = placement::anchor(pref, monitors.len(), cursor_monitor);
     }
@@ -1954,7 +1953,7 @@ impl App {
     /// False (with a beep) when Lock Layout forbids the change.
     pub(super) fn layout_allowed(&self, op: crate::winmodel::LayoutOp) -> bool {
         if !self.layout_allowed_quiet(op) {
-            unsafe { windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK) };
+            crate::platform::clock::beep();
             return false;
         }
         true
@@ -1984,7 +1983,7 @@ impl App {
         let Some(g) = &self.gpu else { return };
         let inner = g.window.inner_size();
         let (w, h) = crate::winmodel::step_size((inner.width, inner.height), cell, r);
-        let _ = super::caption_ui::request_inner_size(&g.window, PhysicalSize::new(w, h));
+        let _ = crate::platform::caption::request_inner_size(&g.window, PhysicalSize::new(w, h));
     }
 
     /// Edit Window Title and Edit Tab Title: a one-line window; an empty title clears it.
@@ -2082,7 +2081,7 @@ impl App {
                     let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
                     let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
                     g.window.set_outer_position(PhysicalPosition::new(r.x as i32, r.y as i32));
-                    let _ = super::caption_ui::request_inner_size(&g.window, PhysicalSize::new((r.w as u32).saturating_sub(dw).max(1), (r.h as u32).saturating_sub(dh).max(1)));
+                    let _ = crate::platform::caption::request_inner_size(&g.window, PhysicalSize::new((r.w as u32).saturating_sub(dw).max(1), (r.h as u32).saturating_sub(dh).max(1)));
                 }
         }
     }
@@ -2115,15 +2114,7 @@ impl App {
 
 /// The work area and the whole of the monitor a window is on (the nearest one), in pixels.
 pub(super) fn monitor_rects_of(hwnd: isize) -> Option<(Rect, Rect)> {
-    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
-    let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
-    info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-    let m = unsafe { MonitorFromWindow(hwnd as _, MONITOR_DEFAULTTONEAREST) };
-    if unsafe { GetMonitorInfoW(m, &mut info) } == 0 {
-        return None;
-    }
-    let r = |r: windows_sys::Win32::Foundation::RECT| Rect { x: r.left as f32, y: r.top as f32, w: (r.right - r.left) as f32, h: (r.bottom - r.top) as f32 };
-    Some((r(info.rcWork), r(info.rcMonitor)))
+    crate::platform::window::monitor_rects(hwnd)
 }
 
 /// A merge's split of a window's tabs: the ones that move, the ones `stays` keeps, and the

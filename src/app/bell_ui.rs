@@ -31,11 +31,7 @@ impl App {
 
     /// Whether Windows plays animations ("Show animations in Windows"; off for reduced motion).
     fn animations_on() -> bool {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW};
-        let mut on: i32 = 1;
-        // A failed query leaves the default: animations on.
-        unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&mut on as *mut i32).cast(), 0) };
-        on != 0
+        crate::platform::input::animations_on()
     }
 
     /// The one entry for every pane flash (a bell's, RequestAttention's): it passes the visual
@@ -70,9 +66,7 @@ impl App {
         if let Some(e) = ring.effects {
             crate::dlog!("bell effects: beep {} icon {} flash {}", e.beep, e.icon, e.flash);
             if e.beep && self.bell_limiter.beep(now) {
-                unsafe {
-                    windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK);
-                }
+                crate::platform::clock::beep();
             }
             let marked = e.icon && !self.looking_at(pane) && self.bell_icons.insert(pane);
             if crate::bell::bell_notification_due(e.icon, marked) {

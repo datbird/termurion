@@ -759,14 +759,7 @@ mod tests {
         s.feed(text.as_bytes());
         // This thread's CPU time, not the clock, so a machine busy with other work (a parallel
         // test run, a game) does not fail the test.
-        let cpu = || {
-            use windows_sys::Win32::Foundation::FILETIME;
-            let z = || FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
-            let (mut a, mut b, mut k, mut u) = (z(), z(), z(), z());
-            unsafe { windows_sys::Win32::System::Threading::GetThreadTimes(windows_sys::Win32::System::Threading::GetCurrentThread(), &mut a, &mut b, &mut k, &mut u) };
-            let t = |f: FILETIME| (f.dwHighDateTime as u64) << 32 | f.dwLowDateTime as u64;
-            std::time::Duration::from_nanos((t(k) + t(u)) * 100)
-        };
+        let cpu = crate::platform::clock::thread_cpu_time;
         let before = cpu();
         let hits = find_all(&s, "needle").unwrap();
         let took = cpu() - before;

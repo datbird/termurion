@@ -46,13 +46,12 @@ impl App {
 
     /// Shell > Print > Screen, Selection, or Buffer.
     pub(super) fn print(&mut self, id: PaneId, what: crate::print::What) {
-        use windows_sys::Win32::System::Diagnostics::Debug::MessageBeep;
         let Some(hwnd) = self.hwnd() else { return };
         let Some(p) = self.panes.get(&id) else { return };
         // The user selects in the screen on show: a Filter or Zoom view while one is up.
         let screen = &p.screen;
         if what == crate::print::What::Selection && screen.selection_text().is_none() {
-            unsafe { MessageBeep(0) };
+            crate::platform::clock::beep();
             return;
         }
         let mut rows = crate::print::rows(screen, what);

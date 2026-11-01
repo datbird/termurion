@@ -1,70 +1,11 @@
 //! A window's border and corners through DWM (`chrome` decides them).
 
+//! A window's border, corners, menu bar and Theme (`chrome` decides them); the Win32 calls are in
+//! `platform::chrome`.
+
 use super::*;
 use crate::chrome;
-use windows_sys::Win32::Foundation::RECT;
-use windows_sys::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_EXTENDED_FRAME_BOUNDS, DWMWA_WINDOW_CORNER_PREFERENCE, DwmGetWindowAttribute, DwmSetWindowAttribute};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_SHIFT};
-use windows_sys::Win32::UI::WindowsAndMessaging::{GetMenu, GetWindowRect};
-
-const THEME_SUBCLASS_ID: usize = 0x7468_656D;
-
-thread_local! {
-    /// The way back to the app from `theme_guard`, which never touches `App`.
-    static WAKE: std::cell::RefCell<Option<EventLoopProxy<UserEvent>>> = const { std::cell::RefCell::new(None) };
-    /// A `ThemeReset` is queued and not yet handled: one `WM_SETTINGCHANGE` broadcast reaches every
-    /// terminal window, and the app needs to hear of it once.
-    static RESET_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// The window's subclass proc: winit handles `WM_SETTINGCHANGE` (resetting the title bar to
-/// Windows' mode), then the app is asked to apply the Theme again.
-unsafe extern "system" fn theme_guard(hwnd: windows_sys::Win32::Foundation::HWND, msg: u32, wparam: windows_sys::Win32::Foundation::WPARAM, lparam: windows_sys::Win32::Foundation::LPARAM, _id: usize, _data: usize) -> windows_sys::Win32::Foundation::LRESULT {
-    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
-    use windows_sys::Win32::UI::WindowsAndMessaging::WM_NCDESTROY;
-    // SAFETY: forwarding the message the system delivered, unchanged.
-    let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
-    if crate::dark_menu::reapplies_menus(msg) {
-        // The app mode or the high contrast state may have changed.
-        crate::tab_theme::forget_high_contrast();
-        if !RESET_PENDING.with(|p| p.replace(true)) {
-            WAKE.with(|w| {
-                if let Some(proxy) = w.borrow().as_ref() {
-                    let _ = proxy.send_event(UserEvent::ThemeReset);
-                }
-            });
-        }
-    } else if msg == WM_NCDESTROY {
-        // SAFETY: removing this proc from the window being destroyed.
-        unsafe { RemoveWindowSubclass(hwnd, Some(theme_guard), THEME_SUBCLASS_ID) };
-    }
-    result
-}
-
-/// Gives the window's frame a border color (a COLORREF, or `chrome::COLOR_DEFAULT`). Only
-/// Windows 11 (build 22000 on) takes the attribute; Windows 10's refusal is ignored and the
-/// window keeps the system's border.
-pub(super) fn set_border(hwnd: isize, color: u32) {
-    unsafe { DwmSetWindowAttribute(hwnd as _, DWMWA_BORDER_COLOR as u32, (&color as *const u32).cast(), 4) };
-}
-
-/// Sets how DWM rounds the window's corners (`chrome::corner_preference`).
-pub(super) fn set_corners(hwnd: isize, preference: i32) {
-    unsafe { DwmSetWindowAttribute(hwnd as _, DWMWA_WINDOW_CORNER_PREFERENCE as u32, (&preference as *const i32).cast(), 4) };
-}
-
-/// Takes the menu bar off the window (`SetMenu` with no menu); the window keeps its outer
-/// size, so the client area grows by the bar and a Resized event lays the window out.
-pub(super) fn hide_menu(menu: &muda::Menu, hwnd: isize) -> Result<(), String> {
-    unsafe { menu.hide_for_hwnd(hwnd) }.map_err(|e| e.to_string())
-}
-
-/// Whether the window has a menu bar attached right now (the system's answer, not a note kept
-/// by the app).
-pub(super) fn menu_attached(hwnd: isize) -> bool {
-    // SAFETY: a plain query of a window of this thread.
-    !unsafe { GetMenu(hwnd as _) }.is_null()
-}
+use crate::platform::chrome::{apply_menu_theme as platform_menu_theme, guard_theme, hide_menu, invisible_top_bottom, menu_attached, set_border, set_corners, shift_down, show_menu, theme_reset_handled};
 
 /// Whether the window's menu bar has to change to be as wanted: a bar that should be hidden but
 /// is attached, or one that should show but is not.
@@ -72,30 +13,12 @@ pub(super) fn menu_needs_change(hide: bool, attached: bool) -> bool {
     hide == attached
 }
 
-/// Puts the menu bar back on the window.
-pub(super) fn show_menu(menu: &muda::Menu, hwnd: isize) -> Result<(), String> {
-    unsafe { menu.show_for_hwnd(hwnd) }.map_err(|e| e.to_string())
-}
-
-/// How far the outer frame reaches past the visible one at the top and the bottom: DWM's
-/// invisible resize borders (0 without DWM's bounds).
-fn invisible_top_bottom(hwnd: isize) -> (f32, f32) {
-    let (mut outer, mut visible): (RECT, RECT) = unsafe { (std::mem::zeroed(), std::mem::zeroed()) };
-    if unsafe { GetWindowRect(hwnd as _, &mut outer) } == 0 {
-        return (0.0, 0.0);
-    }
-    if unsafe { DwmGetWindowAttribute(hwnd as _, DWMWA_EXTENDED_FRAME_BOUNDS as u32, (&mut visible as *mut RECT).cast(), std::mem::size_of::<RECT>() as u32) } != 0 {
-        return (0.0, 0.0);
-    }
-    ((visible.top - outer.top).max(0) as f32, (outer.bottom - visible.bottom).max(0) as f32)
-}
-
 /// Moves and sizes a window to an outer frame; the inner size leaves the borders out.
 pub(super) fn set_outer_frame(w: &winit::window::Window, r: Rect) {
     let (outer, inner) = (w.outer_size(), w.inner_size());
     let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
     w.set_outer_position(winit::dpi::PhysicalPosition::new(r.x.round() as i32, r.y.round() as i32));
-    let _ = super::caption_ui::request_inner_size(w, winit::dpi::PhysicalSize::new((r.w.round() as u32).saturating_sub(dw).max(1), (r.h.round() as u32).saturating_sub(dh).max(1)));
+    let _ = crate::platform::caption::request_inner_size(w, winit::dpi::PhysicalSize::new((r.w.round() as u32).saturating_sub(dw).max(1), (r.h.round() as u32).saturating_sub(dh).max(1)));
 }
 
 impl App {
@@ -121,7 +44,7 @@ impl App {
             return set_outer_frame(&w, before);
         }
         let Some((work, _)) = self.monitor_rects() else { return };
-        let shift = unsafe { GetKeyState(i32::from(VK_SHIFT)) } < 0;
+        let shift = shift_down();
         // A Zoom chosen while a key press is routed is a key Zoom; a menu click (or a pointer
         // action or the API) is not, and Shift then inverts MaxVertically (`PT:7065-7078`).
         let target = chrome::zoom_frame(current, work, self.globals.bool("MaxVertically"), self.key_down, shift);
@@ -254,15 +177,9 @@ impl App {
     pub(super) fn apply_menu_theme(&mut self) {
         let forced = crate::tab_theme::forced_dark(self.tab_style());
         let hc = crate::tab_theme::system_high_contrast();
-        let dark = crate::dark_menu::menu_dark(forced, crate::dark_menu::win::system_dark(), hc);
         let Some(hwnd) = self.hwnd() else { return };
-        crate::dark_menu::win::apply(hwnd, crate::dark_menu::app_mode(forced, hc));
-        if let Some(bar) = &self.menu_bar {
-            let theme = if crate::dark_menu::bar_dark(dark, crate::dark_menu::win::api()) { muda::MenuTheme::Dark } else { muda::MenuTheme::Light };
-            // SAFETY: the HWND is this window's, and the bar was attached to it.
-            if let Err(e) = unsafe { bar.menu.set_theme_for_hwnd(hwnd, theme) } {
-                self.banners.set("menu", format!("Could not set the menu bar's theme: {e}"));
-            }
+        if let Err(e) = platform_menu_theme(hwnd, forced, hc, self.menu_bar.as_ref().map(|b| &b.menu)) {
+            self.banners.set("menu", format!("Could not set the menu bar's theme: {e}"));
         }
     }
 
@@ -271,15 +188,16 @@ impl App {
     /// subclass asks the app to apply the Theme again after each one.
     pub(super) fn guard_theme(&self) {
         let Some(hwnd) = self.hwnd() else { return };
-        WAKE.with(|w| *w.borrow_mut() = Some(self.proxy.lock().unwrap().clone()));
-        // SAFETY: the HWND is this window's; the proc only forwards and posts an event.
-        unsafe { windows_sys::Win32::UI::Shell::SetWindowSubclass(hwnd as _, Some(theme_guard), THEME_SUBCLASS_ID, 0) };
+        let proxy = self.proxy.lock().unwrap().clone();
+        guard_theme(hwnd, Box::new(move || {
+            let _ = proxy.send_event(UserEvent::ThemeReset);
+        }));
     }
 
     /// After a system setting changed (`UserEvent::ThemeReset`): a fixed Theme's windows take
     /// its mode again. Nothing to do for Regular, Minimal and Compact, which follow Windows.
     pub(super) fn reapply_forced_theme(&mut self) {
-        RESET_PENDING.with(|p| p.set(false));
+        theme_reset_handled();
         // The same broadcast carries "Always show scrollbars" (`DynamicScrollbars`).
         self.refresh_scroll_style();
         if crate::tab_theme::forced_dark(self.tab_style()).is_some() {

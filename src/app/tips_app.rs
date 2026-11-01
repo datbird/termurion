@@ -80,14 +80,8 @@ fn now_secs() -> f64 {
 
 /// The work area of the monitor `hwnd` is on, else the first monitor's, else a common size.
 fn work_area(hwnd: Option<isize>) -> Work {
-    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
-    if let Some(h) = hwnd {
-        let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
-        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-        if unsafe { GetMonitorInfoW(MonitorFromWindow(h as _, MONITOR_DEFAULTTONEAREST), &mut info) } != 0 {
-            let r = info.rcWork;
-            return (r.left as f32, r.top as f32, (r.right - r.left) as f32, (r.bottom - r.top) as f32);
-        }
+    if let Some((work, _)) = hwnd.and_then(crate::platform::window::monitor_rects) {
+        return (work.x, work.y, work.w, work.h);
     }
     super::requests_ui::work_areas().first().map_or((0.0, 0.0, 1920.0, 1040.0), |&(x, y, w, h)| (x as f32, y as f32, w as f32, h as f32))
 }

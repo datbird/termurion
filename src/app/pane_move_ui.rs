@@ -423,18 +423,11 @@ impl App {
     /// The Termurion terminal window under the cursor and the cursor in its client pixels (P18:
     /// matched only against Termurion's own windows, never by title or class).
     pub(super) fn terminal_window_at_cursor(&self) -> Option<(WindowId, (f32, f32))> {
-        use windows_sys::Win32::Foundation::{HWND, POINT};
-        use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetAncestor, WindowFromPoint, GA_ROOT};
         let screen = tab_drag_ui::cursor_screen()?;
-        let under = unsafe { GetAncestor(WindowFromPoint(POINT { x: screen.0, y: screen.1 }), GA_ROOT) } as isize;
-        if under == 0 {
-            return None;
-        }
+        let under = crate::platform::window::root_at(screen.0, screen.1)?;
         let windows = self.gpu.iter().chain(self.windows.parked().filter_map(|(_, s)| s.gpu.as_ref()));
         let (id, hwnd) = windows.filter_map(|g| menu::hwnd_of(&g.window).map(|h| (g.window.id(), h))).find(|(_, h)| *h == under)?;
-        let mut p = POINT { x: screen.0, y: screen.1 };
-        (unsafe { ScreenToClient(hwnd as HWND, &mut p) } != 0).then_some((id, (p.x as f32, p.y as f32)))
+        crate::platform::window::screen_to_client(hwnd, screen.0, screen.1).map(|(x, y)| (id, (x as f32, y as f32)))
     }
 
     /// A press on a title bar's pane moved: the drag begins at the threshold (a lone pane moves

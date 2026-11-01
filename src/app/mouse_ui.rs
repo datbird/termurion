@@ -71,8 +71,7 @@ impl App {
             }
             mouse::Enter::Steal => {
                 // Windows may refuse and flash the taskbar button instead; that is its rule.
-                use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
-                unsafe { SetForegroundWindow(hwnd as _) };
+                crate::platform::window::set_foreground(hwnd);
             }
             mouse::Enter::Nothing => {}
         }
@@ -156,26 +155,16 @@ impl App {
 
     /// The Termurion terminal window under the screen point: its id and handle.
     fn terminal_window_under(&self, screen: (f64, f64)) -> Option<(winit::window::WindowId, isize)> {
-        use windows_sys::Win32::Foundation::POINT;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetAncestor, WindowFromPoint, GA_ROOT};
-        let under = unsafe { GetAncestor(WindowFromPoint(POINT { x: screen.0 as i32, y: screen.1 as i32 }), GA_ROOT) } as isize;
-        if under == 0 {
-            return None;
-        }
+        let under = crate::platform::window::root_at(screen.0 as i32, screen.1 as i32)?;
         let here = self.gpu.as_ref().filter(|g| menu::hwnd_of(&g.window) == Some(under)).map(|g| g.window.id());
         here.or_else(|| self.windows.parked().find_map(|(_, s)| s.gpu.as_ref().filter(|g| menu::hwnd_of(&g.window) == Some(under)).map(|g| g.window.id()))).map(|id| (id, under))
     }
 
     /// Focuses the pane of the (current) window under the screen point, as focus follows mouse.
     fn focus_pane_at_screen(&mut self, hwnd: isize, screen: (f64, f64)) {
-        use windows_sys::Win32::Foundation::{HWND, POINT};
-        use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
-        let mut p = POINT { x: screen.0 as i32, y: screen.1 as i32 };
-        if unsafe { ScreenToClient(hwnd as HWND, &mut p) } == 0 {
-            return;
-        }
-        if let Some((id, _)) = self.pane_at(p.x as f32, p.y as f32) {
-            self.ffm_pane_focus(id, (p.x as f32, p.y as f32));
+        let Some((px, py)) = crate::platform::window::screen_to_client(hwnd, screen.0 as i32, screen.1 as i32) else { return };
+        if let Some((id, _)) = self.pane_at(px as f32, py as f32) {
+            self.ffm_pane_focus(id, (px as f32, py as f32));
         }
     }
 

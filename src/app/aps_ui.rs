@@ -9,14 +9,7 @@ pub(super) const LOG_KEY: &str = "NoSyncEnableAutomaticProfileSwitchingLogging";
 /// This computer's full DNS name (iTerm2 starts sessions with the local host name, so host
 /// rules work without shell integration).
 pub(super) fn local_host() -> String {
-    let mut buf = vec![0u16; 256];
-    let mut len = buf.len() as u32;
-    // ComputerNameDnsFullyQualified.
-    let ok = unsafe { windows_sys::Win32::System::SystemInformation::GetComputerNameExW(3, buf.as_mut_ptr(), &mut len) };
-    if ok == 0 {
-        return std::env::var("COMPUTERNAME").unwrap_or_default();
-    }
-    String::from_utf16_lossy(&buf[..len as usize])
+    crate::platform::net::local_host()
 }
 
 impl App {

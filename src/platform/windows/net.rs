@@ -106,3 +106,14 @@ pub fn bind_exclusive(addr: SocketAddr) -> std::io::Result<TcpListener> {
         Ok(TcpListener::from_raw_socket(s as _))
     }
 }
+
+pub fn local_host() -> String {
+    let mut buf = vec![0u16; 256];
+    let mut len = buf.len() as u32;
+    // ComputerNameDnsFullyQualified.
+    let ok = unsafe { windows_sys::Win32::System::SystemInformation::GetComputerNameExW(3, buf.as_mut_ptr(), &mut len) };
+    if ok == 0 {
+        return std::env::var("COMPUTERNAME").unwrap_or_default();
+    }
+    String::from_utf16_lossy(&buf[..len as usize])
+}

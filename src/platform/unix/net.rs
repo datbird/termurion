@@ -39,6 +39,15 @@ pub fn ready(stream: &TcpStream, write: bool, wait_ms: i32) -> std::io::Result<(
     }
 }
 
+pub fn local_host() -> String {
+    let mut buf = [0u8; 256];
+    if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
+        return std::env::var("HOSTNAME").unwrap_or_default();
+    }
+    let n = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..n]).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

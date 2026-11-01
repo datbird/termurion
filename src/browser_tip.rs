@@ -247,8 +247,7 @@ impl TipWindow {
         crate::open_quickly_ui::install_fonts(host.ctx());
         host.follow_theme(None);
         if let Some(h) = host.hwnd() {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT};
-            unsafe { SetWindowLongPtrW(h as _, GWL_EXSTYLE, GetWindowLongPtrW(h as _, GWL_EXSTYLE) | (WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW) as isize) };
+            crate::platform::window::set_overlay_style(h);
         }
         let w = TipWindow { host, text: text.to_string(), link: true, point: TIP_POINT, spot: Spot::Link { pane: at, anchor: at }, fit: None, dirty: true, shown: false, show_next: false, owner: None, until: None };
         w.host.request_redraw();
@@ -288,8 +287,7 @@ impl TipWindow {
     /// Hides the window and keeps it for the next hover (nothing is destroyed on a Clear).
     pub fn hide(&mut self) {
         if let Some(hwnd) = self.host.hwnd() {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
-            unsafe { ShowWindow(hwnd as _, SW_HIDE) };
+            crate::platform::window::show(hwnd, crate::platform::window::Show::Hide);
         }
         self.shown = false;
         self.show_next = false;
@@ -362,8 +360,7 @@ impl TipWindow {
         } else if self.show_next && !self.dirty {
             // This paint was made at the size `put` gave: now the window may show.
             if let Some(hwnd) = self.host.hwnd() {
-                use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, ShowWindow};
-                unsafe { ShowWindow(hwnd as _, SW_SHOWNOACTIVATE) };
+                crate::platform::window::show(hwnd, crate::platform::window::Show::ShowNoActivate);
             }
             self.shown = true;
             self.show_next = false;
@@ -399,10 +396,7 @@ impl TipWindow {
 /// The pointer in screen pixels, as the system has it now (a child web view takes the pointer away
 /// from the window, so the window's own last position is stale over a page).
 pub fn pointer_now() -> Option<(f64, f64)> {
-    use windows_sys::Win32::Foundation::POINT;
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
-    let mut p = POINT { x: 0, y: 0 };
-    (unsafe { GetCursorPos(&mut p) } != 0).then_some((f64::from(p.x), f64::from(p.y)))
+    crate::platform::window::cursor_pos().map(|(x, y)| (f64::from(x), f64::from(y)))
 }
 
 #[cfg(test)]

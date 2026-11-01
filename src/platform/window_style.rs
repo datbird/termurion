@@ -37,3 +37,18 @@ pub fn round_corners(window: &Window) {
 pub fn accent_color() -> Option<(u8, u8, u8)> {
     imp::accent_color()
 }
+
+/// Shows or hides the window's taskbar button after the window exists.
+pub fn set_skip_taskbar(window: &Window, skip: bool) {
+    imp::set_skip_taskbar(window, skip)
+}
+
+/// `attrs` for a window that gets its alpha from the compositor (no redirection bitmap on Windows).
+pub fn no_redirection_bitmap(attrs: WindowAttributes) -> WindowAttributes {
+    imp::no_redirection_bitmap(attrs)
+}
+
+/// `attrs` with no taskbar button when `skip` is true, else unchanged.
+pub fn skip_taskbar_if(attrs: WindowAttributes, skip: bool) -> WindowAttributes {
+    if skip { skip_taskbar(attrs) } else { attrs }
+}

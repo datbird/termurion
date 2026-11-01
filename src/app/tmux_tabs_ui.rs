@@ -393,7 +393,7 @@ impl App {
             let scale = w.scale_factor();
             let (outer, inner) = (w.outer_size(), w.inner_size());
             let (dw, dh) = (outer.width.saturating_sub(inner.width) as f64 / scale, outer.height.saturating_sub(inner.height) as f64 / scale);
-            let _ = super::caption_ui::request_inner_size(w, winit::dpi::LogicalSize::new((x as f64 - dw).max(100.0), (y as f64 - dh).max(100.0)));
+            let _ = crate::platform::caption::request_inner_size(w, winit::dpi::LogicalSize::new((x as f64 - dw).max(100.0), (y as f64 - dh).max(100.0)));
         }
         if let Some(p) = origin {
             let monitors: Vec<(i32, i32, i32, i32)> = w.available_monitors().map(|m| (m.position().x, m.position().y, m.size().width as i32, m.size().height as i32)).collect();

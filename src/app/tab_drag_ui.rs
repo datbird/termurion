@@ -244,21 +244,12 @@ impl App {
     /// Another window's tab bar under the screen point `screen` (the topmost window there):
     /// its registry key and the point in its client pixels; None over no other window's bar.
     fn window_bar_point(&self, screen: (i32, i32)) -> Option<(u64, f32, f32)> {
-        use windows_sys::Win32::Foundation::{HWND, POINT};
-        use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetAncestor, WindowFromPoint, GA_ROOT};
-        let under = unsafe { GetAncestor(WindowFromPoint(POINT { x: screen.0, y: screen.1 }), GA_ROOT) } as isize;
-        if under == 0 {
-            return None;
-        }
+        let under = crate::platform::window::root_at(screen.0, screen.1)?;
         self.windows.parked().find_map(|(k, s)| {
             let hwnd = s.gpu.as_ref().and_then(|g| super::menu::hwnd_of(&g.window)).filter(|h| *h == under)?;
             let (bar, _, _) = s.tab_bar_drawn.as_ref()?;
-            let mut p = POINT { x: screen.0, y: screen.1 };
-            if unsafe { ScreenToClient(hwnd as HWND, &mut p) } == 0 {
-                return None;
-            }
-            let (x, y) = (p.x as f32, p.y as f32);
+            let (x, y) = crate::platform::window::screen_to_client(hwnd, screen.0, screen.1)?;
+            let (x, y) = (x as f32, y as f32);
             bar.contains(x, y).then_some((*k, x, y))
         })
     }
@@ -742,6 +733,5 @@ impl App {
 
 /// The pointer's screen point (`GetCursorPos`).
 pub(super) fn cursor_screen() -> Option<(i32, i32)> {
-    let mut p = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
-    (unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut p) } != 0).then_some((p.x, p.y))
+    crate::platform::window::cursor_pos()
 }

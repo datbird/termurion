@@ -495,6 +495,5 @@ impl App {
 
 /// An alert with OK (iTerm2's NSAlert with one button).
 fn alert(owner: Option<isize>, title: &str, text: &str) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONWARNING, MB_OK};
-    super::msgbox::show(owner, title, text, MB_OK | MB_ICONWARNING);
+    crate::platform::dialog::message(owner, title, text, crate::platform::dialog::Kind::Warning);
 }

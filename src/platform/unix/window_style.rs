@@ -25,3 +25,11 @@ pub fn round_corners(_window: &Window) {}
 pub fn accent_color() -> Option<(u8, u8, u8)> {
     None
 }
+
+/// Unix has no taskbar button to toggle; the window manager decides what a dock or panel shows.
+pub fn set_skip_taskbar(_window: &Window, _skip: bool) {}
+
+/// An alpha surface needs no window flag on Unix.
+pub fn no_redirection_bitmap(attrs: WindowAttributes) -> WindowAttributes {
+    attrs
+}

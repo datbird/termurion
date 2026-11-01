@@ -1828,8 +1828,7 @@ fn about_text(version: &str) -> String {
 }
 
 pub(super) fn info_box(text: &str) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK};
-    super::msgbox::show(None, "Termurion", text, MB_OK | MB_ICONINFORMATION);
+    crate::platform::dialog::message(None, "Termurion", text, crate::platform::dialog::Kind::Info);
 }
 
 /// The Window menu's window list (`PT:3069-3084`): (registry key, text, checked) for each

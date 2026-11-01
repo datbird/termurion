@@ -125,9 +125,7 @@ impl App {
 
     /// Edit > Replace Selection > Render Selection Natively: the selection's whole rows.
     pub(super) fn render_selection(&mut self) {
-        let beep = || unsafe {
-            windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK);
-        };
+        let beep = crate::platform::clock::beep;
         let dragging = matches!(self.drag, Drag::Select { .. });
         let wide = self.globals.bool("DefaultWideMode");
         let Some(id) = self.focused_id() else { return beep() };

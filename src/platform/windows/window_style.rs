@@ -48,3 +48,12 @@ pub fn accent_color() -> Option<(u8, u8, u8)> {
     let ok = unsafe { windows_sys::Win32::Graphics::Dwm::DwmGetColorizationColor(&mut color, &mut opaque) } >= 0;
     ok.then(|| ((color >> 16) as u8, (color >> 8) as u8, color as u8))
 }
+
+pub fn set_skip_taskbar(window: &Window, skip: bool) {
+    use winit::platform::windows::WindowExtWindows;
+    window.set_skip_taskbar(skip);
+}
+
+pub fn no_redirection_bitmap(attrs: WindowAttributes) -> WindowAttributes {
+    attrs.with_no_redirection_bitmap(true)
+}

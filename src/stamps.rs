@@ -42,53 +42,29 @@ pub fn local(secs: u64) -> Parts {
 }
 
 /// A time of day, "HH:MM:SS", in local time.
-#[cfg(windows)]
 pub fn clock_time(t: std::time::SystemTime) -> String {
     let secs = t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     hms(&local(secs))
 }
 
-/// A local time as the SYSTEMTIME the formatting calls read.
-#[cfg(windows)]
-fn systemtime(p: &Parts) -> windows_sys::Win32::Foundation::SYSTEMTIME {
-    windows_sys::Win32::Foundation::SYSTEMTIME { wYear: p.year, wMonth: p.month, wDayOfWeek: p.weekday, wDay: p.day, wHour: p.hour, wMinute: p.minute, wSecond: p.second, wMilliseconds: 0 }
+/// A local time as the tuple the platform formatting calls read.
+fn tuple(p: &Parts) -> crate::platform::clock::Local {
+    (p.year, p.month, p.day, p.weekday, p.hour, p.minute, p.second)
 }
 
-/// A formatting call's UTF-16 buffer as text; a call that failed (0) or gave nothing is "".
-#[cfg(windows)]
-fn wide_text(buf: &[u16], n: i32) -> String {
-    if n > 1 {
-        String::from_utf16_lossy(&buf[..n as usize - 1])
-    } else {
-        String::new()
-    }
-}
-
-/// The locale's short date (Windows' `DATE_SHORTDATE`) of a local date.
-#[cfg(windows)]
+/// The locale's short date of a local date.
 pub fn short_date(p: &Parts) -> String {
-    use windows_sys::Win32::Globalization::{GetDateFormatEx, DATE_SHORTDATE};
-    let (st, mut buf) = (systemtime(p), [0u16; 128]);
-    let n = unsafe { GetDateFormatEx(std::ptr::null(), DATE_SHORTDATE, &st, std::ptr::null(), buf.as_mut_ptr(), buf.len() as i32, std::ptr::null()) };
-    wide_text(&buf, n)
+    crate::platform::clock::short_date(tuple(p))
 }
 
-/// The locale's time without seconds (`TIME_NOSECONDS`) of a local time.
-#[cfg(windows)]
+/// The locale's time without seconds of a local time.
 pub fn short_time(p: &Parts) -> String {
-    use windows_sys::Win32::Globalization::{GetTimeFormatEx, TIME_NOSECONDS};
-    let (st, mut buf) = (systemtime(p), [0u16; 128]);
-    let n = unsafe { GetTimeFormatEx(std::ptr::null(), TIME_NOSECONDS, &st, std::ptr::null(), buf.as_mut_ptr(), buf.len() as i32) };
-    wide_text(&buf, n)
+    crate::platform::clock::short_time(tuple(p))
 }
 
-/// The locale's time with seconds (`GetTimeFormatEx` with no flags) of a local time.
-#[cfg(windows)]
+/// The locale's time with seconds of a local time.
 pub fn long_time(p: &Parts) -> String {
-    use windows_sys::Win32::Globalization::GetTimeFormatEx;
-    let (st, mut buf) = (systemtime(p), [0u16; 128]);
-    let n = unsafe { GetTimeFormatEx(std::ptr::null(), 0, &st, std::ptr::null(), buf.as_mut_ptr(), buf.len() as i32) };
-    wide_text(&buf, n)
+    crate::platform::clock::long_time(tuple(p))
 }
 
 /// "MMM d, yyyy" with English month names, as Command Info's date is in iTerm2.

@@ -9,13 +9,17 @@ pub mod unix;
 
 pub mod a11y;
 pub mod browser;
+pub mod caption;
+pub mod chrome;
 pub mod clipboard;
 pub mod clock;
 pub mod coproc;
 pub mod credentials;
+pub mod dialog;
 pub mod display;
 pub mod http;
 pub mod ipc;
+pub mod input;
 pub mod key_record;
 pub mod keys;
 pub mod locale;
@@ -25,7 +29,9 @@ pub mod print;
 pub mod proc;
 pub mod pty;
 pub mod shell_extras;
+pub mod sizing;
 pub mod shell_open;
+pub mod window;
 pub mod window_style;
 
 /// Name of the OS this build runs on, for messages.

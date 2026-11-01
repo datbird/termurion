@@ -5,7 +5,6 @@ use super::windows_ui::{NewWindow, init_gpu_shared, key};
 use super::*;
 use crate::transparency::{self, SurfaceKind};
 use winit::dpi::{PhysicalPosition, PhysicalSize};
-use winit::platform::windows::WindowAttributesExtWindows;
 
 /// The text of the one banner a machine without Direct3D 12 shows.
 pub(super) const UNAVAILABLE: &str = "Transparency needs Direct3D 12; this machine draws every window opaque.";
@@ -336,10 +335,9 @@ impl App {
             .with_inner_size(size)
             .with_decorations(old.is_decorated())
             .with_resizable(old.is_resizable())
-            .with_skip_taskbar(look.skip_taskbar)
             .with_visible(false)
-            .with_active(false)
-            .with_no_redirection_bitmap(true);
+            .with_active(false);
+        attrs = crate::platform::window_style::no_redirection_bitmap(crate::platform::window_style::skip_taskbar_if(attrs, look.skip_taskbar));
         if let Some(p) = position {
             attrs = attrs.with_position(p);
         }
@@ -413,9 +411,7 @@ impl App {
         if carried.show {
             match menu::hwnd_of(&window) {
                 // Minimized shows without activation, over the frame set above.
-                Some(h) if carried.minimized => unsafe {
-                    windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(h as windows_sys::Win32::Foundation::HWND, windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWMINNOACTIVE);
-                },
+                Some(h) if carried.minimized => crate::platform::window::show(h, crate::platform::window::Show::ShowMinimizedNoActivate),
                 _ => window.set_visible(true),
             }
         }
@@ -467,26 +463,8 @@ impl App {
 /// minimized and maximized state. A tool window's placement is in screen coordinates already; any other
 /// window's is relative to the work area.
 fn placement_of(hwnd: isize) -> Option<transparency::Placed> {
-    use windows_sys::Win32::Foundation::HWND;
-    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongW, GetWindowPlacement, GWL_EXSTYLE, WINDOWPLACEMENT, WS_EX_TOOLWINDOW};
-    let h = hwnd as HWND;
-    let mut wp: WINDOWPLACEMENT = unsafe { std::mem::zeroed() };
-    wp.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
-    if unsafe { GetWindowPlacement(h, &mut wp) } == 0 {
-        return None;
-    }
-    let tool = unsafe { GetWindowLongW(h, GWL_EXSTYLE) } as u32 & WS_EX_TOOLWINDOW != 0;
-    let mut shift = (0, 0);
-    if !tool {
-        let mut mi: MONITORINFO = unsafe { std::mem::zeroed() };
-        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-        if unsafe { GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mut mi) } != 0 {
-            shift = (mi.rcWork.left - mi.rcMonitor.left, mi.rcWork.top - mi.rcMonitor.top);
-        }
-    }
-    let r = wp.rcNormalPosition;
-    Some(transparency::placed(wp.showCmd, wp.flags, [r.left, r.top, r.right, r.bottom], shift))
+    let (show_cmd, flags, rect, shift) = crate::platform::window::placement(hwnd)?;
+    Some(transparency::placed(show_cmd, flags, rect, shift))
 }
 
 /// The second instance: DX12 only, DirectComposition swapchains (the only kind that offers a premultiplied
@@ -532,7 +510,7 @@ mod watch_tests {
         let src = include_str!("transparency_ui.rs");
         let body = src.split("fn recreate_window_for_alpha").nth(1).expect("recreate_window_for_alpha");
         let body = body.split("\n    }\n").next().unwrap();
-        assert!(body.contains("with_skip_taskbar(look.skip_taskbar)"), "skip from the look, not only for hotkey windows");
+        assert!(body.contains("skip_taskbar_if(attrs, look.skip_taskbar)"), "skip from the look, not only for hotkey windows");
         assert!(body.contains("placement_of"), "the old placement is read");
     }
 

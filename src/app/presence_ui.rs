@@ -2,14 +2,11 @@
 
 use super::*;
 use crate::presence::{self, Look, Reshow};
-use windows_sys::Win32::Foundation::HWND;
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, IsIconic, IsZoomed, SW_HIDE, SW_SHOW, SW_SHOWMAXIMIZED, SW_SHOWMINNOACTIVE, SW_SHOWNA, SetWindowLongPtrW, ShowWindow, WS_EX_TOOLWINDOW,
-};
+use crate::platform::window::{self as native, Show};
 
 /// Whether the window's actual extended style carries the tool window bit.
 fn has_tool_style(hwnd: isize) -> bool {
-    unsafe { GetWindowLongPtrW(hwnd as HWND, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW != 0 }
+    native::tool_style(hwnd)
 }
 
 /// Sets the tool window bit when it differs from `want`, inside `keep_client` so the client area
@@ -21,27 +18,21 @@ fn set_tool_style(window: &winit::window::Window, hwnd: isize, want: bool, hotke
     if has_tool_style(hwnd) == want {
         return false;
     }
-    super::caption_ui::keep_client(hwnd, || unsafe {
-        let style = GetWindowLongPtrW(hwnd as HWND, GWL_EXSTYLE);
-        let style = if want { style | WS_EX_TOOLWINDOW as isize } else { style & !(WS_EX_TOOLWINDOW as isize) };
-        SetWindowLongPtrW(hwnd as HWND, GWL_EXSTYLE, style);
-    });
+    crate::platform::caption::keep_client(hwnd, || native::set_tool_style(hwnd, want));
     if presence::restyle_needs_reshow(hotkey, window.is_visible() != Some(false)) {
-        unsafe {
-            let minimized = IsIconic(hwnd as HWND) != 0;
-            let maximized = IsZoomed(hwnd as HWND) != 0 && window.fullscreen().is_none();
-            let focused = GetForegroundWindow() == hwnd as HWND;
-            ShowWindow(hwnd as HWND, SW_HIDE);
-            ShowWindow(
-                hwnd as HWND,
-                match presence::reshow_command(minimized, maximized, focused) {
-                    Reshow::MinimizedNoActivate => SW_SHOWMINNOACTIVE,
-                    Reshow::Maximized => SW_SHOWMAXIMIZED,
-                    Reshow::Show => SW_SHOW,
-                    Reshow::ShowNoActivate => SW_SHOWNA,
-                },
-            );
-        }
+        let minimized = native::is_minimized(hwnd);
+        let maximized = native::is_maximized(hwnd) && window.fullscreen().is_none();
+        let focused = native::is_foreground(hwnd);
+        native::show(hwnd, Show::Hide);
+        native::show(
+            hwnd,
+            match presence::reshow_command(minimized, maximized, focused) {
+                Reshow::MinimizedNoActivate => Show::ShowMinimizedNoActivate,
+                Reshow::Maximized => Show::ShowMaximized,
+                Reshow::Show => Show::Show,
+                Reshow::ShowNoActivate => Show::ShowAsIs,
+            },
+        );
     }
     true
 }
@@ -50,11 +41,10 @@ fn set_tool_style(window: &winit::window::Window, hwnd: isize, want: bool, hotke
 /// the window's actual style every pass (winit rewrites the style on its own flag changes).
 fn apply_look(window: &winit::window::Window, look: Look, seen: &mut Option<Look>, hotkey: bool) -> bool {
     let mut changed = false;
-    use winit::platform::windows::WindowExtWindows;
     // A hotkey window is made without a taskbar button; a regular one with.
     let before = seen.map_or(hotkey, |l| l.skip_taskbar);
     if before != look.skip_taskbar {
-        window.set_skip_taskbar(look.skip_taskbar);
+        crate::platform::window_style::set_skip_taskbar(window, look.skip_taskbar);
     }
     if let Some(hwnd) = super::menu::hwnd_of(window) {
         changed = set_tool_style(window, hwnd, look.tool_window, hotkey);
@@ -272,7 +262,7 @@ impl App {
             }
         }
         // A cloaked or background window still has to be foreground for the menu to close on a click away.
-        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd as HWND) };
+        native::set_foreground(hwnd);
         let picked = unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
         crate::host_base::log(&format!("tray: menu on {hwnd:#x} (notification window {}), picked {picked}", Some(hwnd) == crate::platform::notify::window_handle()));
         self.tray_pick = picked;

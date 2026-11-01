@@ -7,6 +7,8 @@
 //! hidden, behind its window, or not the foreground window.
 
 use std::sync::Arc;
+
+use super::super::dialog::{Answer, Kind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
@@ -21,13 +23,38 @@ const WATCH_TRIES: u32 = 30;
 const WATCH_STEP: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// The flags every box uses: the caller's, plus a request to come to the front.
-pub(super) fn flags(style: u32) -> u32 {
+pub fn flags(style: u32) -> u32 {
     style | MB_SETFOREGROUND
+}
+
+/// The cross-platform door: a box of `kind` and its answer.
+pub fn message(owner: Option<isize>, title: &str, body: &str, kind: Kind) -> Answer {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDNO, IDOK, IDYES, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONQUESTION, MB_ICONWARNING, MB_OK, MB_OKCANCEL, MB_TOPMOST, MB_YESNO};
+    let style = match kind {
+        Kind::Info => MB_OK | MB_ICONINFORMATION,
+        Kind::Warning => MB_OK | MB_ICONWARNING,
+        Kind::Error => MB_OK | MB_ICONERROR,
+        Kind::AskYesNo => MB_YESNO | MB_ICONQUESTION,
+        Kind::AskOkCancel => MB_OKCANCEL | MB_ICONQUESTION,
+        Kind::ConfirmOkCancel => MB_OKCANCEL | MB_ICONWARNING,
+        Kind::ConfirmOkCancelOnTop => MB_OKCANCEL | MB_ICONWARNING | MB_TOPMOST,
+    };
+    match show(owner, title, body, style) {
+        r if r == IDOK => Answer::Ok,
+        r if r == IDYES => Answer::Yes,
+        r if r == IDNO => Answer::No,
+        _ => Answer::Cancel,
+    }
+}
+
+/// The quit question with a disclosure, as `disclosure::confirm` builds it.
+pub fn confirm_with_disclosure(owner: Option<isize>, topmost: bool, title: &str, text: &str, prompt: &str, detail: &str) -> Option<bool> {
+    super::disclosure::confirm(owner, topmost, title, text, prompt, detail)
 }
 
 /// Shows a message box and returns its answer (IDOK, IDYES, ...). `owner` is the window the box
 /// belongs to (disabled while the box is open), or None for a box of its own.
-pub(super) fn show(owner: Option<isize>, title: &str, text: &str, style: u32) -> i32 {
+pub fn show(owner: Option<isize>, title: &str, text: &str, style: u32) -> i32 {
     show_with(owner, title, text, style, crate::host_base::log)
 }
 
@@ -47,7 +74,7 @@ fn show_inner(owner: Option<isize>, title: &str, text: &str, style: u32, log: fn
 /// Runs `show`, a modal window of this thread that `owner` owns, the way a message box runs: the
 /// watcher finds it and raises it when it opens behind, and the paint guard holds winit's paint
 /// loop back while it is open. The disclosure dialog comes through here.
-pub(super) fn run_modal<R>(owner: Option<isize>, title: &str, log: fn(&str), guard: bool, show: impl FnOnce() -> R) -> R {
+pub fn run_modal<R>(owner: Option<isize>, title: &str, log: fn(&str), guard: bool, show: impl FnOnce() -> R) -> R {
     let done = Arc::new(AtomicBool::new(false));
     if let Some(owner) = owner {
         let thread = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
@@ -192,7 +219,7 @@ mod tests {
                 let p = e.path();
                 if p.is_dir() {
                     stack.push(p);
-                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("app/msgbox.rs") && !p.ends_with("app\\msgbox.rs") {
+                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("windows/dialog.rs") && !p.ends_with("windows\\dialog.rs") {
                     let code = std::fs::read_to_string(&p).unwrap();
                     if code.contains(concat!("MessageBox", "W(")) {
                         offenders.push(p.display().to_string());
@@ -200,7 +227,7 @@ mod tests {
                 }
             }
         }
-        assert!(offenders.is_empty(), "message boxes outside app/msgbox.rs: {offenders:?}");
+        assert!(offenders.is_empty(), "message boxes outside platform/windows/dialog.rs: {offenders:?}");
     }
 
 
@@ -309,7 +336,7 @@ mod tests {
         impl ApplicationHandler for Run {
             fn resumed(&mut self, el: &ActiveEventLoop) {
                 let w = el.create_window(winit::window::Window::default_attributes().with_title("paint loop")).unwrap();
-                let owner = super::super::menu::hwnd_of(&w).unwrap();
+                let owner = super::super::window::hwnd_of(&w).unwrap();
                 w.request_redraw();
                 self.window = Some(w);
                 for guard in [false, true] {

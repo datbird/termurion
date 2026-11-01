@@ -490,8 +490,7 @@ impl App {
 
 /// A Yes and No question; true for Yes.
 pub(super) fn yes_no(owner: Option<isize>, title: &str, text: &str) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO};
-    super::msgbox::show(owner, title, text, MB_YESNO | MB_ICONQUESTION) == IDYES
+    crate::platform::dialog::message(owner, title, text, crate::platform::dialog::Kind::AskYesNo) == crate::platform::dialog::Answer::Yes
 }
 
 /// The bad folder announcement's id: iTerm2 reuses the missing-profile identifier
@@ -955,7 +954,7 @@ impl App {
             g.window.set_outer_position(winit::dpi::PhysicalPosition::new(frame.x.round() as i32, frame.y.round() as i32));
             let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
             let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
-            let _ = super::caption_ui::request_inner_size(&g.window, winit::dpi::PhysicalSize::new((frame.w as u32).saturating_sub(dw).max(1), (frame.h as u32).saturating_sub(dh).max(1)));
+            let _ = crate::platform::caption::request_inner_size(&g.window, winit::dpi::PhysicalSize::new((frame.w as u32).saturating_sub(dw).max(1), (frame.h as u32).saturating_sub(dh).max(1)));
         }
         self.apply_resizable();
         if launch {

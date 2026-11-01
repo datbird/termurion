@@ -24,3 +24,8 @@ pub fn v6_unavailable(e: &std::io::Error) -> bool {
 pub fn ready(stream: &TcpStream, write: bool, wait_ms: i32) -> std::io::Result<(bool, bool)> {
     imp::ready(stream, write, wait_ms)
 }
+
+/// This computer's full DNS name; the short name when the full one is not known, "" when neither is.
+pub fn local_host() -> String {
+    imp::local_host()
+}

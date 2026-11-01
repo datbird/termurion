@@ -101,7 +101,6 @@ mod panels_app;
 mod announce_ui;
 mod paste_view_ui;
 mod nontext_paste_ui;
-mod disclosure_ui;
 mod cmdbuttons_ui;
 mod session_end_ui;
 mod log_ui;
@@ -125,13 +124,11 @@ mod requests_ui;
 mod emu_ui;
 mod jobs_ui;
 mod close_ui;
-mod msgbox;
 mod coprocess_ui;
 mod dlog_ui;
 mod aps_ui;
 mod windows_ui;
 mod gpu_recovery_ui;
-#[cfg(windows)]
 mod chrome_ui;
 mod desktops_ui;
 mod launch_ui;
@@ -140,9 +137,7 @@ mod default_term_ui;
 mod open_file_ui;
 mod presence_ui;
 mod resident_ui;
-#[cfg(windows)]
 mod sizing_ui;
-#[cfg(windows)]
 mod caption_ui;
 mod tab_drag_ui;
 mod tab_groups_ui;
@@ -1917,8 +1912,7 @@ fn default_shell() -> String {
 }
 
 fn message_box(text: &str) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK};
-    msgbox::show(None, "Termurion", text, MB_OK | MB_ICONERROR);
+    crate::platform::dialog::message(None, "Termurion", text, crate::platform::dialog::Kind::Error);
 }
 
 /// What ends with the process, on EVERY way out of it (Quit, Erase All, a logoff, a panic on the
@@ -3063,7 +3057,7 @@ impl App {
                 if size == inner {
                     return false;
                 }
-                let _ = caption_ui::request_inner_size(&g.window, size);
+                let _ = crate::platform::caption::request_inner_size(&g.window, size);
                 // Windows resizes at once; what it granted is what a hide takes back.
                 let now = g.window.inner_size();
                 if showing {
@@ -5046,7 +5040,7 @@ impl App {
         let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
         let size = winit::dpi::PhysicalSize::new((r.w.round() as u32).saturating_sub(dw).max(1), (r.h.round() as u32).saturating_sub(dh).max(1));
         if size != inner {
-            let _ = caption_ui::request_inner_size(&g.window, size);
+            let _ = crate::platform::caption::request_inner_size(&g.window, size);
         }
     }
 
@@ -5092,7 +5086,7 @@ impl App {
             w = w.min(work.w - outer.width.saturating_sub(inner.width) as f32);
             h = h.min(work.h - outer.height.saturating_sub(inner.height) as f32);
         }
-        let _ = caption_ui::request_inner_size(&g.window, winit::dpi::PhysicalSize::new(w.max(1.0).ceil() as u32, h.max(1.0).ceil() as u32));
+        let _ = crate::platform::caption::request_inner_size(&g.window, winit::dpi::PhysicalSize::new(w.max(1.0).ceil() as u32, h.max(1.0).ceil() as u32));
     }
 
     /// "Always open in a new window, never in a tab": a new tab of `guid` opens as a window
@@ -8019,8 +8013,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::ScaleFactorChanged { mut inner_size_writer, .. } => {
                 // winit is about to size the window for a title bar the caption subclass removes:
-                // the size it sets is corrected here, before it does (`caption_ui::dpi_size`).
-                if let Some(size) = self.hwnd().and_then(caption_ui::dpi_size) {
+                // the size it sets is corrected here, before it does (`crate::platform::caption::dpi_size`).
+                if let Some(size) = self.hwnd().and_then(crate::platform::caption::dpi_size) {
                     let _ = inner_size_writer.request_inner_size(size);
                 }
                 self.apply_fonts();

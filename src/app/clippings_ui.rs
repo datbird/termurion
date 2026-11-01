@@ -31,7 +31,7 @@ pub(super) enum ClipDrag {
 }
 
 pub(super) fn double_click_ms() -> u128 {
-    u128::from(unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() })
+    crate::platform::input::double_click_ms()
 }
 
 impl App {

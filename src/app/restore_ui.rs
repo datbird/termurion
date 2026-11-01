@@ -158,8 +158,7 @@ impl App {
     fn restore_after_trouble(&mut self, path: &std::path::Path) -> bool {
         let count = self.globals.int(crate::restore_state::COUNT_KEY);
         if count > 1 {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{IDOK, MB_ICONQUESTION, MB_OKCANCEL};
-            let ok = super::msgbox::show(None, crate::restore_state::TROUBLE_HEADING, crate::restore_state::TROUBLE_TEXT, MB_OKCANCEL | MB_ICONQUESTION) == IDOK;
+            let ok = crate::platform::dialog::message(None, crate::restore_state::TROUBLE_HEADING, crate::restore_state::TROUBLE_TEXT, crate::platform::dialog::Kind::AskOkCancel) == crate::platform::dialog::Answer::Ok;
             if ok {
                 let _ = std::fs::remove_file(path);
                 self.globals.set(crate::restore_state::COUNT_KEY, toml::Value::Integer(0));

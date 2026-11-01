@@ -131,18 +131,17 @@ impl TipWindow {
         work: Work,
         offset: (f32, f32),
     ) -> Result<TipWindow, String> {
-        use winit::platform::windows::WindowAttributesExtWindows;
         let start_h = 220.0_f64;
         let attrs = Window::default_attributes()
             .with_title(TITLE)
             .with_decorations(false)
             .with_resizable(false)
-            .with_skip_taskbar(true)
             .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
             // A tip never takes the focus from what the person is typing into.
             .with_active(false)
             .with_visible(false)
             .with_inner_size(LogicalSize::new(WIDTH, start_h));
+        let attrs = crate::platform::window_style::skip_taskbar(attrs);
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
         let size = (WIDTH as f32 * host.window.scale_factor() as f32, start_h as f32 * host.window.scale_factor() as f32);
         let (x, y) = clamp_origin(window_origin(work, offset), size, work);

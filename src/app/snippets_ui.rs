@@ -133,7 +133,7 @@ impl App {
     /// A pick from Edit > Snippets or Edit > Actions. False for other menu ids.
     pub(super) fn snippet_or_action_picked(&mut self, id: &str, event_loop: &ActiveEventLoop) -> bool {
         if let Some(guid) = id.strip_prefix(SNIPPET_ID) {
-            let option = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x12) } < 0;
+            let option = crate::platform::input::alt_down();
             self.send_snippet(guid, option, event_loop);
             return true;
         }
