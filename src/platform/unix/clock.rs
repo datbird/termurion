@@ -12,6 +12,6 @@ pub fn local_time() -> (u16, u16, u16, u16, u16, u16) {
 pub fn beep() {
     static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        crate::dlog!("{}", super::super::Unsupported { feature: "System beep" });
+        crate::dlog!("System beep is not available on this platform yet");
     }
 }
