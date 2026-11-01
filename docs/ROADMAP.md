@@ -9,14 +9,15 @@ beta is out.
 
 | | |
 |---|---|
-| Release | 0.0.1-beta7 (2026-10-30) |
+| Release | 0.0.1-beta8 (2026-10-31) |
 | Milestones done | 0 to 14, including 13a to 13y2 and the AI browser tools |
-| Tests | 6,768 |
+| Tests | 6,785 |
 | Rust | about 496,000 lines |
 | Commits | about 2,230 |
 
 ## Next
 
+- macOS and Linux ports, from one tree with a shared Unix layer: [`superpowers/specs/2026-10-31-macos-linux-port-design.md`](superpowers/specs/2026-10-31-macos-linux-port-design.md). Render plugins (beta8, [`render-plugins.md`](render-plugins.md)) already use only wgpu.
 - tmux on Windows: psmux (native), WSL tmux, and tmux over ssh each have a live suite (FIXES item 3, and `docs/probe/2026-10-14-psmux-wsl-tmux-results.md`).
 - Fixes from beta testers. File bugs at https://github.com/datbird/termurion/issues.
 - The open items in [`FIXES.md`](FIXES.md) (found after the beta) and [`TWEAKS.md`](TWEAKS.md).
