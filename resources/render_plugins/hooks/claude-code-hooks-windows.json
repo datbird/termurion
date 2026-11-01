@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/YOU/.termurion/fx-signal.ps1 enter", "async": true, "timeout": 15 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/YOU/.termurion/fx-signal.ps1 done", "async": true, "timeout": 15 } ] }
+    ]
+  }
+}

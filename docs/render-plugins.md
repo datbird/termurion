@@ -27,14 +27,28 @@ The effects can play when you send a prompt and when Claude finishes. Claude Cod
 effect through two hooks. The hooks run on the computer where Claude Code runs, which may be a
 different computer from the one that runs Termurion (for example over ssh).
 
-On that computer:
+On a Mac or Linux computer (also WSL, and any host you reach over ssh):
 
 1. Copy `resources/render_plugins/hooks/fx-signal.sh` to `~/.termurion/fx-signal.sh`.
 2. Merge `resources/render_plugins/hooks/claude-code-hooks.json` into `~/.claude/settings.json`.
-3. In both commands, put your effect's `cursor_color` from its `plugin.toml`.
+3. In both commands, put your effect's `cursor_color` from its `plugin.toml`. Lightning's
+   color is the default.
+
+On Windows (Claude Code run natively):
+
+1. Copy `resources/render_plugins/hooks/fx-signal.ps1` to `%USERPROFILE%\.termurion\`.
+2. Merge `resources/render_plugins/hooks/claude-code-hooks-windows.json` into
+   `%USERPROFILE%\.claude\settings.json`, with your user name in the paths.
+3. Add the effect's color after `enter` and `done` (for example `enter "#ff5ed2"`) when it is
+   not Lightning.
 
 The script sets the cursor color with an invisible low-bit change (OSC 12), then resets it
-(OSC 112) after 1.9 seconds. This also works through ssh and tmux.
+(OSC 112) after 1.9 seconds. It finds the terminal through its parent processes, because a hook
+has no terminal of its own. On Windows it attaches to `claude.exe`'s console. PowerShell takes
+about a second to start, so the Enter effect plays about a second later on Windows.
+
+Tested on 2026-10-31 with Claude Code on Linux over ssh, in WSL and on Windows. All show the
+Enter surge, and the done surge where Claude answered.
 
 ## Write your own
 
@@ -99,9 +113,10 @@ fn fs_main(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
 }
 ```
 
-### Settings that people can change
+### Settings in a shader
 
 Lines like `const float SPEED = 1.5; // how fast` near the top of a shader are its settings.
+Copy the effect's folder into the Effects folder and change them there.
 
 ### Errors
 

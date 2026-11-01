@@ -7,14 +7,26 @@
 kind=${1:-enter}
 color=${2:-${TERMURION_FX_COLOR:-#9fd0fe}}
 color=${color#\#}
-tty=${TERMURION_FX_TTY:-/dev/tty}
-[ -w "$tty" ] || exit 0
+# The terminal: the first ancestor process that has one (a hook may have no tty of its own).
+tty=${TERMURION_FX_TTY:-}
+if [ -z "$tty" ]; then
+  pid=$$
+  while [ "${pid:-1}" -gt 1 ]; do
+    set -- $(ps -o ppid=,tty= -p "$pid" 2>/dev/null)
+    [ $# -ge 2 ] || break
+    case "$2" in
+      "?" | "??" | "-") pid=$1 ;;
+      *) tty=/dev/$2; break ;;
+    esac
+  done
+fi
+[ -n "$tty" ] && [ -w "$tty" ] || exit 0
 r=$((0x$(printf %s "$color" | cut -c1-2)))
 g=$((0x$(printf %s "$color" | cut -c3-4)))
 b=$((0x$(printf %s "$color" | cut -c5-6)))
 if [ "$kind" = done ]; then g=$((g | 1)); b=$((b & ~1)); else g=$((g & ~1)); b=$((b | 1)); fi
 # Each signal flips red's lowest bit, so a new signal is always a color change.
-state="${TMPDIR:-/tmp}/termurion-fx-$(id -u)-$(basename "$(tty 2>/dev/null || echo none)")"
+state="${TMPDIR:-/tmp}/termurion-fx-$(id -u)-$(echo "$tty" | tr '/' '_')"
 parity=$(( ( $(cat "$state" 2>/dev/null | cut -d: -f2 || echo 0) + 1 ) % 2 ))
 r=$(( (r & ~1) | parity ))
 token="$(date +%s)$$:$parity"
