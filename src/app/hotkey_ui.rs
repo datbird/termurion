@@ -151,7 +151,7 @@ impl App {
         for (pane, why) in plan.refused {
             self.hotkey_errors.insert(crate::session_hotkeys::error_key(pane), why.text().to_string());
         }
-        match crate::winkeys::set_hotkeys(chords, taps, min, max) {
+        match crate::platform::keys::set_hotkeys(chords, taps, min, max) {
             Ok(results) => {
                 for (id, r) in results {
                     if let Err(e) = r {

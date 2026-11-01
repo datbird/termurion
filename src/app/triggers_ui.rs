@@ -234,7 +234,7 @@ impl App {
                     self.save_due = Some(Instant::now());
                 }
                 let (title, body) = if divorced { (SESSION_UPDATED, TRIGGERS_OFF_SESSION) } else { (PROFILE_UPDATED, TRIGGERS_OFF_PROFILE) };
-                if let Err(e) = crate::notify::show_with(title, body, self.globals.bool("SilentUserNotifications")) {
+                if let Err(e) = crate::platform::notify::show_with(title, body, self.globals.bool("SilentUserNotifications")) {
                     self.banners.set("notify", format!("Could not show a notification: {e}"));
                 }
                 self.slow_stats.remove(&pane);

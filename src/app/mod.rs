@@ -1127,7 +1127,7 @@ pub struct App {
     /// A loaded recording's pane, entering replay on the next pass (`RC:124-126`).
     recording_replay: Option<PaneId>,
     /// Page Setup's printer, paper, and margins.
-    print_setup: crate::winprint::Setup,
+    print_setup: crate::platform::print::Setup,
     /// OpenURL requests waiting for an answer, by pane and host; uploads being sent.
     pending_urls: HashMap<(PaneId, String), String>,
     uploads: HashMap<PaneId, prompted_ui::Upload>,
@@ -1794,7 +1794,7 @@ pub struct App {
     /// The popover a StatusBarComponentRequest opened (one at a time) and its session.
     text_popover: Option<(PaneId, crate::status_popover_ui::TextPopover)>,
     /// The HTML popover or Quick Look open now (app-wide, one at a time) and the session whose scope its bridge runs in (13x Task 3).
-    web_popover: Option<(Option<PaneId>, crate::web_popover::WebPopover)>,
+    web_popover: Option<(Option<PaneId>, crate::platform::browser::WebPopover)>,
     /// The hovered link or toast above a browser page (13x2 Task 5): one small popup, app-wide.
     browser_tip: Option<crate::browser_tip::TipWindow>,
     /// The newest hover or toast waiting for the next `web_tick` (it needs the event loop).
@@ -1928,9 +1928,9 @@ fn message_box(text: &str) {
 /// with the process; the icon lingers until hovered). It runs on the UI thread, and twice is safe.
 pub(crate) fn teardown_process() {
     crate::dlog::stop_at_exit();
-    crate::winkeys::uninstall();
+    crate::platform::keys::uninstall();
     crate::input_locale::restore_after_panic();
-    crate::notify::remove(0);
+    crate::platform::notify::remove(0);
     crate::handoff_win::begin_closing();
     // A running update check ends with Termurion (its curl.exe), not after it.
     #[cfg(windows)]
@@ -1943,7 +1943,7 @@ pub(crate) fn teardown_process() {
     crate::uia_win::disconnect_all();
     // The overlay icons come off the taskbar buttons (the badge is the app's, not the shell's).
     #[cfg(windows)]
-    crate::taskbar_win::clear_all();
+    crate::platform::shell_extras::taskbar_clear_all();
     // Every web view closes (its browser process lets go of its folder), then this run's Dev Null
     // browser folder goes with it (file removal).
     #[cfg(windows)]
@@ -2037,19 +2037,19 @@ pub fn run() {
     };
     let proxy = Arc::new(Mutex::new(event_loop.create_proxy()));
     let clicks = proxy.clone();
-    crate::notify::on_click(Box::new(move || {
+    crate::platform::notify::on_click(Box::new(move || {
         let _ = clicks.lock().map(|p| p.send_event(UserEvent::NotificationClicked));
     }));
     let trays = proxy.clone();
-    crate::notify::on_tray(Box::new(move |right| {
+    crate::platform::notify::on_tray(Box::new(move |right| {
         let _ = trays.lock().map(|p| p.send_event(UserEvent::Tray(right)));
     }));
     let taskbars = proxy.clone();
-    crate::notify::on_taskbar_created(Box::new(move || {
+    crate::platform::notify::on_taskbar_created(Box::new(move || {
         let _ = taskbars.lock().map(|p| p.send_event(UserEvent::TaskbarCreated));
     }));
     let displays = proxy.clone();
-    crate::display_watch::on_change(Box::new(move || {
+    crate::platform::display::on_change(Box::new(move || {
         let _ = displays.lock().map(|p| p.send_event(UserEvent::DisplayChanged));
     }));
     let job_wake = proxy.clone();
@@ -2234,7 +2234,7 @@ pub fn run() {
     let git_worker = git_ui::GitWorker::new(Arc::new(crate::git_run_win::WinGitRun), notify.clone());
     // Discovered Ollama models from the last run resolve at once while a refresh runs.
     let ai_discovery = crate::ai_discovery::Cache::load(&crate::ai_discovery::default_path());
-    let ai_transport: Arc<dyn crate::ai_transport::Transport> = Arc::new(crate::ai_winhttp::WinHttp);
+    let ai_transport: Arc<dyn crate::ai_transport::Transport> = crate::platform::http::system();
     let open_work = open_file_ui::OpenWork::new(notify.clone());
     let pathnav = pathnav_ui::PathNav::new(notify.clone());
     let composer_worker = crate::composer_worker::Worker::new(notify.clone(), Arc::new(crate::composer_worker::RealFs));
@@ -2481,7 +2481,7 @@ pub fn run() {
         pending_reads: HashMap::new(),
         pending_properties: HashMap::new(),
         pending_urls: HashMap::new(),
-        print_setup: crate::winprint::Setup::default(),
+        print_setup: crate::platform::print::Setup::default(),
         shot: None,
         replay_window: None,
         replay_seen: None,
@@ -5804,7 +5804,7 @@ impl App {
                 return self.run_command(item, event_loop);
             }
         if self.remap_in_app_on() && self.mods.cmd && !self.phys_mods.cmd
-            && let Some(chord) = crate::winkeys::vk_to_key(crate::winkeys::vk_of(ev.physical_key)).map(|key| crate::menus::Chord { key, cmd: true, alt: self.mods.alt, shift: self.mods.shift, ctrl: self.mods.ctrl }) {
+            && let Some(chord) = crate::platform::key_record::chord_key(ev.physical_key).map(|key| crate::menus::Chord { key, cmd: true, alt: self.mods.alt, shift: self.mods.shift, ctrl: self.mods.ctrl }) {
                 return self.run_chord(&chord, event_loop);
             }
         if self.bar_key(ev, event_loop) || self.upload_key(ev) || self.paste_view_key(ev) {
@@ -6191,13 +6191,13 @@ impl App {
             let point = self.grid_point(id, col, row);
             if self.open_link_split(id, point) {
                 #[cfg(windows)]
-                crate::winkeys::mask_start_menu();
+                crate::platform::keys::mask_start_menu();
                 return self.redraw();
             }
         }
         if b == 0 && mods.cmd && !mods.ctrl && acts && self.globals.bool("CommandSelection") {
             #[cfg(windows)]
-            crate::winkeys::mask_start_menu();
+            crate::platform::keys::mask_start_menu();
             let point = self.grid_point(id, col, row);
             if self.open_target(id, point, false, event_loop) {
                 return self.redraw();
@@ -6228,7 +6228,7 @@ impl App {
                 // masked it above (it is off: a Win-drag still appends).
                 #[cfg(windows)]
                 if mods.cmd {
-                    crate::winkeys::mask_start_menu();
+                    crate::platform::keys::mask_start_menu();
                 }
                 // A press on the selection waits for a drag of its text (R3, `MH:379-391`).
                 let on_selection = count == 1 && !mods.shift && !self.first_mouse_down && self.cell_is_selected(id, point);
@@ -6450,7 +6450,7 @@ impl App {
             self.redraw();
         }
         // A title bar drag whose release was lost (capture taken away) ends here.
-        if matches!(self.drag, Drag::Title { .. }) && self.title_drag_lost(pane_move_ui::DragLost::Moved { left_down: { let (swapped, l, r) = crate::winkeys::mouse_buttons(); pane_move_ui::primary_down(swapped, l, r) } }) {
+        if matches!(self.drag, Drag::Title { .. }) && self.title_drag_lost(pane_move_ui::DragLost::Moved { left_down: { let (swapped, l, r) = crate::platform::keys::mouse_buttons(); pane_move_ui::primary_down(swapped, l, r) } }) {
             return;
         }
         match &self.drag {
@@ -7325,7 +7325,7 @@ impl ApplicationHandler<UserEvent> for App {
                 // A forced Theme's title bar survives system setting changes.
                 self.guard_theme();
                 if let Some(h) = self.hwnd() {
-                    crate::display_watch::watch(h);
+                    crate::platform::display::watch(h);
                     #[cfg(windows)]
                     {
                         crate::firstmouse_win::watch(h);
@@ -7859,7 +7859,7 @@ impl ApplicationHandler<UserEvent> for App {
                     // A color preset still previewed goes back before the window does (B2).
                     let previewed = slot.as_mut().is_some_and(|s| s.restore_preview(&mut self.store));
                     *slot = None;
-                    crate::winkeys::set_recording(false);
+                    crate::platform::key_record::set_recording(false);
                     if previewed {
                         self.apply_edit(Edit::Preview);
                     }

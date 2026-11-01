@@ -14,15 +14,13 @@ use windows_sys::Win32::UI::Controls::Dialogs::{
     PageSetupDlgW, PrintDlgExW, START_PAGE_GENERAL,
 };
 
+use super::super::print::{BLACK_AND_WHITE_LABEL, PAGE_TITLE};
 use crate::styled_copy::Row;
 
 /// The print dialog's extra page: iTerm2's print accessory (`iTermPrintAccessoryViewController.xib`),
 /// one checkbox, "Black and white". The page's checkbox writes here as it is clicked; `print` sets
 /// it before the dialog opens and reads it after.
 static BLACK_AND_WHITE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-/// The checkbox's text (`iTermPrintAccessoryViewController.xib:23`) and the page's tab title.
-pub const BLACK_AND_WHITE_LABEL: &str = "Black and white";
-pub const PAGE_TITLE: &str = "Options";
 const ID_BLACK_AND_WHITE: i32 = 1001;
 
 /// The dialog template of the page in memory: a child dialog holding one automatic checkbox.

@@ -102,7 +102,7 @@ pub fn check(s: &Shortcut, reserved: &[Chord]) -> Result<Chord, Refusal> {
         return Err(Refusal::NoModifier);
     }
     let c = hotkey::chord(s).ok_or(Refusal::NoKey)?;
-    if crate::winkeys::shell_owned(c) {
+    if crate::platform::keys::shell_owned(c) {
         return Err(Refusal::ShellOwned);
     }
     if reserved.contains(&c) {

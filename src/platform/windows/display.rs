@@ -6,6 +6,8 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{SPI_SETWORKAREA, WM_DISPLAYCHANGE, WM_NCDESTROY, WM_SETTINGCHANGE};
 
+pub use super::backdrop::set_blur;
+
 const SUBCLASS_ID: usize = 0x7A4E;
 
 static ON_CHANGE: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
@@ -38,6 +40,24 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 pub fn watch(hwnd: isize) -> bool {
     // SAFETY: the HWND is a live window of this process; the proc only forwards and calls the closure.
     unsafe { SetWindowSubclass(hwnd as _, Some(proc), SUBCLASS_ID, 0) != 0 }
+}
+
+/// The owner's client area's top, centered across it for a window `width` wide: where a sheet would
+/// drop from (screen pixels).
+pub fn sheet_origin(owner: isize, width: u32) -> Option<(i32, i32)> {
+    use windows_sys::Win32::Foundation::{POINT, RECT};
+    use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
+    let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    if unsafe { GetClientRect(owner as _, &mut rect) } == 0 {
+        return None;
+    }
+    let mut top_left = POINT { x: 0, y: 0 };
+    if unsafe { ClientToScreen(owner as _, &mut top_left) } == 0 {
+        return None;
+    }
+    let x = top_left.x + (rect.right - rect.left - width as i32) / 2;
+    Some((x, top_left.y))
 }
 
 #[cfg(test)]

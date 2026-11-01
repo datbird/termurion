@@ -150,7 +150,7 @@ impl App {
                 // A refusal is about one action: it shows for a moment and goes (a banner stayed).
                 Action::Refused(text) => self.show_toast(&text),
                 Action::Notify(title, text) => {
-                    if let Err(e) = crate::notify::show_with(title, text, self.globals.bool("SilentUserNotifications")) {
+                    if let Err(e) = crate::platform::notify::show_with(title, text, self.globals.bool("SilentUserNotifications")) {
                         self.banners.set("notify", format!("Could not show a notification: {e}"));
                     }
                 }
@@ -1040,7 +1040,7 @@ impl App {
             if self.globals.bool("NoSyncAutoBurialReveal") {
                 continue;
             }
-            if let Err(e) = crate::notify::show_with("Session Buried", "It can be restored by detaching from tmux, or from the Sessions > Buried Sessions menu.", self.globals.bool("SilentUserNotifications")) {
+            if let Err(e) = crate::platform::notify::show_with("Session Buried", "It can be restored by detaching from tmux, or from the Sessions > Buried Sessions menu.", self.globals.bool("SilentUserNotifications")) {
                 self.banners.set("notify", format!("Could not show a notification: {e}"));
             }
             self.globals.set("NoSyncAutoBurialReveal", toml::Value::Boolean(true));

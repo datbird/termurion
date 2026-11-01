@@ -1331,7 +1331,7 @@ mod tests {
         assert!(same_notice(Some(4), 4));
         assert!(!same_notice(Some(4), 5), "another notification was shown since");
         assert!(!same_notice(None, 4));
-        let n = include_str!("notify.rs");
+        let n = include_str!("platform/windows/notify.rs");
         assert!(n.split("pub fn show_with(").nth(1).unwrap().split("\n}").next().unwrap().contains("SHOWN.fetch_add"), "show_with counts every notification");
         let a = include_str!("app/alerts_ui.rs");
         assert!(a.split("fn reveal_notified(").nth(1).unwrap().split("\n    }").next().unwrap().contains("same_notice("), "the click compares");

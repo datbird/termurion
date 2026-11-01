@@ -1,7 +1,7 @@
 //! The HTTP transport contract for AI requests: the request and its events, the `Transport` and
 //! `Call` traits, URL and proxy parsing, the UTF-8 carry across chunk boundaries and iTerm2's
 //! error texts. Pure; ports `AITerm/JSFetch.swift` (`JF:35-173`). The real transport is
-//! `ai_winhttp`; tests use `Recorded`, which answers recorded bytes through the same rules.
+//! `platform::windows::http`; tests use `Recorded`, which answers recorded bytes through the same rules.
 
 use crate::globals::Globals;
 use std::fmt;

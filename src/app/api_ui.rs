@@ -455,7 +455,7 @@ impl App {
             ServerStep::Start if self.api_server.is_none() => {
                 let jar = self.api_jar.clone();
                 let cookie: crate::api_server::CookieCheck = Arc::new(move |c: &str| jar.lock().unwrap().consume(c));
-                match Server::start(crate::api_http::PORT, Arc::new(crate::api_peer::check), cookie, self.notify.clone()) {
+                match Server::start(crate::api_http::PORT, Arc::new(crate::platform::ipc::check_peer), cookie, self.notify.clone()) {
                     Ok(s) => self.api_server = Some(s),
                     Err(e) => {
                         let owner = port_owner(crate::api_http::PORT);

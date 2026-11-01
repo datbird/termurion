@@ -21,7 +21,7 @@ impl App {
     /// Paste found no text: files or an image on the clipboard get their question. False when the
     /// clipboard holds neither.
     pub(super) fn nontext_paste(&mut self, pane: PaneId) -> bool {
-        let files = crate::winclip::files();
+        let files = crate::platform::clipboard::files();
         if !files.is_empty() {
             self.nontext_files(pane, files);
             return true;

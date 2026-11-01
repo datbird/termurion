@@ -446,7 +446,7 @@ mod tests {
     /// `dispatch`: the mapping runs first, then `terminal_chord` (menu, then profile).
     #[test]
     fn ctrl_win_chord_precedence_chain() {
-        let hook = include_str!("winkeys.rs");
+        let hook = include_str!("platform/windows/keys.rs");
         let body = hook.split("unsafe fn hook_body(").nth(1).expect("hook_body");
         let at = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("hook_body calls {needle}"));
         assert!(at("global_hotkeys(") < at("remap(h, kb, down)"), "a registered hotkey before a remap");

@@ -273,7 +273,7 @@ impl App {
 
     /// A notification about a transfer; every remote string in it is cleaned first (P14).
     pub(super) fn ssh_notify(title: &str, body: &str) {
-        let _ = crate::notify::show_with(&shown_name(title), &shown_name(body), false);
+        let _ = crate::platform::notify::show_with(&shown_name(title), &shown_name(body), false);
     }
 
     /// Win-click: downloads the remote file or folder `remote` of the pane's host into

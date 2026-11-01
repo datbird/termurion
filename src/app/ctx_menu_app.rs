@@ -310,7 +310,7 @@ impl App {
     /// Whether Paste has something to paste: text, a file or a picture (`PTYTextView.m:479-495`).
     fn clipboard_pasteable(&mut self) -> bool {
         let Some(cb) = self.clipboard.as_mut() else { return false };
-        cb.get_text().is_ok() || crate::winclip::first_file().is_some() || cb.get_image().is_ok()
+        cb.get_text().is_ok() || crate::platform::clipboard::first_file().is_some() || cb.get_image().is_ok()
     }
 
     /// The hidden annotations covering `point` (`hasOpenAnnotationInRange:`, `CMH:355-364`).

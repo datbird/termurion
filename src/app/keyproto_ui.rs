@@ -31,7 +31,7 @@ impl App {
 
     /// The Remap modifiers setting changed: the hook follows it, and the modifiers are read again.
     pub(super) fn remap_setting_changed(&mut self) {
-        crate::winkeys::set_remap_global(!self.remap_in_app_on());
+        crate::platform::keys::set_remap_global(!self.remap_in_app_on());
         self.apply_remapped_mods();
     }
 
@@ -53,7 +53,7 @@ impl App {
             return None;
         }
         let types = ev.text.as_deref().is_some_and(|t| t.chars().any(|c| !c.is_control()));
-        let key = crate::winkeys::vk_to_key(crate::winkeys::vk_of(ev.physical_key))?;
+        let key = crate::platform::key_record::chord_key(ev.physical_key)?;
         // The chords this press can be, the moved ones first: the Win key is held for none of them.
         let candidates = crate::shortcut_key::mode().press_chords(self.mods, types, &key);
         if candidates.is_empty() {
@@ -91,7 +91,7 @@ impl App {
         if ev.state != ElementState::Pressed || self.leader_on {
             return false;
         }
-        let is_v = crate::winkeys::vk_to_key(crate::winkeys::vk_of(ev.physical_key)) == Some(crate::menus::ChordKey::Char('v'));
+        let is_v = crate::platform::key_record::chord_key(ev.physical_key) == Some(crate::menus::ChordKey::Char('v'));
         if !crate::shortcut_key::ctrl_v_pastes(is_v, self.mods, false, false) {
             return false;
         }
@@ -119,12 +119,12 @@ impl App {
         if !self.remap_in_app_on() || !changed || ev.state != ElementState::Pressed {
             return None;
         }
-        let vk = crate::winkeys::vk_of(ev.physical_key);
+        let vk = crate::platform::keys::vk_of(ev.physical_key);
         let scan = ev.physical_key.to_scancode()?;
         let mut out = ev.clone();
-        out.text = crate::winkeys::text_for(vk, scan, self.mods).map(Into::into);
+        out.text = crate::platform::keys::text_for(vk, scan, self.mods).map(Into::into);
         if matches!(out.logical_key, WKey::Character(_))
-            && let Some(t) = crate::winkeys::text_for(vk, scan, Mods { ctrl: false, ..self.mods }) {
+            && let Some(t) = crate::platform::keys::text_for(vk, scan, Mods { ctrl: false, ..self.mods }) {
                 out.logical_key = WKey::Character(t.into());
             }
         Some(out)
@@ -153,7 +153,7 @@ impl App {
         };
         // Windows reports AltGr as Ctrl+Alt.
         let altgr = keyproto::is_altgr(mods, text, base);
-        keyproto::KeyEvent { key, base, text, mods, kind, altgr, vk: crate::winkeys::vk_of(ev.physical_key), sides: self.sides, bucky }
+        keyproto::KeyEvent { key, base, text, mods, kind, altgr, vk: crate::platform::keys::vk_of(ev.physical_key), sides: self.sides, bucky }
     }
 
     /// A press's bytes under the pane's protocol. None: the standard bytes.

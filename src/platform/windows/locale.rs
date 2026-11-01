@@ -6,3 +6,8 @@ use super::super::locale::Status;
 pub fn status(mode: i64, custom: &str, ns_encoding: i64, fallback: &str) -> Result<Status, Unsupported> {
     Ok(crate::locale_win::status(mode, custom, ns_encoding, fallback))
 }
+
+/// The user's default locale name (`en-US`).
+pub fn user_locale() -> Option<String> {
+    Some(crate::locale_win::default_locale_name()).filter(|n| !n.is_empty())
+}

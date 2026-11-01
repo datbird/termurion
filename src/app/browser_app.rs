@@ -1632,7 +1632,7 @@ impl App {
         if win {
             return false;
         }
-        let Some(key) = crate::winkeys::vk_to_key(vk as u16) else { return false };
+        let Some(key) = crate::platform::keys::vk_to_key(vk as u16) else { return false };
         // Ctrl+Alt with a character key may be AltGr typing in the page: it stays the page's.
         if ctrl && alt && matches!(key, crate::menus::ChordKey::Char(_)) {
             return false;

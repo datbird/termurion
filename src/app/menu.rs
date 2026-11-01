@@ -353,18 +353,18 @@ impl App {
         // These closures run on the hook thread inside every key: a poisoned lock is read through.
         let exempt_map = self.exempt_map.clone();
         let exempt = Box::new(move |vk: u16, m: crate::mouse::Mods| {
-            let Some(key) = crate::winkeys::vk_to_key(vk) else { return false };
+            let Some(key) = crate::platform::keys::vk_to_key(vk) else { return false };
             let chord = Chord { key, cmd: m.cmd, alt: m.alt, shift: m.shift, ctrl: m.ctrl };
             crate::keyroute::press_from_chord(&chord).stroke.find(&exempt_map.read().unwrap_or_else(|e| e.into_inner()), false).is_some()
         });
         self.refresh_route();
         let hotkeys = self.proxy.clone();
-        crate::winkeys::set_hotkey_sink(Box::new(move |ids| {
+        crate::platform::keys::set_hotkey_sink(Box::new(move |ids| {
             let _ = hotkeys.lock().unwrap_or_else(|e| e.into_inner()).send_event(UserEvent::Hotkey(ids));
         }));
         // Remap modifiers globally, before the hook sees its first key.
-        crate::winkeys::set_remap_global(self.globals.bool("RemapModifiersGlobally"));
-        match crate::winkeys::install(hwnd, self.remap_tags.clone(), exempt) {
+        crate::platform::keys::set_remap_global(self.globals.bool("RemapModifiersGlobally"));
+        match crate::platform::keys::install(hwnd, self.remap_tags.clone(), exempt) {
             Err(e) => self.banners.set("keys", format!("Modifier remapping and system-wide hotkeys are unavailable: {e}")),
             Ok(()) if !self.hotkeys_registered => {
                 self.hotkeys_registered = true;
@@ -1392,7 +1392,7 @@ impl App {
         self.save_all_window_frames();
         self.clear_undo();
         if let Some(h) = self.hwnd() {
-            crate::notify::remove(h);
+            crate::platform::notify::remove(h);
         }
         if self.save_due.is_some() {
             self.save_now();

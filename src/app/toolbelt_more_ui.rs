@@ -1074,7 +1074,7 @@ impl App {
                     continue;
                 }
                 let (title, body) = status_tool::notify_text(&self.session_label(*pane).0, text);
-                match crate::notify::show_with(&title, &body, self.globals.bool("SilentUserNotifications")) {
+                match crate::platform::notify::show_with(&title, &body, self.globals.bool("SilentUserNotifications")) {
                     Ok(()) => {
                         self.last_notified = Some(*pane);
                         self.last_notified_script = None;

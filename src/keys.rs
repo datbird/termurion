@@ -1,6 +1,6 @@
 //! Turns key presses into the bytes a terminal app expects, with the profile's Keys
 //! options (Option Key Sends, Treat Option as Alt, Application Keypad), and the
-//! Windows-only shortcuts. iTerm2's Cmd chords are Win chords (menus.rs, winkeys.rs).
+//! Windows-only shortcuts. iTerm2's Cmd chords are Win chords (menus.rs, platform/windows/keys.rs).
 
 use crate::layout::Dir;
 use crate::mouse::Mods;

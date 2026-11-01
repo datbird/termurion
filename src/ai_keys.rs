@@ -109,55 +109,27 @@ pub fn shared() -> &'static Mutex<Keys> {
     SHARED.get_or_init(|| Mutex::new(Keys::default()))
 }
 
-/// The system's key store: Credential Manager on Windows.
-#[cfg(windows)]
+/// The system's key store: Credential Manager on Windows; on Unix every call reports Unsupported.
 pub fn system_store() -> Box<dyn KeyStore> {
     Box::new(CredStore)
 }
 
-/// The system's key store: none off Windows (reads find nothing, writes are refused).
-#[cfg(not(windows))]
-pub fn system_store() -> Box<dyn KeyStore> {
-    Box::new(NoStore)
-}
-
-/// Off Windows there is no key store: nothing is stored and nothing can be.
-#[cfg(not(windows))]
-struct NoStore;
-
-#[cfg(not(windows))]
-impl KeyStore for NoStore {
-    fn read(&mut self, _target: &str) -> Result<Option<Secret>, String> {
-        Ok(None)
-    }
-
-    fn write(&mut self, _target: &str, _user: &str, _key: &Secret) -> Result<(), String> {
-        Err("Credential Manager is only on Windows.".to_string())
-    }
-
-    fn delete(&mut self, _target: &str) -> Result<(), String> {
-        Err("Credential Manager is only on Windows.".to_string())
-    }
-}
-
-/// Windows Credential Manager, through `pwm_credman`'s generic-target functions (which refuse
-/// any target that is not Termurion's).
-#[cfg(windows)]
+/// The platform credential store, through `platform::credentials` (which refuses any target that is
+/// not Termurion's).
 pub struct CredStore;
 
-#[cfg(windows)]
 impl KeyStore for CredStore {
     fn read(&mut self, target: &str) -> Result<Option<Secret>, String> {
-        crate::pwm_credman::read_generic(target, "API key")
+        crate::platform::credentials::read(target, "API key")
     }
 
     fn write(&mut self, target: &str, user: &str, key: &Secret) -> Result<(), String> {
-        crate::pwm_credman::write_generic(target, user, key, COMMENT, "API key")
+        crate::platform::credentials::write(target, user, key, COMMENT, "API key")
     }
 
     /// Clearing a key that is already gone is fine, so the bool is dropped.
     fn delete(&mut self, target: &str) -> Result<(), String> {
-        crate::pwm_credman::delete_generic(target).map(|_| ())
+        crate::platform::credentials::delete(target).map(|_| ())
     }
 }
 
@@ -318,11 +290,15 @@ mod tests {
         assert!(key_matches("sk-1", Vendor::DeepSeek));
     }
 
-    #[cfg(not(windows))]
+    /// Off Windows the store reports Unsupported: a read is an error, never an empty answer.
     #[test]
-    fn the_system_store_is_empty_off_windows() {
+    fn the_system_store_is_unsupported_off_windows() {
+        if crate::platform::IS_WINDOWS {
+            return;
+        }
         let mut s = system_store();
-        assert!(matches!(s.read("TermurionAI/OpenAI"), Ok(None)));
-        assert_eq!(s.write("TermurionAI/OpenAI", "u", &Secret::new("k".into())), Err("Credential Manager is only on Windows.".to_string()));
+        assert!(s.read("TermurionAI/OpenAI").unwrap_err().contains("Password manager is not available"));
+        assert!(s.write("TermurionAI/OpenAI", "u", &Secret::new("k".into())).is_err());
+        assert!(s.delete("TermurionAI/OpenAI").is_err());
     }
 }

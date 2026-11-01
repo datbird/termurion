@@ -26,8 +26,6 @@ pub mod remap;
 pub mod keyroute;
 pub mod mru;
 pub mod desktops;
-#[cfg(windows)]
-pub mod display_watch;
 pub mod dark_menu;
 #[cfg(windows)]
 pub mod dragtext_win;
@@ -369,7 +367,6 @@ pub mod basic_auth_ui;
 pub mod note_ui;
 pub mod git_log_ui;
 pub mod status_popover_ui;
-#[cfg(windows)]
 pub mod web_popover;
 pub mod web_replay;
 pub mod web_replay_ui;
@@ -521,19 +518,8 @@ pub mod pwm_bitwarden;
 pub mod pwm_keepassxc;
 pub mod pwm_keeper;
 
-#[cfg(windows)]
-pub mod winclip;
-#[cfg(windows)]
-pub mod winprint;
-#[cfg(windows)]
-pub mod winkeys;
-#[cfg(windows)]
-pub mod pwm_credman;
-#[cfg(windows)]
 pub mod pwm_ui;
 
-#[cfg(windows)]
-pub mod notify;
 
 #[allow(clippy::all, dead_code, missing_docs)]
 pub mod api_pb;
@@ -564,7 +550,6 @@ pub mod locale_guess;
 #[cfg(windows)]
 pub mod locale_win;
 pub mod terminfo;
-#[cfg(windows)]
 pub mod api_server;
 pub mod ai_settings;
 pub mod ai_catalog;
@@ -587,8 +572,6 @@ pub mod ai_ollama;
 pub mod ai_discovery;
 pub mod ai_files;
 pub mod ai_test_conn;
-#[cfg(windows)]
-pub mod ai_winhttp;
 pub mod ai_wire_log;
 pub mod ai_keys;
 pub mod ai_gate;
@@ -631,6 +614,4 @@ pub mod autofill_card_ui;
 pub mod ai_engage_ui;
 pub mod transparency;
 pub mod presence;
-#[cfg(windows)]
-pub mod backdrop;
 pub mod flicker;

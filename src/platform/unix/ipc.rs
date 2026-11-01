@@ -101,6 +101,11 @@ pub fn thread_peer() -> Result<Peer, String> {
 }
 
 /// A name no other test run shares.
+/// No peer check on Unix yet, so every connection is refused.
+pub fn check_peer(_peer: std::net::SocketAddr, _local: std::net::SocketAddr) -> Result<u32, String> {
+    no()
+}
+
 #[cfg(test)]
 pub(crate) fn test_name(what: &str) -> String {
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

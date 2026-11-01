@@ -2062,17 +2062,10 @@ mod tests {
         assert!(!ViewSetup_in_private_default());
     }
 
-    // `ViewSetup` is Windows code (`webhost_win`); its InPrivate default is checked there too.
+    // `ViewSetup` is Windows code (`webhost_win`); its InPrivate default is read through the browser facade.
     #[allow(non_snake_case)]
     fn ViewSetup_in_private_default() -> bool {
-        #[cfg(windows)]
-        {
-            crate::webhost_win::ViewSetup::default().in_private
-        }
-        #[cfg(not(windows))]
-        {
-            false
-        }
+        crate::platform::browser::default_view_in_private()
     }
 
     /// P4: Dev Null folders are per run and swept when their process is gone.

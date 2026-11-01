@@ -16,7 +16,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_SYSKEYDOWN,
 };
 
-use crate::menus::{Chord, ChordKey};
+use super::super::keys::shell_owned;
+use crate::menus::Chord;
 use crate::mouse::Mods;
 use crate::remap::{Remapper, Tags};
 
@@ -35,32 +36,10 @@ pub fn vk_of(key: winit::keyboard::PhysicalKey) -> u16 {
     }
 }
 
-pub fn vk_to_key(vk: u16) -> Option<ChordKey> {
-    Some(match vk {
-        0x41..=0x5A => ChordKey::Char((vk as u8 + 32) as char),
-        0x30..=0x39 => ChordKey::Char(vk as u8 as char),
-        0x26 => ChordKey::Up,
-        0x28 => ChordKey::Down,
-        0x25 => ChordKey::Left,
-        0x27 => ChordKey::Right,
-        0x24 => ChordKey::Home,
-        0x23 => ChordKey::End,
-        0x21 => ChordKey::PageUp,
-        0x22 => ChordKey::PageDown,
-        0x2E => ChordKey::Delete,
-        0x0D => ChordKey::Enter,
-        0x09 => ChordKey::Tab,
-        0x1B => ChordKey::Escape,
-        0x08 => ChordKey::Backspace,
-        0x20 => ChordKey::Space,
-        0x70..=0x7B => ChordKey::F((vk - 0x70 + 1) as u8),
-        // Punctuation depends on the layout: ask Windows which character the key types.
-        0xBA..=0xC0 | 0xDB..=0xDF => {
-            let c = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_CHAR) } & 0x7FFF;
-            ChordKey::Char(char::from_u32(c)?.to_ascii_lowercase())
-        }
-        _ => return None,
-    })
+/// The character a punctuation virtual key types in the person's layout, lowercased.
+pub fn punctuation(vk: u16) -> Option<char> {
+    let c = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_CHAR) } & 0x7FFF;
+    Some(char::from_u32(c)?.to_ascii_lowercase())
 }
 
 struct Hook {
@@ -103,26 +82,6 @@ fn termurion_has_keyboard(foreground: isize) -> bool {
 /// A terminal window closed.
 pub fn remove_window(hwnd: isize) {
     locked(&WINDOWS).retain(|h| *h != hwnd);
-}
-/// The one chord the Cockpit window takes: Window > Cockpit, Cmd+Option+Shift+C (Alt+Shift+F8).
-pub fn cockpit_chord(c: &Chord) -> bool {
-    c.cmd && c.alt && c.shift && !c.ctrl && matches!(c.key, ChordKey::Char('c'))
-}
-
-/// The chords a password manager window takes: Cmd+B, Cmd+U, Cmd+C with no other modifier
-/// (its key equivalents, `WX:138-219`), pressed as the shortcut key.
-pub fn pwm_chord(c: &Chord) -> bool {
-    matches!(c.key, ChordKey::Char('b' | 'u' | 'c')) && c.cmd && !c.alt && !c.shift && !c.ctrl
-}
-
-/// The chords the AI Chat window takes, with no other modifier: Cmd+W (close), Cmd+Shift+Y
-/// (focus) (`CWC:481-501`), and the find chords Cmd+F, Cmd+G, Cmd+Shift+G and Cmd+E
-/// (`CVC:2917-2960`), pressed as the shortcut key.
-pub fn chat_chord(c: &Chord) -> bool {
-    c.cmd
-        && !c.alt
-        && !c.ctrl
-        && matches!((&c.key, c.shift), (ChordKey::Char('w' | 'f' | 'e'), false) | (ChordKey::Char('y'), true) | (ChordKey::Char('g'), _))
 }
 static SETTINGS: AtomicIsize = AtomicIsize::new(0);
 /// The settings window is recording a keystroke: every Win chord goes to it.
@@ -555,40 +514,6 @@ impl HookHotkeys {
     }
 }
 
-/// Win chords the Windows shell keeps for itself (RegisterHotKey refuses them): only these
-/// go to the keyboard hook. Another app's chord is reported, not taken.
-pub fn shell_owned(chord: crate::hotkey::Chord) -> bool {
-    use crate::hotkey::{ChordKey, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN};
-    let ChordKey::Scan(scan) = chord.key else { return false };
-    if chord.mods & MOD_WIN == 0 {
-        return false;
-    }
-    let shift = chord.mods & MOD_SHIFT != 0;
-    let extra = chord.mods & !(MOD_WIN | MOD_SHIFT);
-    // Win (+Shift) with a letter but Y, a digit, or the shell's other keys.
-    const LETTERS: &[u32] = &[0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, 0x31, 0x18, 0x19, 0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x2C];
-    const OTHERS: &[u32] = &[0x39, 0x0F, 0x33, 0x34, 0x27, 0x1C, 0x0C, 0x0D, 0x01, 0xE04B, 0xE04D, 0xE048, 0xE050, 0xE047, 0xE037, 0x45];
-    // Win+1..0, and Win+Ctrl or Win+Alt with 1..9 (the pinned apps' last window and jump lists).
-    let digit = (0x02..=0x0B).contains(&scan);
-    let digit9 = (0x02..=0x0A).contains(&scan);
-    // The modifiers match exactly, as iTerm2's symbolic hotkeys do: Win+Shift is the shell's for
-    // Snipping (S), Restore (M), Notifications (V), Cycle taskbar (T), Reverse language (Space),
-    // new instance (1..0) and moving, stretching or restoring a window (Left, Right, Up, Down), not
-    // every letter.
-    match (extra, shift) {
-        (0, false) => LETTERS.contains(&scan) || digit || OTHERS.contains(&scan),
-        (0, true) => matches!(scan, 0x1F | 0x32 | 0x2F | 0x14 | 0x39 | 0xE04B | 0xE04D | 0xE048 | 0xE050) || digit,
-        // Virtual desktops (Win+Ctrl+D, F4, Left, Right), Quick Assist (Q), Narrator (N), speech
-        // (S), sound output (V), the input language (Space), and the like.
-        (MOD_CONTROL, false) => matches!(scan, 0x20 | 0x3E | 0xE04B | 0xE04D | 0x1C | 0x21 | 0x30 | 0x2E | 0x10 | 0x31 | 0x1F | 0x2F | 0x39) || digit9,
-        // Reset the graphics driver (Win+Ctrl+Shift+B).
-        (MOD_CONTROL, true) => scan == 0x30,
-        // Game Bar and pen shortcuts (Win+Alt+G, R, T, M, B, D, K, H, PrtSc) and jump lists.
-        (MOD_ALT, false) => matches!(scan, 0x22 | 0x13 | 0x14 | 0x32 | 0x30 | 0x20 | 0x25 | 0x23 | 0xE037) || digit9,
-        _ => false,
-    }
-}
-
 type Global = HookHotkeys;
 
 static GLOBAL: Mutex<Option<Global>> = Mutex::new(None);
@@ -715,6 +640,7 @@ fn global_hotkeys(kb: &KBDLLHOOKSTRUCT, down: bool) -> HookVerdict {
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::keys::{chat_chord, cockpit_chord, pwm_chord, vk_to_key};
     use super::*;
     use crate::menus::ChordKey;
 
@@ -751,7 +677,7 @@ mod tests {
         assert!(terminal_has_keyboard(true, 10, 20), "another window's web view does not matter");
         assert!(!terminal_has_keyboard(false, 10, 0), "not a Termurion window");
         // The hook and the remapper both ask it; the global hotkeys run before it and ask nothing.
-        let src = include_str!("winkeys.rs");
+        let src = include_str!("keys.rs");
         let hook = &src[src.find("unsafe fn hook_body").unwrap()..];
         let hook = &hook[..hook.find("\n}\n").unwrap()];
         assert!(!hook.contains("is_termurion(fg)"), "no second foreground test beside it");
@@ -924,11 +850,11 @@ mod tests {
 
     #[test]
     fn the_hook_thread_never_unwraps_a_lock_and_never_outlives_its_pump() {
-        let src = include_str!("winkeys.rs");
+        let src = include_str!("keys.rs");
         let code = src.split("#[cfg(test)]").next().unwrap();
         // Every lock is taken through `locked` or `read_tags`, which read through a poison.
         for bad in [".lock().unwrap()", ".read().unwrap()", ".write().unwrap()", ".lock().ok()", ".lock().map(", ".read().map", "if let Ok(mut w) = ", ".lock().is_ok_and"] {
-            assert!(!code.contains(bad), "winkeys.rs takes a lock with {bad}");
+            assert!(!code.contains(bad), "keys.rs takes a lock with {bad}");
         }
         assert_eq!(code.matches(".lock()").count(), 1, "only `locked` calls lock()");
         assert_eq!(code.matches(".read()").count(), 1, "only `read_tags` calls read()");
@@ -942,9 +868,9 @@ mod tests {
     #[test]
     fn the_hook_closures_read_their_locks_through_a_poison() {
         // `exempt` and the hotkey sink run on the hook thread, inside every key.
-        let src = include_str!("app/menu.rs");
+        let src = include_str!("../../app/menu.rs");
         let start = src.find("These closures run on the hook thread").expect("the closures");
-        let end = src.find("crate::winkeys::set_remap_global(").expect("set_remap_global");
+        let end = src.find("crate::platform::keys::set_remap_global(").expect("set_remap_global");
         let closures = &src[start..end];
         assert!(closures.contains("set_hotkey_sink("));
         assert!(!closures.contains(".unwrap()"), "a hook closure unwraps a lock");
@@ -953,7 +879,7 @@ mod tests {
 
     #[test]
     fn the_unhook_message_stops_the_loop_whatever_its_cleanup_does() {
-        let src = include_str!("winkeys.rs").split("#[cfg(test)]").next().unwrap();
+        let src = include_str!("keys.rs").split("#[cfg(test)]").next().unwrap();
         let at = src.find("let flow = if msg.message == WM_APP_UNHOOK").expect("the unhook is decided outside the guarded arms");
         let arm = &src[at..at + 400];
         assert!(arm.contains("Flow::Stop") && arm.contains("pump_guarded("), "{arm}");

@@ -143,7 +143,7 @@ impl App {
             return;
         }
         let Some(hwnd) = self.hwnd() else { return };
-        crate::backdrop::set_blur(hwnd, want);
+        crate::platform::display::set_blur(hwnd, want);
         self.blur_applied = want;
     }
 
@@ -364,7 +364,7 @@ impl App {
             self.window_remade(h);
         }
         if let Some(h) = old_hwnd {
-            crate::winkeys::remove_window(h);
+            crate::platform::keys::remove_window(h);
         }
         // Everything the code installs per window handle, on the new one (as `open_window_with` does).
         self.menu_bar = None;
@@ -375,7 +375,7 @@ impl App {
         self.access_reinstall_host(key(old_id));
         // The display change subclass (the old handle's goes with its window).
         if let Some(h) = menu::hwnd_of(&window) {
-            crate::display_watch::watch(h);
+            crate::platform::display::watch(h);
             #[cfg(windows)]
             {
                 crate::firstmouse_win::watch(h);
@@ -541,6 +541,6 @@ mod watch_tests {
         let src = include_str!("transparency_ui.rs");
         let body = src.split("fn recreate_window_for_alpha").nth(1).expect("recreate_window_for_alpha");
         let body = body.split("\n    }\n").next().unwrap();
-        assert!(body.contains("display_watch::watch"), "the new HWND must be watched");
+        assert!(body.contains("display::watch"), "the new HWND must be watched");
     }
 }

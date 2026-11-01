@@ -625,6 +625,11 @@ impl Drop for Pipe {
     }
 }
 
+/// The same-user check of a local API connection (`api_peer`).
+pub fn check_peer(peer: std::net::SocketAddr, local: std::net::SocketAddr) -> Result<u32, String> {
+    crate::api_peer::check(peer, local)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;

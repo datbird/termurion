@@ -1223,3 +1223,8 @@ mod tests {
         assert!(body.len() <= 4096, "{}", body.len());
     }
 }
+
+/// The WinHTTP transport, as the platform's system transport.
+pub fn system() -> std::sync::Arc<dyn Transport> {
+    std::sync::Arc::new(WinHttp)
+}

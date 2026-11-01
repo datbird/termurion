@@ -12,6 +12,12 @@ pub fn skip_taskbar(attrs: WindowAttributes) -> WindowAttributes {
     imp::skip_taskbar(attrs)
 }
 
+/// `attrs` owned by the window `owner` (a native handle): it stays above its owner and goes with it.
+/// Unix has no owner handle to give, so the window is left a plain top-level one.
+pub fn owner_window(attrs: WindowAttributes, owner: isize) -> WindowAttributes {
+    imp::owner_window(attrs, owner)
+}
+
 /// Marks a popup so a click on it does not take the focus.
 pub fn no_activate(window: &Window) {
     imp::no_activate(window)

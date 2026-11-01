@@ -41,7 +41,7 @@ fn preferred_languages() -> Vec<String> {
 }
 
 /// The user's default locale name (`en-US`).
-fn default_locale_name() -> String {
+pub fn default_locale_name() -> String {
     let mut buf = [0u16; NAME_MAX];
     // SAFETY: the buffer's length is passed.
     let n = unsafe { GetUserDefaultLocaleName(buf.as_mut_ptr(), NAME_MAX as i32) };

@@ -1237,8 +1237,8 @@ mod tests {
         n.shown(1, 7, "https://a.b", 10);
         // A Termurion alert ("debug logging was turned on") is shown: the count is 11 now.
         let gone = n.take().unwrap();
-        assert!(!crate::notify::still_shown(gone.shown_at, 11), "the Termurion alert is not the page's to clear");
-        assert!(crate::notify::still_shown(gone.shown_at, 10), "its own still is");
+        assert!(!crate::platform::notify::still_shown(gone.shown_at, 11), "the Termurion alert is not the page's to clear");
+        assert!(crate::platform::notify::still_shown(gone.shown_at, 10), "its own still is");
     }
 
     #[test]

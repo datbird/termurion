@@ -474,7 +474,7 @@ impl App {
     pub(super) fn sel_scroll_tick(&mut self) -> Option<Instant> {
         let Drag::Select { scroll: Some(s), .. } = &self.drag else { return None };
         let mut s = *s;
-        let (swapped, l, r) = crate::winkeys::mouse_buttons();
+        let (swapped, l, r) = crate::platform::keys::mouse_buttons();
         if !scroll_continues(pane_move_ui::primary_down(swapped, l, r), self.panes.contains_key(&s.pane)) {
             self.drag = Drag::None;
             return None;
@@ -501,7 +501,7 @@ impl App {
     /// `RequireCmdForDraggingText` is on) the selected text is dragged out through OLE. The drag
     /// state clears first because `DoDragDrop` swallows the release; the selection stays.
     pub(super) fn drag_out_move(&mut self, d: DragOut, x: f32, y: f32) {
-        let (swapped, l, r) = crate::winkeys::mouse_buttons();
+        let (swapped, l, r) = crate::platform::keys::mouse_buttons();
         if !pane_move_ui::primary_down(swapped, l, r) {
             self.drag = Drag::None;
             return;
@@ -834,7 +834,7 @@ mod tests {
     #[test]
     fn copy_with_styles_follows_the_plain_copy() {
         let body = include_str!("seltools_ui.rs").split("fn copy_with_styles_with(").nth(1).unwrap().split("\n    }\n").next().unwrap();
-        let (text, refuse, remember, write) = (body.find("selection_text()").unwrap(), body.find("copy_decision(").unwrap_or(usize::MAX), body.find("remember_paste(").unwrap_or(usize::MAX), body.find("winclip::set(").unwrap());
+        let (text, refuse, remember, write) = (body.find("selection_text()").unwrap(), body.find("copy_decision(").unwrap_or(usize::MAX), body.find("remember_paste(").unwrap_or(usize::MAX), body.find("clipboard::set(").unwrap());
         assert!(text < refuse && refuse < write, "an empty styled copy is refused before the write");
         assert!(body.contains("DisallowCopyEmptyString"));
         assert!(remember < write, "the styled copy reaches Paste History");

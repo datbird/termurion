@@ -65,9 +65,9 @@ impl App {
     /// manual (`setEnabledWithoutCleverness:`, `educateAboutCopyMode`, `iTermCopyModeHandler.m:187-194`).
     fn educate_about_copy_mode(&mut self) {
         if self.globals.raw(crate::copymode::USED_KEY).is_none() {
-            match crate::notify::show_with(crate::copymode::NOTIFICATION_TITLE, crate::copymode::NOTIFICATION_DETAIL, self.globals.bool("SilentUserNotifications")) {
+            match crate::platform::notify::show_with(crate::copymode::NOTIFICATION_TITLE, crate::copymode::NOTIFICATION_DETAIL, self.globals.bool("SilentUserNotifications")) {
                 Ok(()) => {
-                    self.last_notified_link = Some((crate::notify::shown_count(), crate::links::HELP_COPY_MODE.to_string()));
+                    self.last_notified_link = Some((crate::platform::notify::shown_count(), crate::links::HELP_COPY_MODE.to_string()));
                     self.last_notified = None;
                     self.last_notified_script = None;
                 }

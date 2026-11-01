@@ -76,7 +76,7 @@ impl App {
             }
             Target::Missing(n) => {
                 if !std::mem::replace(&mut self.space_complained, true) {
-                    let _ = crate::notify::show_with(&crate::desktops::cant_switch(n), crate::desktops::CANT_SWITCH_FIX, false);
+                    let _ = crate::platform::notify::show_with(&crate::desktops::cant_switch(n), crate::desktops::CANT_SWITCH_FIX, false);
                 }
             }
         }

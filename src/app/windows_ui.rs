@@ -672,7 +672,7 @@ impl App {
         // A forced Theme's title bar survives system setting changes.
         self.guard_theme();
         if let (Some(h), true) = (self.hwnd(), new_slot.is_some()) {
-            crate::display_watch::watch(h);
+            crate::platform::display::watch(h);
             #[cfg(windows)]
             {
                 crate::firstmouse_win::watch(h);
@@ -865,7 +865,7 @@ impl App {
         }
         self.forget_window(k);
         if let Some(h) = self.hwnd() {
-            crate::winkeys::remove_window(h);
+            crate::platform::keys::remove_window(h);
             #[cfg(windows)]
             crate::firstmouse_win::forget(h);
         }
@@ -1637,7 +1637,7 @@ impl App {
                 // Its browser views follow their panes into this window (final review I4) and its
                 // tool views close, before the window is destroyed with the slot.
                 self.window_slot_closing(&mut slot, h);
-                crate::winkeys::remove_window(h);
+                crate::platform::keys::remove_window(h);
                 #[cfg(windows)]
                 crate::firstmouse_win::forget(h);
             }

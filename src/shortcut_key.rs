@@ -439,7 +439,7 @@ impl WindowKeys {
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && !event.repeat => {
                 let types = event.text.as_deref().is_some_and(|t| t.chars().any(|c| !c.is_control()));
-                let key = crate::winkeys::vk_to_key(crate::winkeys::vk_of(event.physical_key))?;
+                let key = crate::platform::key_record::chord_key(event.physical_key)?;
                 mode().window_chord(self.mods, types, key)
             }
             _ => None,
@@ -633,7 +633,7 @@ mod tests {
         // The Cockpit window takes its moved chord.
         for mode in MODES {
             let c = mode.window_chord(phys(false, true, true, false), false, ChordKey::F(8)).expect("Alt+Shift+F8");
-            assert!(crate::winkeys::cockpit_chord(&c), "{c:?}");
+            assert!(crate::platform::keys::cockpit_chord(&c), "{c:?}");
         }
     }
 
@@ -733,11 +733,11 @@ mod tests {
         let chat = include_str!("chat_window_ui.rs");
         assert!(chat.contains("shortcut_key::WindowKeys") && chat.contains("self.keys.chord(event)"), "chat_window_ui");
         let app = include_str!("app/chat_window_app.rs");
-        assert!(app.contains("w.shortcut(event)") && app.contains("filter(crate::winkeys::chat_chord)"), "the chat window takes its own chord");
+        assert!(app.contains("w.shortcut(event)") && app.contains("filter(crate::platform::keys::chat_chord)"), "the chat window takes its own chord");
         let cockpit = include_str!("cockpit_ui.rs");
         assert!(cockpit.contains("shortcut_key::WindowKeys") && cockpit.contains("self.keys.chord(event)"), "cockpit_ui");
         let app = include_str!("app/cockpit_app.rs");
-        assert!(app.contains("w.shortcut(event)") && app.contains("winkeys::cockpit_chord"), "the Cockpit takes its own chord");
+        assert!(app.contains("w.shortcut(event)") && app.contains("keys::cockpit_chord"), "the Cockpit takes its own chord");
     }
 
     /// TWEAKS 9 review I4: a literal mapping on the pressed keys is checked before the Cmd chord.
@@ -1000,9 +1000,9 @@ mod tests {
     /// modifier remap and the system-wide hotkeys.
     #[test]
     fn the_hook_takes_no_win_chords_for_termurion() {
-        let src = include_str!("winkeys.rs").split("#[cfg(test)]").next().unwrap();
+        let src = include_str!("platform/windows/keys.rs").split("#[cfg(test)]").next().unwrap();
         for gone in ["struct Gate", "enum Verdict", "win_is_cmd", "pwm_hook_takes", "chat_hook_takes", "CHORD_FOREGROUND", "UserEvent::Chord"] {
-            assert!(!src.contains(gone), "winkeys.rs still has {gone}");
+            assert!(!src.contains(gone), "platform/windows/keys.rs still has {gone}");
         }
         let app = include_str!("app/mod.rs");
         assert!(!app.contains("UserEvent::Chord"), "no chord arrives from the hook");

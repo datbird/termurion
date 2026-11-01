@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn notes_while_resident_reach_the_person() {
         let note = body(production(include_str!("launch_ui.rs")), "outside_note");
-        assert!(note.contains("if self.resident") && note.contains("crate::notify::show_with(") && note.contains("self.banners.set(key, text)"));
+        assert!(note.contains("if self.resident") && note.contains("crate::platform::notify::show_with(") && note.contains("self.banners.set(key, text)"));
         let launch = production(include_str!("launch_ui.rs")).replace(note, "");
         assert!(!launch.contains("self.banners.set("), "launch_ui: every banner goes through outside_note");
         assert_eq!(launch.matches("self.outside_note(").count(), 3, "ignored, arrangement gone, profile gone");
@@ -520,7 +520,7 @@ mod tests {
         assert!(!go.contains("self.hotkey"), "go_resident takes a hotkey window too (the fresh state clears it)");
         let after = body(production(OWN), "after_last_window_now");
         assert!(after.contains("self.hotkey.is_some()"), "the closing hotkey window is not a terminal left");
-        for never in ["drop_current_window", "winkeys::", "register_hotkeys", "unregister", "close_current", "install_menus"] {
+        for never in ["drop_current_window", "platform::keys::", "register_hotkeys", "unregister", "close_current", "install_menus"] {
             assert!(!production(OWN).contains(never), "the resident window keeps its hook and hotkeys: {never}");
         }
         assert!(go.contains("set_visible(false)") && go.contains("set_skip_taskbar(true)"));
@@ -556,13 +556,13 @@ mod tests {
     /// rule is joined with `resident`, never replaced.
     #[test]
     fn the_resident_icon_survives_explorer() {
-        let notify = production(include_str!("../notify.rs"));
+        let notify = production(include_str!("../platform/windows/notify.rs"));
         assert!(notify.contains("RegisterWindowMessageW") && notify.contains("ON_TASKBAR.get()"), "TaskbarCreated reaches the app");
         let created = body(production(include_str!("presence_ui.rs")), "taskbar_created");
         assert!(created.contains("self.tray_on = false") && created.contains("self.tray_tick("), "the one owner adds it again");
         assert!(production(MOD).contains("UserEvent::TaskbarCreated => return self.taskbar_created()"));
         assert!(production(PRESENCE).contains("crate::resident::icon_wanted(presence::tray_wanted("));
-        assert!(production(PRESENCE).contains("crate::notify::set_resident(want)"));
+        assert!(production(PRESENCE).contains("crate::platform::notify::set_resident(want)"));
     }
 
     /// Closing the last window by its close button, Close Tab or Close ends the undo capture with the

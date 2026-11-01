@@ -358,7 +358,7 @@ impl App {
     /// instead of running Termurion's Win-chord commands on the terminal (security: Win+V must paste
     /// into the page, not the shell).
     pub(super) fn sync_web_keyboard(&self) {
-        crate::winkeys::set_web_focus(self.web_focus_held.and_then(|w| self.window_hwnd(w)).unwrap_or(0));
+        crate::platform::keys::set_web_focus(self.web_focus_held.and_then(|w| self.window_hwnd(w)).unwrap_or(0));
     }
 
     /// The active session of the key window changed from `prev` to `next` (`PTYTab.m:951-960`):

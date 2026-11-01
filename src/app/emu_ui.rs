@@ -164,7 +164,7 @@ impl App {
         let font = self.profile_of(pane).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0, features: Default::default() });
         let stored = self.globals.bool("Print In Black And White");
         let mut bw = stored;
-        if let Err(e) = crate::winprint::print(hwnd as _, &mut self.print_setup, &title, &mut rows, &mut bw, cols, &font.family, font.size_pt) {
+        if let Err(e) = crate::platform::print::print(hwnd as _, &mut self.print_setup, &title, &mut rows, &mut bw, cols, &font.family, font.size_pt) {
             self.banners.set("print", format!("Printing failed: {e}"));
         }
         if bw != stored {

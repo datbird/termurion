@@ -224,7 +224,7 @@ impl App {
         }
         for (id, path, error) in failed {
             self.stop_log(id);
-            let _ = crate::notify::show_with(sl::CANNOT_WRITE, &format!("{path}\n{error}"), false);
+            let _ = crate::platform::notify::show_with(sl::CANNOT_WRITE, &format!("{path}\n{error}"), false);
         }
     }
 

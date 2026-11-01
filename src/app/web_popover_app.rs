@@ -11,7 +11,8 @@ use super::*;
 use crate::api_vars::Values;
 use crate::expr::{Failure, Value};
 use crate::script_eval::Timeout;
-use crate::web_popover::{self, Act, Kind, WebPopover};
+use crate::platform::browser::{self as popover_host, WebPopover};
+use crate::web_popover::{self, Act, Kind};
 use crate::webhost::{self, Event, Runtime, Store, ViewId};
 use crate::webhost_win::WebView;
 
@@ -128,7 +129,7 @@ impl App {
             }
             return;
         }
-        let kind = Kind::QuickLook { url, browser: web_popover::default_browser_name() };
+        let kind = Kind::QuickLook { url, browser: popover_host::default_browser_name() };
         self.open_web_popover(None, kind, web_popover::QUICK_LOOK_SIZE, at, event_loop);
     }
 
@@ -161,8 +162,8 @@ impl App {
         let id = self.next_view_id();
         let sink = self.web_envs.sink();
         let setup = match &kind {
-            Kind::Html { .. } => web_popover::html_setup(),
-            Kind::QuickLook { .. } => web_popover::quick_look_setup(&self.globals.string("WebUserAgent")),
+            Kind::Html { .. } => popover_host::html_setup(),
+            Kind::QuickLook { .. } => popover_host::quick_look_setup(&self.globals.string("WebUserAgent")),
         };
         let Some(env) = self.web_env(Store::Default) else { return };
         let view = WebView::create(env, hwnd, id, bounds, setup, sink);
@@ -375,7 +376,7 @@ mod tests {
         let swap = include_str!("windows_ui.rs");
         assert!(!swap.contains("web_popover"), "not per window");
         let m = include_str!("mod.rs");
-        assert!(m.contains("web_popover: Option<(Option<PaneId>, crate::web_popover::WebPopover)>"));
+        assert!(m.contains("web_popover: Option<(Option<PaneId>, crate::platform::browser::WebPopover)>"));
         assert!(m.contains("self.web_popover_event(id, &event)"), "the window-event chain");
         let me = include_str!("web_popover_app.rs");
         let prod = &me[..me.find("#[cfg(test)]\nmod tests").unwrap()];

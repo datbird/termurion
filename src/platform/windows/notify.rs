@@ -6,6 +6,8 @@
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
+use super::super::notify::still_shown;
+
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Shell::{NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_NOSOUND, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW};
@@ -214,12 +216,6 @@ pub fn show_with(title: &str, body: &str, silent: bool) -> Result<(), String> {
     ADD_UNSURE.store(false, Ordering::SeqCst);
     SHOWN.fetch_add(1, Ordering::SeqCst);
     Ok(())
-}
-
-/// Whether the balloon shown when `shown_count()` was `at` is still the one on screen, now that
-/// it is `now`: nothing was shown since (whoever showed it).
-pub fn still_shown(at: u64, now: u64) -> bool {
-    at == now
 }
 
 /// Dismisses the balloon (an empty `szInfo` removes it), but only while it is still the one shown

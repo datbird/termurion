@@ -733,7 +733,7 @@ mod tests {
         let body = &body[..body.find("\n    }\n").unwrap()];
         assert!(body.find("self.is_browser_pane(id)").unwrap() < body.find("is_this_machine(").unwrap(), "the browser pane answers None before any locality read");
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        for f in ["browser.rs", "webhost.rs", "webhost_win.rs", "web_popover.rs", "app/browser_app.rs", "app/web_popover_app.rs", "app/webhost_app.rs", "app/tool_web_ui.rs"] {
+        for f in ["browser.rs", "webhost.rs", "webhost_win.rs", "web_popover.rs", "platform/windows/web_popover.rs", "app/browser_app.rs", "app/web_popover_app.rs", "app/webhost_app.rs", "app/tool_web_ui.rs"] {
             let text = std::fs::read_to_string(root.join(f)).unwrap();
             let live = text.split("#[cfg(test)]\nmod tests").next().unwrap();
             for own in ["local_names(", "is_local_session(", "host_identity::", "GetComputerName", "machine_id"] {

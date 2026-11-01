@@ -92,25 +92,12 @@ fn read_tab_file(path: &Path) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-/// The COM writer, except in a test build, which never writes the real Jump List.
-#[cfg(all(windows, not(test)))]
 fn write_list(m: &jumplist::Model, exe: &Path) -> Result<Vec<Vec<String>>, String> {
-    crate::jumplist_win::commit(m, exe)
+    crate::platform::shell_extras::jump_list(m, exe)
 }
 
-#[cfg(any(not(windows), test))]
-fn write_list(_: &jumplist::Model, _: &Path) -> Result<Vec<Vec<String>>, String> {
-    Ok(Vec::new())
-}
-
-#[cfg(all(windows, not(test)))]
 fn clear_destinations() -> Result<(), String> {
-    crate::jumplist_win::clear_recent_destinations()
-}
-
-#[cfg(any(not(windows), test))]
-fn clear_destinations() -> Result<(), String> {
-    Ok(())
+    crate::platform::shell_extras::jump_list_clear()
 }
 
 impl App {

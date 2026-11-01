@@ -172,15 +172,15 @@ impl App {
             Err(_) => path,
         };
         if let Some(why) = ar::network_refusal(&folder, &path) {
-            let _ = crate::notify::show_with(ar::FAILED_TITLE, &ar::failed_text(&path.display().to_string(), &why), false);
+            let _ = crate::platform::notify::show_with(ar::FAILED_TITLE, &ar::failed_text(&path.display().to_string(), &why), false);
             return;
         }
         if !path.is_absolute() {
-            let _ = crate::notify::show_with(ar::FAILED_TITLE, &ar::failed_text(&path.display().to_string(), "the archive folder is not a full path"), false);
+            let _ = crate::platform::notify::show_with(ar::FAILED_TITLE, &ar::failed_text(&path.display().to_string(), "the archive folder is not a full path"), false);
             return;
         }
         if let Err(e) = self.save_archive_to(id, &path) {
-            let _ = crate::notify::show_with(ar::FAILED_TITLE, &ar::failed_text(&path.display().to_string(), &e), false);
+            let _ = crate::platform::notify::show_with(ar::FAILED_TITLE, &ar::failed_text(&path.display().to_string(), &e), false);
         }
     }
 
@@ -212,7 +212,7 @@ impl App {
                     self.menus_dirty = true;
                 }
                 Err(e) => {
-                    let _ = crate::notify::show_with(ar::FAILED_TITLE, &ar::failed_text(&path, &e), false);
+                    let _ = crate::platform::notify::show_with(ar::FAILED_TITLE, &ar::failed_text(&path, &e), false);
                 }
             }
         }

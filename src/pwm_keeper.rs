@@ -1,7 +1,7 @@
 //! The Keeper adapter's logic (`iterm2-keeper-adapter`), a port of iTerm2's
 //! `pwmplugin/Sources/iterm2-keeper-adapter/main.swift` and `KeeperCommanderClient.swift`
 //! (`KCC`) over an `Http` trait, so it is testable with a fake. The executable in `src/bin` wires
-//! `WinHttpBlocking` (12b's `ai_winhttp`) and stdio to `pwm_adapter::run_main_with`.
+//! `WinHttpBlocking` (12b's `platform::http`) and stdio to `pwm_adapter::run_main_with`.
 //!
 //! Keeper Commander Service Mode REST v2: `POST <base>/executecommand-async` with the command,
 //! then `GET status/<id>` until completed, failed or expired, then `GET result/<id>`. The "master
@@ -1026,29 +1026,25 @@ pub fn status_from_error(error: &str) -> Option<u16> {
     error.strip_prefix("HTTP request failed with status ")?.strip_suffix('.')?.parse().ok()
 }
 
-/// 12b's WinHTTP transport driven to its end. No proxy: the API key goes only where the
+/// 12b's HTTP transport (`platform::http`) driven to its end. No proxy: the API key goes only where the
 /// person's URL says. Redirects off the host are refused by the transport.
-#[cfg(windows)]
 pub struct WinHttpBlocking;
 
-#[cfg(windows)]
 impl WinHttpBlocking {
     pub fn new() -> WinHttpBlocking {
         WinHttpBlocking
     }
 }
 
-#[cfg(windows)]
 impl Default for WinHttpBlocking {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(windows)]
 impl Http for WinHttpBlocking {
     fn send(&mut self, method: &str, url: &str, headers: &[(String, String)], body: &[u8], timeout: Duration) -> Result<(u16, Vec<u8>), String> {
-        use crate::ai_transport::{Bounds, HttpEvent, HttpRequest, Options, Proxy, Transport, MAX_BODY};
+        use crate::ai_transport::{Bounds, HttpEvent, HttpRequest, Options, Proxy, MAX_BODY};
         let method: &'static str = match method {
             "GET" => "GET",
             "POST" => "POST",
@@ -1064,7 +1060,7 @@ impl Http for WinHttpBlocking {
         let request = HttpRequest { method, url: url.to_string(), headers: headers.to_vec(), body: body.to_vec(), stream: false };
         let options = Options { idle: timeout, proxy: Proxy::Off };
         let bounds = Bounds { limit: MAX_CLI_JSON.min(MAX_BODY), total: Some(timeout) };
-        let mut call = crate::ai_winhttp::WinHttp.start_bounded(request, options, bounds, notify);
+        let mut call = crate::platform::http::system().start_bounded(request, options, bounds, notify);
         loop {
             while let Some(event) = call.try_event() {
                 if let HttpEvent::Done { body, error } = event {

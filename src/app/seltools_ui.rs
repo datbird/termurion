@@ -39,7 +39,7 @@ impl App {
         let rows = p.styled_rows();
         let html = crate::styled_copy::cf_html(&crate::styled_copy::html(&rows, &font.family, font.size_pt, screen.palette.bg, crate::styled_copy::StyleOptions::from_globals(&self.globals)));
         let rtf = crate::styled_copy::rtf(&rows, &font.family, font.size_pt, crate::styled_copy::StyleOptions::from_globals(&self.globals));
-        if let Err(e) = crate::winclip::set(&text, &html, &rtf) {
+        if let Err(e) = crate::platform::clipboard::set(&text, &html, &rtf) {
             self.banners.set("clipboard", format!("Copy failed: {e}"));
         }
     }
@@ -62,7 +62,7 @@ impl App {
         // "Black and white" is a box on the print dialog's own page (the print accessory).
         let stored = self.globals.bool("Print In Black And White");
         let mut bw = stored;
-        if let Err(e) = crate::winprint::print(hwnd as _, &mut self.print_setup, &title, &mut rows, &mut bw, cols, &font.family, font.size_pt) {
+        if let Err(e) = crate::platform::print::print(hwnd as _, &mut self.print_setup, &title, &mut rows, &mut bw, cols, &font.family, font.size_pt) {
             self.banners.set("print", format!("Printing failed: {e}"));
         }
         if bw != stored {
@@ -137,7 +137,7 @@ impl App {
             "copyWithStyles:" => self.copy_with_styles(id),
             "runPageLayout:" => {
                 if let Some(hwnd) = self.hwnd() {
-                    crate::winprint::page_setup(hwnd as _, &mut self.print_setup);
+                    crate::platform::print::page_setup(hwnd as _, &mut self.print_setup);
                 }
             }
             "copyWithControlSequences:" if self.composer_blocks_styled_copy() => {}

@@ -373,7 +373,7 @@ impl App {
     /// Paste File Base64-Encoded: the first file on the clipboard, as base64 lines.
     fn paste_file_base64(&mut self) {
         let Some(id) = self.focused_id() else { return };
-        let Some(path) = crate::winclip::first_file() else {
+        let Some(path) = crate::platform::clipboard::first_file() else {
             return self.banners.set("paste", "The clipboard holds no file.".to_string());
         };
         match crate::localfs::judge_io(&path).and_then(|p| crate::localfs::read(&p)) {

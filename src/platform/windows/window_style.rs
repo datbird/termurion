@@ -15,6 +15,10 @@ pub fn skip_taskbar(attrs: WindowAttributes) -> WindowAttributes {
     attrs.with_skip_taskbar(true)
 }
 
+pub fn owner_window(attrs: WindowAttributes, owner: isize) -> WindowAttributes {
+    attrs.with_owner_window(owner)
+}
+
 pub fn no_activate(window: &Window) {
     if let Some(h) = hwnd(window) {
         use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_NOACTIVATE};

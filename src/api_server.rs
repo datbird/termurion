@@ -84,9 +84,6 @@ const LINGER: Duration = Duration::from_secs(1);
 /// The least time between two logged accept errors.
 const ACCEPT_LOG_EVERY: Duration = Duration::from_secs(60);
 
-/// iTerm2's listen backlog (`S:159-169`).
-const BACKLOG: i32 = 5;
-
 pub struct Server {
     addrs: Vec<SocketAddr>,
     events: Option<Receiver<Event>>,
@@ -489,7 +486,7 @@ impl Drop for Server {
 
 /// Binds both loopback families at `port`.
 fn bind_pair(port: u16) -> Result<Vec<TcpListener>, String> {
-    bind_pair_with(port, &mut bind_exclusive)
+    bind_pair_with(port, &mut crate::platform::net::bind_exclusive)
 }
 
 /// Binds 127.0.0.1 at `port`, then [::1] with `bind6` on the port V4 got. With port 0, a V6
@@ -499,22 +496,16 @@ fn bind_pair_with(port: u16, bind6: &mut dyn FnMut(SocketAddr) -> std::io::Resul
     use std::io::ErrorKind::{AddrInUse, PermissionDenied};
     let attempts = if port == 0 { 8 } else { 1 };
     for _ in 0..attempts {
-        let v4 = bind_exclusive(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).map_err(|e| format!("127.0.0.1 port {port}: {e}"))?;
+        let v4 = crate::platform::net::bind_exclusive(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).map_err(|e| format!("127.0.0.1 port {port}: {e}"))?;
         let taken = v4.local_addr().map_err(|e| format!("127.0.0.1 port {port}: {e}"))?.port();
         match bind6(SocketAddr::from((Ipv6Addr::LOCALHOST, taken))) {
             Ok(v6) => return Ok(vec![v4, v6]),
-            Err(e) if v6_unavailable(&e) => return Ok(vec![v4]),
+            Err(e) if crate::platform::net::v6_unavailable(&e) => return Ok(vec![v4]),
             Err(e) if port == 0 && matches!(e.kind(), AddrInUse | PermissionDenied) => continue,
             Err(e) => return Err(format!("[::1] port {taken}: {e}")),
         }
     }
     Err("no ephemeral port was free on both 127.0.0.1 and [::1]".to_string())
-}
-
-/// A V6 bind that failed because the machine has no usable IPv6 loopback.
-fn v6_unavailable(e: &std::io::Error) -> bool {
-    use windows_sys::Win32::Networking::WinSock::{WSAEADDRNOTAVAIL, WSAEAFNOSUPPORT, WSAEPFNOSUPPORT, WSAEPROTONOSUPPORT};
-    e.raw_os_error().is_some_and(|c| [WSAEAFNOSUPPORT, WSAEADDRNOTAVAIL, WSAEPFNOSUPPORT, WSAEPROTONOSUPPORT].contains(&c))
 }
 
 fn accept_loop(listener: TcpListener, shared: Arc<Shared>, tx: SyncSender<Event>) {
@@ -612,14 +603,14 @@ fn admit(stream: TcpStream, peer: SocketAddr, shared: &Arc<Shared>, tx: &SyncSen
 
 /// A connection's reader, as iTerm2's (`W:231-256`): blocking reads with no timeout, queued for
 /// the connection thread, stopping when `INBOUND_CHUNKS` wait so TCP flow control engages. It
-/// reads only once `WSAPoll` says the socket is readable (so the read returns at once), and
+/// reads only once the readiness poll says the socket is readable (so the read returns at once), and
 /// between polls looks for the connection's end: on Windows neither `shutdown` nor the other
 /// handle's close wakes a blocking read, and a poll timing out consumes and cancels nothing.
 fn read_into(mut stream: TcpStream, mailbox: &Mailbox) {
     let mut buf = vec![0u8; CHUNK];
     loop {
         let want_write = mailbox.mail.lock().unwrap().want_write;
-        let (read, write) = match ready(&stream, want_write) {
+        let (read, write) = match crate::platform::net::ready(&stream, want_write, READER_POLL) {
             Ok(r) => r,
             Err(_) => {
                 mailbox.update(|m| m.eof = true);
@@ -674,20 +665,6 @@ fn read_into(mut stream: TcpStream, mailbox: &Mailbox) {
 
 /// How long the reader's poll waits before it looks for the connection's end.
 const READER_POLL: i32 = 50;
-
-/// Waits up to `READER_POLL` ms for `stream` to have something to read (data, an end or an
-/// error: the read tells which) or, with `write`, room to write. Answers (read, write).
-fn ready(stream: &TcpStream, write: bool) -> std::io::Result<(bool, bool)> {
-    use std::os::windows::io::AsRawSocket;
-    use windows_sys::Win32::Networking::WinSock::{POLLERR, POLLHUP, POLLNVAL, POLLRDNORM, POLLWRNORM, WSAPOLLFD, WSAPoll};
-    let events = if write { POLLRDNORM | POLLWRNORM } else { POLLRDNORM };
-    let mut fd = WSAPOLLFD { fd: stream.as_raw_socket() as _, events, revents: 0 };
-    match unsafe { WSAPoll(&mut fd, 1, READER_POLL) } {
-        n if n < 0 => Err(wsa_error()),
-        0 => Ok((false, false)),
-        _ => Ok((fd.revents & (POLLRDNORM | POLLHUP | POLLERR | POLLNVAL) != 0, fd.revents & POLLWRNORM != 0)),
-    }
-}
 
 /// How the wait for a verdict ended.
 enum Waited {
@@ -924,82 +901,10 @@ impl Connection {
     }
 }
 
-/// Calls `WSAStartup` once for the process (never undone; std does the same lazily).
-fn winsock() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| unsafe {
-        let mut data: windows_sys::Win32::Networking::WinSock::WSADATA = std::mem::zeroed();
-        windows_sys::Win32::Networking::WinSock::WSAStartup(0x202, &mut data);
-    });
-}
-
-fn wsa_error() -> std::io::Error {
-    std::io::Error::from_raw_os_error(unsafe { windows_sys::Win32::Networking::WinSock::WSAGetLastError() })
-}
-
-/// Closes a socket unless released.
-struct SocketGuard(windows_sys::Win32::Networking::WinSock::SOCKET);
-
-impl Drop for SocketGuard {
-    fn drop(&mut self) {
-        unsafe { windows_sys::Win32::Networking::WinSock::closesocket(self.0) };
-    }
-}
-
-/// A listener that no other socket can share (`SO_EXCLUSIVEADDRUSE`, the analog of iTerm2's
-/// `socket.lock`), not inherited by children, V6 sockets V6 only. Refuses any address that is
-/// not loopback.
-fn bind_exclusive(addr: SocketAddr) -> std::io::Result<TcpListener> {
-    use std::os::windows::io::FromRawSocket;
-    use windows_sys::Win32::Networking::WinSock::{
-        AF_INET, AF_INET6, INVALID_SOCKET, IPPROTO_IPV6, IPPROTO_TCP, IPV6_V6ONLY, SO_EXCLUSIVEADDRUSE, SOCK_STREAM, SOCKADDR, SOCKADDR_IN, SOCKADDR_IN6,
-        SOL_SOCKET, WSA_FLAG_NO_HANDLE_INHERIT, WSA_FLAG_OVERLAPPED, WSASocketW, bind, listen, setsockopt,
-    };
-    if !addr.ip().is_loopback() {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("the Python API listens on loopback only, not {addr}")));
-    }
-    winsock();
-    let on: i32 = 1;
-    let set = |s, level, name| -> std::io::Result<()> {
-        let rc = unsafe { setsockopt(s, level, name, &on as *const i32 as *const u8, std::mem::size_of::<i32>() as i32) };
-        if rc != 0 { Err(wsa_error()) } else { Ok(()) }
-    };
-    unsafe {
-        let family = if addr.is_ipv4() { AF_INET } else { AF_INET6 };
-        let s = WSASocketW(family as i32, SOCK_STREAM, IPPROTO_TCP, std::ptr::null(), 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
-        if s == INVALID_SOCKET {
-            return Err(wsa_error());
-        }
-        let guard = SocketGuard(s);
-        set(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE)?;
-        let rc = match addr {
-            SocketAddr::V4(a) => {
-                let mut sa: SOCKADDR_IN = std::mem::zeroed();
-                sa.sin_family = AF_INET;
-                sa.sin_port = a.port().to_be();
-                sa.sin_addr.S_un.S_addr = u32::from_ne_bytes(a.ip().octets());
-                bind(s, &sa as *const SOCKADDR_IN as *const SOCKADDR, std::mem::size_of::<SOCKADDR_IN>() as i32)
-            }
-            SocketAddr::V6(a) => {
-                set(s, IPPROTO_IPV6, IPV6_V6ONLY)?;
-                let mut sa: SOCKADDR_IN6 = std::mem::zeroed();
-                sa.sin6_family = AF_INET6;
-                sa.sin6_port = a.port().to_be();
-                sa.sin6_addr.u.Byte = a.ip().octets();
-                bind(s, &sa as *const SOCKADDR_IN6 as *const SOCKADDR, std::mem::size_of::<SOCKADDR_IN6>() as i32)
-            }
-        };
-        if rc != 0 || listen(s, BACKLOG) != 0 {
-            return Err(wsa_error());
-        }
-        std::mem::forget(guard);
-        Ok(TcpListener::from_raw_socket(s as _))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::net::bind_exclusive;
     use tungstenite::client::IntoClientRequest;
 
     fn allow() -> PeerCheck {
@@ -1351,7 +1256,7 @@ mod tests {
 
     #[test]
     fn v4_serves_alone_without_ipv6() {
-        use windows_sys::Win32::Networking::WinSock::{WSAEACCES, WSAEADDRINUSE, WSAEAFNOSUPPORT};
+        use crate::platform::net::{codes::{ACCESS_DENIED as WSAEACCES, ADDR_IN_USE as WSAEADDRINUSE, AF_UNSUPPORTED as WSAEAFNOSUPPORT}, v6_unavailable};
         let err = |c| std::io::Error::from_raw_os_error(c);
         assert!(v6_unavailable(&err(WSAEAFNOSUPPORT)));
         assert!(!v6_unavailable(&err(WSAEADDRINUSE)));
@@ -1554,7 +1459,7 @@ mod tests {
             let jar = jar.clone();
             Arc::new(move |c: &str| jar.lock().unwrap().consume(c))
         };
-        let s = match Server::start(api_http::PORT, Arc::new(crate::api_peer::check), check, Arc::new(|| {})) {
+        let s = match Server::start(api_http::PORT, Arc::new(crate::platform::ipc::check_peer), check, Arc::new(|| {})) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("skipped: port {} is taken: {e}", api_http::PORT);

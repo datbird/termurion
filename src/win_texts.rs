@@ -27,7 +27,7 @@ mod tests {
             ("ShellIntegrationInstaller/Base.lproj/iTermShellIntegrationWindowController.xib:398", "Installation complete!", shell_wizard::FINISHED_TITLE),
             ("TerminalView/Base.lproj/CommandInfoViewController.xib:404", "Disable showing offscreen command", crate::cmdinfo::DISABLE_OFFSCREEN),
             ("AppKit/iTermApplicationDelegate.m:1055", "Why am I being prompted?", "Why am I being prompted?"),
-            ("Printing/Base.lproj/iTermPrintAccessoryViewController.xib:23", "Black and white", crate::winprint::BLACK_AND_WHITE_LABEL),
+            ("Printing/Base.lproj/iTermPrintAccessoryViewController.xib:23", "Black and white", crate::platform::print::BLACK_AND_WHITE_LABEL),
             ("AITerm/Base.lproj/AITerm.xib:32", "Set Up Artificial Intelligence", crate::settings_ai::REGISTRATION_HEADING),
             ("Settings/iTermAddTriggerViewController.m:439", "CPU Time:", settings_triggers::CPU_TIME_LABEL),
             ("Settings/TriggerController.m:1123", "Copy Trigger as URL to Clipboard", trigger_file::COPY_URL_TITLE),

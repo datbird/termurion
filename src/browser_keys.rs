@@ -154,31 +154,16 @@ fn type_forward_extension(script: &str) -> Result<String, String> {
 /// The chord of a key the gate saw.
 pub fn chord_of(vk: u32, mods: u8) -> Option<Chord> {
     let vk = u16::try_from(vk).ok()?;
-    #[cfg(windows)]
-    let key = crate::winkeys::vk_to_key(vk)?;
-    #[cfg(not(windows))]
-    let key = match vk {
-        0x41..=0x5A => ChordKey::Char((vk as u8 + 32) as char),
-        0x25 => ChordKey::Left,
-        _ => return None,
-    };
+    let key = crate::platform::keys::vk_to_key(vk)?;
     Some(Chord { key, cmd: mods & WIN != 0, alt: mods & ALT != 0, shift: mods & SHIFT != 0, ctrl: mods & CTRL != 0 })
 }
 
-/// The text a key types in the person's keyboard layout under its modifiers (`winkeys::text_for`):
+/// The text a key types in the person's keyboard layout under its modifiers (`platform::keys::text_for`):
 /// Shift+1 is "!" on a US layout and Ctrl+C is U+0003, as an NSEvent's `characters`. None off
 /// Windows, for a key that types nothing, and for a dead key.
 pub fn layout_text(vk: u32, mods: u8) -> Option<String> {
-    #[cfg(windows)]
-    {
-        let vk = u16::try_from(vk).ok()?;
-        crate::winkeys::text_for(vk, 0, crate::mouse::Mods { shift: mods & SHIFT != 0, alt: mods & ALT != 0, ctrl: mods & CTRL != 0, cmd: false })
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (vk, mods);
-        None
-    }
+    let vk = u16::try_from(vk).ok()?;
+    crate::platform::keys::text_for(vk, 0, crate::mouse::Mods { shift: mods & SHIFT != 0, alt: mods & ALT != 0, ctrl: mods & CTRL != 0, cmd: false })
 }
 
 /// The character a key types, which Copy or Send and Paste or Send send when they do not copy or

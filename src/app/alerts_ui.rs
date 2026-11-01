@@ -42,7 +42,7 @@ impl App {
         }
         let (name, tab) = self.session_label(pane);
         let (title, body) = alerts::text(&kind, &name, tab, self.globals.bool("SimpleNotifications"), &self.globals.string("SessionEndMessageText"));
-        match crate::notify::show_with(&title, &body, self.globals.bool("SilentUserNotifications")) {
+        match crate::platform::notify::show_with(&title, &body, self.globals.bool("SilentUserNotifications")) {
             Ok(()) => {
                 self.last_notified = Some(pane);
                 self.last_notified_script = None;
@@ -69,13 +69,13 @@ impl App {
     /// Script Console entry of the script that failed.
     pub(super) fn reveal_notified(&mut self) {
         if let Some((at, url)) = self.last_notified_link.take()
-            && crate::notify::still_shown(at, crate::notify::shown_count()) {
+            && crate::platform::notify::still_shown(at, crate::platform::notify::shown_count()) {
                 if let Err(e) = super::semantic_ui::shell_open(&url, false) {
                     self.banners.set("action", e);
                 }
                 return;
             }
-        if crate::dlog::same_notice(self.last_notified_debug, crate::notify::shown_count()) {
+        if crate::dlog::same_notice(self.last_notified_debug, crate::platform::notify::shown_count()) {
             return self.disable_debug_logging_from_notice();
         }
         if let Some(id) = self.last_notified_script.clone() {

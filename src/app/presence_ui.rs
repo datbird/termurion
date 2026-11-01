@@ -141,7 +141,7 @@ impl App {
             return if presence::tray_changes(want, self.tray_on) { self.tray_due } else { None };
         }
         // A failure leaves the state as it was, so the next try is the retry (Explorer not up yet).
-        let result = crate::notify::set_resident(want);
+        let result = crate::platform::notify::set_resident(want);
         self.tray_on = presence::tray_settle(want, self.tray_on, result.is_ok());
         let before = self.tray_failures;
         self.tray_failures = presence::tray_failures_after(self.tray_failures, result.is_ok());
@@ -235,7 +235,7 @@ impl App {
     /// opens with no terminal window made yet.
     fn show_tray_menu(&mut self) {
         use muda::{ContextMenu, Menu, MenuItem, PredefinedMenuItem, Submenu};
-        let Some(hwnd) = presence::tray_menu_owner(self.hwnd(), crate::notify::window_handle()) else { return };
+        let Some(hwnd) = presence::tray_menu_owner(self.hwnd(), crate::platform::notify::window_handle()) else { return };
         let menu = Menu::new();
         // Every window first: one that left the taskbar and Alt+Tab (or was minimized) has no
         // other way back. A pick runs `window_list_picked`.
@@ -274,7 +274,7 @@ impl App {
         // A cloaked or background window still has to be foreground for the menu to close on a click away.
         unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd as HWND) };
         let picked = unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
-        crate::host_base::log(&format!("tray: menu on {hwnd:#x} (notification window {}), picked {picked}", Some(hwnd) == crate::notify::window_handle()));
+        crate::host_base::log(&format!("tray: menu on {hwnd:#x} (notification window {}), picked {picked}", Some(hwnd) == crate::platform::notify::window_handle()));
         self.tray_pick = picked;
         // The pick arrives after the menu closes, so the menu lives until the next one.
         self.popup_menu = Some(menu);
@@ -381,13 +381,13 @@ mod tests {
         let tail = relaunch.split("self.leave_host(false);").nth(1).expect("relaunch exit");
         let before_exit = tail.split("std::process::exit(0)").next().unwrap();
         assert!(before_exit.contains("teardown_process()"), "removed before the relaunch exit");
-        let n = include_str!("../notify.rs");
+        let n = include_str!("../platform/windows/notify.rs");
         let win = n.split("fn window()").nth(1).and_then(|r| r.split("\nfn base").next()).expect("window()");
         assert!(!win.contains("HWND_MESSAGE"), "a message-only window never hears TaskbarCreated");
         let run = m.split("pub fn run()").nth(1).and_then(|r| r.split("let event_loop").next()).expect("run");
         let after_wait = run.split("wait_for_pid(pid)").nth(1).expect("the wait comes first");
         assert!(after_wait.contains("forwardable_start(&request, wait_pid.is_some())") && after_wait.contains("hand_to_running(&request)"), "a second bare start hands its Reopen to the running Termurion, after the import wait");
         assert!(include_str!("launch_ui.rs").contains("Request::Reopen => self.dock_click_now"), "and the running Termurion acts as the dock click");
-        assert!(!include_str!("../notify.rs").contains("forward_reopen"), "no second start channel beside the pipe");
+        assert!(!include_str!("../platform/windows/notify.rs").contains("forward_reopen"), "no second start channel beside the pipe");
     }
 }

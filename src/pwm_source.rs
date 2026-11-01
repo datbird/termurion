@@ -1,7 +1,7 @@
 //! The password manager's sources (pure): the `Source` trait every backing store implements,
 //! the source kinds with their stored names and menu titles, what each source can do (`Caps`),
 //! and the Windows Credential Manager naming that round-trips iTerm2's keychain keys. The Win32
-//! side of Credential Manager is `pwm_credman.rs`; the CLI and adapter sources come in later
+//! side of Credential Manager is `platform/windows/credentials.rs`; the CLI and adapter sources come in later
 //! tasks. A source runs on the password manager's worker thread, never the UI thread.
 
 use crate::pwm::{Account, Secret, SEP};

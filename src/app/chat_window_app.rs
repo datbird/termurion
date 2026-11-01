@@ -155,11 +155,11 @@ pub(super) enum ChatChord {
 /// Cmd+Shift+G and Cmd+E are the find chords.
 pub(super) fn chat_chord(c: &crate::menus::Chord) -> Option<ChatChord> {
     match c.key {
-        crate::menus::ChordKey::Char('w') if crate::winkeys::chat_chord(c) => Some(ChatChord::Close),
-        crate::menus::ChordKey::Char('y') if crate::winkeys::chat_chord(c) => Some(ChatChord::Focus),
-        crate::menus::ChordKey::Char('f') if crate::winkeys::chat_chord(c) => Some(ChatChord::Find),
-        crate::menus::ChordKey::Char('g') if crate::winkeys::chat_chord(c) => Some(if c.shift { ChatChord::FindPrevious } else { ChatChord::FindNext }),
-        crate::menus::ChordKey::Char('e') if crate::winkeys::chat_chord(c) => Some(ChatChord::UseSelection),
+        crate::menus::ChordKey::Char('w') if crate::platform::keys::chat_chord(c) => Some(ChatChord::Close),
+        crate::menus::ChordKey::Char('y') if crate::platform::keys::chat_chord(c) => Some(ChatChord::Focus),
+        crate::menus::ChordKey::Char('f') if crate::platform::keys::chat_chord(c) => Some(ChatChord::Find),
+        crate::menus::ChordKey::Char('g') if crate::platform::keys::chat_chord(c) => Some(if c.shift { ChatChord::FindPrevious } else { ChatChord::FindNext }),
+        crate::menus::ChordKey::Char('e') if crate::platform::keys::chat_chord(c) => Some(ChatChord::UseSelection),
         _ => None,
     }
 }
@@ -1139,7 +1139,7 @@ impl App {
             return false;
         }
         // The shortcut key's own chords (Ctrl+Shift+W).
-        if let Some(chord) = w.shortcut(event).filter(crate::winkeys::chat_chord).and_then(|c| chat_chord(&c)) {
+        if let Some(chord) = w.shortcut(event).filter(crate::platform::keys::chat_chord).and_then(|c| chat_chord(&c)) {
             self.chat_run_chord(chord);
             return true;
         }
@@ -1991,9 +1991,9 @@ mod tests {
         assert_eq!(chat_chord(&Chord { cmd: false, ..chord('f', false) }), None);
         // The hook takes exactly the chords the window answers.
         for (k, shift) in [('w', false), ('y', true), ('f', false), ('g', false), ('g', true), ('e', false)] {
-            assert!(crate::winkeys::chat_chord(&chord(k, shift)), "{k} {shift}");
+            assert!(crate::platform::keys::chat_chord(&chord(k, shift)), "{k} {shift}");
         }
-        assert!(!crate::winkeys::chat_chord(&chord('f', true)));
+        assert!(!crate::platform::keys::chat_chord(&chord('f', true)));
     }
 
     #[test]

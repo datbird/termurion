@@ -670,7 +670,7 @@ mod tests {
     fn every_window_gets_the_session_watch() {
         for (name, src) in [("mod.rs", include_str!("mod.rs")), ("transparency_ui.rs", include_str!("transparency_ui.rs")), ("windows_ui.rs", include_str!("windows_ui.rs"))] {
             let code = src;
-            let displays = code.matches("display_watch::watch(").count();
+            let displays = code.matches("display::watch(").count();
             let sessions = code.matches("logout_ui::watch(").count();
             assert!(displays > 0 && sessions >= displays, "{name}: {displays} display watches, {sessions} session watches");
         }

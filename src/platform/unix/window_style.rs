@@ -7,6 +7,11 @@ pub fn skip_taskbar(attrs: WindowAttributes) -> WindowAttributes {
     attrs
 }
 
+/// There is no owner window handle on Unix; the window stays top level.
+pub fn owner_window(attrs: WindowAttributes, _owner: isize) -> WindowAttributes {
+    attrs
+}
+
 /// Popups are opened with `with_active(false)`; there is no extended style to set.
 pub fn no_activate(_window: &Window) {}
 

@@ -2482,7 +2482,7 @@ impl Worker {
 fn build(config: &Config, ctx: &Ctx) -> Result<Box<dyn Source>, NeedCli> {
     use crate::pwm_run::ProcessRunner;
     match config.kind {
-        Kind::CredentialManager => Ok(Box::new(crate::pwm_credman::CredentialManager::for_scope(config.scope))),
+        Kind::CredentialManager => Ok(Box::new(crate::platform::credentials::CredentialManager::for_scope(config.scope))),
         Kind::OnePassword => {
             let mut runner = ProcessRunner::new();
             let path = if config.cli.is_empty() {
@@ -3317,7 +3317,7 @@ mod tests {
         assert!(files.len() > 100);
         for f in files {
             let name = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
-            if name == "app/pwm_app.rs" || name.starts_with("pwm_") || name.starts_with("bin/") {
+            if name == "app/pwm_app.rs" || name.starts_with("pwm_") || name.starts_with("bin/") || name == "platform/windows/credentials.rs" || name == "platform/unix/credentials.rs" {
                 continue;
             }
             let text = std::fs::read_to_string(&f).unwrap();

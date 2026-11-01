@@ -114,7 +114,7 @@ impl App {
             return false;
         }
         // Window > Cockpit again while the Cockpit has the keyboard: its own chord shows and focuses it.
-        if w.shortcut(event).is_some_and(|c| crate::winkeys::cockpit_chord(&c)) {
+        if w.shortcut(event).is_some_and(|c| crate::platform::keys::cockpit_chord(&c)) {
             self.reveal_cockpit(event_loop);
             return true;
         }

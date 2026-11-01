@@ -162,21 +162,17 @@ impl App {
             crate::bell_badge::BadgeStep::Push => {}
         }
         let hwnds: Vec<isize> = self.hwnd().into_iter().chain(self.windows.parked().filter_map(|(_, s)| s.gpu.as_ref().and_then(|g| super::menu::hwnd_of(&g.window)))).collect();
-        #[cfg(windows)]
         for h in hwnds {
             // A queue that cannot take the job leaves the button as it was; the next change retries.
-            let _ = crate::taskbar_win::set_badge(h, &label);
+            let _ = crate::platform::shell_extras::taskbar_progress(h, &label);
         }
-        #[cfg(not(windows))]
-        let _ = hwnds;
         self.badge_pushed = Some((label, now));
         None
     }
 
     /// A window's taskbar button hears `TaskbarButtonCreated`, and the next pass sets its badge.
-    #[cfg(windows)]
     pub(super) fn taskbar_watch(&mut self, hwnd: isize) {
-        crate::taskbar_win::watch(hwnd);
+        crate::platform::shell_extras::taskbar_watch(hwnd);
         self.badge_pushed = None;
     }
 }
@@ -203,7 +199,7 @@ mod tests {
         }
         let m = include_str!("mod.rs");
         assert!(m.contains("let badge_due = self.tick_badge();") && m.contains("self.attention_due, badge_due,"), "a held-back badge change wakes the loop");
-        assert!(body(m, "pub(crate) fn teardown_process()", "\n}\n").contains("taskbar_win::clear_all"));
+        assert!(body(m, "pub(crate) fn teardown_process()", "\n}\n").contains("shell_extras::taskbar_clear_all"));
         assert!(body(m, "pub(super) fn select_tab", "\n    }\n").contains("tab_selected"));
         assert!(body(m, "let active = hotkey_ui::termurion_in_front();", "self.hotkey_reactivated()").contains("became_active"));
         assert!(include_str!("alerts_ui.rs").contains("bell_badge::is_waiting"));

@@ -400,7 +400,7 @@ impl App {
                 let font = self.profile_of(id).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0, features: Default::default() });
                 let html = crate::styled_copy::cf_html(&crate::styled_copy::html(&styled, &font.family, font.size_pt, bg, crate::styled_copy::StyleOptions::from_globals(&self.globals)));
                 let rtf = crate::styled_copy::rtf(&styled, &font.family, font.size_pt, crate::styled_copy::StyleOptions::from_globals(&self.globals));
-                Some(crate::winclip::set(&text, &html, &rtf))
+                Some(crate::platform::clipboard::set(&text, &html, &rtf))
             }
         };
         if let Some(Err(e)) = result {

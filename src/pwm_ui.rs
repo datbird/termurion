@@ -147,18 +147,17 @@ impl PwmWindow {
         owner: isize,
         forced: Option<bool>,
     ) -> Result<PwmWindow, String> {
-        use winit::platform::windows::WindowAttributesExtWindows;
         let (w, h) = pwm::WINDOW_SIZE;
         let attrs = Window::default_attributes()
             .with_title(pwm::TITLE_WINDOW)
             .with_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64))
             .with_min_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64))
-            .with_owner_window(owner)
             .with_visible(false);
+        let attrs = crate::platform::window_style::owner_window(attrs, owner);
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
         host.follow_theme(forced);
-        if let Some(at) = sheet_origin(owner, host.window.outer_size()) {
-            host.window.set_outer_position(at);
+        if let Some((x, y)) = crate::platform::display::sheet_origin(owner, host.window.outer_size().width) {
+            host.window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
         }
         host.window.set_visible(true);
         host.focus();
@@ -241,7 +240,7 @@ impl PwmWindow {
             return false;
         }
         if let Some(c) = self.keys.chord(e)
-            && let (true, crate::menus::ChordKey::Char(k)) = (crate::winkeys::pwm_chord(&c), c.key) {
+            && let (true, crate::menus::ChordKey::Char(k)) = (crate::platform::keys::pwm_chord(&c), c.key) {
                 self.chords.push(k);
                 self.host.request_redraw();
                 return true;
@@ -370,23 +369,6 @@ impl PwmWindow {
             self.search = v.filter.to_string();
         }
     }
-}
-
-/// The owner's client area's top, centered across it: where a sheet would drop from.
-fn sheet_origin(owner: isize, size: winit::dpi::PhysicalSize<u32>) -> Option<winit::dpi::PhysicalPosition<i32>> {
-    use windows_sys::Win32::Foundation::{POINT, RECT};
-    use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
-    let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-    if unsafe { GetClientRect(owner as _, &mut rect) } == 0 {
-        return None;
-    }
-    let mut top_left = POINT { x: 0, y: 0 };
-    if unsafe { ClientToScreen(owner as _, &mut top_left) } == 0 {
-        return None;
-    }
-    let x = top_left.x + (rect.right - rect.left - size.width as i32) / 2;
-    Some(winit::dpi::PhysicalPosition::new(x, top_left.y))
 }
 
 /// The default button's action (`Buttons::default_act`).
