@@ -313,7 +313,7 @@ impl App {
                 return;
             }
             if let Err(e) = crate::reg::apply(&mut reg, &entries) {
-                crate::host::log(&format!("open with: {e}"));
+                crate::host_base::log(&format!("open with: {e}"));
             }
         }
     }

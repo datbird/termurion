@@ -301,7 +301,7 @@ impl App {
         let last = self.globals.number(crash_report::LAST_REPORT_KEY).unwrap_or(0.0);
         let Some((dump, _)) = crash_report::pending(&crate::crashdump::crashes_dir(), last) else { return };
         let file = dump.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-        let log = read_tail(&crate::host::log_path(), LOG_READ);
+        let log = read_tail(&crate::host_base::log_path(), LOG_READ);
         let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
         let text = crash_report::report_text(crate::update::current_version(), &crash_report::windows_version(), cpus, &file, &log);
         let text = crash_report::scrub(&text, &crash_report::private_folders());

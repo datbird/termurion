@@ -210,7 +210,7 @@ pub fn read_noauth_file(path: &str) -> Option<NoauthFile> {
         FileKind::Regular
     };
     let size = meta.file_size();
-    let owner_is_user = match (crate::winpipe::file_owner_sid(&file), crate::winpipe::user_sid()) {
+    let owner_is_user = match (crate::platform::windows::ipc::file_owner_sid(&file), crate::platform::windows::ipc::user_sid()) {
         (Ok(owner), Ok(user)) => owner == user,
         _ => false,
     };
@@ -495,7 +495,7 @@ mod tests {
         assert_eq!(noauth_status(&plain, Some(&f)), AllowAll::Valid);
 
         // Another owner (Administrators, which only an elevated process may assign).
-        if crate::winpipe::elevated().unwrap() {
+        if crate::platform::windows::ipc::elevated().unwrap() {
             let admins = at("admins");
             std::fs::write(&admins, noauth_contents(&admins)).unwrap();
             set_owner(&admins, "*S-1-5-32-544");

@@ -220,7 +220,7 @@ pub fn protect_dir_owner_only(dir: &Path) -> Result<(), String> {
     use windows_sys::Win32::Foundation::{HLOCAL, LocalFree};
     use windows_sys::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1, SE_FILE_OBJECT, SetNamedSecurityInfoW};
     use windows_sys::Win32::Security::{ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
-    let sid = crate::winpipe::user_sid()?;
+    let sid = crate::platform::windows::ipc::user_sid()?;
     let sddl = wide(&format!("D:P(A;OICI;FA;;;{sid})"));
     let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
     // SAFETY: plain calls with NUL-terminated strings; the descriptor is freed below.

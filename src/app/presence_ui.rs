@@ -146,13 +146,13 @@ impl App {
         let before = self.tray_failures;
         self.tray_failures = presence::tray_failures_after(self.tray_failures, result.is_ok());
         if presence::tray_enters_steady_retry(before, self.tray_failures) {
-            crate::host::log(&format!("tray: {before} failures, retrying every 30 s while resident with no icon"));
+            crate::host_base::log(&format!("tray: {before} failures, retrying every 30 s while resident with no icon"));
         }
         let verb = if want { "add" } else { "remove" };
         match &result {
-            Ok(()) => crate::host::log(&format!("tray: {verb} ok")),
+            Ok(()) => crate::host_base::log(&format!("tray: {verb} ok")),
             Err(e) => {
-                crate::host::log(&format!("tray: {verb} failed ({e}), failures in a row {}", self.tray_failures));
+                crate::host_base::log(&format!("tray: {verb} failed ({e}), failures in a row {}", self.tray_failures));
                 self.banners.set("tray", e.clone());
             }
         }
@@ -162,7 +162,7 @@ impl App {
 
     /// Explorer restarted and dropped every icon: add it again from a clean count.
     pub(super) fn taskbar_created(&mut self) {
-        crate::host::log("tray: TaskbarCreated, adding the icon again");
+        crate::host_base::log("tray: TaskbarCreated, adding the icon again");
         self.tray_on = false;
         self.tray_failures = 0;
         self.tray_due = None;
@@ -274,7 +274,7 @@ impl App {
         // A cloaked or background window still has to be foreground for the menu to close on a click away.
         unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd as HWND) };
         let picked = unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
-        crate::host::log(&format!("tray: menu on {hwnd:#x} (notification window {}), picked {picked}", Some(hwnd) == crate::notify::window_handle()));
+        crate::host_base::log(&format!("tray: menu on {hwnd:#x} (notification window {}), picked {picked}", Some(hwnd) == crate::notify::window_handle()));
         self.tray_pick = picked;
         // The pick arrives after the menu closes, so the menu lives until the next one.
         self.popup_menu = Some(menu);

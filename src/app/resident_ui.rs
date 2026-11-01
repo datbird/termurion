@@ -42,7 +42,7 @@ impl App {
         let decision = resident::after_last_window(false, hotkeys, self.user_interacted, ran, min, self.globals.bool(QUIT_KEY));
         let graced = !self.user_interacted && (ran.as_secs_f64() < min) && self.globals.bool(QUIT_KEY) && hotkeys == 0;
         if graced {
-            crate::host::log(resident::grace_note());
+            crate::host_base::log(resident::grace_note());
         }
         decision
     }

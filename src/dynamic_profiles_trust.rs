@@ -124,7 +124,7 @@ pub fn open(path: &crate::localfs::LocalPath, limit: usize) -> Result<Opened, St
         o.access_mode(READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_READ_DATA).share_mode(share);
     })
     .map_err(|e| e.to_string())?;
-    let me = crate::winpipe::user_sid().map_err(|e| format!("the current user is unknown ({e})"))?;
+    let me = crate::platform::windows::ipc::user_sid().map_err(|e| format!("the current user is unknown ({e})"))?;
     let handle = file.as_raw_handle() as HANDLE;
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     // SAFETY: the handle is open for the call and `info` is a plain out structure.
@@ -141,7 +141,7 @@ pub fn open(path: &crate::localfs::LocalPath, limit: usize) -> Result<Opened, St
             return Ok(Opened { dir, trust: Err(format!("its owner could not be read ({})", std::io::Error::from_raw_os_error(err as i32))), bytes: Err("not read".into()), stat });
         }
         let read_acl = || -> Result<(String, Option<Vec<Ace>>), String> {
-            let owner_text = if owner.is_null() { return Err("it has no owner".to_string()) } else { crate::winpipe::sid_text(owner)? };
+            let owner_text = if owner.is_null() { return Err("it has no owner".to_string()) } else { crate::platform::windows::ipc::sid_text(owner)? };
             if dacl.is_null() {
                 return Ok((owner_text, None));
             }
@@ -161,7 +161,7 @@ pub fn open(path: &crate::localfs::LocalPath, limit: usize) -> Result<Opened, St
                     _ => continue,
                 };
                 let mask = (bytes.add(4) as *const u32).read_unaligned();
-                let sid = crate::winpipe::sid_text(bytes.add(8) as PSID)?;
+                let sid = crate::platform::windows::ipc::sid_text(bytes.add(8) as PSID)?;
                 aces.push(Ace { sid, mask, allow, inherit_only: flags & 0x08 != 0 });
             }
             Ok((owner_text, Some(aces)))

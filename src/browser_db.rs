@@ -730,7 +730,7 @@ mod tests {
             let judged = crate::localfs::LocalPath::judge(&file).unwrap();
             let sddl = crate::localfs::dacl_sddl(&judged.parent().unwrap().unfollowed("browserdb-u.sqlite").unwrap()).unwrap();
             assert_eq!(sddl.matches("(A;").count(), 1, "one allow entry: {sddl}");
-            assert!(sddl.contains(&crate::winpipe::user_sid().unwrap()) && sddl.starts_with("D:P"), "{sddl}");
+            assert!(sddl.contains(&crate::platform::windows::ipc::user_sid().unwrap()) && sddl.starts_with("D:P"), "{sddl}");
         }
         let again = Db::open(&file).unwrap();
         assert_eq!(again.recent_history(0, 10).len(), 1, "history survives a reopen");

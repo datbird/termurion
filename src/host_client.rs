@@ -10,7 +10,7 @@ use std::time::Duration;
 use crate::host_proto::{Decoder, Live, MIN_VERSION, Msg, VERSION, encode};
 use crate::pty::{Notify, Read};
 use crate::ssh_transport::Transport;
-use crate::winpipe::Pipe;
+use crate::platform::ipc::Pipe;
 
 /// What the host said at the handshake.
 #[derive(Clone, Debug)]
@@ -260,7 +260,7 @@ impl Client {
     }
 
     fn connect_as(pipe: &str, wait: Duration, version: u32) -> Result<Option<(Client, Welcome)>, HostError> {
-        let Some(p) = crate::winpipe::connect(pipe, wait)? else { return Ok(None) };
+        let Some(p) = crate::platform::ipc::connect(pipe, wait)? else { return Ok(None) };
         p.server_is_this_user()?;
         let pipe = Arc::new(p);
         let (out, frames) = mpsc::channel::<Vec<u8>>();
@@ -526,7 +526,7 @@ impl Drop for HostedPty {
 }
 
 /// The session host program beside the app; `start_host_process` starts it by this file name.
-pub const HOST_EXE: &str = "termurion-host.exe";
+pub use crate::host_base::HOST_EXE;
 
 /// Starts `termurion-host.exe` from `exe_dir`, detached from Termurion (its own process group,
 /// out of Termurion's job when Windows allows), so it outlives Termurion.
@@ -551,7 +551,7 @@ pub fn start_host_process(exe_dir: &Path) -> Result<(), String> {
 
 /// Connects to this user's host, starting it when none runs, waiting up to `wait`.
 pub fn connect_or_start(exe_dir: &Path, wait: Duration) -> Result<(Client, Welcome), HostError> {
-    let pipe = crate::winpipe::host_pipe_name()?;
+    let pipe = crate::platform::ipc::host_pipe_name()?;
     if let Some(c) = Client::connect(&pipe, Duration::from_secs(1))? {
         return Ok(c);
     }
@@ -618,7 +618,7 @@ mod tests {
     /// (not busy), welcomes the client at `speaks`, and returns the first message after that.
     fn older_host(name: String, speaks: u32) -> std::thread::JoinHandle<Msg> {
         use crate::host_proto::Decoder;
-        let mut listener = crate::winpipe::Listener::bind(&name).unwrap();
+        let mut listener = crate::platform::ipc::Listener::bind(&name).unwrap();
         std::thread::spawn(move || {
             let hello = |p: &Pipe| {
                 let mut d = Decoder::default();
@@ -656,7 +656,7 @@ mod tests {
     /// sends it a version 2 message.
     #[test]
     fn an_older_host_is_spoken_to_in_version_one() {
-        let name = crate::winpipe::tests::test_name("oldhost");
+        let name = crate::platform::windows::ipc::tests::test_name("oldhost");
         let old_host = older_host(name.clone(), 1);
         let (client, welcome) = Client::connect(&name, Duration::from_secs(5)).unwrap().expect("the old host answers");
         assert_eq!(welcome.version, 1);
@@ -670,7 +670,7 @@ mod tests {
     /// password prompts still work there.
     #[test]
     fn a_version_two_host_keeps_version_two() {
-        let name = crate::winpipe::tests::test_name("v2host");
+        let name = crate::platform::windows::ipc::tests::test_name("v2host");
         let old_host = older_host(name.clone(), 2);
         let (client, welcome) = Client::connect(&name, Duration::from_secs(5)).unwrap().expect("the version 2 host answers");
         assert_eq!(welcome.version, 2);
@@ -683,7 +683,7 @@ mod tests {
     /// ConPTY launch still goes out as Launch.
     #[test]
     fn a_version_three_host_is_too_old_for_a_transport() {
-        let name = crate::winpipe::tests::test_name("v3host");
+        let name = crate::platform::windows::ipc::tests::test_name("v3host");
         let old_host = older_host(name.clone(), 3);
         let (client, welcome) = Client::connect(&name, Duration::from_secs(5)).unwrap().expect("the version 3 host answers");
         assert_eq!(welcome.version, 3);

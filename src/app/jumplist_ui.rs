@@ -28,7 +28,7 @@ fn recents_dir() -> Option<PathBuf> {
     if judged.is_none() {
         static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if !LOGGED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            crate::host::log(&format!("jump list: the Recents folder {} is not a local folder; recent profiles are skipped", dir.display()));
+            crate::host_base::log(&format!("jump list: the Recents folder {} is not a local folder; recent profiles are skipped", dir.display()));
         }
     }
     judged

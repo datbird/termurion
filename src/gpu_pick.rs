@@ -140,7 +140,7 @@ fn report_lost(generation: u64, text: String) {
     if generation != GENERATION.load(Ordering::SeqCst) {
         return;
     }
-    crate::host::log(&format!("renderer: {text}"));
+    crate::host_base::log(&format!("renderer: {text}"));
     let mut slot = LOST.lock().unwrap_or_else(|e| e.into_inner());
     if slot.is_none() {
         *slot = Some(text);
@@ -165,7 +165,7 @@ pub fn watch(device: &wgpu::Device, generation: u64) {
         if text.to_ascii_lowercase().contains("lost") {
             report_lost(generation, format!("device lost (error): {text}"));
         } else {
-            crate::host::log(&format!("renderer: GPU error: {text}"));
+            crate::host_base::log(&format!("renderer: GPU error: {text}"));
         }
     }));
 }

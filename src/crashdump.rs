@@ -108,7 +108,7 @@ mod win {
             Ok(p) => p.display().to_string(),
             Err(e) => format!("none ({e})"),
         };
-        crate::host::log(&crash_line(exe, code, &module, offset, &shown));
+        crate::host_base::log(&crash_line(exe, code, &module, offset, &shown));
     }
 
     /// The module file name holding `addr` and the offset in it ("?" and the address when none).

@@ -1966,13 +1966,13 @@ pub fn run() {
     let mut pending_urls_at_start = Vec::new();
     match crate::url_launch::url_argument(&std::env::args_os().collect::<Vec<_>>()) {
         crate::url_launch::UrlArg::None => {}
-        crate::url_launch::UrlArg::Refused(why) => return crate::host::log(&format!("url: refused {why}")),
+        crate::url_launch::UrlArg::Refused(why) => return crate::host_base::log(&format!("url: refused {why}")),
         // Only when no Termurion of this user runs does this one start (fix r1): a busy or failed
         // hand-over never opens a second Termurion beside the first.
         crate::url_launch::UrlArg::Url(url) => match crate::url_launch::hand_to_running(&crate::launch::Request::Url { url: url.clone() }) {
             crate::url_launch::AfterHand::Exit => return,
             crate::url_launch::AfterHand::Start => pending_urls_at_start.push(url),
-            crate::url_launch::AfterHand::Refuse(why) => return crate::host::log(&format!("url: refused: {why}")),
+            crate::url_launch::AfterHand::Refuse(why) => return crate::host_base::log(&format!("url: refused: {why}")),
         },
     }
     // Started again after Import All Settings and Data: the old Termurion ends first (`IE:898-911`).
@@ -2005,7 +2005,7 @@ pub fn run() {
             let termurion = crate::default_term::is_termurion(&crate::default_term::current(&crate::reg::HkcuRegistry));
             match crate::default_term::embedding_start(termurion, pack, &crate::url_launch::probe_running()) {
                 crate::default_term::EmbeddingStart::Run => embedding = true,
-                crate::default_term::EmbeddingStart::Exit(why) => return crate::host::log(&format!("embedding: not started: {why}")),
+                crate::default_term::EmbeddingStart::Exit(why) => return crate::host_base::log(&format!("embedding: not started: {why}")),
             }
         }
         Ok(request) => {
@@ -2013,7 +2013,7 @@ pub fn run() {
                 match crate::url_launch::hand_to_running(&request) {
                     crate::url_launch::AfterHand::Exit => return,
                     crate::url_launch::AfterHand::Start => {}
-                    crate::url_launch::AfterHand::Refuse(why) => return crate::host::log(&format!("launch: refused: {why}")),
+                    crate::url_launch::AfterHand::Refuse(why) => return crate::host_base::log(&format!("launch: refused: {why}")),
                 }
             }
             // A bare start is the startup plan's own window: it has nothing more to do.
@@ -2064,7 +2064,7 @@ pub fn run() {
     let url_listener = match crate::url_launch::listen(launch_events(proxy.clone())) {
         Ok(h) => Some(h),
         Err(e) => {
-            crate::host::log(&format!("launch: not listening: {e}"));
+            crate::host_base::log(&format!("launch: not listening: {e}"));
             if embedding {
                 return;
             }
@@ -2114,7 +2114,7 @@ pub fn run() {
         Ok(done) => {
             let entry = crate::utilities::path_entry(&done.folder.to_string_lossy());
             if let Some(text) = crate::utilities::refresh_banner(&done.failed) {
-                crate::host::log(&format!("termurion: {text}"));
+                crate::host_base::log(&format!("termurion: {text}"));
                 banners.set("utilities", text);
             } else if entry.is_none() {
                 banners.set("utilities", format!("The utilities folder {} has a \";\" in its path, so it is not put on PATH.", done.folder.display()));
@@ -7743,7 +7743,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.menu_peek.clear();
                 let traced = std::mem::take(&mut self.tray_pick);
                 if traced {
-                    crate::host::log(&format!("tray: pick {id} (last window {})", self.last_window.is_some()));
+                    crate::host_base::log(&format!("tray: pick {id} (last window {})", self.last_window.is_some()));
                 }
                 if let Some(w) = self.last_window {
                     self.enter(w);
@@ -8123,7 +8123,7 @@ fn log_adapters_once(list: &[gpu_pick::Facts]) {
         for f in list {
             eprintln!("adapter available: backend={:?} name={} device_type={:?}", f.backend, f.name, f.kind);
         }
-        crate::host::log(&format!("adapters: {}", gpu_pick::describe(list)));
+        crate::host_base::log(&format!("adapters: {}", gpu_pick::describe(list)));
         power::set_both_gpu_kinds(gpu_pick::both_kinds(list));
     });
 }
@@ -8139,12 +8139,12 @@ fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference:
         match init_gpu_on(window.clone(), &display, power_preference, backends) {
             Ok(gpu) => {
                 if !failures.is_empty() {
-                    crate::host::log(&format!("renderer: fell back to {label} because {}", failures.join("; ")));
+                    crate::host_base::log(&format!("renderer: fell back to {label} because {}", failures.join("; ")));
                 }
                 return Ok(gpu);
             }
             Err(e) => {
-                crate::host::log(&format!("renderer: {label} unavailable: {e}"));
+                crate::host_base::log(&format!("renderer: {label} unavailable: {e}"));
                 failures.push(format!("{label}: {e}"));
             }
         }
@@ -8186,7 +8186,7 @@ fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHan
     // Once per run in host.log too, so a desktop report says which renderer drew (FIXES 4).
     static LOGGED: std::sync::Once = std::sync::Once::new();
     LOGGED.call_once(|| {
-        crate::host::log(&format!("renderer: {:?} on {} ({})", info.backend, info.name, gpu_pick::why(power_preference, &facts, &gpu_pick::Facts::of(&info))));
+        crate::host_base::log(&format!("renderer: {:?} on {} ({})", info.backend, info.name, gpu_pick::why(power_preference, &facts, &gpu_pick::Facts::of(&info))));
     });
     let caps = surface.get_capabilities(&adapter);
     let format = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0]);

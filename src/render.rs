@@ -1066,7 +1066,7 @@ impl Renderer {
         }
         if self.faces.len() >= self.face_cap {
             if !std::mem::replace(&mut self.capped, true) {
-                crate::host::log("fonts: too many faces; new sizes use the nearest one");
+                crate::host_base::log("fonts: too many faces; new sizes use the nearest one");
             }
             let nearest = (0..self.faces.len())
                 .filter(|i| self.faces[*i].key.same_but_size(key))

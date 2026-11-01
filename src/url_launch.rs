@@ -238,18 +238,19 @@ pub use pipe::{Serving, hand_request_checked, hand_request_on, hand_to_running, 
 #[cfg(windows)]
 mod pipe {
     use super::*;
-    use crate::winpipe;
+    use crate::platform::ipc;
+    use crate::platform::windows::ipc as wipc;
 
     /// Hands `request` to a running Termurion of this user, retrying a busy pipe briefly.
     pub fn hand_to_running(request: &crate::launch::Request) -> AfterHand {
-        let name = match winpipe::url_pipe_name() {
+        let name = match ipc::url_pipe_name() {
             Ok(n) => n,
             Err(e) => return AfterHand::Refuse(format!("no link pipe name: {e}")),
         };
         let mut attempt = || {
             let handed = hand_request_on(&name, request, &allow_foreground);
             if let Handed::OtherOwner(e) = &handed {
-                crate::host::log(&format!("url: the link pipe is held by another owner, so this Termurion runs: {e}"));
+                crate::host_base::log(&format!("url: the link pipe is held by another owner, so this Termurion runs: {e}"));
             }
             handed
         };
@@ -259,7 +260,7 @@ mod pipe {
     /// Whether a Termurion of this user answers on the launch pipe, with nothing sent (an
     /// `-Embedding` start asks before it makes anything: B9).
     pub fn probe_running() -> Handed {
-        match winpipe::url_pipe_name() {
+        match ipc::url_pipe_name() {
             Ok(n) => probe_on(&n, &verify_server),
             Err(e) => Handed::Failed(format!("no link pipe name: {e}")),
         }
@@ -267,11 +268,11 @@ mod pipe {
 
     /// `probe_running` on pipe `name`; a holder `verify` refuses is `OtherOwner`.
     pub fn probe_on(name: &str, verify: &dyn Fn(u32) -> Result<(), String>) -> Handed {
-        let pipe = match winpipe::connect_owned(name, Duration::from_secs(1)) {
+        let pipe = match ipc::connect_owned(name, Duration::from_secs(1)) {
             Ok(Some(p)) => p,
             Ok(None) => return Handed::NoServer,
-            Err(winpipe::ConnectError::Denied(e)) => return Handed::OtherOwner(e),
-            Err(winpipe::ConnectError::Other(e)) => return Handed::Failed(e),
+            Err(ipc::ConnectError::Denied(e)) => return Handed::OtherOwner(e),
+            Err(ipc::ConnectError::Other(e)) => return Handed::Failed(e),
         };
         if let Err(e) = pipe.server_is_this_user() {
             return Handed::OtherOwner(e);
@@ -302,18 +303,18 @@ mod pipe {
     /// `server_verdict` for the process `pid` serving the pipe.
     fn verify_server(pid: u32) -> Result<(), String> {
         let mine = std::env::current_exe().map_err(|e| e.to_string())?;
-        server_verdict(&winpipe::process_token_facts(pid)?, &winpipe::own_token_facts()?, winpipe::process_image(pid).as_deref(), winpipe::session_of(pid), winpipe::session_of(std::process::id()), &mine.to_string_lossy())
+        server_verdict(&wipc::process_token_facts(pid)?, &wipc::own_token_facts()?, wipc::process_image(pid).as_deref(), wipc::session_of(pid), wipc::session_of(std::process::id()), &mine.to_string_lossy())
     }
 
     /// `hand_request_on` with the server check given: a holder `verify` refuses gets nothing, and
     /// is `OtherOwner` (this Termurion runs without a listener, as when another user holds the name).
     pub fn hand_request_checked(name: &str, request: &crate::launch::Request, grant: &dyn Fn(u32), verify: &dyn Fn(u32) -> Result<(), String>) -> Handed {
         let Some(message) = crate::launch::encode(request) else { return Handed::Failed("the request is not one Termurion accepts".into()) };
-        let pipe = match winpipe::connect_owned(name, Duration::from_secs(1)) {
+        let pipe = match ipc::connect_owned(name, Duration::from_secs(1)) {
             Ok(Some(p)) => p,
             Ok(None) => return Handed::NoServer,
-            Err(winpipe::ConnectError::Denied(e)) => return Handed::OtherOwner(e),
-            Err(winpipe::ConnectError::Other(e)) => return Handed::Failed(e),
+            Err(ipc::ConnectError::Denied(e)) => return Handed::OtherOwner(e),
+            Err(ipc::ConnectError::Other(e)) => return Handed::Failed(e),
         };
         if let Err(e) = pipe.server_is_this_user() {
             return Handed::OtherOwner(e);
@@ -343,7 +344,7 @@ mod pipe {
 
     /// The launch pipe served on its own thread until `stop`.
     pub fn listen(notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<Serving, String> {
-        serve_on(&winpipe::url_pipe_name()?, Duration::from_secs(2), notify)
+        serve_on(&ipc::url_pipe_name()?, Duration::from_secs(2), notify)
     }
 
     /// The listening thread of a pipe served for the life of the process.
@@ -374,7 +375,7 @@ mod pipe {
     }
 
     pub fn serve_on(name: &str, wait: Duration, notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<Serving, String> {
-        let mut listener = winpipe::Listener::bind(name)?;
+        let mut listener = ipc::Listener::bind(name)?;
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopping = stop.clone();
         let thread = std::thread::spawn(move || {
@@ -383,7 +384,7 @@ mod pipe {
                     Ok(Some(p)) => p,
                     Ok(None) => continue,
                     Err(e) => {
-                        crate::host::log(&format!("url: accept failed: {e}"));
+                        crate::host_base::log(&format!("url: accept failed: {e}"));
                         if listener.renew().is_err() {
                             return;
                         }
@@ -406,7 +407,7 @@ mod pipe {
     /// counts it taken only then), the pipe is closed, and the request handed on. A silent or finished
     /// client is closed either way, so it never blocks the next one, and the ack never waits for the
     /// callback.
-    fn take_one(pipe: &winpipe::Pipe, wait: Duration, notify: &dyn Fn(crate::launch::Request)) {
+    fn take_one(pipe: &ipc::Pipe, wait: Duration, notify: &dyn Fn(crate::launch::Request)) {
         let request = read_message(pipe, wait);
         if request.is_some() {
             let _ = pipe.write_all(&[ACK]);
@@ -419,7 +420,7 @@ mod pipe {
 
     /// One message, read within `wait` of the accept and at most `launch::MAX_MESSAGE` in all:
     /// it ends where `launch::decode` accepts it. A longer, malformed or silent client is dropped.
-    fn read_message(pipe: &winpipe::Pipe, wait: Duration) -> Option<crate::launch::Request> {
+    fn read_message(pipe: &ipc::Pipe, wait: Duration) -> Option<crate::launch::Request> {
         let end = Instant::now() + wait;
         let mut bytes: Vec<u8> = Vec::new();
         let mut chunk = [0u8; 1024];
@@ -522,10 +523,14 @@ mod tests {
         for bad in ["ssh://h/\u{202e}x", "ssh://h/\u{1b}[31m", "ssh://h/\u{85}", "ssh://h/\u{2028}", "ssh://h x", "ssh://h/\u{200b}"] {
             assert!(matches!(url_argument(&argv(&["--url", bad])), UrlArg::Refused(_)), "{bad:?}");
         }
-        use std::os::windows::ffi::OsStringExt;
-        let mut bad = argv(&["--url"]);
-        bad.push(OsString::from_wide(&[0x73, 0x73, 0x68, 0x3a, 0xd800]));
-        assert!(matches!(url_argument(&bad), UrlArg::Refused(_)));
+        // A lone surrogate is a Windows-only OsString.
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            let mut bad = argv(&["--url"]);
+            bad.push(OsString::from_wide(&[0x73, 0x73, 0x68, 0x3a, 0xd800]));
+            assert!(matches!(url_argument(&bad), UrlArg::Refused(_)));
+        }
     }
 
     #[test]
@@ -618,7 +623,7 @@ mod tests {
     #[cfg(windows)]
     mod windows {
         use super::super::*;
-        use crate::winpipe::tests::test_name;
+        use crate::platform::windows::ipc::tests::test_name;
         use std::sync::mpsc;
 
         fn listening(name: &str, wait: Duration) -> mpsc::Receiver<String> {
@@ -728,7 +733,7 @@ mod tests {
             for (i, request) in every_kind().into_iter().enumerate() {
                 let name = test_name(&format!("launch-silent-{i}"));
                 let rx = listening_all(&name, Duration::from_millis(200));
-                let silent = crate::winpipe::connect(&name, Duration::from_secs(1)).unwrap().unwrap();
+                let silent = crate::platform::ipc::connect(&name, Duration::from_secs(1)).unwrap().unwrap();
                 let t = Instant::now();
                 assert_eq!(hand_request_on(&name, &request, &|_| {}), Handed::Taken, "{request:?}");
                 assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), request);
@@ -745,7 +750,7 @@ mod tests {
             let rx = listening_all(&name, Duration::from_millis(300));
             let long = format!("arrangement\n{}\n", "a".repeat(crate::launch::MAX_MESSAGE));
             for bad in [&b"reopen\nreopen\n"[..], b"junk\n", b"arrangement\na\0\n", long.as_bytes(), b"\xff\xfe"] {
-                let pipe = crate::winpipe::connect(&name, Duration::from_secs(1)).unwrap().unwrap();
+                let pipe = crate::platform::ipc::connect(&name, Duration::from_secs(1)).unwrap().unwrap();
                 let _ = pipe.write_all(bad);
                 assert_eq!(pipe.read_timeout(&mut [0u8; 1], Duration::from_secs(3)), Ok(Some(0)), "dropped and closed");
             }
@@ -774,7 +779,7 @@ mod tests {
         #[test]
         fn a_close_without_the_ack_is_not_taken() {
             let name = test_name("launch-noack");
-            let mut listener = crate::winpipe::Listener::bind(&name).unwrap();
+            let mut listener = crate::platform::ipc::Listener::bind(&name).unwrap();
             let server = std::thread::spawn(move || {
                 let pipe = listener.accept(Duration::from_secs(5)).unwrap().unwrap();
                 let _ = pipe.read_timeout(&mut [0u8; 64], Duration::from_secs(2));
@@ -794,7 +799,7 @@ mod tests {
         fn silent_url_client_is_dropped() {
             let name = test_name("url-silent");
             let rx = listening(&name, Duration::from_millis(200));
-            let silent = crate::winpipe::connect(&name, Duration::from_secs(1)).unwrap().unwrap();
+            let silent = crate::platform::ipc::connect(&name, Duration::from_secs(1)).unwrap().unwrap();
             let t = Instant::now();
             assert_eq!(hand_to_running_on(&name, "ssh://h2", &|_| {}), Handed::Taken);
             assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), "ssh://h2");

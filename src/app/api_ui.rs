@@ -273,7 +273,7 @@ pub(super) fn write_noauth_file(path: &str, set_owner: bool) -> Result<(), Strin
         let access = if set_owner { FILE_GENERIC_WRITE | WRITE_OWNER | READ_CONTROL } else { FILE_GENERIC_WRITE };
         let mut f = std::fs::OpenOptions::new().write(true).create_new(true).access_mode(access).open(&temp).map_err(|e| e.to_string())?;
         if set_owner {
-            crate::winpipe::set_file_owner_to_user(&f)?;
+            crate::platform::windows::ipc::set_file_owner_to_user(&f)?;
         }
         f.write_all(api_auth::noauth_contents(path).as_bytes()).map_err(|e| e.to_string())?;
         f.sync_all().map_err(|e| e.to_string())?;
@@ -558,7 +558,7 @@ impl App {
     /// Writes (on) or deletes (off) the allow-all file.
     pub(super) fn set_allow_all(&mut self, on: bool) -> Result<(), String> {
         let path = noauth_path().ok_or_else(|| "USERPROFILE is not set".to_string())?;
-        if on { write_noauth_file(&path, crate::winpipe::elevated().unwrap_or(false)) } else { std::fs::remove_file(&path).map_err(|e| e.to_string()) }
+        if on { write_noauth_file(&path, crate::platform::windows::ipc::elevated().unwrap_or(false)) } else { std::fs::remove_file(&path).map_err(|e| e.to_string()) }
     }
 
     /// The popup's value is never trusted: it shows the file, and is saved like any setting.
@@ -1445,7 +1445,7 @@ mod tests {
         // A second write, setting the owner only when elevated as `set_allow_all` does,
         // replaces the file, leaving no temporary file behind.
         std::fs::write(&path, "stale").unwrap();
-        write_noauth_file(&path, crate::winpipe::elevated().unwrap()).unwrap();
+        write_noauth_file(&path, crate::platform::windows::ipc::elevated().unwrap()).unwrap();
         assert_eq!(noauth_status(&path, read_noauth_file(&path).as_ref()), AllowAll::Valid);
         let parent = std::path::Path::new(&path).parent().unwrap();
         assert_eq!(std::fs::read_dir(parent).unwrap().count(), 1);

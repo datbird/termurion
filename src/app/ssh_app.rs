@@ -28,7 +28,7 @@ impl App {
         match crate::ssh_secret_win::Server::start(self.ssh_secrets.clone()) {
             Ok(server) => self.ssh_secret_server = Some(server),
             Err(e) => {
-                let e = match crate::winpipe::user_sid() {
+                let e = match crate::platform::windows::ipc::user_sid() {
                     Ok(sid) => e.replace(&sid, "<SID>"),
                     Err(_) => e,
                 };

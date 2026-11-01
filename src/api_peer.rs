@@ -138,7 +138,7 @@ mod win {
     };
     use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 
-    use crate::winpipe;
+    use crate::platform::windows::ipc;
 
     /// The raw table for one family, in u64 cells so the rows are aligned. The table can grow
     /// between the size call and the data call, so it retries a few times.
@@ -235,7 +235,7 @@ mod win {
         let rows = if peer.is_ipv4() { v4_rows(TCP_TABLE_OWNER_PID_CONNECTIONS)? } else { v6_rows(TCP_TABLE_OWNER_PID_CONNECTIONS)? };
         let pid = owner(&rows, peer, local).ok_or_else(|| NO_OWNER.to_string())?;
         // Each token is opened once; any query that fails refuses.
-        judge(&winpipe::process_token_facts(pid)?, &winpipe::own_token_facts()?)?;
+        judge(&ipc::process_token_facts(pid)?, &ipc::own_token_facts()?)?;
         Ok(pid)
     }
 }
@@ -326,7 +326,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn this_process_is_its_own_peer() {
-        use crate::winpipe;
+        use crate::platform::windows::ipc;
         use std::net::{Ipv4Addr, Ipv6Addr, TcpListener, TcpStream};
         for ip in [std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), std::net::IpAddr::V6(Ipv6Addr::LOCALHOST)] {
             let listener = TcpListener::bind(SocketAddr::new(ip, 0)).unwrap();
@@ -342,14 +342,14 @@ mod tests {
         }
         // A connection that does not exist has no owner.
         assert_eq!(check("127.0.0.1:1".parse().unwrap(), "127.0.0.1:2".parse().unwrap()), Err(NO_OWNER.to_string()));
-        let mine = winpipe::own_token_facts().unwrap();
-        assert_eq!(winpipe::process_token_facts(std::process::id()), Ok(mine.clone()));
-        assert_eq!(Ok(mine.sid.clone()), winpipe::user_sid());
-        assert_eq!(Ok(mine.elevated), winpipe::elevated());
+        let mine = ipc::own_token_facts().unwrap();
+        assert_eq!(ipc::process_token_facts(std::process::id()), Ok(mine.clone()));
+        assert_eq!(Ok(mine.sid.clone()), ipc::user_sid());
+        assert_eq!(Ok(mine.elevated), ipc::elevated());
         assert!(!mine.app_container && !mine.restricted);
         assert!(mine.integrity >= MEDIUM_RID, "the suite runs at Medium or higher");
         // A pid that is no process is refused, never passed.
-        assert!(winpipe::process_token_facts(0).is_err());
+        assert!(ipc::process_token_facts(0).is_err());
     }
 
     #[cfg(windows)]

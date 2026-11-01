@@ -218,7 +218,7 @@ pub fn begin_closing() {
 fn caller_peer() -> Option<crate::api_peer::Peer> {
     unsafe {
         CoImpersonateClient().ok()?;
-        let peer = crate::winpipe::thread_peer().ok();
+        let peer = crate::platform::ipc::thread_peer().ok();
         let _ = CoRevertToSelf();
         peer
     }
@@ -335,7 +335,7 @@ impl Server {
     /// calls arrive on COM's RPC threads and never through winit's message loop. `send` gets
     /// every good handoff; `close` is the api's `ConptyClosePseudoConsole`.
     pub fn register(send: Box<dyn Fn(Handoff) + Send + Sync>, pack: PackFn, close: CloseFn) -> Result<Server, String> {
-        let mine = crate::winpipe::own_peer()?;
+        let mine = crate::platform::ipc::own_peer()?;
         let shared = Arc::new(Shared { send, pack, close, gate: Mutex::new(Gate::default()), live: Arc::new(AtomicUsize::new(0)), mine, inflight: Arc::new(AtomicUsize::new(0)) });
         let (stop, wait) = mpsc::channel::<()>();
         let (done, result) = mpsc::channel::<Result<(), String>>();
@@ -385,7 +385,7 @@ impl Drop for Server {
         }
         // The class is revoked; a call already inside has sent its handoff when this returns.
         if !wait_idle(&self.shared.inflight, INFLIGHT_LIMIT) {
-            crate::host::log("handoff: a call was still in flight when the class closed");
+            crate::host_base::log("handoff: a call was still in flight when the class closed");
         }
     }
 }

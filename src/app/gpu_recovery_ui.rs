@@ -62,7 +62,7 @@ impl App {
     pub(super) fn gpu_recovery_tick(&mut self) -> Option<Instant> {
         let now = Instant::now();
         if let Some(why) = gpu_pick::take_lost() {
-            crate::host::log(&format!("renderer: recovering after: {why}"));
+            crate::host_base::log(&format!("renderer: recovering after: {why}"));
             self.gpu_recovery.lost(now);
         }
         match self.gpu_recovery.poll(now) {
@@ -96,13 +96,13 @@ impl App {
         };
         match self.rebuild_all_gpus(backends) {
             Ok(summary) => {
-                crate::host::log(&format!("renderer: recovered on {label} {summary}"));
+                crate::host_base::log(&format!("renderer: recovered on {label} {summary}"));
                 self.gpu_recovery.recovered(now);
                 self.prefs_gpu = self.prefs_gpu.take().and(self.gpu.as_ref().map(|g| (g.instance.clone(), g.adapter.clone(), g.device.clone(), g.queue.clone())));
                 self.redraw_every_window();
             }
             Err(e) => {
-                crate::host::log(&format!("renderer: recovery on {label} failed: {e}"));
+                crate::host_base::log(&format!("renderer: recovery on {label} failed: {e}"));
                 self.gpu_recovery.failed(now);
             }
         }

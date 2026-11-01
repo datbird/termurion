@@ -28,7 +28,7 @@ pub(super) fn flags(style: u32) -> u32 {
 /// Shows a message box and returns its answer (IDOK, IDYES, ...). `owner` is the window the box
 /// belongs to (disabled while the box is open), or None for a box of its own.
 pub(super) fn show(owner: Option<isize>, title: &str, text: &str, style: u32) -> i32 {
-    show_with(owner, title, text, style, crate::host::log)
+    show_with(owner, title, text, style, crate::host_base::log)
 }
 
 /// `show`, writing the watcher's lines with `log`.

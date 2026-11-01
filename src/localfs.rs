@@ -140,7 +140,7 @@ pub fn create_owner_only(p: &Unfollowed) -> io::Result<File> {
     use windows_sys::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
     use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
     use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ};
-    let sid = crate::winpipe::user_sid().map_err(io::Error::other)?;
+    let sid = crate::platform::windows::ipc::user_sid().map_err(io::Error::other)?;
     let sddl: Vec<u16> = format!("O:{sid}D:P(A;;FA;;;{sid})").encode_utf16().chain(std::iter::once(0)).collect();
     let name: Vec<u16> = p.0.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
     // SAFETY: both strings are NUL-terminated and outlive the calls; the descriptor is freed once;
@@ -171,7 +171,7 @@ pub fn is_owner_only(f: &File) -> bool {
     st.is_file
         && !st.is_reparse
         && link_count(f).is_ok_and(|n| n == 1)
-        && matches!((crate::winpipe::file_owner_sid(f), crate::winpipe::user_sid()), (Ok(a), Ok(b)) if a == b && owner_only(&b))
+        && matches!((crate::platform::windows::ipc::file_owner_sid(f), crate::platform::windows::ipc::user_sid()), (Ok(a), Ok(b)) if a == b && owner_only(&b))
 }
 
 /// Opens the SQLite database at a judged path (created when absent, no URI parsing, no shared
@@ -894,7 +894,7 @@ mod tests {
         ("git_run_win.rs", "run_in_job", 1, "the NUL device, not a path"),
         ("globals.rs", "load", 1, "Termurion's own settings file"),
         ("globals.rs", "save", 3, "Termurion's own settings file"),
-        ("host.rs", "log", 1, "Termurion's own log file"),
+        ("host_base.rs", "log", 1, "Termurion's own log file"),
         ("host.rs", "reopen_app", 1, "the person's own profile folder as the working folder of the Termurion the host restarts"),
         ("bin/termurion-host.rs", "run", 1, "termurion.exe beside the host's own exe"),
         ("crashdump.rs", "install", 1, "Termurion's own crashes folder under %LOCALAPPDATA%"),
@@ -936,7 +936,7 @@ mod tests {
         ("platform/windows/shell_open.rs", "open_url", 1, "URL targets only: platform::shell_open::open_with has semantic::shell_url refuse a path, a drive path, a network path and a file: link before ShellExecuteW; a file opens only through localfs::open_with_shell with a LocalPath"),
         ("app/semantic_ui.rs", "shell_open_scheme", 1, "URL targets only: link_scheme::scheme_of and screen judge it again (a path has no scheme, file: is on the blocked list) before ShellExecuteW"),
         ("utilities.rs", "stamp", 1, "Termurion's own utilities folder under %APPDATA%\\Termurion"),
-        ("winpipe.rs", "connect_owned", 1, "a named pipe, not a file path"),
+        ("platform/windows/ipc.rs", "connect_owned", 1, "a named pipe, not a file path"),
     ];
 
     fn fn_name(line: &str) -> Option<String> {

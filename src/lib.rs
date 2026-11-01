@@ -402,7 +402,11 @@ pub mod restore_state;
 pub mod resident;
 pub mod host_proto;
 pub mod host_watch;
+pub mod host_base;
+// Moved to Task 4: host and host_client need pty/conpty.
+#[cfg(windows)]
 pub mod host;
+#[cfg(windows)]
 pub mod host_client;
 pub mod reattach;
 pub mod hotkey;
@@ -501,7 +505,6 @@ pub mod tmux_prefix;
 pub mod doubletap;
 pub mod hotkey_motion;
 pub mod input_locale;
-pub mod winpipe;
 pub mod toolbelt;
 pub mod toolbelt_layout;
 pub mod tool_list;

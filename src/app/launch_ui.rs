@@ -95,7 +95,7 @@ impl App {
     pub(super) fn outside_note(&mut self, key: &'static str, text: String) {
         if self.resident {
             if let Err(e) = crate::notify::show_with("Termurion", &text, true) {
-                crate::host::log(&format!("{key}: {text} (no notification: {e})"));
+                crate::host_base::log(&format!("{key}: {text} (no notification: {e})"));
             }
             return;
         }
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn one_channel_serves_every_request() {
         assert!(!std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("instance_win.rs").exists());
-        let pipe = include_str!("../winpipe.rs");
+        let pipe = include_str!("../platform/windows/ipc.rs");
         assert!(!pipe.contains("termurion-app-"));
     }
 }

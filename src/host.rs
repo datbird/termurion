@@ -11,7 +11,9 @@ use crate::conpty::Api;
 use crate::host_proto::{Decoder, Live, MIN_VERSION, Msg, Ring, VERSION, encode};
 use crate::pty::{Pty, Read};
 use crate::ssh_transport::Transport;
-use crate::winpipe::{Listener, Pipe};
+use crate::platform::ipc::{Listener, Pipe};
+
+pub use crate::host_base::{log, log_path};
 
 /// Output a session keeps for a reattach.
 pub const RING: usize = 4 * 1024 * 1024;
@@ -511,20 +513,6 @@ fn resize_log_line(old: (u16, u16), new: (u16, u16), id: u64) -> Option<String> 
     (old != new).then(|| format!("pty: resize {}x{} (session {id})", new.0, new.1))
 }
 
-/// `host.log` beside Termurion's settings.
-pub fn log_path() -> std::path::PathBuf {
-    crate::globals::default_path().with_file_name("host.log")
-}
-
-/// Appends a line to the host log (the host has no window and no console).
-pub fn log(line: &str) {
-    use std::io::Write;
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log_path()) {
-        let _ = writeln!(f, "{stamp} [{}] {line}", std::process::id());
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -536,7 +524,8 @@ pub(crate) mod tests {
         assert_eq!(resize_log_line((120, 40), (120, 41), 3).as_deref(), Some("pty: resize 120x41 (session 3)"));
     }
     use crate::host_proto::{Decoder, Live, Msg, encode};
-    use crate::winpipe::{self, Pipe};
+    use crate::platform::ipc::Pipe;
+    use crate::platform::windows::ipc as winpipe;
     use std::sync::Arc;
     use std::sync::mpsc::{self, Receiver};
     use std::time::Instant;

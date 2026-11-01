@@ -866,7 +866,7 @@ mod win {
             if err != 0 {
                 return unknown();
             }
-            let sid_of = |s: PSID| if s.is_null() { "?".to_string() } else { crate::winpipe::sid_text(s).unwrap_or_else(|_| "?".into()) };
+            let sid_of = |s: PSID| if s.is_null() { "?".to_string() } else { crate::platform::windows::ipc::sid_text(s).unwrap_or_else(|_| "?".into()) };
             let name_of = |s: PSID, id: &str| {
                 if !names {
                     return String::new();

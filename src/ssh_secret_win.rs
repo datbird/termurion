@@ -7,7 +7,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::ssh_secret::{valid, Secrets, SECRET_BYTES};
-use crate::winpipe::{Listener, Pipe};
+use crate::platform::ipc::{Listener, Pipe};
 
 /// How long one accept waits before the thread looks at its stop flag.
 const ACCEPT_WAIT: Duration = Duration::from_millis(250);
@@ -21,9 +21,9 @@ pub struct Server {
 }
 
 impl Server {
-    /// Serves on this user's secret pipe (`winpipe::secret_pipe_name`).
+    /// Serves on this user's secret pipe (`platform::ipc::secret_pipe_name`).
     pub fn start(secrets: Arc<Mutex<Secrets>>) -> Result<Server, String> {
-        Server::start_on(&crate::winpipe::secret_pipe_name()?, secrets)
+        Server::start_on(&crate::platform::ipc::secret_pipe_name()?, secrets)
     }
 
     /// Serves on `name`. Fails when the name is taken (another Termurion of this user serves it).
@@ -75,14 +75,14 @@ impl Drop for Server {
 /// A secret from this user's Termurion at this elevation. None when none serves one (iTerm2's
 /// "none" off macOS, `IS:44-56`).
 pub fn fetch(wait: Duration) -> Option<String> {
-    fetch_from(&crate::winpipe::secret_pipe_name().ok()?, wait)
+    fetch_from(&crate::platform::ipc::secret_pipe_name().ok()?, wait)
 }
 
 /// A secret from the pipe `name`: None when nothing listens, when the server is another user
 /// or runs at another elevation, or when what it sent (up to its close, at most 64 bytes)
 /// is not a secret. `wait` bounds the connect and, separately, the read.
 pub fn fetch_from(name: &str, wait: Duration) -> Option<String> {
-    let pipe = Arc::new(crate::winpipe::connect(name, wait).ok()??);
+    let pipe = Arc::new(crate::platform::ipc::connect(name, wait).ok()??);
     pipe.server_is_this_user().ok()?;
     // A server that never closes must not hold the caller: the pipe is shut after `wait`.
     let (done, ended) = std::sync::mpsc::channel::<()>();

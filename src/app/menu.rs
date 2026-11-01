@@ -1371,7 +1371,7 @@ impl App {
     fn quit(&mut self, event_loop: &ActiveEventLoop) {
         let pending = self.prefs_exit_pending;
         let ok = !pending && self.confirm_close(close_ui::Closing::App);
-        crate::host::log(&format!("quit: settings question pending {pending}, confirmed {ok}"));
+        crate::host_base::log(&format!("quit: settings question pending {pending}, confirmed {ok}"));
         if ok {
             self.quit_confirmed(event_loop);
         }
@@ -1404,7 +1404,7 @@ impl App {
         self.panes.clear();
         self.focus_order.clear();
         let exits = self.prefs_before_exit();
-        crate::host::log(&format!("quit: exits now {exits}"));
+        crate::host_base::log(&format!("quit: exits now {exits}"));
         if exits {
             self.catalog_flush();
             event_loop.exit();

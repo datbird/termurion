@@ -114,7 +114,7 @@ pub(super) fn ask_on_thread(ask: impl FnOnce() -> bool + Send + 'static, answere
     });
     if let Err(e) = started {
         // No question can be shown: the shutdown is not held for one.
-        crate::host::log(&format!("shutdown: the quit question could not start: {e}"));
+        crate::host_base::log(&format!("shutdown: the quit question could not start: {e}"));
         QUESTION_OPEN.store(false, Ordering::SeqCst);
         end_question();
         destroy_block();

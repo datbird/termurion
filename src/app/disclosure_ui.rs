@@ -196,7 +196,7 @@ pub(super) fn confirm(owner: Option<isize>, topmost: bool, title: &str, text: &s
     let mut ctx = Ctx { text: text.to_string(), prompt: prompt.to_string(), detail: detail.to_string(), expanded: false };
     let words = template(title, topmost, &ctx);
     let parent = owner.map_or(std::ptr::null_mut(), |h| h as HWND);
-    let answer = super::msgbox::run_modal(owner, title, crate::host::log, true, || unsafe {
+    let answer = super::msgbox::run_modal(owner, title, crate::host_base::log, true, || unsafe {
         DialogBoxIndirectParamW(GetModuleHandleW(std::ptr::null()), words.as_ptr().cast(), parent, Some(proc), &mut ctx as *mut Ctx as LPARAM)
     });
     LAST.store(answer, Ordering::Relaxed);

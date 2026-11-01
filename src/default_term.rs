@@ -114,7 +114,7 @@ pub fn repair_at_start() {
     let fix = server_repair(&r, &exe, &|p| crate::localfs::judged(p) && !crate::localfs::local_exists(p));
     if !fix.is_empty()
         && let Err(e) = crate::reg::apply(&mut r, &fix) {
-            crate::host::log(&format!("default terminal: could not repair the handoff class: {e}"));
+            crate::host_base::log(&format!("default terminal: could not repair the handoff class: {e}"));
         }
 }
 
@@ -446,7 +446,7 @@ mod tests {
         let src = include_str!("url_launch.rs");
         assert!(src.contains("crate::api_peer::judge_peer("), "server_verdict uses the one peer judge");
         let hw = include_str!("handoff_win.rs");
-        assert!(hw.contains("winpipe::thread_peer()"), "the caller's token and session are read while impersonating");
+        assert!(hw.contains("platform::ipc::thread_peer()"), "the caller's token and session are read while impersonating");
     }
 
     /// Task 5 review, Important 2 (P11): when Termurion's exe moved, startup rewrites only the

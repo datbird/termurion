@@ -22,7 +22,7 @@ fn run() -> i32 {
             return 1;
         }
     };
-    let name = match termurion::winpipe::host_pipe_name() {
+    let name = match termurion::platform::ipc::host_pipe_name() {
         Ok(n) => n,
         Err(e) => {
             host::log(&e);

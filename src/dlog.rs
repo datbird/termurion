@@ -1387,7 +1387,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "H\nbody\nF\n");
         let sddl = localfs::dacl_sddl(&dir.unfollowed(FILE_NAME).unwrap()).unwrap();
         assert_eq!(sddl.matches("(A;").count(), 1, "one allow ACE: {sddl}");
-        assert!(sddl.contains(&crate::winpipe::user_sid().unwrap()) && sddl.starts_with("D:P"), "for the user, protected: {sddl}");
+        assert!(sddl.contains(&crate::platform::windows::ipc::user_sid().unwrap()) && sddl.starts_with("D:P"), "for the user, protected: {sddl}");
         // A planted junction at the file's name is not followed and not written through.
         let target = scratch("acl-target");
         let _ = std::fs::remove_file(&path);

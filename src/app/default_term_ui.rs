@@ -93,7 +93,7 @@ impl App {
                 match crate::handoff_win::Server::register(send, pack, close) {
                     Ok(s) => self.handoff = Some(s),
                     Err(e) => {
-                        crate::host::log(&format!("handoff: not registered: {e}"));
+                        crate::host_base::log(&format!("handoff: not registered: {e}"));
                         self.banners.set("handoff", "Termurion could not take terminal hand-offs from Windows.".to_string());
                     }
                 }
@@ -159,7 +159,7 @@ impl App {
             match crate::url_launch::listen(super::launch_events(self.proxy.clone())) {
                 Ok(s) => self.url_listener = Some(s),
                 Err(e) => {
-                    crate::host::log(&format!("embedding: the launch pipe is taken: {e}"));
+                    crate::host_base::log(&format!("embedding: the launch pipe is taken: {e}"));
                     let paths = self.open_batch.take_all();
                     let urls = std::mem::take(&mut self.pending_urls_at_start).into_iter().map(|url| crate::launch::Request::Url { url });
                     let opens = (!paths.is_empty()).then_some(crate::launch::Request::Open { paths });
@@ -174,7 +174,7 @@ impl App {
                     match crate::url_launch::lost_pipe(&after, waiting) {
                         crate::url_launch::LostPipe::RunWithout => {}
                         ended => {
-                            crate::host::log(&format!("embedding: ends, the launch pipe's holder took or refused the requests ({ended:?})"));
+                            crate::host_base::log(&format!("embedding: ends, the launch pipe's holder took or refused the requests ({ended:?})"));
                             event_loop.exit();
                             return false;
                         }
