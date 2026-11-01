@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Finds cfg(windows) / cfg(not(windows)) outside the allowed places. Prints file:line, exits 1 on any hit.
+# Usage: scripts/cfg-audit [path ...]   (default: all of src/)
+# Allowed: src/platform/, src/lib.rs, src/bin/, build.rs, Cargo.toml, any *_win.rs. crates/ is vendored and skipped.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+if [ $# -eq 0 ]; then set -- src; fi
+hits=0
+while IFS= read -r f; do
+    case "$f" in
+        src/platform/*|src/lib.rs|src/bin/*|build.rs|Cargo.toml|*_win.rs|crates/*) continue ;;
+    esac
+    while IFS= read -r line; do
+        echo "$f:$line"
+        hits=1
+    done < <(grep -nE 'cfg\((not\()?windows\b|cfg\(.*[(, ](not\()?windows[),)]' "$f" | cut -d: -f1)
+done < <(find "$@" -type f \( -name '*.rs' -o -name Cargo.toml \) | sed 's#^\./##' | sort)
+exit $hits
