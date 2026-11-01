@@ -1928,6 +1928,19 @@ light_dark = false
 macos_only = false
 
 [[setting]]
+key = "Render Plugins"
+tab = "Window"
+mode = "terminal"
+section = "Effects"
+label = "Effects:"
+type = "list"
+default = []
+default_note = "Termurion only (iTerm2 has no shaders). Render plugin folder names, in the order they run."
+help = "Shaders that run over the whole window each frame, such as the built-in cursor effects. Several run one after another."
+light_dark = false
+macos_only = false
+
+[[setting]]
 key = "Scrollback Lines"
 tab = "Terminal"
 mode = "terminal"

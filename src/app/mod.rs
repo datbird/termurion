@@ -60,6 +60,7 @@ const WHEEL_LINES: f32 = 3.0;
 const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 mod actions;
+mod fx_ui;
 mod gpu_capture;
 mod paste_ui;
 mod edit_session_ui;
@@ -424,6 +425,8 @@ struct Gpu {
     alpha: Option<AlphaGpu>,
     /// The pointer shape last set on the window (`refresh_pointer_shape` writes it only on change).
     shape: Option<crate::pointer_shape::Shape>,
+    /// Render plugins for this window (`fx_ui`); None when its profile lists none.
+    fx: Option<fx_ui::FxRuntime>,
     // Dropped last, after the surface.
     window: Arc<Window>,
 }
@@ -6570,7 +6573,8 @@ impl App {
     /// Advanced switches, the renderer's face metrics and the window's scale.
     pub(super) fn draw_prefs(&mut self) -> scene::DrawPrefs {
         let metrics = self.gpu.as_mut().map(|g| g.renderer.underline_metrics()).unwrap_or(scene::DrawPrefs::default().metrics);
-        scene::DrawPrefs::from_globals(&self.globals, metrics, self.scale())
+        let fx_cursor = self.gpu.as_ref().and_then(|g| g.fx.as_ref()).and_then(|f| f.cursor_color());
+        scene::DrawPrefs { fx_cursor, ..scene::DrawPrefs::from_globals(&self.globals, metrics, self.scale()) }
     }
 
     /// This window draws see-through now (as `build_frame` decides it): an alpha surface, with a pane
@@ -7088,6 +7092,8 @@ impl App {
         // The next edge drag snaps to what this frame shows.
         self.publish_snap();
         let scene_start = timing.then(Instant::now);
+        // The effects first: their cursor color is part of the frame (`draw_prefs`).
+        self.fx_sync();
         let frame = self.build_frame();
         if let Some(t) = scene_start {
             self.draw_timers.stats[1].add(t.elapsed().as_secs_f64(), 1);
@@ -7108,6 +7114,7 @@ impl App {
         self.sync_blur();
         // Window numbers show from 1 in the saved logs (P20).
         let window_n = self.window_number() + 1;
+        let focused_window = self.focused;
         let Some(gpu) = self.gpu.as_mut() else { return };
         gpu.window.set_title(&title);
         let wait_start = Instant::now();
@@ -7155,7 +7162,21 @@ impl App {
         #[cfg(debug_assertions)]
         let capturing = gpu_capture::begin(gpu.render_device());
         let draw_start = timing.then(Instant::now);
-        let drawn = gpu.renderer.draw_with(&frame, &view, raw.as_ref(), w, h);
+        let fx_now = Instant::now();
+        let drawn = match gpu.fx.as_mut().filter(|f| f.active()) {
+            Some(fx) => {
+                // The passes write the window through its non-sRGB view (fx_sync made sure it has one).
+                let out = texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(crate::render_fx_gpu::raw_format(gpu.config.format)), ..Default::default() });
+                fx.prepare(frame.fx.as_ref(), (w, h), focused_window, fx_now);
+                let (chain, uniforms) = fx.chain_mut().expect("active");
+                gpu.renderer.draw_fx(&frame, chain, uniforms, &out, w, h)
+            }
+            None => gpu.renderer.draw_with(&frame, &view, raw.as_ref(), w, h),
+        };
+        // Animated effects keep the window drawing while they run.
+        if gpu.fx.as_ref().is_some_and(|f| f.wants_frame(fx_now, focused_window)) {
+            gpu.window.request_redraw();
+        }
         if let Some(t) = draw_start {
             self.draw_timers.stats[2].add(t.elapsed().as_secs_f64(), 1);
         }
@@ -8125,6 +8146,9 @@ fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference:
 fn make_handles(window: &Arc<Window>, display: &winit::event_loop::OwnedDisplayHandle, power_preference: wgpu::PowerPreference, backends: wgpu::Backends) -> Result<(GpuHandles, wgpu::Surface<'static>, Vec<gpu_pick::Facts>), String> {
     let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display.clone()));
     desc.backends = backends;
+    // FXC on every machine: `Auto` takes a dxcompiler.dll found on PATH, so shaders (render
+    // plugins above all) would compile one way here and another way there.
+    desc.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
     let instance = wgpu::Instance::new(desc);
     let surface = instance.create_surface(window.clone()).map_err(|e| format!("no surface: {e}"))?;
     let facts: Vec<gpu_pick::Facts> = pollster::block_on(instance.enumerate_adapters(backends)).iter().map(|a| gpu_pick::Facts::of(&a.get_info())).collect();
@@ -8169,7 +8193,7 @@ fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHan
     };
     surface.configure(&device, &config);
     let renderer = Renderer::new(&device, &queue, format, FONT, FONT_PX * window.scale_factor() as f32);
-    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, window })
+    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, fx: None, window })
 }
 
 /// The surface size to use, or None while the window is minimized (0 wide or high).

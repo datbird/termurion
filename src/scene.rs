@@ -124,6 +124,25 @@ pub struct Frame {
     /// The whole drawn target's opacity, 1.0 unless a hotkey window fades on an alpha surface
     /// (the renderer's last pass scales the premultiplied target by it).
     pub fade: f32,
+    /// What render plugins read: the focused pane's cursor and colors (else the first pane's).
+    pub fx: Option<FxPane>,
+}
+
+/// The pane the render plugin uniforms describe (`render_fx`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FxPane {
+    /// None while the cursor is hidden.
+    pub cursor: Option<crate::render_fx::Cursor>,
+    pub focused: bool,
+    pub bg: Rgb,
+    pub fg: Rgb,
+    pub cursor_color: Rgb,
+    /// The cursor color a program set with OSC 12, which wins over the profile's.
+    pub program_cursor: Option<Rgb>,
+    pub cursor_text: Rgb,
+    pub selection: Rgb,
+    pub selected_text: Option<Rgb>,
+    pub ansi: [Rgb; 16],
 }
 
 impl Default for Frame {
@@ -143,6 +162,7 @@ impl Default for Frame {
             scrollbars: Vec::new(),
             face_heights: Vec::new(),
             fade: 1.0,
+            fx: None,
         }
     }
 }
@@ -359,11 +379,15 @@ pub struct DrawPrefs {
     /// The pane's Special Font Config (`render::Renderer::face_table`): the code points it
     /// covers draw in its fonts, remapped when an entry has a destination.
     pub table: Option<std::sync::Arc<crate::font_table::Config>>,
+    /// A render plugin's cursor color (its `cursor_color`): the cursor draws in it, as Ghostty
+    /// draws the cursor-fx presets, unless a program set one with OSC 12. The effects find the
+    /// cursor on screen by this color. None draws the profile's cursor color.
+    pub fx_cursor: Option<Rgb>,
 }
 
 impl Default for DrawPrefs {
     fn default() -> Self {
-        DrawPrefs { underline_hyperlinks: true, solid_underlines: false, metrics: crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 }, scale: 1.0, ligatures: STOCK_LIGATURES, alt_level: 2, masks: crate::fonts::MaskRules::STOCK, custom_boxes: true, powerline: false, powerline_extended: true, powerline_wide: true, table: None }
+        DrawPrefs { underline_hyperlinks: true, solid_underlines: false, metrics: crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 }, scale: 1.0, ligatures: STOCK_LIGATURES, alt_level: 2, masks: crate::fonts::MaskRules::STOCK, custom_boxes: true, powerline: false, powerline_extended: true, powerline_wide: true, table: None, fx_cursor: None }
     }
 }
 
@@ -374,7 +398,7 @@ impl DrawPrefs {
     /// The prefs the live frame and a screenshot both draw with: the two Advanced switches from
     /// `globals`, the renderer's face metrics and the window's scale.
     pub fn from_globals(globals: &crate::globals::Globals, metrics: crate::underline::Metrics, scale: f32) -> DrawPrefs {
-        DrawPrefs { underline_hyperlinks: globals.bool("UnderlineHyperlinks"), solid_underlines: globals.bool("SolidUnderlines"), metrics, scale, ligatures: crate::fonts::LigatureRules { prefer_speed: globals.bool("PreferSpeedToFullLigatureSupport"), ..STOCK_LIGATURES }, alt_level: STOCK_LIGATURES.level, masks: crate::fonts::MaskRules { retina: scale >= 2.0, force_aa_on_retina: globals.bool("ForceAntialiasingOnRetina"), ..crate::fonts::MaskRules::STOCK }, custom_boxes: !globals.bool("DisableCustomBoxDrawing"), powerline: false, powerline_extended: globals.bool("SupportPowerlineExtendedSymbols"), powerline_wide: globals.bool("MakeSomePowerlineSymbolsWide"), table: None }
+        DrawPrefs { underline_hyperlinks: globals.bool("UnderlineHyperlinks"), solid_underlines: globals.bool("SolidUnderlines"), metrics, scale, ligatures: crate::fonts::LigatureRules { prefer_speed: globals.bool("PreferSpeedToFullLigatureSupport"), ..STOCK_LIGATURES }, alt_level: STOCK_LIGATURES.level, masks: crate::fonts::MaskRules { retina: scale >= 2.0, force_aa_on_retina: globals.bool("ForceAntialiasingOnRetina"), ..crate::fonts::MaskRules::STOCK }, custom_boxes: !globals.bool("DisableCustomBoxDrawing"), powerline: false, powerline_extended: globals.bool("SupportPowerlineExtendedSymbols"), powerline_wide: globals.bool("MakeSomePowerlineSymbolsWide"), table: None, fx_cursor: None }
     }
 
     /// The metrics to draw with in a cell of height `ch`: the face's, or (none measured) an
@@ -1037,8 +1061,17 @@ pub fn pane_with(
     if face != crate::render::DEFAULT_FACE && !frame.face_heights.iter().any(|(f, _)| *f == face) {
         frame.face_heights.push((face, ch));
     }
-    let palette = &screen.palette;
     let term = screen.term();
+    let fx_palette;
+    let palette = match draw.fx_cursor {
+        Some(preset) => {
+            let mut p = screen.palette.clone();
+            p.cursor = term.colors()[alacritty_terminal::vte::ansi::NamedColor::Cursor as usize].unwrap_or(preset);
+            fx_palette = p;
+            &fx_palette
+        }
+        None => &screen.palette,
+    };
     let (cols, lines) = (term.columns(), term.screen_lines());
     let content = term.renderable_content();
     // The extra selections' columns on each visible row, computed once per frame.
@@ -1066,7 +1099,8 @@ pub fn pane_with(
     let block_cursor = !key_cursor && focused && content.cursor.shape == CursorShape::Block;
     // Smart Cursor Color: a focused box only (`iTermMetalPerFrameState.m:455-490`). The cell's
     // own colors and its neighbors' backgrounds come before selection and match highlights.
-    let smart_box = look.smart.filter(|_| block_cursor).and_then(|(bg_t, fg_t)| {
+    // A render plugin's cursor color wins: the effects find the cursor by it (`DrawPrefs::fx_cursor`).
+    let smart_box = look.smart.filter(|_| block_cursor && draw.fx_cursor.is_none()).and_then(|(bg_t, fg_t)| {
         let (row, col) = cursor_at?;
         let at = |r: i64, c: i64| -> Option<alacritty_terminal::term::cell::Cell> {
             (r >= 0 && c >= 0 && (r as usize) < lines && (c as usize) < cols).then(|| term.grid()[alacritty_terminal::index::Point::new(alacritty_terminal::index::Line(r as i32 - content.display_offset as i32), alacritty_terminal::index::Column(c as usize))].clone())
@@ -1489,6 +1523,37 @@ pub fn pane_with(
             }
             _ => {}
         }
+    }
+
+    if focused || frame.fx.is_none() {
+        use crate::render_fx::style;
+        let fx_cursor = cursor.filter(|_| !key_cursor).map(|(row, col)| {
+            let origin = (rect.x, rect.y);
+            let block = box_rect(&look.geometry, origin, cell, row, col, wide_cursor);
+            let solid = cursor_rect(&look.geometry, content.cursor.shape, origin, cell, row, col, wide_cursor);
+            let (r, kind) = match content.cursor.shape {
+                CursorShape::Beam => (solid, style::BAR),
+                CursorShape::Underline => (solid, style::UNDERLINE),
+                CursorShape::HollowBlock => (block, style::BLOCK_HOLLOW),
+                _ if !focused => (block, style::BLOCK_HOLLOW),
+                _ => (block, style::BLOCK),
+            };
+            let c = palette.cursor;
+            crate::render_fx::Cursor { rect: [r.x, r.y, r.w, r.h], color: [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0, 1.0], style: kind, visible: true }
+        });
+        let program_cursor = term.colors()[alacritty_terminal::vte::ansi::NamedColor::Cursor as usize];
+        frame.fx = Some(FxPane {
+            cursor: fx_cursor,
+            focused,
+            bg: palette.bg,
+            fg: palette.fg,
+            cursor_color: palette.cursor,
+            program_cursor,
+            cursor_text: palette.cursor_text,
+            selection: palette.selection,
+            selected_text: palette.selected_text,
+            ansi: palette.ansi,
+        });
     }
 
     // A smear (`CursorSmearView`) is the cursor color, drawn over the cell, under the dim.

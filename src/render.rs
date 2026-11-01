@@ -1682,7 +1682,10 @@ pub(crate) mod test_gpu {
     pub(crate) fn shared_all() -> (wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue) {
         GPU.get_or_init(|| {
             let _gpu = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+            // FXC, as the app uses (make_handles): a dxcompiler.dll on PATH must not change what passes.
+            let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+            desc.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
+            let instance = wgpu::Instance::new(desc);
             let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
             let made = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
             // Kept for the life of the process: dropping an instance is the racy call.
@@ -2394,6 +2397,7 @@ mod tests {
             scrollbars: vec![],
             backgrounds: vec![],
             face_heights: vec![],
+            fx: None,
         };
         r.draw(&frame, &view, w, h).unwrap();
         let px = read(&device, &queue, &tex, w, h);
@@ -2425,7 +2429,7 @@ mod tests {
         let plain = r.draw_offscreen(&frame, w, h).unwrap();
         let copy = crate::render_fx::compile_glsl("void mainImage(out vec4 c, in vec2 p) { c = texture(iChannel0, p / iResolution.xy); }").unwrap();
         let swap = crate::render_fx::compile_glsl("void mainImage(out vec4 c, in vec2 p) { c = texture(iChannel0, p / iResolution.xy).bgra; }").unwrap();
-        let mut chain = crate::render_fx_gpu::Chain::new(&device, format, vec![copy, swap]).unwrap();
+        let mut chain = crate::render_fx_gpu::Chain::new(&device, format, vec![copy, swap], false).unwrap();
         let u = crate::render_fx::Uniforms { resolution: [w as f32, h as f32, 1.0], ..Default::default() };
         let px = r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), w, h).unwrap();
         let at = |b: &[u8], x: usize, y: usize| [b[(y * w as usize + x) * 4], b[(y * w as usize + x) * 4 + 1], b[(y * w as usize + x) * 4 + 2]];
@@ -2433,11 +2437,28 @@ mod tests {
         assert_eq!(at(&px, 5, 5), [pb, pg, pr], "the top-left quad, red and blue swapped, same bytes");
         assert_eq!(at(&px, 5, 25), at(&plain, 5, 25), "no vertical flip: the bottom stays the clear color");
         assert_eq!(at(&px, 50, 5), at(&plain, 50, 5));
-        // Every built-in effect builds a pipeline on this device and runs.
-        for p in crate::render_fx::discover(None).0 {
-            let mut c = crate::render_fx_gpu::Chain::new(&device, format, p.compile().unwrap()).unwrap_or_else(|e| panic!("{}: {e}", p.id));
-            r.draw_offscreen_fx(&frame, Some((&mut c, &u)), w, h).unwrap_or_else(|e| panic!("{}: {e}", p.id));
+        // A shader's alpha reaches an opaque window's target only when the window keeps alpha.
+        let clear_alpha = || crate::render_fx::compile_glsl("void mainImage(out vec4 c, in vec2 p) { c = vec4(texture(iChannel0, p / iResolution.xy).rgb, 0.0); }").unwrap();
+        for (keep, want) in [(false, 255u8), (true, 0u8)] {
+            let mut c = crate::render_fx_gpu::Chain::new(&device, format, vec![clear_alpha()], keep).unwrap();
+            let px = r.draw_offscreen_fx(&frame, Some((&mut c, &u)), w, h).unwrap();
+            assert_eq!(px[(5 * w as usize + 5) * 4 + 3], want, "keep_alpha {keep}");
         }
+        // Every built-in effect builds a pipeline on this device and runs, and away from the
+        // cursor it leaves the frame as it was (the effects draw near the cursor only).
+        let mut clock = crate::render_fx::Clock::default();
+        let mut u = u;
+        let cursor = crate::render_fx::Cursor { rect: [40.0, 20.0, 8.0, 10.0], color: [0.62, 0.82, 0.996, 1.0], style: crate::render_fx::style::BLOCK, visible: true };
+        clock.frame(&mut u, std::time::Instant::now(), (w, h), Some(cursor), true);
+        let mut bad = Vec::new();
+        for p in crate::render_fx::discover(None).0 {
+            let mut c = crate::render_fx_gpu::Chain::new(&device, format, p.compile().unwrap(), false).unwrap_or_else(|e| panic!("{}: {e}", p.id));
+            let out = r.draw_offscreen_fx(&frame, Some((&mut c, &u)), w, h).unwrap_or_else(|e| panic!("{}: {e}", p.id));
+            if at(&out, 5, 5) != at(&plain, 5, 5) {
+                bad.push(format!("{}: {:?} where the frame has {:?}", p.id, at(&out, 5, 5), at(&plain, 5, 5)));
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
     #[test]
@@ -2480,6 +2501,7 @@ mod tests {
             scrollbars: vec![],
             backgrounds: vec![],
             face_heights: vec![],
+            fx: None,
         };
         r.draw(&frame, &view, w, h).unwrap();
         let px = read(&device, &queue, &tex, w, h);

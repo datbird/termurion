@@ -19,6 +19,11 @@ pub const PROFILE_KEY: &str = "Render Plugins";
 /// The user's own plugins, under the config folder.
 pub const USER_FOLDER: &str = "RenderPlugins";
 
+/// The user's own plugins: `RenderPlugins` beside the settings file.
+pub fn user_dir() -> PathBuf {
+    crate::globals::default_path().parent().map_or_else(|| PathBuf::from(USER_FOLDER), |d| d.join(USER_FOLDER))
+}
+
 /// How long `auto` animation runs after the last change.
 pub const AUTO_WINDOW: Duration = Duration::from_secs(2);
 

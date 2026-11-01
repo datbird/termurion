@@ -48,8 +48,11 @@ pub fn raw_format(format: wgpu::TextureFormat) -> wgpu::TextureFormat {
 }
 
 impl Chain {
-    /// Builds a pipeline per shader. Fails with the first shader the device rejects.
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, shaders: Vec<Compiled>) -> Result<Chain, String> {
+    /// Builds a pipeline per shader. Fails with the first shader the device rejects. On an
+    /// opaque window (`keep_alpha` false) the last pass writes color only and the window stays
+    /// opaque: shaders made for Ghostty may leave any alpha, which Ghostty's opaque window ignores
+    /// but a composited window would show through.
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, shaders: Vec<Compiled>, keep_alpha: bool) -> Result<Chain, String> {
         let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("render_fx"),
             entries: &[
@@ -79,11 +82,15 @@ impl Chain {
             ..Default::default()
         });
         let mut passes = Vec::new();
-        for shader in shaders {
+        let last = shaders.len().saturating_sub(1);
+        for (i, shader) in shaders.into_iter().enumerate() {
+            let write_mask = if i == last && !keep_alpha { wgpu::ColorWrites::COLOR } else { wgpu::ColorWrites::ALL };
             let layout = uniform_layout(&shader.module);
             let size = layout.as_ref().map_or(16, |l| l.size.max(16)) as u64;
             let entry = shader.entry.clone();
-            let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            // A driver compiler failure is an internal error, a bad shader a validation error.
+            let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+            let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("render_fx plugin"), source: wgpu::ShaderSource::Naga(Cow::Owned(shader.module)) });
             let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("render_fx"),
@@ -93,7 +100,7 @@ impl Chain {
                     module: &module,
                     entry_point: Some(&entry),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format: raw_format(format), blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                    targets: &[Some(wgpu::ColorTargetState { format: raw_format(format), blend: None, write_mask })],
                 }),
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: None,
@@ -101,7 +108,8 @@ impl Chain {
                 multiview_mask: None,
                 cache: None,
             });
-            if let Some(e) = ready(device, scope.pop()) {
+            let errors = [ready(device, validation.pop()), ready(device, internal.pop())];
+            if let Some(e) = errors.into_iter().flatten().next() {
                 return Err(e.to_string());
             }
             let uniforms = device.create_buffer(&wgpu::BufferDescriptor { label: Some("render_fx uniforms"), size, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });

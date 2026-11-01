@@ -821,6 +821,7 @@ mod tests {
 
     /// Callers of a sink whose input is not text a remote host wrote, and why.
     const NOT_PANE_TEXT: &[(&str, &str, &str)] = &[
+        ("settings_effects.rs", "open_folder", "shows Termurion's own RenderPlugins folder beside its settings (render_fx::user_dir) on the person's click, never pane text; nothing is run"),
         ("app/browser_extensions_app.rs", "browser_extensions_reveal", "only SELECTS the extensions folder in Explorer: a local drive path (root_ok, judged) the profile or the default names, never pane text; nothing is opened or run"),
         ("app/transfers_ui.rs", "transfer_picked", "Open is the person's click on a file Termurion itself saved from a transfer: a program or script type was saved as `name.ext.download`, a type the shell reads on listing was refused (inert_files), and the path comes from the transfer list, never pane text"),
         ("regex_railroad.rs", "open", "opens the page this module wrote itself in the temp folder (a judged file whose name is the process id), never pane text; the regular expression is only drawn in it"),

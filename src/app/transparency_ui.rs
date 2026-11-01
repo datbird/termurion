@@ -41,6 +41,7 @@ fn init_gpu_alpha(window: Arc<Window>, primary: &Gpu, alpha: &AlphaGpu) -> Resul
         instance: primary.instance.clone(),
         alpha: Some(alpha.clone()),
         shape: None,
+        fx: None,
         window,
     })
 }
@@ -495,6 +496,7 @@ pub(super) fn make_alpha_gpu(display: &winit::event_loop::OwnedDisplayHandle, wi
     let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display.clone()));
     desc.backends = wgpu::Backends::DX12;
     desc.backend_options.dx12.presentation_system = wgpu::Dx12SwapchainKind::DxgiFromVisual;
+    desc.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
     let instance = wgpu::Instance::new(desc);
     let adapter = {
         let probe = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;

@@ -1541,6 +1541,12 @@ impl SettingsWindow {
                             if crate::settings_fonts::GROUPED.contains(&s.key.as_str()) {
                                 continue;
                             }
+                            if s.key == crate::render_fx::PROFILE_KEY {
+                                if crate::settings_effects::editor(ui, profile) {
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
                             if s.key == "Jobs to Ignore" {
                                 if crate::settings_lists::jobs_to_ignore(ui, profile) {
                                     edit = Edit::Changed(selected.clone());

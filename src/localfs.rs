@@ -806,6 +806,9 @@ mod tests {
     /// files shipped beside it, the temp folder it made), Windows' own folders, and PATH lookups. A
     /// new raw probe in a listed function changes its count and fails too.
     const OWN: &[(&str, &str, usize, &str)] = &[
+        ("render_fx.rs", "discover_in", 2, "plugin.toml files in Termurion's own RenderPlugins folder beside its settings (render_fx::user_dir)"),
+        ("render_fx.rs", "shader_text", 1, "a shader file inside a plugin folder of Termurion's own RenderPlugins folder; names with a separator or .. are refused first"),
+        ("settings_effects.rs", "editor", 1, "creates Termurion's own RenderPlugins folder beside its settings on the person's click"),
         ("ai_discovery.rs", "load", 1, "Termurion's own model cache beside its settings (ai_discovery::default_path)"),
         ("ai_discovery.rs", "save", 2, "Termurion's own model cache beside its settings (ai_discovery::default_path)"),
         ("ai_wire_log.rs", "open", 3, "Termurion's own AIChatWire log folder beside its settings"),

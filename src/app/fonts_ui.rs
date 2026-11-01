@@ -411,6 +411,7 @@ impl App {
             prefs.masks = g.renderer.face_masks(face, prefs.masks.retina, prefs.masks.force_aa_on_retina);
             prefs.powerline = g.renderer.face_powerline(face);
             prefs.table = g.renderer.face_table(face);
+            prefs.fx_cursor = g.fx.as_ref().and_then(|f| f.cursor_color());
         }
         prefs
     }

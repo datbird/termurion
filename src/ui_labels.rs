@@ -84,6 +84,7 @@ const EXEMPT: &[(&str, &[&str], &str)] = &[
     ),
     ("profile", &["Custom Window Title", "Custom Tab Title", "Idle Code", "Idle Period"], "iTerm2's text field has no label of its own; it follows its checkbox"),
     ("profile", &["Custom Locale"], "iTerm2's Change Locale button; the row is drawn by the locale button, not by its label"),
+    ("profile", &["Render Plugins"], "Termurion only: iTerm2 has no render plugins; drawn by the Effects editor (settings_effects)"),
     ("profile", &["Jobs to Ignore"], "iTerm2's Edit button next to 'If there are jobs besides:'; drawn by the jobs list editor"),
     (
         "profile",

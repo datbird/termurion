@@ -42,11 +42,11 @@ pub fn after(list: &[String], event: ListEvent) -> (Vec<String>, bool) {
     }
 }
 
-fn strings(profile: &Profile, key: &str) -> Vec<String> {
+pub fn strings(profile: &Profile, key: &str) -> Vec<String> {
     profile.get(key).and_then(|v| v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())).unwrap_or_default()
 }
 
-fn store(profile: &mut Profile, key: &str, list: Vec<String>) {
+pub fn store(profile: &mut Profile, key: &str, list: Vec<String>) {
     profile.set(key, Value::Array(list.into_iter().map(Value::String).collect()));
 }
 
