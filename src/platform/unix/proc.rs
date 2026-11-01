@@ -30,7 +30,8 @@ pub fn children(_pid: u32) -> Vec<u32> {
     Vec::new()
 }
 
-/// What a shell left running after it exited. Reports Unsupported, so a caller shows it.
+/// What a shell left running after it exited. Reports Unsupported; the one caller ignores the
+/// error, because job info is cosmetic.
 pub fn orphans_of(_dead: u32) -> Result<Vec<Proc>, String> {
     note();
     Err(Unsupported { feature: "Process information" }.into())

@@ -796,6 +796,8 @@ mod tests {
         "shell_open(",
         // The platform funnel: any app file calling it is audited like shell_open itself.
         "shell_open::open",
+        // The platform spawn funnel: any caller is audited like a spawn itself.
+        "start_detached(",
         "imp::open_url(",
         "open_with_shell(",
         "shell_verb(",
@@ -892,7 +894,9 @@ mod tests {
         ("app/triggers_ui.rs", "start_command", "Run Command for the user's own trigger rule (ruling)"),
         ("bin/termurion-git.rs", "run", "the git menu's wrapper: git with the menu's own command"),
         ("git_run_win.rs", "start", "git for the status bar, Termurion's own arguments"),
-        ("platform/windows/proc.rs", "start_detached", "starts Termurion's own session host (host_client::start_host_process passes its fixed file name)"),
+        ("host_client.rs", "start_host_process", "starts Termurion's own session host by its fixed file name"),
+        ("platform/windows/proc.rs", "start_detached", "the spawn funnel itself: it runs the path it is given; its callers are checked through the start_detached( token"),
+        ("platform/unix/proc.rs", "start_detached", "the Unix backend: it starts nothing and reports Unsupported"),
         ("host.rs", "reopen_app", "restarts Termurion's own exe, found beside the host's own exe"),
         ("probe.rs", "wsl", "`wsl.exe` with Termurion's own arguments"),
         ("platform/windows/pty.rs", "start", "a pane's shell, from its profile"),
@@ -1024,7 +1028,7 @@ mod tests {
     /// `remote_text` and no listing, is reported; the same call in a GATED function is not.
     #[test]
     fn a_planted_ungated_opening_call_fails_the_gate() {
-        for call in ["self.open_link(text, Style::Tab, false, None)", "self.open_link_system(text, false)", "self.open_url_in_browser(text, Style::Tab, None)", "self.open_link_answered(text, Style::Tab, false, None, false, 0)", "self.upsell_answered(text, 1)", "self.execute_with(id, run, None, exec)", "self.browser_page_open(pane, text, PageOpen::Tab, el)", "crate::platform::shell_open::open(text)", "crate::platform::shell_open::open_with(text, false)"] {
+        for call in ["self.open_link(text, Style::Tab, false, None)", "self.open_link_system(text, false)", "self.open_url_in_browser(text, Style::Tab, None)", "self.open_link_answered(text, Style::Tab, false, None, false, 0)", "self.upsell_answered(text, 1)", "self.execute_with(id, run, None, exec)", "self.browser_page_open(pane, text, PageOpen::Tab, el)", "crate::platform::shell_open::open(text)", "crate::platform::shell_open::open_with(text, false)", "crate::platform::proc::start_detached(text)"] {
             let mut files = real_sources();
             files.push(("app/planted.rs".to_string(), format!("impl App {{\n    fn evil(&mut self, text: &str) {{\n        {call};\n    }}\n}}\n")));
             let (wrong, _) = gate_violations(&files);
