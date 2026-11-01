@@ -24,7 +24,7 @@ use windows_sys::Win32::System::Console::HPCON;
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, GetProcessId, WaitForSingleObject};
 
-use crate::conpty::{CloseFn, PackFn};
+use crate::platform::pty::conpty::{CloseFn, PackFn};
 use crate::default_term::{Args, Gate, Refusal, vet};
 
 /// `CLSID_TERMURION_TERMINAL` as a GUID.

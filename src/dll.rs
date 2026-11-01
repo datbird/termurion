@@ -280,6 +280,6 @@ mod tests {
         let err = super::load_bundled(Path::new("conpty.dll")).unwrap_err();
         assert!(err.contains("not an absolute path"), "{err}");
         // The shipped conpty.dll loads by full path.
-        assert!(super::load_bundled(&crate::conpty::dev_vendor_dir().join("conpty.dll")).is_ok());
+        assert!(super::load_bundled(&crate::platform::pty::conpty::dev_vendor_dir().join("conpty.dll")).is_ok());
     }
 }

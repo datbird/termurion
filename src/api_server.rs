@@ -18,7 +18,7 @@ use tungstenite::protocol::Role;
 use tungstenite::{Message, WebSocket};
 
 use crate::api_http;
-use crate::pty::Notify;
+use crate::platform::pty::Notify;
 
 /// Maps a connection (peer, local) to the peer's pid, or refuses it with a reason (Task 3).
 pub type PeerCheck = Arc<dyn Fn(SocketAddr, SocketAddr) -> Result<u32, String> + Send + Sync>;

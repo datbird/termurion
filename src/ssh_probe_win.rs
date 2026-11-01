@@ -8,8 +8,8 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::conpty::{self, Api, Source, dev_vendor_dir};
-    use crate::pty::{Pty, spawn_flags};
+    use crate::platform::pty::conpty::{self, Api, Source, dev_vendor_dir};
+    use crate::platform::pty::{Pty, spawn_flags};
     use crate::ssh_probe::*;
     use crate::ssh_transport::{ORDER, Transport, conpty_flags, label};
     use std::io::{Read, Write};
@@ -605,7 +605,7 @@ mod tests {
 
     /// `set_console_size` on the console `pid` runs on.
     fn resize_attached(pid: u32, cols: i16, rows: i16) -> Result<String, String> {
-        crate::pty::attached_unless(pid, &std::sync::atomic::AtomicBool::new(false), || set_console_size(cols, rows))
+        crate::platform::pty::attached_unless(pid, &std::sync::atomic::AtomicBool::new(false), || set_console_size(cols, rows))
     }
 
     /// ssh.exe started with CreateProcessW directly (for STARTF_USECOUNTCHARS and a hidden

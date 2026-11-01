@@ -229,7 +229,7 @@ impl App {
     pub(super) fn pane_from_handoff(&mut self, id: PaneId, p: Profile, mut h: Handoff, cols: u16, rows: u16) -> Result<(Pane, Profile), String> {
         let title = std::mem::take(&mut h.title);
         let (hpc, input, output, client, live) = h.take();
-        let mut pty = crate::pty::from_handoff(&self.api, hpc as _, input as _, output as _, client as _, self.notify.clone()).map_err(|e| format!("Could not take the handed-off console: {e}"))?;
+        let mut pty = crate::platform::pty::from_handoff(&self.api, hpc as _, input as _, output as _, client as _, self.notify.clone()).map_err(|e| format!("Could not take the handed-off console: {e}"))?;
         if let Some(l) = live {
             pty.hold(Box::new(l));
         }

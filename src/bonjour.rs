@@ -394,7 +394,7 @@ pub use browser::Browser;
 #[cfg(windows)]
 mod browser {
     use super::{instance_label, DnsSd, Ended, Event, Found, Lost, Outbox, Requests, MAX_HOSTS, SERVICES};
-    use crate::pty::Notify;
+    use crate::platform::pty::Notify;
     use std::collections::HashMap;
     use std::ffi::c_void;
     use std::net::{Ipv4Addr, Ipv6Addr};

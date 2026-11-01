@@ -6,10 +6,10 @@ use alacritty_terminal::term::TermMode;
 use std::time::{Duration, Instant};
 
 use crate::composer;
-use crate::conpty::Api;
+use crate::platform::pty::conpty::Api;
 use crate::dvr;
 use crate::layout::PaneId;
-use crate::pty::{self, Notify, Pty, Read};
+use crate::platform::pty::{self, Notify, Pty, Read};
 use crate::ssh_transport::Transport;
 use crate::replay;
 use crate::screen::Screen;
@@ -2507,7 +2507,7 @@ mod tests {
 
     use super::*;
 
-    use crate::conpty::{self, Source, dev_vendor_dir};
+    use crate::platform::pty::conpty::{self, Source, dev_vendor_dir};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 

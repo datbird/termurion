@@ -408,9 +408,9 @@ pub fn real_main() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conpty::{self, Source};
+    use crate::platform::pty::conpty::{self, Source};
     use crate::osc1337::Attention;
-    use crate::pty::{self, Read};
+    use crate::platform::pty::{self, Read};
     use crate::screen::{Request, Screen};
     use crate::util_osc::{b64, seq};
 

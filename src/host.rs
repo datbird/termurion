@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use crate::conpty::Api;
+use crate::platform::pty::conpty::Api;
 use crate::host_proto::{Decoder, Live, MIN_VERSION, Msg, Ring, VERSION, encode};
-use crate::pty::{Pty, Read};
+use crate::platform::pty::{Pty, Read};
 use crate::ssh_transport::Transport;
 use crate::platform::ipc::{Listener, Pipe};
 
@@ -151,7 +151,7 @@ fn watch_prompts(host: std::sync::Weak<Mutex<Host>>) {
         let Some(debounce) = debounce else { continue };
         // Unknown (the mode could not be read, or the session was paused since) is never a
         // prompt.
-        let samples: Vec<(u64, bool, Instant)> = targets.into_iter().map(|(id, pid, paused)| (id, crate::pty::console_mode_unless(pid, &paused).is_ok_and(crate::pwm_prompt::at_prompt), Instant::now())).collect();
+        let samples: Vec<(u64, bool, Instant)> = targets.into_iter().map(|(id, pid, paused)| (id, crate::platform::pty::console_mode_unless(pid, &paused).is_ok_and(crate::pwm_prompt::at_prompt), Instant::now())).collect();
         let Some(shared) = host.upgrade() else { return };
         let mut h = shared.lock().unwrap();
         // A request changed while these were read: they belong to the old one.
@@ -390,11 +390,11 @@ fn launch(host: &Shared, api: &Api, wake: &mpsc::Sender<u64>, t: Transport, tag:
         h.next_id - 1
     };
     let w = wake.clone();
-    let notify: crate::pty::Notify = Arc::new(move || {
+    let notify: crate::platform::pty::Notify = Arc::new(move || {
         let _ = w.send(id);
     });
     let dir = (!cwd.is_empty()).then(|| std::path::PathBuf::from(&cwd));
-    match crate::pty::spawn_transport(api, t, &cmdline, dir.as_deref(), &env, cols.max(1), rows.max(1), notify) {
+    match crate::platform::pty::spawn_transport(api, t, &cmdline, dir.as_deref(), &env, cols.max(1), rows.max(1), notify) {
         Ok(pty) => {
             let pid = pty.pid();
             let mut h = host.lock().unwrap();
@@ -531,7 +531,7 @@ pub(crate) mod tests {
     use std::time::Instant;
 
     pub(crate) fn api() -> Api {
-        crate::conpty::load(&crate::conpty::Source::Shipped(crate::conpty::dev_vendor_dir())).unwrap()
+        crate::platform::pty::conpty::load(&crate::platform::pty::conpty::Source::Shipped(crate::platform::pty::conpty::dev_vendor_dir())).unwrap()
     }
 
     /// A host on its own pipe, in a thread.
@@ -733,7 +733,7 @@ pub(crate) mod tests {
     fn the_prompt_watch_skips_paused_and_unattached_sessions() {
         let api = api();
         let session = |attached: bool| {
-            let pty = crate::pty::spawn(&api, "cmd.exe /d /k", 80, 24).unwrap();
+            let pty = crate::platform::pty::spawn(&api, "cmd.exe /d /k", 80, 24).unwrap();
             let pid = pty.pid();
             Session { pty: Some(pty), ring: Ring::new(16), pid, cmdline: String::new(), cwd: String::new(), cols: 80, rows: 24, exited: None, attached, pending: 0, prompt: Default::default() }
         };
@@ -749,7 +749,7 @@ pub(crate) mod tests {
         let targets = h.prompt_targets();
         h.sessions[&1].pty.as_ref().unwrap().pause_after_reads();
         let (_, pid, paused) = &targets[0];
-        assert_eq!(crate::pty::console_mode_unless(*pid, paused), Err("the console is paused".to_string()));
+        assert_eq!(crate::platform::pty::console_mode_unless(*pid, paused), Err("the console is paused".to_string()));
         h.sessions[&2].pty.as_ref().unwrap().set_paused(false);
         assert_eq!(ids(&h), vec![2], "an undone close is read again");
         for s in h.sessions.drain().map(|(_, s)| s) {
@@ -773,7 +773,7 @@ pub(crate) mod tests {
         let c = Conn::open(&name);
         c.hello();
         let script = "$k = Add-Type -Name C -Namespace T -PassThru -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern bool SetConsoleCtrlHandler(IntPtr h, bool add);'; [void]$k::SetConsoleCtrlHandler([IntPtr]::Zero, $false); 'ready'; Start-Sleep 60";
-        let id = c.launch(&format!("powershell.exe -NoProfile -EncodedCommand {}", crate::pty::tests::encoded_command(script)));
+        let id = c.launch(&format!("powershell.exe -NoProfile -EncodedCommand {}", crate::platform::windows::pty::tests::encoded_command(script)));
         c.output_until(id, "ready");
         std::thread::sleep(Duration::from_millis(500));
         c.send(&Msg::Signal { id, ctrl_break: false });

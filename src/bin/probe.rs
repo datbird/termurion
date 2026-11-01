@@ -5,7 +5,7 @@
 #[cfg(windows)]
 fn main() {
     termurion::dll::harden_process();
-    use termurion::conpty::{self, Source, dev_vendor_dir};
+    use termurion::platform::pty::conpty::{self, Source, dev_vendor_dir};
 
     let filter = std::env::args().nth(1).unwrap_or_default();
     let mut shipped_failed = false;

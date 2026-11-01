@@ -784,7 +784,7 @@ pub struct Provisioner {
 
 #[cfg(windows)]
 impl Provisioner {
-    pub fn start(uv_dir: PathBuf, notify: crate::pty::Notify) -> Provisioner {
+    pub fn start(uv_dir: PathBuf, notify: crate::platform::pty::Notify) -> Provisioner {
         use std::sync::atomic::Ordering::SeqCst;
         use std::sync::mpsc::channel;
         let (jobs, job_rx) = channel::<(u64, Job)>();

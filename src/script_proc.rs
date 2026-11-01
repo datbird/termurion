@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::Arc;
 
-use crate::pty::Notify;
+use crate::platform::pty::Notify;
 use crate::script_provision::KillJob;
 
 /// What the reader thread sends: output in order, then the exit code once the output ended

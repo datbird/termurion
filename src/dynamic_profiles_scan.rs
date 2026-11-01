@@ -14,7 +14,7 @@ use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TI
 use windows_sys::Win32::Storage::FileSystem::{FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FindCloseChangeNotification, FindNextChangeNotification};
 use windows_sys::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects};
 
-use crate::pty::Notify;
+use crate::platform::pty::Notify;
 
 /// A storm of changes (a sync tool rewriting the folder) never holds the reload off for longer
 /// than this after the first change of the burst.

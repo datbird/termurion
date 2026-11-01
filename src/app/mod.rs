@@ -17,7 +17,7 @@ use winit::keyboard::{KeyCode, KeyLocation, ModifiersKeyState, PhysicalKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winit::window::{Window, WindowId};
 
-use crate::conpty::{self, Api, Source};
+use crate::platform::pty::conpty::{self, Api, Source};
 use crate::globals::{self, Globals};
 use crate::margins;
 use crate::scrollbar;
@@ -36,7 +36,7 @@ use crate::pointer::{self, Down, Up};
 use crate::layout::{Axis, Layout, PaneId, Rect};
 use crate::mouse::{self, Button, Mods, Tracking};
 use crate::pane::Pane;
-use crate::pty::Notify;
+use crate::platform::pty::Notify;
 use crate::palette::Palette;
 use crate::profile::{self, Profile};
 use crate::render::Renderer;

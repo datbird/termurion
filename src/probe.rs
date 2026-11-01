@@ -3,9 +3,9 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::conpty::Api;
+use crate::platform::pty::conpty::Api;
 use crate::mouse::{self, Action, Button, Event, Modes, Mods, Tracking};
-use crate::pty::{self, Pty};
+use crate::platform::pty::{self, Pty};
 use crate::screen::Screen;
 
 pub const COLS: u16 = 200;

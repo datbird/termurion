@@ -800,7 +800,7 @@ mod tests {
             "let a = gs::guarded_args(&vet, &[x]);",
             "let a = gs::launch_args(&vet, &x);",
             "let e = gs::launch_env();",
-            "let p = crate::pty::spawn_notify(&api, &line, None, &env, 80, 24, n);",
+            "let p = crate::platform::pty::spawn_notify(&api, &line, None, &env, 80, 24, n);",
             "if stem.as_deref() == Some(\"git\") {}",
             "crate::git_run_win::WinGitRun.run(&g, &d, &a, t, None);",
         ];

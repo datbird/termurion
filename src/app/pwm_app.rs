@@ -2646,7 +2646,7 @@ mod lock {
     use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{WM_NCDESTROY, WM_WTSSESSION_CHANGE};
 
-    use crate::pty::Notify;
+    use crate::platform::pty::Notify;
 
     const SUBCLASS_ID: usize = 0x7077_6D6C;
     const WTS_SESSION_LOCK: usize = 7;

@@ -35,12 +35,12 @@ pub(super) enum Done {
 pub(super) struct OpenWork {
     tx: mpsc::Sender<Done>,
     rx: mpsc::Receiver<Done>,
-    notify: crate::pty::Notify,
+    notify: crate::platform::pty::Notify,
     inflight: Arc<AtomicUsize>,
 }
 
 impl OpenWork {
-    pub(super) fn new(notify: crate::pty::Notify) -> OpenWork {
+    pub(super) fn new(notify: crate::platform::pty::Notify) -> OpenWork {
         let (tx, rx) = mpsc::channel();
         OpenWork { tx, rx, notify, inflight: Arc::new(AtomicUsize::new(0)) }
     }

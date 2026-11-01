@@ -4,15 +4,15 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::conpty::{self, Source, dev_vendor_dir};
-    use crate::pty::spawn;
+    use crate::platform::pty::conpty::{self, Source, dev_vendor_dir};
+    use crate::platform::pty::spawn;
     use std::time::Duration;
 
     fn capture(source: Source, name: &str) {
         let api = conpty::load(&source).unwrap();
         let p = spawn(&api, "wsl.exe -e tmux -L termurion-probe -f /dev/null -CC new-session", 80, 24).unwrap();
         let mut all = Vec::new();
-        let step = |p: &crate::pty::Pty, needle: &[u8], all: &mut Vec<u8>| match p.read_until(needle, Duration::from_secs(20)) {
+        let step = |p: &crate::platform::pty::Pty, needle: &[u8], all: &mut Vec<u8>| match p.read_until(needle, Duration::from_secs(20)) {
             Ok(b) => all.extend(b),
             Err(b) => {
                 all.extend(b);
@@ -45,7 +45,7 @@ mod tests {
         let api = conpty::load(&Source::Shipped(dev_vendor_dir())).unwrap();
         let p = spawn(&api, "wsl.exe -e tmux -L termurion-layout -f /dev/null -CC new-session", 80, 24).unwrap();
         let mut all = Vec::new();
-        let step = |p: &crate::pty::Pty, needle: &[u8], all: &mut Vec<u8>| match p.read_until(needle, Duration::from_secs(20)) {
+        let step = |p: &crate::platform::pty::Pty, needle: &[u8], all: &mut Vec<u8>| match p.read_until(needle, Duration::from_secs(20)) {
             Ok(b) => all.extend(b),
             Err(b) => {
                 all.extend(b);
@@ -108,7 +108,7 @@ mod tests {
         let api = conpty::load(&Source::Shipped(dev_vendor_dir())).unwrap();
         let p = spawn(&api, &format!("psmux.exe -L {server} -CC new-session -s {server}"), 80, 24).unwrap();
         let mut all = Vec::new();
-        let step = |p: &crate::pty::Pty, needle: &[u8], all: &mut Vec<u8>| match p.read_until(needle, Duration::from_secs(20)) {
+        let step = |p: &crate::platform::pty::Pty, needle: &[u8], all: &mut Vec<u8>| match p.read_until(needle, Duration::from_secs(20)) {
             Ok(b) => all.extend(b),
             Err(b) => {
                 all.extend(b);
@@ -153,7 +153,7 @@ mod tests {
         let api = conpty::load(&Source::Shipped(dev_vendor_dir())).unwrap();
         let p = spawn(&api, &format!("psmux.exe -L {server} -CC new-session -s {server}"), 80, 24).unwrap();
         let mut all = Vec::new();
-        let step = |p: &crate::pty::Pty, needle: &[u8], all: &mut Vec<u8>| match p.read_until(needle, Duration::from_secs(20)) {
+        let step = |p: &crate::platform::pty::Pty, needle: &[u8], all: &mut Vec<u8>| match p.read_until(needle, Duration::from_secs(20)) {
             Ok(b) => all.extend(b),
             Err(b) => {
                 all.extend(b);

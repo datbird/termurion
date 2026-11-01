@@ -12,7 +12,7 @@ fn main() {
 
 #[cfg(windows)]
 fn run() -> i32 {
-    use termurion::conpty::{self, Source};
+    use termurion::platform::pty::conpty::{self, Source};
     use termurion::host;
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(std::path::PathBuf::from)).unwrap_or_default();
     let api = match conpty::load(&Source::Shipped(exe_dir.clone())).or_else(|e| conpty::load(&Source::Inbox).map_err(|e2| format!("{e}; {e2}"))) {

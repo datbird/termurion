@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use crate::host_proto::{Decoder, Live, MIN_VERSION, Msg, VERSION, encode};
-use crate::pty::{Notify, Read};
+use crate::platform::pty::{Notify, Read};
 use crate::ssh_transport::Transport;
 use crate::platform::ipc::Pipe;
 

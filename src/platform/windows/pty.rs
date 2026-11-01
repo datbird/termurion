@@ -26,7 +26,8 @@ use windows_sys::Win32::System::Threading::{
     STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
-use crate::conpty::Api;
+use super::conpty::Api;
+use crate::platform::pty::{Notify, Read};
 use crate::ssh_transport::Transport;
 
 /// One console attach at a time (Send Signal's events, password prompt mode reads, the write
@@ -173,18 +174,6 @@ pub struct Pty {
 
 /// How long Drop waits for ConPTY to close the output pipe before it ends the child.
 const CLOSE_WAIT: Duration = Duration::from_secs(2);
-
-/// Called from background threads when a pty has new output or its child exits.
-pub type Notify = Arc<dyn Fn() + Send + Sync>;
-
-/// The result of a non-blocking read.
-pub enum Read {
-    Data(Vec<u8>),
-    Empty,
-    /// The output pipe closed. ConPTY closes it only after the pseudoconsole closes,
-    /// so a child exit shows up in `exit_code`, not here.
-    Closed,
-}
 
 fn check_size(cols: u16, rows: u16) -> Result<(), String> {
     if cols == 0 || rows == 0 || cols > i16::MAX as u16 || rows > i16::MAX as u16 {
@@ -764,6 +753,12 @@ impl Drop for Pty {
     }
 }
 
+/// The shipped ConPTY from the repo's vendor folder, for the live tests in other modules.
+#[cfg(test)]
+pub fn test_api() -> Api {
+    super::conpty::load(&super::conpty::Source::Shipped(super::conpty::dev_vendor_dir())).unwrap()
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
 
@@ -812,7 +807,7 @@ pub(crate) mod tests {
     }
 
     use super::*;
-    use crate::conpty::{self, Source, dev_vendor_dir};
+    use crate::platform::windows::conpty::{self, Source, dev_vendor_dir};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

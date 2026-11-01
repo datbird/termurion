@@ -28,8 +28,8 @@ mod tests {
     use alacritty_terminal::index::{Column, Line};
     use alacritty_terminal::term::cell::Flags;
 
-    use crate::conpty::{self, Source, dev_vendor_dir};
-    use crate::pty::{Pty, Read, spawn_notify};
+    use crate::platform::pty::conpty::{self, Source, dev_vendor_dir};
+    use crate::platform::pty::{Pty, Read, spawn_notify};
     use crate::screen::Screen;
 
     const POWERSHELL: &str = "powershell.exe -NoLogo -NoProfile";
@@ -233,7 +233,7 @@ mod tests {
             use windows_sys::Win32::System::Console::{CONSOLE_SCREEN_BUFFER_INFO, COORD, FreeConsole, GetConsoleScreenBufferInfo, ReadConsoleOutputCharacterW};
             // The test process has a console of its own; attaching to the shell's needs none.
             unsafe { FreeConsole() };
-            crate::pty::attached_unless(pid, &std::sync::atomic::AtomicBool::new(false), || unsafe {
+            crate::platform::pty::attached_unless(pid, &std::sync::atomic::AtomicBool::new(false), || unsafe {
                 let name: Vec<u16> = "CONOUT$".encode_utf16().chain(Some(0)).collect();
                 let h = CreateFileW(name.as_ptr(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, std::ptr::null(), OPEN_EXISTING, 0, std::ptr::null_mut());
                 if h == INVALID_HANDLE_VALUE {

@@ -8,7 +8,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::pty::Notify;
+use crate::platform::pty::Notify;
 use crate::script_provision::{KillJob, RealRunner};
 use crate::update::{self, Fetch, Fetched};
 

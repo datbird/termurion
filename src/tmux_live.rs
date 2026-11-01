@@ -18,8 +18,8 @@ mod tests {
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
 
-    use crate::conpty::{self, Source, dev_vendor_dir};
-    use crate::pty::{Pty, spawn};
+    use crate::platform::pty::conpty::{self, Source, dev_vendor_dir};
+    use crate::platform::pty::{Pty, spawn};
     use crate::tmux_controller::{Action, Controller};
     use crate::tmux_gateway::{Event, Flags, Gateway, Tag};
     use crate::tmux_handshake::{self, Handshake, Step};

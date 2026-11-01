@@ -332,7 +332,7 @@ impl JobWatch {
                     // Each sample with its own time. Unknown (the mode could not be read) is
                     // never a password prompt; nor is one paused since it was picked (refused
                     // under `CONSOLE`, so no read runs on a paused console).
-                    let samples: Vec<(u32, bool, std::time::Instant)> = shells.iter().map(|(pid, paused)| (*pid, crate::pty::console_mode_unless(*pid, paused).is_ok_and(crate::pwm_prompt::at_prompt), std::time::Instant::now())).collect();
+                    let samples: Vec<(u32, bool, std::time::Instant)> = shells.iter().map(|(pid, paused)| (*pid, crate::platform::pty::console_mode_unless(*pid, paused).is_ok_and(crate::pwm_prompt::at_prompt), std::time::Instant::now())).collect();
                     let Some(shared) = weak.upgrade() else { return };
                     let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
                     let mut changed = false;
@@ -554,7 +554,7 @@ const OWN_EVENT_WAIT: Duration = Duration::from_millis(500);
 /// process's own handler has seen the event (at most `OWN_EVENT_WAIT`), so the copy Windows
 /// delivers to the sender never lands after a later attach reset the handler list.
 pub fn console_event(pid: u32, ctrl_break: bool, stop: Arc<std::sync::atomic::AtomicBool>) -> std::thread::JoinHandle<Result<(), String>> {
-    std::thread::spawn(move || crate::pty::attached_unless(pid, &stop, || crate::pty::send_ctrl_event_attached(ctrl_break, OWN_EVENT_WAIT).map(|_| ())))
+    std::thread::spawn(move || crate::platform::pty::attached_unless(pid, &stop, || crate::platform::pty::send_ctrl_event_attached(ctrl_break, OWN_EVENT_WAIT).map(|_| ())))
 }
 
 /// Every process under a shell now (for the close prompt), with its name.
@@ -685,7 +685,7 @@ mod tests {
     #[test]
     fn an_unreadable_console_is_not_a_prompt() {
         // No such process: the mode is unknown, which the watcher reads as no prompt.
-        let got = crate::pty::console_mode(0xFFFF_FFF0);
+        let got = crate::platform::pty::console_mode(0xFFFF_FFF0);
         assert!(got.is_err(), "{got:?}");
         assert!(!got.is_ok_and(crate::pwm_prompt::at_prompt));
         let w = JobWatch::start(std::sync::Arc::new(|| {}));
@@ -704,7 +704,7 @@ mod tests {
         assert_eq!(ids(&consoles), vec![1]);
         let targets = console_targets(&consoles);
         running.store(true, Ordering::Release);
-        assert_eq!(crate::pty::console_mode_unless(targets[0].0, &targets[0].1), Err("the console is paused".to_string()));
+        assert_eq!(crate::platform::pty::console_mode_unless(targets[0].0, &targets[0].1), Err("the console is paused".to_string()));
     }
 
     #[test]

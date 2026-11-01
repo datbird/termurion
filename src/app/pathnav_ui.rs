@@ -53,12 +53,12 @@ enum Reply {
 pub(super) struct PathNav {
     tx: std::sync::mpsc::Sender<Reply>,
     rx: std::sync::mpsc::Receiver<Reply>,
-    notify: crate::pty::Notify,
+    notify: crate::platform::pty::Notify,
     busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl PathNav {
-    pub(super) fn new(notify: crate::pty::Notify) -> PathNav {
+    pub(super) fn new(notify: crate::platform::pty::Notify) -> PathNav {
         let (tx, rx) = std::sync::mpsc::channel();
         PathNav { tx, rx, notify, busy: Arc::new(std::sync::atomic::AtomicBool::new(false)) }
     }

@@ -328,12 +328,7 @@ pub mod ssh_probe_win;
 pub mod ssh_secret_win;
 
 #[cfg(windows)]
-pub mod conpty;
-
-#[cfg(windows)]
 pub mod probe;
-#[cfg(windows)]
-pub mod pty;
 #[cfg(windows)]
 pub mod jobwatch;
 #[cfg(windows)]

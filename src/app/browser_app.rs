@@ -1973,7 +1973,7 @@ mod tests {
     fn a_browser_pane_writes_nothing_and_never_exits() {
         let io = crate::pane::Io::Browser(BrowserIo::default());
         assert!(io.write(b"x").is_ok() && io.resize(3, 3).is_ok() && io.clear().is_ok() && io.pid().is_none() && io.exit_code().is_none() && io.pending() == 0);
-        assert!(matches!(io.try_read(), crate::pty::Read::Empty));
+        assert!(matches!(io.try_read(), crate::platform::pty::Read::Empty));
     }
 
     #[test]
