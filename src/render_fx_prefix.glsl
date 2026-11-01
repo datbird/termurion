@@ -32,7 +32,17 @@ layout(set = 0, binding = 1, std140) uniform Globals {
     vec3  iCursorText;
     vec3  iSelectionForegroundColor;
     vec3  iSelectionBackgroundColor;
+    // Termurion: Claude Code's input box lines as read from the grid (y of the top and the
+    // bottom line in pixels from the top, z = 1 when there is a box). Not in Ghostty.
+    vec4  iInputBox;
 };
+
+// Termurion: how far above the cursor the input box reaches (it grows with a long prompt):
+// at least the 4 rows cursor-fx assumes.
+float termurionAbove(float cellH) {
+    if (iInputBox.z < 0.5) return 4.0 * cellH;
+    return max(4.0 * cellH, iCurrentCursor.y - iInputBox.x + cellH);
+}
 
 #define CURSORSTYLE_BLOCK        0
 #define CURSORSTYLE_BLOCK_HOLLOW 1

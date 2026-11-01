@@ -181,10 +181,58 @@ fn discover_in(builtin: &[crate::render_fx_builtin::Builtin], user: Option<&Path
     (list, errors)
 }
 
-/// The GLSL naga compiles: the prefix, the body with its own line numbers, then `main()`.
-/// `main()` goes last because naga rejects a call to a function defined later.
+/// The GLSL naga compiles: the prefix, the body (with `patch_input_box`) with its own line
+/// numbers, then `main()`. `main()` goes last because naga rejects a call to a function defined
+/// later.
 pub fn wrap_glsl(body: &str) -> String {
+    let body = patch_input_box(body);
     format!("{PREFIX}\n#line 1\n{body}\nvoid main() {{ mainImage(_fragColor, gl_FragCoord.xy); }}\n")
+}
+
+/// Termurion's patch for cursor-fx-style shaders (each line stays one line, so error line numbers
+/// still match the file): they look for Claude Code's input box lines by scanning pixels near the
+/// cursor, at most 4 rows up, so a box that grows with a long prompt loses its top line. When
+/// Termurion found the box in the grid (`iInputBox`), `boxLineY`, `clLineNear` and `boxLines`
+/// answer with its lines, and the "how far above the cursor" bounds reach the top line. Shaders
+/// without these functions are left as they are.
+pub fn patch_input_box(body: &str) -> String {
+    let up = |v: &str| format!("(Y_DOWN ? iResolution.y - {v} : {v})");
+    let (top, bottom) = (up("iInputBox.x"), up("iInputBox.y"));
+    let nearest = |at: &str| format!(" if (iInputBox.z > 0.5) {{ float tA = {top}, tB = {bottom}; float tN = abs({at} - tA) < abs({at} - tB) ? tA : tB; return abs({at} - tN) <= reach ? tN : -1.0; }}");
+    let mut out = String::with_capacity(body.len() + 1024);
+    for line in body.split_inclusive('\n') {
+        let (text, end) = match line.strip_suffix('\n') {
+            Some(t) => (t, "\n"),
+            None => (line, ""),
+        };
+        let trimmed = text.trim_end();
+        let mut text = text.to_string();
+        if trimmed.starts_with("float boxLineY(vec2 p, vec2 center, vec4 cur, vec2 res, float reach)") && trimmed.ends_with('{') {
+            text.push_str(&nearest("p.y"));
+        } else if trimmed.starts_with("float clLineNear(float y0, float reach, vec2 res)") && trimmed.ends_with('{') {
+            text.push_str(&nearest("y0"));
+        } else if trimmed.starts_with("vec2 boxLines(vec4 cur, vec2 center, float cellW, float cellH, vec2 res)") && trimmed.ends_with('{') {
+            text.push_str(&format!(" if (iInputBox.z > 0.5) return vec2({top}, {bottom});"));
+        }
+        out.push_str(&bounds_re().replace_all(&text, |c: &regex::Captures| {
+            let unit = if c[2].contains("cur.w") { "cur.w" } else { "cellH" };
+            let m = &c[2];
+            if let Some(name) = m.strip_prefix("(4.0 + ").and_then(|r| r.strip_suffix(") * cellH")) {
+                format!("{}(termurionAbove(cellH) + {name} * cellH)", &c[1])
+            } else if m == "4.5 * cellH" {
+                format!("{}(termurionAbove(cellH) + 0.5 * cellH)", &c[1])
+            } else {
+                format!("{}termurionAbove({unit})", &c[1])
+            }
+        }));
+        out.push_str(end);
+    }
+    out
+}
+
+fn bounds_re() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"(center\.y\s*[<>]\s*)(\(4\.0 \+ [A-Z_]+\) \* cellH|4\.5 \* cellH|4\.0 \* cellH|4\.0 \* cur\.w)").unwrap())
 }
 
 /// A shader compiled and validated.
@@ -308,6 +356,9 @@ pub struct Uniforms {
     pub cursor_text: [f32; 3],
     pub selection_foreground: [f32; 3],
     pub selection_background: [f32; 3],
+    /// Termurion's `iInputBox`: the input box's top and bottom line (pixels from the top), and
+    /// 1 when there is one.
+    pub input_box: [f32; 4],
 }
 
 impl Default for Uniforms {
@@ -337,6 +388,7 @@ impl Default for Uniforms {
             cursor_text: [0.0; 3],
             selection_foreground: [0.0; 3],
             selection_background: [1.0; 3],
+            input_box: [0.0; 4],
         }
     }
 }
@@ -385,6 +437,7 @@ impl Uniforms {
         f("iCursorText", floats(&self.cursor_text));
         f("iSelectionForegroundColor", floats(&self.selection_foreground));
         f("iSelectionBackgroundColor", floats(&self.selection_background));
+        f("iInputBox", floats(&self.input_box));
         // Arrays: element i at offset + i * stride.
         let mut array = |name: &str, items: Vec<Vec<u8>>| {
             if let Some(&(off, stride)) = layout.fields.get(name) {
@@ -858,6 +911,21 @@ mod tests {
                 assert!(list.iter().all(|p| p.shader_text(&p.manifest.shaders[0]).unwrap().contains(&format!(" {c} "))), "{c} is in every built-in");
             }
         }
+    }
+
+    #[test]
+    fn the_input_box_patch_reaches_every_builtin() {
+        for p in discover(None).0 {
+            let text = p.shader_text(&p.manifest.shaders[0]).unwrap();
+            let patched = patch_input_box(&text);
+            assert_eq!(text.lines().count(), patched.lines().count(), "{}: line numbers stay", p.id);
+            assert!(patched.contains("iInputBox.z > 0.5) { float tA"), "{}: boxLineY answers from the grid", p.id);
+            assert!(!bounds_re().is_match(&patched), "{}: every 4-row bound reaches the box top", p.id);
+            assert!(patched.matches("termurionAbove(").count() >= 1, "{}", p.id);
+        }
+        // A shader without the functions is untouched.
+        let plain = "void mainImage(out vec4 c, in vec2 p) { c = vec4(1.0); }";
+        assert_eq!(patch_input_box(plain), plain);
     }
 
     #[test]

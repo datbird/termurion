@@ -161,6 +161,7 @@ impl FxRuntime {
             u.cursor_text = unit(p.cursor_text);
             u.selection_background = unit(p.selection);
             u.selection_foreground = unit(p.selected_text.unwrap_or(p.fg));
+            u.input_box = p.input_box.map_or([0.0; 4], |[t, b]| [t, b, 1.0, 0.0]);
             for (i, slot) in u.palette.iter_mut().enumerate() {
                 *slot = if i < 16 { unit(p.ansi[i]) } else { xterm_256(i) };
             }

@@ -111,6 +111,12 @@ as Ghostty's custom shaders, so most Ghostty shaders run without changes:
 | `iFocus`, `iTimeFocus` | 1 when the window has focus; `iTime` when focus came back |
 | `iBackgroundColor`, `iForegroundColor`, `iCursorColor`, `iCursorText` | profile colors |
 | `iSelectionBackgroundColor`, `iSelectionForegroundColor`, `iPalette[256]` | more colors |
+| `iInputBox` | Termurion only: Claude Code's input box lines, read from the grid. `x` and `y` are the top and bottom line's height in pixels from the top, `z` is 1 when there is a box |
+
+Claude Code's input box grows upward as a prompt gets longer. cursor-fx shaders look for its
+lines near the cursor, at most 4 rows up. Termurion patches every shader that has cursor-fx's
+`boxLineY`, `clLineNear` or `boxLines` while it compiles it, so they use `iInputBox` instead and
+reach the top line at any height. The shader files themselves stay unchanged.
 
 Coordinates follow Ghostty on macOS (y goes down): `fragCoord` starts at the top left, and
 `iCurrentCursor.y` is the bottom edge of the cursor. A Ghostty shader with a `Y_DOWN` switch

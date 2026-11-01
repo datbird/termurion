@@ -2419,7 +2419,9 @@ mod tests {
 
     /// The demo video (docs/assets/render-plugins.mp4): a scripted Claude Code session drawn by
     /// Termurion's own scene, renderer and effect chain, one PNG per frame at 30 fps, into
-    /// `%TEMP%\termurion-demo`. Run by hand: `cargo test --release --lib render_demo -- --ignored`.
+    /// `%TEMP%\termurion-demo`. Every built-in effect types, sends (its Enter look) and gets an
+    /// answer (its done look); Neon's prompt runs three lines, so its input box grows. Run by
+    /// hand: `cargo test --release --lib render_demo_video -- --ignored`.
     #[test]
     #[ignore]
     fn render_demo_video() {
@@ -2432,105 +2434,278 @@ mod tests {
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
         let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 22.0);
         let cell = r.cell;
-        let (cols, rows) = (78usize, 13usize);
+        let (cols, rows) = (78usize, 14usize);
         let pad = 16.0f32;
         let (w, h) = (((cols as f32 * cell.0) + 2.0 * pad).ceil() as u32 & !1, ((rows as f32 * cell.1) + 2.0 * pad).ceil() as u32 & !1);
         let plugins = discover(None).0;
-        let unit = |c: [u8; 3]| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0];
         let bg = crate::palette::rgb(22, 24, 30);
         let line = "\u{2500}".repeat(cols);
-        // One screen state: (history rows, typed text, spinner text or none, cursor shown).
-        let draw_screen = |history: &[String], typed: &str, spinner: Option<&str>| -> (crate::screen::Screen, (usize, usize)) {
+        let width = cols - 4;
+        // The prompt as Claude Code wraps it in its input box.
+        let wrap = |text: &str| -> Vec<String> {
+            let chars: Vec<char> = text.chars().collect();
+            if chars.is_empty() {
+                return vec![String::new()];
+            }
+            chars.chunks(width).map(|c| c.iter().collect()).collect()
+        };
+        // One screen: history rows from the top, the spinner over the box, the box (its top line
+        // moves up as the prompt grows) and the status row; the cursor ends the prompt.
+        let draw_screen = |history: &[String], typed: &str, spinner: Option<&str>| -> crate::screen::Screen {
             let mut s = crate::screen::Screen::new(cols, rows);
             s.palette.bg = bg;
             s.palette.fg = crate::palette::rgb(222, 222, 222);
+            let input = wrap(typed);
+            let bottom = rows - 1;
+            let top = bottom - input.len() - 1;
             let mut o = String::from("\x1b[2J");
-            for (i, l) in history.iter().enumerate() {
+            for (i, l) in history.iter().enumerate().take(top.saturating_sub(3)) {
                 o.push_str(&format!("\x1b[{};1H{l}", i + 1));
             }
             if let Some(sp) = spinner {
-                o.push_str(&format!("\x1b[8;1H\x1b[38;5;209m{sp}\x1b[0m"));
+                o.push_str(&format!("\x1b[{};1H\x1b[38;5;209m{sp}\x1b[0m", top - 1));
             }
-            o.push_str(&format!("\x1b[10;1H\x1b[38;5;240m{line}\x1b[0m\x1b[11;1H\u{276f} {typed}\x1b[12;1H\x1b[38;5;240m{line}\x1b[0m\x1b[13;1H\x1b[38;5;245m  \u{23f5}\u{23f5} accept edits on (shift+tab to cycle)\x1b[0m"));
-            let col = 2 + typed.chars().count();
-            o.push_str(&format!("\x1b[11;{}H", col + 1));
+            o.push_str(&format!("\x1b[{top};1H\x1b[38;5;240m{line}\x1b[0m"));
+            for (i, l) in input.iter().enumerate() {
+                o.push_str(&format!("\x1b[{};1H{} {l}", top + 1 + i, if i == 0 { "\u{276f}" } else { " " }));
+            }
+            o.push_str(&format!("\x1b[{bottom};1H\x1b[38;5;240m{line}\x1b[0m\x1b[{rows};1H\x1b[38;5;245m  \u{23f5}\u{23f5} accept edits on (shift+tab to cycle)\x1b[0m"));
+            let last = input.last().unwrap();
+            o.push_str(&format!("\x1b[{};{}H", top + input.len(), 3 + last.chars().count()));
             s.feed(o.as_bytes());
-            (s, (10, col))
+            s
         };
-        let n = std::cell::Cell::new(0usize);
-        let t0 = Instant::now();
-        let fps = 30u64;
-        // Renders `frames` frames of one state for one effect.
-        let mut shoot = |plugin: &str, chain: &mut crate::render_fx_gpu::Chain, clock: &mut Clock, u: &mut Uniforms, signals: &mut Signals, s: &crate::screen::Screen, preset: [u8; 3], frames: usize, busy: bool| {
-            for _ in 0..frames {
-                let now = t0 + Duration::from_millis(n.get() as u64 * 1000 / fps);
-                if busy {
-                    signals.output(now);
-                }
-                signals.tick(now);
-                let rect = crate::layout::Rect { x: pad, y: pad, w: cols as f32 * cell.0, h: rows as f32 * cell.1 };
-                let draw = crate::scene::DrawPrefs { fx_cursor: Some(crate::palette::rgb(preset[0], preset[1], preset[2])), ..Default::default() };
-                let mut frame = Frame { clear: rgba(bg, 1.0), fade: 1.0, ..Default::default() };
-                crate::scene::pane_with(&mut frame, s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE);
-                let fx = frame.fx.clone().unwrap();
-                let mut cur = fx.cursor;
-                if let Some(c) = cur.as_mut() {
-                    let [cr, cg, cb] = signals.apply(preset, now);
-                    c.color = [cr as f32 / 255.0, cg as f32 / 255.0, cb as f32 / 255.0, 1.0];
-                }
-                clock.frame(u, now, (w, h), cur, true);
-                u.background = unit([bg.r, bg.g, bg.b]);
-                u.foreground = unit([222, 222, 222]);
-                let px = r.draw_offscreen_fx(&frame, Some((chain, u)), w, h).unwrap();
-                image::RgbaImage::from_raw(w, h, px).unwrap().save(out.join(format!("f{:05}.png", n.get()))).unwrap();
-                n.set(n.get() + 1);
-            }
-            let _ = plugin;
-        };
-        let history = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        // The description up to its first clause, cut to fit one row.
         let tagline = |d: &str, max: usize| -> String {
             let first = d.split([';', '.']).next().unwrap_or(d).trim();
             if first.chars().count() <= max { first.to_string() } else { format!("{}\u{2026}", first.chars().take(max - 1).collect::<String>()) }
         };
-        // Act 1: Lightning, the whole Claude Code story.
-        let story = |id: &str, prompt: &str, answer: &str, shoot: &mut dyn FnMut(&str, &mut crate::render_fx_gpu::Chain, &mut Clock, &mut Uniforms, &mut Signals, &crate::screen::Screen, [u8; 3], usize, bool), full: bool| {
+        let n = std::cell::Cell::new(0usize);
+        let t0 = Instant::now();
+        let fps = 30u64;
+        let now_of = |k: usize| t0 + Duration::from_millis(k as u64 * 1000 / fps);
+        let spin = ["\u{00b7}", "\u{2722}", "\u{2736}", "\u{273b}", "\u{273d}", "\u{273b}", "\u{2736}", "\u{2722}"];
+        let effects: Vec<(&str, &str, &str, usize)> = vec![
+            ("lightning", "make the cursor effects awesome", "Done: thirteen effects, each with its own cursor.", 0),
+            ("neon", "now write the README section that explains how to turn the effects on, which settings they share, and how the Enter and done surges know when to play", "Added it under docs/render-plugins.md.", 0),
+            ("cyber", "decrypt the logs", "Found 3 warnings, no errors.", 10),
+            ("glitch", "why is the build flaky", "A race in the test GPU setup; fixed.", 10),
+            ("hologram", "draw the architecture", "Here is the diagram.", 10),
+            ("embers", "warm up the cache", "Cache warmed in 1.2 s.", 10),
+            ("katana", "cut the dead code", "Removed 412 lines.", 10),
+            ("fireworks", "ship it", "Released 0.0.1-beta10.", 10),
+            ("aurora", "make it calm", "Idle animation set to gentle.", 10),
+            ("mecha", "deploy the robots", "All five hosts updated.", 10),
+            ("phosphor", "show the old terminal", "Scanlines on.", 10),
+            ("shockwave", "ping every host", "All hosts answered.", 10),
+            ("teleport", "beam me up", "Energizing.", 10),
+        ];
+        for (id, prompt, answer, typed_before) in effects {
             let p = plugins.iter().find(|p| p.id == id).unwrap();
-            let preset = crate::render_fx::hex_color(p.manifest.cursor_color.as_deref().unwrap()).map(|c| [(c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8]).unwrap();
+            let c = crate::render_fx::hex_color(p.manifest.cursor_color.as_deref().unwrap()).unwrap();
+            let preset = [(c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8];
             let mut chain = crate::render_fx_gpu::Chain::new(&device, format, p.compile().unwrap(), false).unwrap();
             let (mut clock, mut u, mut sig) = (Clock::default(), Uniforms::default(), Signals::default());
-            let before = history(&[&format!("\x1b[1m  {}\x1b[0m  \x1b[38;5;245m{}\x1b[0m", p.title(), tagline(&p.manifest.description, cols - p.title().len() - 6)), "", "\x1b[38;5;252m\u{25cf}\x1b[0m Updated the effects and the README.", "  \u{2514} 2 files changed, 41 insertions(+)"]);
-            let (s, _) = draw_screen(&before, "", None);
-            shoot(id, &mut chain, &mut clock, &mut u, &mut sig, &s, preset, 15, false);
-            for i in 1..=prompt.chars().count() {
-                let typed: String = prompt.chars().take(i).collect();
-                let (s, _) = draw_screen(&before, &typed, None);
-                shoot(id, &mut chain, &mut clock, &mut u, &mut sig, &s, preset, 3, false);
+            let title = format!("\x1b[1m  {}\x1b[0m  \x1b[38;5;245m{}\x1b[0m", p.title(), tagline(&p.manifest.description, cols - p.title().len() - 6));
+            let base = vec![title.clone(), String::new(), "\x1b[38;5;252m\u{25cf}\x1b[0m Updated the effects and the README.".to_string(), "  \u{2514} 2 files changed, 41 insertions(+)".to_string()];
+            let mut shoot = |s: &crate::screen::Screen, frames: usize, busy: bool, sig: &mut Signals, clock: &mut Clock, u: &mut Uniforms| {
+                for _ in 0..frames {
+                    let now = now_of(n.get());
+                    if busy {
+                        sig.output(now);
+                    }
+                    sig.tick(now);
+                    let rect = crate::layout::Rect { x: pad, y: pad, w: cols as f32 * cell.0, h: rows as f32 * cell.1 };
+                    let draw = crate::scene::DrawPrefs { fx_cursor: Some(crate::palette::rgb(preset[0], preset[1], preset[2])), ..Default::default() };
+                    let mut frame = Frame { clear: rgba(bg, 1.0), fade: 1.0, ..Default::default() };
+                    crate::scene::pane_with(&mut frame, s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE);
+                    let fx = frame.fx.clone().unwrap();
+                    let mut cur = fx.cursor;
+                    if let Some(c) = cur.as_mut() {
+                        let [cr, cg, cb] = sig.apply(preset, now);
+                        c.color = [cr as f32 / 255.0, cg as f32 / 255.0, cb as f32 / 255.0, 1.0];
+                    }
+                    clock.frame(u, now, (w, h), cur, true);
+                    u.background = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
+                    u.foreground = [222.0 / 255.0; 3];
+                    u.input_box = fx.input_box.map_or([0.0; 4], |[t, b]| [t, b, 1.0, 0.0]);
+                    let px = r.draw_offscreen_fx(&frame, Some((&mut chain, u)), w, h).unwrap();
+                    image::RgbaImage::from_raw(w, h, px).unwrap().save(out.join(format!("f{:05}.png", n.get()))).unwrap();
+                    n.set(n.get() + 1);
+                }
+            };
+            let chars: Vec<char> = prompt.chars().collect();
+            let start = if typed_before > 0 { chars.len().saturating_sub(typed_before) } else { 0 };
+            let typed_at = |i: usize| chars.iter().take(i).collect::<String>();
+            shoot(&draw_screen(&base, &typed_at(start), None), 6, false, &mut sig, &mut clock, &mut u);
+            // Long prompts type faster, so every act stays short.
+            let per = if chars.len() - start > 60 { 1 } else { 3 };
+            for i in start + 1..=chars.len() {
+                shoot(&draw_screen(&base, &typed_at(i), None), per, false, &mut sig, &mut clock, &mut u);
             }
-            let (s, _) = draw_screen(&before, prompt, None);
-            shoot(id, &mut chain, &mut clock, &mut u, &mut sig, &s, preset, 12, false);
-            if !full {
-                return;
+            shoot(&draw_screen(&base, prompt, None), 6, false, &mut sig, &mut clock, &mut u);
+            // Enter: the prompt moves into the history and the box clears.
+            sig.enter(now_of(n.get()));
+            let mut sent = base.clone();
+            for (i, l) in wrap(prompt).iter().enumerate() {
+                sent.push(format!("\x1b[48;5;236m{} {l}\x1b[K\x1b[0m", if i == 0 { "\u{276f}" } else { " " }));
             }
-            sig.enter(t0 + Duration::from_millis(n.get() as u64 * 1000 / fps));
-            let sent = history(&[&format!("\x1b[1m  {}\x1b[0m  \x1b[38;5;245m{}\x1b[0m", p.title(), tagline(&p.manifest.description, cols - p.title().len() - 6)), "", "\x1b[38;5;252m\u{25cf}\x1b[0m Updated the effects and the README.", "  \u{2514} 2 files changed, 41 insertions(+)", "", &format!("\x1b[48;5;236m\u{276f} {prompt}\x1b[K\x1b[0m")]);
-            let spin = ["\u{00b7}", "\u{2722}", "\u{2736}", "\u{273b}", "\u{273d}", "\u{273b}", "\u{2736}", "\u{2722}"];
-            for k in 0..80 {
-                let (s, _) = draw_screen(&sent, "", Some(&format!("{} Orchestrating\u{2026} \x1b[38;5;245m(esc to interrupt)", spin[(k / 3) % spin.len()])));
-                shoot(id, &mut chain, &mut clock, &mut u, &mut sig, &s, preset, 1, true);
+            let spinning = if id == "lightning" { 70 } else { 40 };
+            for k in 0..spinning {
+                let sp = format!("{} Orchestrating\u{2026} \x1b[38;5;245m(esc to interrupt)", spin[(k / 3) % spin.len()]);
+                shoot(&draw_screen(&sent, "", Some(&sp)), 1, true, &mut sig, &mut clock, &mut u);
             }
             let mut done = sent.clone();
-            done.push(String::new());
-            done[6] = format!("\x1b[38;5;252m\u{25cf}\x1b[0m {answer}");
-            let (s, _) = draw_screen(&done, "", None);
-            shoot(id, &mut chain, &mut clock, &mut u, &mut sig, &s, preset, 105, false);
-        };
-        story("lightning", "make the cursor effects awesome", "Done: thirteen effects, each with its own cursor.", &mut shoot, true);
-        story("neon", "now the neon one", "Neon flickers back on after each key.", &mut shoot, true);
-        for id in ["cyber", "embers", "glitch", "mecha", "katana", "aurora"] {
-            story(id, "typing shows each effect", "", &mut shoot, false);
+            done.push(format!("\x1b[38;5;252m\u{25cf}\x1b[0m {answer}"));
+            // Done plays 1.2 s after the last output (Termurion's own signal), then it settles.
+            shoot(&draw_screen(&done, "", None), if id == "lightning" { 80 } else { 56 }, false, &mut sig, &mut clock, &mut u);
         }
         eprintln!("DEMO {} frames {w}x{h} in {}", n.get(), out.display());
+    }
+
+    /// Every built-in effect's Enter look on Claude Code's input region, as ghostty-cursor-fx's
+    /// media/effects images show it: one PNG per effect and moment into
+    /// `%TEMP%\termurion-enter`. Run by hand: `--ignored render_enter_gallery`.
+    #[test]
+    #[ignore]
+    fn render_enter_gallery() {
+        use crate::render_fx::{Clock, Signals, Uniforms, discover};
+        use std::time::{Duration, Instant};
+        let out = std::env::temp_dir().join("termurion-enter");
+        let _ = std::fs::remove_dir_all(&out);
+        std::fs::create_dir_all(&out).unwrap();
+        let (device, queue) = device();
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 20.0);
+        let cell = r.cell;
+        let (cols, rows) = (70usize, 7usize);
+        let (w, h) = ((cols as f32 * cell.0).ceil() as u32 & !1, (rows as f32 * cell.1).ceil() as u32 & !1);
+        let bg = crate::palette::rgb(40, 40, 40);
+        let line = "\u{2500}".repeat(cols);
+        let screen = |typed: &str, sent: bool| {
+            let mut s = crate::screen::Screen::new(cols, rows);
+            s.palette.bg = bg;
+            s.palette.fg = crate::palette::rgb(222, 222, 222);
+            let mut o = String::from("\x1b[2J\x1b[1;1H  \u{2514} 2 files changed, 41 insertions(+)");
+            if sent {
+                o.push_str("\x1b[2;1H\x1b[48;5;236m\u{276f} make the cursor effects awesome\x1b[K\x1b[0m\x1b[3;1H\x1b[38;5;209m\u{273b} Orchestrating\u{2026}\x1b[0m \x1b[38;5;245m(esc to interrupt)\x1b[0m");
+            }
+            o.push_str(&format!("\x1b[4;1H\x1b[38;5;240m{line}\x1b[0m\x1b[5;1H\u{276f} {typed}\x1b[6;1H\x1b[38;5;240m{line}\x1b[0m\x1b[7;1H\x1b[38;5;245m  \u{23f5}\u{23f5} accept edits on (shift+tab to cycle)\x1b[0m\x1b[5;{}H", 3 + typed.chars().count()));
+            s.feed(o.as_bytes());
+            s
+        };
+        for p in discover(None).0 {
+            let c = crate::render_fx::hex_color(p.manifest.cursor_color.as_deref().unwrap()).unwrap();
+            let preset = [(c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8];
+            let mut chain = crate::render_fx_gpu::Chain::new(&device, format, p.compile().unwrap(), false).unwrap();
+            let (mut clock, mut u, mut sig) = (Clock::default(), Uniforms::default(), Signals::default());
+            let t0 = Instant::now();
+            let mut frame_at = |ms: u64, s: &crate::screen::Screen, save: Option<String>, sig: &Signals, clock: &mut Clock, u: &mut Uniforms| {
+                let now = t0 + Duration::from_millis(ms);
+                let rect = crate::layout::Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
+                let draw = crate::scene::DrawPrefs { fx_cursor: Some(crate::palette::rgb(preset[0], preset[1], preset[2])), ..Default::default() };
+                let mut frame = Frame { clear: rgba(bg, 1.0), fade: 1.0, ..Default::default() };
+                crate::scene::pane_with(&mut frame, s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE);
+                let mut cur = frame.fx.clone().unwrap().cursor;
+                if let Some(c) = cur.as_mut() {
+                    let [cr, cg, cb] = sig.apply(preset, now);
+                    c.color = [cr as f32 / 255.0, cg as f32 / 255.0, cb as f32 / 255.0, 1.0];
+                }
+                clock.frame(u, now, (w, h), cur, true);
+                u.background = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
+                u.input_box = frame.fx.as_ref().and_then(|f| f.input_box).map_or([0.0; 4], |[t, b]| [t, b, 1.0, 0.0]);
+                let px = r.draw_offscreen_fx(&frame, Some((&mut chain, u)), w, h).unwrap();
+                if let Some(name) = save {
+                    image::RgbaImage::from_raw(w, h, px).unwrap().save(out.join(name)).unwrap();
+                }
+            };
+            let typed = screen("make the cursor effects awesome", false);
+            let sent = screen("", true);
+            // Typed and still, then Enter (the input clears as Claude Code takes the prompt).
+            for ms in (0..1500).step_by(33) {
+                frame_at(ms, &typed, None, &sig, &mut clock, &mut u);
+            }
+            sig.enter(t0 + Duration::from_millis(1500));
+            for ms in (1500..3600).step_by(33) {
+                let save = [1650u64, 1800, 2000, 2300, 2700].iter().find(|m| (ms as i64 - **m as i64).abs() < 17).map(|m| format!("{}-{:04}.png", p.id, m - 1500));
+                frame_at(ms, &sent, save, &sig, &mut clock, &mut u);
+            }
+        }
+    }
+
+    /// Every built-in effect's Enter look reaches both of Claude Code's input box lines, for two
+    /// fonts, two sizes and an input box of 1, 3 and 6 lines (it grows upward as the prompt
+    /// grows). The lit pixels are counted on each line's row, at the best of a few moments.
+    #[test]
+    fn every_effect_lights_both_box_lines_on_enter() {
+        use crate::render_fx::{Clock, Signals, Uniforms, discover};
+        use std::time::{Duration, Instant};
+        let (device, queue) = device();
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let bg = crate::palette::rgb(30, 31, 36);
+        let mut bad = Vec::new();
+        let mut report = Vec::new();
+        for (family, px) in [("Cascadia Mono", 14.0f32), ("Consolas", 20.0)] {
+            let mut r = Renderer::new(&device, &queue, format, family, px);
+            let cell = r.cell;
+            let (cols, rows) = (72usize, 14usize);
+            let (w, h) = ((cols as f32 * cell.0).ceil() as u32, (rows as f32 * cell.1).ceil() as u32);
+            let line = "\u{2500}".repeat(cols);
+            for input in [1usize, 3, 6] {
+                // Rows (1-based): the box's top line, `input` rows of text, the bottom line, status.
+                let bottom = rows - 1;
+                let top = bottom - input - 1;
+                let mut s = crate::screen::Screen::new(cols, rows);
+                s.palette.bg = bg;
+                let mut o = format!("\x1b[2J\x1b[1;1H\u{25cf} Done.\x1b[{top};1H\x1b[38;5;240m{line}\x1b[0m");
+                for i in 0..input {
+                    o.push_str(&format!("\x1b[{};1H{} this prompt goes on for a while, line {}", top + 1 + i, if i == 0 { "\u{276f}" } else { " " }, i + 1));
+                }
+                o.push_str(&format!("\x1b[{bottom};1H\x1b[38;5;240m{line}\x1b[0m\x1b[{};1H  status\x1b[{};{}H", rows, top + input, 44));
+                s.feed(o.as_bytes());
+                let rect = crate::layout::Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
+                for p in discover(None).0 {
+                    let c = crate::render_fx::hex_color(p.manifest.cursor_color.as_deref().unwrap()).unwrap();
+                    let preset = [(c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8];
+                    let draw = crate::scene::DrawPrefs { fx_cursor: Some(crate::palette::rgb(preset[0], preset[1], preset[2])), ..Default::default() };
+                    let mut frame = Frame { clear: rgba(bg, 1.0), fade: 1.0, ..Default::default() };
+                    crate::scene::pane_with(&mut frame, &s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE);
+                    let plain = r.draw_offscreen(&frame, w, h).unwrap();
+                    let mut chain = crate::render_fx_gpu::Chain::new(&device, format, p.compile().unwrap(), false).unwrap();
+                    let (mut clock, mut u, mut sig) = (Clock::default(), Uniforms::default(), Signals::default());
+                    u.background = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
+                    u.input_box = frame.fx.as_ref().and_then(|f| f.input_box).map_or([0.0; 4], |[t, b]| [t, b, 1.0, 0.0]);
+                    assert!(u.input_box[2] > 0.5, "{family} {px} input {input}: the scene finds the box");
+                    let t0 = Instant::now();
+                    let mut best = (0usize, 0usize);
+                    let lit_row = |lit: &[u8], row: usize| -> usize {
+                        let (y0, y1) = (((row - 1) as f32 * cell.1) as usize, ((row as f32) * cell.1) as usize);
+                        (y0..y1.min(h as usize)).flat_map(|y| (0..w as usize).map(move |x| (y * w as usize + x) * 4)).filter(|&i| (0..3).any(|k| (lit[i + k] as i32 - plain[i + k] as i32).abs() > 30)).count()
+                    };
+                    for ms in (0u64..2600).step_by(50) {
+                        if ms == 1000 {
+                            sig.enter(t0 + Duration::from_millis(ms));
+                        }
+                        let now = t0 + Duration::from_millis(ms);
+                        let mut cur = frame.fx.clone().unwrap().cursor;
+                        if let Some(c) = cur.as_mut() {
+                            let [cr, cg, cb] = sig.apply(preset, now);
+                            c.color = [cr as f32 / 255.0, cg as f32 / 255.0, cb as f32 / 255.0, 1.0];
+                        }
+                        clock.frame(&mut u, now, (w, h), cur, true);
+                        if ms >= 1050 && ms % 150 == 0 {
+                            let lit = r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), w, h).unwrap();
+                            best = (best.0.max(lit_row(&lit, top)), best.1.max(lit_row(&lit, bottom)));
+                        }
+                    }
+                    report.push(format!("{family} {px} input {input} {}: top {} bottom {}", p.id, best.0, best.1));
+                    if best.0 < 40 || best.1 < 40 {
+                        bad.push(report.last().unwrap().clone());
+                    }
+                }
+            }
+        }
+        eprintln!("{}", report.join("\n"));
+        assert!(bad.is_empty(), "box lines not lit:\n{}", bad.join("\n"));
     }
 
     /// Lightning's Enter surge runs along Claude Code's input box lines (above and below the

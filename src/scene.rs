@@ -143,6 +143,10 @@ pub struct FxPane {
     pub selection: Rgb,
     pub selected_text: Option<Rgb>,
     pub ansi: [Rgb; 16],
+    /// Claude Code's input box around the cursor, read from the grid: the middle of its top and
+    /// its bottom line row, in window pixels from the top (the box grows upward with a long
+    /// prompt). None without a box.
+    pub input_box: Option<[f32; 2]>,
 }
 
 impl Default for Frame {
@@ -1542,6 +1546,18 @@ pub fn pane_with(
             crate::render_fx::Cursor { rect: [r.x, r.y, r.w, r.h], color: [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0, 1.0], style: kind, visible: true }
         });
         let program_cursor = term.colors()[alacritty_terminal::vte::ansi::NamedColor::Cursor as usize];
+        // A row is a box line when most of its cells are a horizontal line glyph.
+        let box_row = |row: usize| -> bool {
+            let line = alacritty_terminal::index::Line(row as i32 - content.display_offset as i32);
+            let n = (0..cols).filter(|&c| matches!(term.grid()[line][alacritty_terminal::index::Column(c)].c, '\u{2500}' | '\u{2501}')).count();
+            cols > 0 && n * 10 >= cols * 8
+        };
+        let input_box = cursor.and_then(|(row, _)| {
+            let bottom = (row + 1..lines.min(row + 3)).find(|&r| box_row(r))?;
+            let top = (0..row).rev().find(|&r| box_row(r))?;
+            let mid = |r: usize| rect.y + r as f32 * ch + ch / 2.0;
+            Some([mid(top), mid(bottom)])
+        });
         frame.fx = Some(FxPane {
             cursor: fx_cursor,
             focused,
@@ -1553,6 +1569,7 @@ pub fn pane_with(
             selection: palette.selection,
             selected_text: palette.selected_text,
             ansi: palette.ansi,
+            input_box,
         });
     }
 
