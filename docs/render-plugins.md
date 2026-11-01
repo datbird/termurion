@@ -23,9 +23,23 @@ effect unless a program set its own cursor color.
 
 ## Claude Code: the Enter and done effects
 
-The effects can play when you send a prompt and when Claude finishes. Claude Code tells the
-effect through two hooks. The hooks run on the computer where Claude Code runs, which may be a
-different computer from the one that runs Termurion (for example over ssh).
+The effects play when you send a prompt and when Claude finishes. Termurion makes both signals
+itself, so nothing needs to be installed on the computer where Claude Code runs. This also
+works over ssh and inside tmux:
+
+- **Enter:** you press Enter.
+- **Done:** output that kept coming for at least 1.5 seconds after Enter (Claude Code's spinner
+  draws until the answer is in) stays quiet for 1.2 seconds. With shell integration, a long
+  shell command's end (OSC 133;D) plays it at once.
+
+Under **Effects**, the **Claude Code** group turns each part on or off: the Enter surge, the
+done surge, the input box lines in the effect's color, input box lines that are always alive,
+the prompt mark's look, and Termurion's own signals. The **General** group has the jump bolt and
+the idle animation. These switches apply to every effect.
+
+### Hooks (optional)
+
+Claude Code hooks can send the signals instead. A hook's signal wins over Termurion's own.
 
 On a Mac or Linux computer (also WSL, and any host you reach over ssh):
 
