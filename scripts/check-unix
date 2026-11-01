@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Counts compile errors on Linux (here) and macOS (ssh funtimes). Exits 1 if either is non-zero.
+# The count is diagnostic lines across the lib and lib-test targets, not unique errors.
+# CHECK_UNIX_MAC_HOST overrides the macOS ssh host (default funtimes).
 # Usage: scripts/check-unix [--linux-only | --mac-only]
 set -uo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
@@ -14,17 +16,29 @@ esac
 bad=0
 # Short format puts each diagnostic as path:line:col: error[..], so match those (plus bare error: lines from cargo itself, minus the summary).
 count() { grep -E '^([^ ]+:[0-9]+:[0-9]+: )?error' | grep -vc 'could not compile' || true; }
+# Runs a check command, prints "<os>: N errors". A failed run with no counted errors did not really run: exit 2.
+report() {
+    local os="$1"; shift
+    local out rc n
+    out=$("$@" 2>&1); rc=$?
+    n=$(printf '%s\n' "$out" | count)
+    if [ "$rc" -ne 0 ] && [ "$n" -eq 0 ]; then
+        echo "$os: check did not run"
+        printf '%s\n' "$out" | tail -5 >&2
+        exit 2
+    fi
+    echo "$os: $n errors"
+    [ "$n" -ne 0 ] && bad=1
+    return 0
+}
 if [ "$do_linux" = 1 ]; then
     # shellcheck disable=SC1090
     [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
-    n=$(cargo check --all-targets --message-format short 2>&1 | count)
-    echo "linux: $n errors"
-    [ "$n" -ne 0 ] && bad=1
+    report linux cargo check --all-targets --message-format short
 fi
 if [ "$do_mac" = 1 ]; then
-    rsync -rt --delete --exclude target/ --exclude .git/ --exclude .superpowers/ ./ funtimes:src/termurion/ || { echo "check-unix: rsync to funtimes failed" >&2; exit 2; }
-    n=$(ssh funtimes 'cd src/termurion && ~/.cargo/bin/cargo check --all-targets --message-format short' 2>&1 | count)
-    echo "macos: $n errors"
-    [ "$n" -ne 0 ] && bad=1
+    host="${CHECK_UNIX_MAC_HOST:-funtimes}"
+    rsync -rt --delete --exclude target/ --exclude .git/ --exclude .superpowers/ ./ "$host:src/termurion/" || { echo "macos: check did not run"; exit 2; }
+    report macos ssh "$host" 'cd src/termurion && ~/.cargo/bin/cargo check --all-targets --message-format short'
 fi
 exit $bad
