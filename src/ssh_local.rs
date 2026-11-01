@@ -260,7 +260,6 @@ pub fn finish_no_replace(temp: &Path, final_path: &Path, host_url: &str, mark: &
     }
 }
 
-#[cfg(windows)]
 pub fn finish(temp: &Path, final_path: &Path, host_url: &str) -> Result<PathBuf, String> {
     finish_with(temp, final_path, host_url, &|p, u| crate::inert_files::mark_strict(p, Some(u)))
 }
@@ -293,12 +292,10 @@ fn tree(root: &Path) -> Result<Vec<(PathBuf, bool)>, String> {
 /// there. Before anything moves: no entry is a reparse point or a file with another hard link,
 /// no name is one Explorer reads or Windows reads as another item, and every file took its mark
 /// (a failure is "Failed to quarantine" and nothing moved). `from` should be on the volume of `dest`.
-#[cfg(windows)]
 pub fn mark_and_move(from: &Path, dest: &Path, host_url: &str) -> Result<(), String> {
     mark_and_move_with(from, dest, host_url, &|p, u| crate::inert_files::mark_strict(p, Some(u)))
 }
 
-#[cfg(windows)]
 pub fn mark_and_move_with(from: &Path, dest: &Path, host_url: &str, mark: &dyn Fn(&Path, &str) -> std::io::Result<()>) -> Result<(), String> {
     use crate::script_archive as sa;
     if let Some(entry) = sa::unsafe_entry(from, &sa::stage_entries) {
@@ -350,7 +347,6 @@ pub fn mark_and_move_with(from: &Path, dest: &Path, host_url: &str, mark: &dyn F
 /// zip bomb can grow past the claim) writes it into a fresh empty folder beside `dest`, and
 /// `mark_and_move` moves the marked files into place. The fresh folder is removed on every path.
 /// The caller removes the zip.
-#[cfg(windows)]
 pub fn unzip(zip: &Path, dest: &Path, host_url: &str) -> Result<(), String> {
     let bytes = crate::extract::read_whole(zip, ZIP_FILE_MAX)?;
     let claimed = crate::zip_check::check_total(&bytes, crate::zip_check::Limits::DEFAULT)?;
@@ -367,7 +363,6 @@ pub fn unzip(zip: &Path, dest: &Path, host_url: &str) -> Result<(), String> {
 }
 
 /// The bytes free for the person on the drive holding `dir` (`GetDiskFreeSpaceExW`).
-#[cfg(windows)]
 pub fn free_space(dir: &Path) -> Result<u64, String> {
     localfs::free_space(&localfs::judge_io(dir).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
 }

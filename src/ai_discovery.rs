@@ -681,7 +681,6 @@ fn restored_model(d: &Value, endpoint: &str) -> Option<Model> {
 }
 
 /// The cache file, `%APPDATA%\Termurion\ollama-models.json` beside `settings.toml` (Decision 8).
-#[cfg(windows)]
 pub fn default_path() -> PathBuf {
     crate::globals::default_path().with_file_name("ollama-models.json")
 }

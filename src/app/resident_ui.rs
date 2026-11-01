@@ -521,7 +521,7 @@ mod tests {
         for never in ["drop_current_window", "platform::keys::", "register_hotkeys", "unregister", "close_current", "install_menus"] {
             assert!(!production(OWN).contains(never), "the resident window keeps its hook and hotkeys: {never}");
         }
-        assert!(go.contains("set_visible(false)") && go.contains("set_skip_taskbar(true)"));
+        assert!(go.contains("set_visible(false)") && go.contains("set_skip_taskbar(&g.window, true)"));
     }
 
     /// Every `tabs[self.active]` of the app is proven unreachable with no tab: only `split_as` (which

@@ -36,6 +36,22 @@ pub fn locale_from_lang_env(lang: &str) -> Option<String> {
     Some(base.replace('_', "-"))
 }
 
+/// What the locale guesser knows about the machine and a profile with encoding `ns_encoding`.
+pub fn facts(ns_encoding: i64, fallback: &str) -> crate::locale_guess::Facts {
+    imp::facts(ns_encoding, fallback)
+}
+
+/// Every locale the system offers, as `ll_CC`.
+pub fn system_locales() -> Vec<String> {
+    imp::system_locales()
+}
+
+/// Display names for the languages and the countries of `locales`: (language code, name) and
+/// (country code, name).
+pub fn names_for(locales: &[String]) -> (std::collections::HashMap<String, String>, std::collections::HashMap<String, String>) {
+    imp::names_for(locales)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

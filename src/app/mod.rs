@@ -1368,7 +1368,7 @@ pub struct App {
     /// Download Files' batches still out, by id (app-wide; 14d).
     ssh_batches: HashMap<u64, ssh_panel_app::Batch>,
     /// The secret pipe's server, started with the first window; None when it could not start.
-    ssh_secret_server: Option<crate::ssh_secret_win::Server>,
+    ssh_secret_server: Option<crate::platform::ssh_secret::Server>,
     /// The Script Console's entries: scripts, connections and the app-wide logs.
     script_history: crate::script_history::History,
     /// The API's alerts, shown one at a time in order; each window opens on a pass (it needs
@@ -1479,7 +1479,7 @@ pub struct App {
     scripts_alert: Option<(crate::prompt_ui::ConfirmWindow, scripts_alerts::Ask)>,
     /// Checking for updates (M13v2): the worker, the window, the next scheduled check, whether the
     /// check in flight is the person's, and the view waiting to show. App-wide, never per window.
-    update_checker: Option<crate::update_fetch_win::Checker>,
+    update_checker: Option<crate::platform::update_fetch::Checker>,
     update_window: Option<crate::update_ui::UpdateWindow>,
     update_due: Option<Instant>,
     update_manual: bool,
@@ -1928,7 +1928,7 @@ pub(crate) fn teardown_process() {
     crate::handoff_win::begin_closing();
     // A running update check ends with Termurion (its curl.exe), not after it.
     #[cfg(windows)]
-    crate::update_fetch_win::cancel_running();
+    crate::platform::update_fetch::cancel_running();
     // The Dynamic Profiles folder's watch stops with Termurion.
     #[cfg(windows)]
     crate::dynamic_profiles_scan::stop_all();

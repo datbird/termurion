@@ -32,6 +32,11 @@ pub fn beep_error() {
     beep()
 }
 
+/// Named sounds are Windows' (the Media folder); Unix has none, so the caller beeps instead.
+pub fn play_named(_name: &str) -> Option<bool> {
+    None
+}
+
 /// This thread's CPU time.
 pub fn thread_cpu_time() -> std::time::Duration {
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };

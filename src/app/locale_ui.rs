@@ -139,9 +139,9 @@ impl App {
     /// wrong-encoding ones apart when the profile is UTF-8 (R6).
     fn locale_picker(&self, guid: &str) -> Picker {
         let encoding = self.store.get(guid).map_or(4, |p| p.int("Character Encoding"));
-        let facts = crate::locale_win::facts(encoding, "");
-        let system = crate::locale_win::system_locales();
-        let (languages, countries) = crate::locale_win::names_for(&system);
+        let facts = crate::platform::locale::facts(encoding, "");
+        let system = crate::platform::locale::system_locales();
+        let (languages, countries) = crate::platform::locale::names_for(&system);
         let language = |c: &str| languages.get(c).cloned();
         let country = |c: &str| countries.get(c).cloned();
         Picker::new(&locale_guess::picker_locales(&system), encoding == 4, &facts.preferred, (&language, &country))

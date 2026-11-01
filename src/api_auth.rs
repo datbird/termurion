@@ -364,6 +364,13 @@ pub fn change_failed_text(error: &str) -> String {
     format!("The setting could not be changed: {error}")
 }
 
+/// No allow-all file is read on Unix: the check is Windows' (owner SID and DACL), so every start
+/// has none and the API keeps asking for the cookie (the safe answer).
+#[cfg(unix)]
+pub fn read_noauth_file(_path: &str) -> Option<NoauthFile> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

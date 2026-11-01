@@ -197,7 +197,7 @@ mod tests {
         assert!(body(m, "pub(super) fn select_tab", "\n    }\n").contains("tab_selected"));
         assert!(body(m, "let active = hotkey_ui::termurion_in_front();", "self.hotkey_reactivated()").contains("became_active"));
         assert!(include_str!("alerts_ui.rs").contains("bell_badge::is_waiting"));
-        assert!(include_str!("marks_ui.rs").contains("taskbar_win::play_named") && include_str!("marks_ui.rs").contains("sound_for"));
+        assert!(include_str!("marks_ui.rs").contains("clock::play_named") && include_str!("marks_ui.rs").contains("sound_for"));
     }
 
     /// Typing clears a bell icon; with ClearBellIconAggressively off the tick leaves it.

@@ -230,10 +230,17 @@ pub fn mark_strict(path: &Path, host_url: Option<&str>) -> std::io::Result<()> {
     if !crate::localfs::lstat(&crate::localfs::judge_io(path)?)?.is_file {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a file"));
     }
-    crate::localfs::write(&zone_stream(path)?, zone_text(host_url))
+    // The mark is an NTFS stream. Unix keeps no such stream (macOS's quarantine attribute is a later
+    // step), so there the file is left as it is: the one allowed no-op for a Windows-only extra.
+    #[cfg(windows)]
+    crate::localfs::write(&zone_stream(path)?, zone_text(host_url))?;
+    #[cfg(unix)]
+    let _ = host_url;
+    Ok(())
 }
 
 /// `path`'s Zone.Identifier stream, judged.
+#[cfg(windows)]
 fn zone_stream(path: &Path) -> std::io::Result<crate::localfs::LocalPath> {
     let mut stream = path.as_os_str().to_os_string();
     stream.push(":Zone.Identifier");
@@ -252,7 +259,10 @@ pub fn write_marked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// The Zone.Identifier stream alone, for a writer that wrote the file through its own handle
 /// (a failure is ignored: a drive without streams keeps the file unmarked).
 pub fn mark(path: &Path) {
+    #[cfg(windows)]
     let _ = zone_stream(path).and_then(|s| crate::localfs::write(&s, ZONE_MARK));
+    #[cfg(unix)]
+    let _ = path;
 }
 
 /// The door's rule for a whole path (`write_checked`): `refused_path`, or a final name of a

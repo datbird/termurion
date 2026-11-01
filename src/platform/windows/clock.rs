@@ -77,3 +77,7 @@ pub fn long_time(p: Local) -> String {
     let n = unsafe { GetTimeFormatEx(std::ptr::null(), 0, &st, std::ptr::null(), buf.as_mut_ptr(), buf.len() as i32) };
     wide_text(&buf, n)
 }
+
+pub fn play_named(name: &str) -> Option<bool> {
+    crate::taskbar_win::play_named(name)
+}

@@ -243,6 +243,18 @@ mod win {
 #[cfg(windows)]
 pub use win::{check, listen_rows, process_name, tcp_rows};
 
+/// The listening-port table is a Windows call; Unix reports that it is not available.
+#[cfg(unix)]
+pub fn listen_rows() -> Result<Vec<Row>, String> {
+    Err(crate::platform::Unsupported { feature: "Finding the process on a port" }.to_string())
+}
+
+/// The name of a process by id is a Windows call; Unix has none yet.
+#[cfg(unix)]
+pub fn process_name(_pid: u32) -> Option<String> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

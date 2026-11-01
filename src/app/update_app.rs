@@ -86,9 +86,9 @@ fn now_secs() -> f64 {
 }
 
 impl App {
-    fn update_checker_ready(&mut self) -> &crate::update_fetch_win::Checker {
+    fn update_checker_ready(&mut self) -> &crate::platform::update_fetch::Checker {
         let notify = self.notify.clone();
-        self.update_checker.get_or_insert_with(|| crate::update_fetch_win::Checker::start(Box::new(crate::update_fetch_win::CurlFetch), notify))
+        self.update_checker.get_or_insert_with(|| crate::platform::update_fetch::Checker::start(Box::new(crate::platform::update_fetch::CurlFetch), notify))
     }
 
     /// Once per launch, after the first window (`SUUpdater.m:193-240`): the permission question

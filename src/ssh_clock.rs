@@ -233,6 +233,18 @@ pub fn local_zone_name() -> String {
     tame(&String::from_utf16_lossy(&name[..end]), TZ_MAX)
 }
 
+/// The name of this computer's time zone right now (`tm_zone`, as "CST").
+#[cfg(unix)]
+pub fn local_zone_name() -> String {
+    let now = unsafe { libc::time(std::ptr::null_mut()) };
+    let mut t: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&now, &mut t) }.is_null() || t.tm_zone.is_null() {
+        return String::new();
+    }
+    let name = unsafe { std::ffi::CStr::from_ptr(t.tm_zone) }.to_string_lossy().into_owned();
+    tame(&name, TZ_MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

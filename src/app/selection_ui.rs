@@ -515,7 +515,9 @@ impl App {
             self.banners.set("drag-text", "The selection is too large to drag");
             return;
         }
-        crate::dragtext_win::drag_text(&text);
+        if let Err(e) = crate::platform::drag::drag_text(&text) {
+            self.banners.set("drag-text", e.to_string());
+        }
         self.redraw();
     }
 

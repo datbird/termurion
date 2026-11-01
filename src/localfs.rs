@@ -161,6 +161,14 @@ pub fn create_owner_only(p: &Unfollowed) -> io::Result<File> {
     }
 }
 
+/// Makes a NEW file at the entry, readable and writable by this user alone (mode 0600), refusing an
+/// existing entry (a planted file or link) and never following a link at the name.
+#[cfg(unix)]
+pub fn create_owner_only(p: &Unfollowed) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&p.0)
+}
+
 /// Whether the open file is this user's own plain single-link file with the owner-only DACL
 /// `create_owner_only` makes: owned by the user's SID, protected, one allow entry (full access)
 /// for that SID. The handle was opened with read access.
@@ -498,6 +506,18 @@ pub fn free_space(dir: &LocalPath) -> io::Result<u64> {
         return Err(io::Error::last_os_error());
     }
     Ok(free)
+}
+
+/// The bytes free for the person on the file system holding a judged folder (`statvfs`).
+#[cfg(unix)]
+pub fn free_space(dir: &LocalPath) -> io::Result<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(dir.0.as_os_str().as_bytes()).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(path.as_ptr(), &mut st) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(u64::from(st.f_bavail).saturating_mul(u64::from(st.f_frsize)))
 }
 
 pub fn create_dir_all(p: &LocalPath) -> io::Result<()> {
@@ -910,7 +930,7 @@ mod tests {
         ("platform/windows/pty.rs", "console_mode_unless", 1, "the console device CONIN$, not a path"),
         ("restore_state.rs", "write_atomic", 3, "Termurion's own window-state file"),
         ("script_archive.rs", "hard_links", 1, "a folder Termurion just extracted an archive into: its own script staging folder, or the fresh folder it made beside a judged download"),
-        ("script_archive.rs", "stage_entries", 3, "a folder Termurion just extracted an archive into: its own script staging folder, or the fresh folder it made beside a judged download"),
+        ("script_archive.rs", "stage_entries", 7, "a folder Termurion just extracted an archive into: its own script staging folder, or the fresh folder it made beside a judged download"),
         ("script_new.rs", "write_files", 2, "a new script's files in Termurion's Scripts folder"),
         ("script_provision.rs", "download", 1, "Termurion's own runtime, download and environment folders under %APPDATA%"),
         ("script_provision.rs", "exists", 1, "Termurion's own runtime, download and environment folders under %APPDATA%"),

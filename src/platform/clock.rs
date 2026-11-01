@@ -48,3 +48,9 @@ pub fn short_time(p: Local) -> String {
 pub fn long_time(p: Local) -> String {
     imp::long_time(p)
 }
+
+/// Plays a named system sound through the judge: None when it is refused or this OS has none, else
+/// whether it started (false while another sound plays).
+pub fn play_named(name: &str) -> Option<bool> {
+    imp::play_named(name)
+}

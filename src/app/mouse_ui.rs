@@ -1044,7 +1044,7 @@ mod tests {
     fn cursor_entered_runs_ffm_enter() {
         assert!(MOD.contains("WindowEvent::CursorEntered"));
         let enter = body(UI, "ffm_enter");
-        for needle in ["ffm_on_enter(", "ffm_may_act(", "focus_terminal_window(", "SetForegroundWindow", "hidden_hotkey_key", "StealKeyFocus"] {
+        for needle in ["ffm_on_enter(", "ffm_may_act(", "focus_terminal_window(", "set_foreground(", "hidden_hotkey_key", "StealKeyFocus"] {
             assert!(enter.contains(needle), "{needle}");
         }
         assert!(!enter.contains("Drag::App"), "a held press keeps its pane");

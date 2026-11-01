@@ -817,6 +817,12 @@ pub fn save_private(name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     Err(first_error.unwrap_or_else(|| could_not_open(Path::new(name))))
 }
 
+/// The debug log's private files are written by the Windows folder rules; Unix has no log folder yet.
+#[cfg(unix)]
+pub fn save_private(_name: &str, _bytes: &[u8]) -> Result<PathBuf, String> {
+    Err(crate::platform::Unsupported { feature: "Saving the debug log's files" }.to_string())
+}
+
 /// Saves into the first folder that takes it (iTerm2 reports the failure of its one folder).
 #[cfg(windows)]
 pub fn save(header: &str, body: &str, footer: &str, append: bool) -> Result<PathBuf, String> {

@@ -561,7 +561,7 @@ mod tests {
         let put = &live[live.find("fn put(&mut self)").unwrap()..live.find("/// The pointer in screen pixels").unwrap()];
         assert!(put.contains("self.show_next = true") && !put.contains("ShowWindow"), "put only asks for the show");
         let redraw = &live[live.find("fn redraw(&mut self)").unwrap()..live.find("/// Sizes and places").unwrap()];
-        assert!(redraw.contains("self.show_next && !self.dirty") && redraw.contains("SW_SHOWNOACTIVATE"), "the paint after the resize shows it");
+        assert!(redraw.contains("self.show_next && !self.dirty") && redraw.contains("Show::ShowNoActivate"), "the paint after the resize shows it");
         let hide = &live[live.find("pub fn hide(&mut self) {").unwrap()..live.find("pub fn is_toast").unwrap()];
         assert!(hide.contains("self.show_next = false"));
     }

@@ -17,6 +17,7 @@ pub mod coproc;
 pub mod credentials;
 pub mod dialog;
 pub mod display;
+pub mod drag;
 pub mod http;
 pub mod ipc;
 pub mod input;
@@ -31,6 +32,8 @@ pub mod pty;
 pub mod shell_extras;
 pub mod sizing;
 pub mod shell_open;
+pub mod ssh_secret;
+pub mod update_fetch;
 pub mod window;
 pub mod window_style;
 

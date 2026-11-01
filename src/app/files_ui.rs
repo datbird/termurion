@@ -105,7 +105,6 @@ pub(super) fn downloads(override_path: &str) -> Downloads {
     Downloads { dir, note }
 }
 
-#[cfg(windows)]
 /// A message box with an OK button.
 pub(super) fn message(text: &str) {
     crate::platform::dialog::message(None, "Termurion", text, crate::platform::dialog::Kind::Warning);

@@ -4,7 +4,6 @@
 //! except `ensure`.
 
 use std::ffi::OsStr;
-#[cfg(windows)]
 use std::path::{Path, PathBuf};
 
 /// The folder beside termurion.exe that holds the utilities.
@@ -66,7 +65,6 @@ pub fn session_path(path: Option<&OsStr>, system_root: &str, entry: &str) -> Opt
 
 /// What `ensure` did: the folder, and each file it could not bring up to date as
 /// "<file>: <error>".
-#[cfg(windows)]
 #[derive(Debug, PartialEq, Eq)]
 pub struct Ensured {
     pub folder: PathBuf,
@@ -152,6 +150,12 @@ fn refresh(src: &Path, dst: &Path, old: &Path) -> std::io::Result<()> {
         std::fs::copy(src, dst)?;
     }
     Ok(())
+}
+
+/// The utilities are `.exe` hard links beside the Windows build; Unix does not put them on PATH yet.
+#[cfg(unix)]
+pub fn ensure(_exe_dir: &Path) -> Result<Ensured, String> {
+    Err(crate::platform::Unsupported { feature: "The command line utilities" }.to_string())
 }
 
 #[cfg(test)]

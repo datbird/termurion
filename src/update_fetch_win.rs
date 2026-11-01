@@ -452,6 +452,6 @@ mod tests {
             assert!(!code.contains(banned), "the update path downloads and writes nothing: {banned}");
         }
         let teardown = include_str!("app/mod.rs").split("fn teardown_process").nth(1).and_then(|r| r.split("\n}").next()).unwrap();
-        assert!(teardown.contains("update_fetch_win::cancel_running"), "quitting ends a running check");
+        assert!(teardown.contains("update_fetch::cancel_running"), "quitting ends a running check");
     }
 }

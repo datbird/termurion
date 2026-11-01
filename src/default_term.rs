@@ -118,6 +118,11 @@ pub fn repair_at_start() {
         }
 }
 
+/// Termurion is not a default terminal on Unix (a Windows handoff class), so there is nothing to
+/// repair at start. A Windows-only extra: the one allowed silent no-op.
+#[cfg(unix)]
+pub fn repair_at_start() {}
+
 /// The pair put back: the saved one, else "Let Windows decide".
 pub fn restore_entries(saved: Option<Pair>) -> Vec<(String, String, String)> {
     let p = saved.unwrap_or(Pair { console: CLSID_DEFAULT.into(), terminal: CLSID_DEFAULT.into() });
