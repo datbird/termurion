@@ -2417,152 +2417,284 @@ mod tests {
         assert_eq!(r.resolve_family("MesloLGS-NF-Regular"), "MesloLGS NF");
     }
 
-    /// The promo video's shots (promo/README.md): each shot in the JSON file that
-    /// `TERMURION_PROMO` names is a scripted Claude Code screen drawn by Termurion's scene, renderer
-    /// and effect chain at 60 fps, one PNG per frame into `<out>/<id>/`, with `<out>/cues.json`
-    /// (every keystroke, Enter and done, for the music). Run by hand:
+    /// The promo video's shots (promo/README.md). Each shot in the JSON file `TERMURION_PROMO`
+    /// names is a full Termurion window (the real tab bar, split panes, Claude Code or a shell in
+    /// each pane) drawn by the scene, the renderer and the effect chain at 60 fps, one PNG per
+    /// frame into `<out>/<id>/`, with `<out>/cues.json` (keystrokes, Enter, done, for the music).
+    /// The window's effect is the focused pane's, as in the app. Run by hand:
     /// `TERMURION_PROMO=... cargo test --release --lib render_promo_shots -- --ignored`.
     #[test]
     #[ignore]
     fn render_promo_shots() {
         use crate::render_fx::{Clock, Signals, Uniforms, discover};
+        use serde_json::Value;
         use std::time::{Duration, Instant};
-        let spec: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(std::env::var("TERMURION_PROMO").unwrap()).unwrap()).unwrap();
+        let spec: Value = serde_json::from_str(&std::fs::read_to_string(std::env::var("TERMURION_PROMO").unwrap()).unwrap()).unwrap();
         let out = std::path::PathBuf::from(spec["out"].as_str().unwrap());
         std::fs::create_dir_all(&out).unwrap();
+        let (w, h) = (spec["width"].as_u64().unwrap() as u32, spec["height"].as_u64().unwrap() as u32);
+        let ui = spec["scale"].as_f64().unwrap() as f32;
         let (device, queue) = device();
         let format = wgpu::TextureFormat::Bgra8UnormSrgb;
         let plugins = discover(None).0;
         let bg = crate::palette::rgb(22, 24, 30);
         let only: Option<Vec<String>> = std::env::var("TERMURION_PROMO_ONLY").ok().map(|s| s.split(',').map(String::from).collect());
+        let strs = |v: &Value| -> Vec<String> { v.as_array().map_or(Vec::new(), |a| a.iter().map(|x| x.as_str().unwrap().to_string()).collect()) };
+        // A new profile's switches, so the effects look as a user sees them.
+        let switches: Vec<(&str, bool)> = crate::render_fx::SWITCHES.iter().filter_map(|(_, c, _, on, _)| c.map(|c| (c, *on))).collect();
+        let mut chains: std::collections::HashMap<String, crate::render_fx_gpu::Chain> = Default::default();
         let mut cues = Vec::new();
-        let mut sizes = serde_json::Map::new();
+
+        struct P {
+            effect: String,
+            claude: bool,
+            prompt: String,
+            history: Vec<String>,
+            typed: String,
+            queue: Vec<char>,
+            every: usize,
+            next: usize,
+            busy: Option<usize>,
+            status: bool,
+            sig: Signals,
+            printing: Vec<String>,
+        }
         for shot in spec["shots"].as_array().unwrap() {
             let id = shot["id"].as_str().unwrap();
             if only.as_ref().is_some_and(|o| !o.iter().any(|x| x == id)) {
                 continue;
             }
-            let effect = shot["effect"].as_str().unwrap();
-            let (cols, rows) = (shot["cols"].as_u64().unwrap() as usize, shot["rows"].as_u64().unwrap() as usize);
-            let status = shot["status"].as_bool().unwrap_or(true);
             let frames = shot["frames"].as_u64().unwrap() as usize;
             let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", shot["px"].as_f64().unwrap() as f32);
             let cell = r.cell;
-            let pad = (cell.1 * 0.6).round();
-            let (w, h) = (((cols as f32 * cell.0) + 2.0 * pad).ceil() as u32 & !1, ((rows as f32 * cell.1) + 2.0 * pad).ceil() as u32 & !1);
-            sizes.insert(id.to_string(), serde_json::json!([w, h]));
             let dir = out.join(id);
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
-            let p = plugins.iter().find(|p| p.id == effect).unwrap();
-            let c = crate::render_fx::hex_color(p.manifest.cursor_color.as_deref().unwrap()).unwrap();
-            let preset = [(c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8];
-            // The switches a new profile has (what a user sees), with the shot's own on top.
-            let switches: Vec<(&str, bool)> = crate::render_fx::SWITCHES
+            let mut tabs = strs(&shot["tabs"]);
+            let mut active = shot["active"].as_u64().unwrap_or(0) as usize;
+            let mut panes: Vec<P> = shot["panes"]
+                .as_array()
+                .unwrap()
                 .iter()
-                .filter_map(|(_, c, _, on, _)| c.map(|c| (c, shot["switches"].get(c).and_then(|v| v.as_bool()).unwrap_or(*on))))
+                .map(|p| P {
+                    effect: p["effect"].as_str().unwrap().to_string(),
+                    claude: p["kind"].as_str() != Some("shell"),
+                    prompt: p["prompt"].as_str().unwrap_or("").to_string(),
+                    history: strs(&p["history"]),
+                    typed: p["typed"].as_str().unwrap_or("").to_string(),
+                    queue: Vec::new(),
+                    every: 6,
+                    next: 0,
+                    busy: None,
+                    status: p["status"].as_bool().unwrap_or(true),
+                    sig: Signals::default(),
+                    printing: Vec::new(),
+                })
                 .collect();
-            let mut chain = crate::render_fx_gpu::Chain::new(&device, format, p.compile_with(&switches).unwrap(), false).unwrap();
-            let (mut clock, mut u, mut sig) = (Clock::default(), Uniforms::default(), Signals::default());
-            let line = "\u{2500}".repeat(cols);
-            let width = cols - 4;
-            let wrap = |text: &str| -> Vec<String> {
-                let chars: Vec<char> = text.chars().collect();
-                if chars.is_empty() { vec![String::new()] } else { chars.chunks(width).map(|c| c.iter().collect()).collect() }
-            };
-            // The screen: history from the top, the spinner over the box, the box (its top line
-            // moves up as the prompt grows), the status row; the cursor ends the prompt.
-            let draw_screen = |history: &[String], typed: &str, spinner: Option<&str>| -> crate::screen::Screen {
-                let mut s = crate::screen::Screen::new(cols, rows);
-                s.palette.bg = bg;
-                s.palette.fg = crate::palette::rgb(222, 222, 222);
-                let input = wrap(typed);
-                let bottom = if status { rows - 1 } else { rows };
-                let top = bottom - input.len() - 1;
-                let mut o = String::from("\x1b[2J");
-                let room = top.saturating_sub(if spinner.is_some() { 2 } else { 1 });
-                let skip = history.len().saturating_sub(room);
-                for (i, l) in history.iter().skip(skip).enumerate() {
-                    o.push_str(&format!("\x1b[{};1H{l}", i + 1));
-                }
-                if let Some(sp) = spinner {
-                    o.push_str(&format!("\x1b[{};1H\x1b[38;5;209m{sp}\x1b[0m", top - 1));
-                }
-                o.push_str(&format!("\x1b[{top};1H\x1b[38;5;240m{line}\x1b[0m"));
-                for (i, l) in input.iter().enumerate() {
-                    o.push_str(&format!("\x1b[{};1H{} {l}", top + 1 + i, if i == 0 { "\u{276f}" } else { " " }));
-                }
-                o.push_str(&format!("\x1b[{bottom};1H\x1b[38;5;240m{line}\x1b[0m"));
-                if status {
-                    o.push_str(&format!("\x1b[{rows};1H\x1b[38;5;245m  \u{23f5}\u{23f5} accept edits on (shift+tab to cycle)\x1b[0m"));
-                }
-                o.push_str(&format!("\x1b[{};{}H", top + input.len(), 3 + input.last().unwrap().chars().count()));
-                s.feed(o.as_bytes());
-                s
-            };
-            let spin = ["\u{00b7}", "\u{2722}", "\u{2736}", "\u{273b}", "\u{273d}", "\u{273b}", "\u{2736}", "\u{2722}"];
-            let mut history: Vec<String> = shot["history"].as_array().map_or(Vec::new(), |a| a.iter().map(|v| v.as_str().unwrap().to_string()).collect());
-            let mut typed = String::new();
-            let mut queue_chars: Vec<char> = Vec::new();
-            let (mut every, mut next_key) = (4usize, 0usize);
-            let mut busy_since: Option<usize> = None;
+            let mut focus = shot["focus"].as_u64().unwrap_or(0) as usize;
+            let (mut clock, mut u) = (Clock::default(), Uniforms::default());
+            let mut running = String::new();
             let events = shot["events"].as_array().cloned().unwrap_or_default();
             let t0 = Instant::now();
+            let spin = ["\u{00b7}", "\u{2722}", "\u{2736}", "\u{273b}", "\u{273d}", "\u{273b}", "\u{2736}", "\u{2722}"];
             for f in 0..frames {
                 let now = t0 + Duration::from_micros(f as u64 * 1_000_000 / 60);
                 for e in events.iter().filter(|e| e["f"].as_u64() == Some(f as u64)) {
+                    let k = e["pane"].as_u64().map_or(focus, |k| k as usize);
+                    let p = &mut panes[k];
                     match e["t"].as_str().unwrap() {
-                        "set" => typed = e["text"].as_str().unwrap().to_string(),
+                        "set" => p.typed = e["text"].as_str().unwrap().to_string(),
                         "type" => {
-                            queue_chars = e["text"].as_str().unwrap().chars().collect();
-                            queue_chars.reverse();
-                            every = e["every"].as_u64().unwrap_or(4) as usize;
-                            next_key = f;
+                            p.queue = e["text"].as_str().unwrap().chars().rev().collect();
+                            p.every = e["every"].as_u64().unwrap_or(6) as usize;
+                            p.next = f;
                         }
                         "enter" => {
-                            sig.enter(now);
-                            cues.push(serde_json::json!({"shot": id, "f": f, "type": "enter", "fx": effect}));
-                            for (i, l) in wrap(&typed).iter().enumerate() {
-                                history.push(format!("\x1b[48;5;236m{} {l}\x1b[K\x1b[0m", if i == 0 { "\u{276f}" } else { " " }));
+                            p.sig.enter(now);
+                            cues.push(serde_json::json!({"shot": id, "f": f, "type": "enter", "fx": p.effect}));
+                            if p.claude {
+                                p.history.push(format!("\u{0}{}", p.typed));
+                                p.busy = Some(f);
+                            } else {
+                                p.history.push(format!("{}{}", p.prompt, p.typed));
+                                p.history.extend(strs(&e["out"]));
+                                if e["claude"].as_bool() == Some(true) {
+                                    p.claude = true;
+                                    p.history = strs(&e["welcome"]);
+                                }
                             }
-                            typed.clear();
-                            queue_chars.clear();
-                            busy_since = Some(f);
+                            p.typed.clear();
+                            p.queue.clear();
                         }
                         "done" => {
-                            sig.command_ended(now);
-                            cues.push(serde_json::json!({"shot": id, "f": f, "type": "done", "fx": effect}));
-                            history.push(format!("\x1b[38;5;252m\u{25cf}\x1b[0m {}", e["answer"].as_str().unwrap_or("Done.")));
-                            busy_since = None;
+                            p.sig.command_ended(now);
+                            cues.push(serde_json::json!({"shot": id, "f": f, "type": "done", "fx": p.effect}));
+                            p.history.push(format!("\x1b[38;5;252m\u{25cf}\x1b[0m {}", e["answer"].as_str().unwrap_or("Done.")));
+                            p.busy = None;
                         }
+                        "print" => {
+                            p.printing = strs(&e["lines"]);
+                            p.printing.reverse();
+                            p.every = e["every"].as_u64().unwrap_or(3) as usize;
+                            p.next = f;
+                        }
+                        "history" => p.history = strs(&e["lines"]),
+                        "focus" => focus = k,
+                        "effect" => p.effect = e["effect"].as_str().unwrap().to_string(),
+                        "addtab" => {
+                            tabs.push(e["title"].as_str().unwrap().to_string());
+                            active = tabs.len() - 1;
+                        }
+                        "tab" => active = e["index"].as_u64().unwrap() as usize,
                         other => panic!("unknown event {other}"),
                     }
                 }
-                if !queue_chars.is_empty() && f >= next_key {
-                    typed.push(queue_chars.pop().unwrap());
-                    cues.push(serde_json::json!({"shot": id, "f": f, "type": "key", "fx": effect}));
-                    next_key = f + every;
+                for p in panes.iter_mut() {
+                    if !p.queue.is_empty() && f >= p.next {
+                        p.typed.push(p.queue.pop().unwrap());
+                        cues.push(serde_json::json!({"shot": id, "f": f, "type": "key", "fx": p.effect}));
+                        p.next = f + p.every;
+                    }
+                    if !p.printing.is_empty() && f >= p.next {
+                        p.history.push(p.printing.pop().unwrap());
+                        p.next = f + p.every;
+                    }
+                    if p.busy.is_some() {
+                        p.sig.output(now);
+                    }
                 }
-                let spinner = busy_since.map(|b| format!("{} Orchestrating\u{2026} \x1b[38;5;245m(esc to interrupt)", spin[((f - b) / 6) % spin.len()]));
-                if busy_since.is_some() {
-                    sig.output(now);
-                }
-                let s = draw_screen(&history, &typed, spinner.as_deref());
-                let rect = crate::layout::Rect { x: pad, y: pad, w: cols as f32 * cell.0, h: rows as f32 * cell.1 };
-                let draw = crate::scene::DrawPrefs { fx_cursor: Some(crate::palette::rgb(preset[0], preset[1], preset[2])), ..Default::default() };
+                // The window: the tab bar on top (when the shot has tabs), the panes side by side.
                 let mut frame = Frame { clear: rgba(bg, 1.0), fade: 1.0, ..Default::default() };
-                crate::scene::pane_with(&mut frame, &s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE);
+                let mut top = 0.0f32;
+                if !tabs.is_empty() {
+                    use crate::tab_layout::{self, TabInput};
+                    let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+                    let looks: Vec<crate::scene::TabLook> = tabs.iter().enumerate().map(|(i, t)| crate::scene::TabLook { title: t.clone(), number: i + 1, ..Default::default() }).collect();
+                    let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() }).collect();
+                    let font_px = r.font_px().max(1.0);
+                    let rr = std::cell::RefCell::new(&mut r);
+                    let measure = |text: &str, pt: f32, bold: bool| {
+                        let mut r = rr.borrow_mut();
+                        r.prose_width(text, bold, pt * ui / font_px) / ui
+                    };
+                    let bar = tab_layout::build(&inputs, active, w as f32 / ui, 0.0, None, &s, &measure);
+                    drop(rr);
+                    let style = crate::tab_theme::TabStyle::Automatic;
+                    let inputs = crate::tab_theme::Inputs {
+                        system_dark: true,
+                        system_high_contrast: false,
+                        focused: true,
+                        light_darkness: 0.07,
+                        dark_darkness: 0.5,
+                        high_visibility: false,
+                        session_bg: bg,
+                        dimming: 0.0,
+                        minimal: Default::default(),
+                        colored_outline: 0.5,
+                        colored_text_prominence: 0.5,
+                        tabs: tabs.len(),
+                    };
+                    let mut pal = crate::tab_theme::palette(style, &inputs);
+                    pal.attached = crate::tab_theme::attached(style, true);
+                    let bh = (bar.height * ui).round();
+                    let area = crate::layout::Rect { x: 0.0, y: 0.0, w: w as f32, h: bh };
+                    crate::scene::tab_bar(&mut frame, &looks, active, &bar, area, ui, ui / font_px, cell.1, true, false, &pal);
+                    top = bh;
+                }
+                let n = panes.len();
+                let gap = (1.0 * ui).round();
+                let pw = ((w as f32 - gap * (n - 1) as f32) / n as f32).floor();
+                let pad = (cell.1 * 0.5).round();
+                let draw_order: Vec<usize> = (0..n).filter(|&k| k != focus).chain(std::iter::once(focus)).collect();
+                for &k in &draw_order {
+                    let p = &panes[k];
+                    let x0 = k as f32 * (pw + gap);
+                    let cols = ((pw - 2.0 * pad) / cell.0).floor() as usize;
+                    let rows = ((h as f32 - top - 2.0 * pad) / cell.1).floor() as usize;
+                    let mut s = crate::screen::Screen::new(cols, rows);
+                    s.palette.bg = bg;
+                    s.palette.fg = crate::palette::rgb(222, 222, 222);
+                    let wrap = |text: &str, width: usize| -> Vec<String> {
+                        let chars: Vec<char> = text.chars().collect();
+                        if chars.is_empty() { vec![String::new()] } else { chars.chunks(width.max(1)).map(|c| c.iter().collect()).collect() }
+                    };
+                    // No autowrap: a long line ends at the pane's edge, as a sent prompt is
+                    // wrapped here like Claude Code wraps it.
+                    let mut o = String::from("\x1b[2J\x1b[?7l");
+                    let history: Vec<String> = p
+                        .history
+                        .iter()
+                        .flat_map(|l| match l.strip_prefix('\u{0}') {
+                            Some(sent) => wrap(sent, cols - 4).into_iter().enumerate().map(|(i, part)| format!("\x1b[48;5;236m{} {part}\x1b[K\x1b[0m", if i == 0 { "\u{276f}" } else { " " })).collect::<Vec<_>>(),
+                            None => vec![l.clone()],
+                        })
+                        .collect();
+                    if p.claude {
+                        let line = "\u{2500}".repeat(cols);
+                        let input = wrap(&p.typed, cols - 4);
+                        let bottom = if p.status { rows - 1 } else { rows };
+                        let topl = bottom - input.len() - 1;
+                        let spinner = p.busy.map(|b| format!("{} Orchestrating\u{2026} \x1b[38;5;245m(esc to interrupt)", spin[((f - b) / 6) % spin.len()]));
+                        let room = topl.saturating_sub(if spinner.is_some() { 2 } else { 1 });
+                        let skip = history.len().saturating_sub(room);
+                        for (i, l) in history.iter().skip(skip).enumerate() {
+                            o.push_str(&format!("\x1b[{};1H{l}", i + 1));
+                        }
+                        if let Some(sp) = spinner {
+                            o.push_str(&format!("\x1b[{};1H\x1b[38;5;209m{sp}\x1b[0m", topl - 1));
+                        }
+                        o.push_str(&format!("\x1b[{topl};1H\x1b[38;5;240m{line}\x1b[0m"));
+                        for (i, l) in input.iter().enumerate() {
+                            o.push_str(&format!("\x1b[{};1H{} {l}", topl + 1 + i, if i == 0 { "\u{276f}" } else { " " }));
+                        }
+                        o.push_str(&format!("\x1b[{bottom};1H\x1b[38;5;240m{line}\x1b[0m"));
+                        if p.status {
+                            o.push_str(&format!("\x1b[{rows};1H\x1b[38;5;245m  \u{23f5}\u{23f5} accept edits on (shift+tab to cycle)\x1b[0m"));
+                        }
+                        o.push_str(&format!("\x1b[{};{}H", topl + input.len(), 3 + input.last().unwrap().chars().count()));
+                    } else {
+                        let skip = history.len().saturating_sub(rows - 1);
+                        let mut row = 1;
+                        for l in history.iter().skip(skip) {
+                            o.push_str(&format!("\x1b[{row};1H{l}"));
+                            row += 1;
+                        }
+                        o.push_str(&format!("\x1b[{row};1H{}{}", p.prompt, p.typed));
+                    }
+                    s.feed(o.as_bytes());
+                    let rect = crate::layout::Rect { x: x0 + pad, y: top + pad, w: cols as f32 * cell.0, h: rows as f32 * cell.1 };
+                    let c = crate::render_fx::hex_color(plugins.iter().find(|q| q.id == panes[focus].effect).unwrap().manifest.cursor_color.as_deref().unwrap()).unwrap();
+                    let draw = crate::scene::DrawPrefs { fx_cursor: Some(crate::palette::rgb((c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8)), ..Default::default() };
+                    crate::scene::pane_with(&mut frame, &s, rect, cell, k == focus, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE);
+                }
+                if n > 1 {
+                    let divs: Vec<crate::layout::Divider> = (1..n)
+                        .map(|k| crate::layout::Divider { rect: crate::layout::Rect { x: k as f32 * (pw + gap) - gap, y: top, w: gap, h: h as f32 - top }, path: Vec::new(), axis: crate::layout::Axis::Row, parent: crate::layout::Rect { x: 0.0, y: top, w: w as f32, h: h as f32 - top } })
+                        .collect();
+                    crate::scene::dividers(&mut frame, &divs, crate::palette::rgb(64, 66, 76));
+                }
+                // The focused pane's effect runs over the window; a new effect starts a new clock.
+                let fp = &panes[focus];
+                if running != fp.effect {
+                    running = fp.effect.clone();
+                    clock = Clock::default();
+                    u = Uniforms::default();
+                }
+                let p = plugins.iter().find(|q| q.id == running).unwrap();
+                let chain = chains.entry(running.clone()).or_insert_with(|| crate::render_fx_gpu::Chain::new(&device, format, p.compile_with(&switches).unwrap(), false).unwrap());
+                let c = crate::render_fx::hex_color(p.manifest.cursor_color.as_deref().unwrap()).unwrap();
+                let preset = [(c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8];
                 let fx = frame.fx.clone().unwrap();
                 let mut cur = fx.cursor;
                 if let Some(c) = cur.as_mut() {
-                    let [cr, cg, cb] = sig.apply(preset, now);
+                    let [cr, cg, cb] = fp.sig.apply(preset, now);
                     c.color = [cr as f32 / 255.0, cg as f32 / 255.0, cb as f32 / 255.0, 1.0];
                 }
                 clock.frame(&mut u, now, (w, h), cur, true);
                 u.background = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
                 u.foreground = [222.0 / 255.0; 3];
                 u.input_box = fx.input_box.map_or([0.0; 4], |[t, b]| [t, b, 1.0, 0.0]);
-                let px = r.draw_offscreen_fx(&frame, Some((&mut chain, &u)), w, h).unwrap();
+                let px = r.draw_offscreen_fx(&frame, Some((chain, &u)), w, h).unwrap();
                 let img = image::RgbImage::from_fn(w, h, |x, y| {
                     let i = ((y * w + x) * 4) as usize;
                     image::Rgb([px[i], px[i + 1], px[i + 2]])
@@ -2573,7 +2705,7 @@ mod tests {
             }
         }
         let cues_path = out.join(if only.is_some() { "cues-partial.json" } else { "cues.json" });
-        std::fs::write(&cues_path, serde_json::to_string_pretty(&serde_json::json!({"cues": cues, "sizes": sizes})).unwrap()).unwrap();
+        std::fs::write(&cues_path, serde_json::to_string_pretty(&serde_json::json!({ "cues": cues })).unwrap()).unwrap();
         eprintln!("PROMO shots in {}", out.display());
     }
 

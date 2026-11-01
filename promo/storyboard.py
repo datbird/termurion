@@ -1,96 +1,187 @@
-"""The promo's storyboard: every shot Termurion renders (shots.json, for the ignored test
-render_promo_shots) and where each one sits in the video (cut.py reads SCENES). 60 fps, on the
-music's grid (grid.json: 120 BPM, a bar is 2 s = 120 frames)."""
+"""The promo's storyboard: one Termurion window, full screen, for the whole video. Every shot is
+the real window (tab bar, split panes, Claude Code or a shell) rendered by the ignored test
+render_promo_shots at 2560x1440 and 60 fps; cut.py moves a camera over it and adds the captions.
+
+The music (music.py) is 150 BPM: a beat is 24 frames, a bar 96, a sixteenth 6. Keys land on
+sixteenths and every Enter on a downbeat, so the sound and the picture share one grid.
+
+  python promo/storyboard.py <out dir on the build machine> <shots.json>
+"""
 import json
-import pathlib
 import sys
 
 FPS = 60
-BAR = 120
-HERE = pathlib.Path(__file__).resolve().parent
+BEAT = 24
+BAR = 96
+S16 = 6
+W, H, SCALE, PX = 2560, 1440, 2.0, 44
 
-# Each effect's cursor color (its plugin.toml) and a one-line caption.
+# Each effect's cursor color (its plugin.toml) and a short note for the caption.
 FX = {
-    "lightning": ("#9fd0fe", "arcs of current crawl around the cursor"),
-    "cyber": ("#50e080", "glyph rain in netrunner green"),
-    "glitch": ("#f85452", "a corrupted signal that tears"),
-    "neon": ("#ff5ed2", "a pink neon tube that breathes"),
-    "mecha": ("#bcc8dc", "armor plates and energy blades"),
-    "embers": ("#ff8a3c", "glowing embers rise from the lines"),
-    "katana": ("#b8c4d4", "a blade cuts the lines in two"),
-    "phosphor": ("#6be894", "an old green screen beam"),
-    "shockwave": ("#b69cfe", "a pulse runs along the lines"),
-    "teleport": ("#3fd8c8", "the lines sparkle and beam out"),
-    "fireworks": ("#ffc856", "a fuse burns and rockets launch"),
-    "aurora": ("#7fe0c0", "curtains of northern light"),
-    "hologram": ("#4cc8f0", "a scan and a wireframe grid"),
+    "lightning": ("#9fd0fe", "arcs of current"),
+    "cyber": ("#50e080", "glyph rain"),
+    "glitch": ("#f85452", "a corrupted signal"),
+    "neon": ("#ff5ed2", "a breathing tube"),
+    "mecha": ("#bcc8dc", "armor and blades"),
+    "embers": ("#ff8a3c", "rising embers"),
+    "katana": ("#b8c4d4", "a clean cut"),
+    "phosphor": ("#6be894", "an old green screen"),
+    "shockwave": ("#b69cfe", "a pulse"),
+    "teleport": ("#3fd8c8", "beam out"),
+    "fireworks": ("#ffc856", "a fuse and rockets"),
+    "aurora": ("#7fe0c0", "northern light"),
+    "hologram": ("#4cc8f0", "a wireframe scan"),
 }
 
-HISTORY = ["\x1b[38;5;252m●\x1b[0m Updated the effects and the README.", "  └ 2 files changed, 41 insertions(+)"]
-SHOTS = []
-SCENES = []   # (video frame, shot id, frames, kind, effect, caption)
+DIM, RESET = "\x1b[38;5;245m", "\x1b[0m"
+DOT = "\x1b[38;5;252m●\x1b[0m"
 
 
-def shot(id, effect, frames, cols=80, rows=9, px=32, status=True, history=HISTORY, events=(), switches=None):
-    SHOTS.append(dict(id=id, effect=effect, frames=frames, cols=cols, rows=rows, px=px, status=status,
-                      history=list(history), events=list(events), switches=switches or {}))
+def work(file, old, new, test):
+    """A few lines of an earlier exchange, so each screen looks like real work."""
+    return [
+        f"{DOT} Read {file}",
+        f"{DOT} Update({file})",
+        f"  {DIM}⎿{RESET}  Updated {file} with 1 addition and 1 removal",
+        f"       \x1b[48;5;52m 41 -  {old}\x1b[K{RESET}",
+        f"       \x1b[48;5;22m 41 +  {new}\x1b[K{RESET}",
+        f"{DOT} Bash({test})",
+        f"  {DIM}⎿{RESET}  test result: ok. 48 passed; 0 failed",
+        "",
+    ]
+
+
+WELCOME = [f"\x1b[38;5;209m✻{RESET} Welcome to Claude Code", f"  {DIM}/help for help, /status for your current setup{RESET}", ""]
+H_AUTH = work("src/auth/session.rs", "let ttl = Duration::minutes(5);", "let ttl = Duration::hours(8);", "cargo test auth")
+H_LOGS = work("tools/logs.py", "level = 'debug'", "level = 'info'", "pytest tools")
+H_CI = work(".github/workflows/ci.yml", "runs-on: ubuntu-20.04", "runs-on: ubuntu-24.04", "act -j build")
+H_UI = work("web/theme.css", "--accent: #888;", "--accent: #ff5ed2;", "npm test")
+H_DOCS = work("docs/architecture.md", "## Overview", "## How it fits together", "mdbook build")
+H_GIT = work("scripts/prune.sh", "git branch -d", "git branch -D", "bash -n scripts/prune.sh")
+
+# A screen as full as a real session's: the welcome, two earlier changes, then the newest.
+FULL = lambda h: WELCOME + H_GIT + H_LOGS + h
+
+SHOTS, SCENES = [], []
+
+
+def shot(id, frames, panes, events, tabs=("claude",), active=None, focus=0, px=PX):
+    tabs = list(tabs)
+    SHOTS.append(dict(id=id, frames=frames, px=px, tabs=tabs, active=len(tabs) - 1 if active is None else active,
+                      panes=panes, focus=focus, events=events))
     return id
 
 
-def place(at, id, frames, kind, effect=None, caption=None):
-    SCENES.append(dict(at=at, shot=id, frames=frames, kind=kind, effect=effect, caption=caption))
+def claude(effect, history, status=True, typed=""):
+    return dict(effect=effect, kind="claude", history=history, status=status, typed=typed)
 
 
-# Intro, 0-8 s: four living cursors, close up.
-for k, fx in enumerate(["lightning", "aurora", "neon", "hologram"]):
-    events = [dict(f=50, t="type", text="hi", every=14)] if fx in ("lightning", "neon") else []
-    place(k * BAR, shot(f"p_{fx}", fx, BAR, cols=13, rows=3, px=84, status=False, history=[], events=events), BAR, "portrait", fx)
+def place(bar, id, frames, captions=(), camera=None, start=0):
+    """Puts `frames` of shot `id` (from its frame `start`) at `bar`. Captions are (frame, effect
+    or None, text); the camera is (frame, zoom, focus y 0-1) keys."""
+    SCENES.append(dict(at=round(bar * BAR), shot=id, frames=frames, start=start, captions=list(captions), camera=camera or [(0, 1.0, 0.5)]))
 
-# 8 s: the drop and the title over a Lightning Enter.
-place(4 * BAR, shot("title", "lightning", BAR, events=[dict(f=0, t="set", text="make the cursor effects awesome"), dict(f=0, t="enter")]),
-      BAR, "title", "lightning")
 
-# 10-22 s: three heroes, two bars each: typing, Enter on the downbeat, done a bar and a half later.
-HEROES = [("lightning", "fix the login bug", "Fixed: the session cookie expired early."),
-          ("cyber", "decrypt the logs", "Found 3 warnings, no errors."),
-          ("glitch", "why is the build flaky", "A race in the GPU setup. Fixed.")]
-for k, (fx, prompt, answer) in enumerate(HEROES):
-    n = 2 * BAR
-    start = BAR - 8 - 5 * len(prompt)
-    ev = [dict(f=start, t="type", text=prompt, every=5), dict(f=BAR, t="enter"), dict(f=BAR + 90, t="done", answer=answer)]
-    place(5 * BAR + k * n, shot(f"h_{fx}", fx, n, events=ev), n, "hero", fx)
+def typing(text, at, pane=None, every=S16):
+    e = dict(f=at, t="type", text=text, every=every)
+    if pane is not None:
+        e["pane"] = pane
+    return e
 
-# 22-24 s: Neon's Enter on the bar, into the break.
-place(11 * BAR, shot("neon_drop", "neon", BAR, events=[dict(f=0, t="set", text="make the logo glow"), dict(f=0, t="enter")]), BAR, "montage", "neon")
 
-# 24-30 s: the break. A long prompt grows the input box; Mecha's Enter lands on the second drop.
-LONG = ("clean up the old branches, then write a short note for the team about which ones went and "
-        "why, and keep anything that has an open pull request")
-ev = [dict(f=12, t="type", text=LONG, every=1), dict(f=2 * BAR, t="enter"), dict(f=2 * BAR + 90, t="done", answer="Cleaned up 14 merged branches.")]
-place(12 * BAR, shot("grow", "mecha", 3 * BAR, cols=60, rows=10, events=ev, switches={"LINE_EFFECT": True}), 3 * BAR, "grow", "mecha")
+# 1. Bars 0-3: a shell. "claude" is typed on the eighths, Claude Code starts on bar 2.
+id = shot("intro", 4 * BAR, [dict(effect="aurora", kind="shell", prompt="\x1b[38;5;110m~/app\x1b[0m $ ", history=[])],
+          [typing("claude", BAR, every=12), dict(f=2 * BAR, t="enter", claude=True, welcome=WELCOME)], tabs=["zsh"])
+place(0, id, 4 * BAR, [(24, None, "termurion"), (2 * BAR, "aurora", "cursor effects, built in")],
+      camera=[(0, 1.33, 0.12), (2 * BAR - 1, 1.2, 0.2), (2 * BAR, 1.0, 0.5)])
 
-# 30-46 s: the other eight, a bar each, Enter on beat two.
-MONTAGE = ["embers", "katana", "phosphor", "shockwave", "teleport", "fireworks", "aurora", "hologram"]
-PROMPTS = ["warm up the cache", "cut the dead code", "show the old terminal", "ping every host",
-           "beam me up", "ship it", "make it calm", "draw the architecture"]
-for k, (fx, prompt) in enumerate(zip(MONTAGE, PROMPTS)):
-    ev = [dict(f=0, t="set", text=prompt[:-4]), dict(f=2, t="type", text=prompt[-4:], every=6), dict(f=30, t="enter")]
-    place(15 * BAR + k * BAR, shot(f"m_{fx}", fx, BAR, events=ev), BAR, "montage", fx)
+# 2. Bars 4-7, the drop: Lightning. Typed on the sixteenths, Enter on bar 6, done on bar 7.5.
+id = shot("drop", 4 * BAR, [claude("lightning", FULL(H_AUTH))],
+          [typing("fix the session timeout", 6), dict(f=2 * BAR, t="enter"), dict(f=3 * BAR + 2 * BEAT, t="done", answer="Fixed: sessions last 8 hours now.")])
+place(4, id, 4 * BAR, [(0, "lightning", "typing"), (2 * BAR, "lightning", "enter: the prompt is sent"),
+                       (3 * BAR + 2 * BEAT, "lightning", "done: the answer is in")],
+      camera=[(0, 1.25, 1.0), (2 * BAR - 1, 1.12, 1.0), (2 * BAR, 1.0, 0.7), (4 * BAR, 1.06, 0.8)])
 
-# 46-50 s: all thirteen at once. Tiles arrive on the 16ths, all send on the next bar, done after.
-ALL = ["cyber", "lightning", "glitch", "neon", "phosphor", "embers", "shockwave", "katana", "teleport",
-       "fireworks", "aurora", "mecha", "hologram"]
+# 3. Bars 8-15: a new tab every two bars, each its own profile and effect.
+TABS = [("cyber", "decrypt the error logs", H_LOGS), ("glitch", "why is the build flaky", H_CI),
+        ("neon", "make the accent color pop", H_UI), ("hologram", "draw the architecture", H_DOCS)]
+ev, tabs = [], ["claude"]
+for k, (fx, prompt, hist) in enumerate(TABS):
+    f = k * 2 * BAR
+    ev += [dict(f=f, t="addtab", title=fx), dict(f=f, t="effect", effect=fx), dict(f=f, t="history", lines=FULL(hist)),
+           typing(prompt, f + 12), dict(f=f + BAR, t="enter")]
+id = shot("tabs", 8 * BAR, [claude("cyber", [])], ev, tabs=["claude"])
+place(8, id, 8 * BAR, [(k * 2 * BAR, fx, FX[fx][1]) for k, (fx, _, _) in enumerate(TABS)],
+      camera=sum(([(k * 2 * BAR, 1.15, 1.0), (k * 2 * BAR + BAR - 1, 1.08, 1.0), (k * 2 * BAR + BAR, 1.0, 0.7)] for k in range(4)), []))
+
+# 4. Bars 16-20, the break: a long prompt grows the input box; Enter lands on the second drop.
+LONG = ("prune the merged branches, then write a short note for the team about which ones went "
+        "and why, and keep anything with an open pull request")
+id = shot("grow", 5 * BAR, [claude("mecha", WELCOME + H_CI + H_LOGS + H_GIT)],
+          [dict(f=0, t="addtab", title="mecha"), typing(LONG, 12, every=2), dict(f=4 * BAR, t="enter")],
+          tabs=["claude", "cyber", "glitch", "neon", "hologram"])
+place(16, id, 5 * BAR, [(0, "mecha", "long prompt? the box grows"), (2 * BAR, "mecha", "the effects follow both lines")],
+      camera=[(0, 1.0, 0.6), (4 * BAR - 1, 1.3, 1.0), (4 * BAR, 1.0, 0.7)])
+
+# 5. Bars 21-26: three panes, three hosts. Focus moves every two bars and the window's effect
+# follows the focused pane's profile.
+HOSTS = [("embers", "\x1b[38;5;110m$\x1b[0m ssh devbox", "tune the cache"),
+         ("katana", "\x1b[38;5;110m$\x1b[0m wsl", "drop dead code"),
+         ("teleport", "\x1b[38;5;110m$\x1b[0m tmux attach", "deploy staging")]
+panes = [claude(fx, [cmd, ""] + WELCOME + H_AUTH + H_DOCS, status=False) for fx, cmd, _ in HOSTS]
+ev = []
+for k, (fx, _, prompt) in enumerate(HOSTS):
+    f = k * 2 * BAR
+    ev += [dict(f=f, t="focus", pane=k), typing(prompt, f + 6, pane=k), dict(f=f + BAR, t="enter", pane=k),
+           dict(f=f + BAR + 90, t="done", pane=k, answer="Done.")]
+id = shot("split", 6 * BAR, panes, ev, tabs=["claude", "cyber", "glitch", "neon", "hologram", "mecha", "ssh / wsl / tmux"])
+place(21, id, 6 * BAR, [(0, "embers", "ssh"), (2 * BAR, "katana", "wsl"), (4 * BAR, "teleport", "tmux"),
+                        (BAR, None, "nothing to install on the host")])
+
+# 6. Bars 27-28: four more, half a bar each. Bar 29: all thirteen tabs on the sixteenths.
+ALL = ["lightning", "cyber", "glitch", "neon", "hologram", "mecha", "embers", "katana", "teleport",
+       "phosphor", "shockwave", "fireworks", "aurora"]
+for k, fx in enumerate(["phosphor", "shockwave", "fireworks", "aurora"]):
+    id = shot(f"quick_{fx}", BAR // 2, [claude(fx, FULL(H_DOCS), typed="ship it")], [dict(f=0, t="enter")],
+              tabs=ALL[:10 + k], active=9 + k)
+    place(27 + k / 2, id, BAR // 2, [(0, fx, FX[fx][1])], camera=[(0, 1.12, 1.0)])
 for k, fx in enumerate(ALL):
-    ev = [dict(f=0, t="set", text="ship it"), dict(f=BAR, t="enter"), dict(f=BAR + 90, t="done", answer="Shipped.")]
-    place(23 * BAR, shot(f"t_{fx}", fx, 2 * BAR, cols=44, rows=6, px=14, events=ev), 2 * BAR, "tile", fx)
+    id = shot(f"roll_{fx}", 40, [claude(fx, FULL(H_AUTH), typed="go")], [dict(f=0, t="enter")], tabs=ALL, active=k)
+    place(29 + k * S16 / BAR, id, S16, camera=[(0, 1.18, 1.0)], start=6)
 
-# 50-58 s: what it is, then the end card, over an idle Aurora.
-place(25 * BAR, shot("outro", "aurora", 4 * BAR, cols=60, rows=5, px=30, history=[], status=False,
-                     events=[dict(f=40, t="type", text="claude", every=8)]), 4 * BAR, "outro", "aurora")
+# 7. Bars 30-33: one window, thirteen effects, a last Enter.
+id = shot("finale", 4 * BAR, [claude("lightning", FULL(H_AUTH), typed="ship it")],
+          [dict(f=0, t="enter"), dict(f=BAR + 2 * BEAT, t="done", answer="Shipped.")], tabs=ALL, active=0)
+place(30, id, 4 * BAR, [(0, None, "13 effects, built in"), (2 * BAR, None, "settings > profiles > window > effects")],
+      camera=[(0, 1.0, 0.7), (4 * BAR, 1.1, 0.9)])
 
-END = 29 * BAR
+# 8. Bars 34-39: the end card is the shell's own output.
+LOGO = [
+    "█████ ████ ████  █   █ █  █ ████  █  ███  █   █",
+    "  █   █    █   █ ██ ██ █  █ █   █ █ █   █ ██  █",
+    "  █   ███  ████  █ █ █ █  █ ████  █ █   █ █ █ █",
+    "  █   █    █  █  █   █ █  █ █  █  █ █   █ █  ██",
+    "  █   ████ █   █ █   █  ██  █   █ █  ███  █   █",
+]
+OUT = [""] + ["  \x1b[38;5;153m" + l + RESET for l in LOGO] + [
+    "",
+    "  iTerm2 for Windows. Free and open source.",
+    "  \x1b[38;5;117mgithub.com/datbird/termurion\x1b[0m",
+    "",
+    f"  {DIM}cursor effects: ghostty-cursor-fx by AONIR (MIT){RESET}",
+    f"  {DIM}music: made for this video{RESET}",
+    "",
+]
+id = shot("end", 6 * BAR, [dict(effect="aurora", kind="shell", prompt="\x1b[38;5;110m~/app\x1b[0m $ ", history=[])],
+          [typing("termurion --about", 6), dict(f=BAR + 2 * BEAT, t="enter", out=[]),
+           dict(f=BAR + 2 * BEAT + 2, t="print", lines=OUT, every=3)], tabs=["zsh"], px=56)
+place(34, id, 6 * BAR, camera=[(0, 1.2, 0.0), (BAR + 2 * BEAT, 1.0, 0.0)])
+
+END = 40 * BAR
 
 if __name__ == "__main__":
-    out = sys.argv[1]
-    (pathlib.Path(sys.argv[2])).write_text(json.dumps(dict(out=out, shots=SHOTS), indent=1))
-    print(len(SHOTS), "shots,", sum(s["frames"] for s in SHOTS), "frames")
+    shots_json = dict(out=sys.argv[1], width=W, height=H, scale=SCALE, shots=SHOTS)
+    pathlib_path = sys.argv[2]
+    with open(pathlib_path, "w") as fh:
+        json.dump(shots_json, fh, indent=1)
+    print(len(SHOTS), "shots,", sum(s["frames"] for s in SHOTS), "frames,", END / FPS, "s")
