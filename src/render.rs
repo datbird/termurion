@@ -2417,6 +2417,122 @@ mod tests {
         assert_eq!(r.resolve_family("MesloLGS-NF-Regular"), "MesloLGS NF");
     }
 
+    /// The demo video (docs/assets/render-plugins.mp4): a scripted Claude Code session drawn by
+    /// Termurion's own scene, renderer and effect chain, one PNG per frame at 30 fps, into
+    /// `%TEMP%\termurion-demo`. Run by hand: `cargo test --release --lib render_demo -- --ignored`.
+    #[test]
+    #[ignore]
+    fn render_demo_video() {
+        use crate::render_fx::{Clock, Signals, Uniforms, discover};
+        use std::time::{Duration, Instant};
+        let out = std::env::temp_dir().join("termurion-demo");
+        let _ = std::fs::remove_dir_all(&out);
+        std::fs::create_dir_all(&out).unwrap();
+        let (device, queue) = device();
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 22.0);
+        let cell = r.cell;
+        let (cols, rows) = (78usize, 13usize);
+        let pad = 16.0f32;
+        let (w, h) = (((cols as f32 * cell.0) + 2.0 * pad).ceil() as u32 & !1, ((rows as f32 * cell.1) + 2.0 * pad).ceil() as u32 & !1);
+        let plugins = discover(None).0;
+        let unit = |c: [u8; 3]| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0];
+        let bg = crate::palette::rgb(22, 24, 30);
+        let line = "\u{2500}".repeat(cols);
+        // One screen state: (history rows, typed text, spinner text or none, cursor shown).
+        let draw_screen = |history: &[String], typed: &str, spinner: Option<&str>| -> (crate::screen::Screen, (usize, usize)) {
+            let mut s = crate::screen::Screen::new(cols, rows);
+            s.palette.bg = bg;
+            s.palette.fg = crate::palette::rgb(222, 222, 222);
+            let mut o = String::from("\x1b[2J");
+            for (i, l) in history.iter().enumerate() {
+                o.push_str(&format!("\x1b[{};1H{l}", i + 1));
+            }
+            if let Some(sp) = spinner {
+                o.push_str(&format!("\x1b[8;1H\x1b[38;5;209m{sp}\x1b[0m"));
+            }
+            o.push_str(&format!("\x1b[10;1H\x1b[38;5;240m{line}\x1b[0m\x1b[11;1H\u{276f} {typed}\x1b[12;1H\x1b[38;5;240m{line}\x1b[0m\x1b[13;1H\x1b[38;5;245m  \u{23f5}\u{23f5} accept edits on (shift+tab to cycle)\x1b[0m"));
+            let col = 2 + typed.chars().count();
+            o.push_str(&format!("\x1b[11;{}H", col + 1));
+            s.feed(o.as_bytes());
+            (s, (10, col))
+        };
+        let n = std::cell::Cell::new(0usize);
+        let t0 = Instant::now();
+        let fps = 30u64;
+        // Renders `frames` frames of one state for one effect.
+        let mut shoot = |plugin: &str, chain: &mut crate::render_fx_gpu::Chain, clock: &mut Clock, u: &mut Uniforms, signals: &mut Signals, s: &crate::screen::Screen, preset: [u8; 3], frames: usize, busy: bool| {
+            for _ in 0..frames {
+                let now = t0 + Duration::from_millis(n.get() as u64 * 1000 / fps);
+                if busy {
+                    signals.output(now);
+                }
+                signals.tick(now);
+                let rect = crate::layout::Rect { x: pad, y: pad, w: cols as f32 * cell.0, h: rows as f32 * cell.1 };
+                let draw = crate::scene::DrawPrefs { fx_cursor: Some(crate::palette::rgb(preset[0], preset[1], preset[2])), ..Default::default() };
+                let mut frame = Frame { clear: rgba(bg, 1.0), fade: 1.0, ..Default::default() };
+                crate::scene::pane_with(&mut frame, s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE);
+                let fx = frame.fx.clone().unwrap();
+                let mut cur = fx.cursor;
+                if let Some(c) = cur.as_mut() {
+                    let [cr, cg, cb] = signals.apply(preset, now);
+                    c.color = [cr as f32 / 255.0, cg as f32 / 255.0, cb as f32 / 255.0, 1.0];
+                }
+                clock.frame(u, now, (w, h), cur, true);
+                u.background = unit([bg.r, bg.g, bg.b]);
+                u.foreground = unit([222, 222, 222]);
+                let px = r.draw_offscreen_fx(&frame, Some((chain, u)), w, h).unwrap();
+                image::RgbaImage::from_raw(w, h, px).unwrap().save(out.join(format!("f{:05}.png", n.get()))).unwrap();
+                n.set(n.get() + 1);
+            }
+            let _ = plugin;
+        };
+        let history = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // The description up to its first clause, cut to fit one row.
+        let tagline = |d: &str, max: usize| -> String {
+            let first = d.split([';', '.']).next().unwrap_or(d).trim();
+            if first.chars().count() <= max { first.to_string() } else { format!("{}\u{2026}", first.chars().take(max - 1).collect::<String>()) }
+        };
+        // Act 1: Lightning, the whole Claude Code story.
+        let story = |id: &str, prompt: &str, answer: &str, shoot: &mut dyn FnMut(&str, &mut crate::render_fx_gpu::Chain, &mut Clock, &mut Uniforms, &mut Signals, &crate::screen::Screen, [u8; 3], usize, bool), full: bool| {
+            let p = plugins.iter().find(|p| p.id == id).unwrap();
+            let preset = crate::render_fx::hex_color(p.manifest.cursor_color.as_deref().unwrap()).map(|c| [(c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8]).unwrap();
+            let mut chain = crate::render_fx_gpu::Chain::new(&device, format, p.compile().unwrap(), false).unwrap();
+            let (mut clock, mut u, mut sig) = (Clock::default(), Uniforms::default(), Signals::default());
+            let before = history(&[&format!("\x1b[1m  {}\x1b[0m  \x1b[38;5;245m{}\x1b[0m", p.title(), tagline(&p.manifest.description, cols - p.title().len() - 6)), "", "\x1b[38;5;252m\u{25cf}\x1b[0m Updated the effects and the README.", "  \u{2514} 2 files changed, 41 insertions(+)"]);
+            let (s, _) = draw_screen(&before, "", None);
+            shoot(id, &mut chain, &mut clock, &mut u, &mut sig, &s, preset, 15, false);
+            for i in 1..=prompt.chars().count() {
+                let typed: String = prompt.chars().take(i).collect();
+                let (s, _) = draw_screen(&before, &typed, None);
+                shoot(id, &mut chain, &mut clock, &mut u, &mut sig, &s, preset, 3, false);
+            }
+            let (s, _) = draw_screen(&before, prompt, None);
+            shoot(id, &mut chain, &mut clock, &mut u, &mut sig, &s, preset, 12, false);
+            if !full {
+                return;
+            }
+            sig.enter(t0 + Duration::from_millis(n.get() as u64 * 1000 / fps));
+            let sent = history(&[&format!("\x1b[1m  {}\x1b[0m  \x1b[38;5;245m{}\x1b[0m", p.title(), tagline(&p.manifest.description, cols - p.title().len() - 6)), "", "\x1b[38;5;252m\u{25cf}\x1b[0m Updated the effects and the README.", "  \u{2514} 2 files changed, 41 insertions(+)", "", &format!("\x1b[48;5;236m\u{276f} {prompt}\x1b[K\x1b[0m")]);
+            let spin = ["\u{00b7}", "\u{2722}", "\u{2736}", "\u{273b}", "\u{273d}", "\u{273b}", "\u{2736}", "\u{2722}"];
+            for k in 0..80 {
+                let (s, _) = draw_screen(&sent, "", Some(&format!("{} Orchestrating\u{2026} \x1b[38;5;245m(esc to interrupt)", spin[(k / 3) % spin.len()])));
+                shoot(id, &mut chain, &mut clock, &mut u, &mut sig, &s, preset, 1, true);
+            }
+            let mut done = sent.clone();
+            done.push(String::new());
+            done[6] = format!("\x1b[38;5;252m\u{25cf}\x1b[0m {answer}");
+            let (s, _) = draw_screen(&done, "", None);
+            shoot(id, &mut chain, &mut clock, &mut u, &mut sig, &s, preset, 105, false);
+        };
+        story("lightning", "make the cursor effects awesome", "Done: thirteen effects, each with its own cursor.", &mut shoot, true);
+        story("neon", "now the neon one", "Neon flickers back on after each key.", &mut shoot, true);
+        for id in ["cyber", "embers", "glitch", "mecha", "katana", "aurora"] {
+            story(id, "typing shows each effect", "", &mut shoot, false);
+        }
+        eprintln!("DEMO {} frames {w}x{h} in {}", n.get(), out.display());
+    }
+
     /// Lightning's Enter surge runs along Claude Code's input box lines (above and below the
     /// prompt), drawn the way Termurion really draws them, for several fonts and sizes and a
     /// dark tinted background like a real profile's. The uniforms come from the frame, as the

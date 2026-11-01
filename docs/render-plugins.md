@@ -3,6 +3,10 @@
 Render plugins are shaders that run over the whole Termurion window every frame. Termurion
 ships 13 cursor effects, and you can add your own.
 
+![The cursor effects in a Claude Code session](assets/render-plugins.gif)
+
+[Full-size video](assets/render-plugins.mp4).
+
 ## Turn an effect on
 
 1. Open **Settings > Profiles > Window**.

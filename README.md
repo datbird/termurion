@@ -143,6 +143,14 @@ The render test, [`scripts/acid.py`](scripts/acid.py): 24-bit color, half-block 
 style and underline kind, box drawing, braille, wide and combining characters, and links. Run it
 with `python scripts/acid.py` (add `--loop` to repeat). [Full-size video](docs/assets/acid.mp4).
 
+<p align="center"><img src="docs/assets/render-plugins.gif" width="830" alt="Termurion's cursor effects in a Claude Code session: Lightning's sparks while typing, a surge along the input box lines on Enter and again when the answer arrives, then Neon, Cyber, Embers, Glitch, Mecha, Katana and Aurora"></p>
+
+Render plugins: the 13 built-in cursor effects from
+[ghostty-cursor-fx](https://github.com/Avarce/ghostty-cursor-fx), with Claude Code's Enter and
+done surges and nothing to install on the host. Drawn by Termurion's own renderer
+(`render_demo_video` in `src/render.rs`). [Full-size video](docs/assets/render-plugins.mp4),
+[how to turn them on](docs/render-plugins.md).
+
 <table>
 <tr>
 <td width="50%"><img src="docs/assets/screenshots/menu-shell.png" alt="The Shell menu: windows, tabs, splits, archives, workgroups, broadcast input, tmux and ssh"></td>
