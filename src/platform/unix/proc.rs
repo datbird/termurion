@@ -119,14 +119,15 @@ fn check_then_kill(pid: u32, target: libc::pid_t, created: Option<u64>, sig: lib
 }
 
 /// Linux: a pidfd pins the process, so a pid reused after the check can never get the signal.
-/// Kernels before 5.3 have no pidfd; they take the plain path.
+/// Kernels before 5.3 have no pidfd, and some container seccomp profiles answer EPERM (pidfd_open
+/// itself never checks permission); both take the plain path.
 #[cfg(target_os = "linux")]
 fn send_checked(pid: u32, target: libc::pid_t, created: Option<u64>, sig: libc::c_int) -> Result<(), String> {
     // SAFETY: pidfd_open takes a pid and flags and returns a descriptor we own.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, target, 0) };
     if fd < 0 {
         return match std::io::Error::last_os_error().raw_os_error() {
-            Some(libc::ENOSYS) => check_then_kill(pid, target, created, sig),
+            Some(libc::ENOSYS | libc::EPERM) => check_then_kill(pid, target, created, sig),
             Some(libc::ESRCH) => Err(ended(pid)),
             _ => Err(os_err("pidfd_open")),
         };
