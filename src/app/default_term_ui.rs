@@ -9,7 +9,7 @@ use winit::event_loop::ActiveEventLoop;
 use super::scripts_alerts::{ask, Then};
 use super::*;
 use crate::default_term as dt;
-use crate::handoff_win::Handoff;
+use crate::platform::handoff::{self, Handoff};
 use crate::reg::{apply, HkcuRegistry, Registry};
 
 impl App {
@@ -81,16 +81,15 @@ impl App {
 
     /// The handoff class is registered exactly while Termurion is the default and has the pack.
     pub(super) fn sync_handoff_server(&mut self) {
-        let want = self.api.pack.is_some() && dt::is_termurion(&dt::current(&HkcuRegistry));
+        let want = handoff::can_serve(&self.api) && dt::is_termurion(&dt::current(&HkcuRegistry));
         match (want, self.handoff.is_some()) {
             (true, false) => {
-                let (Some(pack), close) = (self.api.pack, self.api.close) else { return };
                 let proxy = self.proxy.clone();
                 let send = Box::new(move |h: Handoff| {
                     // A loop that is gone drops the event, and with it the handoff, which closes its handles.
                     let _ = proxy.lock().map(|p| p.send_event(UserEvent::Handoff(h)));
                 });
-                match crate::handoff_win::Server::register(send, pack, close) {
+                match handoff::register(send, &self.api) {
                     Ok(s) => self.handoff = Some(s),
                     Err(e) => {
                         crate::host_base::log(&format!("handoff: not registered: {e}"));
@@ -226,13 +225,8 @@ impl App {
 
     /// The pane a handed-off console becomes: its packed pseudoconsole, resized to the pane, titled
     /// with the startup title until the program sets one. It is never hosted in termurion-host.
-    pub(super) fn pane_from_handoff(&mut self, id: PaneId, p: Profile, mut h: Handoff, cols: u16, rows: u16) -> Result<(Pane, Profile), String> {
-        let title = std::mem::take(&mut h.title);
-        let (hpc, input, output, client, live) = h.take();
-        let mut pty = crate::platform::pty::from_handoff(&self.api, hpc as _, input as _, output as _, client as _, self.notify.clone()).map_err(|e| format!("Could not take the handed-off console: {e}"))?;
-        if let Some(l) = live {
-            pty.hold(Box::new(l));
-        }
+    pub(super) fn pane_from_handoff(&mut self, id: PaneId, p: Profile, h: Handoff, cols: u16, rows: u16) -> Result<(Pane, Profile), String> {
+        let (mut pty, title) = handoff::into_pty(&self.api, h, self.notify.clone()).map_err(|e| format!("Could not take the handed-off console: {e}"))?;
         let _ = pty.resize(cols.max(2), rows.max(1));
         let mut pane = Pane::from_pty(id, pty, cols, rows);
         if !title.is_empty() {
@@ -281,7 +275,7 @@ mod tests {
     fn the_handoff_class_follows_the_default_and_the_pack() {
         let me = include_str!("default_term_ui.rs");
         let sync = me.split("fn sync_handoff_server").nth(1).unwrap().split("\n    }\n").next().unwrap();
-        assert!(sync.contains("self.api.pack.is_some() && dt::is_termurion("));
+        assert!(sync.contains("handoff::can_serve(&self.api) && dt::is_termurion("));
         let m = include_str!("mod.rs");
         let teardown = m.split("pub(crate) fn teardown_process()").nth(1).unwrap().split("\n}").next().unwrap();
         assert!(teardown.contains("handoff_win::begin_closing()"));

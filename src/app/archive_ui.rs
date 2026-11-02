@@ -325,6 +325,7 @@ mod tests {
         assert!(super::read_bounded(&f, 9).unwrap_err().contains("larger"), "a file past the limit is refused");
         // A file past the limit is refused by its size, before anything is read: one that cannot
         // be opened at all (another process holds it exclusively) still gets the size answer.
+        #[cfg(windows)] // an exclusive share mode is a Windows open flag
         {
             use std::os::windows::fs::OpenOptionsExt;
             let held = std::fs::OpenOptions::new().read(true).share_mode(0).open(&f).unwrap();

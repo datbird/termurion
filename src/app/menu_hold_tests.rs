@@ -4,6 +4,7 @@
 //! resize's non-client repaint made muda draw it over the client until the next frame.
 
 use super::{menu_attached, menu_needs_change};
+#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow};
 
 /// Source of a file without its test modules.
@@ -52,6 +53,7 @@ fn a_bar_is_changed_only_when_the_window_differs_from_what_is_wanted() {
     assert!(!menu_needs_change(false, true));
 }
 
+#[cfg(windows)]
 fn window() -> isize {
     let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
     // SAFETY: a hidden window of the system's STATIC class on this thread, destroyed by the test.
@@ -60,6 +62,7 @@ fn window() -> isize {
     w as isize
 }
 
+#[cfg(windows)]
 fn bar() -> muda::Menu {
     let m = muda::Menu::new();
     let shell = muda::Submenu::new("Shell", true);
@@ -69,6 +72,7 @@ fn bar() -> muda::Menu {
 }
 
 #[test]
+#[cfg(windows)] // a real HWND and muda's Win32 bar
 fn the_window_reports_its_own_bar() {
     let w = window();
     assert!(!menu_attached(w));

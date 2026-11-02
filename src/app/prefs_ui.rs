@@ -21,7 +21,7 @@ use crate::store::Store;
 const SAVE_DELAY: Duration = Duration::from_millis(500);
 
 /// A fetch of the URL: its text, or curl's exit code and message.
-pub(super) type Fetched = Result<String, (i32, String)>;
+pub(super) type Fetched = crate::platform::http::Fetched;
 
 /// What the launch found (`freshCopyOfRemotePreferences`, `RP:234-313`).
 #[allow(clippy::large_enum_variant)] // built once and moved rarely; boxing the variant adds an indirection for no gain
@@ -227,23 +227,9 @@ pub(super) fn load_at_start(g: &mut Globals, store: &mut Store, fetch: &dyn Fn(&
     }
 }
 
-/// Loads a URL with curl.exe from System32, hidden: the body, or curl's exit code and what it
-/// wrote to stderr.
-#[cfg(windows)]
+/// Loads a URL (the platform's fetch): the body, or an exit code and message.
 pub(super) fn curl_fetch(url: &str, timeout: Option<f64>) -> Fetched {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let out = std::process::Command::new(crate::script_provision::RealRunner::system_tool("curl.exe").map_err(|e| (-1, e))?)
-        .args(rp::curl_args(url, timeout))
-        .stdin(std::process::Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|e| (-1, e.to_string()))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    } else {
-        Err((out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stderr).trim().to_string()))
-    }
+    crate::platform::http::fetch_text(url, &rp::curl_args(url, timeout))
 }
 
 /// The settings file's snapshot: Termurion's TOML, or iTerm2's plist. None when it cannot be read,

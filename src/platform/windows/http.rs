@@ -65,6 +65,24 @@ impl Slot {
     }
 }
 
+/// Loads a URL with curl.exe from System32, hidden: the body, or curl's exit code and what it
+/// wrote to stderr.
+pub fn fetch_text(_url: &str, args: &[String]) -> super::super::http::Fetched {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let out = std::process::Command::new(crate::script_provision::RealRunner::system_tool("curl.exe").map_err(|e| (-1, e))?)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| (-1, e.to_string()))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err((out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stderr).trim().to_string()))
+    }
+}
+
 /// Called by the worker before each WinHTTP call on the request handle, with the step's index.
 #[cfg(test)]
 type Hook = Box<dyn Fn(usize, &Arc<Shared>) + Send + Sync>;

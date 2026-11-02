@@ -385,6 +385,7 @@ mod dnd_tests {
     /// 13o final review I2 and Task 9 minor 5: a dropped link, junction, device or network path is
     /// never statted through, read or listed (invariant 5).
     #[test]
+    #[cfg(windows)] // junctions (mklink /J), Windows device names and file symlinks
     fn dropped_links_and_devices_are_refused() {
         let dir = std::env::temp_dir().join(format!("termurion-dnd-links-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

@@ -232,8 +232,57 @@ pub fn lost_pipe(after: &[AfterHand], console_waiting: bool) -> LostPipe {
 /// request as taken only when it reads this.
 pub const ACK: u8 = 0x06;
 
+#[cfg(unix)]
+pub use no_pipe::{Serving, hand_to_running, listen, probe_running};
 #[cfg(windows)]
 pub use pipe::{Serving, hand_request_checked, hand_request_on, hand_to_running, hand_to_running_on, listen, listen_on, probe_on, probe_running, serve_on};
+
+/// Unix has no single-instance link pipe yet (P1): nothing runs to hand to, and nothing can be served.
+#[cfg(unix)]
+mod no_pipe {
+    use super::*;
+
+    /// No running Termurion can be found, so this one starts and opens the request itself.
+    pub fn hand_to_running(_request: &crate::launch::Request) -> AfterHand {
+        AfterHand::Start
+    }
+
+    /// Nothing answers: there is no pipe to ask.
+    pub fn probe_running() -> Handed {
+        Handed::NoServer
+    }
+
+    /// Always Err: the launch pipe is not available on Unix, and the caller logs the text.
+    pub fn listen(_notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<Serving, String> {
+        Err(crate::platform::Unsupported { feature: "Single-instance link handoff" }.into())
+    }
+
+    /// A served pipe. Nothing makes one on Unix.
+    pub struct Serving {
+        never: std::convert::Infallible,
+    }
+
+    impl Serving {
+        pub fn stop(&mut self) {
+            match self.never {}
+        }
+
+        pub fn stopped(&self) -> bool {
+            match self.never {}
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn unix_launch_pipe_is_unsupported() {
+            assert!(listen(Box::new(|_| {})).err().unwrap().contains("Single-instance link handoff is not available"));
+            assert_eq!(probe_running(), Handed::NoServer);
+        }
+    }
+}
 
 #[cfg(windows)]
 mod pipe {
