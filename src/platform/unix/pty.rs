@@ -207,7 +207,18 @@ fn inherited_env() -> Vec<(OsString, OsString)> {
 /// The child's environment: the inherited set less the outer terminal's variables, with the
 /// session's `NAME=value` entries merged over it. Never logged: it can hold the session's cookie.
 pub(crate) fn child_env(inherited: Vec<(OsString, OsString)>, env: &[String]) -> Vec<(OsString, OsString)> {
-    let kept = inherited.into_iter().filter(|(n, _)| !OUTER_TERMINAL_VARS.iter().any(|o| n.as_bytes() == o.as_bytes())).collect();
+    // The locale the session sets, if any: an inherited LC_ALL or LC_CTYPE that says otherwise
+    // would beat it (LC_ALL beats everything), so it goes. No locale set: the env stays as it came.
+    let set = |name: &str| env.iter().rev().find_map(|e| e.strip_prefix(name).and_then(|r| r.strip_prefix('=')));
+    let profile_locale = set("LC_CTYPE").or_else(|| set("LANG")).map(str::to_owned);
+    let kept = inherited
+        .into_iter()
+        .filter(|(n, _)| !OUTER_TERMINAL_VARS.iter().any(|o| n.as_bytes() == o.as_bytes()))
+        .filter(|(n, v)| match (&profile_locale, n.as_bytes()) {
+            (Some(want), b"LC_ALL" | b"LC_CTYPE") => v.as_bytes() == want.as_bytes(),
+            _ => true,
+        })
+        .collect();
     merge_env(kept, env)
 }
 
@@ -832,6 +843,20 @@ mod tests {
         let p = spawn(&PtyApi, "/bin/sh -c 'sleep 30'", 80, 24).unwrap();
         p.terminate();
         assert_eq!(p.wait_exit(secs(5)), Some(137));
+    }
+
+    #[test]
+    fn a_profile_locale_beats_an_inherited_one() {
+        let lang = ["LANG=en_US.UTF-8".to_string()];
+        let env = child_env(vec![os("LC_ALL", "C"), os("LC_CTYPE", "C"), os("PATH", "/bin")], &lang);
+        assert_eq!(env, vec![os("PATH", "/bin"), os("LANG", "en_US.UTF-8")], "a conflicting LC_ALL and LC_CTYPE are dropped");
+        let env = child_env(vec![os("LC_ALL", "en_US.UTF-8")], &lang);
+        assert!(env.contains(&os("LC_ALL", "en_US.UTF-8")), "one that agrees stays: {env:?}");
+        let env = child_env(vec![os("LC_ALL", "C"), os("LANG", "C")], &["LC_CTYPE=UTF-8".to_string()]);
+        assert_eq!(env, vec![os("LANG", "C"), os("LC_CTYPE", "UTF-8")], "the fallback LC_CTYPE also clears LC_ALL");
+        let inherited = vec![os("LC_ALL", "C"), os("LC_CTYPE", "C"), os("LANG", "C")];
+        assert_eq!(child_env(inherited.clone(), &[]), inherited, "no profile locale: the env is exactly as inherited");
+        assert_eq!(child_env(inherited.clone(), &["FOO=1".to_string()])[..3], inherited[..], "an unrelated entry changes nothing");
     }
 
     #[test]

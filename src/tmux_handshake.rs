@@ -135,10 +135,17 @@ pub fn server_is_local(native: bool, pid: Option<u32>, name: Option<&str>) -> bo
         return false;
     }
     let Some(name) = name else { return false };
+    let name = name.strip_suffix(" (deleted)").unwrap_or(name);
     let stem = name.rsplit(['\\', '/']).next().unwrap_or(name);
     let stem = stem.strip_suffix(".exe").or_else(|| stem.strip_suffix(".EXE")).unwrap_or(stem).to_ascii_lowercase();
     // psmux installs itself as psmux.exe, pmux.exe and tmux.exe.
     matches!(stem.as_str(), "psmux" | "pmux" | "tmux")
+}
+
+/// The name of the foreground job under the gateway pane's shell `pid` (the tmux client, or ssh).
+pub fn client_job(pid: Option<u32>) -> Option<String> {
+    // The title is argv0's file name: a tmux client's process name reads "tmux: client".
+    crate::platform::proc::foreground_job(pid?).map(|j| j.title)
 }
 
 /// The file name of the local process `pid`, when this machine has one and it can be read.
@@ -147,10 +154,22 @@ pub fn process_name(pid: u32) -> Option<String> {
 }
 
 impl Handshake {
-    /// The server is local (see `server_is_local`); `name_of` reads a local process's file name.
-    pub fn server_local(&self, name_of: &dyn Fn(u32) -> Option<String>) -> bool {
+    /// The server is local (see `server_is_local`); `name_of` reads a local process's file name and
+    /// `client_job` the name of the gateway pane's foreground job.
+    pub fn server_local(&self, name_of: &dyn Fn(u32) -> Option<String>, client_job: &dyn Fn() -> Option<String>) -> bool {
+        self.server_local_on(crate::platform::IS_WINDOWS, name_of, client_job)
+    }
+
+    /// `server_local` for a named OS. On Unix the pid alone is not proof (a remote server's pid can
+    /// match a local tmux), so the pane's own client must be a local tmux too: over ssh it is ssh.
+    /// Windows keeps its rule.
+    fn server_local_on(&self, windows: bool, name_of: &dyn Fn(u32) -> Option<String>, client_job: &dyn Fn() -> Option<String>) -> bool {
         let name = self.server_pid.and_then(name_of);
-        server_is_local(self.psmux || !crate::platform::IS_WINDOWS, self.server_pid, name.as_deref())
+        let native = self.psmux || !windows;
+        if !server_is_local(native, self.server_pid, name.as_deref()) {
+            return false;
+        }
+        windows || self.psmux || client_job().as_deref().is_some_and(|j| server_is_local(true, Some(1), Some(j)))
     }
 
     /// The kick-off, in iTerm2's order; the phony command must be first.
@@ -224,7 +243,7 @@ impl Handshake {
                 if text.is_some_and(|t| t.contains('_')) {
                     steps.push(Step::Abort(
                         "UTF-8 Mode Not Detected".into(),
-                        "tmux is not in UTF-8 mode. Please pass the -u command line argument to tmux or change your LANG environment variable to end with \u{201c}.UTF-8\u{201d}.".into(),
+                        "tmux needs a UTF-8 locale and this session has none. Set LANG to a UTF-8 locale such as en_US.UTF-8 (the profile's locale setting does this, and an inherited LC_ALL or LC_CTYPE must not say otherwise), or pass -u to tmux.".into(),
                     ));
                 }
             }
@@ -447,8 +466,8 @@ mod tests {
         let mut h = Handshake::default();
         h.reply(Ask::Phony, Some(""), &mut g);
         h.reply(Ask::ServerPid, Some("4242"), &mut g);
-        assert!(h.server_local(&|pid| (pid == 4242).then(|| "psmux.exe".to_string())));
-        assert!(!h.server_local(&|_| None));
+        assert!(h.server_local(&|pid| (pid == 4242).then(|| "psmux.exe".to_string()), &|| None));
+        assert!(!h.server_local(&|_| None, &|| None));
     }
 
     /// A Unix tmux server runs in this machine's pid space (iTerm2's `didLoadServerPID`): the
@@ -462,8 +481,20 @@ mod tests {
         let mut h = Handshake::default();
         h.reply(Ask::ServerPid, Some("42"), &mut g);
         assert!(!h.psmux);
-        assert_eq!(h.server_local(&|_| Some("tmux".to_string())), !crate::platform::IS_WINDOWS, "native on Unix only; Windows keeps the psmux rule");
-        assert!(!h.server_local(&|_| Some("bash".to_string())));
+        let tmux = |_: u32| Some("tmux".to_string());
+        // Unix: the pid names a local tmux and the pane's job is a local tmux client.
+        assert!(h.server_local_on(false, &tmux, &|| Some("tmux".into())));
+        assert!(!h.server_local_on(false, &|_| Some("bash".into()), &|| Some("tmux".into())));
+        // Over ssh the pane's job is ssh, even when the remote pid names a local tmux.
+        assert!(!h.server_local_on(false, &tmux, &|| Some("ssh".into())), "a remote server whose pid matches a local tmux");
+        assert!(!h.server_local_on(false, &tmux, &|| None), "no job known");
+        // Windows keeps the psmux rule: a non-psmux server is never local, the job is not asked.
+        assert!(!h.server_local_on(true, &tmux, &|| Some("tmux".into())));
+        let mut ps = Handshake::default();
+        ps.reply(Ask::Phony, Some(""), &mut g);
+        ps.reply(Ask::ServerPid, Some("42"), &mut g);
+        assert!(ps.server_local_on(true, &|_| Some("psmux.exe".into()), &|| None));
+        assert!(server_is_local(true, Some(42), Some("/usr/bin/tmux (deleted)")), "a replaced binary still reads as tmux");
         assert!(process_name(std::process::id()).is_some_and(|n| !n.contains(['/', '\\'])), "the file name, from the platform");
     }
 

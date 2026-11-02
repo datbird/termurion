@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drives the real Termurion window on a private X server and says PASS or FAIL for one scenario.
-# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, host, job, clipboard, tmux
+# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, host, job, clipboard, tmux, tmux-nolang, tmux-lcall, tmux-windows
 #
 # Needs Xvfb, xdotool and ImageMagick's import. Proof is a file, not pixels: each pane runs
 # `echo $$ >> $SCRATCH/pids`, and a screenshot (screen.png) is kept for a person to look at.
@@ -14,11 +14,15 @@ repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo"
 scenario="${1:-}"
 case "$scenario" in
-    shell | layout | host | job | clipboard | tmux) ;;
-    *) echo "usage: scripts/unix-gui-check <shell|layout|host|job|clipboard|tmux>" >&2; exit 2 ;;
+    shell | layout | host | job | clipboard | tmux | tmux-nolang | tmux-lcall | tmux-windows) ;;
+    *) echo "usage: scripts/unix-gui-check <shell|layout|host|job|clipboard|tmux|tmux-nolang|tmux-lcall|tmux-windows>" >&2; exit 2 ;;
 esac
+# The tmux scenarios: tmux (tabs in the attaching window), tmux-nolang (the app starts with no locale
+# variable), tmux-lcall (the app starts with LC_ALL=C), tmux-windows (the default: a new Termurion window).
+is_tmux=false
+case "$scenario" in tmux*) is_tmux=true ;; esac
 tools="Xvfb xdotool import"
-[ "$scenario" = tmux ] && tools="$tools tmux"
+$is_tmux && tools="$tools tmux"
 for tool in $tools; do
     command -v "$tool" > /dev/null || { echo "FAIL $scenario: $tool is not installed"; exit 1; }
 done
@@ -51,7 +55,7 @@ cleanup() {
             && kill "${p#/proc/}" 2> /dev/null
     done
     # The tmux scenario's server, by its own socket name.
-    [ "$scenario" = tmux ] && tmux -L guicheck kill-server 2> /dev/null
+    $is_tmux && tmux -L guicheck kill-server 2> /dev/null
     [ -n "$xvfb_pid" ] && kill "$xvfb_pid" 2> /dev/null
     return 0
 }
@@ -59,11 +63,11 @@ trap cleanup EXIT
 fail() {
     echo "FAIL $scenario: $1"
     # What the guicheck server holds, for a person reading the failure.
-    [ "$scenario" = tmux ] && { tmux -L guicheck list-panes -a -F '#{window_id} #{pane_id} #{pane_pid}' 2> /dev/null; tmux -L guicheck capture-pane -p -t '%0' 2> /dev/null | head -8; }
+    $is_tmux && { tmux -L guicheck list-panes -a -F '#{window_id} #{pane_id} #{pane_pid}' 2> /dev/null; tmux -L guicheck capture-pane -p -t '%0' 2> /dev/null | head -8; }
     exit 1
 }
 
-[ "$scenario" = tmux ] && tmux -L guicheck kill-server 2> /dev/null
+$is_tmux && tmux -L guicheck kill-server 2> /dev/null
 cargo build --bins > "$scratch/build.log" 2>&1 || { tail -5 "$scratch/build.log" >&2; fail "cargo build --bins"; }
 
 Xvfb "$display" -screen 0 1600x1000x24 -nolisten tcp > "$scratch/xvfb.log" 2>&1 &
@@ -83,7 +87,7 @@ if [ "$scenario" = clipboard ]; then
     printf '[settings.PointerActions."Button,2,1,,"]\nAction = "kPasteFromSelectionPointerAction"\nArgument = ""\n' > "$scratch/home/.config/termurion/settings.toml"
 fi
 # The tmux scenario opens tmux windows as tabs of the attaching window (mode 2), so the typing below has a tab to land in.
-if [ "$scenario" = tmux ]; then
+if [ "$scenario" != tmux-windows ] && $is_tmux; then
     mkdir -p "$scratch/home/.config/termurion"
     printf '[settings]\nOpenTmuxWindowsIn = 2\n' > "$scratch/home/.config/termurion/settings.toml"
 fi
@@ -92,7 +96,11 @@ if [ "$scenario" = job ]; then
     mkdir -p "$scratch/home/.config/termurion"
     printf 'default = "job-check"\n\n[[profile]]\nGuid = "job-check"\nName = "Default"\n"Prompt Before Closing 2" = 2\n' > "$scratch/home/.config/termurion/profiles.toml"
 fi
-env -u TMUX -u WAYLAND_DISPLAY -u XDG_CONFIG_HOME -u XDG_STATE_HOME HOME="$scratch/home" TMPDIR="$scratch/tmp" XDG_RUNTIME_DIR="$scratch/run" \
+# The locale the app itself starts under, for the tmux variants.
+locale_env=()
+[ "$scenario" = tmux-nolang ] && locale_env=(-u LANG -u LC_ALL -u LC_CTYPE)
+[ "$scenario" = tmux-lcall ] && locale_env=(LC_ALL=C)
+env -u TMUX -u WAYLAND_DISPLAY -u XDG_CONFIG_HOME -u XDG_STATE_HOME "${locale_env[@]}" HOME="$scratch/home" TMPDIR="$scratch/tmp" XDG_RUNTIME_DIR="$scratch/run" \
     "$repo/target/debug/termurion" > "$scratch/app.log" 2>&1 &
 app_pid=$!
 
@@ -222,9 +230,10 @@ case "$scenario" in
         kill "$xclip_pid" 2> /dev/null
         [ "$(tr -d '\n' < "$scratch/got" 2> /dev/null)" = other ] || fail "the middle click did not paste 'other' (got '$(cat "$scratch/got" 2> /dev/null)')"
         ;;
-    tmux)
+    tmux | tmux-nolang | tmux-lcall | tmux-windows)
         sleep 1
-        # Control mode: the app drives the pane, and its first tmux window becomes a tab.
+        windows_before=$(xdotool search --onlyvisible --pid "$app_pid" 2> /dev/null | wc -l)
+        # Control mode: the app drives the pane, and its first tmux window opens as a tab or a window.
         xdotool type --delay 20 'tmux -L guicheck -f /dev/null -CC new-session -s gui'
         xdotool key Return
         mode=""
@@ -234,15 +243,24 @@ case "$scenario" in
             sleep 0.1
         done
         [ "$mode" = 1 ] || fail "no control mode client on the guicheck server (client_control_mode '$mode')"
-        # The tab opens a moment after the client attaches; the shell inside it is the tmux server's child.
         sleep 3
         shoot
+        if [ "$scenario" = tmux-windows ]; then
+            # The default opens the tmux window as a window of its own: a second visible X window.
+            windows_after=$(xdotool search --onlyvisible --pid "$app_pid" 2> /dev/null | wc -l)
+            [ "$windows_after" -gt "$windows_before" ] || fail "no new Termurion window opened ($windows_before before, $windows_after after)"
+            newwin=$(xdotool search --onlyvisible --pid "$app_pid" 2> /dev/null | grep -vx "$win" | tail -1)
+            xdotool windowfocus --sync "$newwin" 2> /dev/null || true
+            sleep 1
+        fi
         type_pid_line
         shoot
         shell_pid=$(head -1 "$scratch/pids")
         server_pid=$(tmux -L guicheck display-message -p '#{pid}' 2> /dev/null)
         parent=$(ps -o ppid= -p "$shell_pid" | tr -d ' ')
-        [ -n "$server_pid" ] && [ "$parent" = "$server_pid" ] || fail "the tab's shell $shell_pid has parent '$parent', not the tmux server '$server_pid' (see $scratch/screen.png)"
+        [ -n "$server_pid" ] && [ "$parent" = "$server_pid" ] || fail "the shell $shell_pid has parent '$parent', not the tmux server '$server_pid' (see $scratch/screen.png)"
+        # The pid line came from a tmux pane (the new tab or window), not from the gateway's own shell.
+        tmux -L guicheck list-panes -a -F '#{pane_pid}' | grep -qx "$shell_pid" || fail "pid $shell_pid is not the shell of a tmux pane"
         ;;
 esac
 kill -0 "$app_pid" 2> /dev/null || fail "the app died (see $scratch/app.log)"

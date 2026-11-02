@@ -63,6 +63,11 @@ mod tests {
         Some(a)
     }
 
+    /// The ssh client: ssh.exe on Windows, ssh elsewhere.
+    fn ssh_program() -> &'static str {
+        if crate::platform::IS_WINDOWS { "ssh.exe" } else { "ssh" }
+    }
+
     /// A short random suffix for a remote server's name, so two runs never meet.
     fn random_name(prefix: &str) -> String {
         let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
@@ -77,7 +82,7 @@ mod tests {
         let file = std::env::temp_dir().join(format!("termurion-live-ssh-{}-{server}.txt", std::process::id()));
         let Ok(out) = std::fs::File::create(&file) else { return "no temp file".into() };
         let Ok(err) = out.try_clone() else { return "no temp file".into() };
-        let child = Command::new("ssh.exe").arg("-n").args(ssh).args(["tmux", "-L", server]).args(args).stdin(Stdio::null()).stdout(out).stderr(err).spawn();
+        let child = Command::new(ssh_program()).arg("-n").args(ssh).args(["tmux", "-L", server]).args(args).stdin(Stdio::null()).stdout(out).stderr(err).spawn();
         let mut child = match child {
             Ok(c) => c,
             Err(e) => return format!("spawn error {e}"),
@@ -144,7 +149,7 @@ mod tests {
                 Flavor::Wsl => format!("wsl.exe -e tmux -L {server} -f /dev/null -CC new-session -s {session}"),
                 Flavor::Local => format!("tmux -L {server} -f /dev/null -CC new-session -s {session}"),
                 // A pty on the far side (-tt), as typing `ssh host tmux -CC` does.
-                Flavor::Ssh => format!("ssh.exe -tt {} tmux -L {server} -f /dev/null -CC new-session -s {session}", ssh_args().expect("TERMURION_TMUX_SSH_HOST").join(" ")),
+                Flavor::Ssh => format!("{} -tt {} tmux -L {server} -f /dev/null -CC new-session -s {session}", ssh_program(), ssh_args().expect("TERMURION_TMUX_SSH_HOST").join(" ")),
             }
         }
 
@@ -238,6 +243,10 @@ mod tests {
         pub fn start(flavor: Flavor, name: &str) -> Live {
             let server = format!("termurion-test-{name}");
             let api = test_api();
+            // A leftover server of this name (a crashed earlier run) must not be attached to.
+            if flavor == Flavor::Local {
+                flavor.stop(&server, &server);
+            }
             // A local tmux needs a UTF-8 locale or it turns tabs into "_" (the app hands its panes one).
             let env: Vec<String> = if flavor == Flavor::Local { vec!["LANG=en_US.UTF-8".into()] } else { Vec::new() };
             let p = spawn_notify(&api, &flavor.start(&server, &server), None, &env, 80, 24, std::sync::Arc::new(|| {})).unwrap();
@@ -330,7 +339,7 @@ mod tests {
                                 }
                             }
                             if ask == tmux_handshake::Ask::ServerPid {
-                                self.server_local = self.hs.server_local(&tmux_handshake::process_name);
+                                self.server_local = self.hs.server_local(&tmux_handshake::process_name, &|| tmux_handshake::client_job(Some(self.p.pid())));
                                 self.ctl.set_server_local(self.server_local, &mut self.gw);
                             }
                             if ask == tmux_handshake::Ask::SetTitles {
