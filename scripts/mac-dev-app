@@ -7,9 +7,9 @@ set -uo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo"
 host="${CHECK_UNIX_MAC_HOST:-funtimes}"
-rsync -rt --delete --exclude target/ --exclude .git/ --exclude .superpowers/ ./ "$host:src/termurion/" || { echo "mac-dev-app: rsync failed"; exit 2; }
+rsync -rt --delete --exclude /target/ --exclude /.git/ --exclude /.superpowers/ ./ "$host:src/termurion/" || { echo "mac-dev-app: rsync failed"; exit 2; }
 ssh "$host" 'bash -s' <<'REMOTE' || { echo "mac-dev-app: failed"; exit 1; }
-set -eu
+set -euo pipefail
 cd src/termurion
 ~/.cargo/bin/cargo build --bins 2>&1 | tail -3
 app=target/debug/Termurion.app
