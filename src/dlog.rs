@@ -256,7 +256,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("app/clipboard_ui.rs", 1),
     ("app/hotkey_ui.rs", 2),
     ("app/menu.rs", 2),
-    ("app/mod.rs", 6),
+    ("app/mod.rs", 7),
     ("app/page_saver_app.rs", 1),
     ("app/restore_ui.rs", 2),
     ("app/session_end_ui.rs", 1),

@@ -759,7 +759,7 @@ pub(crate) mod tests {
     /// The child half of `a_signal_goes_through_the_host`: detached (no console, as
     /// termurion-host runs), so the host can attach to its session's console.
     // Windows only: it drives a console child with Win32 console calls and PowerShell.
-    #[cfg(windows)]
+    #[cfg(windows)] // test: a live ConPTY host
     #[test]
     #[ignore]
     fn signal_child() {
@@ -783,7 +783,7 @@ pub(crate) mod tests {
         c.send(&Msg::KillAll);
     }
 
-    #[cfg(windows)]
+    #[cfg(windows)] // test: a signal through a live host
     #[test]
     fn a_signal_goes_through_the_host() {
         use std::os::windows::process::CommandExt;

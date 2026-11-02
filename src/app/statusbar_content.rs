@@ -351,9 +351,8 @@ pub(super) fn is_this_machine(host: Option<&str>, token: Option<&str>) -> bool {
 
 /// The local time, broken down.
 fn local_civil() -> sbt::Civil {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    let (year, month, day, weekday, hour, minute, second) = crate::platform::clock::local_at(now.as_secs()).unwrap_or((1970, 1, 1, 4, 0, 0, 0));
-    sbt::Civil { year: year as i32, month: month as u32, day: day as u32, weekday: weekday as u32, hour: hour as u32, minute: minute as u32, second: second as u32, millis: now.subsec_millis() }
+    let (year, month, day, weekday, hour, minute, second, millis) = crate::platform::clock::local_now();
+    sbt::Civil { year: i32::from(year), month: u32::from(month), day: u32::from(day), weekday: u32::from(weekday), hour: u32::from(hour), minute: u32::from(minute), second: u32::from(second), millis: u32::from(millis) }
 }
 
 /// `dateFormatFromTemplate:options:0 locale:currentLocale` (`CLK`): the OS's best pattern for the

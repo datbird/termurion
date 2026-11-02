@@ -16,8 +16,19 @@ pub fn files() -> Vec<std::path::PathBuf> {
     Vec::new()
 }
 
+/// A secret copy kept out of clipboard-manager history: the KDE password hint on Linux, the
+/// concealed-type mark on macOS.
 pub fn set_private_text(cb: &mut arboard::Clipboard, text: &str) -> Result<(), arboard::Error> {
-    cb.set().text(text)
+    #[cfg(target_os = "macos")]
+    {
+        use arboard::SetExtApple;
+        cb.set().exclude_from_history().text(text)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        use arboard::SetExtLinux;
+        cb.set().exclude_from_history().text(text)
+    }
 }
 
 #[cfg(test)]

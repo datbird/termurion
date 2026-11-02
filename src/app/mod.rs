@@ -2049,6 +2049,11 @@ pub fn run() {
     let mut pipe_problem: Option<String> = None;
     let url_listener = match crate::url_launch::listen(launch_events(proxy.clone())) {
         Ok(h) => Some(h),
+        // No launch pipe on this OS: nothing holds it, so nothing is handed over and no banner claims so.
+        Err(e) if crate::url_launch::listen_unsupported(&e) => {
+            crate::dlog!("The launch pipe is not available on this platform yet");
+            None
+        }
         Err(e) => {
             crate::host_base::log(&format!("launch: not listening: {e}"));
             if embedding {

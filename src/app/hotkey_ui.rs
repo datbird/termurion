@@ -274,6 +274,9 @@ impl App {
     }
 
     pub(super) fn show_hotkey_window(&mut self, guid: &str, fg: isize) {
+        if let Err(e) = crate::platform::hotkey::available() {
+            return self.banners.set("hotkey-window", e.to_string());
+        }
         crate::rlog!("dropdown window shown");
         let previous = (!ours(fg)).then_some(fg);
         match self.hotkey_window_of(guid) {

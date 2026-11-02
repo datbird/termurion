@@ -1,5 +1,10 @@
 //! Win32 calls of the hotkey window.
 
+/// The hotkey window works on Windows.
+pub fn available() -> Result<(), super::super::Unsupported> {
+    Ok(())
+}
+
 pub fn cloak(hwnd: isize, on: bool) {
     use windows_sys::Win32::Graphics::Dwm::{DWMWA_CLOAK, DwmSetWindowAttribute};
     let v: i32 = on as i32;

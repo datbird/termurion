@@ -7,4 +7,4 @@ use super::unix::hotkey as imp;
 #[cfg(windows)]
 use super::windows::hotkey as imp;
 
-pub use imp::{cloak, foreground, is_window, order_front, ours, set_alpha};
+pub use imp::{available, cloak, foreground, is_window, order_front, ours, set_alpha};

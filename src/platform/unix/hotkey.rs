@@ -1,11 +1,16 @@
 //! The hotkey window needs a native handle and a system-wide hotkey, and Unix has neither yet
-//! (`keys::set_hotkeys` reports Unsupported, `window::hwnd_of` is None), so no caller holds a
-//! handle to pass. These answer "nothing" for one handed in anyway.
+//! (`keys::set_hotkeys` reports Unsupported, `window::hwnd_of` is None). Calls that can fail say
+//! `Unsupported { feature: "Hotkey window" }`; the window handle calls below can never be reached with
+//! a handle, and answer "nothing" for one handed in anyway.
 
-/// No cloaking without a handle.
+use super::super::Unsupported;
+
+const FEATURE: &str = "Hotkey window";
+
+/// No cloaking without a handle (none exists on Unix, so never reached).
 pub fn cloak(_hwnd: isize, _on: bool) {}
 
-/// False: no opacity was set, so a fade stops at once.
+/// Unsupported: no opacity was set, so a fade stops at once.
 pub fn set_alpha(_hwnd: isize, _alpha: f32) -> bool {
     false
 }
@@ -23,4 +28,10 @@ pub fn is_window(_hwnd: isize) -> bool {
     false
 }
 
+/// No handle to order (never reached on Unix).
 pub fn order_front(_hwnd: isize, _minimized: bool) {}
+
+/// The hotkey window is not available on Unix yet.
+pub fn available() -> Result<(), Unsupported> {
+    Err(Unsupported { feature: FEATURE })
+}

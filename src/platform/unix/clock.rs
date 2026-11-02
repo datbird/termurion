@@ -91,6 +91,25 @@ pub fn zone_name() -> String {
     unsafe { std::ffi::CStr::from_ptr(t.tm_zone) }.to_string_lossy().into_owned()
 }
 
+/// The local time now, with its weekday and milliseconds.
+pub fn local_now() -> (u16, u16, u16, u16, u16, u16, u16, u16) {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts) };
+    let mut t: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&ts.tv_sec, &mut t) };
+    ((t.tm_year + 1900) as u16, (t.tm_mon + 1) as u16, t.tm_mday as u16, t.tm_wday as u16, t.tm_hour as u16, t.tm_min as u16, t.tm_sec as u16, (ts.tv_nsec / 1_000_000) as u16)
+}
+
+/// A signed Unix time as local time; None when it does not convert.
+pub fn local_at_signed(secs: i64) -> Option<Local> {
+    let at = libc::time_t::try_from(secs).ok()?;
+    let mut t: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&at, &mut t) }.is_null() {
+        return None;
+    }
+    Some(((t.tm_year + 1900) as u16, (t.tm_mon + 1) as u16, t.tm_mday as u16, t.tm_wday as u16, t.tm_hour as u16, t.tm_min as u16, t.tm_sec as u16))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

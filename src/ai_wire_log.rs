@@ -307,7 +307,7 @@ pub fn console(enabled: bool, line: &str) {
     if !enabled {
         return;
     }
-    crate::platform::proc::debug_line(&format!("Termurion AI: {line}"));
+    crate::platform::proc::debug_line(&format!("Termurion AI: {line}\n"));
 }
 
 #[cfg(test)]

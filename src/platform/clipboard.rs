@@ -22,7 +22,7 @@ pub fn files() -> Vec<std::path::PathBuf> {
 }
 
 /// Replaces the clipboard with a secret `text`, kept out of the clipboard history and the cloud clipboard
-/// where the OS has them (Windows). Elsewhere it is a plain copy.
+/// where the OS has them (Windows history and cloud clipboard, the Linux password hint, macOS concealed type).
 pub fn set_private_text(cb: &mut arboard::Clipboard, text: &str) -> Result<(), arboard::Error> {
     imp::set_private_text(cb, text)
 }

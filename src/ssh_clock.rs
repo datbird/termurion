@@ -192,7 +192,7 @@ pub fn civil_at(unix: f64, zone: Option<i32>) -> Civil {
 /// This computer's local time for a UTC instant (the OS's time zone rules); None when the instant is
 /// outside what the OS can convert.
 fn local_civil(secs: i64, millis: u32) -> Option<Civil> {
-    let (year, month, day, weekday, hour, minute, second) = crate::platform::clock::local_at(u64::try_from(secs).ok()?)?;
+    let (year, month, day, weekday, hour, minute, second) = crate::platform::clock::local_at_signed(secs)?;
     Some(Civil { year: i32::from(year), month: u32::from(month), day: u32::from(day), weekday: u32::from(weekday), hour: u32::from(hour), minute: u32::from(minute), second: u32::from(second), millis })
 }
 

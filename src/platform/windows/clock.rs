@@ -109,3 +109,28 @@ pub fn zone_name() -> String {
     let end = name.iter().position(|c| *c == 0).unwrap_or(name.len());
     String::from_utf16_lossy(&name[..end])
 }
+/// `GetLocalTime`, with the weekday and milliseconds.
+pub fn local_now() -> (u16, u16, u16, u16, u16, u16, u16, u16) {
+    let mut t: windows_sys::Win32::Foundation::SYSTEMTIME = unsafe { std::mem::zeroed() };
+    unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut t) };
+    (t.wYear, t.wMonth, t.wDay, t.wDayOfWeek, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds)
+}
+
+/// `SystemTimeToTzSpecificLocalTime` of an instant; negative seconds convert down to what a FILETIME holds.
+pub fn local_at_signed(secs: i64) -> Option<Local> {
+    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+    // 100 ns ticks from 1601.
+    let ticks = secs.checked_add(11_644_473_600)?.checked_mul(10_000_000)?;
+    let ticks = u64::try_from(ticks).ok()?;
+    let file = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
+    let mut utc: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    let mut local: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    unsafe {
+        if FileTimeToSystemTime(&file, &mut utc) == 0 || SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) == 0 {
+            return None;
+        }
+    }
+    Some((local.wYear, local.wMonth, local.wDay, local.wDayOfWeek, local.wHour, local.wMinute, local.wSecond))
+}
+

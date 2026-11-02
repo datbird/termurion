@@ -4825,15 +4825,44 @@ pub fn banner_rect(area: Rect, cell: (f32, f32)) -> Rect {
     Rect { x: area.x, y: area.y + area.h - cell.1 - 8.0, w: area.w, h: cell.1 + 8.0 }
 }
 
-/// A one-line error bar along the bottom of `area`. Its box goes in `quads`, so its
-/// text (in `rows`) draws on top.
+/// The error bar's text cut into lines that fit `area`'s width in cells (at most six, the last
+/// ending in U+2026 when more is left), breaking at a space when the line has one.
+pub fn banner_lines(text: &str, area_w: f32, cell_w: f32) -> Vec<String> {
+    const MAX_LINES: usize = 6;
+    let cols = ((area_w / cell_w.max(1.0)) as usize).saturating_sub(2).max(1);
+    let mut rest: Vec<char> = text.chars().collect();
+    let mut lines = Vec::new();
+    while !rest.is_empty() {
+        if lines.len() == MAX_LINES {
+            let last: &mut String = lines.last_mut().unwrap();
+            let keep = last.chars().count().saturating_sub(1);
+            *last = last.chars().take(keep).collect::<String>() + "\u{2026}";
+            break;
+        }
+        let take = if rest.len() <= cols { rest.len() } else { rest[..cols].iter().rposition(|c| *c == ' ').filter(|i| *i > cols / 2).map_or(cols, |i| i + 1) };
+        let line: String = rest.drain(..take).collect();
+        lines.push(line.trim_end().to_string());
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+/// A line-wrapped error bar along the bottom of `area` (one line for a short text). Its box goes in
+/// `quads`, so its text (in `rows`) draws on top.
 pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) -> Rect {
-    let r = banner_rect(area, cell);
+    let lines = banner_lines(text, area.w, cell.0);
+    let extra = (lines.len() - 1) as f32 * cell.1;
+    let one = banner_rect(area, cell);
+    let r = Rect { x: one.x, y: one.y - extra, w: one.w, h: one.h + extra };
     // The pane's text and strokes under the bar go, as under every surface.
     cut_out(frame, r, cell.1);
     frame.quads.push(Quad { rect: r, color: rgba(BANNER, 1.0) });
-    let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
-    frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    for (i, line) in lines.into_iter().enumerate() {
+        let span = Span { text: line, color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+        frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0 + i as f32 * cell.1, spans: vec![span], clip: r, scale: 1.0, face: crate::render::DEFAULT_FACE });
+    }
     r
 }
 
@@ -9077,6 +9106,19 @@ mod drawn_overlay_tests {
         let mut f = Frame::default();
         assert_eq!(banner(&mut f, "oops", AREA, CELL), banner_rect(AREA, CELL));
         assert_eq!(f.quads.last().unwrap().rect, banner_rect(AREA, CELL));
+    }
+
+    #[test]
+    fn a_long_banner_wraps_instead_of_running_off_the_edge() {
+        assert_eq!(banner_lines("short", 800.0, 8.0), ["short"]);
+        let text = "word ".repeat(60);
+        let lines = banner_lines(&text, 400.0, 8.0);
+        assert!(lines.len() > 1 && lines.len() <= 6, "{lines:?}");
+        assert!(lines.iter().all(|l| l.chars().count() <= 48), "{lines:?}");
+        assert!(banner_lines(&"x".repeat(5000), 400.0, 8.0).last().unwrap().ends_with('\u{2026}'));
+        let mut f = Frame::default();
+        let r = banner(&mut f, &text, AREA, CELL);
+        assert!(r.h > banner_rect(AREA, CELL).h && r.y + r.h == AREA.y + AREA.h, "it grows upward from the bottom edge");
     }
 
     #[test]

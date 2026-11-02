@@ -215,6 +215,14 @@ pub enum LostPipe {
 }
 
 /// The rule over each request's `hand_over` result; `console_waiting` is a handoff that would be lost.
+/// The feature the Unix launch pipe reports as Unsupported.
+pub const LISTEN_FEATURE: &str = "Single-instance link handoff";
+
+/// `listen` failed because this OS has no launch pipe at all (not because another program holds it).
+pub fn listen_unsupported(error: &str) -> bool {
+    error == crate::platform::Unsupported { feature: LISTEN_FEATURE }.to_string()
+}
+
 pub fn lost_pipe(after: &[AfterHand], console_waiting: bool) -> LostPipe {
     if console_waiting {
         return LostPipe::RunWithout;
@@ -254,7 +262,7 @@ mod no_pipe {
 
     /// Always Err: the launch pipe is not available on Unix, and the caller logs the text.
     pub fn listen(_notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<Serving, String> {
-        Err(crate::platform::Unsupported { feature: "Single-instance link handoff" }.into())
+        Err(crate::platform::Unsupported { feature: super::LISTEN_FEATURE }.into())
     }
 
     /// A served pipe. Nothing makes one on Unix.
@@ -573,7 +581,7 @@ mod tests {
             assert!(matches!(url_argument(&argv(&["--url", bad])), UrlArg::Refused(_)), "{bad:?}");
         }
         // A lone surrogate is a Windows-only OsString.
-        #[cfg(windows)]
+        #[cfg(windows)] // test: a lone surrogate (OsStringExt::from_wide)
         {
             use std::os::windows::ffi::OsStringExt;
             let mut bad = argv(&["--url"]);
@@ -669,7 +677,7 @@ mod tests {
         assert_eq!(server_verdict(&mine, &mine, Some(exe), Some(3), Some(3), exe), Ok(()));
     }
 
-    #[cfg(windows)]
+    #[cfg(windows)] // test: the Windows pipe tests
     mod windows {
         use super::super::*;
         use crate::platform::windows::ipc::tests::test_name;

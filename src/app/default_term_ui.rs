@@ -187,7 +187,9 @@ impl App {
                             other => self.launch_queue.push(other),
                         }
                     }
-                    self.banners.set("launch-pipe", "Another program holds Termurion's launch pipe, so files and links opened with Termurion cannot reach this window.".to_string());
+                    if !crate::url_launch::listen_unsupported(&e) {
+                        self.banners.set("launch-pipe", "Another program holds Termurion's launch pipe, so files and links opened with Termurion cannot reach this window.".to_string());
+                    }
                 }
             }
         }

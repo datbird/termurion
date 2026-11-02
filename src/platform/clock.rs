@@ -65,3 +65,14 @@ pub fn best_date_pattern(template: &str) -> Option<String> {
 pub fn zone_name() -> String {
     imp::zone_name()
 }
+
+/// The local time now with its weekday and milliseconds: year, month, day, weekday (0 is Sunday), hour,
+/// minute, second, millisecond.
+pub fn local_now() -> (u16, u16, u16, u16, u16, u16, u16, u16) {
+    imp::local_now()
+}
+
+/// `local_at` for a signed Unix time (an instant before 1970 converts where the OS can hold it).
+pub fn local_at_signed(secs: i64) -> Option<Local> {
+    imp::local_at_signed(secs)
+}
