@@ -861,6 +861,7 @@ mod tests {
         ("platform/unix/ipc.rs", "connect", 1, "the session host socket in Termurion's own private runtime folder; lstat is the point (a link or a foreign folder is refused), and no path from outside reaches it"),
         ("platform/unix/ipc.rs", "check_parent", 2, "the session host socket in Termurion's own private runtime folder; lstat is the point (a link or a foreign folder is refused), and no path from outside reaches it"),
         ("platform/unix/ipc.rs", "take", 1, "the session host socket in Termurion's own private runtime folder; lstat is the point (a link or a foreign folder is refused), and no path from outside reaches it"),
+        ("platform/unix/ipc.rs", "refresh", 1, "the session host socket in Termurion's own private runtime folder; lstat is the point (a link or a foreign folder is refused), and no path from outside reaches it"),
         ("platform/unix/locale.rs", "installed_names", 1, "the fixed system folder /usr/share/locale (macOS), listed for its locale names only; no path from outside"),
         ("app/mod.rs", "run", 1, "Termurion's own uv folder under %APPDATA%"),
         ("app/restore_ui.rs", "saved_windows", 3, "Termurion's own saved-windows state file and the mark beside it that says an Import All brought it"),

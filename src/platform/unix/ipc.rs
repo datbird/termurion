@@ -216,8 +216,14 @@ pub struct Listener {
     /// The file it bound, so drop only removes its own.
     id: (u64, u64),
     /// The held `<name>.lock`: one host per name, whatever the probe below sees.
-    _lock: HostLock,
+    lock: HostLock,
+    /// When the socket and lock file times were last refreshed.
+    touched: Instant,
 }
+
+/// Tmp cleaners (macOS, systemd-tmpfiles) remove files nobody touched for days; a live host
+/// touches its two files this often.
+const TOUCH_EVERY: Duration = Duration::from_secs(3600);
 
 /// An exclusive flock on `<socket>.lock`, held from before the stale probe until drop. With it,
 /// probe, unlink and bind cannot interleave with another host of this user.
@@ -320,7 +326,7 @@ impl Listener {
             }
         }
         let id = file_id(&path).ok_or_else(|| format!("{} is not the socket just bound", path.display()))?;
-        let l = Listener { fd, path, id, _lock: lock };
+        let l = Listener { fd, path, id, lock, touched: Instant::now() };
         if unsafe { libc::listen(l.fd.as_raw_fd(), 16) } < 0 {
             return Err(format!("listen failed: {}", std::io::Error::last_os_error()));
         }
@@ -335,9 +341,31 @@ impl Listener {
         Ok(())
     }
 
+    /// Sets the access and modify times of the socket and the lock file to now, so a tmp cleaner
+    /// never takes them from under a live host. A file already gone is logged, not recreated.
+    pub fn refresh(&mut self) {
+        self.touched = Instant::now();
+        let now = [libc::timespec { tv_sec: 0, tv_nsec: libc::UTIME_NOW }; 2];
+        if file_id(&self.path) == Some(self.id) {
+            if let Ok(c) = std::ffi::CString::new(self.path.as_os_str().as_bytes()) {
+                unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), now.as_ptr(), libc::AT_SYMLINK_NOFOLLOW) };
+            }
+        } else {
+            crate::dlog!("The session host socket file is gone");
+        }
+        if std::fs::symlink_metadata(&self.lock.path).is_ok() {
+            unsafe { libc::futimens(self.lock._fd.as_raw_fd(), now.as_ptr()) };
+        } else {
+            crate::dlog!("The session host lock file is gone");
+        }
+    }
+
     /// Waits up to `wait` for a client of this user. None when none came; a peer of another user
     /// is dropped unread and counts as none.
     pub fn accept(&mut self, wait: Duration) -> Result<Option<Pipe>, String> {
+        if self.touched.elapsed() >= TOUCH_EVERY {
+            self.refresh();
+        }
         if !poll_in(self.fd.as_raw_fd(), wait)? {
             return Ok(None);
         }
@@ -607,6 +635,29 @@ mod tests {
         std::fs::DirBuilder::new().mode(mode).create(&d).unwrap();
         std::fs::set_permissions(&d, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
         Scratch(d)
+    }
+
+    #[test]
+    fn refresh_brings_old_file_times_to_now() {
+        let name = test_name("touch");
+        let mut l = Listener::bind(&name).unwrap();
+        let path = runtime_dir().unwrap().join(&name);
+        let lock = runtime_dir().unwrap().join(format!("{name}.lock"));
+        let old = [libc::timespec { tv_sec: 1000, tv_nsec: 0 }; 2];
+        for f in [&path, &lock] {
+            let c = std::ffi::CString::new(f.as_os_str().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), old.as_ptr(), libc::AT_SYMLINK_NOFOLLOW) }, 0);
+            assert_eq!(std::fs::symlink_metadata(f).unwrap().mtime(), 1000, "the test set an old time");
+        }
+        l.refresh();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        for f in [&path, &lock] {
+            let m = std::fs::symlink_metadata(f).unwrap();
+            assert!((now - m.mtime()).abs() < 60 && (now - m.atime()).abs() < 60, "{} was touched", f.display());
+        }
+        // A file that is gone is logged, not an error or a panic.
+        std::fs::remove_file(&path).unwrap();
+        l.refresh();
     }
 
     #[test]

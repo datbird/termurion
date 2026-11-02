@@ -280,6 +280,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("perm_queue.rs", 1),
     ("platform/unix/clock.rs", 1),
     ("platform/unix/dialog.rs", 3),
+    ("platform/unix/ipc.rs", 2),
     ("platform/unix/metrics.rs", 1),
     ("platform/unix/proc.rs", 1),
     ("platform/unix/watch.rs", 1),
