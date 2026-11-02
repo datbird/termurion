@@ -7,6 +7,12 @@ use super::unix::chrome as imp;
 #[cfg(windows)]
 use super::windows::chrome as imp;
 
+/// Whether the menu bar and pop-up menus exist on this OS. The app asks before it builds one and
+/// shows the reason where a menu was wanted.
+pub fn available() -> Result<(), super::Unsupported> {
+    imp::available()
+}
+
 /// Gives the window's frame a border color (a COLORREF); a no-op where the OS draws the border.
 pub fn set_border(hwnd: isize, color: u32) {
     imp::set_border(hwnd, color)

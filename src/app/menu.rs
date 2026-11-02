@@ -228,8 +228,26 @@ impl App {
         hwnd_of(&self.gpu.as_ref()?.window)
     }
 
+    /// The handle a pop-up menu needs. Without one the menu is not shown; where the OS has no menus
+    /// at all, a banner says so (the same text each time, so it is one banner).
+    pub(super) fn popup_hwnd(&mut self) -> Option<isize> {
+        if let Err(e) = crate::platform::chrome::available() {
+            self.banners.set("menu", e.to_string());
+            return None;
+        }
+        self.hwnd()
+    }
+
     /// Builds the menu bar from iTerm2's menus, the right-click menu, and the Win chord hook.
     pub(super) fn install_menus(&mut self) {
+        // No menus on this OS: say so once in the log; a right-click shows the banner.
+        if crate::platform::chrome::available().is_err() {
+            static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                crate::dlog!("The native menu bar is not available on this platform yet");
+            }
+            return;
+        }
         let Some(hwnd) = self.hwnd() else { return };
         SPLIT_HINTS.get_or_init(|| self.globals.bool("ShowHintsInSplitPaneMenuItems"));
         // The shortcut key, before any menu text or the hook's first key reads it.
@@ -421,7 +439,7 @@ impl App {
     /// when its main menu item is not built yet, a check row has a check, a swatch row an icon. A label's
     /// "&" is doubled so Windows shows it. The menu lives until the next one: the pick arrives after it closes.
     pub(super) fn show_context_rows(&mut self, rows: &[crate::ctx_menu::Row]) {
-        let Some(hwnd) = self.hwnd() else { return };
+        let Some(hwnd) = self.popup_hwnd() else { return };
         let context = Menu::new();
         let mut results = Vec::new();
         for row in rows {
@@ -511,7 +529,7 @@ impl App {
     /// A context menu built from `entries` (`tab_menu::Entry`) as a popup at the pointer;
     /// `what` names it in an error banner. A label's "&" is doubled so Windows shows it.
     pub(super) fn show_entries(&mut self, entries: &[crate::tab_menu::Entry], what: &str) {
-        let Some(hwnd) = self.hwnd() else { return };
+        let Some(hwnd) = self.popup_hwnd() else { return };
         let menu = Menu::new();
         let mut results = Vec::new();
         for e in entries {
@@ -528,7 +546,7 @@ impl App {
     /// A porthole's language list as a popup: `items` in order, None for a separator. The
     /// picks come back as `porthole-lang:<index>`.
     pub(super) fn show_porthole_languages(&mut self, items: &[Option<String>]) {
-        let Some(hwnd) = self.hwnd() else { return };
+        let Some(hwnd) = self.popup_hwnd() else { return };
         let menu = Menu::new();
         let mut index = 0;
         let mut results = Vec::new();
@@ -553,7 +571,7 @@ impl App {
     /// as plain text with its number, the selected tab checked (`PSM _setupCells:`). The picks
     /// come back as `tab-overflow:<index>`.
     pub(super) fn show_tab_overflow(&mut self) {
-        let Some(hwnd) = self.hwnd() else { return };
+        let Some(hwnd) = self.popup_hwnd() else { return };
         let html = self.globals.bool("HTMLTabTitles");
         let menu = Menu::new();
         let mut results = Vec::new();
@@ -579,7 +597,7 @@ impl App {
     /// always has a color, so it has no "Default". The picks come back as `color-pick:<n>`.
     /// 13d's tab and tab group menus open it.
     pub(super) fn open_color_picker(&mut self, target: ColorTarget, swatches: Vec<crate::palette::Rgb>) {
-        let Some(hwnd) = self.hwnd() else { return };
+        let Some(hwnd) = self.popup_hwnd() else { return };
         let menu = Menu::new();
         let mut results = Vec::new();
         for (n, (label, color, _)) in picker_items(&swatches, matches!(target, ColorTarget::Tab(_))).into_iter().enumerate() {

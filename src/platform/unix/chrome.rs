@@ -1,11 +1,18 @@
 //! Window chrome on Unix. DWM has no Unix meaning (the window manager draws border and corners);
-//! the native menu bar is not attached yet and says so.
+//! the native menu bar is not attached yet; `available` says so and the app shows it.
 
 use crate::platform::Unsupported;
 
 /// What the menu bar says when it cannot attach.
 fn menu_unsupported() -> String {
-    Unsupported { feature: "The native menu bar" }.to_string()
+    Unsupported { feature: MENUS }.to_string()
+}
+
+const MENUS: &str = "The native menu bar";
+
+/// Menus (bar and pop-ups) are not built on Unix yet.
+pub fn available() -> Result<(), Unsupported> {
+    Err(Unsupported { feature: MENUS })
 }
 
 pub fn set_border(_hwnd: isize, _color: u32) {}

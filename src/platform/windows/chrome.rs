@@ -210,3 +210,8 @@ mod menu_bar_replace_tests {
         assert!(body.contains("chrome::replace_menu_bar(earlier, &menu, hwnd, self.want_menu_hidden())") && !body.contains("menu.init_for_hwnd"));
     }
 }
+
+/// Menus are always there on Windows.
+pub fn available() -> Result<(), crate::platform::Unsupported> {
+    Ok(())
+}
