@@ -65,7 +65,8 @@ pub fn wait_for_pid(pid: u32) {
 
 /// The debug output of a Unix program is its stderr.
 pub fn debug_line(text: &str) {
-    eprintln!("{text}");
+    // Some callers end the line themselves.
+    eprintln!("{}", text.trim_end_matches('\n'));
 }
 
 /// The Jobs tool's signal, sent or on its way (Windows' shape).

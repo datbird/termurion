@@ -50,13 +50,6 @@ pub fn store(profile: &mut Profile, key: &str, list: Vec<String>) {
     profile.set(key, Value::Array(list.into_iter().map(Value::String).collect()));
 }
 
-fn beep() {
-    #[cfg(windows)]
-    unsafe {
-        windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK);
-    }
-}
-
 /// Rows of text with add and remove: the event, and whether text changed.
 fn rows(ui: &mut egui::Ui, id: &str, list: &mut Vec<String>, hint: &str) -> (Option<ListEvent>, bool) {
     let (mut event, mut edited) = (None, false);
@@ -106,7 +99,7 @@ pub fn bound_hosts(ui: &mut egui::Ui, profile: &mut Profile, others: &[Candidate
     };
     let (clean, beeped) = after(&list, event);
     if beeped {
-        beep();
+        crate::platform::clock::beep();
     }
     if event != ListEvent::Committed {
         store(profile, "Bound Hosts", clean);

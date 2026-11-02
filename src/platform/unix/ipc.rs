@@ -6,6 +6,7 @@ use crate::api_peer::Peer;
 use crate::platform::Unsupported;
 
 const FEATURE: &str = "Session host";
+const API: &str = "The automation API";
 const ALLOW_ALL: &str = "The automation allow-all file";
 
 fn no<T>() -> Result<T, String> {
@@ -125,7 +126,7 @@ pub fn create_new_for_write(_path: &str, _set_owner: bool) -> Result<std::fs::Fi
 
 /// No peer check on Unix yet, so every connection is refused.
 pub fn check_peer(_peer: std::net::SocketAddr, _local: std::net::SocketAddr) -> Result<u32, String> {
-    no()
+    Err(Unsupported { feature: API }.into())
 }
 
 #[cfg(test)]
