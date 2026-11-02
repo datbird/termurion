@@ -618,8 +618,26 @@ pub fn visible_rects(layout: &Layout, zoomed: Option<PaneId>, area: Rect, gap: f
     }
 }
 
+/// Drops the panes `live` does not know. Quit empties the pane table before the tabs go.
+pub fn only_live(rects: Vec<(PaneId, Rect)>, live: impl Fn(PaneId) -> bool) -> Vec<(PaneId, Rect)> {
+    rects.into_iter().filter(|(id, _)| live(*id)).collect()
+}
+
 #[cfg(test)]
 mod tests {
+    /// Quit empties the panes while the tabs still name them, and the event loop can run a few more
+    /// events (the chord's key release). A pane that is gone must not be drawn, hit or looked up.
+    #[test]
+    fn a_pane_that_is_gone_is_not_visible() {
+        let mut l = Layout::new(1);
+        l.split(1, Axis::Row, 2);
+        let all = visible_rects(&l, None, AREA, 1.0);
+        assert_eq!(all.len(), 2);
+        let kept = only_live(all, |id| id == 2);
+        assert_eq!(kept.iter().map(|(id, _)| *id).collect::<Vec<_>>(), vec![2]);
+        assert!(only_live(visible_rects(&l, None, AREA, 1.0), |_| false).is_empty());
+    }
+
     /// 13u minor: the per-frame title question counts and searches without building a list.
     #[test]
     fn count_and_any_agree_with_the_list() {

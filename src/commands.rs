@@ -221,6 +221,14 @@ pub fn status(item: &Item) -> Status {
 
 #[cfg(test)]
 mod tests {
+    /// The bracket chords the restore scenarios press: Cmd+] is the next pane, Cmd+Shift+] the next tab.
+    #[test]
+    fn the_bracket_chords_run_their_commands() {
+        let c = |shift| Chord { key: crate::menus::ChordKey::Char(']'), cmd: true, alt: false, shift, ctrl: false };
+        assert_eq!(command_for_chord(&c(false)).map(|i| i.selector.as_str()), Some("nextPane:"));
+        assert_eq!(command_for_chord(&c(true)).map(|i| i.selector.as_str()), Some("nextTab:"));
+    }
+
     use super::*;
 
     /// B8: GPU capture is debug-build code; a release build reports it not applicable and leaves

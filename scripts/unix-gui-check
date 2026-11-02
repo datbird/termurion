@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Drives the real Termurion window on a private X server and says PASS or FAIL for one scenario.
-# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, host, job, clipboard, tmux, tmux-nolang, tmux-lcall, tmux-windows
+# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, host, job, clipboard, tmux, tmux-nolang, tmux-lcall, tmux-windows,
+# restore-windows, restore-host
 #
 # Needs Xvfb, xdotool and ImageMagick's import. Proof is a file, not pixels: each pane runs
 # `echo $$ >> $SCRATCH/pids`, and a screenshot (screen.png) is kept for a person to look at.
@@ -14,8 +15,8 @@ repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo"
 scenario="${1:-}"
 case "$scenario" in
-    shell | layout | host | job | clipboard | tmux | tmux-nolang | tmux-lcall | tmux-windows) ;;
-    *) echo "usage: scripts/unix-gui-check <shell|layout|host|job|clipboard|tmux|tmux-nolang|tmux-lcall|tmux-windows>" >&2; exit 2 ;;
+    shell | layout | host | job | clipboard | tmux | tmux-nolang | tmux-lcall | tmux-windows | restore-windows | restore-host) ;;
+    *) echo "usage: scripts/unix-gui-check <shell|layout|host|job|clipboard|tmux|tmux-nolang|tmux-lcall|tmux-windows|restore-windows|restore-host>" >&2; exit 2 ;;
 esac
 # The tmux scenarios: tmux (tabs in the attaching window), tmux-nolang (the app starts with no locale
 # variable), tmux-lcall (the app starts with LC_ALL=C), tmux-windows (the default: a new Termurion window).
@@ -77,9 +78,14 @@ for _ in $(seq 50); do [ -S "/tmp/.X11-unix/X${display#:}" ] && break; sleep 0.1
 
 export DISPLAY="$display" SCRATCH="$scratch" SHELL=/bin/bash
 # The host scenario runs its shells in termurion-host (the setting is read at startup).
-if [ "$scenario" = host ]; then
+if [ "$scenario" = host ] || [ "$scenario" = restore-host ]; then
     mkdir -p "$scratch/home/.config/termurion"
-    printf '[settings]\nRunJobsInServers = true\n' > "$scratch/home/.config/termurion/settings.toml"
+    printf '[settings]\nRunJobsInServers = true\nSUEnableAutomaticChecks = false\n' > "$scratch/home/.config/termurion/settings.toml"
+fi
+# restore-windows keeps the shells in the app, so a quit ends them and only the saved windows remain.
+if [ "$scenario" = restore-windows ]; then
+    mkdir -p "$scratch/home/.config/termurion"
+    printf '[settings]\nRunJobsInServers = false\nSUEnableAutomaticChecks = false\n' > "$scratch/home/.config/termurion/settings.toml"
 fi
 # The clipboard scenario binds the middle button to Paste from Selection (the factory binding pastes the clipboard).
 if [ "$scenario" = clipboard ]; then
@@ -100,14 +106,28 @@ fi
 locale_env=()
 [ "$scenario" = tmux-nolang ] && locale_env=(-u LANG -u LC_ALL -u LC_CTYPE)
 [ "$scenario" = tmux-lcall ] && locale_env=(LC_ALL=C)
-env -u TMUX -u WAYLAND_DISPLAY -u XDG_CONFIG_HOME -u XDG_STATE_HOME "${locale_env[@]}" HOME="$scratch/home" TMPDIR="$scratch/tmp" XDG_RUNTIME_DIR="$scratch/run" \
-    "$repo/target/debug/termurion" > "$scratch/app.log" 2>&1 &
-app_pid=$!
-
-win=$(timeout 30 xdotool search --sync --onlyvisible --pid "$app_pid" 2> /dev/null | tail -1)
-[ -n "$win" ] || fail "no window for pid $app_pid (see $scratch/app.log)"
-xdotool windowfocus --sync "$win" 2> /dev/null || true
-sleep 2
+# A box needs a window manager to be mapped (zenity 4 under bare Xvfb draws nothing), so the quit
+# question in restore-windows is answered by a zenity that says OK at once.
+if [ "$scenario" = restore-windows ]; then
+    mkdir -p "$scratch/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$scratch/bin/zenity"
+    chmod +x "$scratch/bin/zenity"
+    export PATH="$scratch/bin:$PATH"
+fi
+launch_app() {
+    env -u TMUX -u WAYLAND_DISPLAY -u XDG_CONFIG_HOME -u XDG_STATE_HOME "${locale_env[@]}" HOME="$scratch/home" TMPDIR="$scratch/tmp" XDG_RUNTIME_DIR="$scratch/run" \
+        "$repo/target/debug/termurion" >> "$scratch/app.log" 2>&1 &
+    app_pid=$!
+}
+# Finds the app's window and focuses it by hand (no window manager).
+find_window() {
+    win=$(timeout 30 xdotool search --sync --onlyvisible --pid "$app_pid" 2> /dev/null | tail -1)
+    [ -n "$win" ] || fail "no window for pid $app_pid (see $scratch/app.log)"
+    xdotool windowfocus --sync "$win" 2> /dev/null || true
+    sleep 2
+}
+launch_app
+find_window
 
 # Types the pid line into whichever pane has focus, then waits for it to land in the file.
 want=0
@@ -194,6 +214,104 @@ case "$scenario" in
         shoot
         kill -0 "$shell_pid" 2> /dev/null || fail "the close did not wait for an answer: the shell $shell_pid is gone"
         pgrep -P "$shell_pid" -x sleep > /dev/null || fail "the sleep under $shell_pid is gone"
+        ;;
+    restore-windows | restore-host)
+        sleep 1
+        # Three panes: tab one, then a second tab split in two. Each writes MARK-<pid> and its pid.
+        type_mark() {
+            xdotool type --delay 20 'echo MARK-$$; echo $$ >> "$SCRATCH/pids"'
+            xdotool key Return
+            want=$((want + 1))
+            for _ in $(seq 100); do
+                [ "$(wc -l < "$scratch/pids")" -ge "$want" ] && return 0
+                sleep 0.1
+            done
+            fail "pane $want never wrote its pid (see $scratch/screen.png)"
+        }
+        type_mark
+        xdotool key ctrl+shift+t
+        sleep 1.5
+        type_mark
+        xdotool key ctrl+shift+d
+        sleep 1.5
+        type_mark
+        shoot
+        [ "$(sort -u "$scratch/pids" | wc -l)" -eq 3 ] || fail "expected 3 distinct pids: $(tr '\n' ' ' < "$scratch/pids")"
+        cp "$scratch/pids" "$scratch/pids1"
+        cp "$scratch/screen.png" "$scratch/before.png"
+        state="$scratch/home/.config/termurion/state"
+        # After the restart: walk the panes (next pane, select tab 1 and 2) typing a pid line until three
+        # new shells have answered, or say what was reached.
+        reach_three() {
+            : > "$scratch/pids"
+            sleep 3
+            for step in type pane type tab1 type tab2 type tab3 type; do
+                case "$step" in
+                    type)
+                        xdotool type --delay 20 'echo $$ >> "$SCRATCH/pids"'
+                        xdotool key Return
+                        sleep 1
+                        [ "$(sort -u "$scratch/pids" | wc -l)" -ge 3 ] && return 0
+                        ;;
+                    pane) xdotool key ctrl+shift+braceright; sleep 1 ;;
+                    # Select Tab 1 and 2 (Cmd+1, Cmd+2); the next-tab chord has Ctrl+Alt in it, which is AltGr typing.
+                    tab1) xdotool key ctrl+shift+1; sleep 1 ;;
+                    tab2) xdotool key ctrl+shift+2; sleep 1 ;;
+                    tab3) xdotool key ctrl+shift+3; sleep 1 ;;
+                esac
+            done
+            return 1
+        }
+        if [ "$scenario" = restore-windows ]; then
+            # Quit Termurion (Cmd+Q, terminate:); a question about it is answered OK.
+            xdotool key ctrl+shift+q
+            # The quit question is answered by the stand-in zenity on PATH (it exits 0, as OK does).
+            for _ in $(seq 50); do kill -0 "$app_pid" 2> /dev/null || break; sleep 0.2; done
+            kill -0 "$app_pid" 2> /dev/null && fail "the app did not quit (see $scratch/app.log)"
+            [ -s "$state" ] || fail "no saved windows file at $state after the quit"
+            marks=$(grep -a -o 'MARK-[0-9][0-9]*' "$state" | sort -u | wc -l)
+            [ "$marks" -eq 3 ] || fail "the saved windows hold $marks MARK- lines, not 3"
+            launch_app
+            find_window
+        else
+            for pid in $(cat "$scratch/pids1"); do kill -0 "$pid" 2> /dev/null || fail "shell $pid is gone before the crash"; done
+            # The app saves its windows after a quiet moment; a crash before that is a different test.
+            # Wait for the file to exist and then hold still for longer than the quiet time.
+            for _ in $(seq 100); do [ -s "$state" ] && break; sleep 0.1; done
+            last=""
+            for _ in $(seq 100); do
+                now=$(stat -c %Y.%y "$state" 2> /dev/null)
+                [ "$now" = "$last" ] && break
+                last=$now
+                sleep 4
+            done
+            old_app=$app_pid
+            kill -9 "$old_app"
+            sleep 1
+            for pid in $(cat "$scratch/pids1"); do kill -0 "$pid" 2> /dev/null || fail "shell $pid died with the app"; done
+            # The host watches for the app and starts it again by itself.
+            app_pid=""
+            for _ in $(seq 150); do
+                for p in /proc/[0-9]*; do
+                    [ "$(cat "$p/comm" 2> /dev/null)" = termurion ] || continue
+                    [ "${p#/proc/}" = "$old_app" ] && continue
+                    tr '\0' '\n' < "$p/environ" 2> /dev/null | grep -qx "XDG_RUNTIME_DIR=$scratch/run" || continue
+                    app_pid=${p#/proc/}
+                done
+                [ -n "$app_pid" ] && break
+                sleep 0.1
+            done
+            [ -n "$app_pid" ] || fail "the host did not reopen Termurion"
+            find_window
+        fi
+        reach_three || { shoot; fail "fewer than 3 panes answered after the restart: $(tr '\n' ' ' < "$scratch/pids") (see $scratch/screen.png)"; }
+        shoot
+        cp "$scratch/pids" "$scratch/pids2"
+        if [ "$scenario" = restore-host ]; then
+            [ "$(sort -u "$scratch/pids1")" = "$(sort -u "$scratch/pids2")" ] || fail "pids2 ($(sort -u "$scratch/pids2" | tr '\n' ' ')) is not pids1 ($(sort -u "$scratch/pids1" | tr '\n' ' '))"
+        else
+            [ -z "$(sort -u "$scratch/pids1" "$scratch/pids2" | uniq -d)" ] || fail "a restored pane kept an old shell pid"
+        fi
         ;;
     clipboard)
         sleep 1

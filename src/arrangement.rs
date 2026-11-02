@@ -985,6 +985,19 @@ mod tests {
         }
     }
 
+    /// On Unix a saved folder is just the path: contents force it, no contents keep it as the previous one.
+    #[test]
+    fn a_unix_folder_is_restored() {
+        if crate::platform::IS_WINDOWS {
+            return;
+        }
+        let plain = session(80, 24, Table::new(), "s", Some("/tmp/a"));
+        assert_eq!(folder_for(&plain, false), Folder::Previous("/tmp/a".into()));
+        let mut with = plain.clone();
+        with.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
+        assert_eq!(folder_for(&with, false), Folder::Forced("/tmp/a".into()));
+    }
+
     /// An ssh session's "~" is the remote host's home: never this machine's, so it is not
     /// forced (and checked) here.
     #[test]
