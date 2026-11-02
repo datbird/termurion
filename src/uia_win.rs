@@ -34,6 +34,8 @@ use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWi
 use windows_sys::Win32::UI::WindowsAndMessaging::{WM_DESTROY, WM_GETOBJECT, WM_NCDESTROY};
 
 use crate::access::{self, Unit};
+// Re-exported while the Task 7 callers (app/mod.rs, logout_ui) still name them here.
+pub use crate::platform::a11y::{PaneSnapshot, Request, WindowSnapshot};
 
 /// Subclass id ("uias").
 const SUBCLASS_ID: usize = 0x7561_6973;
@@ -43,49 +45,6 @@ const MAX_NEEDLE: usize = 1024;
 const FIND_BUDGET: usize = 20_000_000;
 /// The longest announcement handed to a client, in characters.
 const MAX_ANNOUNCE_CHARS: usize = 100_000;
-
-/// One pane as the provider sees it (screen coordinates).
-#[derive(Clone, Debug, Default)]
-pub struct PaneSnapshot {
-    pub id: u64,
-    pub text: access::Text,
-    /// The selection as text offsets (empty when `.0 == .1`).
-    pub selection: (usize, usize),
-    pub cursor: usize,
-    /// (left, top, right, bottom).
-    pub rect: (i32, i32, i32, i32),
-    /// One cell's width and height in pixels.
-    pub cell: (f32, f32),
-    /// Where text row `first_visible_row`, column 0 sits on screen.
-    pub origin: (i32, i32),
-    pub first_visible_row: usize,
-    pub visible_rows: usize,
-    pub focused: bool,
-    /// The pane is at a password prompt (13v2 B5/P12): the text is only the prompt, nothing is
-    /// announced, and `Select` and `ScrollIntoView` are refused.
-    pub secure: bool,
-    /// A browser pane (13x B7): its name ("Browser: <title>"), a Group with no text range and no
-    /// caret; WebView2 raises its own UI Automation tree from its child window.
-    pub label: Option<String>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct WindowSnapshot {
-    pub title: String,
-    /// (left, top, right, bottom).
-    pub rect: (i32, i32, i32, i32),
-    pub panes: Vec<PaneSnapshot>,
-}
-
-/// What a client asks of Termurion; posted to the window thread.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Request {
-    Select { pane: u64, start: usize, end: usize },
-    ScrollIntoView { pane: u64, offset: usize },
-    /// A client asked the window for its root provider: the window thread publishes a snapshot
-    /// now (nothing else would wake it, and nothing is built until a client is there).
-    Attach,
-}
 
 /// Every COM method body runs in this: a panic becomes `E_FAIL`.
 pub(crate) fn guard<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {

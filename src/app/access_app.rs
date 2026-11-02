@@ -16,7 +16,7 @@ use super::*;
 use crate::access::{self, Event, Signal};
 use crate::pane::Pane;
 use crate::screen::Screen;
-use crate::uia_win::{Host, PaneSnapshot, Request, WindowSnapshot};
+use crate::platform::a11y::{Host, PaneSnapshot, Request, WindowSnapshot};
 
 /// What the screen reader side keeps of one pane while a client listens.
 #[derive(Default)]
