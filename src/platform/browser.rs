@@ -13,6 +13,12 @@ use super::windows::browser as imp;
 pub use imp::{WebPopover, html_setup, quick_look_setup};
 pub use imp::default_browser_name;
 
+/// The friendly name of the registered handler of https, for the Composer's "This will open ... in
+/// <browser>." line; None when there is none or the name is blank.
+pub fn https_handler_name() -> Option<String> {
+    imp::https_handler_name()
+}
+
 /// Ok when pages can be shown in a web view here.
 pub fn available() -> Result<(), Unsupported> {
     imp::available()

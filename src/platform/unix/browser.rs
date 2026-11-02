@@ -11,6 +11,11 @@ pub fn default_browser_name() -> Option<String> {
     None
 }
 
+/// The handler of https is not looked up on Unix yet.
+pub fn https_handler_name() -> Option<String> {
+    None
+}
+
 /// There is no view setup here, so nothing starts InPrivate.
 pub fn default_view_in_private() -> bool {
     false

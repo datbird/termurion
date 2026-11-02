@@ -56,5 +56,3 @@ pub fn monitor_rects(_hwnd: isize) -> Option<(Rect, Rect)> {
 pub fn placement(_hwnd: isize) -> Option<(u32, u32, [i32; 4], (i32, i32))> {
     None
 }
-
-pub fn flash_taskbar(_hwnd: isize, _until_front: bool) {}

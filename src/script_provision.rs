@@ -934,18 +934,20 @@ impl Runner for RealRunner {
 pub struct Provisioner {
     done: std::cell::RefCell<std::collections::VecDeque<(u64, Result<Outcome, String>)>>,
     next: std::cell::Cell<u64>,
+    notify: crate::platform::pty::Notify,
 }
 
 #[cfg(unix)]
 impl Provisioner {
-    pub fn start(_uv_dir: PathBuf, _notify: crate::platform::pty::Notify) -> Provisioner {
-        Provisioner { done: Default::default(), next: std::cell::Cell::new(0) }
+    pub fn start(_uv_dir: PathBuf, notify: crate::platform::pty::Notify) -> Provisioner {
+        Provisioner { done: Default::default(), next: std::cell::Cell::new(1), notify }
     }
 
     pub fn submit(&self, _job: Job) -> u64 {
         let id = self.next.get();
         self.next.set(id + 1);
         self.done.borrow_mut().push_back((id, Err(provisioning_unsupported())));
+        (self.notify)();
         id
     }
 

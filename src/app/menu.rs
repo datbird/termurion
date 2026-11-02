@@ -7,7 +7,6 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::vte::ansi::{CharsetIndex, Handler, StandardCharset};
 use muda::{CheckMenuItem, ContextMenu, Icon, IconMenuItem, IsMenuItem, Menu, MenuItem, MenuTheme, PredefinedMenuItem, Submenu};
 use winit::event_loop::ActiveEventLoop;
-use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use super::*;
 use crate::commands;
@@ -220,10 +219,7 @@ pub(super) const PROFILE_ALL_ID: &str = "profile-all:";
 
 /// A window's Win32 handle.
 pub(super) fn hwnd_of(window: &Window) -> Option<isize> {
-    match window.window_handle().ok()?.as_raw() {
-        RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
-        _ => None,
-    }
+    crate::platform::window::hwnd_of(window)
 }
 
 impl App {

@@ -3,7 +3,7 @@
 use windows_sys::Win32::Foundation::{HWND, POINT};
 use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow, ScreenToClient};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    FLASHW_ALL, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx, GA_ROOT, GWL_EXSTYLE, GetAncestor, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowLongW, GetWindowPlacement,
+    GA_ROOT, GWL_EXSTYLE, GetAncestor, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowLongW, GetWindowPlacement,
     IsIconic, IsZoomed, SW_HIDE, SW_SHOW, SW_SHOWMAXIMIZED, SW_SHOWMINNOACTIVE, SW_SHOWNA, SW_SHOWNOACTIVATE, SetForegroundWindow, SetWindowLongPtrW, ShowWindow, WINDOWPLACEMENT, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WindowFromPoint,
 };
@@ -108,10 +108,4 @@ pub fn placement(hwnd: isize) -> Option<(u32, u32, [i32; 4], (i32, i32))> {
     }
     let r = wp.rcNormalPosition;
     Some((wp.showCmd, wp.flags, [r.left, r.top, r.right, r.bottom], shift))
-}
-
-pub fn flash_taskbar(hwnd: isize, until_front: bool) {
-    let (flags, count) = if until_front { (FLASHW_TRAY | FLASHW_TIMERNOFG, 0) } else { (FLASHW_ALL, 1) };
-    let info = FLASHWINFO { cbSize: std::mem::size_of::<FLASHWINFO>() as u32, hwnd: hwnd as _, dwFlags: flags, uCount: count, dwTimeout: 0 };
-    unsafe { FlashWindowEx(&info) };
 }

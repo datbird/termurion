@@ -226,30 +226,18 @@ pub fn zone_of(text: &str) -> Option<u32> {
 /// Marks the existing file `path` as from the internet, and fails when it cannot: a missing
 /// file (writing a stream would create it), or a drive that keeps no streams (FAT). For a
 /// download that must not land unmarked; `write_marked` stays lenient for inline files (12d).
+/// On Unix there is no quarantine mark yet, so this fails with the Unsupported text and a strict
+/// download fails honestly.
 pub fn mark_strict(path: &Path, host_url: Option<&str>) -> std::io::Result<()> {
     if !crate::localfs::lstat(&crate::localfs::judge_io(path)?)?.is_file {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a file"));
     }
-    // The mark is an NTFS stream. Unix keeps no such stream (macOS's quarantine attribute is a later
-    // step), so there the file is left as it is: the one allowed no-op for a Windows-only extra.
-    #[cfg(windows)]
-    crate::localfs::write(&zone_stream(path)?, zone_text(host_url))?;
-    #[cfg(unix)]
-    let _ = host_url;
-    Ok(())
-}
-
-/// `path`'s Zone.Identifier stream, judged.
-#[cfg(windows)]
-fn zone_stream(path: &Path) -> std::io::Result<crate::localfs::LocalPath> {
-    let mut stream = path.as_os_str().to_os_string();
-    stream.push(":Zone.Identifier");
-    crate::localfs::judge_io(std::path::PathBuf::from(stream))
+    crate::platform::quarantine::mark(path, &zone_text(host_url))
 }
 
 /// Writes `bytes` to `path`, then the Zone.Identifier stream, so SmartScreen or Protected View
 /// meets a file opened after it was revealed. A drive without streams (FAT) keeps the file
-/// unmarked.
+/// unmarked. On Unix the file is written and left unmarked (no quarantine mark exists there yet).
 pub fn write_marked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     crate::localfs::write(&crate::localfs::judge_io(path)?, bytes)?;
     mark(path);
@@ -257,12 +245,10 @@ pub fn write_marked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// The Zone.Identifier stream alone, for a writer that wrote the file through its own handle
-/// (a failure is ignored: a drive without streams keeps the file unmarked).
+/// (a failure is ignored: a drive without streams keeps the file unmarked). On Unix this does
+/// nothing, since no quarantine mark exists there yet.
 pub fn mark(path: &Path) {
-    #[cfg(windows)]
-    let _ = zone_stream(path).and_then(|s| crate::localfs::write(&s, ZONE_MARK));
-    #[cfg(unix)]
-    let _ = path;
+    let _ = crate::platform::quarantine::mark(path, ZONE_MARK);
 }
 
 /// The door's rule for a whole path (`write_checked`): `refused_path`, or a final name of a

@@ -206,7 +206,8 @@ pub fn progress_text(l: &Local) -> String {
 
 /// Moves a finished temp file into place. The final path is refused when it is a type the shell
 /// reads on listing (P1); the temp is marked with `mark` (a failure removes it: "Failed to
-/// quarantine", or `NOT_REMOVED` when it will not go); then it replaces `final_path`, and a
+/// quarantine", or `NOT_REMOVED` when it will not go; on Unix the mark is Unsupported, so every
+/// finish fails); then it replaces `final_path`, and a
 /// failed move removes it and reports the error (iTerm2 reports success).
 pub fn finish_with(temp: &Path, final_path: &Path, host_url: &str, mark: &dyn Fn(&Path, &str) -> std::io::Result<()>) -> Result<PathBuf, String> {
     let local = localfs::judge_io(temp).map_err(|e| e.to_string())?;
@@ -291,7 +292,8 @@ fn tree(root: &Path) -> Result<Vec<(PathBuf, bool)>, String> {
 /// Marks every file under `from` and moves it to the same place under `dest`, replacing what is
 /// there. Before anything moves: no entry is a reparse point or a file with another hard link,
 /// no name is one Explorer reads or Windows reads as another item, and every file took its mark
-/// (a failure is "Failed to quarantine" and nothing moved). `from` should be on the volume of `dest`.
+/// (a failure is "Failed to quarantine" and nothing moved; on Unix no mark exists yet, so every
+/// file fails to take one and nothing is moved). `from` should be on the volume of `dest`.
 pub fn mark_and_move(from: &Path, dest: &Path, host_url: &str) -> Result<(), String> {
     mark_and_move_with(from, dest, host_url, &|p, u| crate::inert_files::mark_strict(p, Some(u)))
 }
@@ -345,7 +347,8 @@ pub fn mark_and_move_with(from: &Path, dest: &Path, host_url: &str, mark: &dyn F
 /// is written), the claimed total must fit on the drive, Termurion's own walk of those same bytes
 /// (`extract::zip`, never tar.exe: one parser, and each file gets exactly its claimed size, so no
 /// zip bomb can grow past the claim) writes it into a fresh empty folder beside `dest`, and
-/// `mark_and_move` moves the marked files into place. The fresh folder is removed on every path.
+/// `mark_and_move` moves the marked files into place (on Unix the mark is Unsupported, so an unzip
+/// fails there after the checks). The fresh folder is removed on every path.
 /// The caller removes the zip.
 pub fn unzip(zip: &Path, dest: &Path, host_url: &str) -> Result<(), String> {
     let bytes = crate::extract::read_whole(zip, ZIP_FILE_MAX)?;

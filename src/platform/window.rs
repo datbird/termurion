@@ -93,8 +93,3 @@ pub fn monitor_rects(hwnd: isize) -> Option<(Rect, Rect)> {
 pub fn placement(hwnd: isize) -> Option<(u32, u32, [i32; 4], (i32, i32))> {
     imp::placement(hwnd)
 }
-
-/// Flashes the window's taskbar button: until the window is in front, or once.
-pub fn flash_taskbar(hwnd: isize, until_front: bool) {
-    imp::flash_taskbar(hwnd, until_front)
-}

@@ -29,6 +29,7 @@ pub mod notify;
 pub mod print;
 pub mod proc;
 pub mod pty;
+pub mod quarantine;
 pub mod shell_extras;
 pub mod sizing;
 pub mod shell_open;
