@@ -895,7 +895,7 @@ mod tests {
     }
 
     fn proc(pid: u32, ppid: u32, name: &str, created: u64, cmdline: Option<&str>) -> Proc {
-        Proc { pid, ppid, name: name.into(), created, gui: false, cmdline: cmdline.map(str::to_string) }
+        Proc { pid, ppid, name: name.into(), created, gui: false, cmdline: cmdline.map(str::to_string), background: false }
     }
 
     #[test]

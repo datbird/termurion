@@ -454,7 +454,6 @@ impl Exit {
 }
 
 /// The foreground process group of the pty whose shell is `pid` (what a job watcher asks).
-#[allow(dead_code)] // the job watcher (Task 5) is its caller
 pub(crate) fn foreground_group(pid: u32) -> Option<i32> {
     let master = registry(|r| r.get(&pid).cloned())?;
     let g = unsafe { libc::tcgetpgrp(master.as_raw_fd()) };

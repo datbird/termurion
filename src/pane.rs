@@ -4049,18 +4049,30 @@ mod tests {
         assert!(p.exit_pid().is_some(), "kept for the survivor survey only");
     }
 
+    /// A shell that ignores hangup and leaves a background program on its console.
+    const SURVIVOR: &str = "/bin/sh -c 'trap \"\" HUP; sleep 30 &'";
+
+    /// Stops a survivor the test started.
+    fn stop_survivor(pid: u32) {
+        let _ = if crate::platform::IS_WINDOWS {
+            std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).output()
+        } else {
+            std::process::Command::new("kill").args(["-9", &pid.to_string()]).output()
+        };
+    }
+
     #[test]
     fn close_asks_for_survivors_of_an_ended_pane() {
         // `start /b` leaves ping running and attached to the console after cmd exits.
-        let mut p = start("cmd.exe /c start /b ping -n 30 127.0.0.1");
+        let mut p = start(by_os("cmd.exe /c start /b ping -n 30 127.0.0.1", SURVIVOR));
         assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
         p.survey_survivors();
         let names = p.live_survivors();
         let pids: Vec<u32> = p.survivors.iter().map(|(pid, _)| *pid).collect();
-        assert!(names.iter().any(|n| n.eq_ignore_ascii_case("ping")), "{names:?} {:?}", p.survivors);
+        assert!(names.iter().any(|n| n.eq_ignore_ascii_case(by_os("ping", "sleep"))), "{names:?} {:?}", p.survivors);
         // Only what this test started is stopped.
         for pid in pids {
-            let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).output();
+            stop_survivor(pid);
         }
         let end = Instant::now() + Duration::from_secs(5);
         while Instant::now() < end && !p.live_survivors().is_empty() {
@@ -4094,15 +4106,15 @@ mod tests {
     fn survivors_are_taken_at_the_exit() {
         // A close or restart before the end is handled (the drain wait) still sees what the
         // shell left running; so does the pid kept for the job watcher.
-        let mut p = start("cmd.exe /c start /b ping -n 30 127.0.0.1");
+        let mut p = start(by_os("cmd.exe /c start /b ping -n 30 127.0.0.1", SURVIVOR));
         assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
         assert!(!p.ended, "the end is not handled yet");
         let names = p.live_survivors();
         let pids: Vec<u32> = p.survivors.iter().map(|(pid, _)| *pid).collect();
-        assert!(names.iter().any(|n| n.eq_ignore_ascii_case("ping")), "{names:?} {:?}", p.survivors);
+        assert!(names.iter().any(|n| n.eq_ignore_ascii_case(by_os("ping", "sleep"))), "{names:?} {:?}", p.survivors);
         assert!(p.exit_pid().is_some());
         for pid in pids {
-            let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).output();
+            stop_survivor(pid);
         }
     }
 

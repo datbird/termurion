@@ -238,6 +238,7 @@ impl Provider {
                     name: r.name().unwrap_or_default(),
                     created: r.start.map_or(0, |t| t.max(0) as u64),
                     gui: false,
+                    background: false,
                     cmdline: Some(r.command.clone()),
                 })
             })

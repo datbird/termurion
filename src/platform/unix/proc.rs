@@ -1,51 +1,129 @@
-//! No process tree reader on Unix yet. Job info is cosmetic, so these answer None or empty and
-//! say so once in the debug log.
+//! Process facts on Unix, from the kernel's process table (`proc_table`): the foreground job, the
+//! tree under a shell, and signals.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 
+use super::proc_table::{open, rows};
+use crate::jobwatch::{snapshot, Cache};
 use crate::platform::Unsupported;
-use crate::proctree::{Job, Proc};
+use crate::proctree::{self, Job, Proc};
+use crate::toolbelt_tools::SignalWay;
 
-fn note() {
-    static LOGGED: AtomicBool = AtomicBool::new(false);
-    if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        crate::dlog!("Process information is not available on this platform yet");
+pub use crate::jobwatch::JobWatch;
+
+/// The job a shell shows: the deepest foreground program under it. None when the shell is gone.
+pub fn foreground_job(pid: u32) -> Option<Job> {
+    let procs = snapshot(&[pid], &mut Cache::default()).ok()?;
+    proctree::display_job(&procs, pid)
+}
+
+/// The full path of the program `pid` runs.
+pub fn process_image(pid: u32) -> Option<String> {
+    open(pid).and_then(|o| o.image())
+}
+
+/// The ids of the processes started by `pid`.
+pub fn children(pid: u32) -> Vec<u32> {
+    rows().map(|all| all.into_iter().filter(|r| r.pid != r.ppid && r.ppid == pid).map(|r| r.pid).collect()).unwrap_or_default()
+}
+
+/// What a shell left running after it exited: every process still in its session, found by the
+/// session id (a shell is its session's leader, so nothing it left reparents out of it).
+pub fn orphans_of(dead: u32) -> Result<Vec<Proc>, String> {
+    let sid = libc::pid_t::try_from(dead).map_err(|_| format!("process {dead} is not a valid id"))?;
+    let mut out = Vec::new();
+    for r in rows()? {
+        if r.pid == dead {
+            continue;
+        }
+        // SAFETY: getsid only reads the process table.
+        if unsafe { libc::getsid(r.pid as libc::pid_t) } != sid {
+            continue;
+        }
+        let Some(o) = open(r.pid) else { continue };
+        out.push(Proc { pid: r.pid, ppid: r.ppid, name: r.name, created: o.created(), gui: false, cmdline: None, background: r.background });
     }
+    Ok(out)
 }
 
-pub fn foreground_job(_pid: u32) -> Option<Job> {
-    note();
-    None
+/// The names of those of `set` ((pid, start time)) that still run: a reused pid has another
+/// start time and is not counted.
+pub fn still_running(set: &[(u32, u64)]) -> Vec<String> {
+    let Ok(all) = rows() else { return Vec::new() };
+    set.iter()
+        .filter_map(|(pid, made)| {
+            let name = &all.iter().find(|r| r.pid == *pid)?.name;
+            (open(*pid)?.created() == *made).then(|| name.clone())
+        })
+        .collect()
 }
 
-pub fn process_image(_pid: u32) -> Option<String> {
-    note();
-    None
+/// A pid as the kernel's signed one; 0 and the out-of-range are refused (kill(0) would signal our
+/// own group).
+fn kernel_pid(pid: u32) -> Result<libc::pid_t, String> {
+    libc::pid_t::try_from(pid).ok().filter(|p| *p > 0).ok_or_else(|| format!("process {pid} is not a valid id"))
 }
 
-pub fn children(_pid: u32) -> Vec<u32> {
-    note();
-    Vec::new()
+fn os_err(what: &str) -> String {
+    format!("{what} failed: {}", std::io::Error::last_os_error())
 }
 
-/// What a shell left running after it exited. Reports Unsupported; the one caller ignores the
-/// error, because job info is cosmetic.
-pub fn orphans_of(_dead: u32) -> Result<Vec<Proc>, String> {
-    note();
-    Err(Unsupported { feature: "Process information" }.into())
+/// Ctrl+C (SIGINT) or Ctrl+Break (SIGQUIT) to the foreground group of the pty `pid` runs on,
+/// from its own thread. Only for a pty this process holds (a local pane): a hosted pane's goes
+/// through termurion-host. Not at all once `stop` is set (a pane paused for Undo Close).
+pub fn console_event(pid: u32, ctrl_break: bool, stop: Arc<AtomicBool>) -> JoinHandle<Result<(), String>> {
+    std::thread::spawn(move || {
+        if stop.load(Ordering::Acquire) {
+            return Err("the console is paused".to_string());
+        }
+        let group = super::pty::foreground_group(pid).ok_or_else(|| format!("no pty for process {pid}"))?;
+        let sig = if ctrl_break { libc::SIGQUIT } else { libc::SIGINT };
+        // SAFETY: killpg with a group the pty reported.
+        if unsafe { libc::killpg(group, sig) } < 0 { Err(os_err("killpg")) } else { Ok(()) }
+    })
 }
 
-/// The names of the listed processes that still run: none can be told, so none.
-pub fn still_running(_set: &[(u32, u64)]) -> Vec<String> {
-    note();
-    Vec::new()
+/// The Jobs tool's signal, sent or on its way (Windows' shape).
+pub enum Sent {
+    Done,
+    /// A console event sent from its own thread; its result.
+    Later(JoinHandle<Result<(), String>>),
 }
 
-/// Sends Ctrl+C or Ctrl+Break to a console. Unix has no consoles to send it to.
-pub fn console_event(_pid: u32, _ctrl_break: bool, _stop: Arc<AtomicBool>) -> JoinHandle<Result<(), String>> {
-    std::thread::spawn(|| Err(Unsupported { feature: "Console signals" }.into()))
+/// Every process under a shell now (the close prompt's list).
+pub fn descendants_now(shell: u32) -> Result<Vec<Proc>, String> {
+    let procs = snapshot(&[shell], &mut Cache::default())?;
+    Ok(proctree::descendants(&procs, shell).into_iter().cloned().collect())
+}
+
+/// Whether the process `pid` still runs and is the one started at `created` (a reused pid is
+/// another process).
+pub fn process_alive(pid: u32, created: u64) -> bool {
+    open(pid).is_some_and(|o| o.created() == created)
+}
+
+/// Sends one of the Jobs tool's signals to `pid`, only to the process started at `created` when
+/// given (a pid the tree showed may have been reused since). `CtrlC` is SIGINT and `CtrlBreak`
+/// SIGQUIT to the process itself; `Terminate(code)` is signal `code - 128`. `stop` matters only to
+/// `console_event`.
+pub fn signal_process(pid: u32, created: Option<u64>, way: SignalWay, _stop: Arc<AtomicBool>) -> Result<Sent, String> {
+    let target = kernel_pid(pid)?;
+    let sig = match way {
+        SignalWay::CtrlC => libc::SIGINT,
+        SignalWay::CtrlBreak => libc::SIGQUIT,
+        SignalWay::Terminate(code) => code.checked_sub(128).filter(|n| (1..=64).contains(n)).map(|n| n as libc::c_int).ok_or_else(|| format!("{code} is not a signal exit code"))?,
+    };
+    let o = open(pid).ok_or_else(|| format!("process {pid} has already ended"))?;
+    if created.is_some_and(|c| o.created() != c) {
+        return Err(format!("process {pid} has already ended"));
+    }
+    // SAFETY: a plain kill of a checked pid.
+    if unsafe { libc::kill(target, sig) } < 0 {
+        return Err(os_err("kill"));
+    }
+    Ok(Sent::Done)
 }
 
 /// Starts a program detached from this process: no stdio, a session of its own (so a closed
@@ -86,79 +164,6 @@ pub fn wait_for_pid(pid: u32) {
 pub fn debug_line(text: &str) {
     // Some callers end the line themselves.
     eprintln!("{}", text.trim_end_matches('\n'));
-}
-
-/// The Jobs tool's signal, sent or on its way (Windows' shape).
-pub enum Sent {
-    Done,
-    /// A console event sent from its own thread; its result.
-    Later(JoinHandle<Result<(), String>>),
-}
-
-/// Every process under a shell now (the close prompt's list): none can be listed yet.
-pub fn descendants_now(_shell: u32) -> Result<Vec<Proc>, String> {
-    note();
-    Err(Unsupported { feature: "Process information" }.into())
-}
-
-/// Whether the process created at `created` still runs: none can be told, so no.
-pub fn process_alive(_pid: u32, _created: u64) -> bool {
-    note();
-    false
-}
-
-/// Sends one of the Jobs tool's signals: Unix has no sender yet.
-pub fn signal_process(_pid: u32, _created: Option<u64>, _way: crate::toolbelt_tools::SignalWay, _stop: Arc<AtomicBool>) -> Result<Sent, String> {
-    Err(Unsupported { feature: "Sending signals to jobs" }.into())
-}
-
-/// The job watcher: it needs the process list, which Unix does not read yet, so it watches
-/// nothing. Every call answers none or empty, and `error` says why for the Jobs tool.
-#[derive(Clone)]
-pub struct JobWatch;
-
-impl JobWatch {
-    pub fn start(_notify: Arc<dyn Fn() + Send + Sync>) -> JobWatch {
-        note();
-        JobWatch
-    }
-
-    pub fn watch(&self, _shell: u32) {}
-
-    pub fn forget(&self, _shell: u32) {}
-
-    pub fn set_tree_wanted(&self, _shell: u32, _on: bool) {}
-
-    pub fn tree(&self, _shell: u32) -> Vec<Proc> {
-        Vec::new()
-    }
-
-    pub fn tree_gen(&self) -> u64 {
-        0
-    }
-
-    pub fn watch_console(&self, _shell: u32, _paused: Arc<AtomicBool>) {}
-
-    pub fn set_read_modes(&self, _debounce: Option<f64>) {}
-
-    pub fn password_input(&self, _shell: u32) -> bool {
-        false
-    }
-
-    pub fn set_ancestry_diagnostics(&self, _on: bool) {}
-
-    pub fn set_fast_updates(&self, _on: bool) {}
-
-    pub fn set_fast(&self, _fast: bool) {}
-
-    pub fn job(&self, _shell: u32) -> crate::proctree::ShellJob {
-        crate::proctree::ShellJob::default()
-    }
-
-    /// Why the watcher shows nothing.
-    pub fn error(&self) -> Option<String> {
-        Some(Unsupported { feature: "Process information" }.to_string())
-    }
 }
 
 /// The exit code a stopped script reports on Windows (`STATUS_CONTROL_C_EXIT`).
@@ -240,14 +245,128 @@ pub fn hide_console(_cmd: &mut std::process::Command) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::pty::{spawn, PtyApi};
+    use std::time::{Duration, Instant};
+
+    const SH_I: &str = "env PS1=> ENV= /bin/sh -i";
+
+    fn running() -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(false))
+    }
+
+    /// Polls `f` for up to 3 seconds.
+    fn within_3s(mut f: impl FnMut() -> bool) -> bool {
+        let end = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < end {
+            if f() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        f()
+    }
+
+    /// The job's title is argv0, so a shell reads "sh" even where the kernel's name is "bash".
+    fn job_is(pid: u32, name: &str) -> bool {
+        foreground_job(pid).is_some_and(|j| j.title == name)
+    }
 
     #[test]
-    fn unix_proc_answers_none_and_empty() {
-        assert!(foreground_job(1).is_none());
-        assert!(process_image(1).is_none());
-        assert!(children(1).is_empty());
-        assert!(still_running(&[(1, 1)]).is_empty());
-        assert!(start_detached(std::path::Path::new("x")).unwrap_err().contains("Session host is not available"));
-        assert!(orphans_of(1).unwrap_err().contains("Process information is not available"));
+    fn the_foreground_job_follows_the_pty() {
+        let p = spawn(&PtyApi, SH_I, 80, 24).unwrap();
+        p.read_until(b">", Duration::from_secs(5)).unwrap_or_else(|got| panic!("{:?}", String::from_utf8_lossy(&got)));
+        let pid = p.pid();
+        assert!(job_is(pid, "sh"), "an idle shell is its own job");
+        p.write(b"sleep 5\n").unwrap();
+        assert!(within_3s(|| job_is(pid, "sleep")), "{:?}", foreground_job(pid));
+        let job = foreground_job(pid).unwrap();
+        assert_eq!(job.cmdline, "sleep 5");
+        console_event(pid, false, running()).join().unwrap().unwrap();
+        assert!(within_3s(|| job_is(pid, "sh")), "Ctrl+C ended the sleep: {:?}", foreground_job(pid));
+        // A background job is in the process list but never the job.
+        p.write(b"sleep 30 &\n").unwrap();
+        let seen = || rows().unwrap().into_iter().any(|r| r.name == "sleep" && r.ppid == pid && r.background);
+        assert!(within_3s(seen), "the background sleep is listed as background");
+        assert!(job_is(pid, "sh"), "{:?}", foreground_job(pid));
+        assert_eq!(descendants_now(pid).unwrap().len(), 1, "the close prompt still sees it");
+        for c in descendants_now(pid).unwrap() {
+            let _ = signal_process(c.pid, Some(c.created), SignalWay::Terminate(137), running());
+        }
+    }
+
+    #[test]
+    fn a_console_event_needs_a_pty_we_hold() {
+        let e = console_event(1, false, running()).join().unwrap().unwrap_err();
+        assert!(e.contains("no pty"), "{e}");
+        let p = spawn(&PtyApi, SH_I, 80, 24).unwrap();
+        p.read_until(b">", Duration::from_secs(5)).unwrap();
+        let paused = Arc::new(AtomicBool::new(true));
+        assert_eq!(console_event(p.pid(), false, paused).join().unwrap(), Err("the console is paused".to_string()));
+    }
+
+    #[test]
+    fn signal_process_checks_the_creation_time() {
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        let made = open(pid).unwrap().created();
+        assert!(process_alive(pid, made));
+        assert!(signal_process(pid, Some(made.wrapping_add(1)), SignalWay::Terminate(137), running()).is_err());
+        assert!(child.try_wait().unwrap().is_none(), "the child lives");
+        assert!(signal_process(0, None, SignalWay::CtrlC, running()).is_err(), "pid 0 would signal our own group");
+        assert!(signal_process(pid, None, SignalWay::Terminate(5), running()).is_err(), "not a signal exit code");
+        assert!(matches!(signal_process(pid, Some(made), SignalWay::Terminate(137), running()), Ok(Sent::Done)));
+        let status = child.wait().unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(9), "KILL is 128 + 9");
+        assert!(!process_alive(pid, made));
+        assert!(signal_process(pid, Some(made), SignalWay::CtrlC, running()).is_err(), "an ended process");
+    }
+
+    #[test]
+    fn ctrl_c_and_break_are_int_and_quit() {
+        use std::os::unix::process::ExitStatusExt;
+        for (way, sig) in [(SignalWay::CtrlC, libc::SIGINT), (SignalWay::CtrlBreak, libc::SIGQUIT)] {
+            let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+            assert!(matches!(signal_process(child.id(), None, way, running()), Ok(Sent::Done)));
+            assert_eq!(child.wait().unwrap().signal(), Some(sig));
+        }
+    }
+
+    #[test]
+    fn our_own_tree_is_listed() {
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let me = std::process::id();
+        assert!(children(me).contains(&child.id()));
+        assert!(process_image(child.id()).is_some_and(|i| i.ends_with("sleep")));
+        assert_eq!(crate::platform::proc::process_name(child.id()).as_deref(), Some("sleep"));
+        let made = open(child.id()).unwrap().created();
+        assert_eq!(still_running(&[(child.id(), made), (child.id(), made + 1)]), vec!["sleep".to_string()]);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(still_running(&[(child.id(), made)]).is_empty());
+        assert!(orphans_of(4_000_000).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_job_watch_reports_a_change() {
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = hits.clone();
+        let w = JobWatch::start(Arc::new(move || {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }));
+        let p = spawn(&PtyApi, SH_I, 80, 24).unwrap();
+        p.read_until(b">", Duration::from_secs(5)).unwrap();
+        let pid = p.pid();
+        w.watch(pid);
+        let named = |n: &str| w.job(pid).job.is_some_and(|j| j.title == n);
+        assert!(within_3s(|| named("sh")), "{:?}", w.job(pid));
+        let before = hits.load(Ordering::Relaxed);
+        p.write(b"sleep 5\n").unwrap();
+        assert!(within_3s(|| named("sleep")), "{:?}", w.job(pid));
+        assert!(hits.load(Ordering::Relaxed) > before, "the window was told");
+        assert_eq!(w.job(pid).ancestors, vec!["sleep"]);
+        assert_eq!(w.error(), None);
+        w.forget(pid);
+        console_event(pid, false, running()).join().unwrap().unwrap();
     }
 }

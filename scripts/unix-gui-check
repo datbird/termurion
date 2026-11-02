@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drives the real Termurion window on a private X server and says PASS or FAIL for one scenario.
-# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, host
+# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, host, job
 #
 # Needs Xvfb, xdotool and ImageMagick's import. Proof is a file, not pixels: each pane runs
 # `echo $$ >> $SCRATCH/pids`, and a screenshot (screen.png) is kept for a person to look at.
@@ -14,8 +14,8 @@ repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo"
 scenario="${1:-}"
 case "$scenario" in
-    shell | layout | host) ;;
-    *) echo "usage: scripts/unix-gui-check <shell|layout|host>" >&2; exit 2 ;;
+    shell | layout | host | job) ;;
+    *) echo "usage: scripts/unix-gui-check <shell|layout|host|job>" >&2; exit 2 ;;
 esac
 for tool in Xvfb xdotool import; do
     command -v "$tool" > /dev/null || { echo "FAIL $scenario: $tool is not installed"; exit 1; }
@@ -57,6 +57,11 @@ export DISPLAY="$display" SCRATCH="$scratch" SHELL=/bin/bash
 if [ "$scenario" = host ]; then
     mkdir -p "$scratch/home/.config/termurion"
     printf '[settings]\nRunJobsInServers = true\n' > "$scratch/home/.config/termurion/settings.toml"
+fi
+# The job scenario's profile asks before closing a session that runs a job (a new profile never asks).
+if [ "$scenario" = job ]; then
+    mkdir -p "$scratch/home/.config/termurion"
+    printf 'default = "job-check"\n\n[[profile]]\nGuid = "job-check"\nName = "Default"\n"Prompt Before Closing 2" = 2\n' > "$scratch/home/.config/termurion/profiles.toml"
 fi
 env -u TMUX -u WAYLAND_DISPLAY -u XDG_CONFIG_HOME -u XDG_STATE_HOME HOME="$scratch/home" TMPDIR="$scratch/tmp" XDG_RUNTIME_DIR="$scratch/run" \
     "$repo/target/debug/termurion" > "$scratch/app.log" 2>&1 &
@@ -112,6 +117,38 @@ case "$scenario" in
         type_pid_line
         shoot
         [ "$(sort -u "$scratch/pids" | wc -l)" -eq 3 ] || fail "expected 3 distinct pids: $(tr '\n' ' ' < "$scratch/pids")"
+        ;;
+    job)
+        sleep 1
+        # A second tab, so the close below is not the window's last. Its shell runs `sleep 20`.
+        xdotool key ctrl+shift+t
+        sleep 1.5
+        type_pid_line
+        shell_pid=$(tail -1 "$scratch/pids")
+        xdotool type --delay 20 'sleep 20'
+        xdotool key Return
+        # The job watcher looks every half second; the title is the job's name.
+        title=""
+        for _ in $(seq 40); do
+            title=$(xdotool getwindowname "$win" 2> /dev/null)
+            case "$title" in *sleep*) break ;; esac
+            sleep 0.25
+        done
+        case "$title" in *sleep*) ;; *) fail "the title never read sleep: '$title'" ;; esac
+        # Close Session (Cmd+W, closeCurrentSession:) must ask. The question goes to stderr as well
+        # as into a window (zenity), and the window waits for an answer, so the shell outlives the key.
+        xdotool key ctrl+shift+w
+        for _ in $(seq 40); do
+            grep -q "is running sleep" "$scratch/app.log" && break
+            sleep 0.25
+        done
+        sleep 1
+        shoot
+        grep -q "is running sleep" "$scratch/app.log" || fail "the close never asked about the sleep (see $scratch/app.log)"
+        # The box is zenity, the app's child, waiting for the answer.
+        pgrep -P "$app_pid" -x zenity > /dev/null || fail "no question window is open (see $scratch/screen.png)"
+        kill -0 "$shell_pid" 2> /dev/null || fail "the close did not wait for an answer: the shell $shell_pid is gone"
+        pgrep -P "$shell_pid" -x sleep > /dev/null || fail "the sleep under $shell_pid is gone"
         ;;
 esac
 kill -0 "$app_pid" 2> /dev/null || fail "the app died (see $scratch/app.log)"

@@ -328,7 +328,6 @@ pub mod ssh_secret_win;
 
 #[cfg(windows)]
 pub mod probe;
-#[cfg(windows)]
 pub mod jobwatch;
 #[cfg(windows)]
 pub mod coproc_win;

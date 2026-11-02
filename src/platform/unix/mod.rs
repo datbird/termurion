@@ -31,6 +31,7 @@ pub mod notify;
 pub mod print;
 pub mod privacy;
 pub mod proc;
+pub mod proc_table;
 pub mod pty;
 pub mod quarantine;
 pub mod shell_extras;

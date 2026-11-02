@@ -889,7 +889,7 @@ mod tests {
     #[test]
     fn job_chain_follows_iterm2() {
         use crate::proctree::{self, Proc};
-        let p = |pid: u32, ppid: u32, name: &str, created: u64| Proc { pid, ppid, name: name.into(), created, gui: false, cmdline: None };
+        let p = |pid: u32, ppid: u32, name: &str, created: u64| Proc { pid, ppid, name: name.into(), created, gui: false, cmdline: None, background: false };
         let chain_of = |procs: &[Proc]| {
             let job = proctree::display_job(procs, 10);
             job_chain(job.as_ref().map(|j| j.name.as_str()), &proctree::ancestors(procs, 10), proctree::root_name(procs, 10).as_deref())

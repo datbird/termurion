@@ -359,7 +359,7 @@ mod tests {
         let home = std::env::temp_dir();
         let co = Coprocess::start("ping -n 60 127.0.0.1", false, &home, Arc::new(|| {})).unwrap();
         std::thread::sleep(Duration::from_millis(500));
-        let procs = crate::jobwatch::descendants_now(co.pid()).unwrap();
+        let procs = crate::platform::proc::descendants_now(co.pid()).unwrap();
         let ping = procs.iter().find(|p| p.name.eq_ignore_ascii_case("PING.EXE")).expect("ping runs under cmd").pid;
         let cmd = co.pid();
         drop(co);

@@ -1027,7 +1027,7 @@ mod tests {
             let server = l.hs.server_pid.and_then(tmux_handshake::windows_process_name);
             let pid = l.pane_pids.get(&pane).copied();
             let name = pid.and_then(tmux_handshake::windows_process_name);
-            let tree = pid.and_then(|p| crate::jobwatch::descendants_now(p).ok()).map_or(0, |t| t.len());
+            let tree = pid.and_then(|p| crate::platform::proc::descendants_now(p).ok()).map_or(0, |t| t.len());
             result(&l, "server process is psmux", server.is_some(), &format!("{server:?}"));
             result(&l, "pane pid is a process here", pid.is_some() && name.is_some(), &format!("pid {pid:?} {name:?} ({tree} below it)"));
             // A program started in the pane shows up under that pid.
@@ -1038,7 +1038,7 @@ mod tests {
             let found = pid.is_some_and(|p| {
                 let end = Instant::now() + Duration::from_secs(15);
                 loop {
-                    let procs = crate::jobwatch::descendants_now(p).unwrap_or_default();
+                    let procs = crate::platform::proc::descendants_now(p).unwrap_or_default();
                     if procs.iter().any(|q| q.name.to_ascii_lowercase().starts_with("ping")) {
                         break true;
                     }

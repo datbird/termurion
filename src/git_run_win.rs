@@ -373,7 +373,7 @@ mod tests {
             std::thread::spawn(move || {
                 while !done.load(Ordering::Acquire) {
                     if let Some(p) = *pid.lock().unwrap() {
-                        for d in crate::jobwatch::descendants_now(p).unwrap_or_default() {
+                        for d in crate::platform::proc::descendants_now(p).unwrap_or_default() {
                             if d.name.eq_ignore_ascii_case("PING.EXE") {
                                 pings.lock().unwrap().insert(d.pid);
                             }

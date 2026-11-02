@@ -22,6 +22,8 @@ pub struct Proc {
     /// A Windows-subsystem (GUI) program: not in the terminal, never the job.
     pub gui: bool,
     pub cmdline: Option<String>,
+    /// Not in its terminal's foreground process group (Unix); never the job.
+    pub background: bool,
 }
 
 /// The job a session shows.
@@ -97,7 +99,10 @@ fn job_of(p: &Proc) -> Job {
 }
 
 fn deepest(procs: &[Proc], root: u32) -> Option<&Proc> {
-    walk(procs, root).into_iter().filter(|(p, _)| !p.gui && !is_host(p)).max_by_key(|(p, d)| (*d, p.created)).map(|(p, _)| p)
+    let walked = walk(procs, root);
+    let best = walked.iter().filter(|(p, _)| !p.gui && !is_host(p) && !p.background).max_by_key(|(p, d)| (*d, p.created)).map(|(p, _)| *p);
+    // The shell exists, so the job is never None: with nothing in front it is the shell.
+    best.or_else(|| walked.first().map(|(p, _)| *p))
 }
 
 /// The deepest console program under the shell (the shell itself when it has none);
@@ -148,7 +153,7 @@ mod tests {
     use super::*;
 
     fn p(pid: u32, ppid: u32, name: &str, created: u64) -> Proc {
-        Proc { pid, ppid, name: name.into(), created, gui: false, cmdline: None }
+        Proc { pid, ppid, name: name.into(), created, gui: false, cmdline: None, background: false }
     }
 
     #[test]
@@ -161,6 +166,23 @@ mod tests {
         let tie = vec![p(10, 1, "pwsh.exe", 100), p(11, 10, "a.exe", 110), p(12, 10, "b.exe", 120)];
         assert_eq!(display_job(&tie, 10).unwrap().name, "b", "the newest wins a tie");
         assert_eq!(display_job(&tie, 99), None, "the shell is gone");
+    }
+
+    #[test]
+    fn a_background_job_is_never_the_job() {
+        let bg = |mut q: Proc| {
+            q.background = true;
+            q
+        };
+        let vim = vec![bg(p(10, 1, "zsh", 100)), p(11, 10, "vim", 110)];
+        assert_eq!(display_job(&vim, 10).unwrap().name, "vim");
+        let sleeper = vec![p(10, 1, "zsh", 100), bg(p(11, 10, "sleep", 110))];
+        assert_eq!(display_job(&sleeper, 10).unwrap().name, "zsh", "a background child is not the job");
+        let all_bg = vec![bg(p(10, 1, "zsh", 100)), bg(p(11, 10, "sleep", 110))];
+        let j = display_job(&all_bg, 10).expect("the shell exists, so there is a job");
+        assert_eq!((j.name.as_str(), j.pid), ("zsh", 10));
+        assert_eq!(display_job(&all_bg, 99), None, "the shell is gone");
+        assert_eq!(descendants(&all_bg, 10).len(), 1, "the close prompt still sees background jobs");
     }
 
     #[test]

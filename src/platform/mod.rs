@@ -6,6 +6,10 @@ use std::fmt;
 pub mod windows;
 #[cfg(unix)]
 pub mod unix;
+#[cfg(target_os = "linux")]
+pub mod linux;
+#[cfg(target_os = "macos")]
+pub mod macos;
 
 pub mod a11y;
 pub mod browser;
@@ -38,6 +42,7 @@ pub mod notify;
 pub mod print;
 pub mod privacy;
 pub mod proc;
+pub mod proc_table;
 pub mod pty;
 pub mod quarantine;
 pub mod shell_extras;
