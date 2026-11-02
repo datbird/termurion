@@ -34,6 +34,8 @@ pub fn split(line: &str) -> Result<Vec<String>, String> {
                     match chars.next() {
                         Some('"') => break,
                         Some('\\') => match chars.next() {
+                            // A line continuation inside double quotes is removed.
+                            Some('\n') => {}
                             Some(e @ ('"' | '\\' | '$' | '`')) => cur.push(e),
                             Some(other) => {
                                 cur.push('\\');
@@ -46,12 +48,19 @@ pub fn split(line: &str) -> Result<Vec<String>, String> {
                     }
                 }
             }
-            '\\' => {
-                live = true;
-                if let Some(n) = chars.next() {
+            '\\' => match chars.next() {
+                // A line continuation is removed and starts no word.
+                Some('\n') => {}
+                Some(n) => {
+                    live = true;
                     cur.push(n);
                 }
-            }
+                // A backslash at the very end is a literal backslash.
+                None => {
+                    live = true;
+                    cur.push('\\');
+                }
+            },
             other => {
                 live = true;
                 cur.push(other);
@@ -77,6 +86,17 @@ mod tests {
         assert_eq!(split("  "), Err("empty command line".to_string()));
         assert!(split("a 'b").unwrap_err().contains("unterminated quote"));
         assert!(split("a \"b").unwrap_err().contains("unterminated quote"));
+    }
+
+    #[test]
+    fn a_trailing_backslash_is_literal_and_a_continuation_vanishes() {
+        assert_eq!(split("a \\"), Ok(vec!["a".to_string(), "\\".into()]));
+        assert_eq!(split("a\\"), Ok(vec!["a\\".to_string()]));
+        assert_eq!(split("a \\\nb"), Ok(vec!["a".to_string(), "b".into()]));
+        assert_eq!(split("a\\\nb c"), Ok(vec!["ab".to_string(), "c".into()]));
+        assert_eq!(split("a \\\n"), Ok(vec!["a".to_string()]), "no extra empty word");
+        assert_eq!(split("\"x\\\ny\""), Ok(vec!["xy".to_string()]));
+        assert_eq!(split("'a\\\nb'"), Ok(vec!["a\\\nb".to_string()]), "single quotes keep it");
     }
 
     #[test]

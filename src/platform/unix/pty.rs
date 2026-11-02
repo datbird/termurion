@@ -8,7 +8,9 @@
 //! would reap children `std::process::Command` waits on elsewhere (git, curl), so none is used.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -100,12 +102,19 @@ pub fn spawn_notify(api: &PtyApi, cmdline: &str, cwd: Option<&std::path::Path>, 
 /// with no tty (resize and clear then do nothing).
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_transport(_api: &PtyApi, t: Transport, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pty, String> {
+    spawn_with_env(inherited_env(), t, cmdline, cwd, env, cols, rows, notify)
+}
+
+/// `spawn_transport` over a given inherited environment (a test hands it one).
+#[allow(clippy::too_many_arguments)]
+fn spawn_with_env(inherited: Vec<(OsString, OsString)>, t: Transport, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pty, String> {
     check_size(cols, rows)?;
-    let words = crate::posix_words::split(cmdline).map_err(|e| format!("{cmdline}: {e}"))?;
+    // The error already names the line.
+    let words = crate::posix_words::split(cmdline)?;
     let mut cmd = Command::new(&words[0]);
     cmd.args(&words[1..]);
     cmd.env_clear();
-    cmd.envs(child_env(inherited_env(), env));
+    cmd.envs(child_env(inherited, env));
     if let Some(dir) = working_folder(cwd) {
         cmd.current_dir(dir.path());
     }
@@ -180,17 +189,49 @@ fn working_folder(cwd: Option<&std::path::Path>) -> Option<crate::localfs::Local
     crate::localfs::LocalPath::judge(cwd).or_else(|| crate::platform::paths::home_dir().and_then(crate::localfs::LocalPath::judge))
 }
 
-fn inherited_env() -> Vec<(String, String)> {
-    std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect()
+fn inherited_env() -> Vec<(OsString, OsString)> {
+    std::env::vars_os().collect()
 }
 
 /// The child's environment: the inherited set less the outer terminal's variables, with the
 /// session's `NAME=value` entries merged over it. Never logged: it can hold the session's cookie.
-pub(crate) fn child_env(inherited: Vec<(String, String)>, env: &[String]) -> Vec<(String, String)> {
-    let kept = inherited.into_iter().filter(|(n, _)| !OUTER_TERMINAL_VARS.contains(&n.as_str())).collect();
-    crate::session_env::merge(kept, env)
+pub(crate) fn child_env(inherited: Vec<(OsString, OsString)>, env: &[String]) -> Vec<(OsString, OsString)> {
+    let kept = inherited.into_iter().filter(|(n, _)| !OUTER_TERMINAL_VARS.iter().any(|o| n.as_bytes() == o.as_bytes())).collect();
+    merge_env(kept, env)
 }
 
+/// `session_env::merge` for Unix: names are case-sensitive (`http_proxy` and `HTTP_PROXY` are two
+/// variables) and values stay raw bytes. Same rules otherwise: `NEVER_INHERITED` names are
+/// dropped from `base`, an entry holding a NUL is ignored, `-NAME` removes, `NAME=value` sets.
+fn merge_env(base: Vec<(OsString, OsString)>, extra: &[String]) -> Vec<(OsString, OsString)> {
+    let mut out = base;
+    out.retain(|(n, _)| !crate::session_env::NEVER_INHERITED.iter().any(|x| n.as_bytes().eq_ignore_ascii_case(x.as_bytes())));
+    for e in extra.iter().filter(|e| !e.contains('\0')) {
+        if let Some(gone) = e.strip_prefix('-').filter(|n| !n.is_empty() && !n.contains('=')) {
+            out.retain(|(n, _)| n.as_bytes() != gone.as_bytes());
+            continue;
+        }
+        // The name ends at the first `=` after its first character, as `session_env::merge` reads it.
+        let Some(at) = e.char_indices().skip(1).find(|(_, c)| *c == '=').map(|(i, _)| i) else { continue };
+        let (name, value) = (&e[..at], &e[at + 1..]);
+        out.retain(|(n, _)| n.as_bytes() != name.as_bytes());
+        out.push((OsString::from(name), OsString::from(value)));
+    }
+    out
+}
+
+/// A pipe, close-on-exec from the start where the OS can (`pipe2`), else flagged at once.
+#[cfg(target_os = "linux")]
+fn make_pipe() -> Result<(OwnedFd, OwnedFd), String> {
+    let mut fds = [0 as RawFd; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } < 0 {
+        return Err(os_err("pipe2"));
+    }
+    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+}
+
+/// macOS has no `pipe2`: flagged right after, under `SPAWN_LOCK` against our own spawns.
+#[cfg(not(target_os = "linux"))]
 fn make_pipe() -> Result<(OwnedFd, OwnedFd), String> {
     let mut fds = [0 as RawFd; 2];
     if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {
@@ -202,6 +243,7 @@ fn make_pipe() -> Result<(OwnedFd, OwnedFd), String> {
     Ok((r, w))
 }
 
+#[cfg(not(target_os = "linux"))]
 fn cloexec(fd: &OwnedFd) -> Result<(), String> {
     if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
         return Err(os_err("fcntl(FD_CLOEXEC)"));
@@ -217,6 +259,46 @@ fn clone_fd(fd: &OwnedFd) -> Result<OwnedFd, String> {
 /// A pty of this size, the master and our copy of the slave both close-on-exec; the slave
 /// reads UTF-8 (`IUTF8`, so erasing a multi-byte character takes the whole character).
 fn open_pty(cols: u16, rows: u16) -> Result<(OwnedFd, OwnedFd), String> {
+    let (master, slave) = open_pair(cols, rows)?;
+    let mut tio: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(slave.as_raw_fd(), &mut tio) } < 0 {
+        return Err(os_err("tcgetattr"));
+    }
+    tio.c_iflag |= libc::IUTF8;
+    if unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &tio) } < 0 {
+        return Err(os_err("tcsetattr"));
+    }
+    Ok((master, slave))
+}
+
+/// Linux: both ends are opened close-on-exec (`O_CLOEXEC`, and `TIOCGPTPEER` for the slave), so
+/// no fork on another thread can ever inherit one.
+#[cfg(target_os = "linux")]
+fn open_pair(cols: u16, rows: u16) -> Result<(OwnedFd, OwnedFd), String> {
+    let flags = libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC;
+    let m = unsafe { libc::posix_openpt(flags) };
+    if m < 0 {
+        return Err(os_err("posix_openpt"));
+    }
+    let master = unsafe { OwnedFd::from_raw_fd(m) };
+    if unsafe { libc::grantpt(m) } < 0 || unsafe { libc::unlockpt(m) } < 0 {
+        return Err(os_err("grantpt/unlockpt"));
+    }
+    let s = unsafe { libc::ioctl(m, libc::TIOCGPTPEER as _, flags) };
+    if s < 0 {
+        return Err(os_err("ioctl(TIOCGPTPEER)"));
+    }
+    let slave = unsafe { OwnedFd::from_raw_fd(s) };
+    let ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+    if unsafe { libc::ioctl(m, libc::TIOCSWINSZ as _, &ws) } < 0 {
+        return Err(os_err("ioctl(TIOCSWINSZ)"));
+    }
+    Ok((master, slave))
+}
+
+/// macOS: `openpty`, then close-on-exec at once, under `SPAWN_LOCK` against our own spawns.
+#[cfg(not(target_os = "linux"))]
+fn open_pair(cols: u16, rows: u16) -> Result<(OwnedFd, OwnedFd), String> {
     let (mut m, mut s) = (0 as RawFd, 0 as RawFd);
     let mut ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
     // (null_mut and &mut: macOS declares the last two arguments mutable, Linux const.)
@@ -226,14 +308,6 @@ fn open_pty(cols: u16, rows: u16) -> Result<(OwnedFd, OwnedFd), String> {
     let (master, slave) = unsafe { (OwnedFd::from_raw_fd(m), OwnedFd::from_raw_fd(s)) };
     cloexec(&master)?;
     cloexec(&slave)?;
-    let mut tio: libc::termios = unsafe { std::mem::zeroed() };
-    if unsafe { libc::tcgetattr(slave.as_raw_fd(), &mut tio) } < 0 {
-        return Err(os_err("tcgetattr"));
-    }
-    tio.c_iflag |= libc::IUTF8;
-    if unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &tio) } < 0 {
-        return Err(os_err("tcsetattr"));
-    }
     Ok((master, slave))
 }
 
@@ -565,11 +639,15 @@ impl Drop for Pty {
         self.set_paused(false);
         self.writer.take();
         let group = self.tty.is_some();
-        if group {
-            registry(|r| r.remove(&self.pid));
+        if let Some(own) = self.tty.take() {
+            // Only this pty's own entry: a reused pid may belong to a newer one by now.
+            registry(|r| {
+                if r.get(&self.pid).is_some_and(|e| Arc::ptr_eq(e, &own)) {
+                    r.remove(&self.pid);
+                }
+            });
             self.exit.signal(self.pid, true, libc::SIGHUP);
         }
-        self.tty = None;
         // Wakes the reader, which drops its master.
         unsafe { libc::write(self.wake.as_raw_fd(), [0u8].as_ptr().cast(), 1) };
         let (exit, pid) = (self.exit.clone(), self.pid);
@@ -592,6 +670,10 @@ mod tests {
 
     fn secs(n: u64) -> Duration {
         Duration::from_secs(n)
+    }
+
+    fn os(n: &str, v: &str) -> (OsString, OsString) {
+        (OsString::from(n), OsString::from(v))
     }
 
     fn text(b: &[u8]) -> String {
@@ -643,12 +725,9 @@ mod tests {
 
     #[test]
     fn outer_terminal_variables_never_reach_the_shell() {
-        let env = child_env(
-            vec![("TERM".into(), "xterm-kitty".into()), ("TMUX".into(), "/tmp/t,1,0".into()), ("PATH".into(), "/bin".into())],
-            &["TERM=xterm-256color".to_string()],
-        );
-        assert!(env.contains(&("TERM".to_string(), "xterm-256color".to_string())), "{env:?}");
-        assert!(env.contains(&("PATH".to_string(), "/bin".to_string())), "{env:?}");
+        let env = child_env(vec![os("TERM", "xterm-kitty"), os("TMUX", "/tmp/t,1,0"), os("PATH", "/bin")], &["TERM=xterm-256color".to_string()]);
+        assert!(env.contains(&os("TERM", "xterm-256color")), "{env:?}");
+        assert!(env.contains(&os("PATH", "/bin")), "{env:?}");
         assert!(!env.iter().any(|(n, _)| n == "TMUX"), "{env:?}");
         assert!(!inherits_term());
         // And live: the shell's own TERM is the profile's, not what this process was started under.
@@ -697,6 +776,7 @@ mod tests {
         assert!(e.contains("no-such-program-xyz"), "{e}");
         let e = spawn(&PtyApi, "/bin/sh -c 'unclosed", 80, 24).err().unwrap();
         assert!(e.contains("unterminated"), "{e}");
+        assert_eq!(e.matches("unclosed").count(), 1, "the line is named once: {e}");
         // A Windows command line is a plain command here, never a shell string.
         let e = spawn(&PtyApi, r#"pwsh.exe-not-here -NoLogo "C:\Program Files\x.exe""#, 80, 24).err().unwrap();
         assert!(e.contains("pwsh.exe-not-here"), "{e}");
@@ -742,5 +822,33 @@ mod tests {
         let p = spawn(&PtyApi, "/bin/sh -c 'sleep 30'", 80, 24).unwrap();
         p.terminate();
         assert_eq!(p.wait_exit(secs(5)), Some(137));
+    }
+
+    #[test]
+    fn names_are_case_sensitive_and_raw_values_survive() {
+        let env = child_env(vec![os("HTTP_PROXY", "inherited"), os("PATH", "/bin")], &["http_proxy=x".to_string()]);
+        assert!(env.contains(&os("HTTP_PROXY", "inherited")), "a lower case name is another variable: {env:?}");
+        assert!(env.contains(&os("http_proxy", "x")), "{env:?}");
+        let env = child_env(vec![os("PATH", "/bin"), os("Path", "/x")], &["-path".to_string(), "-Path".to_string()]);
+        assert_eq!(env, vec![os("PATH", "/bin")], "-Path removes only Path");
+        // A value that is not UTF-8 reaches the child as it is.
+        let raw = (OsString::from("RAWV"), OsString::from_vec(vec![b'f', 0xff]));
+        assert!(child_env(vec![raw.clone()], &[]).contains(&raw));
+        let p = spawn_with_env(vec![os("PATH", "/bin:/usr/bin"), raw], Transport::Conpty, "/bin/sh -c 'printf %s \"$RAWV\" | od -An -tx1 | tr -d \" \"'", None, &[], 80, 24, Arc::new(|| {})).unwrap();
+        let got = p.read_until(b"66ff", secs(5));
+        assert!(got.is_ok(), "{:?}", got.err().map(|g| text(&g)));
+    }
+
+    #[test]
+    fn a_drop_leaves_a_newer_ptys_registry_entry() {
+        let p = spawn(&PtyApi, "/bin/sh -c 'sleep 5'", 80, 24).unwrap();
+        let pid = p.pid();
+        // As if the pid was reused by a newer pty whose entry replaced this one.
+        let (_r, w) = make_pipe().unwrap();
+        let newer = Arc::new(w);
+        registry(|r| r.insert(pid, newer.clone()));
+        drop(p);
+        assert!(registry(|r| r.get(&pid).is_some_and(|e| Arc::ptr_eq(e, &newer))), "the newer entry was removed");
+        registry(|r| r.remove(&pid));
     }
 }

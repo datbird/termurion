@@ -4197,7 +4197,7 @@ mod tests {
         assert!(pump_until(&mut p, |p| p.exited.is_some()), "pwsh did not finish");
         p.pump();
         assert_eq!(p.screen.marks_in_order().len(), 1, "{}", p.screen.all_text());
-        assert!(p.screen.shell.cwd.as_deref().is_some_and(|c| c.contains(by_os(":", "/"))), "{:?}", p.screen.shell.cwd);
+        assert!(p.screen.shell.cwd.as_deref().is_some_and(|c| if crate::platform::IS_WINDOWS { c.contains(':') } else { c.starts_with('/') }), "{:?}", p.screen.shell.cwd);
         assert_eq!(p.screen.shell.shell.as_deref(), Some(by_os("powershell", "pwsh")));
     }
 
