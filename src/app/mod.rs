@@ -1,6 +1,6 @@
 //! The Termurion window: tabs of split panes, drawn with wgpu.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -1505,6 +1505,8 @@ pub struct App {
     /// Locale questions waiting for the picker: the start-time prompts, and Settings' Change
     /// Locale requests (`locale_ui`).
     locale_asks: VecDeque<locale_ui::Ask>,
+    /// Profiles the start-time locale prompt was queued for in this run: it asks once, not at every new tab.
+    locale_prompted: HashSet<String>,
     locale_window: Option<locale_ui::PickerWindow>,
     /// iTerm2's suppressed alerts (app-wide): the catalog of warnings answered automatically,
     /// "Always show alerts with remembered selections" (not saved, as iTerm2's process global),
@@ -2752,6 +2754,7 @@ pub fn run() {
         access_focus_sent: None,
         access_attach: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         locale_asks: VecDeque::new(),
+        locale_prompted: HashSet::new(),
         locale_window: None,
         suppressed,
         show_remembered: false,
@@ -4259,7 +4262,9 @@ impl App {
             Outcome::NeedsPrompt => {
                 if asks {
                     let guid = self.store.shared_guid(&p.guid());
-                    self.queue_locale_prompt(guid, p.name(), !p.bool("Is Dynamic Profile"));
+                    if self.locale_prompted.insert(guid.clone()) {
+                        self.queue_locale_prompt(guid, p.name(), !p.bool("Is Dynamic Profile"));
+                    }
                 }
                 locale_guess::lc_ctype(&facts, &supported).map(|v| vec![("LC_CTYPE".to_string(), v)]).unwrap_or_default()
             }

@@ -3624,6 +3624,7 @@ dependencies = [
  "arboard",
  "base64 0.22.1",
  "bytemuck",
+ "core-foundation-sys",
  "egui",
  "egui-wgpu",
  "egui-winit",

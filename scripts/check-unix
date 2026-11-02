@@ -4,7 +4,7 @@
 # CHECK_UNIX_MAC_HOST overrides the macOS ssh host (default funtimes).
 # With --test it runs `cargo test --lib` instead and prints "<os>: P passed, F failed" with the failing names.
 # FILTER is one or more space separated test name filters (default: every lib test).
-# Usage: scripts/check-unix [--linux-only | --mac-only] [--test [FILTER]]
+# Usage: scripts/check-unix [--linux-only | --mac-only] [--test [FILTER]]   (flags in any order; FILTER words follow --test)
 set -uo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo"
@@ -13,8 +13,9 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --linux-only) do_mac=0 ;;
         --mac-only) do_linux=0 ;;
-        --test) do_test=1; shift; filter="$*"; break ;;
-        *) echo "usage: scripts/check-unix [--linux-only | --mac-only] [--test [FILTER]]" >&2; exit 2 ;;
+        --test) do_test=1 ;;
+        -*) echo "usage: scripts/check-unix [--linux-only | --mac-only] [--test [FILTER]]" >&2; exit 2 ;;
+        *) [ "$do_test" = 1 ] || { echo "usage: scripts/check-unix [--linux-only | --mac-only] [--test [FILTER]]" >&2; exit 2; }; filter="$filter${filter:+ }$1" ;;
     esac
     shift
 done

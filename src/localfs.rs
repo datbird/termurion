@@ -853,6 +853,7 @@ mod tests {
         ("app/menu.rs", "write_pwsh_script", 2, "Termurion's own PowerShell integration script under %APPDATA% / %LOCALAPPDATA%"),
         ("platform/windows/pty.rs", "default_shell", 1, "the person's own PATH entries looking for pwsh.exe"),
         ("platform/unix/pty.rs", "spawn_with_env", 1, "the pane's working folder, which working_folder judged first (or the home folder, judged)"),
+        ("platform/unix/locale.rs", "installed_names", 1, "the fixed system folder /usr/share/locale (macOS), listed for its locale names only; no path from outside"),
         ("app/mod.rs", "run", 1, "Termurion's own uv folder under %APPDATA%"),
         ("app/restore_ui.rs", "saved_windows", 3, "Termurion's own saved-windows state file and the mark beside it that says an Import All brought it"),
         ("app/restore_ui.rs", "write_state", 2, "Termurion's own saved-windows state file and the Import All mark beside it"),

@@ -52,6 +52,10 @@ winresource = "0.1"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# The user's locale on macOS (CFLocaleCopyCurrent); already in the tree through winit.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation-sys = "0.8.7"
+
 [target.'cfg(windows)'.dependencies]
 # Windows Hello for the password manager's gate (UserConsentVerifier); both are already in the
 # tree (through wgpu), only these features are new. Win32_System_Variant and Win32_UI_Accessibility are the UI Automation provider (uia_win), each named here on purpose.
