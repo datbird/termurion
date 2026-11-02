@@ -401,10 +401,10 @@ pub mod session_hotkeys;
 pub mod broadcast;
 pub mod dim;
 pub mod dropdown_views;
-// Live tests that drive a real Windows ConPTY.
+// The probe drives a real Windows ConPTY; the live suite runs on every OS.
 #[cfg(windows)]
 mod tmux_probe;
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tmux_live;
 #[cfg(all(test, windows))]
 mod resize_live;

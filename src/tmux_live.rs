@@ -1,6 +1,6 @@
-//! The live tmux suite: a real tmux server (psmux on Windows, tmux in WSL, or tmux on another
-//! machine over ssh) behind the shipped ConPTY, driven by the same gateway, handshake, and
-//! controller the app uses.
+//! The live tmux suite: a real tmux server (psmux on Windows, tmux in WSL, a local Unix tmux, or
+//! tmux on another machine over ssh) behind the platform's pty (the shipped ConPTY on
+//! Windows), driven by the same gateway, handshake, and controller the app uses.
 //! Nothing here opens a window. Every test is ignored and uses its own server name
 //! (`-L termurion-test-...`), so it never touches a running multiplexer.
 //!
@@ -18,8 +18,7 @@ mod tests {
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
 
-    use crate::platform::pty::conpty::{self, Source, dev_vendor_dir};
-    use crate::platform::pty::{Pty, spawn};
+    use crate::platform::pty::{Pty, spawn_notify, test_api};
     use crate::tmux_controller::{Action, Controller};
     use crate::tmux_gateway::{Event, Flags, Gateway, Tag};
     use crate::tmux_handshake::{self, Handshake, Step};
@@ -32,6 +31,22 @@ mod tests {
         Wsl,
         /// tmux on another machine, reached with ssh.
         Ssh,
+        /// A Unix tmux on this machine, straight on the pty.
+        Local,
+    }
+
+    /// Whether this flavor can run here: psmux and WSL are Windows tools, a local tmux is a
+    /// Unix one. The others print a SKIP line and pass, as the ssh tests do with no host.
+    fn runnable(flavor: Flavor) -> bool {
+        let ok = match flavor {
+            Flavor::Psmux | Flavor::Wsl => crate::platform::IS_WINDOWS,
+            Flavor::Local => !crate::platform::IS_WINDOWS,
+            Flavor::Ssh => true,
+        };
+        if !ok {
+            println!("LIVE {} SKIP not on this OS", flavor.label());
+        }
+        ok
     }
 
     /// The ssh options for the test host, from the environment (None: no host named).
@@ -101,6 +116,7 @@ mod tests {
         let out = match flavor {
             Flavor::Psmux => Command::new("psmux").args(["-f", &psmux_no_config(), "-L", server]).args(args).output(),
             Flavor::Wsl => Command::new("wsl.exe").args(["-e", "tmux", "-L", server]).args(args).output(),
+            Flavor::Local => Command::new("tmux").args(["-L", server]).args(args).output(),
             Flavor::Ssh => {
                 let Some(a) = ssh_args() else { return "no ssh host".into() };
                 return ssh_cli(&a, server, args);
@@ -118,6 +134,7 @@ mod tests {
                 Flavor::Psmux => "psmux",
                 Flavor::Wsl => "wsl",
                 Flavor::Ssh => "ssh",
+                Flavor::Local => "local",
             }
         }
 
@@ -125,6 +142,7 @@ mod tests {
             match self {
                 Flavor::Psmux => format!("psmux.exe -f \"{}\" -L {server} -CC new-session -s {session}", psmux_no_config()),
                 Flavor::Wsl => format!("wsl.exe -e tmux -L {server} -f /dev/null -CC new-session -s {session}"),
+                Flavor::Local => format!("tmux -L {server} -f /dev/null -CC new-session -s {session}"),
                 // A pty on the far side (-tt), as typing `ssh host tmux -CC` does.
                 Flavor::Ssh => format!("ssh.exe -tt {} tmux -L {server} -f /dev/null -CC new-session -s {session}", ssh_args().expect("TERMURION_TMUX_SSH_HOST").join(" ")),
             }
@@ -140,6 +158,9 @@ mod tests {
                 }
                 Flavor::Wsl => {
                     let _ = Command::new("wsl.exe").args(["-e", "tmux", "-L", server, "kill-server"]).output();
+                }
+                Flavor::Local => {
+                    let _ = Command::new("tmux").args(["-L", server, "kill-server"]).output();
                 }
                 Flavor::Ssh => {
                     server_cli(self, server, &["kill-server"]);
@@ -216,8 +237,10 @@ mod tests {
     impl Live {
         pub fn start(flavor: Flavor, name: &str) -> Live {
             let server = format!("termurion-test-{name}");
-            let api = conpty::load(&Source::Shipped(dev_vendor_dir())).unwrap();
-            let p = spawn(&api, &flavor.start(&server, &server), 80, 24).unwrap();
+            let api = test_api();
+            // A local tmux needs a UTF-8 locale or it turns tabs into "_" (the app hands its panes one).
+            let env: Vec<String> = if flavor == Flavor::Local { vec!["LANG=en_US.UTF-8".into()] } else { Vec::new() };
+            let p = spawn_notify(&api, &flavor.start(&server, &server), None, &env, 80, 24, std::sync::Arc::new(|| {})).unwrap();
             let mut gw = Gateway::new("\r");
             gw.logging = true;
             let mut ctl = Controller::new(tmux_handshake::FIRST_FREE_TAG);
@@ -307,7 +330,7 @@ mod tests {
                                 }
                             }
                             if ask == tmux_handshake::Ask::ServerPid {
-                                self.server_local = self.hs.server_local(&tmux_handshake::windows_process_name);
+                                self.server_local = self.hs.server_local(&tmux_handshake::process_name);
                                 self.ctl.set_server_local(self.server_local, &mut self.gw);
                             }
                             if ask == tmux_handshake::Ask::SetTitles {
@@ -478,6 +501,9 @@ mod tests {
     }
 
     fn attach_report(flavor: Flavor, name: &str) {
+        if !runnable(flavor) {
+            return;
+        }
         let mut l = Live::attach(flavor, name);
         l.say(&format!("entered={} version_min={:?} max={:?} known={} tab_bug={} v3_2={}", l.entered, l.hs.min, l.hs.max, l.hs.known, l.hs.tab_bug, l.gw.v3_2));
         l.say(&format!("status_bar={} default_terminal={:?} server_pid={:?} set_titles={}", l.hs.status_bar, l.hs.default_terminal, l.hs.server_pid, l.hs.set_titles));
@@ -544,6 +570,9 @@ mod tests {
 
     /// Every command Termurion's controller sends, from the attach on, and what the server said.
     fn audit(flavor: Flavor, name: &str) {
+        if !runnable(flavor) {
+            return;
+        }
         let mut l = Live::attach(flavor, name);
         let (w, pane) = first_pane(&l);
         let s = session_id(&l);
@@ -670,6 +699,9 @@ mod tests {
 
     /// The features of the plan's live suite, through the real gateway and controller.
     fn suite(flavor: Flavor, name: &str) {
+        if !runnable(flavor) {
+            return;
+        }
         let mut l = Live::attach(flavor, name);
         let (w, pane) = first_pane(&l);
         let s = session_id(&l);
@@ -726,7 +758,7 @@ mod tests {
         // Keys round trip.
         let marker = match flavor {
             Flavor::Psmux => "echo ('ROUND'+'TRIP')\r",
-            Flavor::Wsl | Flavor::Ssh => "echo ROUND''TRIP\r",
+            Flavor::Wsl | Flavor::Ssh | Flavor::Local => "echo ROUND''TRIP\r",
         };
         let focus = l.ctl.windows.get(&w).and_then(|p| p.first().copied()).unwrap_or(pane);
         l.out.clear();
@@ -807,6 +839,9 @@ mod tests {
     #[test]
     #[ignore]
     fn psmux_ctrl_c_and_enter_leave_the_client() {
+        if !runnable(Flavor::Psmux) {
+            return;
+        }
         let mut l = Live::attach(Flavor::Psmux, "cc");
         let _ = l.p.write(b"\x03");
         let _ = l.p.write(b"\r");
@@ -855,6 +890,9 @@ mod tests {
     #[test]
     #[ignore]
     fn explore_psmux_more() {
+        if !runnable(Flavor::Psmux) {
+            return;
+        }
         let mut l = Live::attach(Flavor::Psmux, "mo");
         let asks = l.asks.clone();
         for (k, v) in asks.iter().filter(|(k, _)| matches!(k.as_str(), "Version" | "Phony" | "ServerPid" | "Probe22" | "Probe21" | "Probe23" | "Probe18" | "Status" | "DefaultTerminal" | "Utf8")) {
@@ -916,6 +954,9 @@ mod tests {
 
     /// The suite's kill-pane step again, with the lines tmux and psmux send for it.
     fn kill_pane_lines(flavor: Flavor) {
+        if !runnable(flavor) {
+            return;
+        }
         let mut l = Live::attach(flavor, "kp");
         let (w, pane) = first_pane(&l);
         l.audit(&tmux_edits::split_window(pane, true, &Dir::Home, true));
@@ -946,6 +987,9 @@ mod tests {
     /// The attached session killed from inside: tmux says `%exit`; psmux says nothing, and the
     /// gateway lets go by itself (`Event::Gone`), after which the client process is ended.
     fn session_end(flavor: Flavor, name: &str) {
+        if !runnable(flavor) {
+            return;
+        }
         let mut l = Live::attach(flavor, name);
         let session = l.session.clone();
         let t = Instant::now();
@@ -953,6 +997,30 @@ mod tests {
         let ended = l.pump_until(Duration::from_secs(12), |l| l.exited && l.p.exit_code().is_some());
         result(&l, "kill-session of the attached session", ok && ended, &format!("gateway ended {} (gone event {}) client exit {:?} after {:?}", l.exited, l.gone, l.p.exit_code(), t.elapsed()));
         l.finish();
+    }
+
+    #[test]
+    #[ignore]
+    fn suite_local() {
+        suite(Flavor::Local, "su");
+    }
+
+    #[test]
+    #[ignore]
+    fn session_end_local() {
+        session_end(Flavor::Local, "se");
+    }
+
+    #[test]
+    #[ignore]
+    fn locality_local() {
+        locality(Flavor::Local, "lo");
+    }
+
+    #[test]
+    #[ignore]
+    fn clipboard_local() {
+        clipboard(Flavor::Local, "cb");
     }
 
     #[test]
@@ -977,6 +1045,9 @@ mod tests {
 
     /// tmux's paste buffer reaches the local clipboard: `%paste-buffer-changed`, `show-buffer`.
     fn clipboard(flavor: Flavor, name: &str) {
+        if !runnable(flavor) {
+            return;
+        }
         let mut l = Live::attach(flavor, name);
         let (ok, text) = l.run("set-buffer \"CLIPTEXT 123\"");
         l.say(&format!("CMD {} set-buffer => {text}", if ok { "ok" } else { "ERR" }));
@@ -1018,28 +1089,32 @@ mod tests {
     /// read and name real processes of this machine. A WSL or ssh server is not local and is
     /// never asked for a pane pid.
     fn locality(flavor: Flavor, name: &str) {
+        if !runnable(flavor) {
+            return;
+        }
         let mut l = Live::attach(flavor, name);
         l.settle(Duration::from_secs(2));
         let (_, pane) = first_pane(&l);
-        let want_local = flavor == Flavor::Psmux;
+        let want_local = matches!(flavor, Flavor::Psmux | Flavor::Local);
         result(&l, "server local", l.server_local == want_local, &format!("server pid {:?}, local {}", l.hs.server_pid, l.server_local));
         if want_local {
-            let server = l.hs.server_pid.and_then(tmux_handshake::windows_process_name);
+            let server = l.hs.server_pid.and_then(tmux_handshake::process_name);
             let pid = l.pane_pids.get(&pane).copied();
-            let name = pid.and_then(tmux_handshake::windows_process_name);
+            let name = pid.and_then(tmux_handshake::process_name);
             let tree = pid.and_then(|p| crate::platform::proc::descendants_now(p).ok()).map_or(0, |t| t.len());
-            result(&l, "server process is psmux", server.is_some(), &format!("{server:?}"));
+            result(&l, "server process is tmux", server.is_some(), &format!("{server:?}"));
             result(&l, "pane pid is a process here", pid.is_some() && name.is_some(), &format!("pid {pid:?} {name:?} ({tree} below it)"));
             // A program started in the pane shows up under that pid.
             let focus = pane;
-            for cmd in crate::tmux_keys::encode(b"ping -n 20 127.0.0.1\r", focus, l.hs.min, l.hs.max).unwrap() {
+            let (job, line): (&str, &[u8]) = if flavor == Flavor::Local { ("sleep", b"sleep 20\r") } else { ("ping", b"ping -n 20 127.0.0.1\r") };
+            for cmd in crate::tmux_keys::encode(line, focus, l.hs.min, l.hs.max).unwrap() {
                 l.run(&cmd);
             }
             let found = pid.is_some_and(|p| {
                 let end = Instant::now() + Duration::from_secs(15);
                 loop {
                     let procs = crate::platform::proc::descendants_now(p).unwrap_or_default();
-                    if procs.iter().any(|q| q.name.to_ascii_lowercase().starts_with("ping")) {
+                    if procs.iter().any(|q| q.name.to_ascii_lowercase().starts_with(job)) {
                         break true;
                     }
                     if Instant::now() > end {
@@ -1048,7 +1123,7 @@ mod tests {
                     l.settle(Duration::from_millis(300));
                 }
             });
-            result(&l, "job read from the pane's process tree", found, "ping below the pane's shell");
+            result(&l, "job read from the pane's process tree", found, &format!("{job} below the pane's shell"));
         } else {
             result(&l, "no pane pid asked", l.pane_pids.is_empty(), &format!("{:?}", l.pane_pids));
         }
@@ -1079,6 +1154,9 @@ mod tests {
     #[test]
     #[ignore]
     fn explore_psmux_round2() {
+        if !runnable(Flavor::Psmux) {
+            return;
+        }
         let mut l = Live::attach(Flavor::Psmux, "r2");
         let (w, pane) = first_pane(&l);
         let s = session_id(&l);
@@ -1114,6 +1192,9 @@ mod tests {
     #[test]
     #[ignore]
     fn explore_psmux_detach_raw() {
+        if !runnable(Flavor::Psmux) {
+            return;
+        }
         let l = Live::attach(Flavor::Psmux, "dr");
         let _ = l.p.write(b"detach\r");
         let t = Instant::now();

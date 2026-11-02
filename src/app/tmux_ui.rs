@@ -175,7 +175,7 @@ impl App {
                         if ask == tmux_handshake::Ask::ServerPid {
                             // iTerm2's didLoadServerPID: a server whose process is here is local.
                             let Some(t) = self.tmux.get_mut(&pane) else { return };
-                            let local = t.hs.server_local(&tmux_handshake::windows_process_name);
+                            let local = t.hs.server_local(&tmux_handshake::process_name);
                             t.ctl.set_server_local(local, &mut t.gw);
                         }
                         if ask == tmux_handshake::Ask::SetTitles {

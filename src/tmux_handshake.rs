@@ -126,12 +126,12 @@ pub struct Handshake {
 }
 
 /// Whether the tmux server runs on this machine as a process Termurion can see (iTerm2's
-/// `didLoadServerPID`: the process behind `#{pid}` is named tmux). The pid is only meaningful
-/// to this machine when the server is native Windows psmux; the pid of WSL tmux or of tmux
-/// over ssh belongs to another pid space, and a Windows process with that number would be a
-/// stranger. `name` is the file name of the Windows process with the server's pid.
-pub fn server_is_local(psmux: bool, pid: Option<u32>, name: Option<&str>) -> bool {
-    if !psmux || pid.is_none() {
+/// `didLoadServerPID`: the process behind `#{pid}` is named tmux). `native`: the pid is in this
+/// machine's pid space. A Unix tmux server always is; on Windows only psmux is, since the pid
+/// of WSL tmux or of tmux over ssh belongs to another pid space and a Windows process with
+/// that number would be a stranger. `name` is the file name of the local process with that pid.
+pub fn server_is_local(native: bool, pid: Option<u32>, name: Option<&str>) -> bool {
+    if !native || pid.is_none() {
         return false;
     }
     let Some(name) = name else { return false };
@@ -141,22 +141,16 @@ pub fn server_is_local(psmux: bool, pid: Option<u32>, name: Option<&str>) -> boo
     matches!(stem.as_str(), "psmux" | "pmux" | "tmux")
 }
 
-/// The file name of the Windows process `pid`, when this machine has one and it can be read.
-#[cfg(windows)]
-pub fn windows_process_name(pid: u32) -> Option<String> {
-    crate::api_peer::process_name(pid)
-}
-
-#[cfg(not(windows))]
-pub fn windows_process_name(_pid: u32) -> Option<String> {
-    None
+/// The file name of the local process `pid`, when this machine has one and it can be read.
+pub fn process_name(pid: u32) -> Option<String> {
+    crate::platform::proc::process_name(pid)
 }
 
 impl Handshake {
-    /// The server is local (see `server_is_local`); `name_of` reads a Windows process's file name.
+    /// The server is local (see `server_is_local`); `name_of` reads a local process's file name.
     pub fn server_local(&self, name_of: &dyn Fn(u32) -> Option<String>) -> bool {
         let name = self.server_pid.and_then(name_of);
-        server_is_local(self.psmux, self.server_pid, name.as_deref())
+        server_is_local(self.psmux || !crate::platform::IS_WINDOWS, self.server_pid, name.as_deref())
     }
 
     /// The kick-off, in iTerm2's order; the phony command must be first.
@@ -455,6 +449,22 @@ mod tests {
         h.reply(Ask::ServerPid, Some("4242"), &mut g);
         assert!(h.server_local(&|pid| (pid == 4242).then(|| "psmux.exe".to_string())));
         assert!(!h.server_local(&|_| None));
+    }
+
+    /// A Unix tmux server runs in this machine's pid space (iTerm2's `didLoadServerPID`): the
+    /// process behind its pid, named tmux, makes it local with no psmux in sight.
+    #[test]
+    fn a_unix_tmux_server_is_local() {
+        assert!(server_is_local(true, Some(42), Some("tmux")));
+        assert!(!server_is_local(true, Some(42), Some("bash")));
+        assert!(!server_is_local(true, None, Some("tmux")));
+        let mut g = started();
+        let mut h = Handshake::default();
+        h.reply(Ask::ServerPid, Some("42"), &mut g);
+        assert!(!h.psmux);
+        assert_eq!(h.server_local(&|_| Some("tmux".to_string())), !crate::platform::IS_WINDOWS, "native on Unix only; Windows keeps the psmux rule");
+        assert!(!h.server_local(&|_| Some("bash".to_string())));
+        assert!(process_name(std::process::id()).is_some_and(|n| !n.contains(['/', '\\'])), "the file name, from the platform");
     }
 
     #[test]
