@@ -174,9 +174,10 @@ impl App {
                         }
                         if ask == tmux_handshake::Ask::ServerPid {
                             // iTerm2's didLoadServerPID: a server whose process is here is local.
-                            let job = tmux_handshake::client_job(self.panes.get(&pane).and_then(|p| p.shell_pid()));
+                            // The process walk runs only when the rule needs it (never on Windows).
+                            let shell = self.panes.get(&pane).and_then(|p| p.shell_pid());
                             let Some(t) = self.tmux.get_mut(&pane) else { return };
-                            let local = t.hs.server_local(&tmux_handshake::process_name, &|| job.clone());
+                            let local = t.hs.server_local(&tmux_handshake::process_name, &|| tmux_handshake::client_job(shell));
                             t.ctl.set_server_local(local, &mut t.gw);
                         }
                         if ask == tmux_handshake::Ask::SetTitles {
