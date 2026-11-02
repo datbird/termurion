@@ -6,7 +6,7 @@ use super::unix::clipboard as imp;
 use super::windows::clipboard as imp;
 
 /// Replaces the clipboard with `text` and, for programs that take styles, `html` (a full
-/// "HTML Format" document) and `rtf`. Unix puts plain text only and refuses a styled copy.
+/// "HTML Format" document) and `rtf`. Unix sets HTML beside the plain text and refuses RTF alone.
 pub fn set(text: &str, html: &str, rtf: &str) -> Result<(), String> {
     imp::set(text, html, rtf)
 }
@@ -19,6 +19,18 @@ pub fn first_file() -> Option<std::path::PathBuf> {
 /// Every file on the clipboard, in order. Empty on Unix, which has no file list yet.
 pub fn files() -> Vec<std::path::PathBuf> {
     imp::files()
+}
+
+/// Puts `text` in the primary selection, the buffer a middle click pastes. Linux only; Windows and macOS
+/// have none and return Ok.
+pub fn set_selection(text: &str) -> Result<(), String> {
+    imp::set_selection(text)
+}
+
+/// Reads the primary selection off the UI thread and calls `done` with it (None when empty). Windows and
+/// macOS call `done(None)` at once.
+pub fn request_selection(done: Box<dyn FnOnce(Option<String>) + Send>) {
+    imp::request_selection(done)
 }
 
 /// Replaces the clipboard with a secret `text`, kept out of the clipboard history and the cloud clipboard

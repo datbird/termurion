@@ -322,26 +322,18 @@ pub fn open_with_shell(p: &LocalPath, cwd: Option<&LocalPath>, background: bool)
 }
 
 /// ShellExecute `verb` ("open", "edit") on a judged file or folder: ShellExecute takes a file only
-/// as a `LocalPath` (round 5 item 4).
-#[cfg(windows)]
+/// as a `LocalPath` (round 5 item 4). Other systems open with the default app and refuse any other verb.
 pub fn shell_verb(verb: &str, p: &LocalPath, cwd: Option<&LocalPath>, background: bool) -> io::Result<()> {
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, SW_SHOWNORMAL};
-    let wide = |s: &std::ffi::OsStr| {
-        use std::os::windows::ffi::OsStrExt;
-        s.encode_wide().chain(Some(0)).collect::<Vec<u16>>()
+    #[cfg(windows)]
+    let done = crate::platform::shell_open::shell_verb(verb, &p.0, cwd.map(|d| d.0.as_path()), background);
+    // Only Windows has verbs: "open" is the default app, anything else is not offered.
+    #[cfg(not(windows))]
+    let done = {
+        // The folder only matters to ShellExecute.
+        let _ = cwd;
+        if verb == "open" { crate::platform::shell_open::open_file(&p.0, background) } else { Err(crate::platform::Unsupported { feature: "Editing a file with its app" }.into()) }
     };
-    let (verb, file) = (wide(verb.as_ref()), wide(p.0.as_os_str()));
-    let dir = cwd.map(|d| wide(d.0.as_os_str()));
-    let show = if background { SW_SHOWNOACTIVATE } else { SW_SHOWNORMAL };
-    let r = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), dir.as_ref().map_or(std::ptr::null(), |d| d.as_ptr()), show) };
-    // Values of 32 or less are errors (SE_ERR_*).
-    if r as isize > 32 { Ok(()) } else { Err(io::Error::other(format!("ShellExecute error {}", r as isize))) }
-}
-
-#[cfg(not(windows))]
-pub fn shell_verb(verb: &str, p: &LocalPath, _cwd: Option<&LocalPath>, _background: bool) -> io::Result<()> {
-    Err(io::Error::other(format!("{verb} {} needs Windows", p.0.display())))
+    done.map_err(io::Error::other)
 }
 
 /// Judge, then `is_dir` (a refused path is no folder).
@@ -973,6 +965,7 @@ mod tests {
         ("util_console.rs", "open_console", 1, "the console devices CONIN$ and CONOUT$, not paths"),
         ("utilities.rs", "ensure", 5, "Termurion's own utilities folder under %APPDATA%\\Termurion"),
         ("utilities.rs", "refresh", 6, "Termurion's own utilities folder under %APPDATA%\\Termurion"),
+        ("platform/windows/shell_open.rs", "shell_verb", 1, "the file sink: it takes a path localfs::shell_verb got as a judged LocalPath (open_file passes the same), the one way a file from outside reaches ShellExecuteW"),
         ("platform/windows/shell_open.rs", "open_url", 1, "URL targets only: platform::shell_open::open_with has semantic::shell_url refuse a path, a drive path, a network path and a file: link before ShellExecuteW; a file opens only through localfs::open_with_shell with a LocalPath"),
         ("platform/windows/shell_open.rs", "open_scheme", 1, "URL targets only: semantic_ui::shell_open_scheme has link_scheme::scheme_of and screen judge it again (a path has no scheme, file: is on the blocked list) and percent-encodes it before ShellExecuteW"),
         ("utilities.rs", "stamp", 1, "Termurion's own utilities folder under %APPDATA%\\Termurion"),

@@ -25,8 +25,21 @@ pub fn open_scheme(encoded_url: &str, background: bool) -> Result<(), String> {
     imp::open_scheme(encoded_url, background)
 }
 
+/// Opens a judged file or folder with its default app (`background` asks it not to take the focus). Only
+/// `localfs::open_with_shell` calls it, with a `LocalPath`.
+pub fn open_file(path: &std::path::Path, background: bool) -> Result<(), String> {
+    imp::open_file(path, background)
+}
+
+/// ShellExecute `verb` ("open", "edit") on a judged file, with a judged working folder. Only
+/// `localfs::shell_verb` calls it.
+#[cfg(windows)]
+pub fn shell_verb(verb: &str, path: &std::path::Path, cwd: Option<&std::path::Path>, background: bool) -> Result<(), String> {
+    imp::shell_verb(verb, path, cwd, background)
+}
+
 /// Shows `path` selected in the file manager (Explorer on Windows); nothing runs it. The caller passes
-/// a path Termurion made or judged. Unix reports Unsupported until a file manager call exists (P1).
+/// a path Termurion made or judged.
 pub fn reveal(path: &str) -> Result<(), String> {
     imp::reveal(path)
 }

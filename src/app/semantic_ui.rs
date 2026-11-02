@@ -761,6 +761,9 @@ mod tests {
         "shell_open::open",
         // The platform reveal: selects a path in the file manager; any app caller is audited.
         "shell_open::reveal(",
+        // The platform file open: any app caller is audited like shell_open itself.
+        "shell_open::open_file(",
+        "imp::open_file(",
         // The platform reveal of several items in their folder: the same audit.
         "shell_open::reveal_all(",
         "imp::reveal_all(",
@@ -842,6 +845,16 @@ mod tests {
         ("app/browser_app.rs", "run_external", "an external protocol a browser page asked for or a person typed goes through external_uri_run (guard_open), only for a person's gesture"),
         ("app/web_popover_app.rs", "external_uri_run", "builds a decision and opens nothing; its caller is checked"),
         ("localfs.rs", "open_with_shell", "the file sink itself: it takes a judged LocalPath; its callers are checked"),
+        ("platform/unix/shell_open.rs", "open_file", "the backend of the judged platform funnel (platform::shell_open), reached only through its judged callers"),
+        ("platform/unix/shell_open.rs", "open_scheme", "the backend of the judged platform funnel (platform::shell_open), reached only through its judged callers"),
+        ("platform/unix/shell_open.rs", "reveal", "the backend of the judged platform funnel (platform::shell_open), reached only through its judged callers"),
+        ("platform/unix/shell_open.rs", "reveal_all", "the backend of the judged platform funnel (platform::shell_open), reached only through its judged callers"),
+        ("platform/unix/shell_open.rs", "opener", "builds the one-argument opener command for the judged funnel above; starts nothing"),
+        ("platform/unix/shell_open.rs", "spawn_and_wait", "starts the command the judged funnel built and waits for it off the UI thread"),
+        ("platform/shell_open.rs", "open_file", "the platform file open itself: it takes a path localfs judged; its callers are checked through the shell_open::open_file( token"),
+        ("platform/shell_open.rs", "shell_verb", "the platform file verb itself: it takes a path localfs judged; its only caller is localfs::shell_verb"),
+        ("platform/windows/shell_open.rs", "open_file", "the backend of the judged platform funnel (platform::shell_open), reached only through its judged callers"),
+        ("platform/windows/shell_open.rs", "shell_verb", "the backend of the judged platform funnel (platform::shell_open), reached only through its judged callers"),
         ("localfs.rs", "shell_verb", "the file sink itself: it takes a judged LocalPath; its callers are checked"),
         ("app/scripts_alerts.rs", "bind_scheme_confirmed", "opens the constant Default apps page (url_schemes::DEFAULT_APPS_URI), never text from a pane or a link"),
         ("app/semantic_ui.rs", "reveal_in_explorer", "the sink itself; its callers are checked"),
@@ -1020,7 +1033,7 @@ mod tests {
     /// `remote_text` and no listing, is reported; the same call in a GATED function is not.
     #[test]
     fn a_planted_ungated_opening_call_fails_the_gate() {
-        for call in ["self.open_link(text, Style::Tab, false, None)", "self.open_link_system(text, false)", "self.open_url_in_browser(text, Style::Tab, None)", "self.open_link_answered(text, Style::Tab, false, None, false, 0)", "self.upsell_answered(text, 1)", "self.execute_with(id, run, None, exec)", "self.browser_page_open(pane, text, PageOpen::Tab, el)", "crate::platform::shell_open::open(text)", "crate::platform::shell_open::open_with(text, false)", "crate::platform::proc::start_detached(text)", "crate::platform::proc::command_for_line(text)", "crate::platform::http::fetch_text(text, None)", "crate::platform::shell_open::reveal(text)", "crate::platform::shell_open::reveal_all(text)", "crate::platform::shell_open::open_scheme(text, false)", "crate::platform::pty::spawn_transport(&api, t, text, None, &[], 80, 24, n)"] {
+        for call in ["self.open_link(text, Style::Tab, false, None)", "self.open_link_system(text, false)", "self.open_url_in_browser(text, Style::Tab, None)", "self.open_link_answered(text, Style::Tab, false, None, false, 0)", "self.upsell_answered(text, 1)", "self.execute_with(id, run, None, exec)", "self.browser_page_open(pane, text, PageOpen::Tab, el)", "crate::platform::shell_open::open(text)", "crate::platform::shell_open::open_with(text, false)", "crate::platform::proc::start_detached(text)", "crate::platform::proc::command_for_line(text)", "crate::platform::http::fetch_text(text, None)", "crate::platform::shell_open::reveal(text)", "crate::platform::shell_open::reveal_all(text)", "crate::platform::shell_open::open_scheme(text, false)", "crate::platform::shell_open::open_file(std::path::Path::new(text), false)", "crate::platform::pty::spawn_transport(&api, t, text, None, &[], 80, 24, n)"] {
             let mut files = real_sources();
             files.push(("app/planted.rs".to_string(), format!("impl App {{\n    fn evil(&mut self, text: &str) {{\n        {call};\n    }}\n}}\n")));
             let (wrong, _) = gate_violations(&files);

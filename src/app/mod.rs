@@ -449,6 +449,8 @@ impl Gpu {
 
 pub struct App {
     notify: Notify,
+    /// A primary selection read on its worker, waiting for the loop to paste it: (pane, text, paste argument).
+    selection_paste: Arc<Mutex<Option<(PaneId, String, String)>>>,
     /// The foreground jobs of the panes' shells.
     jobs: crate::platform::proc::JobWatch,
     proxy: Arc<Mutex<EventLoopProxy<UserEvent>>>,
@@ -2042,7 +2044,7 @@ pub fn run() {
     let url_listener = match crate::url_launch::listen(launch_events(proxy.clone())) {
         Ok(h) => Some(h),
         // No launch pipe on this OS: nothing holds it, so nothing is handed over and no banner claims so.
-        Err(e) if crate::url_launch::listen_unsupported(&e) => {
+        Err(crate::url_launch::ListenError::Unsupported(_)) => {
             crate::dlog!("The launch pipe is not available on this platform yet");
             None
         }
@@ -2595,6 +2597,7 @@ pub fn run() {
         key_down: false,
         cursor: (0.0, 0.0),
         drag: Drag::None,
+        selection_paste: Arc::new(Mutex::new(None)),
         clicks: Clicks::default(),
         focused: true,
         tab_bar: tab_layout::Bar::default(),
@@ -7737,7 +7740,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::ShutdownAsk => return self.shutdown_query(event_loop),
             UserEvent::ShutdownAnswer(ok) => return self.shutdown_answered(ok, event_loop),
-            UserEvent::Wake => {}
+            UserEvent::Wake => self.take_selection_paste(),
         }
         let mut changed = false;
         let mut outputs = Vec::new();

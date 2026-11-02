@@ -543,10 +543,50 @@ impl App {
     /// `copy_on_selection` with the selection's text already extracted (a mouse release extracts
     /// it once for everything it does).
     pub(super) fn copy_on_selection_with(&mut self, id: PaneId, text: Option<&str>) {
+        self.set_primary_selection(id, text);
         match copy_kind(self.globals.bool("CopySelection"), self.globals.bool("CopyWithStylesByDefault")) {
             None => {}
             Some(CopyKind::Plain) => self.copy_selection_with(id, text),
             Some(CopyKind::Styled) => self.copy_with_styles_with(id, text),
+        }
+    }
+
+    /// Puts a selection the person just made in the system's primary selection (Linux; nothing elsewhere),
+    /// whatever `CopySelection` says: it is a separate buffer, the one a middle click pastes.
+    fn set_primary_selection(&mut self, id: PaneId, text: Option<&str>) {
+        let Some(text) = text.map(str::to_string).or_else(|| self.selected_text(id)).filter(|t| !t.is_empty()) else { return };
+        if let Err(e) = crate::platform::clipboard::set_selection(&text) {
+            self.banners.set("clipboard", format!("The primary selection was not set: {e}"));
+        }
+    }
+
+    /// Pastes `text` into `id` as the middle-click action does: plain, or by the paste configuration.
+    pub(super) fn paste_selection(&mut self, id: PaneId, text: &str, config: &str) {
+        if config.is_empty() {
+            self.user_paste(id, text, crate::broadcast::Write::Paste);
+        } else {
+            self.paste_with_config(id, text, config);
+        }
+    }
+
+    /// Reads the primary selection on its worker; the loop pastes it when it wakes.
+    pub(super) fn request_primary_paste(&mut self, pane: PaneId, config: &str) {
+        let (slot, notify, config) = (self.selection_paste.clone(), self.notify.clone(), config.to_string());
+        crate::platform::clipboard::request_selection(Box::new(move |text| {
+            if let Some(text) = text.filter(|t| !t.is_empty()) {
+                if let Ok(mut s) = slot.lock() {
+                    *s = Some((pane, text, config));
+                }
+                notify();
+            }
+        }));
+    }
+
+    /// The wake handler's half: pastes what `request_primary_paste` left, into the focused pane.
+    pub(super) fn take_selection_paste(&mut self) {
+        let taken = self.selection_paste.lock().ok().and_then(|mut s| s.take());
+        if let (Some((_pane, text, config)), Some(id)) = (taken, self.focused_id()) {
+            self.paste_selection(id, &text, &config);
         }
     }
 

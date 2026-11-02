@@ -52,6 +52,10 @@ winresource = "0.1"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Wayland sessions get the clipboard and the primary selection through the data-control protocol.
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+arboard = { version = "3", features = ["wayland-data-control"] }
+
 # The user's locale on macOS (CFLocaleCopyCurrent); already in the tree through winit.
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation-sys = "0.8.7"

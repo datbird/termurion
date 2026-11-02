@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drives the real Termurion window on a private X server and says PASS or FAIL for one scenario.
-# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, host, job
+# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, host, job, clipboard
 #
 # Needs Xvfb, xdotool and ImageMagick's import. Proof is a file, not pixels: each pane runs
 # `echo $$ >> $SCRATCH/pids`, and a screenshot (screen.png) is kept for a person to look at.
@@ -14,12 +14,19 @@ repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo"
 scenario="${1:-}"
 case "$scenario" in
-    shell | layout | host | job) ;;
-    *) echo "usage: scripts/unix-gui-check <shell|layout|host|job>" >&2; exit 2 ;;
+    shell | layout | host | job | clipboard) ;;
+    *) echo "usage: scripts/unix-gui-check <shell|layout|host|job|clipboard>" >&2; exit 2 ;;
 esac
 for tool in Xvfb xdotool import; do
     command -v "$tool" > /dev/null || { echo "FAIL $scenario: $tool is not installed"; exit 1; }
 done
+# xclip may sit in ~/.local/bin, which a non-login shell does not have on PATH.
+xclip_bin=$(command -v xclip || true)
+[ -z "$xclip_bin" ] && [ -x "$HOME/.local/bin/xclip" ] && xclip_bin="$HOME/.local/bin/xclip"
+if [ "$scenario" = clipboard ] && [ -z "$xclip_bin" ]; then
+    echo "FAIL $scenario: xclip is not installed"
+    exit 1
+fi
 # shellcheck disable=SC1090
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 
@@ -59,6 +66,11 @@ export DISPLAY="$display" SCRATCH="$scratch" SHELL=/bin/bash
 if [ "$scenario" = host ]; then
     mkdir -p "$scratch/home/.config/termurion"
     printf '[settings]\nRunJobsInServers = true\n' > "$scratch/home/.config/termurion/settings.toml"
+fi
+# The clipboard scenario binds the middle button to Paste from Selection (the factory binding pastes the clipboard).
+if [ "$scenario" = clipboard ]; then
+    mkdir -p "$scratch/home/.config/termurion"
+    printf '[settings.PointerActions."Button,2,1,,"]\nAction = "kPasteFromSelectionPointerAction"\nArgument = ""\n' > "$scratch/home/.config/termurion/settings.toml"
 fi
 # The job scenario's profile asks before closing a session that runs a job (a new profile never asks).
 if [ "$scenario" = job ]; then
@@ -159,6 +171,41 @@ case "$scenario" in
         shoot
         kill -0 "$shell_pid" 2> /dev/null || fail "the close did not wait for an answer: the shell $shell_pid is gone"
         pgrep -P "$shell_pid" -x sleep > /dev/null || fail "the sleep under $shell_pid is gone"
+        ;;
+    clipboard)
+        sleep 1
+        # Draw the word alone on row 0 (a screen clear without the scrollback one that asks a question).
+        xdotool type --delay 20 "printf '\\033[2J\\033[HSELECTME\\n'"
+        xdotool key Return
+        sleep 1
+        # A drag along row 0 selects the line; the primary selection must then hold the word.
+        xdotool mousemove 2 10
+        xdotool mousedown 1
+        for x in 60 120 200 300; do xdotool mousemove "$x" 10; sleep 0.1; done
+        xdotool mouseup 1
+        sleep 1
+        shoot
+        got=$(timeout 5 "$xclip_bin" -o -selection primary 2> /dev/null | tr -d '\n' | sed 's/ *$//')
+        [ "$got" = SELECTME ] || fail "the primary selection after a drag is '$got', not SELECTME"
+        # Another program owns the selection now; a middle click (the pane has no selection of its own) pastes it into a cat that writes a file.
+        xdotool type --delay 20 'cat > "$SCRATCH/got"'
+        xdotool key Return
+        sleep 0.5
+        printf other | "$xclip_bin" -quiet -selection primary > /dev/null 2>&1 &
+        xclip_pid=$!
+        sleep 1
+        # The pane pastes its own selection first, so a plain click drops the drag's one.
+        xdotool mousemove 600 300
+        xdotool click 1
+        sleep 0.5
+        xdotool click 2
+        sleep 1
+        xdotool key Return
+        xdotool key ctrl+d
+        for _ in $(seq 50); do [ -s "$scratch/got" ] && break; sleep 0.1; done
+        shoot
+        kill "$xclip_pid" 2> /dev/null
+        [ "$(tr -d '\n' < "$scratch/got" 2> /dev/null)" = other ] || fail "the middle click did not paste 'other' (got '$(cat "$scratch/got" 2> /dev/null)')"
         ;;
 esac
 kill -0 "$app_pid" 2> /dev/null || fail "the app died (see $scratch/app.log)"

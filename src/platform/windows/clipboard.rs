@@ -96,7 +96,31 @@ pub fn files() -> Vec<std::path::PathBuf> {
     out
 }
 
+/// Windows has no primary selection (a call with no meaning here).
+pub fn set_selection(_text: &str) -> Result<(), String> {
+    Ok(())
+}
+
+/// Windows has no primary selection: nothing to read.
+pub fn request_selection(done: Box<dyn FnOnce(Option<String>) + Send>) {
+    done(None);
+}
+
 pub fn set_private_text(cb: &mut arboard::Clipboard, text: &str) -> Result<(), arboard::Error> {
     use arboard::SetExtWindows;
     cb.set().exclude_from_history().exclude_from_cloud().text(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_selection_buffer() {
+        assert!(set_selection("x").is_ok());
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Some(Some("unset".to_string()))));
+        let g = got.clone();
+        request_selection(Box::new(move |t| *g.lock().unwrap() = Some(t)));
+        assert_eq!(*got.lock().unwrap(), Some(None));
+    }
 }

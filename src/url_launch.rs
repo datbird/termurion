@@ -218,9 +218,22 @@ pub enum LostPipe {
 /// The feature the Unix launch pipe reports as Unsupported.
 pub const LISTEN_FEATURE: &str = "Single-instance link handoff";
 
-/// `listen` failed because this OS has no launch pipe at all (not because another program holds it).
-pub fn listen_unsupported(error: &str) -> bool {
-    error == crate::platform::Unsupported { feature: LISTEN_FEATURE }.to_string()
+/// Why `listen` did not serve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListenError {
+    /// This OS has no launch pipe at all (not because another program holds it).
+    Unsupported(crate::platform::Unsupported),
+    /// The pipe could not be made or is taken; the text says why.
+    Failed(String),
+}
+
+impl std::fmt::Display for ListenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ListenError::Unsupported(u) => u.fmt(f),
+            ListenError::Failed(s) => f.write_str(s),
+        }
+    }
 }
 
 pub fn lost_pipe(after: &[AfterHand], console_waiting: bool) -> LostPipe {
@@ -245,7 +258,7 @@ pub use no_pipe::{Serving, hand_to_running, listen, probe_running};
 #[cfg(windows)]
 pub use pipe::{Serving, hand_request_checked, hand_request_on, hand_to_running, hand_to_running_on, listen, listen_on, probe_on, probe_running, serve_on};
 
-/// Unix has no single-instance link pipe yet (P1): nothing runs to hand to, and nothing can be served.
+/// Unix has no single-instance link pipe: it is not available on Unix yet, so nothing runs to hand to, and nothing can be served.
 #[cfg(unix)]
 mod no_pipe {
     use super::*;
@@ -261,8 +274,8 @@ mod no_pipe {
     }
 
     /// Always Err: the launch pipe is not available on Unix, and the caller logs the text.
-    pub fn listen(_notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<Serving, String> {
-        Err(crate::platform::Unsupported { feature: super::LISTEN_FEATURE }.into())
+    pub fn listen(_notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<Serving, ListenError> {
+        Err(ListenError::Unsupported(crate::platform::Unsupported { feature: super::LISTEN_FEATURE }))
     }
 
     /// A served pipe. Nothing makes one on Unix.
@@ -286,7 +299,7 @@ mod no_pipe {
 
         #[test]
         fn unix_launch_pipe_is_unsupported() {
-            assert!(listen(Box::new(|_| {})).err().unwrap().contains("Single-instance link handoff is not available"));
+            assert!(matches!(listen(Box::new(|_| {})), Err(ListenError::Unsupported(_))));
             assert_eq!(probe_running(), Handed::NoServer);
         }
     }
@@ -400,8 +413,8 @@ mod pipe {
     }
 
     /// The launch pipe served on its own thread until `stop`.
-    pub fn listen(notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<Serving, String> {
-        serve_on(&ipc::url_pipe_name()?, Duration::from_secs(2), notify)
+    pub fn listen(notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<Serving, ListenError> {
+        serve_on(&ipc::url_pipe_name().map_err(ListenError::Failed)?, Duration::from_secs(2), notify).map_err(ListenError::Failed)
     }
 
     /// The listening thread of a pipe served for the life of the process.
@@ -500,6 +513,13 @@ mod pipe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listen_errors_keep_their_text() {
+        assert_eq!(ListenError::Failed("x".into()).to_string(), "x");
+        let want = format!("Single-instance link handoff is not available on {} yet", crate::platform::OS_NAME);
+        assert_eq!(ListenError::Unsupported(crate::platform::Unsupported { feature: LISTEN_FEATURE }).to_string(), want);
+    }
 
     fn argv(parts: &[&str]) -> Vec<OsString> {
         std::iter::once(r"C:\T\termurion.exe").chain(parts.iter().copied()).map(OsString::from).collect()

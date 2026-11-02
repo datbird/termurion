@@ -11,6 +11,25 @@ pub fn open_url(url: &str, background: bool) -> Result<(), String> {
     if r as isize > 32 { Ok(()) } else { Err(format!("ShellExecute error {}", r as isize)) }
 }
 
+/// ShellExecuteW "open" on a judged file.
+pub fn open_file(path: &std::path::Path, background: bool) -> Result<(), String> {
+    shell_verb("open", path, None, background)
+}
+
+/// ShellExecuteW `verb` on a judged file, with a judged working folder; the file is one argument.
+pub fn shell_verb(verb: &str, path: &std::path::Path, cwd: Option<&std::path::Path>, background: bool) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, SW_SHOWNORMAL};
+    let wide = |s: &std::ffi::OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+    let (verb, file) = (wide(verb.as_ref()), wide(path.as_os_str()));
+    let dir = cwd.map(|d| wide(d.as_os_str()));
+    let show = if background { SW_SHOWNOACTIVATE } else { SW_SHOWNORMAL };
+    let r = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), dir.as_ref().map_or(std::ptr::null(), |d| d.as_ptr()), show) };
+    // Values of 32 or less are errors (SE_ERR_*).
+    if r as isize > 32 { Ok(()) } else { Err(format!("ShellExecute error {}", r as isize)) }
+}
+
 /// Explorer from the Windows folder (never from PATH) with the one select argument
 /// (`semantic::explorer_select_arg`, which refuses quotes, control characters and network paths).
 pub fn reveal(path: &str) -> Result<(), String> {

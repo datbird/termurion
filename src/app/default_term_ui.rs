@@ -187,7 +187,7 @@ impl App {
                             other => self.launch_queue.push(other),
                         }
                     }
-                    if !crate::url_launch::listen_unsupported(&e) {
+                    if !matches!(e, crate::url_launch::ListenError::Unsupported(_)) {
                         self.banners.set("launch-pipe", "Another program holds Termurion's launch pipe, so files and links opened with Termurion cannot reach this window.".to_string());
                     }
                 }
