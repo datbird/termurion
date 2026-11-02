@@ -307,6 +307,11 @@ impl App {
     /// At launch, before the first window (an arrangement may name a dynamic profile): the
     /// folder is made, watched, and read.
     pub(super) fn dynamic_profiles_start(&mut self) {
+        // No trusted open on this OS: say so once in the log, with no alert at every start.
+        if crate::platform::watch::dynamic_profiles().is_err() {
+            crate::dlog!("Dynamic Profiles are not available on this platform yet");
+            return;
+        }
         let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
         let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
         let folder = dp::folder(&self.globals.string("DynamicProfilesPath"), &appdata, &home);

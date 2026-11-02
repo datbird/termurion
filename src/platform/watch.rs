@@ -6,4 +6,9 @@ use super::unix::watch as imp;
 #[cfg(windows)]
 use super::windows::watch as imp;
 
+/// Whether Dynamic Profiles can be read on this OS (they need a trusted open of each file).
+pub fn dynamic_profiles() -> Result<(), super::Unsupported> {
+    imp::dynamic_profiles()
+}
+
 pub use imp::{stop_all, DynamicScanner, ScanEvent, ScriptsScanner};
