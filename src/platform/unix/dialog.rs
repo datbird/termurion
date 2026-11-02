@@ -26,7 +26,7 @@ fn available() -> bool {
 fn show(title: &str, body: &str, kind: Kind) -> Answer {
     let level = match kind {
         Kind::Info | Kind::AskYesNo | Kind::AskOkCancel => MessageLevel::Info,
-        Kind::Warning | Kind::ConfirmOkCancel | Kind::ConfirmOkCancelOnTop => MessageLevel::Warning,
+        Kind::Warning | Kind::ConfirmOkCancel | Kind::ConfirmClose | Kind::ConfirmOkCancelOnTop => MessageLevel::Warning,
         Kind::Error => MessageLevel::Error,
     };
     let row = match buttons(kind) {
@@ -43,13 +43,14 @@ fn show(title: &str, body: &str, kind: Kind) -> Answer {
     }
 }
 
-/// What a question answers when no box can be drawn. A close confirmation says OK so the window
-/// can still be closed; the others take the answer that changes nothing.
+/// What a question answers when no box can be drawn. A close or quit question says OK so the
+/// window can still be closed; the others (an erase, a force detach) take the answer that changes
+/// nothing.
 fn safe_answer(kind: Kind) -> Answer {
     match kind {
-        Kind::ConfirmOkCancel | Kind::ConfirmOkCancelOnTop => Answer::Ok,
+        Kind::ConfirmClose | Kind::ConfirmOkCancelOnTop => Answer::Ok,
         Kind::AskYesNo => Answer::No,
-        Kind::AskOkCancel => Answer::Cancel,
+        Kind::AskOkCancel | Kind::ConfirmOkCancel => Answer::Cancel,
         Kind::Info | Kind::Warning | Kind::Error => Answer::Ok,
     }
 }
@@ -92,9 +93,14 @@ mod tests {
 
     #[test]
     fn a_question_with_no_box_never_traps_a_close() {
-        assert_eq!(safe_answer(Kind::ConfirmOkCancel), Answer::Ok);
+        assert_eq!(safe_answer(Kind::ConfirmClose), Answer::Ok);
         assert_eq!(safe_answer(Kind::ConfirmOkCancelOnTop), Answer::Ok);
         assert_eq!(safe_answer(Kind::AskYesNo), Answer::No);
         assert_eq!(safe_answer(Kind::AskOkCancel), Answer::Cancel);
+    }
+
+    #[test]
+    fn a_destructive_question_with_no_box_changes_nothing() {
+        assert_eq!(safe_answer(Kind::ConfirmOkCancel), Answer::Cancel);
     }
 }

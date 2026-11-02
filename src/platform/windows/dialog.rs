@@ -36,7 +36,7 @@ pub fn message(owner: Option<isize>, title: &str, body: &str, kind: Kind) -> Ans
         Kind::Error => MB_OK | MB_ICONERROR,
         Kind::AskYesNo => MB_YESNO | MB_ICONQUESTION,
         Kind::AskOkCancel => MB_OKCANCEL | MB_ICONQUESTION,
-        Kind::ConfirmOkCancel => MB_OKCANCEL | MB_ICONWARNING,
+        Kind::ConfirmOkCancel | Kind::ConfirmClose => MB_OKCANCEL | MB_ICONWARNING,
         Kind::ConfirmOkCancelOnTop => MB_OKCANCEL | MB_ICONWARNING | MB_TOPMOST,
     };
     match show(owner, title, body, style) {

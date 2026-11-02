@@ -24,6 +24,9 @@ pub enum Kind {
     AskOkCancel,
     /// OK and Cancel, warning icon.
     ConfirmOkCancel,
+    /// OK and Cancel, warning icon, asking whether to close or quit. Drawn like `ConfirmOkCancel`;
+    /// where no box can be drawn it answers OK so the window can still be closed.
+    ConfirmClose,
     /// OK and Cancel, warning icon, on top of everything and in front (a box of a thread that owns
     /// no window).
     ConfirmOkCancelOnTop,
@@ -51,7 +54,7 @@ pub fn buttons(kind: Kind) -> Buttons {
     match kind {
         Kind::Info | Kind::Warning | Kind::Error => Buttons::Ok,
         Kind::AskYesNo => Buttons::YesNo,
-        Kind::AskOkCancel | Kind::ConfirmOkCancel | Kind::ConfirmOkCancelOnTop => Buttons::OkCancel,
+        Kind::AskOkCancel | Kind::ConfirmOkCancel | Kind::ConfirmClose | Kind::ConfirmOkCancelOnTop => Buttons::OkCancel,
     }
 }
 

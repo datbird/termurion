@@ -122,7 +122,7 @@ impl App {
         let (names, notes) = self.job_names(&panes);
         let notes: Vec<String> = pinned.into_iter().chain(notes).chain(group_note).collect();
         let body = close_rules::with_notes(close_rules::body(close_rules::subject(kind, panes.len(), panes.iter().any(|id| self.panes.get(id).is_some_and(|p| p.locked))), &close_rules::counted(&names)), &notes);
-        confirm(self.hwnd(), &title, &body)
+        confirm_close_box(self.hwnd(), &title, &body)
     }
 
     /// Why a quit asks (and so a shutdown): the sessions' reasons, the Closing settings and every
@@ -170,7 +170,7 @@ pub(super) fn confirm_quit(owner: Option<isize>, topmost: bool, reasons: &[close
     let (body, why) = close_rules::quit_parts(reasons, keep);
     crate::platform::dialog::confirm_with_disclosure(owner, topmost, "Quit Termurion?", &body, crate::platform::dialog::WHY_PROMPT, &why).unwrap_or_else(|| {
         let text = close_rules::quit_text(reasons, keep);
-        if topmost { confirm_on_top("Quit Termurion?", &text) } else { confirm(owner, "Quit Termurion?", &text) }
+        if topmost { confirm_on_top("Quit Termurion?", &text) } else { confirm_close_box(owner, "Quit Termurion?", &text) }
     })
 }
 
@@ -178,6 +178,12 @@ pub(super) fn confirm_quit(owner: Option<isize>, topmost: bool, reasons: &[close
 /// top and in front (no owner, so no window of the app thread is tied to it); true for OK.
 pub(super) fn confirm_on_top(title: &str, text: &str) -> bool {
     crate::platform::dialog::message(None, title, text, crate::platform::dialog::Kind::ConfirmOkCancelOnTop) == crate::platform::dialog::Answer::Ok
+}
+
+/// The close or quit question; true for OK. Drawn like `confirm`, but where no box can be drawn
+/// it answers OK so the window can still be closed.
+fn confirm_close_box(owner: Option<isize>, title: &str, text: &str) -> bool {
+    crate::platform::dialog::message(owner, title, text, crate::platform::dialog::Kind::ConfirmClose) == crate::platform::dialog::Answer::Ok
 }
 
 /// An OK and Cancel question; true for OK.
