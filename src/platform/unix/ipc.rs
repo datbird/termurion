@@ -26,6 +26,11 @@ fn euid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
+/// The one decision on a peer: the same user as `own`, or refused.
+fn same_user(peer_uid: u32, own: u32) -> Result<(), String> {
+    if peer_uid == own { Ok(()) } else { Err(format!("the peer runs as user {peer_uid}, not this user")) }
+}
+
 fn errno_is(e: &std::io::Error, codes: &[i32]) -> bool {
     e.raw_os_error().is_some_and(|c| codes.contains(&c))
 }
@@ -35,7 +40,7 @@ fn errno_is(e: &std::io::Error, codes: &[i32]) -> bool {
 pub fn runtime_dir_from(xdg: Option<&Path>, tmp: &Path, euid: u32) -> PathBuf {
     if let Some(x) = xdg
         && x.is_absolute()
-        && std::fs::symlink_metadata(x).is_ok_and(|m| m.file_type().is_dir() && m.uid() == euid)
+        && std::fs::symlink_metadata(x).is_ok_and(|m| m.file_type().is_dir() && m.uid() == euid && m.mode() & 0o022 == 0)
     {
         return x.join("termurion");
     }
@@ -53,11 +58,24 @@ pub fn check_private(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The folder that will hold the runtime folder must not let another user rename ours away: not
+/// group or other writable, unless it is sticky (/tmp). A link to such a folder (macOS /tmp) is followed.
+pub fn check_parent(parent: &Path) -> Result<(), String> {
+    let m = std::fs::metadata(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    if !m.is_dir() || (m.mode() & 0o022 != 0 && m.mode() & 0o1000 == 0) {
+        return Err(format!("{} lets other users rename folders in it", parent.display()));
+    }
+    Ok(())
+}
+
 /// The runtime folder, made 0700 when missing and checked either way.
 pub fn runtime_dir() -> Result<PathBuf, String> {
     let xdg = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
     let tmp = std::env::var_os("TMPDIR").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| PathBuf::from("/tmp"));
     let dir = runtime_dir_from(xdg.as_deref(), &tmp, euid());
+    if let Some(parent) = dir.parent() {
+        check_parent(parent)?;
+    }
     // The mode goes to mkdir itself, so there is no moment the folder is more open than 0700.
     match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
         Ok(()) => {}
@@ -197,6 +215,57 @@ pub struct Listener {
     path: PathBuf,
     /// The file it bound, so drop only removes its own.
     id: (u64, u64),
+    /// The held `<name>.lock`: one host per name, whatever the probe below sees.
+    _lock: HostLock,
+}
+
+/// An exclusive flock on `<socket>.lock`, held from before the stale probe until drop. With it,
+/// probe, unlink and bind cannot interleave with another host of this user.
+struct HostLock {
+    _fd: OwnedFd,
+    path: PathBuf,
+}
+
+impl HostLock {
+    fn take(socket: &Path) -> Result<HostLock, String> {
+        let mut lock_path = socket.as_os_str().to_owned();
+        lock_path.push(".lock");
+        let lock_path = PathBuf::from(lock_path);
+        let c = std::ffi::CString::new(lock_path.as_os_str().as_bytes()).map_err(|_| format!("{} holds a NUL", lock_path.display()))?;
+        // A holder that unlinks its file at drop may leave us a file nobody else sees: retry on that.
+        for _ in 0..8 {
+            let raw = unsafe { libc::open(c.as_ptr(), libc::O_RDWR | libc::O_CREAT | libc::O_CLOEXEC | libc::O_NOFOLLOW, 0o600 as libc::c_uint) };
+            if raw < 0 {
+                return Err(format!("could not open {}: {}", lock_path.display(), std::io::Error::last_os_error()));
+            }
+            let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+            if unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } < 0 {
+                let e = std::io::Error::last_os_error();
+                if errno_is(&e, &[libc::EWOULDBLOCK, libc::EAGAIN]) {
+                    return Err(format!("another session host is already listening at {}", socket.display()));
+                }
+                return Err(format!("could not lock {}: {e}", lock_path.display()));
+            }
+            // Still the file at the path (not unlinked by the last holder while we waited)?
+            let mut st: libc::stat = unsafe { std::mem::zeroed() };
+            if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } < 0 {
+                return Err(format!("{}: {}", lock_path.display(), std::io::Error::last_os_error()));
+            }
+            let mine = (st.st_dev as u64, st.st_ino as u64);
+            match std::fs::symlink_metadata(&lock_path) {
+                Ok(m) if (m.dev(), m.ino()) == mine => return Ok(HostLock { _fd: fd, path: lock_path }),
+                _ => continue,
+            }
+        }
+        Err(format!("could not lock {}", lock_path.display()))
+    }
+}
+
+impl Drop for HostLock {
+    fn drop(&mut self) {
+        // Removed while still locked, so the next host makes a fresh file.
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// Why `connect_owned` failed.
@@ -217,6 +286,7 @@ impl Listener {
     pub fn bind(name: &str) -> Result<Listener, String> {
         let path = resolve(name)?;
         let (sa, len) = addr_for(&path)?;
+        let lock = HostLock::take(&path)?;
         let fd = new_socket().map_err(|e| format!("socket failed: {e}"))?;
         let mut replaced = false;
         loop {
@@ -230,7 +300,8 @@ impl Listener {
             replaced = true;
             match try_connect(&sa, len) {
                 Ok(_) => return Err(format!("another session host is already listening at {}", path.display())),
-                // A full backlog still means somebody listens.
+                // A full backlog is EAGAIN on Linux; macOS answers ECONNREFUSED instead, which is why
+                // the held lock above, not this probe, is what keeps a live host's socket safe.
                 Err(c) if errno_is(&c, &[libc::EAGAIN]) => return Err(format!("another session host is already listening at {}", path.display())),
                 Err(c) if errno_is(&c, &[libc::ECONNREFUSED, libc::ENOENT]) => {}
                 Err(c) => return Err(format!("could not look at {}: {c}", path.display())),
@@ -249,7 +320,7 @@ impl Listener {
             }
         }
         let id = file_id(&path).ok_or_else(|| format!("{} is not the socket just bound", path.display()))?;
-        let l = Listener { fd, path, id };
+        let l = Listener { fd, path, id, _lock: lock };
         if unsafe { libc::listen(l.fd.as_raw_fd(), 16) } < 0 {
             return Err(format!("listen failed: {}", std::io::Error::last_os_error()));
         }
@@ -278,12 +349,8 @@ impl Listener {
         // Sockets accepted from a non-blocking listener may inherit that (BSD).
         set_nonblocking(fd.as_raw_fd(), false).map_err(|e| format!("fcntl failed: {e}"))?;
         let pipe = Pipe { fd };
-        match pipe.peer_ids() {
-            Ok((uid, _)) if uid == euid() => Ok(Some(pipe)),
-            Ok((uid, _)) => {
-                crate::host_base::log(&format!("host: dropped a connection from user {uid}"));
-                Ok(None)
-            }
+        match pipe.peer_ids().and_then(|(uid, _)| same_user(uid, euid())) {
+            Ok(()) => Ok(Some(pipe)),
             Err(e) => {
                 crate::host_base::log(&format!("host: dropped a connection, {e}"));
                 Ok(None)
@@ -409,7 +476,7 @@ impl Pipe {
     /// Ok when the other end runs as this user.
     pub fn server_is_this_user(&self) -> Result<(), String> {
         let (uid, _) = self.peer_ids()?;
-        if uid == euid() { Ok(()) } else { Err("the session host belongs to another user".to_string()) }
+        same_user(uid, euid()).map_err(|_| "the session host belongs to another user".to_string())
     }
 }
 
@@ -444,8 +511,10 @@ pub fn connect(name: &str, wait: Duration) -> Result<Option<Pipe>, String> {
 pub fn connect_owned(name: &str, wait: Duration) -> Result<Option<Pipe>, ConnectError> {
     let Some(pipe) = connect(name, wait).map_err(ConnectError::Other)? else { return Ok(None) };
     match pipe.peer_ids() {
-        Ok((uid, _)) if uid == euid() => Ok(Some(pipe)),
-        Ok(_) => Err(ConnectError::Denied("the session host belongs to another user".to_string())),
+        Ok((uid, _)) => match same_user(uid, euid()) {
+            Ok(()) => Ok(Some(pipe)),
+            Err(_) => Err(ConnectError::Denied("the session host belongs to another user".to_string())),
+        },
         Err(e) => Err(ConnectError::Other(e)),
     }
 }
@@ -512,12 +581,76 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    /// A scratch path removed when it goes out of scope, even after a failed assert.
+    struct Scratch(PathBuf);
+
+    impl std::ops::Deref for Scratch {
+        type Target = PathBuf;
+        fn deref(&self) -> &PathBuf {
+            &self.0
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            if std::fs::symlink_metadata(&self.0).is_ok_and(|m| m.is_dir()) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            } else {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+    }
+
     /// A fresh scratch folder with the given mode.
-    fn scratch(mode: u32) -> PathBuf {
+    fn scratch(mode: u32) -> Scratch {
         let d = std::env::temp_dir().join(test_name("dir"));
         std::fs::DirBuilder::new().mode(mode).create(&d).unwrap();
         std::fs::set_permissions(&d, std::os::unix::fs::PermissionsExt::from_mode(mode)).unwrap();
-        d
+        Scratch(d)
+    }
+
+    #[test]
+    fn only_the_same_user_is_admitted() {
+        assert!(same_user(1000, 1000).is_ok());
+        assert!(same_user(0, 0).is_ok());
+        assert!(same_user(1001, 1000).is_err(), "a different uid is refused");
+        assert!(same_user(0, 1000).is_err(), "even root is not this user");
+        assert!(same_user(1000, 0).is_err());
+    }
+
+    #[test]
+    fn two_binders_leave_exactly_one_winner() {
+        for round in 0..20 {
+            let name = test_name(&format!("race{round}"));
+            let path = runtime_dir().unwrap().join(&name);
+            let gate = Arc::new(std::sync::Barrier::new(2));
+            let run = |gate: Arc<std::sync::Barrier>, name: String| {
+                std::thread::spawn(move || {
+                    gate.wait();
+                    Listener::bind(&name)
+                })
+            };
+            let (a, b) = (run(gate.clone(), name.clone()), run(gate, name.clone()));
+            let (a, b) = (a.join().unwrap(), b.join().unwrap());
+            let winners: Vec<&Listener> = [&a, &b].into_iter().filter_map(|r| r.as_ref().ok()).collect();
+            assert_eq!(winners.len(), 1, "exactly one host wins ({:?} / {:?})", a.as_ref().err(), b.as_ref().err());
+            assert_eq!(file_id(&path), Some(winners[0].id), "the path keeps the winner's socket");
+            let loser = if a.is_err() { a.err() } else { b.err() }.unwrap();
+            assert!(loser.contains("already listening"), "{loser}");
+        }
+    }
+
+    #[test]
+    fn a_world_writable_parent_is_refused() {
+        let open = scratch(0o777);
+        assert!(check_parent(&open).unwrap_err().contains("rename"));
+        let sticky = scratch(0o700);
+        std::fs::set_permissions(&*sticky, std::os::unix::fs::PermissionsExt::from_mode(0o1777)).unwrap();
+        check_parent(&sticky).unwrap();
+        let private = scratch(0o700);
+        check_parent(&private).unwrap();
+        // An XDG folder others can write into is not trusted either.
+        assert_ne!(runtime_dir_from(Some(&open), Path::new("/tmp"), euid()), open.join("termurion"));
     }
 
     #[test]
@@ -592,15 +725,12 @@ mod tests {
         assert!(e.contains("is not a private folder of this user") && e.contains(&open.display().to_string()), "{e}");
         let private = scratch(0o700);
         check_private(&private).unwrap();
-        let link = std::env::temp_dir().join(test_name("link"));
-        std::os::unix::fs::symlink(&private, &link).unwrap();
+        let link = Scratch(std::env::temp_dir().join(test_name("link")));
+        std::os::unix::fs::symlink(&*private, &*link).unwrap();
         assert!(check_private(&link).is_err(), "a link to a private folder is refused");
         let file = private.join("f");
         std::fs::write(&file, b"").unwrap();
         assert!(check_private(&file).is_err(), "a file is not a folder");
-        std::fs::remove_file(&link).unwrap();
-        std::fs::remove_dir_all(&private).unwrap();
-        std::fs::remove_dir(&open).unwrap();
     }
 
     #[test]
@@ -609,15 +739,13 @@ mod tests {
         assert_eq!(std::fs::symlink_metadata(&dir).unwrap().mode() & 0o077, 0);
         // A link where a socket should be is refused, whatever it points to.
         let name = test_name("plant");
-        let target = std::env::temp_dir().join(test_name("target"));
-        let _real = std::os::unix::net::UnixListener::bind(&target).unwrap();
-        let link = dir.join(&name);
-        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let target = Scratch(std::env::temp_dir().join(test_name("target")));
+        let _real = std::os::unix::net::UnixListener::bind(&*target).unwrap();
+        let link = Scratch(dir.join(&name));
+        std::os::unix::fs::symlink(&*target, &*link).unwrap();
         assert!(connect(&name, Duration::ZERO).is_err(), "connect does not follow a link");
         assert!(Listener::bind(&name).is_err(), "bind does not replace a link");
-        assert!(std::fs::symlink_metadata(&link).is_ok());
-        std::fs::remove_file(&link).unwrap();
-        std::fs::remove_file(&target).unwrap();
+        assert!(std::fs::symlink_metadata(&*link).is_ok());
     }
 
     #[test]
@@ -632,7 +760,6 @@ mod tests {
         assert_eq!(runtime_dir_from(Some(&mine.join("missing")), tmp, uid), fallback, "a missing folder is not trusted");
         let other = uid.wrapping_add(1);
         assert_eq!(runtime_dir_from(Some(&mine), Path::new("/var/t"), other), PathBuf::from(format!("/var/t/termurion-{other}")), "a folder of someone else is not trusted");
-        std::fs::remove_dir(&mine).unwrap();
     }
 
     #[test]

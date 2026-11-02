@@ -43,6 +43,12 @@ pub fn load_for_app(exe_dir: &std::path::Path) -> Result<(PtyApi, Option<String>
     imp::load_for_app(exe_dir)
 }
 
+/// Runs a process spawn with no other spawn of ours in flight where that matters (Unix: the gate
+/// that keeps a freshly made descriptor from leaking into a child); Windows needs none.
+pub fn spawn_gated<T>(f: impl FnOnce() -> T) -> T {
+    imp::spawn_gated(f)
+}
+
 /// The loaded library has its pack (the default-terminal rule); never on Unix.
 pub fn api_has_pack(api: &PtyApi) -> bool {
     imp::api_has_pack(api)

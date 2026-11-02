@@ -1278,6 +1278,11 @@ pub(crate) mod tests {
     }
 }
 
+/// Windows needs no gate: handles are made inheritable per call, never by default.
+pub fn spawn_gated<T>(f: impl FnOnce() -> T) -> T {
+    f()
+}
+
 /// The ConPTY shipped beside the exe, else the copy built into Windows.
 pub fn load_for_app(exe_dir: &std::path::Path) -> Result<(super::conpty::Api, Option<String>), String> {
     use super::conpty::{self, Source};

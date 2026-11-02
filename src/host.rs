@@ -274,7 +274,8 @@ fn reopen_app(exe: &std::path::Path) -> Result<(), String> {
     if let Some(home) = crate::platform::paths::home_dir() {
         cmd.current_dir(home);
     }
-    cmd.spawn().map(drop).map_err(|e| format!("{}: {e}", exe.display()))
+    // Under the spawn gate, so a descriptor made on another thread is never inherited (macOS).
+    crate::platform::pty::spawn_gated(|| cmd.spawn()).map(drop).map_err(|e| format!("{}: {e}", exe.display()))
 }
 
 /// Moves a session's new output into its ring and to the attached Termurion.

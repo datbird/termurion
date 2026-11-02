@@ -215,7 +215,8 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("bin");
         let host = crate::host_base::host_exe();
         for exe in [host.as_str(), crate::utilities::EXE, crate::git_wrapper::WRAPPER_EXE] {
-            let stem = exe.strip_suffix(".exe").unwrap_or(exe);
+            // Windows names must carry .exe; elsewhere the host has none.
+            let stem = if crate::platform::IS_WINDOWS { exe.strip_suffix(".exe").expect("an exe name") } else { exe.strip_suffix(".exe").unwrap_or(exe) };
             assert!(dir.join(format!("{stem}.rs")).is_file(), "{exe} has no src/bin/{stem}.rs");
         }
         assert_eq!(crate::util_cli::EXE_STEM, crate::utilities::EXE.trim_end_matches(".exe"));

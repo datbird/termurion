@@ -47,6 +47,11 @@ static REGISTRY: Mutex<Option<HashMap<u32, Arc<OwnedFd>>>> = Mutex::new(None);
 static SPAWN_LOCK: Mutex<()> = Mutex::new(());
 
 /// The spawn gate, for any other code that makes a descriptor which must not leak into a child.
+pub fn spawn_gated<T>(f: impl FnOnce() -> T) -> T {
+    let _gate = spawn_gate();
+    f()
+}
+
 pub(super) fn spawn_gate() -> std::sync::MutexGuard<'static, ()> {
     SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
