@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::vte::ansi::{CharsetIndex, Handler, StandardCharset};
-use muda::{CheckMenuItem, ContextMenu, Icon, IconMenuItem, IsMenuItem, Menu, MenuItem, MenuTheme, PredefinedMenuItem, Submenu};
+use muda::{CheckMenuItem, Icon, IconMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use winit::event_loop::ActiveEventLoop;
 
 use super::*;
@@ -335,12 +335,11 @@ impl App {
         // after the new one is attached, muda takes the window's menu away, the new bar with it.
         let earlier = self.menu_bar.take().map(|b| b.menu);
         self.menu_refused = None;
-        if let Err(e) = unsafe { replace_menu_bar(earlier, &menu, hwnd, self.want_menu_hidden()) } {
+        if let Err(e) = crate::platform::chrome::replace_menu_bar(earlier, &menu, hwnd, self.want_menu_hidden()) {
             self.banners.set("menu", format!("Could not attach the menu bar: {e}"));
         }
         // Tips beside highlighted items, after the delay `MenuTipDelay` sets (iTerm2 reads it per tip).
-        #[cfg(windows)]
-        crate::menu_tip_win::install(hwnd, crate::menu_tips::delay_of(self.globals.number("MenuTipDelay").unwrap_or(1.0)));
+        crate::platform::chrome::install_menu_tips(hwnd, crate::menu_tips::delay_of(self.globals.number("MenuTipDelay").unwrap_or(1.0)));
 
         let proxy = self.proxy.clone();
         muda::MenuEvent::set_event_handler(Some(move |e: muda::MenuEvent| {
@@ -432,7 +431,7 @@ impl App {
         if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
             self.banners.set("menu", format!("Context menu: {e}"));
         }
-        unsafe { context.show_context_menu_for_hwnd(hwnd, None) };
+        crate::platform::chrome::popup(&context, hwnd, None);
         self.popup_menu = Some(context);
     }
 
@@ -522,7 +521,7 @@ impl App {
         if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
             self.banners.set("menu", format!("{what}: {e}"));
         }
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        crate::platform::chrome::popup(&menu, hwnd, None);
         self.popup_menu = Some(menu);
     }
 
@@ -546,7 +545,7 @@ impl App {
         if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
             self.banners.set("menu", format!("Language menu: {e}"));
         }
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        crate::platform::chrome::popup(&menu, hwnd, None);
         self.popup_menu = Some(menu);
     }
 
@@ -571,7 +570,7 @@ impl App {
         if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
             self.banners.set("menu", format!("Tab menu: {e}"));
         }
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        crate::platform::chrome::popup(&menu, hwnd, None);
         self.popup_menu = Some(menu);
     }
 
@@ -594,7 +593,7 @@ impl App {
             self.banners.set("menu", format!("Tab Color menu: {e}"));
         }
         self.color_pick = Some((target, swatches));
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        crate::platform::chrome::popup(&menu, hwnd, None);
         self.popup_menu = Some(menu);
     }
 
@@ -645,8 +644,12 @@ impl App {
                     ColorTarget::Tab(id) => self.tabs.iter().find(|t| t.id == *id).and_then(|t| self.tab_look(t).color),
                     ColorTarget::Group(g) => self.tabs.iter().find_map(|t| t.group.as_ref().filter(|x| x.id == *g)).map(|x| x.color),
                 };
-                if let Some(c) = self.hwnd().and_then(|h| choose_color(h, current, &swatches)) {
-                    self.apply_picked_color(target, Some(c));
+                if let Some(h) = self.hwnd() {
+                    match crate::platform::dialog::choose_color(h, current, &swatches) {
+                        Ok(Some(c)) => self.apply_picked_color(target, Some(c)),
+                        Ok(None) => {}
+                        Err(e) => self.banners.set("menu", e.to_string()),
+                    }
                 }
             }
         }
@@ -821,7 +824,7 @@ impl App {
             return self.open_profile_from_menu(guid);
         }
         if let Some(path) = id.strip_prefix(PROFILE_ALL_ID) {
-            let alt = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x12) } < 0;
+            let alt = crate::platform::input::alt_down();
             return self.open_all_from_menu(path, alt);
         }
         if self.snippet_or_action_picked(id, event_loop) || self.toolbelt_picked(id, event_loop) {
@@ -1500,124 +1503,7 @@ fn swatch_icon(c: crate::palette::Rgb) -> Option<Icon> {
     Icon::from_rgba([c.r, c.g, c.b, 0xff].repeat(16 * 16), 16, 16).ok()
 }
 
-/// Windows' color dialog, fully open, starting at `initial` with `swatches` (the first 16)
-/// as its custom colors. None on Cancel.
-fn choose_color(hwnd: isize, initial: Option<crate::palette::Rgb>, swatches: &[crate::palette::Rgb]) -> Option<crate::palette::Rgb> {
-    use windows_sys::Win32::UI::Controls::Dialogs::{CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW, ChooseColorW};
-    let colorref = |c: &crate::palette::Rgb| c.r as u32 | (c.g as u32) << 8 | (c.b as u32) << 16;
-    let mut custom = [0x00ff_ffffu32; 16];
-    for (slot, c) in custom.iter_mut().zip(swatches) {
-        *slot = colorref(c);
-    }
-    let mut cc: CHOOSECOLORW = unsafe { std::mem::zeroed() };
-    cc.lStructSize = std::mem::size_of::<CHOOSECOLORW>() as u32;
-    cc.hwndOwner = hwnd as _;
-    cc.lpCustColors = custom.as_mut_ptr();
-    cc.Flags = CC_FULLOPEN;
-    if let Some(c) = initial {
-        cc.rgbResult = colorref(&c);
-        cc.Flags |= CC_RGBINIT;
-    }
-    if unsafe { ChooseColorW(&mut cc) } == 0 {
-        return None;
-    }
-    let v = cc.rgbResult;
-    Some(crate::palette::rgb(v as u8, (v >> 8) as u8, (v >> 16) as u8))
-}
 
-
-/// Attaches `menu` as `hwnd`'s menu bar after taking `earlier` (the window's bar so far) off it.
-/// The order matters: muda's drop of a menu clears the menu of every window it was on, so an
-/// earlier bar dropped after the new one is attached leaves the window with no menu bar.
-///
-/// # Safety
-/// `hwnd` is a live window of this thread.
-///
-/// A bar for a window that is to hide it (`hide`: Minimal, Compact, full screen) is taken off
-/// again at once, so it is never attached while the app believes it hidden.
-unsafe fn replace_menu_bar(earlier: Option<Menu>, menu: &Menu, hwnd: isize, hide: bool) -> muda::Result<()> {
-    if let Some(old) = earlier {
-        // Not on this window (another window's bar): its drop takes it off that one.
-        let _ = unsafe { old.remove_for_hwnd(hwnd) };
-        drop(old);
-    }
-    unsafe { menu.init_for_hwnd_with_theme(hwnd, MenuTheme::Auto) }?;
-    if hide {
-        unsafe { menu.hide_for_hwnd(hwnd) }?;
-    }
-    Ok(())
-}
-
-/// The resident wake's menu bar (TWEAKS 8 follow-up): a window that gets a second bar keeps it.
-#[cfg(test)]
-mod menu_bar_replace_tests {
-    use super::*;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, GetMenu};
-
-    fn window() -> isize {
-        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
-        // SAFETY: a hidden window of the system's STATIC class on this thread, destroyed by the test.
-        let w = unsafe { CreateWindowExW(0, class.as_ptr(), std::ptr::null(), 0, 0, 0, 10, 10, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null()) };
-        assert!(!w.is_null());
-        w as isize
-    }
-
-    fn bar() -> Menu {
-        let m = Menu::new();
-        let shell = Submenu::new("Shell", true);
-        shell.append(&MenuItem::new("New Window", true, None)).unwrap();
-        m.append(&shell).unwrap();
-        m
-    }
-
-    #[test]
-    fn a_second_bar_stays_on_the_window() {
-        let w = window();
-        let first = bar();
-        unsafe { first.init_for_hwnd(w) }.unwrap();
-        let second = bar();
-        unsafe { replace_menu_bar(Some(first), &second, w, false) }.unwrap();
-        assert!(!unsafe { GetMenu(w as _) }.is_null(), "the new bar is on the window after the old one is gone");
-        drop(second);
-        unsafe { DestroyWindow(w as _) };
-    }
-
-    /// The failure this guards against: attaching first and dropping the old bar after.
-    #[test]
-    fn dropping_the_old_bar_after_attaching_clears_the_window() {
-        let w = window();
-        let first = bar();
-        unsafe { first.init_for_hwnd(w) }.unwrap();
-        let second = bar();
-        unsafe { second.init_for_hwnd(w) }.unwrap();
-        drop(first);
-        assert!(unsafe { GetMenu(w as _) }.is_null(), "muda's drop takes the window's menu away");
-        drop(second);
-        unsafe { DestroyWindow(w as _) };
-    }
-
-    /// A bar built for a window that is to hide it never shows: it is detached as it attaches.
-    #[test]
-    fn a_rebuilt_bar_for_a_hidden_window_stays_off_it() {
-        let w = window();
-        let first = bar();
-        unsafe { first.init_for_hwnd(w) }.unwrap();
-        let second = bar();
-        unsafe { replace_menu_bar(Some(first), &second, w, true) }.unwrap();
-        assert!(unsafe { GetMenu(w as _) }.is_null(), "no bar on the window");
-        assert!(unsafe { second.show_for_hwnd(w) }.is_ok(), "but the bar is still the window's, to be shown again");
-        assert!(!unsafe { GetMenu(w as _) }.is_null());
-        drop(second);
-        unsafe { DestroyWindow(w as _) };
-    }
-
-    #[test]
-    fn install_menus_replaces_through_the_helper() {
-        let src = include_str!("menu.rs");
-        let body = src.split("pub(super) fn install_menus").nth(1).unwrap().split("muda::MenuEvent::set_event_handler").next().unwrap();
-        assert!(body.contains("replace_menu_bar(earlier, &menu, hwnd, self.want_menu_hidden())") && !body.contains("menu.init_for_hwnd"));
-    }
-}
 
 #[cfg(test)]
 mod color_picker_tests {

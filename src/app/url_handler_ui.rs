@@ -110,11 +110,7 @@ impl App {
         let result = handle(&template, url, background, &lookup, lax, &resolve, &mut |program, args| {
             let mut cmd = std::process::Command::new(program);
             cmd.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x0800_0000);
-            }
+            crate::platform::proc::hide_console(&mut cmd);
             if let Some(d) = dir.as_deref().and_then(|d| crate::localfs::LocalPath::semantic(&d.to_string_lossy(), &probe)) {
                 crate::localfs::set_cwd(&mut cmd, &d);
             }

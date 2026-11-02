@@ -3,7 +3,7 @@
 
 use winit::window::Window;
 
-use super::super::window::Show;
+use super::super::window::{Flash, Show};
 use crate::layout::Rect;
 
 pub fn hwnd_of(_window: &Window) -> Option<isize> {
@@ -55,4 +55,10 @@ pub fn monitor_rects(_hwnd: isize) -> Option<(Rect, Rect)> {
 
 pub fn placement(_hwnd: isize) -> Option<(u32, u32, [i32; 4], (i32, i32))> {
     None
+}
+
+pub fn flash(_hwnd: isize, _how: Flash) {}
+
+pub fn is_arranged(_hwnd: isize) -> bool {
+    false
 }

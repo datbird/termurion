@@ -243,7 +243,6 @@ pub fn now_millis() -> u64 {
 
 /// The per-launch wire log file under `%APPDATA%\Termurion\AIChatWire\`, opened on the first record
 /// written while the setting is on; a failure to open disables it for the launch (`WL:157-189`).
-#[cfg(windows)]
 pub struct WireLog {
     dir: std::path::PathBuf,
     file: Option<std::fs::File>,
@@ -251,14 +250,12 @@ pub struct WireLog {
     attempted: bool,
 }
 
-#[cfg(windows)]
 impl Default for WireLog {
     fn default() -> WireLog {
         WireLog::new()
     }
 }
 
-#[cfg(windows)]
 impl WireLog {
     pub fn new() -> WireLog {
         let data = crate::globals::default_path().parent().map(std::path::Path::to_path_buf).unwrap_or_default();
@@ -304,19 +301,13 @@ impl WireLog {
     }
 }
 
-/// One verbose console line, "Termurion AI: <line>", for DebugView or a debugger (Decision 6); a
-/// no-op when disabled and off Windows.
+/// One verbose console line, "Termurion AI: <line>", for DebugView or a debugger (Decision 6); the
+/// debug output is stderr on Unix. Nothing when disabled.
 pub fn console(enabled: bool, line: &str) {
     if !enabled {
         return;
     }
-    #[cfg(windows)]
-    {
-        let wide: Vec<u16> = format!("Termurion AI: {line}\n").encode_utf16().chain(std::iter::once(0)).collect();
-        unsafe { windows_sys::Win32::System::Diagnostics::Debug::OutputDebugStringW(wide.as_ptr()) };
-    }
-    #[cfg(not(windows))]
-    let _ = line;
+    crate::platform::proc::debug_line(&format!("Termurion AI: {line}"));
 }
 
 #[cfg(test)]
@@ -463,7 +454,6 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
     #[test]
     fn wire_log_opens_one_file_on_the_first_record() {
         let dir = std::env::temp_dir().join(format!("termurion-wire-log-test-{}", std::process::id()));

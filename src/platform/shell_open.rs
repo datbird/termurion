@@ -18,10 +18,23 @@ pub fn open_with(target: &str, background: bool) -> Result<(), String> {
     imp::open_url(&url, background)
 }
 
+/// Hands an already judged and percent-encoded link of another app's scheme to the app the OS
+/// registered for it (`background` asks it not to take the focus). Only `semantic_ui::shell_open_scheme`
+/// calls it, after `link_scheme::screen`.
+pub fn open_scheme(encoded_url: &str, background: bool) -> Result<(), String> {
+    imp::open_scheme(encoded_url, background)
+}
+
 /// Shows `path` selected in the file manager (Explorer on Windows); nothing runs it. The caller passes
 /// a path Termurion made or judged. Unix reports Unsupported until a file manager call exists (P1).
 pub fn reveal(path: &str) -> Result<(), String> {
     imp::reveal(path)
+}
+
+/// Shows the finished items together in the file manager: one path selected in its folder, several
+/// selected together in their common folder. Nothing runs them; the caller passes paths Termurion made.
+pub fn reveal_all(paths: &[std::path::PathBuf]) -> Result<(), String> {
+    imp::reveal_all(paths)
 }
 
 #[cfg(test)]

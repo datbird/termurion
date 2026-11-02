@@ -20,3 +20,13 @@ pub fn first_mouse_watch(_hwnd: isize) {}
 
 /// As `first_mouse_watch`.
 pub fn first_mouse_forget(_hwnd: isize) {}
+
+/// No first-mouse mark on Unix.
+pub fn first_mouse_take(_hwnd: isize) -> bool {
+    false
+}
+
+/// The desktop's scroll direction is not read yet.
+pub fn touchpad_natural() -> bool {
+    false
+}

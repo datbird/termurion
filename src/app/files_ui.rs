@@ -65,26 +65,9 @@ fn writable_folder(dir: &std::path::Path) -> bool {
     made
 }
 
-/// The folder Windows keeps Downloads in for this user.
-#[cfg(windows)]
+/// The folder the OS keeps Downloads in for this user.
 fn known_downloads() -> Option<std::path::PathBuf> {
-    use windows_sys::Win32::System::Com::CoTaskMemFree;
-    use windows_sys::Win32::UI::Shell::{FOLDERID_Downloads, SHGetKnownFolderPath};
-    let mut out: windows_sys::core::PWSTR = std::ptr::null_mut();
-    // SAFETY: `out` receives a CoTaskMem string that is freed below.
-    let hr = unsafe { SHGetKnownFolderPath(&FOLDERID_Downloads, 0, std::ptr::null_mut(), &mut out) };
-    if hr < 0 || out.is_null() {
-        return None;
-    }
-    let len = (0..).take_while(|&i| unsafe { *out.add(i) } != 0).count();
-    let path = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(out, len) });
-    unsafe { CoTaskMemFree(out as _) };
-    Some(path.into())
-}
-
-#[cfg(not(windows))]
-fn known_downloads() -> Option<std::path::PathBuf> {
-    None
+    crate::platform::shellfs::downloads()
 }
 
 pub(super) fn downloads(override_path: &str) -> Downloads {

@@ -90,7 +90,7 @@ impl App {
     /// One attempt on API number `api` of the start-up order.
     fn recover_gpu(&mut self, api: usize, now: Instant) {
         let forced = std::env::var(gpu_pick::FORCE_ENV).ok();
-        let order = gpu_pick::backend_order(cfg!(windows), forced.as_deref());
+        let order = gpu_pick::backend_order(crate::platform::IS_WINDOWS, forced.as_deref());
         let Some(&(backends, label)) = order.get(api) else {
             return self.gpu_recovery.failed(now);
         };

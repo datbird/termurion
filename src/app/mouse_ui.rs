@@ -310,14 +310,7 @@ impl App {
     /// Takes the first-mouse flag of the window in front of the event: true once after a
     /// client-area click that activated it (`firstmouse_win`).
     pub(super) fn first_mouse(&mut self) -> bool {
-        #[cfg(windows)]
-        {
-            self.hwnd().is_some_and(crate::firstmouse_win::take)
-        }
-        #[cfg(not(windows))]
-        {
-            false
-        }
+        self.hwnd().is_some_and(crate::platform::input::first_mouse_take)
     }
 
     /// The point is on one of Termurion's overlays inside a pane: no program ever sees a click,
@@ -566,12 +559,9 @@ fn pointer_screen() -> Option<(f64, f64)> {
     tab_drag_ui::cursor_screen().map(|(x, y)| (x as f64, y as f64))
 }
 
-/// The touchpad's natural scrolling (false off Windows).
+/// The touchpad's natural scrolling.
 fn touchpad_natural() -> bool {
-    #[cfg(windows)]
-    return wheel::touchpad_natural();
-    #[cfg(not(windows))]
-    false
+    crate::platform::input::touchpad_natural()
 }
 
 #[cfg(test)]
@@ -1001,8 +991,8 @@ mod tests {
     fn every_window_is_watched_for_first_mouse() {
         let w = include_str!("windows_ui.rs");
         assert!(body(w, "open_window_with").contains("first_mouse_watch"), "windows opened later");
-        assert!(MOD.contains("firstmouse_win::watch"), "the first window, in resumed");
-        assert!(include_str!("transparency_ui.rs").contains("firstmouse_win::watch"), "a recreated window");
+        assert!(MOD.contains("first_mouse_watch"), "the first window, in resumed");
+        assert!(include_str!("transparency_ui.rs").contains("first_mouse_watch"), "a recreated window");
         assert!(body(w, "drop_current_window").contains("first_mouse_forget"));
     }
     /// Task 8: Ctrl+wheel is the pinch after every UI wheel handler and the overlay hold,

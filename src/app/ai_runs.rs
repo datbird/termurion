@@ -205,7 +205,6 @@ impl App {
         let key = if open { crate::ai_keys::shared().lock().unwrap_or_else(|e| e.into_inner()).get(model.vendor, &mut *crate::ai_keys::system_store()) } else { None };
         let options = crate::ai_transport::options_from(&self.globals);
         let runner = Runner::new(turn, self.ai_transport.clone(), options, self.notify.clone());
-        #[cfg(windows)]
         let runner = runner.with_log(self.ai_wire_log.clone(), self.globals.bool("AiChatRawWireLogging"));
         let mut run = Run { runner, owner, endpoint };
         match launch(open, &mut run.runner, key.as_ref()) {

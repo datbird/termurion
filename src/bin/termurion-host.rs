@@ -8,6 +8,12 @@ fn main() {
     termurion::crashdump::install();
     #[cfg(windows)]
     std::process::exit(run());
+    #[cfg(not(windows))]
+    {
+        // No session host yet: say so on the terminal that started it, as the platform layer words it.
+        eprintln!("{}", termurion::platform::Unsupported { feature: "The session host" });
+        std::process::exit(1);
+    }
 }
 
 #[cfg(windows)]

@@ -16,6 +16,10 @@ pub fn files() -> Vec<std::path::PathBuf> {
     Vec::new()
 }
 
+pub fn set_private_text(cb: &mut arboard::Clipboard, text: &str) -> Result<(), arboard::Error> {
+    cb.set().text(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

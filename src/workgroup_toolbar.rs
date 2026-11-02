@@ -195,6 +195,11 @@ fn failure(error: &str, reportable: bool, diagnostic: Option<String>) -> UsageRe
     UsageReport { bars: Vec::new(), error: Some(error.to_string()), diagnostic, reportable: Some(reportable) }
 }
 
+/// A usage report that failed with `error` (not a bug to report).
+pub fn failed(error: &str) -> UsageReport {
+    failure(error, false, None)
+}
+
 /// The fraction a bar draws: held to 0..1 so a bad command cannot blow out the geometry.
 pub fn clamped(bar: &UsageBar) -> f64 {
     if bar.fraction.is_finite() { bar.fraction.clamp(0.0, 1.0) } else { 0.0 }

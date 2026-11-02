@@ -60,6 +60,31 @@ pub fn sheet_origin(owner: isize, width: u32) -> Option<(i32, i32)> {
     Some((x, top_left.y))
 }
 
+/// The primary monitor's height in pixels (it sits at the virtual screen's origin).
+pub fn primary_height() -> f64 {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CYSCREEN};
+    unsafe { GetSystemMetrics(SM_CYSCREEN) as f64 }
+}
+
+/// Each monitor's work area (without the taskbar) in virtual-screen pixels.
+pub fn work_areas() -> Vec<(f64, f64, f64, f64)> {
+    use windows_sys::Win32::Foundation::{LPARAM, RECT};
+    use windows_sys::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO};
+    unsafe extern "system" fn each(m: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> windows_sys::Win32::Foundation::BOOL {
+        let out = unsafe { &mut *(data as *mut Vec<(f64, f64, f64, f64)>) };
+        let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if unsafe { GetMonitorInfoW(m, &mut info) } != 0 {
+            let r = info.rcWork;
+            out.push((r.left as f64, r.top as f64, (r.right - r.left) as f64, (r.bottom - r.top) as f64));
+        }
+        1
+    }
+    let mut out: Vec<(f64, f64, f64, f64)> = Vec::new();
+    unsafe { EnumDisplayMonitors(std::ptr::null_mut(), std::ptr::null(), Some(each), &mut out as *mut _ as LPARAM) };
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

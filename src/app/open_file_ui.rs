@@ -303,18 +303,9 @@ impl App {
         if std::mem::replace(&mut self.open_with_done, true) {
             return;
         }
-        #[cfg(windows)]
-        {
-            use crate::reg::Registry;
-            let Ok(exe) = std::env::current_exe() else { return };
-            let entries = open_file::open_with_entries(&exe);
-            let mut reg = crate::reg::HkcuRegistry;
-            if reg.get(&entries[1].0, &entries[1].1).as_deref() == Some(entries[1].2.as_str()) {
-                return;
-            }
-            if let Err(e) = crate::reg::apply(&mut reg, &entries) {
-                crate::host_base::log(&format!("open with: {e}"));
-            }
+        let Ok(exe) = std::env::current_exe() else { return };
+        if let Err(e) = crate::platform::shell_extras::register_open_with(&exe) {
+            crate::host_base::log(&format!("open with: {e}"));
         }
     }
 }

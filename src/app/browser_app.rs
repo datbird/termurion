@@ -1178,7 +1178,6 @@ impl App {
     /// The Menu button's menu (`BT:306-420`); Add and Remove Bookmark, Manage Bookmarks and History
     /// act with Task 7's database and pages, Settings with 13x8.
     pub(super) fn show_browser_menu(&mut self, pane: PaneId, at: (f32, f32)) {
-        use muda::ContextMenu;
         let Some(hwnd) = self.hwnd() else { return };
         let dev_null = self.panes.get(&pane).and_then(|p| p.browser_io()).is_some_and(|io| io.dev_null);
         // Add or Remove Bookmark: the page's own state, enabled for a web page.
@@ -1226,7 +1225,7 @@ impl App {
             return;
         }
         let at = muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(at.0 as i32, at.1 as i32));
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, Some(at)) };
+        crate::platform::chrome::popup(&menu, hwnd, Some(at));
         self.popup_menu = Some(menu);
     }
 
@@ -1252,7 +1251,6 @@ impl App {
 
     /// The history menu of Back or Forward: the pane's own list (WebView2 has none).
     fn show_browser_history(&mut self, pane: PaneId, back: bool, at: (f32, f32)) {
-        use muda::ContextMenu;
         let Some(hwnd) = self.hwnd() else { return };
         let Some(bv) = self.browser_views.get(&pane) else { return };
         let items = if back { bv.bar.nav.back_items() } else { bv.bar.nav.forward_items() };
@@ -1266,7 +1264,7 @@ impl App {
             let _ = menu.append(&muda::MenuItem::with_id(format!("{HISTORY_ID}{pane}:{steps}"), label.replace('&', "&&"), true, None));
         }
         let at = muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(at.0 as i32, at.1 as i32));
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, Some(at)) };
+        crate::platform::chrome::popup(&menu, hwnd, Some(at));
         self.popup_menu = Some(menu);
     }
 

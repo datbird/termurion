@@ -41,6 +41,12 @@ pub fn facts(ns_encoding: i64, fallback: &str) -> crate::locale_guess::Facts {
     imp::facts(ns_encoding, fallback)
 }
 
+/// Whether `candidate` (`ll_CC.ENC`, `ll_CC`, `ll` or just the encoding's name) is a locale the system
+/// can use; `encoding` is the profile's encoding name.
+pub fn supported(candidate: &str, encoding: Option<&str>) -> bool {
+    imp::supported(candidate, encoding)
+}
+
 /// Every locale the system offers, as `ll_CC`.
 pub fn system_locales() -> Vec<String> {
     imp::system_locales()
@@ -50,6 +56,12 @@ pub fn system_locales() -> Vec<String> {
 /// (country code, name).
 pub fn names_for(locales: &[String]) -> (std::collections::HashMap<String, String>, std::collections::HashMap<String, String>) {
     imp::names_for(locales)
+}
+
+/// The word breaker for double-click selection: ICU's on Windows; elsewhere one that takes the whole
+/// text, so the selection rules alone decide.
+pub fn segmenter() -> Box<dyn crate::wordsel::Segmenter> {
+    imp::segmenter()
 }
 
 #[cfg(test)]

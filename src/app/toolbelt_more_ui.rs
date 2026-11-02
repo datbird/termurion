@@ -1197,7 +1197,7 @@ impl App {
             self.jobs_watch_at = None;
         } else if self.jobs_watch_at.is_none_or(|t| now >= t) {
             self.jobs_watch_at = Some(now + JOBS_TICK);
-            let (ended, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.job_watches).into_iter().partition(|(pid, created, _)| !crate::jobwatch::process_alive(*pid, *created));
+            let (ended, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.job_watches).into_iter().partition(|(pid, created, _)| !crate::platform::proc::process_alive(*pid, *created));
             self.job_watches = kept;
             if !ended.is_empty() {
                 self.tools_changed();
@@ -1288,7 +1288,7 @@ impl App {
         self.banners.clear("jobs-signal");
         let mut tree = self.jobs.tree(req.shell);
         if tree.is_empty() {
-            match crate::jobwatch::descendants_now(req.shell) {
+            match crate::platform::proc::descendants_now(req.shell) {
                 Ok(t) => tree = t,
                 Err(e) => self.banners.set("jobs-signal", format!("Could not read the running programs: {e}")),
             }
@@ -1296,7 +1296,7 @@ impl App {
         let (mut sent, mut failed, mut consoled) = (false, false, false);
         for (pid, created) in req.pids {
             let under_shell = pid == req.shell || tree.iter().any(|p| p.pid == pid && p.created == created);
-            if !under_shell || !crate::jobwatch::process_alive(pid, created) {
+            if !under_shell || !crate::platform::proc::process_alive(pid, created) {
                 continue;
             }
             let console = matches!(req.way, SignalWay::CtrlC | SignalWay::CtrlBreak);
@@ -1311,8 +1311,8 @@ impl App {
             let stop = pane.and_then(|p| p.console_pause_flag()).unwrap_or_default();
             let result = match hosted {
                 Some(r) => r,
-                None => crate::jobwatch::signal_process(pid, Some(created), req.way, stop).map(|s| {
-                    if let crate::jobwatch::Sent::Later(h) = s {
+                None => crate::platform::proc::signal_process(pid, Some(created), req.way, stop).map(|s| {
+                    if let crate::platform::proc::Sent::Later(h) = s {
                         self.signal_waits.push(h);
                     }
                 }),
@@ -1468,7 +1468,7 @@ impl App {
             let Shown::Jobs(j) = &*shown else { return };
             let found = j.proc(pid).filter(|p| p.created == created).map(|p| (p.created, crate::proctree::strip_exe(&p.name).to_string()));
             match found {
-                Some((created, name)) if crate::jobwatch::process_alive(pid, created) => self.job_watches.push((pid, created, name)),
+                Some((created, name)) if crate::platform::proc::process_alive(pid, created) => self.job_watches.push((pid, created, name)),
                 other => {
                     let name = other.map(|(_, n)| n).unwrap_or_default();
                     let (title, text) = cannot_notify_text(&name, pid);

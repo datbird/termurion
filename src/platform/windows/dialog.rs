@@ -198,6 +198,31 @@ fn is_above(window: isize, other: isize) -> bool {
     false
 }
 
+/// Windows' color dialog, fully open, starting at `initial` with `swatches` (the first 16)
+/// as its custom colors. None on Cancel.
+pub fn choose_color(hwnd: isize, initial: Option<crate::palette::Rgb>, swatches: &[crate::palette::Rgb]) -> Result<Option<crate::palette::Rgb>, super::super::Unsupported> {
+    use windows_sys::Win32::UI::Controls::Dialogs::{CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW, ChooseColorW};
+    let colorref = |c: &crate::palette::Rgb| c.r as u32 | (c.g as u32) << 8 | (c.b as u32) << 16;
+    let mut custom = [0x00ff_ffffu32; 16];
+    for (slot, c) in custom.iter_mut().zip(swatches) {
+        *slot = colorref(c);
+    }
+    let mut cc: CHOOSECOLORW = unsafe { std::mem::zeroed() };
+    cc.lStructSize = std::mem::size_of::<CHOOSECOLORW>() as u32;
+    cc.hwndOwner = hwnd as _;
+    cc.lpCustColors = custom.as_mut_ptr();
+    cc.Flags = CC_FULLOPEN;
+    if let Some(c) = initial {
+        cc.rgbResult = colorref(&c);
+        cc.Flags |= CC_RGBINIT;
+    }
+    if unsafe { ChooseColorW(&mut cc) } == 0 {
+        return Ok(None);
+    }
+    let v = cc.rgbResult;
+    Ok(Some(crate::palette::rgb(v as u8, (v >> 8) as u8, (v >> 16) as u8)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

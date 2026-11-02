@@ -8,6 +8,5 @@ fn main() {
     termurion::crashdump::install();
     #[cfg(windows)]
     termurion::presence::set_app_user_model_id();
-    #[cfg(windows)]
     termurion::app::run();
 }

@@ -1277,3 +1277,24 @@ pub(crate) mod tests {
         assert!(ended && start.elapsed() < secs(3), "the child still ran {:?} after the drop", start.elapsed());
     }
 }
+
+/// The ConPTY shipped beside the exe, else the copy built into Windows.
+pub fn load_for_app(exe_dir: &std::path::Path) -> Result<(super::conpty::Api, Option<String>), String> {
+    use super::conpty::{self, Source};
+    match conpty::load(&Source::Shipped(exe_dir.to_path_buf())) {
+        Ok(api) => Ok((api, None)),
+        Err(e) => match conpty::load(&Source::Inbox) {
+            Ok(api) => Ok((api, Some(format!("Shipped ConPTY did not load ({e}). Using the Windows copy.")))),
+            Err(e2) => Err(format!("No ConPTY: {e}; {e2}")),
+        },
+    }
+}
+
+pub fn shipped_has_pack(exe_dir: &std::path::Path) -> bool {
+    use super::conpty::{self, Source};
+    conpty::load(&Source::Shipped(exe_dir.to_path_buf())).is_ok_and(|a| a.pack.is_some())
+}
+
+pub fn api_has_pack(api: &super::conpty::Api) -> bool {
+    api.pack.is_some()
+}

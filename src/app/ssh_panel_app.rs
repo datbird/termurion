@@ -124,54 +124,6 @@ impl Batch {
     }
 }
 
-/// Shows the finished items together in Explorer: one path selected in its folder, several
-/// selected together in their common folder (`OP:67-80`, with the arrived ones only).
-#[cfg(windows)]
-pub(super) fn reveal_all(paths: &[PathBuf]) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::process::CommandExt;
-    use windows_sys::Win32::UI::Shell::{ILCreateFromPathW, ILFindLastID, ILFree, SHOpenFolderAndSelectItems};
-    let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain(std::iter::once(0)).collect() };
-    match paths {
-        [] => Ok(()),
-        [one] => {
-            // The same Explorer the Win-click's reveal runs, found through the system directory.
-            let program = crate::script_provision::system_directory().and_then(|s| crate::semantic::explorer_in(&s)).ok_or("the Windows folder is unknown")?;
-            let arg = crate::semantic::explorer_select_arg(&one.to_string_lossy()).ok_or("the file's name cannot be shown in Explorer")?;
-            let mut cmd = std::process::Command::new(program);
-            cmd.raw_arg(arg);
-            cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
-        }
-        many => {
-            let folder = many[0].parent().ok_or("no folder")?;
-            if many.iter().any(|p| p.parent() != Some(folder)) {
-                return Err("the items are not in one folder".into());
-            }
-            // SAFETY: each list comes from ILCreateFromPathW and is freed once; the child ids
-            // point into their lists, which outlive the call.
-            unsafe {
-                let parent = ILCreateFromPathW(wide(folder).as_ptr());
-                if parent.is_null() {
-                    return Err("the folder could not be found".into());
-                }
-                let lists: Vec<*mut _> = many.iter().map(|p| ILCreateFromPathW(wide(p).as_ptr())).filter(|l| !l.is_null()).collect();
-                let children: Vec<*const _> = lists.iter().map(|l| ILFindLastID(*l) as *const _).collect();
-                let mut hr = if children.is_empty() { -1 } else { SHOpenFolderAndSelectItems(parent, children.len() as u32, children.as_ptr(), 0) };
-                // winit's drop target starts OLE on the UI thread; if COM is not up, start it once.
-                if hr == 0x800401F0u32 as i32 {
-                    windows_sys::Win32::System::Com::CoInitializeEx(std::ptr::null(), windows_sys::Win32::System::Com::COINIT_APARTMENTTHREADED as u32);
-                    hr = SHOpenFolderAndSelectItems(parent, children.len() as u32, children.as_ptr(), 0);
-                }
-                for l in lists {
-                    ILFree(l);
-                }
-                ILFree(parent);
-                if hr < 0 { Err(format!("Explorer answered 0x{:08X}", hr as u32)) } else { Ok(()) }
-            }
-        }
-    }
-}
-
 impl App {
     /// Download Files is enabled while any host frames (`TVS:953-955`: iTerm2's registry is not empty).
     pub(super) fn download_files_enabled(&self) -> bool {
@@ -496,7 +448,7 @@ impl App {
                 done.push(p);
             }
         }
-        if let Err(e) = reveal_all(&done) {
+        if let Err(e) = crate::platform::shell_open::reveal_all(&done) {
             self.banners.set("action", format!("Could not show the downloaded files: {}", shown_name(&e)));
         }
     }

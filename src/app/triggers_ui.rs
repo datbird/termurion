@@ -81,19 +81,9 @@ fn command_args(cmd: &str) -> String {
 
 /// Runs a command for Run Command: hidden, through cmd.exe, output discarded.
 fn start_command(cmd: &str) -> std::io::Result<std::process::Child> {
-    let mut c = std::process::Command::new("cmd.exe");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        c.raw_arg(command_args(cmd));
-    }
+    let mut c = crate::platform::proc::command_for_line(cmd).map_err(std::io::Error::other)?;
     c.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        c.creation_flags(CREATE_NO_WINDOW);
-    }
+    crate::platform::proc::hide_console(&mut c);
     c.spawn()
 }
 
@@ -295,23 +285,18 @@ impl App {
 
     /// Bounce Dock Icon: the taskbar button flashes until Termurion is in front, or once.
     pub(super) fn flash_taskbar(&mut self, until_active: bool) {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{FLASHW_ALL, FLASHW_TIMERNOFG, FLASHW_TRAY};
-        if until_active { self.flash_taskbar_raw(FLASHW_TRAY | FLASHW_TIMERNOFG, 0) } else { self.flash_taskbar_raw(FLASHW_ALL, 1) }
+        use crate::platform::window::Flash;
+        if until_active { self.flash_taskbar_raw(Flash::UntilFront) } else { self.flash_taskbar_raw(Flash::OnceAll) }
     }
 
     /// The one `FlashWindowEx` call (B6): every taskbar flash (this trigger, RequestAttention)
-    /// goes through the per-window floor; only `FLASHW_STOP` is never held back.
-    pub(super) fn flash_taskbar_raw(&mut self, flags: u32, count: u32) {
-        #[cfg(windows)]
-        {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{FLASHW_STOP, FLASHWINFO, FlashWindowEx};
-            let Some(hwnd) = self.hwnd() else { return };
-            if flags != FLASHW_STOP && !self.bell_limiter.taskbar(hwnd, std::time::Instant::now()) {
-                return;
-            }
-            let info = FLASHWINFO { cbSize: std::mem::size_of::<FLASHWINFO>() as u32, hwnd: hwnd as _, dwFlags: flags, uCount: count, dwTimeout: 0 };
-            unsafe { FlashWindowEx(&info) };
+    /// goes through the per-window floor; only a stop is never held back.
+    pub(super) fn flash_taskbar_raw(&mut self, how: crate::platform::window::Flash) {
+        let Some(hwnd) = self.hwnd() else { return };
+        if how != crate::platform::window::Flash::Stop && !self.bell_limiter.taskbar(hwnd, std::time::Instant::now()) {
+            return;
         }
+        crate::platform::window::flash(hwnd, how);
     }
 
     /// The bar answers for Show Alert: Disable This Alert turns that trigger off in this

@@ -134,6 +134,15 @@ pub fn descendants(procs: &[Proc], root: u32) -> Vec<&Proc> {
     walk(procs, root).into_iter().skip(1).map(|(p, _)| p).collect()
 }
 
+/// What the window knows about one shell's job.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ShellJob {
+    pub job: Option<Job>,
+    pub ancestors: Vec<String>,
+    /// The shell's own name (`proctree::root_name`); None once it is gone.
+    pub root: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

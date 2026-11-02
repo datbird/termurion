@@ -27,3 +27,13 @@ pub fn open_url(url: &str, _background: bool) -> Result<(), String> {
 pub fn reveal(_path: &str) -> Result<(), String> {
     Err(super::super::Unsupported { feature: "Show in file manager" }.into())
 }
+
+/// No file manager call yet: reports Unsupported.
+pub fn reveal_all(_paths: &[std::path::PathBuf]) -> Result<(), String> {
+    Err(super::super::Unsupported { feature: "Show in file manager" }.into())
+}
+
+/// Another app's scheme is not handed on yet: reports Unsupported.
+pub fn open_scheme(_encoded_url: &str, _background: bool) -> Result<(), String> {
+    Err(super::super::Unsupported { feature: "Opening another app's link" }.into())
+}

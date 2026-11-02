@@ -557,38 +557,18 @@ fn time_label(ts_us: i64) -> String {
     replay_panel::time_label(ts_us, day_of(now), &|t| format_local(t, true), &|t| format_local(t, false), &day_of)
 }
 
-/// Microseconds since 1970 as local time.
-fn local_time(ts_us: i64) -> windows_sys::Win32::Foundation::SYSTEMTIME {
-    use windows_sys::Win32::Foundation::FILETIME;
-    use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
-    // FILETIME counts 100 ns steps from 1601.
-    let ticks = (ts_us.max(0) as u64 / 1_000_000 + 11_644_473_600) * 10_000_000;
-    let ft = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
-    let mut utc = unsafe { std::mem::zeroed() };
-    let mut here = unsafe { std::mem::zeroed() };
-    unsafe {
-        FileTimeToSystemTime(&ft, &mut utc);
-        SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut here);
-    }
-    here
+/// Microseconds since 1970 as local time (all zeros when it does not convert, as the old call left it).
+fn local_time(ts_us: i64) -> crate::platform::clock::Local {
+    crate::platform::clock::local_at(ts_us.max(0) as u64 / 1_000_000).unwrap_or_default()
 }
 
 /// The local day, as (year, month * 32 + day).
 fn day_of(ts_us: i64) -> (i32, u32) {
     let t = local_time(ts_us);
-    (t.wYear as i32, t.wMonth as u32 * 32 + t.wDay as u32)
+    (t.0 as i32, t.1 as u32 * 32 + t.2 as u32)
 }
 
 fn format_local(ts_us: i64, date: bool) -> String {
-    use windows_sys::Win32::Globalization::{DATE_SHORTDATE, GetDateFormatEx, GetTimeFormatEx};
     let t = local_time(ts_us);
-    let mut buf = [0u16; 128];
-    let n = unsafe {
-        if date {
-            GetDateFormatEx(std::ptr::null(), DATE_SHORTDATE, &t, std::ptr::null(), buf.as_mut_ptr(), buf.len() as i32, std::ptr::null())
-        } else {
-            GetTimeFormatEx(std::ptr::null(), 0, &t, std::ptr::null(), buf.as_mut_ptr(), buf.len() as i32)
-        }
-    };
-    String::from_utf16_lossy(&buf[..(n.max(1) as usize - 1)])
+    if date { crate::platform::clock::short_date(t) } else { crate::platform::clock::long_time(t) }
 }

@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(load_list(&d).as_deref(), Some("[2]"), "replaced");
         assert!(d.unfollowed(format!("{FILE}.tmp")).map(|t| !t.path().exists()).unwrap(), "no temporary file is left");
         // The access list is a Windows fact.
-        #[cfg(windows)]
+        #[cfg(windows)] // test: the DACL
         {
             let sddl = localfs::dacl_sddl(&d.unfollowed(FILE).unwrap()).unwrap();
             assert_eq!(sddl.matches("(A;").count(), 1, "{sddl}");

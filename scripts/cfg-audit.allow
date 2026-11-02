@@ -1,0 +1,83 @@
+# Exemptions for scripts/cfg-audit. One per line: `path:pattern  # reason`, or `path:*<=N  # reason` for a whole file.
+# A stale entry (no hit, or a pattern that matches nothing) fails the audit.
+
+# Test-only cfgs in app files: a Windows-only test or a Windows-only part of a test.
+src/app/adblock_app.rs:#[cfg(windows)] // test: the DACL  # the access list of a saved file is a Windows fact (SDDL)
+src/app/archive_ui.rs:#[cfg(windows)] // an exclusive share mode  # a Windows open flag in a test
+src/app/emu_ui.rs:#[cfg(windows)] // junctions (mklink /J)  # the links-and-devices test makes junctions, device names and file symlinks
+src/app/menu_hold_tests.rs:#[cfg(windows)]  # a test file for the real HWND and muda Win32 bar
+src/app/page_saver_app.rs:#[cfg(windows)] // test: the Mark of the Web  # an NTFS stream test
+src/app/statusbar_content.rs:#[cfg(windows)] // test: ICU through Windows  # ICU answers through Windows in this test
+
+# Owning modules outside src/app/: their Windows code sits behind a cfg until it moves under platform/ (P1).
+src/dlog.rs:*<=31  # owning module: the cfg stays until the code moves under platform/ in P1
+src/localfs.rs:*<=22  # owning module: the cfg stays until the code moves under platform/ in P1
+src/script_provision.rs:*<=15  # owning module: the cfg stays until the code moves under platform/ in P1
+src/workgroup_restore.rs:*<=13  # owning module: the cfg stays until the code moves under platform/ in P1
+src/url_schemes.rs:*<=13  # owning module: the cfg stays until the code moves under platform/ in P1
+src/encoding.rs:*<=12  # owning module: the cfg stays until the code moves under platform/ in P1
+src/netpath.rs:*<=11  # owning module: the cfg stays until the code moves under platform/ in P1
+src/input_locale.rs:*<=11  # owning module: the cfg stays until the code moves under platform/ in P1
+src/git_state.rs:*<=11  # owning module: the cfg stays until the code moves under platform/ in P1
+src/utilities.rs:*<=9  # owning module: the cfg stays until the code moves under platform/ in P1
+src/dll.rs:*<=9  # owning module: the cfg stays until the code moves under platform/ in P1
+src/browser_autofill.rs:*<=9  # owning module: the cfg stays until the code moves under platform/ in P1
+src/util_imgls.rs:*<=7  # owning module: the cfg stays until the code moves under platform/ in P1
+src/file_serve.rs:*<=7  # owning module: the cfg stays until the code moves under platform/ in P1
+src/dynamic_profiles_trust.rs:*<=7  # owning module: the cfg stays until the code moves under platform/ in P1
+src/wordsel.rs:*<=5  # owning module: the cfg stays until the code moves under platform/ in P1
+src/remote_file.rs:*<=5  # owning module: the cfg stays until the code moves under platform/ in P1
+src/pwm_run.rs:*<=5  # owning module: the cfg stays until the code moves under platform/ in P1
+src/link_scheme.rs:*<=5  # owning module: the cfg stays until the code moves under platform/ in P1
+src/host_identity.rs:*<=5  # owning module: the cfg stays until the code moves under platform/ in P1
+src/api_peer.rs:*<=5  # owning module: the cfg stays until the code moves under platform/ in P1
+src/api_client.rs:*<=5  # owning module: the cfg stays until the code moves under platform/ in P1
+src/util_cli.rs:*<=4  # owning module: the cfg stays until the code moves under platform/ in P1
+src/url_launch.rs:*<=4  # owning module: the cfg stays until the code moves under platform/ in P1
+src/power.rs:*<=4  # owning module: the cfg stays until the code moves under platform/ in P1
+src/it2_session.rs:*<=4  # owning module: the cfg stays until the code moves under platform/ in P1
+src/inert_files.rs:*<=4  # owning module: the cfg stays until the code moves under platform/ in P1
+src/crashdump.rs:*<=4  # owning module: the cfg stays until the code moves under platform/ in P1
+src/tab_theme.rs:*<=3  # owning module: the cfg stays until the code moves under platform/ in P1
+src/sleep_guard.rs:*<=3  # owning module: the cfg stays until the code moves under platform/ in P1
+src/settings_triggers.rs:*<=3  # owning module: the cfg stays until the code moves under platform/ in P1
+src/scrollbar.rs:*<=3  # owning module: the cfg stays until the code moves under platform/ in P1
+src/save_panel.rs:*<=3  # owning module: the cfg stays until the code moves under platform/ in P1
+src/chat_input.rs:*<=3  # owning module: the cfg stays until the code moves under platform/ in P1
+src/cc_status.rs:*<=3  # owning module: the cfg stays until the code moves under platform/ in P1
+src/browser_db.rs:*<=3  # owning module: the cfg stays until the code moves under platform/ in P1
+src/bonjour.rs:*<=3  # owning module: the cfg stays until the code moves under platform/ in P1
+src/util_simple.rs:*<=2  # owning module: the cfg stays until the code moves under platform/ in P1
+src/util_git.rs:*<=2  # owning module: the cfg stays until the code moves under platform/ in P1
+src/util_api.rs:*<=2  # owning module: the cfg stays until the code moves under platform/ in P1
+src/tmux_handshake.rs:*<=2  # owning module: the cfg stays until the code moves under platform/ in P1
+src/ssh_local.rs:*<=2  # owning module: the cfg stays until the code moves under platform/ in P1
+src/ssh_inject.rs:*<=2  # owning module: the cfg stays until the code moves under platform/ in P1
+src/semantic.rs:*<=2  # owning module: the cfg stays until the code moves under platform/ in P1
+src/script_archive.rs:*<=2  # owning module: the cfg stays until the code moves under platform/ in P1
+src/reg.rs:*<=2  # owning module: the cfg stays until the code moves under platform/ in P1
+src/host.rs:*<=2  # owning module: the cfg stays until the code moves under platform/ in P1
+src/desktops.rs:*<=2  # owning module: the cfg stays until the code moves under platform/ in P1
+src/ctx_help.rs:*<=2  # owning module: the cfg stays until the code moves under platform/ in P1
+src/crash_report.rs:*<=2  # owning module: the cfg stays until the code moves under platform/ in P1
+src/api_auth.rs:*<=2  # owning module: the cfg stays until the code moves under platform/ in P1
+src/ai_gate.rs:*<=2  # owning module: the cfg stays until the code moves under platform/ in P1
+src/wheel.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1
+src/stamps.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1
+src/settings_lists.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1
+src/settings_effects.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1
+src/settings_ai.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1
+src/pwm_cli.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1
+src/presence.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1
+src/pane.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1
+src/menu_tips.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1
+src/default_term.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1
+src/dark_menu.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1
+src/code_review.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1
+src/claude_code.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1
+src/chrome.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1
+src/chat_view.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1
+src/chat_store.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1
+src/browser_download.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1
+src/bidi_mirror.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1
+src/ai_actions.rs:*<=1  # owning module: the cfg stays until the code moves under platform/ in P1

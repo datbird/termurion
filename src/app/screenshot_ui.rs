@@ -70,7 +70,7 @@ impl App {
     pub(super) fn make_screenshot(&mut self, event_loop: &ActiveEventLoop) {
         use alacritty_terminal::grid::Dimensions;
         let Some(pane) = self.focused_id().filter(|id| self.panes.contains_key(id)) else {
-            unsafe { windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(0) };
+            crate::platform::clock::beep();
             return;
         };
         if let Some(old) = self.shot.take() {
@@ -357,19 +357,9 @@ impl App {
     }
 }
 
-/// The user's Desktop folder (where Windows keeps it, OneDrive included).
+/// The user's Desktop folder.
 pub(super) fn desktop() -> Option<std::path::PathBuf> {
-    use windows_sys::Win32::System::Com::CoTaskMemFree;
-    use windows_sys::Win32::UI::Shell::{FOLDERID_Desktop, SHGetKnownFolderPath};
-    let mut out: windows_sys::core::PWSTR = std::ptr::null_mut();
-    let hr = unsafe { SHGetKnownFolderPath(&FOLDERID_Desktop, 0, std::ptr::null_mut(), &mut out) };
-    if hr < 0 || out.is_null() {
-        return None;
-    }
-    let len = (0..).take_while(|&i| unsafe { *out.add(i) } != 0).count();
-    let path = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(out, len) });
-    unsafe { CoTaskMemFree(out as _) };
-    Some(path.into())
+    crate::platform::shellfs::desktop()
 }
 
 #[cfg(test)]

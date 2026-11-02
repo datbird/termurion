@@ -40,3 +40,26 @@ pub fn theme_reset_handled() {}
 pub fn shift_down() -> bool {
     false
 }
+
+/// Menus open where the toolkit puts them; there is nothing to lift.
+pub struct Lift;
+
+impl Lift {
+    pub fn new(_hwnd: isize, _x: f32, _y: f32) -> Lift {
+        Lift
+    }
+}
+
+/// No pop-up without a native handle; the app holds none on Unix (`window::hwnd_of` is None).
+pub fn popup<M: muda::ContextMenu + ?Sized>(_menu: &M, _hwnd: isize, _position: Option<muda::dpi::Position>) -> bool {
+    false
+}
+
+/// The menu bar is not attached on Unix yet: the earlier bar is dropped and the new one is not shown.
+pub fn replace_menu_bar(earlier: Option<muda::Menu>, _menu: &muda::Menu, _hwnd: isize, _hide: bool) -> muda::Result<()> {
+    drop(earlier);
+    Ok(())
+}
+
+/// A Windows-only extra: menus here are the toolkit's own.
+pub fn install_menu_tips(_hwnd: isize, _delay: std::time::Duration) {}

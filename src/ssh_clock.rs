@@ -179,7 +179,6 @@ impl Clock {
 
 /// The civil time at `unix` seconds in the zone `zone` (a UTC offset), else in this computer's
 /// zone.
-#[cfg(windows)]
 pub fn civil_at(unix: f64, zone: Option<i32>) -> Civil {
     let whole = unix.floor();
     let millis = ((unix - whole) * 1000.0) as u32;
@@ -190,59 +189,17 @@ pub fn civil_at(unix: f64, zone: Option<i32>) -> Civil {
     local_civil(secs, millis.min(999)).unwrap_or_else(|| Civil::from_unix(secs, millis.min(999)))
 }
 
-/// This computer's local time for a UTC instant (`SystemTimeToTzSpecificLocalTime`); None when
-/// the instant is outside what Windows can hold.
-#[cfg(windows)]
+/// This computer's local time for a UTC instant (the OS's time zone rules); None when the instant is
+/// outside what the OS can convert.
 fn local_civil(secs: i64, millis: u32) -> Option<Civil> {
-    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
-    use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
-    // 100 ns ticks from 1601.
-    let ticks = secs.checked_add(11_644_473_600)?.checked_mul(10_000_000)?;
-    let ticks = u64::try_from(ticks).ok()?;
-    let file = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
-    let mut utc: SYSTEMTIME = unsafe { std::mem::zeroed() };
-    let mut local: SYSTEMTIME = unsafe { std::mem::zeroed() };
-    unsafe {
-        if FileTimeToSystemTime(&file, &mut utc) == 0 || SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) == 0 {
-            return None;
-        }
-    }
-    Some(Civil {
-        year: i32::from(local.wYear),
-        month: u32::from(local.wMonth),
-        day: u32::from(local.wDay),
-        weekday: u32::from(local.wDayOfWeek),
-        hour: u32::from(local.wHour),
-        minute: u32::from(local.wMinute),
-        second: u32::from(local.wSecond),
-        millis,
-    })
+    let (year, month, day, weekday, hour, minute, second) = crate::platform::clock::local_at(u64::try_from(secs).ok()?)?;
+    Some(Civil { year: i32::from(year), month: u32::from(month), day: u32::from(day), weekday: u32::from(weekday), hour: u32::from(hour), minute: u32::from(minute), second: u32::from(second), millis })
 }
 
-/// This computer's zone name, as `GetTimeZoneInformation` gives it (standard or daylight):
-/// what `get_time_offset` answers with no conductor (Decision).
-#[cfg(windows)]
+/// This computer's zone name (standard or daylight): what `get_time_offset` answers with no
+/// conductor (Decision).
 pub fn local_zone_name() -> String {
-    use windows_sys::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
-    /// `TIME_ZONE_ID_DAYLIGHT`.
-    const DAYLIGHT: u32 = 2;
-    let mut info: TIME_ZONE_INFORMATION = unsafe { std::mem::zeroed() };
-    let id = unsafe { GetTimeZoneInformation(&mut info) };
-    let name = if id == DAYLIGHT { &info.DaylightName } else { &info.StandardName };
-    let end = name.iter().position(|c| *c == 0).unwrap_or(name.len());
-    tame(&String::from_utf16_lossy(&name[..end]), TZ_MAX)
-}
-
-/// The name of this computer's time zone right now (`tm_zone`, as "CST").
-#[cfg(unix)]
-pub fn local_zone_name() -> String {
-    let now = unsafe { libc::time(std::ptr::null_mut()) };
-    let mut t: libc::tm = unsafe { std::mem::zeroed() };
-    if unsafe { libc::localtime_r(&now, &mut t) }.is_null() || t.tm_zone.is_null() {
-        return String::new();
-    }
-    let name = unsafe { std::ffi::CStr::from_ptr(t.tm_zone) }.to_string_lossy().into_owned();
-    tame(&name, TZ_MAX)
+    tame(&crate::platform::clock::zone_name(), TZ_MAX)
 }
 
 #[cfg(test)]

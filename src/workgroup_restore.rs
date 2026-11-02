@@ -700,6 +700,12 @@ pub fn key_in(dir: &std::path::Path) -> Option<[u8; KEY_LEN]> {
     None
 }
 
+/// No key file is kept on Unix yet (it is owner-only by Windows ACL): every import asks.
+#[cfg(unix)]
+pub fn key_in(_dir: &std::path::Path) -> Option<[u8; KEY_LEN]> {
+    None
+}
+
 /// Removes the open file (opened with DELETE access): the very file that was judged, whatever has
 /// the name by then. POSIX semantics first, so the name is free at once (another Termurion starting now
 /// makes its key instead of meeting a delete-pending name); where the volume has none (FAT, older

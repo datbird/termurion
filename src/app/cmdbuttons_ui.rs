@@ -63,7 +63,6 @@ impl App {
 
     /// Pops the menu at the pointer; its pick arrives as `cmdbtn:<n>`.
     fn cmd_button_menu_show(&mut self, pane: PaneId, mark: u32, button: Button, items: &[&'static str]) {
-        use muda::ContextMenu;
         if items.is_empty() {
             return;
         }
@@ -75,7 +74,7 @@ impl App {
             }
         }
         self.cmd_button_menu = Some((pane, mark, button));
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        crate::platform::chrome::popup(&menu, hwnd, None);
         self.popup_menu = Some(menu);
     }
 

@@ -884,7 +884,6 @@ impl App {
     /// The message menu at `at` (screen pixels), built from `chat_view::message_menu`; its picks
     /// come back through `run_menu_id` as `chat_message_picked`.
     fn chat_message_menu(&mut self, at: (f32, f32), id: String) {
-        use muda::ContextMenu;
         let Some(hwnd) = self.chat_window.as_ref().and_then(|w| w.hwnd()) else { return };
         let Some(editable) = self.chat_visible_message(ChatView::Window, &id).map(chat_view::editable) else { return };
         let menu = muda::Menu::new();
@@ -896,7 +895,7 @@ impl App {
             }
         }
         let at = muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(at.0 as i32, at.1 as i32));
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, Some(at)) };
+        crate::platform::chrome::popup(&menu, hwnd, Some(at));
         // The pick arrives after the menu closes, so the menu lives until the next one.
         self.popup_menu = Some(menu);
     }
@@ -1361,7 +1360,6 @@ impl App {
     /// The attach button's popup at `at` (screen pixels): files or a folder, two dialogs because
     /// Windows has no one for both. Its pick returns through `run_menu_id`.
     fn chat_attach_menu(&mut self, at: (f32, f32)) {
-        use muda::ContextMenu;
         let Some(hwnd) = self.chat_window.as_ref().and_then(|w| w.hwnd()) else { return };
         let menu = muda::Menu::new();
         for (id, title) in [(ATTACH_FILES_ID, chat_input::ATTACH_FILES), (ATTACH_FOLDER_ID, chat_input::ATTACH_FOLDER)] {
@@ -1371,7 +1369,7 @@ impl App {
             }
         }
         let at = muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(at.0 as i32, at.1 as i32));
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, Some(at)) };
+        crate::platform::chrome::popup(&menu, hwnd, Some(at));
         self.popup_menu = Some(menu);
     }
 
@@ -1429,7 +1427,6 @@ impl App {
     /// The list's right-click menu at `at` (screen pixels) for the selected chats (`CL:393-414`);
     /// its picks come back through `run_menu_id` as `chat_list_picked`.
     fn chat_list_menu(&mut self, at: (f32, f32), ids: Vec<String>) {
-        use muda::ContextMenu;
         let Some(hwnd) = self.chat_window.as_ref().and_then(|w| w.hwnd()) else { return };
         let menu = muda::Menu::new();
         let mut results = Vec::new();
@@ -1448,7 +1445,7 @@ impl App {
         }
         self.chat_menu_ids = ids;
         let at = muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(at.0 as i32, at.1 as i32));
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, Some(at)) };
+        crate::platform::chrome::popup(&menu, hwnd, Some(at));
         // The pick arrives after the menu closes, so the menu lives until the next one.
         self.popup_menu = Some(menu);
     }

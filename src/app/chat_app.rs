@@ -549,7 +549,6 @@ impl App {
         let options = crate::ai_transport::options_from(&self.globals);
         let notify = self.notify.clone();
         let verbose = self.globals.bool(VERBOSE_KEY);
-        #[cfg(windows)]
         let log = (self.ai_wire_log.clone(), self.globals.bool(WIRE_LOG_KEY));
         let globals = &self.globals;
         // The panes are read by `pane_of` and written by the explanation processor (it places
@@ -579,7 +578,6 @@ impl App {
                 transport: t.clone(),
                 options: o.clone(),
                 notify: n.clone(),
-                #[cfg(windows)]
                 log: log.clone(),
                 verbose,
             })
@@ -844,7 +842,6 @@ impl App {
 }
 
 /// `aiChatRawWireLogging` and `aiChatVerboseConsoleLogging` (12b's wire log and DebugView lines).
-#[cfg(windows)]
 const WIRE_LOG_KEY: &str = "AiChatRawWireLogging";
 const VERBOSE_KEY: &str = "AiChatVerboseConsoleLogging";
 
@@ -855,7 +852,6 @@ struct LiveTurn {
     transport: Arc<dyn Transport>,
     options: Options,
     notify: Notify,
-    #[cfg(windows)]
     log: (Arc<std::sync::Mutex<crate::ai_wire_log::WireLog>>, bool),
     verbose: bool,
 }
@@ -865,7 +861,6 @@ impl TurnDriver for LiveTurn {
         let key = crate::ai_keys::shared().lock().unwrap_or_else(|e| e.into_inner()).get(input.model.vendor, &mut *crate::ai_keys::system_store());
         crate::ai_wire_log::console(self.verbose, &format!("chat turn started with {} ({} messages, {} tools)", input.model.name, input.messages.len(), input.tools.len()));
         let runner = Runner::new(Turn::new(input), self.transport.clone(), self.options.clone(), self.notify.clone());
-        #[cfg(windows)]
         let runner = runner.with_log(self.log.0.clone(), self.log.1);
         self.runner.insert(runner).start(key.as_ref())
     }

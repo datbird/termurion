@@ -209,12 +209,12 @@ impl App {
     }
 
     fn attention(&mut self, pane: PaneId, a: Attention) {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{FLASHW_STOP, FLASHW_TIMERNOFG, FLASHW_TRAY};
+        use crate::platform::window::Flash;
         match a {
             // The taskbar flashes share the per-window floor with the Bounce trigger (B6).
-            Attention::Once => self.flash_taskbar_raw(FLASHW_TRAY, 1),
-            Attention::Start => self.flash_taskbar_raw(FLASHW_TRAY | FLASHW_TIMERNOFG, 0),
-            Attention::Stop => self.flash_taskbar_raw(FLASHW_STOP, 0),
+            Attention::Once => self.flash_taskbar_raw(Flash::Once),
+            Attention::Start => self.flash_taskbar_raw(Flash::UntilFront),
+            Attention::Stop => self.flash_taskbar_raw(Flash::Stop),
             // Always the whole pane, whatever TraditionalVisualBell says (`PS:17176-17178`),
             // through the one visual floor.
             Attention::Flash => self.start_flash(pane, crate::bell::Visual::FullFlash, Instant::now()),
@@ -240,8 +240,7 @@ impl App {
         }
         self.bring_forward();
         if let Some(hwnd) = self.hwnd() {
-            use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
-            if unsafe { SetForegroundWindow(hwnd as _) } == 0 {
+            if !crate::platform::window::set_foreground(hwnd) {
                 self.attention(pane, Attention::Once);
             }
         }
@@ -414,27 +413,12 @@ impl App {
 
 /// The primary monitor's height in pixels (it sits at the virtual screen's origin).
 fn primary_height() -> f64 {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CYSCREEN};
-    unsafe { GetSystemMetrics(SM_CYSCREEN) as f64 }
+    crate::platform::display::primary_height()
 }
 
 /// Each monitor's work area (without the taskbar) in virtual-screen pixels.
 pub(super) fn work_areas() -> Vec<(f64, f64, f64, f64)> {
-    use windows_sys::Win32::Foundation::{LPARAM, RECT};
-    use windows_sys::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO};
-    unsafe extern "system" fn each(m: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> windows_sys::Win32::Foundation::BOOL {
-        let out = unsafe { &mut *(data as *mut Vec<(f64, f64, f64, f64)>) };
-        let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
-        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-        if unsafe { GetMonitorInfoW(m, &mut info) } != 0 {
-            let r = info.rcWork;
-            out.push((r.left as f64, r.top as f64, (r.right - r.left) as f64, (r.bottom - r.top) as f64));
-        }
-        1
-    }
-    let mut out: Vec<(f64, f64, f64, f64)> = Vec::new();
-    unsafe { EnumDisplayMonitors(std::ptr::null_mut(), std::ptr::null(), Some(each), &mut out as *mut _ as LPARAM) };
-    out
+    crate::platform::display::work_areas()
 }
 
 #[cfg(test)]

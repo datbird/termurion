@@ -765,7 +765,11 @@ impl App {
             }
             Then::Archive(path) => match index {
                 0 => self.import_path(path, true),
-                2 => super::scripts_app::recycle(&path),
+                2 => {
+                    if let Err(e) = super::scripts_app::recycle(&path) {
+                        self.banners.set("scripts", e);
+                    }
+                }
                 _ => {}
             },
             Then::AlreadyInstalled(name) => {

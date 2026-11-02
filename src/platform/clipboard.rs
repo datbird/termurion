@@ -20,3 +20,9 @@ pub fn first_file() -> Option<std::path::PathBuf> {
 pub fn files() -> Vec<std::path::PathBuf> {
     imp::files()
 }
+
+/// Replaces the clipboard with a secret `text`, kept out of the clipboard history and the cloud clipboard
+/// where the OS has them (Windows). Elsewhere it is a plain copy.
+pub fn set_private_text(cb: &mut arboard::Clipboard, text: &str) -> Result<(), arboard::Error> {
+    imp::set_private_text(cb, text)
+}

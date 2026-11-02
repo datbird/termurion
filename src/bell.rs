@@ -317,7 +317,7 @@ mod tests {
         assert!(l.taskbar(1, t + TASKBAR_FLASH_FLOOR));
         let rq = include_str!("app/requests_ui.rs").split("\n#[cfg(test)]").next().unwrap();
         let tr = include_str!("app/triggers_ui.rs").split("\n#[cfg(test)]").next().unwrap();
-        assert_eq!((tr.matches("FlashWindowEx(").count(), rq.matches("FlashWindowEx(").count()), (1, 0), "one call site");
+        assert_eq!((tr.matches("platform::window::flash(").count(), rq.matches("platform::window::flash(").count()), (1, 0), "one call site");
         assert!(tr.contains("bell_limiter.taskbar(") && rq.contains("flash_taskbar_raw("), "RequestAttention shares the limiter");
         assert!(tr.contains("fn flash_taskbar(&mut self") && tr.matches("flash_taskbar_raw(").count() >= 3);
     }

@@ -37,3 +37,15 @@ pub fn taskbar_clear_all() {
 pub fn dll_hardening() -> Result<(), String> {
     imp::dll_hardening()
 }
+
+/// Disable App Nap: opts the process out of EcoQoS execution-speed throttling (Windows). Unix has no
+/// such switch yet and says so.
+pub fn opt_out_of_power_throttling() -> Result<(), String> {
+    imp::opt_out_of_power_throttling()
+}
+
+/// Adds Termurion to Explorer's "Open with" list for its file types, when its entry is absent or names
+/// another program: per user, never a default association. Unix has no such list to write to.
+pub fn register_open_with(exe: &std::path::Path) -> Result<(), String> {
+    imp::register_open_with(exe)
+}

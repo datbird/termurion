@@ -643,7 +643,7 @@ mod tests {
         assert!(body(&read("windows_ui.rs"), "fn forget_window(", "\n    }\n").contains("access_forget_window"));
         assert!(body(&read("transparency_ui.rs"), "fn recreate_window_for_alpha", "\n    }\n").contains("access_reinstall_host"));
         assert!(body(&read("windows_ui.rs"), "fn open_window_with(", "self.registry.open(").contains("access_install_host"));
-        assert!(body(&m, "fn teardown_process()", "\n}\n").contains("uia_win::disconnect_all"));
+        assert!(body(&m, "fn teardown_process()", "\n}\n").contains("a11y::disconnect_all"));
     }
 
     /// The 13v1 merge (S8 b): a hidden resident window has no screen reader provider (going resident
@@ -674,7 +674,7 @@ mod tests {
         let m = std::fs::read_to_string(format!("{}/src/app/mod.rs", env!("CARGO_MANIFEST_DIR"))).unwrap();
         assert_eq!(m.matches("fn teardown_process()").count(), 1, "one teardown");
         let t = m.split("pub(crate) fn teardown_process()").nth(1).and_then(|r| r.split("\n}\n").next()).unwrap();
-        for call in ["handoff_win::begin_closing()", "update_fetch::cancel_running()", "dynamic_profiles_scan::stop_all()", "uia_win::disconnect_all()"] {
+        for call in ["handoff::begin_closing()", "update_fetch::cancel_running()", "watch::stop_all()", "a11y::disconnect_all()"] {
             assert!(t.contains(call), "the teardown calls {call}");
         }
     }

@@ -886,10 +886,8 @@ pub struct Runner {
     options: Options,
     notify: Notify,
     call: Option<Box<dyn Call>>,
-    #[cfg(windows)]
     log: Option<(Arc<std::sync::Mutex<crate::ai_wire_log::WireLog>>, bool)>,
     /// The live call's wire log id and start.
-    #[cfg(windows)]
     logged: Option<(String, std::time::Instant)>,
 }
 
@@ -901,15 +899,12 @@ impl Runner {
             options,
             notify,
             call: None,
-            #[cfg(windows)]
             log: None,
-            #[cfg(windows)]
             logged: None,
         }
     }
 
     /// Writes the wire log's records while `enabled` (`aiChatRawWireLogging`).
-    #[cfg(windows)]
     pub fn with_log(mut self, log: Arc<std::sync::Mutex<crate::ai_wire_log::WireLog>>, enabled: bool) -> Runner {
         self.log = Some((log, enabled));
         self
@@ -1018,7 +1013,6 @@ impl Runner {
         self.call = Some(self.transport.start(request, self.options.clone(), self.notify.clone()));
     }
 
-    #[cfg(windows)]
     fn log_request(&mut self, request: &HttpRequest) {
         use crate::ai_wire_log::{iso_stamp, now_millis, request_record};
         if let Some((log, enabled)) = &self.log {
@@ -1029,10 +1023,6 @@ impl Runner {
         }
     }
 
-    #[cfg(not(windows))]
-    fn log_request(&mut self, _request: &HttpRequest) {}
-
-    #[cfg(windows)]
     fn log_event(&mut self, event: &HttpEvent) {
         use crate::ai_wire_log::{chunk_record, iso_stamp, now_millis, response_record};
         let (Some((log, enabled)), Some((id, started))) = (&self.log, &self.logged) else {
@@ -1045,9 +1035,6 @@ impl Runner {
         };
         log.lock().unwrap_or_else(|e| e.into_inner()).log(*enabled, &record);
     }
-
-    #[cfg(not(windows))]
-    fn log_event(&mut self, _event: &HttpEvent) {}
 }
 
 /// Whether two runs of the same answer delivered in different chunks had the same outcome: the

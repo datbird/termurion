@@ -81,3 +81,31 @@ pub fn long_time(p: Local) -> String {
 pub fn play_named(name: &str) -> Option<bool> {
     crate::taskbar_win::play_named(name)
 }
+
+/// `udatpg_getBestPattern` for `template` in the user's locale (ICU, through Windows).
+pub fn best_date_pattern(template: &str) -> Option<String> {
+    use windows_sys::Win32::Globalization::{U_ZERO_ERROR, udatpg_close, udatpg_getBestPattern, udatpg_open};
+    let mut err = U_ZERO_ERROR;
+    // A null locale is ICU's default, the user's.
+    let g = unsafe { udatpg_open(std::ptr::null(), &mut err) };
+    if g.is_null() || err > U_ZERO_ERROR {
+        return None;
+    }
+    let skeleton: Vec<u16> = template.encode_utf16().collect();
+    let mut buf = vec![0u16; 256];
+    let n = unsafe { udatpg_getBestPattern(g, skeleton.as_ptr(), skeleton.len() as i32, buf.as_mut_ptr(), buf.len() as i32, &mut err) };
+    unsafe { udatpg_close(g) };
+    (err <= U_ZERO_ERROR && n > 0 && (n as usize) <= buf.len()).then(|| String::from_utf16_lossy(&buf[..n as usize]))
+}
+
+/// The zone name as `GetTimeZoneInformation` gives it (standard or daylight).
+pub fn zone_name() -> String {
+    use windows_sys::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
+    /// `TIME_ZONE_ID_DAYLIGHT`.
+    const DAYLIGHT: u32 = 2;
+    let mut info: TIME_ZONE_INFORMATION = unsafe { std::mem::zeroed() };
+    let id = unsafe { GetTimeZoneInformation(&mut info) };
+    let name = if id == DAYLIGHT { &info.DaylightName } else { &info.StandardName };
+    let end = name.iter().position(|c| *c == 0).unwrap_or(name.len());
+    String::from_utf16_lossy(&name[..end])
+}

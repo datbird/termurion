@@ -73,6 +73,12 @@ pub fn confirm_with_disclosure(owner: Option<isize>, topmost: bool, title: &str,
     imp::confirm_with_disclosure(owner, topmost, title, text, prompt, detail)
 }
 
+/// The OS color dialog, starting at `initial` with `swatches` (the first 16) as its custom colors.
+/// Ok(None) on Cancel. Unix has no such dialog yet.
+pub fn choose_color(hwnd: isize, initial: Option<crate::palette::Rgb>, swatches: &[crate::palette::Rgb]) -> Result<Option<crate::palette::Rgb>, super::Unsupported> {
+    imp::choose_color(hwnd, initial, swatches)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

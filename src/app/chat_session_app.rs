@@ -686,7 +686,6 @@ impl App {
     /// panel (`inline` names its pane), the terminal window. Ids are `aichat:menu:<verb>:<chat>`;
     /// the menu lives until its pick arrives (`popup_menu`).
     pub(super) fn show_session_menu(&mut self, chat: &str, inline: Option<PaneId>, at: (f32, f32)) {
-        use muda::ContextMenu;
         let hwnd = match inline {
             Some(pane) => {
                 self.enter_pane_window(pane);
@@ -727,7 +726,7 @@ impl App {
             return;
         }
         let at = muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(at.0 as i32, at.1 as i32));
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, Some(at)) };
+        crate::platform::chrome::popup(&menu, hwnd, Some(at));
         self.popup_menu = Some(menu);
     }
 
@@ -771,7 +770,6 @@ impl App {
     /// A press on an AI glyph among a pane's indicators: a click menu of the popover's links
     /// (Decision). False for a press anywhere else. The hits are this window's last frame's.
     pub(super) fn chat_indicator_press(&mut self, x: f32, y: f32) -> bool {
-        use muda::ContextMenu;
         let Some(&(pane, _, kind)) = self.chat_indicator_hits.iter().find(|(_, r, _)| r.contains(x, y)) else { return false };
         let Some(reference) = self.session_ref(pane) else { return true };
         let routes = match kind {
@@ -788,7 +786,7 @@ impl App {
             }
         }
         self.chat_indicator_menu = Some((pane, routes.into_iter().map(|(_, r)| r).collect()));
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        crate::platform::chrome::popup(&menu, hwnd, None);
         self.popup_menu = Some(menu);
         true
     }

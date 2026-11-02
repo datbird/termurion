@@ -278,7 +278,9 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("jobwatch.rs", 2),
     ("perm_queue.rs", 1),
     ("platform/unix/clock.rs", 1),
+    ("platform/unix/metrics.rs", 1),
     ("platform/unix/proc.rs", 1),
+    ("platform/unix/watch.rs", 1),
     ("trigger_eval.rs", 1),
     ("view_source.rs", 1),
     ("webhost_win.rs", 22),
@@ -822,6 +824,12 @@ pub fn save_private(name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
 #[cfg(unix)]
 pub fn save_private(_name: &str, _bytes: &[u8]) -> Result<PathBuf, String> {
     Err(crate::platform::Unsupported { feature: "Saving the debug log's files" }.to_string())
+}
+
+/// The debug log is saved by the Windows folder rules; Unix has no log folder yet.
+#[cfg(unix)]
+pub fn save(_header: &str, _body: &str, _footer: &str, _append: bool) -> Result<PathBuf, String> {
+    Err(crate::platform::Unsupported { feature: "Saving the debug log" }.to_string())
 }
 
 /// Saves into the first folder that takes it (iTerm2 reports the failure of its one folder).

@@ -51,50 +51,18 @@ pub(super) const APP_HOTKEY: u32 = 0;
 /// The id of the Open Quickly hotkey (Settings > Keys > Hotkey).
 pub(super) const OPEN_QUICKLY_HOTKEY: u32 = u32::MAX;
 
-fn cloak(hwnd: isize, on: bool) {
-    use windows_sys::Win32::Graphics::Dwm::{DWMWA_CLOAK, DwmSetWindowAttribute};
-    let v: i32 = on as i32;
-    unsafe { DwmSetWindowAttribute(hwnd as _, DWMWA_CLOAK as u32, (&v as *const i32).cast(), 4) };
-}
-
-/// Sets the window's opacity for a fade: `WS_EX_LAYERED` is added for the animation and
-/// removed again at full opacity, so the swap chain keeps its normal path outside a fade.
-/// False when Windows refused the attribute (the fade then stops).
-pub(super) fn set_window_alpha(hwnd: isize, alpha: f32) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongPtrW, IsWindow, LWA_ALPHA, SetLayeredWindowAttributes, SetWindowLongPtrW, WS_EX_LAYERED};
-    unsafe {
-        if IsWindow(hwnd as _) == 0 {
-            return false;
-        }
-        let ex = GetWindowLongPtrW(hwnd as _, GWL_EXSTYLE);
-        let layered = ex & WS_EX_LAYERED as isize != 0;
-        if alpha >= 1.0 {
-            if layered {
-                SetWindowLongPtrW(hwnd as _, GWL_EXSTYLE, ex & !(WS_EX_LAYERED as isize));
-            }
-            return true;
-        }
-        if !layered {
-            SetWindowLongPtrW(hwnd as _, GWL_EXSTYLE, ex | WS_EX_LAYERED as isize);
-        }
-        SetLayeredWindowAttributes(hwnd as _, 0, (alpha.clamp(0.0, 1.0) * 255.0).round() as u8, LWA_ALPHA) != 0
-    }
-}
-
 /// A window of Termurion is in front.
 pub(super) fn termurion_in_front() -> bool {
     ours(foreground())
 }
 
 pub(super) fn foreground() -> isize {
-    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() as isize }
+    crate::platform::hotkey::foreground()
 }
 
 /// A window of this process (a terminal window, Settings, a dialog).
 pub(super) fn ours(hwnd: isize) -> bool {
-    let mut pid = 0u32;
-    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd as _, &mut pid) };
-    pid == std::process::id()
+    crate::platform::hotkey::ours(hwnd)
 }
 
 impl App {
@@ -199,7 +167,7 @@ impl App {
                 // The taskbar button comes back through `presence_tick`.
                 g.window.set_window_level(winit::window::WindowLevel::Normal);
                 g.window.set_visible(true);
-                cloak(hwnd, false);
+                crate::platform::hotkey::cloak(hwnd, false);
             }
         }
         if let Some(b) = back {
@@ -338,7 +306,7 @@ impl App {
         let floats = prefs.as_ref().is_some_and(|p| p.floats);
         let animates = prefs.as_ref().is_some_and(|p| p.animates);
         // Placed while cloaked, so nothing flashes at the old place.
-        cloak(hwnd, true);
+        crate::platform::hotkey::cloak(hwnd, true);
         let Some(g) = &self.gpu else { return };
         g.window.set_visible(true);
         g.window.set_minimized(false);
@@ -364,7 +332,7 @@ impl App {
         // The first frame is already transparent: nothing flashes at full opacity.
         match fade {
             Some(FadePath::Layered) => {
-                if !set_window_alpha(hwnd, 0.0) {
+                if !crate::platform::hotkey::set_alpha(hwnd, 0.0) {
                     self.fade_failed = true;
                 }
             }
@@ -391,7 +359,7 @@ impl App {
             self.render();
         }
         let Some(g) = &self.gpu else { return };
-        cloak(hwnd, false);
+        crate::platform::hotkey::cloak(hwnd, false);
         g.window.focus_window();
         let now = Instant::now();
         if let Some(h) = self.hotkey.as_mut() {
@@ -446,7 +414,7 @@ impl App {
     /// Puts the current window back to full opacity (the layered style off, the renderer's fade 1).
     fn end_fade(&mut self) {
         if let Some(hwnd) = self.hwnd() {
-            set_window_alpha(hwnd, 1.0);
+            crate::platform::hotkey::set_alpha(hwnd, 1.0);
         }
         if let Some(h) = self.hotkey.as_mut() {
             h.fade = 1.0;
@@ -473,8 +441,10 @@ impl App {
         let r = Self::outer_rect(g);
         let inside = |m: &Rect, x: f32, y: f32| x >= m.x && x < m.x + m.w && y >= m.y && y < m.y + m.h;
         let window_monitor = monitors.iter().position(|m| inside(m, r.x + r.w / 2.0, r.y + r.h / 2.0)).unwrap_or(0);
-        let mut pt = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
-        let cursor_monitor = if unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) } != 0 { monitors.iter().position(|m| inside(m, pt.x as f32, pt.y as f32)).unwrap_or(window_monitor) } else { window_monitor };
+        let cursor_monitor = match crate::platform::window::cursor_pos() {
+            Some(pt) => monitors.iter().position(|m| inside(m, pt.0 as f32, pt.1 as f32)).unwrap_or(window_monitor),
+            None => window_monitor,
+        };
         let pref = self.store.get(guid).and_then(|p| p.get("Screen")).and_then(|v| v.as_integer()).unwrap_or(-1);
         let work = placement::screen_for(pref, &monitors, window_monitor, cursor_monitor);
         if inside(&work, r.x + r.w / 2.0, r.y + r.h / 2.0) {
@@ -508,7 +478,7 @@ impl App {
     /// `back` is where a slide left it: the shown place, so the next show starts right.
     fn finish_hide(&mut self, by_key: bool, back: Option<(f32, f32)>) {
         let Some(hwnd) = self.hwnd() else { return };
-        cloak(hwnd, true);
+        crate::platform::hotkey::cloak(hwnd, true);
         // Full opacity again, while it is cloaked: the next show starts from its own first frame.
         self.end_fade();
         if let Some(g) = &self.gpu {
@@ -525,8 +495,8 @@ impl App {
             h.previous.take()
         });
         if by_key
-            && let Some(p) = previous.filter(|p| unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindow(*p as _) } != 0) {
-                unsafe { windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(p as _) };
+            && let Some(p) = previous.filter(|p| crate::platform::hotkey::is_window(*p)) {
+                crate::platform::window::set_foreground(p);
             }
     }
 
@@ -555,7 +525,7 @@ impl App {
             } else if fade == Some(FadePath::Layered) {
                 let hwnd = self.hwnd();
                 // The last step of a show is full opacity (the style comes off); a hide ends at 0.
-                if hwnd.is_none_or(|h| !set_window_alpha(h, alpha)) {
+                if hwnd.is_none_or(|h| !crate::platform::hotkey::set_alpha(h, alpha)) {
                     self.fade_failed = true;
                     (pos, done) = (motion.to, true);
                     self.end_fade();
@@ -688,7 +658,6 @@ impl App {
     /// app (Activate's `order_window_front`, `H:3072-3079`); a minimized window is restored
     /// without activation. A hidden hotkey window shows the way its hotkey shows it.
     pub(super) fn order_front(&mut self, id: WindowId) {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{HWND_TOP, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos, ShowWindow};
         if !self.enter(id) {
             return;
         }
@@ -698,10 +667,8 @@ impl App {
             return;
         }
         let Some(h) = self.hwnd() else { return };
-        if self.gpu.as_ref().is_some_and(|g| g.window.is_minimized() == Some(true)) {
-            unsafe { ShowWindow(h as _, SW_SHOWNOACTIVATE) };
-        }
-        unsafe { SetWindowPos(h as _, HWND_TOP, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE) };
+        let minimized = self.gpu.as_ref().is_some_and(|g| g.window.is_minimized() == Some(true));
+        crate::platform::hotkey::order_front(h, minimized);
     }
 
     /// Whether the current window is a pinned hotkey window (the menu check).
@@ -767,37 +734,6 @@ impl App {
                 }
             }
             hotkey::AppAct::OpenWindow => self.pending_windows.push(NewWindow::Profile(None)),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use windows_sys::Win32::UI::WindowsAndMessaging::*;
-
-    #[test]
-    fn window_alpha_adds_and_removes_the_layered_style() {
-        unsafe {
-            let class: Vec<u16> = "TermurionAlphaTest\0".encode_utf16().collect();
-            RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(DefWindowProcW), lpszClassName: class.as_ptr(), ..std::mem::zeroed() });
-            // A tool window that is never shown, off every monitor.
-            let h = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, class.as_ptr(), class.as_ptr(), WS_POPUP, -30000, -30000, 16, 16, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
-            assert!(!h.is_null());
-            let layered = || GetWindowLongPtrW(h, GWL_EXSTYLE) & WS_EX_LAYERED as isize != 0;
-            assert!(!layered());
-            assert!(set_window_alpha(h as isize, 0.5));
-            assert!(layered(), "a fade adds the layered style");
-            let (mut key, mut alpha, mut flags) = (0u32, 0u8, 0u32);
-            GetLayeredWindowAttributes(h, &mut key, &mut alpha, &mut flags);
-            assert_eq!((alpha, flags), (128, LWA_ALPHA));
-            // Later steps of a fade are the same call; a desktop-less ssh session (0) refuses a second
-            // `SetLayeredWindowAttributes` on a window (error 31), so they are checked on the checklist.
-            assert!(set_window_alpha(h as isize, 1.0));
-            assert!(!layered(), "full opacity removes the style");
-            assert!(set_window_alpha(h as isize, 1.0), "removing twice is fine");
-            DestroyWindow(h);
-            assert!(!set_window_alpha(h as isize, 0.5), "a destroyed window refuses");
         }
     }
 }

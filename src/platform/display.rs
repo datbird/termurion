@@ -27,3 +27,14 @@ pub fn set_blur(hwnd: isize, on: bool) -> bool {
 pub fn sheet_origin(owner: isize, width: u32) -> Option<(i32, i32)> {
     imp::sheet_origin(owner, width)
 }
+
+/// The primary monitor's height in pixels (it sits at the virtual screen's origin).
+pub fn primary_height() -> f64 {
+    imp::primary_height()
+}
+
+/// Each monitor's work area (without the taskbar) as x, y, width, height in virtual-screen pixels.
+/// Empty where the OS gives no monitor list without a window (Unix: winit lists monitors per window).
+pub fn work_areas() -> Vec<(f64, f64, f64, f64)> {
+    imp::work_areas()
+}

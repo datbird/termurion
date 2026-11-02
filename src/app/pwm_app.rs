@@ -359,14 +359,14 @@ impl PwmState {
 
     /// The authentication prompt's answer for one store: success unlocks that store only, failure
     /// revokes it. Err is the reason.
-    fn apply_answer(&mut self, scope: Scope, answer: win_auth::Answer) -> Result<(), String> {
+    fn apply_answer(&mut self, scope: Scope, answer: crate::platform::user_auth::Answer) -> Result<(), String> {
         let reason = match answer {
-            win_auth::Answer::Granted => {
+            crate::platform::user_auth::Answer::Granted => {
                 self.auth_mut(scope).granted(true);
                 return Ok(());
             }
-            win_auth::Answer::Canceled => "password entry was cancelled.".to_string(),
-            win_auth::Answer::Failed(reason) => reason,
+            crate::platform::user_auth::Answer::Canceled => "password entry was cancelled.".to_string(),
+            crate::platform::user_auth::Answer::Failed(reason) => reason,
         };
         self.auth_mut(scope).granted(false);
         Err(reason)
@@ -593,7 +593,7 @@ impl App {
                 return session;
             }
         };
-        lock::watch(owner_hwnd, self.notify.clone());
+        crate::platform::screen_lock::watch(owner_hwnd, self.notify.clone());
         self.pwm.instances += 1;
         self.pwm_window = Some(PwmWin {
             window,
@@ -632,7 +632,7 @@ impl App {
     pub(super) fn authenticate(&mut self, scope: Scope) -> bool {
         let owner = self.hwnd().unwrap_or(0);
         // Windows Hello (PIN, fingerprint, face) where it is set up, else the password prompt.
-        let answer = win_auth::hello(owner).unwrap_or_else(|| win_auth::prompt(owner));
+        let answer = crate::platform::user_auth::hello(owner).unwrap_or_else(|| crate::platform::user_auth::prompt(owner));
         match self.pwm.apply_answer(scope, answer) {
             Ok(()) => true,
             Err(reason) => {
@@ -1119,9 +1119,8 @@ impl App {
     /// (Win+V) and cloud clipboard. A Windows addition (m10b ruling): iTerm2 copies a plain
     /// string (`copyPasswordToClipboard:`), and macOS keeps no history to leak it into.
     fn pwm_copy(&mut self, s: &Secret) {
-        use arboard::SetExtWindows;
         if let Some(cb) = &mut self.clipboard
-            && let Err(e) = cb.set().exclude_from_history().exclude_from_cloud().text(s.expose()) {
+            && let Err(e) = crate::platform::clipboard::set_private_text(cb, s.expose()) {
                 self.banners.set("clipboard", format!("Copy failed: {e}"));
             }
     }
@@ -1303,12 +1302,12 @@ impl App {
     /// Handles the worker's replies, the probes' deadlines, broadcast rounds and a screen lock.
     /// Returns when the next probe deadline is due.
     pub(super) fn tick_pwm(&mut self) -> Option<Instant> {
-        if lock::take() {
+        if crate::platform::screen_lock::take() {
             self.pwm_screen_locked();
         }
-        if lock::watched() == 0 && (self.pwm.auth.authenticated || self.pwm.browser_auth.authenticated)
+        if crate::platform::screen_lock::watched() == 0 && (self.pwm.auth.authenticated || self.pwm.browser_auth.authenticated)
             && let Some(h) = self.hwnd() {
-                lock::watch(h, self.notify.clone());
+                crate::platform::screen_lock::watch(h, self.notify.clone());
             }
         let replies: Vec<Reply> = [&self.pwm.worker, &self.pwm.browser_worker].into_iter().flatten().flat_map(|w| w.rx.try_iter()).collect();
         // Pickers that closed without a choice end their challenges.
@@ -2480,7 +2479,7 @@ impl Worker {
 /// Builds the source for `config`. A CLI that cannot be found (or is too old) comes back for
 /// the window to offer Locate.
 fn build(config: &Config, ctx: &Ctx) -> Result<Box<dyn Source>, NeedCli> {
-    use crate::pwm_run::ProcessRunner;
+    use crate::platform::proc::ProcessRunner;
     match config.kind {
         Kind::CredentialManager => Ok(Box::new(crate::platform::credentials::CredentialManager::for_scope(config.scope))),
         Kind::OnePassword => {
@@ -2633,239 +2632,6 @@ fn run(slot: &mut Option<(Config, Box<dyn Source>)>, job: WindowJob, ctx: &Ctx) 
     }
 }
 
-// --- The screen lock ---
-
-/// `WTS_SESSION_LOCK` through `WTSRegisterSessionNotification` on a terminal window (iTerm2's
-/// `com.apple.screenIsLocked`), seen by a window subclass and handled on the next pass.
-mod lock {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Mutex, OnceLock};
-
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-    use windows_sys::Win32::System::RemoteDesktop::{WTSRegisterSessionNotification, WTSUnRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION};
-    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_NCDESTROY, WM_WTSSESSION_CHANGE};
-
-    use crate::platform::pty::Notify;
-
-    const SUBCLASS_ID: usize = 0x7077_6D6C;
-    const WTS_SESSION_LOCK: usize = 7;
-
-    static LOCKED: AtomicBool = AtomicBool::new(false);
-    static WAKE: OnceLock<Notify> = OnceLock::new();
-    static WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
-
-    /// Watches `hwnd` for the screen locking, once per window.
-    pub(super) fn watch(hwnd: isize, wake: Notify) {
-        let _ = WAKE.set(wake);
-        let Ok(mut w) = WINDOWS.lock() else { return };
-        if w.contains(&hwnd) {
-            return;
-        }
-        let ok = unsafe { WTSRegisterSessionNotification(hwnd as HWND, NOTIFY_FOR_THIS_SESSION) } != 0;
-        if ok && unsafe { SetWindowSubclass(hwnd as HWND, Some(proc), SUBCLASS_ID, 0) } != 0 {
-            w.push(hwnd);
-        }
-    }
-
-    /// How many windows are watched.
-    pub(super) fn watched() -> usize {
-        WINDOWS.lock().map_or(0, |w| w.len())
-    }
-
-    /// Whether the screen locked since the last call.
-    pub(super) fn take() -> bool {
-        LOCKED.swap(false, Ordering::AcqRel)
-    }
-
-    unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
-        if msg == WM_WTSSESSION_CHANGE && wparam == WTS_SESSION_LOCK {
-            LOCKED.store(true, Ordering::Release);
-            if let Some(w) = WAKE.get() {
-                w();
-            }
-        } else if msg == WM_NCDESTROY {
-            unsafe {
-                WTSUnRegisterSessionNotification(hwnd);
-                RemoveWindowSubclass(hwnd, Some(proc), SUBCLASS_ID);
-            }
-            if let Ok(mut w) = WINDOWS.lock() {
-                w.retain(|h| *h != hwnd as isize);
-            }
-        }
-        unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
-    }
-}
-
-// --- Authentication ---
-
-/// Windows Hello through `UserConsentVerifier` (for this window, `IUserConsentVerifierInterop`),
-/// or the Windows credential prompt for the signed-in user, checked with `LogonUserW`. The typed
-/// password is unpacked into a stack buffer, used once and wiped with the packed buffer.
-mod win_auth {
-    use std::sync::atomic::{compiler_fence, Ordering};
-
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
-    use windows_sys::Win32::Security::Credentials::{CredUIPromptForWindowsCredentialsW, CredUnPackAuthenticationBufferW, CREDUIWIN_ENUMERATE_CURRENT_USER, CREDUI_INFOW, CRED_PACK_PROTECTED_CREDENTIALS};
-    use windows_sys::Win32::Security::{LogonUserW, LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT};
-    use windows_sys::Win32::System::Com::CoTaskMemFree;
-
-    pub(super) const CAPTION: &str = "Termurion";
-    pub(super) const MESSAGE: &str = "Termurion wants to open the password manager.";
-    const ERROR_CANCELLED: u32 = 1223;
-    const ERROR_LOGON_FAILURE: u32 = 1326;
-
-    pub(super) enum Answer {
-        Granted,
-        Canceled,
-        /// The reason, finishing "Authentication failed because ".
-        Failed(String),
-    }
-
-    fn wide(s: &str) -> Vec<u16> {
-        s.encode_utf16().chain(Some(0)).collect()
-    }
-
-    fn wipe(b: &mut [u16]) {
-        for c in b.iter_mut() {
-            unsafe { std::ptr::write_volatile(c, 0) };
-        }
-        compiler_fence(Ordering::SeqCst);
-    }
-
-    /// iTerm2's reasons (`P:320-359`) where Windows has the same case, else Windows' own text.
-    pub(super) fn reason(code: u32) -> String {
-        match code {
-            ERROR_LOGON_FAILURE => "valid credentials weren't supplied.".to_string(),
-            ERROR_CANCELLED => "password entry was cancelled.".to_string(),
-            _ => format!("{}.", std::io::Error::from_raw_os_error(code as i32).to_string().trim_end_matches(['.', ' ', '\r', '\n'])),
-        }
-    }
-
-    /// "DOMAIN\user" in the user field splits into its parts when the domain came back empty;
-    /// "user@domain" stays whole for `LogonUserW` with no domain.
-    pub(super) fn split_user(user: &[u16], domain: &[u16]) -> (Vec<u16>, Option<Vec<u16>>) {
-        let user = &user[..user.iter().position(|c| *c == 0).unwrap_or(user.len())];
-        let domain = &domain[..domain.iter().position(|c| *c == 0).unwrap_or(domain.len())];
-        let z = |s: &[u16]| s.iter().copied().chain(Some(0)).collect::<Vec<u16>>();
-        if !domain.is_empty() {
-            return (z(user), Some(z(domain)));
-        }
-        match user.iter().position(|c| *c == u16::from(b'\\')) {
-            Some(i) => (z(&user[i + 1..]), Some(z(&user[..i]))),
-            None => (z(user), None),
-        }
-    }
-
-    /// Windows Hello's answer (`UserConsentVerificationResult`): None where the device or its
-    /// setup is missing, so the password prompt is used instead.
-    pub(super) fn hello_answer(code: i32) -> Option<Answer> {
-        Some(match code {
-            0 => Answer::Granted,
-            6 => Answer::Canceled,
-            1 | 2 => return None,
-            3 => Answer::Failed("authentication is disabled by policy.".to_string()),
-            4 => Answer::Failed("the authentication device is busy.".to_string()),
-            5 => Answer::Failed("there were too many failed attempts.".to_string()),
-            _ => Answer::Failed("Windows Hello reported an error.".to_string()),
-        })
-    }
-
-    /// Waits for a Windows Runtime operation, handling this thread's messages meanwhile, so
-    /// the Hello dialog works. Termurion's own windows are frozen until it returns: winit holds
-    /// every event while its handler is on the stack, so they neither repaint nor take input
-    /// (as with the credential prompt and the file pickers; accepted, checklist "modal calls").
-    fn wait<T: windows::core::RuntimeType + 'static>(op: &windows_future::IAsyncOperation<T>) -> Option<T> {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT};
-        while op.Status().ok()? == windows_future::AsyncStatus::Started {
-            let mut msg: MSG = unsafe { std::mem::zeroed() };
-            if unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0 {
-                unsafe {
-                    TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
-                }
-            } else {
-                unsafe { MsgWaitForMultipleObjects(0, std::ptr::null(), 0, 50, QS_ALLINPUT) };
-            }
-        }
-        op.GetResults().ok()
-    }
-
-    /// Windows Hello over `owner`; None when it is not available (or could not be asked).
-    pub(super) fn hello(owner: isize) -> Option<Answer> {
-        use windows::Security::Credentials::UI::{UserConsentVerificationResult, UserConsentVerifier, UserConsentVerifierAvailability};
-        use windows::Win32::System::WinRT::IUserConsentVerifierInterop;
-        let available = wait(&UserConsentVerifier::CheckAvailabilityAsync().ok()?)?;
-        if available != UserConsentVerifierAvailability::Available {
-            return None;
-        }
-        let interop = windows::core::factory::<UserConsentVerifier, IUserConsentVerifierInterop>().ok()?;
-        let hwnd = windows::Win32::Foundation::HWND(owner as _);
-        let op: windows_future::IAsyncOperation<UserConsentVerificationResult> = unsafe { interop.RequestVerificationForWindowAsync(hwnd, &windows::core::HSTRING::from(MESSAGE)) }.ok()?;
-        hello_answer(wait(&op)?.0)
-    }
-
-    pub(super) fn prompt(owner: isize) -> Answer {
-        let caption = wide(CAPTION);
-        let message = wide(MESSAGE);
-        let info = CREDUI_INFOW {
-            cbSize: std::mem::size_of::<CREDUI_INFOW>() as u32,
-            hwndParent: owner as _,
-            pszMessageText: message.as_ptr(),
-            pszCaptionText: caption.as_ptr(),
-            hbmBanner: std::ptr::null_mut(),
-        };
-        let mut package = 0u32;
-        let mut out: *mut core::ffi::c_void = std::ptr::null_mut();
-        let mut out_len = 0u32;
-        let mut save = 0;
-        let r = unsafe { CredUIPromptForWindowsCredentialsW(&info, 0, &mut package, std::ptr::null(), 0, &mut out, &mut out_len, &mut save, CREDUIWIN_ENUMERATE_CURRENT_USER) };
-        if r == ERROR_CANCELLED {
-            return Answer::Canceled;
-        }
-        if r != 0 {
-            return Answer::Failed(reason(r));
-        }
-        let mut user = [0u16; 514];
-        let mut domain = [0u16; 338];
-        let mut password = [0u16; 514];
-        let (mut ul, mut dl, mut pl) = (user.len() as u32, domain.len() as u32, password.len() as u32);
-        let unpacked = unsafe { CredUnPackAuthenticationBufferW(CRED_PACK_PROTECTED_CREDENTIALS, out, out_len, user.as_mut_ptr(), &mut ul, domain.as_mut_ptr(), &mut dl, password.as_mut_ptr(), &mut pl) } != 0;
-        let unpack_error = unsafe { GetLastError() };
-        unsafe {
-            let bytes = std::slice::from_raw_parts_mut(out as *mut u8, out_len as usize);
-            for b in bytes.iter_mut() {
-                std::ptr::write_volatile(b, 0);
-            }
-            compiler_fence(Ordering::SeqCst);
-            CoTaskMemFree(out);
-        }
-        let answer = if !unpacked {
-            Answer::Failed(reason(unpack_error))
-        } else {
-            let (mut u, mut d) = split_user(&user, &domain);
-            let mut token: HANDLE = std::ptr::null_mut();
-            let domain_ptr = d.as_ref().map_or(std::ptr::null(), |d| d.as_ptr());
-            let ok = unsafe { LogonUserW(u.as_ptr(), domain_ptr, password.as_ptr(), LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, &mut token) } != 0;
-            let error = unsafe { GetLastError() };
-            wipe(&mut u);
-            if let Some(d) = d.as_mut() {
-                wipe(d);
-            }
-            if ok {
-                unsafe { CloseHandle(token) };
-                Answer::Granted
-            } else {
-                Answer::Failed(reason(error))
-            }
-        };
-        wipe(&mut password);
-        wipe(&mut user);
-        wipe(&mut domain);
-        answer
-    }
-}
-
 /// How many holds on its focus reports `pane` has: its waiting password, closed managers'
 /// holds waiting for the focus, and managers open over it.
 fn true_holds(pane: PaneId, entry: bool, holds: &[PaneId], windows: impl IntoIterator<Item = Option<PaneId>>) -> u32 {
@@ -2930,24 +2696,6 @@ mod tests {
         assert_eq!(lp.buttons, vec!["Locate", "Cancel", "Help"]);
         assert_eq!(adapter_identifier(Kind::Keeper), Some("Keeper Security"));
         assert_eq!(adapter_identifier(Kind::OnePassword), None);
-    }
-
-    #[test]
-    fn authentication_texts_follow_iterm2() {
-        assert_eq!(win_auth::CAPTION, "Termurion");
-        assert_eq!(win_auth::MESSAGE, "Termurion wants to open the password manager.");
-        assert_eq!(win_auth::reason(1326), "valid credentials weren't supplied.");
-        assert_eq!(win_auth::reason(1223), "password entry was cancelled.");
-        assert!(win_auth::reason(5).ends_with('.'));
-        let w = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-        assert_eq!(win_auth::split_user(&w("BOX\\bob"), &w("")), (w("bob"), Some(w("BOX"))));
-        assert_eq!(win_auth::split_user(&w("bob@example.com"), &w("")), (w("bob@example.com"), None));
-        assert_eq!(win_auth::split_user(&w("bob"), &w("CORP")), (w("bob"), Some(w("CORP"))));
-        // Windows Hello: verified, canceled, and a missing device or setup falls back.
-        assert!(matches!(win_auth::hello_answer(0), Some(win_auth::Answer::Granted)));
-        assert!(matches!(win_auth::hello_answer(6), Some(win_auth::Answer::Canceled)));
-        assert!(win_auth::hello_answer(1).is_none() && win_auth::hello_answer(2).is_none());
-        assert!(matches!(win_auth::hello_answer(5), Some(win_auth::Answer::Failed(r)) if r == "there were too many failed attempts."));
     }
 
     #[test]
@@ -3056,18 +2804,18 @@ mod tests {
         let (required, every) = (true, false);
         let mut st = PwmState::default();
         assert!(st.auth_of(Scope::Browser).needs_prompt(required, every) && st.auth_of(Scope::Terminal).needs_prompt(required, every));
-        assert!(st.apply_answer(Scope::Browser, win_auth::Answer::Granted).is_ok());
+        assert!(st.apply_answer(Scope::Browser, crate::platform::user_auth::Answer::Granted).is_ok());
         assert!(!st.auth_of(Scope::Browser).needs_prompt(required, every));
         assert!(st.auth_of(Scope::Terminal).needs_prompt(required, every), "the terminal store stays locked");
-        assert!(st.apply_answer(Scope::Terminal, win_auth::Answer::Granted).is_ok());
-        assert!(st.apply_answer(Scope::Browser, win_auth::Answer::Canceled).is_err());
+        assert!(st.apply_answer(Scope::Terminal, crate::platform::user_auth::Answer::Granted).is_ok());
+        assert!(st.apply_answer(Scope::Browser, crate::platform::user_auth::Answer::Canceled).is_err());
         assert!(st.auth_of(Scope::Browser).needs_prompt(required, every) && !st.auth_of(Scope::Terminal).needs_prompt(required, every), "a refusal revokes only its own store");
         // The reverse.
         let mut st = PwmState::default();
-        assert!(st.apply_answer(Scope::Terminal, win_auth::Answer::Granted).is_ok());
+        assert!(st.apply_answer(Scope::Terminal, crate::platform::user_auth::Answer::Granted).is_ok());
         assert!(st.auth_of(Scope::Browser).needs_prompt(required, every));
         // A screen lock revokes both.
-        assert!(st.apply_answer(Scope::Browser, win_auth::Answer::Granted).is_ok());
+        assert!(st.apply_answer(Scope::Browser, crate::platform::user_auth::Answer::Granted).is_ok());
         st.screen_locked(false);
         assert!(st.auth.authenticated && st.browser_auth.authenticated, "after-lock off keeps both");
         st.screen_locked(true);

@@ -132,7 +132,7 @@ impl App {
         // sample times do not drive its slide.
         let remote = if kind == Kind::Cpu { self.panes.get(&pane).and_then(|p| p.remote_cpu()) } else { None };
         let since = self.globals.bool(ANIMATE_KEY).then(|| own.map(|t| t.elapsed())).flatten().filter(|_| remote.is_none());
-        graph_of(kind, c, &self.meters, crate::metrics_win::has_battery(), since, remote)
+        graph_of(kind, c, &self.meters, crate::platform::metrics::has_battery(), since, remote)
     }
 
     /// The meters some session's bar has a component for (on screen or not: iTerm2's
@@ -166,7 +166,7 @@ impl App {
                     Some(Kind::Cpu) => w.cpu = true,
                     Some(Kind::Memory) => w.memory = true,
                     Some(Kind::Network) => w.network = true,
-                    Some(Kind::Battery) if crate::metrics_win::has_battery() => w.battery = true,
+                    Some(Kind::Battery) if crate::platform::metrics::has_battery() => w.battery = true,
                     _ => {}
                 }
             }

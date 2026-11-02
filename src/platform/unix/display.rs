@@ -18,3 +18,13 @@ pub fn set_blur(_hwnd: isize, _on: bool) -> bool {
 pub fn sheet_origin(_owner: isize, _width: u32) -> Option<(i32, i32)> {
     None
 }
+
+/// winit lists monitors per window, and the app holds no window here: the height is unknown, so 0.
+pub fn primary_height() -> f64 {
+    0.0
+}
+
+/// No monitor list without a window yet (winit's `available_monitors` needs one).
+pub fn work_areas() -> Vec<(f64, f64, f64, f64)> {
+    Vec::new()
+}

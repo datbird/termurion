@@ -32,3 +32,13 @@ pub fn first_mouse_forget(hwnd: isize) {
 pub fn animations_on() -> bool {
     imp::animations_on()
 }
+
+/// True once after a client-area click that brought the window forward (Windows marks it; Unix does not).
+pub fn first_mouse_take(hwnd: isize) -> bool {
+    imp::first_mouse_take(hwnd)
+}
+
+/// The touchpad's natural scrolling (Windows' Precision Touchpad setting; false where it is not read).
+pub fn touchpad_natural() -> bool {
+    imp::touchpad_natural()
+}

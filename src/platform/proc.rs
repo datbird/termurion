@@ -6,4 +6,5 @@ use super::unix::proc as imp;
 #[cfg(windows)]
 use super::windows::proc as imp;
 
-pub use imp::{children, console_event, foreground_job, orphans_of, process_image, start_detached, still_running};
+pub use imp::{children, command_for_line, hide_console, console_event, debug_line, descendants_now, foreground_job, orphans_of, process_alive, process_image, signal_process, start_detached, still_running, wait_for_pid, JobWatch, ProcessRunner, ScriptProcess, Sent, KILLED_CODE};
+pub(crate) use imp::KillJob;

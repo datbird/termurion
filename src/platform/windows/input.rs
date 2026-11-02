@@ -23,3 +23,11 @@ pub fn first_mouse_watch(hwnd: isize) {
 pub fn first_mouse_forget(hwnd: isize) {
     crate::firstmouse_win::forget(hwnd)
 }
+
+pub fn first_mouse_take(hwnd: isize) -> bool {
+    crate::firstmouse_win::take(hwnd)
+}
+
+pub fn touchpad_natural() -> bool {
+    crate::wheel::touchpad_natural()
+}

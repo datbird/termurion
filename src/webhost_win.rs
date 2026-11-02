@@ -2979,8 +2979,8 @@ mod tests {
         let m = include_str!("app/mod.rs");
         let t = &m[m.find("pub(crate) fn teardown_process()").unwrap()..];
         let t = &t[..t.find("\n}\n").unwrap()];
-        let close = t.find("crate::webhost_win::close_all()").expect("teardown closes the views");
-        assert!(close < t.find("crate::webhost_win::cleanup_files()").unwrap(), "views close before their folder goes");
+        let close = t.find("crate::platform::browser::close_all()").expect("teardown closes the views");
+        assert!(close < t.find("crate::platform::browser::cleanup_files()").unwrap(), "views close before their folder goes");
         assert!(close > t.find("crate::dlog::stop_at_exit()").unwrap());
     }
 

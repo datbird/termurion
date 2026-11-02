@@ -3,17 +3,51 @@
 # Usage: scripts/cfg-audit [path ...]   (default: all of src/)
 # Catches cfg(..), cfg!(..) and cfg_attr(..) naming windows, bare or inside any/all/not.
 # Allowed: src/platform/, src/lib.rs, src/bin/, build.rs, Cargo.toml, any *_win.rs. crates/ is vendored and skipped.
+# Exempt by scripts/cfg-audit.allow, one entry per line: `path:pattern  # reason`.
+#   path:pattern     a hit in that file whose line contains the text (a test-only cfg)
+#   path:*<=N        a whole file, up to N hits (an owning module outside app/ whose cfg moves under platform/ in P1)
+# Nothing under src/app/ may be exempted whole, and every entry must still match a hit (a stale entry fails).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 if [ $# -eq 0 ]; then set -- src; fi
+allow=scripts/cfg-audit.allow
 hits=0
+declare -A used=() count=()
+patterns=()
+if [ -f "$allow" ]; then
+    while IFS= read -r raw; do
+        entry="${raw%%  #*}"
+        case "$entry" in ''|'#'*) continue ;; esac
+        patterns+=("$entry")
+    done < "$allow"
+fi
 while IFS= read -r f; do
     case "$f" in
         src/platform/*|src/lib.rs|src/bin/*|build.rs|Cargo.toml|*_win.rs|crates/*) continue ;;
     esac
-    while IFS= read -r line; do
-        echo "$f:$line"
-        hits=1
-    done < <(grep -nE 'cfg(_attr)?!?\(([^"]*[(, ])?(not\()?windows[,)]' "$f" | cut -d: -f1)
+    while IFS= read -r hit; do
+        line="${hit%%:*}"; text="${hit#*:}"
+        ok=0
+        for e in "${patterns[@]}"; do
+            p="${e%%:*}"; pat="${e#*:}"
+            [ "$p" = "$f" ] || continue
+            if [[ "$pat" == '*<='* ]]; then
+                max="${pat#'*<='}"
+                count[$e]=$(( ${count[$e]:-0} + 1 ))
+                used[$e]=1
+                if [ "${count[$e]}" -le "$max" ]; then ok=1; break; fi
+            elif [[ "$text" == *"$pat"* ]]; then
+                used[$e]=1; ok=1; break
+            fi
+        done
+        if [ $ok -eq 0 ]; then echo "$f:$line"; hits=1; fi
+    done < <(grep -nE 'cfg(_attr)?!?\(([^"]*[(, ])?(not\()?windows[,)]' "$f")
 done < <(find "$@" -type f \( -name '*.rs' -o -name Cargo.toml \) | sed 's#^\./##' | sort)
+# Only a whole run can tell a stale entry.
+if [ "$*" = "src" ]; then
+    for e in "${patterns[@]}"; do
+        if [ -z "${used[$e]:-}" ]; then echo "cfg-audit.allow: no hit for $e"; hits=1; fi
+        case "$e" in src/app/*:'*<='*) echo "cfg-audit.allow: a whole app file is not allowed: $e"; hits=1 ;; esac
+    done
+fi
 exit $hits

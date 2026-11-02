@@ -958,7 +958,7 @@ impl App {
 
     /// The component menu (`CV:310-388`).
     fn show_status_menu(&mut self, pane: PaneId, p: &Placement, hit: Option<usize>) {
-        use muda::{CheckMenuItem, ContextMenu, Menu, MenuItem, PredefinedMenuItem};
+        use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
         let Some(hwnd) = self.hwnd() else { return };
         let algorithm = p.layout.advanced.algorithm;
         let shown = hit.map(|i| &p.shown[i]);
@@ -997,7 +997,7 @@ impl App {
             self.banners.set("menu", format!("Status bar menu: {e}"));
         }
         self.status_menu = Some(StatusMenu { pane, class, index: shown.and_then(|s| s.index), copy, checkboxes: checkboxes.into_iter().map(|k| k.key).collect(), choices: Vec::new(), path: None });
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        crate::platform::chrome::popup(&menu, hwnd, None);
         self.popup_menu = Some(menu);
     }
 

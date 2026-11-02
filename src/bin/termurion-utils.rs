@@ -8,4 +8,10 @@ fn main() {
     termurion::dll::harden_process();
     #[cfg(windows)]
     std::process::exit(termurion::util_console::real_main());
+    #[cfg(not(windows))]
+    {
+        // The utilities read the console through Windows' console API; no terminal reader on Unix yet.
+        eprintln!("{}", termurion::platform::Unsupported { feature: "The terminal utilities" });
+        std::process::exit(1);
+    }
 }

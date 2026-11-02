@@ -76,6 +76,21 @@ pub fn long_time(p: Local) -> String {
     strftime(p, b"%T\0")
 }
 
+/// No pattern database is read on Unix yet; the template is used as written.
+pub fn best_date_pattern(_template: &str) -> Option<String> {
+    None
+}
+
+/// The name of this computer's time zone right now (`tm_zone`, as "CST").
+pub fn zone_name() -> String {
+    let now = unsafe { libc::time(std::ptr::null_mut()) };
+    let mut t: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&now, &mut t) }.is_null() || t.tm_zone.is_null() {
+        return String::new();
+    }
+    unsafe { std::ffi::CStr::from_ptr(t.tm_zone) }.to_string_lossy().into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

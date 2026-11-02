@@ -564,14 +564,7 @@ impl App {
         if let Some(old) = self.workgroups.get_mut(instance).and_then(|i| i.review.files.remove(config)) {
             remove_review_file(&old);
         }
-        #[cfg(windows)]
-        let made = cr::write_system_prompt(dir, text).map_err(|e| format!("Termurion could not write the review's system prompt: {e}"));
-        #[cfg(not(windows))]
-        let made: Result<std::path::PathBuf, String> = {
-            let _ = (dir, text);
-            Err("Code review runs on Windows only.".to_string())
-        };
-        let path = made?;
+        let path = cr::write_system_prompt(dir, text).map_err(|e| format!("Termurion could not write the review's system prompt: {e}"))?;
         if let Some(inst) = self.workgroups.get_mut(instance) {
             inst.review.files.insert(config.to_string(), path.clone());
         }
@@ -772,7 +765,6 @@ fn write_review_settings(tmp: &crate::localfs::LocalPath) -> Result<std::path::P
     if dir.join("code-review-settings.txt").and_then(|p| crate::localfs::read(&p).ok()).is_some_and(|b| b == want.as_bytes()) {
         return Ok(dir.path().to_path_buf());
     }
-    #[cfg(windows)]
     {
         use std::io::Write;
         let _ = crate::localfs::remove_unfollowed(&entry);

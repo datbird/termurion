@@ -29,3 +29,7 @@ pub fn message(_owner: Option<isize>, title: &str, body: &str, kind: Kind) -> An
 pub fn confirm_with_disclosure(_owner: Option<isize>, _topmost: bool, _title: &str, _text: &str, _prompt: &str, _detail: &str) -> Option<bool> {
     None
 }
+
+pub fn choose_color(_hwnd: isize, _initial: Option<crate::palette::Rgb>, _swatches: &[crate::palette::Rgb]) -> Result<Option<crate::palette::Rgb>, super::super::Unsupported> {
+    Err(super::super::Unsupported { feature: "The color dialog" })
+}

@@ -10,7 +10,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
-use super::super::window::Show;
+use super::super::window::{Flash, Show};
 use crate::layout::Rect;
 
 pub fn hwnd_of(window: &Window) -> Option<isize> {
@@ -108,4 +108,30 @@ pub fn placement(hwnd: isize) -> Option<(u32, u32, [i32; 4], (i32, i32))> {
     }
     let r = wp.rcNormalPosition;
     Some((wp.showCmd, wp.flags, [r.left, r.top, r.right, r.bottom], shift))
+}
+
+/// `FlashWindowEx`: every flash of the app goes through here.
+pub fn flash(hwnd: isize, how: Flash) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{FLASHW_ALL, FLASHW_STOP, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx};
+    let (flags, count) = match how {
+        Flash::Once => (FLASHW_TRAY, 1),
+        Flash::UntilFront => (FLASHW_TRAY | FLASHW_TIMERNOFG, 0),
+        Flash::OnceAll => (FLASHW_ALL, 1),
+        Flash::Stop => (FLASHW_STOP, 0),
+    };
+    let info = FLASHWINFO { cbSize: std::mem::size_of::<FLASHWINFO>() as u32, hwnd: hwnd as _, dwFlags: flags, uCount: count, dwTimeout: 0 };
+    unsafe { FlashWindowEx(&info) };
+}
+
+/// `IsWindowArranged` (user32 on Windows 10 and later; looked up at run time, so an older Windows says no).
+pub fn is_arranged(hwnd: isize) -> bool {
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+    type Arranged = unsafe extern "system" fn(HWND) -> i32;
+    static ARRANGED: std::sync::OnceLock<Option<Arranged>> = std::sync::OnceLock::new();
+    let f = ARRANGED.get_or_init(|| {
+        let user32: Vec<u16> = "user32.dll".encode_utf16().chain(Some(0)).collect();
+        let p = unsafe { GetProcAddress(GetModuleHandleW(user32.as_ptr()), c"IsWindowArranged".as_ptr().cast())? };
+        Some(unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, Arranged>(p) })
+    });
+    f.is_some_and(|f| unsafe { f(hwnd as HWND) } != 0)
 }

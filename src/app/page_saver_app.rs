@@ -1064,7 +1064,7 @@ mod tests {
     }
 
     /// Every file the saver writes carries the Mark of the Web (real NTFS stream), with the page's URL.
-    #[cfg(windows)]
+    #[cfg(windows)] // test: the Mark of the Web is an NTFS stream
     #[test]
     fn every_saved_file_is_marked() {
         let root = temp_root("zone");

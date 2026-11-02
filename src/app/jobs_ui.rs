@@ -117,7 +117,7 @@ impl App {
 
 /// The job and ancestors a session shows: a framing session's remote list wins over the
 /// local watcher's (which would name ssh.exe); with none the local one stays (`PS:25574-25581`).
-fn pane_job(local: crate::jobwatch::ShellJob, remote: Option<(Option<crate::proctree::Job>, Vec<String>)>) -> (Option<crate::proctree::Job>, Vec<String>) {
+fn pane_job(local: crate::proctree::ShellJob, remote: Option<(Option<crate::proctree::Job>, Vec<String>)>) -> (Option<crate::proctree::Job>, Vec<String>) {
     match remote {
         Some(remote) => remote,
         None => (local.job, local.ancestors),
@@ -127,7 +127,7 @@ fn pane_job(local: crate::jobwatch::ShellJob, remote: Option<(Option<crate::proc
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jobwatch::ShellJob;
+    use crate::proctree::ShellJob;
     use crate::proctree::Job;
 
     fn job(name: &str, pid: u32) -> Job {

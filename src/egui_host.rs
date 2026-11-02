@@ -267,6 +267,11 @@ impl EguiHost {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
             _ => {
+                // The frame is skipped; its texture changes were applied above and are done with.
+                for id in &out.textures_delta.free {
+                    self.renderer.free_texture(id);
+                }
+                out.textures_delta.clear();
                 self.surface.configure(&self.device, &self.config);
                 self.window.request_redraw();
                 return;
@@ -297,6 +302,8 @@ impl EguiHost {
         for id in &out.textures_delta.free {
             self.renderer.free_texture(id);
         }
+        // Applied: egui's debug build checks that no delta is dropped unhandled.
+        out.textures_delta.clear();
     }
 }
 

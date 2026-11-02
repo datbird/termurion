@@ -106,8 +106,9 @@ mod tests {
         let open = &sem[sem.find("pub(super) fn shell_open_scheme").unwrap()..];
         let open = &open[..open.find("\n}\n").unwrap()];
         assert!(open.contains("link_scheme::scheme_of(") && open.contains("link_scheme::screen(") && open.contains("encode_url_chars("), "the sink judges the link again");
-        assert!(open.contains("ShellExecuteW") && !open.contains("cmd") && !open.contains("Command::new"), "never a shell string");
-        assert!(sem.matches("shell_open_scheme(").count() >= 2 && include_str!("link_scheme_app.rs").matches("shell_open_scheme(").count() >= 1);
+        assert!(open.contains("shell_open::open_scheme(") && !open.contains("cmd") && !open.contains("Command::new"), "never a shell string");
+        assert!(include_str!("../platform/windows/shell_open.rs").contains("ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr()"), "the platform passes the one file argument");
+        assert!(sem.matches("shell_open_scheme(").count() >= 1 && include_str!("link_scheme_app.rs").matches("shell_open_scheme(").count() >= 1);
         let alerts = include_str!("scripts_alerts.rs");
         assert!(alerts.contains("Then::BrowserPermission(_) | Then::BrowserClearData { .. } | Then::BrowserExtension { .. } | Then::ConfirmSigned | Then::AllowAutoLaunch(_) | Then::LinkScheme { .. }"), "input guard");
         assert!(alerts.contains("Then::LinkScheme { url, scheme, background } => self.link_scheme_answered(&url, &scheme, background, index)"));

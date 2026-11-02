@@ -7,34 +7,10 @@ use super::*;
 use crate::dlog;
 use crate::warnings::Kind;
 
-/// Reads a text value of `HKEY_LOCAL_MACHINE` (a normal user may read these).
-fn hklm_string(key: &str, name: &str) -> Option<String> {
-    use windows_sys::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
-    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
-    let (key, name) = (wide(key), wide(name));
-    let mut buf = [0u16; 256];
-    let mut bytes = std::mem::size_of_val(&buf) as u32;
-    // SAFETY: both names are NUL-terminated; `buf` has `bytes` bytes.
-    let rc = unsafe { RegGetValueW(HKEY_LOCAL_MACHINE, key.as_ptr(), name.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut bytes) };
-    if rc != 0 {
-        return None;
-    }
-    let end = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
-    let text = String::from_utf16_lossy(&buf[..end]).trim().to_string();
-    (!text.is_empty()).then_some(text)
-}
-
 /// The local time as "YYYY-MM-DD HH:MM:SS".
 fn local_date() -> String {
-    use windows_sys::Win32::Foundation::SYSTEMTIME;
-    use windows_sys::Win32::System::SystemInformation::GetLocalTime;
-    // SAFETY: a zeroed out-structure the call fills.
-    let t = unsafe {
-        let mut t: SYSTEMTIME = std::mem::zeroed();
-        GetLocalTime(&mut t);
-        t
-    };
-    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond)
+    let (y, mo, d, h, mi, s) = crate::platform::clock::local_time();
+    format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}")
 }
 
 /// What Save Retrospective Debug Logs writes (`AD:3355-3357`): the header then the ring, no
@@ -133,9 +109,7 @@ impl App {
     /// monitors, Windows and the windows with counts. No title, folder, command or user name (P3).
     pub(super) fn debug_facts(&self) -> dlog::Facts {
         let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-        let cpu = hklm_string(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0", "ProcessorNameString").unwrap_or_default();
-        let product = hklm_string(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "ProductName").unwrap_or_else(|| "Windows".into());
-        let build = hklm_string(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "CurrentBuild").unwrap_or_default();
+        let machine = crate::platform::sysinfo::machine();
         let screens = self
             .gpu
             .as_ref()
@@ -156,9 +130,9 @@ impl App {
             version: env!("CARGO_PKG_VERSION").to_string(),
             date: local_date(),
             unix,
-            machine: format!("{} {}", std::env::consts::ARCH, cpu).trim().to_string(),
+            machine: format!("{} {}", std::env::consts::ARCH, machine.cpu).trim().to_string(),
             screens,
-            os: format!("{product} build {build}").trim().to_string(),
+            os: format!("{} build {}", machine.product, machine.build).trim().to_string(),
             key_window: Some(self.window_number()).filter(|n| *n > 0),
             windows,
             order,

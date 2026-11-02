@@ -673,9 +673,7 @@ impl App {
             crate::platform::display::watch(h);
             crate::platform::input::first_mouse_watch(h);
             self.taskbar_watch(h);
-            // Task 7: logout_ui is still Windows-only.
-            #[cfg(windows)]
-            super::logout_ui::watch(h);
+            crate::platform::logout::watch(h);
         }
         // iTerm2 reads it once per tab bar it makes: a change affects new windows only.
         self.tab_selects_on_down = self.globals.bool("SelectsTabsOnMouseDown");

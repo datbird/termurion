@@ -12,7 +12,7 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess, WaitForMultipleObjects};
 
-use crate::proctree::{self, Job, Proc};
+use crate::proctree::{self, Proc};
 use crate::toolbelt_tools::SignalWay;
 
 /// How often the watcher looks while Termurion is in front, and while it is not (iTerm2's
@@ -262,14 +262,7 @@ fn log_ancestry_shrink(procs: &[Proc], root: u32, old: &[String], now: &ShellJob
     }
 }
 
-/// What the window knows about one shell's job.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ShellJob {
-    pub job: Option<Job>,
-    pub ancestors: Vec<String>,
-    /// The shell's own name (`proctree::root_name`); None once it is gone.
-    pub root: Option<String>,
-}
+pub use crate::proctree::ShellJob;
 
 #[derive(Default)]
 struct Shared {
@@ -629,6 +622,7 @@ pub fn still_running(set: &[(u32, u64)]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proctree::Job;
 
     /// `PC:479-500`: the names that vanished from a shrinking ancestry, and the one log line.
     #[test]

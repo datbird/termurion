@@ -4,7 +4,7 @@
 //! resize's non-client repaint made muda draw it over the client until the next frame.
 
 use super::menu_needs_change;
-#[cfg(windows)]
+#[cfg(windows)] // test file: real windows
 use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow};
 
 /// Source of a file without its test modules.
@@ -34,7 +34,7 @@ fn a_built_bar_is_hidden_as_it_attaches() {
     let menu = live(include_str!("menu.rs"));
     let install = body(menu, "pub(super) fn install_menus");
     assert!(install.contains("self.want_menu_hidden()"), "install_menus passes what the window wants");
-    let helper = menu.split("unsafe fn replace_menu_bar").nth(1).unwrap().split("\n}\n").next().unwrap();
+    let helper = include_str!("../platform/windows/chrome.rs").split("pub fn replace_menu_bar").nth(1).unwrap().split("\n}\n").next().unwrap();
     assert!(helper.contains("hide_for_hwnd"), "the helper hides the new bar itself");
 }
 
@@ -53,7 +53,7 @@ fn a_bar_is_changed_only_when_the_window_differs_from_what_is_wanted() {
     assert!(!menu_needs_change(false, true));
 }
 
-#[cfg(windows)]
+#[cfg(windows)] // test file: real windows
 fn window() -> isize {
     let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
     // SAFETY: a hidden window of the system's STATIC class on this thread, destroyed by the test.
@@ -62,7 +62,7 @@ fn window() -> isize {
     w as isize
 }
 
-#[cfg(windows)]
+#[cfg(windows)] // test file: real windows
 fn bar() -> muda::Menu {
     let m = muda::Menu::new();
     let shell = muda::Submenu::new("Shell", true);

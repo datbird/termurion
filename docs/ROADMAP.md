@@ -17,7 +17,7 @@ beta is out.
 
 ## Next
 
-- macOS and Linux ports, from one tree with a shared Unix layer: [`superpowers/specs/2026-10-31-macos-linux-port-design.md`](superpowers/specs/2026-10-31-macos-linux-port-design.md). Render plugins (beta8, [`render-plugins.md`](render-plugins.md)) already use only wgpu.
+- macOS and Linux ports, from one tree with a shared Unix layer: [`superpowers/specs/2026-10-31-macos-linux-port-design.md`](superpowers/specs/2026-10-31-macos-linux-port-design.md). P0 (compile everywhere) is done: the whole crate and all five programs build on Linux and macOS, and a feature with no Unix backend reports "<feature> is not available on <OS> yet". Test status on Unix: [`port/unix-test-gaps.md`](port/unix-test-gaps.md). P1 is next: the pseudo terminal, so a local shell runs. Render plugins (beta8, [`render-plugins.md`](render-plugins.md)) already use only wgpu.
 - tmux on Windows: psmux (native), WSL tmux, and tmux over ssh each have a live suite (FIXES item 3, and `docs/probe/2026-10-14-psmux-wsl-tmux-results.md`).
 - Fixes from beta testers. File bugs at https://github.com/datbird/termurion/issues.
 - The open items in [`FIXES.md`](FIXES.md) (found after the beta) and [`TWEAKS.md`](TWEAKS.md).

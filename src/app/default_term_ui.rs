@@ -27,7 +27,7 @@ impl App {
     /// and registers the handoff class.
     pub(super) fn make_default_terminal(&mut self) {
         let wt = Self::windows_apps().is_some_and(|d| dt::console_host_present(&d));
-        if let Some(text) = dt::make_blocked(wt, self.api.pack.is_some()) {
+        if let Some(text) = dt::make_blocked(wt, crate::platform::pty::api_has_pack(&self.api)) {
             let heading = if wt { dt::PACK_MISSING_HEADING } else { dt::NEEDS_WT_HEADING };
             return self.default_term_alert(heading, text);
         }
@@ -278,7 +278,7 @@ mod tests {
         assert!(sync.contains("handoff::can_serve(&self.api) && dt::is_termurion("));
         let m = include_str!("mod.rs");
         let teardown = m.split("pub(crate) fn teardown_process()").nth(1).unwrap().split("\n}").next().unwrap();
-        assert!(teardown.contains("handoff_win::begin_closing()"));
+        assert!(teardown.contains("handoff::begin_closing()"));
         // S4: an -Embedding start that cannot take the pipe ends before any hook is installed.
         let run = m.split("pub fn run()").nth(1).unwrap().split("event_loop.run_app").next().unwrap();
         assert!(run.contains("probe_running()") && run.contains("if embedding {"));

@@ -65,7 +65,6 @@ pub fn layout_path(name: &str) -> String {
 /// Writes every entry missing or different under `appdata\Termurion\terminfo` and returns that
 /// folder; a file already identical is left alone. A UNC `appdata` is refused (never written
 /// from the UI thread; `session_env::appdata_local` is the one rule for it).
-#[cfg(windows)]
 pub fn ensure(appdata: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
     if crate::session_env::is_unc(&appdata.to_string_lossy()) {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "the roaming folder is a network path"));
@@ -105,7 +104,6 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
     #[test]
     fn ensure_writes_and_repairs() {
         let root = std::env::temp_dir().join(format!("termurion-terminfo-{}", std::process::id()));

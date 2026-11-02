@@ -17,7 +17,7 @@ use winit::keyboard::{KeyCode, KeyLocation, ModifiersKeyState, PhysicalKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winit::window::{Window, WindowId};
 
-use crate::platform::pty::conpty::{self, Api, Source};
+use crate::platform::pty::PtyApi as Api;
 use crate::globals::{self, Globals};
 use crate::margins;
 use crate::scrollbar;
@@ -105,7 +105,6 @@ mod cmdbuttons_ui;
 mod session_end_ui;
 mod log_ui;
 mod archive_ui;
-#[cfg(windows)]
 mod logout_ui;
 mod session_ui;
 mod seltools_ui;
@@ -294,12 +293,12 @@ pub enum UserEvent {
     /// Another `termurion.exe` handed over a request (the launch pipe, `launch_ui`).
     Launch(crate::launch::Request),
     /// A console handed over by the Windows default-terminal handoff (`handoff_win`, `default_term_ui`).
-    Handoff(crate::handoff_win::Handoff),
+    Handoff(crate::platform::handoff::Handoff),
     /// Windows is logging off: flush the logs and archives and end the hosted shells, then set
     /// the flag the window procedure is waiting on (`logout_ui`).
     Logoff(Arc<std::sync::atomic::AtomicBool>),
     /// A screen reader asked to select text or scroll, or attached (`uia_win::Request`).
-    Uia(crate::uia_win::Request),
+    Uia(crate::platform::a11y::Request),
     /// Windows asks whether the session may end (WM_QUERYENDSESSION on window `hwnd`): the app sets
     /// `end_now` (true = nothing to ask) and then `done` (`logout_ui`, `resident_ui::shutdown_decide`).
     ShutdownQuery { done: Arc<std::sync::atomic::AtomicBool>, end_now: Arc<std::sync::atomic::AtomicBool>, hwnd: isize },
@@ -451,7 +450,7 @@ impl Gpu {
 pub struct App {
     notify: Notify,
     /// The foreground jobs of the panes' shells.
-    jobs: crate::jobwatch::JobWatch,
+    jobs: crate::platform::proc::JobWatch,
     proxy: Arc<Mutex<EventLoopProxy<UserEvent>>>,
     menu_bar: Option<menu::MenuBar>,
     /// Keys > Remap Modifiers, read by the keyboard hook's thread.
@@ -720,9 +719,9 @@ pub struct App {
     composers: HashMap<PaneId, composer_ui::View>,
     composer_worker: crate::composer_worker::Worker,
     /// Watches and scans the Scripts folder (started with the first window).
-    scripts_scan: Option<crate::scripts_scan::Scanner>,
+    scripts_scan: Option<crate::platform::watch::ScriptsScanner>,
     /// The Dynamic Profiles folder's watch (app-wide, 13v2 Task 6); None where there is none.
-    dynamic_scan: Option<crate::dynamic_profiles_scan::Scanner>,
+    dynamic_scan: Option<crate::platform::watch::DynamicScanner>,
     /// Errors of a burst that came while an alert for the first still waited (`_pendingErrors`).
     dynamic_errors_pending: usize,
     /// Each dynamic profile's file as read (its text and what it looked like), for a write-back.
@@ -839,11 +838,11 @@ pub struct App {
     jump_list_due: bool,
     jump_sync: crate::jumplist::Sync,
     /// The default-terminal handoff class, registered while Termurion is the default (m13v1 Task 5).
-    handoff: Option<crate::handoff_win::Server>,
+    handoff: Option<crate::platform::handoff::Server>,
     /// The handed-off console the next started pane takes (`spawn_pane`), and the ones that
     /// arrived before the first window.
-    start_handoff: Option<crate::handoff_win::Handoff>,
-    handoff_queue: Vec<crate::handoff_win::Handoff>,
+    start_handoff: Option<crate::platform::handoff::Handoff>,
+    handoff_queue: Vec<crate::platform::handoff::Handoff>,
     /// When an `-Embedding` start began: it makes no window until its handoff arrives.
     embedding: Option<Instant>,
     handoffs_seen: usize,
@@ -992,7 +991,7 @@ pub struct App {
     /// The status bar graphs' meters and their Windows samplers (app-wide: every window's
     /// graphs show the same machine), and the slide animation's next frame.
     meters: crate::statusbar_metrics::Meters,
-    samplers: crate::metrics_win::WinSamplers,
+    samplers: crate::platform::metrics::SystemSamplers,
     graph_frame_due: Option<Instant>,
     /// The git components' pollers by pane (a pane's first git component), the worker
     /// that runs git off this thread, and the panes whose bar placed its git component at
@@ -1104,7 +1103,7 @@ pub struct App {
     pwm_window: Option<pwm_app::PwmWin>,
     /// This window's dynamic tool web views by tool name, and what each was made for (13x Task 2;
     /// per window: `swap_live`).
-    tool_views: HashMap<String, crate::webhost_win::WebView>,
+    tool_views: HashMap<String, crate::platform::browser::WebView>,
     tool_loaded: HashMap<String, tool_web_ui::Loaded>,
     /// What Shell > ssh > Disconnect last showed in this window (per window: `swap_live`).
     ssh_menu_shown: Option<Option<String>>,
@@ -1494,7 +1493,7 @@ pub struct App {
     /// Screen readers (M13v2 Task 10): the UI Automation host of each window (by registry key),
     /// what is kept of each pane while a client listens, the one settle deadline, the window
     /// and focus last published, and whether an Attach is already posted. App-wide.
-    uia_hosts: HashMap<u64, crate::uia_win::Host>,
+    uia_hosts: HashMap<u64, crate::platform::a11y::Host>,
     access_trackers: HashMap<PaneId, access_app::AccessPane>,
     access_due: Option<Instant>,
     /// When the snapshot was last built, and the deadline a held-back build waits for (one build a frame).
@@ -1712,16 +1711,15 @@ pub struct App {
     /// The events each chat is about to receive, held for the gate and the rate.
     orch_outbox: HashMap<String, crate::orch_watch::Outbox>,
     /// 12b's wire log file for the chat turns' requests (app-wide).
-    #[cfg(windows)]
     ai_wire_log: Arc<Mutex<crate::ai_wire_log::WireLog>>,
     /// Launched scripts' processes by their Script Console entry's id (their key), the
     /// launches waiting for "Enable Python API?" to be answered, and the script whose
     /// failure notification was posted last (a click reveals its entry; a session's alert
     /// takes the click over, as `last_notified`).
-    script_procs: HashMap<String, crate::script_proc::ScriptProcess>,
+    script_procs: HashMap<String, crate::platform::proc::ScriptProcess>,
     /// The jobs of scripts that ended by themselves while something they started still runs;
     /// dropped when that ends (closing a job ends what is in it, so Termurion's quit ends them).
-    script_jobs_left: Vec<crate::script_provision::KillJob>,
+    script_jobs_left: Vec<crate::platform::proc::KillJob>,
     script_after_enable: Vec<crate::script_launch::Request>,
     /// Open Python REPL: the interpreter waiting for "Enable Python API?", and the one whose
     /// window opens on the next loop pass (which has the event loop).
@@ -1925,25 +1923,19 @@ pub(crate) fn teardown_process() {
     crate::platform::keys::uninstall();
     crate::input_locale::restore_after_panic();
     crate::platform::notify::remove(0);
-    crate::handoff_win::begin_closing();
+    crate::platform::handoff::begin_closing();
     // A running update check ends with Termurion (its curl.exe), not after it.
-    #[cfg(windows)]
     crate::platform::update_fetch::cancel_running();
     // The Dynamic Profiles folder's watch stops with Termurion.
-    #[cfg(windows)]
-    crate::dynamic_profiles_scan::stop_all();
+    crate::platform::watch::stop_all();
     // Every screen reader provider is disconnected, so no client keeps a dead one (P14).
-    #[cfg(windows)]
-    crate::uia_win::disconnect_all();
+    crate::platform::a11y::disconnect_all();
     // The overlay icons come off the taskbar buttons (the badge is the app's, not the shell's).
-    #[cfg(windows)]
     crate::platform::shell_extras::taskbar_clear_all();
     // Every web view closes (its browser process lets go of its folder), then this run's Dev Null
     // browser folder goes with it (file removal).
-    #[cfg(windows)]
-    let _ = crate::webhost_win::close_all();
-    #[cfg(windows)]
-    crate::webhost_win::cleanup_files();
+    let _ = crate::platform::browser::close_all();
+    crate::platform::browser::cleanup_files();
 }
 
 pub fn run() {
@@ -1995,7 +1987,7 @@ pub fn run() {
         // launch pipe; it forwards nothing and makes no window until a handoff arrives (B9).
         Ok(crate::launch::Request::Embedding) => {
             let exe = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_default();
-            let pack = conpty::load(&Source::Shipped(exe)).is_ok_and(|a| a.pack.is_some());
+            let pack = crate::platform::pty::shipped_has_pack(&exe);
             let termurion = crate::default_term::is_termurion(&crate::default_term::current(&crate::reg::HkcuRegistry));
             match crate::default_term::embedding_start(termurion, pack, &crate::url_launch::probe_running()) {
                 crate::default_term::EmbeddingStart::Run => embedding = true,
@@ -2047,7 +2039,7 @@ pub fn run() {
         let _ = displays.lock().map(|p| p.send_event(UserEvent::DisplayChanged));
     }));
     let job_wake = proxy.clone();
-    let jobs = crate::jobwatch::JobWatch::start(Arc::new(move || {
+    let jobs = crate::platform::proc::JobWatch::start(Arc::new(move || {
         let _ = job_wake.lock().map(|p| p.send_event(UserEvent::JobsChanged));
     }));
     // This Termurion takes the requests sent to it. One that cannot bind is a second Termurion of the
@@ -2094,15 +2086,14 @@ pub fn run() {
     if let Some(text) = pipe_problem {
         banners.set("launch-pipe", text);
     }
-    let api = match conpty::load(&Source::Shipped(exe_dir.clone())) {
-        Ok(api) => api,
-        Err(e) => match conpty::load(&Source::Inbox) {
-            Ok(api) => {
-                banners.set("conpty", format!("Shipped ConPTY did not load ({e}). Using the Windows copy."));
-                api
+    let api = match crate::platform::pty::load_for_app(&exe_dir) {
+        Ok((api, note)) => {
+            if let Some(note) = note {
+                banners.set("conpty", note);
             }
-            Err(e2) => return message_box(&format!("No ConPTY: {e}; {e2}")),
-        },
+            api
+        }
+        Err(e) => return message_box(&e),
     };
     let utilities = match crate::utilities::ensure(&exe_dir) {
         Ok(done) => {
@@ -2225,7 +2216,7 @@ pub fn run() {
     } else {
         (None, None)
     };
-    let git_worker = git_ui::GitWorker::new(Arc::new(crate::git_run_win::WinGitRun), notify.clone());
+    let git_worker = git_ui::GitWorker::new(Arc::new(crate::platform::gitrun::SystemGitRun), notify.clone());
     // Discovered Ollama models from the last run resolve at once while a refresh runs.
     let ai_discovery = crate::ai_discovery::Cache::load(&crate::ai_discovery::default_path());
     let ai_transport: Arc<dyn crate::ai_transport::Transport> = crate::platform::http::system();
@@ -2502,7 +2493,7 @@ pub fn run() {
         status_setup: None,
         status_clock_due: None,
         meters: crate::statusbar_metrics::Meters::new(),
-        samplers: crate::metrics_win::WinSamplers,
+        samplers: crate::platform::metrics::SystemSamplers,
         graph_frame_due: None,
         git: HashMap::new(),
         git_worker,
@@ -2870,7 +2861,6 @@ pub fn run() {
         restart_history: HashMap::new(),
         orch_polls: HashMap::new(),
         orch_outbox: HashMap::new(),
-        #[cfg(windows)]
         ai_wire_log: Arc::new(Mutex::new(crate::ai_wire_log::WireLog::new())),
         script_procs: HashMap::new(),
         script_jobs_left: Vec::new(),
@@ -2923,7 +2913,7 @@ pub fn run() {
         prefs_reveal: false,
         prefs_gpu: None,
         display_handle: None,
-        gpu_recovery: gpu_pick::Recovery::new(gpu_pick::backend_order(cfg!(windows), None).len()),
+        gpu_recovery: gpu_pick::Recovery::new(gpu_pick::backend_order(crate::platform::IS_WINDOWS, None).len()),
         alpha_gpu: None,
         transparency_unavailable: false,
         alpha_pending: Vec::new(),
@@ -3022,7 +3012,7 @@ impl App {
             maximized: g.window.is_maximized(),
             full_screen: g.window.fullscreen().is_some(),
             minimized: g.window.is_minimized() == Some(true),
-            snapped: self.hwnd().is_some_and(window_arranged),
+            snapped: self.hwnd().is_some_and(crate::platform::window::is_arranged),
             size_locked: self.win_locks.size,
             hotkey: self.hotkey.is_some(),
         })
@@ -4251,13 +4241,12 @@ impl App {
     /// custom locale is used as written and the warning is asked, a failed guess falls to
     /// `LC_CTYPE` (iTerm2's path after "Use Minimal POSIX Locale") and the prompt is queued. An
     /// override launch (a git window, a script, an orchestrated command) never asks.
-    #[cfg(windows)]
     fn locale_pairs(&mut self, p: &Profile) -> Vec<(String, String)> {
         use crate::locale_guess::{self, Outcome};
         let encoding = p.int("Character Encoding");
-        let facts = crate::locale_win::facts(encoding, &self.globals.string("FallbackLCCType"));
+        let facts = crate::platform::locale::facts(encoding, &self.globals.string("FallbackLCCType"));
         let name = locale_guess::encoding_name(encoding);
-        let supported = |c: &str| crate::locale_win::supported(c, name);
+        let supported = |c: &str| crate::platform::locale::supported(c, name);
         let mode = locale_guess::Mode::from_value(p.int("Set Local Environment Vars"));
         let asks = self.start_command_override.is_none() && self.start_env_override.is_none();
         match locale_guess::locale_vars(mode, &p.string("Custom Locale"), &facts, encoding == 4, &supported) {
@@ -4280,14 +4269,8 @@ impl App {
         }
     }
 
-    #[cfg(not(windows))]
-    fn locale_pairs(&mut self, _p: &Profile) -> Vec<(String, String)> {
-        Vec::new()
-    }
-
     /// Termurion's terminfo folder, written on first use and kept for the run. A UNC `%APPDATA%`
     /// is never written (none, silently); a write error leaves it out with a banner.
-    #[cfg(windows)]
     fn terminfo_folder(&mut self) -> Option<PathBuf> {
         if self.terminfo_dir.is_none() {
             let appdata = crate::session_env::appdata_local()?;
@@ -4300,11 +4283,6 @@ impl App {
             }
         }
         self.terminfo_dir.clone()
-    }
-
-    #[cfg(not(windows))]
-    fn terminfo_folder(&mut self) -> Option<PathBuf> {
-        None
     }
 
     /// A pane dropped for good takes its cookie out of the jar (a pane stashed for Undo Close
@@ -4860,7 +4838,7 @@ impl App {
             self.script_log_app(crate::scripts::scripts_folder_not_local(&folder));
         }
         // The old scanner's thread ends on its own; a scan it is in finishes first.
-        let mut scanner = crate::scripts_scan::Scanner::start(folder, self.notify.clone());
+        let mut scanner = crate::platform::watch::ScriptsScanner::start(folder, self.notify.clone());
         // A build under way keeps holding scans (its file events), as with the old scanner.
         scanner.hold(self.provisioner.as_ref().is_some_and(|p| p.busy()));
         self.scripts_scan = Some(scanner);
@@ -4892,20 +4870,20 @@ impl App {
     fn scripts_scan_tick(&mut self) {
         while let Some((event, folder)) = self.scripts_scan.as_ref().and_then(|s| Some((s.try_event()?, s.folder().to_path_buf()))) {
             match event {
-                crate::scripts_scan::ScanEvent::Slow => {
+                crate::platform::watch::ScanEvent::Slow => {
                     let text = crate::scripts::slow_text(&folder);
                     let buttons = [crate::scripts::STOP, crate::scripts::CONTINUE];
                     self.ask_scripts(scripts_alerts::ask(crate::scripts::SLOW_HEADING, &text, &buttons, None, crate::warnings::Kind::Persistent, scripts_alerts::Then::SlowScan));
                 }
                 // An unchanged tree is left alone, so nothing built from it is rebuilt.
-                crate::scripts_scan::ScanEvent::Done(result) if result.tree != self.scripts_tree => {
+                crate::platform::watch::ScanEvent::Done(result) if result.tree != self.scripts_tree => {
                     self.archives_found(&result.archives);
                     self.scripts_all = crate::scripts::all_scripts(&result.tree);
                     self.scripts_tree = result.tree;
                     self.refresh_scripts_menu();
                     self.deps_tree_changed();
                 }
-                crate::scripts_scan::ScanEvent::Done(result) => self.archives_found(&result.archives),
+                crate::platform::watch::ScanEvent::Done(result) => self.archives_found(&result.archives),
             }
         }
     }
@@ -6184,13 +6162,11 @@ impl App {
         if b == 0 && mods.cmd && mods.shift && !mods.ctrl && acts && self.globals.bool("CommandSelection") {
             let point = self.grid_point(id, col, row);
             if self.open_link_split(id, point) {
-                #[cfg(windows)]
                 crate::platform::keys::mask_start_menu();
                 return self.redraw();
             }
         }
         if b == 0 && mods.cmd && !mods.ctrl && acts && self.globals.bool("CommandSelection") {
-            #[cfg(windows)]
             crate::platform::keys::mask_start_menu();
             let point = self.grid_point(id, col, row);
             if self.open_target(id, point, false, event_loop) {
@@ -6220,7 +6196,6 @@ impl App {
                 let append = mods.cmd && !mods.alt;
                 // The Win release must not open the Start menu, whether or not CommandSelection
                 // masked it above (it is off: a Win-drag still appends).
-                #[cfg(windows)]
                 if mods.cmd {
                     crate::platform::keys::mask_start_menu();
                 }
@@ -7253,9 +7228,8 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         // Disable App Nap: opt out of EcoQoS once at start (effective after a restart).
-        #[cfg(windows)]
         if self.globals.bool("DisableAppNap")
-            && let Err(e) = power::opt_out_of_power_throttling() {
+            && let Err(e) = crate::platform::shell_extras::opt_out_of_power_throttling() {
                 eprintln!("power throttling opt-out unavailable: {e}");
             }
         if self.snippets.broken {
@@ -7285,8 +7259,7 @@ impl ApplicationHandler<UserEvent> for App {
         let resident_start = self.start_handoff.is_none() && startup_hotkey.is_none() && matches!(policy, crate::startup::SYSTEM | crate::startup::HOTKEY_ONLY) && hotkey_profiles.is_empty() && !early.restore && !early.window;
         let mut attrs = Window::default_attributes().with_title("Termurion").with_window_icon(crate::presence::window_icon()).with_inner_size(LogicalSize::new(1000.0, 650.0));
         if startup_hotkey.is_some() || resident_start {
-            use winit::platform::windows::WindowAttributesExtWindows;
-            attrs = attrs.with_visible(false).with_skip_taskbar(true);
+            attrs = crate::platform::window_style::skip_taskbar(attrs.with_visible(false));
         }
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
@@ -7320,12 +7293,9 @@ impl ApplicationHandler<UserEvent> for App {
                 self.guard_theme();
                 if let Some(h) = self.hwnd() {
                     crate::platform::display::watch(h);
-                    #[cfg(windows)]
-                    {
-                        crate::firstmouse_win::watch(h);
-                        self.taskbar_watch(h);
-                        logout_ui::watch(h);
-                    }
+                    crate::platform::input::first_mouse_watch(h);
+                    self.taskbar_watch(h);
+                    crate::platform::logout::watch(h);
                 }
                 self.refresh_caption_frame();
                 self.apply_corners();
@@ -7606,7 +7576,6 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_recording_windows(event_loop);
         self.open_git_log(event_loop);
         let pwm_due = [self.tick_pwm(), self.basic_auth_tick(event_loop)].into_iter().flatten().min();
-        #[cfg(windows)]
         self.tick_logout();
         self.open_pwm_windows(event_loop);
         self.open_autofill_windows(event_loop);
@@ -7761,17 +7730,11 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Launch(request) => return self.receive_launch(request, event_loop),
             UserEvent::Handoff(h) => return self.handoff_arrived(h, event_loop),
             UserEvent::Logoff(done) => {
-                #[cfg(windows)]
                 self.logoff_now(&done);
-                #[cfg(not(windows))]
-                done.store(true, std::sync::atomic::Ordering::Release);
                 return;
             }
             UserEvent::ShutdownQuery { done, end_now, hwnd } => {
-                #[cfg(windows)]
                 self.shutdown_decide(hwnd, &end_now);
-                #[cfg(not(windows))]
-                let _ = (hwnd, end_now);
                 done.store(true, std::sync::atomic::Ordering::Release);
                 return;
             }
@@ -8129,7 +8092,7 @@ fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference:
     let display = event_loop.owned_display_handle();
     let forced = std::env::var(gpu_pick::FORCE_ENV).ok();
     let mut failures: Vec<String> = Vec::new();
-    for (backends, label) in gpu_pick::backend_order(cfg!(windows), forced.as_deref()) {
+    for (backends, label) in gpu_pick::backend_order(crate::platform::IS_WINDOWS, forced.as_deref()) {
         match init_gpu_on(window.clone(), &display, power_preference, backends) {
             Ok(gpu) => {
                 if !failures.is_empty() {
@@ -8259,20 +8222,6 @@ fn add_tab_choice(tmux_client: bool, use_current: bool) -> AddTab {
     } else {
         AddTab::Default
     }
-}
-
-/// The window is snapped to a half or a quarter of the screen (`IsWindowArranged`, user32 on
-/// Windows 10 and later; looked up at run time, so an older Windows says no).
-fn window_arranged(hwnd: isize) -> bool {
-    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
-    type Arranged = unsafe extern "system" fn(windows_sys::Win32::Foundation::HWND) -> i32;
-    static ARRANGED: std::sync::OnceLock<Option<Arranged>> = std::sync::OnceLock::new();
-    let f = ARRANGED.get_or_init(|| {
-        let user32: Vec<u16> = "user32.dll".encode_utf16().chain(Some(0)).collect();
-        let p = unsafe { GetProcAddress(GetModuleHandleW(user32.as_ptr()), c"IsWindowArranged".as_ptr().cast())? };
-        Some(unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, Arranged>(p) })
-    });
-    f.is_some_and(|f| unsafe { f(hwnd as windows_sys::Win32::Foundation::HWND) } != 0)
 }
 
 /// A hit on the tab bar, unless it names a tab that no longer exists.
@@ -8434,7 +8383,7 @@ impl App {
         }
         let held = self.web_focus_held == Some(id);
         let step = match self.hwnd() {
-            Some(hwnd) => crate::webhost::focus_step(f, hwnd, crate::webhost_win::foreground_root(), held),
+            Some(hwnd) => crate::webhost::focus_step(f, hwnd, crate::platform::browser::foreground_root(), held),
             None => crate::webhost::FocusStep::Normal,
         };
         match step {

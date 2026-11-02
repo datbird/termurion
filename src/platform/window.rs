@@ -24,12 +24,35 @@ pub enum Show {
     ShowAsIs,
 }
 
+/// How `flash` calls for attention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flash {
+    /// The taskbar button once.
+    Once,
+    /// The taskbar button until the window is in front.
+    UntilFront,
+    /// The button and the caption once.
+    OnceAll,
+    /// Stops a flash.
+    Stop,
+}
+
 /// A window's native handle, when the OS gives it one.
 pub fn hwnd_of(window: &Window) -> Option<isize> {
     imp::hwnd_of(window)
 }
 
 /// The pointer's screen point.
+/// Flashes the window for attention. Unix has no handle to flash (the app never holds one).
+pub fn flash(hwnd: isize, how: Flash) {
+    imp::flash(hwnd, how)
+}
+
+/// The window is snapped to a half or a quarter of the screen (`IsWindowArranged`, Windows 10 and later).
+pub fn is_arranged(hwnd: isize) -> bool {
+    imp::is_arranged(hwnd)
+}
+
 pub fn cursor_pos() -> Option<(i32, i32)> {
     imp::cursor_pos()
 }

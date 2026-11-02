@@ -125,76 +125,6 @@ fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     f.sync_all()
 }
 
-/// The handle-based rename: the folder is opened without following a link and without the
-/// delete share right, so it cannot be renamed or replaced while the call runs; the new file is
-/// opened for DELETE (no link followed) and renamed with `FileRenameInfo` to `target` in that
-/// folder, replacing the old file. The folder must still be the judged one (`judged`: volume serial
-/// and file index). The target is the bare file name joined to the path the folder's own handle
-/// reports (links resolved), so the destination is never resolved again from the textual path.
-#[cfg(windows)]
-fn rename_in_folder(folder: &Path, judged: Option<(u32, u64)>, tmp: &str, target: &str) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::fs::OpenOptionsExt;
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Foundation::HANDLE;
-    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileRenameInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW, SetFileInformationByHandle};
-    // The folder through 13v1's one path judge, then opened as itself (no link followed).
-    let folder = crate::localfs::judge_io(folder)?;
-    let dir = crate::localfs::open_unfollowed(&crate::localfs::Unfollowed::from(folder.clone()), |o| {
-        o.access_mode(FILE_READ_ATTRIBUTES).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
-    })?;
-    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-    // SAFETY: the handle is open for the call and `info` is a plain out structure.
-    if unsafe { GetFileInformationByHandle(dir.as_raw_handle() as HANDLE, &mut info) } == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
-        return Err(std::io::Error::other("the folder is a link"));
-    }
-    // The folder reached by this path now is the folder that was judged, not one swapped in since.
-    let now = (info.dwVolumeSerialNumber, (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow));
-    // An unknown identity is a refusal too: the folder cannot be shown to be the judged one.
-    if judged != Some(now) {
-        return Err(std::io::Error::other("the folder is not the one that was judged"));
-    }
-    let tmp = folder.unfollowed(tmp).ok_or_else(crate::localfs::refused)?;
-    let new = crate::localfs::open_unfollowed(&tmp, |o| {
-        o.access_mode(DELETE).share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
-    })?;
-    // FILE_RENAME_INFO: ReplaceIfExists (4 bytes, padded to 8), RootDirectory (8, none), FileNameLength
-    // (4, in bytes), then the name.
-    // The folder's own path as the HANDLE reports it (links resolved), then the bare file name: a
-    // bare name alone is resolved against the process's current folder by the call.
-    let mut base = vec![0u16; 4096];
-    // SAFETY: the handle is open; the buffer length is passed.
-    let n = unsafe { GetFinalPathNameByHandleW(dir.as_raw_handle() as HANDLE, base.as_mut_ptr(), base.len() as u32, 0) } as usize;
-    if n == 0 || n >= base.len() {
-        return Err(std::io::Error::other("the folder's path could not be read from its handle"));
-    }
-    base.truncate(n);
-    if base.last() != Some(&(b'\\' as u16)) {
-        base.push(b'\\' as u16);
-    }
-    let name: Vec<u16> = base.into_iter().chain(std::ffi::OsStr::new(target).encode_wide()).collect();
-    let mut buf = vec![0u8; 24 + name.len() * 2];
-    buf[0] = 1;
-    buf[16..20].copy_from_slice(&((name.len() * 2) as u32).to_le_bytes());
-    for (i, u) in name.iter().enumerate() {
-        buf[20 + i * 2..22 + i * 2].copy_from_slice(&u.to_le_bytes());
-    }
-    // SAFETY: the handle is open; the buffer is a FILE_RENAME_INFO of the size passed.
-    let ok = unsafe { SetFileInformationByHandle(new.as_raw_handle() as HANDLE, FileRenameInfo, buf.as_ptr().cast(), buf.len() as u32) };
-    drop(dir);
-    if ok == 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
-}
-
-#[cfg(not(windows))]
-fn rename_in_folder(folder: &Path, _judged: Option<(u32, u64)>, tmp: &str, target: &str) -> std::io::Result<()> {
-    let folder = crate::localfs::judge_io(folder)?;
-    let (Some(from), Some(to)) = (folder.child(tmp), folder.child(target)) else { return Err(crate::localfs::refused()) };
-    crate::localfs::rename(&from, &to)
-}
-
 /// Removes a temporary file the write-back made (judged first, as every path).
 fn remove_tmp(tmp: &Path) {
     if let Some(t) = crate::localfs::judge(tmp) {
@@ -204,7 +134,7 @@ fn remove_tmp(tmp: &Path) {
 
 impl Fs<'static> {
     pub(super) fn real() -> Fs<'static> {
-        Fs { local: &dp::system_local, open: &dp::system_open, write_new: &write_new, rename: &rename_in_folder }
+        Fs { local: &dp::system_local, open: &dp::system_open, write_new: &write_new, rename: &crate::platform::shellfs::replace_in_folder }
     }
 }
 
@@ -385,7 +315,7 @@ impl App {
             let _ = crate::localfs::create_dir_all(&judged);
         }
         let latency = self.globals.number("DynamicProfilesNotificationLatency").filter(|v| v.is_finite()).unwrap_or(0.1).clamp(0.01, 60.0);
-        self.dynamic_scan = Some(crate::dynamic_profiles_scan::Scanner::start(folder, std::time::Duration::from_secs_f64(latency), self.notify.clone()));
+        self.dynamic_scan = Some(crate::platform::watch::DynamicScanner::start(folder, std::time::Duration::from_secs_f64(latency), self.notify.clone()));
         self.reload_dynamic_profiles();
     }
 
@@ -573,8 +503,8 @@ mod tests {
     /// Final review 7: the rename refuses a folder whose judged identity is unknown.
     #[test]
     fn the_rename_refuses_an_unknown_judged_folder() {
-        let src = include_str!("dynamic_profiles_app.rs");
-        let at = src.find("fn rename_in_folder(folder: &Path, judged").unwrap();
+        let src = include_str!("../platform/windows/shellfs.rs");
+        let at = src.find("pub fn replace_in_folder(folder: &Path, judged").unwrap();
         let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
         assert!(body.contains("judged != Some(now)"));
         assert!(!body.contains("judged.is_some_and"));

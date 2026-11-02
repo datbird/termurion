@@ -41,6 +41,20 @@ pub fn console_mode_unless(_pid: u32, _paused: &AtomicBool) -> Result<u32, Strin
     Err(Unsupported { feature: "Console input mode" }.into())
 }
 
+/// Nothing to load; a shell start says "Local shells is not available" where it is asked for.
+pub fn load_for_app(_exe_dir: &std::path::Path) -> Result<(PtyApi, Option<String>), String> {
+    Ok((PtyApi, None))
+}
+
+pub fn api_has_pack(_api: &PtyApi) -> bool {
+    false
+}
+
+/// No pack on Unix.
+pub fn shipped_has_pack(_exe_dir: &std::path::Path) -> bool {
+    false
+}
+
 #[cfg(test)]
 pub fn test_api() -> PtyApi {
     PtyApi

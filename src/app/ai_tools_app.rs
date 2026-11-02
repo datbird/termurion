@@ -205,22 +205,14 @@ impl App {
     /// block the UI thread), wakes the loop when it finishes, and keeps the answer's receiver
     /// for `ai_help_tick`. A newer Get-Help on the pane replaces the older one.
     fn ai_help_start(&mut self, pane: PaneId, args: Vec<String>) -> ToolStart {
-        #[cfg(windows)]
-        {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let notify = self.notify.clone();
-            std::thread::spawn(move || {
-                let _ = tx.send(ai_actions::get_help(&args));
-                notify();
-            });
-            self.ai_helps.insert(pane, rx);
-            ToolStart::Pending
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = (pane, args);
-            done("Error running Get-Help: PowerShell is not available.", MANPAGE_NOTICE)
-        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let notify = self.notify.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(ai_actions::get_help(&args));
+            notify();
+        });
+        self.ai_helps.insert(pane, rx);
+        ToolStart::Pending
     }
 
     /// Each finished Get-Help, polled from `ai_helps` with `try_recv`; the chat maps the pane

@@ -35,3 +35,18 @@ pub fn system_locales() -> Vec<String> {
 pub fn names_for(_locales: &[String]) -> (std::collections::HashMap<String, String>, std::collections::HashMap<String, String>) {
     Default::default()
 }
+
+/// A name of the `ll_CC` shape (two or three lowercase letters, then an optional country) or the
+/// profile's encoding name; the system's own list is not read yet.
+pub fn supported(candidate: &str, encoding: Option<&str>) -> bool {
+    if encoding == Some(candidate) && !candidate.is_empty() {
+        return true;
+    }
+    let base = candidate.split('.').next().unwrap_or("").split('@').next().unwrap_or("");
+    let language = base.split('_').next().unwrap_or("");
+    (2..=3).contains(&language.len()) && language.bytes().all(|b| b.is_ascii_lowercase())
+}
+
+pub fn segmenter() -> Box<dyn crate::wordsel::Segmenter> {
+    Box::new(crate::wordsel::NoSegmenter)
+}

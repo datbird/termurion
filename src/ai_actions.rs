@@ -286,6 +286,12 @@ pub fn get_help(args: &[String]) -> String {
     text
 }
 
+/// Get-Help is PowerShell's; the answer says so where there is none.
+#[cfg(unix)]
+pub fn get_help(_args: &[String]) -> String {
+    format!("Error running Get-Help: PowerShell is not available on {} yet.", crate::platform::OS_NAME)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

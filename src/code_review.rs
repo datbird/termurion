@@ -309,7 +309,6 @@ pub fn cap_system_prompt(text: &str) -> String {
 
 /// Writes the system prompt to a NEW owner-only file in `dir` (a judged folder): an unguessable name,
 /// `CREATE_NEW`, a DACL of the person alone. Returns the file's path.
-#[cfg(windows)]
 pub fn write_system_prompt(dir: &crate::localfs::LocalPath, text: &str) -> std::io::Result<std::path::PathBuf> {
     use std::io::Write;
     let name = system_prompt_file_name();

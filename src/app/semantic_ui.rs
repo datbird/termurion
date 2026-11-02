@@ -399,13 +399,12 @@ impl App {
                 }
             }
             Run::Command(line) => {
-                let mut cmd = std::process::Command::new("cmd.exe");
-                #[cfg(windows)]
-                {
-                    use std::os::windows::process::CommandExt;
-                    // CREATE_NO_WINDOW: the command's own windows still show.
-                    cmd.raw_arg(semantic::cmd_args(&line)).creation_flags(0x0800_0000);
-                }
+                let mut cmd = match crate::platform::proc::command_for_line(&line) {
+                    Ok(c) => c,
+                    Err(e) => return self.banners.set("action", e.to_string()),
+                };
+                // No console window of its own: the command's own windows still show.
+                crate::platform::proc::hide_console(&mut cmd);
                 if let Some(d) = cwd.and_then(crate::localfs::LocalPath::judge).filter(crate::localfs::is_dir) {
                     crate::localfs::set_cwd(&mut cmd, &d);
                 }
@@ -453,11 +452,7 @@ impl App {
         }
         let mut cmd = std::process::Command::new(&exe);
         cmd.args(args);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000);
-        }
+        crate::platform::proc::hide_console(&mut cmd);
         if let Some(d) = cwd.and_then(crate::localfs::LocalPath::judge).filter(crate::localfs::is_dir) {
             crate::localfs::set_cwd(&mut cmd, &d);
         }
@@ -488,27 +483,7 @@ impl App {
     /// Shows `path` selected in Explorer; nothing runs it. Used by semantic history and the AI's
     /// `create_file`.
     pub(super) fn reveal_in_explorer(&mut self, path: &str) {
-        #[cfg(windows)]
-        let program = crate::script_provision::system_directory().and_then(|s| semantic::explorer_in(&s));
-        #[cfg(not(windows))]
-        let program: Option<std::path::PathBuf> = None;
-        let Some(program) = program else {
-            self.banners.set("action", format!("Could not show {path}: the Windows folder is unknown."));
-            return;
-        };
-        let Some(arg) = semantic::explorer_select_arg(path) else {
-            self.banners.set("action", format!("Termurion does not show this path in Explorer: {path:?}"));
-            return;
-        };
-        let mut cmd = std::process::Command::new(program);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.raw_arg(arg);
-        }
-        #[cfg(not(windows))]
-        let _ = arg;
-        if let Err(e) = cmd.spawn() {
+        if let Err(e) = crate::platform::shell_open::reveal(path) {
             self.banners.set("action", format!("Could not show {path}: {e}"));
         }
     }
@@ -681,25 +656,13 @@ pub(super) fn shell_open(target: &str, background: bool) -> Result<(), String> {
     crate::platform::shell_open::open_with(target, background)
 }
 
-/// Hands a link of another app's scheme to the app Windows registered for it: the URL is judged again
+/// Hands a link of another app's scheme to the app the OS registered for it: the URL is judged again
 /// (`link_scheme::screen`), percent-encoded so no quote or space can split what the app's command
-/// receives, and passed to ShellExecuteW as the one file argument, never as a shell string.
-#[cfg(windows)]
+/// receives, and passed to the platform as the one file argument, never as a shell string.
 pub(super) fn shell_open_scheme(url: &str, background: bool) -> Result<(), String> {
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, SW_SHOWNORMAL};
     let scheme = crate::link_scheme::scheme_of(url).ok_or_else(|| "Termurion opens only links here, not paths.".to_string())?;
     crate::link_scheme::screen(&scheme, url)?;
-    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    let (verb, file) = (wide("open"), wide(&crate::semantic::encode_url_chars(url)));
-    let show = if background { SW_SHOWNOACTIVATE } else { SW_SHOWNORMAL };
-    let r = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), show) };
-    if r as isize > 32 { Ok(()) } else { Err(format!("ShellExecute error {}", r as isize)) }
-}
-
-#[cfg(not(windows))]
-pub(super) fn shell_open_scheme(_url: &str, _background: bool) -> Result<(), String> {
-    Err("opening a link needs Windows".to_string())
+    crate::platform::shell_open::open_scheme(&crate::semantic::encode_url_chars(url), background)
 }
 
 #[cfg(test)]
@@ -798,13 +761,19 @@ mod tests {
         "shell_open::open",
         // The platform reveal: selects a path in the file manager; any app caller is audited.
         "shell_open::reveal(",
+        // The platform reveal of several items in their folder: the same audit.
+        "shell_open::reveal_all(",
+        "imp::reveal_all(",
         // The platform fetch: starts the system's fetch tool; any app caller is audited.
         "http::fetch_text(",
         "imp::fetch_text(",
         "imp::reveal(",
         // The platform spawn funnel: any caller is audited like a spawn itself.
         "start_detached(",
+        // The platform cmd.exe builder: any caller is audited like a spawn itself.
+        "command_for_line(",
         "imp::open_url(",
+        "imp::open_scheme(",
         "open_with_shell(",
         "shell_verb(",
         "start_coprocess(",
@@ -834,8 +803,13 @@ mod tests {
         ("app/pathnav_ui.rs", "pathnav_tick", "runs what open_local settled: a Run that came through guard_open or open_file_run, whose callers are checked"),
         ("app/semantic_ui.rs", "shell_open", "the sink itself; its callers are checked"),
         ("platform/shell_open.rs", "reveal", "the platform reveal itself: it selects a path in the file manager and runs nothing; its callers are checked through the shell_open::reveal( token"),
+        ("platform/shell_open.rs", "reveal_all", "the platform reveal of several items itself: it selects them in their folder and runs nothing; its callers are checked through the shell_open::reveal_all( token"),
+        ("platform/windows/shell_open.rs", "reveal_all", "Explorer from the Windows folder (one item) or the shell's select-items call (several, in one folder): selects, runs nothing; its callers are checked through the shell_open::reveal_all( token"),
+        ("app/ssh_panel_app.rs", "ssh_batch_item_ended", "selects the files of the Download Files batch Termurion made (P12) in their folder; nothing is opened or run"),
         ("platform/windows/shell_open.rs", "reveal", "Explorer from the Windows folder with the one select argument (explorer_select_arg): selects, runs nothing; its callers are checked through the shell_open::reveal( token"),
         ("platform/shell_open.rs", "open_with", "the platform sink itself: it refuses anything but a URL (semantic::shell_url) first; its callers are checked through the shell_open::open token"),
+        ("platform/shell_open.rs", "open_scheme", "the platform sink itself: its one caller semantic_ui::shell_open_scheme judges the link again (link_scheme::scheme_of and screen) and encodes it first; that caller is checked through the shell_open::open prefix"),
+        ("platform/windows/shell_open.rs", "open_scheme", "the backend of platform::shell_open::open_scheme, which takes the link already judged and percent-encoded; only that function reaches it"),
         ("platform/windows/shell_open.rs", "open_url", "the backend of platform::shell_open::open_with, which judges the target as a URL (semantic::shell_url) before calling it; only that function reaches it"),
         ("platform/unix/shell_open.rs", "open_url", "the backend of platform::shell_open::open_with, which judges the target as a URL (semantic::shell_url) before calling it; only that function reaches it"),
         ("app/semantic_ui.rs", "shell_open_scheme", "the sink itself; its only caller is link_scheme_app::launch_scheme, after link_scheme::decide and the person's answer"),
@@ -898,13 +872,14 @@ mod tests {
         ("app/scripts_app.rs", "reveal_path", "a script in the user's Scripts folder, revealed"),
         ("app/settings_export_ui.rs", "start_relaunched", "starts Termurion's own executable"),
         ("app/snippets_ui.rs", "run_applied", "the user's own key binding"),
-        ("app/ssh_panel_app.rs", "reveal_all", "the Download Files batch folder Termurion made (P12)"),
         ("app/tmux_ui.rs", "tmux_bar", "a fixed help page"),
         ("app/triggers_ui.rs", "trigger_request", "the user's own trigger rule (ruling)"),
         ("app/triggers_ui.rs", "start_command", "Run Command for the user's own trigger rule (ruling)"),
         ("bin/termurion-git.rs", "run", "the git menu's wrapper: git with the menu's own command"),
         ("git_run_win.rs", "start", "git for the status bar, Termurion's own arguments"),
         ("host_client.rs", "start_host_process", "starts Termurion's own session host by its fixed file name"),
+        ("platform/windows/proc.rs", "command_for_line", "the builder itself: cmd.exe with the one argument builder (semantic::cmd_args, which refuses what cmd.exe reads as syntax); nothing is started here and its callers are checked through the command_for_line( token"),
+        ("platform/unix/proc.rs", "command_for_line", "the Unix backend: it builds nothing and reports Unsupported"),
         ("platform/windows/proc.rs", "start_detached", "the spawn funnel itself: it runs the path it is given; its callers are checked through the start_detached( token"),
         ("platform/unix/proc.rs", "start_detached", "the Unix backend: it starts nothing and reports Unsupported"),
         ("host.rs", "reopen_app", "restarts Termurion's own exe, found beside the host's own exe"),
@@ -1038,7 +1013,7 @@ mod tests {
     /// `remote_text` and no listing, is reported; the same call in a GATED function is not.
     #[test]
     fn a_planted_ungated_opening_call_fails_the_gate() {
-        for call in ["self.open_link(text, Style::Tab, false, None)", "self.open_link_system(text, false)", "self.open_url_in_browser(text, Style::Tab, None)", "self.open_link_answered(text, Style::Tab, false, None, false, 0)", "self.upsell_answered(text, 1)", "self.execute_with(id, run, None, exec)", "self.browser_page_open(pane, text, PageOpen::Tab, el)", "crate::platform::shell_open::open(text)", "crate::platform::shell_open::open_with(text, false)", "crate::platform::proc::start_detached(text)", "crate::platform::http::fetch_text(text, None)", "crate::platform::shell_open::reveal(text)"] {
+        for call in ["self.open_link(text, Style::Tab, false, None)", "self.open_link_system(text, false)", "self.open_url_in_browser(text, Style::Tab, None)", "self.open_link_answered(text, Style::Tab, false, None, false, 0)", "self.upsell_answered(text, 1)", "self.execute_with(id, run, None, exec)", "self.browser_page_open(pane, text, PageOpen::Tab, el)", "crate::platform::shell_open::open(text)", "crate::platform::shell_open::open_with(text, false)", "crate::platform::proc::start_detached(text)", "crate::platform::proc::command_for_line(text)", "crate::platform::http::fetch_text(text, None)", "crate::platform::shell_open::reveal(text)", "crate::platform::shell_open::reveal_all(text)"] {
             let mut files = real_sources();
             files.push(("app/planted.rs".to_string(), format!("impl App {{\n    fn evil(&mut self, text: &str) {{\n        {call};\n    }}\n}}\n")));
             let (wrong, _) = gate_violations(&files);

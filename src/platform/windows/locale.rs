@@ -23,3 +23,11 @@ pub fn system_locales() -> Vec<String> {
 pub fn names_for(locales: &[String]) -> (std::collections::HashMap<String, String>, std::collections::HashMap<String, String>) {
     crate::locale_win::names_for(locales)
 }
+
+pub fn supported(candidate: &str, encoding: Option<&str>) -> bool {
+    crate::locale_win::supported(candidate, encoding)
+}
+
+pub fn segmenter() -> Box<dyn crate::wordsel::Segmenter> {
+    Box::new(crate::wordsel::IcuSegmenter)
+}

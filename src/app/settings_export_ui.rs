@@ -55,28 +55,15 @@ fn entries(dir: &Path) -> Vec<(String, PathBuf)> {
     v
 }
 
-/// A symbolic link, a junction or any other reparse point (`FILE_ATTRIBUTE_REPARSE_POINT`).
+/// A symbolic link, a junction or any other reparse point.
 fn is_reparse(p: &Path) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    p.symlink_metadata().is_ok_and(|m| m.file_attributes() & 0x400 != 0)
+    crate::platform::shellfs::is_reparse(p)
 }
 
 /// The name the existing entry at `p` really has (its final path's last part, the reparse point
 /// itself never followed); None when there is none.
 fn final_name(p: &Path) -> Option<String> {
-    use std::os::windows::ffi::OsStringExt;
-    use std::os::windows::fs::OpenOptionsExt;
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, GetFinalPathNameByHandleW};
-    let f = std::fs::OpenOptions::new().access_mode(0).custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT).open(p).ok()?;
-    let mut buf = vec![0u16; 1024];
-    // SAFETY: an open handle and a buffer of the length given.
-    let n = unsafe { GetFinalPathNameByHandleW(f.as_raw_handle() as _, buf.as_mut_ptr(), buf.len() as u32, 0) } as usize;
-    if n == 0 || n >= buf.len() {
-        return None;
-    }
-    let path = PathBuf::from(std::ffi::OsString::from_wide(&buf[..n]));
-    Some(path.file_name()?.to_string_lossy().into_owned())
+    crate::platform::shellfs::final_name(p)
 }
 
 /// Whether the archive's entry `name` may be copied to `dest`: never a name Import keeps out
@@ -332,17 +319,7 @@ pub(super) fn finish_import(appdata_termurion: &Path) -> Vec<PathBuf> {
 /// Waits up to 30 seconds for the process `pid` to end (`IE:898-911`, the relaunch waiting for
 /// the old Termurion); at once when it cannot be opened (already gone).
 pub(super) fn wait_for_pid(pid: u32) {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
-    // SAFETY: a handle opened here, waited on and closed here.
-    unsafe {
-        let h = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
-        if h.is_null() {
-            return;
-        }
-        WaitForSingleObject(h, 30_000);
-        CloseHandle(h);
-    }
+    crate::platform::proc::wait_for_pid(pid);
 }
 
 /// Starts Termurion again (the current executable) telling it to wait for this process to end.
@@ -366,9 +343,7 @@ fn all_entries(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 
 /// One line in the debug output (`OutputDebugStringW`, iTerm2's `NSLog`).
 fn debug_line(text: &str) {
-    let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
-    // SAFETY: a NUL-terminated wide string that outlives the call.
-    unsafe { windows_sys::Win32::System::Diagnostics::Debug::OutputDebugStringW(wide.as_ptr()) };
+    crate::platform::proc::debug_line(text);
 }
 
 impl App {
@@ -844,17 +819,8 @@ mod tests {
     /// alias is its own archive, so one cannot hide another's short name.
     #[test]
     fn import_never_reaches_a_protected_entry_through_an_alias() {
-        use std::os::windows::ffi::{OsStrExt, OsStringExt};
         let verbatim = |p: &Path| PathBuf::from(format!(r"\\?\{}", p.display()));
-        let short_name = |p: &Path| -> Option<String> {
-            let wide: Vec<u16> = p.as_os_str().encode_wide().chain(Some(0)).collect();
-            let mut buf = vec![0u16; 1024];
-            // SAFETY: a NUL-terminated path and a buffer of the length given.
-            let n = unsafe { windows_sys::Win32::Storage::FileSystem::GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
-            let short = PathBuf::from(std::ffi::OsString::from_wide(&buf[..n.min(buf.len())]));
-            let name = short.file_name()?.to_string_lossy().into_owned();
-            (n > 0 && name != p.file_name()?.to_string_lossy()).then_some(name)
-        };
+        let short_name = crate::platform::shellfs::short_name;
         let root = temp("alias");
         let termurion = root.join("Termurion");
         std::fs::create_dir_all(&termurion).unwrap();

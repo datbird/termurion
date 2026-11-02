@@ -521,7 +521,6 @@ impl App {
     /// The right-click menu of a bubble: Task 4's items with the pane in their ids, so Edit refills
     /// this panel's input and Fork opens the chat window on the new chat.
     fn inline_message_menu(&mut self, pane: PaneId, id: &str, at: (f32, f32)) {
-        use muda::ContextMenu;
         let Some(hwnd) = self.hwnd() else { return };
         let view = ChatView::Panel(pane);
         let Some(editable) = self.chat_visible_message(view, id).map(chat_view::editable) else { return };
@@ -533,13 +532,12 @@ impl App {
             }
         }
         let at = muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(at.0 as i32, at.1 as i32));
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, Some(at)) };
+        crate::platform::chrome::popup(&menu, hwnd, Some(at));
         self.popup_menu = Some(menu);
     }
 
     /// The attach button's popup: files or a folder, as the window's.
     fn inline_attach_menu(&mut self, pane: PaneId, at: (f32, f32)) {
-        use muda::ContextMenu;
         let Some(hwnd) = self.hwnd() else { return };
         let menu = muda::Menu::new();
         for (kind, title) in [("files", crate::chat_input::ATTACH_FILES), ("folder", crate::chat_input::ATTACH_FOLDER)] {
@@ -549,7 +547,7 @@ impl App {
             }
         }
         let at = muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(at.0 as i32, at.1 as i32));
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, Some(at)) };
+        crate::platform::chrome::popup(&menu, hwnd, Some(at));
         self.popup_menu = Some(menu);
     }
 
@@ -674,7 +672,6 @@ impl App {
     /// chats linked to this session first under a separator (muda has no bold item). A pick
     /// arrives as `aichat:inline:<pane>:<chat>` and lives until then (`popup_menu`).
     fn show_switch_menu(&mut self, pane: PaneId, at: (f32, f32)) {
-        use muda::ContextMenu;
         let Some(hwnd) = self.hwnd() else { return };
         let reference = self.session_ref(pane);
         let current = self.inline.get(&pane).and_then(|s| s.binding.chat.clone());
@@ -701,7 +698,7 @@ impl App {
             return;
         }
         let at = muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(at.0 as i32, at.1 as i32));
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, Some(at)) };
+        crate::platform::chrome::popup(&menu, hwnd, Some(at));
         self.popup_menu = Some(menu);
     }
 

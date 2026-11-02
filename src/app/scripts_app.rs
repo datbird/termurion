@@ -20,7 +20,7 @@ use crate::sigarchive;
 use crate::script_export_ui::{ExportEvent, ExportWindow};
 use crate::script_history::{Entry, Relaunch};
 use crate::script_launch::{self as sl, Kind, LaunchGate, Request};
-use crate::script_proc::ScriptProcess;
+use crate::platform::proc::ScriptProcess;
 use crate::script_new::{self as sn, Env, Plan};
 use crate::script_new_ui::{PickerEvent, PickerWindow};
 use crate::script_provision::{Job, Outcome, RealRunner, Target};
@@ -392,13 +392,9 @@ impl App {
 
     /// Selects `path` in Explorer; nothing runs it.
     pub(super) fn reveal_path(&self, path: &Path) {
-        use std::os::windows::process::CommandExt;
         let text = path.to_string_lossy().replace('/', "\\");
-        let Some(arg) = crate::semantic::explorer_select_arg(&text) else { return };
-        let mut cmd = std::process::Command::new("explorer.exe");
-        cmd.raw_arg(arg);
-        // Explorer shows its own message for a path it cannot select.
-        let _ = cmd.spawn();
+        // The file manager shows its own message for a path it cannot select.
+        let _ = crate::platform::shell_open::reveal(&text);
     }
 
     /// Rebuilds the Scripts menu after its fixed items (Manage and the line) when what it
@@ -429,7 +425,7 @@ impl App {
             None => (rest, false),
         };
         // Alt held at the pick stands in for the Option alternate (m7a's precedent).
-        let alt = reveal || unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x12) } < 0;
+        let alt = reveal || crate::platform::input::alt_down();
         self.pick_script(Path::new(path), alt);
         // The menu toggled the item's check itself: it is rebuilt from what runs.
         if let Some(bar) = &mut self.menu_bar {
@@ -519,21 +515,9 @@ impl App {
     }
 }
 
-/// The display name of the app that edits `.py` files (the "edit" verb's,
-/// `AssocQueryStringW(ASSOCSTR_FRIENDLYAPPNAME)`); None when there is no such verb.
+/// The display name of the app that edits `.py` files (the "edit" verb's); None when there is no such verb.
 fn edit_app_name() -> Option<String> {
-    use windows_sys::Win32::UI::Shell::{AssocQueryStringW, ASSOCF_INIT_IGNOREUNKNOWN, ASSOCF_NOTRUNCATE, ASSOCSTR_FRIENDLYAPPNAME};
-    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
-    let (ext, verb) = (wide(".py"), wide("edit"));
-    let mut buf = vec![0u16; 1024];
-    let mut len = buf.len() as u32;
-    let hr = unsafe { AssocQueryStringW(ASSOCF_INIT_IGNOREUNKNOWN | ASSOCF_NOTRUNCATE, ASSOCSTR_FRIENDLYAPPNAME, ext.as_ptr(), verb.as_ptr(), buf.as_mut_ptr(), &mut len) };
-    if hr != 0 {
-        return None;
-    }
-    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-    let name = String::from_utf16_lossy(&buf[..end]);
-    (!name.trim().is_empty()).then_some(name)
+    crate::platform::shellfs::edit_app_name()
 }
 
 impl App {
@@ -780,19 +764,10 @@ pub(super) fn remove_path(p: &Path) {
 const MOVE_ASIDE_FOR: std::time::Duration = std::time::Duration::from_secs(1);
 const MOVE_ASIDE_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// The Recycle Bin (`trashItemAtURL:`): `SHFileOperationW` with undo allowed, no questions
-/// and no error window; a failure is ignored, as iTerm2 ignores it.
-pub(super) fn recycle(path: &Path) {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::UI::Shell::{SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE, SHFILEOPSTRUCTW};
-    // The list of paths ends with two NULs.
-    let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
-    from.extend([0, 0]);
-    let mut op: SHFILEOPSTRUCTW = unsafe { std::mem::zeroed() };
-    op.wFunc = FO_DELETE;
-    op.pFrom = from.as_ptr();
-    op.fFlags = (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT) as u16;
-    unsafe { SHFileOperationW(&mut op) };
+/// The Recycle Bin (`trashItemAtURL:`): undo allowed, no questions and no error window. A failure
+/// the OS gives is ignored, as iTerm2 ignores it; this OS having no Trash yet is returned.
+pub(super) fn recycle(path: &Path) -> Result<(), String> {
+    crate::platform::shellfs::recycle(path).map_err(String::from)
 }
 
 /// Runs tar.exe from System32 with `args` (never one from PATH).
@@ -813,15 +788,7 @@ const ITS_REVEAL_PREFIX: &str = "termurion-its-";
 /// Nothing is unpacked or written.
 fn verify_its_file(path: &Path) -> Result<crate::sigarchive::Verified, String> {
     let bytes = crate::extract::read_whole(path, crate::sigarchive::MAX_FILE).map_err(|e| sa::unzip_failed(&e))?;
-    #[cfg(windows)]
-    {
-        crate::sigarchive::verify_file(&bytes, &crate::sigarchive_win::CryptoApi::online())
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = bytes;
-        Err(crate::sigarchive::NOT_VALID.to_string())
-    }
+    crate::platform::trust::verify_archive(&bytes)
 }
 
 /// Writes the Mark of the Web on every file under `dir` (a Reveal Contents folder is opened in
@@ -1420,8 +1387,8 @@ impl App {
             _ if quiet.is_some() => {}
             Ok(None) => {}
             Ok(Some(location)) => {
-                if trash {
-                    recycle(&source);
+                if trash && let Err(e) = recycle(&source) {
+                    self.banners.set("scripts", e);
                 }
                 let ask = ask(sa::IMPORTED_TITLE, "", &[ok, sa::LAUNCH], None, warnings::Kind::Persistent, Then::ImportDone(location));
                 self.ask_scripts(ask);

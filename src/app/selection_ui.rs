@@ -70,14 +70,8 @@ pub fn word_span(screen: &Screen, at: Pos, rule: &Rule, seg: &dyn Segmenter, win
     (a, b)
 }
 
-#[cfg(windows)]
 fn segmenter() -> Box<dyn Segmenter> {
-    Box::new(wordsel::IcuSegmenter)
-}
-
-#[cfg(not(windows))]
-fn segmenter() -> Box<dyn Segmenter> {
-    Box::new(wordsel::NoSegmenter)
+    crate::platform::locale::segmenter()
 }
 
 /// Makes `a..=b` the live selection of `pane`, made in `mode`, remembering what a drag snaps to.
@@ -870,7 +864,7 @@ mod tests {
         let mask = guard.find("mask_start_menu()").unwrap();
         let cond = guard[..mask].rfind("if mods.cmd").unwrap();
         assert!(!guard[cond..mask].contains("CommandSelection"));
-        assert!(guard[..mask].contains("#[cfg(windows)]"));
+        assert!(guard[..mask].contains("platform::keys::"), "through the platform layer, no cfg of its own");
     }
 
     #[test]

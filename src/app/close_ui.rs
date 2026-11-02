@@ -40,7 +40,7 @@ impl App {
             // A framing session's programs are on its remote (a list that has not arrived is
             // not an error: the local tree answers).
             let listed = if mode == close_prompt::IF_JOBS {
-                p.remote_process_names().map(Ok).or_else(|| p.shell_pid().map(|pid| crate::jobwatch::descendants_now(pid).map(|procs| procs.into_iter().map(|q| q.name).collect())))
+                p.remote_process_names().map(Ok).or_else(|| p.shell_pid().map(|pid| crate::platform::proc::descendants_now(pid).map(|procs| procs.into_iter().map(|q| q.name).collect())))
             } else {
                 None
             };
@@ -76,7 +76,7 @@ impl App {
                 out.extend(names);
                 continue;
             }
-            match p.shell_pid().map(crate::jobwatch::descendants_now) {
+            match p.shell_pid().map(crate::platform::proc::descendants_now) {
                 Some(Ok(procs)) => out.extend(procs.iter().map(|q| crate::proctree::strip_exe(&q.name).to_string()).filter(|n| !n.eq_ignore_ascii_case("conhost") && !n.eq_ignore_ascii_case("OpenConsole"))),
                 Some(Err(e)) => notes.push(format!("Termurion could not read the programs running in a session ({e}).")),
                 None => {}

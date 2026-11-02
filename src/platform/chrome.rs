@@ -56,3 +56,28 @@ pub fn theme_reset_handled() {
 pub fn shift_down() -> bool {
     imp::shift_down()
 }
+
+pub use imp::Lift;
+
+/// Shows the menu as a pop-up at `position` (the window's client pixels; None: at the pointer).
+/// True when an item was picked, false when it was dismissed. The handle is a live window of this
+/// thread, as the app gets it from `window::hwnd_of`.
+pub fn popup<M: muda::ContextMenu + ?Sized>(menu: &M, hwnd: isize, position: Option<muda::dpi::Position>) -> bool {
+    imp::popup(menu, hwnd, position)
+}
+
+/// Attaches `menu` as `hwnd`'s menu bar after taking `earlier` (the window's bar so far) off it.
+/// The order matters: muda's drop of a menu clears the menu of every window it was on, so an
+/// earlier bar dropped after the new one is attached leaves the window with no menu bar.
+///
+/// A bar for a window that is to hide it (`hide`: Minimal, Compact, full screen) is taken off
+/// again at once, so it is never attached while the app believes it hidden.
+pub fn replace_menu_bar(earlier: Option<muda::Menu>, menu: &muda::Menu, hwnd: isize, hide: bool) -> muda::Result<()> {
+    imp::replace_menu_bar(earlier, menu, hwnd, hide)
+}
+
+/// Shows a tip beside the highlighted menu item after `delay` (Windows owner-draws its menus; the toolkit
+/// that draws them elsewhere has no such hook, so this does nothing there).
+pub fn install_menu_tips(hwnd: isize, delay: std::time::Duration) {
+    imp::install_menu_tips(hwnd, delay)
+}

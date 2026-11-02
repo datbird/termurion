@@ -732,13 +732,10 @@ fn run_usage(command: &str, cancel: &AtomicBool) -> UsageReport {
     use std::process::Stdio;
     let custom = !command.is_empty();
     let mut cmd = if custom {
-        let mut c = std::process::Command::new("cmd.exe");
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            c.raw_arg(semantic::cmd_args(command));
+        match crate::platform::proc::command_for_line(command) {
+            Ok(c) => c,
+            Err(e) => return wt::failed(&e.to_string()),
         }
-        c
     } else {
         let path = std::env::var_os("PATH");
         let Some(program) = semantic::resolve_on_path(std::path::Path::new("claude.exe"), path.as_deref()) else { return wt::not_found() };
@@ -746,12 +743,7 @@ fn run_usage(command: &str, cancel: &AtomicBool) -> UsageReport {
         c.args(["-p", "/usage"]);
         c
     };
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    crate::platform::proc::hide_console(&mut cmd);
     cmd.env_remove("ANTHROPIC_API_KEY").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     // Never the current folder: the temp folder, judged local first.
     if let Some(dir) = crate::localfs::LocalPath::judge(std::env::temp_dir()) {
@@ -845,10 +837,12 @@ mod tests {
     #[test]
     fn usage_runner_is_bounded() {
         let prod = &THIS[..THIS.find("#[cfg(test)]").unwrap()];
-        assert!(prod.contains("CREATE_NO_WINDOW"));
+        assert!(prod.contains("hide_console("));
+        assert!(include_str!("../platform/windows/proc.rs").contains("CREATE_NO_WINDOW"), "the platform hides the console");
         assert!(prod.contains("env_remove(\"ANTHROPIC_API_KEY\")"));
         assert!(prod.contains("USAGE_OUTPUT_CAP") && prod.contains("USAGE_TIMEOUT"));
-        assert!(prod.contains("semantic::cmd_args"), "a custom command runs through cmd.exe as written");
+        assert!(prod.contains("command_for_line("), "a custom command runs through cmd.exe as written");
+        assert!(include_str!("../platform/windows/proc.rs").contains("semantic::cmd_args"), "by the one argument builder");
         assert!(prod.contains("resolve_on_path"), "the built-in finds claude.exe only");
     }
 

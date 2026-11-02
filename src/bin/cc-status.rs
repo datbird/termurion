@@ -6,4 +6,9 @@ fn main() {
     termurion::dll::harden_process();
     #[cfg(windows)]
     std::process::exit(termurion::cc_status::real_main());
+    #[cfg(not(windows))]
+    {
+        // The hook always ends 0 so Claude Code is never held up; the reason goes to stderr.
+        eprintln!("cc-status: {}", termurion::platform::Unsupported { feature: "Reporting to Termurion" });
+    }
 }

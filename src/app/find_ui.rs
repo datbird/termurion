@@ -930,8 +930,7 @@ impl App {
         let search = !self.focused_id().and_then(|id| self.finds.get(&id)).is_some_and(|f| f.filter);
         let menu = self.find_mode_menu(find::Mode::label, search);
         let at = self.find_mode_rect.map(|r| muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(r.x as i32, (r.y + r.h) as i32)));
-        use muda::ContextMenu;
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, at) };
+        crate::platform::chrome::popup(&menu, hwnd, at);
         // The pick arrives after the menu closes, so the menu lives until the next one.
         self.popup_menu = Some(menu);
     }

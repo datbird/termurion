@@ -215,13 +215,12 @@ impl App {
     /// set true when nothing needs asking. Otherwise Windows is told why it must wait (a block
     /// reason on the window that was asked, which may be the hidden resident one) and the question
     /// is posted to be shown after the procedure returned FALSE. Reads only; no dialog here.
-    #[cfg(windows)]
     pub(super) fn shutdown_decide(&mut self, hwnd: isize, end_now: &std::sync::atomic::AtomicBool) {
         use std::sync::atomic::Ordering;
         let never = self.globals.bool("NeverBlockSystemShutdown");
         // The question is already pending (a query that raced the window procedure's own check):
         // still held, and no second question (Task 8 M1).
-        if super::logout_ui::question_pending() {
+        if crate::platform::logout::question_pending() {
             end_now.store(false, Ordering::Release);
             return;
         }
@@ -231,8 +230,8 @@ impl App {
             resident::ShutdownAnswer::AskFirst => {
                 end_now.store(false, Ordering::Release);
                 // Pending before anything is posted: every later query holds without asking.
-                super::logout_ui::begin_question();
-                super::logout_ui::raise_block(hwnd);
+                crate::platform::logout::begin_question();
+                crate::platform::logout::raise_block(hwnd);
                 let _ = self.proxy.lock().map(|p| p.send_event(UserEvent::ShutdownAsk));
             }
         }
@@ -240,15 +239,14 @@ impl App {
 
     /// Takes the block reason down (every path: OK, Cancel, the end of the session). Idempotent.
     pub(super) fn destroy_block_reason(&mut self) {
-        #[cfg(windows)]
-        super::logout_ui::destroy_block();
+        crate::platform::logout::destroy_block();
     }
 
     /// The quit question for a held shutdown (`UserEvent::ShutdownAsk`), shown on a thread of its own
     /// so no handler is held while it is open (final review item 2): a session end meanwhile closes it
     /// and writes out. Nothing left to ask quits at once, as Quit does.
     pub(super) fn shutdown_query(&mut self, event_loop: &ActiveEventLoop) {
-        if !super::logout_ui::question_pending() {
+        if !crate::platform::logout::question_pending() {
             return;
         }
         let reasons = if resident::reasons_collected(true, self.globals.bool("NeverBlockSystemShutdown")) { self.quit_reasons_now() } else { Vec::new() };
@@ -257,7 +255,7 @@ impl App {
         }
         let keep = self.keep_jobs_on_quit();
         let proxy = self.proxy.clone();
-        super::logout_ui::ask_on_thread(move || close_ui::confirm_quit(None, true, &reasons, keep), move |ok| {
+        crate::platform::logout::ask_on_thread(move || close_ui::confirm_quit(None, true, &reasons, keep), move |ok| {
             let _ = proxy.lock().map(|p| p.send_event(UserEvent::ShutdownAnswer(ok)));
         });
     }
@@ -267,7 +265,7 @@ impl App {
     /// retry: the person starts the shutdown again, Decision). An answer after the session end wrote
     /// out (the question closed as Cancel) does nothing.
     pub(super) fn shutdown_answered(&mut self, ok: bool, event_loop: &ActiveEventLoop) {
-        if !super::logout_ui::end_question() {
+        if !crate::platform::logout::end_question() {
             return;
         }
         self.destroy_block_reason();

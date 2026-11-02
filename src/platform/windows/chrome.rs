@@ -115,3 +115,98 @@ pub fn apply_menu_theme(hwnd: isize, forced: Option<bool>, high_contrast: bool, 
     }
     Ok(())
 }
+
+pub use super::menu_above::Lift;
+
+pub fn popup<M: muda::ContextMenu + ?Sized>(menu: &M, hwnd: isize, position: Option<muda::dpi::Position>) -> bool {
+    // SAFETY: the handle is a live window of this thread (the caller got it from `hwnd_of`).
+    unsafe { menu.show_context_menu_for_hwnd(hwnd, position) }
+}
+
+pub fn replace_menu_bar(earlier: Option<muda::Menu>, menu: &muda::Menu, hwnd: isize, hide: bool) -> muda::Result<()> {
+    if let Some(old) = earlier {
+        // Not on this window (another window's bar): its drop takes it off that one.
+        let _ = unsafe { old.remove_for_hwnd(hwnd) };
+        drop(old);
+    }
+    unsafe { menu.init_for_hwnd_with_theme(hwnd, muda::MenuTheme::Auto) }?;
+    if hide {
+        unsafe { menu.hide_for_hwnd(hwnd) }?;
+    }
+    Ok(())
+}
+
+pub fn install_menu_tips(hwnd: isize, delay: std::time::Duration) {
+    crate::menu_tip_win::install(hwnd, delay)
+}
+
+#[cfg(test)]
+mod menu_bar_replace_tests {
+    use super::*;
+    use muda::{Menu, MenuItem, Submenu};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, GetMenu};
+
+    fn window() -> isize {
+        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        // SAFETY: a hidden window of the system's STATIC class on this thread, destroyed by the test.
+        let w = unsafe { CreateWindowExW(0, class.as_ptr(), std::ptr::null(), 0, 0, 0, 10, 10, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null()) };
+        assert!(!w.is_null());
+        w as isize
+    }
+
+    fn bar() -> Menu {
+        let m = Menu::new();
+        let shell = Submenu::new("Shell", true);
+        shell.append(&MenuItem::new("New Window", true, None)).unwrap();
+        m.append(&shell).unwrap();
+        m
+    }
+
+    #[test]
+    fn a_second_bar_stays_on_the_window() {
+        let w = window();
+        let first = bar();
+        unsafe { first.init_for_hwnd(w) }.unwrap();
+        let second = bar();
+        replace_menu_bar(Some(first), &second, w, false).unwrap();
+        assert!(!unsafe { GetMenu(w as _) }.is_null(), "the new bar is on the window after the old one is gone");
+        drop(second);
+        unsafe { DestroyWindow(w as _) };
+    }
+
+    /// The failure this guards against: attaching first and dropping the old bar after.
+    #[test]
+    fn dropping_the_old_bar_after_attaching_clears_the_window() {
+        let w = window();
+        let first = bar();
+        unsafe { first.init_for_hwnd(w) }.unwrap();
+        let second = bar();
+        unsafe { second.init_for_hwnd(w) }.unwrap();
+        drop(first);
+        assert!(unsafe { GetMenu(w as _) }.is_null(), "muda's drop takes the window's menu away");
+        drop(second);
+        unsafe { DestroyWindow(w as _) };
+    }
+
+    /// A bar built for a window that is to hide it never shows: it is detached as it attaches.
+    #[test]
+    fn a_rebuilt_bar_for_a_hidden_window_stays_off_it() {
+        let w = window();
+        let first = bar();
+        unsafe { first.init_for_hwnd(w) }.unwrap();
+        let second = bar();
+        replace_menu_bar(Some(first), &second, w, true).unwrap();
+        assert!(unsafe { GetMenu(w as _) }.is_null(), "no bar on the window");
+        assert!(unsafe { second.show_for_hwnd(w) }.is_ok(), "but the bar is still the window's, to be shown again");
+        assert!(!unsafe { GetMenu(w as _) }.is_null());
+        drop(second);
+        unsafe { DestroyWindow(w as _) };
+    }
+
+    #[test]
+    fn install_menus_replaces_through_the_helper() {
+        let src = include_str!("../../app/menu.rs");
+        let body = src.split("pub(super) fn install_menus").nth(1).unwrap().split("muda::MenuEvent::set_event_handler").next().unwrap();
+        assert!(body.contains("chrome::replace_menu_bar(earlier, &menu, hwnd, self.want_menu_hidden())") && !body.contains("menu.init_for_hwnd"));
+    }
+}

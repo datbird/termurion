@@ -43,3 +43,17 @@ pub fn dll_hardening() -> Result<(), String> {
         Err("the DLL search is not fully restricted".to_string())
     }
 }
+
+pub fn opt_out_of_power_throttling() -> Result<(), String> {
+    crate::power::opt_out_of_power_throttling()
+}
+
+pub fn register_open_with(exe: &std::path::Path) -> Result<(), String> {
+    use crate::reg::Registry;
+    let entries = crate::open_file::open_with_entries(exe);
+    let mut reg = crate::reg::HkcuRegistry;
+    if reg.get(&entries[1].0, &entries[1].1).as_deref() == Some(entries[1].2.as_str()) {
+        return Ok(());
+    }
+    crate::reg::apply(&mut reg, &entries).map(|_| ())
+}

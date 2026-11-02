@@ -95,3 +95,8 @@ pub fn files() -> Vec<std::path::PathBuf> {
     unsafe { CloseClipboard() };
     out
 }
+
+pub fn set_private_text(cb: &mut arboard::Clipboard, text: &str) -> Result<(), arboard::Error> {
+    use arboard::SetExtWindows;
+    cb.set().exclude_from_history().exclude_from_cloud().text(text)
+}

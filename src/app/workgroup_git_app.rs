@@ -802,7 +802,7 @@ mod tests {
             "let e = gs::launch_env();",
             "let p = crate::platform::pty::spawn_notify(&api, &line, None, &env, 80, 24, n);",
             "if stem.as_deref() == Some(\"git\") {}",
-            "crate::git_run_win::WinGitRun.run(&g, &d, &a, t, None);",
+            "crate::platform::gitrun::SystemGitRun.run(&g, &d, &a, t, None);",
         ];
         for p in planted {
             assert!(!git_spawn_shapes(p).is_empty(), "the scan misses {p}");

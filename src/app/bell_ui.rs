@@ -187,7 +187,7 @@ mod tests {
         let ring = body(bell, "pub(super) fn ring_bell", "if ring.offer");
         assert!(ring.contains("count.clamp(1, MAX_BURST)"), "the badge adds the burst's count");
         assert!(ring.contains("self.flash_taskbar(true)"), "bounce goes through the shared flash path");
-        assert!(include_str!("triggers_ui.rs").matches("FlashWindowEx(").count() == 1, "one FlashWindowEx");
+        assert!(include_str!("triggers_ui.rs").matches("platform::window::flash(").count() == 1, "one flash call");
         for f in ["windows_ui.rs", "transparency_ui.rs", "mod.rs"] {
             assert!(include_str!("mod.rs").contains("taskbar_watch") && (f == "mod.rs" || std::fs::read_to_string(format!("{}/src/app/{f}", env!("CARGO_MANIFEST_DIR"))).unwrap().contains("self.taskbar_watch(h)")), "{f}");
         }

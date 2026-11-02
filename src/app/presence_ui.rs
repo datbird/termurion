@@ -224,7 +224,7 @@ impl App {
     /// still has a handle), else on the notification window (a hidden top-level window), so it also
     /// opens with no terminal window made yet.
     fn show_tray_menu(&mut self) {
-        use muda::{ContextMenu, Menu, MenuItem, PredefinedMenuItem, Submenu};
+        use muda::{Menu, MenuItem, PredefinedMenuItem, Submenu};
         let Some(hwnd) = presence::tray_menu_owner(self.hwnd(), crate::platform::notify::window_handle()) else { return };
         let menu = Menu::new();
         // Every window first: one that left the taskbar and Alt+Tab (or was minimized) has no
@@ -263,7 +263,7 @@ impl App {
         }
         // A cloaked or background window still has to be foreground for the menu to close on a click away.
         native::set_foreground(hwnd);
-        let picked = unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        let picked = crate::platform::chrome::popup(&menu, hwnd, None);
         crate::host_base::log(&format!("tray: menu on {hwnd:#x} (notification window {}), picked {picked}", Some(hwnd) == crate::platform::notify::window_handle()));
         self.tray_pick = picked;
         // The pick arrives after the menu closes, so the menu lives until the next one.
@@ -366,7 +366,7 @@ mod tests {
         assert!(after[..400].contains("teardown_process()"), "removed right after the event loop ends");
         let teardown = m.split("fn teardown_process").nth(1).and_then(|r| r.split("\n}").next()).expect("teardown_process");
         assert!(teardown.contains("notify::remove"), "the teardown removes the icon");
-        assert!(teardown.contains("dynamic_profiles_scan::stop_all"), "the teardown stops the Dynamic Profiles watch");
+        assert!(teardown.contains("watch::stop_all"), "the teardown stops the Dynamic Profiles watch");
         let relaunch = include_str!("settings_export_ui.rs");
         let tail = relaunch.split("self.leave_host(false);").nth(1).expect("relaunch exit");
         let before_exit = tail.split("std::process::exit(0)").next().unwrap();

@@ -29,15 +29,9 @@ const LOOK: Duration = Duration::from_millis(250);
 const MAX_NOTES: usize = 64;
 
 /// This install's approval key (`wr::key_in`), read or made once per run. None: every import asks.
-#[cfg(windows)]
 fn approval_key() -> Option<&'static [u8; wr::KEY_LEN]> {
     static KEY: std::sync::OnceLock<Option<[u8; wr::KEY_LEN]>> = std::sync::OnceLock::new();
     KEY.get_or_init(|| crate::globals::default_path().parent().and_then(wr::key_in)).as_ref()
-}
-
-#[cfg(not(windows))]
-fn approval_key() -> Option<&'static [u8; wr::KEY_LEN]> {
-    None
 }
 
 /// One look at a waiting restore: the step, and what Ask and Adopt need.

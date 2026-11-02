@@ -36,6 +36,23 @@ pub use super::windows::pty::{console_mode, from_handoff, spawn_flags};
 #[cfg(windows)]
 pub(crate) use super::windows::pty::{attached_unless, send_ctrl_event_attached};
 
+/// Loads the pseudo terminal library the app spawns shells with. Windows takes the ConPTY shipped
+/// beside the exe, else the copy built into Windows (the note says so for a banner); Unix has none to
+/// load, and a shell start reports Unsupported where it is asked for.
+pub fn load_for_app(exe_dir: &std::path::Path) -> Result<(PtyApi, Option<String>), String> {
+    imp::load_for_app(exe_dir)
+}
+
+/// The loaded library has its pack (the default-terminal rule); never on Unix.
+pub fn api_has_pack(api: &PtyApi) -> bool {
+    imp::api_has_pack(api)
+}
+
+/// The default-terminal start rule: the shipped ConPTY has its pack (Windows only).
+pub fn shipped_has_pack(exe_dir: &std::path::Path) -> bool {
+    imp::shipped_has_pack(exe_dir)
+}
+
 /// The api the live tests spawn real shells with: the repo's shipped ConPTY on Windows.
 /// Unix has no backend, so those tests fail there at the spawn, not at compile time.
 #[cfg(test)]

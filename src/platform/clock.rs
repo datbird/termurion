@@ -54,3 +54,14 @@ pub fn long_time(p: Local) -> String {
 pub fn play_named(name: &str) -> Option<bool> {
     imp::play_named(name)
 }
+
+/// The OS's best date pattern (ICU's skeleton match) for `template` in the user's locale; None when
+/// the OS has none, and the caller uses the template as written.
+pub fn best_date_pattern(template: &str) -> Option<String> {
+    imp::best_date_pattern(template)
+}
+
+/// This computer's time zone name right now, as the OS gives it ("CST", or Windows' own wording).
+pub fn zone_name() -> String {
+    imp::zone_name()
+}
