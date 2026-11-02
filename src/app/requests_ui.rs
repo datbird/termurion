@@ -145,7 +145,8 @@ impl App {
             }
             Request::ReportScreenFrames => {
                 let scale = self.scale() as f64;
-                let primary = primary_height();
+                // Frames are measured from the primary monitor's height; unknown, so no answer.
+                let Some(primary) = primary_height() else { return };
                 let n = osc1337::number;
                 let frames: Vec<String> = work_areas()
                     .into_iter()
@@ -252,7 +253,7 @@ impl App {
         let g = self.gpu.as_ref()?;
         let pos = g.window.outer_position().ok()?;
         let size = g.window.outer_size();
-        Some(osc1337::to_points(pos.x as f64, pos.y as f64, size.width as f64, size.height as f64, primary_height(), g.window.scale_factor()))
+        Some(osc1337::to_points(pos.x as f64, pos.y as f64, size.width as f64, size.height as f64, primary_height()?, g.window.scale_factor()))
     }
 
     /// A program in `pane` set or reset its title: with SeparateWindowTitlePerTab off every
@@ -293,7 +294,9 @@ impl App {
     /// Moves and sizes the window to a frame in points, as the program asked (`reallySetPointSize:`).
     pub(super) fn apply_window_frame(&mut self, x: f64, y: f64, w: f64, h: f64) {
         let Some(g) = &self.gpu else { return };
-        let (x, y, w, h) = osc1337::from_points(x, y, w, h, primary_height(), g.window.scale_factor());
+        // Without the primary monitor's height the frame cannot be placed, so it is left alone.
+        let Some(primary) = primary_height() else { return };
+        let (x, y, w, h) = osc1337::from_points(x, y, w, h, primary, g.window.scale_factor());
         // The frame includes the title bar and borders; the inner size leaves them out.
         let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
         let (dw, dh) = (outer.width.saturating_sub(inner.width) as f64, outer.height.saturating_sub(inner.height) as f64);
@@ -412,7 +415,7 @@ impl App {
 }
 
 /// The primary monitor's height in pixels (it sits at the virtual screen's origin).
-fn primary_height() -> f64 {
+fn primary_height() -> Option<f64> {
     crate::platform::display::primary_height()
 }
 

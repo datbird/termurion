@@ -61,9 +61,9 @@ pub fn sheet_origin(owner: isize, width: u32) -> Option<(i32, i32)> {
 }
 
 /// The primary monitor's height in pixels (it sits at the virtual screen's origin).
-pub fn primary_height() -> f64 {
+pub fn primary_height() -> Option<f64> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CYSCREEN};
-    unsafe { GetSystemMetrics(SM_CYSCREEN) as f64 }
+    Some(unsafe { GetSystemMetrics(SM_CYSCREEN) as f64 })
 }
 
 /// Each monitor's work area (without the taskbar) in virtual-screen pixels.

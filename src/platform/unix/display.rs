@@ -19,9 +19,9 @@ pub fn sheet_origin(_owner: isize, _width: u32) -> Option<(i32, i32)> {
     None
 }
 
-/// winit lists monitors per window, and the app holds no window here: the height is unknown, so 0.
-pub fn primary_height() -> f64 {
-    0.0
+/// winit lists monitors per window, and the app holds no window here: the height is unknown.
+pub fn primary_height() -> Option<f64> {
+    None
 }
 
 /// No monitor list without a window yet (winit's `available_monitors` needs one).

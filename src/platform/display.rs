@@ -28,8 +28,9 @@ pub fn sheet_origin(owner: isize, width: u32) -> Option<(i32, i32)> {
     imp::sheet_origin(owner, width)
 }
 
-/// The primary monitor's height in pixels (it sits at the virtual screen's origin).
-pub fn primary_height() -> f64 {
+/// The primary monitor's height in pixels (it sits at the virtual screen's origin). None when this
+/// OS cannot tell without a window (Unix), so a caller skips what needs it instead of guessing.
+pub fn primary_height() -> Option<f64> {
     imp::primary_height()
 }
 
