@@ -116,11 +116,11 @@ pub fn parse_procargs(block: &[u8]) -> Vec<String> {
     let Some(head) = block.get(..4) else { return Vec::new() };
     let argc = i32::from_ne_bytes([head[0], head[1], head[2], head[3]]).max(0) as usize;
     let rest = &block[4..];
-    // Past the path, then past the NULs that pad it.
-    let after_path = rest.iter().position(|&b| b == 0).map_or(rest.len(), |i| i + 1);
-    let rest = &rest[after_path..];
-    let start = rest.iter().position(|&b| b != 0).unwrap_or(rest.len());
-    rest[start..].split(|&b| b == 0).take(argc).map(|w| String::from_utf8_lossy(w).into_owned()).collect()
+    // Past the path and its NUL, then the NUL padding to the next multiple of 8 (counted from the
+    // path's start, as the kernel lays it out). Only that far, so an empty argv[0] stays an argument.
+    let end = rest.iter().position(|&b| b == 0).map_or(rest.len(), |i| i + 1);
+    let at = end.next_multiple_of(8).min(rest.len());
+    rest[at..].split(|&b| b == 0).take(argc).map(|w| String::from_utf8_lossy(w).into_owned()).collect()
 }
 
 #[cfg(test)]
@@ -130,10 +130,33 @@ mod tests {
     #[test]
     fn procargs_blocks_parse() {
         let mut b = 3i32.to_ne_bytes().to_vec();
-        b.extend_from_slice(b"/bin/sh\0\0\0sh\0-c\0sleep 5\0HOME=/x\0");
+        b.extend_from_slice(b"/bin/sh\0sh\0-c\0sleep 5\0HOME=/x\0");
         assert_eq!(parse_procargs(&b), vec!["sh", "-c", "sleep 5"]);
+        let mut e = 3i32.to_ne_bytes().to_vec();
+        e.extend_from_slice(b"/bin/sh\0\0-c\0x\0HOME=/x\0");
+        assert_eq!(parse_procargs(&e), vec!["", "-c", "x"], "an empty argv[0] keeps its place");
         assert!(parse_procargs(b"").is_empty());
         assert!(parse_procargs(&0i32.to_ne_bytes()).is_empty());
+    }
+
+    #[test]
+    fn a_real_empty_argv0_keeps_its_place() {
+        use std::os::unix::process::CommandExt;
+        // Paths of several lengths, so the padding after each is tried.
+        let dir = std::env::temp_dir().join(format!("termurion-argv-{}-with-a-long-folder-name", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let long = dir.join("sleep");
+        let _ = std::os::unix::fs::symlink("/bin/sleep", &long);
+        for exe in ["/bin/sleep", long.to_str().unwrap()] {
+            for (a0, want) in [("", " 30"), ("s", "s 30"), ("a b", "\"a b\" 30")] {
+                let mut child = std::process::Command::new(exe).arg0(a0).arg("30").spawn().unwrap();
+                let line = open(child.id()).and_then(|o| o.cmdline());
+                let _ = child.kill();
+                let _ = child.wait();
+                assert_eq!(line.as_deref(), Some(want), "{exe} with argv0 {a0:?}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

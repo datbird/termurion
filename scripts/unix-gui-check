@@ -30,9 +30,11 @@ mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/run"
 chmod 700 "$scratch/run"
 : > "$scratch/pids"
 
-xvfb_pid="" app_pid=""
+xvfb_pid="" app_pid="" zenity_pid=""
 cleanup() {
     [ -n "$app_pid" ] && kill "$app_pid" 2> /dev/null
+    # The job scenario's question box is a child that would outlive the app.
+    [ -n "$zenity_pid" ] && kill "$zenity_pid" 2> /dev/null
     # A session host this run started holds this scratch XDG_RUNTIME_DIR in its environment.
     for p in /proc/[0-9]*; do
         [ -r "$p/comm" ] && [ "$(cat "$p/comm" 2> /dev/null)" = termurion-host ] \
@@ -142,11 +144,19 @@ case "$scenario" in
             grep -q "is running sleep" "$scratch/app.log" && break
             sleep 0.25
         done
-        sleep 1
-        shoot
         grep -q "is running sleep" "$scratch/app.log" || fail "the close never asked about the sleep (see $scratch/app.log)"
-        # The box is zenity, the app's child, waiting for the answer.
-        pgrep -P "$app_pid" -x zenity > /dev/null || fail "no question window is open (see $scratch/screen.png)"
+        # The box is zenity, the app's child. Its X window must exist within 10 s; only then the shot.
+        # (zenity 4 under Xvfb with no window manager creates it but never maps it, so the shot shows
+        # the app dimmed behind it and not the box itself.)
+        for _ in $(seq 40); do
+            zenity_pid=$(pgrep -P "$app_pid" -x zenity | head -1)
+            [ -n "$zenity_pid" ] && [ -n "$(xdotool search --pid "$zenity_pid" 2> /dev/null | head -1)" ] && break
+            sleep 0.25
+        done
+        [ -n "$zenity_pid" ] || fail "no question box was started (see $scratch/app.log)"
+        [ -n "$(xdotool search --pid "$zenity_pid" 2> /dev/null | head -1)" ] || fail "the question window never appeared"
+        sleep 0.5
+        shoot
         kill -0 "$shell_pid" 2> /dev/null || fail "the close did not wait for an answer: the shell $shell_pid is gone"
         pgrep -P "$shell_pid" -x sleep > /dev/null || fail "the sleep under $shell_pid is gone"
         ;;

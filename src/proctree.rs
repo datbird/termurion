@@ -102,7 +102,7 @@ fn deepest(procs: &[Proc], root: u32) -> Option<&Proc> {
     let walked = walk(procs, root);
     let best = walked.iter().filter(|(p, _)| !p.gui && !is_host(p) && !p.background).max_by_key(|(p, d)| (*d, p.created)).map(|(p, _)| *p);
     // The shell exists, so the job is never None: with nothing in front it is the shell.
-    best.or_else(|| walked.first().map(|(p, _)| *p))
+    best.or_else(|| walked.first().map(|(p, _)| *p).filter(|p| !p.gui && !is_host(p)))
 }
 
 /// The deepest console program under the shell (the shell itself when it has none);
@@ -182,6 +182,9 @@ mod tests {
         let j = display_job(&all_bg, 10).expect("the shell exists, so there is a job");
         assert_eq!((j.name.as_str(), j.pid), ("zsh", 10));
         assert_eq!(display_job(&all_bg, 99), None, "the shell is gone");
+        let mut gui_root = p(10, 1, "notepad.exe", 100);
+        gui_root.gui = true;
+        assert_eq!(display_job(&[gui_root], 10), None, "a GUI root is no job, as before");
         assert_eq!(descendants(&all_bg, 10).len(), 1, "the close prompt still sees background jobs");
     }
 

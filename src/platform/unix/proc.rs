@@ -104,6 +104,49 @@ pub fn process_alive(pid: u32, created: u64) -> bool {
     open(pid).is_some_and(|o| o.created() == created)
 }
 
+fn ended(pid: u32) -> String {
+    format!("process {pid} has already ended")
+}
+
+/// The start-time check, then a plain kill (macOS has no handle to a process; the gap is one syscall).
+fn check_then_kill(pid: u32, target: libc::pid_t, created: Option<u64>, sig: libc::c_int) -> Result<(), String> {
+    let o = open(pid).ok_or_else(|| ended(pid))?;
+    if created.is_some_and(|c| o.created() != c) {
+        return Err(ended(pid));
+    }
+    // SAFETY: a plain kill of a checked pid.
+    if unsafe { libc::kill(target, sig) } < 0 { Err(os_err("kill")) } else { Ok(()) }
+}
+
+/// Linux: a pidfd pins the process, so a pid reused after the check can never get the signal.
+/// Kernels before 5.3 have no pidfd; they take the plain path.
+#[cfg(target_os = "linux")]
+fn send_checked(pid: u32, target: libc::pid_t, created: Option<u64>, sig: libc::c_int) -> Result<(), String> {
+    // SAFETY: pidfd_open takes a pid and flags and returns a descriptor we own.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, target, 0) };
+    if fd < 0 {
+        return match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ENOSYS) => check_then_kill(pid, target, created, sig),
+            Some(libc::ESRCH) => Err(ended(pid)),
+            _ => Err(os_err("pidfd_open")),
+        };
+    }
+    let fd = fd as libc::c_int;
+    let checked = open(pid).ok_or_else(|| ended(pid)).and_then(|o| if created.is_some_and(|c| o.created() != c) { Err(ended(pid)) } else { Ok(()) });
+    let sent = checked.and_then(|()| {
+        // SAFETY: the fd is ours; no siginfo, no flags.
+        if unsafe { libc::syscall(libc::SYS_pidfd_send_signal, fd, sig, std::ptr::null::<libc::c_void>(), 0) } < 0 { Err(os_err("pidfd_send_signal")) } else { Ok(()) }
+    });
+    // SAFETY: closing the descriptor opened above.
+    unsafe { libc::close(fd) };
+    sent
+}
+
+#[cfg(not(target_os = "linux"))]
+fn send_checked(pid: u32, target: libc::pid_t, created: Option<u64>, sig: libc::c_int) -> Result<(), String> {
+    check_then_kill(pid, target, created, sig)
+}
+
 /// Sends one of the Jobs tool's signals to `pid`, only to the process started at `created` when
 /// given (a pid the tree showed may have been reused since). `CtrlC` is SIGINT and `CtrlBreak`
 /// SIGQUIT to the process itself; `Terminate(code)` is signal `code - 128`. `stop` matters only to
@@ -115,14 +158,7 @@ pub fn signal_process(pid: u32, created: Option<u64>, way: SignalWay, _stop: Arc
         SignalWay::CtrlBreak => libc::SIGQUIT,
         SignalWay::Terminate(code) => code.checked_sub(128).filter(|n| (1..=64).contains(n)).map(|n| n as libc::c_int).ok_or_else(|| format!("{code} is not a signal exit code"))?,
     };
-    let o = open(pid).ok_or_else(|| format!("process {pid} has already ended"))?;
-    if created.is_some_and(|c| o.created() != c) {
-        return Err(format!("process {pid} has already ended"));
-    }
-    // SAFETY: a plain kill of a checked pid.
-    if unsafe { libc::kill(target, sig) } < 0 {
-        return Err(os_err("kill"));
-    }
+    send_checked(pid, target, created, sig)?;
     Ok(Sent::Done)
 }
 

@@ -39,7 +39,8 @@ pub fn parse_stat(line: &str) -> Option<Stat> {
 }
 
 fn stat_of(pid: u32) -> Option<Stat> {
-    parse_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+    // Bytes, not a string: the kernel cuts the name at 15 bytes, which can split a character.
+    parse_stat(&String::from_utf8_lossy(&std::fs::read(format!("/proc/{pid}/stat")).ok()?))
 }
 
 /// Every live process. A zombie is gone for our purposes, and a process whose group is not its
@@ -77,7 +78,9 @@ impl Opened {
 
     pub fn image(&self) -> Option<String> {
         let link = std::fs::read_link(format!("/proc/{}/exe", self.pid)).ok()?;
-        Some(link.to_string_lossy().into_owned())
+        let path = link.to_string_lossy().into_owned();
+        // A binary replaced while it runs reads "path (deleted)".
+        Some(path.strip_suffix(" (deleted)").map_or(path.clone(), str::to_string))
     }
 
     pub fn cmdline(&self) -> Option<String> {
@@ -97,6 +100,17 @@ mod tests {
         assert_eq!((s.state, s.start), ('S', 98765));
         assert!(parse_stat("garbage").is_none());
         assert!(parse_stat("1 (x) S 1").is_none(), "too short to trust");
+    }
+
+    #[test]
+    fn a_name_cut_inside_a_character_still_parses() {
+        // The kernel keeps 15 bytes of the name; here the last character is cut after its first byte.
+        let mut line = b"77 (".to_vec();
+        line.extend_from_slice(&[0xC3, 0xA9, 0xC3, 0xA9, 0xC3]);
+        line.extend_from_slice(b") S 1 77 77 34816 77 0 0 0 0 0 0 0 0 0 20 0 1 0 555 1 1");
+        let s = parse_stat(&String::from_utf8_lossy(&line)).unwrap();
+        assert_eq!((s.ppid, s.tpgid, s.start), (1, 77, 555));
+        assert!(s.comm.starts_with("\u{e9}\u{e9}"));
     }
 
     #[test]
