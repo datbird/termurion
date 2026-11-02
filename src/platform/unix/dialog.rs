@@ -13,7 +13,7 @@ fn available() -> bool {
         if cfg!(target_os = "macos") {
             return true;
         }
-        let found = std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("zenity").is_file()));
+        let found = std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| crate::localfs::judge(d.join("zenity")).is_some_and(|p| crate::localfs::is_file(&p))));
         if !found {
             eprintln!("Termurion: message boxes are not available on Linux yet (install zenity); their text goes to stderr.");
             crate::dlog!("Message boxes are not available on Linux yet: install zenity");
@@ -60,7 +60,7 @@ fn safe_answer(kind: Kind) -> Answer {
 /// after. With no dialog program a question takes its safe answer.
 pub fn message(_owner: Option<isize>, title: &str, body: &str, kind: Kind) -> Answer {
     eprintln!("{title}: {body}");
-    crate::dlog!("A message box was asked for; its text went to stderr");
+    crate::dlog!("A message box was asked for; the words went to stderr");
     if !available() {
         if buttons(kind) != Buttons::Ok {
             crate::dlog!("No message box program, so a question took its safe answer");
