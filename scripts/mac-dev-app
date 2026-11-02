@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Builds an unsigned throwaway Termurion.app on funtimes (macOS) and opens it in the Aqua session.
+# The real signed bundle is P2. `open -n` starts it under launchd, so it gets the login environment.
+# CHECK_UNIX_MAC_HOST overrides the ssh host (default funtimes).
+# Usage: scripts/mac-dev-app
+set -uo pipefail
+repo="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$repo"
+host="${CHECK_UNIX_MAC_HOST:-funtimes}"
+rsync -rt --delete --exclude target/ --exclude .git/ --exclude .superpowers/ ./ "$host:src/termurion/" || { echo "mac-dev-app: rsync failed"; exit 2; }
+ssh "$host" 'bash -s' <<'REMOTE' || { echo "mac-dev-app: failed"; exit 1; }
+set -eu
+cd src/termurion
+~/.cargo/bin/cargo build --bins 2>&1 | tail -3
+app=target/debug/Termurion.app
+rm -rf "$app"
+mkdir -p "$app/Contents/MacOS"
+cp target/debug/termurion target/debug/termurion-host "$app/Contents/MacOS/"
+ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+cat > "$app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key><string>termurion</string>
+  <key>CFBundleIdentifier</key><string>dev.termurion.devcheck</string>
+  <key>CFBundleName</key><string>Termurion</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleVersion</key><string>$ver</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+PLIST
+: > /tmp/termurion-gui-pids
+open -n "$app"
+echo "opened $PWD/$app"
+REMOTE
