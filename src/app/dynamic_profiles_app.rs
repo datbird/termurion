@@ -312,8 +312,8 @@ impl App {
             crate::dlog!("Dynamic Profiles are not available on this platform yet");
             return;
         }
-        let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-        let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
+        let appdata = crate::platform::paths::config_base();
+        let home = crate::platform::paths::home_dir().unwrap_or_default();
         let folder = dp::folder(&self.globals.string("DynamicProfilesPath"), &appdata, &home);
         // Never made on a network path; the reload then reports it.
         if let Some(judged) = crate::localfs::judge(&folder) {

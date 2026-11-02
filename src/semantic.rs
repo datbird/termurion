@@ -278,7 +278,7 @@ fn line_and_column(rest: &str) -> (Option<u32>, Option<u32>) {
 }
 
 fn home() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from)
+    crate::platform::paths::home_dir()
 }
 
 /// The most files one click probes (P1), across both passes.

@@ -76,7 +76,7 @@ impl App {
             user: s.shell.user.clone().unwrap_or_default(),
             host: s.shell.host.clone().unwrap_or_default(),
             path: s.shell.cwd.clone().unwrap_or_default(),
-            home: std::env::var("USERPROFILE").unwrap_or_default(),
+            home: crate::platform::paths::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default(),
             size: (grid.columns(), grid.screen_lines()),
             tmux_pane_title: String::new(),
         };

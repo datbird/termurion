@@ -1454,7 +1454,7 @@ impl App {
             ExportEvent::Cancel => self.script_export = None,
             ExportEvent::Export { paths, autolaunch } => {
                 self.script_export = None;
-                let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
+                let home = crate::platform::paths::home_dir().unwrap_or_default();
                 let desktop = super::screenshot_ui::desktop().unwrap_or_else(|| home.join("Desktop"));
                 let (tx, rx) = std::sync::mpsc::channel();
                 let notify = self.notify.clone();

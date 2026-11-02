@@ -91,7 +91,7 @@ pub(super) struct Extensions {
 
 fn data_dir() -> std::io::Result<LocalPath> {
     let base = browser_host::local_appdata().ok_or_else(localfs::refused)?;
-    let dir = localfs::judge_io(base.join("Termurion"))?;
+    let dir = localfs::judge_io(base.join(crate::platform::paths::APP_FOLDER))?;
     localfs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -431,7 +431,7 @@ impl App {
             return vec![status_script(be::NOT_ALLOWED, "error")];
         }
         let value = self.browser_ext_value(pane, be::ROOT_KEY).and_then(|v| v.as_str().map(str::to_string));
-        let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        let appdata = crate::platform::paths::config_base();
         let root = be::root(value.as_deref(), &appdata);
         let refuse = || vec![status_script(&be::create_failed("UNC paths are not supported"), "error")];
         if !be::root_ok(&root) {

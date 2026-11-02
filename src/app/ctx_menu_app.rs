@@ -528,7 +528,7 @@ impl App {
             }
             "img.open" => {
                 // A temporary picture in Termurion's own folder, opened by its default app.
-                let dir = std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, std::path::PathBuf::from).join("Termurion").join("images");
+                let dir = crate::platform::paths::local_dir().join("images");
                 let result = crate::localfs::judge_io(&dir).and_then(|d| {
                     crate::localfs::create_dir_all(&d)?;
                     let file = d.child(format!("image-{}-{img}.png", std::process::id())).ok_or_else(crate::localfs::refused)?;

@@ -396,7 +396,7 @@ impl App {
     /// and the icon tables again.
     fn data_files_reload(&mut self) {
         self.snippets = super::snippets_ui::load_snippets();
-        let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        let appdata = crate::platform::paths::config_base();
         self.global_note = crate::notes::GlobalNote::new(super::toolbelt_more_ui::notes_path(&appdata));
         self.tools_changed();
         self.reload_tab_icon_maps();

@@ -369,7 +369,7 @@ fn env_list(name: &str) -> Vec<String> {
 }
 
 fn home() -> String {
-    std::env::var("USERPROFILE").unwrap_or_default()
+    crate::platform::paths::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 impl App {

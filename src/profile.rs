@@ -406,18 +406,16 @@ pub fn command_line(p: &Profile, default_shell: &str, it2ssh: Option<&std::path:
 }
 
 /// The directory a session starts in, and a warning when the profile's directory is
-/// unusable. Home is %USERPROFILE%; "~" expands to it. A directory that does not exist
+/// unusable. Home is the person's home folder; "~" expands to it. A directory that does not exist
 /// (an imported macOS path, for example) falls back to home, as iTerm2 does.
 pub fn start_dir(p: &Profile) -> (std::path::PathBuf, Option<String>) {
     start_dir_with(p, None)
 }
 
-/// A reported directory as a Windows path: "/C:/Users/rob" (OSC 7 URL form) or
-/// "C:\Users\rob". None for a path that is not a Windows path (a remote Unix one).
+/// A reported directory as a local path: on Windows "/C:/Users/rob" (OSC 7 URL form) or
+/// "C:\Users\rob", on Unix an absolute path. None for a path from another OS (a remote one).
 pub fn local_path(reported: &str) -> Option<std::path::PathBuf> {
-    let s = reported.strip_prefix('/').filter(|r| r.as_bytes().get(1) == Some(&b':')).unwrap_or(reported);
-    let b = s.as_bytes();
-    (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':').then(|| std::path::PathBuf::from(s.replace('/', "\\")))
+    crate::platform::paths::local_path(reported)
 }
 
 /// A saved folder as the Windows path a shell starts in: `local_path`'s, or "~" or a path
@@ -430,12 +428,12 @@ pub fn local_folder(saved: &str) -> Option<std::path::PathBuf> {
         return None;
     }
     let rest = rest.trim_start_matches(['/', '\\']);
-    Some(if rest.is_empty() { home() } else { home().join(rest.replace('/', "\\")) })
+    Some(if rest.is_empty() { home() } else { home().join(rest.replace(['/', '\\'], std::path::MAIN_SEPARATOR_STR)) })
 }
 
-/// The home folder a session starts in: %USERPROFILE%.
+/// The home folder a session starts in (the temp folder when none is known).
 pub fn home() -> std::path::PathBuf {
-    std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir)
+    crate::platform::paths::home_dir().unwrap_or_else(std::env::temp_dir)
 }
 
 /// `start_dir`, with the directory of the session a new one comes from ("Reuse previous
@@ -500,6 +498,20 @@ mod tests {
         assert_eq!(start_dir_with(&p, Some(std::path::Path::new("Z:\\no\\such\\dir"))).0, home);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn reported_paths_become_local_paths() {
+        assert_eq!(local_path("/home/rob"), Some(std::path::PathBuf::from("/home/rob")));
+        assert_eq!(local_path("C:\\Users\\rob"), None);
+        assert_eq!(local_folder("/srv/x"), Some(std::path::PathBuf::from("/srv/x")));
+        assert_eq!(local_folder("~/www/a"), Some(home().join("www/a")));
+        assert_eq!(local_folder("~"), Some(home()));
+        assert_eq!(local_folder("~rob/www"), None);
+        assert_eq!(local_folder("src"), None);
+        assert_eq!(local_folder("D:\\x"), None);
+    }
+
+    #[cfg(windows)] // test: Windows drive paths
     #[test]
     fn url_paths_become_windows_paths() {
         assert_eq!(local_path("/C:/Users/rob"), Some(std::path::PathBuf::from("C:\\Users\\rob")));
@@ -697,7 +709,7 @@ mod tests {
 
     #[test]
     fn start_dir_is_home_by_default_and_expands_tilde() {
-        let home = std::path::PathBuf::from(std::env::var_os("USERPROFILE").unwrap());
+        let home = crate::platform::paths::home_dir().unwrap();
         let mut p = Profile::default();
         assert_eq!(start_dir(&p), (home.clone(), None));
         p.set("Custom Directory", toml::Value::String("Yes".into()));
@@ -707,7 +719,7 @@ mod tests {
 
     #[test]
     fn a_missing_start_dir_falls_back_to_home_with_a_warning() {
-        let home = std::path::PathBuf::from(std::env::var_os("USERPROFILE").unwrap());
+        let home = crate::platform::paths::home_dir().unwrap();
         let mut p = Profile::default();
         p.set("Custom Directory", toml::Value::String("Yes".into()));
         p.set("Working Directory", toml::Value::String("/Users/robert/src".into()));

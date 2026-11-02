@@ -342,7 +342,7 @@ pub const CARD_LABELS: [(&str, &str); 12] = [
 
 /// Where the card lives under the machine-local application data folder.
 pub fn card_path(local_appdata: &std::path::Path) -> std::path::PathBuf {
-    local_appdata.join("Termurion").join(CARD_FILE)
+    local_appdata.join(crate::platform::paths::APP_FOLDER).join(CARD_FILE)
 }
 
 impl Card {
@@ -645,7 +645,7 @@ mod tests {
         assert!(CARD_LABELS.iter().map(|(k, _)| *k).eq(FIELD_TYPES.iter().copied()));
         let mut c = sample();
         assert_eq!(c.fields_mut().len(), CARD_LABELS.len());
-        assert_eq!(card_path(std::path::Path::new(r"C:\a")), std::path::Path::new(r"C:\a").join("Termurion").join("autofill-contact.dat"));
+        assert_eq!(card_path(std::path::Path::new(r"C:\a")), std::path::Path::new(r"C:\a").join(crate::platform::paths::APP_FOLDER).join("autofill-contact.dat"));
         assert!(!format!("{:?}", sample()).contains("Alice"));
     }
 

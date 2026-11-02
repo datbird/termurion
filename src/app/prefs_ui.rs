@@ -68,7 +68,7 @@ pub(super) fn exit_waits(showing: Option<&Ask>, queued: &std::collections::VecDe
 }
 
 fn home() -> PathBuf {
-    std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default()
+    crate::platform::paths::home_dir().unwrap_or_default()
 }
 
 /// `noSyncDownloadPrefsTimeout` (`ASM:550`).

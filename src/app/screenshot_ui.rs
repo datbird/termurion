@@ -263,8 +263,8 @@ impl App {
     /// Desktop.
     fn shot_folder(&self) -> Option<std::path::PathBuf> {
         let set = self.globals.string("ScreenshotSaveLocation");
-        let set = match (set.strip_prefix('~'), std::env::var("USERPROFILE")) {
-            (Some(rest), Ok(home)) => format!("{home}{rest}"),
+        let set = match (set.strip_prefix('~'), crate::platform::paths::home_dir()) {
+            (Some(rest), Some(home)) => format!("{}{rest}", home.display()),
             _ => set,
         };
         if !set.is_empty() && crate::prompted::local_path_ok(&set) && crate::localfs::is_local_dir(std::path::Path::new(&set)) {

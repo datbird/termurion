@@ -943,8 +943,8 @@ fn vet_git_dir(git_dir: &LocalPath, root: &Path, v: &mut Vet) -> Option<()> {
 /// relative path is against `base`. `%(prefix)` and `~user` are refused.
 fn config_path(v: &str, base: &Path) -> Option<LocalPath> {
     if let Some(rest) = v.strip_prefix("~/").or_else(|| v.strip_prefix("~\\")) {
-        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok()?;
-        local_target(Path::new(&home), rest)
+        let home = crate::platform::paths::home_dir()?;
+        local_target(&home, rest)
     } else if v.starts_with('~') || v.starts_with("%(") {
         None
     } else {

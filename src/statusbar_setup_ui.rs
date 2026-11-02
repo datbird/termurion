@@ -249,7 +249,7 @@ impl StatusBarSetupWindow {
         // User Name or Current Directory component's exemplar needs; a Clock's sample is
         // the time now in its own format.
         let user = std::env::var("USERNAME").unwrap_or_default();
-        let home = std::env::var("USERPROFILE").unwrap_or_default();
+        let home = crate::platform::paths::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
         let clock = self.clock;
         let clock_text = |class: &str, knobs: &toml::Table| if class == crate::statusbar_components::CLOCK_CLASS { clock(knobs) } else { String::new() };
         let sheet_open = self.sheet.is_some() || self.advanced.is_some();

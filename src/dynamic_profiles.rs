@@ -83,7 +83,7 @@ pub enum FileType {
 pub fn folder(custom: &str, appdata: &Path, home: &Path) -> PathBuf {
     let custom = custom.trim();
     if custom.is_empty() {
-        return appdata.join("Termurion").join("DynamicProfiles");
+        return appdata.join(crate::platform::paths::APP_FOLDER).join("DynamicProfiles");
     }
     if let Some(rest) = custom.strip_prefix('~') {
         if rest.is_empty() {
@@ -933,7 +933,7 @@ mod tests {
 
         let appdata = Path::new("C:\\Users\\me\\AppData\\Roaming");
         let home = Path::new("C:\\Users\\me");
-        assert_eq!(folder_of("", appdata, home), appdata.join("Termurion").join("DynamicProfiles"));
+        assert_eq!(folder_of("", appdata, home), appdata.join(crate::platform::paths::APP_FOLDER).join("DynamicProfiles"));
         assert_eq!(folder_of("~\\dp", appdata, home), home.join("dp"));
         assert_eq!(folder_of("~", appdata, home), home);
         assert_eq!(folder_of("D:\\profiles", appdata, home), PathBuf::from("D:\\profiles"));

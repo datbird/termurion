@@ -271,7 +271,7 @@ fn run_watch(host: &Shared, watch: &mut crate::host_watch::Watch, exe: &std::pat
 fn reopen_app(exe: &std::path::Path) -> Result<(), String> {
     let mut cmd = std::process::Command::new(exe);
     cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    if let Some(home) = std::env::var_os("USERPROFILE") {
+    if let Some(home) = crate::platform::paths::home_dir() {
         cmd.current_dir(home);
     }
     cmd.spawn().map(drop).map_err(|e| format!("{}: {e}", exe.display()))

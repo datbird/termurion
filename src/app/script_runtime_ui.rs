@@ -74,7 +74,7 @@ fn repeats(pending: &[&After], after: &After) -> bool {
 
 /// Termurion's uv folder, `%APPDATA%\Termurion\uv`.
 pub(super) fn uv_dir() -> PathBuf {
-    let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let appdata = crate::platform::paths::config_base();
     rt::uv_dir(&appdata)
 }
 

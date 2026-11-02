@@ -76,7 +76,7 @@ fn unix_now() -> i64 {
 /// like the browser database, P10).
 fn data_dir() -> std::io::Result<LocalPath> {
     let base = browser_host::local_appdata().ok_or_else(localfs::refused)?;
-    let dir = localfs::judge_io(base.join("Termurion"))?;
+    let dir = localfs::judge_io(base.join(crate::platform::paths::APP_FOLDER))?;
     localfs::create_dir_all(&dir)?;
     Ok(dir)
 }

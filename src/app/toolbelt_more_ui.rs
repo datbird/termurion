@@ -243,7 +243,7 @@ fn status_lead(item: &StatusItem, dark: bool) -> Vec<(char, Rgb)> {
 
 /// The global note's file: `<appdata>\Termurion\notes.txt` (`notes::FILE_NAME`).
 pub(super) fn notes_path(appdata: &Path) -> PathBuf {
-    appdata.join("Termurion").join(notes::FILE_NAME)
+    appdata.join(crate::platform::paths::APP_FOLDER).join(notes::FILE_NAME)
 }
 
 /// Jobs' signal popup is as wide as the widest signal name needs (`SignalPicker sizeToFit`).
@@ -2414,7 +2414,7 @@ mod tests {
     #[test]
     fn note_file_round_trips() {
         let base = std::path::Path::new(r"C:\Users\me\AppData\Roaming");
-        assert_eq!(notes_path(base), base.join("Termurion").join("notes.txt"));
+        assert_eq!(notes_path(base), base.join(crate::platform::paths::APP_FOLDER).join("notes.txt"));
         let text = "first line\nsecond \u{00e9}\ttab\n";
         assert_eq!(read_note(text.as_bytes()), text);
         // A byte order mark (Notepad's UTF-8) is dropped; only a leading one.

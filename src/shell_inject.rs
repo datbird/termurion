@@ -124,7 +124,7 @@ pub fn inject(cmdline: &str, script: &Path) -> Option<String> {
 /// Where Termurion keeps the script: `<appdata>\Termurion\shell_integration\
 /// termurion_shell_integration.ps1`, the install menu's path.
 pub fn script_path(appdata: &Path) -> PathBuf {
-    appdata.join("Termurion").join("shell_integration").join("termurion_shell_integration.ps1")
+    appdata.join(crate::platform::paths::APP_FOLDER).join("shell_integration").join("termurion_shell_integration.ps1")
 }
 
 #[cfg(test)]
@@ -175,7 +175,7 @@ mod tests {
             inject("pwsh.exe -NoLogo", script).as_deref(),
             Some(r#"pwsh.exe -NoLogo -NoExit -Command "Invoke-Expression ([IO.File]::ReadAllText('C:\Users\o''brien\AppData\Roaming\Termurion\shell_integration\termurion_shell_integration.ps1'))""#)
         );
-        assert_eq!(script_path(Path::new(r"C:\A")), PathBuf::from(r"C:\A").join("Termurion").join("shell_integration").join("termurion_shell_integration.ps1"));
+        assert_eq!(script_path(Path::new(r"C:\A")), PathBuf::from(r"C:\A").join(crate::platform::paths::APP_FOLDER).join("shell_integration").join("termurion_shell_integration.ps1"));
         // B6: PowerShell reads U+2018..U+201B as single quotes too: every one is doubled.
         let typo = Path::new("C:\\Users\\O\u{2019}Brien\\x\u{2018}\u{201a}\u{201b}.ps1");
         assert_eq!(

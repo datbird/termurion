@@ -1193,6 +1193,7 @@ mod tests {
     /// local launch starts in home with the unavailable banner; only an ssh session keeps the
     /// saved folder and, in a named arrangement, offers Repair; a shell taken back was never
     /// launched.
+    #[cfg(windows)] // test: Windows drive paths
     #[test]
     fn missing_folder_follows_iterm2() {
         use FolderNotice::*;
@@ -1240,6 +1241,8 @@ mod tests {
         assert_eq!(folder_notice(local(true), "/D:/gone", &record), Unavailable, "the OSC 7 form of a Windows path");
         assert_eq!(seen.borrow().as_deref(), Some(std::path::Path::new(r"D:\gone")), "probed as a Windows path");
     }
+
+    #[cfg(windows)] // test: Windows drive paths
 
     #[test]
     fn remote_reported_folder_is_not_saved() {

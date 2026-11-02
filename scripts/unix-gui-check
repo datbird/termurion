@@ -4,7 +4,7 @@
 #
 # Needs Xvfb, xdotool and ImageMagick's import. Proof is a file, not pixels: each pane runs
 # `echo $$ >> $SCRATCH/pids`, and a screenshot (screen.png) is kept for a person to look at.
-# The app runs with HOME, TMPDIR, APPDATA and XDG_RUNTIME_DIR under target/gui-check/<scenario>/.
+# The app runs with HOME, TMPDIR and XDG_RUNTIME_DIR under target/gui-check/<scenario>/.
 # Keys go through XTEST (xdotool type/key, never --window), with no window manager, so the
 # window is focused by hand. No chord uses the Super key: Command is Ctrl+Shift (shortcut_key.rs),
 # so New Tab (newSession:, Cmd+T) is ctrl+shift+t and Split Vertically (splitVertically:, Cmd+D)
@@ -26,7 +26,7 @@ done
 display=:97
 scratch="$repo/target/gui-check/$scenario"
 rm -rf "$scratch"
-mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/run" "$scratch/appdata/Termurion"
+mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/run" "$scratch/home/.config/termurion"
 chmod 700 "$scratch/run"
 : > "$scratch/pids"
 
@@ -53,7 +53,7 @@ for _ in $(seq 50); do [ -S "/tmp/.X11-unix/X${display#:}" ] && break; sleep 0.1
 [ -S "/tmp/.X11-unix/X${display#:}" ] || fail "Xvfb did not start"
 
 export DISPLAY="$display" SCRATCH="$scratch" SHELL=/bin/bash
-env -u TMUX -u WAYLAND_DISPLAY HOME="$scratch/home" TMPDIR="$scratch/tmp" APPDATA="$scratch/appdata" XDG_RUNTIME_DIR="$scratch/run" \
+env -u TMUX -u WAYLAND_DISPLAY -u XDG_CONFIG_HOME -u XDG_STATE_HOME HOME="$scratch/home" TMPDIR="$scratch/tmp" XDG_RUNTIME_DIR="$scratch/run" \
     "$repo/target/debug/termurion" > "$scratch/app.log" 2>&1 &
 app_pid=$!
 

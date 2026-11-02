@@ -127,8 +127,7 @@ struct FileFormat {
 }
 
 pub fn default_path() -> PathBuf {
-    let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    base.join("Termurion").join("settings.toml")
+    crate::platform::paths::config_dir().join("settings.toml")
 }
 
 /// Keys whose presence means something even at the default: "AI Safety Check" chosen by the

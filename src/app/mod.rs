@@ -2530,7 +2530,7 @@ pub fn run() {
         pane_seen: HashMap::new(),
         focus_seq: 0,
         status_prompt: None,
-        global_note: crate::notes::GlobalNote::new(toolbelt_more_ui::notes_path(&std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir))),
+        global_note: crate::notes::GlobalNote::new(toolbelt_more_ui::notes_path(&crate::platform::paths::config_base())),
         job_watches: Vec::new(),
         jobs_wanted: HashMap::new(),
         jobs_wanting: Default::default(),
@@ -4844,8 +4844,8 @@ impl App {
 
     /// The Scripts folder the settings name now (`scriptsPath`, `FM:236-252`).
     pub(super) fn scripts_folder(&self) -> PathBuf {
-        let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-        let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
+        let appdata = crate::platform::paths::config_base();
+        let home = crate::platform::paths::home_dir().unwrap_or_default();
         crate::scripts::scripts_folder(self.globals.bool("UseCustomScriptsFolder"), &self.globals.string("CustomScriptsFolder"), &appdata, &home, &crate::scripts::RealFs)
     }
 

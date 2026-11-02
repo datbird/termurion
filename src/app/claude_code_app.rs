@@ -81,7 +81,7 @@ impl App {
     /// Claude Code's settings.json: `CLAUDE_CONFIG_DIR` from Termurion's own environment, else the
     /// profile folder's `.claude`. (Returns the folder and the file.)
     fn claude_paths(&self) -> Result<(PathBuf, PathBuf), String> {
-        let profile = std::env::var_os("USERPROFILE").map(PathBuf::from).filter(|p| !p.as_os_str().is_empty()).ok_or_else(|| cc::NO_PROFILE.to_string())?;
+        let profile = crate::platform::paths::home_dir().ok_or_else(|| cc::NO_PROFILE.to_string())?;
         let dir = cc::config_dir(std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(), &profile);
         let file = cc::settings_path(&dir);
         Ok((dir, file))

@@ -23,7 +23,7 @@ const REMOVED_FILE: &str = "removed.json";
 /// `%APPDATA%\Termurion\Recents`, judged first (final review item 16): a redirected AppData or a
 /// junction to a share is never read or made; the recents are skipped then, with one log line.
 fn recents_dir() -> Option<PathBuf> {
-    let dir = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Termurion").join("Recents");
+    let dir = crate::platform::paths::config_dir().join("Recents");
     let judged = crate::localfs::judge(&dir).map(crate::localfs::LocalPath::into_path_buf);
     if judged.is_none() {
         static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

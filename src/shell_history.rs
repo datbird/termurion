@@ -382,6 +382,8 @@ mod tests {
         assert_eq!(remainder("\u{e9}cho x", "\u{e9}"), "cho x");
     }
 
+    #[cfg(windows)] // test: Windows drive paths
+
     #[test]
     fn directories_insert_for_their_shell() {
         assert_eq!(insertable_dir("/C:/Users/rob", Some("pwsh")), "C:\\Users\\rob");

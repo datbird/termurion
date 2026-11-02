@@ -71,7 +71,7 @@ fn known_downloads() -> Option<std::path::PathBuf> {
 }
 
 pub(super) fn downloads(override_path: &str) -> Downloads {
-    let known = known_downloads().or_else(|| std::env::var_os("USERPROFILE").map(|h| std::path::PathBuf::from(h).join("Downloads")));
+    let known = known_downloads().or_else(|| crate::platform::paths::home_dir().map(|h| h.join("Downloads")));
     let mut notes = Vec::new();
     // The setting is probed once: its answer serves the note and the choice.
     let override_ok = !override_path.is_empty() && writable_folder(std::path::Path::new(override_path));
@@ -83,7 +83,7 @@ pub(super) fn downloads(override_path: &str) -> Downloads {
     if chosen.is_none() && known.is_some() {
         notes.push("Windows' Downloads folder is not a local folder Termurion can write");
     }
-    let dir = chosen.or_else(|| std::env::var_os("USERPROFILE").map(std::path::PathBuf::from));
+    let dir = chosen.or_else(|| crate::platform::paths::home_dir());
     let note = (!notes.is_empty()).then(|| format!("Downloads go to {}: {}.", dir.as_ref().map_or("nowhere".to_string(), |d| d.display().to_string()), notes.join("; ")));
     Downloads { dir, note }
 }

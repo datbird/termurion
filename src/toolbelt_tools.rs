@@ -692,6 +692,8 @@ mod tests {
         UserAction { action: 0, title: title.to_string(), parameter: String::new(), escaping: Escaping::Common, apply_mode: 0, version: 2 }
     }
 
+    #[cfg(windows)] // test: Windows drive paths
+
     #[test]
     fn list_tools_follow_iterm2() {
         // Paste History: no ellipsis, only \n becomes a space, cut to 256.

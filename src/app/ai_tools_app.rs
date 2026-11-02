@@ -179,7 +179,7 @@ impl App {
             }
             Call::CreateFile { filename, content } => {
                 let (_, local, cwd) = self.ai_shell_of(pane);
-                let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from);
+                let home = crate::platform::paths::home_dir();
                 let Some(home) = home else { return Some(done(ai_actions::create_failed("the home folder is not known"), ai_actions::create_failed_notice(filename, "the home folder is not known"))) };
                 match ai_actions::file_target(filename, cwd.as_deref(), local, &home) {
                     FileTarget::Refused(why) => done(why.clone(), ai_actions::create_failed_notice(filename, &why)),

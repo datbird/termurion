@@ -153,7 +153,7 @@ pub fn is_network_path(text: &str) -> bool {
 
 /// `%APPDATA%\Termurion\Scripts`, iTerm2's `<Application Support>/iTerm2/Scripts`.
 pub fn default_folder(appdata: &Path) -> PathBuf {
-    appdata.join("Termurion").join(SCRIPTS_DIR)
+    appdata.join(crate::platform::paths::APP_FOLDER).join(SCRIPTS_DIR)
 }
 
 /// `stringByExpandingTildeInPath`: a leading `~` alone or before a separator is the home folder.

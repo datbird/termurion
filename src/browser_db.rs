@@ -98,7 +98,7 @@ pub struct TopSite {
 /// `<LOCALAPPDATA>\Termurion\browserdb-<user>.sqlite` (P10: machine-local, WAL on a roaming profile
 /// corrupts and would sync history across machines; iTerm2's name, `BD:15-26`).
 pub fn path(local_appdata: &Path, user: &str) -> PathBuf {
-    local_appdata.join("Termurion").join(format!("browserdb-{user}.sqlite"))
+    local_appdata.join(crate::platform::paths::APP_FOLDER).join(format!("browserdb-{user}.sqlite"))
 }
 
 /// Deletes the database file and its journals (Clear All Data, `BD:147-167`); a file already gone is
@@ -617,7 +617,7 @@ mod tests {
         );
         let p = path(Path::new("C:\\Users\\a\\AppData\\Local"), crate::browser::USER_ID);
         assert!(p.to_string_lossy().ends_with("browserdb-AC0E9812-7F88-478B-B361-5526082EDDB3.sqlite"), "{p:?}");
-        assert!(p.to_string_lossy().contains("Termurion"));
+        assert!(p.to_string_lossy().contains(crate::platform::paths::APP_FOLDER));
     }
 
     #[test]

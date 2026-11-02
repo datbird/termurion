@@ -69,7 +69,7 @@ pub fn ensure(appdata: &std::path::Path) -> std::io::Result<std::path::PathBuf> 
     if crate::session_env::is_unc(&appdata.to_string_lossy()) {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "the roaming folder is a network path"));
     }
-    let dir = appdata.join("Termurion").join("terminfo");
+    let dir = appdata.join(crate::platform::paths::APP_FOLDER).join("terminfo");
     for (path, bytes) in FILES {
         let file = dir.join(path);
         if std::fs::read(&file).is_ok_and(|have| have == *bytes) {
@@ -109,7 +109,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("termurion-terminfo-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let dir = ensure(&root).unwrap();
-        assert_eq!(dir, root.join("Termurion").join("terminfo"));
+        assert_eq!(dir, root.join(crate::platform::paths::APP_FOLDER).join("terminfo"));
         for (path, bytes) in FILES {
             assert_eq!(std::fs::read(dir.join(path)).unwrap(), *bytes, "{path}");
         }

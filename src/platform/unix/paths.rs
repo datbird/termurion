@@ -2,7 +2,52 @@
 
 use std::ffi::{CStr, OsString};
 use std::os::unix::ffi::OsStringExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// The app's folder name under the base.
+#[cfg(target_os = "macos")]
+pub const APP_FOLDER: &str = "Termurion";
+#[cfg(not(target_os = "macos"))]
+pub const APP_FOLDER: &str = "termurion";
+
+/// The settings base for this OS.
+pub fn config_base() -> PathBuf {
+    config_base_from(std::env::var("XDG_CONFIG_HOME").ok().as_deref(), home_dir().as_deref())
+}
+
+/// The machine-local base for this OS.
+pub fn local_base() -> PathBuf {
+    local_base_from(std::env::var("XDG_STATE_HOME").ok().as_deref(), home_dir().as_deref())
+}
+
+/// The pure choice over the XDG variable and home, so a test can feed both. macOS ignores XDG.
+pub fn config_base_from(xdg: Option<&str>, home: Option<&Path>) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        return home.map_or_else(std::env::temp_dir, |h| h.join("Library").join("Application Support"));
+    }
+    xdg_or(xdg, home, ".config")
+}
+
+/// `config_base_from`'s machine-local twin.
+pub fn local_base_from(xdg: Option<&str>, home: Option<&Path>) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        return home.map_or_else(std::env::temp_dir, |h| h.join("Library").join("Caches"));
+    }
+    xdg_or(xdg, home, ".local/state")
+}
+
+/// An absolute XDG value, else `~/<fallback>`, else the temp folder.
+fn xdg_or(xdg: Option<&str>, home: Option<&Path>, fallback: &str) -> PathBuf {
+    if let Some(x) = xdg.map(Path::new).filter(|p| p.is_absolute()) {
+        return x.to_path_buf();
+    }
+    home.map_or_else(std::env::temp_dir, |h| h.join(fallback))
+}
+
+/// A reported directory: an absolute Unix path. None for anything else.
+pub fn local_path(reported: &str) -> Option<PathBuf> {
+    reported.starts_with('/').then(|| PathBuf::from(reported))
+}
 
 /// `$HOME` when it is an absolute path, else the effective user's `pw_dir`.
 pub fn home_dir() -> Option<PathBuf> {

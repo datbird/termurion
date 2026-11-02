@@ -252,6 +252,8 @@ pub fn row_text(item: &Item, typed: &str) -> (String, Option<Range<usize>>) {
 mod tests {
     use super::*;
 
+    #[cfg(windows)] // test: Windows drive paths
+
     #[test]
     fn suggestions_follow_iterm2() {
         // should_fetch: never on an empty line before the cursor, never mid-word.

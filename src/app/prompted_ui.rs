@@ -373,7 +373,7 @@ impl App {
         let local_shell = crate::ai_terminal::detected_shell(s.shell.shell.as_deref(), launch.as_deref(), local).unwrap_or_default();
         // `PS:25624-25660`: the SSH level, and the home directory, shell and uname of the local
         // computer, none (level 1) or the remote's (level 2, made safe there).
-        let local_home = std::env::var("USERPROFILE").unwrap_or_default();
+        let local_home = crate::platform::paths::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
         for (name, value) in crate::conductor_framer::session_values(p.conductor.as_deref(), &local_home, &local_shell) {
             v.session.insert(name, value);
         }

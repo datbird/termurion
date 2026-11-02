@@ -806,7 +806,7 @@ impl SettingsWindow {
         let open_url = &mut self.open_url;
         let scheme_ask = &mut self.scheme_ask;
         let special_exceptions = &mut self.special_exceptions;
-        let home = std::env::var("USERPROFILE").unwrap_or_default();
+        let home = crate::platform::paths::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
         let tmux_session = self.tmux_session;
         let edit_session = self.edit_session;
         let edit_session_profile = self.edit_session_profile.clone();
@@ -2002,7 +2002,7 @@ pub fn profile_is_default(profile: &Profile, s: &Setting, key: &str) -> bool {
     match key {
         profile::GUID => return true,
         "Working Directory" => {
-            let home = std::env::var("USERPROFILE").unwrap_or_default();
+            let home = crate::platform::paths::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
             return working_directory_is_default(profile.values.get(key), &home);
         }
         "Unicode Version" => return profile.values.get(key).map_or(9, |v| v.as_integer().unwrap_or(0)) == 9,
@@ -3013,7 +3013,7 @@ mod tests {
         let dir = crate::schema::find("Working Directory").unwrap();
         let mut p = Profile::new("Default");
         assert!(profile_is_default(&p, dir, "Working Directory"));
-        let user = std::env::var("USERPROFILE").unwrap_or_default();
+        let user = crate::platform::paths::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
         p.set("Working Directory", Value::String(user));
         assert!(profile_is_default(&p, dir, "Working Directory"));
         p.set("Working Directory", Value::String("C:\\definitely-not-home".into()));

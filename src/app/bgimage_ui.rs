@@ -126,8 +126,8 @@ const BG_CACHE: usize = 8;
 
 /// `~` at the start of a path is the user's home folder.
 fn expand_home(path: &str) -> String {
-    match (path.strip_prefix('~'), std::env::var("USERPROFILE")) {
-        (Some(rest), Ok(home)) => format!("{home}{rest}"),
+    match (path.strip_prefix('~'), crate::platform::paths::home_dir()) {
+        (Some(rest), Some(home)) => format!("{}{rest}", home.display()),
         _ => path.to_string(),
     }
 }

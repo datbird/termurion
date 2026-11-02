@@ -245,7 +245,7 @@ fn record_consent() -> std::io::Result<()> {
 
 /// The allow-all file's path, from `USERPROFILE`.
 fn noauth_path() -> Option<String> {
-    std::env::var("USERPROFILE").ok().filter(|p| !p.is_empty()).map(|p| api_auth::noauth_path(&p))
+    crate::platform::paths::home_dir().map(|p| api_auth::noauth_path(&p.to_string_lossy()))
 }
 
 /// What the allow-all file says now, and what was found at its path.

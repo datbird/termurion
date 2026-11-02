@@ -199,7 +199,7 @@ impl App {
         c.saved = Some(saved);
         c.uname_command = self.globals.string("UnameCommand");
         if local {
-            let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_default();
+            let home = crate::platform::paths::home_dir().unwrap_or_default();
             for (path, destination) in &cfg.files_to_copy {
                 c.add_path(path, destination, &home);
             }

@@ -1813,7 +1813,7 @@ pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> (bool, Pref
 pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &mut dyn FnMut(&mut egui::Ui, &mut Globals) -> bool) -> (bool, PrefsAction) {
     let mut changed = false;
     let mut prefs = PrefsAction::None;
-    let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_default();
+    let home = crate::platform::paths::home_dir().unwrap_or_default();
     let rows = page_rows(tab);
     egui::ScrollArea::vertical().show(ui, |ui| {
         let mut sections: Vec<&str> = Vec::new();

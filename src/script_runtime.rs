@@ -27,7 +27,7 @@ pub const SETUP_CFG: &str = "setup.cfg";
 
 /// Termurion's uv folder: `%APPDATA%\Termurion\uv` (`UV:132-141`).
 pub fn uv_dir(appdata: &Path) -> PathBuf {
-    appdata.join("Termurion").join("uv")
+    appdata.join(crate::platform::paths::APP_FOLDER).join("uv")
 }
 
 /// Termurion's own uv (`UV:143-146`).

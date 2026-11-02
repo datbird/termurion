@@ -44,8 +44,7 @@ pub fn ensure_unique_guids(profiles: &mut [Profile]) {
 }
 
 pub fn default_path() -> PathBuf {
-    let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    base.join("Termurion").join("profiles.toml")
+    crate::platform::paths::config_dir().join("profiles.toml")
 }
 
 impl Store {

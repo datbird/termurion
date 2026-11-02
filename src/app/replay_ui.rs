@@ -543,7 +543,7 @@ fn export_dialog() -> Option<std::path::PathBuf> {
 }
 
 fn home_folder() -> Option<std::path::PathBuf> {
-    std::env::var_os("USERPROFILE").map(std::path::PathBuf::from)
+    crate::platform::paths::home_dir()
 }
 
 fn unix_us() -> i64 {

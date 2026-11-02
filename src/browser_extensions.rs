@@ -46,7 +46,7 @@ pub fn create_failed(e: &str) -> String {
 pub fn root(profile_value: Option<&str>, appdata: &Path) -> PathBuf {
     match profile_value.map(str::trim).filter(|v| !v.is_empty()) {
         Some(v) => PathBuf::from(v),
-        None => appdata.join("Termurion").join("BrowserExtensions"),
+        None => appdata.join(crate::platform::paths::APP_FOLDER).join("BrowserExtensions"),
     }
 }
 

@@ -449,7 +449,7 @@ impl App {
                 let tmux_cwd = || self.panes.get(&pane).and_then(|p| p.tmux_io()).map(|io| io.info.borrow().cwd.clone());
                 let raw = shell.and_then(|s| s.cwd.clone()).or_else(tmux_cwd).unwrap_or_default();
                 let path = shown_path(&raw);
-                let home = std::env::var("USERPROFILE").unwrap_or_default();
+                let home = crate::platform::paths::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
                 let display = sbt::display_dir(&path, &home);
                 let blank = raw.trim().is_empty();
                 Content {
@@ -938,6 +938,8 @@ mod tests {
         knobs.insert("timeout".into(), toml::Value::Integer(0));
         assert_eq!(sbc::button_timeout(&knobs), 0.0, "0 is synchronous");
     }
+
+    #[cfg(windows)] // test: Windows drive paths
 
     #[test]
     fn directory_menu_text_follows_iterm2() {

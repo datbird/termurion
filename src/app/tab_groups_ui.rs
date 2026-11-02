@@ -799,7 +799,7 @@ const ICON_FILE_PX: u32 = 32;
 
 /// `%APPDATA%\Termurion`, where the user's icon maps and PNGs live (iTerm2's Application Support).
 fn icon_dir() -> PathBuf {
-    std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Termurion")
+    crate::platform::paths::config_dir()
 }
 
 /// A user file's bytes; None when it is absent, unreadable, not a regular file, larger than

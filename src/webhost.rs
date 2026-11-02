@@ -139,12 +139,12 @@ pub fn data_folder(local_appdata: &Path, store: Store) -> PathBuf {
         Store::Browser => "Browser",
         Store::BrowserDevNull => "DevNull",
     };
-    local_appdata.join("Termurion").join("WebView2").join(name)
+    local_appdata.join(crate::platform::paths::APP_FOLDER).join("WebView2").join(name)
 }
 
 /// The folder every per-run Dev Null folder lives in.
 pub fn tmp_folder(local_appdata: &Path) -> PathBuf {
-    local_appdata.join("Termurion").join("WebView2").join("Tmp")
+    local_appdata.join(crate::platform::paths::APP_FOLDER).join("WebView2").join("Tmp")
 }
 
 /// `Tmp\DevNull-<pid>-<hex8>` (preflight P4): fresh for each run, so nothing a Dev Null view stored

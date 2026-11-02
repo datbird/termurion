@@ -97,7 +97,7 @@ pub fn probe_allows(answer: &Result<String, String>) -> bool {
 
 /// The folder a saved movie goes to (P16): Termurion's own, swept at the next launch and at exit.
 pub fn replay_folder(local_appdata: &std::path::Path) -> std::path::PathBuf {
-    local_appdata.join("Termurion").join("Replay")
+    local_appdata.join(crate::platform::paths::APP_FOLDER).join("Replay")
 }
 
 /// `Could not create movie: %@` (`BVC:277-285`).

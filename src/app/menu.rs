@@ -909,7 +909,7 @@ impl App {
             // Help pages and the license file: fixed targets, the page through the one guard.
             "copyModeShortcuts:" => self.open_help_page(crate::menu_tips::COPY_MODE_URL),
             "openSourceLicenses:" => {
-                let dir = std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, std::path::PathBuf::from).join("Termurion");
+                let dir = crate::platform::paths::local_dir();
                 // The folder goes through the one path judge (a redirected LocalAppData on a share is refused).
                 match crate::localfs::judge_io(&dir).and_then(|d| crate::licenses::write_to(&d, crate::licenses::text())) {
                     Ok(path) => {
@@ -1683,7 +1683,7 @@ impl App {
             Plan::Pwsh => crate::shell_wizard::Plan::Pwsh,
         };
         let utilities = self.globals.get(INSTALL_UTILITIES_KEY).and_then(|v| v.as_bool()).unwrap_or(true);
-        let path = crate::shell_inject::script_path(&std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir));
+        let path = crate::shell_inject::script_path(&crate::platform::paths::config_base());
         let view = crate::shell_wizard::WizardView::new(plan, utilities, &path.display().to_string());
         self.open_panel(event_loop, crate::panel_ui::Kind::ShellIntegration, Some(pane), Box::new(view));
     }
@@ -1691,7 +1691,7 @@ impl App {
     /// The PowerShell plan's work (the installer's Continue): saves Termurion's script and answers the
     /// command that loads it from `$PROFILE`.
     pub(super) fn write_pwsh_script(&mut self) -> Option<String> {
-        let path = crate::shell_inject::script_path(&std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir));
+        let path = crate::shell_inject::script_path(&crate::platform::paths::config_base());
         let dir = path.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
         if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, PWSH_SCRIPT)) {
             self.banners.set("install", format!("Could not save {}: {e}", path.display()));
