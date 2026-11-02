@@ -262,19 +262,14 @@ fn noauth_now() -> (AllowAll, Option<api_auth::NoauthFile>) {
 /// its owner first.
 pub(super) fn write_noauth_file(path: &str, set_owner: bool) -> Result<(), String> {
     use std::io::Write;
-    use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_WRITE, READ_CONTROL, WRITE_OWNER};
+    crate::platform::ipc::available()?;
     let target = std::path::Path::new(path);
     if let Some(dir) = target.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let temp = format!("{path}.{}.tmp", api_auth::cookie_text(*uuid::Uuid::new_v4().as_bytes()));
     let written = (|| {
-        let access = if set_owner { FILE_GENERIC_WRITE | WRITE_OWNER | READ_CONTROL } else { FILE_GENERIC_WRITE };
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).access_mode(access).open(&temp).map_err(|e| e.to_string())?;
-        if set_owner {
-            crate::platform::windows::ipc::set_file_owner_to_user(&f)?;
-        }
+        let mut f = crate::platform::ipc::create_new_for_write(&temp, set_owner)?;
         f.write_all(api_auth::noauth_contents(path).as_bytes()).map_err(|e| e.to_string())?;
         f.sync_all().map_err(|e| e.to_string())?;
         drop(f);
@@ -557,8 +552,10 @@ impl App {
 
     /// Writes (on) or deletes (off) the allow-all file.
     pub(super) fn set_allow_all(&mut self, on: bool) -> Result<(), String> {
+        crate::platform::ipc::available()?;
         let path = noauth_path().ok_or_else(|| "USERPROFILE is not set".to_string())?;
-        if on { write_noauth_file(&path, crate::platform::windows::ipc::elevated().unwrap_or(false)) } else { std::fs::remove_file(&path).map_err(|e| e.to_string()) }
+        // An unreadable token counts as not elevated: the owner is left alone and the reader decides.
+        if on { write_noauth_file(&path, crate::platform::ipc::elevated().unwrap_or(false)) } else { std::fs::remove_file(&path).map_err(|e| e.to_string()) }
     }
 
     /// The popup's value is never trusted: it shows the file, and is saved like any setting.
@@ -1257,13 +1254,7 @@ impl App {
     fn reveal_allow_all_file(&mut self) {
         let Some(path) = noauth_path() else { return };
         let path = path.replace('/', "\\");
-        let Some(arg) = crate::semantic::explorer_select_arg(&path) else { return };
-        let mut cmd = std::process::Command::new("explorer.exe");
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.raw_arg(arg);
-        }
-        if let Err(e) = cmd.spawn() {
+        if let Err(e) = crate::platform::shell_open::reveal(&path) {
             self.banners.set("action", format!("Could not show {path}: {e}"));
         }
     }
@@ -1438,6 +1429,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let path = format!("{}/Library/Application Support/iTerm2/disable-automation-auth", dir.display());
         // The owner step (an elevated Termurion's) works for a normal one too.
+        if !crate::platform::IS_WINDOWS {
+            // Nothing is written where the reader denies.
+            assert!(write_noauth_file(&path, true).unwrap_err().contains("not available"));
+            return;
+        }
         write_noauth_file(&path, true).unwrap();
         let file = read_noauth_file(&path).unwrap();
         assert!(file.owner_is_user);
@@ -1445,7 +1441,7 @@ mod tests {
         // A second write, setting the owner only when elevated as `set_allow_all` does,
         // replaces the file, leaving no temporary file behind.
         std::fs::write(&path, "stale").unwrap();
-        write_noauth_file(&path, crate::platform::windows::ipc::elevated().unwrap()).unwrap();
+        write_noauth_file(&path, crate::platform::ipc::elevated().unwrap()).unwrap();
         assert_eq!(noauth_status(&path, read_noauth_file(&path).as_ref()), AllowAll::Valid);
         let parent = std::path::Path::new(&path).parent().unwrap();
         assert_eq!(std::fs::read_dir(parent).unwrap().count(), 1);

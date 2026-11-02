@@ -22,3 +22,8 @@ pub fn open_url(url: &str, _background: bool) -> Result<(), String> {
     });
     Ok(())
 }
+
+/// No file manager call yet: reports Unsupported.
+pub fn reveal(_path: &str) -> Result<(), String> {
+    Err(super::super::Unsupported { feature: "Show in file manager" }.into())
+}

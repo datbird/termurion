@@ -18,6 +18,12 @@ pub fn open_with(target: &str, background: bool) -> Result<(), String> {
     imp::open_url(&url, background)
 }
 
+/// Shows `path` selected in the file manager (Explorer on Windows); nothing runs it. The caller passes
+/// a path Termurion made or judged. Unix reports Unsupported until a file manager call exists (P1).
+pub fn reveal(path: &str) -> Result<(), String> {
+    imp::reveal(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

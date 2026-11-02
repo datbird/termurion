@@ -858,3 +858,20 @@ pub(crate) mod tests {
         assert!(l.accept(Duration::from_millis(100)).unwrap().is_none());
     }
 }
+
+pub fn available() -> Result<(), super::super::Unsupported> {
+    Ok(())
+}
+
+/// The new file `path`, opened with the access `set_file_owner_to_user` needs when `set_owner`
+/// (the old body of `api_ui::write_noauth_file`).
+pub fn create_new_for_write(path: &str, set_owner: bool) -> Result<std::fs::File, String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_WRITE, READ_CONTROL, WRITE_OWNER};
+    let access = if set_owner { FILE_GENERIC_WRITE | WRITE_OWNER | READ_CONTROL } else { FILE_GENERIC_WRITE };
+    let f = std::fs::OpenOptions::new().write(true).create_new(true).access_mode(access).open(path).map_err(|e| e.to_string())?;
+    if set_owner {
+        set_file_owner_to_user(&f)?;
+    }
+    Ok(f)
+}

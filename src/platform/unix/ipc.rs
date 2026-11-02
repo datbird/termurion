@@ -6,6 +6,7 @@ use crate::api_peer::Peer;
 use crate::platform::Unsupported;
 
 const FEATURE: &str = "Session host";
+const ALLOW_ALL: &str = "The automation allow-all file";
 
 fn no<T>() -> Result<T, String> {
     Err(Unsupported { feature: FEATURE }.into())
@@ -100,7 +101,28 @@ pub fn thread_peer() -> Result<Peer, String> {
     no()
 }
 
-/// A name no other test run shares.
+/// Denies: whether this process is elevated cannot be read, and a caller treats Err as "not elevated, not trusted".
+pub fn elevated() -> Result<bool, String> {
+    no()
+}
+
+/// Denies: no user identity text exists here.
+pub fn user_sid() -> Result<String, String> {
+    no()
+}
+
+pub fn available() -> Result<(), Unsupported> {
+    Err(Unsupported { feature: ALLOW_ALL })
+}
+
+pub fn set_file_owner_to_user(_file: &std::fs::File) -> Result<(), String> {
+    Err(Unsupported { feature: ALLOW_ALL }.into())
+}
+
+pub fn create_new_for_write(_path: &str, _set_owner: bool) -> Result<std::fs::File, String> {
+    Err(Unsupported { feature: ALLOW_ALL }.into())
+}
+
 /// No peer check on Unix yet, so every connection is refused.
 pub fn check_peer(_peer: std::net::SocketAddr, _local: std::net::SocketAddr) -> Result<u32, String> {
     no()
@@ -120,6 +142,14 @@ mod tests {
     fn unix_ipc_connect_is_unsupported() {
         let e = connect("x", Duration::ZERO).err().unwrap();
         assert!(e.contains("Session host is not available"), "{e}");
+    }
+
+    #[test]
+    fn unix_ipc_elevated_denies() {
+        assert!(elevated().is_err());
+        assert!(user_sid().is_err());
+        assert!(available().is_err());
+        assert!(create_new_for_write("x", true).is_err());
     }
 
     #[test]

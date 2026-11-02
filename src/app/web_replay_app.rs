@@ -266,14 +266,8 @@ impl App {
         match result {
             Ok(path) => {
                 let text = path.to_string_lossy().replace('/', "\\");
-                let Some(arg) = crate::semantic::explorer_select_arg(&text) else { return };
-                let mut cmd = std::process::Command::new("explorer.exe");
-                {
-                    use std::os::windows::process::CommandExt;
-                    cmd.raw_arg(arg);
-                }
-                if let Err(e) = cmd.spawn() {
-                    self.recording_warning(web_replay::MOVIE_HEADING, web_replay::movie_failed(&e.to_string()));
+                if let Err(e) = crate::platform::shell_open::reveal(&text) {
+                    self.recording_warning(web_replay::MOVIE_HEADING, web_replay::movie_failed(&e));
                 }
             }
             Err(e) => self.recording_warning(web_replay::MOVIE_HEADING, web_replay::movie_failed(&e)),
@@ -289,9 +283,9 @@ fn save_movie(frames: &[(Duration, Vec<u8>)], size: (u32, u32)) -> Result<std::p
     if avi.is_empty() {
         return Err("there is nothing to save, or the movie is too large".to_string());
     }
-    let base = crate::webhost_win::local_appdata().ok_or("the local data folder is not known")?;
+    let base = crate::platform::browser::local_appdata().ok_or("the local data folder is not known")?;
     let folder = web_replay::replay_folder(&base);
-    crate::webhost_win::prepare_folder(&folder)?;
+    crate::platform::browser::prepare_folder(&folder)?;
     let dir = crate::localfs::LocalPath::judge(&folder).ok_or("the Replay folder is on a share or behind a link")?;
     let name = format!("Termurion Instant Replay {}.avi", uuid::Uuid::new_v4().simple());
     let file = dir.unfollowed(&name).ok_or("the file name was refused")?;

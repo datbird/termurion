@@ -796,6 +796,9 @@ mod tests {
         "shell_open(",
         // The platform funnel: any app file calling it is audited like shell_open itself.
         "shell_open::open",
+        // The platform reveal: selects a path in the file manager; any app caller is audited.
+        "shell_open::reveal(",
+        "imp::reveal(",
         // The platform spawn funnel: any caller is audited like a spawn itself.
         "start_detached(",
         "imp::open_url(",
@@ -827,6 +830,8 @@ mod tests {
         ("app/semantic_ui.rs", "smart_action_run", "builds the Run; its callers are checked"),
         ("app/pathnav_ui.rs", "pathnav_tick", "runs what open_local settled: a Run that came through guard_open or open_file_run, whose callers are checked"),
         ("app/semantic_ui.rs", "shell_open", "the sink itself; its callers are checked"),
+        ("platform/shell_open.rs", "reveal", "the platform reveal itself: it selects a path in the file manager and runs nothing; its callers are checked through the shell_open::reveal( token"),
+        ("platform/windows/shell_open.rs", "reveal", "Explorer from the Windows folder with the one select argument (explorer_select_arg): selects, runs nothing; its callers are checked through the shell_open::reveal( token"),
         ("platform/shell_open.rs", "open_with", "the platform sink itself: it refuses anything but a URL (semantic::shell_url) first; its callers are checked through the shell_open::open token"),
         ("platform/windows/shell_open.rs", "open_url", "the backend of platform::shell_open::open_with, which judges the target as a URL (semantic::shell_url) before calling it; only that function reaches it"),
         ("platform/unix/shell_open.rs", "open_url", "the backend of platform::shell_open::open_with, which judges the target as a URL (semantic::shell_url) before calling it; only that function reaches it"),
@@ -882,7 +887,7 @@ mod tests {
         ("app/menu.rs", "run_command", "the Help menu's fixed documentation page"),
         ("app/menu.rs", "open_help_page", "fixed help pages from the Help menu (the repository, Copy Mode shortcuts), never pane text"),
         ("app/mod.rs", "window_event", "the Configure SSH help page, the color gallery page, an exported color preset revealed"),
-        ("app/prefs_ui.rs", "curl_fetch", "the settings URL the user typed in Settings"),
+        ("platform/windows/http.rs", "fetch_text", "curl.exe from System32 on the settings URL the user typed in Settings, with remote_prefs::curl_args, https and http only; opens nothing else"),
         ("app/screenshot_ui.rs", "shot_event", "reveals the screenshot Termurion just saved"),
         ("app/scripts_app.rs", "edit_new_script", "the user's new script, edited, never run"),
         ("app/scripts_app.rs", "reveal_path", "a script in the user's Scripts folder, revealed"),
