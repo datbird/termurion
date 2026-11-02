@@ -265,7 +265,7 @@ impl App {
         }
         match result {
             Ok(path) => {
-                let text = path.to_string_lossy().replace('/', "\\");
+                let text = path.to_string_lossy();
                 if let Err(e) = crate::platform::shell_open::reveal(&text) {
                     self.recording_warning(web_replay::MOVIE_HEADING, web_replay::movie_failed(&e));
                 }

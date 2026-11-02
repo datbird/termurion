@@ -21,6 +21,9 @@ pub fn files() -> Vec<std::path::PathBuf> {
     imp::files()
 }
 
+/// Whether this OS has a primary selection at all (Linux); callers skip the work where it has none.
+pub const HAS_PRIMARY_SELECTION: bool = cfg!(not(any(windows, target_os = "macos")));
+
 /// Puts `text` in the primary selection, the buffer a middle click pastes. Linux only; Windows and macOS
 /// have none and return Ok.
 pub fn set_selection(text: &str) -> Result<(), String> {

@@ -391,10 +391,11 @@ impl App {
     }
 
     /// Selects `path` in Explorer; nothing runs it.
-    pub(super) fn reveal_path(&self, path: &Path) {
-        let text = path.to_string_lossy().replace('/', "\\");
-        // The file manager shows its own message for a path it cannot select.
-        let _ = crate::platform::shell_open::reveal(&text);
+    pub(super) fn reveal_path(&mut self, path: &Path) {
+        let text = path.to_string_lossy();
+        if let Err(e) = crate::platform::shell_open::reveal(&text) {
+            self.banners.set("scripts", format!("Could not show {text}: {e}"));
+        }
     }
 
     /// Rebuilds the Scripts menu after its fixed items (Manage and the line) when what it
@@ -681,7 +682,7 @@ impl App {
 
     /// Opens a new script in its editor with the "edit" verb, never "open" (which runs a
     /// `.py`); when that fails the script is revealed.
-    pub(super) fn edit_new_script(&self, path: &Path) {
+    pub(super) fn edit_new_script(&mut self, path: &Path) {
         // ShellExecute takes a file only as a LocalPath (round 5 item 4).
         let edited = crate::localfs::LocalPath::judge(path).is_some_and(|p| crate::localfs::shell_verb("edit", &p, None, false).is_ok());
         if !edited {

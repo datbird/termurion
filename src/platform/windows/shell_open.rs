@@ -35,7 +35,8 @@ pub fn shell_verb(verb: &str, path: &std::path::Path, cwd: Option<&std::path::Pa
 pub fn reveal(path: &str) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     let program = crate::script_provision::system_directory().and_then(|s| crate::semantic::explorer_in(&s)).ok_or("the Windows folder is unknown")?;
-    let arg = crate::semantic::explorer_select_arg(path).ok_or("Termurion does not show this path in Explorer")?;
+    // Callers hold paths with either slash; Explorer wants backslashes.
+    let arg = crate::semantic::explorer_select_arg(&path.replace('/', "\\")).ok_or("Termurion does not show this path in Explorer")?;
     let mut cmd = std::process::Command::new(program);
     cmd.raw_arg(arg);
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
@@ -54,7 +55,7 @@ pub fn reveal_all(paths: &[std::path::PathBuf]) -> Result<(), String> {
         [one] => {
             // The same Explorer the Win-click's reveal runs, found through the system directory.
             let program = crate::script_provision::system_directory().and_then(|s| crate::semantic::explorer_in(&s)).ok_or("the Windows folder is unknown")?;
-            let arg = crate::semantic::explorer_select_arg(&one.to_string_lossy()).ok_or("the file's name cannot be shown in Explorer")?;
+            let arg = crate::semantic::explorer_select_arg(&one.to_string_lossy().replace('/', "\\")).ok_or("the file's name cannot be shown in Explorer")?;
             let mut cmd = std::process::Command::new(program);
             cmd.raw_arg(arg);
             cmd.spawn().map(|_| ()).map_err(|e| e.to_string())

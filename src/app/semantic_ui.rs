@@ -1029,11 +1029,20 @@ mod tests {
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     }
 
+    /// Each file-open token is its own entry: the older `shell_open::open` prefix would catch the first
+    /// one anyway, so the list is checked directly.
+    #[test]
+    fn the_file_open_tokens_are_listed() {
+        for token in ["shell_open::open_file(", "imp::open_file("] {
+            assert!(SINKS.contains(&token), "{token}");
+        }
+    }
+
     /// The guard is proved by planting: a function that hands pane text to any opening call, with no
     /// `remote_text` and no listing, is reported; the same call in a GATED function is not.
     #[test]
     fn a_planted_ungated_opening_call_fails_the_gate() {
-        for call in ["self.open_link(text, Style::Tab, false, None)", "self.open_link_system(text, false)", "self.open_url_in_browser(text, Style::Tab, None)", "self.open_link_answered(text, Style::Tab, false, None, false, 0)", "self.upsell_answered(text, 1)", "self.execute_with(id, run, None, exec)", "self.browser_page_open(pane, text, PageOpen::Tab, el)", "crate::platform::shell_open::open(text)", "crate::platform::shell_open::open_with(text, false)", "crate::platform::proc::start_detached(text)", "crate::platform::proc::command_for_line(text)", "crate::platform::http::fetch_text(text, None)", "crate::platform::shell_open::reveal(text)", "crate::platform::shell_open::reveal_all(text)", "crate::platform::shell_open::open_scheme(text, false)", "crate::platform::shell_open::open_file(std::path::Path::new(text), false)", "crate::platform::pty::spawn_transport(&api, t, text, None, &[], 80, 24, n)"] {
+        for call in ["self.open_link(text, Style::Tab, false, None)", "self.open_link_system(text, false)", "self.open_url_in_browser(text, Style::Tab, None)", "self.open_link_answered(text, Style::Tab, false, None, false, 0)", "self.upsell_answered(text, 1)", "self.execute_with(id, run, None, exec)", "self.browser_page_open(pane, text, PageOpen::Tab, el)", "crate::platform::shell_open::open(text)", "crate::platform::shell_open::open_with(text, false)", "crate::platform::proc::start_detached(text)", "crate::platform::proc::command_for_line(text)", "crate::platform::http::fetch_text(text, None)", "crate::platform::shell_open::reveal(text)", "crate::platform::shell_open::reveal_all(text)", "crate::platform::shell_open::open_scheme(text, false)", "crate::platform::shell_open::open_file(std::path::Path::new(text), false)", "imp::open_file(std::path::Path::new(text), false)", "crate::platform::pty::spawn_transport(&api, t, text, None, &[], 80, 24, n)"] {
             let mut files = real_sources();
             files.push(("app/planted.rs".to_string(), format!("impl App {{\n    fn evil(&mut self, text: &str) {{\n        {call};\n    }}\n}}\n")));
             let (wrong, _) = gate_violations(&files);

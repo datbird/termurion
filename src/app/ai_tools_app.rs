@@ -198,7 +198,7 @@ impl App {
 
     /// Shows the new file selected in Explorer (the semantic history helper); nothing runs it.
     fn ai_reveal_file(&mut self, path: &std::path::Path) {
-        self.reveal_in_explorer(&path.to_string_lossy().replace('/', "\\"));
+        self.reveal_in_explorer(&path.to_string_lossy());
     }
 
     /// Starts `get_help` on a worker thread (a first Get-Help can take seconds and must never

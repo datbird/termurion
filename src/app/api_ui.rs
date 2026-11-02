@@ -1253,7 +1253,6 @@ impl App {
     /// "Show in Explorer": the allow-all file selected; nothing runs it.
     fn reveal_allow_all_file(&mut self) {
         let Some(path) = noauth_path() else { return };
-        let path = path.replace('/', "\\");
         if let Err(e) = crate::platform::shell_open::reveal(&path) {
             self.banners.set("action", format!("Could not show {path}: {e}"));
         }

@@ -543,7 +543,15 @@ impl App {
     /// `copy_on_selection` with the selection's text already extracted (a mouse release extracts
     /// it once for everything it does).
     pub(super) fn copy_on_selection_with(&mut self, id: PaneId, text: Option<&str>) {
-        self.set_primary_selection(id, text);
+        // Extracted once, and only where a primary selection exists to take it.
+        let extracted;
+        let text = if text.is_none() && crate::platform::clipboard::HAS_PRIMARY_SELECTION {
+            extracted = self.selected_text(id);
+            extracted.as_deref()
+        } else {
+            text
+        };
+        self.set_primary_selection(text);
         match copy_kind(self.globals.bool("CopySelection"), self.globals.bool("CopyWithStylesByDefault")) {
             None => {}
             Some(CopyKind::Plain) => self.copy_selection_with(id, text),
@@ -553,9 +561,9 @@ impl App {
 
     /// Puts a selection the person just made in the system's primary selection (Linux; nothing elsewhere),
     /// whatever `CopySelection` says: it is a separate buffer, the one a middle click pastes.
-    fn set_primary_selection(&mut self, id: PaneId, text: Option<&str>) {
-        let Some(text) = text.map(str::to_string).or_else(|| self.selected_text(id)).filter(|t| !t.is_empty()) else { return };
-        if let Err(e) = crate::platform::clipboard::set_selection(&text) {
+    fn set_primary_selection(&mut self, text: Option<&str>) {
+        let Some(text) = text.filter(|t| !t.is_empty() && crate::platform::clipboard::HAS_PRIMARY_SELECTION) else { return };
+        if let Err(e) = crate::platform::clipboard::set_selection(text) {
             self.banners.set("clipboard", format!("The primary selection was not set: {e}"));
         }
     }
@@ -585,8 +593,13 @@ impl App {
     /// The wake handler's half: pastes what `request_primary_paste` left, into the focused pane.
     pub(super) fn take_selection_paste(&mut self) {
         let taken = self.selection_paste.lock().ok().and_then(|mut s| s.take());
-        if let (Some((_pane, text, config)), Some(id)) = (taken, self.focused_id()) {
-            self.paste_selection(id, &text, &config);
+        let Some((pane, text, config)) = taken else { return };
+        // The read can finish long after the click: only the pane that was clicked, still open and
+        // still focused, gets it. Anything else would type another app's text into a different shell.
+        if late_paste_wanted(pane, self.panes.contains_key(&pane), self.focused_id()) {
+            self.paste_selection(pane, &text, &config);
+        } else {
+            crate::dlog!("A late primary selection paste was dropped");
         }
     }
 
@@ -708,8 +721,22 @@ impl App {
     }
 }
 
+/// A primary selection read that came back after the click: paste only into the same, still focused pane.
+fn late_paste_wanted(pane: PaneId, alive: bool, focused: Option<PaneId>) -> bool {
+    alive && focused == Some(pane)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_late_primary_paste_needs_its_pane_alive_and_focused() {
+        use super::late_paste_wanted;
+        assert!(late_paste_wanted(3, true, Some(3)));
+        assert!(!late_paste_wanted(3, false, Some(3)), "the pane was closed");
+        assert!(!late_paste_wanted(3, true, Some(4)), "another pane has the focus");
+        assert!(!late_paste_wanted(3, true, None));
+    }
+
     use super::*;
 
     /// Final review fix 4 (B6, P10): a double click and every move of a word drag read only the

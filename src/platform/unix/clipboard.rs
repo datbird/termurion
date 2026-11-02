@@ -14,7 +14,12 @@ pub enum Plan {
 /// Decides a copy from what the caller has. RTF alone is refused: arboard has no RTF flavor.
 pub fn plan(_text: &str, html: &str, rtf: &str) -> Plan {
     if !html.is_empty() {
-        return Plan::Html(html_part(html).unwrap_or(html).to_string());
+        // "HTML Format" text with a header we cannot read is never offered as it is: plain text instead.
+        return match (html_part(html), html.contains("StartHTML:")) {
+            (Some(doc), _) => Plan::Html(doc.to_string()),
+            (None, true) => Plan::Plain,
+            (None, false) => Plan::Html(html.to_string()),
+        };
     }
     if !rtf.is_empty() {
         return Plan::Refuse(Unsupported { feature: "Copy with styles as RTF" });
@@ -66,48 +71,69 @@ pub fn request_selection(done: Box<dyn FnOnce(Option<String>) + Send>) {
 }
 
 /// One thread owns the clipboard handle for good: X11 serves a selection only while its owner lives.
+/// The queue is bounded: only the newest set waits, and a few reads, so a stuck X connect cannot pile up text.
 #[cfg(not(target_os = "macos"))]
 mod primary {
     use arboard::{Clipboard, GetExtLinux, LinuxClipboardKind, SetExtLinux};
-    use std::sync::{OnceLock, mpsc};
+    use std::sync::{Condvar, Mutex, OnceLock};
 
-    enum Job {
-        Set(String),
-        Get(Box<dyn FnOnce(Option<String>) + Send>),
+    type Done = Box<dyn FnOnce(Option<String>) + Send>;
+    const MAX_READS: usize = 4;
+
+    #[derive(Default)]
+    struct Queue {
+        set: Option<String>,
+        reads: Vec<Done>,
     }
 
-    fn worker() -> &'static mpsc::Sender<Job> {
-        static TX: OnceLock<mpsc::Sender<Job>> = OnceLock::new();
-        TX.get_or_init(|| {
-            let (tx, rx) = mpsc::channel::<Job>();
-            std::thread::spawn(move || {
+    fn queue() -> &'static (Mutex<Queue>, Condvar) {
+        static Q: OnceLock<(Mutex<Queue>, Condvar)> = OnceLock::new();
+        Q.get_or_init(|| {
+            std::thread::spawn(|| {
+                let (lock, cv) = queue();
                 let mut cb: Option<Clipboard> = None;
-                for job in rx {
+                loop {
+                    let work = {
+                        let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
+                        while q.set.is_none() && q.reads.is_empty() {
+                            q = cv.wait(q).unwrap_or_else(|e| e.into_inner());
+                        }
+                        std::mem::take(&mut *q)
+                    };
                     if cb.is_none() {
                         cb = Clipboard::new().ok();
                     }
-                    match job {
-                        Job::Set(text) => {
-                            let ok = cb.as_mut().is_some_and(|c| c.set().clipboard(LinuxClipboardKind::Primary).text(text).is_ok());
-                            if !ok {
-                                crate::dlog!("The primary selection could not be set");
-                            }
+                    if let Some(text) = work.set {
+                        let ok = cb.as_mut().is_some_and(|c| c.set().clipboard(LinuxClipboardKind::Primary).text(text).is_ok());
+                        if !ok {
+                            crate::dlog!("The primary selection could not be set");
                         }
-                        Job::Get(done) => done(cb.as_mut().and_then(|c| c.get().clipboard(LinuxClipboardKind::Primary).text().ok())),
+                    }
+                    for done in work.reads {
+                        done(cb.as_mut().and_then(|c| c.get().clipboard(LinuxClipboardKind::Primary).text().ok()));
                     }
                 }
             });
-            tx
+            (Mutex::new(Queue::default()), Condvar::new())
         })
     }
 
     pub fn set(text: &str) -> Result<(), String> {
-        worker().send(Job::Set(text.to_string())).map_err(|_| "the selection worker has stopped".to_string())
+        let (lock, cv) = queue();
+        lock.lock().unwrap_or_else(|e| e.into_inner()).set = Some(text.to_string());
+        cv.notify_one();
+        Ok(())
     }
 
-    pub fn request(done: Box<dyn FnOnce(Option<String>) + Send>) {
-        if let Err(mpsc::SendError(Job::Get(done))) = worker().send(Job::Get(done)) {
-            done(None);
+    pub fn request(done: Done) {
+        let (lock, cv) = queue();
+        let full = {
+            let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
+            if q.reads.len() >= MAX_READS { Some(done) } else { q.reads.push(done); None }
+        };
+        match full {
+            Some(done) => done(None),
+            None => cv.notify_one(),
         }
     }
 }
@@ -158,6 +184,9 @@ mod tests {
             Plan::Html(h) => assert!(h.starts_with("<html>") && h.contains("<b>a</b>"), "{h}"),
             other => panic!("{other:?}"),
         }
+        // A header that cannot be read never reaches the clipboard as HTML.
+        assert_eq!(plan("a", "Version:0.9\r\nStartHTML:xx\r\n<b>a</b>", ""), Plan::Plain);
+        assert_eq!(plan("a", "<b>a</b>", ""), Plan::Html("<b>a</b>".into()));
         assert_eq!(plan("a", "", "{\\rtf1}"), Plan::Refuse(Unsupported { feature: "Copy with styles as RTF" }));
     }
 
