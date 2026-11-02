@@ -1545,17 +1545,23 @@ mod tests {
         m.add(long);
         m.save(&mut g);
         assert_eq!(m.workgroups, decode(&g.string(KEY)).unwrap());
-        // A value too big for the one write point is not kept in memory either.
+        // A value too big for the one write point is not kept in memory either. Nine full
+        // workgroups pass a MiB; one set_all checks them once (64 adds took minutes).
         let mut huge = Model::default();
-        for i in 0..MAX_WORKGROUPS {
-            let mut w = simple(&format!("w{i}"));
-            for j in 0..MAX_SESSIONS - 1 {
-                let mut s = session(&format!("s{j}"), Some("root"), Kind::Peer);
-                s.command = "c".repeat(MAX_COMMAND);
-                w.sessions.push(s);
-            }
-            huge.add(w);
-        }
+        let list: Vec<Workgroup> = (0..9)
+            .map(|i| {
+                let mut w = simple(&format!("w{i}"));
+                for j in 0..MAX_SESSIONS - 1 {
+                    let mut s = session(&format!("s{j}"), Some("root"), Kind::Peer);
+                    s.command = "c".repeat(MAX_COMMAND);
+                    w.sessions.push(s);
+                }
+                w
+            })
+            .collect();
+        assert!(encode(&list).len() > MAX_BYTES);
+        huge.set_all(list);
+        assert_eq!(huge.workgroups.len(), 9);
         huge.save(&mut g);
         assert!(g.string(KEY).is_empty() && huge.workgroups.is_empty());
     }
