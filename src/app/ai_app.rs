@@ -153,6 +153,10 @@ impl App {
         if !self.ai_check_endpoint(endpoint, false) {
             return self.ai_key_given(then, None);
         }
+        // A store that cannot be read (no credential store here) is said once, not shown as "no key".
+        if let Some(why) = ai_keys::read_problem(vendor) {
+            self.banners.set("ai-keys", format!("Saved API keys cannot be read: {why}"));
+        }
         self.ai_key_asks.push_back((vendor, then));
     }
 
@@ -200,8 +204,11 @@ impl App {
         let key = typed.and_then(|k| ai_keys::normalized(k.expose()).map(|t| Secret::new(t.to_string())));
         if let Some(k) = &key {
             let mut cache = ai_keys::shared().lock().unwrap_or_else(|e| e.into_inner());
-            // A failed write is not shown: the key is cached for the session and used now.
-            let _ = cache.set(vendor, k, &mut *ai_keys::system_store());
+            // The key is cached for the session and used now; a failed write (Unsupported where
+            // there is no credential store) is shown, so the person knows it will not be kept.
+            if let Err(e) = cache.set(vendor, k, &mut *ai_keys::system_store()) {
+                self.banners.set("ai-keys", format!("The API key was not saved: {e}"));
+            }
         }
         self.ai_key_given(then, key);
         true

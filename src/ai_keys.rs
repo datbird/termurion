@@ -66,17 +66,24 @@ pub struct Keys {
 
 impl Keys {
     /// The vendor's key, read from the store on first use and cached; None when there is no
-    /// key or the read failed (a failure is retried on the next call).
+    /// key or the read failed (a failure is retried on the next call). Code that can tell the
+    /// person why uses `get_checked`.
     pub fn get(&mut self, v: Vendor, store: &mut dyn KeyStore) -> Option<Secret> {
+        self.get_checked(v, store).ok().flatten()
+    }
+
+    /// As `get`, but a failed read is the Err (for example the Unsupported text on a system with
+    /// no credential store), not "no key", so a caller can show it.
+    pub fn get_checked(&mut self, v: Vendor, store: &mut dyn KeyStore) -> Result<Option<Secret>, String> {
         if let Some(cached) = self.cache.get(&v.raw()) {
-            return cached.as_ref().map(Secret::duplicate);
+            return Ok(cached.as_ref().map(Secret::duplicate));
         }
         // A hard error is not cached: the next call retries (`KC:197-203`). A stored key that
         // is only whitespace is no key (`keyIsEmpty`), and that absence is cached.
-        let stored = store.read(&target(v)).ok()?.filter(|k| normalized(k.expose()).is_some());
+        let stored = store.read(&target(v))?.filter(|k| normalized(k.expose()).is_some());
         let out = stored.as_ref().map(Secret::duplicate);
         self.cache.insert(v.raw(), stored);
-        out
+        Ok(out)
     }
 
     /// Whether the vendor has a key (through the same cache as `get`).
@@ -107,6 +114,13 @@ impl Keys {
 pub fn shared() -> &'static Mutex<Keys> {
     static SHARED: OnceLock<Mutex<Keys>> = OnceLock::new();
     SHARED.get_or_init(|| Mutex::new(Keys::default()))
+}
+
+/// Why the system's key store cannot be read for `v`, when it cannot (the Unsupported text where
+/// there is no credential store); None when the read works or the key is cached. For the prompt
+/// that asks for a key, so the person is told instead of seeing only a blank "no key".
+pub fn read_problem(v: Vendor) -> Option<String> {
+    shared().lock().unwrap_or_else(|e| e.into_inner()).get_checked(v, &mut *system_store()).err()
 }
 
 /// The system's key store: Credential Manager on Windows; on Unix every call reports Unsupported.
@@ -181,6 +195,31 @@ mod tests {
     /// The key text compared without ever printing it.
     fn is(k: &Option<Secret>, want: &str) -> bool {
         k.as_ref().is_some_and(|s| s.expose() == want)
+    }
+
+    /// A store whose every call fails, as the Unix stand-in does.
+    struct UnsupportedStore;
+
+    impl KeyStore for UnsupportedStore {
+        fn read(&mut self, _t: &str) -> Result<Option<Secret>, String> {
+            Err(crate::platform::Unsupported { feature: "Password manager" }.to_string())
+        }
+        fn write(&mut self, _t: &str, _u: &str, _k: &Secret) -> Result<(), String> {
+            Err(crate::platform::Unsupported { feature: "Password manager" }.to_string())
+        }
+        fn delete(&mut self, _t: &str) -> Result<(), String> {
+            Err(crate::platform::Unsupported { feature: "Password manager" }.to_string())
+        }
+    }
+
+    /// A read that fails is the error, not "no key"; `get` still answers None and does not cache it.
+    #[test]
+    fn ai_key_read_surfaces_unsupported() {
+        let mut keys = Keys::default();
+        let e = keys.get_checked(Vendor::OpenAI, &mut UnsupportedStore).unwrap_err();
+        assert!(e.contains("Password manager is not available"), "{e}");
+        assert!(keys.get(Vendor::OpenAI, &mut UnsupportedStore).is_none());
+        assert!(keys.get_checked(Vendor::OpenAI, &mut UnsupportedStore).is_err());
     }
 
     #[test]
