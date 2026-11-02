@@ -286,7 +286,7 @@ fn open_pair(cols: u16, rows: u16) -> Result<(OwnedFd, OwnedFd), String> {
     }
     let s = unsafe { libc::ioctl(m, libc::TIOCGPTPEER as _, flags) };
     if s < 0 {
-        return Err(os_err("ioctl(TIOCGPTPEER)"));
+        return Err(os_err("ioctl(TIOCGPTPEER), which needs Linux 4.13 or later,"));
     }
     let slave = unsafe { OwnedFd::from_raw_fd(s) };
     let ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
