@@ -3,10 +3,12 @@
 P0 makes the crate and all programs compile on Linux and macOS. It does not make the tests pass there.
 Nothing below is fixed in P0; P1 and later work through it by cause.
 
-Linux (sirtoolio, debug build, final HEAD of fix round 1): `cargo test --lib` gave 6269 passed, 220 failed, 11 ignored
-(696 s; `workgroup::tests::the_model_never_holds_what_the_write_point_would_drop` alone needs minutes on a debug build).
-The full log is `.superpowers/sdd/2026-11-01-p0-compile-everywhere/task-7-linux-tests.log`.
-Windows, same tree: `scripts/xt test --lib` gave 6802 passed, 0 failed, 143 ignored.
+Linux (sirtoolio, debug build, the last code commit of P0): `cargo test --lib` gave 6270 passed, 220 failed, 11 ignored
+(683 s; `workgroup::tests::the_model_never_holds_what_the_write_point_would_drop` alone needs minutes on a debug build).
+The failing set is the same 220 tests as before the final review fixes. The log is a local file, not in the repo.
+Windows: `scripts/xt test --lib` gave 6802 passed, 0 failed, 143 ignored before the final review fixes; after them the
+only failures were two tests the fixes tripped (corrected and green on rerun) and the known timing flake
+`find::tests::find_over_a_large_buffer_is_quick`.
 
 ## Failures by cause (every failure is in exactly one cause; the counts sum to 220)
 
@@ -85,7 +87,7 @@ Tests that start a pane, shell or pty fail at the spawn with "Local shells is no
 
 ### Dynamic Profiles are Windows only (8)
 
-"Dynamic Profiles are read on Windows only" (the app also shows that alert once at every Linux start).
+"Dynamic Profiles are read on Windows only" (the app no longer raises that alert at a Linux start: it logs once and skips the folder).
 
 - `app::dynamic_profiles_app::tests::a_missing_stamp_is_reported_not_dropped`
 - `app::dynamic_profiles_app::tests::rename_names_the_judged_folder`
