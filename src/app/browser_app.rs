@@ -12,7 +12,7 @@ use crate::palette::Rgb;
 use crate::text_edit::{self, EditKey, EditOut};
 use winit::keyboard::{Key as WKey, NamedKey};
 use crate::webhost::{self, Event, ParentFate, Runtime, ViewId};
-use crate::webhost_win::{ViewSetup, WebView};
+use crate::platform::browser::{ViewSetup, WebView};
 
 /// The view of one browser pane.
 pub(super) struct BrowserView {
@@ -275,7 +275,12 @@ impl App {
             Start::Terminal => return false,
         };
         if self.web_runtime() == Runtime::Missing {
-            self.banners.set("webview2", browser::UPSELL_TEXT);
+            // Where no embedded browser exists at all, say so instead of offering a runtime to install.
+            let text = match crate::platform::browser::available() {
+                Err(u) => u.to_string(),
+                Ok(()) => browser::UPSELL_TEXT.to_string(),
+            };
+            self.banners.set("webview2", text);
             return false;
         }
         let dev_null = p.bool("Dev Null Mode");
@@ -310,7 +315,7 @@ impl App {
         let mine: Vec<PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
         let focused = self.focused_pane_id();
         // Keyboard focus moves into a page only in the window that is in front (foreground root).
-        let in_front = crate::webhost_win::foreground_root() == Some(hwnd);
+        let in_front = crate::platform::browser::foreground_root() == Some(hwnd);
         let panes: Vec<PaneId> = self.browser_views.keys().copied().collect();
         for pane in panes {
             let rect = shown.iter().find(|(p, _)| *p == pane).map(|(_, r)| *r);
@@ -351,7 +356,7 @@ impl App {
                 }
             } else if prev.is_some_and(|p| self.is_browser_pane(p)) && self.web_focus_held == self.current_window() {
                 // The keyboard was in the page; it comes back to the terminal.
-                crate::webhost_win::focus_window(hwnd);
+                crate::platform::browser::focus_window(hwnd);
             }
         }
     }
@@ -1386,7 +1391,7 @@ impl App {
         }
         // The keyboard comes back from the page to the window.
         if let Some(hwnd) = self.hwnd() {
-            crate::webhost_win::focus_window(hwnd);
+            crate::platform::browser::focus_window(hwnd);
         }
         self.redraw();
     }

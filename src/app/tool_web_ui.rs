@@ -13,7 +13,7 @@ use crate::layout::Rect;
 use crate::toolbelt::{self, ToolId};
 use crate::toolbelt_layout as tbl;
 use crate::webhost::{self, Event, Runtime, Store, ViewId};
-use crate::webhost_win::{ViewSetup, WebView};
+use crate::platform::browser::{ViewSetup, WebView};
 
 /// A dynamic tool a window's belt shows now: its name, its registered URL and the wrapper's
 /// content rectangle (None while the wrapper is collapsed).
@@ -485,7 +485,7 @@ mod tests {
     fn tool_views_are_per_window() {
         let w = include_str!("windows_ui.rs");
         assert!(w.contains("swap(&mut self.tool_views, &mut s.tool_views)"));
-        assert!(w.contains("tool_views: HashMap<String, crate::webhost_win::WebView>"));
+        assert!(w.contains("tool_views: HashMap<String, crate::platform::browser::WebView>"));
         assert!(!w.contains("tool_view_ids"));
     }
 }

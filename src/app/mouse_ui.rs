@@ -1000,10 +1000,10 @@ mod tests {
     #[test]
     fn every_window_is_watched_for_first_mouse() {
         let w = include_str!("windows_ui.rs");
-        assert!(body(w, "open_window_with").contains("firstmouse_win::watch"), "windows opened later");
+        assert!(body(w, "open_window_with").contains("first_mouse_watch"), "windows opened later");
         assert!(MOD.contains("firstmouse_win::watch"), "the first window, in resumed");
         assert!(include_str!("transparency_ui.rs").contains("firstmouse_win::watch"), "a recreated window");
-        assert!(body(w, "drop_current_window").contains("firstmouse_win::forget"));
+        assert!(body(w, "drop_current_window").contains("first_mouse_forget"));
     }
     /// Task 8: Ctrl+wheel is the pinch after every UI wheel handler and the overlay hold,
     /// over a pane only (P15).

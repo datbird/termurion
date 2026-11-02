@@ -9,7 +9,7 @@ use crate::browser::{self, USER_ID};
 use crate::browser_db::Db;
 use crate::browser_pages::{self, Reply};
 use crate::webhost::Answer;
-use crate::webhost_win;
+use crate::platform::browser as browser_host;
 
 /// Seconds since 1970 (the database's date column).
 fn now() -> i64 {
@@ -31,7 +31,7 @@ impl App {
             return Some(self.browser_db_mem.get_or_insert_with(Db::open_in_memory));
         }
         if self.browser_db.is_none() && !self.browser_db_failed {
-            let opened = webhost_win::local_appdata().ok_or_else(|| "no local application data folder".to_string()).and_then(|base| Db::open(&crate::browser_db::path(&base, USER_ID)));
+            let opened = browser_host::local_appdata().ok_or_else(|| "no local application data folder".to_string()).and_then(|base| Db::open(&crate::browser_db::path(&base, USER_ID)));
             match opened {
                 Ok(db) => self.browser_db = Some(db),
                 Err(_) => {
@@ -57,7 +57,7 @@ impl App {
             self.browser_db_mem = Some(Db::open_in_memory());
             return Ok(());
         }
-        let Some(base) = webhost_win::local_appdata() else { return Err(None) };
+        let Some(base) = browser_host::local_appdata() else { return Err(None) };
         let path = crate::browser_db::path(&base, USER_ID);
         self.browser_db = None;
         if self.browser_db_failed {
@@ -196,7 +196,7 @@ impl App {
         }
         let text = crate::open_quickly::parse(query).1;
         // A person who never browsed has no database: searching must not make one.
-        let exists = self.browser_db.is_some() || webhost_win::local_appdata().is_some_and(|base| crate::localfs::local_exists(&crate::browser_db::path(&base, USER_ID)));
+        let exists = self.browser_db.is_some() || browser_host::local_appdata().is_some_and(|base| crate::localfs::local_exists(&crate::browser_db::path(&base, USER_ID)));
         if !exists {
             return Some(crate::open_quickly::BrowserSources::default());
         }
@@ -274,7 +274,7 @@ mod tests {
     fn history_records_web_pages_only() {
         let p = prod();
         assert!(p.contains("\"http\" | \"https\""));
-        assert!(p.contains("webhost_win::local_appdata()") && p.contains("crate::browser_db::path(&base, USER_ID)"));
+        assert!(p.contains("browser_host::local_appdata()") && p.contains("crate::browser_db::path(&base, USER_ID)"));
         assert!(!p.contains("std::env::var"), "the folder is the known folder, never a variable a parent can redirect");
     }
 }

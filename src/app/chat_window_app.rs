@@ -34,7 +34,7 @@ const ICON_ENV_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 /// and since when it has waited for the environment.
 pub(super) struct IconJob {
     queue: VecDeque<String>,
-    rast: Option<crate::svg_raster_win::Rasterizer>,
+    rast: Option<crate::platform::browser::Rasterizer>,
     waiting: Option<Instant>,
 }
 
@@ -1730,7 +1730,7 @@ impl App {
                 return;
             };
             job.waiting = None;
-            match crate::svg_raster_win::Rasterizer::start(env, &svg, id, sink) {
+            match crate::platform::browser::Rasterizer::start(env, &svg, id, sink) {
                 Ok(r) => {
                     job.rast = Some(r);
                     self.icon_jobs.insert(chat.to_string(), job);

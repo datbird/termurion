@@ -28,7 +28,7 @@ use super::*;
 use crate::browser_extensions::{self as be, Approvals, Manifest};
 use crate::localfs::{self, LocalPath};
 use crate::webhost::Store;
-use crate::webhost_win;
+use crate::platform::browser as browser_host;
 
 const FILE: &str = "browser-extensions.json";
 /// The approvals file is read, changed and written by one worker at a time.
@@ -90,7 +90,7 @@ pub(super) struct Extensions {
 }
 
 fn data_dir() -> std::io::Result<LocalPath> {
-    let base = webhost_win::local_appdata().ok_or_else(localfs::refused)?;
+    let base = browser_host::local_appdata().ok_or_else(localfs::refused)?;
     let dir = localfs::judge_io(base.join("Termurion"))?;
     localfs::create_dir_all(&dir)?;
     Ok(dir)

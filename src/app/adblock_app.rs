@@ -14,7 +14,7 @@ use crate::adblock::{self, Rules};
 use crate::ai_transport::{Bounds, Call, HttpEvent, HttpRequest, Options, Proxy};
 use crate::localfs::{self, LocalPath};
 use crate::webhost::{Answer, Store};
-use crate::webhost_win;
+use crate::platform::browser as browser_host;
 
 /// iTerm2's name for the saved list (`ABM:39`).
 const FILE: &str = "adblock-compiled.json";
@@ -75,7 +75,7 @@ fn unix_now() -> i64 {
 /// The folder the saved list lives in: `<LOCALAPPDATA>\Termurion`, judged (a cache, so machine-local
 /// like the browser database, P10).
 fn data_dir() -> std::io::Result<LocalPath> {
-    let base = webhost_win::local_appdata().ok_or_else(localfs::refused)?;
+    let base = browser_host::local_appdata().ok_or_else(localfs::refused)?;
     let dir = localfs::judge_io(base.join("Termurion"))?;
     localfs::create_dir_all(&dir)?;
     Ok(dir)
@@ -449,8 +449,12 @@ mod tests {
         save_list(&d, "[2]").unwrap();
         assert_eq!(load_list(&d).as_deref(), Some("[2]"), "replaced");
         assert!(d.unfollowed(format!("{FILE}.tmp")).map(|t| !t.path().exists()).unwrap(), "no temporary file is left");
-        let sddl = localfs::dacl_sddl(&d.unfollowed(FILE).unwrap()).unwrap();
-        assert_eq!(sddl.matches("(A;").count(), 1, "{sddl}");
+        // The access list is a Windows fact.
+        #[cfg(windows)]
+        {
+            let sddl = localfs::dacl_sddl(&d.unfollowed(FILE).unwrap()).unwrap();
+            assert_eq!(sddl.matches("(A;").count(), 1, "{sddl}");
+        }
         // Over the cap is not read.
         std::fs::write(d.path().join(FILE), vec![b' '; adblock::MAX_LIST_BYTES + 1]).unwrap();
         assert!(load_list(&d).is_none());

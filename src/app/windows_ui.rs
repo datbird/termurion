@@ -129,7 +129,7 @@ pub(super) struct WinSlot {
     /// The password manager open over this window.
     pwm_window: Option<super::pwm_app::PwmWin>,
     /// This window's dynamic tool web views by tool name, and what each was made for (13x Task 2).
-    tool_views: HashMap<String, crate::webhost_win::WebView>,
+    tool_views: HashMap<String, crate::platform::browser::WebView>,
     tool_loaded: HashMap<String, super::tool_web_ui::Loaded>,
     /// What Shell > ssh > Disconnect last showed: the focused session's identity, None for none
     /// (the outer None: not shown yet). Per window, since each window has its own menu bar.
@@ -671,12 +671,11 @@ impl App {
         self.guard_theme();
         if let (Some(h), true) = (self.hwnd(), new_slot.is_some()) {
             crate::platform::display::watch(h);
+            crate::platform::input::first_mouse_watch(h);
+            self.taskbar_watch(h);
+            // Task 7: logout_ui is still Windows-only.
             #[cfg(windows)]
-            {
-                crate::firstmouse_win::watch(h);
-                self.taskbar_watch(h);
-                super::logout_ui::watch(h);
-            }
+            super::logout_ui::watch(h);
         }
         // iTerm2 reads it once per tab bar it makes: a change affects new windows only.
         self.tab_selects_on_down = self.globals.bool("SelectsTabsOnMouseDown");
@@ -864,8 +863,7 @@ impl App {
         self.forget_window(k);
         if let Some(h) = self.hwnd() {
             crate::platform::keys::remove_window(h);
-            #[cfg(windows)]
-            crate::firstmouse_win::forget(h);
+            crate::platform::input::first_mouse_forget(h);
         }
         let mut live = WinSlot::new_empty();
         self.swap_live(&mut live);
@@ -1636,8 +1634,7 @@ impl App {
                 // tool views close, before the window is destroyed with the slot.
                 self.window_slot_closing(&mut slot, h);
                 crate::platform::keys::remove_window(h);
-                #[cfg(windows)]
-                crate::firstmouse_win::forget(h);
+                crate::platform::input::first_mouse_forget(h);
             }
             drop(slot);
         }

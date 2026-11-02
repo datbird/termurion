@@ -15,7 +15,7 @@ use crate::browser_perms::{self as bp, Decision, PermissionType, Plan, System};
 use crate::layout::PaneId;
 use crate::perm_queue::{Out, ProfileQueue};
 use crate::webhost::{PermAnswer, ViewId};
-use crate::webhost_win::NoteReport;
+use crate::platform::browser::NoteReport;
 
 /// Requests that wait behind another open question of the same pane (one prompt at a time per
 /// pane); the rest are denied at once.
@@ -478,53 +478,8 @@ pub(super) fn sync_for(states: &[(i32, String, i32)], rows_newest_first: Option<
     bp::sync_plan(states, &wanted)
 }
 
-/// The Windows privacy switches (read only; a missing value is None).
-#[derive(Default)]
-struct Privacy {
-    toast: Option<u32>,
-    machine: Option<String>,
-    user: Option<String>,
-    non_packaged: Option<String>,
-}
-
-#[cfg(windows)]
-fn read_privacy_values() -> Privacy {
-    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-    use windows_sys::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegGetValueW};
-    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
-    let dword = |root: HKEY, key: &str, name: &str| -> Option<u32> {
-        let (key, name) = (wide(key), wide(name));
-        let (mut data, mut bytes) = (0u32, 4u32);
-        let rc = unsafe { RegGetValueW(root, key.as_ptr(), name.as_ptr(), RRF_RT_REG_DWORD, std::ptr::null_mut(), &mut data as *mut u32 as *mut _, &mut bytes) };
-        (rc == ERROR_SUCCESS).then_some(data)
-    };
-    let string = |root: HKEY, key: &str, name: &str| -> Option<String> {
-        let (key, name) = (wide(key), wide(name));
-        let mut buf = vec![0u16; 64];
-        let mut bytes = (buf.len() * 2) as u32;
-        let rc = unsafe { RegGetValueW(root, key.as_ptr(), name.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), buf.as_mut_ptr() as *mut _, &mut bytes) };
-        if rc != ERROR_SUCCESS {
-            return None;
-        }
-        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-        Some(String::from_utf16_lossy(&buf[..end]))
-    };
-    const STORE: &str = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location";
-    Privacy {
-        toast: dword(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\PushNotifications", "ToastEnabled"),
-        machine: string(HKEY_LOCAL_MACHINE, STORE, "Value"),
-        user: string(HKEY_CURRENT_USER, STORE, "Value"),
-        non_packaged: string(HKEY_CURRENT_USER, &format!("{STORE}\\NonPackaged"), "Value"),
-    }
-}
-
-#[cfg(not(windows))]
-fn read_privacy_values() -> Privacy {
-    Privacy::default()
-}
-
 fn systems_now() -> Systems {
-    let p = read_privacy_values();
+    let p = crate::platform::privacy::read();
     Systems { notifications: bp::notifications_system(p.toast), location: bp::location_system(p.machine.as_deref(), p.user.as_deref(), p.non_packaged.as_deref()) }
 }
 
@@ -665,7 +620,7 @@ impl App {
         views.first().map(|(_, v)| *v)
     }
 
-    fn view_of_id(&self, view: ViewId) -> Option<&crate::webhost_win::WebView> {
+    fn view_of_id(&self, view: ViewId) -> Option<&crate::platform::browser::WebView> {
         self.browser_views.values().find(|b| b.id == view).and_then(|b| b.view.as_ref())
     }
 

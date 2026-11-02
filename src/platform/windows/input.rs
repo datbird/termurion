@@ -15,3 +15,11 @@ pub fn animations_on() -> bool {
     unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&mut on as *mut i32).cast(), 0) };
     on != 0
 }
+
+pub fn first_mouse_watch(hwnd: isize) {
+    crate::firstmouse_win::watch(hwnd)
+}
+
+pub fn first_mouse_forget(hwnd: isize) {
+    crate::firstmouse_win::forget(hwnd)
+}

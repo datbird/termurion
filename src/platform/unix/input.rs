@@ -14,3 +14,9 @@ pub fn double_click_ms() -> u128 {
 pub fn animations_on() -> bool {
     true
 }
+
+/// No first-mouse mark on Unix (a documented Windows-only extra).
+pub fn first_mouse_watch(_hwnd: isize) {}
+
+/// As `first_mouse_watch`.
+pub fn first_mouse_forget(_hwnd: isize) {}

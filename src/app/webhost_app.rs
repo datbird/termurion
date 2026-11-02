@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use super::*;
 use crate::webhost::{self, EnvOptions, Event, Posted, Runtime, Sink, Store, ViewId};
-use crate::webhost_win::{self, Env};
+use crate::platform::browser::{self as browser_host, Env};
 
 /// iTerm2's `ExpiringValue` duration for the browser gateway's answers (`GW:40`).
 pub(super) const RUNTIME_TTL: Duration = Duration::from_secs(30);
@@ -118,10 +118,10 @@ pub(super) fn env_options(store: Store, proxy: &str) -> EnvOptions {
 /// checks. A refused hint is Missing (no silent fall back) with the reason.
 fn runtime_now(hint: &str) -> (Runtime, Option<PathBuf>, Option<String>) {
     if hint.trim().is_empty() {
-        return (webhost::runtime_outcome(webhost_win::runtime_version(None)), None, None);
+        return (webhost::runtime_outcome(browser_host::runtime_version(None)), None, None);
     }
-    match webhost_win::fixed_runtime_check(hint) {
-        Ok(folder) => (webhost::runtime_outcome(webhost_win::runtime_version(Some(&folder))), Some(folder), None),
+    match browser_host::fixed_runtime_check(hint) {
+        Ok(folder) => (webhost::runtime_outcome(browser_host::runtime_version(Some(&folder))), Some(folder), None),
         Err(why) => (Runtime::Missing, None, Some(why)),
     }
 }
@@ -195,7 +195,7 @@ impl App {
 
     /// The user data folder an environment of `store` uses.
     fn web_folder(&mut self, store: Store) -> Option<PathBuf> {
-        let base = webhost_win::local_appdata()?;
+        let base = browser_host::local_appdata()?;
         Some(match store {
             Store::BrowserDevNull => self.web_envs.dev_null.get_or_insert_with(|| webhost::dev_null_folder(&base, std::process::id(), uuid::Uuid::new_v4().as_u128() as u32)).clone(),
             other => webhost::data_folder(&base, other),
@@ -212,7 +212,7 @@ impl App {
         if slot.env.get().is_none() && !slot.creating.get() {
             if !std::mem::replace(&mut self.web_envs.swept, true) {
                 // Folders a dead run left behind (and this one's, should the pid repeat).
-                webhost_win::cleanup_files();
+                browser_host::cleanup_files();
             }
             slot.creating.set(true);
             let proxy = self.browser_proxy_args();
@@ -323,7 +323,7 @@ impl App {
             self.sync_web_keyboard();
             return;
         };
-        if !crate::webhost::held_focus_lost(hwnd, webhost_win::foreground_root()) {
+        if !crate::webhost::held_focus_lost(hwnd, browser_host::foreground_root()) {
             return;
         }
         self.web_focus_held = None;
@@ -351,7 +351,7 @@ impl App {
         self.web_focus_held = None;
         self.web_focus_view = None;
         self.sync_web_keyboard();
-        webhost_win::focus_window(parent);
+        browser_host::focus_window(parent);
     }
 
     /// Tells the 13u keyboard hook which window's web view holds the keyboard, so it passes keys on
@@ -391,7 +391,7 @@ impl App {
     /// it. The per-pane ledger keeps this and the window's own gain or loss from reporting twice.
     pub(super) fn pane_focus_tick(&mut self) {
         let Some(hwnd) = self.hwnd() else { return };
-        let in_front = crate::webhost_win::foreground_root() == Some(hwnd) && self.web_focus_held != self.current_window();
+        let in_front = browser_host::foreground_root() == Some(hwnd) && self.web_focus_held != self.current_window();
         let Some(window) = self.current_window() else { return };
         let focused = self.focused_pane_id();
         let moved = match self.report_seen.step(window, focused, in_front) {
@@ -608,7 +608,7 @@ mod tests {
         assert!(body_of(include_str!("tool_web_ui.rs"), "fn close_tool_view(").contains("self.web_view_dropped("));
         let me = include_str!("webhost_app.rs");
         let helper = body_of(me, "pub(super) fn web_view_dropped(");
-        assert!(helper.contains("webhost::drop_returns_focus(") && helper.contains("self.sync_web_keyboard();") && helper.contains("webhost_win::focus_window(parent);"));
+        assert!(helper.contains("webhost::drop_returns_focus(") && helper.contains("self.sync_web_keyboard();") && helper.contains("browser_host::focus_window(parent);"));
         // The view that has the keyboard is known (any kind), and a browser view's loss is rechecked
         // like any other's (final review Minor 6).
         let route = body_of(me, "fn web_route(");

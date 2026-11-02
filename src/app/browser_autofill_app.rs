@@ -66,7 +66,7 @@ impl App {
             return;
         }
         let Some(g) = self.gpu.as_ref() else { return };
-        let Some(base) = crate::webhost_win::local_appdata() else {
+        let Some(base) = crate::platform::browser::local_appdata() else {
             self.banners.set("window", "Could not open the contact card: no local application data folder.".to_string());
             return;
         };
@@ -98,7 +98,7 @@ impl App {
         };
         match answer {
             Some(CardResult::Saved(mut card)) => {
-                let saved = match crate::webhost_win::local_appdata() {
+                let saved = match crate::platform::browser::local_appdata() {
                     Some(base) => browser_autofill::save_card(&browser_autofill::card_path(&base), &card),
                     None => Err("no local application data folder".to_string()),
                 };
@@ -155,7 +155,7 @@ impl App {
         if self.autofill_ask_open(pane) {
             return;
         }
-        let Some(base) = crate::webhost_win::local_appdata() else { return };
+        let Some(base) = crate::platform::browser::local_appdata() else { return };
         let mut card = browser_autofill::load_card(&browser_autofill::card_path(&base));
         if card.is_empty() {
             card.wipe();
@@ -194,7 +194,7 @@ impl App {
         if !saved {
             return;
         }
-        let Some(base) = crate::webhost_win::local_appdata() else { return };
+        let Some(base) = crate::platform::browser::local_appdata() else { return };
         for (pane, w) in waiting {
             if !self.autofill_bound(pane, &w.origin, w.epoch) || self.autofill_ask_open(pane) {
                 continue;

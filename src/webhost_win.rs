@@ -31,6 +31,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 use windows::core::{BOOL, Interface, PCWSTR, PWSTR};
 
 use crate::browser_world;
+pub use crate::platform::browser::NoteReport;
 use crate::webhost::{self, Answer, EnvOptions, Event, Posted, Sink, Store, ViewGate, ViewId};
 
 /// Runs the body of a COM callback. A panic must never unwind into COM (that aborts Termurion with
@@ -698,17 +699,6 @@ struct Inner {
     audio_watch: Option<(ICoreWebView2_8, i64)>,
     /// What `set_muted` last asked for (the engine answers once the view exists).
     muted: bool,
-}
-
-/// What the app tells the view about a notification it holds (`notification_report`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NoteReport {
-    /// Termurion showed it: `ReportShown`, the object stays held.
-    Shown,
-    /// It was closed (by the person, or the app took it away): `ReportClosed`, then released.
-    Closed,
-    /// Termurion will not show it: released without a report.
-    Release,
 }
 
 /// One WebView2 controller. Dropping it closes the controller; `close` says so.

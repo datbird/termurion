@@ -14,7 +14,7 @@ use crate::script_eval::Timeout;
 use crate::platform::browser::{self as popover_host, WebPopover};
 use crate::web_popover::{self, Act, Kind};
 use crate::webhost::{self, Event, Runtime, Store, ViewId};
-use crate::webhost_win::WebView;
+use crate::platform::browser::WebView;
 
 /// How long a popover waits for its environment before it gives up.
 const VIEW_WAIT: Duration = Duration::from_secs(15);

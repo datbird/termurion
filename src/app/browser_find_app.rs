@@ -132,11 +132,11 @@ impl App {
             bv.bar.call = None;
         }
         let Some(hwnd) = self.hwnd() else { return };
-        if crate::webhost_win::foreground_root() != Some(hwnd)
+        if crate::platform::browser::foreground_root() != Some(hwnd)
             && let Some(g) = self.gpu.as_ref() {
                 g.window.focus_window();
             }
-        crate::webhost_win::focus_window(hwnd);
+        crate::platform::browser::focus_window(hwnd);
         if self.web_focus_held.is_some() && self.web_focus_held == self.current_window() {
             self.web_focus_held = None;
             self.sync_web_keyboard();
@@ -767,7 +767,7 @@ mod tests {
     fn keyboard_hand_over_has_one_path() {
         let me = prod(include_str!("browser_find_app.rs"));
         let take = between(me, "pub(super) fn browser_find_take_keyboard", "pub(super) fn browser_find_yield_to_address");
-        assert!(take.contains("crate::webhost_win::focus_window(hwnd)") && take.contains("find_takes_keyboard(&mut bv.bar.keys, f)"));
+        assert!(take.contains("crate::platform::browser::focus_window(hwnd)") && take.contains("find_takes_keyboard(&mut bv.bar.keys, f)"));
         assert!(take.contains("g.window.focus_window()"), "the window is activated first when it is not in front");
         assert!(take.contains("self.web_focus_held = None") && take.contains("self.sync_web_keyboard()"), "ReturnFromChild's bookkeeping");
         assert!(!me.contains("windows_sys") && !me.contains("SetFocus("), "no second SetFocus");
