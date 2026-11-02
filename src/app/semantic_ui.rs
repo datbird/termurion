@@ -798,6 +798,9 @@ mod tests {
         "shell_open::open",
         // The platform reveal: selects a path in the file manager; any app caller is audited.
         "shell_open::reveal(",
+        // The platform fetch: starts the system's fetch tool; any app caller is audited.
+        "http::fetch_text(",
+        "imp::fetch_text(",
         "imp::reveal(",
         // The platform spawn funnel: any caller is audited like a spawn itself.
         "start_detached(",
@@ -887,7 +890,9 @@ mod tests {
         ("app/menu.rs", "run_command", "the Help menu's fixed documentation page"),
         ("app/menu.rs", "open_help_page", "fixed help pages from the Help menu (the repository, Copy Mode shortcuts), never pane text"),
         ("app/mod.rs", "window_event", "the Configure SSH help page, the color gallery page, an exported color preset revealed"),
-        ("platform/windows/http.rs", "fetch_text", "curl.exe from System32 on the settings URL the user typed in Settings, with remote_prefs::curl_args, https and http only; opens nothing else"),
+        ("platform/windows/http.rs", "fetch_text", "curl.exe from System32 with remote_prefs::curl_args built inside (http and https only); the URL is one argument, and nothing is opened or run from the reply"),
+        ("platform/http.rs", "fetch_text", "the platform fetch itself: it builds the tool's arguments and passes the URL as one argument; its callers are checked through the http::fetch_text( token"),
+        ("app/prefs_ui.rs", "curl_fetch", "the settings URL the user typed in Settings; fetched as text only, never opened or run"),
         ("app/screenshot_ui.rs", "shot_event", "reveals the screenshot Termurion just saved"),
         ("app/scripts_app.rs", "edit_new_script", "the user's new script, edited, never run"),
         ("app/scripts_app.rs", "reveal_path", "a script in the user's Scripts folder, revealed"),
@@ -1033,7 +1038,7 @@ mod tests {
     /// `remote_text` and no listing, is reported; the same call in a GATED function is not.
     #[test]
     fn a_planted_ungated_opening_call_fails_the_gate() {
-        for call in ["self.open_link(text, Style::Tab, false, None)", "self.open_link_system(text, false)", "self.open_url_in_browser(text, Style::Tab, None)", "self.open_link_answered(text, Style::Tab, false, None, false, 0)", "self.upsell_answered(text, 1)", "self.execute_with(id, run, None, exec)", "self.browser_page_open(pane, text, PageOpen::Tab, el)", "crate::platform::shell_open::open(text)", "crate::platform::shell_open::open_with(text, false)", "crate::platform::proc::start_detached(text)"] {
+        for call in ["self.open_link(text, Style::Tab, false, None)", "self.open_link_system(text, false)", "self.open_url_in_browser(text, Style::Tab, None)", "self.open_link_answered(text, Style::Tab, false, None, false, 0)", "self.upsell_answered(text, 1)", "self.execute_with(id, run, None, exec)", "self.browser_page_open(pane, text, PageOpen::Tab, el)", "crate::platform::shell_open::open(text)", "crate::platform::shell_open::open_with(text, false)", "crate::platform::proc::start_detached(text)", "crate::platform::http::fetch_text(text, None)", "crate::platform::shell_open::reveal(text)"] {
             let mut files = real_sources();
             files.push(("app/planted.rs".to_string(), format!("impl App {{\n    fn evil(&mut self, text: &str) {{\n        {call};\n    }}\n}}\n")));
             let (wrong, _) = gate_violations(&files);

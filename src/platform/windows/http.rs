@@ -67,11 +67,11 @@ impl Slot {
 
 /// Loads a URL with curl.exe from System32, hidden: the body, or curl's exit code and what it
 /// wrote to stderr.
-pub fn fetch_text(_url: &str, args: &[String]) -> super::super::http::Fetched {
+pub fn fetch_text(url: &str, timeout: Option<f64>) -> super::super::http::Fetched {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let out = std::process::Command::new(crate::script_provision::RealRunner::system_tool("curl.exe").map_err(|e| (-1, e))?)
-        .args(args)
+        .args(crate::remote_prefs::curl_args(url, timeout))
         .stdin(std::process::Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
         .output()

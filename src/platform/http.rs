@@ -13,10 +13,11 @@ use super::windows::http as imp;
 /// A fetch of a URL as text: the body, or the tool's exit code and message.
 pub type Fetched = Result<String, (i32, String)>;
 
-/// Loads `url` with the system's fetch tool, run with `args` (the caller's own, `remote_prefs::curl_args`):
-/// the body, or the exit code and what the tool wrote. Unix reports Unsupported (P1 picks a client).
-pub fn fetch_text(url: &str, args: &[String]) -> Fetched {
-    imp::fetch_text(url, args)
+/// Loads `url` with the system's fetch tool: the body, or the exit code and what the tool wrote. The
+/// tool's arguments are built here and in the backend only (`remote_prefs::curl_args`, which allows
+/// http and https and nothing else), never by a caller. Unix reports Unsupported (P1 picks a client).
+pub fn fetch_text(url: &str, timeout: Option<f64>) -> Fetched {
+    imp::fetch_text(url, timeout)
 }
 
 /// The system's HTTP transport.

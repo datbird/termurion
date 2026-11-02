@@ -3,7 +3,7 @@
 //! hidden" note (a window recreated for transparency, a rebuild) sat under the client, and each
 //! resize's non-client repaint made muda draw it over the client until the next frame.
 
-use super::{menu_attached, menu_needs_change};
+use super::menu_needs_change;
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow};
 
@@ -74,6 +74,7 @@ fn bar() -> muda::Menu {
 #[test]
 #[cfg(windows)] // a real HWND and muda's Win32 bar
 fn the_window_reports_its_own_bar() {
+    use super::menu_attached;
     let w = window();
     assert!(!menu_attached(w));
     let b = bar();

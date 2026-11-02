@@ -138,6 +138,12 @@ impl App {
         if self.uia_hosts.contains_key(&key) {
             return;
         }
+        // No screen reader backend on this OS: said once in the debug log, no banner on every window.
+        if crate::platform::a11y::available().is_err() {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| crate::dlog!("access: screen reader support is not available on this system"));
+            return;
+        }
         let proxy = self.proxy.clone();
         let pending = self.access_attach.clone();
         // Runs on UI Automation's threads: it only posts (an Attach is posted once until handled).

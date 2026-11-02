@@ -8,7 +8,7 @@ use crate::ai_transport::{Bounds, Call, HttpEvent, HttpRequest, Notify, Options,
 const FEATURE: &str = "AI chat";
 
 /// No fetch tool is used on Unix yet.
-pub fn fetch_text(_url: &str, _args: &[String]) -> super::super::http::Fetched {
+pub fn fetch_text(_url: &str, _timeout: Option<f64>) -> super::super::http::Fetched {
     Err((-1, Unsupported { feature: "Settings from a URL" }.to_string()))
 }
 

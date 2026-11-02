@@ -239,6 +239,7 @@ pub fn scrub(text: &str) -> String {
 
 /// Every file holding `dlog!` calls and how many: a new call site is a review of what it passes.
 pub const CALL_SITES: &[(&str, usize)] = &[
+    ("app/access_app.rs", 1),
     ("app/adblock_app.rs", 5),
     ("app/api_ui.rs", 2),
     ("app/bell_ui.rs", 2),

@@ -229,7 +229,7 @@ pub(super) fn load_at_start(g: &mut Globals, store: &mut Store, fetch: &dyn Fn(&
 
 /// Loads a URL (the platform's fetch): the body, or an exit code and message.
 pub(super) fn curl_fetch(url: &str, timeout: Option<f64>) -> Fetched {
-    crate::platform::http::fetch_text(url, &rp::curl_args(url, timeout))
+    crate::platform::http::fetch_text(url, timeout)
 }
 
 /// The settings file's snapshot: Termurion's TOML, or iTerm2's plist. None when it cannot be read,

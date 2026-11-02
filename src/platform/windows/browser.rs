@@ -4,7 +4,7 @@ use super::super::Unsupported;
 
 pub use super::web_popover::{WebPopover, default_browser_name};
 pub use crate::svg_raster_win::Rasterizer;
-pub use crate::webhost_win::{Env, ViewSetup, WebView, cleanup_files, close_all, fixed_runtime_check, focus_window, foreground_root, local_appdata, prepare_folder, runtime_version};
+pub use crate::webhost_win::{Env, WebView, cleanup_files, close_all, fixed_runtime_check, focus_window, foreground_root, local_appdata, prepare_folder, runtime_version};
 
 pub fn available() -> Result<(), Unsupported> {
     Ok(())
