@@ -128,7 +128,7 @@ pub fn history(store: &Store, host: &str, prefix: &str, max: usize, now: f64) ->
 /// Quotes `text` for insertion into `shell`'s command line, reusing
 /// `shell_history::insertable_dir`'s exact character sets and quoting per shell instead of
 /// duplicating them. `insertable_dir` only takes the Windows-quoting branch when
-/// `profile::local_path` recognizes its argument as a drive-letter path, so a bare file or
+/// `profile::local_path` recognizes its argument as a local path (a drive-letter one on Windows), so a bare file or
 /// directory name (which never looks like one) is given a throwaway drive prefix to reach
 /// that branch for `pwsh`/`cmd`, then the prefix is peeled back off (from just inside any
 /// opening quote mark `insertable_dir` added). A POSIX shell needs no such trick: a bare name
@@ -138,15 +138,16 @@ fn quote_name(text: &str, shell: Option<&str>) -> String {
     if !matches!(lower.as_str(), "pwsh" | "powershell" | "cmd") {
         return shell_history::insertable_dir(text, shell);
     }
-    const PLACEHOLDER: &str = "Z:\\";
-    let quoted = shell_history::insertable_dir(&format!("{PLACEHOLDER}{text}"), shell);
-    if let Some(rest) = quoted.strip_prefix(PLACEHOLDER) {
+    // A path root the shell quoting recognizes as local: a throwaway drive on Windows, "/" on Unix.
+    let placeholder = if crate::platform::IS_WINDOWS { "Z:\\" } else { "/" };
+    let quoted = shell_history::insertable_dir(&format!("{placeholder}{text}"), shell);
+    if let Some(rest) = quoted.strip_prefix(placeholder) {
         return rest.to_string();
     }
     let mut chars = quoted.chars();
     let open = chars.next().unwrap_or('\'');
     let rest = chars.as_str();
-    let inner = rest.strip_prefix(PLACEHOLDER).unwrap_or(rest);
+    let inner = rest.strip_prefix(placeholder).unwrap_or(rest);
     format!("{open}{inner}")
 }
 
@@ -251,8 +252,6 @@ pub fn row_text(item: &Item, typed: &str) -> (String, Option<Range<usize>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(windows)] // test: Windows drive paths
 
     #[test]
     fn suggestions_follow_iterm2() {

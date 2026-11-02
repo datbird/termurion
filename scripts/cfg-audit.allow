@@ -86,10 +86,3 @@ src/chat_store.rs:*<=1  # production cfg owed to P1 (move under platform/)
 src/browser_download.rs:*<=1  # production cfg owed to P1 (move under platform/)
 src/bidi_mirror.rs:*<=1  # production cfg owed to P1 (move under platform/)
 src/ai_actions.rs:*<=1  # production cfg owed to P1 (move under platform/)
-src/arrangement.rs:#[cfg(windows)] // test: Windows drive paths  # these tests name drive-letter folders; the unix twins sit beside them
-src/profile.rs:#[cfg(windows)] // test: Windows drive paths  # the test names drive-letter folders; the unix twin sits beside it
-src/app/arrange_ui.rs:#[cfg(windows)] // test: Windows drive paths  # the test names drive-letter folders; Windows path semantics
-src/app/statusbar_content.rs:#[cfg(windows)] // test: Windows drive paths  # the test names drive-letter folders; Windows path semantics
-src/composer_suggest.rs:#[cfg(windows)] // test: Windows drive paths  # the test names drive-letter folders; Windows path semantics
-src/shell_history.rs:#[cfg(windows)] // test: Windows drive paths  # the test names drive-letter folders; Windows path semantics
-src/toolbelt_tools.rs:#[cfg(windows)] // test: Windows drive paths  # the test names drive-letter folders; Windows path semantics

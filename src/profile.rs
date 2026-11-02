@@ -498,32 +498,29 @@ mod tests {
         assert_eq!(start_dir_with(&p, Some(std::path::Path::new("Z:\\no\\such\\dir"))).0, home);
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn reported_paths_become_local_paths() {
-        assert_eq!(local_path("/home/rob"), Some(std::path::PathBuf::from("/home/rob")));
-        assert_eq!(local_path("C:\\Users\\rob"), None);
-        assert_eq!(local_folder("/srv/x"), Some(std::path::PathBuf::from("/srv/x")));
-        assert_eq!(local_folder("~/www/a"), Some(home().join("www/a")));
-        assert_eq!(local_folder("~"), Some(home()));
-        assert_eq!(local_folder("~rob/www"), None);
-        assert_eq!(local_folder("src"), None);
-        assert_eq!(local_folder("D:\\x"), None);
-    }
-
-    #[cfg(windows)] // test: Windows drive paths
     #[test]
     fn url_paths_become_windows_paths() {
-        assert_eq!(local_path("/C:/Users/rob"), Some(std::path::PathBuf::from("C:\\Users\\rob")));
-        assert_eq!(local_path("C:\\Users\\rob"), Some(std::path::PathBuf::from("C:\\Users\\rob")));
-        assert_eq!(local_path("/home/rob"), None);
-        assert_eq!(local_folder("/D:/x"), Some(std::path::PathBuf::from("D:\\x")));
-        assert_eq!(local_folder("~/www/a"), Some(home().join("www\\a")));
-        assert_eq!(local_folder("~\\www"), Some(home().join("www")));
-        assert_eq!(local_folder("~"), Some(home()));
-        assert_eq!(local_folder("~rob/www"), None);
-        assert_eq!(local_folder("/home/rob"), None);
-        assert_eq!(local_folder("src"), None);
+        if crate::platform::IS_WINDOWS {
+            assert_eq!(local_path("/C:/Users/rob"), Some(std::path::PathBuf::from("C:\\Users\\rob")));
+            assert_eq!(local_path("C:\\Users\\rob"), Some(std::path::PathBuf::from("C:\\Users\\rob")));
+            assert_eq!(local_path("/home/rob"), None);
+            assert_eq!(local_folder("/D:/x"), Some(std::path::PathBuf::from("D:\\x")));
+            assert_eq!(local_folder("~/www/a"), Some(home().join("www\\a")));
+            assert_eq!(local_folder("~\\www"), Some(home().join("www")));
+            assert_eq!(local_folder("~"), Some(home()));
+            assert_eq!(local_folder("~rob/www"), None);
+            assert_eq!(local_folder("/home/rob"), None);
+            assert_eq!(local_folder("src"), None);
+        } else {
+            assert_eq!(local_path("/home/rob"), Some(std::path::PathBuf::from("/home/rob")));
+            assert_eq!(local_path("C:\\Users\\rob"), None);
+            assert_eq!(local_folder("/srv/x"), Some(std::path::PathBuf::from("/srv/x")));
+            assert_eq!(local_folder("~/www/a"), Some(home().join("www/a")));
+            assert_eq!(local_folder("~"), Some(home()));
+            assert_eq!(local_folder("~rob/www"), None);
+            assert_eq!(local_folder("src"), None);
+            assert_eq!(local_folder("D:\\x"), None);
+        }
     }
 
     #[test]

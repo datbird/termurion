@@ -114,7 +114,7 @@ pub(super) enum SaveWhat {
 /// profile's start folder); an ssh-profile pane keeps a POSIX one, as its session restores
 /// remotely, but never a drive path (the restored ssh.exe would start in that LOCAL folder).
 fn saved_cwd(remote_text: bool, ssh_profile: bool, cwd: Option<&str>) -> Option<String> {
-    if remote_text && (!ssh_profile || cwd.is_some_and(|c| crate::profile::local_path(c).is_some())) {
+    if remote_text && (!ssh_profile || cwd.is_some_and(|c| crate::platform::paths::windows_local_path(c).is_some())) {
         return None;
     }
     cwd.map(arrangement::saved_folder)
@@ -558,7 +558,7 @@ pub(super) fn folder_notice(launch: Launch, folder: &str, is_dir: &dyn Fn(&std::
         if !launch.named {
             return FolderNotice::Nothing;
         }
-        let missing = crate::profile::local_path(folder).is_none_or(|path| !is_dir(&path));
+        let missing = crate::platform::paths::windows_local_path(folder).is_none_or(|path| !is_dir(&path));
         return if missing { FolderNotice::Repair } else { FolderNotice::Nothing };
     }
     match crate::profile::local_folder(folder) {
@@ -1193,10 +1193,10 @@ mod tests {
     /// local launch starts in home with the unavailable banner; only an ssh session keeps the
     /// saved folder and, in a named arrangement, offers Repair; a shell taken back was never
     /// launched.
-    #[cfg(windows)] // test: Windows drive paths
     #[test]
     fn missing_folder_follows_iterm2() {
         use FolderNotice::*;
+        use crate::platform::IS_WINDOWS;
         assert_eq!(unavailable_text(r"D:\gone"), "The directory \u{201c}D:\\gone\u{201d} is unavailable. Started in home directory instead.");
         let none = |_: &std::path::Path| false;
         let probed = std::cell::Cell::new(false);
@@ -1206,28 +1206,43 @@ mod tests {
         };
         let local = |named| Launch { launched: true, named, ssh: false };
         let ssh = |named| Launch { launched: true, named, ssh: true };
-        assert_eq!(folder_notice(local(true), r"D:\gone", &none), Unavailable, "a local launch: home and the banner, no Repair");
-        assert_eq!(folder_notice(local(false), r"D:\gone", &none), Unavailable, "window restoration too");
-        assert_eq!(folder_notice(ssh(true), r"D:\gone", &none), Repair, "an ssh session in a named arrangement");
-        assert_eq!(folder_notice(ssh(false), r"D:\gone", &none), Nothing, "window restoration has no arrangement to repair");
-        assert_eq!(folder_notice(Launch { launched: false, named: true, ssh: false }, r"D:\gone", &none), Nothing, "a shell taken back");
-        assert_eq!(folder_notice(local(true), r"C:\here", &|_: &std::path::Path| true), Nothing, "a folder that exists");
+        let gone = crate::platform::by_os(r"D:\gone", "/gone");
+        assert_eq!(folder_notice(local(true), gone, &none), Unavailable, "a local launch: home and the banner, no Repair");
+        assert_eq!(folder_notice(local(false), gone, &none), Unavailable, "window restoration too");
+        assert_eq!(folder_notice(ssh(true), gone, &none), Repair, "an ssh session in a named arrangement");
+        assert_eq!(folder_notice(ssh(false), gone, &none), Nothing, "window restoration has no arrangement to repair");
+        assert_eq!(folder_notice(Launch { launched: false, named: true, ssh: false }, gone, &none), Nothing, "a shell taken back");
+        let here = crate::platform::by_os(r"C:\here", "/here");
+        assert_eq!(folder_notice(local(true), here, &|_: &std::path::Path| true), Nothing, "a folder that exists");
         assert_eq!(folder_notice(local(true), "", &none), Nothing, "no folder");
-        assert_eq!(folder_notice(local(true), r"\\host\share\x", &watch), Nothing);
-        assert_eq!(folder_notice(ssh(true), "//host/share", &watch), Nothing);
-        assert!(!probed.get(), "a UNC folder is never probed");
-        // Not a Windows path (WSL, MSYS, a remote host's): a local launch cannot start there,
-        // so it is not checked.
-        assert_eq!(folder_notice(local(true), "/home/rob/src", &watch), Nothing, "a Unix path is not missing");
+        if IS_WINDOWS {
+            assert_eq!(folder_notice(local(true), r"\\host\share\x", &watch), Nothing);
+            assert_eq!(folder_notice(ssh(true), "//host/share", &watch), Nothing);
+            assert!(!probed.get(), "a UNC folder is never probed");
+            // Not a Windows path (WSL, MSYS, a remote host's): a local launch cannot start there,
+            // so it is not checked.
+            assert_eq!(folder_notice(local(true), "/home/rob/src", &watch), Nothing, "a Unix path is not missing");
+            assert!(!probed.get(), "a path that is not a Windows path is never probed");
+        } else {
+            // A local launch checks any absolute folder.
+            assert_eq!(folder_notice(local(true), "/home/rob/src", &watch), Unavailable);
+            assert!(probed.get());
+            probed.set(false);
+        }
         assert_eq!(folder_notice(local(true), "~rob/www", &watch), Nothing);
-        assert!(!probed.get(), "a path that is not a Windows path is never probed");
+        assert!(!probed.get(), "a path that is not a local folder is never probed");
         // An ssh session of a named arrangement checks its folder on this machine as it is
         // (`PS:3560-3568`): a Unix or "~" path is missing here, with no probe.
         assert_eq!(folder_notice(ssh(true), "/home/rob/src", &watch), Repair);
         assert_eq!(folder_notice(ssh(true), "~/www", &watch), Repair);
         assert_eq!(folder_notice(ssh(false), "/home/rob/src", &watch), Nothing, "no arrangement to repair");
         assert!(!probed.get(), "nor probed for ssh");
-        assert_eq!(folder_notice(ssh(true), r"C:\here", &|_: &std::path::Path| true), Nothing, "an ssh folder that exists here");
+        if IS_WINDOWS {
+            assert_eq!(folder_notice(ssh(true), r"C:\here", &|_: &std::path::Path| true), Nothing, "an ssh folder that exists here");
+        } else {
+            // An ssh pane's folder is the remote's: never one of this machine's, so Repair, never a probe.
+            assert_eq!(folder_notice(ssh(true), "/here", &|_: &std::path::Path| true), Repair);
+        }
         // A local "~" path is checked in the home folder, as iTerm2 standardizes it first.
         let home = crate::profile::home();
         let only_home = |p: &std::path::Path| p == home;
@@ -1238,20 +1253,22 @@ mod tests {
             *seen.borrow_mut() = Some(p.to_path_buf());
             false
         };
-        assert_eq!(folder_notice(local(true), "/D:/gone", &record), Unavailable, "the OSC 7 form of a Windows path");
-        assert_eq!(seen.borrow().as_deref(), Some(std::path::Path::new(r"D:\gone")), "probed as a Windows path");
+        let reported = crate::platform::by_os("/D:/gone", "/gone");
+        assert_eq!(folder_notice(local(true), reported, &record), Unavailable, "the OSC 7 form of a Windows path");
+        assert_eq!(seen.borrow().as_deref(), Some(std::path::Path::new(gone)), "probed as a local path");
     }
-
-    #[cfg(windows)] // test: Windows drive paths
 
     #[test]
     fn remote_reported_folder_is_not_saved() {
         assert_eq!(saved_cwd(true, false, Some("/etc/evil")), None, "a framed pane's folder is remote-reported");
         assert_eq!(saved_cwd(true, true, Some("/home/u")).as_deref(), Some("/home/u"), "an ssh-profile pane restores remotely");
-        assert_eq!(saved_cwd(false, false, Some("/C:/Users/me")).as_deref(), Some(r"C:\Users\me"), "a local pane keeps its folder");
+        assert_eq!(saved_cwd(false, false, Some("/C:/Users/me")).as_deref(), Some(crate::platform::by_os(r"C:\Users\me", "/C:/Users/me")), "a local pane keeps its folder");
+        assert_eq!(saved_cwd(false, false, Some("/home/me")).as_deref(), Some("/home/me"), "a local pane keeps its folder");
         assert_eq!(saved_cwd(false, false, None), None);
-        assert_eq!(saved_cwd(true, true, Some("/C:/Users/evil")), None, "a drive path the remote reported is never a local start folder");
-        assert_eq!(saved_cwd(true, true, Some(r"D:\x")), None);
+        if crate::platform::IS_WINDOWS {
+            assert_eq!(saved_cwd(true, true, Some("/C:/Users/evil")), None, "a drive path the remote reported is never a local start folder");
+            assert_eq!(saved_cwd(true, true, Some(r"D:\x")), None);
+        }
     }
 
     fn hosted_chain() -> crate::conductor::Conductor {

@@ -26,7 +26,7 @@ done
 display=:97
 scratch="$repo/target/gui-check/$scenario"
 rm -rf "$scratch"
-mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/run" "$scratch/home/.config/termurion"
+mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/run"
 chmod 700 "$scratch/run"
 : > "$scratch/pids"
 
@@ -98,4 +98,7 @@ case "$scenario" in
         ;;
 esac
 kill -0 "$app_pid" 2> /dev/null || fail "the app died (see $scratch/app.log)"
+# Settings and data land where the OS says, never in the temp folder.
+[ -f "$scratch/home/.config/termurion/settings.toml" ] || fail "no settings.toml under \$HOME/.config/termurion"
+[ ! -e "$scratch/tmp/Termurion" ] && [ ! -e "$scratch/tmp/termurion" ] || fail "the app wrote its folder into the temp folder"
 echo "PASS $scenario"

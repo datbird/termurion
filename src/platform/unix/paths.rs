@@ -44,6 +44,11 @@ fn xdg_or(xdg: Option<&str>, home: Option<&Path>, fallback: &str) -> PathBuf {
     home.map_or_else(std::env::temp_dir, |h| h.join(fallback))
 }
 
+/// Nothing on Unix is a Windows path.
+pub fn windows_local_path(_reported: &str) -> Option<PathBuf> {
+    None
+}
+
 /// A reported directory: an absolute Unix path. None for anything else.
 pub fn local_path(reported: &str) -> Option<PathBuf> {
     reported.starts_with('/').then(|| PathBuf::from(reported))

@@ -81,7 +81,8 @@ pub fn remainder(command: &str, typed: &str) -> String {
 pub fn insertable_dir(path: &str, shell: Option<&str>) -> String {
     let shell = shell.unwrap_or("").to_ascii_lowercase();
     let windows = matches!(shell.as_str(), "pwsh" | "powershell" | "cmd");
-    let local = crate::profile::local_path(path).map(|p| p.to_string_lossy().into_owned());
+    // A POSIX shell on Unix always escapes; Windows keeps its drive-path rule for every shell.
+    let local = crate::profile::local_path(path).filter(|_| crate::platform::IS_WINDOWS || windows).map(|p| p.to_string_lossy().into_owned());
     match (local, windows) {
         (Some(p), _) if shell == "cmd" => {
             if p.contains([' ', '&', '(', ')', '^', '|', '<', '>', '%', '!']) { format!("\"{p}\"") } else { p }
@@ -382,15 +383,15 @@ mod tests {
         assert_eq!(remainder("\u{e9}cho x", "\u{e9}"), "cho x");
     }
 
-    #[cfg(windows)] // test: Windows drive paths
-
     #[test]
     fn directories_insert_for_their_shell() {
-        assert_eq!(insertable_dir("/C:/Users/rob", Some("pwsh")), "C:\\Users\\rob");
-        assert_eq!(insertable_dir("/C:/Users/rob/My Docs", Some("pwsh")), "'C:\\Users\\rob\\My Docs'");
-        assert_eq!(insertable_dir("/C:/it's here", Some("powershell")), "'C:\\it''s here'");
-        assert_eq!(insertable_dir("/C:/a b", Some("cmd")), "\"C:\\a b\"");
+        use crate::platform::by_os;
+        assert_eq!(insertable_dir("/C:/Users/rob", Some("pwsh")), by_os("C:\\Users\\rob", "/C:/Users/rob"));
+        assert_eq!(insertable_dir("/C:/Users/rob/My Docs", Some("pwsh")), by_os("'C:\\Users\\rob\\My Docs'", "'/C:/Users/rob/My Docs'"));
+        assert_eq!(insertable_dir("/C:/it's here", Some("powershell")), by_os("'C:\\it''s here'", "'/C:/it''s here'"));
+        assert_eq!(insertable_dir("/C:/a b", Some("cmd")), by_os("\"C:\\a b\"", "\"/C:/a b\""));
         assert_eq!(insertable_dir("/home/me/My Docs", Some("bash")), "/home/me/My\\ Docs");
+        assert_eq!(insertable_dir("/home/me/it's", Some("zsh")), "/home/me/it\\'s", "a POSIX shell escapes on every OS");
         assert_eq!(insertable_dir("/tmp/a\nb", None), "/tmp/a\\\nb", "POSIX: newlines escaped too");
         let dir = std::env::temp_dir().join(format!("termurion-write-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

@@ -939,8 +939,6 @@ mod tests {
         assert_eq!(sbc::button_timeout(&knobs), 0.0, "0 is synchronous");
     }
 
-    #[cfg(windows)] // test: Windows drive paths
-
     #[test]
     fn directory_menu_text_follows_iterm2() {
         assert_eq!(dir_title(r"C:\src", true), "\u{2605} C:\\src");
@@ -948,7 +946,7 @@ mod tests {
         assert_eq!(folder_name(r"C:\Users\rob\src\"), "src");
         assert_eq!(folder_name("/home/rob/termurion"), "termurion");
         assert_eq!(folder_name(r"C:\"), "C:");
-        assert_eq!(shown_path("/C:/Users/rob"), r"C:\Users\rob");
+        assert_eq!(shown_path("/C:/Users/rob"), crate::platform::by_os(r"C:\Users\rob", "/C:/Users/rob"));
         assert_eq!(shown_path("/home/rob"), "/home/rob");
         assert_eq!(evaluation_error("\\(x", "bad"), "Error while evaluating \u{201C}\\(x\u{201D}:\nbad");
     }

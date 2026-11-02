@@ -45,6 +45,14 @@ pub fn local_path(reported: &str) -> Option<PathBuf> {
     imp::local_path(reported)
 }
 
+/// A directory a Windows program reported, as a Windows path ("/C:/x" or "C:\\x"), and nothing else.
+/// Where a remote host's folder must never be mistaken for one of this machine's: an ssh pane
+/// reports its own paths, so on Unix, where every absolute path is local, none of them is. None
+/// on Unix always.
+pub fn windows_local_path(reported: &str) -> Option<PathBuf> {
+    imp::windows_local_path(reported)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,7 +78,9 @@ mod tests {
         use super::super::unix::paths::{config_base_from, local_base_from};
         use std::path::Path;
         assert_eq!(config_base_from(None, Some(Path::new("/h"))), PathBuf::from("/h/Library/Application Support"));
+        assert_eq!(config_base_from(Some("/x"), Some(Path::new("/h"))), PathBuf::from("/h/Library/Application Support"), "XDG is ignored on macOS");
         assert_eq!(config_base_from(None, None), std::env::temp_dir());
+        assert_eq!(local_base_from(Some("/s"), Some(Path::new("/h"))), PathBuf::from("/h/Library/Caches"), "XDG is ignored on macOS");
         assert_eq!(local_base_from(None, Some(Path::new("/h"))), PathBuf::from("/h/Library/Caches"));
         assert_eq!(local_base_from(None, None), std::env::temp_dir());
         assert_eq!(APP_FOLDER, "Termurion");
@@ -83,6 +93,14 @@ mod tests {
         assert_eq!(config_dir(), appdata.join("Termurion"));
         let local = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap());
         assert_eq!(local_dir(), local.join("Termurion"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nothing_is_a_windows_path_on_unix() {
+        assert_eq!(windows_local_path("/C:/x"), None);
+        assert_eq!(windows_local_path(r"C:\x"), None);
+        assert_eq!(windows_local_path("/home/u"), None);
     }
 
     #[cfg(unix)]

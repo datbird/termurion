@@ -543,7 +543,7 @@ pub enum Folder {
 /// never this machine's.
 pub fn folder_for(session: &Value, ssh: bool) -> Folder {
     let Some(d) = session.get("Working Directory").and_then(|v| v.as_str()) else { return Folder::None };
-    let local = if ssh { crate::profile::local_path(d) } else { crate::profile::local_folder(d) };
+    let local = if ssh { crate::platform::paths::windows_local_path(d) } else { crate::profile::local_folder(d) };
     match local.map(|p| p.display().to_string()) {
         Some(local) if contents(session).is_some() || styled_contents(session).is_some() => Folder::Forced(local),
         Some(local) => Folder::Previous(local),
@@ -941,33 +941,50 @@ mod tests {
         assert_eq!(replace_profile(&windows, "nobody", &good), windows);
     }
 
-    #[cfg(windows)] // test: Windows drive paths
     #[test]
     fn folders_follow_the_profile_rule() {
-        let plain = session(80, 24, Table::new(), "s", Some(r"C:\src"));
-        assert_eq!(folder_for(&plain, false), Folder::Previous(r"C:\src".into()), "the profile's rule decides, with this as the previous folder");
-        let mut with = plain.clone();
-        with.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
-        assert_eq!(folder_for(&with, false), Folder::Forced(r"C:\src".into()), "contents force the folder");
-        assert_eq!(folder_for(&session(80, 24, Table::new(), "s", None), false), Folder::None);
-        // A folder that is not a Windows path (WSL, MSYS, a remote host's) cannot be a Windows
-        // shell's folder: contents never force it, so no "does not exist" banner follows.
-        let mut unix = session(80, 24, Table::new(), "s", Some("/home/rob/src"));
-        unix.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
-        assert_eq!(folder_for(&unix, false), Folder::Previous("/home/rob/src".into()));
-        // The OSC 7 form and "~" are forced as the Windows paths they name, so an existing one
-        // is not reported as missing.
-        let mut osc7 = session(80, 24, Table::new(), "s", Some("/D:/x"));
-        osc7.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
-        assert_eq!(folder_for(&osc7, false), Folder::Forced(r"D:\x".into()));
-        let mut tilde = session(80, 24, Table::new(), "s", Some("~/www"));
-        tilde.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
-        assert_eq!(folder_for(&tilde, false), Folder::Forced(crate::profile::home().join("www").display().to_string()));
-        assert_eq!(folder_for(&session(80, 24, Table::new(), "s", Some("/D:/x")), false), Folder::Previous(r"D:\x".into()));
-        assert_eq!(contents(&with), Some("x"));
+        if crate::platform::IS_WINDOWS {
+            let plain = session(80, 24, Table::new(), "s", Some(r"C:\src"));
+            assert_eq!(folder_for(&plain, false), Folder::Previous(r"C:\src".into()), "the profile's rule decides, with this as the previous folder");
+            let mut with = plain.clone();
+            with.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
+            assert_eq!(folder_for(&with, false), Folder::Forced(r"C:\src".into()), "contents force the folder");
+            assert_eq!(folder_for(&session(80, 24, Table::new(), "s", None), false), Folder::None);
+            // A folder that is not a Windows path (WSL, MSYS, a remote host's) cannot be a Windows
+            // shell's folder: contents never force it, so no "does not exist" banner follows.
+            let mut unix = session(80, 24, Table::new(), "s", Some("/home/rob/src"));
+            unix.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
+            assert_eq!(folder_for(&unix, false), Folder::Previous("/home/rob/src".into()));
+            // The OSC 7 form and "~" are forced as the Windows paths they name, so an existing one
+            // is not reported as missing.
+            let mut osc7 = session(80, 24, Table::new(), "s", Some("/D:/x"));
+            osc7.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
+            assert_eq!(folder_for(&osc7, false), Folder::Forced(r"D:\x".into()));
+            let mut tilde = session(80, 24, Table::new(), "s", Some("~/www"));
+            tilde.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
+            assert_eq!(folder_for(&tilde, false), Folder::Forced(crate::profile::home().join("www").display().to_string()));
+            assert_eq!(folder_for(&session(80, 24, Table::new(), "s", Some("/D:/x")), false), Folder::Previous(r"D:\x".into()));
+            assert_eq!(contents(&with), Some("x"));
+        } else {
+            let plain = session(80, 24, Table::new(), "s", Some("/src"));
+            assert_eq!(folder_for(&plain, false), Folder::Previous("/src".into()));
+            let mut with = plain.clone();
+            with.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
+            assert_eq!(folder_for(&with, false), Folder::Forced("/src".into()), "contents force the folder");
+            assert_eq!(folder_for(&session(80, 24, Table::new(), "s", None), false), Folder::None);
+            // A Windows folder cannot be this shell's folder, so contents never force it.
+            let mut win = session(80, 24, Table::new(), "s", Some(r"C:\src"));
+            win.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
+            assert_eq!(folder_for(&win, false), Folder::Previous(r"C:\src".into()));
+            let mut tilde = session(80, 24, Table::new(), "s", Some("~/www"));
+            tilde.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
+            assert_eq!(folder_for(&tilde, false), Folder::Forced(crate::profile::home().join("www").display().to_string()));
+            // An ssh session's folder is the remote's, never this machine's.
+            assert_eq!(folder_for(&tilde, true), Folder::Previous("~/www".into()));
+            assert_eq!(folder_for(&with, true), Folder::Previous("/src".into()));
+        }
     }
 
-    #[cfg(windows)] // test: Windows drive paths
     /// An ssh session's "~" is the remote host's home: never this machine's, so it is not
     /// forced (and checked) here.
     #[test]
@@ -976,38 +993,14 @@ mod tests {
         tilde.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
         assert_eq!(folder_for(&tilde, true), Folder::Previous("~/www".into()));
         assert_eq!(folder_for(&session(80, 24, Table::new(), "s", Some("~")), true), Folder::Previous("~".into()));
-        // A drive-letter folder is still this machine's.
+        // A drive-letter folder is still this machine's on Windows; on Unix nothing an ssh pane reports is.
         let mut local = session(80, 24, Table::new(), "s", Some(r"C:\src"));
         local.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
-        assert_eq!(folder_for(&local, true), Folder::Forced(r"C:\src".into()));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unix_folders_follow_the_profile_rule() {
-        let plain = session(80, 24, Table::new(), "s", Some("/src"));
-        assert_eq!(folder_for(&plain, false), Folder::Previous("/src".into()));
-        let mut with = plain.clone();
-        with.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
-        assert_eq!(folder_for(&with, false), Folder::Forced("/src".into()), "contents force the folder");
-        assert_eq!(folder_for(&session(80, 24, Table::new(), "s", None), false), Folder::None);
-        // A Windows folder cannot be this shell's folder, so contents never force it.
-        let mut win = session(80, 24, Table::new(), "s", Some(r"C:\src"));
-        win.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
-        assert_eq!(folder_for(&win, false), Folder::Previous(r"C:\src".into()));
-        let mut tilde = session(80, 24, Table::new(), "s", Some("~/www"));
-        tilde.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
-        assert_eq!(folder_for(&tilde, false), Folder::Forced(crate::profile::home().join("www").display().to_string()));
-        // An ssh session's "~" is the remote host's home, an absolute folder is still local.
-        assert_eq!(folder_for(&tilde, true), Folder::Previous("~/www".into()));
-        assert_eq!(folder_for(&with, true), Folder::Forced("/src".into()));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unix_folders_are_saved_as_they_are() {
-        assert_eq!(saved_folder("/home/me"), "/home/me");
-        assert_eq!(saved_folder(r"C:\src"), r"C:\src");
+        let want = if crate::platform::IS_WINDOWS { Folder::Forced(r"C:\src".into()) } else { Folder::Previous(r"C:\src".into()) };
+        assert_eq!(folder_for(&local, true), want);
+        let mut remote = session(80, 24, Table::new(), "s", Some("/home/u/src"));
+        remote.as_table_mut().unwrap().insert("Termurion Contents".into(), Value::String("x".into()));
+        assert_eq!(folder_for(&remote, true), Folder::Previous("/home/u/src".into()), "a remote path is kept as reported");
     }
 
     fn one_window(profile: Table) -> Vec<Value> {
@@ -1215,12 +1208,16 @@ mod tests {
         assert_eq!(inert_text("ok\x1b]52;c;SGVsbG8=\x07 done\r\nnext\ttab\x05"), "ok]52;c;SGVsbG8= done\r\nnext\ttab");
     }
 
-    #[cfg(windows)] // test: Windows drive paths
     #[test]
     fn osc7_folders_are_saved_as_windows_paths() {
-        assert_eq!(saved_folder("/C:/Users/me"), r"C:\Users\me");
-        assert_eq!(saved_folder(r"C:\src"), r"C:\src");
-        assert_eq!(saved_folder("/home/me"), "/home/me", "a remote POSIX path is kept");
+        if crate::platform::IS_WINDOWS {
+            assert_eq!(saved_folder("/C:/Users/me"), r"C:\Users\me");
+            assert_eq!(saved_folder(r"C:\src"), r"C:\src");
+            assert_eq!(saved_folder("/home/me"), "/home/me", "a remote POSIX path is kept");
+        } else {
+            assert_eq!(saved_folder("/home/me"), "/home/me");
+            assert_eq!(saved_folder(r"C:\src"), r"C:\src");
+        }
     }
 
     #[test]
