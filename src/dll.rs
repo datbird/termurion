@@ -213,8 +213,9 @@ mod tests {
     #[test]
     fn spawned_exe_names_are_cargo_bins() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("bin");
-        for exe in [crate::host_base::HOST_EXE, crate::utilities::EXE, crate::git_wrapper::WRAPPER_EXE] {
-            let stem = exe.strip_suffix(".exe").expect("an exe name");
+        let host = crate::host_base::host_exe();
+        for exe in [host.as_str(), crate::utilities::EXE, crate::git_wrapper::WRAPPER_EXE] {
+            let stem = exe.strip_suffix(".exe").unwrap_or(exe);
             assert!(dir.join(format!("{stem}.rs")).is_file(), "{exe} has no src/bin/{stem}.rs");
         }
         assert_eq!(crate::util_cli::EXE_STEM, crate::utilities::EXE.trim_end_matches(".exe"));

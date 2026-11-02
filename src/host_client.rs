@@ -526,12 +526,12 @@ impl Drop for HostedPty {
 }
 
 /// The session host program beside the app; `start_host_process` starts it by this file name.
-pub use crate::host_base::HOST_EXE;
+pub use crate::host_base::host_exe;
 
 /// Starts `termurion-host.exe` from `exe_dir`, detached from Termurion (its own process group,
 /// out of Termurion's job when Windows allows), so it outlives Termurion.
 pub fn start_host_process(exe_dir: &Path) -> Result<(), String> {
-    crate::platform::proc::start_detached(&exe_dir.join(HOST_EXE))
+    crate::platform::proc::start_detached(&exe_dir.join(host_exe()))
 }
 
 /// Connects to this user's host, starting it when none runs, waiting up to `wait`.
@@ -567,7 +567,7 @@ mod tests {
     fn a_changed_watch_clears_hosted_prompts() {
         let (name, _host) = start_host(Duration::from_secs(1));
         let (client, _) = connect(&name);
-        let pty = client.launch("cmd.exe /d /k", None, &[], 80, 24, quiet()).unwrap();
+        let pty = client.launch(crate::platform::by_os("cmd.exe /d /k", "env PS1=> ENV= /bin/sh -i"), None, &[], 80, 24, quiet()).unwrap();
         client.watch_prompts(Some(0.2));
         pty.slot.lock().unwrap().password_input = true;
         assert!(pty.password_input());
@@ -684,7 +684,7 @@ mod tests {
         let (name, _host) = start_host(Duration::from_secs(1));
         let (client, welcome) = connect(&name);
         assert_eq!(welcome.version, VERSION);
-        let pty = client.launch_transport(Transport::Pipes, "cmd.exe /d /c echo client-pipes", None, &[], 80, 24, quiet()).unwrap();
+        let pty = client.launch_transport(Transport::Pipes, crate::platform::by_os("cmd.exe /d /c echo client-pipes", "/bin/sh -c 'echo client-pipes'"), None, &[], 80, 24, quiet()).unwrap();
         read_until(&pty, "client-pipes");
         client.kill_all();
     }
@@ -720,7 +720,7 @@ mod tests {
         assert!(w.sessions.is_empty() && !w.instance.is_empty());
         let woke = Arc::new(AtomicUsize::new(0));
         let w2 = woke.clone();
-        let p = c.launch("cmd.exe /d /c echo hosted-hi & ping -n 30 127.0.0.1 >nul", None, &[], 80, 24, Arc::new(move || {
+        let p = c.launch(crate::platform::by_os("cmd.exe /d /c echo hosted-hi & ping -n 30 127.0.0.1 >nul", "/bin/sh -c 'echo hosted-hi; sleep 30'"), None, &[], 80, 24, Arc::new(move || {
             w2.fetch_add(1, Ordering::Relaxed);
         })).unwrap();
         assert!(p.pid() > 0);
@@ -747,7 +747,7 @@ mod tests {
     fn an_attached_pane_sets_its_size() {
         let (name, _host) = start_host(Duration::from_secs(1));
         let (c, _) = connect(&name);
-        let mut p = c.launch("cmd.exe /d /c ping -n 30 127.0.0.1 >nul", None, &[], 80, 24, quiet()).unwrap();
+        let mut p = c.launch(crate::platform::by_os("cmd.exe /d /c ping -n 30 127.0.0.1 >nul", "/bin/sh -c 'sleep 30'"), None, &[], 80, 24, quiet()).unwrap();
         let (id, pid) = (p.id(), p.pid());
         p.detach();
         drop(p);
@@ -771,7 +771,7 @@ mod tests {
     fn hosted_exit_code_arrives() {
         let (name, _host) = start_host(Duration::from_secs(1));
         let (c, _) = connect(&name);
-        let p = c.launch("cmd.exe /d /c exit 7", None, &[], 80, 24, quiet()).unwrap();
+        let p = c.launch(crate::platform::by_os("cmd.exe /d /c exit 7", "/bin/sh -c 'exit 7'"), None, &[], 80, 24, quiet()).unwrap();
         let end = Instant::now() + Duration::from_secs(10);
         while p.exit_code().is_none() {
             assert!(Instant::now() < end, "no exit");
@@ -785,8 +785,8 @@ mod tests {
     fn drop_kills_the_session() {
         let (name, _host) = start_host(Duration::from_secs(1));
         let (c, _) = connect(&name);
-        let kept = c.launch("cmd.exe /d /c ping -n 30 127.0.0.1 >nul", None, &[], 80, 24, quiet()).unwrap();
-        let gone = c.launch("cmd.exe /d /c ping -n 30 127.0.0.1 >nul", None, &[], 80, 24, quiet()).unwrap();
+        let kept = c.launch(crate::platform::by_os("cmd.exe /d /c ping -n 30 127.0.0.1 >nul", "/bin/sh -c 'sleep 30'"), None, &[], 80, 24, quiet()).unwrap();
+        let gone = c.launch(crate::platform::by_os("cmd.exe /d /c ping -n 30 127.0.0.1 >nul", "/bin/sh -c 'sleep 30'"), None, &[], 80, 24, quiet()).unwrap();
         let (kept_id, gone_id) = (kept.id(), gone.id());
         drop(gone);
         let mut detached = kept;
@@ -805,7 +805,7 @@ mod tests {
     fn reattach_continues_the_output() {
         let (name, _host) = start_host(Duration::from_secs(1));
         let (c, _) = connect(&name);
-        let mut p = c.launch("cmd.exe /d /c echo first-part & ping -n 3 127.0.0.1 >nul & echo second-part & ping -n 30 127.0.0.1 >nul", None, &[], 80, 24, quiet()).unwrap();
+        let mut p = c.launch(crate::platform::by_os("cmd.exe /d /c echo first-part & ping -n 3 127.0.0.1 >nul & echo second-part & ping -n 30 127.0.0.1 >nul", "/bin/sh -c 'echo first-part; sleep 3; echo second-part; sleep 30'"), None, &[], 80, 24, quiet()).unwrap();
         let first = read_until(&p, "first-part");
         let (id, at) = (p.id(), p.offset());
         p.detach();

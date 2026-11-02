@@ -1,8 +1,11 @@
 //! The bits of the session host that every module may use: its log and its exe name. The host
 //! itself (`host`, `host_client`) needs a pty, so it is not built everywhere.
 
-/// The session host program beside the app; `start_host_process` starts it by this file name.
-pub const HOST_EXE: &str = "termurion-host.exe";
+/// The session host program beside the app; `start_host_process` starts it by this file name
+/// (`termurion-host.exe` on Windows, `termurion-host` elsewhere).
+pub fn host_exe() -> String {
+    format!("termurion-host{}", std::env::consts::EXE_SUFFIX)
+}
 
 /// `host.log` beside Termurion's settings.
 pub fn log_path() -> std::path::PathBuf {

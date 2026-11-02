@@ -48,9 +48,28 @@ pub fn console_event(_pid: u32, _ctrl_break: bool, _stop: Arc<AtomicBool>) -> Jo
     std::thread::spawn(|| Err(Unsupported { feature: "Console signals" }.into()))
 }
 
-/// Starts a program detached from this process. Only the session host needs it, and it has no Unix backend yet.
-pub fn start_detached(_exe: &std::path::Path) -> Result<(), String> {
-    Err(Unsupported { feature: "Session host" }.into())
+/// Starts a program detached from this process: no stdio, a session of its own (so a closed
+/// terminal or a killed Termurion does not take it along). Only the session host needs it. A thread
+/// waits on the child so it never lingers as a zombie while Termurion runs.
+pub fn start_detached(exe: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    let mut cmd = Command::new(exe);
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    // SAFETY: setsid is async-signal-safe and touches nothing of ours.
+    unsafe {
+        cmd.pre_exec(|| if libc::setsid() < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
+    }
+    // Under the spawn gate, so a descriptor another thread has just made is never inherited.
+    let child = {
+        let _gate = super::pty::spawn_gate();
+        cmd.spawn()
+    };
+    let mut child = child.map_err(|e| format!("{}: {e}", exe.display()))?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// Waits up to 30 seconds for the process `pid` to end; at once when it is not there.

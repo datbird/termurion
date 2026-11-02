@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drives the real Termurion window on a private X server and says PASS or FAIL for one scenario.
-# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout
+# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, host
 #
 # Needs Xvfb, xdotool and ImageMagick's import. Proof is a file, not pixels: each pane runs
 # `echo $$ >> $SCRATCH/pids`, and a screenshot (screen.png) is kept for a person to look at.
@@ -14,8 +14,8 @@ repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo"
 scenario="${1:-}"
 case "$scenario" in
-    shell | layout) ;;
-    *) echo "usage: scripts/unix-gui-check <shell|layout>" >&2; exit 2 ;;
+    shell | layout | host) ;;
+    *) echo "usage: scripts/unix-gui-check <shell|layout|host>" >&2; exit 2 ;;
 esac
 for tool in Xvfb xdotool import; do
     command -v "$tool" > /dev/null || { echo "FAIL $scenario: $tool is not installed"; exit 1; }
@@ -53,6 +53,11 @@ for _ in $(seq 50); do [ -S "/tmp/.X11-unix/X${display#:}" ] && break; sleep 0.1
 [ -S "/tmp/.X11-unix/X${display#:}" ] || fail "Xvfb did not start"
 
 export DISPLAY="$display" SCRATCH="$scratch" SHELL=/bin/bash
+# The host scenario runs its shells in termurion-host (the setting is read at startup).
+if [ "$scenario" = host ]; then
+    mkdir -p "$scratch/home/.config/termurion"
+    printf '[settings]\nRunJobsInServers = true\n' > "$scratch/home/.config/termurion/settings.toml"
+fi
 env -u TMUX -u WAYLAND_DISPLAY -u XDG_CONFIG_HOME -u XDG_STATE_HOME HOME="$scratch/home" TMPDIR="$scratch/tmp" XDG_RUNTIME_DIR="$scratch/run" \
     "$repo/target/debug/termurion" > "$scratch/app.log" 2>&1 &
 app_pid=$!
@@ -82,6 +87,18 @@ case "$scenario" in
         type_pid_line
         shoot
         [ "$(sort -u "$scratch/pids" | wc -l)" -eq 1 ] || fail "expected one pid: $(tr '\n' ' ' < "$scratch/pids")"
+        ;;
+    host)
+        sleep 1
+        type_pid_line
+        shoot
+        shell_pid=$(head -1 "$scratch/pids")
+        parent=$(ps -o ppid= -p "$shell_pid" | tr -d ' ')
+        [ -n "$parent" ] || fail "no parent for the pane's shell $shell_pid"
+        parent_name=$(ps -o comm= -p "$parent")
+        [ "$parent_name" = termurion-host ] || fail "the pane's shell runs under '$parent_name', not termurion-host"
+        # A host that did not start shows the "Shells run inside Termurion" banner and runs the shell
+        # under the app instead, so the parent above is the proof; the banner itself is UI only.
         ;;
     layout)
         sleep 1

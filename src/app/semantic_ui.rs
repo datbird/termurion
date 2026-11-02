@@ -888,7 +888,7 @@ mod tests {
         ("platform/windows/proc.rs", "command_for_line", "the builder itself: cmd.exe with the one argument builder (semantic::cmd_args, which refuses what cmd.exe reads as syntax); nothing is started here and its callers are checked through the command_for_line( token"),
         ("platform/unix/proc.rs", "command_for_line", "the Unix backend: it builds nothing and reports Unsupported"),
         ("platform/windows/proc.rs", "start_detached", "the spawn funnel itself: it runs the path it is given; its callers are checked through the start_detached( token"),
-        ("platform/unix/proc.rs", "start_detached", "the Unix backend: it starts nothing and reports Unsupported"),
+        ("platform/unix/proc.rs", "start_detached", "the spawn funnel itself on Unix: it runs the path it is given, null stdio, its own session; its callers are checked through the start_detached( token"),
         ("host.rs", "reopen_app", "restarts Termurion's own exe, found beside the host's own exe"),
         ("probe.rs", "wsl", "`wsl.exe` with Termurion's own arguments"),
         ("platform/windows/pty.rs", "start", "a pane's shell, from its profile"),

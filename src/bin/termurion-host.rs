@@ -8,11 +8,37 @@ fn main() {
     termurion::crashdump::install();
     #[cfg(windows)]
     std::process::exit(run());
-    #[cfg(not(windows))]
-    {
-        // No session host yet: say so on the terminal that started it, as the platform layer words it.
-        eprintln!("{}", termurion::platform::Unsupported { feature: "The session host" });
-        std::process::exit(1);
+    #[cfg(unix)]
+    std::process::exit(run());
+}
+
+#[cfg(unix)]
+fn run() -> i32 {
+    use termurion::host;
+    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(std::path::PathBuf::from)).unwrap_or_default();
+    let api = match termurion::platform::pty::load_for_app(&exe_dir) {
+        Ok((api, _)) => api,
+        Err(e) => {
+            host::log(&format!("no pty: {e}"));
+            return 1;
+        }
+    };
+    let name = match termurion::platform::ipc::host_pipe_name() {
+        Ok(n) => n,
+        Err(e) => {
+            host::log(&e);
+            return 1;
+        }
+    };
+    // A vanished Termurion is started again from this folder (`host_watch`).
+    let app = exe_dir.join("termurion");
+    let opts = host::Options { reopen: app.is_file().then_some(app), ..host::Options::default() };
+    match host::run(&name, api, opts) {
+        Ok(()) => 0,
+        Err(e) => {
+            host::log(&e);
+            1
+        }
     }
 }
 

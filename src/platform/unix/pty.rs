@@ -46,6 +46,11 @@ static REGISTRY: Mutex<Option<HashMap<u32, Arc<OwnedFd>>>> = Mutex::new(None);
 /// forks inside the gap between `openpty` and the close-on-exec flag.
 static SPAWN_LOCK: Mutex<()> = Mutex::new(());
 
+/// The spawn gate, for any other code that makes a descriptor which must not leak into a child.
+pub(super) fn spawn_gate() -> std::sync::MutexGuard<'static, ()> {
+    SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn registry<T>(f: impl FnOnce(&mut HashMap<u32, Arc<OwnedFd>>) -> T) -> T {
     let mut g = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
     f(g.get_or_insert_with(HashMap::new))

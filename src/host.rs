@@ -636,7 +636,7 @@ pub(crate) mod tests {
         let (name, _host) = start_host(Duration::from_secs(1));
         let c = Conn::open(&name);
         assert!(c.hello().is_empty());
-        let id = c.launch("cmd.exe /d /c echo hello-host");
+        let id = c.launch(crate::platform::by_os("cmd.exe /d /c echo hello-host", "/bin/sh -c 'echo hello-host'"));
         c.output_until(id, "hello-host");
         assert_eq!(c.wait(|m| matches!(m, Msg::Exited { id: i, .. } if *i == id).then_some(())), ());
     }
@@ -647,7 +647,7 @@ pub(crate) mod tests {
         let (name, _host) = start_host(Duration::from_secs(1));
         let c = Conn::open(&name);
         c.hello();
-        let id = c.launch_with("cmd.exe /d /c echo [%ITERM_PROFILE%^]", vec!["ITERM_PROFILE=Hosted".into()]);
+        let id = c.launch_with(crate::platform::by_os("cmd.exe /d /c echo [%ITERM_PROFILE%^]", "/bin/sh -c 'echo [$ITERM_PROFILE]'"), vec!["ITERM_PROFILE=Hosted".into()]);
         c.output_until(id, "[Hosted]");
     }
 
@@ -658,7 +658,7 @@ pub(crate) mod tests {
         let c = Conn::open(&name);
         c.hello();
         let launch = |tag: u64, transport: u8| {
-            c.send(&Msg::LaunchWith { tag, cmdline: "cmd.exe /d /c echo hosted-pipes".into(), cwd: String::new(), env: vec![], cols: 80, rows: 24, transport });
+            c.send(&Msg::LaunchWith { tag, cmdline: crate::platform::by_os("cmd.exe /d /c echo hosted-pipes", "/bin/sh -c 'echo hosted-pipes'").into(), cwd: String::new(), env: vec![], cols: 80, rows: 24, transport });
             c.wait(|m| match m {
                 Msg::Launched { tag: t, id, .. } if *t == tag => Some(Ok(*id)),
                 Msg::LaunchFailed { tag: t, error } if *t == tag => Some(Err(error.clone())),
@@ -675,7 +675,7 @@ pub(crate) mod tests {
         let (name, _host) = start_host(Duration::from_secs(1));
         let c = Conn::open(&name);
         c.hello();
-        let id = c.launch("cmd.exe /d /c ping -n 2 127.0.0.1 >nul & echo later-text & ping -n 30 127.0.0.1 >nul");
+        let id = c.launch(crate::platform::by_os("cmd.exe /d /c ping -n 2 127.0.0.1 >nul & echo later-text & ping -n 30 127.0.0.1 >nul", "/bin/sh -c 'sleep 1; echo later-text; sleep 30'"));
         c.close();
         std::thread::sleep(Duration::from_secs(3));
         let c = Conn::open(&name);
@@ -696,7 +696,7 @@ pub(crate) mod tests {
         let (name, _host) = start_host(Duration::from_secs(1));
         let c = Conn::open(&name);
         c.hello();
-        let id = c.launch("cmd.exe /d /c echo before-pause & ping -n 3 127.0.0.1 >nul & echo after-pause & ping -n 30 127.0.0.1 >nul");
+        let id = c.launch(crate::platform::by_os("cmd.exe /d /c echo before-pause & ping -n 3 127.0.0.1 >nul & echo after-pause & ping -n 30 127.0.0.1 >nul", "/bin/sh -c 'echo before-pause; sleep 3; echo after-pause; sleep 30'"));
         c.output_until(id, "before-pause");
         c.send(&Msg::Pause { id, paused: true });
         std::thread::sleep(Duration::from_millis(200));
@@ -829,7 +829,7 @@ pub(crate) mod tests {
             Msg::Welcome { version, .. } => Some(*version),
             _ => None,
         }), 1);
-        let id = old.launch("cmd.exe /d /c echo old-termurion");
+        let id = old.launch(crate::platform::by_os("cmd.exe /d /c echo old-termurion", "/bin/sh -c 'echo old-termurion'"));
         old.output_until(id, "old-termurion");
         old.close();
         std::thread::sleep(Duration::from_millis(300));
@@ -841,7 +841,7 @@ pub(crate) mod tests {
             _ => None,
         }), 2);
         new.send(&Msg::WatchPrompts { debounce_ms: Some(200) });
-        let id = new.launch("cmd.exe /d /c echo new-termurion");
+        let id = new.launch(crate::platform::by_os("cmd.exe /d /c echo new-termurion", "/bin/sh -c 'echo new-termurion'"));
         new.output_until(id, "new-termurion");
         new.send(&Msg::WatchPrompts { debounce_ms: None });
         new.close();
@@ -870,7 +870,7 @@ pub(crate) mod tests {
         let b = Conn::open(&name);
         b.send(&Msg::Hello { version: crate::host_proto::VERSION });
         b.wait(|m| matches!(m, Msg::Refused { .. }).then_some(()));
-        let id = a.launch("cmd.exe /d /c echo still-mine");
+        let id = a.launch(crate::platform::by_os("cmd.exe /d /c echo still-mine", "/bin/sh -c 'echo still-mine'"));
         a.output_until(id, "still-mine");
     }
 
@@ -879,7 +879,7 @@ pub(crate) mod tests {
         let (name, host) = start_host(Duration::from_millis(500));
         let c = Conn::open(&name);
         c.hello();
-        let id = c.launch("cmd.exe /d /c exit 3");
+        let id = c.launch(crate::platform::by_os("cmd.exe /d /c exit 3", "/bin/sh -c 'exit 3'"));
         let code = c.wait(|m| match m {
             Msg::Exited { id: i, code } if *i == id => Some(*code),
             _ => None,
