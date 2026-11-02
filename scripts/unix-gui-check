@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Drives the real Termurion window on a private X server and says PASS or FAIL for one scenario.
+# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout
+#
+# Needs Xvfb, xdotool and ImageMagick's import. Proof is a file, not pixels: each pane runs
+# `echo $$ >> $SCRATCH/pids`, and a screenshot (screen.png) is kept for a person to look at.
+# The app runs with HOME, TMPDIR, APPDATA and XDG_RUNTIME_DIR under target/gui-check/<scenario>/.
+# Keys go through XTEST (xdotool type/key, never --window), with no window manager, so the
+# window is focused by hand. No chord uses the Super key: Command is Ctrl+Shift (shortcut_key.rs),
+# so New Tab (newSession:, Cmd+T) is ctrl+shift+t and Split Vertically (splitVertically:, Cmd+D)
+# is ctrl+shift+d.
+set -uo pipefail
+repo="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$repo"
+scenario="${1:-}"
+case "$scenario" in
+    shell | layout) ;;
+    *) echo "usage: scripts/unix-gui-check <shell|layout>" >&2; exit 2 ;;
+esac
+for tool in Xvfb xdotool import; do
+    command -v "$tool" > /dev/null || { echo "FAIL $scenario: $tool is not installed"; exit 1; }
+done
+# shellcheck disable=SC1090
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+
+display=:97
+scratch="$repo/target/gui-check/$scenario"
+rm -rf "$scratch"
+mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/run" "$scratch/appdata/Termurion"
+chmod 700 "$scratch/run"
+: > "$scratch/pids"
+
+xvfb_pid="" app_pid=""
+cleanup() {
+    [ -n "$app_pid" ] && kill "$app_pid" 2> /dev/null
+    # A session host this run started holds this scratch XDG_RUNTIME_DIR in its environment.
+    for p in /proc/[0-9]*; do
+        [ -r "$p/comm" ] && [ "$(cat "$p/comm" 2> /dev/null)" = termurion-host ] \
+            && tr '\0' '\n' < "$p/environ" 2> /dev/null | grep -qx "XDG_RUNTIME_DIR=$scratch/run" \
+            && kill "${p#/proc/}" 2> /dev/null
+    done
+    [ -n "$xvfb_pid" ] && kill "$xvfb_pid" 2> /dev/null
+    return 0
+}
+trap cleanup EXIT
+fail() { echo "FAIL $scenario: $1"; exit 1; }
+
+cargo build --bins > "$scratch/build.log" 2>&1 || { tail -5 "$scratch/build.log" >&2; fail "cargo build --bins"; }
+
+Xvfb "$display" -screen 0 1600x1000x24 -nolisten tcp > "$scratch/xvfb.log" 2>&1 &
+xvfb_pid=$!
+for _ in $(seq 50); do [ -S "/tmp/.X11-unix/X${display#:}" ] && break; sleep 0.1; done
+[ -S "/tmp/.X11-unix/X${display#:}" ] || fail "Xvfb did not start"
+
+export DISPLAY="$display" SCRATCH="$scratch" SHELL=/bin/bash
+env -u TMUX -u WAYLAND_DISPLAY HOME="$scratch/home" TMPDIR="$scratch/tmp" APPDATA="$scratch/appdata" XDG_RUNTIME_DIR="$scratch/run" \
+    "$repo/target/debug/termurion" > "$scratch/app.log" 2>&1 &
+app_pid=$!
+
+win=$(timeout 30 xdotool search --sync --onlyvisible --pid "$app_pid" 2> /dev/null | tail -1)
+[ -n "$win" ] || fail "no window for pid $app_pid (see $scratch/app.log)"
+xdotool windowfocus --sync "$win" 2> /dev/null || true
+sleep 2
+
+# Types the pid line into whichever pane has focus, then waits for it to land in the file.
+want=0
+type_pid_line() {
+    xdotool type --delay 20 'echo $$ >> "$SCRATCH/pids"'
+    xdotool key Return
+    want=$((want + 1))
+    for _ in $(seq 100); do
+        [ "$(wc -l < "$scratch/pids")" -ge "$want" ] && return 0
+        sleep 0.1
+    done
+    fail "pane $want never wrote its pid (see $scratch/screen.png)"
+}
+shoot() { import -window root "$scratch/screen.png" 2> /dev/null || true; }
+
+case "$scenario" in
+    shell)
+        sleep 1
+        type_pid_line
+        shoot
+        [ "$(sort -u "$scratch/pids" | wc -l)" -eq 1 ] || fail "expected one pid: $(tr '\n' ' ' < "$scratch/pids")"
+        ;;
+    layout)
+        sleep 1
+        type_pid_line
+        # New tab (Cmd+T, newSession:), then Split Vertically (Cmd+D, splitVertically:).
+        xdotool key ctrl+shift+t
+        sleep 1.5
+        type_pid_line
+        xdotool key ctrl+shift+d
+        sleep 1.5
+        type_pid_line
+        shoot
+        [ "$(sort -u "$scratch/pids" | wc -l)" -eq 3 ] || fail "expected 3 distinct pids: $(tr '\n' ' ' < "$scratch/pids")"
+        ;;
+esac
+kill -0 "$app_pid" 2> /dev/null || fail "the app died (see $scratch/app.log)"
+echo "PASS $scenario"

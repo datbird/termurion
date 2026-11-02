@@ -1901,14 +1901,6 @@ pub struct App {
     restoring_windows: bool,
 }
 
-/// pwsh.exe when it is on the PATH, else Windows PowerShell.
-fn default_shell() -> String {
-    let found = std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).any(|d| d.join("pwsh.exe").is_file()))
-        .unwrap_or(false);
-    if found { "pwsh.exe -NoLogo".into() } else { "powershell.exe -NoLogo".into() }
-}
-
 fn message_box(text: &str) {
     crate::platform::dialog::message(None, "Termurion", text, crate::platform::dialog::Kind::Error);
 }
@@ -2457,7 +2449,7 @@ pub fn run() {
         global_error: None,
         global_generation: 1,
         api,
-        shell: default_shell(),
+        shell: crate::platform::pty::default_shell(),
         gpu: None,
         tabs: Vec::new(),
         active: 0,
@@ -4221,7 +4213,7 @@ impl App {
         // TERM is the profile's Terminal Type, only when nothing else names it (`PS:3253-3255`).
         // Decided before the POSIX variables (which never name TERM) so a WSL session's
         // `WSLENV` can list it (P17); the entry still goes last.
-        let term = crate::session_env::term_var(&env, std::env::var_os("TERM").is_some(), &p.terminal_type());
+        let term = crate::session_env::term_var(&env, crate::platform::pty::inherits_term(), &p.terminal_type());
         // The POSIX variables follow, never interleaved (`PS:3284-3366`); `merge` puts them over
         // the inherited block.
         let posix = self.posix(p, cmd, term.is_some());

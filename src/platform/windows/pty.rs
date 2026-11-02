@@ -194,6 +194,19 @@ fn coord(cols: u16, rows: u16) -> COORD {
     COORD { X: cols as i16, Y: rows as i16 }
 }
 
+/// pwsh.exe when it is on the PATH, else Windows PowerShell.
+pub fn default_shell() -> String {
+    let found = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).any(|d| d.join("pwsh.exe").is_file()))
+        .unwrap_or(false);
+    if found { "pwsh.exe -NoLogo".into() } else { "powershell.exe -NoLogo".into() }
+}
+
+/// Whether the environment Termurion inherited names a `TERM` the child gets too.
+pub fn inherits_term() -> bool {
+    std::env::var_os("TERM").is_some()
+}
+
 pub fn spawn(api: &Api, cmdline: &str, cols: u16, rows: u16) -> Result<Pty, String> {
     spawn_notify(api, cmdline, None, &[], cols, rows, Arc::new(|| {}))
 }
@@ -651,20 +664,7 @@ impl Pty {
     /// Reads until `needle` appears. Ok with everything read on a hit, Err with
     /// everything read on timeout.
     pub fn read_until(&self, needle: &[u8], wait: Duration) -> Result<Vec<u8>, Vec<u8>> {
-        let end = Instant::now() + wait;
-        let mut all = Vec::new();
-        loop {
-            if all.windows(needle.len()).any(|w| w == needle) {
-                return Ok(all);
-            }
-            let left = end.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return Err(all);
-            }
-            if let Some(chunk) = self.read_timeout(left.min(Duration::from_millis(50))) {
-                all.extend(chunk);
-            }
-        }
+        crate::platform::pty::read_until_with(|d| self.read_timeout(d), needle, wait)
     }
 
     /// Waits for the child to exit and returns its exit code.

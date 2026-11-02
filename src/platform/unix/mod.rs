@@ -26,6 +26,7 @@ pub mod metrics;
 pub mod gitrun;
 pub mod logout;
 pub mod net;
+pub mod paths;
 pub mod notify;
 pub mod print;
 pub mod privacy;

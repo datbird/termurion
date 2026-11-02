@@ -2,17 +2,22 @@
 # Counts compile errors on Linux (here) and macOS (ssh funtimes). Exits 1 if either is non-zero.
 # The count is diagnostic lines across the lib and lib-test targets, not unique errors.
 # CHECK_UNIX_MAC_HOST overrides the macOS ssh host (default funtimes).
-# Usage: scripts/check-unix [--linux-only | --mac-only]
+# With --test it runs `cargo test --lib` instead and prints "<os>: P passed, F failed" with the failing names.
+# FILTER is one or more space separated test name filters (default: every lib test).
+# Usage: scripts/check-unix [--linux-only | --mac-only] [--test [FILTER]]
 set -uo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo"
-do_linux=1; do_mac=1
-case "${1:-}" in
-    --linux-only) do_mac=0 ;;
-    --mac-only) do_linux=0 ;;
-    "") ;;
-    *) echo "usage: scripts/check-unix [--linux-only | --mac-only]" >&2; exit 2 ;;
-esac
+do_linux=1; do_mac=1; do_test=0; filter=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --linux-only) do_mac=0 ;;
+        --mac-only) do_linux=0 ;;
+        --test) do_test=1; shift; filter="$*"; break ;;
+        *) echo "usage: scripts/check-unix [--linux-only | --mac-only] [--test [FILTER]]" >&2; exit 2 ;;
+    esac
+    shift
+done
 bad=0
 # Short format puts each diagnostic as path:line:col: error[..], so match those (plus bare error: lines from cargo itself, minus the summary).
 count() { grep -E '^([^ ]+:[0-9]+:[0-9]+: )?error' | grep -vc 'could not compile' || true; }
@@ -31,7 +36,33 @@ report() {
     [ "$n" -ne 0 ] && bad=1
     return 0
 }
-if [ "$do_linux" = 1 ]; then
+# Runs the lib tests, prints "<os>: P passed, F failed" and the failing names. Exit 1 on a failure.
+# A run that built nothing (no "test result" line) did not really run: exit 2.
+test_report() {
+    local os="$1"; shift
+    local out p=0 f=0 line
+    out=$("$@" 2>&1)
+    while read -r line; do
+        p=$((p + $(sed -n 's/.* \([0-9]*\) passed.*/\1/p' <<<"$line")))
+        f=$((f + $(sed -n 's/.* \([0-9]*\) failed.*/\1/p' <<<"$line")))
+    done < <(grep '^test result:' <<<"$out")
+    if ! grep -q '^test result:' <<<"$out"; then
+        echo "$os: tests did not run"
+        printf '%s\n' "$out" | tail -8 >&2
+        exit 2
+    fi
+    echo "$os: $p passed, $f failed"
+    if [ "$f" -ne 0 ]; then
+        sed -n '/^failures:$/,/^test result:/p' <<<"$out" | grep -E '^    [A-Za-z_0-9:]+$' | sort -u | sed 's/^   /  FAILED/'
+        bad=1
+    fi
+    return 0
+}
+if [ "$do_linux" = 1 ] && [ "$do_test" = 1 ]; then
+    [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+    # shellcheck disable=SC2086
+    test_report linux cargo test --lib -- $filter
+elif [ "$do_linux" = 1 ]; then
     # shellcheck disable=SC1090
     [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
     report linux cargo check --all-targets --message-format short
@@ -39,6 +70,10 @@ fi
 if [ "$do_mac" = 1 ]; then
     host="${CHECK_UNIX_MAC_HOST:-funtimes}"
     rsync -rt --delete --exclude target/ --exclude .git/ --exclude .superpowers/ ./ "$host:src/termurion/" || { echo "macos: check did not run"; exit 2; }
-    report macos ssh "$host" 'cd src/termurion && ~/.cargo/bin/cargo check --all-targets --message-format short'
+    if [ "$do_test" = 1 ]; then
+        test_report macos ssh "$host" "cd src/termurion && ~/.cargo/bin/cargo test --lib -- $filter"
+    else
+        report macos ssh "$host" 'cd src/termurion && ~/.cargo/bin/cargo check --all-targets --message-format short'
+    fi
 fi
 exit $bad

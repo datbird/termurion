@@ -33,6 +33,7 @@ pub mod metrics;
 pub mod gitrun;
 pub mod logout;
 pub mod net;
+pub mod paths;
 pub mod notify;
 pub mod print;
 pub mod privacy;
@@ -60,6 +61,12 @@ pub const OS_NAME: &str = "Linux";
 
 /// True on Windows; for the odd value that only differs by OS (a test's expectation, a backend list).
 pub const IS_WINDOWS: bool = cfg!(windows);
+
+/// A test's value that differs by OS: the Windows string byte for byte, or the Unix one.
+#[cfg(test)]
+pub fn by_os<'a>(windows: &'a str, unix: &'a str) -> &'a str {
+    if IS_WINDOWS { windows } else { unix }
+}
 
 /// A feature that has no implementation on this OS yet.
 #[derive(Debug, Clone, PartialEq, Eq)]

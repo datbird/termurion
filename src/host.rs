@@ -732,7 +732,7 @@ pub(crate) mod tests {
     fn the_prompt_watch_skips_paused_and_unattached_sessions() {
         let api = api();
         let session = |attached: bool| {
-            let pty = crate::platform::pty::spawn(&api, "cmd.exe /d /k", 80, 24).unwrap();
+            let pty = crate::platform::pty::spawn(&api, crate::platform::by_os("cmd.exe /d /k", "env PS1=> ENV= /bin/sh -i"), 80, 24).unwrap();
             let pid = pty.pid();
             Session { pty: Some(pty), ring: Ring::new(16), pid, cmdline: String::new(), cwd: String::new(), cols: 80, rows: 24, exited: None, attached, pending: 0, prompt: Default::default() }
         };

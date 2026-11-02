@@ -7,6 +7,7 @@
 #![allow(clippy::field_reassign_with_default)]
 
 pub mod platform;
+pub mod posix_words;
 pub mod mouse;
 pub mod scrollbar;
 pub mod cursor_look;

@@ -778,6 +778,8 @@ mod tests {
         "shell_verb(",
         "start_coprocess(",
         "start_coprocess_titled(",
+        // The pty spawn funnel: a pane's shell from its profile; any caller is audited like a spawn itself.
+        "spawn_transport(",
         "reveal_in_explorer(",
         "Command::new(",
         "ShellExecuteW(",
@@ -787,6 +789,10 @@ mod tests {
 
     /// Callers of a sink whose input is not text a remote host wrote, and why.
     const NOT_PANE_TEXT: &[(&str, &str, &str)] = &[
+        ("platform/unix/pty.rs", "spawn_transport", "starts a pane's shell from its profile's command line (split into words, never handed to a shell), never pane text"),
+        ("platform/unix/pty.rs", "spawn_notify", "starts a pane's shell from its profile's command line (split into words, never handed to a shell), never pane text"),
+        ("pane.rs", "start_transport", "starts a pane's shell from its profile, never pane text"),
+        ("host.rs", "launch", "starts a hosted session's shell from the profile's command line the client sent, never pane text"),
         ("settings_effects.rs", "open_folder", "shows Termurion's own RenderPlugins folder beside its settings (render_fx::user_dir) on the person's click, never pane text; nothing is run"),
         ("app/browser_extensions_app.rs", "browser_extensions_reveal", "only SELECTS the extensions folder in Explorer: a local drive path (root_ok, judged) the profile or the default names, never pane text; nothing is opened or run"),
         ("app/transfers_ui.rs", "transfer_picked", "Open is the person's click on a file Termurion itself saved from a transfer: a program or script type was saved as `name.ext.download`, a type the shell reads on listing was refused (inert_files), and the path comes from the transfer list, never pane text"),
@@ -1013,7 +1019,7 @@ mod tests {
     /// `remote_text` and no listing, is reported; the same call in a GATED function is not.
     #[test]
     fn a_planted_ungated_opening_call_fails_the_gate() {
-        for call in ["self.open_link(text, Style::Tab, false, None)", "self.open_link_system(text, false)", "self.open_url_in_browser(text, Style::Tab, None)", "self.open_link_answered(text, Style::Tab, false, None, false, 0)", "self.upsell_answered(text, 1)", "self.execute_with(id, run, None, exec)", "self.browser_page_open(pane, text, PageOpen::Tab, el)", "crate::platform::shell_open::open(text)", "crate::platform::shell_open::open_with(text, false)", "crate::platform::proc::start_detached(text)", "crate::platform::proc::command_for_line(text)", "crate::platform::http::fetch_text(text, None)", "crate::platform::shell_open::reveal(text)", "crate::platform::shell_open::reveal_all(text)", "crate::platform::shell_open::open_scheme(text, false)"] {
+        for call in ["self.open_link(text, Style::Tab, false, None)", "self.open_link_system(text, false)", "self.open_url_in_browser(text, Style::Tab, None)", "self.open_link_answered(text, Style::Tab, false, None, false, 0)", "self.upsell_answered(text, 1)", "self.execute_with(id, run, None, exec)", "self.browser_page_open(pane, text, PageOpen::Tab, el)", "crate::platform::shell_open::open(text)", "crate::platform::shell_open::open_with(text, false)", "crate::platform::proc::start_detached(text)", "crate::platform::proc::command_for_line(text)", "crate::platform::http::fetch_text(text, None)", "crate::platform::shell_open::reveal(text)", "crate::platform::shell_open::reveal_all(text)", "crate::platform::shell_open::open_scheme(text, false)", "crate::platform::pty::spawn_transport(&api, t, text, None, &[], 80, 24, n)"] {
             let mut files = real_sources();
             files.push(("app/planted.rs".to_string(), format!("impl App {{\n    fn evil(&mut self, text: &str) {{\n        {call};\n    }}\n}}\n")));
             let (wrong, _) = gate_violations(&files);

@@ -3786,6 +3786,14 @@ mod tests {
         assert!(!p.frozen);
     }
 
+    /// A shell that stays up and prompts with `>`, as cmd does.
+    const SH_I: &str = "env PS1=> ENV= /bin/sh -i";
+
+    /// `win` on Windows, the shell command `unix` elsewhere.
+    fn by_os<'a>(win: &'a str, unix: &'a str) -> &'a str {
+        crate::platform::by_os(win, unix)
+    }
+
     fn start(cmd: &str) -> Pane {
         let api = crate::platform::pty::test_api();
         Pane::start(1, &api, cmd, None, &[], 80, 24, Arc::new(|| {})).unwrap()
@@ -3807,7 +3815,7 @@ mod tests {
     /// pty and restores it so the program redraws; off, the pty is not resized.
     #[test]
     fn clear_buffer_jiggles_when_asked() {
-        let mut p = start("cmd.exe");
+        let mut p = start(by_os("cmd.exe", SH_I));
         clear_then_jiggle(&mut p, false);
         assert!(p.resizes_for_test.is_empty(), "off: no resize");
         clear_then_jiggle(&mut p, true);
@@ -3816,7 +3824,7 @@ mod tests {
 
     #[test]
     fn ended_pane_keeps_its_screen() {
-        let mut p = start("cmd.exe /c echo termurion-end");
+        let mut p = start(by_os("cmd.exe /c echo termurion-end", "/bin/sh -c 'echo termurion-end'"));
         assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
         // The rest of the output may still be on its way.
         assert!(pump_until(&mut p, |p| p.screen.all_text().contains("termurion-end")), "{:?}", p.screen.all_text());
@@ -3829,13 +3837,13 @@ mod tests {
 
     #[test]
     fn relaunch_keeps_the_screen() {
-        let mut a = start("cmd.exe /c echo first-run");
+        let mut a = start(by_os("cmd.exe /c echo first-run", "/bin/sh -c 'echo first-run'"));
         assert!(pump_until(&mut a, |p| p.exited.is_some()), "no exit");
         assert!(pump_until(&mut a, |p| p.screen.all_text().contains("first-run")), "{:?}", a.screen.all_text());
         a.ended = true;
         a.own_mut().feed(b"\x1b[?1000h");
         assert_ne!(a.screen.mouse_modes().tracking, crate::mouse::Tracking::Off);
-        let b = start("cmd.exe /c echo second-run");
+        let b = start(by_os("cmd.exe /c echo second-run", "/bin/sh -c 'echo second-run'"));
         let mut a = Pane::relaunch(a, b);
         assert_eq!(a.exited, None);
         assert!(!a.ended);
@@ -3850,12 +3858,12 @@ mod tests {
     /// shell is not answered for another).
     #[test]
     fn the_shell_generation_moves_with_exit_and_restart() {
-        let mut a = start("cmd.exe /c echo gen");
+        let mut a = start(by_os("cmd.exe /c echo gen", "/bin/sh -c 'echo gen'"));
         let first = a.shell_gen;
         assert!(pump_until(&mut a, |p| p.exited.is_some()), "no exit");
         let ended = a.shell_gen;
         assert!(ended > first, "an exit is a new state of the pane");
-        let b = start("cmd.exe /q /k");
+        let b = start(by_os("cmd.exe /q /k", SH_I));
         let mut c = Pane::relaunch(a, b);
         assert!(c.shell_gen > ended, "a restart is a new shell");
         let live = c.shell_gen;
@@ -3867,7 +3875,7 @@ mod tests {
     /// console (B8's ruling counts resizes).
     #[test]
     fn an_ended_pane_resizes_its_screen_not_its_console() {
-        let mut p = start("cmd.exe /c exit 0");
+        let mut p = start(by_os("cmd.exe /c exit 0", "/bin/sh -c 'exit 0'"));
         assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
         let before = touches();
         assert!(p.resize(40, 9), "the size changed");
@@ -3880,7 +3888,7 @@ mod tests {
     /// Item 22: a write that a dead pane refuses leaves the composer's probe alone.
     #[test]
     fn a_refused_write_keeps_the_composer_probe() {
-        let mut p = start("cmd.exe /c exit 0");
+        let mut p = start(by_os("cmd.exe /c exit 0", "/bin/sh -c 'exit 0'"));
         assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
         p.composer.probe = crate::prompt_state::ClearProbe::start(b"\x08", Instant::now());
         assert!(p.composer.probe.is_some());
@@ -4006,7 +4014,7 @@ mod tests {
 
     #[test]
     fn ended_pane_takes_no_input() {
-        let mut p = start("cmd.exe /c exit 0");
+        let mut p = start(by_os("cmd.exe /c exit 0", "/bin/sh -c 'exit 0'"));
         assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
         // Buffer Input holds what is typed: an ended pane holds nothing.
         p.buffer.on = true;
@@ -4034,7 +4042,7 @@ mod tests {
 
     #[test]
     fn ended_pane_has_no_shell_pid() {
-        let mut p = start("cmd.exe /c exit 0");
+        let mut p = start(by_os("cmd.exe /c exit 0", "/bin/sh -c 'exit 0'"));
         assert!(p.shell_pid().is_some(), "a running shell has its pid");
         assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
         assert_eq!(p.shell_pid(), None, "Windows reuses pids");
@@ -4063,7 +4071,7 @@ mod tests {
 
     #[test]
     fn clear_buffer_skips_an_ended_pane() {
-        let mut p = start("cmd.exe /c echo gone");
+        let mut p = start(by_os("cmd.exe /c echo gone", "/bin/sh -c 'echo gone'"));
         assert!(pump_until(&mut p, |p| p.exited.is_some()), "no exit");
         let before = touches();
         p.clear();
@@ -4074,7 +4082,7 @@ mod tests {
 
     #[test]
     fn a_live_shell_ends_before_its_restart() {
-        let mut p = start("cmd.exe /q /k");
+        let mut p = start(by_os("cmd.exe /q /k", SH_I));
         assert!(p.pty.is_some() && p.exited.is_none(), "a running shell");
         p.end_live_shell();
         assert!(p.exited.is_some(), "the pane is ended");
@@ -4100,9 +4108,9 @@ mod tests {
 
     #[test]
     fn clear_buffer_keeps_conpty_in_step() {
-        let mut p = start("cmd.exe");
+        let mut p = start(by_os("cmd.exe", SH_I));
         assert!(pump_until(&mut p, |p| p.screen.text().contains('>')), "no prompt");
-        p.input(b"for /l %i in (1,1,30) do @echo L%i\r");
+        p.input(by_os("for /l %i in (1,1,30) do @echo L%i\r", "i=1; while [ $i -le 30 ]; do echo L$i; i=$((i+1)); done\r").as_bytes());
         assert!(pump_until(&mut p, |p| {
             let t = p.screen.all_text();
             t.contains("L30\n") && t.trim_end().ends_with('>')
@@ -4183,20 +4191,21 @@ mod tests {
         let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/shell_integration/termurion_shell_integration.ps1");
         // Windows PowerShell 5.1 is on every Windows machine, and is the older of the two
         // PowerShells the script supports.
-        let cmd = format!("powershell.exe -NoProfile -NoLogo -Command \". '{}'; prompt; Start-Sleep -Milliseconds 300\"", script.display());
+        let exe = by_os("powershell.exe", "pwsh");
+        let cmd = format!("{exe} -NoProfile -NoLogo -Command \". '{}'; prompt; Start-Sleep -Milliseconds 300\"", script.display());
         let mut p = start(&cmd);
         assert!(pump_until(&mut p, |p| p.exited.is_some()), "pwsh did not finish");
         p.pump();
         assert_eq!(p.screen.marks_in_order().len(), 1, "{}", p.screen.all_text());
-        assert!(p.screen.shell.cwd.as_deref().is_some_and(|c| c.contains(':')), "{:?}", p.screen.shell.cwd);
-        assert_eq!(p.screen.shell.shell.as_deref(), Some("powershell"));
+        assert!(p.screen.shell.cwd.as_deref().is_some_and(|c| c.contains(by_os(":", "/"))), "{:?}", p.screen.shell.cwd);
+        assert_eq!(p.screen.shell.shell.as_deref(), Some(by_os("powershell", "pwsh")));
     }
 
     #[test]
     fn clear_to_last_mark_keeps_conpty_in_step() {
-        let mut p = start("cmd.exe");
+        let mut p = start(by_os("cmd.exe", SH_I));
         assert!(pump_until(&mut p, |p| p.screen.text().contains('>')), "no prompt");
-        p.input(b"for /l %i in (1,1,30) do @echo L%i\r");
+        p.input(by_os("for /l %i in (1,1,30) do @echo L%i\r", "i=1; while [ $i -le 30 ]; do echo L$i; i=$((i+1)); done\r").as_bytes());
         assert!(pump_until(&mut p, |p| {
             let t = p.screen.all_text();
             t.contains("L30\n") && t.trim_end().ends_with('>')
@@ -4224,7 +4233,7 @@ mod tests {
             "function prompt {{ if ($?) {{ 'ok> ' }} else {{ 'fail> ' }} }}; . '{}'; Write-Error x -ErrorAction SilentlyContinue; prompt; prompt; Start-Sleep -Milliseconds 300",
             script.display()
         );
-        let mut p = start(&format!("powershell.exe -NoProfile -NoLogo -Command \"{body}\""));
+        let mut p = start(&format!("{} -NoProfile -NoLogo -Command \"{body}\"", by_os("powershell.exe", "pwsh")));
         assert!(pump_until(&mut p, |p| p.exited.is_some()), "powershell did not finish");
         p.pump();
         let text = p.screen.all_text();
@@ -4257,20 +4266,20 @@ mod tests {
 
     #[test]
     fn pump_shows_output() {
-        let mut p = start("cmd.exe /q /k echo pane-ok");
+        let mut p = start(by_os("cmd.exe /q /k echo pane-ok", "/bin/sh -c 'echo pane-ok'"));
         assert!(pump_until(&mut p, |p| p.screen.text().contains("pane-ok")), "{}", p.screen.text());
     }
 
     #[test]
     fn exit_code_is_reported() {
-        let mut p = start("cmd.exe /c exit 4");
+        let mut p = start(by_os("cmd.exe /c exit 4", "/bin/sh -c 'exit 4'"));
         assert!(pump_until(&mut p, |p| p.exited.is_some()));
         assert_eq!(p.exited, Some(4));
     }
 
     #[test]
     fn resize_to_zero_keeps_a_minimum() {
-        let mut p = start("cmd.exe /q /k");
+        let mut p = start(by_os("cmd.exe /q /k", SH_I));
         p.resize(0, 0);
         assert_eq!(p.error, None);
         assert_eq!((p.screen.term().columns(), p.screen.term().screen_lines()), (2, 1));
@@ -4278,7 +4287,7 @@ mod tests {
 
     #[test]
     fn drop_does_not_block() {
-        let p = start("cmd.exe /q /k");
+        let p = start(by_os("cmd.exe /q /k", SH_I));
         let t = Instant::now();
         drop(p);
         assert!(t.elapsed() < Duration::from_millis(500), "{:?}", t.elapsed());
@@ -4286,7 +4295,7 @@ mod tests {
 
     #[test]
     fn a_view_keeps_the_panes_own_modes_and_style() {
-        let mut p = start("cmd.exe");
+        let mut p = start(by_os("cmd.exe", SH_I));
         p.own_mut().feed(b"\x1b[?2004h");
         let view = crate::synthetic::view(&[crate::synthetic::Styled { text: "x".into(), sgr: "x".into() }], p.own());
         p.show_view(view);
@@ -4301,7 +4310,7 @@ mod tests {
     fn selection_writes_keep_state() {
         use alacritty_terminal::index::{Column, Line, Point, Side};
         use alacritty_terminal::selection::{Selection, SelectionType};
-        let mut p = start("cmd /c ping -n 3 127.0.0.1 >nul");
+        let mut p = start(by_os("cmd /c ping -n 3 127.0.0.1 >nul", "/bin/sh -c 'sleep 3'"));
         p.screen.feed(b"one\r\ntwo");
         let sel = || Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left);
         p.set_selection(Some(sel()), crate::seltext::Mode::Word);
@@ -4328,7 +4337,7 @@ mod tests {
     fn extras_ride_with_the_screen() {
         use alacritty_terminal::index::{Column, Line, Point, Side};
         use alacritty_terminal::selection::{Selection, SelectionType};
-        let mut p = start("cmd /c ping -n 3 127.0.0.1 >nul");
+        let mut p = start(by_os("cmd /c ping -n 3 127.0.0.1 >nul", "/bin/sh -c 'sleep 3'"));
         p.screen.feed(b"one\r\ntwo");
         p.set_selection(Some(Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left)), crate::seltext::Mode::Character);
         p.screen.push_extra(crate::seltext::Sub { start: crate::find::Pos { row: 1, col: 0 }, end: crate::find::Pos { row: 1, col: 2 }, mode: crate::seltext::Mode::Character, window: None, connected: false });
@@ -4342,7 +4351,7 @@ mod tests {
     fn copies_read_the_screen_the_user_selects_in() {
         use alacritty_terminal::index::{Column, Line, Point, Side};
         use alacritty_terminal::selection::{Selection, SelectionType};
-        let mut p = start("cmd /c ping -n 3 127.0.0.1 >nul");
+        let mut p = start(by_os("cmd /c ping -n 3 127.0.0.1 >nul", "/bin/sh -c 'sleep 3'"));
         let mut view = Screen::new(20, 4);
         view.feed(b"from the view");
         let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left);
@@ -4356,7 +4365,7 @@ mod tests {
 
     #[test]
     fn focus_reports_are_not_held() {
-        let mut p = start("cmd /c ping -n 3 127.0.0.1 >nul");
+        let mut p = start(by_os("cmd /c ping -n 3 127.0.0.1 >nul", "/bin/sh -c 'sleep 3'"));
         p.set_buffering(true);
         p.focus_report(true);
         assert_eq!(p.waiting(), 0);
@@ -4390,7 +4399,7 @@ mod tests {
     #[test]
     fn a_paused_pane_stops_reading() {
         // ping prints a line a second; a paused pane takes none of them until it resumes.
-        let mut p = start("ping -n 8 127.0.0.1");
+        let mut p = start(by_os("ping -n 8 127.0.0.1", "/bin/sh -c 'for i in $(seq 8); do echo tick; sleep 1; done'"));
         std::thread::sleep(Duration::from_millis(1200));
         let drain = |p: &Pane| {
             let mut n = 0;
