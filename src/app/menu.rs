@@ -1424,6 +1424,7 @@ impl App {
         crate::host_base::log(&format!("quit: exits now {exits}"));
         if exits {
             self.catalog_flush();
+            self.quitting = true;
             event_loop.exit();
         }
     }

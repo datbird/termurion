@@ -248,7 +248,7 @@ impl ShortcutKey {
     /// when it is not one: the Win key is down (Windows' own), the modifiers are no pair, or
     /// the press types a character with Ctrl+Alt held, which is AltGr on a layout that has one.
     pub fn press_as_cmd(self, phys: Mods, types_a_character: bool) -> Option<Mods> {
-        if phys.cmd || (phys.ctrl && phys.alt && types_a_character) {
+        if phys.cmd || (crate::platform::keys::CTRL_ALT_IS_ALTGR && phys.ctrl && phys.alt && types_a_character) {
             return None;
         }
         Some(self.logical(phys)).filter(|l| l.cmd)
@@ -264,7 +264,7 @@ impl ShortcutKey {
     /// profile's new-window shortcut. Empty for the Win key, for modifiers that are none of these
     /// and for AltGr typing. The caller takes the first one something is bound to.
     pub fn press_chords(self, phys: Mods, types_a_character: bool, key: &ChordKey) -> Vec<Chord> {
-        if phys.cmd || (phys.ctrl && phys.alt && types_a_character) {
+        if phys.cmd || (crate::platform::keys::CTRL_ALT_IS_ALTGR && phys.ctrl && phys.alt && types_a_character) {
             return Vec::new();
         }
         let held = Held { ctrl: phys.ctrl, shift: phys.shift, alt: phys.alt };
@@ -573,17 +573,31 @@ mod tests {
         assert_eq!((l.cmd, l.shift, l.alt, l.ctrl), (true, false, false, true), "Shift+Alt is Cmd+Ctrl in Ctrl+Alt mode");
     }
 
+    /// Cmd+Shift+] is Ctrl+Shift+Alt+] and the key types `}`. Only Windows reads Ctrl+Alt as AltGr.
+    #[test]
+    fn ctrl_shift_alt_bracket_is_next_tab_off_windows() {
+        let chords = ShortcutKey::CtrlShift.press_chords(phys(true, true, true, false), true, &ChordKey::Char(']'));
+        if crate::platform::IS_WINDOWS {
+            assert!(chords.is_empty(), "AltGr typing");
+            return;
+        }
+        let tab = chords.iter().find_map(|c| crate::commands::command_for_chord(c));
+        assert_eq!(tab.map(|i| i.selector.as_str()), Some("nextTab:"));
+        let pane = ShortcutKey::CtrlShift.press_chords(phys(true, true, false, false), true, &ChordKey::Char(']'));
+        assert_eq!(pane.iter().find_map(|c| crate::commands::command_for_chord(c)).map(|i| i.selector.as_str()), Some("nextPane:"));
+    }
+
     #[test]
     fn altgr_typing_is_not_a_shortcut_and_win_is_never_one() {
         let a = ShortcutKey::CtrlAlt;
         assert!(a.press_as_cmd(phys(true, false, true, false), false).is_some(), "Ctrl+Alt+X with no character is Cmd+X");
-        assert!(a.press_as_cmd(phys(true, false, true, false), true).is_none(), "AltGr+Q typing @ is left alone");
+        assert_eq!(a.press_as_cmd(phys(true, false, true, false), true).is_none(), crate::platform::IS_WINDOWS, "AltGr+Q typing @ is left alone on Windows only");
         assert!(ShortcutKey::CtrlShift.press_as_cmd(phys(true, true, false, false), true).is_some(), "Ctrl+Shift types no character");
-        assert!(ShortcutKey::CtrlShift.press_as_cmd(phys(true, true, true, false), true).is_none(), "Ctrl+Alt in it is AltGr too");
+        assert_eq!(ShortcutKey::CtrlShift.press_as_cmd(phys(true, true, true, false), true).is_none(), crate::platform::IS_WINDOWS, "Ctrl+Alt in it is AltGr on Windows only");
         for m in MODES {
             assert!(m.press_as_cmd(phys(true, true, false, true), false).is_none(), "Win held: Windows' chord");
             assert!(m.press_chords(phys(true, true, false, true), false, &ChordKey::Char('d')).is_empty());
-            assert!(m.press_chords(phys(true, true, true, false), true, &ChordKey::Char('n')).is_empty(), "AltGr typing");
+            assert_eq!(m.press_chords(phys(true, true, true, false), true, &ChordKey::Char('n')).is_empty(), crate::platform::IS_WINDOWS, "AltGr typing, on Windows only");
         }
         assert!(ShortcutKey::CtrlShift.press_as_cmd(phys(true, false, false, false), false).is_none(), "Ctrl alone is the shell's");
         assert!(ShortcutKey::CtrlShift.press_as_cmd(phys(false, false, true, false), false).is_none(), "Alt alone is Meta");
@@ -605,7 +619,9 @@ mod tests {
         assert_eq!(m.recorded_mods(phys(true, false, false, false), false), phys(true, false, false, false));
         // AltGr typing is never a shortcut, so it is recorded as pressed.
         let a = phys(true, false, true, false);
-        assert_eq!(ShortcutKey::CtrlAlt.recorded_mods(a, true), a);
+        if crate::platform::IS_WINDOWS {
+            assert_eq!(ShortcutKey::CtrlAlt.recorded_mods(a, true), a);
+        }
         // The stroke: the capital D from the held Shift becomes d.
         let raw = Keystroke::new('D' as u32, crate::keystroke::from_mods(r), None, 'D' as u32);
         let s = recorded_stroke(raw, p, r);
@@ -629,7 +645,7 @@ mod tests {
         assert!(g.cmd && g.shift && !g.alt);
         assert!(m.window_chord(phys(true, false, false, false), false, ChordKey::Char('b')).is_none(), "Ctrl+B is the program's");
         assert!(m.window_chord(phys(false, false, false, true), false, ChordKey::Char('b')).is_none(), "Win is Windows'");
-        assert!(ShortcutKey::CtrlAlt.window_chord(phys(true, false, true, false), true, ChordKey::Char('e')).is_none(), "AltGr+E types a character");
+        assert_eq!(ShortcutKey::CtrlAlt.window_chord(phys(true, false, true, false), true, ChordKey::Char('e')).is_none(), crate::platform::IS_WINDOWS, "AltGr+E types a character (Windows only)");
         // The Cockpit window takes its moved chord.
         for mode in MODES {
             let c = mode.window_chord(phys(false, true, true, false), false, ChordKey::F(8)).expect("Alt+Shift+F8");
@@ -951,7 +967,7 @@ mod tests {
         let m = ShortcutKey::CtrlShift;
         let l = m.press_as_cmd(phys(true, false, true, false), false).expect("Ctrl+Alt+F is Cmd+Ctrl+F");
         assert_eq!((l.cmd, l.ctrl, l.shift, l.alt), (true, true, false, false));
-        assert!(m.press_as_cmd(phys(true, false, true, false), true).is_none(), "AltGr typing is left to typing");
+        assert_eq!(m.press_as_cmd(phys(true, false, true, false), true).is_none(), crate::platform::IS_WINDOWS, "AltGr typing is left to typing (Windows only)");
         // The windows without menus have no Cmd+Ctrl command.
         assert!(m.window_chord(phys(true, false, true, false), false, ChordKey::Char('f')).is_none());
     }

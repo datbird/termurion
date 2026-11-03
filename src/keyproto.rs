@@ -132,7 +132,7 @@ pub fn encode(kb: Keyboard, ev: &KeyEvent) -> Option<Vec<u8>> {
 /// key's own (base) character. winit's text ignores Ctrl, so Ctrl+Alt+A still says "a".
 pub fn is_altgr(mods: Mods, text: Option<&str>, base: Option<char>) -> bool {
     let Some(t) = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control)) else { return false };
-    mods.ctrl && mods.alt && base.map(|b| b.to_string()) != Some(t.to_lowercase())
+    crate::platform::keys::CTRL_ALT_IS_ALTGR && mods.ctrl && mods.alt && base.map(|b| b.to_string()) != Some(t.to_lowercase())
 }
 
 /// The kitty flags.
@@ -682,7 +682,7 @@ mod tests {
         let both = m(false, true, true);
         assert!(!is_altgr(both, Some("a"), Some('a')), "Ctrl+Alt+A on a US layout");
         assert!(!is_altgr(both, Some("A"), Some('a')), "with Shift too");
-        assert!(is_altgr(both, Some("@"), Some('q')), "AltGr+Q on a German layout");
+        assert_eq!(is_altgr(both, Some("@"), Some('q')), crate::platform::IS_WINDOWS, "AltGr+Q on a German layout (Ctrl+Alt on Windows only)");
         assert!(!is_altgr(m(false, true, false), Some("@"), Some('q')), "Alt alone");
         assert!(!is_altgr(both, None, Some('a')));
     }

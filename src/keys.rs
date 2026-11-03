@@ -485,8 +485,13 @@ mod tests {
     fn altgr_sends_the_typed_character() {
         // German layout: AltGr+Q types @. Windows reports AltGr as Ctrl+Alt.
         let altgr = Mods { ctrl: true, alt: true, shift: false, cmd: false };
-        assert_eq!(press("@", "q", "@", altgr), b"@");
-        assert_eq!(press("{", "7", "{", altgr), b"{");
+        if crate::platform::IS_WINDOWS {
+            assert_eq!(press("@", "q", "@", altgr), b"@");
+            assert_eq!(press("{", "7", "{", altgr), b"{");
+        } else {
+            // X11 and macOS keep AltGr apart from Alt, so Ctrl+Alt here is a real chord.
+            assert_ne!(press("@", "q", "@", altgr), b"@");
+        }
     }
 
     #[test]

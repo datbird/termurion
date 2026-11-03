@@ -239,28 +239,40 @@ case "$scenario" in
         [ "$(sort -u "$scratch/pids" | wc -l)" -eq 3 ] || fail "expected 3 distinct pids: $(tr '\n' ' ' < "$scratch/pids")"
         cp "$scratch/pids" "$scratch/pids1"
         cp "$scratch/screen.png" "$scratch/before.png"
+        touch "$scratch/typed"
         state="$scratch/home/.config/termurion/state"
-        # After the restart: walk the panes (next pane, select tab 1 and 2) typing a pid line until three
-        # new shells have answered, or say what was reached.
-        reach_three() {
+        # After the restart, prove the shape with the next-pane and next-tab chords (Cmd+] and
+        # Cmd+Shift+], pressed as ctrl+shift+} and ctrl+alt+shift+}): two tabs, the first a single pane,
+        # the second split in two. Each pane answers with its pid; the answers must show that shape.
+        say() {
+            local n
+            n=$(wc -l < "$scratch/pids")
+            xdotool type --delay 20 'echo $$ >> "$SCRATCH/pids"'
+            xdotool key Return
+            for _ in $(seq 50); do
+                [ "$(wc -l < "$scratch/pids")" -gt "$n" ] && break
+                sleep 0.1
+            done
+            [ "$(wc -l < "$scratch/pids")" -gt "$n" ] || return 1
+            tail -1 "$scratch/pids"
+        }
+        next_pane() { xdotool key ctrl+shift+braceright; sleep 1; }
+        next_tab() { xdotool key ctrl+alt+shift+braceright; sleep 1; }
+        reach_shape() {
             : > "$scratch/pids"
             sleep 3
-            for step in type pane type tab1 type tab2 type tab3 type; do
-                case "$step" in
-                    type)
-                        xdotool type --delay 20 'echo $$ >> "$SCRATCH/pids"'
-                        xdotool key Return
-                        sleep 1
-                        [ "$(sort -u "$scratch/pids" | wc -l)" -ge 3 ] && return 0
-                        ;;
-                    pane) xdotool key ctrl+shift+braceright; sleep 1 ;;
-                    # Select Tab 1 and 2 (Cmd+1, Cmd+2); the next-tab chord has Ctrl+Alt in it, which is AltGr typing.
-                    tab1) xdotool key ctrl+shift+1; sleep 1 ;;
-                    tab2) xdotool key ctrl+shift+2; sleep 1 ;;
-                    tab3) xdotool key ctrl+shift+3; sleep 1 ;;
-                esac
-            done
-            return 1
+            local a1 a2 b1 b2 b3 c1 c2
+            # The restored tab: one pane or two, told by whether the next pane is another shell.
+            a1=$(say) || return 1; next_pane; a2=$(say) || return 1
+            next_tab; b1=$(say) || return 1; next_pane; b2=$(say) || return 1
+            next_pane; b3=$(say) || return 1
+            if [ "$a1" = "$a2" ]; then single=$a1; pair1=$b1; pair2=$b2; back=$b3; [ "$b1" = "$b3" ] || return 2
+            else single=$b1; pair1=$a1; pair2=$a2; [ "$b1" = "$b2" ] || return 3; [ "$b1" = "$b3" ] || return 3; fi
+            [ "$pair1" != "$pair2" ] && [ "$single" != "$pair1" ] && [ "$single" != "$pair2" ] || return 4
+            # Two tabs only: the next tab from here is the first one again.
+            next_tab; c1=$(say) || return 1; next_tab; c2=$(say) || return 1
+            [ "$c1" != "$c2" ] || return 5
+            return 0
         }
         if [ "$scenario" = restore-windows ]; then
             # Quit Termurion (Cmd+Q, terminate:); a question about it is answered OK.
@@ -269,21 +281,22 @@ case "$scenario" in
             for _ in $(seq 50); do kill -0 "$app_pid" 2> /dev/null || break; sleep 0.2; done
             kill -0 "$app_pid" 2> /dev/null && fail "the app did not quit (see $scratch/app.log)"
             [ -s "$state" ] || fail "no saved windows file at $state after the quit"
-            marks=$(grep -a -o 'MARK-[0-9][0-9]*' "$state" | sort -u | wc -l)
-            [ "$marks" -eq 3 ] || fail "the saved windows hold $marks MARK- lines, not 3"
+            for pid in $(cat "$scratch/pids1"); do
+                grep -aq "MARK-$pid" "$state" || fail "the saved windows hold no MARK-$pid line"
+            done
             launch_app
             find_window
         else
             for pid in $(cat "$scratch/pids1"); do kill -0 "$pid" 2> /dev/null || fail "shell $pid is gone before the crash"; done
-            # The app saves its windows after a quiet moment; a crash before that is a different test.
-            # Wait for the file to exist and then hold still for longer than the quiet time.
-            for _ in $(seq 100); do [ -s "$state" ] && break; sleep 0.1; done
-            last=""
-            for _ in $(seq 100); do
-                now=$(stat -c %Y.%y "$state" 2> /dev/null)
-                [ "$now" = "$last" ] && break
-                last=$now
-                sleep 4
+            # The app saves its windows QUIET after the last change and at most every FLOOR (restore_state.rs):
+            # wait for a save newer than the last typing, for at most both plus a margin.
+            quiet=$(sed -n 's/^pub const QUIET: Duration = Duration::from_secs(\([0-9]*\));/\1/p' src/restore_state.rs)
+            floor=$(sed -n 's/^pub const FLOOR: Duration = Duration::from_secs(\([0-9]*\));/\1/p' src/restore_state.rs)
+            [ -n "$quiet" ] && [ -n "$floor" ] || fail "could not read QUIET and FLOOR from src/restore_state.rs"
+            deadline=$(( $(date +%s) + quiet + floor + 10 ))
+            until [ "$state" -nt "$scratch/typed" ]; do
+                [ "$(date +%s)" -lt "$deadline" ] || fail "the app never saved its windows after the typing"
+                sleep 0.5
             done
             old_app=$app_pid
             kill -9 "$old_app"
@@ -291,7 +304,8 @@ case "$scenario" in
             for pid in $(cat "$scratch/pids1"); do kill -0 "$pid" 2> /dev/null || fail "shell $pid died with the app"; done
             # The host watches for the app and starts it again by itself.
             app_pid=""
-            for _ in $(seq 150); do
+            deadline=$(( $(date +%s) + 15 ))
+            while [ "$(date +%s)" -lt "$deadline" ]; do
                 for p in /proc/[0-9]*; do
                     [ "$(cat "$p/comm" 2> /dev/null)" = termurion ] || continue
                     [ "${p#/proc/}" = "$old_app" ] && continue
@@ -299,15 +313,19 @@ case "$scenario" in
                     app_pid=${p#/proc/}
                 done
                 [ -n "$app_pid" ] && break
-                sleep 0.1
+                sleep 0.2
             done
             [ -n "$app_pid" ] || fail "the host did not reopen Termurion"
             find_window
         fi
-        reach_three || { shoot; fail "fewer than 3 panes answered after the restart: $(tr '\n' ' ' < "$scratch/pids") (see $scratch/screen.png)"; }
+        reach_shape
+        rc=$?
+        [ "$rc" -eq 0 ] || { shoot; fail "the restored layout is not two tabs (one pane, then a split pair): step $rc, pids $(tr '\n' ' ' < "$scratch/pids") (see $scratch/screen.png)"; }
         shoot
         cp "$scratch/pids" "$scratch/pids2"
         if [ "$scenario" = restore-host ]; then
+            [ "$single" = "$(sed -n 1p "$scratch/pids1")" ] || fail "the single-pane tab holds $single, not the first shell $(sed -n 1p "$scratch/pids1")"
+            [ "$(printf '%s\n%s\n' "$pair1" "$pair2" | sort)" = "$(sed -n '2,3p' "$scratch/pids1" | sort)" ] || fail "the split tab holds $pair1 and $pair2, not the second and third shells"
             [ "$(sort -u "$scratch/pids1")" = "$(sort -u "$scratch/pids2")" ] || fail "pids2 ($(sort -u "$scratch/pids2" | tr '\n' ' ')) is not pids1 ($(sort -u "$scratch/pids1" | tr '\n' ' '))"
         else
             [ -z "$(sort -u "$scratch/pids1" "$scratch/pids2" | uniq -d)" ] || fail "a restored pane kept an old shell pid"

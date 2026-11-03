@@ -11,6 +11,10 @@ use super::windows::keys as imp;
 
 pub use imp::{install, mask_start_menu, mouse_buttons, remove_window, set_hotkey_sink, set_hotkeys, set_remap_global, set_web_focus, text_for, uninstall, vk_of};
 
+/// Windows reports AltGr as Ctrl+Alt, so a typing key with both down is a typed character there.
+/// X11, Wayland and macOS keep AltGr (Option) apart, so Ctrl+Alt on them is a real chord.
+pub const CTRL_ALT_IS_ALTGR: bool = cfg!(windows);
+
 /// The chord key of a Windows virtual key code, or None when it has none.
 pub fn vk_to_key(vk: u16) -> Option<ChordKey> {
     Some(match vk {
