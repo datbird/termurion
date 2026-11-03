@@ -220,19 +220,19 @@ impl SshPanelWindow {
                             out = PanelEvent::Click { path: f.absolute_path.clone(), ctrl: mods.command, shift: mods.shift };
                         }
                         resp.context_menu(|ui| {
-                            if ui.add(egui::Button::new(m::GO_TO_FOLDER).shortcut_text(crate::shortcut_key::mode().show("Ctrl+Shift+G"))).clicked() {
+                            if ui.add(egui::Button::new(m::GO_TO_FOLDER).shortcut_text(menu_key("Ctrl+Shift+G"))).clicked() {
                                 open_goto = true;
                                 ui.close();
                             }
-                            if ui.add(egui::Button::new(m::GO_TO_HOME).shortcut_text(crate::shortcut_key::mode().show("Ctrl+Shift+H"))).clicked() {
+                            if ui.add(egui::Button::new(m::GO_TO_HOME).shortcut_text(menu_key("Ctrl+Shift+H"))).clicked() {
                                 out = PanelEvent::Home;
                                 ui.close();
                             }
-                            if ui.add(egui::Button::new(m::GO_UP).shortcut_text(crate::shortcut_key::mode().show("Ctrl+Up"))).clicked() {
+                            if ui.add(egui::Button::new(m::GO_UP).shortcut_text(menu_key("Ctrl+Up"))).clicked() {
                                 out = PanelEvent::Up;
                                 ui.close();
                             }
-                            if ui.add(egui::Button::new(m::REFRESH).shortcut_text(crate::shortcut_key::mode().show("Ctrl+R"))).clicked() {
+                            if ui.add(egui::Button::new(m::REFRESH).shortcut_text(menu_key("Ctrl+R"))).clicked() {
                                 out = PanelEvent::Refresh;
                                 ui.close();
                             }
@@ -293,5 +293,33 @@ impl SshPanelWindow {
             }
         });
         out
+    }
+}
+
+/// A context menu shortcut as it works here: the handlers test egui's `command`, which is Cmd on
+/// macOS (shown as the Mac glyphs) and Ctrl elsewhere (the text as written).
+fn menu_key(ctrl_text: &str) -> String {
+    if crate::platform::keys::CMD_IS_A_KEY {
+        crate::shortcut_key::mode().show(&ctrl_text.replacen("Ctrl", "Win", 1))
+    } else {
+        ctrl_text.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::menu_key;
+
+    /// Windows and Linux show the menu keys as before; macOS shows the Cmd keys the handlers take.
+    #[test]
+    fn the_menu_keys_are_the_ones_that_work() {
+        for k in ["Ctrl+Shift+G", "Ctrl+Shift+H", "Ctrl+Up", "Ctrl+R"] {
+            let shown = menu_key(k);
+            if crate::platform::keys::CMD_IS_A_KEY {
+                assert!(shown.contains('\u{2318}') && !shown.contains('\u{2303}'), "{k} shows {shown}");
+            } else {
+                assert_eq!(shown, k);
+            }
+        }
     }
 }

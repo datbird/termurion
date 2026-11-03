@@ -1243,20 +1243,30 @@ impl App {
     }
 }
 
-/// The menu entry for a profile: its name, and the shortcut as accelerator text.
+/// The menu entry for a profile: its name, and the shortcut as accelerator text. Where the OS
+/// draws shortcuts itself (macOS), the name only; `profile_accelerator` gives the key equivalent.
 fn profile_menu_text(name: &str, shortcut: Option<char>) -> String {
     let name = name.replace('&', "&&");
     match shortcut {
-        Some(k) => format!("{name}\t{}", crate::shortcut_key::mode().show(&format!("Ctrl+Win+{k}"))),
-        None => name,
+        Some(k) if !crate::platform::chrome::NATIVE_ACCELERATORS => format!("{name}\t{}", crate::shortcut_key::mode().show(&format!("Ctrl+Win+{k}"))),
+        _ => name,
     }
+}
+
+/// A profile's Ctrl+Cmd key as a native key equivalent, where the OS draws shortcuts (macOS).
+fn profile_accelerator(shortcut: Option<char>) -> Option<muda::accelerator::Accelerator> {
+    if !crate::platform::chrome::NATIVE_ACCELERATORS {
+        return None;
+    }
+    let key = crate::menus::ChordKey::Char(shortcut?.to_ascii_lowercase());
+    crate::menus::accelerator(&crate::menus::Chord { key, cmd: true, alt: false, shift: false, ctrl: true })
 }
 
 fn append_profile_nodes(sub: &muda::Submenu, nodes: &[crate::profile_menu::Node]) -> Result<(), muda::Error> {
     use crate::profile_menu::Node;
     for node in nodes {
         match node {
-            Node::Profile { guid, name, shortcut } => sub.append(&muda::MenuItem::with_id(format!("{}{guid}", menu::PROFILE_ID), profile_menu_text(name, *shortcut), true, None))?,
+            Node::Profile { guid, name, shortcut } => sub.append(&muda::MenuItem::with_id(format!("{}{guid}", menu::PROFILE_ID), profile_menu_text(name, *shortcut), true, profile_accelerator(*shortcut)))?,
             Node::Folder { name, children } => {
                 let folder = muda::Submenu::new(name.replace('&', "&&"), true);
                 append_profile_nodes(&folder, children)?;
@@ -2165,8 +2175,17 @@ mod tests {
 
     #[test]
     fn profile_menu_item_shows_its_shortcut() {
-        let shown = if cfg!(target_os = "macos") { "\u{2303}\u{2318}Q" } else { "Ctrl+Alt+Q" };
-        assert_eq!(profile_menu_text("Work & Play", Some('Q')), format!("Work && Play\t{shown}"));
+        if crate::platform::chrome::NATIVE_ACCELERATORS {
+            // AppKit draws Ctrl+Cmd+Q from the key equivalent; the title is the name alone.
+            assert_eq!(profile_menu_text("Work & Play", Some('Q')), "Work && Play");
+            let want = crate::menus::accelerator(&crate::menus::Chord { key: crate::menus::ChordKey::Char('q'), cmd: true, alt: false, shift: false, ctrl: true });
+            assert!(want.is_some());
+            assert_eq!(profile_accelerator(Some('Q')), want);
+        } else {
+            assert_eq!(profile_menu_text("Work & Play", Some('Q')), "Work && Play\tCtrl+Alt+Q");
+            assert_eq!(profile_accelerator(Some('Q')), None);
+        }
         assert_eq!(profile_menu_text("Work", None), "Work");
+        assert_eq!(profile_accelerator(None), None);
     }
 }
