@@ -11,6 +11,10 @@ use super::windows::paths as imp;
 /// The app's folder name under the base: `Termurion` on Windows and macOS, `termurion` on Linux.
 pub const APP_FOLDER: &str = imp::APP_FOLDER;
 
+/// Whether launch may touch the Downloads folder. False on macOS, where that asks the person for
+/// access before they have done anything; the first download sweeps it instead.
+pub const SWEEP_DOWNLOADS_AT_LAUNCH: bool = imp::SWEEP_DOWNLOADS_AT_LAUNCH;
+
 /// The person's home folder: `%USERPROFILE%` on Windows; on Unix `$HOME` when absolute, else the
 /// password database's entry for the effective user. None when neither names one.
 pub fn home_dir() -> Option<PathBuf> {

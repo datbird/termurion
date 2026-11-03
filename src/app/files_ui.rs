@@ -355,6 +355,13 @@ impl App {
     /// per run and again only when the setting changes (`DownloadsCache`, P19).
     pub(super) fn downloads_folder(&mut self) -> Option<std::path::PathBuf> {
         let (dir, banner) = self.downloads_cache.get(&self.globals.string("DownloadsDirectory"), downloads);
+        // Where launch left Downloads alone, its stale temps are swept on the first answer.
+        if !crate::platform::paths::SWEEP_DOWNLOADS_AT_LAUNCH && !self.downloads_swept {
+            self.downloads_swept = true;
+            if let Some(d) = &dir {
+                crate::ssh_local::sweep_stale(d, std::time::SystemTime::now());
+            }
+        }
         match banner {
             Some(Some(note)) => self.banners.set("downloads", note),
             Some(None) => self.banners.clear("downloads"),
@@ -406,6 +413,21 @@ impl App {
 mod tests {
     use super::*;
     use crate::inert_files::SHOWN_NAME;
+
+    /// P2 Task 4: on macOS launch never touches Downloads (that raises the access prompt on every
+    /// launch of an unsigned build); the first download sweeps it instead.
+    #[test]
+    fn no_protected_folder_at_launch_on_macos() {
+        let read = |p: &str| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(p)).unwrap();
+        let m = read("src/app/mod.rs");
+        let at = m.find("SWEEP_DOWNLOADS_AT_LAUNCH").expect("the launch sweep is guarded");
+        assert!(m[at..at + 200].contains("files_ui::downloads("), "the guard wraps the Downloads sweep");
+        let f = read("src/app/files_ui.rs");
+        let at = f.find("fn downloads_folder").unwrap();
+        let body = &f[at..at + 1200];
+        assert!(body.contains("!crate::platform::paths::SWEEP_DOWNLOADS_AT_LAUNCH"), "guarded by the constant");
+        assert!(body.contains("ssh_local::sweep_stale"), "sweeps on the first answer");
+    }
 
     /// Final review item 17 (Task 8 M3, P19): the Downloads folder is probed once per run, again only
     /// when DownloadsDirectory changes, and its banner is raised once per change, not per download.

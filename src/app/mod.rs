@@ -829,6 +829,7 @@ pub struct App {
     resident: bool,
     /// The Downloads folder chosen for the run (final review item 17). App-wide.
     downloads_cache: files_ui::DownloadsCache,
+    downloads_swept: bool,
     /// Where in `pending_windows` the resident wake's one window waits (final review item 3): later
     /// tabs asked for before it opens join it. Cleared when the window is awake. App-wide.
     pending_wake: Option<usize>,
@@ -2160,9 +2161,11 @@ pub fn run() {
     let downloads_setting = globals.string("DownloadsDirectory");
     std::thread::spawn(move || {
         let now = std::time::SystemTime::now();
-        if let Some(d) = files_ui::downloads(&downloads_setting).dir {
-            crate::ssh_local::sweep_stale(&d, now);
-        }
+        // macOS asks for Downloads access on first touch, so the first download sweeps it instead.
+        if crate::platform::paths::SWEEP_DOWNLOADS_AT_LAUNCH
+            && let Some(d) = files_ui::downloads(&downloads_setting).dir {
+                crate::ssh_local::sweep_stale(&d, now);
+            }
         crate::ssh_local::sweep_stale(&std::env::temp_dir(), now);
     });
     // So does the default-terminal handoff class (P11), under the same rule.
@@ -2413,6 +2416,7 @@ pub fn run() {
         launch_flood: Default::default(),
         resident: false,
         downloads_cache: Default::default(),
+        downloads_swept: false,
         pending_wake: None,
         launched_at: Instant::now(),
         user_interacted: false,

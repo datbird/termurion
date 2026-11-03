@@ -1,6 +1,9 @@
 //! Leaving the taskbar and Alt+Tab (13g): when Termurion acts as iTerm2's UI element, and what a
 //! window's styles are. Pure; `app::presence_ui` applies it.
 
+/// The signed macOS bundle's identifier (`packaging/macos/Info.plist.in`, `scripts/mac-bundle`).
+pub const MAC_BUNDLE_ID: &str = "dev.termurion.Termurion";
+
 pub const UI_ELEMENT_KEY: &str = "HideFromDockAndAppSwitcher";
 pub const REQUIRES_HOTKEYS_KEY: &str = "UIElementRequiresHotkeys";
 pub const EXCLUDED_FROM_CYCLING_KEY: &str = "HotkeyWindowsExcludedFromCycling";
@@ -286,6 +289,31 @@ pub fn dock_click(visible_hotkey_windows: usize, profiles: &[(String, i64)], vis
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bundle template, filled, is a plist that names Termurion and no iTerm2.
+    #[test]
+    fn the_mac_bundle_plist_names_termurion() {
+        let text = include_str!("../packaging/macos/Info.plist.in")
+            .replace("@VERSION@", "1.2.3")
+            .replace("@SHORT_VERSION@", "1.2")
+            .replace("@BUNDLE_ID@", MAC_BUNDLE_ID);
+        let v = plist::Value::from_reader_xml(text.as_bytes()).expect("parses");
+        let d = v.as_dictionary().unwrap();
+        assert_eq!(d.get("CFBundleIdentifier").and_then(|v| v.as_string()), Some(MAC_BUNDLE_ID));
+        assert_eq!(d.get("CFBundleExecutable").and_then(|v| v.as_string()), Some("termurion"));
+        let mut usage = 0;
+        for (k, val) in d {
+            if k.ends_with("UsageDescription") {
+                let s = val.as_string().unwrap();
+                assert!(s.contains("Termurion") && !s.contains("iTerm2"), "{k}: {s}");
+                usage += 1;
+            }
+        }
+        assert!(usage >= 17, "fourteen plus three folder keys, got {usage}");
+        for k in ["NSDesktopFolderUsageDescription", "NSDocumentsFolderUsageDescription", "NSDownloadsFolderUsageDescription"] {
+            assert!(d.contains_key(k), "{k}");
+        }
+    }
 
     /// Every window gets Termurion's icon, not the default one: the terminal windows (made in
     /// three places) and the egui windows.

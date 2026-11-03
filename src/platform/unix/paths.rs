@@ -10,6 +10,9 @@ pub const APP_FOLDER: &str = "Termurion";
 #[cfg(not(target_os = "macos"))]
 pub const APP_FOLDER: &str = "termurion";
 
+/// macOS asks before an app reads Downloads, so launch leaves it alone; Linux has no such prompt.
+pub const SWEEP_DOWNLOADS_AT_LAUNCH: bool = !cfg!(target_os = "macos");
+
 /// The settings base for this OS.
 pub fn config_base() -> PathBuf {
     config_base_from(std::env::var("XDG_CONFIG_HOME").ok().as_deref(), home_dir().as_deref())

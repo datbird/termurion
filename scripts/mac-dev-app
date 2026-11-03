@@ -17,20 +17,9 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 cp target/debug/termurion target/debug/termurion-host "$app/Contents/MacOS/"
 ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-cat > "$app/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleExecutable</key><string>termurion</string>
-  <key>CFBundleIdentifier</key><string>dev.termurion.devcheck</string>
-  <key>CFBundleName</key><string>Termurion</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleVersion</key><string>$ver</string>
-  <key>NSHighResolutionCapable</key><true/>
-</dict>
-</plist>
-PLIST
+# One plist, from the template; only the bundle id differs from the real bundle.
+sed -e "s|@BUNDLE_ID@|dev.termurion.devcheck|" -e "s|@VERSION@|$ver|" -e "s|@SHORT_VERSION@|${ver%%-*}|" \
+  packaging/macos/Info.plist.in > "$app/Contents/Info.plist"
 : > /tmp/termurion-gui-pids
 open -n "$app"
 echo "opened $PWD/$app"

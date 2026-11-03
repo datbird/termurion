@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Builds the ad hoc signed Termurion.app on funtimes (macOS) and copies the zip to target/mac/.
+# CHECK_UNIX_MAC_HOST overrides the ssh host (default funtimes).
+# Usage: scripts/mac-bundle
+set -euo pipefail
+repo="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$repo"
+host="${CHECK_UNIX_MAC_HOST:-funtimes}"
+rsync -rt --delete --exclude /target/ --exclude /.git/ --exclude /.superpowers/ ./ "$host:src/termurion/" || { echo "mac-bundle: rsync failed"; exit 2; }
+out=$(ssh "$host" 'bash -s' <<'REMOTE'
+set -euo pipefail
+cd src/termurion
+step() { echo "mac-bundle: $1 failed" >&2; exit 1; }
+~/.cargo/bin/cargo build --release --bins >&2 || step build
+ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+app=target/release/Termurion.app
+rm -rf "$app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cp target/release/termurion target/release/termurion-host "$app/Contents/MacOS/" || step copy
+sed -e "s|@BUNDLE_ID@|dev.termurion.Termurion|" -e "s|@VERSION@|$ver|" -e "s|@SHORT_VERSION@|${ver%%-*}|" \
+  packaging/macos/Info.plist.in > "$app/Contents/Info.plist" || step plist
+# The icon: sizes 16 to 256 with their 2x, from the 256 art.
+set_dir=$(mktemp -d)/Termurion.iconset
+mkdir -p "$set_dir"
+src=docs/assets/termurion/termurion-icon-256.png
+for s in 16 32 128 256; do
+  sips -z $s $s "$src" --out "$set_dir/icon_${s}x${s}.png" >/dev/null || step icon
+  sips -z $((s*2)) $((s*2)) "$src" --out "$set_dir/icon_${s}x${s}@2x.png" >/dev/null || step icon
+done
+iconutil -c icns "$set_dir" -o "$app/Contents/Resources/Termurion.icns" || step icon
+# Sign inside out, then check.
+codesign --force --sign - "$app/Contents/MacOS/termurion-host" >&2 || step sign
+codesign --force --sign - --identifier dev.termurion.Termurion "$app" >&2 || step sign
+codesign --verify --deep --strict "$app" >&2 || step verify
+zip="target/release/Termurion-$ver-arm64.zip"
+rm -f "$zip"
+ditto -c -k --keepParent "$app" "$zip" || step zip
+echo "ZIP $zip"
+REMOTE
+) || { echo "mac-bundle: failed"; exit 1; }
+zip=$(echo "$out" | sed -n 's/^ZIP //p')
+mkdir -p target/mac
+scp -q "$host:src/termurion/$zip" target/mac/ || { echo "mac-bundle: copy back failed"; exit 1; }
+echo "mac-bundle: target/mac/$(basename "$zip")"

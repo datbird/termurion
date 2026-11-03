@@ -8,6 +8,9 @@ pub fn home_dir() -> Option<std::path::PathBuf> {
 /// The app's folder name under the base.
 pub const APP_FOLDER: &str = "Termurion";
 
+/// Windows has no folder prompt, so launch may sweep Downloads.
+pub const SWEEP_DOWNLOADS_AT_LAUNCH: bool = true;
+
 /// `%APPDATA%`, else the temp folder.
 pub fn config_base() -> std::path::PathBuf {
     std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir)
