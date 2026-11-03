@@ -635,10 +635,13 @@ impl App {
         let owner = self.hwnd().unwrap_or(0);
         // Windows Hello (PIN, fingerprint, face) where it is set up, else the password prompt.
         let answer = crate::platform::user_auth::hello(owner).unwrap_or_else(|| crate::platform::user_auth::prompt(owner));
+        let alert = alert_wanted(&answer, crate::platform::user_auth::SILENT_CANCEL);
         match self.pwm.apply_answer(scope, answer) {
             Ok(()) => true,
             Err(reason) => {
-                self.pwm_warning(AUTH_FAILED_TITLE, &format!("Authentication failed because {reason}"));
+                if alert {
+                    self.pwm_warning(AUTH_FAILED_TITLE, &format!("Authentication failed because {reason}"));
+                }
                 false
             }
         }
@@ -2651,6 +2654,11 @@ fn first_for<W: PartialEq>(seen: &mut Vec<W>, window: W) -> bool {
     true
 }
 
+/// Whether a failed prompt shows the alert: not for a cancel where the platform keeps those silent.
+fn alert_wanted(answer: &crate::platform::user_auth::Answer, silent_cancel: bool) -> bool {
+    !(silent_cancel && matches!(answer, crate::platform::user_auth::Answer::Canceled))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3037,6 +3045,16 @@ mod tests {
     /// Merge seam (13y2's KeePassXC, Bitwarden, Keeper and LastPass adapters with 13x7's browser
     /// password sources): every source, for the terminal and the browser scope alike, is built in
     /// `build` on the one worker, and nothing outside the password manager constructs one.
+    #[test]
+    fn a_silent_cancel_shows_no_alert() {
+        use crate::platform::user_auth::Answer;
+        assert!(!alert_wanted(&Answer::Canceled, true));
+        assert!(alert_wanted(&Answer::Canceled, false));
+        assert!(alert_wanted(&Answer::Failed("x".into()), true));
+        #[cfg(target_os = "macos")]
+        assert!(crate::platform::user_auth::SILENT_CANCEL);
+    }
+
     #[test]
     fn every_password_source_has_one_owner() {
         let src = include_str!("pwm_app.rs");

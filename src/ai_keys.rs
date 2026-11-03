@@ -123,7 +123,7 @@ pub fn read_problem(v: Vendor) -> Option<String> {
     shared().lock().unwrap_or_else(|e| e.into_inner()).get_checked(v, &mut *system_store()).err()
 }
 
-/// The system's key store: Credential Manager on Windows; on Unix every call reports Unsupported.
+/// The system's key store: Credential Manager on Windows, the Keychain on macOS; on Linux every call reports Unsupported.
 pub fn system_store() -> Box<dyn KeyStore> {
     Box::new(CredStore)
 }

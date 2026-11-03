@@ -16,3 +16,9 @@ pub enum Answer {
     /// The reason, finishing "Authentication failed because ".
     Failed(String),
 }
+
+/// Whether a system or app cancel of the prompt shows no alert (iTerm2 on macOS; Windows keeps its alert).
+#[cfg(target_os = "macos")]
+pub const SILENT_CANCEL: bool = true;
+#[cfg(not(target_os = "macos"))]
+pub const SILENT_CANCEL: bool = false;

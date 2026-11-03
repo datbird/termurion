@@ -39,6 +39,8 @@ pub fn hello(_owner: isize) -> Option<Answer> {
     if matches!(answer, Answer::Granted)
         && let Some(mtm) = objc2::MainThreadMarker::new()
     {
+        // The replacement needs macOS 14; the bundle targets older.
+        #[allow(deprecated)]
         objc2_app_kit::NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
     }
     Some(answer)

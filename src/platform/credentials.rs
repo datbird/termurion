@@ -27,10 +27,12 @@ pub const STORE_QUERY_NAME: &str = "Credential Manager";
 
 /// The prefixes of every target Termurion owns: the password manager's `Termurion/` and
 /// `Termurion-Browser/` and the AI keys' `TermurionAI/` (compared case-sensitively).
+#[cfg(any(windows, target_os = "macos", test))]
 const OWNED_PREFIXES: [&str; 3] = ["Termurion/", "Termurion-Browser/", "TermurionAI/"];
 
 /// Whether a target is one of Termurion's. Every generic call refuses any other target before
 /// it reaches the system store, so nothing here ever touches another program's credential.
+#[cfg(any(windows, target_os = "macos", test))]
 pub(crate) fn owned(target: &str) -> bool {
     OWNED_PREFIXES.iter().any(|p| target.starts_with(p))
 }

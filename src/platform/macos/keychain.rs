@@ -6,7 +6,8 @@
 //! is ever logged.
 
 use security_framework::base::Error;
-use security_framework::item::{ItemAddOptions, ItemAddValue, ItemClass, ItemSearchOptions, ItemUpdateOptions, ItemUpdateValue, SearchResult};
+use core_foundation::base::TCFType;
+use security_framework::item::{ItemAddOptions, ItemAddValue, ItemClass, ItemSearchOptions, SearchResult};
 
 use crate::platform::credentials::guard;
 use crate::pwm::{Account, Secret};
@@ -37,23 +38,54 @@ fn by_service(target: &str) -> ItemSearchOptions {
     q
 }
 
+/// What a write needs from the store, so the order of its steps can be tested without a Keychain.
+trait Ops {
+    fn delete(&mut self, target: &str) -> Result<bool, String>;
+    fn add(&mut self, target: &str, user: &str, secret: &Secret, comment: &str) -> Result<(), String>;
+}
+
+struct Real;
+
+impl Ops for Real {
+    fn delete(&mut self, target: &str) -> Result<bool, String> {
+        delete_item(target)
+    }
+
+    fn add(&mut self, target: &str, user: &str, secret: &Secret, comment: &str) -> Result<(), String> {
+        let bytes = secret.expose().as_bytes();
+        // SAFETY: kCFAllocatorNull never frees the bytes, and the CFData is dropped (at the end of
+        // this function) before `secret`, so it borrows them without a second copy to wipe.
+        let data = unsafe {
+            let d = core_foundation_sys::data::CFDataCreateWithBytesNoCopy(
+                std::ptr::null(),
+                bytes.as_ptr(),
+                bytes.len() as isize,
+                core_foundation_sys::base::kCFAllocatorNull,
+            );
+            if d.is_null() {
+                return Err("The Keychain could not take the secret.".to_string());
+            }
+            core_foundation::data::CFData::wrap_under_create_rule(d)
+        };
+        let mut add = ItemAddOptions::new(ItemAddValue::Data { class: ItemClass::generic_password(), data });
+        add.set_service(target).set_account_name(user).set_label(target).set_comment(comment);
+        add.add().map_err(text)
+    }
+}
+
+/// The write: delete whatever holds the service, then add. An item another app planted under our
+/// name (open access list) is never reused, so the new item gets Termurion's own access list. If the
+/// delete fails the error is returned and the secret is not written.
+fn write_with(ops: &mut dyn Ops, target: &str, user: &str, secret: &Secret, comment: &str) -> Result<(), String> {
+    ops.delete(target)?;
+    ops.add(target, user, secret, comment)
+}
+
 /// Writes (creates or replaces) the item for `target`. `what` is unused: the Keychain has no
 /// size limit that needs the secret named.
 pub(crate) fn write_generic(target: &str, user: &str, secret: &Secret, comment: &str, _what: &str) -> Result<(), String> {
     guard(target)?;
-    let data = core_foundation::data::CFData::from_buffer(secret.expose().as_bytes());
-    // Update in place first (keeps the item and its access list), else add.
-    let mut up = ItemUpdateOptions::new();
-    up.set_value(ItemUpdateValue::Data(data.clone())).set_account_name(user).set_label(target).set_comment(comment);
-    match security_framework::item::update_item(&by_service(target), &up) {
-        Ok(()) => Ok(()),
-        Err(e) if is_missing(&e) => {
-            let mut add = ItemAddOptions::new(ItemAddValue::Data { class: ItemClass::generic_password(), data });
-            add.set_service(target).set_account_name(user).set_label(target).set_comment(comment);
-            add.add().map_err(text)
-        }
-        Err(e) => Err(text(e)),
-    }
+    write_with(&mut Real, target, user, secret, comment)
 }
 
 /// Wipes a buffer that held a secret.
@@ -92,6 +124,10 @@ pub(crate) fn read_generic(target: &str, what: &str) -> Result<Option<Secret>, S
 /// Deletes the item: `Ok(true)` when one was deleted, `Ok(false)` when there was none.
 pub(crate) fn delete_generic(target: &str) -> Result<bool, String> {
     guard(target)?;
+    delete_item(target)
+}
+
+fn delete_item(target: &str) -> Result<bool, String> {
     match by_service(target).delete() {
         Ok(()) => Ok(true),
         Err(e) if is_missing(&e) => Ok(false),
@@ -235,6 +271,33 @@ mod tests {
         assert_eq!(delete_generic("iTerm2"), Err(refused));
     }
 
+    /// Records the steps of a write.
+    struct Fake {
+        log: Vec<&'static str>,
+        delete_fails: bool,
+    }
+    impl Ops for Fake {
+        fn delete(&mut self, _t: &str) -> Result<bool, String> {
+            self.log.push("delete");
+            if self.delete_fails { Err("denied".into()) } else { Ok(true) }
+        }
+        fn add(&mut self, _t: &str, _u: &str, _s: &Secret, _c: &str) -> Result<(), String> {
+            self.log.push("add");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_write_deletes_first_and_never_writes_after_a_failed_delete() {
+        let s = Secret::new("k".into());
+        let mut f = Fake { log: vec![], delete_fails: false };
+        write_with(&mut f, "TermurionAI/x", "u", &s, "c").unwrap();
+        assert_eq!(f.log, ["delete", "add"]);
+        let mut f = Fake { log: vec![], delete_fails: true };
+        assert_eq!(write_with(&mut f, "TermurionAI/x", "u", &s, "c"), Err("denied".to_string()));
+        assert_eq!(f.log, ["delete"], "no secret is written when the old item cannot be removed");
+    }
+
     /// Deletes its items at the end, even when an assert fails.
     struct Cleanup(Vec<String>);
     impl Drop for Cleanup {
@@ -257,6 +320,11 @@ mod tests {
         assert_eq!(read_generic(&ai, "API key").unwrap().unwrap().expose(), "k1");
         write_generic(&ai, "p2user", &Secret::new("k2".into()), "p2 test", "API key").unwrap();
         assert_eq!(read_generic(&ai, "API key").unwrap().unwrap().expose(), "k2");
+
+        // A pre-existing item under our name is replaced, not adopted: after a write there is one item.
+        let mut count = ItemSearchOptions::new();
+        count.class(ItemClass::generic_password()).service(&ai).load_attributes(true).limit(security_framework::item::Limit::All);
+        assert_eq!(count.search().unwrap().len(), 1);
 
         let mut cm = CredentialManager::for_scope(Scope::Terminal);
         assert!(cm.accounts().unwrap().iter().all(|a| a.id != ai), "an AI key is not a password manager account");
