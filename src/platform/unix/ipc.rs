@@ -69,11 +69,16 @@ pub fn check_parent(parent: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The runtime folder, made 0700 when missing and checked either way.
-pub fn runtime_dir() -> Result<PathBuf, String> {
+/// Where the runtime folder is now, made or not.
+fn runtime_dir_path() -> PathBuf {
     let xdg = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
     let tmp = std::env::var_os("TMPDIR").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| PathBuf::from("/tmp"));
-    let dir = runtime_dir_from(xdg.as_deref(), &tmp, euid());
+    runtime_dir_from(xdg.as_deref(), &tmp, euid())
+}
+
+/// The runtime folder, made 0700 when missing and checked either way.
+pub fn runtime_dir() -> Result<PathBuf, String> {
+    let dir = runtime_dir_path();
     if let Some(parent) = dir.parent() {
         check_parent(parent)?;
     }
@@ -93,6 +98,8 @@ fn resolve(name: &str) -> Result<PathBuf, String> {
     if name.contains('/') {
         let path = PathBuf::from(name);
         if let Some(parent) = path.parent() {
+            // A missing folder is made 0700 by mkdir itself (one level), then checked as any.
+            let _ = std::fs::DirBuilder::new().mode(0o700).create(parent);
             check_private(parent)?;
         }
         Ok(path)
@@ -220,7 +227,14 @@ pub struct Listener {
     lock: HostLock,
     /// When the socket and lock file times were last refreshed.
     touched: Instant,
+    /// The name it was bound under, to bind again when its file is gone.
+    name: String,
+    /// When `keep_reachable` last looked.
+    checked: Instant,
 }
+
+/// How often a host looks that its socket is still where a client would look for it.
+const CHECK_EVERY: Duration = Duration::from_secs(2);
 
 /// Tmp cleaners (macOS, systemd-tmpfiles) remove files nobody touched for days; a live host
 /// touches its two files this often.
@@ -231,6 +245,8 @@ const TOUCH_EVERY: Duration = Duration::from_secs(3600);
 struct HostLock {
     _fd: OwnedFd,
     path: PathBuf,
+    /// The locked file, so drop only removes its own.
+    id: (u64, u64),
 }
 
 impl HostLock {
@@ -260,7 +276,7 @@ impl HostLock {
             }
             let mine = (st.st_dev as u64, st.st_ino as u64);
             match std::fs::symlink_metadata(&lock_path) {
-                Ok(m) if (m.dev(), m.ino()) == mine => return Ok(HostLock { _fd: fd, path: lock_path }),
+                Ok(m) if (m.dev(), m.ino()) == mine => return Ok(HostLock { _fd: fd, path: lock_path, id: mine }),
                 _ => continue,
             }
         }
@@ -268,10 +284,19 @@ impl HostLock {
     }
 }
 
+impl HostLock {
+    /// Whether the file at the path is still the one this lock holds.
+    fn still_ours(&self) -> bool {
+        std::fs::symlink_metadata(&self.path).is_ok_and(|m| (m.dev(), m.ino()) == self.id)
+    }
+}
+
 impl Drop for HostLock {
     fn drop(&mut self) {
-        // Removed while still locked, so the next host makes a fresh file.
-        let _ = std::fs::remove_file(&self.path);
+        // Removed while still locked, so the next host makes a fresh file; a newer host's file stays.
+        if self.still_ours() {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -292,50 +317,93 @@ impl Listener {
     /// is replaced.
     pub fn bind(name: &str) -> Result<Listener, String> {
         let path = resolve(name)?;
-        let (sa, len) = addr_for(&path)?;
         let lock = HostLock::take(&path)?;
-        let fd = new_socket().map_err(|e| format!("socket failed: {e}"))?;
-        let mut replaced = false;
-        loop {
-            if unsafe { libc::bind(fd.as_raw_fd(), (&sa as *const libc::sockaddr_un).cast(), len) } == 0 {
-                break;
-            }
-            let e = std::io::Error::last_os_error();
-            if e.raw_os_error() != Some(libc::EADDRINUSE) || replaced {
-                return Err(format!("could not bind {}: {e}", path.display()));
-            }
-            replaced = true;
-            match try_connect(&sa, len) {
-                Ok(_) => return Err(format!("another session host is already listening at {}", path.display())),
-                // A full backlog is EAGAIN on Linux; macOS answers ECONNREFUSED instead, which is why
-                // the held lock above, not this probe, is what keeps a live host's socket safe.
-                Err(c) if errno_is(&c, &[libc::EAGAIN]) => return Err(format!("another session host is already listening at {}", path.display())),
-                Err(c) if errno_is(&c, &[libc::ECONNREFUSED, libc::ENOENT]) => {}
-                Err(c) => return Err(format!("could not look at {}: {c}", path.display())),
-            }
-            // Stale: only a socket of ours is removed, never a file someone put there.
-            match std::fs::symlink_metadata(&path) {
-                Ok(m) if m.file_type().is_socket() && m.uid() == euid() => {
-                    if let Err(e) = std::fs::remove_file(&path)
-                        && e.kind() != std::io::ErrorKind::NotFound {
-                            return Err(format!("could not remove {}: {e}", path.display()));
-                        }
-                }
-                Ok(_) => return Err(format!("{} exists and is not a socket of this user", path.display())),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(format!("{}: {e}", path.display())),
-            }
-        }
-        let id = file_id(&path).ok_or_else(|| format!("{} is not the socket just bound", path.display()))?;
-        let l = Listener { fd, path, id, lock, touched: Instant::now() };
-        if unsafe { libc::listen(l.fd.as_raw_fd(), 16) } < 0 {
-            return Err(format!("listen failed: {}", std::io::Error::last_os_error()));
-        }
-        // accept must never block while it holds the macOS spawn gate.
-        set_nonblocking(l.fd.as_raw_fd(), true).map_err(|e| format!("fcntl failed: {e}"))?;
-        Ok(l)
+        let (fd, id) = bind_socket(&path)?;
+        Ok(Listener { fd, path, id, lock, touched: Instant::now(), name: name.to_string(), checked: Instant::now() })
     }
 
+    /// Logind removes the runtime folder at the last logout, and a tmp cleaner may take the
+    /// socket; the host lives on with its shells, so it binds again where a client looks now
+    /// (making the 0700 folder and the lock again). A newer host already there is left alone:
+    /// this one keeps its shells and tries again later.
+    fn keep_reachable(&mut self) {
+        self.checked = Instant::now();
+        let want = where_now(&self.name);
+        let socket_ok = file_id(&self.path) == Some(self.id);
+        if want == self.path && socket_ok && self.lock.still_ours() {
+            return;
+        }
+        // Same place and the lock is still ours: only the socket file went.
+        let rebound = if want == self.path && self.lock.still_ours() {
+            bind_socket(&self.path).map(|(fd, id)| {
+                self.fd = fd;
+                self.id = id;
+            })
+        } else {
+            Listener::bind(&self.name).map(|l| *self = l)
+        };
+        match rebound {
+            Ok(()) => crate::dlog!("The session host listens again after its socket was gone"),
+            Err(_) => crate::dlog!("The session host socket is gone and could not be made again"),
+        }
+    }
+}
+
+/// Where `name`'s socket would be now, without making anything.
+fn where_now(name: &str) -> PathBuf {
+    if name.contains('/') { PathBuf::from(name) } else { runtime_dir_path().join(name) }
+}
+
+/// Binds and listens at `path` (the lock already held); a file left by a dead host is replaced.
+fn bind_socket(path: &Path) -> Result<(OwnedFd, (u64, u64)), String> {
+    let (sa, len) = addr_for(path)?;
+    let fd = new_socket().map_err(|e| format!("socket failed: {e}"))?;
+    let mut replaced = false;
+    loop {
+        if unsafe { libc::bind(fd.as_raw_fd(), (&sa as *const libc::sockaddr_un).cast(), len) } == 0 {
+            break;
+        }
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() != Some(libc::EADDRINUSE) || replaced {
+            return Err(format!("could not bind {}: {e}", path.display()));
+        }
+        replaced = true;
+        match try_connect(&sa, len) {
+            Ok(_) => return Err(format!("another session host is already listening at {}", path.display())),
+            // A full backlog is EAGAIN on Linux; macOS answers ECONNREFUSED instead, which is why
+            // the held lock above, not this probe, is what keeps a live host's socket safe.
+            Err(c) if errno_is(&c, &[libc::EAGAIN]) => return Err(format!("another session host is already listening at {}", path.display())),
+            Err(c) if errno_is(&c, &[libc::ECONNREFUSED, libc::ENOENT]) => {}
+            Err(c) => return Err(format!("could not look at {}: {c}", path.display())),
+        }
+        // Stale: only a socket of ours is removed, never a file someone put there.
+        match std::fs::symlink_metadata(&path) {
+            Ok(m) if m.file_type().is_socket() && m.uid() == euid() => {
+                if let Err(e) = std::fs::remove_file(&path)
+                    && e.kind() != std::io::ErrorKind::NotFound {
+                        return Err(format!("could not remove {}: {e}", path.display()));
+                    }
+            }
+            Ok(_) => return Err(format!("{} exists and is not a socket of this user", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
+    }
+    let id = file_id(path).ok_or_else(|| format!("{} is not the socket just bound", path.display()))?;
+    // 0600 whatever the umask, before anyone can connect; the private folder means nobody swapped it.
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| format!("{} holds a NUL", path.display()))?;
+    if unsafe { libc::chmod(c.as_ptr(), 0o600) } < 0 {
+        return Err(format!("could not set the mode of {}: {}", path.display(), std::io::Error::last_os_error()));
+    }
+    if unsafe { libc::listen(fd.as_raw_fd(), 16) } < 0 {
+        return Err(format!("listen failed: {}", std::io::Error::last_os_error()));
+    }
+    // accept must never block while it holds the macOS spawn gate.
+    set_nonblocking(fd.as_raw_fd(), true).map_err(|e| format!("fcntl failed: {e}"))?;
+    Ok((fd, id))
+}
+
+impl Listener {
     /// A socket that listens serves any number of clients one after another, so there is no
     /// instance to replace (the Windows pipe needs a fresh one per client).
     pub fn renew(&mut self) -> Result<(), String> {
@@ -343,7 +411,8 @@ impl Listener {
     }
 
     /// Sets the access and modify times of the socket and the lock file to now, so a tmp cleaner
-    /// never takes them from under a live host. A file already gone is logged, not recreated.
+    /// never takes them from under a live host. A file already gone is logged here;
+    /// `keep_reachable` makes it again.
     pub fn refresh(&mut self) {
         self.touched = Instant::now();
         let now = [libc::timespec { tv_sec: 0, tv_nsec: libc::UTIME_NOW }; 2];
@@ -364,6 +433,9 @@ impl Listener {
     /// Waits up to `wait` for a client of this user. None when none came; a peer of another user
     /// is dropped unread and counts as none.
     pub fn accept(&mut self, wait: Duration) -> Result<Option<Pipe>, String> {
+        if self.checked.elapsed() >= CHECK_EVERY {
+            self.keep_reachable();
+        }
         if self.touched.elapsed() >= TOUCH_EVERY {
             self.refresh();
         }
@@ -749,6 +821,49 @@ mod tests {
     #[test]
     fn connect_finds_nothing_where_nothing_listens() {
         assert!(connect(&test_name("none"), Duration::ZERO).unwrap().is_none());
+    }
+
+    /// A runtime folder removed under a live host (logind at the last logout): the host makes the
+    /// 0700 folder, lock and socket again, and a client reaches it there.
+    #[test]
+    fn a_host_whose_folder_is_gone_listens_again() {
+        let dir = scratch(0o700);
+        let path = dir.join("h");
+        let name = path.to_string_lossy().into_owned();
+        let mut l = Listener::bind(&name).unwrap();
+        std::fs::remove_dir_all(&*dir).unwrap();
+        assert!(std::os::unix::net::UnixStream::connect(&path).is_err(), "nothing to reach");
+        l.checked = Instant::now() - CHECK_EVERY;
+        assert!(l.accept(Duration::from_millis(10)).unwrap().is_none());
+        check_private(&dir).expect("the folder is back, private");
+        assert!(file_id(&path).is_some() && dir.join("h.lock").exists(), "socket and lock are back");
+        let c = connect_owned(&name, Duration::from_secs(1)).unwrap().expect("reachable again");
+        assert!(l.accept(Duration::from_secs(1)).unwrap().is_some());
+        drop(c);
+        // Only the socket file gone (the lock still ours): the socket alone comes back.
+        std::fs::remove_file(&path).unwrap();
+        l.checked = Instant::now() - CHECK_EVERY;
+        assert!(l.accept(Duration::from_millis(10)).unwrap().is_none());
+        let c = connect_owned(&name, Duration::from_secs(1)).unwrap().expect("reachable again");
+        assert!(l.accept(Duration::from_secs(1)).unwrap().is_some());
+        drop(c);
+        // A newer host took the path meanwhile: it is left alone, and this one keeps going.
+        std::fs::remove_dir_all(&*dir).unwrap();
+        let newer = Listener::bind(&name).unwrap();
+        l.checked = Instant::now() - CHECK_EVERY;
+        assert!(l.accept(Duration::from_millis(10)).unwrap().is_none());
+        assert_eq!(file_id(&path), Some(newer.id), "the newer host's socket stays");
+        drop(l);
+        assert_eq!(file_id(&path), Some(newer.id));
+        assert!(dir.join("h.lock").exists(), "and so does its lock file");
+    }
+
+    /// The spec's 0600 on the socket file, whatever the umask (the 0700 folder is the boundary).
+    #[test]
+    fn the_socket_file_is_owner_only() {
+        let name = test_name("mode");
+        let l = Listener::bind(&name).unwrap();
+        assert_eq!(std::fs::symlink_metadata(&l.path).unwrap().mode() & 0o777, 0o600);
     }
 
     #[test]

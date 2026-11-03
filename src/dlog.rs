@@ -279,7 +279,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("platform/unix/clipboard.rs", 1),
     ("platform/unix/clock.rs", 1),
     ("platform/unix/dialog.rs", 3),
-    ("platform/unix/ipc.rs", 2),
+    ("platform/unix/ipc.rs", 4),
     ("platform/unix/metrics.rs", 1),
     ("platform/unix/shell_open.rs", 2),
     ("platform/unix/watch.rs", 1),
