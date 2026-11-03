@@ -90,7 +90,8 @@ pub fn reveal_all(paths: &[PathBuf]) -> Result<(), String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let folder = paths[0].parent().map(Path::to_path_buf);
+        // A failed reveal opens a folder instead, never a bundle around the item.
+        let folder = super::open_judge::fallback_folder(&paths[0]);
         let mut cmd = Command::new("dbus-send");
         cmd.args(dbus_reveal_args(paths)?);
         match spawn_and_wait(cmd, Kind::FileManager, folder.clone()) {

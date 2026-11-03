@@ -396,6 +396,10 @@ fn text_local(path: &str, r: &Rule) -> bool {
     if crate::scripts::is_network_path(path) || crate::scripts::is_device_name(Path::new(path)) {
         return false;
     }
+    // macOS /net and /Network mount from the network when touched.
+    if !r.allow_network && crate::platform::files::is_auto_mount(path) {
+        return false;
+    }
     let p = without_long_prefix(path);
     let b = p.as_bytes();
     let absolute = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/');

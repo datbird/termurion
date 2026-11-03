@@ -144,6 +144,11 @@ pub fn free_space(dir: &LocalPath) -> io::Result<u64> {
 /// A move that never replaces: `AlreadyExists` when `to` is there. It is `MoveFileExW` with
 /// no flags (the standard library's rename passes MOVEFILE_REPLACE_EXISTING), atomic against a file
 /// that appears at the name at any time.
+/// Windows has no folder that mounts on touch; UNC paths are `is_network_path`'s.
+pub fn is_auto_mount(_path: &str) -> bool {
+    false
+}
+
 pub fn rename_no_replace(from: &LocalPath, to: &LocalPath) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;

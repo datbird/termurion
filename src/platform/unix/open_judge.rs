@@ -12,7 +12,7 @@ use std::path::Path;
 const RUNNABLE_TYPES: &[&str] = &[
     "command", "terminal", "tool", "workflow", "action", "app", "pkg", "mpkg", "prefpane", "saver", "qlgenerator", "kext", "plugin", "osax",
     "scpt", "scptd", "applescript", "mobileconfig", "webloc", "inetloc", "fileloc", "afploc", "dmg", "desktop", "appimage", "run", "deb",
-    "rpm", "flatpakref", "snap", "sh", "bash", "zsh", "tcsh", "fish", "pl", "rb", "php", "lua",
+    "rpm", "flatpakref", "flatpak", "flatpakrepo", "snap", "sparsebundle", "sparseimage", "cdr", "vncloc", "ftploc", "sh", "bash", "zsh", "tcsh", "fish", "pl", "rb", "php", "lua",
 ];
 
 /// Schemes no choice opens on Unix, with the reason: the opener mounts a share, starts a remote
@@ -32,12 +32,32 @@ const BLOCKED_SCHEMES: &[(&str, &str)] = &[
     ("applescript", "opens a script ready to run"),
 ];
 
-/// Whether opening `path` could run something: a type Windows or Unix runs, a file with any
+/// Whether opening `path` could run something: a type Windows or Unix runs (by its own name and
+/// by the name of what it links to, as LaunchServices resolves a link first), a file with any
 /// execute bit, a macOS bundle folder, or anything that is not a plain file or folder. A file
-/// whose kind cannot be read counts as runnable (shown, never opened); one that is not there
-/// does not (it is not opened either).
+/// whose kind or target cannot be read counts as runnable (shown, never opened); one that is not
+/// there does not (it is not opened either).
 pub fn runnable(path: &str) -> bool {
-    crate::inert_files::high_risk(path) || runnable_type(path) || runs_by_kind(Path::new(path))
+    if named_runnable(path) || runs_by_kind(Path::new(path)) {
+        return true;
+    }
+    match std::fs::canonicalize(path) {
+        Ok(real) => named_runnable(&real.to_string_lossy()),
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound || is_link(Path::new(path)),
+    }
+}
+
+fn named_runnable(path: &str) -> bool {
+    crate::inert_files::high_risk(path) || runnable_type(path)
+}
+
+/// Whether `path` is a link (its target then cannot be found: fail closed rather than guess); a
+/// name that cannot be read at all counts as one.
+fn is_link(path: &Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) => m.file_type().is_symlink(),
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    }
 }
 
 fn runnable_type(path: &str) -> bool {
@@ -60,6 +80,44 @@ fn is_bundle(dir: &Path) -> bool {
         Ok(_) => true,
         Err(e) => e.kind() != std::io::ErrorKind::NotFound,
     }
+}
+
+/// What the opener is handed for a judged path.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Judged {
+    /// Open this path (the canonical one that was judged).
+    Open(std::path::PathBuf),
+    /// Show this path in the file manager instead.
+    Reveal(std::path::PathBuf),
+}
+
+/// The last word before the opener: a runnable path is shown, anything else is opened as the
+/// canonical path that was judged.
+pub fn judged_open(path: &Path) -> Judged {
+    if runnable(&path.to_string_lossy()) {
+        return Judged::Reveal(path.to_path_buf());
+    }
+    match std::fs::canonicalize(path) {
+        Ok(real) => Judged::Open(real),
+        // Not there at all: the opener says so.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !is_link(path) => Judged::Open(path.to_path_buf()),
+        Err(_) => Judged::Reveal(path.to_path_buf()),
+    }
+}
+
+/// The folder a failed reveal opens instead: the item's parent, or the first ancestor that is
+/// not a bundle (opening a bundle launches it).
+pub fn fallback_folder(item: &Path) -> Option<std::path::PathBuf> {
+    let mut dir = item.parent()?;
+    // The outermost bundle counts: X.app/Contents/MacOS climbs to the folder holding X.app.
+    let mut out = dir;
+    while let Some(up) = dir.parent() {
+        if runnable(&dir.to_string_lossy()) {
+            out = up;
+        }
+        dir = up;
+    }
+    (!runnable(&out.to_string_lossy())).then(|| out.to_path_buf())
 }
 
 /// Why `scheme` (lower case) is never handed to the opener on Unix; None when it may be asked.
@@ -138,6 +196,57 @@ mod tests {
         let f = folder.to_string_lossy().into_owned();
         assert_eq!(opened(&f), Run::Open(f.clone()), "a plain folder opens");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A link is judged by what it points at too: a harmless name on a link to a program is
+    /// shown, and what is opened is the target that was judged.
+    #[test]
+    fn a_link_is_judged_by_its_target() {
+        let d = dir("links");
+        let real = std::fs::canonicalize(&d).unwrap();
+        for target in ["payload.terminal", "tool.py", "inst.pkg"] {
+            write(&d.join(target), 0o644);
+            let link = d.join(format!("README-{target}.txt"));
+            std::os::unix::fs::symlink(d.join(target), &link).unwrap();
+            let l = link.to_string_lossy().into_owned();
+            assert_eq!(opened(&l), Run::Reveal(l.clone()), "{target}");
+            assert_eq!(judged_open(&link), Judged::Reveal(link.clone()), "{target}");
+        }
+        let doc = d.join("doc.txt");
+        write(&doc, 0o644);
+        let link = d.join("notes.md");
+        std::os::unix::fs::symlink(&doc, &link).unwrap();
+        assert_eq!(judged_open(&link), Judged::Open(real.join("doc.txt")), "the judged target is what opens");
+        // A loop cannot be resolved: fail closed.
+        let (a, b) = (d.join("loop-a.txt"), d.join("loop-b.txt"));
+        std::os::unix::fs::symlink(&b, &a).unwrap();
+        std::os::unix::fs::symlink(&a, &b).unwrap();
+        assert!(runnable(&a.to_string_lossy()));
+        assert_eq!(judged_open(&a), Judged::Reveal(a.clone()));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A failed reveal never opens a bundle around the item.
+    #[test]
+    fn the_reveal_fallback_never_opens_a_bundle() {
+        let d = dir("fallback");
+        let inner = d.join("X.app/Contents/MacOS");
+        std::fs::create_dir_all(&inner).unwrap();
+        let item = inner.join("X");
+        write(&item, 0o755);
+        assert_eq!(fallback_folder(&item), Some(d.clone()));
+        let plain = d.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(fallback_folder(&plain.join("f.txt")), Some(plain.clone()));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Disk images, Flatpak bundles and the remaining Finder location files are shown too.
+    #[test]
+    fn images_bundles_and_location_files_are_runnable() {
+        for name in ["x.sparsebundle", "x.sparseimage", "x.cdr", "x.flatpak", "x.flatpakrepo", "x.vncloc", "x.ftploc"] {
+            assert!(runnable(&format!("/no/such/{name}")), "{name}");
+        }
     }
 
     /// Fail closed: a file whose kind cannot be read, or that is a pipe or device, is never opened.

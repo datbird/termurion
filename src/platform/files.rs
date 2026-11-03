@@ -60,6 +60,11 @@ pub fn free_space(dir: &LocalPath) -> io::Result<u64> {
 }
 
 /// A move that never replaces: `AlreadyExists` when `to` is there.
+/// Whether `path` is a folder the OS mounts from the network on first touch (macOS `/net`).
+pub fn is_auto_mount(path: &str) -> bool {
+    imp::is_auto_mount(path)
+}
+
 pub fn rename_no_replace(from: &LocalPath, to: &LocalPath) -> io::Result<()> {
     imp::rename_no_replace(from, to)
 }
