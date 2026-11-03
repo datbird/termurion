@@ -8413,6 +8413,7 @@ impl App {
     /// `apply_focus` runs only what `focus_actions` names. A held focus is re-checked by
     /// `web_focus_recheck`, because the real deactivation sends the parent nothing.
     fn window_focus(&mut self, id: WindowId, f: bool) {
+        crate::platform::notify::set_active(f);
         if !f {
             self.menu_peek.clear();
         }

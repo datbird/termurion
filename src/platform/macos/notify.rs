@@ -11,7 +11,6 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{Bool, ProtocolObject};
 use objc2::{define_class, msg_send, AnyThread, DefinedClass};
-use objc2_app_kit::NSRunningApplication;
 use objc2_foundation::{NSArray, NSBundle, NSError, NSObject, NSObjectProtocol, NSString};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent, UNNotification, UNNotificationPresentationOptions, UNNotificationRequest,
@@ -24,9 +23,73 @@ const NO_BUNDLE: &str = "Notifications need Termurion to run as Termurion.app";
 const TURNED_OFF: &str = "Notifications are turned off for Termurion in System Settings";
 
 static SHOWN: AtomicU64 = AtomicU64::new(0);
-static ASKED: AtomicBool = AtomicBool::new(false);
+/// Whether Termurion is the active app. Set from the main thread (window focus), read by the
+/// center's thread, so no AppKit call happens off the main thread.
+static ACTIVE: AtomicBool = AtomicBool::new(false);
+static PENDING: Mutex<Pending> = Mutex::new(Pending::new());
+const QUEUE_CAP: usize = 8;
 type Click = Arc<dyn Fn() + Send + Sync>;
 static CLICK: Mutex<Option<Click>> = Mutex::new(None);
+
+/// A show waiting for the permission answer.
+#[derive(Clone, Debug, PartialEq)]
+struct Item {
+    title: String,
+    body: String,
+    silent: bool,
+}
+
+/// What a show does while permission is not decided.
+#[derive(Debug, PartialEq)]
+enum Step {
+    /// First one: ask the system.
+    Ask,
+    /// A prompt is already open: it waits in the queue.
+    Wait,
+    /// The queue is full.
+    Full,
+}
+
+/// What the answer to the prompt does with the queued shows.
+#[derive(Debug, PartialEq)]
+enum Settled {
+    Post(Vec<Item>),
+    Drop(usize),
+}
+
+/// The shows made while the permission prompt is open, and whether it is open.
+struct Pending {
+    asked: bool,
+    items: Vec<Item>,
+}
+
+impl Pending {
+    const fn new() -> Self {
+        Pending { asked: false, items: Vec::new() }
+    }
+
+    fn on_show(&mut self, item: Item) -> Step {
+        if self.items.len() >= QUEUE_CAP {
+            return Step::Full;
+        }
+        self.items.push(item);
+        if std::mem::replace(&mut self.asked, true) { Step::Wait } else { Step::Ask }
+    }
+
+    /// The prompt is over. `undecided`: it closed with no answer, so a later show asks again.
+    fn settle(&mut self, granted: bool, undecided: bool) -> Settled {
+        let items = std::mem::take(&mut self.items);
+        if !granted && undecided {
+            self.asked = false;
+        }
+        if granted { Settled::Post(items) } else { Settled::Drop(items.len()) }
+    }
+}
+
+/// Whether Termurion is in front, from the window focus events on the main thread.
+pub fn set_active(on: bool) {
+    ACTIVE.store(on, Ordering::SeqCst);
+}
 
 /// The identifier of the n-th notification.
 pub fn request_id(n: u64) -> String {
@@ -90,7 +153,7 @@ define_class!(
     unsafe impl UNUserNotificationCenterDelegate for Delegate {
         #[unsafe(method(userNotificationCenter:willPresentNotification:withCompletionHandler:))]
         fn will_present(&self, _center: &UNUserNotificationCenter, _n: &UNNotification, done: &block2::DynBlock<dyn Fn(UNNotificationPresentationOptions)>) {
-            let front = NSRunningApplication::currentApplication().isActive();
+            let front = ACTIVE.load(Ordering::SeqCst);
             let opts = if front { UNNotificationPresentationOptions::Banner | UNNotificationPresentationOptions::List | UNNotificationPresentationOptions::Sound } else { UNNotificationPresentationOptions(0) };
             done.call((opts,));
         }
@@ -124,7 +187,14 @@ fn center() -> Retained<UNUserNotificationCenter> {
 }
 
 /// Adds the request to the center; a failure is only logged (it happens off the UI thread).
-fn post(title: &str, body: &str, silent: bool, id: &str) {
+fn not_shown() {
+    dlog!("The notification was not shown");
+}
+
+fn post(title: &str, body: &str, silent: bool) {
+    // Only a real post counts, so clear_if_shown(at) stays right.
+    let id = request_id(SHOWN.fetch_add(1, Ordering::SeqCst) + 1);
+    let id = id.as_str();
     let content = UNMutableNotificationContent::new();
     content.setTitle(&NSString::from_str(title));
     content.setBody(&NSString::from_str(body));
@@ -134,7 +204,7 @@ fn post(title: &str, body: &str, silent: bool, id: &str) {
     let request = UNNotificationRequest::requestWithIdentifier_content_trigger(&NSString::from_str(id), &content, None);
     let done = RcBlock::new(|err: *mut NSError| {
         if !err.is_null() {
-            dlog!("The notification was not shown");
+            not_shown();
         }
     });
     center().addNotificationRequest_withCompletionHandler(&request, Some(&done));
@@ -161,29 +231,33 @@ pub fn show_with(title: &str, body: &str, silent: bool) -> Result<(), String> {
     if !has_bundle() {
         return Err(NO_BUNDLE.to_string());
     }
-    let status = status();
-    if status == Some(UNAuthorizationStatus::Denied) {
-        return Err(TURNED_OFF.to_string());
-    }
-    let n = SHOWN.fetch_add(1, Ordering::SeqCst) + 1;
-    let id = request_id(n);
-    if status == Some(UNAuthorizationStatus::NotDetermined) {
-        // Ask once; the answer arrives later and the post follows a yes.
-        if ASKED.swap(true, Ordering::SeqCst) {
+    match status() {
+        Some(UNAuthorizationStatus::Denied) => return Err(TURNED_OFF.to_string()),
+        Some(UNAuthorizationStatus::Authorized | UNAuthorizationStatus::Provisional | UNAuthorizationStatus::Ephemeral) => {
+            post(title, body, silent);
             return Ok(());
         }
-        let (title, body) = (title.to_string(), body.to_string());
-        let answer = RcBlock::new(move |granted: Bool, _err: *mut NSError| {
-            if granted.as_bool() {
-                post(&title, &body, silent, &id);
-            } else {
-                dlog!("The notification was not shown");
-            }
-        });
-        center().requestAuthorizationWithOptions_completionHandler(UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound, &answer);
-        return Ok(());
+        // Not decided, or the read timed out. Asking is safe either way: an app that is already
+        // allowed gets a yes at once with no prompt, and the queue posts.
+        _ => {}
     }
-    post(title, body, silent, &id);
+    let item = Item { title: title.to_string(), body: body.to_string(), silent };
+    let step = PENDING.lock().unwrap_or_else(|e| e.into_inner()).on_show(item);
+    match step {
+        Step::Wait => {}
+        Step::Full => not_shown(),
+        Step::Ask => {
+            let answer = RcBlock::new(move |granted: Bool, _err: *mut NSError| {
+                let undecided = !granted.as_bool() && matches!(status(), None | Some(UNAuthorizationStatus::NotDetermined));
+                let settled = PENDING.lock().unwrap_or_else(|e| e.into_inner()).settle(granted.as_bool(), undecided);
+                match settled {
+                    Settled::Post(items) => items.iter().for_each(|i| post(&i.title, &i.body, i.silent)),
+                    Settled::Drop(n) => (0..n.min(1)).for_each(|_| not_shown()),
+                }
+            });
+            center().requestAuthorizationWithOptions_completionHandler(UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound, &answer);
+        }
+    }
     Ok(())
 }
 
@@ -201,5 +275,53 @@ mod tests {
         let e = show_with("t", "b", false).unwrap_err();
         assert!(e.contains("Termurion.app"), "{e}");
         assert_eq!(shown_count(), 0);
+    }
+
+    fn item(n: usize) -> Item {
+        Item { title: format!("t{n}"), body: String::new(), silent: false }
+    }
+
+    #[test]
+    fn shows_during_the_prompt_queue_and_post_on_yes() {
+        let mut p = Pending::new();
+        assert_eq!(p.on_show(item(1)), Step::Ask);
+        assert_eq!(p.on_show(item(2)), Step::Wait);
+        assert_eq!(p.settle(true, false), Settled::Post(vec![item(1), item(2)]));
+        assert!(p.items.is_empty());
+    }
+
+    #[test]
+    fn a_no_drops_the_queue() {
+        let mut p = Pending::new();
+        p.on_show(item(1));
+        p.on_show(item(2));
+        assert_eq!(p.settle(false, false), Settled::Drop(2));
+        assert!(p.asked, "a decided no is not asked again");
+    }
+
+    #[test]
+    fn a_prompt_closed_undecided_asks_again() {
+        let mut p = Pending::new();
+        p.on_show(item(1));
+        assert_eq!(p.settle(false, true), Settled::Drop(1));
+        assert_eq!(p.on_show(item(2)), Step::Ask);
+    }
+
+    #[test]
+    fn the_queue_is_bounded() {
+        let mut p = Pending::new();
+        for n in 0..QUEUE_CAP {
+            p.on_show(item(n));
+        }
+        assert_eq!(p.on_show(item(99)), Step::Full);
+        assert_eq!(p.items.len(), QUEUE_CAP);
+    }
+
+    #[test]
+    fn active_flag_follows_focus() {
+        set_active(true);
+        assert!(ACTIVE.load(Ordering::SeqCst));
+        set_active(false);
+        assert!(!ACTIVE.load(Ordering::SeqCst));
     }
 }

@@ -15,3 +15,11 @@ pub use imp::{clear_if_shown, on_click, on_taskbar_created, on_tray, remove, set
 pub fn still_shown(at: u64, now: u64) -> bool {
     at == now
 }
+
+/// Tells the backend whether Termurion is the active app (macOS shows banners only then).
+pub fn set_active(on: bool) {
+    #[cfg(target_os = "macos")]
+    imp::set_active(on);
+    #[cfg(not(target_os = "macos"))]
+    let _ = on;
+}
