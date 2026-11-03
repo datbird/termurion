@@ -10,6 +10,18 @@ fn unsupported<T>(feature: &'static str) -> io::Result<T> {
     Err(io::Error::other(String::from(super::super::Unsupported { feature })))
 }
 
+/// A Finder alias file (not a symbolic link) and where it points: Some on macOS when `path` is one,
+/// with Err when its target cannot be found. Linux has no such files.
+pub fn finder_alias(path: &std::path::Path) -> Option<Result<PathBuf, String>> {
+    #[cfg(target_os = "macos")]
+    return super::super::macos::alias::finder_alias(path);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 pub fn open_unfollowed(_p: &Unfollowed, _configure: impl FnOnce(&mut OpenOptions)) -> io::Result<File> {
     unsupported("Opening a file without following a link")
 }

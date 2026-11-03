@@ -226,8 +226,8 @@ pub fn zone_of(text: &str) -> Option<u32> {
 /// Marks the existing file `path` as from the internet, and fails when it cannot: a missing
 /// file (writing a stream would create it), or a drive that keeps no streams (FAT). For a
 /// download that must not land unmarked; `write_marked` stays lenient for inline files (12d).
-/// On Unix there is no quarantine mark yet, so this fails with the Unsupported text and a strict
-/// download fails honestly.
+/// On macOS the mark is the quarantine attribute; on Linux there is none, so this fails with the
+/// Unsupported text and a strict download fails honestly.
 pub fn mark_strict(path: &Path, host_url: Option<&str>) -> std::io::Result<()> {
     if !crate::localfs::lstat(&crate::localfs::judge_io(path)?)?.is_file {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a file"));
@@ -237,7 +237,7 @@ pub fn mark_strict(path: &Path, host_url: Option<&str>) -> std::io::Result<()> {
 
 /// Writes `bytes` to `path`, then the Zone.Identifier stream, so SmartScreen or Protected View
 /// meets a file opened after it was revealed. A drive without streams (FAT) keeps the file
-/// unmarked. On Unix the file is written and left unmarked (no quarantine mark exists there yet).
+/// unmarked. On Linux the file is written and left unmarked (no quarantine mark exists there).
 pub fn write_marked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     crate::localfs::write(&crate::localfs::judge_io(path)?, bytes)?;
     mark(path);
@@ -245,8 +245,8 @@ pub fn write_marked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// The Zone.Identifier stream alone, for a writer that wrote the file through its own handle
-/// (a failure is ignored: a drive without streams keeps the file unmarked). On Unix this does
-/// nothing, since no quarantine mark exists there yet.
+/// (a failure is ignored: a drive without streams keeps the file unmarked). On Linux this does
+/// nothing, since no quarantine mark exists there.
 pub fn mark(path: &Path) {
     let _ = crate::platform::quarantine::mark(path, ZONE_MARK);
 }

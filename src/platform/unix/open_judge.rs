@@ -38,12 +38,62 @@ const BLOCKED_SCHEMES: &[(&str, &str)] = &[
 /// whose kind or target cannot be read counts as runnable (shown, never opened); one that is not
 /// there does not (it is not opened either).
 pub fn runnable(path: &str) -> bool {
-    if named_runnable(path) || runs_by_kind(Path::new(path)) {
+    runnable_at(path, 0)
+}
+
+/// How many aliases deep a chain is followed before it counts as runnable.
+const ALIAS_DEPTH: u32 = 8;
+
+fn runnable_at(path: &str, depth: u32) -> bool {
+    if depth > ALIAS_DEPTH || named_runnable(path) || runs_by_kind(Path::new(path)) {
         return true;
     }
     match std::fs::canonicalize(path) {
-        Ok(real) => named_runnable(&real.to_string_lossy()),
+        Ok(real) => named_runnable(&real.to_string_lossy()) || foreign_file_in_shared_folder(&real) || alias_runnable(&real, depth),
         Err(e) => e.kind() != std::io::ErrorKind::NotFound || is_link(Path::new(path)),
+    }
+}
+
+/// A Finder alias is judged by what it names, like a link; one that does not resolve is shown.
+fn alias_runnable(real: &Path, depth: u32) -> bool {
+    match super::files::finder_alias(real) {
+        None => false,
+        Some(Ok(target)) => runnable_at(&target.to_string_lossy(), depth + 1),
+        Some(Err(_)) => true,
+    }
+}
+
+/// Where the opener ends up for `path`: the alias chain followed to a file that is not an alias.
+/// None when a link in the chain does not resolve.
+fn follow_aliases(path: &Path) -> Option<std::path::PathBuf> {
+    let mut cur = std::fs::canonicalize(path).ok()?;
+    for _ in 0..=ALIAS_DEPTH {
+        match super::files::finder_alias(&cur) {
+            None => return Some(cur),
+            Some(Ok(next)) => cur = next,
+            Some(Err(_)) => return None,
+        }
+    }
+    None
+}
+
+/// Another person's file in a folder anyone can write to (a shared folder, /tmp): someone else
+/// chose its content and its name, so it is shown and not opened. Root's files are the system's.
+pub fn foreign_in_shared(owner: u32, euid: u32, dir_mode: u32) -> bool {
+    owner != euid && owner != 0 && dir_mode & 0o022 != 0
+}
+
+fn foreign_file_in_shared_folder(real: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = std::fs::metadata(real) else { return true };
+    if !meta.is_file() {
+        return false;
+    }
+    let Some(parent) = real.parent() else { return false };
+    match std::fs::metadata(parent) {
+        Ok(dir) => foreign_in_shared(meta.uid(), unsafe { libc::geteuid() }, dir.mode()),
+        // The folder cannot be read: fail safe.
+        Err(_) => true,
     }
 }
 
@@ -97,11 +147,15 @@ pub fn judged_open(path: &Path) -> Judged {
     if runnable(&path.to_string_lossy()) {
         return Judged::Reveal(path.to_path_buf());
     }
-    match std::fs::canonicalize(path) {
-        Ok(real) => Judged::Open(real),
-        // Not there at all: the opener says so.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !is_link(path) => Judged::Open(path.to_path_buf()),
-        Err(_) => Judged::Reveal(path.to_path_buf()),
+    match follow_aliases(path) {
+        Some(real) => Judged::Open(real),
+        None => match std::fs::canonicalize(path) {
+            // An alias in the chain did not resolve: shown, never opened.
+            Ok(_) => Judged::Reveal(path.to_path_buf()),
+            // Not there at all: the opener says so.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !is_link(path) => Judged::Open(path.to_path_buf()),
+            Err(_) => Judged::Reveal(path.to_path_buf()),
+        },
     }
 }
 
@@ -166,6 +220,16 @@ mod tests {
 
     /// A click shows a program and never runs it: Terminal files, bundles, launchers and any file
     /// with an execute bit are revealed; plain documents open.
+    /// Another person's file in a folder anyone writes to is shown; your own, root's and files in
+    /// private folders are not.
+    #[test]
+    fn another_users_file_in_a_shared_folder_is_shown() {
+        assert!(foreign_in_shared(1001, 501, 0o1777));
+        assert!(!foreign_in_shared(501, 501, 0o1777));
+        assert!(!foreign_in_shared(0, 501, 0o1777));
+        assert!(!foreign_in_shared(1001, 501, 0o755));
+    }
+
     #[test]
     fn programs_are_revealed_and_documents_open() {
         let d = dir("kinds");

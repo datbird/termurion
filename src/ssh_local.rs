@@ -206,7 +206,7 @@ pub fn progress_text(l: &Local) -> String {
 
 /// Moves a finished temp file into place. The final path is refused when it is a type the shell
 /// reads on listing (P1); the temp is marked with `mark` (a failure removes it: "Failed to
-/// quarantine", or `NOT_REMOVED` when it will not go; on Unix the mark is Unsupported, so every
+/// quarantine", or `NOT_REMOVED` when it will not go; on Linux the mark is Unsupported, so every
 /// finish fails); then it replaces `final_path`, and a
 /// failed move removes it and reports the error (iTerm2 reports success).
 pub fn finish_with(temp: &Path, final_path: &Path, host_url: &str, mark: &dyn Fn(&Path, &str) -> std::io::Result<()>) -> Result<PathBuf, String> {
@@ -292,7 +292,7 @@ fn tree(root: &Path) -> Result<Vec<(PathBuf, bool)>, String> {
 /// Marks every file under `from` and moves it to the same place under `dest`, replacing what is
 /// there. Before anything moves: no entry is a reparse point or a file with another hard link,
 /// no name is one Explorer reads or Windows reads as another item, and every file took its mark
-/// (a failure is "Failed to quarantine" and nothing moved; on Unix no mark exists yet, so every
+/// (a failure is "Failed to quarantine" and nothing moved; on Linux no mark exists, so every
 /// file fails to take one and nothing is moved). `from` should be on the volume of `dest`.
 pub fn mark_and_move(from: &Path, dest: &Path, host_url: &str) -> Result<(), String> {
     mark_and_move_with(from, dest, host_url, &|p, u| crate::inert_files::mark_strict(p, Some(u)))
