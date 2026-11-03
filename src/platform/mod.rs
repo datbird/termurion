@@ -85,6 +85,13 @@ pub fn by_os<'a>(windows: &'a str, unix: &'a str) -> &'a str {
     if IS_WINDOWS { windows } else { unix }
 }
 
+/// A test's shortcut text: the Windows and Linux form (Ctrl+Shift+1), or the Mac glyph form on
+/// macOS, where Cmd is a key and the labels use the Mac's glyphs.
+#[cfg(test)]
+pub fn by_cmd<'a>(other: &'a str, mac: &'a str) -> &'a str {
+    if keys::CMD_IS_A_KEY { mac } else { other }
+}
+
 /// A feature that has no implementation on this OS yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unsupported {

@@ -329,10 +329,11 @@ mod tests {
         assert!(key_matches("sk-1", Vendor::DeepSeek));
     }
 
-    /// Off Windows the store reports Unsupported: a read is an error, never an empty answer.
+    /// Off Windows and macOS the store reports Unsupported: a read is an error, never an empty answer.
     #[test]
     fn the_system_store_is_unsupported_off_windows() {
-        if crate::platform::IS_WINDOWS {
+        // macOS has the Keychain store (P2), tested live in platform::unix::credentials.
+        if crate::platform::IS_WINDOWS || cfg!(target_os = "macos") {
             return;
         }
         let mut s = system_store();

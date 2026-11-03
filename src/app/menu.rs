@@ -1645,7 +1645,13 @@ mod install_tests {
         let profile = dir.join("profile.ps1");
         let cmd = pwsh_install_command(&script).trim_end().to_string();
         let run = format!("$PROFILE = '{}'; {cmd}; {cmd}; if ($global:TermurionLoaded) {{ 'loaded' }}", profile.display());
-        let out = std::process::Command::new("powershell.exe").args(["-NoProfile", "-NoLogo", "-Command", &run]).output().unwrap();
+        // Windows PowerShell on Windows; PowerShell 7 (pwsh) elsewhere, and no pwsh means nothing to run.
+        let program = crate::platform::by_os("powershell.exe", "pwsh");
+        let out = match std::process::Command::new(program).args(["-NoProfile", "-NoLogo", "-Command", &run]).output() {
+            Ok(out) => out,
+            Err(e) if !crate::platform::IS_WINDOWS && e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => panic!("{program}: {e}"),
+        };
         assert!(String::from_utf8_lossy(&out.stdout).contains("loaded"), "{}", String::from_utf8_lossy(&out.stderr));
         let text = std::fs::read_to_string(&profile).unwrap();
         assert_eq!(text.matches("termurion_shell_integration.ps1").count(), 1, "{text}");

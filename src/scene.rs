@@ -7906,8 +7906,10 @@ mod tests {
 
         // The number centered in its box, iTerm2's floor.
         let counter = px(bar.cells[0].1.counter.unwrap());
-        let win1 = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "Ctrl+Shift+1")).expect("the number");
-        assert_eq!(win1.x, counter.x + ((counter.w - 144.0) / 2.0).floor());
+        let win1 = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == crate::platform::by_cmd("Ctrl+Shift+1", "\u{2318}1"))).expect("the number");
+        // 12 pixels a character: 12 characters, or the 2 of Cmd+1 on macOS.
+        let text_w = if crate::platform::keys::CMD_IS_A_KEY { 24.0 } else { 144.0 };
+        assert_eq!(win1.x, counter.x + ((counter.w - text_w) / 2.0).floor());
 
         // The status dot is the tab's icon, in the icon rect.
         let icon = px(bar.cells[0].1.icon.unwrap());

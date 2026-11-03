@@ -1236,7 +1236,7 @@ impl SettingsWindow {
                                 let live = crate::platform::iterm2_prefs::live_file();
                                 let mut dialog = rfd::FileDialog::new().add_filter("iTerm2 settings or Dynamic Profiles", &["plist", "json"]);
                                 // Open in the folder iTerm2 keeps its settings in, with the file named.
-                                if let Some(l) = live.as_deref().filter(|l| l.exists()) {
+                                if let Some(l) = live.as_deref().filter(|l| crate::localfs::judge(l).is_some_and(|j| crate::localfs::exists(&j))) {
                                     dialog = dialog.set_directory(l.parent().unwrap_or(l)).set_file_name(l.file_name().and_then(|n| n.to_str()).unwrap_or(""));
                                 }
                                 if let Some(path) = dialog.pick_file() {

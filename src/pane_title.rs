@@ -365,15 +365,16 @@ mod tests {
     fn title_text_follows_iterm2() {
         assert_eq!(title_text("bash", 0, 5), "bash");
         assert_eq!(title_text("bash", 2, 9), "bash");
-        assert_eq!(title_text("bash", 2, 5), "Alt+2   bash");
-        assert_eq!(title_text("vim", 9, 6), "Alt+Shift+9   vim");
-        assert_eq!(title_text("x", 1, 1), "Ctrl+1   x");
-        assert_eq!(title_text("x", 3, 4), "Ctrl+Shift+3   x");
+        let by = |win: &str, mac: &str| crate::platform::by_cmd(win, mac).to_string();
+        assert_eq!(title_text("bash", 2, 5), by("Alt+2   bash", "\u{2325}2   bash"));
+        assert_eq!(title_text("vim", 9, 6), by("Alt+Shift+9   vim", "\u{2325}\u{2318}9   vim"));
+        assert_eq!(title_text("x", 1, 1), by("Ctrl+1   x", "\u{2303}1   x"));
+        assert_eq!(title_text("x", 3, 4), by("Ctrl+Shift+3   x", "\u{2318}3   x"));
         // P1: a title is untrusted program text.
         let hostile = title_text("a\u{202e}b\u{200b}\r\nc", 2, 5);
-        assert_eq!(hostile, "Alt+2   abc");
+        assert_eq!(hostile, by("Alt+2   abc", "\u{2325}2   abc"));
         let long = title_text(&"w".repeat(10_000), 2, 5);
-        assert!(long.chars().count() <= 200 + 1 + "Alt+2   ".len());
+        assert!(long.chars().count() <= 200 + 1 + by("Alt+2   ", "\u{2325}2   ").chars().count());
         assert!(!long.contains('\n'));
     }
 

@@ -199,8 +199,8 @@ mod tests {
         assert_eq!(modifiers(3), Some(""));
         // The label (WSL stringForOrdinal:): the chord for 1 to 9, the bare number from 10
         // on or with no modifier.
-        assert_eq!(shortcut_label(6, 0), "Alt+Shift+1");
-        assert_eq!(shortcut_label(6, 8), "Alt+Shift+9");
+        assert_eq!(shortcut_label(6, 0), crate::platform::by_cmd("Alt+Shift+1", "\u{2325}\u{2318}1"));
+        assert_eq!(shortcut_label(6, 8), crate::platform::by_cmd("Alt+Shift+9", "\u{2325}\u{2318}9"));
         assert_eq!(shortcut_label(6, 9), "10");
         assert_eq!(shortcut_label(9, 0), "1");
         // "N. " only when the label cannot show (PT:3105-3122).
@@ -209,7 +209,7 @@ mod tests {
         assert_eq!(number_prefix(true, true, false, 2).as_deref(), Some("3. "));
         assert_eq!(number_prefix(false, false, false, 0), None);
         // R11: the label ends the caption after four spaces.
-        assert_eq!(caption("vim", true, true, true, 6, 0), "vim    Alt+Shift+1");
+        assert_eq!(caption("vim", true, true, true, 6, 0), crate::platform::by_cmd("vim    Alt+Shift+1", "vim    \u{2325}\u{2318}1"));
         assert_eq!(caption("vim", true, true, true, 6, 9), "vim    10");
         assert_eq!(caption("vim", true, true, true, 9, 0), "vim    1");
         assert_eq!(caption("vim", true, true, false, 6, 0), "1. vim");
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn compact_caption_follows_r11() {
-        assert_eq!(compact_caption("vim", true, true, 6, 0), ("vim".to_string(), Some("Alt+Shift+1".to_string())));
+        assert_eq!(compact_caption("vim", true, true, 6, 0), ("vim".to_string(), Some(crate::platform::by_cmd("Alt+Shift+1", "\u{2325}\u{2318}1").to_string())));
         assert_eq!(compact_caption("vim", true, true, 6, 9), ("vim".to_string(), Some("10".to_string())));
         assert_eq!(compact_caption("vim", true, false, 6, 0), ("1. vim".to_string(), None));
         assert_eq!(compact_caption("vim", false, true, 6, 0), ("vim".to_string(), None));
@@ -231,8 +231,8 @@ mod tests {
     #[test]
     fn window_menu_entry_follows_iterm2() {
         // PT:3069-3084: the title without the number and the chord for 1 to 9.
-        assert_eq!(menu_entry("vim", "vim", true, 6, 0), "vim \u{2014} Alt+Shift+1");
-        assert_eq!(menu_entry("1. vim", "vim", true, 6, 0), "vim \u{2014} Alt+Shift+1");
+        assert_eq!(menu_entry("vim", "vim", true, 6, 0), crate::platform::by_cmd("vim \u{2014} Alt+Shift+1", "vim \u{2014} \u{2325}\u{2318}1"));
+        assert_eq!(menu_entry("1. vim", "vim", true, 6, 0), crate::platform::by_cmd("vim \u{2014} Alt+Shift+1", "vim \u{2014} \u{2325}\u{2318}1"));
         // From 10 on, and with no modifier or the key off, the window's own title (its "N. "
         // too, when the caption has one).
         assert_eq!(menu_entry("vim", "vim", true, 6, 9), "vim \u{2014} 10");

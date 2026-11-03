@@ -301,10 +301,12 @@ mod tests {
     #[test]
     fn pip_commands_follow_iterm2() {
         let venv = Path::new(r"C:\S\t\.venv");
-        let python = r"C:\S\t\.venv\Scripts\python.exe";
-        let uv = Backend::Uv(PathBuf::from(r"C:\u\bin\uv.exe"));
+        // Joined with the OS separator: C:\S\t\.venv\Scripts\python.exe on Windows.
+        let python = &venv.join("Scripts").join("python.exe").to_string_lossy().to_string();
+        let uv_path = Path::new(r"C:\u").join("bin").join("uv.exe");
+        let uv = Backend::Uv(uv_path.clone());
         let (program, args, env) = pip_command(&uv, venv, &s(&["install", "x"]));
-        assert_eq!(program, PathBuf::from(r"C:\u\bin\uv.exe"));
+        assert_eq!(program, uv_path);
         assert_eq!(args, s(&["pip", "install", "x", "--only-binary", ":all:", "--python", python]));
         assert_eq!(env, rt::uv_env(Path::new(r"C:\u"), true));
 

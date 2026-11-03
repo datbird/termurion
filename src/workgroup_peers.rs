@@ -211,12 +211,12 @@ mod tests {
         assert_eq!(by_digit(12, 8), Some(7));
         assert_eq!(by_digit(12, 9), Some(11));
         assert_eq!(by_digit(8, 8), Some(7));
-        assert_eq!(digit_label(1).as_deref(), Some("Ctrl+Shift+Alt+F1"));
-        assert_eq!(digit_label(8).as_deref(), Some("Ctrl+Shift+Alt+F8"));
+        assert_eq!(digit_label(1).as_deref(), Some(crate::platform::by_cmd("Ctrl+Shift+Alt+F1", "\u{2325}\u{21e7}\u{2318}1")));
+        assert_eq!(digit_label(8).as_deref(), Some(crate::platform::by_cmd("Ctrl+Shift+Alt+F8", "\u{2325}\u{21e7}\u{2318}8")));
         assert_eq!(digit_label(9), None, "the 9 rule needs the count");
         assert_eq!(digit_label(0), None);
-        assert_eq!(segment_label("Diff", None, 2, 3), "Diff\u{2003}Ctrl+Shift+Alt+F2");
-        assert_eq!(segment_label("Last", None, 12, 12), "Last\u{2003}Ctrl+Shift+Alt+F9", "the last of nine or more");
+        assert_eq!(segment_label("Diff", None, 2, 3), crate::platform::by_cmd("Diff\u{2003}Ctrl+Shift+Alt+F2", "Diff\u{2003}\u{2325}\u{21e7}\u{2318}2"));
+        assert_eq!(segment_label("Last", None, 12, 12), crate::platform::by_cmd("Last\u{2003}Ctrl+Shift+Alt+F9", "Last\u{2003}\u{2325}\u{21e7}\u{2318}9"), "the last of nine or more");
         assert_eq!(segment_label("Mid", None, 10, 12), "Mid", "no shortcut for it");
         assert_eq!(segment_label("Diff", Some("Ctrl+D"), 2, 3), "Diff\u{2003}Ctrl+D", "a custom shortcut replaces the digit");
         assert_eq!(segment_label("Diff", Some(""), 2, 3), "Diff");
@@ -252,7 +252,7 @@ mod tests {
         let other = crate::keystroke::Keystroke::new(0x65, crate::keystroke::OPTION | crate::keystroke::CONTROL, None, 0x65);
         assert!(!shortcut_matches(&sc, &other));
         assert!(!shortcut_matches(&Shortcut { serialized: "garbage".into() }, &k));
-        assert_eq!(custom_label(&sc).as_deref(), Some("Ctrl+Alt+D"));
+        assert_eq!(custom_label(&sc).as_deref(), Some(crate::platform::by_cmd("Ctrl+Alt+D", "\u{2303}\u{2325}D")));
         assert_eq!(custom_label(&Shortcut { serialized: "garbage".into() }), None);
     }
 

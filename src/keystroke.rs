@@ -125,6 +125,19 @@ impl Keystroke {
     }
 }
 
+/// The modifiers alone ("Ctrl+Shift", or the Mac glyphs), spelled with the shortcut key's real keys.
+pub fn modifiers_label(flags: u64) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for (flag, name) in [(COMMAND, "Win"), (CONTROL, "Ctrl"), (OPTION, "Alt"), (SHIFT, "Shift")] {
+        if flags & flag != 0 {
+            parts.push(name);
+        }
+    }
+    // The trailing "+" marks a prefix with no key yet.
+    let text = crate::shortcut_key::mode().show(&format!("{}+", parts.join("+")));
+    text.trim_end_matches('+').to_string()
+}
+
 fn key_name(ch: u32) -> String {
     match ch {
         0x03 => "Enter".into(),

@@ -633,21 +633,26 @@ mod tests {
     #[test]
     fn a_folder_linked_to_a_network_path_is_never_probed() {
         // The final review's Important 2 (invariant 5): D:\s is a link to \\h\s, or sits under
-        // one, so it is neither probed, read nor written.
-        let home = Path::new(r"C:\Users\u");
-        let to_share = |p: &Path| (p == Path::new(r"D:\s")).then(|| PathBuf::from(r"\\h\s"));
+        // one, so it is neither probed, read nor written. Off Windows the same shapes in slash
+        // paths, and the share is a double-slash path, which the judge reads as a share by its text.
+        let by = crate::platform::by_os;
+        let home = Path::new(by(r"C:\Users\u", "/u"));
+        let (link, sub, mine) = (by(r"D:\s", "/d/s"), by(r"D:\s\sub", "/d/s/sub"), by(r"D:\s\mine.toml", "/d/s/mine.toml"));
+        let (plain, share, local_target) = (by(r"D:\t", "/d/t"), by(r"\\h\s", "//h/s"), by(r"E:\t", "/e/t"));
+        let settings = by(r"D:\s\termurion-settings.toml", "/d/s/termurion-settings.toml");
+        let to_share = |p: &Path| (p == Path::new(link)).then(|| PathBuf::from(share));
         let never = |_: &Path| -> bool { panic!("a folder reached through a link to a network path is never probed") };
-        assert!(!location_valid(r"D:\s", home, &to_share, &never, None));
-        assert!(!location_valid(r"D:\s\sub", home, &to_share, &never, None), "a folder under the link");
-        assert!(!location_valid(r"D:\s\mine.toml", home, &to_share, &never, None));
-        assert!(!local_folder(Path::new(r"D:\s"), &to_share));
-        assert!(!local_folder(Path::new(r"D:\s\termurion-settings.toml"), &to_share));
-        assert!(!local_folder(Path::new(r"\\h\s"), &|_| None));
+        assert!(!location_valid(link, home, &to_share, &never, None));
+        assert!(!location_valid(sub, home, &to_share, &never, None), "a folder under the link");
+        assert!(!location_valid(mine, home, &to_share, &never, None));
+        assert!(!local_folder(Path::new(link), &to_share));
+        assert!(!local_folder(Path::new(settings), &to_share));
+        assert!(!local_folder(Path::new(share), &|_| None));
         // A link to a local folder, and a plain folder, stay usable.
-        let to_local = |p: &Path| (p == Path::new(r"D:\s")).then(|| PathBuf::from(r"E:\t"));
-        assert!(local_folder(Path::new(r"D:\s"), &to_local));
-        assert!(local_folder(Path::new(r"D:\t"), &to_share));
-        assert!(location_valid(r"D:\s", home, &to_local, &|p| p == Path::new(r"D:\s"), None));
+        let to_local = |p: &Path| (p == Path::new(link)).then(|| PathBuf::from(local_target));
+        assert!(local_folder(Path::new(link), &to_local));
+        assert!(local_folder(Path::new(plain), &to_share));
+        assert!(location_valid(link, home, &to_local, &|p| p == Path::new(link), None));
     }
 
     #[test]

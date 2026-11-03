@@ -787,10 +787,12 @@ mod tests {
 
     #[test]
     fn commands_follow_iterm2() {
+        // Joined with the OS separator: C:\u\python on Windows.
+        let under = |name: &str| Path::new(r"C:\u").join(name).to_string_lossy().to_string();
         let expect = |downloads: &str| {
             vec![
-                ("UV_PYTHON_INSTALL_DIR".to_string(), r"C:\u\python".to_string()),
-                ("UV_CACHE_DIR".to_string(), r"C:\u\cache".to_string()),
+                ("UV_PYTHON_INSTALL_DIR".to_string(), under("python")),
+                ("UV_CACHE_DIR".to_string(), under("cache")),
                 ("UV_PYTHON_PREFERENCE".to_string(), "only-managed".to_string()),
                 ("UV_NO_CONFIG".to_string(), "1".to_string()),
                 ("UV_PYTHON_DOWNLOADS".to_string(), downloads.to_string()),

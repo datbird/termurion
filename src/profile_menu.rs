@@ -434,8 +434,9 @@ mod tests {
         assert_eq!(profiles[1].string("Shortcut"), "");
         let titles = shortcut_titles(&[(a, "A".into(), None), (b, "B".into(), Some('Q'))]);
         assert_eq!(titles.len(), 37, "none, A-Z and 0-9");
-        assert!(titles.contains(&(16, "Ctrl+Alt+Q (B)".to_string())));
-        assert!(titles.contains(&(0, "Ctrl+Alt+A".to_string())));
+        let by = crate::platform::by_cmd;
+        assert!(titles.contains(&(16, format!("{} (B)", by("Ctrl+Alt+Q", "\u{2303}\u{2318}Q")))));
+        assert!(titles.contains(&(0, by("Ctrl+Alt+A", "\u{2303}\u{2318}A").to_string())));
         assert!(titles.contains(&(-1, String::new())));
     }
 

@@ -137,8 +137,7 @@ pub fn key_label(k: &str) -> String {
     };
     let clicks = ["single click", "double click", "triple click", "quad click"].get(clicks.saturating_sub(1) as usize).copied().unwrap_or("(error)");
     let flags = crate::keystroke::from_mods(m);
-    let mods = crate::keystroke::Keystroke::new(0, flags, None, 0).label();
-    let mods = mods.trim_end_matches("+0x0").trim_end_matches("0x0");
+    let mods = crate::keystroke::modifiers_label(flags);
     if mods.is_empty() { format!("{button}, {clicks}") } else { format!("{button}, {clicks}, {mods}") }
 }
 
@@ -321,7 +320,7 @@ mod tests {
     #[test]
     fn keys_read_like_iterm2_rows() {
         assert_eq!(key_label("Button,1,1,,"), "Right button, single click");
-        assert_eq!(key_label("Button,0,2,cs,"), "Left button, double click, Ctrl+Shift+Alt");
+        assert_eq!(key_label("Button,0,2,cs,"), crate::platform::by_cmd("Left button, double click, Ctrl+Shift+Alt", "Left button, double click, \u{21e7}\u{2318}"));
         assert_eq!(key_label("Button,4,1,,"), "Button #5, single click");
         assert_eq!(key_label("Gesture,ThreeFingerSwipeUp,,"), "ThreeFingerSwipeUp");
     }

@@ -910,7 +910,11 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join(rp::PREFS_FILE), remote().to_toml()).unwrap();
         let t = folder.display().to_string();
-        let to_share = |p: &Path| (p == folder.as_path()).then(|| PathBuf::from(r"\\h\s"));
+        // A link to a network path: a UNC name on Windows, a double-slash path (read as a share by
+        // its text) elsewhere.
+        let share = crate::platform::by_os(r"\\h\s", "//h/s");
+        let share_file = crate::platform::by_os(r"\\h\s\f.toml", "//h/s/f.toml");
+        let to_share = |p: &Path| (p == folder.as_path()).then(|| PathBuf::from(share));
         let (g, _) = local(&dir, &t);
         match start(&g, Path::new(r"C:\Users\u"), &to_share, &never) {
             Start::Ask(ask) => {
@@ -923,7 +927,7 @@ mod tests {
         let named = folder.join(rp::PREFS_FILE);
         let (g, _) = local(&dir, &named.display().to_string());
         assert!(matches!(start(&g, Path::new(r"C:\Users\u"), &to_share, &never), Start::Ask(_)));
-        let file_to_share = |p: &Path| (p == named.as_path()).then(|| PathBuf::from(r"\\h\s\f.toml"));
+        let file_to_share = |p: &Path| (p == named.as_path()).then(|| PathBuf::from(share_file));
         let (g, _) = local(&dir, &t);
         assert!(matches!(start(&g, Path::new(r"C:\Users\u"), &file_to_share, &never), Start::Ask(_)));
         // With no link the same folder loads.
