@@ -38,7 +38,7 @@ pub fn create_failed(e: &str) -> String {
 }
 
 pub fn created_notice(name: &str) -> String {
-    format!("Created {name} and revealed in Explorer.")
+    crate::platform::native_words(&format!("Created {name} and revealed in Explorer.")).into_owned()
 }
 
 pub fn create_failed_notice(name: &str, e: &str) -> String {

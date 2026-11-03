@@ -628,7 +628,7 @@ fn key_dialog(ctx: &egui::Context, d: &mut KeyDialog, error: &mut Option<String>
         ui.set_width(90.0 + 14.0 + 516.0);
         ui.strong(KEYS_HEADING);
         ui.add_space(4.0);
-        ui.label(KEYS_TEXT);
+        ui.label(crate::platform::native_words(KEYS_TEXT));
         ui.add_space(10.0);
         for (i, (v, s)) in Vendor::KEY_ORDER.iter().zip(d.now.iter_mut()).enumerate() {
             ui.horizontal(|ui| {

@@ -1258,7 +1258,7 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
 }
 
 fn globals_in(section: &str) -> Vec<&'static Setting> {
-    schema::global().iter().filter(|s| s.section == section).collect()
+    schema::global().iter().filter(|s| s.section == section && !row_hidden(&s.key)).collect()
 }
 
 /// iTerm2's Keys pane.
@@ -1314,13 +1314,16 @@ pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profile
         for s in globals_in("Key Bindings").into_iter().filter(|s| s.kind == Kind::Bool) {
             changed |= global_control(ui, g, s, true);
         }
-        ui.add_space(8.0);
-        ui.strong("Shortcut Key");
-        for s in globals_in("Shortcut Key") {
-            changed |= global_control(ui, g, s, true);
-        }
-        if let Some(w) = crate::shortcut_key::warning(crate::shortcut_key::ShortcutKey::from_globals(g)) {
-            ui.colored_label(ui.visuals().warn_fg_color, w);
+        // The whole group is hidden on macOS, where Cmd is the shortcut key.
+        if !crate::platform::keys::CMD_IS_A_KEY {
+            ui.add_space(8.0);
+            ui.strong("Shortcut Key");
+            for s in globals_in("Shortcut Key") {
+                changed |= global_control(ui, g, s, true);
+            }
+            if let Some(w) = crate::shortcut_key::warning(crate::shortcut_key::ShortcutKey::from_globals(g)) {
+                ui.colored_label(ui.visuals().warn_fg_color, w);
+            }
         }
         ui.add_space(8.0);
         ui.strong("Navigation Shortcuts");
@@ -1792,7 +1795,9 @@ pub fn row_visible(g: &Globals, key: &str) -> bool {
 /// Rows a schema page never draws: the Advanced rows that need Apple Intelligence, which is
 /// not available on Windows (ruling 7). Ruling 12e-4 also keeps them out of the schema.
 pub fn row_hidden(key: &str) -> bool {
-    matches!(key, "aiGeneratedTabTitles" | "logAITabTitleCorpus") || (key == "ShortcutKey" && crate::platform::keys::CMD_IS_A_KEY)
+    // On macOS Cmd is the shortcut key and the system keeps its own shortcuts: neither the Shortcut
+    // key choice nor Windows' "respect its shortcuts" switch has anything to set.
+    matches!(key, "aiGeneratedTabTitles" | "logAITabTitleCorpus") || (matches!(key, "ShortcutKey" | "AllowSymbolicHotKeys") && crate::platform::keys::CMD_IS_A_KEY)
 }
 
 /// The global rows a schema page draws, in schema order: the tab's rows without the General
@@ -2187,6 +2192,10 @@ pub fn profile_key_mappings(ui: &mut egui::Ui, p: &mut Profile, st: &mut KeysSta
 
 #[cfg(test)]
 mod tests {
+    /// The text as this OS words it (the Mac's words on macOS), for what the schema now holds.
+    fn nw(text: impl AsRef<str>) -> String {
+        crate::platform::native_words(text.as_ref()).into_owned()
+    }
     use super::*;
 
     /// 13y2 Task 9b (Review Focus 10): every Advanced row is iTerm2's capitalized defaults key, each
@@ -2278,8 +2287,8 @@ mod tests {
             assert_eq!(s.section, section, "{key} section");
             assert_eq!(s.kind, kind, "{key} kind");
             assert_eq!(s.default.as_ref(), Some(&default), "{key} default");
-            assert_eq!(s.help, help, "{key} help");
-            assert_eq!(s.label, help.lines().next().unwrap(), "{key} label");
+            assert_eq!(s.help, nw(&help), "{key} help");
+            assert_eq!(s.label, nw(help.lines().next().unwrap()), "{key} label");
             // The Advanced pane must draw it with the right control (preflight P9).
             let want = match kind {
                 Kind::Bool => crate::advanced_pane::RowKind::Bool,
@@ -2326,8 +2335,8 @@ mod tests {
             assert_eq!((s.tab.as_str(), s.section.as_str()), (tab, section), "{key} placement");
             assert_eq!(s.kind, kind, "{key} kind");
             assert_eq!(s.default.as_ref(), Some(&default), "{key} default");
-            assert_eq!(s.label, label, "{key} label");
-            assert_eq!(s.help, help, "{key} help");
+            assert_eq!(s.label, nw(label), "{key} label");
+            assert_eq!(s.help, nw(&help), "{key} help");
             if tab == "Advanced" {
                 let row = crate::advanced_pane::rows().into_iter().find(|r| r.key == key).unwrap_or_else(|| panic!("{key} has no pane row"));
                 assert_eq!(row.kind, crate::advanced_pane::RowKind::Bool, "{key} row kind");
@@ -2366,8 +2375,8 @@ mod tests {
             assert!(!s.macos_only, "{key} is not macOS-only");
             assert_eq!(s.kind, kind, "{key} kind");
             assert_eq!(s.default.as_ref(), Some(&default), "{key} default");
-            assert_eq!(s.label, label, "{key} label");
-            assert_eq!(s.help, help, "{key} help");
+            assert_eq!(s.label, nw(label), "{key} label");
+            assert_eq!(s.help, nw(&help), "{key} help");
         }
     }
 
@@ -2845,7 +2854,7 @@ mod tests {
         assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", Kind::Bool));
         assert_eq!(s.default, Some(Value::Boolean(true)));
         let text = "Reveal file created by \u{201c}Export All Settings and Data\u{201d} in Explorer upon completion";
-        assert_eq!((s.label.as_str(), s.help.as_str()), (text, text));
+        assert_eq!((s.label.as_str(), s.help.as_str()), (nw(text).as_str(), nw(text).as_str()));
     }
 
     #[test]
@@ -2890,7 +2899,7 @@ mod tests {
             let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
             assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Warnings", Kind::Bool), "{key}");
             assert_eq!(s.default, Some(Value::Boolean(false)), "{key}");
-            assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (nw(text).as_str(), nw(text).as_str()), "{key}");
         }
     }
 
@@ -3150,7 +3159,7 @@ mod tests {
             assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
             assert_eq!(row.kind, kind, "{key}");
             assert_eq!(row.default, Some(default), "{key}");
-            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (nw(label).as_str(), nw(help).as_str()), "{key}");
             // The row draws through the Advanced pane with the kind its type gives (P1).
             let drawn = advanced.iter().find(|r| r.key == key).unwrap_or_else(|| panic!("{key} is not drawn"));
             let want = match kind {
@@ -3331,7 +3340,7 @@ mod tests {
             assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Scripting"), "{key}");
             assert_eq!(row.kind, Kind::Bool, "{key}");
             assert_eq!(row.default, Some(Value::Boolean(default)), "{key}");
-            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (nw(label).as_str(), nw(help).as_str()), "{key}");
         }
     }
 
@@ -3565,8 +3574,8 @@ mod tests {
         assert_eq!(d.help, "Downloads folder.\nIf set, downloaded files go to this location instead of the user\u{2019}s Downloads folder.");
         let s = schema::find_global("ShowSuiteNameInDockIcon").expect("ShowSuiteNameInDockIcon");
         assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind, s.default.clone()), ("Advanced", "General", Kind::Bool, Some(Value::Boolean(true))));
-        assert_eq!(s.label, "Overlay the suite name on the taskbar icon when launched with -suite.");
-        assert_eq!(s.help, "Overlay the suite name on the taskbar icon when launched with -suite.\nWhen you run an isolated instance with the -suite argument, its name is drawn across the lower third of the taskbar icon so you can tell instances apart.");
+        assert_eq!(s.label, nw("Overlay the suite name on the taskbar icon when launched with -suite."));
+        assert_eq!(s.help, nw("Overlay the suite name on the taskbar icon when launched with -suite.\nWhen you run an isolated instance with the -suite argument, its name is drawn across the lower third of the taskbar icon so you can tell instances apart."));
         for key in ["DownloadsDirectory", "ShowSuiteNameInDockIcon"] {
             assert!(page_rows("Advanced").iter().any(|r| r.key == key), "{key}");
             assert_eq!(schema::global().iter().filter(|r| r.key == key).count(), 1, "{key}");
@@ -3602,8 +3611,8 @@ mod tests {
             let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} is not in the schema"));
             assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", section, kind), "{key}");
             assert_eq!(row.default, Some(default), "{key}");
-            assert_eq!(row.label, label, "{key}");
-            assert_eq!(row.help, format!("{label}{rest}"), "{key}");
+            assert_eq!(row.label, nw(&label), "{key}");
+            assert_eq!(row.help, nw(&format!("{label}{rest}")), "{key}");
             assert!(page_rows("Advanced").iter().any(|s| s.key == key), "{key}");
             assert_eq!(schema::global().iter().filter(|s| s.key == key).count(), 1, "{key}");
         }
@@ -3616,7 +3625,7 @@ mod tests {
         let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} is not in the schema"));
         assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "Tabs", Kind::Bool));
         assert_eq!(row.default, Some(Value::Boolean(false)));
-        assert_eq!(row.label, "Add items to Recents (in the taskbar button\u{2019}s Jump List) to reopen recently used profiles as tabs?");
+        assert_eq!(row.label, nw("Add items to Recents (in the taskbar button\u{2019}s Jump List) to reopen recently used profiles as tabs?"));
         assert_eq!(row.help, row.label);
         assert!(page_rows("Advanced").iter().any(|s| s.key == key));
         assert_eq!(schema::global().iter().filter(|s| s.key.eq_ignore_ascii_case(key)).count(), 1, "one row, whatever the case");
@@ -3633,7 +3642,7 @@ mod tests {
             assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"), "{key}");
             assert_eq!(row.kind, Kind::Bool, "{key}");
             assert_eq!(row.default, Some(Value::Boolean(true)), "{key}");
-            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (nw(label).as_str(), nw(help).as_str()), "{key}");
             assert!(Globals::empty(std::path::Path::new("utilities-row-test.toml")).bool(key), "{key} on until turned off");
         }
     }
@@ -4217,8 +4226,8 @@ mod tests {
             assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
             assert_eq!(row.kind, kind, "{key}");
             assert_eq!(row.default.as_ref(), Some(&default), "{key}");
-            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
-            assert_eq!(row.help, help, "{key}");
+            assert_eq!(row.label, nw(help.split('\n').next().unwrap()), "{key}");
+            assert_eq!(row.help, nw(help), "{key}");
         }
         // The Apple-only rows are left out of the schema (ruling 12e-4).
         assert!(schema::find_global("aiGeneratedTabTitles").is_none());
@@ -4237,6 +4246,7 @@ mod tests {
     #[test]
     fn the_shortcut_key_row_is_hidden_on_macos() {
         assert_eq!(row_hidden("ShortcutKey"), crate::platform::keys::CMD_IS_A_KEY);
+        assert_eq!(row_hidden("AllowSymbolicHotKeys"), crate::platform::keys::CMD_IS_A_KEY);
     }
 
     #[test]
@@ -4332,7 +4342,7 @@ mod tests {
             let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
             assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Warnings", Kind::Bool), "{key}");
             assert_eq!(s.default, Some(Value::Boolean(false)), "{key}");
-            assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (nw(text).as_str(), nw(text).as_str()), "{key}");
         }
     }
 
@@ -4349,7 +4359,7 @@ mod tests {
             assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Warnings", Kind::Bool), "{key}");
             assert_eq!(s.default, None, "{key}");
             assert!(s.optional_bool(), "{key}");
-            assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (nw(text).as_str(), nw(text).as_str()), "{key}");
         }
     }
 
@@ -4364,7 +4374,7 @@ mod tests {
             let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
             assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Warnings", Kind::Bool), "{key}");
             assert_eq!(s.default, Some(Value::Boolean(false)), "{key}");
-            assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (nw(text).as_str(), nw(text).as_str()), "{key}");
         }
     }
 
@@ -4492,7 +4502,7 @@ mod tests {
             let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
             assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), (tab, "General", Kind::Bool), "{key}");
             assert_eq!(s.default, Some(Value::Boolean(false)), "{key}");
-            assert_eq!(s.label, label, "{key}");
+            assert_eq!(s.label, nw(label), "{key}");
         }
         let mut g = Globals::empty(std::path::Path::new("presence-rows-test.toml"));
         assert!(!row_enabled(&g, "UIElementRequiresHotkeys"));
@@ -4507,8 +4517,8 @@ mod tests {
         let s = schema::find_global("StatusBarIcon").expect("StatusBarIcon");
         assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", Kind::Bool));
         assert_eq!(s.default, Some(Value::Boolean(true)));
-        assert_eq!(s.label, "Add notification area icon when excluded from taskbar?");
-        assert_eq!(s.help, "Add notification area icon when excluded from taskbar?\nWhen you turn on \u{201c}Exclude from taskbar and Alt+Tab switcher\u{201d} a notification area icon is added so you can switch the setting back off. Disable this to remove the icon. Doing so makes it very hard to get to Settings. You must restart Termurion after changing this setting.");
+        assert_eq!(s.label, nw("Add notification area icon when excluded from taskbar?"));
+        assert_eq!(s.help, nw("Add notification area icon when excluded from taskbar?\nWhen you turn on \u{201c}Exclude from taskbar and Alt+Tab switcher\u{201d} a notification area icon is added so you can switch the setting back off. Disable this to remove the icon. Doing so makes it very hard to get to Settings. You must restart Termurion after changing this setting."));
     }
 
     #[test]
@@ -4814,7 +4824,7 @@ mod tests {
             let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
             assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", section, kind), "{key}");
             assert_eq!(row.default, Some(default), "{key}");
-            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (nw(label).as_str(), nw(help).as_str()), "{key}");
         }
     }
 
@@ -4830,7 +4840,7 @@ mod tests {
             let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
             assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", "General", Kind::Bool), "{key}");
             assert_eq!(row.default, Some(Value::Boolean(true)), "{key}");
-            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (nw(label).as_str(), nw(help).as_str()), "{key}");
         }
     }
 
@@ -4859,7 +4869,7 @@ mod tests {
             let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
             assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", section, kind), "{key}");
             assert_eq!(row.default, Some(default), "{key}");
-            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (nw(label).as_str(), nw(help).as_str()), "{key}");
         }
     }
 
@@ -4892,7 +4902,7 @@ mod tests {
             let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
             assert_eq!((row.tab.as_str(), row.section.as_str(), row.kind), ("Advanced", section, Kind::Bool), "{key}");
             assert_eq!(row.default, Some(Value::Boolean(default)), "{key}");
-            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (nw(label).as_str(), nw(help).as_str()), "{key}");
         }
         let uv = schema::find("Unicode Version").unwrap();
         let choices: Vec<(Value, &str)> = uv.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
@@ -4957,7 +4967,7 @@ mod tests {
             let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} has no row"));
             assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", *section), "{key}");
             let label = help.lines().next().unwrap();
-            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (nw(label).as_str(), nw(help).as_str()), "{key}");
             let (kind, value, rk) = match default {
                 D::B(b) => (Kind::Bool, Value::Boolean(*b), RowKind::Bool),
                 D::S(s) => (Kind::String, Value::String(s.to_string()), RowKind::Text),
@@ -5070,8 +5080,8 @@ mod tests {
             assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Debugging"), "{key}");
             assert_eq!(row.kind, Kind::String, "{key}");
             assert_eq!(row.default, Some(Value::String(String::new())), "{key}");
-            assert_eq!(row.label, label, "{key}");
-            assert_eq!(row.help, format!("{label}{rest}"), "{key}");
+            assert_eq!(row.label, nw(&label), "{key}");
+            assert_eq!(row.help, nw(&format!("{label}{rest}")), "{key}");
             assert!(!row.optional_bool(), "{key}");
         }
     }
@@ -5102,8 +5112,8 @@ mod tests {
             assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
             assert_eq!(row.kind, Kind::Bool, "{key}");
             assert_eq!(row.default, Some(Value::Boolean(false)), "{key}");
-            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
-            assert_eq!(row.help, help, "{key}");
+            assert_eq!(row.label, nw(help.split('\n').next().unwrap()), "{key}");
+            assert_eq!(row.help, nw(help), "{key}");
             assert!(!row.optional_bool(), "{key}");
         }
     }
@@ -5122,8 +5132,8 @@ mod tests {
             assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Terminal"), "{key}");
             assert_eq!(row.kind, kind, "{key}");
             assert_eq!(row.default, Some(default), "{key}");
-            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
-            assert_eq!(row.help, help, "{key}");
+            assert_eq!(row.label, nw(help.split('\n').next().unwrap()), "{key}");
+            assert_eq!(row.help, nw(help), "{key}");
             assert!(!row.optional_bool(), "{key}");
         }
     }
@@ -5143,8 +5153,8 @@ mod tests {
             assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
             assert_eq!(row.kind, kind, "{key}");
             assert_eq!(row.default, Some(default), "{key}");
-            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
-            assert_eq!(row.help, help, "{key}");
+            assert_eq!(row.label, nw(help.split('\n').next().unwrap()), "{key}");
+            assert_eq!(row.help, nw(help), "{key}");
             assert!(!row.optional_bool(), "{key}");
         }
     }
@@ -5165,8 +5175,8 @@ mod tests {
             assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Badge"), "{key}");
             assert_eq!(row.kind, kind, "{key}");
             assert_eq!(row.default, Some(default), "{key}");
-            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
-            assert_eq!(row.help, help, "{key}");
+            assert_eq!(row.label, nw(help.split('\n').next().unwrap()), "{key}");
+            assert_eq!(row.help, nw(help), "{key}");
             assert!(!row.optional_bool(), "{key}");
         }
         // The profile rows' default notes name the Advanced keys as the computed default.
@@ -5193,8 +5203,8 @@ mod tests {
             assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
             assert_eq!(row.kind, kind, "{key}");
             assert_eq!(row.default, Some(default), "{key}");
-            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
-            assert_eq!(row.help, help, "{key}");
+            assert_eq!(row.label, nw(help.split('\n').next().unwrap()), "{key}");
+            assert_eq!(row.help, nw(help), "{key}");
             assert!(!row.optional_bool(), "{key}");
         }
     }

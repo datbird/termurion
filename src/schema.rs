@@ -101,12 +101,28 @@ struct File {
 /// The iTerm2 profile editor's tabs, in its order.
 pub const TABS: [&str; 8] = ["General", "Colors", "Text", "Window", "Terminal", "Session", "Keys", "Advanced"];
 
+/// The file's settings with their wording in this OS's words (Finder for Explorer, the Mac's key
+/// names for Win, Dock for taskbar on macOS; unchanged elsewhere). Keys and values are untouched.
+fn worded(mut settings: Vec<Setting>) -> Vec<Setting> {
+    use crate::platform::native_words;
+    for s in &mut settings {
+        s.label = native_words(&s.label).into_owned();
+        s.help = native_words(&s.help).into_owned();
+        for c in &mut s.choices {
+            c.label = native_words(&c.label).into_owned();
+        }
+    }
+    settings
+}
+
 pub fn profile() -> &'static [Setting] {
     static SETTINGS: OnceLock<Vec<Setting>> = OnceLock::new();
     SETTINGS.get_or_init(|| {
-        toml::from_str::<File>(include_str!("../schema/profile.toml"))
-            .expect("schema/profile.toml must parse; the schema tests check it")
-            .setting
+        worded(
+            toml::from_str::<File>(include_str!("../schema/profile.toml"))
+                .expect("schema/profile.toml must parse; the schema tests check it")
+                .setting,
+        )
     })
 }
 
@@ -118,9 +134,11 @@ pub fn find(key: &str) -> Option<&'static Setting> {
 pub fn global() -> &'static [Setting] {
     static SETTINGS: OnceLock<Vec<Setting>> = OnceLock::new();
     SETTINGS.get_or_init(|| {
-        toml::from_str::<File>(include_str!("../schema/global.toml"))
-            .expect("schema/global.toml must parse; the globals tests check it")
-            .setting
+        worded(
+            toml::from_str::<File>(include_str!("../schema/global.toml"))
+                .expect("schema/global.toml must parse; the globals tests check it")
+                .setting,
+        )
     })
 }
 
@@ -160,6 +178,27 @@ mod tests {
         for (name, text) in [("global", include_str!("../schema/global.toml")), ("profile", include_str!("../schema/profile.toml"))] {
             for (n, line) in text.lines().enumerate() {
                 assert!(!line.contains(['\u{2018}', '\u{2019}', '\u{201c}', '\u{201d}']), "{name}.toml:{}: raw typographic quote; use a \\u escape", n + 1);
+            }
+        }
+    }
+
+    /// The wording follows the OS: Windows and Linux keep the file's text, macOS says Finder, the
+    /// Keychain, the Dock and the Mac's key names.
+    #[test]
+    fn wording_follows_this_os() {
+        let by = crate::platform::by_cmd;
+        let left = find_global("LeftCommand").expect("LeftCommand");
+        assert_eq!(left.label, by("Remap left Win key to:", "Remap left command (\u{2318}) key to:"));
+        assert_eq!(left.choices.iter().find(|c| c.value.as_integer() == Some(7)).map(|c| c.label.as_str()), Some(by("Left Win", "Left Command")));
+        let export = find_global("RevealExportedSettingsAndData").expect("the export reveal row");
+        assert_eq!(export.label.contains("Finder"), crate::platform::keys::CMD_IS_A_KEY, "{}", export.label);
+        if crate::platform::keys::CMD_IS_A_KEY {
+            for s in global().iter().chain(profile()).filter(|s| !crate::settings_keys::row_hidden(&s.key)) {
+                for text in std::iter::once(&s.label).chain(std::iter::once(&s.help)).chain(s.choices.iter().map(|c| &c.label)) {
+                    for word in ["Explorer", "taskbar", "Win key", "Credential Manager", "Ctrl key", "Alt key"] {
+                        assert!(!text.contains(word), "{}: {text}", s.key);
+                    }
+                }
             }
         }
     }

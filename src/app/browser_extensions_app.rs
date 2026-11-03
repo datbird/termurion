@@ -442,7 +442,7 @@ impl App {
             return vec![status_script(&be::create_failed(&e.to_string()), "error")];
         }
         self.execute(pane, crate::semantic::Run::Reveal(judged.path().to_string_lossy().to_string()), None, false);
-        vec![status_script(be::REVEALED, "success")]
+        vec![status_script(&crate::platform::native_words(be::REVEALED), "success")]
     }
 
     /// The native folder picker: the person's choice becomes the pane's root, and every manifest in it

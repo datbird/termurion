@@ -746,7 +746,7 @@ impl App {
             results.push(menu.append(&PredefinedMenuItem::separator()));
             results.push(menu.append(&MenuItem::with_id("statusbar:dir-copy-path", "Copy Path", true, None)));
             results.push(menu.append(&MenuItem::with_id("statusbar:dir-copy-name", "Copy Folder Name", true, None)));
-            results.push(menu.append(&MenuItem::with_id("statusbar:dir-reveal", "Show in Explorer", dir_menu_reveals(self.remote_text(pane)), None)));
+            results.push(menu.append(&MenuItem::with_id("statusbar:dir-reveal", crate::platform::native_words("Show in Explorer"), dir_menu_reveals(self.remote_text(pane)), None)));
             results.push(menu.append(&PredefinedMenuItem::separator()));
             results.push(menu.append(&MenuItem::with_id("statusbar:dir-new-window", "New Session Here in New Window", true, None)));
             results.push(menu.append(&MenuItem::with_id("statusbar:dir-new-tab", "New Session Here in New Tab", true, None)));

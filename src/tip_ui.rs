@@ -92,9 +92,15 @@ pub fn clamp_origin(origin: (f32, f32), size: (f32, f32), work: Work) -> (f32, f
     (x, y)
 }
 
+/// A tip's text as this OS shows it: on macOS the Mac's words (Finder, Dock) and key glyphs for the
+/// Windows ones; unchanged on Windows and Linux.
+pub fn shown(text: &str) -> String {
+    if crate::platform::keys::CMD_IS_A_KEY { crate::shortcut_key::mode().show(&crate::platform::native_words(text)) } else { text.to_string() }
+}
+
 /// What Share copies: "Title\n\nBody", then "\n\nURL" when the tip has one.
 pub fn share_text(tip: &Tip) -> String {
-    let mut text = format!("{}\n\n{}", tip.title, tip.body);
+    let mut text = format!("{}\n\n{}", shown(&tip.title), shown(&tip.body));
     if let Some(url) = &tip.url {
         text.push_str("\n\n");
         text.push_str(url);
@@ -227,9 +233,9 @@ impl TipWindow {
                 if back.drag_started() {
                     drag = true;
                 }
-                ui.label(egui::RichText::new(tip.title.as_str()).strong().size(20.0));
+                ui.label(egui::RichText::new(shown(&tip.title)).strong().size(20.0));
                 ui.add_space(6.0);
-                ui.label(egui::RichText::new(tip.body.as_str()).size(15.0));
+                ui.label(egui::RichText::new(shown(&tip.body)).size(15.0));
                 ui.add_space(4.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                     ui.label(egui::RichText::new(SIGNATURE).italics().small().weak());

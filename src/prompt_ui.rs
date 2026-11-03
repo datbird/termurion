@@ -406,6 +406,9 @@ impl ConfirmWindow {
         heading: &str,
         text: &str,
     ) -> Result<ConfirmWindow, String> {
+        // Windows words (Explorer, taskbar) read as the Mac's on macOS.
+        let (heading, text) = (crate::platform::native_words(heading), crate::platform::native_words(text));
+        let (heading, text) = (heading.as_ref(), text.as_ref());
         let host = EguiHost::open(event_loop, instance, adapter, device, queue, heading, 480.0, window_height(text))?;
         Ok(ConfirmWindow { host, text: text.into(), suppress: false, checkbox: true, checkbox_label: Self::SUPPRESS, ok: "OK".into(), cancel: Some("Cancel".into()), enter_cancels: false, actions: Vec::new(), shortcuts: Vec::new(), underline: false, forget: false, close: None, spaces: None, gated: None, read: false, guard: None })
     }
@@ -445,8 +448,8 @@ impl ConfirmWindow {
     ) -> Result<ConfirmWindow, String> {
         let mut w = ConfirmWindow::open(event_loop, instance, adapter, device, queue, heading, text)?;
         w.checkbox = false;
-        w.ok = second.into();
-        w.cancel = Some(first.into());
+        w.ok = crate::platform::native_words(second).into_owned();
+        w.cancel = Some(crate::platform::native_words(first).into_owned());
         w.enter_cancels = true;
         Ok(w)
     }
@@ -476,7 +479,7 @@ impl ConfirmWindow {
         w.checkbox = checkbox.is_some();
         w.checkbox_label = checkbox.unwrap_or(Self::SUPPRESS);
         w.cancel = None;
-        w.actions = labels.iter().map(|l| l.to_string()).collect();
+        w.actions = labels.iter().map(|l| crate::platform::native_words(l).into_owned()).collect();
         w.shortcuts = shortcuts.to_vec();
         w.underline = underline;
         w.forget = forget;

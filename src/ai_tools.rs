@@ -377,7 +377,7 @@ const TOOLS: [Tool; 26] = {
         Tool {
             name: "create_file",
             category: WriteToFilesystem,
-            description: "Creates a file containing a specified string on the user's computer and then reveals it in Explorer.",
+            description: if cfg!(target_os = "macos") { "Creates a file containing a specified string on the user's computer and then reveals it in Finder." } else { "Creates a file containing a specified string on the user's computer and then reveals it in Explorer." },
             args: &[
                 text("filename", "The name of the file you wish to create. It will be replaced if it already exists."),
                 text("content", "The content that will be written to the file."),
@@ -727,14 +727,14 @@ mod tests {
                 "Inserts text into the terminal input at the cursor position, as if typed, without submitting it: the text may not contain a line break or a control key other than Tab (a refused text types nothing). To run a command, use execute_command. Use this to interact with a running interactive or full-screen (TUI) program - choose a menu option, or send keystrokes to a running app - since unlike execute_command it does not wait for the program to finish."
             )
         );
-        assert_eq!(description("create_file"), Some("Creates a file containing a specified string on the user's computer and then reveals it in Explorer."));
+        assert_eq!(description("create_file"), Some(crate::platform::by_cmd("Creates a file containing a specified string on the user's computer and then reveals it in Explorer.", "Creates a file containing a specified string on the user's computer and then reveals it in Finder.")));
         let screen = description("get_screen_contents").unwrap();
         assert!(screen.ends_with("These tokens are inserted by Termurion and are not literally present on the screen."));
         assert!(screen.contains("\u{27E8}dim\u{27E9}\u{2026}\u{27E8}/dim\u{27E9}"));
         assert!(description("restart_session").unwrap().starts_with("Restarts this terminal session: terminates any running jobs"));
         assert_eq!(description("detect_ssh_session"), Some("Returns true if the user is SSH\u{2019}ed into a remote host."));
         for name in ALL_NAMES {
-            assert!(description(name).is_some_and(|d| !d.contains("iTerm2") && !d.contains("Finder")), "{name}");
+            assert!(description(name).is_some_and(|d| !d.contains("iTerm2") && (crate::platform::keys::CMD_IS_A_KEY || !d.contains("Finder"))), "{name}");
         }
         assert_eq!(description("nope"), None);
         assert_eq!(

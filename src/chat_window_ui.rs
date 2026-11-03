@@ -1283,7 +1283,7 @@ fn file_item(ui: &mut egui::Ui, name: &str, reference: Option<String>, _row: &Ro
     }
     let usable = reference.is_some() && chat_view::attachment_name(name).is_some();
     resp.context_menu(|ui| {
-        if ui.add_enabled(usable, egui::Button::new(chat_view::REVEAL_TITLE)).clicked() {
+        if ui.add_enabled(usable, egui::Button::new(crate::platform::native_words(chat_view::REVEAL_TITLE))).clicked() {
             if let Some(r) = &reference {
                 out.push(ChatEvent::RevealFile(r.clone()));
             }

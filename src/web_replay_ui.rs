@@ -156,7 +156,7 @@ impl PlaybackWindow {
                         clock.forward();
                     }
                     let label = format!("{} / {}", web_replay::format_time(clock.pos), web_replay::format_time(end));
-                    if ui.add_enabled(!*saving, egui::Button::new(web_replay::REVEAL)).clicked() {
+                    if ui.add_enabled(!*saving, egui::Button::new(crate::platform::native_words(web_replay::REVEAL))).clicked() {
                         act = Some(ReplayAct::Reveal);
                     }
                     ui.label(label);

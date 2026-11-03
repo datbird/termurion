@@ -60,6 +60,9 @@ fn safe_answer(kind: Kind) -> Answer {
 /// the answer, and an Error box too because it is a fatal start message and the process ends right
 /// after. With no dialog program a question takes its safe answer.
 pub fn message(_owner: Option<isize>, title: &str, body: &str, kind: Kind) -> Answer {
+    // Windows words in the text (Explorer, the taskbar) read as the Mac's on macOS.
+    let (title, body) = (crate::platform::native_words(title), crate::platform::native_words(body));
+    let (title, body) = (title.as_ref(), body.as_ref());
     eprintln!("{title}: {body}");
     crate::dlog!("A message box was asked for; the words went to stderr");
     if !available() {

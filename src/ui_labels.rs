@@ -205,7 +205,8 @@ fn schema_labels_are_iterm2s() {
             continue;
         }
         match expected(scope, &s.key) {
-            Some(want) if want == s.label => {}
+            // The schema wears the OS's words (the Mac's on macOS); iTerm2's label is held in Windows words.
+            Some(want) if crate::platform::native_words(&want) == s.label => {}
             Some(want) => bad.push(format!("{scope} {}: have {:?}, iTerm2 has {:?} ({})", s.key, s.label, want, control_for(scope, &s.key).map_or("override", |c| c.source.as_str()))),
             None => bad.push(format!("{scope} {} ({:?}): no iTerm2 label and not exempt", s.key, s.label)),
         }

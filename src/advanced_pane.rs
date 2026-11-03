@@ -565,7 +565,10 @@ mod tests {
         );
         assert_eq!(
             text("KillJobsInServersOnQuit"),
-            ("User-initiated Quit (Win+Q) of Termurion will kill all running jobs.", "User-initiated Quit (Win+Q) of Termurion will kill all running jobs.\nApplies only when session restoration is on.")
+            (
+                crate::platform::by_cmd("User-initiated Quit (Win+Q) of Termurion will kill all running jobs.", "User-initiated Quit (\u{2318}Q) of Termurion will kill all running jobs."),
+                crate::platform::by_cmd("User-initiated Quit (Win+Q) of Termurion will kill all running jobs.\nApplies only when session restoration is on.", "User-initiated Quit (\u{2318}Q) of Termurion will kill all running jobs.\nApplies only when session restoration is on.")
+            )
         );
         assert_eq!(
             text("FileDropCoprocess").1,
