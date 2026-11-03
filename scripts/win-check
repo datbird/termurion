@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Type-checks the Windows build (lib and lib tests) from Linux or macOS, with no Windows machine.
+# Type-checks the Windows build (lib, lib tests and the binaries) from Linux or macOS, with no Windows machine.
 # It runs `cargo check --target x86_64-pc-windows-msvc`. The bundled sqlite build script wants
 # MSVC cl.exe and lib.exe, so stand-ins that write empty outputs go first on PATH: a check never
 # links, so those objects are never used. This proves the code compiles, not that it runs;
@@ -28,7 +28,7 @@ ln -sf stub "$stubs/cl.exe"
 ln -sf stub "$stubs/lib.exe"
 cargo="${CARGO:-cargo}"
 command -v "$cargo" >/dev/null || cargo="$HOME/.cargo/bin/cargo"
-out="$(PATH="$stubs:$PATH" "$cargo" check --lib --tests --target x86_64-pc-windows-msvc --target-dir "$target_dir" 2>&1)"
+out="$(PATH="$stubs:$PATH" "$cargo" check --lib --tests --bins --target x86_64-pc-windows-msvc --target-dir "$target_dir" 2>&1)"
 status=$?
 # The conpty files are fetched on Windows only, so their build-script notice is noise here.
 diag="$(printf '%s\n' "$out" | grep -E -A3 '^(warning|error)' | grep -E '^(warning|error)|-->' | grep -vE 'fetch-conpty|generated [0-9]+ warning|could not compile|aborting due')"

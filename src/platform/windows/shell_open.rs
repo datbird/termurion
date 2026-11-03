@@ -54,13 +54,18 @@ pub fn shell_verb(verb: &str, path: &std::path::Path, cwd: Option<&std::path::Pa
     if r as isize > 32 { Ok(()) } else { Err(format!("ShellExecute error {}", r as isize)) }
 }
 
+/// Explorer's `/select,` argument for `path`. Callers hold paths with either slash; Explorer
+/// wants backslashes, so the backend turns every `/` into `\` for all of them.
+fn select_arg(path: &str) -> Option<String> {
+    crate::semantic::explorer_select_arg(&path.replace('/', "\\"))
+}
+
 /// Explorer from the Windows folder (never from PATH) with the one select argument
 /// (`semantic::explorer_select_arg`, which refuses quotes, control characters and network paths).
 pub fn reveal(path: &str) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     let program = crate::script_provision::system_directory().and_then(|s| crate::semantic::explorer_in(&s)).ok_or("the Windows folder is unknown")?;
-    // Callers hold paths with either slash; Explorer wants backslashes.
-    let arg = crate::semantic::explorer_select_arg(&path.replace('/', "\\")).ok_or("Termurion does not show this path in Explorer")?;
+    let arg = select_arg(path).ok_or("Termurion does not show this path in Explorer")?;
     let mut cmd = std::process::Command::new(program);
     cmd.raw_arg(arg);
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
@@ -79,7 +84,7 @@ pub fn reveal_all(paths: &[std::path::PathBuf]) -> Result<(), String> {
         [one] => {
             // The same Explorer the Win-click's reveal runs, found through the system directory.
             let program = crate::script_provision::system_directory().and_then(|s| crate::semantic::explorer_in(&s)).ok_or("the Windows folder is unknown")?;
-            let arg = crate::semantic::explorer_select_arg(&one.to_string_lossy().replace('/', "\\")).ok_or("the file's name cannot be shown in Explorer")?;
+            let arg = select_arg(&one.to_string_lossy()).ok_or("the file's name cannot be shown in Explorer")?;
             let mut cmd = std::process::Command::new(program);
             cmd.raw_arg(arg);
             cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
@@ -123,4 +128,20 @@ pub fn open_scheme(encoded_url: &str, background: bool) -> Result<(), String> {
     let show = if background { SW_SHOWNOACTIVATE } else { SW_SHOWNORMAL };
     let r = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), show) };
     if r as isize > 32 { Ok(()) } else { Err(format!("ShellExecute error {}", r as isize)) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every reveal caller's path reaches Explorer with backslashes (the backend owns the
+    /// conversion, Task 6 ruling), and the select argument's own refusals still hold.
+    #[test]
+    fn reveal_turns_every_slash_into_a_backslash() {
+        assert_eq!(select_arg("C:/Users/x/f.txt").as_deref(), Some(r#"/select,"C:\Users\x\f.txt""#));
+        assert_eq!(select_arg(r"C:\Users\x/sub/f.txt").as_deref(), Some(r#"/select,"C:\Users\x\sub\f.txt""#));
+        assert_eq!(select_arg(r"C:\a\b.txt").as_deref(), Some(r#"/select,"C:\a\b.txt""#));
+        assert_eq!(select_arg("//server/share/f.txt"), None, "a network path, either slash");
+        assert_eq!(select_arg("C:/a\"b"), None);
+    }
 }
