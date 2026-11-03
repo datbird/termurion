@@ -624,6 +624,8 @@ mod tests {
         ("platform/unix/open_judge.rs", "shown_by_owner", 2, "only the owner and mode of a file and its folder, for a path the open path already judged; nothing is opened"),
         ("platform/macos/alias.rs", "finder_alias", 2, "the kind of the clicked path (judged by netpath::may_probe in semantic::open_local_result) or of an alias target (judged by alias::screened, netpath::may_probe, before any read), asked before the system is; nothing is opened"),
         ("platform/macos/alias.rs", "resolve", 1, "the target a Finder alias names: the stored path is read from the bookmark bytes and the resolved one is returned by the system, each screened by alias::screened (netpath::may_probe) before this canonicalize; the system resolver itself runs only after the stored path passed; nothing is opened"),
+        ("platform/unix/open_judge.rs", "climbs_past", 1, "lstat of Contents inside an ancestor of a path the reveal path already judged, to climb out of a bundle; nothing is opened"),
+        ("platform/unix/open_judge.rs", "fallback_folder_by", 2, "the kind of the canonical folder judged_open just passed, so only a folder is the reveal fallback"),
         ("platform/unix/open_judge.rs", "is_bundle", 1, "lstat of Contents inside a folder the open path already passed through netpath::may_probe; nothing is opened"),
         ("platform/unix/proc.rs", "start_detached", 1, "the root folder, a constant: the detached host keeps no mount busy"),
         ("platform/unix/files.rs", "rename_no_replace", 1, "a path localfs judged, handed over as a judged Unfollowed or LocalPath (the gate's own calls, moved under platform)"),

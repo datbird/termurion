@@ -233,7 +233,7 @@ Session code page and Unicode normalization assertions. Not diagnosed further in
 
 Recorded after the Task 8 re-review; none is fixed, each is a residual window after the judge and before `open`.
 
-- Only the file's own folder is tested by the owner rule, so a writable ancestor (a 0777 folder without the sticky bit holding your own folder) can still swap a whole folder.
+- Only the file's own folder is tested by the owner rule, so a writable ancestor (a 0777 folder without the sticky bit holding your own folder, or a folder another non-root user owns) can still swap a whole folder.
 - macOS ACLs are not read: an ACL that lets another user add files or change security on a folder or file is invisible to the mode test.
 - Alias targets are screened with the default probe rule, so the person's PathsToIgnore list does not apply to them (it is stricter on network paths, not on ignored slow folders).
 

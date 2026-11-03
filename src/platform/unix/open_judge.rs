@@ -35,8 +35,9 @@ const BLOCKED_SCHEMES: &[(&str, &str)] = &[
 /// Whether opening `path` could run something: a type Windows or Unix runs (by its own name and
 /// by the name of what it links to, as LaunchServices resolves a link first), a file with any
 /// execute bit, a macOS bundle folder, or anything that is not a plain file or folder. A file
-/// whose kind or target cannot be read counts as runnable (shown, never opened); one that is not
-/// there does not (it is not opened either).
+/// whose kind or target cannot be read counts as runnable (shown, never opened). A missing path
+/// is not runnable, but that does not make it safe to open: it could be anything by then, so
+/// anything that opens goes through `judged_open`, which refuses it.
 pub fn runnable(path: &str) -> bool {
     matches!(judge(Path::new(path)), Verdict::Show)
 }
@@ -169,18 +170,37 @@ pub fn judged_open(path: &Path) -> Judged {
 }
 
 /// The folder a failed reveal opens instead: the item's parent, or the first ancestor that is
-/// not a bundle (opening a bundle launches it).
+/// not a bundle (opening a bundle launches it). It is judged like a click and only a folder the
+/// judge would open is handed back, as the real path it saw; a missing, shown or odd one gives
+/// no fallback at all.
 pub fn fallback_folder(item: &Path) -> Option<std::path::PathBuf> {
+    fallback_folder_by(item, judged_open)
+}
+
+fn fallback_folder_by(item: &Path, judge: impl Fn(&Path) -> Judged) -> Option<std::path::PathBuf> {
     let mut dir = item.parent()?;
     // The outermost bundle counts: X.app/Contents/MacOS climbs to the folder holding X.app.
     let mut out = dir;
     while let Some(up) = dir.parent() {
-        if runnable(&dir.to_string_lossy()) {
+        // A folder that cannot be looked into may be a bundle or not: no fallback at all.
+        if named_runnable(dir) || climbs_past(dir)? {
             out = up;
         }
         dir = up;
     }
-    (!runnable(&out.to_string_lossy())).then(|| out.to_path_buf())
+    match judge(out) {
+        Judged::Open(real) if std::fs::metadata(&real).is_ok_and(|m| m.is_dir()) => Some(real),
+        _ => None,
+    }
+}
+
+/// Whether a failed reveal climbs past `dir` as a bundle; None when that cannot be told.
+fn climbs_past(dir: &Path) -> Option<bool> {
+    match std::fs::symlink_metadata(dir.join("Contents")) {
+        Ok(_) => Some(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound || e.kind() == std::io::ErrorKind::NotADirectory => Some(false),
+        Err(_) => None,
+    }
 }
 
 /// Why `scheme` (lower case) is never handed to the opener on Unix; None when it may be asked.
@@ -367,18 +387,66 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// A failed reveal never opens a bundle around the item.
+    /// A failed reveal never opens a bundle around the item, and what it opens is the real
+    /// folder the judge saw.
     #[test]
     fn the_reveal_fallback_never_opens_a_bundle() {
         let d = dir("fallback");
+        let real = std::fs::canonicalize(&d).unwrap();
         let inner = d.join("X.app/Contents/MacOS");
         std::fs::create_dir_all(&inner).unwrap();
         let item = inner.join("X");
         write(&item, 0o755);
-        assert_eq!(fallback_folder(&item), Some(d.clone()));
+        assert_eq!(fallback_folder(&item), Some(real.clone()));
         let plain = d.join("plain");
         std::fs::create_dir_all(&plain).unwrap();
-        assert_eq!(fallback_folder(&plain.join("f.txt")), Some(plain.clone()));
+        assert_eq!(fallback_folder(&plain.join("f.txt")), Some(real.join("plain")));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A folder that is not there gets no fallback: someone could make it before the opener runs.
+    #[test]
+    fn a_missing_parent_gives_no_fallback() {
+        let d = dir("fallback-missing");
+        assert_eq!(fallback_folder(&d.join("zzz/run.sh")), None);
+        assert_eq!(fallback_folder(Path::new("/no/such/termurion-dir/f.txt")), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Through a linked folder the fallback is the judged real folder, never the link text.
+    #[test]
+    fn a_linked_parent_gives_the_judged_real_path() {
+        let d = dir("fallback-link");
+        let real = std::fs::canonicalize(&d).unwrap();
+        std::fs::create_dir_all(d.join("target")).unwrap();
+        std::os::unix::fs::symlink(d.join("target"), d.join("via")).unwrap();
+        assert_eq!(fallback_folder(&d.join("via/run.sh")), Some(real.join("target")));
+        // A link to a file is no folder to open.
+        write(&d.join("doc.txt"), 0o644);
+        std::os::unix::fs::symlink(d.join("doc.txt"), d.join("filelink")).unwrap();
+        assert_eq!(fallback_folder(&d.join("filelink/x")), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Another user's folder is shown by the judge, so it gives no fallback; only Open counts.
+    #[test]
+    fn another_users_folder_gives_no_fallback() {
+        let d = dir("fallback-other");
+        let item = d.join("f.txt");
+        assert_eq!(fallback_folder_by(&item, |p| Judged::Reveal(p.to_path_buf())), None);
+        assert_eq!(fallback_folder_by(&item, |p| Judged::Missing(p.to_path_buf())), None);
+        assert!(shown_for_owner(0, 501, 0o755, 20, 20, 1001), "a folder another user owns is shown");
+        // A real one when this machine has it: a folder in /home or /Users owned by someone else.
+        use std::os::unix::fs::MetadataExt;
+        let me = unsafe { libc::geteuid() };
+        for root in ["/home", "/Users"] {
+            for e in std::fs::read_dir(root).into_iter().flatten().flatten() {
+                let Ok(m) = std::fs::metadata(e.path()) else { continue };
+                if m.is_dir() && m.uid() != me && m.uid() != 0 {
+                    assert_eq!(fallback_folder(&e.path().join("f.txt")), None, "{}", e.path().display());
+                }
+            }
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 

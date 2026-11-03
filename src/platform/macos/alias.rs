@@ -81,6 +81,17 @@ fn stored_path(data: &CFData) -> Result<PathBuf, String> {
     v.downcast::<CFString>().map(|s| PathBuf::from(s.to_string())).ok_or_else(|| "The alias stores no path.".to_string())
 }
 
+/// The volume the bookmark data names, read without touching it: the resolver can find a file
+/// by volume and file number, so the volume is screened like the stored path.
+fn stored_volume(data: &CFData) -> Result<PathBuf, String> {
+    let v = unsafe { sys::CFURLCreateResourcePropertyForKeyFromBookmarkData(std::ptr::null(), sys::kCFURLVolumeURLKey, data.as_concrete_TypeRef()) };
+    if v.is_null() {
+        return Err("The alias stores no volume.".into());
+    }
+    let v = unsafe { CFType::wrap_under_create_rule(v) };
+    v.downcast::<CFURL>().and_then(|u| u.to_path()).ok_or_else(|| "The alias stores no volume.".to_string())
+}
+
 /// The canonical target of the alias file at `url`, without any dialog and without mounting.
 fn resolve(url: &CFURL) -> Result<PathBuf, String> {
     let mut err: CFErrorRef = std::ptr::null_mut();
@@ -92,6 +103,7 @@ fn resolve(url: &CFURL) -> Result<PathBuf, String> {
     // The path the alias stored is read from the bookmark bytes alone and screened first: the
     // system resolver looks the target up, and that must never reach a network mount.
     screened(&stored_path(&data)?)?;
+    screened(&stored_volume(&data)?)?;
     let mut stale = 0;
     let target = unsafe {
         sys::CFURLCreateByResolvingBookmarkData(
@@ -143,6 +155,13 @@ mod tests {
         assert!(!data.is_null());
         let data = unsafe { CFData::wrap_under_create_rule(data) };
         assert_eq!(stored_path(&data).unwrap().file_name().unwrap(), "t.txt");
+        assert!(stored_volume(&data).is_ok_and(|v| v.is_absolute()));
+        // Both are screened before the resolver, in that order.
+        let src = include_str!("alias.rs");
+        let code = &src[..src.find("#[cfg(test)]").unwrap()];
+        let at = |s: &str| code.find(s).unwrap();
+        assert!(at("screened(&stored_path(") < at("screened(&stored_volume("));
+        assert!(at("screened(&stored_volume(") < at("sys::CFURLCreateByResolvingBookmarkData("));
         let _ = std::fs::remove_dir_all(&d);
     }
 
