@@ -66,6 +66,21 @@ fn screened(path: &Path) -> Result<(), String> {
     }
 }
 
+unsafe extern "C" {
+    // core-foundation-sys hides this key behind a feature; it is in CoreFoundation since macOS 10.8.
+    static kCFURLPathKey: core_foundation_sys::string::CFStringRef;
+}
+
+/// The path stored in bookmark data, read without touching the target.
+fn stored_path(data: &CFData) -> Result<PathBuf, String> {
+    let v = unsafe { sys::CFURLCreateResourcePropertyForKeyFromBookmarkData(std::ptr::null(), kCFURLPathKey, data.as_concrete_TypeRef()) };
+    if v.is_null() {
+        return Err("The alias stores no path.".into());
+    }
+    let v = unsafe { CFType::wrap_under_create_rule(v) };
+    v.downcast::<CFString>().map(|s| PathBuf::from(s.to_string())).ok_or_else(|| "The alias stores no path.".to_string())
+}
+
 /// The canonical target of the alias file at `url`, without any dialog and without mounting.
 fn resolve(url: &CFURL) -> Result<PathBuf, String> {
     let mut err: CFErrorRef = std::ptr::null_mut();
@@ -74,6 +89,9 @@ fn resolve(url: &CFURL) -> Result<PathBuf, String> {
         return Err(error_text(err));
     }
     let data = unsafe { CFData::wrap_under_create_rule(data) };
+    // The path the alias stored is read from the bookmark bytes alone and screened first: the
+    // system resolver looks the target up, and that must never reach a network mount.
+    screened(&stored_path(&data)?)?;
     let mut stale = 0;
     let target = unsafe {
         sys::CFURLCreateByResolvingBookmarkData(
@@ -110,6 +128,22 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         assert!(screened(Path::new(std::ffi::OsStr::from_bytes(b"/tmp/\xff.txt"))).is_err());
         assert!(screened(Path::new("/tmp/x.txt")).is_ok());
+    }
+
+    /// The stored path of an alias is read from its bookmark bytes without resolving it.
+    #[test]
+    fn the_stored_path_is_read_before_resolving() {
+        let d = std::env::temp_dir().join(format!("termurion-alias-stored-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        file(&d.join("t.txt"), 0o644);
+        make_alias(&d.join("t.txt"), &d.join("a.txt"));
+        let mut err: CFErrorRef = std::ptr::null_mut();
+        let data = unsafe { sys::CFURLCreateBookmarkDataFromFile(std::ptr::null(), CFURL::from_path(d.join("a.txt"), false).unwrap().as_concrete_TypeRef(), &mut err) };
+        assert!(!data.is_null());
+        let data = unsafe { CFData::wrap_under_create_rule(data) };
+        assert_eq!(stored_path(&data).unwrap().file_name().unwrap(), "t.txt");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Writes a Finder alias at `alias` naming `target` (what the Finder's Make Alias does).

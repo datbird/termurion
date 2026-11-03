@@ -87,25 +87,26 @@ pub fn foreign_in_shared(owner: u32, euid: u32, dir_mode: u32) -> bool {
     owner != euid && owner != 0 && dir_mode & 0o022 != 0
 }
 
-/// Whether who owns a regular file, and who can change its folder, make it unsafe to open: the
-/// owner can add an execute bit between the judge and `open` when they are not you or root; a
-/// folder that others can write to (without the sticky bit) lets them swap the name; and so does
-/// a folder that a group can write to, unless that group is your own primary one (your private
-/// group has no other members).
-pub fn shown_for_owner(owner: u32, euid: u32, parent_mode: u32, parent_gid: u32, egid: u32) -> bool {
+/// Whether who owns an item, and who can change its folder, make it unsafe to open: the owner
+/// can add an execute bit or swap it between the judge and `open` when they are not you or root;
+/// the same goes for a folder another non-root user owns; a folder that others can write to
+/// (without the sticky bit) lets them swap the name; and so does a folder that a group can write
+/// to, unless that group is your own private one (`egid == euid`, the Linux convention). On macOS
+/// the primary group is `staff`, shared by every account, so a group-writable folder is shown.
+pub fn shown_for_owner(owner: u32, euid: u32, parent_mode: u32, parent_gid: u32, egid: u32, parent_uid: u32) -> bool {
     let sticky = parent_mode & 0o1000 != 0;
-    (owner != euid && owner != 0) || (!sticky && (parent_mode & 0o002 != 0 || (parent_mode & 0o020 != 0 && parent_gid != egid)))
+    let private_group = parent_gid == egid && egid == euid;
+    (owner != euid && owner != 0)
+        || (parent_uid != euid && parent_uid != 0)
+        || (!sticky && (parent_mode & 0o002 != 0 || (parent_mode & 0o020 != 0 && !private_group)))
 }
 
 fn shown_by_owner(real: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     let Ok(meta) = std::fs::metadata(real) else { return true };
-    if !meta.is_file() {
-        return false;
-    }
     let Some(parent) = real.parent() else { return false };
     match std::fs::metadata(parent) {
-        Ok(dir) => shown_for_owner(meta.uid(), unsafe { libc::geteuid() }, dir.mode(), dir.gid(), unsafe { libc::getegid() }),
+        Ok(dir) => shown_for_owner(meta.uid(), unsafe { libc::geteuid() }, dir.mode(), dir.gid(), unsafe { libc::getegid() }, dir.uid()),
         // The folder cannot be read: fail safe.
         Err(_) => true,
     }
@@ -153,6 +154,8 @@ pub enum Judged {
     Open(std::path::PathBuf),
     /// Show this path in the file manager instead.
     Reveal(std::path::PathBuf),
+    /// Not there when it was judged: nothing is opened (it could be something else by `open` time).
+    Missing(std::path::PathBuf),
 }
 
 /// The last word before the opener: a runnable path is shown, anything else is opened as the
@@ -160,8 +163,7 @@ pub enum Judged {
 pub fn judged_open(path: &Path) -> Judged {
     match judge(path) {
         Verdict::Open(real) => Judged::Open(real),
-        // Not there at all: the opener says so.
-        Verdict::Missing => Judged::Open(path.to_path_buf()),
+        Verdict::Missing => Judged::Missing(path.to_path_buf()),
         Verdict::Show => Judged::Reveal(path.to_path_buf()),
     }
 }
@@ -237,18 +239,48 @@ mod tests {
         assert!(!foreign_in_shared(1001, 501, 0o755));
     }
 
-    /// The wider rule: another user's file is shown in any folder, a folder others can write to
-    /// shows even your own file, and a group-writable one does unless the group is your own.
+    /// The wider rule: another user's file or folder is shown in any folder, a folder another user
+    /// owns or others can write to shows even your own file, and a group-writable one does unless
+    /// the group is your own private one.
     #[test]
     fn a_file_is_shown_for_its_owner_or_its_folder() {
-        let (me, mine, other) = (501, 20, 80);
-        assert!(shown_for_owner(1001, me, 0o755, mine, mine), "another user's file in a private folder");
-        assert!(!shown_for_owner(0, me, 0o755, mine, mine), "root's file");
-        assert!(!shown_for_owner(me, me, 0o775, mine, mine), "your file in a folder of your own group");
-        assert!(shown_for_owner(me, me, 0o775, other, mine), "your file in a folder of another group");
-        assert!(shown_for_owner(me, me, 0o777, mine, mine), "world-writable without sticky");
-        assert!(!shown_for_owner(me, me, 0o1777, other, mine), "sticky");
-        assert!(!shown_for_owner(me, me, 0o755, other, mine));
+        let (me, mine, staff, other) = (501, 501, 20, 80);
+        // The Linux shape: the user's own group has the user's number.
+        assert!(shown_for_owner(1001, me, 0o755, mine, mine, me), "another user's file in a private folder");
+        assert!(!shown_for_owner(0, me, 0o755, mine, mine, 0), "root's file");
+        assert!(!shown_for_owner(me, me, 0o775, mine, mine, me), "your file in a folder of your private group");
+        assert!(shown_for_owner(me, me, 0o775, other, mine, me), "your file in a folder of another group");
+        assert!(shown_for_owner(me, me, 0o777, mine, mine, me), "world-writable without sticky");
+        assert!(!shown_for_owner(me, me, 0o1777, other, mine, 0), "sticky");
+        assert!(!shown_for_owner(me, me, 0o755, other, mine, me));
+        // The macOS shape: the primary group is staff, shared by everyone.
+        assert!(shown_for_owner(me, me, 0o775, staff, staff, me), "a staff-writable folder");
+        assert!(!shown_for_owner(me, me, 0o755, staff, staff, me));
+        // A folder another non-root user owns can have the file swapped by that user.
+        assert!(shown_for_owner(0, me, 0o755, other, mine, 1001), "root's file in another user's folder");
+        assert!(!shown_for_owner(0, me, 0o755, other, mine, 0), "root's file in root's folder");
+    }
+
+    /// A folder is judged by the same rule as a file: another user's folder is shown, and so is
+    /// one inside a folder others can write to.
+    #[test]
+    fn a_folder_follows_the_owner_rule() {
+        let d = dir("folders");
+        let sub = d.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert!(!runnable(&sub.to_string_lossy()), "your folder in your private folder opens");
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o757)).unwrap();
+        assert!(runnable(&sub.to_string_lossy()), "a folder in a folder others write to is shown");
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A path that was not there at the judge is never handed to `open`.
+    #[test]
+    fn a_missing_path_is_never_opened() {
+        let p = Path::new("/no/such/termurion-file.txt");
+        assert_eq!(judged_open(p), Judged::Missing(p.to_path_buf()));
+        assert!(!runnable(&p.to_string_lossy()));
     }
 
     /// One click resolves the alias chain once, and what is opened is what was judged: the code

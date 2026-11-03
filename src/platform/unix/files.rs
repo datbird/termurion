@@ -154,6 +154,7 @@ pub fn shell_verb(verb: &str, p: &LocalPath, cwd: Option<&LocalPath>, background
     // canonical path it judged (a link swapped after the judge no longer matters).
     match super::open_judge::judged_open(p.path()) {
         super::open_judge::Judged::Open(real) => crate::platform::shell_open::open_file(&real, background),
+        super::open_judge::Judged::Missing(gone) => Err(format!("{} does not exist.", gone.display())),
         super::open_judge::Judged::Reveal(shown) => crate::platform::shell_open::reveal(&shown.to_string_lossy()),
     }
 }

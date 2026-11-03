@@ -229,6 +229,14 @@ Session code page and Unicode normalization assertions. Not diagnosed further in
 - `screen::tests::text_leaves_the_grid_normalized`
 - `styled_copy::tests::copies_follow_the_normalization_form`
 
+## Known security gaps in the open judge (P2 Task 8)
+
+Recorded after the Task 8 re-review; none is fixed, each is a residual window after the judge and before `open`.
+
+- Only the file's own folder is tested by the owner rule, so a writable ancestor (a 0777 folder without the sticky bit holding your own folder) can still swap a whole folder.
+- macOS ACLs are not read: an ACL that lets another user add files or change security on a folder or file is invisible to the mode test.
+- Alias targets are screened with the default probe rule, so the person's PathsToIgnore list does not apply to them (it is stricter on network paths, not on ignored slow folders).
+
 ## macOS-only differences
 
 macOS has the same failures as Linux except these. 5 fail only on macOS (below). 7 failed only on Linux in the last full run and are load or timing flakes: `find::tests::find_over_a_large_buffer_is_quick`, `trigger_eval::tests::each_line_is_checked_once`, `extract::tests::one_walk_checks_and_writes`, `synthetic::tests::filtering_a_large_buffer_is_quick` (Timing; it passed on macOS this time) and the load flakes that pass alone named at the top.
