@@ -1,7 +1,7 @@
 //! The recorder on Unix: a table from winit's key codes. There is no keyboard hook.
 
 use crate::menus::ChordKey;
-use winit::keyboard::{KeyCode as K, PhysicalKey};
+use winit::keyboard::{Key, KeyCode as K, PhysicalKey};
 
 pub fn chord_key(key: PhysicalKey) -> Option<ChordKey> {
     let PhysicalKey::Code(code) = key else { return None };
@@ -42,8 +42,55 @@ pub fn chord_key(key: PhysicalKey) -> Option<ChordKey> {
     }
 }
 
+/// The chord key of a key event: the character on macOS, the position elsewhere.
+pub fn chord_key_of(ev: &winit::event::KeyEvent) -> Option<ChordKey> {
+    if crate::platform::keys::CMD_IS_A_KEY {
+        chord_key_from(&ev.logical_key, ev.physical_key)
+    } else {
+        chord_key(ev.physical_key)
+    }
+}
+
+/// The chord key the character names, as AppKit matches a key equivalent: one ASCII graphic
+/// character (a shifted one as its unshifted key), else the key's position. A non-Latin layout
+/// or a viewer that sends key code 0 still gets the right key.
+pub fn chord_key_from(logical: &Key, physical: PhysicalKey) -> Option<ChordKey> {
+    if let Key::Character(s) = logical {
+        let mut chars = s.chars();
+        if let (Some(c), None) = (chars.next(), chars.next())
+            && c.is_ascii_graphic() {
+                let base = crate::menus::SHIFTED.iter().find(|(shifted, _)| *shifted == c).map_or(c, |(_, base)| *base);
+                return Some(ChordKey::Char(base.to_ascii_lowercase()));
+            }
+    }
+    chord_key(physical)
+}
+
 /// No keyboard hook, so nothing to pause.
 pub fn set_recording(_on: bool) {}
 
 /// No keyboard hook, so no remapping to count the window in.
 pub fn set_settings_window(_hwnd: isize) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::keyboard::NamedKey;
+
+    fn ch(s: &str) -> Key {
+        Key::Character(s.into())
+    }
+
+    #[test]
+    fn the_chord_key_is_the_character() {
+        // Key code 0 from a VNC client, with the right character.
+        assert_eq!(chord_key_from(&ch("t"), PhysicalKey::Code(K::KeyA)), Some(ChordKey::Char('t')));
+        assert_eq!(chord_key_from(&ch("}"), PhysicalKey::Code(K::BracketRight)), Some(ChordKey::Char(']')));
+        assert_eq!(chord_key_from(&ch("T"), PhysicalKey::Code(K::KeyT)), Some(ChordKey::Char('t')));
+        // A non-Latin layout falls back to the key's US position.
+        assert_eq!(chord_key_from(&ch("\u{442}"), PhysicalKey::Code(K::KeyN)), Some(ChordKey::Char('n')));
+        assert_eq!(chord_key_from(&Key::Named(NamedKey::ArrowUp), PhysicalKey::Code(K::ArrowUp)), Some(ChordKey::Up));
+        // AZERTY puts Q where A sits on a US board.
+        assert_eq!(chord_key_from(&ch("q"), PhysicalKey::Code(K::KeyA)), Some(ChordKey::Char('q')));
+    }
+}

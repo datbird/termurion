@@ -15,6 +15,14 @@ pub use imp::{install, mask_start_menu, mouse_buttons, remove_window, set_hotkey
 /// X11, Wayland and macOS keep AltGr (Option) apart, so Ctrl+Alt on them is a real chord.
 pub const CTRL_ALT_IS_ALTGR: bool = cfg!(windows);
 
+/// On macOS winit's super modifier is Cmd and Termurion uses it as the shortcut key. Elsewhere the
+/// Win or Super key belongs to the system and no shortcut uses it.
+pub const CMD_IS_A_KEY: bool = cfg!(target_os = "macos");
+
+/// Windows Terminal's habits beside iTerm2's chords (F11 full screen, Ctrl+V paste). Off on macOS,
+/// where Ctrl+V is literal-next in a shell and Cmd is the shortcut key.
+pub const WINDOWS_KEY_CONVENTIONS: bool = !CMD_IS_A_KEY;
+
 /// The chord key of a Windows virtual key code, or None when it has none.
 pub fn vk_to_key(vk: u16) -> Option<ChordKey> {
     Some(match vk {

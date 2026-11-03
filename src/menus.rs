@@ -66,7 +66,7 @@ pub struct Chord {
 }
 
 /// Characters that need Shift on a US keyboard, and the key that types them.
-const SHIFTED: [(char, char); 21] = [
+pub(crate) const SHIFTED: [(char, char); 21] = [
     ('~', '`'), ('!', '1'), ('@', '2'), ('#', '3'), ('$', '4'), ('%', '5'), ('^', '6'),
     ('&', '7'), ('*', '8'), ('(', '9'), (')', '0'), ('_', '-'), ('+', '='), ('{', '['),
     ('}', ']'), ('|', '\\'), (':', ';'), ('"', '\''), ('<', ','), ('>', '.'), ('?', '/'),
@@ -207,7 +207,7 @@ pub fn items_for(chord: &Chord) -> Vec<&'static Item> {
 /// Windows keeps Win+L (Lock) with any other modifiers, so such a chord never reaches Termurion
 /// and the menu does not show it.
 pub fn reaches_termurion(c: &Chord) -> bool {
-    !(c.cmd && c.key == ChordKey::Char('l'))
+    crate::platform::keys::CMD_IS_A_KEY || !(c.cmd && c.key == ChordKey::Char('l'))
 }
 
 /// A chord key as Windows menus show it.
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn win_l_chords_stay_with_windows() {
         let l = Chord { key: ChordKey::Char('l'), cmd: true, alt: false, shift: true, ctrl: false };
-        assert!(!reaches_termurion(&l));
+        assert_eq!(reaches_termurion(&l), crate::platform::keys::CMD_IS_A_KEY);
         assert!(reaches_termurion(&Chord { key: ChordKey::Char('k'), ..l }));
         assert!(reaches_termurion(&Chord { cmd: false, ..l }));
     }

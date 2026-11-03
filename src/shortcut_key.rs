@@ -36,6 +36,8 @@ pub const KEY: &str = "ShortcutKey";
 pub enum ShortcutKey {
     CtrlShift,
     CtrlAlt,
+    /// macOS: the real Cmd key. Chords read as pressed, with Ctrl, Option and Shift beside it.
+    Command,
 }
 
 /// The physical Ctrl, Shift and Alt held (the Win key is not part of it).
@@ -50,7 +52,10 @@ pub struct Held {
 static MODE: AtomicU8 = AtomicU8::new(0);
 
 pub fn mode() -> ShortcutKey {
-    ShortcutKey::from_value(i64::from(MODE.load(Ordering::Relaxed)))
+    match MODE.load(Ordering::Relaxed) {
+        3 => ShortcutKey::Command,
+        v => ShortcutKey::from_value(i64::from(v)),
+    }
 }
 
 pub fn set_mode(m: ShortcutKey) {
@@ -172,7 +177,7 @@ fn profile_window_key(c: &Chord) -> Option<char> {
 
 impl ShortcutKey {
     /// An unknown or missing value is the default, Ctrl+Shift. A saved 1 (the retired Win key)
-    /// is Ctrl+Shift too.
+    /// is Ctrl+Shift too, and so is a 3 copied from a Mac: Command is never a saved choice.
     pub fn from_value(v: i64) -> ShortcutKey {
         match v {
             2 => ShortcutKey::CtrlAlt,
@@ -184,11 +189,16 @@ impl ShortcutKey {
         match self {
             ShortcutKey::CtrlShift => 0,
             ShortcutKey::CtrlAlt => 2,
+            ShortcutKey::Command => 3,
         }
     }
 
     /// The setting as saved; unset is the default (an existing user who never chose gets it).
+    /// On macOS it is always Command, whatever is stored.
     pub fn from_globals(g: &crate::globals::Globals) -> ShortcutKey {
+        if crate::platform::keys::CMD_IS_A_KEY {
+            return ShortcutKey::Command;
+        }
         ShortcutKey::from_value(g.get(KEY).and_then(|v| v.as_integer()).unwrap_or(0))
     }
 
@@ -198,12 +208,17 @@ impl ShortcutKey {
         match self {
             ShortcutKey::CtrlShift => [CS, CSA, SA, CA],
             ShortcutKey::CtrlAlt => [CA, CSA, CS, SA],
+            // Command has no pairs; every method below answers for it before reading this.
+            ShortcutKey::Command => [CS, CSA, SA, CA],
         }
     }
 
     /// The physical modifiers a Cmd chord with this Shift, Option and Control needs; None when
     /// the chord has no pair (the table in `EXTRAS` moves it to another key).
     pub fn held_for(self, shift: bool, alt: bool, ctrl: bool) -> Option<Held> {
+        if self == ShortcutKey::Command {
+            return Some(Held { ctrl, shift, alt });
+        }
         let p = self.pairs();
         match (ctrl, shift, alt) {
             (false, false, false) => Some(p[0]),
@@ -222,6 +237,9 @@ impl ShortcutKey {
         if !c.cmd {
             return None;
         }
+        if self == ShortcutKey::Command {
+            return Some((Held { ctrl: c.ctrl, shift: c.shift, alt: c.alt }, c.key.clone()));
+        }
         if let Some(e) = extra_of(c) {
             return Some((e.held, e.press.clone()));
         }
@@ -234,7 +252,7 @@ impl ShortcutKey {
     /// The Cmd, Shift and Option a physical key press stands for (cmd false when it is none of
     /// the pairs, or the Win key is down: that is for Windows and for a click).
     pub fn logical(self, phys: Mods) -> Mods {
-        if phys.cmd {
+        if phys.cmd || self == ShortcutKey::Command {
             return phys;
         }
         let now = Held { ctrl: phys.ctrl, shift: phys.shift, alt: phys.alt };
@@ -248,6 +266,9 @@ impl ShortcutKey {
     /// when it is not one: the Win key is down (Windows' own), the modifiers are no pair, or
     /// the press types a character with Ctrl+Alt held, which is AltGr on a layout that has one.
     pub fn press_as_cmd(self, phys: Mods, types_a_character: bool) -> Option<Mods> {
+        if self == ShortcutKey::Command {
+            return phys.cmd.then_some(phys);
+        }
         if phys.cmd || (crate::platform::keys::CTRL_ALT_IS_ALTGR && phys.ctrl && phys.alt && types_a_character) {
             return None;
         }
@@ -264,6 +285,9 @@ impl ShortcutKey {
     /// profile's new-window shortcut. Empty for the Win key, for modifiers that are none of these
     /// and for AltGr typing. The caller takes the first one something is bound to.
     pub fn press_chords(self, phys: Mods, types_a_character: bool, key: &ChordKey) -> Vec<Chord> {
+        if self == ShortcutKey::Command {
+            return if phys.cmd { vec![Chord { key: key.clone(), cmd: true, alt: phys.alt, shift: phys.shift, ctrl: phys.ctrl }] } else { Vec::new() };
+        }
         if phys.cmd || (crate::platform::keys::CTRL_ALT_IS_ALTGR && phys.ctrl && phys.alt && types_a_character) {
             return Vec::new();
         }
@@ -290,6 +314,9 @@ impl ShortcutKey {
     /// The chord the explicit table makes of a press, for the key recorder: iTerm2's chord is
     /// what is stored, as it is for a pair.
     pub fn table_chord(self, phys: Mods, types_a_character: bool, key: &ChordKey) -> Option<Chord> {
+        if self == ShortcutKey::Command {
+            return None;
+        }
         self.press_chords(phys, types_a_character, key).into_iter().find(|c| extra_of(c).is_some())
     }
 
@@ -312,6 +339,9 @@ impl ShortcutKey {
 
     /// How a menu shows a chord: the real keys. A chord nothing presses reads with Cmd.
     pub fn label(self, c: &Chord) -> String {
+        if self == ShortcutKey::Command {
+            return mac_label(c.ctrl, c.alt, c.shift, c.cmd, &c.key);
+        }
         match self.form(c) {
             Some((h, k)) => held_label(h) + &key_label(&k),
             None => crate::menus::chord_label(c).replacen("Win", "Cmd", 1),
@@ -321,6 +351,9 @@ impl ShortcutKey {
     /// A text with iTerm2's Cmd spelled as Win ("Win+Shift+B", "Alt+Win+", "Broadcast (Win+B)")
     /// shown with the real keys, word by word: a word that is not a chord is left alone.
     pub fn show(self, text: &str) -> String {
+        if self == ShortcutKey::Command {
+            return text.split(' ').map(show_mac_word).collect::<Vec<_>>().join(" ");
+        }
         if !text.contains("Win") {
             return text.to_string();
         }
@@ -356,6 +389,51 @@ impl ShortcutKey {
         let Some(h) = self.held_for(shift, alt, ctrl) else { return text.to_string() };
         held_label(h) + &rest.join("+")
     }
+}
+
+/// A chord as the Mac writes it: the modifiers as glyphs in the order Control, Option, Shift,
+/// Command, then the key.
+fn mac_label(ctrl: bool, alt: bool, shift: bool, cmd: bool, key: &ChordKey) -> String {
+    let mut out = String::new();
+    for (on, glyph) in [(ctrl, '\u{2303}'), (alt, '\u{2325}'), (shift, '\u{21e7}'), (cmd, '\u{2318}')] {
+        if on {
+            out.push(glyph);
+        }
+    }
+    out + &mac_key(key)
+}
+
+fn mac_key(k: &ChordKey) -> String {
+    match k {
+        ChordKey::Up => "\u{2191}".into(),
+        ChordKey::Down => "\u{2193}".into(),
+        ChordKey::Left => "\u{2190}".into(),
+        ChordKey::Right => "\u{2192}".into(),
+        other => key_label(other),
+    }
+}
+
+/// One word of a text in Windows spelling ("(Win+B)", "Ctrl+Alt+Left", "Alt+Win+") written in the
+/// Mac's glyphs. A word that is not a chord is left alone.
+fn show_mac_word(word: &str) -> String {
+    let core = word.trim_start_matches('(').trim_end_matches(')');
+    let open = &word[..word.len() - word.trim_start_matches('(').len()];
+    let close = &word[word.trim_end_matches(')').len()..];
+    if open.len() + core.len() + close.len() != word.len() {
+        return word.to_string();
+    }
+    let tokens: Vec<&str> = core.split('+').collect();
+    let (last, mods) = tokens.split_last().expect("split gives a token");
+    let is_mod = |t: &str| matches!(t, "Win" | "Ctrl" | "Alt" | "Shift");
+    if mods.is_empty() || !mods.iter().all(|t| is_mod(t)) {
+        return word.to_string();
+    }
+    let has = |name: &str| mods.contains(&name);
+    // "Alt+Win+" is a prefix with no key yet.
+    let key = if last.is_empty() { String::new() } else if let Some(k) = parse_key_label(last) { mac_key(&k) } else { return word.to_string() };
+    let glyphs = mac_label(has("Ctrl"), has("Alt"), has("Shift"), has("Win"), &ChordKey::Space);
+    let glyphs = glyphs.strip_suffix("Space").unwrap_or(&glyphs);
+    format!("{open}{glyphs}{key}{close}")
 }
 
 /// A key as a menu or a stroke label spells it ("D", "PgUp", "F5", "Return", ";") as a chord key.
@@ -397,7 +475,7 @@ pub fn is_full_screen_command(selector: &str) -> bool {
 /// profile's, the global ones or the Leader) claims the key, which keeps it for a program that
 /// wants F11 through such a mapping.
 pub fn f11_toggles_full_screen(is_f11: bool, mods: Mods, claimed_by_mapping: bool) -> bool {
-    is_f11 && !(mods.shift || mods.alt || mods.ctrl || mods.cmd) && !claimed_by_mapping
+    crate::platform::keys::WINDOWS_KEY_CONVENTIONS && is_f11 && !(mods.shift || mods.alt || mods.ctrl || mods.cmd) && !claimed_by_mapping
 }
 
 /// The key that pastes in every mode, as Windows Terminal does. iTerm2's own chord (Cmd+V) works
@@ -413,7 +491,7 @@ pub fn is_paste_command(id: &str) -> bool {
 /// is not in Copy Mode (where Ctrl+V starts a box selection). A mapping for Ctrl+V keeps the key
 /// for a program that wants its ^V.
 pub fn ctrl_v_pastes(is_v: bool, mods: Mods, claimed_by_mapping: bool, in_copy_mode: bool) -> bool {
-    is_v && mods.ctrl && !(mods.shift || mods.alt || mods.cmd) && !claimed_by_mapping && !in_copy_mode
+    crate::platform::keys::WINDOWS_KEY_CONVENTIONS && is_v && mods.ctrl && !(mods.shift || mods.alt || mods.cmd) && !claimed_by_mapping && !in_copy_mode
 }
 
 /// The modifiers a window without menus (password manager, AI Chat, Cockpit) has seen, and the
@@ -439,7 +517,7 @@ impl WindowKeys {
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && !event.repeat => {
                 let types = event.text.as_deref().is_some_and(|t| t.chars().any(|c| !c.is_control()));
-                let key = crate::platform::key_record::chord_key(event.physical_key)?;
+                let key = crate::platform::key_record::chord_key_of(event)?;
                 mode().window_chord(self.mods, types, key)
             }
             _ => None,
@@ -512,12 +590,13 @@ mod tests {
         assert_eq!(ShortcutKey::from_value(1), ShortcutKey::CtrlShift);
         let mut g = crate::globals::Globals::empty(std::path::Path::new("unused.toml"));
         g.values.insert(KEY.into(), toml::Value::Integer(1));
-        assert_eq!(ShortcutKey::from_globals(&g), ShortcutKey::CtrlShift);
+        let on_mac = crate::platform::keys::CMD_IS_A_KEY;
+        assert_eq!(ShortcutKey::from_globals(&g), if on_mac { ShortcutKey::Command } else { ShortcutKey::CtrlShift });
         g.bound_values();
         assert!(g.raw(KEY).is_none(), "the migrated value is the default again");
         g.values.insert(KEY.into(), toml::Value::Integer(2));
         g.bound_values();
-        assert_eq!(ShortcutKey::from_globals(&g), ShortcutKey::CtrlAlt, "Ctrl+Alt stays");
+        assert_eq!(ShortcutKey::from_globals(&g), if on_mac { ShortcutKey::Command } else { ShortcutKey::CtrlAlt }, "Ctrl+Alt stays");
     }
 
     #[test]
@@ -975,6 +1054,10 @@ mod tests {
     #[test]
     fn ctrl_v_pastes_only_alone_and_unclaimed() {
         let ctrl = Mods { ctrl: true, ..Mods::default() };
+        if !crate::platform::keys::WINDOWS_KEY_CONVENTIONS {
+            assert!(!ctrl_v_pastes(true, ctrl, false, false), "Ctrl+V is literal-next on macOS");
+            return;
+        }
         assert!(ctrl_v_pastes(true, ctrl, false, false));
         assert!(!ctrl_v_pastes(false, ctrl, false, false), "another key");
         assert!(!ctrl_v_pastes(true, Mods::default(), false, false), "a bare v types");
@@ -990,6 +1073,10 @@ mod tests {
     #[test]
     fn f11_toggles_full_screen_only_bare_and_unclaimed() {
         let none = Mods::default();
+        if !crate::platform::keys::WINDOWS_KEY_CONVENTIONS {
+            assert!(!f11_toggles_full_screen(true, none, false), "F11 is the program's on macOS");
+            return;
+        }
         assert!(f11_toggles_full_screen(true, none, false));
         assert!(!f11_toggles_full_screen(false, none, false), "another key");
         assert!(!f11_toggles_full_screen(true, Mods { shift: true, ..none }, false), "Shift+F11 is not it");
@@ -1025,5 +1112,53 @@ mod tests {
         // The setting offers no Win, and a recorded Win press is refused with a note.
         let ui = include_str!("settings_ui.rs");
         assert!(ui.contains("refuse_win"), "the recorder says Windows keeps the Win key");
+    }
+
+    #[test]
+    fn command_mode_presses_chords_as_they_read() {
+        let cs = Mods { cmd: true, shift: true, ..Mods::default() };
+        assert_eq!(ShortcutKey::Command.press_chords(cs, true, &ChordKey::Char('d')), vec![Chord { key: ChordKey::Char('d'), cmd: true, shift: true, alt: false, ctrl: false }]);
+        assert!(ShortcutKey::Command.press_chords(Mods { ctrl: true, shift: true, ..Mods::default() }, true, &ChordKey::Char('d')).is_empty());
+        let t = Chord { key: ChordKey::Char('t'), cmd: true, alt: true, shift: false, ctrl: false };
+        assert_eq!(ShortcutKey::Command.form(&t), Some((Held { ctrl: false, shift: false, alt: true }, ChordKey::Char('t'))));
+        assert_eq!(ShortcutKey::Command.held_for(true, true, true), Some(Held { ctrl: true, shift: true, alt: true }));
+        assert_eq!(ShortcutKey::Command.press_as_cmd(cs, true), Some(cs));
+        assert!(ShortcutKey::Command.press_as_cmd(Mods { ctrl: true, shift: true, ..Mods::default() }, false).is_none());
+        for item in crate::menus::shown_items() {
+            if let Some(c) = item.chord() {
+                assert!(ShortcutKey::Command.reachable(&c), "{}", item.identifier);
+            }
+        }
+    }
+
+    #[test]
+    fn command_labels_use_the_mac_glyphs() {
+        let c = ShortcutKey::Command;
+        assert_eq!(c.label(&Chord { key: ChordKey::Char(']'), cmd: true, alt: false, shift: true, ctrl: false }), "\u{21e7}\u{2318}]");
+        assert_eq!(c.label(&Chord { key: ChordKey::F(1), cmd: true, alt: true, shift: true, ctrl: true }), "\u{2303}\u{2325}\u{21e7}\u{2318}F1");
+        assert_eq!(c.label(&Chord { key: ChordKey::Up, cmd: true, alt: false, shift: false, ctrl: false }), "\u{2318}\u{2191}");
+        assert_eq!(c.show("Broadcast (Win+B)"), "Broadcast (\u{2318}B)");
+        assert_eq!(c.show("Ctrl+Alt+Left"), "\u{2303}\u{2325}\u{2190}");
+        assert_eq!(ShortcutKey::CtrlShift.show("Broadcast (Win+B)"), "Broadcast (Ctrl+Shift+B)");
+    }
+
+    #[test]
+    fn the_mode_is_command_only_on_macos() {
+        let mut g = crate::globals::Globals::empty(std::path::Path::new("unused.toml"));
+        g.values.insert(KEY.into(), toml::Value::Integer(2));
+        let want = if crate::platform::keys::CMD_IS_A_KEY { ShortcutKey::Command } else { ShortcutKey::CtrlAlt };
+        assert_eq!(ShortcutKey::from_globals(&g), want);
+        assert_eq!(ShortcutKey::from_value(3), ShortcutKey::CtrlShift);
+        let before = mode();
+        set_mode(ShortcutKey::Command);
+        assert_eq!(mode(), ShortcutKey::Command);
+        set_mode(before);
+    }
+
+    #[test]
+    fn windows_key_conventions_are_off_on_macos() {
+        use crate::platform::keys::WINDOWS_KEY_CONVENTIONS as W;
+        assert_eq!(ctrl_v_pastes(true, Mods { ctrl: true, ..Mods::default() }, false, false), W);
+        assert_eq!(f11_toggles_full_screen(true, Mods::default(), false), W);
     }
 }

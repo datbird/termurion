@@ -240,6 +240,8 @@ impl App {
 
     /// Builds the menu bar from iTerm2's menus, the right-click menu, and the Win chord hook.
     pub(super) fn install_menus(&mut self) {
+        // The shortcut key, before any menu text or key reads it (also on an OS with no menu bar).
+        crate::shortcut_key::set_mode(crate::shortcut_key::ShortcutKey::from_globals(&self.globals));
         // No menus on this OS: say so once in the log; a right-click shows the banner.
         if crate::platform::chrome::available().is_err() {
             static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -250,8 +252,6 @@ impl App {
         }
         let Some(hwnd) = self.hwnd() else { return };
         SPLIT_HINTS.get_or_init(|| self.globals.bool("ShowHintsInSplitPaneMenuItems"));
-        // The shortcut key, before any menu text or the hook's first key reads it.
-        crate::shortcut_key::set_mode(crate::shortcut_key::ShortcutKey::from_globals(&self.globals));
         let menu = Menu::new();
         let mut subs: HashMap<Vec<String>, Submenu> = HashMap::new();
         let mut checks = HashMap::new();

@@ -12,6 +12,12 @@ pub fn chord_key(key: winit::keyboard::PhysicalKey) -> Option<ChordKey> {
     imp::chord_key(key)
 }
 
+/// The chord key of a key event. Windows and Linux read the key's position; macOS reads the
+/// character, as AppKit matches key equivalents.
+pub fn chord_key_of(ev: &winit::event::KeyEvent) -> Option<ChordKey> {
+    imp::chord_key_of(ev)
+}
+
 /// The recorder is capturing a keystroke. On Windows this pauses the system-wide hotkeys; Unix has
 /// no keyboard hook to pause, so it is a no-op there.
 pub fn set_recording(on: bool) {

@@ -53,7 +53,7 @@ impl App {
             return None;
         }
         let types = ev.text.as_deref().is_some_and(|t| t.chars().any(|c| !c.is_control()));
-        let key = crate::platform::key_record::chord_key(ev.physical_key)?;
+        let key = crate::platform::key_record::chord_key_of(ev)?;
         // The chords this press can be, the moved ones first: the Win key is held for none of them.
         let candidates = crate::shortcut_key::mode().press_chords(self.mods, types, &key);
         if candidates.is_empty() {
@@ -91,7 +91,7 @@ impl App {
         if ev.state != ElementState::Pressed || self.leader_on {
             return false;
         }
-        let is_v = crate::platform::key_record::chord_key(ev.physical_key) == Some(crate::menus::ChordKey::Char('v'));
+        let is_v = crate::platform::key_record::chord_key_of(ev) == Some(crate::menus::ChordKey::Char('v'));
         if !crate::shortcut_key::ctrl_v_pastes(is_v, self.mods, false, false) {
             return false;
         }

@@ -5779,7 +5779,7 @@ impl App {
                 return self.run_command(item, event_loop);
             }
         if self.remap_in_app_on() && self.mods.cmd && !self.phys_mods.cmd
-            && let Some(chord) = crate::platform::key_record::chord_key(ev.physical_key).map(|key| crate::menus::Chord { key, cmd: true, alt: self.mods.alt, shift: self.mods.shift, ctrl: self.mods.ctrl }) {
+            && let Some(chord) = crate::platform::key_record::chord_key_of(ev).map(|key| crate::menus::Chord { key, cmd: true, alt: self.mods.alt, shift: self.mods.shift, ctrl: self.mods.ctrl }) {
                 return self.run_chord(&chord, event_loop);
             }
         if self.bar_key(ev, event_loop) || self.upload_key(ev) || self.paste_view_key(ev) {

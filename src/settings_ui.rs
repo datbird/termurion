@@ -735,8 +735,8 @@ impl SettingsWindow {
             && self.keys.recording() {
                 if k.state == winit::event::ElementState::Pressed {
                     let types = k.text.as_deref().is_some_and(|t| t.chars().any(|c| !c.is_control()));
-                    let key = crate::platform::key_record::chord_key(k.physical_key);
-                    if self.mods.cmd {
+                    let key = crate::platform::key_record::chord_key_of(k);
+                    if self.mods.cmd && !crate::platform::keys::CMD_IS_A_KEY {
                         // Windows keeps the Win key: nothing is recorded, the recorder says why.
                         self.keys.refuse_win();
                     } else if let Some(chord) = key.and_then(|key| crate::shortcut_key::mode().table_chord(self.mods, types, &key)) {

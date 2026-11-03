@@ -1792,7 +1792,7 @@ pub fn row_visible(g: &Globals, key: &str) -> bool {
 /// Rows a schema page never draws: the Advanced rows that need Apple Intelligence, which is
 /// not available on Windows (ruling 7). Ruling 12e-4 also keeps them out of the schema.
 pub fn row_hidden(key: &str) -> bool {
-    matches!(key, "aiGeneratedTabTitles" | "logAITabTitleCorpus")
+    matches!(key, "aiGeneratedTabTitles" | "logAITabTitleCorpus") || (key == "ShortcutKey" && crate::platform::keys::CMD_IS_A_KEY)
 }
 
 /// The global rows a schema page draws, in schema order: the tab's rows without the General
@@ -4213,6 +4213,11 @@ mod tests {
             admin.help,
             "Allow the use of large language model APIs?\nThe purpose of this setting is to make it easy for managed environments to disable the use of LLMs. The user defaults key is `GenerativeAIAllowed`."
         );
+    }
+
+    #[test]
+    fn the_shortcut_key_row_is_hidden_on_macos() {
+        assert_eq!(row_hidden("ShortcutKey"), crate::platform::keys::CMD_IS_A_KEY);
     }
 
     #[test]
