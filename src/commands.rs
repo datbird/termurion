@@ -92,8 +92,6 @@ pub const DONE: &[&str] = &[
     "exitWorkgroup:", "previousWorkgroupPeer:", "nextWorkgroupPeer:",
 ];
 
-/// Hiding other apps is a macOS thing.
-const NO_APP_HIDING: &str = "macOS hides and shows other applications; Windows and Linux have no such command.";
 
 /// Commands that will not be built, with the reason (rulings 3 and 4 of milestone 14).
 const NOT_APPLICABLE: &[(&str, &str)] = &[
@@ -199,13 +197,22 @@ pub fn command_for_chord(chord: &Chord) -> Option<&'static Item> {
     menus::items_for(chord).into_iter().find(|i| !status(i).unavailable())
 }
 
+/// Hiding other apps is a macOS thing: each item keeps its own reason where there is none.
+fn app_hiding_reason(selector: &str) -> Option<&'static str> {
+    match selector {
+        "hideOtherApplications:" => Some("macOS hides other applications; Windows has no such command."),
+        "unhideAllApplications:" => Some("macOS unhides applications; Windows has no such command."),
+        _ => None,
+    }
+}
+
 pub fn status(item: &Item) -> Status {
     // A partial note wins over DONE: the command runs, and the note says how it differs.
     if let Some((_, note)) = PARTIAL.iter().find(|(entry, _)| names(entry, item)) {
         return Status::Partial(note);
     }
-    if matches!(item.selector.as_str(), "hideOtherApplications:" | "unhideAllApplications:") {
-        return if HAS_APP_HIDING { Status::Done } else { Status::NotApplicable(NO_APP_HIDING) };
+    if let Some(why) = app_hiding_reason(&item.selector) {
+        return if HAS_APP_HIDING { Status::Done } else { Status::NotApplicable(why) };
     }
     if let Some((_, why)) = NOT_APPLICABLE.iter().find(|(entry, _)| names(entry, item)) {
         return Status::NotApplicable(why);
@@ -291,6 +298,21 @@ mod tests {
     fn hiding_other_apps_follows_the_os() {
         for (sel, label) in [("hideOtherApplications:", "Hide Others"), ("unhideAllApplications:", "Show All")] {
             assert_eq!(status(find(sel, label)).unavailable(), !HAS_APP_HIDING, "{sel}");
+        }
+    }
+
+    /// Windows keeps the two reasons it always had, word for word.
+    #[test]
+    fn hiding_other_apps_keeps_its_windows_reasons() {
+        let pairs = [
+            ("hideOtherApplications:", "Hide Others", "macOS hides other applications; Windows has no such command."),
+            ("unhideAllApplications:", "Show All", "macOS unhides applications; Windows has no such command."),
+        ];
+        for (sel, label, why) in pairs {
+            assert_eq!(app_hiding_reason(sel), Some(why));
+            if !HAS_APP_HIDING {
+                assert!(matches!(status(find(sel, label)), Status::NotApplicable(w) if w == why), "{sel}");
+            }
         }
     }
 

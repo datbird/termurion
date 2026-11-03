@@ -350,7 +350,8 @@ pub struct Imported {
 /// The profiles, global settings and legacy keys of a settings plist's bytes.
 pub fn from_plist_all(bytes: &[u8]) -> Result<Imported, String> {
     let root = plist::Value::from_reader(std::io::Cursor::new(bytes)).map_err(|e| format!("not an iTerm2 settings file: {e}"))?;
-    let dict = root.as_dictionary().ok_or("not a settings plist")?;
+    // The text the profile reader always gave for a root that is not a dictionary.
+    let dict = root.as_dictionary().ok_or("no New Bookmarks (profiles) in this file")?;
     Ok(Imported { profiles: profiles_from_dict(dict)?, globals: globals_from_dict(dict), legacy: legacy_from_dict(dict) })
 }
 
@@ -398,6 +399,13 @@ mod tests {
     use crate::palette::rgb;
 
     /// One parse gives the profiles and the settings (the fixture of the Reddit report in remote_prefs).
+    /// A plist whose root is not a dictionary says what Import always said (Windows text unchanged).
+    #[test]
+    fn a_plist_that_is_not_a_dictionary_keeps_its_old_error() {
+        let plist = r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><array/></plist>"#;
+        assert_eq!(from_plist_all(plist.as_bytes()).err().as_deref(), Some("no New Bookmarks (profiles) in this file"));
+    }
+
     #[test]
     fn one_parse_gives_profiles_and_settings() {
         let plist = concat!(
