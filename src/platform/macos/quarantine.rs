@@ -35,8 +35,9 @@ pub fn mark(path: &Path, text: &str) -> std::io::Result<()> {
     }
     put(&props, ns_string!("LSQuarantineAgentName"), agent_name().as_ref());
     put(&props, ns_string!("LSQuarantineAgentBundleIdentifier"), agent_bundle().as_ref());
-    if let Some(u) = super::super::quarantine::host_url(text) {
-        put(&props, ns_string!("LSQuarantineDataURL"), NSString::from_str(u).as_ref());
+    // The data URL is a URL, not text; one that does not parse is left out.
+    if let Some(u) = super::super::quarantine::host_url(text).and_then(|u| NSURL::URLWithString(&NSString::from_str(u))) {
+        put(&props, ns_string!("LSQuarantineDataURL"), u.as_ref());
     }
     put(&props, ns_string!("LSQuarantineTimeStamp"), NSDate::now().as_ref());
     put(&props, ns_string!("LSQuarantineType"), ns_string!("LSQuarantineTypeOtherDownload").as_ref());

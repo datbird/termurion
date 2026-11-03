@@ -1780,6 +1780,12 @@ mod tests {
     #[test]
     fn open_file_is_never_a_protocol_open() {
         let d = dir("openfile", &["a b.txt", "run.exe"]);
+        // Unix shows a file in a folder others can write to; the test must not follow the umask.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         for text in ["ms-msdt:/id PCWDiagnostic", "search-ms:query=x", "https://a/x.exe", "ms-settings:network", "file:///C:/x", "javascript:alert(1)"] {
             assert!(matches!(open_file_run(text, Some(&d), true), Run::Blocked(_)), "{text}");
         }

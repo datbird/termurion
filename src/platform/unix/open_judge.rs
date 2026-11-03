@@ -38,52 +38,63 @@ const BLOCKED_SCHEMES: &[(&str, &str)] = &[
 /// whose kind or target cannot be read counts as runnable (shown, never opened); one that is not
 /// there does not (it is not opened either).
 pub fn runnable(path: &str) -> bool {
-    runnable_at(path, 0)
+    matches!(judge(Path::new(path)), Verdict::Show)
 }
 
 /// How many aliases deep a chain is followed before it counts as runnable.
 const ALIAS_DEPTH: u32 = 8;
 
-fn runnable_at(path: &str, depth: u32) -> bool {
-    if depth > ALIAS_DEPTH || named_runnable(path) || runs_by_kind(Path::new(path)) {
-        return true;
-    }
-    match std::fs::canonicalize(path) {
-        Ok(real) => named_runnable(&real.to_string_lossy()) || foreign_file_in_shared_folder(&real) || alias_runnable(&real, depth),
-        Err(e) => e.kind() != std::io::ErrorKind::NotFound || is_link(Path::new(path)),
-    }
+/// What one look at a path decided.
+enum Verdict {
+    /// Show it in the file manager.
+    Show,
+    /// Not there at all: nothing is shown or opened by the judge.
+    Missing,
+    /// Safe to open: this canonical file, the end of the link and alias chain that was judged.
+    Open(std::path::PathBuf),
 }
 
-/// A Finder alias is judged by what it names, like a link; one that does not resolve is shown.
-fn alias_runnable(real: &Path, depth: u32) -> bool {
-    match super::files::finder_alias(real) {
-        None => false,
-        Some(Ok(target)) => runnable_at(&target.to_string_lossy(), depth + 1),
-        Some(Err(_)) => true,
+/// The one resolution of a path: the clicked name and every hop of its link and alias chain are
+/// judged (names, kind, owner), and what is handed back is the very file that was judged last.
+fn judge(path: &Path) -> Verdict {
+    if named_runnable(path) || runs_by_kind(path) {
+        return Verdict::Show;
     }
-}
-
-/// Where the opener ends up for `path`: the alias chain followed to a file that is not an alias.
-/// None when a link in the chain does not resolve.
-fn follow_aliases(path: &Path) -> Option<std::path::PathBuf> {
-    let mut cur = std::fs::canonicalize(path).ok()?;
+    let mut cur = match std::fs::canonicalize(path) {
+        Ok(real) => real,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !is_link(path) => return Verdict::Missing,
+        Err(_) => return Verdict::Show,
+    };
     for _ in 0..=ALIAS_DEPTH {
+        if named_runnable(&cur) || runs_by_kind(&cur) || shown_by_owner(&cur) {
+            return Verdict::Show;
+        }
+        // A Finder alias is judged by what it names, like a link; one that does not resolve is shown.
         match super::files::finder_alias(&cur) {
-            None => return Some(cur),
+            None => return Verdict::Open(cur),
             Some(Ok(next)) => cur = next,
-            Some(Err(_)) => return None,
+            Some(Err(_)) => return Verdict::Show,
         }
     }
-    None
+    Verdict::Show
 }
 
 /// Another person's file in a folder anyone can write to (a shared folder, /tmp): someone else
 /// chose its content and its name, so it is shown and not opened. Root's files are the system's.
+/// The narrow rule; `shown_for_owner` is the one the judge applies.
+#[allow(dead_code)]
 pub fn foreign_in_shared(owner: u32, euid: u32, dir_mode: u32) -> bool {
     owner != euid && owner != 0 && dir_mode & 0o022 != 0
 }
 
-fn foreign_file_in_shared_folder(real: &Path) -> bool {
+/// Whether who owns a regular file, and who can change its folder, make it unsafe to open: the
+/// owner can add an execute bit between the judge and `open` when they are not you or root, and
+/// a folder that group or others can write to (without the sticky bit) lets them swap the name.
+pub fn shown_for_owner(owner: u32, euid: u32, parent_mode: u32) -> bool {
+    (owner != euid && owner != 0) || (parent_mode & 0o022 != 0 && parent_mode & 0o1000 == 0)
+}
+
+fn shown_by_owner(real: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     let Ok(meta) = std::fs::metadata(real) else { return true };
     if !meta.is_file() {
@@ -91,14 +102,15 @@ fn foreign_file_in_shared_folder(real: &Path) -> bool {
     }
     let Some(parent) = real.parent() else { return false };
     match std::fs::metadata(parent) {
-        Ok(dir) => foreign_in_shared(meta.uid(), unsafe { libc::geteuid() }, dir.mode()),
+        Ok(dir) => shown_for_owner(meta.uid(), unsafe { libc::geteuid() }, dir.mode()),
         // The folder cannot be read: fail safe.
         Err(_) => true,
     }
 }
 
-fn named_runnable(path: &str) -> bool {
-    crate::inert_files::high_risk(path) || runnable_type(path)
+/// The name judged as text (the Windows floor) and as the real bytes (the Unix types).
+fn named_runnable(path: &Path) -> bool {
+    crate::inert_files::high_risk(&path.to_string_lossy()) || runnable_type(path)
 }
 
 /// Whether `path` is a link (its target then cannot be found: fail closed rather than guess); a
@@ -110,9 +122,8 @@ fn is_link(path: &Path) -> bool {
     }
 }
 
-fn runnable_type(path: &str) -> bool {
-    let name = Path::new(path).file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
-    name.rsplit_once('.').is_some_and(|(_, ext)| RUNNABLE_TYPES.contains(&ext))
+fn runnable_type(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| RUNNABLE_TYPES.iter().any(|t| ext.eq_ignore_ascii_case(t)))
 }
 
 fn runs_by_kind(path: &Path) -> bool {
@@ -144,18 +155,11 @@ pub enum Judged {
 /// The last word before the opener: a runnable path is shown, anything else is opened as the
 /// canonical path that was judged.
 pub fn judged_open(path: &Path) -> Judged {
-    if runnable(&path.to_string_lossy()) {
-        return Judged::Reveal(path.to_path_buf());
-    }
-    match follow_aliases(path) {
-        Some(real) => Judged::Open(real),
-        None => match std::fs::canonicalize(path) {
-            // An alias in the chain did not resolve: shown, never opened.
-            Ok(_) => Judged::Reveal(path.to_path_buf()),
-            // Not there at all: the opener says so.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !is_link(path) => Judged::Open(path.to_path_buf()),
-            Err(_) => Judged::Reveal(path.to_path_buf()),
-        },
+    match judge(path) {
+        Verdict::Open(real) => Judged::Open(real),
+        // Not there at all: the opener says so.
+        Verdict::Missing => Judged::Open(path.to_path_buf()),
+        Verdict::Show => Judged::Reveal(path.to_path_buf()),
     }
 }
 
@@ -205,6 +209,8 @@ mod tests {
         let d = std::env::temp_dir().join(format!("termurion-open-judge-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
+        // A folder others can write to is shown, so the tests do not follow the umask.
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
         d
     }
 
@@ -218,8 +224,6 @@ mod tests {
         crate::semantic::open_local_result(path, false, &crate::netpath::Probe::default(), &|p| Path::new(p).exists())
     }
 
-    /// A click shows a program and never runs it: Terminal files, bundles, launchers and any file
-    /// with an execute bit are revealed; plain documents open.
     /// Another person's file in a folder anyone writes to is shown; your own, root's and files in
     /// private folders are not.
     #[test]
@@ -230,6 +234,42 @@ mod tests {
         assert!(!foreign_in_shared(1001, 501, 0o755));
     }
 
+    /// The wider rule: another user's file is shown in any folder, and a folder others can write
+    /// to without the sticky bit shows even your own file.
+    #[test]
+    fn a_file_is_shown_for_its_owner_or_its_folder() {
+        assert!(shown_for_owner(1001, 501, 0o755), "another user's file in a private folder");
+        assert!(!shown_for_owner(0, 501, 0o755), "root's file");
+        assert!(shown_for_owner(501, 501, 0o775), "your file in a group-writable folder");
+        assert!(shown_for_owner(501, 501, 0o777), "your file in a world-writable folder");
+        assert!(!shown_for_owner(501, 501, 0o1777), "your file in a sticky folder");
+        assert!(!shown_for_owner(501, 501, 0o755));
+    }
+
+    /// One click resolves the alias chain once, and what is opened is what was judged: the code
+    /// has a single alias resolution, and an opened path is never one the judge shows.
+    #[test]
+    fn the_judged_file_is_the_opened_file() {
+        let src = include_str!("open_judge.rs");
+        let code = &src[..src.find("#[cfg(test)]").unwrap()];
+        assert_eq!(code.matches("finder_alias(").count(), 1, "one resolution");
+        let d = dir("once");
+        let doc = d.join("doc.txt");
+        write(&doc, 0o644);
+        let link = d.join("link.md");
+        std::os::unix::fs::symlink(&doc, &link).unwrap();
+        let prog = d.join("run.command");
+        write(&prog, 0o644);
+        for p in [&doc, &link, &prog, &d.join("missing.txt")] {
+            if let Judged::Open(real) = judged_open(p) {
+                assert!(!runnable(&real.to_string_lossy()), "{}", real.display());
+            }
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A click shows a program and never runs it: Terminal files, bundles, launchers and any file
+    /// with an execute bit are revealed; plain documents open.
     #[test]
     fn programs_are_revealed_and_documents_open() {
         let d = dir("kinds");

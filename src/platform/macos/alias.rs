@@ -31,7 +31,8 @@ pub fn finder_alias(path: &Path) -> Option<Result<PathBuf, String>> {
     if !meta.file_type().is_file() {
         return None;
     }
-    let url = CFURL::from_path(path, false)?;
+    // A path that cannot be made a URL cannot be asked about: shown, not opened.
+    let Some(url) = CFURL::from_path(path, false) else { return Some(Err("The alias has no usable name.".into())) };
     match is_alias(&url) {
         Ok(false) => None,
         Ok(true) => Some(resolve(&url)),
@@ -52,6 +53,17 @@ fn is_alias(url: &CFURL) -> Result<bool, String> {
     let flag = |k: &CFString| props.find(k).and_then(|v| v.downcast::<CFBoolean>()).map(bool::from);
     // A flag the system did not answer counts as an alias: fail safe.
     Ok(flag(&alias_key).unwrap_or(true) && !flag(&link_key).unwrap_or(false))
+}
+
+/// The target the same probe rule as a click lets be touched: no network mount, no auto-mount
+/// folder, no device, and a name that is text. Nothing is asked of the disk before this.
+fn screened(path: &Path) -> Result<(), String> {
+    let text = path.to_str().ok_or_else(|| "The alias names a file whose name is not text.".to_string())?;
+    if crate::netpath::may_probe(text, &crate::netpath::Probe::default()) {
+        Ok(())
+    } else {
+        Err(format!("{text} is on a network or special location."))
+    }
 }
 
 /// The canonical target of the alias file at `url`, without any dialog and without mounting.
@@ -79,6 +91,7 @@ fn resolve(url: &CFURL) -> Result<PathBuf, String> {
     }
     let target = unsafe { CFURL::wrap_under_create_rule(target) };
     let path = target.to_path().ok_or_else(|| "The alias names no file.".to_string())?;
+    screened(&path)?;
     std::fs::canonicalize(&path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
@@ -87,6 +100,17 @@ mod tests {
     use super::*;
     use crate::platform::unix::open_judge::{judged_open, runnable, Judged};
     use std::os::unix::fs::PermissionsExt;
+
+    /// A target that is a network mount or auto-mount folder is refused before anything is read
+    /// from it, and a name that is not text is refused too.
+    #[test]
+    fn a_network_target_is_refused_unread() {
+        assert!(screened(Path::new("/net/evil.example/x.txt")).is_err());
+        assert!(screened(Path::new("/Network/Servers/h/x.txt")).is_err());
+        use std::os::unix::ffi::OsStrExt;
+        assert!(screened(Path::new(std::ffi::OsStr::from_bytes(b"/tmp/\xff.txt"))).is_err());
+        assert!(screened(Path::new("/tmp/x.txt")).is_ok());
+    }
 
     /// Writes a Finder alias at `alias` naming `target` (what the Finder's Make Alias does).
     fn make_alias(target: &Path, alias: &Path) {
@@ -114,6 +138,7 @@ mod tests {
         let d = std::env::temp_dir().join(format!("termurion-alias-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
         let real = std::fs::canonicalize(&d).unwrap();
 
         file(&d.join("payload.terminal"), 0o644);
