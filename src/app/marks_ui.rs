@@ -331,7 +331,7 @@ impl App {
                 }
             }
             _ => {
-                let result = self.hwnd().ok_or_else(|| "no window".to_string()).and_then(|h| crate::platform::notify::show(h, "Mark Set", &format!("Session {title} had a mark set.")));
+                let result = crate::platform::notify::show_with("Mark Set", &format!("Session {title} had a mark set."), false);
                 if let Err(e) = result {
                     self.banners.set("notify", format!("Notification failed: {e}"));
                 }
