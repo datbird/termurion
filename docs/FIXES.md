@@ -6,7 +6,15 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 
 ## Open
 
-(none)
+20. **Two pairs of menu items share a key.** Seen 2026-11-03 in the macOS port's final review;
+    the pairs come straight from iTerm2's main menu and ship on Windows too. Decrease Height and
+    Select Pane Above are both Cmd+Opt+Up (Increase Height and Select Pane Below both
+    Cmd+Opt+Down), and Show Clippings (Cmd+Shift+=) is the same key press as Make Text Bigger
+    (Cmd++) on a US layout. Only one item of each pair can run. On macOS it can even be a
+    different one by window: a terminal window resolves the chord through `command_for_chord`,
+    while Settings and other windows get AppKit's first match in menu order. It should pick
+    iTerm2's winner for each pair and use it on every OS, with the loser's shortcut dropped or
+    shown as taken.
 
 ## In progress
 

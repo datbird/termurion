@@ -340,6 +340,7 @@ The macOS VM ran the same three by hand with the dev bundle and the system Quit 
 | 8 Quarantine and aliases | a download carries the quarantine attribute with the Termurion agent name | 2026-11-03 |
 | 9 iTerm2 import | the picker, an imported profile in the Profiles list (after the scroll fix) | 2026-11-03 |
 | 10 tmux restore | variants a, b and c by hand (above) | 2026-11-03 |
+| Final fix round | Settings > Keys recorder took Cmd-T as the chord and no tab opened; the Profiles menu draws a profile's Ctrl+Cmd key as a native key equivalent; with "Require Authentication after Screen Locks" on, a posted `com.apple.screenIsLocked` closed the open password manager and the next open asked for the password again (while still authenticated, a reopen did not ask). A real screen lock was not driven on the VM: the notification was posted from another process, the same delivery path. | 2026-11-03 |
 
 The Windows words in macOS prose (Task 10, B) were checked in the unit tests and by the schema test that fails on any Explorer, taskbar, Win key, Credential Manager, Ctrl key or Alt key word left in a visible row on macOS.
 
@@ -398,7 +399,7 @@ Each with its reason.
 - Reading iTerm2's own Keychain items (its passwords): another app's items ask for access one by one; the import copies settings, not secrets.
 - The CI matrix (Decision 17).
 - The open judge's three known gaps (above): a writable ancestor, ACLs, and the ignore list for alias targets.
-- The profile Q shortcut shows as Ctrl+Cmd+Q on macOS, which is the system Lock Screen chord, and the Profiles menu shows its shortcut as title text, not as a native key equivalent (display only; found in the Task 2 review).
-- Chord collisions that predate P2 and match Windows (Decrease and Increase Height against Select Pane Above and Below; Cmd+Shift+= Show Clippings against Make Text Bigger).
-- Screen lock before the password manager opens is a silent no-op on macOS (the Task 7 review).
+- Known macOS limit: a profile with shortcut key Q never opens from its key. Its chord is Ctrl+Cmd+Q, which macOS takes system-wide for Lock Screen before any app sees it. iTerm2 has the same clash (its profile shortcuts are also Ctrl+Cmd+letter). The Profiles menu item still opens it.
+- Chord collisions that predate P2 and match Windows (Decrease and Increase Height against Select Pane Above and Below; Cmd+Shift+= Show Clippings against Make Text Bigger): FIXES.md item 20.
+- Screen lock for the password manager on Linux: no lock event is read there yet (P3). macOS watches `com.apple.screenIsLocked` since the P2 final fix round.
 - The Python API scripts' virtual environment layout is Windows-only (`Scripts\python.exe`); macOS and Linux use `bin/python` when that phase lands.
