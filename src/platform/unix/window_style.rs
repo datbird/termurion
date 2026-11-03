@@ -14,6 +14,8 @@ pub fn owner_window(attrs: WindowAttributes, owner: isize) -> WindowAttributes {
     use winit::raw_window_handle::{AppKitWindowHandle, RawWindowHandle};
     let Some(view) = std::ptr::NonNull::new(owner as *mut std::ffi::c_void) else { return attrs };
     // SAFETY: `owner` is the live NSView of the terminal window (`view_of`), which outlives this call.
+    // Close only: a minimized manager would leave its terminal window with no sign of it.
+    let attrs = attrs.with_enabled_buttons(winit::window::WindowButtons::CLOSE);
     unsafe { attrs.with_parent_window(Some(RawWindowHandle::AppKit(AppKitWindowHandle::new(view)))) }
 }
 

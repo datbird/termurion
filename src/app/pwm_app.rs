@@ -3042,9 +3042,6 @@ mod tests {
         assert!(!prod.contains("self.pwm.info = Some"), "no reply overwrites the terminal info directly");
     }
 
-    /// Merge seam (13y2's KeePassXC, Bitwarden, Keeper and LastPass adapters with 13x7's browser
-    /// password sources): every source, for the terminal and the browser scope alike, is built in
-    /// `build` on the one worker, and nothing outside the password manager constructs one.
     #[test]
     fn a_silent_cancel_shows_no_alert() {
         use crate::platform::user_auth::Answer;
@@ -3055,6 +3052,9 @@ mod tests {
         assert!(crate::platform::user_auth::SILENT_CANCEL);
     }
 
+    /// Merge seam (13y2's KeePassXC, Bitwarden, Keeper and LastPass adapters with 13x7's browser
+    /// password sources): every source, for the terminal and the browser scope alike, is built in
+    /// `build` on the one worker, and nothing outside the password manager constructs one.
     #[test]
     fn every_password_source_has_one_owner() {
         let src = include_str!("pwm_app.rs");

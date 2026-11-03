@@ -127,12 +127,18 @@ pub(crate) fn delete_generic(target: &str) -> Result<bool, String> {
     delete_item(target)
 }
 
+/// Deletes every item under the service, whatever its account: one delete can leave others (a
+/// delete without an account removes one match), so it repeats until none is left. Bounded.
 fn delete_item(target: &str) -> Result<bool, String> {
-    match by_service(target).delete() {
-        Ok(()) => Ok(true),
-        Err(e) if is_missing(&e) => Ok(false),
-        Err(e) => Err(text(e)),
+    let mut any = false;
+    for _ in 0..16 {
+        match by_service(target).delete() {
+            Ok(()) => any = true,
+            Err(e) if is_missing(&e) => return Ok(any),
+            Err(e) => return Err(text(e)),
+        }
     }
+    Err("The Keychain still holds an item for this entry.".to_string())
 }
 
 /// The accounts a list of service names holds for one scope; anything else is skipped.
@@ -325,6 +331,22 @@ mod tests {
         let mut count = ItemSearchOptions::new();
         count.class(ItemClass::generic_password()).service(&ai).load_attributes(true).limit(security_framework::item::Limit::All);
         assert_eq!(count.search().unwrap().len(), 1);
+
+        // An item another app planted (open access, another account) goes too: one item remains, ours.
+        let plant = format!("TermurionAI/p2-test-plant-{id}");
+        let _plant_guard = Cleanup(vec![plant.clone()]);
+        let st = std::process::Command::new("security")
+            .args(["add-generic-password", "-A", "-s", &plant, "-a", "other", "-w", "x"])
+            .status()
+            .unwrap();
+        assert!(st.success());
+        write_generic(&plant, "p2user", &Secret::new("k3".into()), "p2 test", "API key").unwrap();
+        let mut q = ItemSearchOptions::new();
+        q.class(ItemClass::generic_password()).service(&plant).load_attributes(true).limit(security_framework::item::Limit::All);
+        let found = q.search().unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].simplify_dict().unwrap().get("acct").map(String::as_str), Some("p2user"));
+        assert_eq!(read_generic(&plant, "API key").unwrap().unwrap().expose(), "k3");
 
         let mut cm = CredentialManager::for_scope(Scope::Terminal);
         assert!(cm.accounts().unwrap().iter().all(|a| a.id != ai), "an AI key is not a password manager account");
