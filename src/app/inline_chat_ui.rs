@@ -521,7 +521,7 @@ impl App {
     /// The right-click menu of a bubble: Task 4's items with the pane in their ids, so Edit refills
     /// this panel's input and Fork opens the chat window on the new chat.
     fn inline_message_menu(&mut self, pane: PaneId, id: &str, at: (f32, f32)) {
-        let Some(hwnd) = self.hwnd() else { return };
+        let Some(hwnd) = self.view() else { return };
         let view = ChatView::Panel(pane);
         let Some(editable) = self.chat_visible_message(view, id).map(chat_view::editable) else { return };
         let menu = muda::Menu::new();
@@ -538,7 +538,7 @@ impl App {
 
     /// The attach button's popup: files or a folder, as the window's.
     fn inline_attach_menu(&mut self, pane: PaneId, at: (f32, f32)) {
-        let Some(hwnd) = self.hwnd() else { return };
+        let Some(hwnd) = self.view() else { return };
         let menu = muda::Menu::new();
         for (kind, title) in [("files", crate::chat_input::ATTACH_FILES), ("folder", crate::chat_input::ATTACH_FOLDER)] {
             if let Err(e) = menu.append(&muda::MenuItem::with_id(format!("{PANEL_ATTACH_ID}{kind}:{pane}"), title, true, None)) {
@@ -672,7 +672,7 @@ impl App {
     /// chats linked to this session first under a separator (muda has no bold item). A pick
     /// arrives as `aichat:inline:<pane>:<chat>` and lives until then (`popup_menu`).
     fn show_switch_menu(&mut self, pane: PaneId, at: (f32, f32)) {
-        let Some(hwnd) = self.hwnd() else { return };
+        let Some(hwnd) = self.view() else { return };
         let reference = self.session_ref(pane);
         let current = self.inline.get(&pane).and_then(|s| s.binding.chat.clone());
         let Some(chats) = self.chat_db().and_then(|db| db.chats().ok()) else { return };

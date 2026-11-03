@@ -10,6 +10,23 @@ pub fn hwnd_of(_window: &Window) -> Option<isize> {
     None
 }
 
+/// The NSView on macOS; Linux has no native handle to give.
+pub fn view_of(window: &Window) -> Option<isize> {
+    #[cfg(target_os = "macos")]
+    {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        match window.window_handle().ok()?.as_raw() {
+            RawWindowHandle::AppKit(h) => Some(h.ns_view.as_ptr() as isize),
+            _ => None,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        None
+    }
+}
+
 /// winit has no global pointer query; callers with a window use its cursor events instead.
 pub fn cursor_pos() -> Option<(i32, i32)> {
     None

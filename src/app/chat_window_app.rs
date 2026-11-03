@@ -884,7 +884,7 @@ impl App {
     /// The message menu at `at` (screen pixels), built from `chat_view::message_menu`; its picks
     /// come back through `run_menu_id` as `chat_message_picked`.
     fn chat_message_menu(&mut self, at: (f32, f32), id: String) {
-        let Some(hwnd) = self.chat_window.as_ref().and_then(|w| w.hwnd()) else { return };
+        let Some(hwnd) = self.chat_window.as_ref().and_then(|w| w.view()) else { return };
         let Some(editable) = self.chat_visible_message(ChatView::Window, &id).map(chat_view::editable) else { return };
         let menu = muda::Menu::new();
         for title in chat_view::message_menu(editable) {
@@ -1360,7 +1360,7 @@ impl App {
     /// The attach button's popup at `at` (screen pixels): files or a folder, two dialogs because
     /// Windows has no one for both. Its pick returns through `run_menu_id`.
     fn chat_attach_menu(&mut self, at: (f32, f32)) {
-        let Some(hwnd) = self.chat_window.as_ref().and_then(|w| w.hwnd()) else { return };
+        let Some(hwnd) = self.chat_window.as_ref().and_then(|w| w.view()) else { return };
         let menu = muda::Menu::new();
         for (id, title) in [(ATTACH_FILES_ID, chat_input::ATTACH_FILES), (ATTACH_FOLDER_ID, chat_input::ATTACH_FOLDER)] {
             if let Err(e) = menu.append(&muda::MenuItem::with_id(id, title, true, None)) {
@@ -1427,7 +1427,7 @@ impl App {
     /// The list's right-click menu at `at` (screen pixels) for the selected chats (`CL:393-414`);
     /// its picks come back through `run_menu_id` as `chat_list_picked`.
     fn chat_list_menu(&mut self, at: (f32, f32), ids: Vec<String>) {
-        let Some(hwnd) = self.chat_window.as_ref().and_then(|w| w.hwnd()) else { return };
+        let Some(hwnd) = self.chat_window.as_ref().and_then(|w| w.view()) else { return };
         let menu = muda::Menu::new();
         let mut results = Vec::new();
         for entry in chat_list::context_menu(ids.len()) {

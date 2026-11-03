@@ -55,6 +55,9 @@ fn spawn_and_wait(mut cmd: Command, kind: Kind, folder: Option<PathBuf>) -> Resu
     Ok(())
 }
 
+/// Finder on a Mac; Linux keeps the Windows word.
+pub const FILE_MANAGER: &str = if cfg!(target_os = "macos") { "Finder" } else { "Explorer" };
+
 pub fn open_url(url: &str, _background: bool) -> Result<(), String> {
     spawn_and_wait(opener(OsStr::new(url)), Kind::Opener, None)
 }

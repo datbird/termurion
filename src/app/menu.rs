@@ -42,10 +42,24 @@ const NUDGE: f32 = 0.05;
 /// as Windows ones ("Finder" is "Explorer").
 pub(super) fn menu_text(item: &Item) -> String {
     let label = crate::menu_tips::split_hint(&item.selector, &menus::shown_label(item.label()), *SPLIT_HINTS.get().unwrap_or(&false)).replace('&', "&&");
+    // AppKit draws the shortcut from the item's key equivalent, so the label stays plain there.
+    if crate::platform::chrome::NATIVE_ACCELERATORS {
+        return label;
+    }
     match chord_text(item) {
         Some(c) => format!("{label}\t{c}"),
         None => label,
     }
+}
+
+/// The native key equivalent of an item's chord, when the OS draws shortcuts itself and the chord
+/// reaches Termurion.
+pub(super) fn item_accelerator(item: &Item) -> Option<muda::accelerator::Accelerator> {
+    if !crate::platform::chrome::NATIVE_ACCELERATORS {
+        return None;
+    }
+    let shortcut = crate::shortcut_key::mode();
+    item.chord().filter(|c| shortcut.reaches(c)).and_then(|c| menus::accelerator(&c))
 }
 
 /// The accelerator text of an item: the real keys of its chord, or none when it has no chord
@@ -74,6 +88,10 @@ pub(super) fn chord_text(item: &Item) -> Option<String> {
 /// changed shortcut key. The label before the tab is kept as it stands now.
 fn retext(items: Vec<muda::MenuItemKind>) {
     use muda::MenuItemKind as K;
+    // Native shortcuts need no text; the key equivalent is set when the item is made.
+    if crate::platform::chrome::NATIVE_ACCELERATORS {
+        return;
+    }
     for kind in items {
         let (id, text, set): (String, String, Box<dyn Fn(&str)>) = match kind {
             K::Submenu(s) => {
@@ -228,6 +246,12 @@ impl App {
         hwnd_of(&self.gpu.as_ref()?.window)
     }
 
+    /// This window's native view handle: the HWND on Windows, the NSView on macOS (what menus and
+    /// the hotkey window take).
+    pub(super) fn view(&self) -> Option<isize> {
+        crate::platform::window::view_of(&self.gpu.as_ref()?.window)
+    }
+
     /// The handle a pop-up menu needs. Without one the menu is not shown; where the OS has no menus
     /// at all, a banner says so (the same text each time, so it is one banner).
     pub(super) fn popup_hwnd(&mut self) -> Option<isize> {
@@ -235,7 +259,7 @@ impl App {
             self.banners.set("menu", e.to_string());
             return None;
         }
-        self.hwnd()
+        self.view()
     }
 
     /// Builds the menu bar from iTerm2's menus, the right-click menu, and the Win chord hook.
@@ -250,7 +274,7 @@ impl App {
             }
             return;
         }
-        let Some(hwnd) = self.hwnd() else { return };
+        let Some(view) = self.view() else { return };
         SPLIT_HINTS.get_or_init(|| self.globals.bool("ShowHintsInSplitPaneMenuItems"));
         let menu = Menu::new();
         let mut subs: HashMap<Vec<String>, Submenu> = HashMap::new();
@@ -275,6 +299,9 @@ impl App {
             }
             let (parent, entry): (&[String], Box<dyn IsMenuItem>) = if item.separator {
                 (&item.path[..], Box::new(PredefinedMenuItem::separator()))
+            } else if item.submenu && item.path == ["Termurion", "Services"] && let Some(services) = crate::platform::chrome::services_item() {
+                // The system's own Services submenu (macOS) stands where the schema has the empty one.
+                (&item.path[..item.path.len() - 1], Box::new(services))
             } else if item.submenu {
                 let s = Submenu::new(item.label().replace('&', "&&"), true);
                 subs.insert(item.path.clone(), s.clone());
@@ -286,11 +313,11 @@ impl App {
                 let alert_check = super::marks_ui::CHECKS.iter().any(|(s, _)| *s == item.selector) || super::seltools_ui::CHECKED.contains(&item.selector.as_str()) || matches!(item.selector.as_str(), "toggleMultiLinePasteWarning:" | "promptToConvertTabsToSpacesWhenPasting:" | "toggleSizeChangesAffectProfile:" | "startStopLogging:");
                 let state_check = parent.iter().any(|p| p == "Terminal State") && item.label() != "Reset";
                 if alert_check || state_check {
-                    let c = CheckMenuItem::with_id(item.id(), menu_text(item), enabled, false, None);
+                    let c = CheckMenuItem::with_id(item.id(), menu_text(item), enabled, false, item_accelerator(item));
                     checks.insert(item.label().to_string(), c.clone());
                     (parent, Box::new(c))
                 } else {
-                    let m = MenuItem::with_id(item.id(), menu_text(item), enabled, None);
+                    let m = MenuItem::with_id(item.id(), menu_text(item), enabled, item_accelerator(item));
                     if item.selector == "installPythonRuntime:" {
                         install_runtime = Some(m.clone());
                     }
@@ -353,11 +380,19 @@ impl App {
         // after the new one is attached, muda takes the window's menu away, the new bar with it.
         let earlier = self.menu_bar.take().map(|b| b.menu);
         self.menu_refused = None;
-        if let Err(e) = crate::platform::chrome::replace_menu_bar(earlier, &menu, hwnd, self.want_menu_hidden()) {
+        if let Err(e) = crate::platform::chrome::replace_menu_bar(earlier, &menu, view, self.want_menu_hidden()) {
             self.banners.set("menu", format!("Could not attach the menu bar: {e}"));
         }
+        // The bar is the app's now, so AppKit can take the Help menu; the terminal view then takes
+        // Cmd keys before the menu does, so key mappings win (macOS; no-ops elsewhere).
+        if let Some(help) = subs.get(&vec!["Help".to_string()]) {
+            crate::platform::chrome::adopt_help_menu(help);
+        }
+        if let Err(e) = crate::platform::chrome::claim_key_equivalents(view) {
+            self.banners.set("keyclaim", format!("Key mappings may lose to menu shortcuts: {e}"));
+        }
         // Tips beside highlighted items, after the delay `MenuTipDelay` sets (iTerm2 reads it per tip).
-        crate::platform::chrome::install_menu_tips(hwnd, crate::menu_tips::delay_of(self.globals.number("MenuTipDelay").unwrap_or(1.0)));
+        crate::platform::chrome::install_menu_tips(view, crate::menu_tips::delay_of(self.globals.number("MenuTipDelay").unwrap_or(1.0)));
 
         let proxy = self.proxy.clone();
         muda::MenuEvent::set_event_handler(Some(move |e: muda::MenuEvent| {
@@ -377,7 +412,7 @@ impl App {
         }));
         // Remap modifiers globally, before the hook sees its first key.
         crate::platform::keys::set_remap_global(self.globals.bool("RemapModifiersGlobally"));
-        match crate::platform::keys::install(hwnd, self.remap_tags.clone(), exempt) {
+        match crate::platform::keys::install(view, self.remap_tags.clone(), exempt) {
             Err(e) => self.banners.set("keys", format!("Modifier remapping and system-wide hotkeys are unavailable: {e}")),
             Ok(()) if !self.hotkeys_registered => {
                 self.hotkeys_registered = true;
@@ -428,7 +463,7 @@ impl App {
                 subs.insert(item.path.clone(), s.clone());
                 (&item.path[..item.path.len() - 1], Box::new(s))
             } else {
-                (&item.path[..item.path.len() - 1], Box::new(MenuItem::with_id(item.id(), menu_text(item), Self::menu_enabled(item), None)))
+                (&item.path[..item.path.len() - 1], Box::new(MenuItem::with_id(item.id(), menu_text(item), Self::menu_enabled(item), item_accelerator(item))))
             };
             let _ = if parent.is_empty() { root.append(entry.as_ref()) } else if let Some(s) = subs.get(parent) { s.append(entry.as_ref()) } else { continue };
         }
@@ -1764,6 +1799,43 @@ pub(super) fn restart_spec() -> crate::warnings::Spec {
 
 #[cfg(test)]
 mod tests {
+    use crate::menus;
+    use crate::platform::chrome::NATIVE_ACCELERATORS;
+
+    /// With the OS drawing the shortcuts, the label has no tab and chord text of its own.
+    #[test]
+    fn macos_menus_have_no_chord_column() {
+        let item = menus::by_id("Shell > New Tab").unwrap();
+        assert_eq!(super::menu_text(item).contains('\t'), !NATIVE_ACCELERATORS);
+    }
+
+    /// Menus and the hotkey window take the view (the NSView on macOS, the HWND on Windows), never
+    /// the Windows-only `hwnd()`.
+    #[test]
+    fn menus_and_hotkeys_take_the_view() {
+        // Built from pieces so this test does not find itself.
+        let takes = [["platform::chrome::", "popup("].concat(), ["chrome::replace_", "menu_bar("].concat(), ["platform::hot", "key::"].concat()];
+        let own = ["self.", "hwnd()"].concat();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
+        let mut bad = Vec::new();
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let p = e.path();
+            if p.extension().is_none_or(|x| x != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&p).unwrap();
+            // A body runs from one fn to the next.
+            let mut starts: Vec<usize> = text.match_indices("fn ").map(|(i, _)| i).filter(|i| *i == 0 || text[..*i].ends_with(' ') || text[..*i].ends_with('\n')).collect();
+            starts.push(text.len());
+            for w in starts.windows(2) {
+                let body = &text[w[0]..w[1]];
+                if takes.iter().any(|n| body.contains(n.as_str())) && body.contains(own.as_str()) {
+                    bad.push(format!("{}: {}", p.file_name().unwrap().to_string_lossy(), body.lines().next().unwrap_or("")));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "these take the window handle beside a menu or hotkey call: {bad:#?}");
+    }
 
     /// FIXES 1: the Move Session items follow iTerm2's rule, so a one-session window greys them out.
     #[test]
@@ -1836,7 +1908,9 @@ mod tests {
     fn window_list_entries() {
         let entries = [(7, 1, "b".to_string(), "b".to_string()), (3, 0, "a".to_string(), "a".to_string())];
         let list = super::window_list(&entries, Some(3), true, 6);
-        assert_eq!(list, [(3, "a \u{2014} Alt+Shift+1".to_string(), true), (7, "b \u{2014} Alt+Shift+2".to_string(), false)]);
+        // The window keys read in the shortcut key's own words (Cmd glyphs on a Mac).
+        let key = |n: u8| crate::shortcut_key::mode().show(&format!("Alt+Win+{n}"));
+        assert_eq!(list, [(3, format!("a \u{2014} {}", key(1)), true), (7, format!("b \u{2014} {}", key(2)), false)]);
         let list = super::window_list(&entries, Some(7), false, 6);
         assert_eq!(list, [(3, "a".to_string(), false), (7, "b".to_string(), true)]);
     }

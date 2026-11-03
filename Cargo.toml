@@ -59,6 +59,11 @@ arboard = { version = "3", features = ["wayland-data-control"] }
 # The user's locale on macOS (CFLocaleCopyCurrent); already in the tree through winit.
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation-sys = "0.8.7"
+# The menu bar, pop-ups and the view's key path (src/platform/macos). objc2 0.6 is muda's; winit's own
+# 0.5 stays inside winit, and nothing here may add a third.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSMenu", "NSResponder", "NSView", "NSWindow", "NSRunningApplication", "NSWorkspace"] }
 
 [target.'cfg(windows)'.dependencies]
 # Windows Hello for the password manager's gate (UserConsentVerifier); both are already in the

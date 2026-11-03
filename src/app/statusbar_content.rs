@@ -632,7 +632,7 @@ impl App {
     /// Shows a component's menu at `at`. Windows drops a menu down from its point; one
     /// that must open above the bar is moved up as it appears, its bottom on `at.y`.
     pub(super) fn show_menu_at(&mut self, menu: muda::Menu, at: MenuAt) {
-        let Some(hwnd) = self.hwnd() else { return };
+        let Some(hwnd) = self.view() else { return };
         let position = muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(at.x as i32, at.y as i32));
         let lift = at.above.then(|| crate::platform::chrome::Lift::new(hwnd, at.x, at.y));
         crate::platform::chrome::popup(&menu, hwnd, Some(position));

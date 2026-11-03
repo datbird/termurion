@@ -1,4 +1,4 @@
-//! Window chrome on Unix. DWM has no Unix meaning (the window manager draws border and corners);
+//! Window chrome on Unix (all of it on Linux; macOS takes the shared no-ops from here). DWM has no Unix meaning (the window manager draws border and corners);
 //! the native menu bar is not attached yet; `available` says so and the app shows it.
 
 use crate::platform::Unsupported;
@@ -13,6 +13,25 @@ const MENUS: &str = "The native menu bar";
 /// Menus (bar and pop-ups) are not built on Unix yet.
 pub fn available() -> Result<(), Unsupported> {
     Err(Unsupported { feature: MENUS })
+}
+
+/// Linux menus are the toolkit's own and show no native shortcuts yet.
+pub const NATIVE_ACCELERATORS: bool = false;
+
+/// Linux keeps no screen-wide bar to hand over.
+pub fn bar_focused(_menu: &muda::Menu) {}
+
+/// Linux has no system Help menu to adopt.
+pub fn adopt_help_menu(_sub: &muda::Submenu) {}
+
+/// Linux has no Services menu.
+pub fn services_item() -> Option<muda::PredefinedMenuItem> {
+    None
+}
+
+/// Linux keys do not pass a menu first; nothing to claim.
+pub fn claim_key_equivalents(_view: isize) -> Result<(), String> {
+    Ok(())
 }
 
 pub fn set_border(_hwnd: isize, _color: u32) {}

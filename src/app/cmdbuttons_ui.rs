@@ -66,7 +66,7 @@ impl App {
         if items.is_empty() {
             return;
         }
-        let Some(hwnd) = self.hwnd() else { return };
+        let Some(hwnd) = self.view() else { return };
         let menu = muda::Menu::new();
         for (i, label) in items.iter().enumerate() {
             if let Err(e) = menu.append(&muda::MenuItem::with_id(format!("{MENU_ID}{i}"), label.replace('&', "&&"), true, None)) {

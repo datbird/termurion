@@ -163,7 +163,7 @@ impl App {
                 continue;
             }
             self.hotkey = None;
-            if let (Some(hwnd), Some(g)) = (self.hwnd(), &self.gpu) {
+            if let (Some(hwnd), Some(g)) = (self.view(), &self.gpu) {
                 // The taskbar button comes back through `presence_tick`.
                 g.window.set_window_level(winit::window::WindowLevel::Normal);
                 g.window.set_visible(true);
@@ -300,7 +300,7 @@ impl App {
     /// Shows the current (hotkey) window: from its hidden place for the edge styles that
     /// slide, at once otherwise.
     pub(super) fn roll_in(&mut self) {
-        let Some(hwnd) = self.hwnd() else { return };
+        let Some(hwnd) = self.view() else { return };
         let guid = match &self.hotkey {
             Some(h) if !h.shown && h.roll.is_none() => h.guid.clone(),
             _ => return,
@@ -416,7 +416,7 @@ impl App {
 
     /// Puts the current window back to full opacity (the layered style off, the renderer's fade 1).
     fn end_fade(&mut self) {
-        if let Some(hwnd) = self.hwnd() {
+        if let Some(hwnd) = self.view() {
             crate::platform::hotkey::set_alpha(hwnd, 1.0);
         }
         if let Some(h) = self.hotkey.as_mut() {
@@ -480,7 +480,7 @@ impl App {
     /// Cloaks the current hotkey window and, after a hide by the hotkey, gives focus back.
     /// `back` is where a slide left it: the shown place, so the next show starts right.
     fn finish_hide(&mut self, by_key: bool, back: Option<(f32, f32)>) {
-        let Some(hwnd) = self.hwnd() else { return };
+        let Some(hwnd) = self.view() else { return };
         crate::platform::hotkey::cloak(hwnd, true);
         // Full opacity again, while it is cloaked: the next show starts from its own first frame.
         self.end_fade();
@@ -526,7 +526,7 @@ impl App {
                 (pos, done) = (motion.to, true);
                 self.end_fade();
             } else if fade == Some(FadePath::Layered) {
-                let hwnd = self.hwnd();
+                let hwnd = self.view();
                 // The last step of a show is full opacity (the style comes off); a hide ends at 0.
                 if hwnd.is_none_or(|h| !crate::platform::hotkey::set_alpha(h, alpha)) {
                     self.fade_failed = true;
@@ -669,7 +669,7 @@ impl App {
             self.roll_in();
             return;
         }
-        let Some(h) = self.hwnd() else { return };
+        let Some(h) = self.view() else { return };
         let minimized = self.gpu.as_ref().is_some_and(|g| g.window.is_minimized() == Some(true));
         crate::platform::hotkey::order_front(h, minimized);
     }

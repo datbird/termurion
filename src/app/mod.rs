@@ -8419,6 +8419,10 @@ impl App {
             self.browser_tip_clear_all();
         }
         self.apply_focus(step, f, id);
+        // The window in front hands its menu bar to the screen (macOS keeps one bar; elsewhere a no-op).
+        if f && let Some(bar) = &self.menu_bar {
+            crate::platform::chrome::bar_focused(&bar.menu);
+        }
         self.sync_web_keyboard();
     }
 

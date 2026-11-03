@@ -358,6 +358,11 @@ impl ChatWindow {
         self.host.hwnd()
     }
 
+    /// The native view handle menus take (the HWND on Windows, the NSView on macOS).
+    pub fn view(&self) -> Option<isize> {
+        self.host.view()
+    }
+
     pub fn event(&mut self, event: &WindowEvent) -> bool {
         self.host.event(event)
     }

@@ -1,8 +1,13 @@
 //! Window chrome that is the OS's own: the border color, the corner rounding, the menu bar's
 //! attach state and theme, and the Theme guard. DWM and the menu bar's native handle are Windows
-//! things; on Unix the window manager draws the frame and the menu is not attached to a handle yet.
+//! things; on Linux the window manager draws the frame and the menu is not attached to a handle yet.
+//! On macOS the menu bar is the screen's own and is built here (`macos::chrome`).
+//!
+//! A "view" below is `window::view_of`: the HWND on Windows, the NSView on macOS.
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
+use super::macos::chrome as imp;
+#[cfg(all(unix, not(target_os = "macos")))]
 use super::unix::chrome as imp;
 #[cfg(windows)]
 use super::windows::chrome as imp;
@@ -12,6 +17,10 @@ use super::windows::chrome as imp;
 pub fn available() -> Result<(), super::Unsupported> {
     imp::available()
 }
+
+/// The OS draws each item's shortcut itself (macOS), so a label carries no tab and chord text and
+/// an item gets a native key equivalent instead.
+pub const NATIVE_ACCELERATORS: bool = imp::NATIVE_ACCELERATORS;
 
 /// Gives the window's frame a border color (a COLORREF); a no-op where the OS draws the border.
 pub fn set_border(hwnd: isize, color: u32) {
@@ -67,9 +76,9 @@ pub use imp::Lift;
 
 /// Shows the menu as a pop-up at `position` (the window's client pixels; None: at the pointer).
 /// True when an item was picked, false when it was dismissed. The handle is a live window of this
-/// thread, as the app gets it from `window::hwnd_of`.
-pub fn popup<M: muda::ContextMenu + ?Sized>(menu: &M, hwnd: isize, position: Option<muda::dpi::Position>) -> bool {
-    imp::popup(menu, hwnd, position)
+/// thread, as the app gets it from `window::view_of`.
+pub fn popup<M: muda::ContextMenu + ?Sized>(menu: &M, view: isize, position: Option<muda::dpi::Position>) -> bool {
+    imp::popup(menu, view, position)
 }
 
 /// Attaches `menu` as `hwnd`'s menu bar after taking `earlier` (the window's bar so far) off it.
@@ -78,12 +87,35 @@ pub fn popup<M: muda::ContextMenu + ?Sized>(menu: &M, hwnd: isize, position: Opt
 ///
 /// A bar for a window that is to hide it (`hide`: Minimal, Compact, full screen) is taken off
 /// again at once, so it is never attached while the app believes it hidden.
-pub fn replace_menu_bar(earlier: Option<muda::Menu>, menu: &muda::Menu, hwnd: isize, hide: bool) -> muda::Result<()> {
-    imp::replace_menu_bar(earlier, menu, hwnd, hide)
+/// Err is the refusal in words.
+pub fn replace_menu_bar(earlier: Option<muda::Menu>, menu: &muda::Menu, view: isize, hide: bool) -> Result<(), String> {
+    imp::replace_menu_bar(earlier, menu, view, hide).map_err(|e| e.to_string())
+}
+
+/// A window with this menu bar came to the front: its bar becomes the screen's. Windows and Linux
+/// keep a bar on each window, so there is nothing to hand over there.
+pub fn bar_focused(menu: &muda::Menu) {
+    imp::bar_focused(menu)
+}
+
+/// Gives AppKit the Help submenu (its search field). Only macOS has a system Help menu.
+pub fn adopt_help_menu(sub: &muda::Submenu) {
+    imp::adopt_help_menu(sub)
+}
+
+/// The system's own Services submenu item, where the OS has one (macOS); none elsewhere.
+pub fn services_item() -> Option<muda::PredefinedMenuItem> {
+    imp::services_item()
+}
+
+/// Makes the window's view take every Command key-down before the menu does, so key mappings beat
+/// menu shortcuts (macOS). Windows and Linux route keys through their own hook, so nothing to do.
+pub fn claim_key_equivalents(view: isize) -> Result<(), String> {
+    imp::claim_key_equivalents(view)
 }
 
 /// Shows a tip beside the highlighted menu item after `delay` (Windows owner-draws its menus; the toolkit
 /// that draws them elsewhere has no such hook, so this does nothing there).
-pub fn install_menu_tips(hwnd: isize, delay: std::time::Duration) {
-    imp::install_menu_tips(hwnd, delay)
+pub fn install_menu_tips(view: isize, delay: std::time::Duration) {
+    imp::install_menu_tips(view, delay)
 }

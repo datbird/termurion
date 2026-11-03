@@ -183,6 +183,11 @@ impl EguiHost {
         self.ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
     }
 
+    /// The window's native view handle for menus: the HWND on Windows, the NSView on macOS.
+    pub fn view(&self) -> Option<isize> {
+        crate::platform::window::view_of(&self.window)
+    }
+
     /// The window's Win32 handle.
     pub fn hwnd(&self) -> Option<isize> {
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};

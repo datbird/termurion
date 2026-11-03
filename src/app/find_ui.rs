@@ -925,7 +925,7 @@ impl App {
 
     /// Opens the find bar's mode menu under the mode label.
     pub(super) fn show_find_mode_menu(&mut self) {
-        let Some(hwnd) = self.hwnd() else { return };
+        let Some(hwnd) = self.view() else { return };
         // As the bar's fields: Search has "Erase Search History", Filter does not.
         let search = !self.focused_id().and_then(|id| self.finds.get(&id)).is_some_and(|f| f.filter);
         let menu = self.find_mode_menu(find::Mode::label, search);

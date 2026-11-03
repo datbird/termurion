@@ -5,6 +5,9 @@ use super::unix::shell_open as imp;
 #[cfg(windows)]
 use super::windows::shell_open as imp;
 
+/// What this OS calls its file manager, for labels ("Reveal in Explorer").
+pub const FILE_MANAGER: &str = imp::FILE_MANAGER;
+
 /// Opens a URL with its default app. Only a URL (`semantic::shell_url`): a path, a drive path or a
 /// file link is refused, so no caller hands the shell an unjudged file; a file opens through
 /// `localfs::open_with_shell` with a judged `LocalPath`.

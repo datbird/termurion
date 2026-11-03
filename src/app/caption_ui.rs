@@ -242,7 +242,7 @@ impl App {
     /// pointer (a right click on the strip, `PSM:3978-3982`). The window's menu is already
     /// initialized for this window, so its picks reach the usual handler.
     pub(super) fn show_caption_menu(&mut self, at_cursor: bool) {
-        let (Some(hwnd), Some(bar)) = (self.hwnd(), self.menu_bar.as_ref()) else { return };
+        let (Some(hwnd), Some(bar)) = (self.view(), self.menu_bar.as_ref()) else { return };
         let at = if at_cursor { None } else { self.caption_layout().and_then(|l| l.menu).map(|m| muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(m.x as i32, (m.y + m.h) as i32))) };
         // SAFETY: the window's own menu and HWND.
         crate::platform::chrome::popup(&bar.menu, hwnd, at);

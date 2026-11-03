@@ -225,7 +225,7 @@ impl App {
     /// opens with no terminal window made yet.
     fn show_tray_menu(&mut self) {
         use muda::{Menu, MenuItem, PredefinedMenuItem, Submenu};
-        let Some(hwnd) = presence::tray_menu_owner(self.hwnd(), crate::platform::notify::window_handle()) else { return };
+        let Some(hwnd) = presence::tray_menu_owner(self.view(), crate::platform::notify::window_handle()) else { return };
         let menu = Menu::new();
         // Every window first: one that left the taskbar and Alt+Tab (or was minimized) has no
         // other way back. A pick runs `window_list_picked`.

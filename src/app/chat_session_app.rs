@@ -689,9 +689,9 @@ impl App {
         let hwnd = match inline {
             Some(pane) => {
                 self.enter_pane_window(pane);
-                self.hwnd()
+                self.view()
             }
-            None => self.chat_window.as_ref().and_then(|w| w.hwnd()),
+            None => self.chat_window.as_ref().and_then(|w| w.view()),
         };
         let Some(hwnd) = hwnd else { return };
         let Some(row) = self.chat_row(chat) else { return };
@@ -777,7 +777,7 @@ impl App {
             IndicatorKind::AiStreaming => chat_routes::indicator_routes(false, true, &reference),
             _ => return false,
         };
-        let Some(hwnd) = self.hwnd() else { return true };
+        let Some(hwnd) = self.view() else { return true };
         let menu = muda::Menu::new();
         for (i, (label, _)) in routes.iter().enumerate() {
             if let Err(e) = menu.append(&muda::MenuItem::with_id(format!("{INDICATOR_ID}{i}"), label.replace('&', "&&"), true, None)) {

@@ -1,5 +1,8 @@
 //! ShellExecute for a judged URL (moved from `app/semantic_ui.rs` as is).
 
+/// Explorer.
+pub const FILE_MANAGER: &str = "Explorer";
+
 pub fn open_url(url: &str, background: bool) -> Result<(), String> {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, SW_SHOWNORMAL};

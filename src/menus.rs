@@ -141,9 +141,59 @@ impl Item {
 }
 
 /// A menu title as Termurion shows it (the menu bar, Open Quickly): iTerm2's with "Finder" as
-/// "Explorer" (Decision). The schema keeps iTerm2's titles, which menu ids are made of.
+/// this OS's file manager (Decision). The schema keeps iTerm2's titles, which menu ids are made of.
 pub fn shown_label(label: &str) -> String {
-    label.replace("Finder", "Explorer")
+    label.replace("Finder", crate::platform::shell_open::FILE_MANAGER)
+}
+
+/// The native key equivalent of a chord, for a bar that draws its own shortcuts (macOS). None
+/// when the key has no `Code` (the caller then shows the item with no shortcut).
+pub fn accelerator(c: &Chord) -> Option<muda::accelerator::Accelerator> {
+    use muda::accelerator::{Accelerator, Code, Modifiers};
+    let code = match c.key {
+        ChordKey::Char(ch) => match ch {
+            'a'..='z' => *[Code::KeyA, Code::KeyB, Code::KeyC, Code::KeyD, Code::KeyE, Code::KeyF, Code::KeyG, Code::KeyH, Code::KeyI, Code::KeyJ, Code::KeyK, Code::KeyL, Code::KeyM, Code::KeyN, Code::KeyO, Code::KeyP, Code::KeyQ, Code::KeyR, Code::KeyS, Code::KeyT, Code::KeyU, Code::KeyV, Code::KeyW, Code::KeyX, Code::KeyY, Code::KeyZ].get(ch as usize - 'a' as usize)?,
+            '0'..='9' => *[Code::Digit0, Code::Digit1, Code::Digit2, Code::Digit3, Code::Digit4, Code::Digit5, Code::Digit6, Code::Digit7, Code::Digit8, Code::Digit9].get(ch as usize - '0' as usize)?,
+            '`' => Code::Backquote,
+            '-' => Code::Minus,
+            '=' => Code::Equal,
+            '[' => Code::BracketLeft,
+            ']' => Code::BracketRight,
+            '\\' => Code::Backslash,
+            ';' => Code::Semicolon,
+            '\'' => Code::Quote,
+            ',' => Code::Comma,
+            '.' => Code::Period,
+            '/' => Code::Slash,
+            _ => return None,
+        },
+        ChordKey::Up => Code::ArrowUp,
+        ChordKey::Down => Code::ArrowDown,
+        ChordKey::Left => Code::ArrowLeft,
+        ChordKey::Right => Code::ArrowRight,
+        ChordKey::Home => Code::Home,
+        ChordKey::End => Code::End,
+        ChordKey::PageUp => Code::PageUp,
+        ChordKey::PageDown => Code::PageDown,
+        ChordKey::Delete => Code::Delete,
+        ChordKey::F(n) => *[
+            Code::F1, Code::F2, Code::F3, Code::F4, Code::F5, Code::F6, Code::F7, Code::F8, Code::F9, Code::F10, Code::F11, Code::F12,
+            Code::F13, Code::F14, Code::F15, Code::F16, Code::F17, Code::F18, Code::F19, Code::F20, Code::F21, Code::F22, Code::F23, Code::F24,
+        ]
+        .get((n as usize).checked_sub(1)?)?,
+        ChordKey::Enter => Code::Enter,
+        ChordKey::Tab => Code::Tab,
+        ChordKey::Escape => Code::Escape,
+        ChordKey::Backspace => Code::Backspace,
+        ChordKey::Space => Code::Space,
+    };
+    let mut mods = Modifiers::empty();
+    for (on, m) in [(c.cmd, Modifiers::META), (c.alt, Modifiers::ALT), (c.ctrl, Modifiers::CONTROL), (c.shift, Modifiers::SHIFT)] {
+        if on {
+            mods |= m;
+        }
+    }
+    Some(Accelerator::new(mods, code))
 }
 
 pub fn by_id(id: &str) -> Option<&'static Item> {
@@ -398,9 +448,29 @@ mod tests {
     }
 
     #[test]
-    fn script_labels_follow_windows() {
-        assert_eq!(shown_label("Reveal Scripts in Finder"), "Reveal Scripts in Explorer");
+    fn script_labels_follow_this_os() {
+        assert_eq!(shown_label("Reveal Scripts in Finder"), format!("Reveal Scripts in {}", crate::platform::shell_open::FILE_MANAGER));
         assert_eq!(shown_label("New Tab"), "New Tab");
+    }
+
+    #[test]
+    fn the_file_manager_is_this_os_one() {
+        use crate::platform::shell_open::FILE_MANAGER;
+        assert_eq!(shown_label("Reveal in Finder"), format!("Reveal in {FILE_MANAGER}"));
+        assert_eq!(FILE_MANAGER, if cfg!(target_os = "macos") { "Finder" } else { "Explorer" });
+    }
+
+    #[test]
+    fn accelerators_follow_the_chords() {
+        use muda::accelerator::{Accelerator, Code, Modifiers};
+        let c = |key, cmd, alt, shift, ctrl| Chord { key, cmd, alt, shift, ctrl };
+        assert_eq!(accelerator(&c(ChordKey::Char('t'), true, false, false, false)), Some(Accelerator::new(Modifiers::META, Code::KeyT)));
+        assert_eq!(accelerator(&c(ChordKey::Char(']'), true, false, true, false)), Some(Accelerator::new(Modifiers::META | Modifiers::SHIFT, Code::BracketRight)));
+        assert_eq!(accelerator(&c(ChordKey::F(1), true, true, true, true)), Some(Accelerator::new(Modifiers::META | Modifiers::ALT | Modifiers::CONTROL | Modifiers::SHIFT, Code::F1)));
+        assert_eq!(accelerator(&c(ChordKey::Up, true, false, false, false)), Some(Accelerator::new(Modifiers::META, Code::ArrowUp)));
+        assert_eq!(accelerator(&c(ChordKey::F(25), false, false, false, false)), None);
+        let missing: Vec<String> = shown_items().filter_map(|i| i.chord()).filter(|c| accelerator(c).is_none()).map(|c| format!("{c:?}")).collect();
+        assert!(missing.is_empty(), "no accelerator for {missing:?}");
     }
 
     #[test]

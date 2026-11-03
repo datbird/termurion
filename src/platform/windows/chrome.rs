@@ -140,6 +140,25 @@ pub fn install_menu_tips(hwnd: isize, delay: std::time::Duration) {
     crate::menu_tip_win::install(hwnd, delay)
 }
 
+/// Windows draws its shortcut text after a tab in the label.
+pub const NATIVE_ACCELERATORS: bool = false;
+
+/// Each window keeps its own bar on Windows; there is no screen bar to hand over.
+pub fn bar_focused(_menu: &muda::Menu) {}
+
+/// Windows has no system Help menu to adopt.
+pub fn adopt_help_menu(_sub: &muda::Submenu) {}
+
+/// Windows has no Services menu.
+pub fn services_item() -> Option<muda::PredefinedMenuItem> {
+    None
+}
+
+/// The Windows key hook takes keys before the menu; nothing to claim.
+pub fn claim_key_equivalents(_view: isize) -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod menu_bar_replace_tests {
     use super::*;

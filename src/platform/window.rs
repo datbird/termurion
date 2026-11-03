@@ -42,6 +42,13 @@ pub fn hwnd_of(window: &Window) -> Option<isize> {
     imp::hwnd_of(window)
 }
 
+/// The native handle menus and the hotkey window take: the HWND on Windows (the same value
+/// `hwnd_of` gives), the window's NSView on macOS, none on Linux. `hwnd_of` stays None on macOS so
+/// no Windows-only path wakes up there.
+pub fn view_of(window: &Window) -> Option<isize> {
+    imp::view_of(window)
+}
+
 /// The pointer's screen point.
 /// Flashes the window for attention. Unix has no handle to flash (the app never holds one).
 pub fn flash(hwnd: isize, how: Flash) {

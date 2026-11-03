@@ -959,7 +959,7 @@ impl App {
     /// The component menu (`CV:310-388`).
     fn show_status_menu(&mut self, pane: PaneId, p: &Placement, hit: Option<usize>) {
         use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
-        let Some(hwnd) = self.hwnd() else { return };
+        let Some(hwnd) = self.view() else { return };
         let algorithm = p.layout.advanced.algorithm;
         let shown = hit.map(|i| &p.shown[i]);
         let class = shown.map_or(String::new(), |s| s.component.class.clone());
