@@ -2299,8 +2299,9 @@ mod tests {
         assert!(!file_url_local("file://srv/share/a", &yes));
         assert!(!file_url_local("file:////srv/s/a", &yes));
         assert!(!file_url_local("file:///Z:/a", &local_c), "a remote drive: the judge says no");
-        assert!(file_url_local("FILE:///C:/ok", &local_c));
-        assert!(file_url_local("file://localhost/C:/ok", &local_c));
+        // A drive path is a Windows path; on Unix it is no local file here.
+        assert_eq!(file_url_local("FILE:///C:/ok", &local_c), crate::platform::IS_WINDOWS);
+        assert_eq!(file_url_local("file://localhost/C:/ok", &local_c), crate::platform::IS_WINDOWS);
         assert!(!file_url_local("file:///C:/ok:stream", &local_c));
         assert!(!file_url_local("file:///C:/ok%00x", &local_c));
         assert!(!file_url_local("file://./C:/x", &yes));

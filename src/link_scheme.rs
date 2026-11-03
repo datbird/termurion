@@ -189,7 +189,7 @@ pub fn scheme_of(url: &str) -> Option<String> {
 /// Whether `scheme` (and `url`) can never open.
 pub fn screen(scheme: &str, url: &str) -> Result<(), String> {
     let refuse = || Err(format!("Termurion never opens {scheme}: links."));
-    if BLOCKED.iter().any(|(s, _)| *s == scheme) {
+    if BLOCKED.iter().any(|(s, _)| *s == scheme) || crate::platform::shell_open::scheme_refusal(scheme).is_some() {
         return refuse();
     }
     if OWN.contains(&scheme) {

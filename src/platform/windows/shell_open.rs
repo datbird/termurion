@@ -11,6 +11,30 @@ pub fn open_url(url: &str, background: bool) -> Result<(), String> {
     if r as isize > 32 { Ok(()) } else { Err(format!("ShellExecute error {}", r as isize)) }
 }
 
+/// Programs and scripts: the one dangerous-type list and the machine's PATHEXT.
+pub fn runnable(path: &str) -> bool {
+    crate::inert_files::high_risk(path)
+}
+
+/// `link_scheme::BLOCKED` is Windows' whole list.
+pub fn scheme_refusal(_scheme: &str) -> Option<&'static str> {
+    None
+}
+
+/// Only an empty host and `localhost` are local here.
+pub fn is_this_host(_host: &str) -> bool {
+    false
+}
+
+/// A decoded `file:` link path as a Windows path: "/C:/x" is "C:\x", every `/` a `\`.
+pub fn file_url_os_path(path: String) -> Option<String> {
+    let path = match path.strip_prefix('/') {
+        Some(p) if p.as_bytes().get(1) == Some(&b':') => p.to_string(),
+        _ => path,
+    };
+    Some(path.replace('/', "\\"))
+}
+
 /// ShellExecuteW "open" on a judged file.
 pub fn open_file(path: &std::path::Path, background: bool) -> Result<(), String> {
     shell_verb("open", path, None, background)

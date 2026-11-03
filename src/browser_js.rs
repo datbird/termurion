@@ -723,7 +723,7 @@ pub fn gate_refusal(target: &str) -> Option<String> {
         let path = match rest.strip_prefix("//") {
             Some(r) => {
                 let (host, path) = r.split_at(r.find('/').unwrap_or(r.len()));
-                if !(host.is_empty() || host.eq_ignore_ascii_case("localhost")) {
+                if !(host.is_empty() || host.eq_ignore_ascii_case("localhost") || crate::platform::shell_open::is_this_host(host)) {
                     return refuse();
                 }
                 path

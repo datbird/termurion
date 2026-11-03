@@ -38,6 +38,29 @@ pub fn shell_verb(verb: &str, path: &std::path::Path, cwd: Option<&std::path::Pa
     imp::shell_verb(verb, path, cwd, background)
 }
 
+/// Whether opening `path` would run it (a program, a script, a bundle): such a file is shown,
+/// never opened. Windows: the one dangerous-type list and PATHEXT (`inert_files::high_risk`).
+/// Unix: the open judge (types, execute bits, bundles; the Windows list as a floor).
+pub fn runnable(path: &str) -> bool {
+    imp::runnable(path)
+}
+
+/// Why a link scheme is never handed to the opener on this OS, beyond `link_scheme::BLOCKED`.
+pub fn scheme_refusal(scheme: &str) -> Option<&'static str> {
+    imp::scheme_refusal(scheme)
+}
+
+/// Whether the host of a `file://host/...` link is this machine by name (`localhost` and an
+/// empty host are local everywhere).
+pub fn is_this_host(host: &str) -> bool {
+    imp::is_this_host(host)
+}
+
+/// A decoded `file:` link path as this OS names it; None when it is no local path.
+pub fn file_url_os_path(path: String) -> Option<String> {
+    imp::file_url_os_path(path)
+}
+
 /// Shows `path` selected in the file manager (Explorer on Windows); nothing runs it. The caller passes
 /// a path Termurion made or judged.
 pub fn reveal(path: &str) -> Result<(), String> {

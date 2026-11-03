@@ -893,20 +893,21 @@ pub fn open_url_run(text: &str, has_code: bool) -> Run {
     guard_open(text, has_code)
 }
 
-/// Programs and scripts: "open" would run them, so Termurion shows them instead. The one rule is the
-/// write door's, `inert_files::high_risk`: the name as Windows opens it (`inert_files::opened_name`:
-/// a stream suffix, trailing dots and spaces dropped, and any stream fails closed), the one list,
-/// and the machine's own PATHEXT.
+/// Programs and scripts: "open" would run them, so Termurion shows them instead. On Windows the
+/// one rule is the write door's, `inert_files::high_risk`: the name as Windows opens it
+/// (`inert_files::opened_name`: a stream suffix, trailing dots and spaces dropped, and any stream
+/// fails closed), the one list, and the machine's own PATHEXT. Unix adds its own types, execute
+/// bits and bundles (`platform::shell_open::runnable`).
 pub(crate) fn runnable(path: &str) -> bool {
-    crate::inert_files::high_risk(path)
+    crate::platform::shell_open::runnable(path)
 }
 
-/// A local file: link as a Windows path. None for a link to another machine.
+/// A local file: link as this OS's path. None for a link to another machine.
 pub(crate) fn file_url_path(url: &str) -> Option<String> {
     let rest = &url[url.find(':')? + 1..];
     let rest = rest.strip_prefix("//").map_or(Some(rest), |r| {
         let (host, path) = r.split_at(r.find('/').unwrap_or(r.len()));
-        (host.is_empty() || host.eq_ignore_ascii_case("localhost")).then_some(path)
+        (host.is_empty() || host.eq_ignore_ascii_case("localhost") || crate::platform::shell_open::is_this_host(host)).then_some(path)
     })?;
     let bytes = rest.as_bytes();
     let mut out = Vec::new();
@@ -921,13 +922,7 @@ pub(crate) fn file_url_path(url: &str) -> Option<String> {
         out.push(bytes[i]);
         i += 1;
     }
-    let path = String::from_utf8_lossy(&out).to_string();
-    // "/C:/x" is "C:\x".
-    let path = match path.strip_prefix('/') {
-        Some(p) if p.as_bytes().get(1) == Some(&b':') => p.to_string(),
-        _ => path,
-    };
-    let path = path.replace('/', "\\");
+    let path = crate::platform::shell_open::file_url_os_path(String::from_utf8_lossy(&out).to_string())?;
     (!crate::scripts::is_network_path(&path)).then_some(path)
 }
 
@@ -1581,7 +1576,7 @@ mod tests {
         let co = Prefs { action: "coprocess".into(), text: "x".into(), editor: String::new() };
         assert_eq!(plan(&file, &co, &around, false), Some(Run::Coprocess("x".into())));
         assert_eq!(plan(&Target::Url("https://a/".into()), &co, &around, false), Some(Run::Open("https://a/".into())));
-        assert_eq!(plan(&Target::Link("file:///c:/x".into()), &best, &around, false), Some(Run::OpenLocal { path: "c:\\x".into(), has_code: false }));
+        assert_eq!(plan(&Target::Link("file:///c:/x".into()), &best, &around, false), Some(Run::OpenLocal { path: crate::platform::by_os("c:\\x", "/c:/x").into(), has_code: false }));
     }
 
     #[test]
@@ -1691,12 +1686,15 @@ mod tests {
             Run::OpenLocal { path, has_code } => open_local_result(&path, has_code, &crate::netpath::Probe::default(), &|_| true),
             other => other,
         };
-        assert_eq!(settle(guard_open("file:///C:/Users/u/Downloads/x.exe", false)), Run::Reveal("C:\\Users\\u\\Downloads\\x.exe".into()));
-        assert_eq!(settle(guard_open("file:///C:/docs/a%20b.txt", false)), Run::Open("C:\\docs\\a b.txt".into()));
+        // A file: link is a path as this OS names it (Unix keeps the slashes).
+        assert_eq!(settle(guard_open("file:///C:/Users/u/Downloads/x.exe", false)), Run::Reveal(crate::platform::by_os("C:\\Users\\u\\Downloads\\x.exe", "/C:/Users/u/Downloads/x.exe").into()));
+        // On Unix the `:` in that path fails closed: shown, not opened.
+        let doc = if crate::platform::IS_WINDOWS { Run::Open("C:\\docs\\a b.txt".into()) } else { Run::Reveal("/C:/docs/a b.txt".into()) };
+        assert_eq!(settle(guard_open("file:///C:/docs/a%20b.txt", false)), doc);
         assert!(matches!(guard_open("C:\\tools\\x.bat", false), Run::Blocked(_)));
         let best = Prefs::from_value(None);
         let link = Target::Link("file:///C:/x/evil.cmd".into());
-        assert_eq!(plan(&link, &best, &Around::default(), false).map(settle), Some(Run::Reveal("C:\\x\\evil.cmd".into())));
+        assert_eq!(plan(&link, &best, &Around::default(), false).map(settle), Some(Run::Reveal(crate::platform::by_os("C:\\x\\evil.cmd", "/C:/x/evil.cmd").into())));
         assert!(matches!(plan(&Target::Url("javascript://x".into()), &best, &Around::default(), false), Some(Run::Blocked(_))));
     }
     #[test]

@@ -1,5 +1,7 @@
 //! `open` on macOS, `xdg-open` on Linux; the file manager through `open -R` or the FileManager1 D-Bus call.
 
+pub use super::open_judge::{file_url_os_path, is_this_host, runnable, scheme_refusal};
+
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
