@@ -129,6 +129,7 @@ fn spawn_with_env(inherited: Vec<(OsString, OsString)>, t: Transport, cmdline: &
     if let Some(dir) = working_folder(cwd) {
         cmd.current_dir(dir.path());
     }
+    let fd_limit = fd_limit();
     let _gate = SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (wake_r, wake) = make_pipe()?;
     let (master, input, child) = match t {
@@ -138,13 +139,14 @@ fn spawn_with_env(inherited: Vec<(OsString, OsString)>, t: Transport, cmdline: &
             cmd.stdin(Stdio::from(a)).stdout(Stdio::from(b)).stderr(Stdio::from(slave));
             // A session of its own with the pty as its controlling terminal.
             unsafe {
-                cmd.pre_exec(|| {
+                cmd.pre_exec(move || {
                     if libc::setsid() < 0 {
                         return Err(std::io::Error::last_os_error());
                     }
                     if libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
                         return Err(std::io::Error::last_os_error());
                     }
+                    cloexec_from_3(fd_limit);
                     Ok(())
                 });
             }
@@ -158,6 +160,12 @@ fn spawn_with_env(inherited: Vec<(OsString, OsString)>, t: Transport, cmdline: &
             let (out_r, out_w) = make_pipe()?;
             let err_w = clone_fd(&out_w)?;
             cmd.stdin(Stdio::from(stdin_r)).stdout(Stdio::from(out_w)).stderr(Stdio::from(err_w));
+            unsafe {
+                cmd.pre_exec(move || {
+                    cloexec_from_3(fd_limit);
+                    Ok(())
+                });
+            }
             let child = cmd.spawn().map_err(|e| spawn_error(cmdline, cwd, &e))?;
             (Source::Pipe(out_r), stdin_w, child)
         }
@@ -240,6 +248,26 @@ fn merge_env(base: Vec<(OsString, OsString)>, extra: &[String]) -> Vec<(OsString
         out.push((OsString::from(name), OsString::from(value)));
     }
     out
+}
+
+/// One past the highest descriptor this process can hold, read before the fork.
+fn fd_limit() -> libc::c_int {
+    // getdtablesize is already capped by the kernel's per-process limit.
+    unsafe { libc::getdtablesize() }.max(256)
+}
+
+/// In the child, between fork and exec: every descriptor from 3 up becomes close-on-exec, so a
+/// descriptor another thread made just before its own flag (std's pipes on macOS) never reaches
+/// the shell. Flags, not closes: std's exec-error pipe must live until the exec. Only
+/// async-signal-safe calls.
+fn cloexec_from_3(limit: libc::c_int) {
+    #[cfg(target_os = "linux")]
+    if unsafe { libc::syscall(libc::SYS_close_range, 3 as libc::c_uint, libc::c_uint::MAX, libc::CLOSE_RANGE_CLOEXEC) } == 0 {
+        return;
+    }
+    for fd in 3..limit {
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
 }
 
 /// A pipe, close-on-exec from the start where the OS can (`pipe2`), else flagged at once.
@@ -765,6 +793,22 @@ mod tests {
         let _alive = spawn(&PtyApi, "env PS1=> ENV= /bin/sh -i", 80, 24).unwrap();
         let (_p, out) = run("/bin/sh -c 'for f in 3 4 5 6 7 8 9 10 11 12; do [ -e /dev/fd/$f ] && echo OPEN$f; done; echo END'");
         assert!(out.contains("END") && !out.contains("OPEN"), "{out}");
+    }
+
+    /// Another thread's descriptor caught before its close-on-exec flag (std's pipes on macOS)
+    /// still never reaches a shell, on either transport.
+    #[test]
+    fn a_descriptor_without_close_on_exec_never_reaches_a_shell() {
+        let null = std::fs::File::open("/dev/null").unwrap();
+        let fd = unsafe { libc::fcntl(null.as_raw_fd(), libc::F_DUPFD, 200) };
+        assert!(fd >= 200, "{}", std::io::Error::last_os_error());
+        let _close = unsafe { OwnedFd::from_raw_fd(fd) };
+        let line = format!("/bin/sh -c '[ -e /dev/fd/{fd} ] && echo LEAK{fd}; echo END'");
+        for t in [Transport::Conpty, Transport::Pipes] {
+            let p = spawn_transport(&PtyApi, t, &line, None, &[], 80, 24, Arc::new(|| {})).unwrap();
+            let out = text(&p.read_until(b"END", secs(5)).unwrap_or_else(|got| panic!("{:?}", text(&got))));
+            assert!(!out.contains("LEAK"), "{t:?}: {out}");
+        }
     }
 
     #[test]
