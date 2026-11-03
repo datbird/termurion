@@ -1,8 +1,10 @@
 //! The keyboard layer on Unix. Cmd and Super come from winit's modifiers, so there is no
-//! low-level hook to install; the Windows-only hook calls are no-ops, and system-wide hotkeys report Unsupported.
+//! low-level hook to install; the Windows-only hook calls are no-ops. System-wide hotkeys are macOS's
+//! (`global_keys`) and report Unsupported on Linux.
 
 use std::sync::{Arc, RwLock};
 
+#[cfg(not(target_os = "macos"))]
 use super::super::Unsupported;
 use crate::mouse::Mods;
 use crate::remap::Tags;
@@ -35,8 +37,21 @@ pub fn remove_window(_hwnd: isize) {}
 
 pub fn set_web_focus(_hwnd: isize) {}
 
+#[cfg(target_os = "macos")]
+pub fn set_hotkey_sink(sink: Box<dyn Fn(Vec<u32>) + Send + Sync>) {
+    super::global_keys::set_hotkey_sink(sink)
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn set_hotkey_sink(_sink: Box<dyn Fn(Vec<u32>) + Send + Sync>) {}
 
+/// macOS registers Carbon hot keys; the double-tap delays have no use there (taps are refused).
+#[cfg(target_os = "macos")]
+pub fn set_hotkeys(chords: Vec<(u32, crate::hotkey::Chord)>, taps: Vec<(u32, u8)>, _min: std::time::Duration, _max: std::time::Duration) -> Result<Vec<(u32, Result<(), String>)>, String> {
+    super::global_keys::set_hotkeys(chords, taps)
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn set_hotkeys(_chords: Vec<(u32, crate::hotkey::Chord)>, _taps: Vec<(u32, u8)>, _min: std::time::Duration, _max: std::time::Duration) -> Result<Vec<(u32, Result<(), String>)>, String> {
     Err(Unsupported { feature: "System-wide hotkeys" }.into())
 }
@@ -62,6 +77,7 @@ mod tests {
         assert_eq!(vk_of(winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified)), 0);
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn unix_hotkeys_unsupported() {
         let e = set_hotkeys(Vec::new(), Vec::new(), std::time::Duration::ZERO, std::time::Duration::ZERO).unwrap_err();

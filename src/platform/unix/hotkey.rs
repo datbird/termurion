@@ -35,3 +35,6 @@ pub fn order_front(_hwnd: isize, _minimized: bool) {}
 pub fn available() -> Result<(), Unsupported> {
     Err(Unsupported { feature: FEATURE })
 }
+
+/// Nothing to join: Linux has no hotkey window handle.
+pub fn join_active_space(_view: isize) {}

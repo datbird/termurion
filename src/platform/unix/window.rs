@@ -40,7 +40,11 @@ pub fn screen_to_client(_hwnd: isize, _x: i32, _y: i32) -> Option<(i32, i32)> {
     None
 }
 
+/// macOS activates the app of a negative handle (another app) or makes our window key; Linux has no handles.
 pub fn set_foreground(_hwnd: isize) -> bool {
+    #[cfg(target_os = "macos")]
+    return crate::platform::macos::hotkey::bring_front(_hwnd);
+    #[cfg(not(target_os = "macos"))]
     false
 }
 
@@ -66,7 +70,11 @@ pub fn set_tool_style(_hwnd: isize, _want: bool) {}
 
 pub fn set_overlay_style(_hwnd: isize) {}
 
-pub fn monitor_rects(_hwnd: isize) -> Option<(Rect, Rect)> {
+/// The work area and whole area of the window's screen in pixels, top left origin (macOS only).
+pub fn monitor_rects(_view: isize) -> Option<(Rect, Rect)> {
+    #[cfg(target_os = "macos")]
+    return crate::platform::macos::hotkey::monitor_rects(_view);
+    #[cfg(not(target_os = "macos"))]
     None
 }
 

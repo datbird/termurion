@@ -248,7 +248,7 @@ impl App {
                     // Minimized counts as hidden: the press brings it back.
                     let minimized = self.gpu.as_ref().is_some_and(|g| g.window.is_minimized().unwrap_or(false));
                     let open = h.shown && !minimized;
-                    Win { open, focused: open && self.hwnd() == Some(fg), pinned }
+                    Win { open, focused: open && self.view() == Some(fg), pinned }
                 }
                 None => Win { open: false, focused: false, pinned },
             };
@@ -310,6 +310,8 @@ impl App {
         let animates = prefs.as_ref().is_some_and(|p| p.animates);
         // Placed while cloaked, so nothing flashes at the old place.
         crate::platform::hotkey::cloak(hwnd, true);
+        // macOS: it opens on the Space the person is on.
+        crate::platform::hotkey::join_active_space(hwnd);
         let Some(g) = &self.gpu else { return };
         g.window.set_visible(true);
         g.window.set_minimized(false);
@@ -602,10 +604,7 @@ impl App {
 
     /// The terminal window with this OS handle.
     fn terminal_window_of_hwnd(&self, hwnd: isize) -> Option<WindowId> {
-        let of = |g: &Gpu| match winit::raw_window_handle::HasWindowHandle::window_handle(g.window.as_ref()).ok().map(|h| h.as_raw()) {
-            Some(winit::raw_window_handle::RawWindowHandle::Win32(h)) if h.hwnd.get() == hwnd => Some(g.window.id()),
-            _ => None,
-        };
+        let of = |g: &Gpu| (crate::platform::window::view_of(&g.window) == Some(hwnd)).then(|| g.window.id());
         self.gpu.as_ref().and_then(of).or_else(|| self.windows.parked().find_map(|(_, s)| s.gpu.as_ref().and_then(of)))
     }
 
@@ -723,6 +722,8 @@ impl App {
                 if let Some(b) = self.last_window {
                     self.enter(b);
                 }
+                // macOS keeps an app with no window in front; hiding it hands the front to the app before.
+                crate::platform::app_events::hide_app();
             }
             hotkey::AppAct::ShowAll => {
                 let back = std::mem::take(&mut self.app_hidden);

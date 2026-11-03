@@ -1660,7 +1660,7 @@ impl App {
 impl App {
     /// The current window's monitor: its work area and whole area.
     pub(super) fn monitor_rects(&self) -> Option<(Rect, Rect)> {
-        monitor_rects_of(self.hwnd()?)
+        monitor_rects_of(self.view()?)
     }
 
     /// Applies an iTerm2 window style to the current window. The Window Style menu makes
