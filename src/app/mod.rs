@@ -290,6 +290,8 @@ pub enum UserEvent {
     Caption(isize, crate::caption::Event),
     /// An ssh: URL came from outside (the URL pipe): `ssh_url_app::receive_url`.
     OpenUrl(String),
+    /// The system asked for a quit or a Dock click (macOS).
+    System(crate::platform::app_events::AppEvent),
     /// Another `termurion.exe` handed over a request (the launch pipe, `launch_ui`).
     Launch(crate::launch::Request),
     /// A console handed over by the Windows default-terminal handoff (`handoff_win`, `default_term_ui`).
@@ -7239,6 +7241,10 @@ impl ApplicationHandler<UserEvent> for App {
         if self.gpu.is_some() {
             return;
         }
+        let events = self.proxy.clone();
+        crate::platform::app_events::install(Box::new(move |e| {
+            let _ = events.lock().map(|p| p.send_event(UserEvent::System(e)));
+        }));
         // An `-Embedding` start makes its window when the handoff arrives (`handoff_arrived`).
         if self.embedding.is_some() && self.start_handoff.is_none() {
             return;
@@ -7744,6 +7750,8 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Caption(hwnd, e) => return self.caption_event(hwnd, e, event_loop),
             UserEvent::OpenUrl(url) => return self.receive_url(url),
             UserEvent::Launch(request) => return self.receive_launch(request, event_loop),
+            UserEvent::System(crate::platform::app_events::AppEvent::Terminate) => return self.quit(event_loop),
+            UserEvent::System(crate::platform::app_events::AppEvent::Reopen) => return self.dock_click_now(event_loop),
             UserEvent::Handoff(h) => return self.handoff_arrived(h, event_loop),
             UserEvent::Logoff(done) => {
                 self.logoff_now(&done);

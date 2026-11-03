@@ -1,6 +1,8 @@
 //! Unix (Linux and macOS) implementations of the platform layer.
 
 pub mod a11y;
+#[cfg(not(target_os = "macos"))]
+pub mod app_events;
 pub mod approval_key;
 pub mod browser;
 pub mod caption;

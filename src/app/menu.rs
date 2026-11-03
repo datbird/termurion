@@ -1029,6 +1029,13 @@ impl App {
                     self.close_window(id, event_loop);
                 }
             }
+            "hide:" if crate::platform::app_events::hide_app() => {}
+            "hideOtherApplications:" => {
+                crate::platform::app_events::hide_others();
+            }
+            "unhideAllApplications:" => {
+                crate::platform::app_events::show_all();
+            }
             "hide:" | "performMiniaturize:" => {
                 if let Some(w) = &window {
                     w.set_minimized(true);
@@ -1433,12 +1440,15 @@ impl App {
         }
     }
 
-    fn quit(&mut self, event_loop: &ActiveEventLoop) {
+    pub(super) fn quit(&mut self, event_loop: &ActiveEventLoop) {
         let pending = self.prefs_exit_pending;
         let ok = !pending && self.confirm_close(close_ui::Closing::App);
         crate::host_base::log(&format!("quit: settings question pending {pending}, confirmed {ok}"));
         if ok {
             self.quit_confirmed(event_loop);
+        } else if !pending {
+            // Refused: the system's quit stops waiting. A pending settings question answers later.
+            crate::platform::app_events::answer_terminate(false);
         }
     }
 
@@ -1473,6 +1483,7 @@ impl App {
         if exits {
             self.catalog_flush();
             self.quitting = true;
+            crate::platform::app_events::answer_terminate(true);
             event_loop.exit();
         }
     }
@@ -1820,6 +1831,18 @@ mod tests {
     fn macos_menus_have_no_chord_column() {
         let item = menus::by_id("Shell > New Tab").unwrap();
         assert_eq!(super::menu_text(item).contains('\t'), !NATIVE_ACCELERATORS);
+    }
+
+    /// The system's quit waits for an answer on every way out of `quit`.
+    #[test]
+    fn every_quit_path_answers_the_system() {
+        let src = include_str!("menu.rs");
+        let body = |name: &str| src.split(name).nth(1).unwrap().split("\n    }\n").next().unwrap();
+        assert!(body("    fn quit(&mut self").contains("answer_terminate(false)"), "a refused quit says no");
+        let confirmed = body("fn quit_confirmed(&mut self");
+        let (answer, exit) = (confirmed.find("answer_terminate(true)"), confirmed.find("event_loop.exit()"));
+        assert!(answer.is_some() && answer < exit, "an accepted quit says yes before the loop exits");
+        assert!(include_str!("prefs_ui.rs").contains("answer_terminate(true)"), "the settings question's exit says yes too");
     }
 
     /// Every path that destroys a terminal window goes through `window_gone`, which drops the

@@ -592,6 +592,7 @@ impl App {
         if self.prefs_exit_pending && !self.prefs_quit_question_open() {
             self.prefs_exit_pending = false;
             self.catalog_flush();
+            crate::platform::app_events::answer_terminate(true);
             event_loop.exit();
         }
     }

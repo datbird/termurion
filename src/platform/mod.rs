@@ -12,6 +12,7 @@ pub mod linux;
 pub mod macos;
 
 pub mod a11y;
+pub mod app_events;
 pub mod approval_key;
 pub mod browser;
 pub mod caption;

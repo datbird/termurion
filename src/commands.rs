@@ -91,14 +91,17 @@ pub const DONE: &[&str] = &[
     "exitWorkgroup:", "previousWorkgroupPeer:", "nextWorkgroupPeer:",
 ];
 
+use crate::platform::app_events::HAS_APP_HIDING;
+
+/// Hiding other apps is a macOS thing.
+const NO_APP_HIDING: &str = "macOS hides and shows other applications; Windows and Linux have no such command.";
+
 /// Commands that will not be built, with the reason (rulings 3 and 4 of milestone 14).
 const NOT_APPLICABLE: &[(&str, &str)] = &[
     (
         "pairCompanionDevice:",
         "iTerm2's companion is a proprietary iPhone pairing over its relay, with no Windows host story; the item stays hidden, as iTerm2 hides it unless pairing is allowed.",
     ),
-    ("hideOtherApplications:", "macOS hides other applications; Windows has no such command."),
-    ("unhideAllApplications:", "macOS unhides applications; Windows has no such command."),
     ("toggleSecureInput:", "macOS Secure Keyboard Entry (EnableSecureEventInput); Windows has no equivalent mode."),
     (
         "installAlreadyDownloadedPythonRuntime:",
@@ -202,6 +205,9 @@ pub fn status(item: &Item) -> Status {
     if let Some((_, note)) = PARTIAL.iter().find(|(entry, _)| names(entry, item)) {
         return Status::Partial(note);
     }
+    if matches!(item.selector.as_str(), "hideOtherApplications:" | "unhideAllApplications:") {
+        return if HAS_APP_HIDING { Status::Done } else { Status::NotApplicable(NO_APP_HIDING) };
+    }
     if let Some((_, why)) = NOT_APPLICABLE.iter().find(|(entry, _)| names(entry, item)) {
         return Status::NotApplicable(why);
     }
@@ -280,6 +286,13 @@ mod tests {
 
     fn find(sel: &str, label: &str) -> &'static Item {
         items().iter().find(|i| i.selector == sel && i.label() == label).unwrap()
+    }
+
+    #[test]
+    fn hiding_other_apps_follows_the_os() {
+        for (sel, label) in [("hideOtherApplications:", "Hide Others"), ("unhideAllApplications:", "Show All")] {
+            assert_eq!(status(find(sel, label)).unavailable(), !HAS_APP_HIDING, "{sel}");
+        }
     }
 
     #[test]
