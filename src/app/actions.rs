@@ -464,10 +464,11 @@ impl App {
             }
             "kPasteFromSelectionPointerAction" => {
                 let sel = self.panes.get(&pane).and_then(|p| p.screen.selection_text());
-                match (sel, self.focused_id()) {
-                    (Some(s), Some(id)) => self.paste_selection(id, &s, &b.argument),
-                    // No selection of its own: the system's primary selection, read off this thread.
-                    (None, Some(_)) => self.request_primary_paste(pane, &b.argument),
+                use super::selection_ui::{middle_paste, MiddlePaste};
+                match (middle_paste(crate::platform::clipboard::HAS_PRIMARY_SELECTION, sel), self.focused_id()) {
+                    (Some(MiddlePaste::Own(s)), Some(id)) => self.paste_selection(id, &s, &b.argument),
+                    // The system's primary selection, read off this thread; the pane's own only if it is empty.
+                    (Some(MiddlePaste::Primary { fallback }), Some(_)) => self.request_primary_paste(pane, &b.argument, fallback),
                     _ => {}
                 }
             }

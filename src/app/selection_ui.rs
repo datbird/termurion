@@ -578,10 +578,10 @@ impl App {
     }
 
     /// Reads the primary selection on its worker; the loop pastes it when it wakes.
-    pub(super) fn request_primary_paste(&mut self, pane: PaneId, config: &str) {
+    pub(super) fn request_primary_paste(&mut self, pane: PaneId, config: &str, fallback: Option<String>) {
         let (slot, notify, config) = (self.selection_paste.clone(), self.notify.clone(), config.to_string());
         crate::platform::clipboard::request_selection(Box::new(move |text| {
-            if let Some(text) = text.filter(|t| !t.is_empty()) {
+            if let Some(text) = primary_or(text, fallback) {
                 if let Ok(mut s) = slot.lock() {
                     *s = Some((pane, text, config));
                 }
@@ -721,6 +721,32 @@ impl App {
     }
 }
 
+/// Where a middle click's paste comes from.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum MiddlePaste {
+    /// The pane's own selection, at once (no primary selection on this OS).
+    Own(String),
+    /// The system's primary selection, read off the UI thread; `fallback` (the pane's own) only
+    /// when that read comes back empty.
+    Primary { fallback: Option<String> },
+}
+
+/// Linux: the primary selection always wins, as in every X11 terminal. Termurion owns it right
+/// after its own selection, so it gets its own text back then; once another app takes it, the
+/// pane's old highlight is stale.
+pub(super) fn middle_paste(has_primary: bool, own: Option<String>) -> Option<MiddlePaste> {
+    match (has_primary, own) {
+        (true, own) => Some(MiddlePaste::Primary { fallback: own }),
+        (false, Some(s)) => Some(MiddlePaste::Own(s)),
+        (false, None) => None,
+    }
+}
+
+/// The primary selection's text, else the pane's own when that read is empty.
+fn primary_or(primary: Option<String>, fallback: Option<String>) -> Option<String> {
+    primary.filter(|t| !t.is_empty()).or(fallback).filter(|t| !t.is_empty())
+}
+
 /// A primary selection read that came back after the click: paste only into the same, still focused pane.
 fn late_paste_wanted(pane: PaneId, alive: bool, focused: Option<PaneId>) -> bool {
     alive && focused == Some(pane)
@@ -728,6 +754,21 @@ fn late_paste_wanted(pane: PaneId, alive: bool, focused: Option<PaneId>) -> bool
 
 #[cfg(test)]
 mod tests {
+    /// A middle click on Linux pastes what the system's primary selection holds now, not the
+    /// pane's old highlight; the highlight is used only when that read is empty.
+    #[test]
+    fn a_middle_click_reads_the_primary_selection_first() {
+        use super::{middle_paste, MiddlePaste};
+        assert_eq!(middle_paste(true, Some("old".into())), Some(MiddlePaste::Primary { fallback: Some("old".into()) }));
+        assert_eq!(middle_paste(true, None), Some(MiddlePaste::Primary { fallback: None }));
+        assert_eq!(middle_paste(false, Some("own".into())), Some(MiddlePaste::Own("own".into())));
+        assert_eq!(middle_paste(false, None), None);
+        assert_eq!(super::primary_or(Some("url".into()), Some("old".into())).as_deref(), Some("url"));
+        assert_eq!(super::primary_or(Some(String::new()), Some("old".into())).as_deref(), Some("old"));
+        assert_eq!(super::primary_or(None, Some("old".into())).as_deref(), Some("old"));
+        assert_eq!(super::primary_or(None, None), None);
+    }
+
     #[test]
     fn a_late_primary_paste_needs_its_pane_alive_and_focused() {
         use super::late_paste_wanted;
