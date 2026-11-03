@@ -333,8 +333,12 @@ impl Listener {
         if want == self.path && socket_ok && self.lock.still_ours() {
             return;
         }
+        // Same place, the socket still ours: only the lock file went, so only the lock is taken again
+        // (a full bind would probe this host's own socket and fail).
+        let rebound = if want == self.path && socket_ok {
+            HostLock::take(&self.path).map(|lock| self.lock = lock)
         // Same place and the lock is still ours: only the socket file went.
-        let rebound = if want == self.path && self.lock.still_ours() {
+        } else if want == self.path && self.lock.still_ours() {
             bind_socket(&self.path).map(|(fd, id)| {
                 self.fd = fd;
                 self.id = id;
@@ -856,6 +860,27 @@ mod tests {
         drop(l);
         assert_eq!(file_id(&path), Some(newer.id));
         assert!(dir.join("h.lock").exists(), "and so does its lock file");
+    }
+
+    /// Only the lock file removed (a tmp cleaner): the lock alone is taken again, and the host
+    /// never probes its own socket.
+    #[test]
+    fn a_host_whose_lock_file_is_gone_takes_it_again() {
+        let dir = scratch(0o700);
+        let path = dir.join("h");
+        let lock = dir.join("h.lock");
+        let name = path.to_string_lossy().into_owned();
+        let mut l = Listener::bind(&name).unwrap();
+        let id = l.id;
+        std::fs::remove_file(&lock).unwrap();
+        l.checked = Instant::now() - CHECK_EVERY;
+        assert!(l.accept(Duration::from_millis(10)).unwrap().is_none(), "no phantom client");
+        assert!(lock.exists(), "the lock file is back");
+        assert!(l.lock.still_ours(), "and held");
+        assert_eq!((l.id, file_id(&path)), (id, Some(id)), "the socket was never touched");
+        l.checked = Instant::now() - CHECK_EVERY;
+        assert!(l.accept(Duration::from_millis(50)).unwrap().is_none(), "still no phantom client");
+        assert!(Listener::bind(&name).err().unwrap().contains("already listening"), "the lock keeps a second host out");
     }
 
     /// The spec's 0600 on the socket file, whatever the umask (the 0700 folder is the boundary).
