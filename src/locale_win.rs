@@ -66,6 +66,7 @@ pub fn facts(ns_encoding: i64, fallback: &str) -> Facts {
         country: region_of(&name),
         encoding: locale_guess::encoding_name(ns_encoding).map(str::to_string),
         fallback_lc_ctype: fallback.to_string(),
+        ..Facts::default()
     }
 }
 

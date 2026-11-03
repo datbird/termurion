@@ -63,6 +63,10 @@ mod os {
     use core_foundation_sys::locale::{CFLocaleCopyCurrent, CFLocaleGetIdentifier};
     use core_foundation_sys::string::{kCFStringEncodingUTF8, CFStringGetCString};
 
+    /// macOS takes the encoding name alone as `LC_CTYPE` (`UTF-8`), so a failed guess asks.
+    pub const ENCODING_IS_A_LOCALE: bool = true;
+    pub const UTF8_FALLBACK: Option<&str> = None;
+
     /// The identifier of the user's current locale (`en_US`), read through CoreFoundation.
     pub fn user_locale_name() -> Option<String> {
         // SAFETY: CFLocaleCopyCurrent returns an owned locale or null; the identifier is borrowed
@@ -92,6 +96,10 @@ mod os {
 
 #[cfg(not(target_os = "macos"))]
 mod os {
+    /// glibc has no locale named `UTF-8`; `C.UTF-8` is the one UTF-8 locale it always has.
+    pub const ENCODING_IS_A_LOCALE: bool = false;
+    pub const UTF8_FALLBACK: Option<&str> = Some("C.UTF-8");
+
     /// Linux has no per-user setting outside the environment.
     pub fn user_locale_name() -> Option<String> {
         None
@@ -110,7 +118,11 @@ pub fn user_locale() -> Option<String> {
 /// The user's locale (the environment's, else macOS's) stands for the user's side of the picture;
 /// the system's list is read on macOS only.
 pub fn facts(ns_encoding: i64, fallback: &str) -> crate::locale_guess::Facts {
-    let lang = lang_name();
+    facts_for(&lang_name(), ns_encoding, fallback)
+}
+
+fn facts_for(lang: &str, ns_encoding: i64, fallback: &str) -> crate::locale_guess::Facts {
+    let lang = lang.to_string();
     let tag = super::super::locale::locale_from_lang_env(&lang);
     let current = lang.split(['.', '@']).next().unwrap_or("").to_string();
     let country = tag.as_deref().and_then(|t| t.rsplit('-').next()).filter(|c| c.len() == 2 && c.bytes().all(|b| b.is_ascii_uppercase())).map(str::to_string);
@@ -120,7 +132,14 @@ pub fn facts(ns_encoding: i64, fallback: &str) -> crate::locale_guess::Facts {
         country,
         encoding: crate::locale_guess::encoding_name(ns_encoding).map(str::to_string),
         fallback_lc_ctype: fallback.to_string(),
+        utf8_fallback: os::UTF8_FALLBACK.map(str::to_string),
+        inherited_utf8: is_plain_utf8(&lang),
     }
+}
+
+/// `C.UTF-8` in either spelling glibc takes: a working UTF-8 locale with no language.
+fn is_plain_utf8(lang: &str) -> bool {
+    matches!(lang, "C.UTF-8" | "C.utf8" | "C.UTF8" | "C.utf-8")
 }
 
 /// macOS: every `ll_CC` folder of `/usr/share/locale`. Linux: the environment's locale alone, as
@@ -140,14 +159,15 @@ pub fn names_for(_locales: &[String]) -> (std::collections::HashMap<String, Stri
     Default::default()
 }
 
-/// macOS: the name is a folder of `/usr/share/locale`, or the profile's encoding name. Linux: a
-/// name of the `ll`, `ll_CC` or `ll_CC.ENC` shape, as the system's own list is not read there.
+/// macOS: the name is a folder of `/usr/share/locale`, or the profile's encoding name (macOS
+/// takes `LC_CTYPE=UTF-8`). Linux: `C.UTF-8`, or a name of the `ll`, `ll_CC` or `ll_CC.ENC`
+/// shape, as the system's own list is not read there; glibc has no locale named `UTF-8`.
 pub fn supported(candidate: &str, encoding: Option<&str>) -> bool {
-    if encoding == Some(candidate) && !candidate.is_empty() {
+    if os::ENCODING_IS_A_LOCALE && encoding == Some(candidate) && !candidate.is_empty() {
         return true;
     }
     let names = installed_names();
-    if names.is_empty() { looks_like_locale(candidate) } else { names.iter().any(|n| n == candidate) }
+    if names.is_empty() { is_plain_utf8(candidate) || looks_like_locale(candidate) } else { names.iter().any(|n| n == candidate) }
 }
 
 pub fn segmenter() -> Box<dyn crate::wordsel::Segmenter> {
@@ -186,6 +206,31 @@ mod tests {
         assert!(is_ll_cc("en_US") && is_ll_cc("fil_PH"));
         assert!(!is_ll_cc("en") && !is_ll_cc("EN_us") && !is_ll_cc("C") && !is_ll_cc("en_USA"));
         assert!(looks_like_locale("en_US.UTF-8") && looks_like_locale("fr") && !looks_like_locale("EN") && !looks_like_locale(""));
+    }
+
+    /// Linux: `LANG=C.UTF-8` (or no locale) never ends in `LC_CTYPE=UTF-8`, which glibc
+    /// rejects, and never in an empty question.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn linux_never_sets_the_bare_encoding_name() {
+        use crate::locale_guess::{locale_vars, Mode, Outcome};
+        let ok = |c: &str| supported(c, Some("UTF-8"));
+        assert!(!ok("UTF-8") && ok("C.UTF-8") && ok("en_US.UTF-8"));
+        let c_utf8 = facts_for("C.UTF-8", 4, "");
+        assert_eq!(locale_vars(Mode::Automatic, "", &c_utf8, true, &ok), Outcome::None, "C.UTF-8 is kept as it is");
+        let lc = Outcome::Vars(vec![("LC_CTYPE".into(), "C.UTF-8".into())]);
+        assert_eq!(locale_vars(Mode::Automatic, "", &facts_for("", 4, ""), true, &ok), lc);
+        assert_eq!(locale_vars(Mode::Automatic, "", &facts_for("C", 4, ""), true, &ok), lc);
+        assert_eq!(locale_vars(Mode::Minimal, "", &c_utf8, true, &ok), lc);
+        assert_eq!(locale_vars(Mode::Automatic, "", &facts_for("de_DE.UTF-8", 4, ""), true, &ok), Outcome::Vars(vec![("LANG".into(), "de_DE.UTF-8".into())]));
+    }
+
+    /// macOS keeps iTerm2's `LC_CTYPE=UTF-8`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_takes_the_encoding_name_as_lc_ctype() {
+        assert!(supported("UTF-8", Some("UTF-8")));
+        assert_eq!(crate::locale_guess::lc_ctype(&facts_for("", 4, ""), &|c| supported(c, Some("UTF-8"))).as_deref(), Some("UTF-8"));
     }
 
     /// The Dock gives an app no `LANG`: the guess still finds a supported locale from the system.
