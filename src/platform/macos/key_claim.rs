@@ -3,6 +3,9 @@
 //! A `performKeyEquivalent:` is added to the view's class (winit's) that sends `keyDown:` for it.
 //! The class is shared by every winit window, so only the views handed to `install` (terminal
 //! windows) are claimed; Settings and chat windows keep AppKit's own Cmd+C, Cmd+V, Cmd+W and so on.
+//! While a shortcut recorder listens, every view claims Cmd keys, so Cmd-T records instead of
+//! opening a tab. Cmd-Q, Cmd-H and Cmd-M stay the menu's even then: a terminal never takes them,
+//! so a recorded one could not run.
 
 use std::collections::HashSet;
 use std::ffi::CString;
@@ -29,8 +32,9 @@ pub fn system_chord(c: &Chord) -> bool {
 
 /// The whole rule: a registered terminal view, and a chord the key path takes (`bound`: a key
 /// mapping or a command). An unbound chord such as Cmd-Ctrl-Space (Emoji & Symbols) is AppKit's.
-pub fn takes(registered: bool, chord: &Chord, bound: bool) -> bool {
-    registered && bound && !system_chord(chord)
+/// While the recorder listens (`recording`), any view takes any chord but the system keys.
+pub fn takes(registered: bool, chord: &Chord, bound: bool, recording: bool) -> bool {
+    (recording || (registered && bound)) && !system_chord(chord)
 }
 
 /// Terminal views (addresses) that take Cmd keys.
@@ -60,7 +64,7 @@ extern "C-unwind" fn perform_key_equivalent(this: &AnyObject, _sel: Sel, event: 
         let chars = event.charactersIgnoringModifiers().map(|s| s.to_string()).unwrap_or_default();
         let flags = event.modifierFlags();
         let chord = crate::menus::chord_of_key(&chars, true, flags.contains(NSEventModifierFlags::Option), flags.contains(NSEventModifierFlags::Shift), flags.contains(NSEventModifierFlags::Control));
-        let wanted = claims(true, &chars) && chord.as_ref().is_some_and(|c| takes(is_registered(this as *const AnyObject as usize), c, bound(c)));
+        let wanted = claims(true, &chars) && chord.as_ref().is_some_and(|c| takes(is_registered(this as *const AnyObject as usize), c, bound(c), crate::platform::unix::global_keys::recording()));
         if wanted {
             // SAFETY: `this` is the view; keyDown: takes the event.
             let _: () = unsafe { msg_send![this, keyDown: event] };
@@ -126,14 +130,14 @@ mod tests {
         assert!(!claims(true, "`"));
         assert!(!claims(true, "~"));
         assert!(!claims(false, "t"));
-        assert!(takes(true, &cmd('t'), true));
+        assert!(takes(true, &cmd('t'), true, false));
     }
 
     /// Only a terminal window's view claims keys: Cmd+C, Cmd+V and Cmd+W in Settings and chat go to AppKit.
     #[test]
     fn only_terminal_views_claim_keys() {
         for key in ['c', 'v', 'x', 'a', 'z', 'w'] {
-            assert!(!takes(false, &cmd(key), true), "{key} in a window that is not a terminal");
+            assert!(!takes(false, &cmd(key), true, false), "{key} in a window that is not a terminal");
         }
     }
 
@@ -141,13 +145,29 @@ mod tests {
     #[test]
     fn unbound_and_system_chords_stay_with_appkit() {
         let emoji = Chord { key: ChordKey::Space, ctrl: true, ..cmd('t') };
-        assert!(!takes(true, &emoji, false), "Cmd+Ctrl+Space is Emoji & Symbols");
+        assert!(!takes(true, &emoji, false, false), "Cmd+Ctrl+Space is Emoji & Symbols");
         for key in ['q', 'h', 'm'] {
-            assert!(!takes(true, &cmd(key), true));
+            assert!(!takes(true, &cmd(key), true, false));
         }
-        assert!(!takes(true, &Chord { alt: true, ..cmd('h') }, true), "Hide Others");
-        assert!(takes(true, &Chord { shift: true, ..cmd('h') }, true), "a mapping on Cmd+Shift+H wins");
-        assert!(takes(true, &Chord { alt: true, ..cmd('m') }, true));
+        assert!(!takes(true, &Chord { alt: true, ..cmd('h') }, true, false), "Hide Others");
+        assert!(takes(true, &Chord { shift: true, ..cmd('h') }, true, false), "a mapping on Cmd+Shift+H wins");
+        assert!(takes(true, &Chord { alt: true, ..cmd('m') }, true, false));
+    }
+
+    /// While the recorder listens, a Settings or Profiles view takes a Cmd chord that has a menu
+    /// item (Cmd-T records, no tab opens), bound or not; Cmd-Q, Cmd-H, Cmd-Opt-H and Cmd-M stay the menu's.
+    #[test]
+    fn the_recorder_gets_cmd_chords_in_any_window() {
+        for key in ['t', 'd', 'k', 'w', 'c', 'v', '1'] {
+            assert!(takes(false, &cmd(key), false, true), "{key} while recording");
+            assert!(!takes(false, &cmd(key), false, false), "{key} when not recording");
+        }
+        assert!(takes(false, &Chord { shift: true, ..cmd('h') }, false, true));
+        for key in ['q', 'h', 'm'] {
+            assert!(!takes(false, &cmd(key), true, true), "{key} stays the menu's");
+            assert!(!takes(true, &cmd(key), true, true));
+        }
+        assert!(!takes(false, &Chord { alt: true, ..cmd('h') }, false, true), "Hide Others");
     }
 
     /// A destroyed window's view no longer takes keys.

@@ -214,6 +214,11 @@ pub fn set_recording(on: bool) {
     });
 }
 
+/// Whether the shortcut recorder listens (the key claim gives it every Cmd chord then).
+pub fn recording() -> bool {
+    *locked(&PAUSED)
+}
+
 /// Hands presses to `sink` as the ids their chord was registered under.
 pub fn set_hotkey_sink(sink: Sink) {
     *locked(&SINK) = Some(sink);
