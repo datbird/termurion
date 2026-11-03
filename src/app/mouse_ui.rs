@@ -993,7 +993,8 @@ mod tests {
         assert!(body(w, "open_window_with").contains("first_mouse_watch"), "windows opened later");
         assert!(MOD.contains("first_mouse_watch"), "the first window, in resumed");
         assert!(include_str!("transparency_ui.rs").contains("first_mouse_watch"), "a recreated window");
-        assert!(body(w, "drop_current_window").contains("first_mouse_forget"));
+        assert!(body(w, "drop_current_window").contains("window_gone("), "which forgets the first-mouse watch");
+        assert!(include_str!("menu.rs").split("fn window_gone").nth(1).unwrap().contains("first_mouse_forget"));
     }
     /// Task 8: Ctrl+wheel is the pinch after every UI wheel handler and the overlay hold,
     /// over a pane only (P15).

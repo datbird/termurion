@@ -859,13 +859,8 @@ impl App {
             self.close_hosted_views(hwnd);
         }
         self.forget_window(k);
-        if let Some(h) = self.hwnd() {
-            crate::platform::keys::remove_window(h);
-            crate::platform::input::first_mouse_forget(h);
-        }
-        // The view address can be reused by a window that is not a terminal.
-        if let Some(v) = self.view() {
-            crate::platform::chrome::forget_key_equivalents(v);
+        if let Some(g) = &self.gpu {
+            menu::window_gone(&g.window);
         }
         let mut live = WinSlot::new_empty();
         self.swap_live(&mut live);
@@ -1635,8 +1630,9 @@ impl App {
                 // Its browser views follow their panes into this window (final review I4) and its
                 // tool views close, before the window is destroyed with the slot.
                 self.window_slot_closing(&mut slot, h);
-                crate::platform::keys::remove_window(h);
-                crate::platform::input::first_mouse_forget(h);
+            }
+            if let Some(g) = &slot.gpu {
+                menu::window_gone(&g.window);
             }
             drop(slot);
         }
@@ -2169,7 +2165,8 @@ mod tests {
 
     #[test]
     fn profile_menu_item_shows_its_shortcut() {
-        assert_eq!(profile_menu_text("Work & Play", Some('Q')), "Work && Play\tCtrl+Alt+Q");
+        let shown = if cfg!(target_os = "macos") { "\u{2303}\u{2318}Q" } else { "Ctrl+Alt+Q" };
+        assert_eq!(profile_menu_text("Work & Play", Some('Q')), format!("Work && Play\t{shown}"));
         assert_eq!(profile_menu_text("Work", None), "Work");
     }
 }

@@ -240,6 +240,19 @@ pub(super) fn hwnd_of(window: &Window) -> Option<isize> {
     crate::platform::window::hwnd_of(window)
 }
 
+/// A terminal window is going away (closed, merged, or replaced): everything keyed by its native
+/// handle is dropped. The one place for it, so a new path cannot forget a part (the key claim's
+/// view address can be reused by a window that is not a terminal).
+pub(super) fn window_gone(window: &Window) {
+    if let Some(h) = hwnd_of(window) {
+        crate::platform::keys::remove_window(h);
+        crate::platform::input::first_mouse_forget(h);
+    }
+    if let Some(v) = crate::platform::window::view_of(window) {
+        crate::platform::chrome::forget_key_equivalents(v);
+    }
+}
+
 impl App {
     /// This window's Win32 handle.
     pub(super) fn hwnd(&self) -> Option<isize> {
@@ -1807,6 +1820,29 @@ mod tests {
     fn macos_menus_have_no_chord_column() {
         let item = menus::by_id("Shell > New Tab").unwrap();
         assert_eq!(super::menu_text(item).contains('\t'), !NATIVE_ACCELERATORS);
+    }
+
+    /// Every path that destroys a terminal window goes through `window_gone`, which drops the
+    /// per-handle state and the key claim; nothing else in the app calls `keys::remove_window`.
+    #[test]
+    fn every_window_drop_goes_through_window_gone() {
+        let gone = include_str!("menu.rs").split("fn window_gone").nth(1).unwrap().split("\n}\n").next().unwrap();
+        for part in ["keys::remove_window(", "first_mouse_forget(", "forget_key_equivalents("] {
+            assert!(gone.contains(part), "window_gone does {part}");
+        }
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");
+        let raw = ["keys::remove_", "window("].concat();
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("menu.rs") {
+                let text = std::fs::read_to_string(&p).unwrap();
+                assert!(!text.lines().filter(|l| !l.trim_start().starts_with("//")).any(|l| l.contains(raw.as_str())), "{} calls the per-handle removal itself", p.display());
+            }
+        }
+        let body = |src: &'static str, name: &str| -> &'static str { src.split(name).nth(1).unwrap().split("\n    }\n").next().unwrap() };
+        for (src, name) in [(include_str!("windows_ui.rs"), "fn drop_current_window"), (include_str!("windows_ui.rs"), "fn merge_all_windows"), (include_str!("transparency_ui.rs"), "fn recreate_window_for_alpha")] {
+            assert!(body(src, name).contains("window_gone("), "{name} forgets the window it drops");
+        }
     }
 
     /// Menus and the hotkey window take the view (the NSView on macOS, the HWND on Windows), never

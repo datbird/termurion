@@ -361,9 +361,7 @@ impl App {
         if let Some(h) = menu::hwnd_of(&window) {
             self.window_remade(h);
         }
-        if let Some(h) = old_hwnd {
-            crate::platform::keys::remove_window(h);
-        }
+        menu::window_gone(&old);
         // Everything the code installs per window handle, on the new one (as `open_window_with` does).
         self.menu_bar = None;
         self.border_applied = None;
