@@ -2,10 +2,10 @@
 
 P0 made the crate and all programs compile on Linux and macOS. P1 (the Unix core) added the pseudo terminal, the session host, job tracking, paths, the clipboard, opening URLs and files, tmux `-CC` and window restore, and moved the remaining Win32 code under `src/platform/`. This file records what still fails and why.
 
-Linux (debug build, the last code commit of P1): `cargo test --lib` gave **6387 passed, 170 failed**. macOS (arm64 VM, same commit): **6385 passed, 173 failed**. At the start of P1 Linux gave 6270 passed, 220 failed.
+Linux (debug build, after the final review fixes): `cargo test --lib` gave **6395 passed, 173 failed**: the 170 named by cause below, plus 3 load flakes of that full run that pass alone (`script_statusbar::tests::script_component_texts_follow_iterm2`, `ssh_procs::tests::a_huge_remote_list_closes_quickly_and_briefly`, `trigger_eval::tests::banner_lines_skip_triggers`). macOS (arm64 VM, same tree): **6398 passed, 171 failed**. At the start of P1 Linux gave 6270 passed, 220 failed.
 The full failing lists are kept with the task reports (`task-10-linux-failures.txt`, `task-10-mac-failures.txt`); a failure that passes alone is a flake (see Timing).
 
-Windows: the Windows lib and lib tests type-check from Linux (`scripts/win-check`: 0 errors, 2 warnings, both the `fetch_update` deprecations in `session_log.rs`). **The Windows test run (`scripts/xt test --lib`) is pending, not passed**: the Windows host is on hold, so it waits for the end of P1. Until it runs, no claim is made that the Windows suite is green after P1.
+Windows: the Windows lib, lib tests and binaries type-check from Linux (`scripts/win-check`: 0 errors, 2 warnings, both the `fetch_update` deprecations in `session_log.rs`). **The Windows test run (`scripts/xt test --lib`) is pending, not passed**: the Windows host is on hold, so it waits for the end of P1. Until it runs, no claim is made that the Windows suite is green after P1.
 
 ## Failures by cause on Linux (every failure is in exactly one cause; the counts sum to 170)
 
@@ -231,18 +231,17 @@ Session code page and Unicode normalization assertions. Not diagnosed further in
 
 ## macOS-only differences
 
-macOS has the same failures as Linux except these. 6 fail only on macOS (below). 3 fail only on Linux and are load or timing flakes: `find::tests::find_over_a_large_buffer_is_quick`, `trigger_eval::tests::each_line_is_checked_once`, `extract::tests::one_walk_checks_and_writes`.
+macOS has the same failures as Linux except these. 5 fail only on macOS (below). 7 failed only on Linux in the last full run and are load or timing flakes: `find::tests::find_over_a_large_buffer_is_quick`, `trigger_eval::tests::each_line_is_checked_once`, `extract::tests::one_walk_checks_and_writes`, `synthetic::tests::filtering_a_large_buffer_is_quick` (Timing; it passed on macOS this time) and the three that pass alone named at the top.
 
 - `licenses::tests::every_dependency_is_listed`: `webview2-com` has no license entry (Windows-only crate, absent from the Unix tree); it passes on Linux now
 - `pane::tests::the_pwsh_script_emits_prompt_marks`: no `pwsh` on the macOS VM
 - `pane::tests::the_pwsh_script_keeps_the_prompt_state`: no `pwsh` on the macOS VM
-- `platform::unix::pty::tests::a_shell_inherits_no_other_pty`: a Task 1 pin that already failed on macOS at the start of P1; not diagnosed
 - `render::tests::every_effect_lights_both_box_lines_on_enter`: a render test that already failed on the macOS VM at the start of P1; not diagnosed
 - `render::tests::lightning_enter_surge_finds_the_claude_box_lines`: a render test that already failed on the macOS VM at the start of P1; not diagnosed
 
 ## Live tmux lines
 
-The tmux `-CC` code is covered by four `unix-gui-check` scenarios on Linux with a live tmux: `tmux` (tabs in the attaching window), `tmux-nolang` (the app starts with no locale variable), `tmux-lcall` (the app starts with `LC_ALL=C`) and `tmux-windows` (the default, a new Termurion window). All four PASS (below). tmux is not installed on the macOS VM, so the live tmux lines run on Linux only.
+The tmux `-CC` code is covered by four `unix-gui-check` scenarios on Linux with a live tmux: `tmux` (tabs in the attaching window), `tmux-nolang` (the app starts with no locale variable), `tmux-lcall` (the app starts with `LC_ALL=C`) and `tmux-windows` (the default, a new Termurion window). All four PASS (below). The macOS VM has tmux 3.8 (Homebrew, `/opt/homebrew/bin`, not on the PATH of a plain ssh command): the four live local tmux tests passed there in Task 7 with that tmux on the PATH. The GUI scenarios need Xvfb, so they run on Linux only.
 
 ## Tests hidden from Unix on purpose
 
@@ -250,7 +249,7 @@ A `#[cfg(windows)]` on a test or part of one is listed here and in `scripts/cfg-
 
 ## The cfg(unix) unit tests from Tasks 1 to 10
 
-The tests under `platform::unix::*` and the stand-ins ran on both hosts. On Linux none of them is in the failing list. Under load `platform::unix::proc::tests::ctrl_c_and_break_are_int_and_quit` and `the_foreground_job_follows_the_pty` can fail in a full run; they pass alone. On macOS the one failure is `platform::unix::pty::tests::a_shell_inherits_no_other_pty` (above).
+The tests under `platform::unix::*` and the stand-ins ran on both hosts. On Linux none of them is in the failing list. Under load `platform::unix::proc::tests::ctrl_c_and_break_are_int_and_quit` and `the_foreground_job_follows_the_pty` can fail in a full run; they pass alone. On macOS none of them fails either: `a_shell_inherits_no_other_pty` failed there until the final review fixes, because another thread's pipe could reach a new shell in the moment before std set its close-on-exec flag (macOS has no `pipe2`); a new shell now gets every descriptor from 3 up flagged close-on-exec.
 
 ## What is left in the cfg-audit allowlist
 
@@ -258,7 +257,7 @@ The whole-file entries whose reason reads "production cfg owed to the port" are 
 
 ## P1 exit checks
 
-`scripts/unix-gui-check` on Linux (Xvfb), run on the Task 10 tree, 2026-11-02:
+`scripts/unix-gui-check` on Linux (Xvfb), run on the Task 10 tree, 2026-11-02. After the final review fixes (2026-11-03) `host`, `clipboard`, `restore-host` and `tmux-nolang` ran again and PASS; `clipboard` now keeps the pane's highlight when another program takes the primary selection (it fails with the old middle-click order and passes now):
 
 | Scenario | Result |
 |---|---|

@@ -333,8 +333,9 @@ case "$scenario" in
         ;;
     clipboard)
         sleep 1
-        # Draw the word alone on row 0 (a screen clear without the scrollback one that asks a question).
-        xdotool type --delay 20 "printf '\\033[2J\\033[HSELECTME\\n'"
+        # Draw the word alone on row 0 (a screen clear without the scrollback one that asks a question),
+        # then start a cat that writes a file, so nothing touches the screen after the drag below.
+        xdotool type --delay 20 "printf '\\033[2J\\033[HSELECTME\\n'; cat > \"\$SCRATCH/got\""
         xdotool key Return
         sleep 1
         # A drag along row 0 selects the line; the primary selection must then hold the word.
@@ -346,17 +347,12 @@ case "$scenario" in
         shoot
         got=$(timeout 5 "$xclip_bin" -o -selection primary 2> /dev/null | tr -d '\n' | sed 's/ *$//')
         [ "$got" = SELECTME ] || fail "the primary selection after a drag is '$got', not SELECTME"
-        # Another program owns the selection now; a middle click (the pane has no selection of its own) pastes it into a cat that writes a file.
-        xdotool type --delay 20 'cat > "$SCRATCH/got"'
-        xdotool key Return
-        sleep 0.5
+        # Another program owns the selection now, while the drag's highlight stays in the pane: a
+        # middle click pastes what the primary selection holds now, not the pane's old text.
         printf other | "$xclip_bin" -quiet -selection primary > /dev/null 2>&1 &
         xclip_pid=$!
         sleep 1
-        # The pane pastes its own selection first, so a plain click drops the drag's one.
         xdotool mousemove 600 300
-        xdotool click 1
-        sleep 0.5
         xdotool click 2
         sleep 1
         xdotool key Return
