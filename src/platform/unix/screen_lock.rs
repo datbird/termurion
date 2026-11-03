@@ -1,4 +1,4 @@
-//! No screen lock event is read on Unix yet, so the password manager does not lock with the screen.
+//! No screen lock event is read on Linux yet, so the password manager does not lock with the screen.
 
 use crate::platform::pty::Notify;
 

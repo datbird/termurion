@@ -1311,7 +1311,8 @@ impl App {
             self.pwm_screen_locked();
         }
         if crate::platform::screen_lock::watched() == 0 && (self.pwm.auth.authenticated || self.pwm.browser_auth.authenticated)
-            && let Some(h) = self.hwnd() {
+            && let Some(h) = self.view() {
+                // The view is the HWND on Windows; macOS watches app-wide and ignores it.
                 crate::platform::screen_lock::watch(h, self.notify.clone());
             }
         let replies: Vec<Reply> = [&self.pwm.worker, &self.pwm.browser_worker].into_iter().flatten().flat_map(|w| w.rx.try_iter()).collect();
