@@ -132,7 +132,7 @@ pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, Stri
     let mods = ui.input(|i| i.modifiers);
     ui.horizontal_top(|ui| {
         if st.tags_open {
-            ui.allocate_ui(egui::vec2(TAGS_WIDTH, LIST_HEIGHT), |ui| {
+            ui.allocate_ui_with_layout(egui::vec2(TAGS_WIDTH, LIST_HEIGHT), egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.set_width(TAGS_WIDTH);
                 ui.label(egui::RichText::new("Tag Name").strong());
                 egui::ScrollArea::vertical().id_salt("profile-tags").max_height(LIST_HEIGHT - 20.0).show(ui, |ui| {
@@ -227,9 +227,9 @@ mod tests {
     /// horizontal layout of its parent), so every profile after the first was off to the right.
     #[test]
     fn the_rows_stack_down_the_list() {
-        let rows: Vec<_> = ["Alpha", "Bravo", "Charlie"].iter().map(|n| (n.to_string(), n.to_string(), vec![], String::new())).collect();
+        let rows: Vec<_> = [("Alpha", "t1"), ("Bravo", "t2"), ("Charlie", "t3")].iter().map(|(n, t)| (n.to_string(), n.to_string(), vec![t.to_string()], String::new())).collect();
         let ctx = egui::Context::default();
-        let mut state = ListState::default();
+        let mut state = ListState { tags_open: true, ..Default::default() };
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             profile_list(ui, &mut state, &rows, "Alpha", false, None);
         });
@@ -239,6 +239,10 @@ mod tests {
             out.shapes.iter().for_each(|c| painted_at(&c.shape, name, &mut found));
             found.first().copied().unwrap_or_else(|| panic!("{name} is not drawn"))
         };
+        // The tag sidebar's rows stack too.
+        let (ta, tb, tc) = (at("t1"), at("t2"), at("t3"));
+        assert!(tb.y > ta.y && tc.y > tb.y, "tags one under the next: {ta:?} {tb:?} {tc:?}");
+        assert!((tb.x - ta.x).abs() < 1.0 && (tc.x - ta.x).abs() < 1.0, "tags in one column: {ta:?} {tb:?} {tc:?}");
         let (a, b, c) = (at("Alpha"), at("Bravo"), at("Charlie"));
         assert!(b.y > a.y && c.y > b.y, "one under the next: {a:?} {b:?} {c:?}");
         assert!((b.x - a.x).abs() < 1.0 && (c.x - a.x).abs() < 1.0, "in one column: {a:?} {b:?} {c:?}");
