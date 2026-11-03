@@ -43,6 +43,12 @@ fn with_state<R>(f: impl FnOnce(&mut HashMap<isize, (bool, f32)>) -> R) -> R {
     f(g.get_or_insert_with(HashMap::new))
 }
 
+/// The window is going away: its cloak and fade are dropped, so a new window at the same address
+/// starts clean.
+pub fn forget(view: isize) {
+    with_state(|m| m.remove(&view));
+}
+
 /// The window of ours whose content view is `view`.
 fn window_of(view: isize) -> Option<Retained<NSWindow>> {
     let mtm = MainThreadMarker::new()?;
@@ -159,6 +165,14 @@ mod tests {
         assert_eq!(token_kind(0x7f00), Token::View(0x7f00));
         assert_eq!(token_kind(-412), Token::App(412));
         assert_eq!(token_kind(0), Token::Nothing);
+    }
+
+    #[test]
+    fn forgetting_a_window_drops_its_state() {
+        let v = 0x1234_5000;
+        with_state(|m| m.insert(v, (true, 0.3)));
+        forget(v);
+        assert!(with_state(|m| !m.contains_key(&v)));
     }
 
     #[test]

@@ -250,6 +250,7 @@ pub(super) fn window_gone(window: &Window) {
     }
     if let Some(v) = crate::platform::window::view_of(window) {
         crate::platform::chrome::forget_key_equivalents(v);
+        crate::platform::hotkey::forget(v);
     }
 }
 
@@ -1860,7 +1861,7 @@ mod tests {
     #[test]
     fn every_window_drop_goes_through_window_gone() {
         let gone = include_str!("menu.rs").split("fn window_gone").nth(1).unwrap().split("\n}\n").next().unwrap();
-        for part in ["keys::remove_window(", "first_mouse_forget(", "forget_key_equivalents("] {
+        for part in ["keys::remove_window(", "first_mouse_forget(", "forget_key_equivalents(", "hotkey::forget("] {
             assert!(gone.contains(part), "window_gone does {part}");
         }
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app");

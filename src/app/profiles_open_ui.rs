@@ -57,6 +57,8 @@ impl App {
         }
         if closes_after(self.globals.bool(CLOSE_AFTER_OPENING), how, from) {
             self.profiles_win = None;
+            // A recorder in that window is gone with it (Settings re-pauses on its next frame).
+            crate::platform::key_record::set_recording(false);
         }
     }
 

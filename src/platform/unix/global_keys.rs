@@ -21,6 +21,8 @@ struct State {
     manager: GlobalHotKeyManager,
     keys: Vec<HotKey>,
     last: Vec<(u32, Chord)>,
+    /// The latest answer per id, for a request that comes while the recorder holds the chords.
+    answers: HashMap<u32, Result<(), String>>,
 }
 
 thread_local! {
@@ -120,13 +122,22 @@ fn refusal_text(e: &global_hotkey::Error) -> String {
     }
 }
 
-/// Chords that share one registration, with every id that uses it (siblings share a chord).
-fn group(chords: &[(u32, Chord)]) -> Vec<(Chord, Vec<u32>)> {
-    let mut out: Vec<(Chord, Vec<u32>)> = Vec::new();
+/// The key a chord registers as: None when the key has no macOS code.
+type Resolved = Option<(Code, Modifiers)>;
+
+fn resolve(c: &Chord) -> Resolved {
+    code_of(c.key).map(|code| (code, mods_of(c.mods)))
+}
+
+/// Registrations to make, with every id that uses each. Chords that resolve to the same key
+/// share one (siblings, or a Char and a Scan chord for the same key); an unmapped key stands alone.
+fn plan(chords: &[(u32, Chord)]) -> Vec<(Resolved, Vec<u32>)> {
+    let mut out: Vec<(Resolved, Vec<u32>)> = Vec::new();
     for (id, c) in chords {
-        match out.iter_mut().find(|(k, _)| k == c) {
+        let r = resolve(c);
+        match out.iter_mut().find(|(k, _)| r.is_some() && *k == r) {
             Some((_, ids)) => ids.push(*id),
-            None => out.push((*c, vec![*id])),
+            None => out.push((r, vec![*id])),
         }
     }
     out
@@ -141,7 +152,7 @@ pub fn set_hotkeys(chords: Vec<(u32, Chord)>, taps: Vec<(u32, u8)>) -> Result<Re
         let mut s = s.borrow_mut();
         if s.is_none() {
             let manager = GlobalHotKeyManager::new().map_err(|e| e.to_string())?;
-            *s = Some(State { manager, keys: Vec::new(), last: Vec::new() });
+            *s = Some(State { manager, keys: Vec::new(), last: Vec::new(), answers: HashMap::new() });
         }
         let st = s.as_mut().expect("made above");
         st.last = chords.clone();
@@ -151,19 +162,21 @@ pub fn set_hotkeys(chords: Vec<(u32, Chord)>, taps: Vec<(u32, u8)>) -> Result<Re
     })
 }
 
-/// Drops the earlier set, then registers each chord once.
+/// Drops the earlier set, then registers each key once. While paused nothing is registered and
+/// each id gets its latest answer (Ok when it has none), so a refused chord keeps its error.
 fn register(st: &mut State, chords: &[(u32, Chord)], paused: bool) -> Results {
     for k in st.keys.drain(..) {
         let _ = st.manager.unregister(k);
     }
     let mut ids = HashMap::new();
     let mut out = Vec::new();
-    if !paused {
-        for (chord, group_ids) in group(chords) {
-            let result = match code_of(chord.key) {
+    for (resolved, group_ids) in plan(chords) {
+        let result = if paused {
+            None
+        } else {
+            Some(match resolved {
                 None => Err("This key has no macOS key code".to_string()),
-                Some(code) => {
-                    let mods = mods_of(chord.mods);
+                Some((code, mods)) => {
                     let key = HotKey::new(if mods.is_empty() { None } else { Some(mods) }, code);
                     match st.manager.register(key) {
                         Ok(()) => {
@@ -174,9 +187,15 @@ fn register(st: &mut State, chords: &[(u32, Chord)], paused: bool) -> Results {
                         Err(e) => Err(refusal_text(&e)),
                     }
                 }
-            };
-            out.extend(group_ids.iter().map(|id| (*id, result.clone())));
+            })
+        };
+        for id in group_ids {
+            let r = result.clone().unwrap_or_else(|| st.answers.get(&id).cloned().unwrap_or(Ok(())));
+            out.push((id, r));
         }
+    }
+    if !paused {
+        st.answers = out.iter().cloned().collect();
     }
     *locked(&IDS) = Some(ids);
     out
@@ -243,8 +262,19 @@ mod tests {
     fn siblings_share_one_registration() {
         let c = Chord { key: ChordKey::Scan(0x39), mods: MOD_ALT };
         let d = Chord { key: ChordKey::Scan(0x3B), mods: 0 };
-        let g = group(&[(1, c), (2, d), (3, c)]);
-        assert_eq!(g, vec![(c, vec![1, 3]), (d, vec![2])]);
+        let g = plan(&[(1, c), (2, d), (3, c)]);
+        assert_eq!(g, vec![(resolve(&c), vec![1, 3]), (resolve(&d), vec![2])]);
+    }
+
+    #[test]
+    fn a_char_and_a_scan_chord_for_one_key_share_a_registration() {
+        let by_char = Chord { key: ChordKey::Char('a'), mods: MOD_ALT };
+        let by_scan = Chord { key: ChordKey::Scan(0x1E), mods: MOD_ALT };
+        let g = plan(&[(1, by_char), (2, by_scan)]);
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].1, vec![1, 2]);
+        let bad = Chord { key: ChordKey::Scan(0x9999), mods: 0 };
+        assert_eq!(plan(&[(1, bad), (2, bad)]).len(), 2, "unmapped keys stay apart");
     }
 }
 

@@ -42,6 +42,9 @@ pub fn foreground() -> isize {
 /// Windows follows the desktop through `desktops::follows`, so there is nothing to set.
 pub fn join_active_space(_hwnd: isize) {}
 
+/// No per-window state is kept here.
+pub fn forget(_view: isize) {}
+
 /// A window of this process (a terminal window, Settings, a dialog).
 pub fn ours(hwnd: isize) -> bool {
     let mut pid = 0u32;

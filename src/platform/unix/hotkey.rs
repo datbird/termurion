@@ -38,3 +38,6 @@ pub fn available() -> Result<(), Unsupported> {
 
 /// Nothing to join: Linux has no hotkey window handle.
 pub fn join_active_space(_view: isize) {}
+
+/// No per-window state is kept here.
+pub fn forget(_view: isize) {}
