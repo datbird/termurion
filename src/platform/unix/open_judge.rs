@@ -88,10 +88,13 @@ pub fn foreign_in_shared(owner: u32, euid: u32, dir_mode: u32) -> bool {
 }
 
 /// Whether who owns a regular file, and who can change its folder, make it unsafe to open: the
-/// owner can add an execute bit between the judge and `open` when they are not you or root, and
-/// a folder that group or others can write to (without the sticky bit) lets them swap the name.
-pub fn shown_for_owner(owner: u32, euid: u32, parent_mode: u32) -> bool {
-    (owner != euid && owner != 0) || (parent_mode & 0o022 != 0 && parent_mode & 0o1000 == 0)
+/// owner can add an execute bit between the judge and `open` when they are not you or root; a
+/// folder that others can write to (without the sticky bit) lets them swap the name; and so does
+/// a folder that a group can write to, unless that group is your own primary one (your private
+/// group has no other members).
+pub fn shown_for_owner(owner: u32, euid: u32, parent_mode: u32, parent_gid: u32, egid: u32) -> bool {
+    let sticky = parent_mode & 0o1000 != 0;
+    (owner != euid && owner != 0) || (!sticky && (parent_mode & 0o002 != 0 || (parent_mode & 0o020 != 0 && parent_gid != egid)))
 }
 
 fn shown_by_owner(real: &Path) -> bool {
@@ -102,7 +105,7 @@ fn shown_by_owner(real: &Path) -> bool {
     }
     let Some(parent) = real.parent() else { return false };
     match std::fs::metadata(parent) {
-        Ok(dir) => shown_for_owner(meta.uid(), unsafe { libc::geteuid() }, dir.mode()),
+        Ok(dir) => shown_for_owner(meta.uid(), unsafe { libc::geteuid() }, dir.mode(), dir.gid(), unsafe { libc::getegid() }),
         // The folder cannot be read: fail safe.
         Err(_) => true,
     }
@@ -234,16 +237,18 @@ mod tests {
         assert!(!foreign_in_shared(1001, 501, 0o755));
     }
 
-    /// The wider rule: another user's file is shown in any folder, and a folder others can write
-    /// to without the sticky bit shows even your own file.
+    /// The wider rule: another user's file is shown in any folder, a folder others can write to
+    /// shows even your own file, and a group-writable one does unless the group is your own.
     #[test]
     fn a_file_is_shown_for_its_owner_or_its_folder() {
-        assert!(shown_for_owner(1001, 501, 0o755), "another user's file in a private folder");
-        assert!(!shown_for_owner(0, 501, 0o755), "root's file");
-        assert!(shown_for_owner(501, 501, 0o775), "your file in a group-writable folder");
-        assert!(shown_for_owner(501, 501, 0o777), "your file in a world-writable folder");
-        assert!(!shown_for_owner(501, 501, 0o1777), "your file in a sticky folder");
-        assert!(!shown_for_owner(501, 501, 0o755));
+        let (me, mine, other) = (501, 20, 80);
+        assert!(shown_for_owner(1001, me, 0o755, mine, mine), "another user's file in a private folder");
+        assert!(!shown_for_owner(0, me, 0o755, mine, mine), "root's file");
+        assert!(!shown_for_owner(me, me, 0o775, mine, mine), "your file in a folder of your own group");
+        assert!(shown_for_owner(me, me, 0o775, other, mine), "your file in a folder of another group");
+        assert!(shown_for_owner(me, me, 0o777, mine, mine), "world-writable without sticky");
+        assert!(!shown_for_owner(me, me, 0o1777, other, mine), "sticky");
+        assert!(!shown_for_owner(me, me, 0o755, other, mine));
     }
 
     /// One click resolves the alias chain once, and what is opened is what was judged: the code
