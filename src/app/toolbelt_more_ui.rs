@@ -377,7 +377,8 @@ pub(super) fn edit_key(key: &WKey, text: Option<&str>, mods: Mods) -> Option<(Ed
             return c.chars().next().and_then(|c| text_edit::ctrl_key(c, mods.shift)).map(|k| (k, true, false));
         }
     let printable = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control))?;
-    let altgr = mods.ctrl && mods.alt;
+    // Only Windows reports AltGr as Ctrl+Alt; elsewhere that is a chord.
+    let altgr = crate::platform::keys::CTRL_ALT_IS_ALTGR && mods.ctrl && mods.alt;
     Some((EditKey::Text(printable.to_string()), mods.ctrl && !altgr, mods.alt && !altgr))
 }
 
@@ -2449,8 +2450,8 @@ mod tests {
         assert_eq!(taken(&named(NamedKey::ArrowRight), None, m(true, false, false, false)), Some(EditKey::WordRight));
         assert_eq!(taken(&named(NamedKey::Backspace), None, m(true, false, false, false)), Some(EditKey::DeleteWordBack));
         assert_eq!(taken(&named(NamedKey::Home), None, m(true, false, false, false)), Some(EditKey::TextStart));
-        // AltGr typing is typing.
-        assert_eq!(taken(&ch("@"), Some("@"), m(true, true, false, false)), Some(EditKey::Text("@".into())));
+        // AltGr typing is typing (Windows); on Unix Ctrl+Alt is a chord, never typed.
+        assert_eq!(taken(&ch("@"), Some("@"), m(true, true, false, false)), crate::platform::keys::CTRL_ALT_IS_ALTGR.then(|| EditKey::Text("@".into())));
         // Not the editor's: other Ctrl chords, Ctrl+Enter and Ctrl+Tab, Alt and Win chords.
         assert_eq!(taken(&ch("t"), Some("\u{14}"), m(true, false, false, false)), None);
         assert_eq!(taken(&named(NamedKey::Enter), None, m(true, false, false, false)), None);

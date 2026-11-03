@@ -61,7 +61,7 @@ pub(super) fn composer_takes(m: CMods, key: &CKey, auto: bool) -> bool {
     match composer::action(key, m, auto, false) {
         None => false,
         Some(composer::Action::Edit(k)) => {
-            let altgr = m.ctrl && m.alt && matches!(k, EditKey::Text(_));
+            let altgr = crate::platform::keys::CTRL_ALT_IS_ALTGR && m.ctrl && m.alt && matches!(k, EditKey::Text(_));
             text_edit::takes(m.ctrl && !altgr, m.alt && !altgr, m.win, &k)
         }
         Some(_) => true,
@@ -2571,8 +2571,8 @@ mod tests {
         assert!(!composer_takes(m(false, true, false, false), &CKey::Edit(EditKey::Left), false));
         assert!(composer_takes(m(false, true, false, false), &CKey::Edit(EditKey::Enter), false));
         assert!(composer_takes(m(false, true, true, false), &CKey::Edit(EditKey::Enter), false));
-        // AltGr typing is typing.
-        assert!(composer_takes(m(true, true, false, false), &text("@"), false));
+        // AltGr typing is typing (Windows); on Unix Ctrl+Alt is a chord, never typed.
+        assert_eq!(composer_takes(m(true, true, false, false), &text("@"), false), crate::platform::keys::CTRL_ALT_IS_ALTGR);
     }
 
     /// Final review 4: covering a screen of dotted underline is one pass, not a `remove` per quad.

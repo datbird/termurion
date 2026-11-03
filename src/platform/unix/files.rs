@@ -53,11 +53,29 @@ pub fn free_space(dir: &LocalPath) -> io::Result<u64> {
     Ok(u64::from(st.f_bavail).saturating_mul(u64::from(st.f_frsize)))
 }
 
+/// Moves `from` to `to` in one step that fails when `to` exists, so nothing can appear at `to`
+/// between a check and the move. A file system without that move gets a hard link, which is
+/// just as exclusive, then the old name goes.
 pub fn rename_no_replace(from: &LocalPath, to: &LocalPath) -> io::Result<()> {
-    if to.path().exists() {
-        return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+    use std::os::unix::ffi::OsStrExt;
+    let c = |p: &LocalPath| std::ffi::CString::new(p.path().as_os_str().as_bytes()).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e));
+    match exclusive_rename(&c(from)?, &c(to)?) {
+        Err(e) if matches!(e.raw_os_error(), Some(libc::EINVAL | libc::ENOSYS | libc::ENOTSUP | libc::EOPNOTSUPP)) => {
+            std::fs::hard_link(from.path(), to.path())?;
+            std::fs::remove_file(from.path())
+        }
+        done => done,
     }
-    std::fs::rename(from.path(), to.path())
+}
+
+#[cfg(target_os = "linux")]
+fn exclusive_rename(from: &std::ffi::CStr, to: &std::ffi::CStr) -> io::Result<()> {
+    if unsafe { libc::renameat2(libc::AT_FDCWD, from.as_ptr(), libc::AT_FDCWD, to.as_ptr(), libc::RENAME_NOREPLACE) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn exclusive_rename(from: &std::ffi::CStr, to: &std::ffi::CStr) -> io::Result<()> {
+    if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
 
 pub fn watch_tree(_dir: &LocalPath, _filter: u32) -> Option<*mut std::ffi::c_void> {
@@ -77,4 +95,27 @@ pub fn shell_verb(verb: &str, p: &LocalPath, cwd: Option<&LocalPath>, background
     // The folder only matters to ShellExecute.
     let _ = cwd;
     if verb == "open" { crate::platform::shell_open::open_file(p.path(), background) } else { Err(crate::platform::Unsupported { feature: "Editing a file with its app" }.into()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The move never replaces: an existing name is refused and both files stay as they were.
+    #[test]
+    fn rename_no_replace_never_replaces() {
+        let d = std::env::temp_dir().join(format!("termurion-rnr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (a, b, c) = (d.join("a"), d.join("b"), d.join("c"));
+        std::fs::write(&a, "A").unwrap();
+        std::fs::write(&b, "B").unwrap();
+        let judged = |p: &std::path::Path| LocalPath::judge(p).unwrap();
+        let e = rename_no_replace(&judged(&a), &judged(&b)).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::AlreadyExists, "{e}");
+        assert_eq!((std::fs::read_to_string(&a).unwrap(), std::fs::read_to_string(&b).unwrap()), ("A".into(), "B".into()));
+        rename_no_replace(&judged(&a), &judged(&c)).unwrap();
+        assert!(!a.exists() && std::fs::read_to_string(&c).unwrap() == "A");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

@@ -224,7 +224,7 @@ pub fn action(key: &Key, m: Mods, auto: bool, popup: bool) -> Option<Action> {
             // out of the text); it must still reach the editor as a plain key, not be dropped
             // by the Alt gate below (`keyproto::is_altgr`'s precedent - a genuine Ctrl+Alt
             // chord on anything but a printable key is still not the composer's).
-            let altgr = m.ctrl && m.alt && matches!(k, EditKey::Text(_));
+            let altgr = crate::platform::keys::CTRL_ALT_IS_ALTGR && m.ctrl && m.alt && matches!(k, EditKey::Text(_));
             if m.alt && !altgr {
                 return None;
             }
@@ -1354,10 +1354,10 @@ mod tests {
         assert_eq!(action(&Key::Ctrl('l'), m(true, true, false), true, false), None);
 
         // AltGr (Ctrl+Alt held, but the key types text) reaches the editor as text, not
-        // dropped by the Alt gate.
+        // dropped by the Alt gate. Only Windows reports AltGr that way; on Unix Ctrl+Alt is a chord.
         assert_eq!(
             action(&Key::Edit(EditKey::Text("@".to_string())), m(true, true, false), false, false),
-            Some(Action::Edit(EditKey::Text("@".to_string())))
+            crate::platform::keys::CTRL_ALT_IS_ALTGR.then(|| Action::Edit(EditKey::Text("@".to_string())))
         );
         // A genuine Ctrl+Alt chord on a non-text key is still not the composer's.
         assert_eq!(action(&Key::Edit(EditKey::Backspace), m(true, true, false), false, false), None);

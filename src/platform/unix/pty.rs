@@ -36,6 +36,10 @@ const OUTER_TERMINAL_VARS: &[&str] = &[
     "TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "TERM_SESSION_ID", "TERM_FEATURES", "COLORTERM", "ITERM_SESSION_ID", "ITERM_PROFILE", "LC_TERMINAL", "LC_TERMINAL_VERSION",
     "TMUX", "TMUX_PANE", "STY", "WINDOWID", "KITTY_WINDOW_ID", "KITTY_PID", "KITTY_LISTEN_ON", "ALACRITTY_WINDOW_ID", "ALACRITTY_SOCKET", "ALACRITTY_LOG", "VTE_VERSION", "WT_SESSION",
     "WEZTERM_PANE", "COLUMNS", "LINES", "XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID",
+    // Helpers of GNOME Terminal, Konsole, WezTerm, kitty, Ghostty and Terminator talk to their own terminal through these.
+    "GNOME_TERMINAL_SCREEN", "GNOME_TERMINAL_SERVICE", "KONSOLE_VERSION", "KONSOLE_DBUS_SESSION", "KONSOLE_DBUS_SERVICE", "KONSOLE_DBUS_WINDOW", "SHELL_SESSION_ID",
+    "WEZTERM_EXECUTABLE", "WEZTERM_EXECUTABLE_DIR", "WEZTERM_UNIX_SOCKET", "WEZTERM_CONFIG_DIR", "WEZTERM_CONFIG_FILE", "KITTY_PUBLIC_KEY", "KITTY_INSTALLATION_DIR",
+    "GHOSTTY_RESOURCES_DIR", "GHOSTTY_BIN_DIR", "GHOSTTY_SHELL_FEATURES", "TERMINATOR_UUID", "TERMINATOR_DBUS_NAME", "TERMINATOR_DBUS_PATH",
 ];
 
 /// Every pty child's master by child pid, from spawn to drop: the foreground group and the input
@@ -776,6 +780,10 @@ mod tests {
     #[test]
     fn outer_terminal_variables_never_reach_the_shell() {
         let env = child_env(vec![os("TERM", "xterm-kitty"), os("TMUX", "/tmp/t,1,0"), os("PATH", "/bin")], &["TERM=xterm-256color".to_string()]);
+        // Every terminal's helper variables go too.
+        let helpers = ["GNOME_TERMINAL_SCREEN", "GNOME_TERMINAL_SERVICE", "KONSOLE_VERSION", "KONSOLE_DBUS_SESSION", "KONSOLE_DBUS_SERVICE", "WEZTERM_EXECUTABLE", "WEZTERM_UNIX_SOCKET", "KITTY_PUBLIC_KEY", "KITTY_INSTALLATION_DIR", "GHOSTTY_RESOURCES_DIR", "GHOSTTY_BIN_DIR", "TERMINATOR_UUID"];
+        let left = child_env(helpers.iter().map(|h| os(h, "x")).collect(), &[]);
+        assert!(left.is_empty(), "{left:?}");
         assert!(env.contains(&os("TERM", "xterm-256color")), "{env:?}");
         assert!(env.contains(&os("PATH", "/bin")), "{env:?}");
         assert!(!env.iter().any(|(n, _)| n == "TMUX"), "{env:?}");

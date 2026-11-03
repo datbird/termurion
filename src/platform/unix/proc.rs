@@ -171,6 +171,8 @@ pub fn start_detached(exe: &std::path::Path) -> Result<(), String> {
     use std::process::{Command, Stdio};
     let mut cmd = Command::new(exe);
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    // It lives on after Termurion: never keep the folder Termurion started in (a removable mount) busy.
+    cmd.current_dir("/");
     // SAFETY: setsid is async-signal-safe and touches nothing of ours.
     unsafe {
         cmd.pre_exec(|| if libc::setsid() < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) });

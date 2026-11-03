@@ -3,6 +3,7 @@
 use crate::workgroup_restore::KEY_LEN;
 
 /// DPAPI is Windows'; on Unix every call fails, which callers read as "could not protect".
+/// An unreachable stand-in: its only callers (the card file in `browser_autofill`) are Windows-only.
 pub fn dpapi_with(_data: &[u8], _protect: bool, _entropy: &[u8]) -> Option<Vec<u8>> {
     None
 }

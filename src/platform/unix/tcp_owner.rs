@@ -5,9 +5,9 @@ use std::net::SocketAddr;
 use crate::api_peer::Row;
 use crate::platform::Unsupported;
 
-/// No peer check on Unix yet, so every connection is refused.
-pub fn check(_peer: SocketAddr, _local: SocketAddr) -> Result<u32, String> {
-    Err(Unsupported { feature: "The automation API" }.into())
+/// No peer check on Unix yet, so every connection is refused: the one refusal `ipc::check_peer` gives too.
+pub fn check(peer: SocketAddr, local: SocketAddr) -> Result<u32, String> {
+    super::ipc::check_peer(peer, local)
 }
 
 /// No connection table on Unix yet.
@@ -20,7 +20,7 @@ pub fn listen_rows() -> Result<Vec<Row>, String> {
     Err(Unsupported { feature: "Finding the process on a port" }.to_string())
 }
 
-/// The name of a process by id is a Windows call; Unix has none yet.
-pub fn process_name(_pid: u32) -> Option<String> {
-    None
+/// The name of a process by id: the one Unix answer, `platform::proc::process_name`.
+pub fn process_name(pid: u32) -> Option<String> {
+    crate::platform::proc::process_name(pid)
 }
