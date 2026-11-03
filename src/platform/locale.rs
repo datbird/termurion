@@ -66,8 +66,6 @@ pub fn segmenter() -> Box<dyn crate::wordsel::Segmenter> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn locale_from_lang_env() {
         assert_eq!(super::locale_from_lang_env("en_US.UTF-8").as_deref(), Some("en-US"));

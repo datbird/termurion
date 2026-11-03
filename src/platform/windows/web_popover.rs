@@ -11,7 +11,7 @@ use crate::egui_host::EguiHost;
 use crate::layout::Rect;
 use crate::web_popover::{Act, BridgeLimiter, Kind, Layout, closes_for_foreground, layout, open_in_title, open_in_url};
 use crate::webhost::{self, ViewId};
-use crate::webhost_win::{ViewSetup, WebView};
+use crate::webhost_win::WebView;
 
 /// The browser's name for the "Open in" button: the registered handler of http.
 pub fn default_browser_name() -> Option<String> {

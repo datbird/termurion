@@ -228,7 +228,7 @@ impl App {
     /// The pane a handed-off console becomes: its packed pseudoconsole, resized to the pane, titled
     /// with the startup title until the program sets one. It is never hosted in termurion-host.
     pub(super) fn pane_from_handoff(&mut self, id: PaneId, p: Profile, h: Handoff, cols: u16, rows: u16) -> Result<(Pane, Profile), String> {
-        let (mut pty, title) = handoff::into_pty(&self.api, h, self.notify.clone()).map_err(|e| format!("Could not take the handed-off console: {e}"))?;
+        let (pty, title) = handoff::into_pty(&self.api, h, self.notify.clone()).map_err(|e| format!("Could not take the handed-off console: {e}"))?;
         let _ = pty.resize(cols.max(2), rows.max(1));
         let mut pane = Pane::from_pty(id, pty, cols, rows);
         if !title.is_empty() {

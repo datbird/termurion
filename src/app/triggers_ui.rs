@@ -74,11 +74,6 @@ pub(super) fn triggers_of(p: &crate::profile::Profile) -> (Vec<Trigger>, Trigger
     (list, prefs)
 }
 
-/// The arguments cmd.exe gets for Run Command: the one builder, so a captured value cannot add a command.
-fn command_args(cmd: &str) -> String {
-    crate::semantic::cmd_args(cmd)
-}
-
 /// Runs a command for Run Command: hidden, through cmd.exe, output discarded.
 fn start_command(cmd: &str) -> std::io::Result<std::process::Child> {
     let mut c = crate::platform::proc::command_for_line(cmd).map_err(std::io::Error::other)?;
@@ -552,6 +547,7 @@ mod tests {
 
     #[test]
     fn run_command_args_are_the_one_cmd_builder() {
-        assert_eq!(command_args(r#"run "foo&calc""#), r#"/d /v:off /s /c "run "foo&calc"""#);
+        // Run Command reaches cmd.exe through platform::proc::command_for_line, which uses this builder.
+        assert_eq!(crate::semantic::cmd_args(r#"run "foo&calc""#), r#"/d /v:off /s /c "run "foo&calc"""#);
     }
 }

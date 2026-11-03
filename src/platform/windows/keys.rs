@@ -17,7 +17,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::super::keys::shell_owned;
-use crate::menus::Chord;
 use crate::mouse::Mods;
 use crate::remap::{Remapper, Tags};
 
@@ -642,6 +641,7 @@ fn global_hotkeys(kb: &KBDLLHOOKSTRUCT, down: bool) -> HookVerdict {
 mod tests {
     use super::super::super::keys::{chat_chord, cockpit_chord, pwm_chord, vk_to_key};
     use super::*;
+    use crate::menus::Chord;
     use crate::menus::ChordKey;
 
     #[test]

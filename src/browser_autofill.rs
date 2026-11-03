@@ -316,6 +316,7 @@ pub const CARD_FILE: &str = "autofill-contact.dat";
 /// A field's most characters (kept on save, load and in the editor; a larger file is no card).
 pub const MAX_VALUE: usize = 256;
 /// The most bytes read from a card file.
+#[cfg(windows)]
 const MAX_CARD_FILE: u64 = 64 * 1024;
 /// The entropy the card is protected with (as 13y1's approval key has its own): a blob made for one
 /// use never unprotects as the other.

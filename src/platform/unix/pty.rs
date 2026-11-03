@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -688,6 +688,7 @@ impl Drop for Pty {
 mod tests {
     use super::*;
     use crate::platform::by_os;
+    use std::os::unix::ffi::OsStringExt;
 
     fn secs(n: u64) -> Duration {
         Duration::from_secs(n)
