@@ -2,7 +2,7 @@
 
 P0 made the crate and all programs compile on Linux and macOS. P1 (the Unix core) added the pseudo terminal, the session host, job tracking, paths, the clipboard, opening URLs and files, tmux `-CC` and window restore, and moved the remaining Win32 code under `src/platform/`. This file records what still fails and why.
 
-Linux (debug build, after the final review fixes): `cargo test --lib` gave **6395 passed, 173 failed**: the 170 named by cause below, plus 3 load flakes of that full run that pass alone (`script_statusbar::tests::script_component_texts_follow_iterm2`, `ssh_procs::tests::a_huge_remote_list_closes_quickly_and_briefly`, `trigger_eval::tests::banner_lines_skip_triggers`). macOS (arm64 VM, same tree): **6398 passed, 171 failed**. At the start of P1 Linux gave 6270 passed, 220 failed.
+Linux (debug build, after the final review fixes and their residual round): `cargo test --lib` gave **6403 passed, 173 failed**: the 170 named by cause below, plus 3 load flakes of that full run that pass alone (`chat_store::tests::corrupt_database_does_not_open`, `trigger_eval::tests::lines_gone_before_the_check`, `trigger_eval::tests::one_search_fits_the_budget`; the run before had three others, `script_statusbar::tests::script_component_texts_follow_iterm2`, `ssh_procs::tests::a_huge_remote_list_closes_quickly_and_briefly` and `trigger_eval::tests::banner_lines_skip_triggers`, which pass now). macOS (arm64 VM, same tree): **6405 passed, 171 failed**. At the start of P1 Linux gave 6270 passed, 220 failed.
 The full failing lists are kept with the task reports (`task-10-linux-failures.txt`, `task-10-mac-failures.txt`); a failure that passes alone is a flake (see Timing).
 
 Windows: the Windows lib, lib tests and binaries type-check from Linux (`scripts/win-check`: 0 errors, 2 warnings, both the `fetch_update` deprecations in `session_log.rs`). **The Windows test run (`scripts/xt test --lib`) is pending, not passed**: the Windows host is on hold, so it waits for the end of P1. Until it runs, no claim is made that the Windows suite is green after P1.
@@ -231,7 +231,7 @@ Session code page and Unicode normalization assertions. Not diagnosed further in
 
 ## macOS-only differences
 
-macOS has the same failures as Linux except these. 5 fail only on macOS (below). 7 failed only on Linux in the last full run and are load or timing flakes: `find::tests::find_over_a_large_buffer_is_quick`, `trigger_eval::tests::each_line_is_checked_once`, `extract::tests::one_walk_checks_and_writes`, `synthetic::tests::filtering_a_large_buffer_is_quick` (Timing; it passed on macOS this time) and the three that pass alone named at the top.
+macOS has the same failures as Linux except these. 5 fail only on macOS (below). 7 failed only on Linux in the last full run and are load or timing flakes: `find::tests::find_over_a_large_buffer_is_quick`, `trigger_eval::tests::each_line_is_checked_once`, `extract::tests::one_walk_checks_and_writes`, `synthetic::tests::filtering_a_large_buffer_is_quick` (Timing; it passed on macOS this time) and the load flakes that pass alone named at the top.
 
 - `licenses::tests::every_dependency_is_listed`: `webview2-com` has no license entry (Windows-only crate, absent from the Unix tree); it passes on Linux now
 - `pane::tests::the_pwsh_script_emits_prompt_marks`: no `pwsh` on the macOS VM
