@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Drives the real Termurion window on a private X server and says PASS or FAIL for one scenario.
 # Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, host, job, clipboard, tmux, tmux-nolang, tmux-lcall, tmux-windows,
-# restore-windows, restore-host
+# restore-windows, restore-host, tmux-restore [a|b|c|d]
+#
+# tmux-restore: a relaunch on the same config after a tmux -CC gateway was open. Variant a: shells in
+# the app, quit with the chord. b: shells in the session host, kill -9 of the app (the host reopens
+# it). c: b with the tmux server killed before the reopen. d (not in the default run): b with a new
+# tmux window made 50 ms before the kill, so a reply to the app's own command may be in flight.
+# With no variant the scenario runs a, b and c.
 #
 # Needs Xvfb, xdotool and ImageMagick's import. Proof is a file, not pixels: each pane runs
 # `echo $$ >> $SCRATCH/pids`, and a screenshot (screen.png) is kept for a person to look at.
@@ -14,9 +20,23 @@ set -uo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo"
 scenario="${1:-}"
+variant="${2:-}"
 case "$scenario" in
     shell | layout | host | job | clipboard | tmux | tmux-nolang | tmux-lcall | tmux-windows | restore-windows | restore-host) ;;
-    *) echo "usage: scripts/unix-gui-check <shell|layout|host|job|clipboard|tmux|tmux-nolang|tmux-lcall|tmux-windows|restore-windows|restore-host>" >&2; exit 2 ;;
+    tmux-restore)
+        case "$variant" in
+            a | b | c | d) ;;
+            "")
+                # All three variants, one run each; the scenario passes when every one does.
+                bad=0
+                for v in a b c; do "$0" tmux-restore "$v" || bad=1; done
+                [ "$bad" -eq 0 ] && echo "PASS tmux-restore"
+                exit "$bad"
+                ;;
+            *) echo "usage: scripts/unix-gui-check tmux-restore [a|b|c|d]" >&2; exit 2 ;;
+        esac
+        ;;
+    *) echo "usage: scripts/unix-gui-check <shell|layout|host|job|clipboard|tmux|tmux-nolang|tmux-lcall|tmux-windows|restore-windows|restore-host|tmux-restore [a|b|c|d]>" >&2; exit 2 ;;
 esac
 # The tmux scenarios: tmux (tabs in the attaching window), tmux-nolang (the app starts with no locale
 # variable), tmux-lcall (the app starts with LC_ALL=C), tmux-windows (the default: a new Termurion window).
@@ -38,7 +58,7 @@ fi
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 
 display=:97
-scratch="$repo/target/gui-check/$scenario"
+scratch="$repo/target/gui-check/$scenario${variant:+-$variant}"
 rm -rf "$scratch"
 mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/run"
 chmod 700 "$scratch/run"
@@ -93,9 +113,16 @@ if [ "$scenario" = clipboard ]; then
     printf '[settings.PointerActions."Button,2,1,,"]\nAction = "kPasteFromSelectionPointerAction"\nArgument = ""\n' > "$scratch/home/.config/termurion/settings.toml"
 fi
 # The tmux scenario opens tmux windows as tabs of the attaching window (mode 2), so the typing below has a tab to land in.
-if [ "$scenario" != tmux-windows ] && $is_tmux; then
+if [ "$scenario" != tmux-windows ] && [ "$scenario" != tmux-restore ] && $is_tmux; then
     mkdir -p "$scratch/home/.config/termurion"
     printf '[settings]\nOpenTmuxWindowsIn = 2\n' > "$scratch/home/.config/termurion/settings.toml"
+fi
+# tmux-restore: tabs for tmux windows; the shells live in the host for b and c, in the app for a.
+if [ "$scenario" = tmux-restore ]; then
+    mkdir -p "$scratch/home/.config/termurion"
+    jobs_in_servers=true
+    [ "$variant" = a ] && jobs_in_servers=false
+    printf '[settings]\nOpenTmuxWindowsIn = 2\nRunJobsInServers = %s\nSUEnableAutomaticChecks = false\n' "$jobs_in_servers" > "$scratch/home/.config/termurion/settings.toml"
 fi
 # The job scenario's profile asks before closing a session that runs a job (a new profile never asks).
 if [ "$scenario" = job ]; then
@@ -108,9 +135,9 @@ locale_env=()
 [ "$scenario" = tmux-lcall ] && locale_env=(LC_ALL=C)
 # A box needs a window manager to be mapped (zenity 4 under bare Xvfb draws nothing), so the quit
 # question in restore-windows is answered by a zenity that says OK at once.
-if [ "$scenario" = restore-windows ]; then
+if [ "$scenario" = restore-windows ] || [ "$scenario" = tmux-restore ]; then
     mkdir -p "$scratch/bin"
-    printf '#!/bin/sh\nexit 0\n' > "$scratch/bin/zenity"
+    printf '#!/bin/sh\necho "$@" >> "%s/zenity.log"\nexit 0\n' "$scratch" > "$scratch/bin/zenity"
     chmod +x "$scratch/bin/zenity"
     export PATH="$scratch/bin:$PATH"
 fi
@@ -361,6 +388,70 @@ case "$scenario" in
         shoot
         kill "$xclip_pid" 2> /dev/null
         [ "$(tr -d '\n' < "$scratch/got" 2> /dev/null)" = other ] || fail "the middle click did not paste 'other' (got '$(cat "$scratch/got" 2> /dev/null)')"
+        ;;
+    tmux-restore)
+        sleep 1
+        xdotool type --delay 20 'tmux -L guicheck -f /dev/null -CC new-session -s gui'
+        xdotool key Return
+        mode=""
+        for _ in $(seq 100); do
+            mode=$(tmux -L guicheck list-clients -F '#{client_control_mode}' 2> /dev/null | head -1)
+            [ "$mode" = 1 ] && break
+            sleep 0.1
+        done
+        [ "$mode" = 1 ] || fail "no control mode client on the guicheck server before the relaunch (client_control_mode '$mode')"
+        sleep 3
+        touch "$scratch/typed"
+        state="$scratch/home/.config/termurion/state"
+        if [ "$variant" = a ]; then
+            xdotool key ctrl+shift+q
+            for _ in $(seq 50); do kill -0 "$app_pid" 2> /dev/null || break; sleep 0.2; done
+            kill -0 "$app_pid" 2> /dev/null && fail "the app did not quit (see $scratch/app.log)"
+            [ -s "$state" ] || fail "no saved windows file at $state after the quit"
+            lines_before=$(wc -l < "$scratch/app.log")
+            launch_app
+            find_window
+        else
+            quiet=$(sed -n 's/^pub const QUIET: Duration = Duration::from_secs(\([0-9]*\));/\1/p' src/restore_state.rs)
+            floor=$(sed -n 's/^pub const FLOOR: Duration = Duration::from_secs(\([0-9]*\));/\1/p' src/restore_state.rs)
+            deadline=$(( $(date +%s) + quiet + floor + 10 ))
+            until [ "$state" -nt "$scratch/typed" ]; do
+                [ "$(date +%s)" -lt "$deadline" ] || fail "the app never saved its windows"
+                sleep 0.5
+            done
+            old_app=$app_pid
+            lines_before=$(wc -l < "$scratch/app.log")
+            [ "$variant" = d ] && { tmux -L guicheck new-window -d; sleep 0.05; }
+            kill -9 "$old_app"
+            [ "$variant" = c ] && tmux -L guicheck kill-server 2> /dev/null
+            app_pid=""
+            deadline=$(( $(date +%s) + 20 ))
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+                for p in /proc/[0-9]*; do
+                    [ "$(cat "$p/comm" 2> /dev/null)" = termurion ] || continue
+                    [ "${p#/proc/}" = "$old_app" ] && continue
+                    tr '\0' '\n' < "$p/environ" 2> /dev/null | grep -qx "XDG_RUNTIME_DIR=$scratch/run" || continue
+                    app_pid=${p#/proc/}
+                done
+                [ -n "$app_pid" ] && break
+                sleep 0.2
+            done
+            [ -n "$app_pid" ] || fail "the host did not reopen Termurion"
+            find_window
+        fi
+        sleep 5
+        shoot
+        # The error box prints its title and text to the app log (stderr) and the stand-in zenity log.
+        if tail -n +$((lines_before + 1)) "$scratch/app.log" | grep -q "Reported a Problem" || grep -qs "Reported a Problem" "$scratch/zenity.log"; then
+            fail "the relaunch raised 'tmux Reported a Problem': $(tail -n +$((lines_before + 1)) "$scratch/app.log" | grep -m1 'Reported a Problem') (see $scratch/screen.png)"
+        fi
+        mode=$(tmux -L guicheck list-clients -F '#{client_control_mode}' 2> /dev/null | head -1)
+        echo "tmux-restore $variant: client_control_mode '${mode:-none}' after the relaunch"
+        # Either tmux mode is back (mode 1) or the pane is a plain shell that answers a typed line.
+        : > "$scratch/pids"; want=0
+        type_pid_line
+        shoot
+        cp "$scratch/pids" "$scratch/pids2"
         ;;
     tmux | tmux-nolang | tmux-lcall | tmux-windows)
         sleep 1
