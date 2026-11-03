@@ -15,10 +15,11 @@ pub struct Facts {
     pub encoding: Option<String>,
     /// Advanced > Terminal "FallbackLCCType".
     pub fallback_lc_ctype: String,
-    /// A UTF-8 locale with no language that the system always has (`C.UTF-8` on Linux, where the
-    /// bare encoding name is no locale). Where set, the picker has nothing to offer, so a failed
-    /// guess never asks and this is the `LC_CTYPE` fallback. None on macOS and Windows.
+    /// The UTF-8 locale a failed guess falls back to where the bare encoding name is no locale
+    /// (Linux: `C.UTF-8`, else `en_US.UTF-8`, when the C library has it). None on macOS and Windows.
     pub utf8_fallback: Option<String>,
+    /// The picker would have nothing to offer (Linux), so a failed guess never asks.
+    pub never_asks: bool,
     /// The environment already names a working UTF-8 locale with no language (`C.UTF-8`): a
     /// failed guess then sets nothing.
     pub inherited_utf8: bool,
@@ -165,8 +166,8 @@ pub fn locale_vars(mode: Mode, custom: &str, f: &Facts, utf8: bool, supported: &
         Mode::Custom | Mode::Automatic => match lang(f, supported) {
             Some(v) => var("LANG", v),
             // An empty picker is no question: keep a working UTF-8 locale, else fall back.
-            None if f.utf8_fallback.is_some() && f.inherited_utf8 && utf8 => Outcome::None,
-            None if f.utf8_fallback.is_some() => lc_ctype(f, supported).map_or(Outcome::None, |v| var("LC_CTYPE", v)),
+            None if f.never_asks && f.inherited_utf8 && utf8 => Outcome::None,
+            None if f.never_asks => lc_ctype(f, supported).map_or(Outcome::None, |v| var("LC_CTYPE", v)),
             None => Outcome::NeedsPrompt,
         },
     }
@@ -410,7 +411,7 @@ mod tests {
     fn a_system_with_a_plain_utf8_locale_never_asks_and_never_sets_the_encoding_name() {
         // Linux's rule: C.UTF-8, or a name that starts with a language.
         let shape = |c: &str| c == "C.UTF-8" || c.starts_with(|ch: char| ch.is_ascii_lowercase());
-        let linux = Facts { utf8_fallback: Some("C.UTF-8".into()), ..facts(&[], None, Some("UTF-8")) };
+        let linux = Facts { utf8_fallback: Some("C.UTF-8".into()), never_asks: true, ..facts(&[], None, Some("UTF-8")) };
         let lc = Outcome::Vars(vec![("LC_CTYPE".into(), "C.UTF-8".into())]);
         assert_eq!(locale_vars(Mode::Automatic, "", &linux, true, &shape), lc, "no locale at all");
         assert_eq!(locale_vars(Mode::Minimal, "", &linux, true, &shape), lc);

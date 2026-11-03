@@ -65,7 +65,9 @@ mod os {
 
     /// macOS takes the encoding name alone as `LC_CTYPE` (`UTF-8`), so a failed guess asks.
     pub const ENCODING_IS_A_LOCALE: bool = true;
-    pub const UTF8_FALLBACK: Option<&str> = None;
+    pub fn utf8_fallback() -> Option<&'static str> {
+        None
+    }
 
     /// The identifier of the user's current locale (`en_US`), read through CoreFoundation.
     pub fn user_locale_name() -> Option<String> {
@@ -96,9 +98,31 @@ mod os {
 
 #[cfg(not(target_os = "macos"))]
 mod os {
-    /// glibc has no locale named `UTF-8`; `C.UTF-8` is the one UTF-8 locale it always has.
+    /// glibc has no locale named `UTF-8`.
     pub const ENCODING_IS_A_LOCALE: bool = false;
-    pub const UTF8_FALLBACK: Option<&str> = Some("C.UTF-8");
+
+    /// The UTF-8 locale a failed guess falls back to: `C.UTF-8`, else `en_US.UTF-8` (an old
+    /// glibc has no `C.UTF-8`), else none, each asked of the C library itself.
+    pub fn utf8_fallback() -> Option<&'static str> {
+        static PICKED: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+        *PICKED.get_or_init(|| pick_fallback(&locale_exists))
+    }
+
+    /// Whether the C library has `name` for LC_CTYPE: `newlocale`, setlocale's thread-safe twin,
+    /// which leaves this process's own locale alone.
+    pub(super) fn locale_exists(name: &str) -> bool {
+        let Ok(c) = std::ffi::CString::new(name) else { return false };
+        let l = unsafe { libc::newlocale(libc::LC_CTYPE_MASK, c.as_ptr(), std::ptr::null_mut()) };
+        if l.is_null() {
+            return false;
+        }
+        unsafe { libc::freelocale(l) };
+        true
+    }
+
+    pub(super) fn pick_fallback(exists: &dyn Fn(&str) -> bool) -> Option<&'static str> {
+        ["C.UTF-8", "en_US.UTF-8"].into_iter().find(|n| exists(n))
+    }
 
     /// Linux has no per-user setting outside the environment.
     pub fn user_locale_name() -> Option<String> {
@@ -132,7 +156,8 @@ fn facts_for(lang: &str, ns_encoding: i64, fallback: &str) -> crate::locale_gues
         country,
         encoding: crate::locale_guess::encoding_name(ns_encoding).map(str::to_string),
         fallback_lc_ctype: fallback.to_string(),
-        utf8_fallback: os::UTF8_FALLBACK.map(str::to_string),
+        utf8_fallback: os::utf8_fallback().map(str::to_string),
+        never_asks: !os::ENCODING_IS_A_LOCALE,
         inherited_utf8: is_plain_utf8(&lang),
     }
 }
@@ -223,6 +248,22 @@ mod tests {
         assert_eq!(locale_vars(Mode::Automatic, "", &facts_for("C", 4, ""), true, &ok), lc);
         assert_eq!(locale_vars(Mode::Minimal, "", &c_utf8, true, &ok), lc);
         assert_eq!(locale_vars(Mode::Automatic, "", &facts_for("de_DE.UTF-8", 4, ""), true, &ok), Outcome::Vars(vec![("LANG".into(), "de_DE.UTF-8".into())]));
+    }
+
+    /// An old glibc may lack `C.UTF-8`: then `en_US.UTF-8`, else nothing. The real C library
+    /// here has `C.UTF-8`.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn the_fallback_locale_must_exist() {
+        assert_eq!(os::pick_fallback(&|_| true), Some("C.UTF-8"));
+        assert_eq!(os::pick_fallback(&|n| n == "en_US.UTF-8"), Some("en_US.UTF-8"));
+        assert_eq!(os::pick_fallback(&|_| false), None);
+        assert_eq!(os::utf8_fallback(), Some("C.UTF-8"));
+        assert!(!os::locale_exists("xx_NOPE.UTF-8"));
+        // No locale to fall back to: nothing is set, and still no empty question.
+        let mut f = facts_for("", 4, "");
+        f.utf8_fallback = None;
+        assert_eq!(crate::locale_guess::locale_vars(crate::locale_guess::Mode::Automatic, "", &f, true, &|c| supported(c, Some("UTF-8"))), crate::locale_guess::Outcome::None);
     }
 
     /// macOS keeps iTerm2's `LC_CTYPE=UTF-8`.
