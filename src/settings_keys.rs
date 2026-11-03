@@ -2423,7 +2423,8 @@ mod tests {
     #[test]
     fn rows_show_labels() {
         let map: toml::Table = toml::from_str("\"0x9-0x40000\" = { Action = 32, Text = \"\" }").unwrap();
-        assert_eq!(rows(&map), [("0x9-0x40000".to_string(), "Ctrl+Tab".to_string(), "Cycle Tabs Forward".to_string())]);
+        let ctrl_tab = crate::shortcut_key::mode().show("Ctrl+Tab");
+        assert_eq!(rows(&map), [("0x9-0x40000".to_string(), ctrl_tab, "Cycle Tabs Forward".to_string())]);
         let hex: toml::Table = toml::from_str("\"0x7f-0x80000\" = { Action = 11, Text = \"0x1b 0x7f\" }").unwrap();
         assert_eq!(rows(&hex)[0].2, "Send Hex Code: 0x1b 0x7f");
     }

@@ -378,6 +378,14 @@ mod tests {
 
     #[test]
     fn labels_use_windows_names() {
+        if crate::platform::keys::CMD_IS_A_KEY {
+            // The same keys in the Mac's glyphs: Cmd is the real key there.
+            assert_eq!(parse("0xf702-0x320000").unwrap().label(), "\u{21e7}\u{2318}\u{2190}");
+            assert_eq!(parse("0x9-0x40000").unwrap().label(), "\u{2303}Tab");
+            assert_eq!(parse("0x61-0x1100000").unwrap().label(), "Leader, \u{2318}A");
+            assert_eq!(parse("0x35-0x200000").unwrap().label(), "Keypad 5");
+            return;
+        }
         assert_eq!(parse("0xf702-0x320000").unwrap().label(), "Ctrl+Shift+Alt+Left");
         assert_eq!(parse("0x9-0x40000").unwrap().label(), "Ctrl+Tab");
         assert_eq!(parse("0x19-0x60000").unwrap().label(), "Ctrl+Shift+Tab");

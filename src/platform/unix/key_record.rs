@@ -45,25 +45,26 @@ pub fn chord_key(key: PhysicalKey) -> Option<ChordKey> {
 /// The chord key of a key event: the character on macOS, the position elsewhere.
 pub fn chord_key_of(ev: &winit::event::KeyEvent) -> Option<ChordKey> {
     if crate::platform::keys::CMD_IS_A_KEY {
-        chord_key_from(&ev.logical_key, ev.physical_key)
+        use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+        chord_key_from(&ev.logical_key, &ev.key_without_modifiers(), ev.physical_key)
     } else {
         chord_key(ev.physical_key)
     }
 }
 
 /// The chord key the character names, as AppKit matches a key equivalent: one ASCII graphic
-/// character (a shifted one as its unshifted key), else the key's position. A non-Latin layout
-/// or a viewer that sends key code 0 still gets the right key.
-pub fn chord_key_from(logical: &Key, physical: PhysicalKey) -> Option<ChordKey> {
-    if let Key::Character(s) = logical {
+/// character (a shifted one as its unshifted key), else the same from the key without modifiers
+/// (Option makes a symbol), else the key's position. A non-Latin layout or a viewer that sends
+/// key code 0 still gets the right key.
+pub fn chord_key_from(logical: &Key, unmodified: &Key, physical: PhysicalKey) -> Option<ChordKey> {
+    let ascii = |k: &Key| {
+        let Key::Character(s) = k else { return None };
         let mut chars = s.chars();
-        if let (Some(c), None) = (chars.next(), chars.next())
-            && c.is_ascii_graphic() {
-                let base = crate::menus::SHIFTED.iter().find(|(shifted, _)| *shifted == c).map_or(c, |(_, base)| *base);
-                return Some(ChordKey::Char(base.to_ascii_lowercase()));
-            }
-    }
-    chord_key(physical)
+        let c = chars.next().filter(|c| c.is_ascii_graphic() && chars.next().is_none())?;
+        let base = crate::menus::SHIFTED.iter().find(|(shifted, _)| *shifted == c).map_or(c, |(_, base)| *base);
+        Some(ChordKey::Char(base.to_ascii_lowercase()))
+    };
+    ascii(logical).or_else(|| ascii(unmodified)).or_else(|| chord_key(physical))
 }
 
 /// No keyboard hook, so nothing to pause.
@@ -84,13 +85,17 @@ mod tests {
     #[test]
     fn the_chord_key_is_the_character() {
         // Key code 0 from a VNC client, with the right character.
-        assert_eq!(chord_key_from(&ch("t"), PhysicalKey::Code(K::KeyA)), Some(ChordKey::Char('t')));
-        assert_eq!(chord_key_from(&ch("}"), PhysicalKey::Code(K::BracketRight)), Some(ChordKey::Char(']')));
-        assert_eq!(chord_key_from(&ch("T"), PhysicalKey::Code(K::KeyT)), Some(ChordKey::Char('t')));
+        assert_eq!(chord_key_from(&ch("t"), &ch("t"), PhysicalKey::Code(K::KeyA)), Some(ChordKey::Char('t')));
+        assert_eq!(chord_key_from(&ch("}"), &ch("}"), PhysicalKey::Code(K::BracketRight)), Some(ChordKey::Char(']')));
+        assert_eq!(chord_key_from(&ch("T"), &ch("T"), PhysicalKey::Code(K::KeyT)), Some(ChordKey::Char('t')));
         // A non-Latin layout falls back to the key's US position.
-        assert_eq!(chord_key_from(&ch("\u{442}"), PhysicalKey::Code(K::KeyN)), Some(ChordKey::Char('n')));
-        assert_eq!(chord_key_from(&Key::Named(NamedKey::ArrowUp), PhysicalKey::Code(K::ArrowUp)), Some(ChordKey::Up));
+        assert_eq!(chord_key_from(&ch("\u{442}"), &ch("\u{442}"), PhysicalKey::Code(K::KeyN)), Some(ChordKey::Char('n')));
+        assert_eq!(chord_key_from(&Key::Named(NamedKey::ArrowUp), &Key::Named(NamedKey::ArrowUp), PhysicalKey::Code(K::ArrowUp)), Some(ChordKey::Up));
         // AZERTY puts Q where A sits on a US board.
-        assert_eq!(chord_key_from(&ch("q"), PhysicalKey::Code(K::KeyA)), Some(ChordKey::Char('q')));
+        assert_eq!(chord_key_from(&ch("q"), &ch("q"), PhysicalKey::Code(K::KeyA)), Some(ChordKey::Char('q')));
+        // Option makes the character a symbol; the key without modifiers names the key (AZERTY A).
+        assert_eq!(chord_key_from(&ch("\u{e6}"), &ch("a"), PhysicalKey::Code(K::KeyQ)), Some(ChordKey::Char('a')));
+        // Both non-ASCII: the US position.
+        assert_eq!(chord_key_from(&ch("\u{e6}"), &ch("\u{442}"), PhysicalKey::Code(K::KeyQ)), Some(ChordKey::Char('q')));
     }
 }

@@ -220,19 +220,19 @@ impl SshPanelWindow {
                             out = PanelEvent::Click { path: f.absolute_path.clone(), ctrl: mods.command, shift: mods.shift };
                         }
                         resp.context_menu(|ui| {
-                            if ui.add(egui::Button::new(m::GO_TO_FOLDER).shortcut_text("Ctrl+Shift+G")).clicked() {
+                            if ui.add(egui::Button::new(m::GO_TO_FOLDER).shortcut_text(crate::shortcut_key::mode().show("Ctrl+Shift+G"))).clicked() {
                                 open_goto = true;
                                 ui.close();
                             }
-                            if ui.add(egui::Button::new(m::GO_TO_HOME).shortcut_text("Ctrl+Shift+H")).clicked() {
+                            if ui.add(egui::Button::new(m::GO_TO_HOME).shortcut_text(crate::shortcut_key::mode().show("Ctrl+Shift+H"))).clicked() {
                                 out = PanelEvent::Home;
                                 ui.close();
                             }
-                            if ui.add(egui::Button::new(m::GO_UP).shortcut_text("Ctrl+Up")).clicked() {
+                            if ui.add(egui::Button::new(m::GO_UP).shortcut_text(crate::shortcut_key::mode().show("Ctrl+Up"))).clicked() {
                                 out = PanelEvent::Up;
                                 ui.close();
                             }
-                            if ui.add(egui::Button::new(m::REFRESH).shortcut_text("Ctrl+R")).clicked() {
+                            if ui.add(egui::Button::new(m::REFRESH).shortcut_text(crate::shortcut_key::mode().show("Ctrl+R"))).clicked() {
                                 out = PanelEvent::Refresh;
                                 ui.close();
                             }

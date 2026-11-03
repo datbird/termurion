@@ -49,7 +49,9 @@ pub struct Held {
 }
 
 /// What the key path and the menus read. Ctrl+Shift until the app sets it from the setting.
-static MODE: AtomicU8 = AtomicU8::new(0);
+/// Command on macOS from the start, so text built before the first menu is already in Mac words.
+const INITIAL_MODE: u8 = if crate::platform::keys::CMD_IS_A_KEY { 3 } else { 0 };
+static MODE: AtomicU8 = AtomicU8::new(INITIAL_MODE);
 
 pub fn mode() -> ShortcutKey {
     match MODE.load(Ordering::Relaxed) {
@@ -208,8 +210,8 @@ impl ShortcutKey {
         match self {
             ShortcutKey::CtrlShift => [CS, CSA, SA, CA],
             ShortcutKey::CtrlAlt => [CA, CSA, CS, SA],
-            // Command has no pairs; every method below answers for it before reading this.
-            ShortcutKey::Command => [CS, CSA, SA, CA],
+            // Every caller (held_for, logical, press_chords) answers for Command before this.
+            ShortcutKey::Command => unreachable!("Command has no pairs"),
         }
     }
 
@@ -429,8 +431,16 @@ fn show_mac_word(word: &str) -> String {
         return word.to_string();
     }
     let has = |name: &str| mods.contains(&name);
-    // "Alt+Win+" is a prefix with no key yet.
-    let key = if last.is_empty() { String::new() } else if let Some(k) = parse_key_label(last) { mac_key(&k) } else { return word.to_string() };
+    // "Alt+Win+" is a prefix with no key yet; "Win+click" and "Alt+drag" keep their pointer word.
+    let key = if last.is_empty() {
+        String::new()
+    } else if matches!(*last, "click" | "drag") {
+        last.to_string()
+    } else if let Some(k) = parse_key_label(last) {
+        mac_key(&k)
+    } else {
+        return word.to_string();
+    };
     let glyphs = mac_label(has("Ctrl"), has("Alt"), has("Shift"), has("Win"), &ChordKey::Space);
     let glyphs = glyphs.strip_suffix("Space").unwrap_or(&glyphs);
     format!("{open}{glyphs}{key}{close}")
@@ -1149,10 +1159,7 @@ mod tests {
         let want = if crate::platform::keys::CMD_IS_A_KEY { ShortcutKey::Command } else { ShortcutKey::CtrlAlt };
         assert_eq!(ShortcutKey::from_globals(&g), want);
         assert_eq!(ShortcutKey::from_value(3), ShortcutKey::CtrlShift);
-        let before = mode();
-        set_mode(ShortcutKey::Command);
-        assert_eq!(mode(), ShortcutKey::Command);
-        set_mode(before);
+        assert_eq!(ShortcutKey::Command.value(), 3);
     }
 
     #[test]
@@ -1160,5 +1167,20 @@ mod tests {
         use crate::platform::keys::WINDOWS_KEY_CONVENTIONS as W;
         assert_eq!(ctrl_v_pastes(true, Mods { ctrl: true, ..Mods::default() }, false, false), W);
         assert_eq!(f11_toggles_full_screen(true, Mods::default(), false), W);
+    }
+
+    #[test]
+    fn the_mode_starts_right_before_any_menu_is_built() {
+        // MODE's initial value, read before any test sets it.
+        let want = if crate::platform::keys::CMD_IS_A_KEY { 3 } else { 0 };
+        assert_eq!(INITIAL_MODE, want);
+    }
+
+    #[test]
+    fn click_and_drag_words_get_the_mac_glyphs_too() {
+        assert_eq!(ShortcutKey::Command.show("Win+click"), "\u{2318}click");
+        assert_eq!(ShortcutKey::Command.show("Alt+drag"), "\u{2325}drag");
+        assert_eq!(ShortcutKey::Command.show("Ctrl+Shift+click"), "\u{2303}\u{21e7}click");
+        assert_eq!(ShortcutKey::CtrlShift.show("Ctrl+Shift+G"), "Ctrl+Shift+G");
     }
 }
