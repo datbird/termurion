@@ -1824,13 +1824,25 @@ mod tests {
                 continue;
             }
             let text = std::fs::read_to_string(&p).unwrap();
-            // A body runs from one fn to the next.
-            let mut starts: Vec<usize> = text.match_indices("fn ").map(|(i, _)| i).filter(|i| *i == 0 || text[..*i].ends_with(' ') || text[..*i].ends_with('\n')).collect();
-            starts.push(text.len());
-            for w in starts.windows(2) {
-                let body = &text[w[0]..w[1]];
+            // A body runs from one fn line to the next; comment lines are not code.
+            let is_fn = |l: &str| {
+                let t = l.trim_start();
+                let t = t.strip_prefix("pub").map_or(t, |r| r.trim_start_matches(|c: char| c != ' ').trim_start());
+                t.starts_with("fn ") || t.starts_with("async fn ")
+            };
+            let mut bodies: Vec<(String, String)> = Vec::new();
+            for line in text.lines() {
+                if is_fn(line) {
+                    bodies.push((line.trim().to_string(), String::new()));
+                }
+                if let Some((_, body)) = bodies.last_mut() && !line.trim_start().starts_with("//") {
+                    body.push_str(line);
+                    body.push('\n');
+                }
+            }
+            for (head, body) in bodies {
                 if takes.iter().any(|n| body.contains(n.as_str())) && body.contains(own.as_str()) {
-                    bad.push(format!("{}: {}", p.file_name().unwrap().to_string_lossy(), body.lines().next().unwrap_or("")));
+                    bad.push(format!("{}: {head}", p.file_name().unwrap().to_string_lossy()));
                 }
             }
         }
@@ -1908,8 +1920,9 @@ mod tests {
     fn window_list_entries() {
         let entries = [(7, 1, "b".to_string(), "b".to_string()), (3, 0, "a".to_string(), "a".to_string())];
         let list = super::window_list(&entries, Some(3), true, 6);
-        // The window keys read in the shortcut key's own words (Cmd glyphs on a Mac).
-        let key = |n: u8| crate::shortcut_key::mode().show(&format!("Alt+Win+{n}"));
+        // Cmd glyphs on a Mac; the Windows words elsewhere.
+        let mode = crate::shortcut_key::mode();
+        let key = |n: u8| if cfg!(target_os = "macos") { mode.show(&format!("Alt+Win+{n}")) } else { format!("Alt+Shift+{n}") };
         assert_eq!(list, [(3, format!("a \u{2014} {}", key(1)), true), (7, format!("b \u{2014} {}", key(2)), false)]);
         let list = super::window_list(&entries, Some(7), false, 6);
         assert_eq!(list, [(3, "a".to_string(), false), (7, "b".to_string(), true)]);

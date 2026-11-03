@@ -1,4 +1,4 @@
-//! Window chrome on Unix (all of it on Linux; macOS takes the shared no-ops from here). DWM has no Unix meaning (the window manager draws border and corners);
+//! Window chrome on Unix: Linux in full, plus the no-ops macOS shares. DWM has no Unix meaning (the window manager draws border and corners);
 //! the native menu bar is not attached yet; `available` says so and the app shows it.
 
 use crate::platform::Unsupported;

@@ -449,7 +449,8 @@ mod tests {
 
     #[test]
     fn script_labels_follow_this_os() {
-        assert_eq!(shown_label("Reveal Scripts in Finder"), format!("Reveal Scripts in {}", crate::platform::shell_open::FILE_MANAGER));
+        let manager = if cfg!(target_os = "macos") { "Finder" } else { "Explorer" };
+        assert_eq!(shown_label("Reveal Scripts in Finder"), format!("Reveal Scripts in {manager}"));
         assert_eq!(shown_label("New Tab"), "New Tab");
     }
 

@@ -3,8 +3,9 @@
 //! meaning here and come from the shared Unix no-ops.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use muda::ContextMenu;
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSView;
 
@@ -17,6 +18,9 @@ pub const NATIVE_ACCELERATORS: bool = true;
 
 /// A bar was handed to the app at least once.
 static BAR_SET: AtomicBool = AtomicBool::new(false);
+
+/// The menu (its NSMenu address) that is the app's main menu now.
+static CURRENT: AtomicUsize = AtomicUsize::new(0);
 
 const OFF_MAIN: &str = "AppKit menus can only be used on the main thread.";
 
@@ -50,6 +54,7 @@ pub fn replace_menu_bar(earlier: Option<muda::Menu>, menu: &muda::Menu, _view: i
         return Err(OFF_MAIN.to_string());
     }
     menu.init_for_nsapp();
+    CURRENT.store(menu.ns_menu() as usize, Ordering::Relaxed);
     drop(earlier);
     BAR_SET.store(true, Ordering::Relaxed);
     Ok(())
@@ -57,7 +62,8 @@ pub fn replace_menu_bar(earlier: Option<muda::Menu>, menu: &muda::Menu, _view: i
 
 /// The window that came to the front hands its bar to the screen.
 pub fn bar_focused(menu: &muda::Menu) {
-    if MainThreadMarker::new().is_some() {
+    // Only when another window's bar is the app's: a focus gain on the same bar changes nothing.
+    if MainThreadMarker::new().is_some() && CURRENT.swap(menu.ns_menu() as usize, Ordering::Relaxed) != menu.ns_menu() as usize {
         menu.init_for_nsapp();
     }
 }
