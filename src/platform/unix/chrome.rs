@@ -1,5 +1,5 @@
-//! Window chrome on Unix: Linux in full, plus the no-ops macOS shares. DWM has no Unix meaning (the window manager draws border and corners);
-//! the native menu bar is not attached yet; `available` says so and the app shows it.
+//! Window chrome on Unix: Linux in full, plus the no-ops macOS shares. The window manager draws
+//! border and corners; the native menu bar is not attached yet, and `available` says so.
 
 use crate::platform::Unsupported;
 
@@ -30,9 +30,12 @@ pub fn services_item() -> Option<muda::PredefinedMenuItem> {
 }
 
 /// Linux keys do not pass a menu first; nothing to claim.
-pub fn claim_key_equivalents(_view: isize) -> Result<(), String> {
+pub fn claim_key_equivalents(_view: isize, _route: std::sync::Arc<std::sync::RwLock<crate::keyroute::Snapshot>>) -> Result<(), String> {
     Ok(())
 }
+
+/// Nothing was claimed on Linux, so nothing to forget.
+pub fn forget_key_equivalents(_view: isize) {}
 
 pub fn set_border(_hwnd: isize, _color: u32) {}
 

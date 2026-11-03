@@ -863,6 +863,10 @@ impl App {
             crate::platform::keys::remove_window(h);
             crate::platform::input::first_mouse_forget(h);
         }
+        // The view address can be reused by a window that is not a terminal.
+        if let Some(v) = self.view() {
+            crate::platform::chrome::forget_key_equivalents(v);
+        }
         let mut live = WinSlot::new_empty();
         self.swap_live(&mut live);
         // `close_current` drops the closed window (which closes the OS window) and swaps the

@@ -109,12 +109,20 @@ impl Item {
 
     /// The Windows chord for this item's key equivalent, if it has one.
     pub fn chord(&self) -> Option<Chord> {
-        let mut chars = self.key.chars();
-        let c = chars.next()?;
-        if chars.next().is_some() {
-            return None;
-        }
         let has = |m: &str| self.mods.iter().any(|x| x == m);
+        chord_of_key(&self.key, has("cmd"), has("opt"), has("shift"), has("ctrl"))
+    }
+}
+
+/// The chord for a key equivalent string (iTerm2's key characters, the same ones AppKit reports as
+/// the characters of a key event) with its modifiers. None for an empty or multi-character string.
+pub fn chord_of_key(key: &str, cmd: bool, alt: bool, shift: bool, ctrl: bool) -> Option<Chord> {
+    let mut chars = key.chars();
+    let c = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+    {
         let (key, implied_shift) = match c {
             '\u{f700}' => (ChordKey::Up, false),
             '\u{f701}' => (ChordKey::Down, false),
@@ -136,7 +144,7 @@ impl Item {
                 None => (ChordKey::Char(c.to_ascii_lowercase()), false),
             },
         };
-        Some(Chord { key, cmd: has("cmd"), alt: has("opt"), shift: has("shift") || implied_shift, ctrl: has("ctrl") })
+        Some(Chord { key, cmd, alt, shift: shift || implied_shift, ctrl })
     }
 }
 

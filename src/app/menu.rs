@@ -388,7 +388,7 @@ impl App {
         if let Some(help) = subs.get(&vec!["Help".to_string()]) {
             crate::platform::chrome::adopt_help_menu(help);
         }
-        if let Err(e) = crate::platform::chrome::claim_key_equivalents(view) {
+        if let Err(e) = crate::platform::chrome::claim_key_equivalents(view, self.route_snapshot.clone()) {
             self.banners.set("keyclaim", format!("Key mappings may lose to menu shortcuts: {e}"));
         }
         // Tips beside highlighted items, after the delay `MenuTipDelay` sets (iTerm2 reads it per tip).

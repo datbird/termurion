@@ -80,8 +80,12 @@ pub fn services_item() -> Option<muda::PredefinedMenuItem> {
     Some(muda::PredefinedMenuItem::services(None))
 }
 
-pub fn claim_key_equivalents(view: isize) -> Result<(), String> {
-    super::key_claim::install(view)
+pub fn claim_key_equivalents(view: isize, route: std::sync::Arc<std::sync::RwLock<crate::keyroute::Snapshot>>) -> Result<(), String> {
+    super::key_claim::install(view, route)
+}
+
+pub fn forget_key_equivalents(view: isize) {
+    super::key_claim::forget(view)
 }
 
 /// Pops the menu up in the window's view. False for a dismissed menu, and also when there is no

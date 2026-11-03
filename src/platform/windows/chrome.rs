@@ -155,9 +155,12 @@ pub fn services_item() -> Option<muda::PredefinedMenuItem> {
 }
 
 /// The Windows key hook takes keys before the menu; nothing to claim.
-pub fn claim_key_equivalents(_view: isize) -> Result<(), String> {
+pub fn claim_key_equivalents(_view: isize, _route: std::sync::Arc<std::sync::RwLock<crate::keyroute::Snapshot>>) -> Result<(), String> {
     Ok(())
 }
+
+/// Nothing was claimed on Windows, so nothing to forget.
+pub fn forget_key_equivalents(_view: isize) {}
 
 #[cfg(test)]
 mod menu_bar_replace_tests {

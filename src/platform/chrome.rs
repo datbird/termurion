@@ -110,8 +110,14 @@ pub fn services_item() -> Option<muda::PredefinedMenuItem> {
 
 /// Makes the window's view take every Command key-down before the menu does, so key mappings beat
 /// menu shortcuts (macOS). Windows and Linux route keys through their own hook, so nothing to do.
-pub fn claim_key_equivalents(view: isize) -> Result<(), String> {
-    imp::claim_key_equivalents(view)
+/// `route` is what the key path takes (mappings, menu chords): only those Cmd keys are claimed.
+pub fn claim_key_equivalents(view: isize, route: std::sync::Arc<std::sync::RwLock<crate::keyroute::Snapshot>>) -> Result<(), String> {
+    imp::claim_key_equivalents(view, route)
+}
+
+/// The window's view is going away: it stops taking keys (macOS; nothing to forget elsewhere).
+pub fn forget_key_equivalents(view: isize) {
+    imp::forget_key_equivalents(view)
 }
 
 /// Shows a tip beside the highlighted menu item after `delay` (Windows owner-draws its menus; the toolkit
