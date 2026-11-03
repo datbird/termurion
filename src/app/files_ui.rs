@@ -358,8 +358,9 @@ impl App {
         // Where launch left Downloads alone, its stale temps are swept on the first answer.
         if !crate::platform::paths::SWEEP_DOWNLOADS_AT_LAUNCH && !self.downloads_swept {
             self.downloads_swept = true;
-            if let Some(d) = &dir {
-                crate::ssh_local::sweep_stale(d, std::time::SystemTime::now());
+            // Off the UI thread: a folder access prompt must not freeze the window.
+            if let Some(d) = dir.clone() {
+                std::thread::spawn(move || crate::ssh_local::sweep_stale(&d, std::time::SystemTime::now()));
             }
         }
         match banner {
@@ -427,6 +428,7 @@ mod tests {
         let body = &f[at..at + 1200];
         assert!(body.contains("!crate::platform::paths::SWEEP_DOWNLOADS_AT_LAUNCH"), "guarded by the constant");
         assert!(body.contains("ssh_local::sweep_stale"), "sweeps on the first answer");
+        assert!(body.contains("std::thread::spawn") && body.find("thread::spawn") < body.find("ssh_local::sweep_stale"), "off the UI thread");
     }
 
     /// Final review item 17 (Task 8 M3, P19): the Downloads folder is probed once per run, again only

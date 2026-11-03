@@ -7,12 +7,16 @@ repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo"
 host="${CHECK_UNIX_MAC_HOST:-funtimes}"
 rsync -rt --delete --exclude /target/ --exclude /.git/ --exclude /.superpowers/ ./ "$host:src/termurion/" || { echo "mac-bundle: rsync failed"; exit 2; }
-out=$(ssh "$host" 'bash -s' <<'REMOTE'
+# The remote script goes over as a file, so no command in it can eat its stdin.
+rscript=$(mktemp)
+trap 'rm -f "$rscript"' EXIT
+cat > "$rscript" <<'REMOTE'
 set -euo pipefail
 cd src/termurion
 step() { echo "mac-bundle: $1 failed" >&2; exit 1; }
 ~/.cargo/bin/cargo build --release --bins >&2 || step build
 ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+[ -n "$ver" ] || step version
 app=target/release/Termurion.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
@@ -37,7 +41,9 @@ rm -f "$zip"
 ditto -c -k --keepParent "$app" "$zip" || step zip
 echo "ZIP $zip"
 REMOTE
-) || { echo "mac-bundle: failed"; exit 1; }
+scp -q "$rscript" "$host:/tmp/mac-bundle-remote.sh" || { echo "mac-bundle: upload failed"; exit 1; }
+# The remote step lines already name the failure; exit quietly after them.
+out=$(ssh -n "$host" 'bash /tmp/mac-bundle-remote.sh; rc=$?; rm -f /tmp/mac-bundle-remote.sh; exit $rc') || exit 1
 zip=$(echo "$out" | sed -n 's/^ZIP //p')
 mkdir -p target/mac
 scp -q "$host:src/termurion/$zip" target/mac/ || { echo "mac-bundle: copy back failed"; exit 1; }

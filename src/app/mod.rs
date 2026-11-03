@@ -829,6 +829,7 @@ pub struct App {
     resident: bool,
     /// The Downloads folder chosen for the run (final review item 17). App-wide.
     downloads_cache: files_ui::DownloadsCache,
+    /// Whether this run has swept stale download temps (where launch leaves Downloads alone).
     downloads_swept: bool,
     /// Where in `pending_windows` the resident wake's one window waits (final review item 3): later
     /// tabs asked for before it opens join it. Cleared when the window is awake. App-wide.
