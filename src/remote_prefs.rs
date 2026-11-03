@@ -134,9 +134,36 @@ pub fn is_plist(file: &Path) -> bool {
     file.extension().is_some_and(|e| e.eq_ignore_ascii_case("plist"))
 }
 
+/// Shown where `location_valid` refuses the Mac's own iTerm2 settings folder.
+pub const LIVE_FOLDER: &str = "This is the folder macOS keeps iTerm2's own settings in. Termurion does not write there; choose the folder iTerm2 loads its settings from instead.";
+
+/// `path` with its links followed (a few hops), for comparing two folders.
+fn resolved(path: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>) -> PathBuf {
+    let mut p = path.to_path_buf();
+    for _ in 0..16 {
+        match read_link(&p) {
+            Some(t) => p = if t.is_absolute() { t } else { p.parent().map_or(t.clone(), |d| d.join(&t)) },
+            None => break,
+        }
+    }
+    p
+}
+
+/// Whether the location text names `live_dir`, the folder macOS keeps iTerm2's own settings in.
+pub fn is_live_folder(text: &str, home: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>, live_dir: Option<&Path>) -> bool {
+    let Some(live) = live_dir else { return false };
+    if is_url(text) || text.trim().is_empty() {
+        return false;
+    }
+    let folder = expanded(text, home);
+    let trim = |p: PathBuf| p.components().collect::<PathBuf>();
+    trim(resolved(Path::new(&folder), read_link)) == trim(resolved(live, read_link))
+}
+
 /// `remoteLocationIsValid` (`RP:315-328`): a URL with a host, or a writable folder. A network path,
 /// or a folder reached through a link to one (`local_folder`), is never valid and never probed.
-pub fn location_valid(text: &str, home: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>, writable: &dyn Fn(&Path) -> bool) -> bool {
+/// `live_dir` (the Mac's iTerm2 settings folder) is never valid: Termurion does not write there.
+pub fn location_valid(text: &str, home: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>, writable: &dyn Fn(&Path) -> bool, live_dir: Option<&Path>) -> bool {
     if is_url(text) {
         return url_has_host(text);
     }
@@ -144,7 +171,7 @@ pub fn location_valid(text: &str, home: &Path, read_link: &dyn Fn(&Path) -> Opti
         return false;
     }
     let folder = expanded(text, home);
-    local_folder(Path::new(&folder), read_link) && writable(Path::new(&folder))
+    !is_live_folder(text, home, read_link, live_dir) && local_folder(Path::new(&folder), read_link) && writable(Path::new(&folder))
 }
 
 /// Whether the settings folder (or its file) may be read, probed or written: not a network path,
@@ -568,24 +595,39 @@ mod tests {
         assert_eq!(prefs_file(Path::new(r"D:\s\mine.txt"), &txt), Path::new(r"D:\s\mine.txt\termurion-settings.toml"));
         let always = |_: &Path| true;
         let no_link = |_: &Path| None;
-        assert!(location_valid("https://h/p", home, &no_link, &none));
-        assert!(!location_valid("https://", home, &no_link, &always));
-        assert!(!location_valid("  ", home, &no_link, &always));
+        assert!(location_valid("https://h/p", home, &no_link, &none, None));
+        assert!(!location_valid("https://", home, &no_link, &always, None));
+        assert!(!location_valid("  ", home, &no_link, &always, None));
         let probed = Cell::new(false);
         let spy = |_: &Path| {
             probed.set(true);
             true
         };
-        assert!(!location_valid(r"\\h\s", home, &no_link, &spy));
-        assert!(!location_valid("//h/s", home, &no_link, &spy));
+        assert!(!location_valid(r"\\h\s", home, &no_link, &spy, None));
+        assert!(!location_valid("//h/s", home, &no_link, &spy, None));
         assert!(!probed.get(), "a network path is never probed");
-        assert!(location_valid("https://h/p", home, &no_link, &spy));
+        assert!(location_valid("https://h/p", home, &no_link, &spy, None));
         assert!(!probed.get(), "a URL is never probed");
         let d = |p: &Path| p == Path::new(r"D:\s");
-        assert!(location_valid("D:\\s", home, &no_link, &d));
-        assert!(!location_valid("D:\\t", home, &no_link, &d));
+        assert!(location_valid("D:\\s", home, &no_link, &d, None));
+        assert!(!location_valid("D:\\t", home, &no_link, &d, None));
         let h = |p: &Path| p == Path::new(r"C:\Users\u\s");
-        assert!(location_valid("~\\s", home, &no_link, &h));
+        assert!(location_valid("~\\s", home, &no_link, &h, None));
+    }
+
+    #[test]
+    fn the_live_folder_is_refused() {
+        let home = Path::new("/u");
+        let live = Path::new("/u/Library/Preferences");
+        let always = |_: &Path| true;
+        let no_link = |_: &Path| None;
+        assert!(!location_valid("/u/Library/Preferences", home, &no_link, &always, Some(live)));
+        assert!(!location_valid("~/Library/Preferences/", home, &no_link, &always, Some(live)));
+        assert!(location_valid("/u/iCloud", home, &no_link, &always, Some(live)));
+        assert!(location_valid("/u/Library/Preferences", home, &no_link, &always, None), "off the Mac nothing is live");
+        // A link that leads to it is refused too.
+        let via = |p: &Path| (p == Path::new("/u/prefs")).then(|| PathBuf::from("/u/Library/Preferences"));
+        assert!(!location_valid("/u/prefs", home, &via, &always, Some(live)));
     }
 
     #[test]
@@ -595,9 +637,9 @@ mod tests {
         let home = Path::new(r"C:\Users\u");
         let to_share = |p: &Path| (p == Path::new(r"D:\s")).then(|| PathBuf::from(r"\\h\s"));
         let never = |_: &Path| -> bool { panic!("a folder reached through a link to a network path is never probed") };
-        assert!(!location_valid(r"D:\s", home, &to_share, &never));
-        assert!(!location_valid(r"D:\s\sub", home, &to_share, &never), "a folder under the link");
-        assert!(!location_valid(r"D:\s\mine.toml", home, &to_share, &never));
+        assert!(!location_valid(r"D:\s", home, &to_share, &never, None));
+        assert!(!location_valid(r"D:\s\sub", home, &to_share, &never, None), "a folder under the link");
+        assert!(!location_valid(r"D:\s\mine.toml", home, &to_share, &never, None));
         assert!(!local_folder(Path::new(r"D:\s"), &to_share));
         assert!(!local_folder(Path::new(r"D:\s\termurion-settings.toml"), &to_share));
         assert!(!local_folder(Path::new(r"\\h\s"), &|_| None));
@@ -605,7 +647,7 @@ mod tests {
         let to_local = |p: &Path| (p == Path::new(r"D:\s")).then(|| PathBuf::from(r"E:\t"));
         assert!(local_folder(Path::new(r"D:\s"), &to_local));
         assert!(local_folder(Path::new(r"D:\t"), &to_share));
-        assert!(location_valid(r"D:\s", home, &to_local, &|p| p == Path::new(r"D:\s")));
+        assert!(location_valid(r"D:\s", home, &to_local, &|p| p == Path::new(r"D:\s"), None));
     }
 
     #[test]

@@ -1924,7 +1924,12 @@ pub fn prefs_save_enabled(
 ) -> bool {
     use crate::remote_prefs as rp;
     let text = g.string(rp::FOLDER_KEY);
-    g.bool(rp::LOAD_KEY) && !rp::is_url(&rp::expanded(&text, home)) && rp::location_valid(&text, home, read_link, writable)
+    g.bool(rp::LOAD_KEY) && !rp::is_url(&rp::expanded(&text, home)) && rp::location_valid(&text, home, read_link, writable, None)
+}
+
+/// The folder the Mac keeps iTerm2's own settings in; None off the Mac.
+fn live_dir() -> Option<std::path::PathBuf> {
+    crate::platform::iterm2_prefs::live_file().as_deref().and_then(std::path::Path::parent).map(std::path::Path::to_path_buf)
 }
 
 /// `choosePrefsCustomFolder`: the folder picker; a picked folder becomes the location, which
@@ -1979,7 +1984,7 @@ fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path
             action = PrefsAction::Changed;
         }
     let on = g.bool(rp::LOAD_KEY);
-    if on && !was_on && g.string(rp::FOLDER_KEY).is_empty() && choose_prefs_folder(g).is_some() && rp::location_valid(&g.string(rp::FOLDER_KEY), home, &crate::netpath::read_reparse, &rp::writable) {
+    if on && !was_on && g.string(rp::FOLDER_KEY).is_empty() && choose_prefs_folder(g).is_some() && rp::location_valid(&g.string(rp::FOLDER_KEY), home, &crate::netpath::read_reparse, &rp::writable, live_dir().as_deref()) {
         action = PrefsAction::CopyNow;
     }
     let mut text = g.string(rp::FOLDER_KEY);
@@ -2005,7 +2010,7 @@ fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path
         valid = match cached {
             Some((checked, valid)) if checked == text => valid,
             _ => {
-                let valid = rp::location_valid(&text, home, &crate::netpath::read_reparse, &rp::writable);
+                let valid = rp::location_valid(&text, home, &crate::netpath::read_reparse, &rp::writable, live_dir().as_deref());
                 ui.ctx().data_mut(|d| d.insert_temp(prefs_valid_id(), (text.clone(), valid)));
                 valid
             }
@@ -2017,6 +2022,9 @@ fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path
     })
     .response
     .on_hover_text(setting.map_or("", |s| s.help.as_str()));
+    if on && rp::is_live_folder(&text, home, &crate::netpath::read_reparse, live_dir().as_deref()) {
+        ui.add(egui::Label::new(egui::RichText::new(rp::LIVE_FOLDER).color(ui.visuals().warn_fg_color)).wrap());
+    }
     // The folder's probe (and its link check) answered above; a URL or a network path is never probed.
     let enabled = prefs_save_enabled(g, home, &|_| None, &|_| valid);
     ui.add_enabled_ui(enabled, |ui| {

@@ -22,6 +22,7 @@ pub mod handoff;
 pub mod hotkey;
 pub mod http;
 pub mod ipc;
+pub mod iterm2_prefs;
 pub mod log_store;
 pub mod input;
 pub mod key_record;

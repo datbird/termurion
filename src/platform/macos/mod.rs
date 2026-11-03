@@ -4,6 +4,7 @@ pub mod alias;
 pub mod app_events;
 pub mod chrome;
 pub mod hotkey;
+pub mod iterm2_prefs;
 pub mod keychain;
 pub mod key_claim;
 pub mod notify;

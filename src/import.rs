@@ -124,9 +124,12 @@ pub(crate) fn from_json(v: &serde_json::Value) -> Option<Value> {
 
 pub fn from_plist_bytes(bytes: &[u8]) -> Result<Vec<Profile>, String> {
     let root = plist::Value::from_reader(std::io::Cursor::new(bytes)).map_err(|e| format!("not an iTerm2 settings file: {e}"))?;
-    let bookmarks = root
-        .as_dictionary()
-        .and_then(|d| d.get("New Bookmarks"))
+    profiles_from_dict(root.as_dictionary().ok_or("no New Bookmarks (profiles) in this file")?)
+}
+
+fn profiles_from_dict(dict: &plist::Dictionary) -> Result<Vec<Profile>, String> {
+    let bookmarks = dict
+        .get("New Bookmarks")
         .and_then(|v| v.as_array())
         .ok_or("no New Bookmarks (profiles) in this file")?;
     Ok(unique(bookmarks
@@ -337,6 +340,36 @@ fn plist_file(path: &Path) -> Result<plist::Value, String> {
     plist::Value::from_reader(std::io::Cursor::new(read_judged(path)?)).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Everything an iTerm2 settings plist gives, from one parse.
+pub struct Imported {
+    pub profiles: Vec<Profile>,
+    pub globals: Vec<(String, Value)>,
+    pub legacy: Legacy,
+}
+
+/// The profiles, global settings and legacy keys of a settings plist's bytes.
+pub fn from_plist_all(bytes: &[u8]) -> Result<Imported, String> {
+    let root = plist::Value::from_reader(std::io::Cursor::new(bytes)).map_err(|e| format!("not an iTerm2 settings file: {e}"))?;
+    let dict = root.as_dictionary().ok_or("not a settings plist")?;
+    Ok(Imported { profiles: profiles_from_dict(dict)?, globals: globals_from_dict(dict), legacy: legacy_from_dict(dict) })
+}
+
+/// What to import from `picked`: iTerm2's live domain when `picked` is the live file and the
+/// domain answers (the file on disk can lag it), else the file itself.
+pub fn source_bytes(
+    picked: &Path,
+    live: Option<&Path>,
+    read_live: impl FnOnce() -> Result<Option<Vec<u8>>, String>,
+    read_file: impl FnOnce(&Path) -> std::io::Result<Vec<u8>>,
+) -> Result<Vec<u8>, String> {
+    if live == Some(picked)
+        && let Some(bytes) = read_live()?
+    {
+        return Ok(bytes);
+    }
+    read_file(picked).map_err(|e| format!("{}: {e}", picked.display()))
+}
+
 pub fn from_file(path: &Path) -> Result<Vec<Profile>, String> {
     let bytes = read_judged(path)?;
     match path.extension().and_then(|e| e.to_str()).map(str::to_lowercase).as_deref() {
@@ -363,6 +396,34 @@ mod tests {
 
     use super::*;
     use crate::palette::rgb;
+
+    /// One parse gives the profiles and the settings (the fixture of the Reddit report in remote_prefs).
+    #[test]
+    fn one_parse_gives_profiles_and_settings() {
+        let plist = concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>"#,
+            r#"<key>FocusFollowsMouse</key><true/><key>MacOnly</key><string>keep</string>"#,
+            r#"<key>Default Bookmark Guid</key><string>m1</string>"#,
+            r#"<key>New Bookmarks</key><array><dict><key>Guid</key><string>m1</string><key>Name</key><string>Mac</string></dict></array>"#,
+            r#"</dict></plist>"#,
+        );
+        let got = from_plist_all(plist.as_bytes()).unwrap();
+        assert_eq!(got.profiles.len(), 1);
+        assert_eq!(got.profiles[0].string("Name"), "Mac");
+        assert!(got.globals.iter().any(|(k, v)| k == "FocusFollowsMouse" && v.as_bool() == Some(true)), "{:?}", got.globals);
+    }
+
+    #[test]
+    fn the_live_domain_wins_for_the_live_file() {
+        let live = Path::new("/u/Library/Preferences/com.googlecode.iterm2.plist");
+        let file = |_: &Path| Ok(b"F".to_vec());
+        assert_eq!(source_bytes(live, Some(live), || Ok(Some(b"L".to_vec())), file).unwrap(), b"L");
+        assert_eq!(source_bytes(live, Some(live), || Ok(None), file).unwrap(), b"F");
+        let other = Path::new("/u/elsewhere.plist");
+        let never = || -> Result<Option<Vec<u8>>, String> { panic!("the live domain is not read for another file") };
+        assert_eq!(source_bytes(other, Some(live), never, file).unwrap(), b"F");
+        assert_eq!(source_bytes(live, None, never, file).unwrap(), b"F");
+    }
 
     /// 13y2 Task 9b: an Advanced setting imports under its iTerm2 spelling or a lower-case-first one.
     #[test]

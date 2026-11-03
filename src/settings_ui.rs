@@ -387,6 +387,22 @@ pub fn row_opens(shift: bool) -> How {
     if shift { How::Window } else { How::Tab }
 }
 
+/// What a picked iTerm2 file gives: its profiles and, for a settings plist, the global and legacy
+/// keys. The Mac's live iTerm2 file is read from the preferences domain instead (the file can lag).
+fn import_picked(path: &std::path::Path, live: Option<&std::path::Path>) -> Result<(Vec<Profile>, Option<(Vec<(String, toml::Value)>, crate::import::Legacy)>), String> {
+    if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("plist")) {
+        return crate::import::from_file(path).map(|list| (list, None));
+    }
+    let bytes = crate::import::source_bytes(
+        path,
+        live,
+        || crate::platform::iterm2_prefs::read_domain(crate::platform::iterm2_prefs::ITERM2_DOMAIN),
+        |p| crate::localfs::judge_io(p).and_then(|p| crate::localfs::read(&p)),
+    )?;
+    let all = crate::import::from_plist_all(&bytes)?;
+    Ok((all.profiles, Some((all.globals, all.legacy))))
+}
+
 /// The settings editor, or iTerm2's Profiles window (Cmd+O): a list to start sessions from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -1191,34 +1207,35 @@ impl SettingsWindow {
                             ui.separator();
                             if ui.button("Import from iTerm2...").clicked() {
                                 ui.close();
-                                if let Some(path) = rfd::FileDialog::new().add_filter("iTerm2 settings or Dynamic Profiles", &["plist", "json"]).pick_file() {
-                                    edit = match crate::import::from_file(&path) {
-                                        Ok(mut list) => {
+                                let live = crate::platform::iterm2_prefs::live_file();
+                                let mut dialog = rfd::FileDialog::new().add_filter("iTerm2 settings or Dynamic Profiles", &["plist", "json"]);
+                                // Open in the folder iTerm2 keeps its settings in, with the file named.
+                                if let Some(l) = live.as_deref().filter(|l| l.exists()) {
+                                    dialog = dialog.set_directory(l.parent().unwrap_or(l)).set_file_name(l.file_name().and_then(|n| n.to_str()).unwrap_or(""));
+                                }
+                                if let Some(path) = dialog.pick_file() {
+                                    edit = match import_picked(&path, live.as_deref()) {
+                                        Ok((mut list, globals_read)) => {
                                             let n = list.len();
                                             // A full settings plist also carries the global key and pointer
                                             // settings, and maybe iTerm2's legacy keys, which are migrated into
                                             // the imported values and profiles before they are stored.
-                                            let is_plist = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("plist"));
-                                            let globals_read = is_plist.then(|| {
-                                                let mut values = crate::import::globals_from_file(&path)?;
-                                                crate::import::migrate_legacy(&mut values, &crate::import::legacy_from_file(&path)?, &mut list);
-                                                Ok::<_, String>(values)
-                                            });
+                                            let mut values = Vec::new();
+                                            if let Some((v, legacy)) = globals_read {
+                                                values = v;
+                                                crate::import::migrate_legacy(&mut values, &legacy, &mut list);
+                                            }
                                             for p in list {
                                                 store.profiles.retain(|q| q.guid() != p.guid());
                                                 store.add(p);
                                             }
-                                            match globals_read {
-                                                Some(Err(e)) => Edit::Error(e),
-                                                Some(Ok(values)) => {
-                                                    for (k, v) in values {
-                                                        globals.set(&k, v);
-                                                    }
-                                                    crate::ai_models::migrate_after_import(globals);
-                                                    Edit::Imported(n)
+                                            if !values.is_empty() {
+                                                for (k, v) in values {
+                                                    globals.set(&k, v);
                                                 }
-                                                None => Edit::Imported(n),
+                                                crate::ai_models::migrate_after_import(globals);
                                             }
+                                            Edit::Imported(n)
                                         }
                                         Err(e) => Edit::Error(e),
                                     };
