@@ -1828,6 +1828,8 @@ pub struct App {
     prefs_exit_pending: bool,
     /// Quit has emptied the panes and asked the loop to exit: no later event may look a pane up.
     quitting: bool,
+    /// The quit question is showing (a system quit that arrives meanwhile asks nothing more).
+    quit_asking: bool,
     prefs_startup: Vec<scripts_alerts::Ask>,
     prefs_reveal: bool,
     prefs_gpu: Option<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)>,
@@ -2914,6 +2916,7 @@ pub fn run() {
         prefs_fetch: None,
         prefs_exit_pending: false,
         quitting: false,
+        quit_asking: false,
         prefs_startup,
         prefs_reveal: false,
         prefs_gpu: None,

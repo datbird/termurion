@@ -2,6 +2,7 @@
 //! A command owned by a later milestone shows disabled; it never half-works.
 
 use crate::menus::{self, Chord, ChordKey, Item};
+use crate::platform::app_events::HAS_APP_HIDING;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -90,8 +91,6 @@ pub const DONE: &[&str] = &[
     "installClaudeCodeIntegration:", "reinstallClaudeCodeIntegration:", "uninstallClaudeCodeIntegration:",
     "exitWorkgroup:", "previousWorkgroupPeer:", "nextWorkgroupPeer:",
 ];
-
-use crate::platform::app_events::HAS_APP_HIDING;
 
 /// Hiding other apps is a macOS thing.
 const NO_APP_HIDING: &str = "macOS hides and shows other applications; Windows and Linux have no such command.";

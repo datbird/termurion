@@ -1029,7 +1029,6 @@ impl App {
                     self.close_window(id, event_loop);
                 }
             }
-            "hide:" if crate::platform::app_events::hide_app() => {}
             "hideOtherApplications:" => {
                 crate::platform::app_events::hide_others();
             }
@@ -1037,7 +1036,9 @@ impl App {
                 crate::platform::app_events::show_all();
             }
             "hide:" | "performMiniaturize:" => {
-                if let Some(w) = &window {
+                if item.selector == "hide:" && crate::platform::app_events::hide_app() {
+                    // The whole app is hidden.
+                } else if let Some(w) = &window {
                     w.set_minimized(true);
                 }
             }
@@ -1441,8 +1442,15 @@ impl App {
     }
 
     pub(super) fn quit(&mut self, event_loop: &ActiveEventLoop) {
+        // The question is modal, so a second system quit can arrive while it shows: the one
+        // question and the one reply stand for both.
+        if self.quit_asking {
+            return;
+        }
         let pending = self.prefs_exit_pending;
+        self.quit_asking = true;
         let ok = !pending && self.confirm_close(close_ui::Closing::App);
+        self.quit_asking = false;
         crate::host_base::log(&format!("quit: settings question pending {pending}, confirmed {ok}"));
         if ok {
             self.quit_confirmed(event_loop);
@@ -1838,10 +1846,12 @@ mod tests {
     fn every_quit_path_answers_the_system() {
         let src = include_str!("menu.rs");
         let body = |name: &str| src.split(name).nth(1).unwrap().split("\n    }\n").next().unwrap();
-        assert!(body("    fn quit(&mut self").contains("answer_terminate(false)"), "a refused quit says no");
+        assert!(body("    pub(super) fn quit(&mut self").contains("answer_terminate(false)"), "a refused quit says no");
         let confirmed = body("fn quit_confirmed(&mut self");
         let (answer, exit) = (confirmed.find("answer_terminate(true)"), confirmed.find("event_loop.exit()"));
         assert!(answer.is_some() && answer < exit, "an accepted quit says yes before the loop exits");
+        let quit = body("    pub(super) fn quit(&mut self");
+        assert!(quit.contains("if self.quit_asking {") && quit.find("if self.quit_asking {") < quit.find("confirm_close("), "a second system quit while the question shows asks nothing");
         assert!(include_str!("prefs_ui.rs").contains("answer_terminate(true)"), "the settings question's exit says yes too");
     }
 
