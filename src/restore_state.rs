@@ -105,6 +105,11 @@ impl Debounce {
     }
 }
 
+/// Whether the loop ending should save the windows now: only when nothing saved them already.
+pub fn exit_saves(quitting: bool, frozen: bool) -> bool {
+    !quitting && !frozen
+}
+
 /// Saved contents as they may come back: text, CR, LF, TAB, and SGR sequences
 /// (`ESC [ digits ; : m`). Every other control character and sequence goes.
 pub fn sgr_safe(text: &str) -> String {
@@ -189,6 +194,15 @@ pub fn banner_grays(bg: Rgb) -> (u8, u8) {
 
 #[cfg(test)]
 mod tests {
+    /// The loop ending on its own (the macOS stock Quit, a window manager closing everything) saves
+    /// the windows once: never after App::quit (quitting), a last-window close or a second copy (frozen).
+    #[test]
+    fn the_exit_saves_once() {
+        assert!(super::exit_saves(false, false), "the loop ends on its own: save");
+        assert!(!super::exit_saves(true, false), "App::quit already saved");
+        assert!(!super::exit_saves(false, true), "the state is frozen");
+    }
+
     use super::*;
 
     fn window(name: &str) -> Value {

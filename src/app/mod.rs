@@ -7222,6 +7222,19 @@ fn launch_events(proxy: Arc<Mutex<EventLoopProxy<UserEvent>>>) -> Box<dyn Fn(cra
 }
 
 impl ApplicationHandler<UserEvent> for App {
+    /// The loop ended without App::quit (the macOS stock Quit item, a window manager closing
+    /// everything): save the windows and let the host keep or end its shells, once.
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // No panes: an idle embedding start or an already emptied app has nothing to save, and an empty state would wipe the last one.
+        if self.panes.is_empty() || !crate::restore_state::exit_saves(self.quitting, self.state_frozen) {
+            return;
+        }
+        crate::rlog!("the loop ended without a quit: saving the windows");
+        self.save_state_for_quit();
+        let keep = self.keep_jobs_on_quit();
+        self.leave_host(keep);
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.gpu.is_some() {
             return;
