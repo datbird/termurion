@@ -1051,7 +1051,7 @@ mod tests {
                 "Probe Before Sending Password",
                 "Automatically Send Return Key after Password",
                 "-",
-                "Windows Credential Manager",
+                crate::platform::credentials::STORE_MENU_TITLE,
                 "1Password Integration",
                 "LastPass Integration",
                 "KeePassXC Integration",

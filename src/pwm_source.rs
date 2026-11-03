@@ -91,7 +91,7 @@ impl Kind {
     /// The gear menu item's title (`iTermPasswordManager.xib`, "macOS Keychain" in Windows words).
     pub fn menu_title(self) -> &'static str {
         match self {
-            Kind::CredentialManager => "Windows Credential Manager",
+            Kind::CredentialManager => crate::platform::credentials::STORE_MENU_TITLE,
             Kind::OnePassword => "1Password Integration",
             Kind::LastPass => "LastPass Integration",
             Kind::KeePassXC => "KeePassXC Integration",
@@ -196,7 +196,7 @@ pub fn credman_caps() -> Caps {
 /// The alert text for a failed password read (`W:1948-1957`, "Keychain" in Windows words). The
 /// window shows it for every source, as iTerm2 does.
 pub fn password_failed(message: &str) -> String {
-    format!("Could not get password. Credential Manager query failed: {message}")
+    format!("Could not get password. {} query failed: {message}", crate::platform::credentials::STORE_QUERY_NAME)
 }
 
 /// The Credential Manager target for an account: `Termurion/<account><SEP><user>`. iTerm2's
@@ -238,6 +238,7 @@ pub fn parse_target_in(scope: Scope, target: &str) -> Option<Account> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::credentials::{STORE_MENU_TITLE, STORE_QUERY_NAME};
 
     #[test]
     fn browser_scope_follows_iterm2() {
@@ -290,7 +291,7 @@ mod tests {
             assert_eq!(Kind::from_stored(k.stored()), k);
         }
         assert_eq!(Kind::OnePassword.stored(), "OnePassword");
-        assert_eq!(Kind::CredentialManager.menu_title(), "Windows Credential Manager");
+        assert_eq!(Kind::CredentialManager.menu_title(), STORE_MENU_TITLE);
         assert_eq!(Kind::Keeper.menu_title(), "Keeper Security");
         assert_eq!(SOURCE_KEY, "NoSyncPasswordManagerDataSourceName");
 
@@ -301,6 +302,14 @@ mod tests {
         assert!(!c.generated_only && !c.multiple_accounts && !c.can_reset);
         assert!(c.add_toggle.is_none() && c.settings.is_empty() && c.commands.is_empty());
 
-        assert_eq!(password_failed("Element not found."), "Could not get password. Credential Manager query failed: Element not found.");
+        assert_eq!(password_failed("Element not found."), format!("Could not get password. {STORE_QUERY_NAME} query failed: Element not found."));
+    }
+
+    #[test]
+    fn store_words_follow_the_os() {
+        assert_eq!(Kind::CredentialManager.menu_title(), STORE_MENU_TITLE);
+        assert!(password_failed("x").contains(STORE_QUERY_NAME));
+        #[cfg(target_os = "macos")]
+        assert_eq!((STORE_MENU_TITLE, STORE_QUERY_NAME), ("macOS Keychain", "Keychain"));
     }
 }

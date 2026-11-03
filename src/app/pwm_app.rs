@@ -568,7 +568,9 @@ impl App {
         } else if !required {
             self.pwm_auth(scope).open_unprompted();
         }
-        let opened = match (self.gpu.as_ref(), self.hwnd()) {
+        // macOS has no HWND: its owner handle is the window's view (the sheet owner is unused there).
+        let owner = self.hwnd().or_else(|| self.gpu.as_ref().and_then(|g| crate::platform::window::view_of(&g.window)));
+        let opened = match (self.gpu.as_ref(), owner) {
             (Some(g), Some(h)) => PwmWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, h, crate::tab_theme::forced_dark(self.tab_style())).map(|w| (w, h)),
             _ => Err("no terminal window".to_string()),
         };
@@ -3065,7 +3067,7 @@ mod tests {
         assert!(files.len() > 100);
         for f in files {
             let name = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
-            if name == "app/pwm_app.rs" || name.starts_with("pwm_") || name.starts_with("bin/") || name == "platform/windows/credentials.rs" || name == "platform/unix/credentials.rs" {
+            if name == "app/pwm_app.rs" || name.starts_with("pwm_") || name.starts_with("bin/") || name == "platform/windows/credentials.rs" || name == "platform/unix/credentials.rs" || name == "platform/macos/keychain.rs" {
                 continue;
             }
             let text = std::fs::read_to_string(&f).unwrap();

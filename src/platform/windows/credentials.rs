@@ -7,6 +7,7 @@
 //! refuse any target outside Termurion's two prefixes before calling Windows. No test calls
 //! Credential Manager; the milestone's checklist covers that by hand.
 
+use crate::platform::credentials::guard;
 use crate::pwm::{Account, Secret};
 use crate::pwm_source::{self, Caps, Kind, Scope, Source};
 use windows_sys::Win32::Foundation::{GetLastError, ERROR_NOT_FOUND};
@@ -75,24 +76,6 @@ fn target(scope: Scope, a: &Account) -> Result<&str, String> {
     match pwm_source::parse_target_in(scope, &a.id) {
         Some(_) => Ok(&a.id),
         None => Err("Not a Termurion credential.".to_string()),
-    }
-}
-
-/// The prefixes of every target Termurion owns: the password manager's `Termurion/` and
-/// `Termurion-Browser/` and the AI keys' `TermurionAI/` (compared case-sensitively).
-const OWNED_PREFIXES: [&str; 3] = ["Termurion/", "Termurion-Browser/", "TermurionAI/"];
-
-/// Whether a target is one of Termurion's. The generic functions below refuse any other target
-/// before calling Windows, so nothing here ever touches another program's credential.
-pub(crate) fn owned(target: &str) -> bool {
-    OWNED_PREFIXES.iter().any(|p| target.starts_with(p))
-}
-
-fn guard(target: &str) -> Result<(), String> {
-    if owned(target) {
-        Ok(())
-    } else {
-        Err("Not a Termurion credential.".to_string())
     }
 }
 
@@ -313,6 +296,7 @@ impl Source for CredentialManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::credentials::owned;
 
     #[test]
     fn names_decode_strictly_and_the_filter_follows_service() {
@@ -322,6 +306,13 @@ mod tests {
         // An unpaired surrogate: skipped, never shown as a row that names nothing.
         let bad = [0x54u16, 0xD800, 0x61, 0];
         assert_eq!(unsafe { from_wide(bad.as_ptr()) }, None);
+    }
+
+    #[test]
+    fn store_words_stay_windows_text() {
+        use crate::platform::credentials::{STORE_MENU_TITLE, STORE_QUERY_NAME};
+        assert_eq!((STORE_MENU_TITLE, STORE_QUERY_NAME), ("Windows Credential Manager", "Credential Manager"));
+        assert_eq!(pwm_source::password_failed("x"), "Could not get password. Credential Manager query failed: x");
     }
 
     #[test]
