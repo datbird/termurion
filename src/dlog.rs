@@ -17,9 +17,6 @@ use std::sync::{Mutex, OnceLock};
 use std::thread::ThreadId;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(windows)]
-use crate::localfs;
-
 /// In-memory text past this loses its oldest half (`DL:452-457`).
 pub const MAX_LOG: usize = 200 * 1024 * 1024;
 /// The retrospective ring's bound (`DL:36-38`).
@@ -502,9 +499,8 @@ pub fn set_syslog(on: bool) {
 
 /// Starts the log from empty. Without `append` the old file goes first (`DL:554-579`).
 pub fn start_logging(header: String, append: bool) {
-    #[cfg(windows)]
     if !append {
-        remove_old_files();
+        crate::platform::log_store::remove_old_files();
     }
     let mut l = LOG.lock().unwrap_or_else(|e| e.into_inner());
     APPEND.store(append, Ordering::Relaxed);
@@ -522,7 +518,6 @@ pub fn stop() -> Option<(String, String, bool)> {
 }
 
 /// Stops and writes on this thread; the file's path when logging was on.
-#[cfg(windows)]
 pub fn stop_logging(footer: &dyn Fn() -> String) -> Result<Option<PathBuf>, String> {
     match stop() {
         None => Ok(None),
@@ -546,24 +541,7 @@ pub fn stop_at_exit() {
         ON.store(false, Ordering::Relaxed);
         l.stop()
     };
-    #[cfg(windows)]
-    if let Some((h, b)) = taken {
-        // A save already running finishes first; give up after EXIT_WAIT (the process is ending).
-        let start = std::time::Instant::now();
-        let guard = loop {
-            match SAVE.try_lock() {
-                Ok(g) => break Some(g),
-                Err(std::sync::TryLockError::Poisoned(p)) => break Some(p.into_inner()),
-                Err(std::sync::TryLockError::WouldBlock) if start.elapsed() < EXIT_WAIT => std::thread::sleep(std::time::Duration::from_millis(10)),
-                Err(std::sync::TryLockError::WouldBlock) => break None,
-            }
-        };
-        if guard.is_some() {
-            let _ = save_locked(&h, &b, EXIT_FOOTER, APPEND.load(Ordering::Relaxed));
-        }
-    }
-    #[cfg(not(windows))]
-    drop(taken);
+    crate::platform::log_store::save_at_exit(taken, &|| APPEND.load(Ordering::Relaxed));
 }
 
 fn thread_name() -> &'static str {
@@ -616,14 +594,7 @@ pub fn redact<'a>(full: &'a str, redacted: &'a str) -> &'a str {
 /// that ask for it call this, and only the prefix of a log entry or a number table goes (any
 /// process of the session can read it).
 pub fn debug_output(text: &str) {
-    #[cfg(windows)]
-    {
-        let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-        // SAFETY: NUL-terminated and alive for the call.
-        unsafe { windows_sys::Win32::System::Diagnostics::Debug::OutputDebugStringW(wide.as_ptr()) };
-    }
-    #[cfg(not(windows))]
-    let _ = text;
+    crate::platform::log_store::debug_output(text);
 }
 
 /// A debug log line. Costs one atomic load while logging is off and formats nothing; every
@@ -652,217 +623,17 @@ macro_rules! rlog {
 
 // ---- the file ----
 
-/// The folders a log may go in, best first: `%TEMP%` when the judge accepts it (a share is never
-/// one: the log holds window facts and the connection would send the person's hash), then
-/// `%LOCALAPPDATA%\Termurion\Logs`.
-#[cfg(windows)]
-pub fn log_dirs_with(env: &dyn Fn(&str) -> Option<String>) -> Vec<localfs::LocalPath> {
-    let mut out = Vec::new();
-    if let Some(t) = env("TEMP").filter(|t| !t.is_empty()).and_then(localfs::LocalPath::judge) {
-        out.push(t);
-    }
-    let logs = env("LOCALAPPDATA").filter(|t| !t.is_empty()).and_then(localfs::LocalPath::judge).and_then(|b| b.join("Termurion")).and_then(|b| b.join("Logs"));
-    if let Some(logs) = logs {
-        let _ = localfs::create_dir_all(&logs);
-        out.push(logs);
-    }
-    out
-}
-
-#[cfg(windows)]
-pub fn log_dirs() -> Vec<localfs::LocalPath> {
-    log_dirs_with(&|k| std::env::var(k).ok())
-}
-
-/// One lock for every disk write of the log: a save, the private state files and the removal of
-/// the old file at start. Without it an off/on/off during a large save lets the UI thread delete the
-/// file a worker is writing, and a second save interleaves with the first.
-#[cfg(windows)]
-static SAVE: Mutex<()> = Mutex::new(());
-
-/// How long the exit save waits for a save already running (the process is ending).
-#[cfg(windows)]
-const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
-
-#[cfg(windows)]
-fn remove_old_files() {
-    let _one = SAVE.lock().unwrap_or_else(|e| e.into_inner());
-    for dir in log_dirs() {
-        if let Some(f) = dir.unfollowed(FILE_NAME) {
-            let _ = localfs::remove_unfollowed(&f);
-        }
-    }
-}
-
-/// The disk side of `write`: a new file is made owner-only and never through a link.
-#[cfg(windows)]
-struct Disk {
-    file: localfs::Unfollowed,
-    /// The one handle every chunk goes through: the file `prepare` judged, or the one `create`
-    /// made. The name is never opened again, so a swap after the judgment is not followed.
-    handle: Option<std::fs::File>,
-}
-
-#[cfg(windows)]
-impl Write3 for Disk {
-    fn create(&mut self, _: &Path) -> std::io::Result<()> {
-        // An open handle on the old file would leave its delete pending and refuse CREATE_NEW.
-        self.handle = None;
-        match localfs::remove_unfollowed(&self.file) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
-        }
-        self.handle = Some(localfs::create_owner_only(&self.file)?);
-        Ok(())
-    }
-
-    fn append(&mut self, _: &Path, chunk: &[u8]) -> std::io::Result<()> {
-        use std::io::Write;
-        match self.handle.as_mut() {
-            Some(f) => f.write_all(chunk),
-            None => Err(std::io::Error::other("no file is open for the log")),
-        }
-    }
-}
-
-/// Whether an existing log file is this user's own owner-only file (`localfs::is_owner_only`): a
-/// file with a wider inherited DACL may be read by others, so it is not appended to.
-#[cfg(windows)]
-fn is_ours(f: &std::fs::File) -> bool {
-    localfs::is_owner_only(f)
-}
-
-/// What `prepare` found at the log's name.
-#[cfg(windows)]
-enum Prepared {
-    /// No file (or one moved aside): a fresh one is made.
-    Fresh,
-    /// The user's own file, open for appending: the writes go through this handle.
-    Append(std::fs::File),
-}
-
-/// Looks at the file before the write: whether to append to it. A file that is not ours, or a
-/// link, is renamed away; one the new text would push past `cap` becomes the `.old` generation.
-#[cfg(windows)]
-fn prepare(dir: &localfs::LocalPath, file: &localfs::Unfollowed, append: bool, incoming: u64, cap: u64) -> Result<Prepared, String> {
-    let open = localfs::open_unfollowed(file, |o| {
-        o.read(true).append(true);
-    });
-    let f = match open {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Prepared::Fresh),
-        Err(_) => return aside(dir, file).map(|_| Prepared::Fresh),
-    };
-    if !is_ours(&f) {
-        drop(f);
-        return aside(dir, file).map(|_| Prepared::Fresh);
-    }
-    let len = localfs::file_stat(&f).map_or(0, |s| s.len);
-    if append && len + incoming > cap {
-        drop(f);
-        let old = dir.unfollowed(OLD_NAME).ok_or_else(|| could_not_open(dir.path()))?;
-        match localfs::remove_unfollowed(&old) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.to_string()),
-        }
-        localfs::rename_unfollowed(file, &old).map_err(|e| e.to_string())?;
-        return Ok(Prepared::Fresh);
-    }
-    Ok(Prepared::Append(f))
-}
-
-/// Moves an entry that is not ours to `debuglog.stale-<unix>.txt`.
-#[cfg(windows)]
-fn aside(dir: &localfs::LocalPath, file: &localfs::Unfollowed) -> Result<(), String> {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-    let to = dir.unfollowed(format!("debuglog.stale-{}-{}.txt", now.as_secs(), now.subsec_nanos())).ok_or_else(|| could_not_open(dir.path()))?;
-    localfs::rename_unfollowed(file, &to).map_err(|e| e.to_string())
-}
-
-/// Saves into one folder; the file's path.
-#[cfg(windows)]
-pub fn save_in(dir: &localfs::LocalPath, header: &str, body: &str, footer: &str, append: bool) -> Result<PathBuf, String> {
-    save_in_capped(dir, header, body, footer, append, MAX_FILE)
-}
-
-#[cfg(windows)]
-pub fn save_in_capped(dir: &localfs::LocalPath, header: &str, body: &str, footer: &str, append: bool, cap: u64) -> Result<PathBuf, String> {
-    let file = dir.unfollowed(FILE_NAME).ok_or_else(|| could_not_open(dir.path()))?;
-    let (exists, handle) = match prepare(dir, &file, append, (header.len() + body.len() + footer.len()) as u64, cap)? {
-        Prepared::Fresh => (false, None),
-        Prepared::Append(f) => (true, Some(f)),
-    };
-    let mut disk = Disk { file: file.clone(), handle };
-    write(file.path(), header, body, footer, append, exists, &mut disk)?;
-    Ok(file.path().to_path_buf())
-}
-
-/// A small owner-only file in the first log folder that takes it (the state size files): a
-/// plain `name`, replaced when it exists, never written through a link. The file's path.
-#[cfg(windows)]
-pub fn save_private(name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
-    use std::io::Write;
-    let _one = SAVE.lock().unwrap_or_else(|e| e.into_inner());
-    let mut first_error = None;
-    for dir in log_dirs() {
-        let Some(file) = dir.unfollowed(name) else { continue };
-        let made = match localfs::remove_unfollowed(&file) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e),
-        }
-        .and_then(|()| localfs::create_owner_only(&file))
-        .and_then(|mut f| f.write_all(bytes));
-        match made {
-            Ok(()) => return Ok(file.path().to_path_buf()),
-            Err(e) => {
-                first_error.get_or_insert(e.to_string());
-            }
-        }
-    }
-    Err(first_error.unwrap_or_else(|| could_not_open(Path::new(name))))
-}
-
-/// The debug log's private files are written by the Windows folder rules; Unix has no log folder yet.
-#[cfg(unix)]
-pub fn save_private(_name: &str, _bytes: &[u8]) -> Result<PathBuf, String> {
-    Err(crate::platform::Unsupported { feature: "Saving the debug log's files" }.to_string())
-}
-
-/// The debug log is saved by the Windows folder rules; Unix has no log folder yet.
-#[cfg(unix)]
-pub fn save(_header: &str, _body: &str, _footer: &str, _append: bool) -> Result<PathBuf, String> {
-    Err(crate::platform::Unsupported { feature: "Saving the debug log" }.to_string())
-}
-
-/// Saves into the first folder that takes it (iTerm2 reports the failure of its one folder).
-#[cfg(windows)]
-pub fn save(header: &str, body: &str, footer: &str, append: bool) -> Result<PathBuf, String> {
-    let _one = SAVE.lock().unwrap_or_else(|e| e.into_inner());
-    save_locked(header, body, footer, append)
-}
-
-/// `save` for a caller that holds `SAVE`.
-#[cfg(windows)]
-fn save_locked(header: &str, body: &str, footer: &str, append: bool) -> Result<PathBuf, String> {
-    let mut first_error = None;
-    for dir in log_dirs() {
-        match save_in(&dir, header, body, footer, append) {
-            Ok(p) => return Ok(p),
-            Err(e) => {
-                first_error.get_or_insert(e);
-            }
-        }
-    }
-    Err(first_error.unwrap_or_else(|| could_not_open(Path::new(FILE_NAME))))
-}
+pub use crate::platform::log_store::{log_dirs, log_dirs_with, save, save_private};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    #[cfg(windows)]
+    use crate::localfs;
+    #[cfg(windows)]
+    use crate::platform::windows::log_store::{prepare, remove_old_files, save_in, save_in_capped, Prepared, SAVE};
 
     /// The process-wide log is shared by tests that start it.
     fn global_guard() -> std::sync::MutexGuard<'static, ()> {

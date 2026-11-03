@@ -54,3 +54,10 @@ pub fn downloads() -> Option<PathBuf> {
 pub fn short_name(p: &Path) -> Option<String> {
     imp::short_name(p)
 }
+
+/// A staging folder's entries for `script_archive::unsafe_entry`, never following a link: a link (a
+/// reparse point on Windows), a folder, or a file with its hard link count. A folder that cannot be
+/// read reads as a link, so the archive is refused.
+pub fn stage_entries(dir: &Path) -> Vec<(String, crate::script_archive::Stat)> {
+    imp::stage_entries(dir)
+}

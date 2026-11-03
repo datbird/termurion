@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use super::super::Unsupported;
+use crate::script_archive::Stat;
 
 /// The user's Desktop folder (where Windows keeps it, OneDrive included).
 pub fn desktop() -> Option<PathBuf> {
@@ -163,4 +164,40 @@ pub fn short_name(p: &Path) -> Option<String> {
     let short = PathBuf::from(std::ffi::OsString::from_wide(&buf[..n.min(buf.len())]));
     let name = short.file_name()?.to_string_lossy().into_owned();
     (n > 0 && name != p.file_name()?.to_string_lossy()).then_some(name)
+}
+
+/// A file's number of hard links, read without following a link; `u32::MAX` when it cannot
+/// be read (refused, as a file with other names would be).
+fn hard_links(p: &Path) -> u32 {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES};
+    let Ok(file) = std::fs::OpenOptions::new().access_mode(FILE_READ_ATTRIBUTES).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).open(p) else { return u32::MAX };
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return u32::MAX;
+    }
+    info.nNumberOfLinks
+}
+
+/// A staging folder's entries for `sa::unsafe_entry`, never following a link: a reparse
+/// point (`FILE_ATTRIBUTE_REPARSE_POINT`: a symbolic link, a junction or any other kind), a
+/// folder, or a file with its hard link count. A folder that cannot be read reads as a
+/// reparse point, so the archive is refused.
+pub fn stage_entries(dir: &Path) -> Vec<(String, Stat)> {
+    use std::os::windows::fs::MetadataExt;
+    const REPARSE: u32 = 0x400;
+    let Ok(rd) = std::fs::read_dir(dir) else { return vec![(String::new(), Stat::Reparse)] };
+    rd.flatten()
+        .map(|e| {
+            let path = e.path();
+            let stat = match path.symlink_metadata() {
+                Err(_) => Stat::Reparse,
+                Ok(m) if m.file_attributes() & REPARSE != 0 => Stat::Reparse,
+                Ok(m) if m.is_dir() => Stat::Dir,
+                Ok(_) => Stat::File { links: hard_links(&path) },
+            };
+            (e.file_name().to_string_lossy().into_owned(), stat)
+        })
+        .collect()
 }

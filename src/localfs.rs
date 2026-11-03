@@ -14,6 +14,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+pub use crate::platform::files::{create_owner_only, dacl_sddl, dacl_sddl_of, final_path, free_space, is_owner_only, link_count, open_unfollowed, rename_no_replace, watch_tree};
+
 /// A path the judge found local: every folder from the root down was read for links (each link's
 /// target judged the same way) and no step touched the network. Only `LocalPath::judge` (and its
 /// test and Semantic History forms) makes one.
@@ -116,92 +118,11 @@ impl LocalPath {
     }
 }
 
-/// Opens the entry itself with the options `configure` sets; the reparse point is never followed
-/// (`FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS` are always set, last).
-#[cfg(windows)]
-pub fn open_unfollowed(p: &Unfollowed, configure: impl FnOnce(&mut OpenOptions)) -> io::Result<File> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT};
-    let mut options = OpenOptions::new();
-    configure(&mut options);
-    options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).open(&p.0)
-}
-
-/// Makes a NEW file at the entry, readable and writable by this user alone: owned by the user's SID
-/// (an elevated token would own it as Administrators) with a protected DACL of one allow entry for
-/// that SID (nothing inherited), `CREATE_NEW` so an existing entry (a
-/// planted file or link) is refused rather than reused, and the reparse point never followed.
-/// Another user's share of the folder gets no access, whatever the folder's own ACL says.
-#[cfg(windows)]
-pub fn create_owner_only(p: &Unfollowed) -> io::Result<File> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::io::FromRawHandle;
-    use windows_sys::Win32::Foundation::{GENERIC_WRITE, HLOCAL, INVALID_HANDLE_VALUE, LocalFree};
-    use windows_sys::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
-    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
-    use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ};
-    let sid = crate::platform::windows::ipc::user_sid().map_err(io::Error::other)?;
-    let sddl: Vec<u16> = format!("O:{sid}D:P(A;;FA;;;{sid})").encode_utf16().chain(std::iter::once(0)).collect();
-    let name: Vec<u16> = p.0.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
-    // SAFETY: both strings are NUL-terminated and outlive the calls; the descriptor is freed once;
-    // the handle is owned by the `File` made from it.
-    unsafe {
-        let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-        if ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), SDDL_REVISION_1, &mut sd, std::ptr::null_mut()) == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let sa = SECURITY_ATTRIBUTES { nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: sd, bInheritHandle: 0 };
-        let h = CreateFileW(name.as_ptr(), GENERIC_WRITE, FILE_SHARE_READ, &sa, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, std::ptr::null_mut());
-        let err = io::Error::last_os_error();
-        LocalFree(sd as HLOCAL);
-        if h == INVALID_HANDLE_VALUE {
-            return Err(err);
-        }
-        Ok(File::from_raw_handle(h as _))
-    }
-}
-
-/// Makes a NEW file at the entry, readable and writable by this user alone (mode 0600), refusing an
-/// existing entry (a planted file or link) and never following a link at the name.
-#[cfg(unix)]
-pub fn create_owner_only(p: &Unfollowed) -> io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&p.0)
-}
-
-/// Whether the open file is this user's own plain single-link file with the owner-only DACL
-/// `create_owner_only` makes: owned by the user's SID, protected, one allow entry (full access)
-/// for that SID. The handle was opened with read access.
-#[cfg(windows)]
-pub fn is_owner_only(f: &File) -> bool {
-    let Ok(st) = file_stat(f) else { return false };
-    let owner_only = |sid: &str| dacl_sddl_of(f).is_ok_and(|s| s == format!("D:P(A;;FA;;;{sid})"));
-    st.is_file
-        && !st.is_reparse
-        && link_count(f).is_ok_and(|n| n == 1)
-        && matches!((crate::platform::windows::ipc::file_owner_sid(f), crate::platform::windows::ipc::user_sid()), (Ok(a), Ok(b)) if a == b && owner_only(&b))
-}
-
 /// Opens the SQLite database at a judged path (created when absent, no URI parsing, no shared
 /// mutex). The gate's one database opener: a path from outside reaches SQLite only as a `LocalPath`.
 pub fn open_database(p: &LocalPath) -> rusqlite::Result<rusqlite::Connection> {
     use rusqlite::OpenFlags;
     rusqlite::Connection::open_with_flags(&p.0, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_NO_MUTEX)
-}
-
-/// How many names (hard links) the open file has.
-#[cfg(windows)]
-pub fn link_count(f: &File) -> io::Result<u32> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
-    // SAFETY: a valid handle and a zeroed out-structure.
-    unsafe {
-        let mut info: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
-        if GetFileInformationByHandle(f.as_raw_handle() as _, &mut info) == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(info.nNumberOfLinks)
-    }
 }
 
 /// The entry itself renamed (a link is moved, never followed).
@@ -215,46 +136,6 @@ pub fn remove_unfollowed(p: &Unfollowed) -> io::Result<()> {
         // A junction or directory link goes with `remove_dir`.
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied => std::fs::remove_dir(&p.0).or(Err(e)),
         other => other,
-    }
-}
-
-/// The entry's DACL as SDDL text (a test reads back what `create_owner_only` set).
-#[cfg(windows)]
-pub fn dacl_sddl(p: &Unfollowed) -> io::Result<String> {
-    let f = open_unfollowed(p, |o| {
-        o.read(true);
-    })?;
-    dacl_sddl_of(&f)
-}
-
-/// An open file's DACL as SDDL text (the handle was opened with read access).
-#[cfg(windows)]
-pub fn dacl_sddl_of(f: &File) -> io::Result<String> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Foundation::{HLOCAL, LocalFree};
-    use windows_sys::Win32::Security::Authorization::{ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT};
-    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
-    // SAFETY: the handle is open; the descriptor and the text are freed once.
-    unsafe {
-        let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-        let rc = GetSecurityInfo(f.as_raw_handle() as _, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), &mut sd);
-        if rc != 0 {
-            return Err(io::Error::from_raw_os_error(rc as i32));
-        }
-        let mut text: *mut u16 = std::ptr::null_mut();
-        let ok = ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &mut text, std::ptr::null_mut());
-        let err = io::Error::last_os_error();
-        LocalFree(sd as HLOCAL);
-        if ok == 0 {
-            return Err(err);
-        }
-        let mut n = 0;
-        while *text.add(n) != 0 {
-            n += 1;
-        }
-        let out = String::from_utf16_lossy(std::slice::from_raw_parts(text, n));
-        LocalFree(text as HLOCAL);
-        Ok(out)
     }
 }
 
@@ -324,16 +205,7 @@ pub fn open_with_shell(p: &LocalPath, cwd: Option<&LocalPath>, background: bool)
 /// ShellExecute `verb` ("open", "edit") on a judged file or folder: ShellExecute takes a file only
 /// as a `LocalPath` (round 5 item 4). Other systems open with the default app and refuse any other verb.
 pub fn shell_verb(verb: &str, p: &LocalPath, cwd: Option<&LocalPath>, background: bool) -> io::Result<()> {
-    #[cfg(windows)]
-    let done = crate::platform::shell_open::shell_verb(verb, &p.0, cwd.map(|d| d.0.as_path()), background);
-    // Only Windows has verbs: "open" is the default app, anything else is not offered.
-    #[cfg(not(windows))]
-    let done = {
-        // The folder only matters to ShellExecute.
-        let _ = cwd;
-        if verb == "open" { crate::platform::shell_open::open_file(&p.0, background) } else { Err(crate::platform::Unsupported { feature: "Editing a file with its app" }.into()) }
-    };
-    done.map_err(io::Error::other)
+    crate::platform::files::shell_verb(verb, p, cwd, background).map_err(io::Error::other)
 }
 
 /// Judge, then `is_dir` (a refused path is no folder).
@@ -371,14 +243,8 @@ pub struct Stat {
 impl Stat {
     fn of(m: &std::fs::Metadata) -> Stat {
         let t = m.file_type();
-        #[cfg(windows)]
-        let reparse = std::os::windows::fs::MetadataExt::file_attributes(m) & 0x400 != 0;
-        #[cfg(not(windows))]
-        let reparse = t.is_symlink();
-        #[cfg(windows)]
-        let hidden = std::os::windows::fs::MetadataExt::file_attributes(m) & 0x2 != 0;
-        #[cfg(not(windows))]
-        let hidden = false;
+        let reparse = crate::platform::files::entry_is_reparse(m);
+        let hidden = crate::platform::files::entry_is_hidden(m);
         Stat { is_dir: t.is_dir(), is_file: t.is_file(), is_link: t.is_symlink(), is_reparse: reparse || t.is_symlink(), len: m.len(), modified: m.modified().ok(), readonly: m.permissions().readonly(), hidden }
     }
 }
@@ -425,25 +291,6 @@ pub fn file_stat(f: &File) -> io::Result<Stat> {
     f.metadata().map(|m| Stat::of(&m))
 }
 
-/// The path an OPEN handle really names (`GetFinalPathNameByHandleW`, every link followed), so a
-/// check on it is a check on what a read of that handle returns, whatever was swapped meanwhile.
-/// None when the system cannot say (and on other hosts).
-#[cfg(windows)]
-pub fn final_path(f: &File) -> Option<PathBuf> {
-    use std::os::windows::ffi::OsStringExt;
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
-    let mut buf = vec![0u16; 4096];
-    // SAFETY: an open handle and a buffer of the length given.
-    let n = unsafe { GetFinalPathNameByHandleW(f.as_raw_handle() as _, buf.as_mut_ptr(), buf.len() as u32, 0) } as usize;
-    (n != 0 && n < buf.len()).then(|| PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])))
-}
-
-#[cfg(not(windows))]
-pub fn final_path(_f: &File) -> Option<PathBuf> {
-    None
-}
-
 pub fn open(p: &LocalPath) -> io::Result<File> {
     File::open(&p.0)
 }
@@ -486,32 +333,6 @@ pub fn create_dir(p: &LocalPath) -> io::Result<()> {
     std::fs::create_dir(&p.0)
 }
 
-/// The bytes free for the person on the drive holding a judged folder (`GetDiskFreeSpaceExW`).
-#[cfg(windows)]
-pub fn free_space(dir: &LocalPath) -> io::Result<u64> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
-    let wide: Vec<u16> = dir.0.as_os_str().encode_wide().chain(Some(0)).collect();
-    let mut free = 0u64;
-    // SAFETY: `wide` is NUL-terminated; the other outputs are optional.
-    if unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut()) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(free)
-}
-
-/// The bytes free for the person on the file system holding a judged folder (`statvfs`).
-#[cfg(unix)]
-pub fn free_space(dir: &LocalPath) -> io::Result<u64> {
-    use std::os::unix::ffi::OsStrExt;
-    let path = std::ffi::CString::new(dir.0.as_os_str().as_bytes()).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::statvfs(path.as_ptr(), &mut st) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(u64::from(st.f_bavail).saturating_mul(u64::from(st.f_frsize)))
-}
-
 pub fn create_dir_all(p: &LocalPath) -> io::Result<()> {
     std::fs::create_dir_all(&p.0)
 }
@@ -532,33 +353,6 @@ pub fn rename(from: &LocalPath, to: &LocalPath) -> io::Result<()> {
     std::fs::rename(&from.0, &to.0)
 }
 
-/// A move that never replaces: `AlreadyExists` when `to` is there. On Windows it is `MoveFileExW` with
-/// no flags (the standard library's rename passes MOVEFILE_REPLACE_EXISTING), atomic against a file
-/// that appears at the name at any time.
-pub fn rename_no_replace(from: &LocalPath, to: &LocalPath) -> io::Result<()> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
-        let wide = |p: &std::path::Path| p.as_os_str().encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
-        let (f, t) = (wide(&from.0), wide(&to.0));
-        // SAFETY: both are NUL-terminated wide strings that live through the call.
-        if unsafe { MoveFileExW(f.as_ptr(), t.as_ptr(), 0) } != 0 {
-            return Ok(());
-        }
-        let e = io::Error::last_os_error();
-        // ERROR_ALREADY_EXISTS (183) and ERROR_FILE_EXISTS (80).
-        Err(if matches!(e.raw_os_error(), Some(183) | Some(80)) { io::Error::from(io::ErrorKind::AlreadyExists) } else { e })
-    }
-    #[cfg(not(windows))]
-    {
-        if to.0.exists() {
-            return Err(io::Error::from(io::ErrorKind::AlreadyExists));
-        }
-        std::fs::rename(&from.0, &to.0)
-    }
-}
-
 pub fn copy(from: &LocalPath, to: &LocalPath) -> io::Result<u64> {
     std::fs::copy(&from.0, &to.0)
 }
@@ -568,18 +362,6 @@ pub fn copy(from: &LocalPath, to: &LocalPath) -> io::Result<u64> {
 pub fn append_to_tar<W: io::Write>(tar: &mut tar::Builder<W>, name: &Path, p: &LocalPath) -> io::Result<()> {
     tar.follow_symlinks(false);
     if is_dir(p) { tar.append_dir_all(name, &p.0) } else { tar.append_path_with_name(&p.0, name) }
-}
-
-/// A change notification on the whole tree under a judged folder, None when it cannot be watched.
-#[cfg(windows)]
-pub fn watch_tree(dir: &LocalPath, filter: u32) -> Option<windows_sys::Win32::Foundation::HANDLE> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-    use windows_sys::Win32::Storage::FileSystem::FindFirstChangeNotificationW;
-    let wide: Vec<u16> = dir.0.as_os_str().encode_wide().chain(Some(0)).collect();
-    // SAFETY: `wide` is NUL-terminated and outlives the call.
-    let h = unsafe { FindFirstChangeNotificationW(wide.as_ptr(), 1, filter) };
-    (h != INVALID_HANDLE_VALUE).then_some(h)
 }
 
 /// The folder a child process starts in (CreateProcess opens it).
@@ -830,6 +612,13 @@ mod tests {
         ("app/api_ui.rs", "set_allow_all", 1, "Termurion's own API consent file beside its settings and the API's disable-auth file it writes"),
         ("app/api_ui.rs", "sync_api_server", 1, "Termurion's own API consent file beside its settings and the API's disable-auth file it writes"),
         ("platform/windows/ipc.rs", "create_new_for_write", 1, "the temporary file of the API disable-auth file, created new (never through a link) beside it; the path is made by api_ui::write_noauth_file from the user profile folder"),
+        ("platform/windows/files.rs", "create_owner_only", 1, "a path localfs judged, handed over as a judged Unfollowed or LocalPath (the gate's own calls, moved under platform)"),
+        ("platform/windows/files.rs", "free_space", 1, "a path localfs judged, handed over as a judged Unfollowed or LocalPath (the gate's own calls, moved under platform)"),
+        ("platform/windows/files.rs", "open_unfollowed", 1, "a path localfs judged, handed over as a judged Unfollowed or LocalPath (the gate's own calls, moved under platform)"),
+        ("platform/windows/files.rs", "watch_tree", 1, "a path localfs judged, handed over as a judged Unfollowed or LocalPath (the gate's own calls, moved under platform)"),
+        ("platform/unix/files.rs", "create_owner_only", 1, "a path localfs judged, handed over as a judged Unfollowed or LocalPath (the gate's own calls, moved under platform)"),
+        ("platform/unix/files.rs", "entry_is_reparse", 1, "asked of a Metadata that was already read (no path is touched here)"),
+        ("platform/unix/files.rs", "rename_no_replace", 2, "a path localfs judged, handed over as a judged Unfollowed or LocalPath (the gate's own calls, moved under platform)"),
         ("app/api_ui.rs", "write_noauth_file", 3, "Termurion's own API consent file beside its settings and the API's disable-auth file it writes"),
         ("app/scripts_app.rs", "mark_tree", 2, "the Reveal Contents folder Termurion itself just created under the temp folder (marks the files it extracted there)"),
         ("pwm_run.rs", "resolve_in", 1, "a PATH folder of the person's own environment, searched for the password manager CLI (bw.cmd) to start; nothing is read from it"),
@@ -941,19 +730,20 @@ mod tests {
         ("probe.rs", "win_console_mouse", 1, "the test helper exe beside Termurion's own exe"),
         ("platform/windows/pty.rs", "console_mode_unless", 1, "the console device CONIN$, not a path"),
         ("restore_state.rs", "write_atomic", 3, "Termurion's own window-state file"),
-        ("script_archive.rs", "hard_links", 1, "a folder Termurion just extracted an archive into: its own script staging folder, or the fresh folder it made beside a judged download"),
-        ("script_archive.rs", "stage_entries", 7, "a folder Termurion just extracted an archive into: its own script staging folder, or the fresh folder it made beside a judged download"),
+        ("platform/windows/shellfs.rs", "hard_links", 1, "a folder Termurion just extracted an archive into: its own script staging folder, or the fresh folder it made beside a judged download"),
+        ("platform/windows/shellfs.rs", "stage_entries", 3, "a folder Termurion just extracted an archive into: its own script staging folder, or the fresh folder it made beside a judged download"),
+        ("platform/unix/shellfs.rs", "stage_entries", 4, "a folder Termurion just extracted an archive into: its own script staging folder, or the fresh folder it made beside a judged download"),
         ("script_new.rs", "write_files", 2, "a new script's files in Termurion's Scripts folder"),
-        ("script_provision.rs", "download", 1, "Termurion's own runtime, download and environment folders under %APPDATA%"),
-        ("script_provision.rs", "exists", 1, "Termurion's own runtime, download and environment folders under %APPDATA%"),
-        ("script_provision.rs", "extract", 1, "Termurion's own runtime, download and environment folders under %APPDATA%"),
-        ("script_provision.rs", "find_file", 1, "Termurion's own runtime, download and environment folders under %APPDATA%"),
-        ("script_provision.rs", "list_dirs", 2, "Termurion's own runtime, download and environment folders under %APPDATA%"),
-        ("script_provision.rs", "remove", 3, "Termurion's own runtime, download and environment folders under %APPDATA%"),
-        ("script_provision.rs", "rename", 2, "Termurion's own runtime, download and environment folders under %APPDATA%"),
-        ("script_provision.rs", "sha256", 1, "Termurion's own runtime, download and environment folders under %APPDATA%"),
-        ("script_provision.rs", "system_tool", 1, "Windows' own System32 folder (GetSystemDirectory)"),
-        ("script_provision.rs", "write", 2, "Termurion's own runtime, download and environment folders under %APPDATA%"),
+        ("platform/windows/provision.rs", "download", 1, "Termurion's own runtime, download and environment folders under %APPDATA%"),
+        ("platform/windows/provision.rs", "exists", 1, "Termurion's own runtime, download and environment folders under %APPDATA%"),
+        ("platform/windows/provision.rs", "extract", 1, "Termurion's own runtime, download and environment folders under %APPDATA%"),
+        ("platform/windows/provision.rs", "find_file", 1, "Termurion's own runtime, download and environment folders under %APPDATA%"),
+        ("platform/windows/provision.rs", "list_dirs", 2, "Termurion's own runtime, download and environment folders under %APPDATA%"),
+        ("platform/windows/provision.rs", "remove", 3, "Termurion's own runtime, download and environment folders under %APPDATA%"),
+        ("platform/windows/provision.rs", "rename", 2, "Termurion's own runtime, download and environment folders under %APPDATA%"),
+        ("platform/windows/provision.rs", "sha256", 1, "Termurion's own runtime, download and environment folders under %APPDATA%"),
+        ("platform/windows/provision.rs", "system_tool", 1, "Windows' own System32 folder (GetSystemDirectory)"),
+        ("platform/windows/provision.rs", "write", 2, "Termurion's own runtime, download and environment folders under %APPDATA%"),
         ("scripts.rs", "read_link", 1, "the judge's own reparse reader behind the Fs seam (netpath::judge calls it root first)"),
         ("scripts_scan.rs", "start_with", 1, "Termurion's Scripts folder (scripts_folder judges a custom one on every call)"),
         ("settings_keys.rs", "add_icon_font", 1, "Windows' own Fonts folder"),
@@ -963,12 +753,12 @@ mod tests {
         ("store.rs", "save", 3, "Termurion's own profiles file"),
         ("terminfo.rs", "ensure", 3, "Termurion's own terminfo folder under %APPDATA%\\Termurion"),
         ("util_console.rs", "open_console", 1, "the console devices CONIN$ and CONOUT$, not paths"),
-        ("utilities.rs", "ensure", 5, "Termurion's own utilities folder under %APPDATA%\\Termurion"),
-        ("utilities.rs", "refresh", 6, "Termurion's own utilities folder under %APPDATA%\\Termurion"),
+        ("platform/windows/utilities.rs", "ensure", 5, "Termurion's own utilities folder under %APPDATA%\\Termurion"),
+        ("platform/windows/utilities.rs", "refresh", 6, "Termurion's own utilities folder under %APPDATA%\\Termurion"),
         ("platform/windows/shell_open.rs", "shell_verb", 1, "the file sink: it takes a path localfs::shell_verb got as a judged LocalPath (open_file passes the same), the one way a file from outside reaches ShellExecuteW"),
         ("platform/windows/shell_open.rs", "open_url", 1, "URL targets only: platform::shell_open::open_with has semantic::shell_url refuse a path, a drive path, a network path and a file: link before ShellExecuteW; a file opens only through localfs::open_with_shell with a LocalPath"),
         ("platform/windows/shell_open.rs", "open_scheme", 1, "URL targets only: semantic_ui::shell_open_scheme has link_scheme::scheme_of and screen judge it again (a path has no scheme, file: is on the blocked list) and percent-encodes it before ShellExecuteW"),
-        ("utilities.rs", "stamp", 1, "Termurion's own utilities folder under %APPDATA%\\Termurion"),
+        ("platform/windows/utilities.rs", "stamp", 1, "Termurion's own utilities folder under %APPDATA%\\Termurion"),
         ("platform/windows/ipc.rs", "connect_owned", 1, "a named pipe, not a file path"),
     ];
 

@@ -18,16 +18,16 @@ src/host.rs:// test: a signal through a live host  # a Ctrl+C through a real con
 src/url_launch.rs:*<=2  # production cfg owed to P1 (move under platform/)
 
 # Owning modules outside src/app/ (production cfgs owed to P1: the 71 files and their twins are listed in the plan's P1 move list): their Windows code sits behind a cfg until it moves under platform/ (P1).
-src/dlog.rs:*<=31  # production cfg owed to P1 (move under platform/)
-src/localfs.rs:*<=22  # production cfg owed to P1 (move under platform/)
-src/script_provision.rs:*<=15  # production cfg owed to P1 (move under platform/)
+src/dlog.rs:*<=10  # test-only cfgs: the Windows-only tests and the source scan's own text
+src/localfs.rs:*<=4  # test-only cfgs: the Windows-only tests and the source scan's own text
+src/script_provision.rs:*<=2  # test-only cfgs: the Windows-only tests and the source scan's own text
 src/workgroup_restore.rs:*<=13  # production cfg owed to P1 (move under platform/)
 src/url_schemes.rs:*<=13  # production cfg owed to P1 (move under platform/)
 src/encoding.rs:*<=12  # production cfg owed to P1 (move under platform/)
 src/netpath.rs:*<=11  # production cfg owed to P1 (move under platform/)
 src/input_locale.rs:*<=11  # production cfg owed to P1 (move under platform/)
 src/git_state.rs:*<=11  # production cfg owed to P1 (move under platform/)
-src/utilities.rs:*<=9  # production cfg owed to P1 (move under platform/)
+src/utilities.rs:*<=7  # test-only cfgs: the Windows-only tests and the source scan's own text
 src/dll.rs:*<=9  # production cfg owed to P1 (move under platform/)
 src/browser_autofill.rs:*<=9  # production cfg owed to P1 (move under platform/)
 src/util_imgls.rs:*<=7  # production cfg owed to P1 (move under platform/)
@@ -60,7 +60,6 @@ src/util_api.rs:*<=2  # production cfg owed to P1 (move under platform/)
 src/ssh_local.rs:*<=2  # production cfg owed to P1 (move under platform/)
 src/ssh_inject.rs:*<=2  # production cfg owed to P1 (move under platform/)
 src/semantic.rs:*<=2  # production cfg owed to P1 (move under platform/)
-src/script_archive.rs:*<=2  # production cfg owed to P1 (move under platform/)
 src/reg.rs:*<=2  # production cfg owed to P1 (move under platform/)
 src/desktops.rs:*<=2  # production cfg owed to P1 (move under platform/)
 src/ctx_help.rs:*<=2  # production cfg owed to P1 (move under platform/)

@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use super::super::Unsupported;
+use crate::script_archive::Stat;
 
 /// The home folder's Desktop, when there is one.
 pub fn desktop() -> Option<PathBuf> {
@@ -46,4 +47,23 @@ pub fn downloads() -> Option<PathBuf> {
 #[cfg(test)]
 pub fn short_name(_p: &Path) -> Option<String> {
     None
+}
+
+/// A staging folder's entries for `sa::unsafe_entry`, never following a link: a symbolic link, a
+/// folder, or a file with its hard link count. A folder that cannot be read reads as a link, so the
+/// archive is refused.
+pub fn stage_entries(dir: &Path) -> Vec<(String, Stat)> {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(rd) = std::fs::read_dir(dir) else { return vec![(String::new(), Stat::Reparse)] };
+    rd.flatten()
+        .map(|e| {
+            let stat = match e.path().symlink_metadata() {
+                Err(_) => Stat::Reparse,
+                Ok(m) if m.file_type().is_symlink() => Stat::Reparse,
+                Ok(m) if m.is_dir() => Stat::Dir,
+                Ok(m) => Stat::File { links: u32::try_from(m.nlink()).unwrap_or(u32::MAX) },
+            };
+            (e.file_name().to_string_lossy().into_owned(), stat)
+        })
+        .collect()
 }
