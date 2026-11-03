@@ -4763,6 +4763,10 @@ impl App {
             Edit::ImportAll => self.import_all(),
             Edit::EraseAll => self.erase_all(),
             Edit::Changed(_) | Edit::Imported(_) => {
+                // The profile list is drawn before an import's button stores anything: draw again.
+                for w in [self.settings.as_ref(), self.profiles_win.as_ref()].into_iter().flatten() {
+                    w.request_redraw();
+                }
                 // Rules may have changed: every session looks again (iTerm2's reloadAllProfiles).
                 for s in self.aps.values_mut() {
                     s.mark_dirty();

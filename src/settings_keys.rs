@@ -2022,7 +2022,17 @@ fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path
     })
     .response
     .on_hover_text(setting.map_or("", |s| s.help.as_str()));
-    if on && rp::is_live_folder(&text, home, &crate::netpath::read_reparse, live_dir().as_deref()) {
+    // Whether the text names the live folder follows links, so it is worked out when the text changes.
+    let live_id = prefs_valid_id().with("live");
+    let live = match ui.ctx().data(|d| d.get_temp::<(String, bool)>(live_id)) {
+        Some((checked, live)) if checked == text => live,
+        _ => {
+            let live = rp::is_live_folder(&text, home, &crate::netpath::read_reparse, live_dir().as_deref());
+            ui.ctx().data_mut(|d| d.insert_temp(live_id, (text.clone(), live)));
+            live
+        }
+    };
+    if on && live {
         ui.add(egui::Label::new(egui::RichText::new(rp::LIVE_FOLDER).color(ui.visuals().warn_fg_color)).wrap());
     }
     // The folder's probe (and its link check) answered above; a URL or a network path is never probed.

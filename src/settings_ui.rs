@@ -16,6 +16,9 @@ use crate::settings_keys::{self, KeysState};
 use crate::settings_profile_actions as pa;
 use crate::store::Store;
 
+/// A settings plist's global keys and legacy keys, next to its profiles.
+type Imported = (Vec<(String, toml::Value)>, crate::import::Legacy);
+
 /// A profile tab's rows, in the order iTerm2's xib draws them (`scripts/order-schema.py`; the order is held
 /// by `ui_labels`). iTerm2's profile panes have no section headings, so the tab is one group with no name.
 pub fn sections(tab: &str) -> Vec<(String, Vec<&'static Setting>)> {
@@ -387,9 +390,32 @@ pub fn row_opens(shift: bool) -> How {
     if shift { How::Window } else { How::Tab }
 }
 
+/// Stores what an iTerm2 import gave: the profiles (replacing any with the same Guid) and, for a
+/// settings plist, its global keys, with the legacy keys migrated and the AI migration redone.
+fn apply_import(store: &mut Store, globals: &mut Globals, mut list: Vec<Profile>, globals_read: Option<Imported>) -> Edit {
+    let n = list.len();
+    let mut values = Vec::new();
+    let plist = globals_read.is_some();
+    if let Some((v, legacy)) = globals_read {
+        values = v;
+        crate::import::migrate_legacy(&mut values, &legacy, &mut list);
+    }
+    for p in list {
+        store.profiles.retain(|q| q.guid() != p.guid());
+        store.add(p);
+    }
+    if plist {
+        for (k, v) in values {
+            globals.set(&k, v);
+        }
+        crate::ai_models::migrate_after_import(globals);
+    }
+    Edit::Imported(n)
+}
+
 /// What a picked iTerm2 file gives: its profiles and, for a settings plist, the global and legacy
 /// keys. The Mac's live iTerm2 file is read from the preferences domain instead (the file can lag).
-fn import_picked(path: &std::path::Path, live: Option<&std::path::Path>) -> Result<(Vec<Profile>, Option<(Vec<(String, toml::Value)>, crate::import::Legacy)>), String> {
+fn import_picked(path: &std::path::Path, live: Option<&std::path::Path>) -> Result<(Vec<Profile>, Option<Imported>), String> {
     if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("plist")) {
         return crate::import::from_file(path).map(|list| (list, None));
     }
@@ -1215,28 +1241,7 @@ impl SettingsWindow {
                                 }
                                 if let Some(path) = dialog.pick_file() {
                                     edit = match import_picked(&path, live.as_deref()) {
-                                        Ok((mut list, globals_read)) => {
-                                            let n = list.len();
-                                            // A full settings plist also carries the global key and pointer
-                                            // settings, and maybe iTerm2's legacy keys, which are migrated into
-                                            // the imported values and profiles before they are stored.
-                                            let mut values = Vec::new();
-                                            if let Some((v, legacy)) = globals_read {
-                                                values = v;
-                                                crate::import::migrate_legacy(&mut values, &legacy, &mut list);
-                                            }
-                                            for p in list {
-                                                store.profiles.retain(|q| q.guid() != p.guid());
-                                                store.add(p);
-                                            }
-                                            if !values.is_empty() {
-                                                for (k, v) in values {
-                                                    globals.set(&k, v);
-                                                }
-                                                crate::ai_models::migrate_after_import(globals);
-                                            }
-                                            Edit::Imported(n)
-                                        }
+                                        Ok((list, globals_read)) => apply_import(store, globals, list, globals_read),
                                         Err(e) => Edit::Error(e),
                                     };
                                 }
@@ -2643,6 +2648,47 @@ fn shows_ai_models_on(mode: Mode, page: Page, sub: crate::settings_ai::SubTab) -
 
 #[cfg(test)]
 mod tests {
+    /// The Import from iTerm2 path for a settings plist: the picked file's profiles land in the
+    /// store, its keys in the globals, and the AI migration flag is reset once for a plist only.
+    #[test]
+    fn an_iterm2_plist_import_reaches_the_store_and_globals() {
+        let path = std::env::temp_dir().join(format!("termurion-import-picked-{}.plist", std::process::id()));
+        std::fs::write(&path, concat!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>FocusFollowsMouse</key><true/>"#,
+            r#"<key>New Bookmarks</key><array><dict><key>Guid</key><string>p2m</string><key>Name</key><string>P2 Mac</string></dict></array></dict></plist>"#,
+        )).unwrap();
+        let (list, read) = import_picked(&path, None).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(read.is_some(), "a plist brings its settings");
+        let mut store = crate::store::Store::fresh(std::path::Path::new("x.toml"));
+        let before = store.profiles.len();
+        let mut plain = Globals::empty(std::path::Path::new("import-picked-test.toml"));
+        assert!(matches!(apply_import(&mut store, &mut plain, list, read), Edit::Imported(1)));
+        assert_eq!(store.profiles.len(), before + 1);
+        assert!(store.profiles.iter().any(|p| p.name() == "P2 Mac"));
+        assert_eq!(plain.values.get("FocusFollowsMouse"), Some(&Value::Boolean(true)));
+        // A manual model with no headers of its own, and legacy global headers to give it.
+        let seeded = || {
+            let mut g = Globals::empty(std::path::Path::new("import-picked-test.toml"));
+            let mut header = toml::Table::new();
+            header.insert("name".into(), Value::String("X-Test".into()));
+            header.insert("value".into(), Value::String("1".into()));
+            g.set(crate::ai_settings::CUSTOM_HEADERS_ENABLED, Value::Boolean(true));
+            g.set(crate::ai_settings::CUSTOM_HEADERS, Value::Array(vec![Value::Table(header)]));
+            g.set(crate::ai_settings::MANUAL_MODELS, Value::Array(vec![Value::Table(toml::Table::new())]));
+            g
+        };
+        let has_headers = |g: &Globals| matches!(g.get(crate::ai_settings::MANUAL_MODELS), Some(Value::Array(a)) if a[0].as_table().is_some_and(|t| t.contains_key("customHeaders")));
+        let mut globals = seeded();
+        let (list, read) = (vec![Profile::new("Q")], Some((Vec::new(), crate::import::Legacy::default())));
+        apply_import(&mut store, &mut globals, list, read);
+        assert!(has_headers(&globals), "the AI migration runs for a plist, even one with no global keys");
+        // JSON profiles carry no settings: nothing is migrated.
+        let mut globals = seeded();
+        apply_import(&mut store, &mut globals, vec![Profile::new("J")], None);
+        assert!(!has_headers(&globals));
+    }
+
     use super::*;
 
     #[test]

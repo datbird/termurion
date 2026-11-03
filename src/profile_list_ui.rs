@@ -153,6 +153,8 @@ pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, Stri
             ui.separator();
         }
         egui::ScrollArea::vertical().id_salt("profile-rows").max_height(LIST_HEIGHT).auto_shrink([false, false]).show(ui, |ui| {
+            // The scroll area inherits the row's horizontal layout; the rows stack top down.
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
             let width = ui.available_width();
             for &i in &shown_idx {
                 let (guid, name, tags, _) = &rows[i];
@@ -202,6 +204,7 @@ pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, Stri
                     });
                 }
             }
+            });
         });
     });
     event
@@ -210,6 +213,36 @@ pub fn profile_list(ui: &mut egui::Ui, st: &mut ListState, rows: &[(String, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Where the text `name` was painted this frame.
+    fn painted_at(shape: &egui::Shape, name: &str, found: &mut Vec<egui::Pos2>) {
+        match shape {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| painted_at(s, name, found)),
+            egui::Shape::Text(t) if t.galley.text().contains(name) => found.push(t.pos),
+            _ => {}
+        }
+    }
+
+    /// The rows stack down the list. They once sat side by side (the list's scroll area took the
+    /// horizontal layout of its parent), so every profile after the first was off to the right.
+    #[test]
+    fn the_rows_stack_down_the_list() {
+        let rows: Vec<_> = ["Alpha", "Bravo", "Charlie"].iter().map(|n| (n.to_string(), n.to_string(), vec![], String::new())).collect();
+        let ctx = egui::Context::default();
+        let mut state = ListState::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            profile_list(ui, &mut state, &rows, "Alpha", false, None);
+        });
+        out.textures_delta.clear();
+        let at = |name: &str| {
+            let mut found = Vec::new();
+            out.shapes.iter().for_each(|c| painted_at(&c.shape, name, &mut found));
+            found.first().copied().unwrap_or_else(|| panic!("{name} is not drawn"))
+        };
+        let (a, b, c) = (at("Alpha"), at("Bravo"), at("Charlie"));
+        assert!(b.y > a.y && c.y > b.y, "one under the next: {a:?} {b:?} {c:?}");
+        assert!((b.x - a.x).abs() < 1.0 && (c.x - a.x).abs() < 1.0, "in one column: {a:?} {b:?} {c:?}");
+    }
 
     #[test]
     fn the_search_menu_lists_the_tags_and_adds_one_to_the_query() {
