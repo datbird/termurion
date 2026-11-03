@@ -875,3 +875,56 @@ pub fn create_new_for_write(path: &str, set_owner: bool) -> Result<std::fs::File
     }
     Ok(f)
 }
+
+use crate::api_auth::{noauth_contents, FileKind, NoauthFile};
+
+/// Reads the allow-all path for `noauth_status` without following a link: one handle opened with
+/// `FILE_FLAG_OPEN_REPARSE_POINT` (and `FILE_FLAG_BACKUP_SEMANTICS`, so a directory opens too)
+/// gives the attributes, size, owner and contents. `None` when nothing is at the path or its
+/// attributes cannot be read (iTerm2's None). Contents are read only from a plain file of the
+/// magic's size; a file that opens for its attributes but not for reading has no contents.
+pub fn read_noauth_file(path: &str) -> Option<NoauthFile> {
+    use std::io::Read;
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL,
+    };
+    let open = |access: u32| {
+        std::fs::OpenOptions::new()
+            .access_mode(access)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+    };
+    let (mut file, readable) = match open(FILE_READ_ATTRIBUTES | READ_CONTROL | FILE_READ_DATA) {
+        Ok(f) => (f, true),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => (open(FILE_READ_ATTRIBUTES | READ_CONTROL).ok()?, false),
+        Err(_) => return None,
+    };
+    let meta = file.metadata().ok()?;
+    let attrs = meta.file_attributes();
+    let kind = if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        FileKind::Link
+    } else if attrs & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        FileKind::Directory
+    } else {
+        FileKind::Regular
+    };
+    let size = meta.file_size();
+    let owner_is_user = match (crate::platform::windows::ipc::file_owner_sid(&file), crate::platform::windows::ipc::user_sid()) {
+        (Ok(owner), Ok(user)) => owner == user,
+        _ => false,
+    };
+    let expected = noauth_contents(path).len() as u64;
+    let contents = if readable && kind == FileKind::Regular && size == expected {
+        let mut bytes = Vec::new();
+        match (&mut file).take(expected + 1).read_to_end(&mut bytes) {
+            Ok(_) => String::from_utf8(bytes).ok(),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    Some(NoauthFile { kind, size, owner_is_user, contents })
+}

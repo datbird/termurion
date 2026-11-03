@@ -606,7 +606,7 @@ mod tests {
         ("ai_discovery.rs", "load", 1, "Termurion's own model cache beside its settings (ai_discovery::default_path)"),
         ("ai_discovery.rs", "save", 2, "Termurion's own model cache beside its settings (ai_discovery::default_path)"),
         ("ai_wire_log.rs", "open", 3, "Termurion's own AIChatWire log folder beside its settings"),
-        ("api_auth.rs", "read_noauth_file", 2, "the Python API's disable-auth file in the person's own profile folder (api_auth::noauth_path), opened without following a link"),
+        ("platform/windows/ipc.rs", "read_noauth_file", 2, "the Python API's disable-auth file in the person's own profile folder (api_auth::noauth_path), opened without following a link"),
         ("app/api_ui.rs", "api_launch", 1, "Termurion's own API consent file beside its settings and the API's disable-auth file it writes"),
         ("app/api_ui.rs", "record_consent", 2, "Termurion's own API consent file beside its settings and the API's disable-auth file it writes"),
         ("app/api_ui.rs", "set_allow_all", 1, "Termurion's own API consent file beside its settings and the API's disable-auth file it writes"),

@@ -1,89 +1,35 @@
-# Unix test gaps after P0
+# Unix test gaps after P1
 
-P0 makes the crate and all programs compile on Linux and macOS. It does not make the tests pass there.
-Nothing below is fixed in P0; P1 and later work through it by cause.
+P0 made the crate and all programs compile on Linux and macOS. P1 (the Unix core) added the pseudo terminal, the session host, job tracking, paths, the clipboard, opening URLs and files, tmux `-CC` and window restore, and moved the remaining Win32 code under `src/platform/`. This file records what still fails and why.
 
-Linux (sirtoolio, debug build, the last code commit of P0): `cargo test --lib` gave 6270 passed, 220 failed, 11 ignored
-(683 s; `workgroup::tests::the_model_never_holds_what_the_write_point_would_drop` alone needs minutes on a debug build).
-The failing set is the same 220 tests as before the final review fixes. The log is a local file, not in the repo.
-Windows: `scripts/xt test --lib` gave 6802 passed, 0 failed, 143 ignored before the final review fixes; after them the
-only failures were two tests the fixes tripped (corrected and green on rerun) and the known timing flake
-`find::tests::find_over_a_large_buffer_is_quick`.
+Linux (debug build, the last code commit of P1): `cargo test --lib` gave **6387 passed, 170 failed**. macOS (arm64 VM, same commit): **6385 passed, 173 failed**. At the start of P1 Linux gave 6270 passed, 220 failed.
+The full failing lists are kept with the task reports (`task-10-linux-failures.txt`, `task-10-mac-failures.txt`); a failure that passes alone is a flake (see Timing).
 
-## Failures by cause (every failure is in exactly one cause; the counts sum to 220)
+Windows: the Windows lib and lib tests type-check from Linux (`scripts/win-check`: 0 errors, 2 warnings, both the `fetch_update` deprecations in `session_log.rs`). **The Windows test run (`scripts/xt test --lib`) is pending, not passed**: the Windows host is on hold, so it waits for the end of P1. Until it runs, no claim is made that the Windows suite is green after P1.
+
+## Failures by cause on Linux (every failure is in exactly one cause; the counts sum to 170)
 
 | Cause | Count |
 |---|---|
-| Local shells are Unsupported | 29 |
-| Session host is Unsupported | 19 |
+| Coprocesses are Unsupported | 2 |
 | Dynamic Profiles are Windows only | 8 |
 | Windows-only tools missing | 20 |
 | Fonts and text metrics | 5 |
-| Windows path and platform rules in assertions | 121 |
-| Timing | 6 |
+| Windows path and platform rules in assertions | 119 |
+| Timing | 5 |
 | Text encoding and normalization | 11 |
-| Licenses | 1 |
-| Total | 220 |
+| Total | 170 |
 
-There is no "other" bucket: a failure not matched by a message rule was put under cause 6 by its module, and the lists below name every test.
+Gone since P0, because P1 fixed them: "Local shells are Unsupported" (29, the pty backend), "Session host is Unsupported" (19, the Unix socket host), the Licenses test on Linux, and two path-rule tests (`profile::tests::a_missing_start_dir_falls_back_to_home_with_a_warning` and `start_dir_is_home_by_default_and_expands_tilde`). Two of the old "Local shells" tests moved into the new Coprocesses cause.
 
-### Local shells are Unsupported (29)
+There is no "other" bucket: every failure is named below.
 
-Tests that start a pane, shell or pty fail at the spawn with "Local shells is not available on Linux yet". Fixed by the P1 pty backend.
+### Coprocesses are Unsupported (2)
 
-- `host::tests::the_prompt_watch_skips_paused_and_unattached_sessions`
-- `pane::tests::a_live_shell_ends_before_its_restart`
-- `pane::tests::a_paused_pane_stops_reading`
-- `pane::tests::a_refused_write_keeps_the_composer_probe`
-- `pane::tests::a_view_keeps_the_panes_own_modes_and_style`
-- `pane::tests::an_ended_pane_resizes_its_screen_not_its_console`
-- `pane::tests::clear_buffer_jiggles_when_asked`
-- `pane::tests::clear_buffer_keeps_conpty_in_step`
-- `pane::tests::clear_buffer_skips_an_ended_pane`
-- `pane::tests::clear_to_last_mark_keeps_conpty_in_step`
-- `pane::tests::close_asks_for_survivors_of_an_ended_pane`
-- `pane::tests::copies_read_the_screen_the_user_selects_in`
+The coprocess backend returns Unsupported on Linux and macOS (P2 or later), and these two pane tests start `cmd.exe` as the coprocess.
+
 - `pane::tests::coprocess_types_into_the_shell`
-- `pane::tests::drop_does_not_block`
-- `pane::tests::ended_pane_has_no_shell_pid`
-- `pane::tests::ended_pane_keeps_its_screen`
-- `pane::tests::ended_pane_takes_no_input`
-- `pane::tests::exit_code_is_reported`
-- `pane::tests::extras_ride_with_the_screen`
-- `pane::tests::focus_reports_are_not_held`
 - `pane::tests::mute_hides_output_from_the_screen`
-- `pane::tests::pump_shows_output`
-- `pane::tests::relaunch_keeps_the_screen`
-- `pane::tests::resize_to_zero_keeps_a_minimum`
-- `pane::tests::selection_writes_keep_state`
-- `pane::tests::survivors_are_taken_at_the_exit`
-- `pane::tests::the_pwsh_script_emits_prompt_marks`
-- `pane::tests::the_pwsh_script_keeps_the_prompt_state`
-- `pane::tests::the_shell_generation_moves_with_exit_and_restart`
-
-### Session host is Unsupported (19)
-
-"Session host is not available on Linux yet". Each host test also waits 5 s in `Conn::open` before it fails, which adds minutes to a run.
-
-- `host::tests::detach_resumes_a_paused_session`
-- `host::tests::exited_sessions_wait_for_forget`
-- `host::tests::host_launches_and_echoes`
-- `host::tests::launch_env_reaches_the_session`
-- `host::tests::launch_with_runs_the_transport`
-- `host::tests::output_waits_while_detached`
-- `host::tests::second_client_is_refused`
-- `host::tests::versions_one_to_three_are_spoken`
-- `host_client::tests::a_busy_host_says_so`
-- `host_client::tests::a_changed_watch_clears_hosted_prompts`
-- `host_client::tests::a_transport_launch_runs_in_the_host`
-- `host_client::tests::a_version_three_host_is_too_old_for_a_transport`
-- `host_client::tests::a_version_two_host_keeps_version_two`
-- `host_client::tests::an_attached_pane_sets_its_size`
-- `host_client::tests::an_older_host_is_spoken_to_in_version_one`
-- `host_client::tests::drop_kills_the_session`
-- `host_client::tests::hosted_exit_code_arrives`
-- `host_client::tests::hosted_pane_runs_a_shell`
-- `host_client::tests::reattach_continues_the_output`
 
 ### Dynamic Profiles are Windows only (8)
 
@@ -133,7 +79,7 @@ Text widths and face lookup measured against Windows fonts (Cascadia Mono is not
 - `render::tests::text_advance_matches_the_cell_width`
 - `render::tests::underlines_break_around_glyph_ink`
 
-### Windows path and platform rules in assertions (121)
+### Windows path and platform rules in assertions (119)
 
 Expected values are `C:\` paths, `\` separators, drive letters, UNC and subst rules, 8.3 names, PATHEXT, explorer.exe, USERPROFILE, the registry, or a path judge that refuses `/tmp` paths. Named by module below.
 
@@ -191,8 +137,6 @@ Expected values are `C:\` paths, `\` separators, drive letters, UNC and subst ru
 - `netpath::tests::reparse_data_is_read_and_unknown_tags_are_refused`
 - `netpath::tests::subst_letters_are_resolved_and_judged`
 - `page_saver::tests::save_destination_follows_windows`
-- `profile::tests::a_missing_start_dir_falls_back_to_home_with_a_warning`
-- `profile::tests::start_dir_is_home_by_default_and_expands_tilde`
 - `remote_prefs::tests::a_folder_linked_to_a_network_path_is_never_probed`
 - `remote_prefs::tests::locations_follow_iterm2`
 - `script_archive::tests::archive_entries_are_checked`
@@ -259,7 +203,7 @@ Expected values are `C:\` paths, `\` separators, drive letters, UNC and subst ru
 - `webhost::tests::folders_and_options_follow_windows`
 - `workgroup_run::tests::a_member_never_runs_git_unchecked`
 
-### Timing (6)
+### Timing (5)
 
 Time-bounded tests on a loaded debug build, and thread-count tests. `find_over_a_large_buffer_is_quick` is the known flake.
 
@@ -267,7 +211,6 @@ Time-bounded tests on a loaded debug build, and thread-count tests. `find_over_a
 - `app::git_ui::tests::worker_bounds_threads_and_abandons_stuck_ones`
 - `find::tests::find_over_a_large_buffer_is_quick`
 - `scripts::tests::slow_scan_follows_iterm2`
-- `ssh_procs::tests::a_huge_remote_list_closes_quickly_and_briefly`
 - `synthetic::tests::filtering_a_large_buffer_is_quick`
 
 ### Text encoding and normalization (11)
@@ -286,23 +229,60 @@ Session code page and Unicode normalization assertions. Not diagnosed further in
 - `screen::tests::text_leaves_the_grid_normalized`
 - `styled_copy::tests::copies_follow_the_normalization_form`
 
-### Licenses (1)
+## macOS-only differences
 
-`licenses::tests::every_dependency_is_listed`: webview2-com has no license entry (Windows-only crate, absent from the Unix tree).
+macOS has the same failures as Linux except these. 6 fail only on macOS (below). 3 fail only on Linux and are load or timing flakes: `find::tests::find_over_a_large_buffer_is_quick`, `trigger_eval::tests::each_line_is_checked_once`, `extract::tests::one_walk_checks_and_writes`.
 
-- `licenses::tests::every_dependency_is_listed`
+- `licenses::tests::every_dependency_is_listed`: `webview2-com` has no license entry (Windows-only crate, absent from the Unix tree); it passes on Linux now
+- `pane::tests::the_pwsh_script_emits_prompt_marks`: no `pwsh` on the macOS VM
+- `pane::tests::the_pwsh_script_keeps_the_prompt_state`: no `pwsh` on the macOS VM
+- `platform::unix::pty::tests::a_shell_inherits_no_other_pty`: a Task 1 pin that already failed on macOS at the start of P1; not diagnosed
+- `render::tests::every_effect_lights_both_box_lines_on_enter`: a render test that already failed on the macOS VM at the start of P1; not diagnosed
+- `render::tests::lightning_enter_surge_finds_the_claude_box_lines`: a render test that already failed on the macOS VM at the start of P1; not diagnosed
+
+## Live tmux lines
+
+The tmux `-CC` code is covered by four `unix-gui-check` scenarios on Linux with a live tmux: `tmux` (tabs in the attaching window), `tmux-nolang` (the app starts with no locale variable), `tmux-lcall` (the app starts with `LC_ALL=C`) and `tmux-windows` (the default, a new Termurion window). All four PASS (below). tmux is not installed on the macOS VM, so the live tmux lines run on Linux only.
 
 ## Tests hidden from Unix on purpose
 
-A `#[cfg(windows)]` on a test or part of one is listed here and in `scripts/cfg-audit.allow` with its reason. In
-`src/app/`: the DACL check in `adblock_app` (SDDL), the exclusive share mode in `archive_ui`, the links-and-devices
-test in `emu_ui` (junctions, device names, file symlinks; the symlink test is gated off Unix), the real-HWND tests in
-`menu_hold_tests`, the Mark of the Web test in `page_saver_app` (NTFS stream), the ICU pattern test in
-`statusbar_content`. Outside `src/app/`: in `url_launch.rs` the lone-surrogate test and the Windows pipe tests, in `host.rs`
-the two live ConPTY tests, and the Windows-only tests that sit beside the Windows code they test in `dlog`, `localfs`,
-`script_provision`, `url_schemes` and others (counted by the whole-file entries).
+A `#[cfg(windows)]` on a test or part of one is listed here and in `scripts/cfg-audit.allow` with its reason. In `src/app/`: the DACL check in `adblock_app` (SDDL), the exclusive share mode in `archive_ui`, the links-and-devices test in `emu_ui` (junctions, device names, file symlinks; the symlink test is gated off Unix), the real-HWND tests in `menu_hold_tests`, the Mark of the Web test in `page_saver_app` (NTFS stream), the ICU pattern test in `statusbar_content`. Outside `src/app/`: in `url_launch.rs` the lone-surrogate test and the Windows pipe tests, in `host.rs` the two live ConPTY tests, and the Windows-only tests that sit beside the Windows code they test in `dlog`, `localfs`, `script_provision`, `url_schemes`, `api_auth`, `api_peer`, `desktops`, `workgroup_restore` and others (counted by the whole-file entries; for the modules P1 moved, those entries now count test cfgs only).
 
-## The cfg(unix) unit tests from Tasks 1 to 7
+## The cfg(unix) unit tests from Tasks 1 to 10
 
-The tests under `platform::unix::*` and the stand-ins ran on Linux and all passed (none failed in the list above). None
-runs on macOS yet; the Mac check is compile only.
+The tests under `platform::unix::*` and the stand-ins ran on both hosts. On Linux none of them is in the failing list. Under load `platform::unix::proc::tests::ctrl_c_and_break_are_int_and_quit` and `the_foreground_job_follows_the_pty` can fail in a full run; they pass alone. On macOS the one failure is `platform::unix::pty::tests::a_shell_inherits_no_other_pty` (above).
+
+## What is left in the cfg-audit allowlist
+
+The whole-file entries whose reason reads "production cfg owed to the port" are Windows code that still sits behind a `#[cfg(windows)]` outside `src/platform/` (for example `url_schemes`, `encoding`, `netpath`, `input_locale`, `git_state`, `dll`, `browser_autofill`). P1 covered the modules moved in Tasks 9 and 10; the rest is owed to the port. `scripts/cfg-audit` exits 0 and stays the gate.
+
+## P1 exit checks
+
+`scripts/unix-gui-check` on Linux (Xvfb), run on the Task 10 tree, 2026-11-02:
+
+| Scenario | Result |
+|---|---|
+| shell | PASS |
+| layout | PASS |
+| host | PASS |
+| job | PASS |
+| clipboard | PASS |
+| tmux | PASS |
+| tmux-nolang | PASS |
+| tmux-lcall | PASS |
+| tmux-windows | PASS |
+| restore-windows | PASS |
+| restore-host | PASS |
+
+macOS hand checks on the macOS VM (Task 8 and its fix rounds), 2026-11-02:
+
+- Host case (RunJobsInServers true): PASS. After `kill -9` of the app the shell and host stayed alive, the host started Termurion again, and the pane showed the same shell pid and the earlier marker line.
+- Stock Quit then relaunch: restores. Quit through the stock Termurion > Quit item saved the windows (`App::exiting`), and the relaunch showed the earlier marker line with the "Session Contents Restored" banner. One pane only, because macOS has no native menu bar until P2.
+- Tabs and splits on macOS: covered by the Linux `layout`, `restore-windows` and `restore-host` scenarios and the unit tests (`layout`, `arrangement`, `restore_state`, `shortcut_key` and `keyproto` ran green on macOS). They could not be built by hand on the VM, which has no native menu bar.
+- Windows: `scripts/xt test --lib` is PENDING (host on hold; it runs at the end of P1). `scripts/win-check` is the compile proof only.
+
+Parked for P2 (macOS packaging, the native menu bar and first run):
+
+- Stock macOS Quit skips frame saving, notes and log flushing. The window state is saved on that path now; the rest waits for the native Quit going through `App::quit`.
+- A windowless relaunch after the macOS Downloads prompt (the unsigned dev bundle asks for Downloads access on each launch; one relaunch left the process running with no window).
+- The tmux control-mode dialog on stale saved state ("%begin with empty command queue" at launch after old tmux tests; Termurion's own error dialog, not a crash; cause not proven).

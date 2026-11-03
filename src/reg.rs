@@ -102,71 +102,8 @@ impl Registry for FakeRegistry {
     }
 }
 
-/// `HKEY_CURRENT_USER`, through `url_schemes`' writer.
-#[cfg(windows)]
-pub struct HkcuRegistry;
-
-#[cfg(windows)]
-impl Registry for HkcuRegistry {
-    fn get(&self, key: &str, name: &str) -> Option<String> {
-        crate::url_schemes::win::get(key, (!name.is_empty()).then_some(name))
-    }
-
-    fn set(&mut self, key: &str, name: &str, value: &str) -> Result<(), String> {
-        crate::url_schemes::win::set(key, (!name.is_empty()).then_some(name), value)
-    }
-
-    fn delete_tree(&mut self, key: &str) -> Result<(), String> {
-        if !deletable(key) {
-            return Err(format!("Termurion does not delete the registry key {key}"));
-        }
-        crate::url_schemes::win::delete_tree(key);
-        Ok(())
-    }
-
-    fn delete_value(&mut self, key: &str, name: &str) -> Result<(), String> {
-        if !value_deletable(key, name) {
-            return Err(format!("Termurion does not delete the registry value {key}\\{name}"));
-        }
-        crate::url_schemes::win::delete_value(key, (!name.is_empty()).then_some(name));
-        Ok(())
-    }
-
-    fn delete_scheme_class(&mut self, scheme: &str) -> Result<(), String> {
-        if !crate::url_schemes::is_listed(scheme) {
-            return Err(format!("Termurion does not delete the registry key for {scheme}"));
-        }
-        crate::url_schemes::win::delete_tree(&format!("Software\\Classes\\{scheme}"));
-        Ok(())
-    }
-}
-
-/// There is no registry on Unix; every read finds nothing and every write says so.
-#[cfg(unix)]
-pub struct HkcuRegistry;
-
-#[cfg(unix)]
-impl Registry for HkcuRegistry {
-    fn get(&self, _key: &str, _name: &str) -> Option<String> {
-        None
-    }
-
-    fn set(&mut self, _key: &str, _name: &str, _value: &str) -> Result<(), String> {
-        Err(crate::platform::Unsupported { feature: "The registry" }.to_string())
-    }
-
-    fn delete_tree(&mut self, _key: &str) -> Result<(), String> {
-        Err(crate::platform::Unsupported { feature: "The registry" }.to_string())
-    }
-
-    fn delete_value(&mut self, _key: &str, _name: &str) -> Result<(), String> {
-        Err(crate::platform::Unsupported { feature: "The registry" }.to_string())
-    }
-
-    fn delete_scheme_class(&mut self, _scheme: &str) -> Result<(), String> {
-        Err(crate::platform::Unsupported { feature: "The registry" }.to_string())
-    }
-}
+// The real registry lives under platform (Windows' per-user hive; Unix has none).
+pub use crate::platform::registry::HkcuRegistry;
 
 #[cfg(test)]
 mod tests {

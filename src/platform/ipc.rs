@@ -37,3 +37,9 @@ pub fn set_file_owner_to_user(file: &std::fs::File) -> Result<(), String> {
 pub fn create_new_for_write(path: &str, set_owner: bool) -> Result<std::fs::File, String> {
     imp::create_new_for_write(path, set_owner)
 }
+
+/// Reads the automation API's allow-all file without following a link. Unix reads none: the check is
+/// Windows' (owner SID and DACL), so every start has none and the API keeps asking for the cookie.
+pub fn read_noauth_file(path: &str) -> Option<crate::api_auth::NoauthFile> {
+    imp::read_noauth_file(path)
+}

@@ -31,3 +31,8 @@ pub fn begin_closing() {
 pub fn into_pty(api: &PtyApi, h: Handoff, notify: Notify) -> Result<(Pty, String), String> {
     imp::into_pty(api, h, notify)
 }
+
+/// Startup: puts the handoff class's recorded exe back when it went stale. Windows only; Unix has none.
+pub fn repair_at_start() {
+    imp::repair_at_start()
+}

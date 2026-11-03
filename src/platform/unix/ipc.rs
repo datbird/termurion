@@ -11,6 +11,7 @@ use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::api_auth::NoauthFile;
 use crate::api_peer::Peer;
 use crate::platform::Unsupported;
 
@@ -596,6 +597,12 @@ pub fn create_new_for_write(_path: &str, _set_owner: bool) -> Result<std::fs::Fi
 /// No peer check on Unix yet, so every connection is refused.
 pub fn check_peer(_peer: std::net::SocketAddr, _local: std::net::SocketAddr) -> Result<u32, String> {
     Err(Unsupported { feature: API }.into())
+}
+
+/// No allow-all file is read on Unix: the check is Windows' (owner SID and DACL), so every start
+/// has none and the API keeps asking for the cookie (the safe answer).
+pub fn read_noauth_file(_path: &str) -> Option<NoauthFile> {
+    None
 }
 
 #[cfg(test)]

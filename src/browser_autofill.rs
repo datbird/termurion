@@ -432,7 +432,7 @@ pub fn load_card(path: &std::path::Path) -> Card {
     if (&mut f).take(MAX_CARD_FILE + 1).read_to_end(&mut blob).is_err() || blob.len() as u64 > MAX_CARD_FILE {
         return Card::default();
     }
-    let Some(mut plain) = crate::workgroup_restore::dpapi_with(&blob, false, CARD_ENTROPY) else { return Card::default() };
+    let Some(mut plain) = crate::platform::approval_key::dpapi_with(&blob, false, CARD_ENTROPY) else { return Card::default() };
     let card = card_from_bytes(&plain);
     wipe_bytes(&mut plain);
     card.unwrap_or_default()
@@ -447,7 +447,7 @@ pub fn save_card(path: &std::path::Path, card: &Card) -> Result<(), String> {
     let (dir, file) = card_entry(path).ok_or_else(|| "the folder is not a local one".to_string())?;
     crate::localfs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let mut plain = card_to_bytes(card)?;
-    let blob = crate::workgroup_restore::dpapi_with(&plain, true, CARD_ENTROPY);
+    let blob = crate::platform::approval_key::dpapi_with(&plain, true, CARD_ENTROPY);
     wipe_bytes(&mut plain);
     let blob = blob.ok_or_else(|| "Windows could not protect the card".to_string())?;
     let temp = dir.unfollowed(format!("{CARD_FILE}.{}.tmp", uuid::Uuid::new_v4())).ok_or_else(|| "no usable file name".to_string())?;
@@ -730,12 +730,12 @@ mod tests {
         let f = crate::localfs::create_owner_only(&card_entry(&path).unwrap().1).unwrap();
         let mut f = f;
         use std::io::Write;
-        f.write_all(&crate::workgroup_restore::dpapi_with(&card_to_bytes(&sample()).unwrap(), true, b"another entropy").unwrap()).unwrap();
+        f.write_all(&crate::platform::approval_key::dpapi_with(&card_to_bytes(&sample()).unwrap(), true, b"another entropy").unwrap()).unwrap();
         drop(f);
         assert_eq!(load_card(&path), Card::default(), "wrong entropy");
         std::fs::remove_file(&path).unwrap();
         let mut f = crate::localfs::create_owner_only(&card_entry(&path).unwrap().1).unwrap();
-        f.write_all(&crate::workgroup_restore::dpapi_with(br#"{"first_name":"Alice"}"#, true, CARD_ENTROPY).unwrap()).unwrap();
+        f.write_all(&crate::platform::approval_key::dpapi_with(br#"{"first_name":"Alice"}"#, true, CARD_ENTROPY).unwrap()).unwrap();
         drop(f);
         assert_eq!(load_card(&path), Card::default(), "a partial card");
         let _ = std::fs::remove_dir_all(&dir);

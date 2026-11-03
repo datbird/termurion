@@ -51,3 +51,7 @@ mod tests {
         assert!(!can_serve(&PtyApi));
     }
 }
+
+/// Termurion is not a default terminal on Unix (a Windows handoff class), so there is nothing to
+/// repair at start. A Windows-only extra: the one allowed silent no-op.
+pub fn repair_at_start() {}

@@ -26,3 +26,15 @@ pub fn into_pty(api: &PtyApi, mut h: Handoff, notify: Notify) -> Result<(Pty, St
     }
     Ok((pty, title))
 }
+
+/// Startup: `server_repair` on the real registry. The recorded exe path is saved state, so it is
+/// judged before it is probed: a path the judge refuses counts as still there.
+pub fn repair_at_start() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let mut r = crate::reg::HkcuRegistry;
+    let fix = crate::default_term::server_repair(&r, &exe, &|p| crate::localfs::judged(p) && !crate::localfs::local_exists(p));
+    if !fix.is_empty()
+        && let Err(e) = crate::reg::apply(&mut r, &fix) {
+            crate::host_base::log(&format!("default terminal: could not repair the handoff class: {e}"));
+        }
+}

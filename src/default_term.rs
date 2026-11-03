@@ -105,23 +105,8 @@ pub fn server_repair(r: &dyn Registry, exe: &Path, gone: &dyn Fn(&Path) -> bool)
     if stale { vec![entry(&key, "", &now)] } else { Vec::new() }
 }
 
-/// Startup: `server_repair` on the real registry. The recorded exe path is saved state, so it is
-/// judged before it is probed: a path the judge refuses counts as still there.
-#[cfg(windows)]
-pub fn repair_at_start() {
-    let Ok(exe) = std::env::current_exe() else { return };
-    let mut r = crate::reg::HkcuRegistry;
-    let fix = server_repair(&r, &exe, &|p| crate::localfs::judged(p) && !crate::localfs::local_exists(p));
-    if !fix.is_empty()
-        && let Err(e) = crate::reg::apply(&mut r, &fix) {
-            crate::host_base::log(&format!("default terminal: could not repair the handoff class: {e}"));
-        }
-}
-
-/// Termurion is not a default terminal on Unix (a Windows handoff class), so there is nothing to
-/// repair at start. A Windows-only extra: the one allowed silent no-op.
-#[cfg(unix)]
-pub fn repair_at_start() {}
+// Startup repair of the handoff class lives under platform (Windows fixes the registry, Unix has none).
+pub use crate::platform::handoff::repair_at_start;
 
 /// The pair put back: the saved one, else "Let Windows decide".
 pub fn restore_entries(saved: Option<Pair>) -> Vec<(String, String, String)> {
