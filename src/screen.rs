@@ -2616,9 +2616,9 @@ impl Screen {
         Some(out.trim_end().to_string())
     }
 
-    /// The whole buffer as text, oldest line first, trailing spaces trimmed.
     /// The text an arrangement with contents saves: the main screen and its history, less the
-    /// rows a full-screen program left in it (as session restoration saves).
+    /// rows a full-screen program left in it (as session restoration saves). While a program
+    /// has the alternate screen up, the main screen is saved, not the program's.
     pub fn restorable_text(&self) -> String {
         let grid = self.term.primary_grid();
         let top = -(grid.history_size() as i32);
@@ -2635,6 +2635,7 @@ impl Screen {
         out
     }
 
+    /// The whole buffer as text, oldest line first, trailing spaces trimmed.
     pub fn all_text(&self) -> String {
         let grid = self.term.grid();
         let top = -(grid.history_size() as i32);

@@ -434,7 +434,9 @@ fn sgr_grid(g: &alacritty_terminal::grid::Grid<Cell>, spans: &[(i32, usize, usiz
         let more = same_line(spans, i);
         let cells = cells_in(g, *line, *from, *to, hard_end && !more);
         if keep_rows && cells.is_empty() && i > 0 && spans[i - 1].0 == line - 1 && wraps_in(g, line - 1) {
-            out.push(' ');
+            // A plain space: the row above may end in a colored cell.
+            out.push_str("\x1b[0m ");
+            last = Some(vec!["0".to_string()]);
         }
         for col in cells {
             let c = &g[Line(*line)][Column(col)];

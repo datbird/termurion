@@ -217,7 +217,8 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             // start of its text there even when it continues a line above the screen.
             let at_top_of_screen = self.grow_keeps_rows && reflow && i + 1 == self.lines;
             let last_row = match reversed.last_mut() {
-                Some(last_row) if should_reflow(last_row) && !at_top_of_screen => last_row,
+                // Termurion patch 36: an alternate screen row never merges with a main one.
+                Some(last_row) if should_reflow(last_row) && !at_top_of_screen && last_row.alt == row.alt => last_row,
                 _ => {
                     reversed.push(row);
                     continue;
@@ -369,7 +370,11 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let mut added_above_cursor = 0usize;
 
         let mut rows = self.raw.take_all();
+        // Termurion patch 36: which rows came from the alternate screen, so a wrap never carries
+        // cells across between those and main rows.
+        let alts: Vec<bool> = rows.iter().map(|r| r.alt).collect();
         for (i, mut row) in rows.drain(..).enumerate().rev() {
+            let alt = row.alt;
             // Append lines left over from the previous row.
             if let Some(buffered) = buffered.take() {
                 // Add a column for every cell added before the cursor, if it goes beyond the new
@@ -437,6 +442,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                     .map(|c| c.flags().contains(Flags::WRAPLINE) && i >= 1)
                     .unwrap_or(false)
                     && wrapped.len() < columns
+                    && alts[i - 1] == alt
                 {
                     // Make sure previous wrap flag doesn't linger around.
                     if let Some(cell) = wrapped.last_mut() {

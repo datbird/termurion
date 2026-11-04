@@ -124,7 +124,8 @@ impl App {
         let profile = (p.int("Columns").clamp(0, 9999) as u32, p.int("Rows").clamp(0, 9999) as u32);
         let tab = if self.tabs.iter().any(|t| t.layout.panes().contains(&gw)) {
             let cell = self.profile_cell(&p);
-            let (c, r) = self.grid_size_in(self.content_area(), cell, self.pane_room_for(gw, &p));
+            // The tab's whole frame, as iTerm2's tab view (a status bar is inside a session).
+            let (c, r) = self.grid_size_in(self.window_area(), cell, self.pane_room_for(gw, &p));
             (u32::from(c), u32::from(r))
         } else {
             own

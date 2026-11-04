@@ -1593,6 +1593,57 @@ mod tests {
         assert!(s.restorable_text().contains("[server exited]"));
     }
 
+    /// Round 6b (Minor 1): the space that keeps a wrapped blank row is plain, whatever color the
+    /// row above ends in.
+    #[test]
+    fn a_kept_blank_row_is_not_colored() {
+        use alacritty_terminal::index::{Column, Line};
+        use alacritty_terminal::vte::ansi::{Color, NamedColor};
+        let mut s = Screen::with_scrollback(5, 4, 100);
+        s.feed(b"abc\x1b[41mde \r\x1b[0m\x1b[K\r\r\nx");
+        let (text, at) = crate::styled_copy::sgr_restorable(&s);
+        let mut r = Screen::with_scrollback(5, 4, 100);
+        r.feed_restored(&text, Some(at), None);
+        assert_eq!(r.term().grid()[Line(2)][Column(0)].c, 'x', "{text:?}");
+        assert_eq!(r.term().grid()[Line(1)][Column(0)].bg, Color::Named(NamedColor::Background), "{text:?}");
+    }
+
+    /// Round 6b: a resize never mixes a full-screen program's history rows with the shell's.
+    /// A command line wraps across the screen top (its first part in history), tmux's last
+    /// screen joins the history between the parts, then the window gets wider or narrower.
+    #[test]
+    fn a_resize_keeps_alternate_rows_apart_from_the_shell_line() {
+        for cols in [20, 8] {
+            let mut s = Screen::with_scrollback(10, 3, 100);
+            s.feed(b"AAAAAAAAAAAAA\r\nb\r\nc");
+            s.feed(b"\x1b[?1049hTMUXTEXT\x1b[2J\x1b[?1049l");
+            s.resize(cols, 3);
+            let (text, _) = crate::styled_copy::sgr_restorable(&s);
+            let plain: String = crate::restore_state::sgr_safe(&text).split('\x1b').map(|p| p.split_once('m').map_or(p, |(_, t)| t)).collect();
+            assert!(!plain.contains("TMUX") && !plain.contains("XT"), "{cols} columns: {plain:?}");
+            assert!(plain.replace('\n', "").contains(&"A".repeat(13)), "{cols} columns: {plain:?}");
+        }
+    }
+
+    /// Round 6b: a wrapped row the alternate screen scrolled into its history does not pull
+    /// the shell's next row into itself when the window gets wider (that row would be dropped
+    /// from the saved session with it).
+    #[test]
+    fn a_resize_keeps_shell_rows_out_of_alternate_rows() {
+        let mut s = Screen::with_scrollback(10, 3, 100);
+        s.feed(b"m1\r\nm2\r\nm3");
+        s.feed(b"\x1b[?1049h\x1b[3;1HBBBBBBBBBBBBBBB\r\n\r\n\x1b[?1049l");
+        s.resize(20, 3);
+        // Shell output after the program left scrolls into history after its rows, and is kept.
+        s.feed(b"\r\nn1\r\nn2\r\nn3\r\nn4");
+        s.resize(10, 3);
+        let (text, _) = crate::styled_copy::sgr_restorable(&s);
+        assert!(!text.contains('B'), "{text:?}");
+        for m in ["m1", "m2", "m3", "n1", "n2", "n3", "n4"] {
+            assert!(text.contains(m), "{m} is gone: {text:?}");
+        }
+    }
+
     #[test]
     fn restore_matches_the_saved_viewport() {
         use alacritty_terminal::index::{Column, Line};

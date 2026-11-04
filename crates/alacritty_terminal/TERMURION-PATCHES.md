@@ -199,6 +199,9 @@ test data) is left out. Changes:
 
 36. `grid/row.rs`: `Row` has an `alt` flag (`alt()`, `set_alt()`), cleared by `reset` and kept by split
     rows. `term/mod.rs`: `swap_alt` sets it on the alternate screen's history rows as they join the
-    main history, so session restoration can leave them out.
+    main history, so session restoration can leave them out, and clears the wrap on the newest of
+    them (its continuation was not kept). `grid/resize.rs`: reflow never joins an alternate row with
+    a main one (`grow_columns` does not merge them, `shrink_columns` does not carry wrapped cells
+    across).
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

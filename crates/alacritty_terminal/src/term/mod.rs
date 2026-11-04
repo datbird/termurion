@@ -1013,6 +1013,10 @@ impl<T> Term<T> {
             for row in &mut rows {
                 row.set_alt(true);
             }
+            // The newest row's continuation stayed on the alternate screen: it ends there.
+            if let Some(cell) = rows.last_mut().and_then(|r| r.last_mut()) {
+                cell.flags.remove(Flags::WRAPLINE);
+            }
             let by = rows.len();
             if by > 0 {
                 // Termurion patch: every absolute row number below the main grid's `scrolled_off`
