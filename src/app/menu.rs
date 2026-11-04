@@ -1073,11 +1073,14 @@ impl App {
             }
             // New Tab appends; from a group's last tab it joins that group (`AD newTabAtIndex:`).
             "newSession:" => {
-                let (before, active) = (self.tabs.len(), self.active);
-                let group = self.tabs.get(active).and_then(|t| t.group.as_ref()).map(|g| g.id.clone());
-                self.new_tab(None);
-                if self.tabs.len() > before {
-                    self.new_tab_joins_group(self.tabs.len() - 1, active, group);
+                // From a tmux window iTerm2 asks what kind of tab (`AD newTabAtIndex:didMakeSession:`).
+                if self.tmux_new(false, true).is_none() {
+                    let (before, active) = (self.tabs.len(), self.active);
+                    let group = self.tabs.get(active).and_then(|t| t.group.as_ref()).map(|g| g.id.clone());
+                    self.new_tab(None);
+                    if self.tabs.len() > before {
+                        self.new_tab_joins_group(self.tabs.len() - 1, active, group);
+                    }
                 }
             }
             "newWindow:" => {
@@ -1124,12 +1127,16 @@ impl App {
                 self.tmux_new(false, false);
             }
             "newSessionAlternate:" => {
-                let (before, active) = (self.tabs.len(), self.active);
-                let group = self.tabs.get(active).and_then(|t| t.group.as_ref()).map(|g| g.id.clone());
-                self.new_tab(None);
-                if let Some(at) = super::move_new_tab(&mut self.tabs, before, active) {
-                    self.active = at;
-                    self.new_tab_joins_group(at, active, group);
+                // The same question; Use Default Profile opens beside the current tab.
+                let asked = self.tabs.get(self.active).map(|t| t.id).is_some_and(|b| self.tmux_new_beside(false, true, Some(b)).is_some());
+                if !asked {
+                    let (before, active) = (self.tabs.len(), self.active);
+                    let group = self.tabs.get(active).and_then(|t| t.group.as_ref()).map(|g| g.id.clone());
+                    self.new_tab(None);
+                    if let Some(at) = super::move_new_tab(&mut self.tabs, before, active) {
+                        self.active = at;
+                        self.new_tab_joins_group(at, active, group);
+                    }
                 }
             }
             "newWindowWithSameProfile:" => {
@@ -1883,6 +1890,26 @@ pub(super) fn restart_spec() -> crate::warnings::Spec {
 #[cfg(test)]
 mod tests {
     use crate::menus;
+
+    /// The source of one menu arm, up to its closing brace.
+    fn arm(selector: &str) -> &'static str {
+        let src = include_str!("menu.rs").split("#[cfg(test)]").next().unwrap();
+        let from = src.find(&format!("\"{selector}\" => {{")).unwrap_or_else(|| panic!("{selector}"));
+        let rest = &src[from..];
+        &rest[..rest.find("\n            }\n").unwrap()]
+    }
+
+    /// New Tab (Cmd-T, Ctrl+Shift+T) from a tmux window asks what kind of tab, as iTerm2's
+    /// does by default (`AD newTabAtIndex:didMakeSession:`, `possiblyTmuxValueForWindow:`);
+    /// its alternate goes the same way.
+    #[test]
+    fn new_tab_in_a_tmux_window_asks_what_kind() {
+        use crate::menus::{Chord, ChordKey::Char};
+        let chord = Chord { key: Char('t'), cmd: true, alt: false, shift: false, ctrl: false };
+        assert_eq!(crate::commands::command_for_chord(&chord).unwrap().selector, "newSession:");
+        assert!(arm("newSession:").contains("if self.tmux_new(false, true).is_none() {"), "{}", arm("newSession:"));
+        assert!(arm("newSessionAlternate:").contains("self.tmux_new_beside(false, true, Some(b)).is_some());\n                if !asked {"), "{}", arm("newSessionAlternate:"));
+    }
 
     /// Round 6c: a confirmed quit ends the process even when the event loop does not return,
     /// and does nothing more when it does.
