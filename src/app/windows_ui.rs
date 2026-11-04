@@ -1780,8 +1780,12 @@ impl App {
     pub(super) fn place_window(&mut self) {
         use crate::placement::{self, Rect as R};
         let (guid, slot) = self.claim_slot();
-        let monitors: Vec<R> = placement::primary_first(super::requests_ui::work_areas().into_iter().map(to_rect).collect());
+        let mut monitors: Vec<R> = placement::primary_first(super::requests_ui::work_areas().into_iter().map(to_rect).collect());
         let Some(g) = self.gpu.as_ref() else { return };
+        // Where the OS lists no work areas (Unix), the window's own monitors stand in.
+        if monitors.is_empty() {
+            monitors = placement::primary_first(g.window.available_monitors().map(|m| R { x: m.position().x as f32, y: m.position().y as f32, w: m.size().width as f32, h: m.size().height as f32 }).collect());
+        }
         let current = Self::outer_rect(g);
         let others: Vec<R> = self.windows.parked().filter_map(|(_, s)| s.gpu.as_ref().map(Self::outer_rect)).collect();
         let inside = |r: &R, x: f32, y: f32| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
@@ -1806,6 +1810,8 @@ impl App {
             (pref != -1).then(|| placement::move_to(current, monitors.get(window_monitor).copied().unwrap_or(work), work))
         });
         let Some(r) = target else { return };
+        // Never exactly on top of a window that is already open (the parent of a tmux window).
+        let r = placement::clear_of_siblings(r, &others, 22.0 * g.window.scale_factor() as f32, &monitors);
         let w = &g.window;
         w.set_outer_position(PhysicalPosition::new(r.x.round() as i32, r.y.round() as i32));
         if (r.w, r.h) != (current.w, current.h) {

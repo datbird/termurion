@@ -132,6 +132,22 @@ pub fn place(policy: i64, saved: Option<Rect>, windows: usize, work: Rect, other
     }
 }
 
+/// A new window at a sibling's frame (within `step`, which a menu bar or a title bar can add)
+/// hides it: it moves down and right by `step`, again while a sibling is still there (iTerm2
+/// cascades new windows), and stays on a monitor.
+pub fn clear_of_siblings(r: Rect, siblings: &[Rect], step: f32, monitors: &[Rect]) -> Rect {
+    let same = |a: &Rect, b: &Rect| (a.x - b.x).abs() < step && (a.y - b.y).abs() < step;
+    let mut r = r;
+    for _ in 0..64 {
+        if !siblings.iter().any(|s| same(&r, s)) {
+            break;
+        }
+        r.x += step;
+        r.y += step;
+    }
+    clamp_to_monitors(r, monitors)
+}
+
 /// The profile's Screen setting: -1 the window's monitor, -2 the monitor with the cursor,
 /// n the n-th monitor (the primary first); a missing one falls back to the window's.
 pub fn screen_for(pref: i64, monitors: &[Rect], window_monitor: usize, cursor_monitor: usize) -> Rect {
@@ -253,6 +269,21 @@ mod tests {
         let other = [Rect { x: 0.0, y: 0.0, w: 500.0, h: 800.0 }];
         let r = place(SMART, saved, 2, WORK, &other, current, &mons).unwrap();
         assert!(r.x >= 500.0, "away from the other window: {r:?}");
+    }
+
+    #[test]
+    fn a_new_window_never_sits_exactly_on_a_sibling() {
+        let mons = [WORK];
+        let parent = Rect { x: 100.0, y: 80.0, w: 400.0, h: 300.0 };
+        let moved = clear_of_siblings(parent, &[parent], 22.0, &mons);
+        assert_eq!((moved.x, moved.y, moved.w, moved.h), (122.0, 102.0, 400.0, 300.0));
+        // Two siblings on the cascade: it goes past both.
+        let second = Rect { x: 122.0, y: 102.0, ..parent };
+        assert_eq!(clear_of_siblings(parent, &[parent, second], 22.0, &mons).x, 144.0);
+        // A frame that is not on a sibling stays.
+        let apart = Rect { x: 600.0, ..parent };
+        assert_eq!(clear_of_siblings(apart, &[parent], 22.0, &mons), apart);
+        assert_eq!(clear_of_siblings(apart, &[], 22.0, &mons), apart);
     }
 
     #[test]
