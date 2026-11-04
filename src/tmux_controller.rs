@@ -32,7 +32,7 @@ enum Req {
     /// `list-windows -F "#{window_id}"` for a tab reorder: the wanted order.
     Reorder(Vec<u32>),
     /// `new-window -PF` from Termurion: the tmux window whose Termurion window it joins.
-    NewWindow(Option<u32>),
+    NewWindow(Option<u32>, Option<usize>),
     /// `refresh-client -A '%P:pause'` for these panes.
     PausePanes(Vec<u32>),
     /// The Dashboard's list of one session's windows.
@@ -336,6 +336,8 @@ pub struct Controller {
     break_points: HashMap<u32, (i32, i32)>,
     /// Hidden windows opened again: their Termurion window and tab index.
     unburied: HashMap<u32, (String, usize)>,
+    /// New tmux tabs asked for at an index, by window, until they open.
+    pending_index: HashMap<u32, usize>,
     /// The last command sent for each saved option (iTerm2 skips an unchanged one).
     last_saved: HashMap<&'static str, String>,
     /// The status monitors' timer interval (tmux's `status-interval`, at least 1 s), and
@@ -409,6 +411,7 @@ impl Controller {
             hotkeys: HashMap::new(),
             break_points: HashMap::new(),
             unburied: HashMap::new(),
+            pending_index: HashMap::new(),
             last_saved: HashMap::new(),
             status_interval: 1.0,
             status_interval_asked: false,
@@ -527,6 +530,12 @@ impl Controller {
     /// Tmux Window. With variable sizes the client first takes the new window's size.
     /// Returns the tag of the `new-window` command, whose reply comes as `NewWindowReply`.
     pub fn new_window(&mut self, affinity: Option<u32>, dir: &crate::tmux_edits::Dir, size: Option<(u32, u32)>, gw: &mut Gateway) -> Tag {
+        self.new_window_at(affinity, dir, size, None, gw)
+    }
+
+    /// `new_window` whose tab opens at `index` in its window (iTerm2's `newTmuxTabAtIndex:`,
+    /// `TmuxController.m:4625-4633`, `TmuxWindowOpener.m:722-724`).
+    pub fn new_window_at(&mut self, affinity: Option<u32>, dir: &crate::tmux_edits::Dir, size: Option<(u32, u32)>, index: Option<usize>, gw: &mut Gateway) -> Tag {
         let mut list = Vec::new();
         if let Some((w, h)) = size.filter(|_| crate::tmux_sizes::variable(self.version, self.prefs.variable_sizes)) {
             self.window_sizes.clear();
@@ -534,7 +543,7 @@ impl Controller {
             list.push((format!("refresh-client -C {w},{h}"), None, Flags { tolerate: true, ..Default::default() }));
         }
         let recycling = self.version.is_some_and(|v| v >= 1.9);
-        let t = self.tag(Req::NewWindow(affinity));
+        let t = self.tag(Req::NewWindow(affinity, index));
         list.push((crate::tmux_edits::new_window(None, dir, recycling), Some(t), Flags::default()));
         gw.send_list(list, false);
         t
@@ -932,11 +941,12 @@ impl Controller {
         // A break-out point is used once, then the saved origin (iTerm2's positionForWindowWithPanes).
         let point = panes.iter().find_map(|p| self.break_points.remove(p));
         let unburied = self.unburied.remove(&window);
+        let pending = self.pending_index.remove(&window);
         Restore {
             settings: terminal.and_then(|t| self.per_window.get(&t).cloned()),
             origin: point.or_else(|| self.origins.get(&window).copied()),
             tab_title: self.per_tab.get(&window).cloned(),
-            tab_index: unburied.as_ref().map(|u| u.1),
+            tab_index: unburied.as_ref().map(|u| u.1).or(pending),
             terminal: unburied.map(|u| u.0),
             tab_colors: panes.iter().filter_map(|p| Some((*p, *self.tab_colors.get(p)?))).collect(),
             hotkeys: panes.iter().filter_map(|p| Some((*p, self.hotkeys.get(p)?.clone()))).collect(),
@@ -1286,10 +1296,14 @@ impl Controller {
                     }
                 out.extend(value.and_then(|v| self.monitor_value(key, v)));
             }
-            Req::NewWindow(affinity) => {
+            Req::NewWindow(affinity, index) => {
                 if ok {
                     let w = crate::tmux_windows::window_id(text.trim());
                     self.intentional.insert(w);
+                    // The index waits for the window to open (iTerm2's pending window).
+                    if let Some(i) = index.filter(|_| text.trim().starts_with('@')) {
+                        self.pending_index.insert(w, i);
+                    }
                     if let Some(a) = affinity {
                         self.affinities.set_equal(&w.to_string(), &a.to_string());
                     }
@@ -1985,6 +1999,22 @@ mod tests {
         }
         let a = r.answer(Some(""));
         assert!(matches!(&a[..], [Action::Open { place: Place::WithSibling(0), .. }]), "{a:?}");
+    }
+
+    /// I5: a tmux tab asked for at an index opens there (`TmuxController.m:4631`,
+    /// `TmuxController.m:482`, `TmuxWindowOpener.m:722-724`); a window brought back from being
+    /// hidden keeps its own place (`TmuxController.m:3375-3381`).
+    #[test]
+    fn a_new_tmux_tab_opens_at_its_index() {
+        let mut r = opened();
+        r.sent();
+        r.ctl.new_window_at(Some(0), &crate::tmux_edits::Dir::Home, None, Some(2), &mut r.gw);
+        r.answer(Some("@7"));
+        assert_eq!(r.ctl.restore_of(7, &[]).tab_index, Some(2));
+        assert_eq!(r.ctl.restore_of(7, &[]).tab_index, None, "used once");
+        r.ctl.new_window(Some(0), &crate::tmux_edits::Dir::Home, None, &mut r.gw);
+        r.answer(Some("@8"));
+        assert_eq!(r.ctl.restore_of(8, &[]).tab_index, None, "a plain new tmux tab: where it would go");
     }
 
     #[test]

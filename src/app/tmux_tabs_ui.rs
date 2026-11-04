@@ -1276,7 +1276,10 @@ impl App {
         }
         match (index, window) {
             (0, _) => {
-                self.tmux_new_at(anchor, window);
+                let from = self.tabs.iter().position(|t| t.layout.panes().contains(&anchor)).unwrap_or(self.active);
+                let beside = if let LocalTab::Beside(id) = local { self.tabs.iter().position(|t| t.id == id) } else { None };
+                let at = (!window).then(|| tmux_tab_index(local, from, beside)).flatten();
+                self.tmux_new_in(anchor, window, at);
             }
             (_, true) => {
                 self.pending_windows.push(super::windows_ui::NewWindow::Profile(None));
@@ -1300,12 +1303,17 @@ impl App {
     /// A new tmux window (`window`) or tab next to the tmux window of `pane`. None when the
     /// pane is not a tmux pane.
     fn tmux_new_at(&mut self, pane: PaneId, window: bool) -> Option<()> {
+        self.tmux_new_in(pane, window, None)
+    }
+
+    /// `tmux_new_at` whose new tab opens at `index` of its window.
+    fn tmux_new_in(&mut self, pane: PaneId, window: bool, index: Option<usize>) -> Option<()> {
         let (gw, _, tmux_window) = self.tmux_of(pane)?;
         let dir = self.tmux_dir(pane);
         let size = self.profile_of(pane).map(|p| (p.int("Columns").max(1) as u32, p.int("Rows").max(1) as u32));
         let affinity = (!window).then_some(tmux_window);
         let t = self.tmux.get_mut(&gw)?;
-        t.ctl.new_window(affinity, &dir, size, &mut t.gw);
+        t.ctl.new_window_at(affinity, &dir, size, index, &mut t.gw);
         self.tmux_flush(gw);
         Some(())
     }
@@ -1521,6 +1529,17 @@ pub(super) enum LocalTab {
     Beside(u64),
 }
 
+/// Where the answer's new tmux tab goes (`IC:376` passes the command's index on): New Tab's at
+/// the end (nil), the alternate's after the tab at `from` (`AD:3018-3035`, at the end of the tab
+/// bar by default), New Tab to the Right's after its tab at `beside` (`PT:15391`).
+pub(super) fn tmux_tab_index(local: LocalTab, from: usize, beside: Option<usize>) -> Option<usize> {
+    match local {
+        LocalTab::End => None,
+        LocalTab::After => Some(from + 1),
+        LocalTab::Beside(_) => beside.map(|at| at + 1),
+    }
+}
+
 /// "What kind of tab (or window) do you want to open?" from the tmux pane `anchor`, under the
 /// legacy key while it is silenced (`legacy`), else the window's or the tab's key; permanently
 /// silenceable (`possiblyTmuxValueForWindow:cancel:`, `AD:3788-3825`).
@@ -1581,6 +1600,16 @@ mod tests {
 
     use super::*;
     use crate::warnings::Kind;
+
+    /// I5: the answer's tmux tab takes the command's index (`IC:376`): none for New Tab, the
+    /// next one for the alternate (`AD:3018-3035`) and for New Tab to the Right (`PT:15391`).
+    #[test]
+    fn the_new_tmux_tab_goes_where_the_command_puts_it() {
+        assert_eq!(tmux_tab_index(LocalTab::End, 1, None), None);
+        assert_eq!(tmux_tab_index(LocalTab::After, 1, None), Some(2));
+        assert_eq!(tmux_tab_index(LocalTab::Beside(9), 1, Some(3)), Some(4));
+        assert_eq!(tmux_tab_index(LocalTab::Beside(9), 1, None), None, "its tab closed since: where New Tab's goes");
+    }
 
     /// Title bars take their height from a tmux tab's report, one per stacked pane.
     #[test]
