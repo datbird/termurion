@@ -733,6 +733,7 @@ mod tests {
         ("crashdump.rs", "install", 1, "Termurion's own crashes folder under %LOCALAPPDATA%"),
         ("crashdump.rs", "prune", 3, "Termurion's own crashes folder under %LOCALAPPDATA% (only .dmp files)"),
         ("crashdump.rs", "write_dump", 3, "Termurion's own crashes folder under %LOCALAPPDATA%"),
+        ("profile.rs", "default_font", 1, "the system's own Monaco font file at its fixed path; nothing is read from it"),
         ("notes.rs", "ensure_loaded", 1, "Termurion's own notes file under %APPDATA%\\Termurion"),
         ("notes.rs", "file_exists", 1, "Termurion's own notes file under %APPDATA%\\Termurion"),
         ("notes.rs", "flush", 1, "Termurion's own notes file under %APPDATA%\\Termurion"),

@@ -105,11 +105,18 @@ pub fn add_fallback_faces(defs: &mut egui::FontDefinitions) {
     }
 }
 
-/// The faces behind egui's own: the check mark and the Mac modifier keys, which egui's fonts lack
-/// (a box showed in the Settings key lists and would in the menus). A subset of DejaVu Sans,
+/// The faces behind egui's own (a box showed in the Settings key lists, the gateway buttons and the
+/// password manager's gear menu where egui's fonts lack a glyph). A subset of DejaVu Sans,
 /// licensed in resources/fonts.
 fn fallback_faces() -> Vec<Vec<u8>> {
-    vec![include_bytes!("../resources/fonts/TermurionSymbols.ttf").to_vec()]
+    vec![symbols_face()]
+}
+
+/// The bundled symbols face: the check mark, arrows, Mac modifier keys, gear and the other shapes
+/// the windows draw, and stand-ins for the Segoe icon code points (E7xx and its kin) so a window
+/// without Segoe draws a shape, not a box.
+pub fn symbols_face() -> Vec<u8> {
+    include_bytes!("../resources/fonts/TermurionSymbols.ttf").to_vec()
 }
 
 pub struct EguiHost {
@@ -407,6 +414,71 @@ mod tests {
             }
         }
         assert!(missing.is_empty(), "no glyph in the configured fonts for: {}", missing.iter().map(|c| format!("{c} U+{:04X}", *c as u32)).collect::<Vec<_>>().join(", "));
+    }
+
+    /// Item (e): every symbol a window draws, read from the source of the windows that use egui: an
+    /// arrow, shape or dingbat (U+2190 to U+2BFF) or a private-use icon code point in a string or
+    /// char literal outside the tests. Each has a glyph in the fonts a window gets, so no box
+    /// shows. Emoji (they are color pictures) and plain letters are not in the scan.
+    #[test]
+    fn every_symbol_the_windows_draw_is_in_the_font() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        let mut wanted: std::collections::BTreeMap<char, String> = Default::default();
+        for f in files {
+            let text = std::fs::read_to_string(&f).unwrap();
+            if !text.contains("egui::") {
+                continue;
+            }
+            let code = text.split("#[cfg(test)]").next().unwrap_or("");
+            let name = f.file_name().unwrap().to_string_lossy().to_string();
+            let mut found = Vec::new();
+            // Escapes ("\u{2699}"), then characters written out.
+            let mut rest = code;
+            while let Some(i) = rest.find("\\u{") {
+                rest = &rest[i + 3..];
+                if let Some(end) = rest.find('}') {
+                    if let Some(c) = u32::from_str_radix(&rest[..end], 16).ok().and_then(char::from_u32) {
+                        found.push(c);
+                    }
+                }
+            }
+            found.extend(code.chars());
+            for c in found {
+                let n = c as u32;
+                if (0x2190..=0x2bff).contains(&n) || (0xe000..=0xf8ff).contains(&n) {
+                    wanted.entry(c).or_insert_with(|| name.clone());
+                }
+            }
+        }
+        // Not drawn by egui: box drawing and block elements are the terminal's own glyphs, and the
+        // dingbats the Windows-only wizard prints as emoji.
+        wanted.retain(|c, _| !(0x2500..=0x259f).contains(&(*c as u32)) && !matches!(*c as u32, 0x23f3 | 0x2705 | 0x27a1));
+        assert!(wanted.len() > 20, "the scan found only {} symbols", wanted.len());
+        let ctx = egui::Context::default();
+        install_menu_fonts(&ctx);
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(100.0, 100.0))), ..Default::default() }, |_| {});
+            out.textures_delta.clear();
+        }
+        let mut missing = Vec::new();
+        let id = egui::FontId::new(14.0, egui::FontFamily::Proportional);
+        for (c, file) in &wanted {
+            if ctx.fonts_mut(|f| f.glyph_width(&id, *c)) <= 0.0 {
+                missing.push(format!("U+{:04X} in {file}", *c as u32));
+            }
+        }
+        assert!(missing.is_empty(), "no glyph for: {}", missing.join(", "));
     }
 
     #[test]

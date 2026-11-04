@@ -1681,7 +1681,8 @@ pub(crate) fn icon_family() -> egui::FontFamily {
 pub fn add_icon_font(ctx: &egui::Context) {
     use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
     let dir = std::path::PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into())).join("Fonts");
-    let Some(bytes) = ["SegoeIcons.ttf", "segmdl2.ttf"].iter().find_map(|f| std::fs::read(dir.join(f)).ok()) else { return };
+    // Without Segoe (every system but Windows) the bundled symbols face stands in for it.
+    let Some(bytes) = ["SegoeIcons.ttf", "segmdl2.ttf"].iter().find_map(|f| std::fs::read(dir.join(f)).ok()).or_else(|| (!crate::platform::IS_WINDOWS).then(crate::egui_host::symbols_face)) else { return };
     ctx.add_font(FontInsert::new("termurion-icons", egui::FontData::from_owned(bytes), vec![InsertFontFamily { family: icon_family(), priority: FontPriority::Highest }]));
     ctx.data_mut(|d| d.insert_temp(icon_font_id(), true));
 }
