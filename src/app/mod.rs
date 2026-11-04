@@ -45,7 +45,10 @@ use crate::store::{self, Store};
 use crate::scene::{self, Frame, rgba};
 use crate::settings_ui::{Edit, Mode, SettingsWindow};
 
-const FONT: &str = "Cascadia Mono";
+/// The renderer's first face, before a profile sets its own: the platform's default font.
+fn first_font() -> String {
+    profile::parse_font(profile::default_font()).family
+}
 /// 12 pt, iTerm2's default size, at 96 dpi.
 const FONT_PX: f32 = 16.0;
 /// The side tab bar's own margin, in pixels at 100% (not the terminal margin).
@@ -8226,7 +8229,7 @@ fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHan
         color_space: wgpu::SurfaceColorSpace::Auto,
     };
     surface.configure(&device, &config);
-    let renderer = Renderer::new(&device, &queue, format, FONT, FONT_PX * window.scale_factor() as f32);
+    let renderer = Renderer::new(&device, &queue, format, &first_font(), FONT_PX * window.scale_factor() as f32);
     Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, fx: None, bar: Default::default(), window })
 }
 

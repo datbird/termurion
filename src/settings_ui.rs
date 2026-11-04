@@ -1831,7 +1831,7 @@ fn profile_default_value(s: &Setting, key: &str) -> Option<Value> {
     match key.strip_prefix(s.key.as_str()).filter(|v| !v.is_empty()) {
         Some(" (Dark)") => s.seed_dark.clone().or_else(|| s.default_dark.clone()),
         Some(_) => s.seed_light.clone().or_else(|| s.default_light.clone()),
-        None if matches!(key, "Normal Font" | "Non Ascii Font") => Some(Value::String(profile::WINDOWS_FONT.into())),
+        None if matches!(key, "Normal Font" | "Non Ascii Font") => Some(Value::String(profile::default_font().into())),
         None => s.seed.clone().or_else(|| s.default.clone()),
     }
 }
@@ -2040,7 +2040,7 @@ pub fn profile_is_default(profile: &Profile, s: &Setting, key: &str) -> bool {
         let preset = seed.clone().or_else(|| default.clone());
         (profile.values.get(key).cloned().or_else(|| default.clone()).or_else(|| profile.get(&s.key)), preset)
     } else if matches!(key, "Normal Font" | "Non Ascii Font") {
-        (profile.get(key), Some(Value::String(profile::WINDOWS_FONT.into())))
+        (profile.get(key), Some(Value::String(profile::default_font().into())))
     } else {
         (profile.get(key), s.seed.clone().or_else(|| s.default.clone()))
     };
@@ -2720,7 +2720,7 @@ mod tests {
         let s = crate::schema::find("Scrollback Lines").unwrap();
         assert_eq!(profile_default_value(s, "Scrollback Lines"), s.seed.clone().or_else(|| s.default.clone()));
         let font = crate::schema::find("Normal Font").unwrap();
-        assert_eq!(profile_default_value(font, "Normal Font"), Some(Value::String(profile::WINDOWS_FONT.into())));
+        assert_eq!(profile_default_value(font, "Normal Font"), Some(Value::String(profile::default_font().into())));
     }
 
     #[test]

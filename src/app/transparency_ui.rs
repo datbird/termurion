@@ -29,7 +29,7 @@ fn init_gpu_alpha(window: Arc<Window>, primary: &Gpu, alpha: &AlphaGpu) -> Resul
         color_space: wgpu::SurfaceColorSpace::Auto,
     };
     surface.configure(&alpha.device, &config);
-    let renderer = Renderer::new(&alpha.device, &alpha.queue, format, FONT, FONT_PX * window.scale_factor() as f32);
+    let renderer = Renderer::new(&alpha.device, &alpha.queue, format, &super::first_font(), FONT_PX * window.scale_factor() as f32);
     Ok(Gpu {
         surface,
         adapter: primary.adapter.clone(),

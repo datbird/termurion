@@ -12,6 +12,21 @@ pub const NAME: &str = "Name";
 /// The Windows stand-in for iTerm2's default Monaco 12.
 pub const WINDOWS_FONT: &str = "Cascadia Mono 12";
 
+/// The default font for `os`: iTerm2's own Monaco 12 on macOS (Menlo 12 when Monaco is missing),
+/// the Cascadia stand-in everywhere else.
+fn default_font_for(os: &str, monaco_present: bool) -> &'static str {
+    match (os == "macOS", monaco_present) {
+        (true, true) => "Monaco 12",
+        (true, false) => "Menlo 12",
+        _ => WINDOWS_FONT,
+    }
+}
+
+/// What a new profile's font is on this machine.
+pub fn default_font() -> &'static str {
+    default_font_for(crate::platform::OS_NAME, std::path::Path::new("/System/Library/Fonts/Monaco.ttf").exists())
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Profile {
     pub values: BTreeMap<String, Value>,
@@ -178,8 +193,8 @@ impl Profile {
         let mut p = Profile::stock();
         p.set(GUID, Value::String(uuid::Uuid::new_v4().to_string().to_uppercase()));
         p.set(NAME, Value::String(name.to_string()));
-        p.set("Normal Font", Value::String(WINDOWS_FONT.into()));
-        p.set("Non Ascii Font", Value::String(WINDOWS_FONT.into()));
+        p.set("Normal Font", Value::String(default_font().into()));
+        p.set("Non Ascii Font", Value::String(default_font().into()));
         p
     }
 
@@ -756,7 +771,15 @@ mod tests {
         let b = Profile::new("B");
         assert_ne!(a.guid(), b.guid());
         assert_eq!(a.name(), "A");
-        assert_eq!(a.font("Normal Font").family, "Cascadia Mono");
+        assert_eq!(a.font("Normal Font").family, parse_font(default_font()).family);
+    }
+
+    #[test]
+    fn the_default_font_is_per_os() {
+        assert_eq!(default_font_for("Windows", true), "Cascadia Mono 12");
+        assert_eq!(default_font_for("Linux", true), "Cascadia Mono 12");
+        assert_eq!(default_font_for("macOS", true), "Monaco 12");
+        assert_eq!(default_font_for("macOS", false), "Menlo 12");
     }
 
     #[test]
