@@ -594,12 +594,10 @@ pub fn saved_grid(session: &Value) -> Option<(usize, usize)> {
     Some((n("Columns")?, n("Rows")?))
 }
 
-/// The saved grid a restore uses for a pane whose own grid is `own`: None when it is far larger
-/// (more than four times the cells), so a stray size falls back to the pane's own grid.
-pub fn usable_saved_grid(saved: (usize, usize), own: (usize, usize)) -> Option<(usize, usize)> {
-    let (c, r) = (saved.0.clamp(1, MAX_SAVED_GRID), saved.1.clamp(1, MAX_SAVED_GRID));
-    let own_cells = own.0.max(1) * own.1.max(1);
-    (c * r <= own_cells.saturating_mul(4)).then_some((c, r))
+/// The saved grid a restore feeds at, held to `MAX_SAVED_GRID` each. Any size up to that is
+/// used, however much smaller the pane is (a big monitor restored on a laptop).
+pub fn usable_saved_grid(saved: (usize, usize)) -> (usize, usize) {
+    (saved.0.clamp(1, MAX_SAVED_GRID), saved.1.clamp(1, MAX_SAVED_GRID))
 }
 
 pub fn saved_cursor(session: &Value) -> Option<(usize, usize)> {
@@ -760,19 +758,18 @@ mod tests {
 
     use super::*;
 
-    /// Round 4 (I1): a saved grid from a corrupt arrangement or an import (9999x9999) is never
-    /// taken as it is: it is held to what a profile can ask for, so a restore cannot build a
-    /// hundred-million-cell grid.
+    /// Rounds 4 and 5: a saved grid from a corrupt arrangement or an import (9999x9999) is held
+    /// to what a profile can ask for, so a restore cannot build a hundred-million-cell grid. A
+    /// real big monitor's grid is used as it is.
     #[test]
     fn a_huge_saved_grid_is_held_to_a_real_size() {
         let v = session(9999, 9999, Default::default(), "g", None);
         let got = saved_grid(&v);
         assert!(got.is_some_and(|(c, r)| c <= 1250 && r <= 1250), "{got:?}");
-        // Far larger than the pane: not used at all; close to it: used.
-        assert_eq!(usable_saved_grid((9999, 9999), (39, 22)), None);
-        assert_eq!(usable_saved_grid((1250, 1250), (80, 25)), None);
-        assert_eq!(usable_saved_grid((39, 22), (50, 27)), Some((39, 22)));
-        assert_eq!(usable_saved_grid((120, 40), (80, 25)), Some((120, 40)));
+        assert_eq!(usable_saved_grid((9999, 9999)), (1250, 1250));
+        assert_eq!(usable_saved_grid((1250, 1250)), (1250, 1250));
+        assert_eq!(usable_saved_grid((700, 93)), (700, 93));
+        assert_eq!(usable_saved_grid((39, 22)), (39, 22));
     }
 
     #[test]

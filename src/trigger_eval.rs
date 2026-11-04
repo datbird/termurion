@@ -586,8 +586,8 @@ impl Screen {
     /// cursor lands rows above the end and the banner writes over the last lines.
     pub fn feed_restored_sized(&mut self, text: &str, cursor: Option<(usize, usize)>, banner: Option<(&str, (u8, u8))>, saved: Option<(usize, usize)>) {
         let own = (self.term.columns(), self.term.screen_lines());
-        // A size far from the pane's own (a corrupt file) is not used: the text goes in as before.
-        let saved = saved.and_then(|g| crate::arrangement::usable_saved_grid(g, own)).filter(|&(c, _)| c >= 2).filter(|g| *g != own);
+        // Held to a profile's 1250 columns and rows (a corrupt file), however small the pane is.
+        let saved = saved.map(crate::arrangement::usable_saved_grid).filter(|&(c, _)| c >= 2).filter(|g| *g != own);
         if let Some((c, r)) = saved {
             self.resize(c, r);
         }
@@ -1503,15 +1503,54 @@ mod tests {
         assert!(got.iter().filter(|l| l.starts_with("Session Contents Restored")).count() == 2, "{got:?}");
     }
 
-    /// Round 4 (I1): a 9999x9999 saved size never sizes the grid; the text goes in at the
-    /// pane's own grid and the pane keeps it.
+    /// Rounds 4 and 5: a 9999x9999 saved size is held to 1250x1250, fed at that, and the pane
+    /// goes back to its own grid quickly with the text kept.
     #[test]
-    fn a_huge_saved_size_is_not_used() {
+    fn a_huge_saved_size_is_held_to_the_clamp() {
+        use alacritty_terminal::index::{Column, Line};
         let mut r = Screen::with_scrollback(39, 22, 1000);
         let started = std::time::Instant::now();
         r.feed_restored_sized("one\ntwo\n", Some((2, 0)), None, Some((9999, 9999)));
+        let took = started.elapsed();
         assert_eq!((r.term().columns(), r.term().screen_lines()), (39, 22));
-        assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
+        assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+        let g = r.term().grid();
+        let top = -(g.history_size() as i32);
+        let text: Vec<String> = (top..g.screen_lines() as i32).map(|l| (0..g.columns()).map(|c| g[Line(l)][Column(c)].c).collect::<String>().trim_end().to_string()).filter(|t| !t.is_empty()).collect();
+        assert_eq!(text, ["one", "two"]);
+    }
+
+    /// Round 5 (I2): a window saved on a big monitor (700x93) and restored into a laptop's
+    /// much smaller pane (200x58) is fed at its saved size. Fed at the pane's size, its long
+    /// lines wrap, the saved cursor row no longer names the prompt's row and the banner and the
+    /// shell's new prompt land away from it.
+    #[test]
+    fn a_big_saved_window_restores_into_a_small_pane() {
+        use alacritty_terminal::index::{Column, Line};
+        let long = "x".repeat(500);
+        let mut s = Screen::with_scrollback(700, 93, 1000);
+        for i in 1..=20 {
+            s.feed(format!("line {i} {long}\r\n").as_bytes());
+        }
+        s.feed(b"MARK-LAST\r\n$ ");
+        let (text, at) = crate::styled_copy::sgr_restorable(&s);
+        let mut r = Screen::with_scrollback(200, 58, 1000);
+        r.feed_restored_sized(&text, Some(at), Some(("Session Contents Restored", (38, 102))), Some((700, 93)));
+        assert_eq!((r.term().columns(), r.term().screen_lines()), (200, 58));
+        let g = r.term().grid();
+        let top = -(g.history_size() as i32);
+        // Grid rows, blank ones kept, so a gap between the prompt and the banner shows.
+        let got: Vec<String> = (top..g.screen_lines() as i32).map(|l| (0..g.columns()).map(|c| g[Line(l)][Column(c)].c).collect::<String>().trim_end().to_string()).collect();
+        let find = |p: &str| got.iter().position(|l| l.starts_with(p)).unwrap_or_else(|| panic!("{p} is gone: {got:?}"));
+        let mut last = 0;
+        for i in 1..=20 {
+            let n = find(&format!("line {i} "));
+            assert!(n >= last, "line {i} is out of order: {got:?}");
+            last = n;
+        }
+        let (mark, prompt, banner) = (find("MARK-LAST"), find("$"), find("Session Contents Restored"));
+        assert!(last < mark && mark + 1 == prompt, "{got:?}");
+        assert_eq!(banner, prompt + 1, "the banner is right under the prompt: {:?}", &got[prompt..banner.min(got.len()).max(prompt)]);
     }
 
     #[test]
