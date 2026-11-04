@@ -2976,8 +2976,10 @@ pub fn run() {
     // The handoff class is registered before the first window, so COM's wait for it is short.
     app.sync_handoff_server();
     let ran = event_loop.run_app(&mut app);
-    // Set before the error dialog, so the quit backstop never ends the process under it.
-    LOOP_ENDED.store(true, std::sync::atomic::Ordering::SeqCst);
+    // Before the dialog; if the quit backstop won, it ends the process.
+    if loop_end_claimed() {
+        loop { std::thread::park(); }
+    }
     if let Err(e) = ran {
         message_box(&format!("Termurion stopped: {e}"));
     }
@@ -8342,6 +8344,11 @@ fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHan
 
 /// Set when the event loop returns, so a confirmed quit's backstop leaves the teardown alone.
 static LOOP_ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Marks the event loop ended; true when the quit backstop had already claimed the end.
+fn loop_end_claimed() -> bool {
+    LOOP_ENDED.swap(true, std::sync::atomic::Ordering::SeqCst)
+}
 
 /// The surface size to use, or None while the window is minimized (0 wide or high).
 /// The key non-terminal window after a focus change of window `id`: a terminal window taking the

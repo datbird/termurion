@@ -1529,7 +1529,8 @@ pub(super) fn start_quit_backstop() {
 fn quit_backstop(after: std::time::Duration, ended: &'static std::sync::atomic::AtomicBool, end: impl FnOnce() + Send + 'static) {
     std::thread::spawn(move || {
         std::thread::sleep(after);
-        if !ended.load(std::sync::atomic::Ordering::SeqCst) {
+        // Claimed with a swap: the UI thread and this one never both run the teardown.
+        if !ended.swap(true, std::sync::atomic::Ordering::SeqCst) {
             end();
         }
     });
@@ -1899,6 +1900,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(a.load(Ordering::SeqCst), "a stuck loop is ended");
         assert!(!b.load(Ordering::SeqCst), "a loop that returned is left alone");
+        assert!(STUCK.load(Ordering::SeqCst), "the backstop claims the end, so a late loop return waits");
         let own = include_str!("menu.rs");
         let body = &own[own.find("pub(super) fn quit_confirmed(").unwrap()..];
         let body = &body[..body.find("\n    }\n").unwrap()];
@@ -1910,7 +1912,7 @@ mod tests {
         assert!(tick.find("event_loop.exit();").unwrap() < tick.find("super::menu::start_quit_backstop();").unwrap(), "{tick}");
         let run = include_str!("mod.rs");
         // The loop counts as ended before the error dialog, so the backstop never kills it (6d Minor 1).
-        let ended = run.find("    LOOP_ENDED.store(true").unwrap();
+        let ended = run.find("    if loop_end_claimed() {").unwrap();
         assert!(ended < run.find("message_box(&format!(\"Termurion stopped: {e}\"));").unwrap(), "the dialog comes after");
     }
 
