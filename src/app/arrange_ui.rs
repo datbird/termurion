@@ -246,13 +246,18 @@ impl App {
     /// recording's pane is left out (iTerm2 never restores one); a tab or window with
     /// nothing else is left out whole (None).
     pub(super) fn snapshot_window(&self, contents: Contents) -> Option<Value> {
-        self.snapshot_tabs(contents, None, true)
+        self.snapshot_tabs(contents, None, true, true)
     }
 
     /// The window as Duplicate Window copies it: no session carries a workgroup descriptor, so the
     /// copy never adopts the original's instance (P9).
     pub(super) fn snapshot_window_copy(&self) -> Option<Value> {
-        self.snapshot_tabs(Contents::None, None, false)
+        self.snapshot_tabs(Contents::None, None, false, false)
+    }
+
+    /// A tmux tab: its panes are a tmux window's (`PTYTab isTmuxTab`).
+    fn is_tmux_tab(&self, t: &Tab) -> bool {
+        t.layout.tree().leaves().iter().any(|id| self.panes.get(*id).is_some_and(|p| p.tmux_io().is_some()))
     }
 
     /// A tab's panes without a loaded recording's (None when nothing else is left).
@@ -287,13 +292,15 @@ impl App {
     }
 
     /// The current window as an arrangement window table holding only the tabs `only` names
-    /// (ids; None: every tab).
-    fn snapshot_tabs(&self, contents: Contents, only: Option<&[u64]>, workgroups: bool) -> Option<Value> {
+    /// (ids; None: every tab). With `no_tmux` its tmux tabs stay out (`PT:4654-4664`): their
+    /// state is on the tmux server, and a window of only tmux tabs gives None.
+    fn snapshot_tabs(&self, contents: Contents, only: Option<&[u64]>, workgroups: bool, no_tmux: bool) -> Option<Value> {
         let kept: Vec<(usize, &Tab, crate::layout::Tree<PaneId>)> = self
             .tabs
             .iter()
             .enumerate()
             .filter(|(_, t)| only.is_none_or(|ids| ids.contains(&t.id)))
+            .filter(|(_, t)| tab_encoded(self.is_tmux_tab(t), no_tmux))
             .filter_map(|(i, t)| self.kept_tree(t).map(|tree| (i, t, tree)))
             .collect();
         if kept.is_empty() {
@@ -452,7 +459,7 @@ impl App {
             SaveWhat::Window => self.snapshot_window(contents).into_iter().collect(),
             SaveWhat::Tabs(window, ids) => {
                 if self.enter(*window) {
-                    self.snapshot_tabs(contents, Some(ids), true).into_iter().collect()
+                    self.snapshot_tabs(contents, Some(ids), true, false).into_iter().collect()
                 } else {
                     Vec::new()
                 }
@@ -1146,6 +1153,12 @@ pub(super) fn save_idle_mark(p: &Pane, v: &mut Value) {
     }
 }
 
+/// Whether a tab goes into a saved window: a tmux tab only when tmux tabs are kept
+/// (`PT tabsToEncodeExcludingTmux:`).
+fn tab_encoded(tmux_tab: bool, no_tmux: bool) -> bool {
+    !(no_tmux && tmux_tab)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1178,6 +1191,20 @@ mod tests {
         assert_eq!(arrangement::saved_grid(&v), Some((39, 22)));
         v.as_table_mut().unwrap().remove("Rows");
         assert_eq!(arrangement::saved_grid(&v), None);
+    }
+
+    /// Relaunch after quitting while attached with tmux -CC: tmux tabs are not restored, as
+    /// their state is on the tmux server, and a window of only tmux tabs is not either
+    /// (`PT tabsToEncodeExcludingTmux:`, `PT shouldSaveRestorableStateLegacy:`). Save Window
+    /// Arrangement leaves them out too; Duplicate Window and a tab's arrangement keep them.
+    #[test]
+    fn tmux_tabs_stay_out_of_the_saved_windows() {
+        let own = include_str!("arrange_ui.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(own.contains("self.snapshot_tabs(contents, None, true, true)"), "a saved window drops its tmux tabs");
+        assert!(own.contains("self.snapshot_tabs(Contents::None, None, false, false)"), "Duplicate Window keeps them");
+        assert!(own.contains("self.snapshot_tabs(contents, Some(ids), true, false)"), "a tab's arrangement keeps them");
+        assert!(own.contains(".filter(|(_, t)| tab_encoded(self.is_tmux_tab(t), no_tmux))"));
+        assert!(!tab_encoded(true, true) && tab_encoded(false, true) && tab_encoded(true, false));
     }
 
     #[test]
