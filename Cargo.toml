@@ -63,8 +63,8 @@ core-foundation-sys = "0.8.7"
 # The menu bar, pop-ups and the view's key path (src/platform/macos). objc2 0.6 is muda's; winit's own
 # 0.5 stays inside winit, and nothing here may add a third.
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray", "NSBundle", "NSURL", "NSDictionary", "NSDate", "NSError", "NSNotification", "NSDistributedNotificationCenter", "NSOperation", "block2"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSMenu", "NSResponder", "NSView", "NSWindow", "NSRunningApplication", "NSWorkspace", "NSScreen", "libc"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray", "NSBundle", "NSURL", "NSDictionary", "NSDate", "NSError", "NSNotification", "NSDistributedNotificationCenter", "NSOperation", "NSData", "block2"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSMenu", "NSResponder", "NSView", "NSWindow", "NSRunningApplication", "NSWorkspace", "NSScreen", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSImage", "objc2-core-foundation", "libc"] }
 global-hotkey = "0.9.0"
 # Notifications (src/platform/macos/notify.rs).
 block2 = "0.6"

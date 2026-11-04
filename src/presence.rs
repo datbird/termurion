@@ -44,6 +44,12 @@ pub fn tray_menu_owner(terminal: Option<isize>, notify: Option<isize>) -> Option
     terminal.filter(|h| *h != 0).or(notify.filter(|h| *h != 0))
 }
 
+/// Where the tray menu opens: macOS opens it at its menu bar status item (`at_icon`), as a status
+/// item's menu does; Windows on a window of its own (`tray_menu_owner`).
+pub fn tray_menu_anchor(at_icon: bool, terminal: Option<isize>, icon: Option<isize>) -> Option<isize> {
+    if at_icon { tray_menu_owner(icon, terminal) } else { tray_menu_owner(terminal, icon) }
+}
+
 /// An Accessory window (`frames::ACCESSORY`) keeps its own taskbar skip.
 pub fn with_accessory(look: Look, accessory: bool) -> Look {
     Look { tool_window: look.tool_window, skip_taskbar: look.skip_taskbar || accessory }
@@ -201,6 +207,46 @@ pub fn tray_icon_rgba(size: u32) -> Vec<u8> {
     icon_rgba(size).0
 }
 
+/// The menu bar status item's picture (macOS): Termurion's mark as a black shape on clear, `side`
+/// pixels square, the ring tilted around the sun with its moon. AppKit tints it for a light or dark bar.
+pub fn tray_template_rgba(side: u32) -> Vec<u8> {
+    let n = side as f32;
+    let (c, tilt) = (n / 2.0, (-24f32).to_radians());
+    let (rx, ry, stroke) = (n * 0.44, n * 0.2, (n * 0.075).max(1.0));
+    let sun = n * 0.17;
+    // The moon sits on the ring, up and to the right of the sun.
+    let (mu, mv) = (rx * 0.35f32.cos(), -ry * 0.35f32.sin());
+    let (moon_x, moon_y) = (c + mu * tilt.cos() - mv * tilt.sin(), c + mu * tilt.sin() + mv * tilt.cos());
+    let inside = |x: f32, y: f32| -> bool {
+        let (dx, dy) = (x - c, y - c);
+        if dx.hypot(dy) <= sun || (x - moon_x).hypot(y - moon_y) <= n * 0.08 {
+            return true;
+        }
+        // The ring: distance from the tilted ellipse, scaled to the stroke.
+        let (u, v) = (dx * tilt.cos() + dy * tilt.sin(), -dx * tilt.sin() + dy * tilt.cos());
+        let r = ((u / rx).powi(2) + (v / ry).powi(2)).sqrt();
+        let near = (r - 1.0).abs() * ry.min(rx);
+        // A gap around the sun keeps the ring from melting into it.
+        near <= stroke / 2.0 && dx.hypot(dy) > sun + stroke
+    };
+    // 4x4 samples per pixel for smooth edges.
+    let mut out = Vec::with_capacity((side * side * 4) as usize);
+    for py in 0..side {
+        for px in 0..side {
+            let hits = (0..16).filter(|i| inside(px as f32 + (i % 4) as f32 / 4.0 + 0.125, py as f32 + (i / 4) as f32 / 4.0 + 0.125)).count();
+            out.extend_from_slice(&[0, 0, 0, (hits * 255 / 16) as u8]);
+        }
+    }
+    out
+}
+
+/// The status item's picture as PNG bytes; empty if it could not be encoded.
+pub fn tray_template_png(side: u32) -> Vec<u8> {
+    let mut png = Vec::new();
+    let ok = image::RgbaImage::from_raw(side, side, tray_template_rgba(side)).is_some_and(|img| img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).is_ok());
+    if ok { png } else { Vec::new() }
+}
+
 /// Termurion's icon for a window's title bar and taskbar button (the 48 px art).
 pub fn window_icon() -> Option<winit::window::Icon> {
     let (rgba, side) = icon_rgba(48);
@@ -347,6 +393,29 @@ mod tests {
         assert_eq!(tray_menu_owner(None, Some(9)), Some(9));
         assert_eq!(tray_menu_owner(None, None), None);
         assert_eq!(tray_menu_owner(Some(0), Some(9)), Some(9));
+    }
+
+    /// macOS opens the menu at the status item, Windows on its own window as before.
+    #[test]
+    fn tray_menu_opens_at_the_status_item_on_macos() {
+        assert_eq!(tray_menu_anchor(true, Some(7), Some(9)), Some(9));
+        assert_eq!(tray_menu_anchor(true, Some(7), None), Some(7));
+        assert_eq!(tray_menu_anchor(false, Some(7), Some(9)), Some(7));
+        assert_eq!(tray_menu_anchor(false, None, Some(9)), Some(9));
+    }
+
+    /// The status item's picture is a template: black only, with a shape, and clear corners.
+    #[test]
+    fn tray_template_is_a_black_shape_on_clear() {
+        let px = tray_template_rgba(36);
+        assert_eq!(px.len(), 36 * 36 * 4);
+        assert!(px.chunks(4).all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0), "only alpha carries the shape");
+        let solid = px.chunks(4).filter(|p| p[3] > 200).count();
+        assert!(solid > 36 * 36 / 12 && solid < 36 * 36 / 2, "{solid} solid pixels");
+        assert_eq!(px[3], 0, "the corner is clear");
+        let centre = ((18 * 36 + 18) * 4 + 3) as usize;
+        assert_eq!(px[centre], 255, "the sun is in the middle");
+        assert!(tray_template_png(36).starts_with(b"\x89PNG"));
     }
 
     #[test]

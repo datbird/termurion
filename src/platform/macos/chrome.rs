@@ -97,6 +97,10 @@ pub fn popup<M: muda::ContextMenu + ?Sized>(menu: &M, view: isize, position: Opt
     if view == 0 || MainThreadMarker::new().is_none() {
         return false;
     }
+    // The tray menu opens from the menu bar status item, under it.
+    if super::status_item::button_view() == Some(view) {
+        return super::status_item::pop(view, menu.ns_menu());
+    }
     // SAFETY: the app got this pointer from its own live window this call.
     let in_window = unsafe { (*(view as *const NSView)).window().is_some() };
     if !in_window {

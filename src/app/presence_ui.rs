@@ -225,7 +225,8 @@ impl App {
     /// opens with no terminal window made yet.
     fn show_tray_menu(&mut self) {
         use muda::{Menu, MenuItem, PredefinedMenuItem, Submenu};
-        let Some(hwnd) = presence::tray_menu_owner(self.view(), crate::platform::notify::window_handle()) else { return };
+        let at_icon = crate::platform::notify::MENU_AT_ICON;
+        let Some(hwnd) = presence::tray_menu_anchor(at_icon, self.view(), crate::platform::notify::window_handle()) else { return };
         let menu = Menu::new();
         // Every window first: one that left the taskbar and Alt+Tab (or was minimized) has no
         // other way back. A pick runs `window_list_picked`.
@@ -262,7 +263,9 @@ impl App {
             }
         }
         // A cloaked or background window still has to be foreground for the menu to close on a click away.
-        native::set_foreground(hwnd);
+        if !at_icon {
+            native::set_foreground(hwnd);
+        }
         let picked = crate::platform::chrome::popup(&menu, hwnd, None);
         crate::host_base::log(&format!("tray: menu on {hwnd:#x} (notification window {}), picked {picked}", Some(hwnd) == crate::platform::notify::window_handle()));
         self.tray_pick = picked;
@@ -294,6 +297,24 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    /// The macOS menu bar item opens the very menu the Windows tray does: the one builder, the
+    /// same items in the same words, nothing per OS but where it opens.
+    #[test]
+    fn the_status_item_menu_is_the_tray_menu() {
+        let src = include_str!("presence_ui.rs");
+        let body = src.split("fn show_tray_menu").nth(1).and_then(|r| r.split("\n    fn panel_windows").next()).expect("show_tray_menu");
+        assert!(body.contains("for (label, what) in presence::TRAY_ITEMS"));
+        assert!(!body.contains("cfg"), "no item differs by OS");
+        assert!(body.contains("presence::tray_menu_anchor(at_icon"));
+        let labels: Vec<&str> = crate::presence::TRAY_ITEMS.iter().map(|(l, _)| *l).collect();
+        assert_eq!(labels, ["New Window", "Settings", "Bring All Windows to Front", "Buried Sessions", "Check For Updates", "Main Menu", "Quit Termurion"]);
+        // muda drops a lone & on macOS (a mnemonic on Windows), so none may be in a label.
+        assert!(labels.iter().all(|l| !l.contains('&')));
+        // A click on the item is the tray's menu click.
+        let mac = include_str!("../platform/macos/status_item.rs");
+        assert!(mac.contains("f(true)"));
+    }
+
     /// Minor 5: tray "Bring All Windows to Front" skips hidden hotkey windows (arrangeInFront does).
     #[test]
     fn tray_bring_all_skips_hidden_hotkey_windows() {

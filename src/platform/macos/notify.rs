@@ -104,24 +104,30 @@ pub fn on_click(f: Box<dyn Fn() + Send + Sync>) {
     *CLICK.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::from(f));
 }
 
-/// The Dock icon is the way back on macOS (Task 3's reopen); there is no tray icon.
-pub fn on_tray(_f: Box<dyn Fn(bool) + Send + Sync>) {}
+pub const MENU_AT_ICON: bool = true;
+
+/// What a click on the menu bar status item does.
+pub fn on_tray(f: Box<dyn Fn(bool) + Send + Sync>) {
+    super::status_item::on_click(f);
+}
 
 /// Nothing like Explorer restarting happens on macOS.
 pub fn on_taskbar_created(_f: Box<dyn Fn() + Send + Sync>) {}
 
-/// There is no hidden notification window; the Dock icon is the way back.
+/// The tray menu's anchor: the menu bar status item's button, while it is there.
 pub fn window_handle() -> Option<isize> {
-    None
+    super::status_item::button_view()
 }
 
-/// No resident tray icon on macOS; the Dock icon stays.
-pub fn set_resident(_on: bool) -> Result<(), String> {
-    Ok(())
+/// The menu bar status item (the Windows notification area icon).
+pub fn set_resident(on: bool) -> Result<(), String> {
+    super::status_item::set(on)
 }
 
-/// No tray icon to remove on macOS.
-pub fn remove(_owner: isize) {}
+/// Takes the status item out of the menu bar.
+pub fn remove(_owner: isize) {
+    let _ = super::status_item::set(false);
+}
 
 pub fn shown_count() -> u64 {
     SHOWN.load(Ordering::SeqCst)

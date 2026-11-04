@@ -55,6 +55,8 @@ pub fn on_click(f: Box<dyn Fn() + Send + Sync>) {
     let _ = ON_CLICK.set(f);
 }
 
+pub const MENU_AT_ICON: bool = false;
+
 /// What a left or right click on the resident icon does (true for a right click).
 pub fn on_tray(f: Box<dyn Fn(bool) + Send + Sync>) {
     let _ = ON_TRAY.set(f);

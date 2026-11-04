@@ -11,6 +11,8 @@ fn no() -> Result<(), String> {
 /// What a click on a notification does. Nothing is shown here, so nothing is clicked.
 pub fn on_click(_f: Box<dyn Fn() + Send + Sync>) {}
 
+pub const MENU_AT_ICON: bool = false;
+
 /// What a click on the resident icon does. There is no icon on Unix.
 pub fn on_tray(_f: Box<dyn Fn(bool) + Send + Sync>) {}
 
