@@ -251,6 +251,9 @@ pub struct Screen {
     /// Output comes through ConPTY, whose own screen must match this one, so the terminal
     /// never moves the cursor on its own (no fresh line for a prompt).
     pub pty_backed: bool,
+    /// The row number (`row_number`) of the restored-session banner bar, filled to the width the
+    /// pane had when it was fed. A narrowing cuts that row's fill (`cut_bar_tail`).
+    pub(crate) restored_bar: Option<i64>,
     /// A fixed clock for row stamps (tests); None uses the time.
     clock: Option<u32>,
     /// Inline images, by id.
@@ -682,6 +685,7 @@ impl Screen {
             shell: crate::marks::Shell::default(),
             place_prompt_first_column: true,
             pty_backed: false,
+            restored_bar: None,
             clock: None,
             images: crate::images::Store::default(),
             downloads: Vec::new(),
@@ -998,7 +1002,7 @@ impl Screen {
         // ConPTY adds rows below its cursor and pulls no scrollback down; the grid must do the
         // same or its prompt sits on another row than the one ConPTY addresses.
         self.term.set_grow_keeps_rows(self.pty_backed);
-        self.cut_bar_tails(cols);
+        self.cut_bar_tail(cols);
         self.term.resize(GridSize { cols, rows });
         self.sync_selection();
         // Reflow moved rows: triggers go on from the cursor.
@@ -1006,31 +1010,30 @@ impl Screen {
         self.composer_rows_moved();
     }
 
-    /// Before the grid narrows to `cols`: a row filled to its end with one background color (a bar
-    /// such as the restored-session banner, made at the width the pane had then) loses that fill
-    /// past the new width. Left in, reflow wraps the empty fill onto a row of its own, a block of
-    /// background color under the bar. A row that is itself wrapped keeps its tail.
-    fn cut_bar_tails(&mut self, cols: usize) {
-        use alacritty_terminal::term::cell::Flags;
+    /// Before the grid narrows to `cols`: the restored-session banner bar, made at the width the
+    /// pane had then, loses its blank fill past the new width. Left in, reflow wraps the empty
+    /// fill onto a row of its own, a gray block under the bar. Only that row: a program's own
+    /// colored rows keep their tails.
+    fn cut_bar_tail(&mut self, cols: usize) {
         use alacritty_terminal::vte::ansi::{Color, NamedColor};
         let old = self.term.columns();
+        let Some(number) = self.restored_bar else { return };
         if cols == 0 || cols >= old {
             return;
         }
         let grid = self.term.grid_mut();
-        let top = -(grid.history_size() as i32);
-        for line in top..grid.screen_lines() as i32 {
-            let row = &mut grid[Line(line)];
-            let last = &row[Column(old - 1)];
-            if last.flags.contains(Flags::WRAPLINE) || last.bg == Color::Named(NamedColor::Background) {
-                continue;
-            }
-            let bg = last.bg;
-            if (cols..old).all(|c| row[Column(c)].c == ' ' && row[Column(c)].bg == bg) {
-                for c in cols..old {
-                    row[Column(c)] = Cell::default();
-                }
-            }
+        let line = number - grid.scrolled_off() as i64;
+        if line < -(grid.history_size() as i64) || line >= grid.screen_lines() as i64 {
+            return;
+        }
+        let row = &mut grid[Line(line as i32)];
+        let bg = row[Column(old - 1)].bg;
+        // The row still holds the bar (a program may have written over it since).
+        if bg == Color::Named(NamedColor::Background) || !(cols..old).all(|c| row[Column(c)].c == ' ' && row[Column(c)].bg == bg) {
+            return;
+        }
+        for c in cols..old {
+            row[Column(c)] = Cell::default();
         }
     }
 

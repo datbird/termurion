@@ -595,6 +595,7 @@ impl Screen {
                 b.push_str("\r\n");
             }
             // Erasing with the bar's background paints the whole line (iTerm2 does the same).
+            self.restored_bar = Some(self.row_number(self.term.grid().cursor.point.line.0) + i64::from(!b.is_empty()));
             b += &format!("\x1b[48;2;{bg};{bg};{bg}m\x1b[38;2;{fg};{fg};{fg}m\x1b[2K{}\x1b[0m\r\n", crate::arrangement::inert_text(line));
             self.feed_quiet(b.as_bytes());
         }
@@ -1541,6 +1542,15 @@ mod tests {
         w.resize(10, 4);
         let g = w.term().grid();
         assert_eq!(g[Line(1)][Column(9)].bg, Color::Named(NamedColor::Red));
+        // A program's own full-width colored row (not the banner) keeps its tail: reflow wraps it
+        // as it would any text.
+        let mut p = Screen::new(40, 6);
+        p.feed(b"\x1b[44m\x1b[2Kprompt\x1b[0m\r\n");
+        p.resize(30, 6);
+        let g = p.term().grid();
+        let top = -(g.history_size() as i32);
+        let blue = (top..g.screen_lines() as i32).flat_map(|l| (0..30).map(move |c| (l, c))).filter(|&(l, c)| g[Line(l)][Column(c)].bg == Color::Named(NamedColor::Blue)).count();
+        assert_eq!(blue, 40, "all 40 blue cells stay, the tail wrapped onto the next row");
     }
 
     #[test]
