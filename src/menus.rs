@@ -76,7 +76,14 @@ pub(crate) const SHIFTED: [(char, char); 21] = [
 /// Check Settings Control Truncation unless built for development (Termurion's Settings wrap text,
 /// so it is never built, R5). The one rule every menu copy and list of menu actions applies.
 pub fn hidden_in_menu(selector: &str, debug_build: bool) -> bool {
+    hidden_on(selector, debug_build, crate::platform::IS_WINDOWS)
+}
+
+/// `hidden_in_menu` for a given OS. Shell > tmux's psmux and WSL starters are Windows programs:
+/// other systems do not list them.
+pub fn hidden_on(selector: &str, debug_build: bool, windows: bool) -> bool {
     match selector {
+        "newPsmuxSession:" | "newWslTmuxSession:" => !windows,
         "captureNextMetalFrame:" => !debug_build,
         "debugCheckSettingsControlTruncation:" => true,
         // The browser toolbar's Debug Autofill Fields (`iTermBrowserToolbar.swift:370-378`, `#if DEBUG`).
@@ -309,6 +316,10 @@ mod tests {
     /// A list is built from `shown_items()`; `items()` is only searched by selector.
     #[test]
     fn every_menu_list_goes_through_the_one_filter() {
+        for sel in ["newPsmuxSession:", "newWslTmuxSession:"] {
+            assert!(!hidden_on(sel, false, true) && hidden_on(sel, false, false), "{sel} is Windows only");
+            assert_eq!(shown_items().any(|i| i.selector == sel), crate::platform::IS_WINDOWS, "{sel}");
+        }
         assert!(hidden_in_menu("captureNextMetalFrame:", false));
         assert!(!hidden_in_menu("captureNextMetalFrame:", true));
         assert!(hidden_in_menu("debugCheckSettingsControlTruncation:", true));

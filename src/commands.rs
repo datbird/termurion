@@ -472,7 +472,7 @@ mod tests {
     fn the_session_start_items_are_done() {
         let gen_script = include_str!("../scripts/gen-menus.py");
         for (label, sel) in [("New psmux Session", "newPsmuxSession:"), ("New tmux Session in WSL", "newWslTmuxSession:")] {
-            let item = menus::by_id(&format!("Shell > tmux > {label}")).unwrap_or_else(|| panic!("{label}"));
+            let item = items().iter().find(|i| i.id() == format!("Shell > tmux > {label}")).unwrap_or_else(|| panic!("{label}"));
             assert_eq!(item.selector, sel);
             assert_eq!(status(item), Status::Done, "{label}");
             assert!(gen_script.contains(label) && gen_script.contains(sel), "{label} is in the generator");
