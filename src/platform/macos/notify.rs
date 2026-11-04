@@ -2,7 +2,7 @@
 //! a bare binary has no bundle id and says so. Completion handlers run on other threads, so they
 //! touch nothing of the App, only statics and the center.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -23,9 +23,6 @@ const NO_BUNDLE: &str = "Notifications need Termurion to run as Termurion.app";
 const TURNED_OFF: &str = "Notifications are turned off for Termurion in System Settings";
 
 static SHOWN: AtomicU64 = AtomicU64::new(0);
-/// Whether Termurion is the active app. Set from the main thread (window focus), read by the
-/// center's thread, so no AppKit call happens off the main thread.
-static ACTIVE: AtomicBool = AtomicBool::new(false);
 static PENDING: Mutex<Pending> = Mutex::new(Pending::new());
 const QUEUE_CAP: usize = 8;
 type Click = Arc<dyn Fn() + Send + Sync>;
@@ -86,9 +83,15 @@ impl Pending {
     }
 }
 
-/// Whether Termurion is in front, from the window focus events on the main thread.
-pub fn set_active(on: bool) {
-    ACTIVE.store(on, Ordering::SeqCst);
+/// Whether Termurion is in front. The center asks only while Termurion is in front, and the answer
+/// is always to show (`presentation`), so nothing needs it; the facade keeps the call.
+pub fn set_active(_on: bool) {}
+
+/// How a notification shows while Termurion is the active app: as a banner, in the list, with its
+/// sound, for the focused session too (iTerm2's `willPresentNotification:` answers Banner and Sound
+/// every time; only Suppress Alerts in Active Session holds a session's own alert back).
+fn presentation() -> UNNotificationPresentationOptions {
+    UNNotificationPresentationOptions::Banner | UNNotificationPresentationOptions::List | UNNotificationPresentationOptions::Sound
 }
 
 /// The identifier of the n-th notification.
@@ -153,9 +156,7 @@ define_class!(
     unsafe impl UNUserNotificationCenterDelegate for Delegate {
         #[unsafe(method(userNotificationCenter:willPresentNotification:withCompletionHandler:))]
         fn will_present(&self, _center: &UNUserNotificationCenter, _n: &UNNotification, done: &block2::DynBlock<dyn Fn(UNNotificationPresentationOptions)>) {
-            let front = ACTIVE.load(Ordering::SeqCst);
-            let opts = if front { UNNotificationPresentationOptions::Banner | UNNotificationPresentationOptions::List | UNNotificationPresentationOptions::Sound } else { UNNotificationPresentationOptions(0) };
-            done.call((opts,));
+            done.call((presentation(),));
         }
 
         #[unsafe(method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:))]
@@ -317,11 +318,13 @@ mod tests {
         assert_eq!(p.items.len(), QUEUE_CAP);
     }
 
+    /// Step 7: a notification for the focused session shows while Termurion is in front, as in
+    /// iTerm2, whatever the window focus said last (a focus change between two windows used to
+    /// leave the flag off and hide the banner).
     #[test]
-    fn active_flag_follows_focus() {
-        set_active(true);
-        assert!(ACTIVE.load(Ordering::SeqCst));
+    fn notifications_show_while_termurion_is_in_front() {
         set_active(false);
-        assert!(!ACTIVE.load(Ordering::SeqCst));
+        let p = presentation();
+        assert!(p.contains(UNNotificationPresentationOptions::Banner) && p.contains(UNNotificationPresentationOptions::Sound) && p.contains(UNNotificationPresentationOptions::List));
     }
 }

@@ -8036,6 +8036,10 @@ impl ApplicationHandler<UserEvent> for App {
             // tmux keeps where Termurion's windows are (@origins).
             WindowEvent::Moved(_) => self.tmux_save_all_windows(),
             WindowEvent::Resized(size) => {
+                // Off Windows a size request applies at once (`adopt_requested_size`), so a Resized
+                // queued from before it is stale: the window's size now is the one to lay out for,
+                // or the panes bounce back to the old size and their shells redraw.
+                let size = if crate::platform::IS_WINDOWS { size } else { self.gpu.as_ref().map_or(size, |g| g.window.inner_size()) };
                 // Minimizing reports 0x0. Keep every pty at its size, or ConPTY reflows the screen.
                 let Some((w, h)) = usable_size(size.width, size.height) else { return };
                 if let Some(g) = self.gpu.as_mut() {
