@@ -4,8 +4,8 @@
 //! The class is shared by every winit window, so only the views handed to `install` (terminal
 //! windows) are claimed; Settings and chat windows keep AppKit's own Cmd+C, Cmd+V, Cmd+W and so on.
 //! While a shortcut recorder listens, every view claims Cmd keys, so Cmd-T records instead of
-//! opening a tab. Cmd-Q, Cmd-H and Cmd-M stay the menu's even then: a terminal never takes them,
-//! so a recorded one could not run.
+//! opening a tab, and Cmd-Q records instead of quitting (iTerm2's shortcut field gets every key
+//! down first). Cmd-H and Cmd-M stay the menu's even then.
 
 use std::collections::HashSet;
 use std::ffi::CString;
@@ -32,9 +32,10 @@ pub fn system_chord(c: &Chord) -> bool {
 
 /// The whole rule: a registered terminal view, and a chord the key path takes (`bound`: a key
 /// mapping or a command). An unbound chord such as Cmd-Ctrl-Space (Emoji & Symbols) is AppKit's.
-/// While the recorder listens (`recording`), any view takes any chord but the system keys.
+/// While the recorder listens (`recording`), any view takes any chord but Cmd-H and Cmd-M.
 pub fn takes(registered: bool, chord: &Chord, bound: bool, recording: bool) -> bool {
-    (recording || (registered && bound)) && !system_chord(chord)
+    let quit = chord.cmd && !chord.shift && !chord.ctrl && !chord.alt && chord.key == ChordKey::Char('q');
+    (recording || (registered && bound)) && (!system_chord(chord) || (recording && quit))
 }
 
 /// Terminal views (addresses) that take Cmd keys.
@@ -155,7 +156,7 @@ mod tests {
     }
 
     /// While the recorder listens, a Settings or Profiles view takes a Cmd chord that has a menu
-    /// item (Cmd-T records, no tab opens), bound or not; Cmd-Q, Cmd-H, Cmd-Opt-H and Cmd-M stay the menu's.
+    /// item (Cmd-T records, no tab opens), bound or not, and Cmd-Q; Cmd-H, Cmd-Opt-H and Cmd-M stay the menu's.
     #[test]
     fn the_recorder_gets_cmd_chords_in_any_window() {
         for key in ['t', 'd', 'k', 'w', 'c', 'v', '1'] {
@@ -163,7 +164,10 @@ mod tests {
             assert!(!takes(false, &cmd(key), false, false), "{key} when not recording");
         }
         assert!(takes(false, &Chord { shift: true, ..cmd('h') }, false, true));
-        for key in ['q', 'h', 'm'] {
+        // Cmd-Q records, as iTerm2's shortcut field gets every key down first.
+        assert!(takes(false, &cmd('q'), false, true), "Cmd-Q while recording");
+        assert!(takes(true, &cmd('q'), false, true));
+        for key in ['h', 'm'] {
             assert!(!takes(false, &cmd(key), true, true), "{key} stays the menu's");
             assert!(!takes(true, &cmd(key), true, true));
         }

@@ -3810,6 +3810,11 @@ impl App {
     }
 
     /// Whether `id` is one of the terminal windows (the current one or a parked one).
+    /// A Settings or Profiles window with a key, hotkey or leader recorder waiting for a press.
+    fn recorder_listens(&self, id: WindowId) -> bool {
+        [&self.settings, &self.profiles_win].into_iter().flatten().any(|s| s.id() == id && s.recording())
+    }
+
     pub(super) fn is_terminal_window(&self, id: WindowId) -> bool {
         self.gpu.as_ref().is_some_and(|g| g.window.id() == id) || self.windows.parked().any(|(_, s)| s.gpu.as_ref().is_some_and(|g| g.window.id() == id))
     }
@@ -7936,7 +7941,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.aux_mods = m.state();
             }
             if let WindowEvent::KeyboardInput { event: k, .. } = &event {
-                match aux_chord_of(k, self.aux_mods) {
+                match aux_chord_of(k, self.aux_mods, self.recorder_listens(id)) {
                     Some(AuxChord::Close) => {
                         self.key_aux = None;
                         return self.window_event(event_loop, id, WindowEvent::CloseRequested);
@@ -8356,14 +8361,15 @@ enum AuxChord {
     Quit,
 }
 
-fn aux_chord_of(k: &winit::event::KeyEvent, mods: winit::keyboard::ModifiersState) -> Option<AuxChord> {
+fn aux_chord_of(k: &winit::event::KeyEvent, mods: winit::keyboard::ModifiersState, recording: bool) -> Option<AuxChord> {
     let winit::keyboard::Key::Character(c) = &k.logical_key else { return None };
-    aux_chord(c, k.state == winit::event::ElementState::Pressed, k.repeat, mods)
+    aux_chord(c, k.state == winit::event::ElementState::Pressed, k.repeat, mods, recording)
 }
 
-/// Cmd alone with W or Q, pressed and not repeating.
-fn aux_chord(key: &str, pressed: bool, repeat: bool, mods: winit::keyboard::ModifiersState) -> Option<AuxChord> {
-    if !pressed || repeat || !mods.super_key() || mods.control_key() || mods.alt_key() || mods.shift_key() {
+/// Cmd alone with W or Q, pressed and not repeating, while no shortcut recorder listens there
+/// (a recorder records them, as iTerm2's shortcut field does).
+fn aux_chord(key: &str, pressed: bool, repeat: bool, mods: winit::keyboard::ModifiersState, recording: bool) -> Option<AuxChord> {
+    if recording || !pressed || repeat || !mods.super_key() || mods.control_key() || mods.alt_key() || mods.shift_key() {
         return None;
     }
     if key.eq_ignore_ascii_case("w") {
@@ -8785,17 +8791,33 @@ mod tests {
     #[test]
     fn cmd_q_in_a_panel_quits() {
         use winit::keyboard::ModifiersState as M;
-        assert_eq!(aux_chord("q", true, false, M::SUPER), Some(AuxChord::Quit));
-        assert_eq!(aux_chord("Q", true, false, M::SUPER), Some(AuxChord::Quit));
-        assert_eq!(aux_chord("w", true, false, M::SUPER), Some(AuxChord::Close));
-        assert_eq!(aux_chord("q", true, false, M::SUPER | M::SHIFT), None, "Cmd-Shift-Q is not Quit");
-        assert_eq!(aux_chord("q", true, true, M::SUPER), None, "a repeat");
-        assert_eq!(aux_chord("q", false, false, M::SUPER), None, "a release");
-        assert_eq!(aux_chord("q", true, false, M::empty()), None, "plain q is typing");
+        assert_eq!(aux_chord("q", true, false, M::SUPER, false), Some(AuxChord::Quit));
+        assert_eq!(aux_chord("Q", true, false, M::SUPER, false), Some(AuxChord::Quit));
+        assert_eq!(aux_chord("w", true, false, M::SUPER, false), Some(AuxChord::Close));
+        assert_eq!(aux_chord("q", true, false, M::SUPER | M::SHIFT, false), None, "Cmd-Shift-Q is not Quit");
+        assert_eq!(aux_chord("q", true, true, M::SUPER, false), None, "a repeat");
+        assert_eq!(aux_chord("q", false, false, M::SUPER, false), None, "a release");
+        assert_eq!(aux_chord("q", true, false, M::empty(), false), None, "plain q is typing");
         let own = include_str!("mod.rs");
         let ev = &own[own.find("    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {").unwrap()..];
         let ev = &ev[..ev.find("self.prompt_event(id, &event)").unwrap()];
         assert!(ev.contains("Some(AuxChord::Quit) => return self.quit(event_loop)"), "the panel path quits before any panel sees the key");
+    }
+
+    /// Round 6d: a Settings or Profiles recorder that listens records Cmd-Q and Cmd-W, as iTerm2
+    /// hands every key down to a focused shortcut field first (`iTermApplication.m:309-322`).
+    #[test]
+    fn a_listening_recorder_gets_cmd_q_and_cmd_w() {
+        use winit::keyboard::ModifiersState as M;
+        assert_eq!(aux_chord("q", true, false, M::SUPER, true), None, "Cmd-Q is recorded");
+        assert_eq!(aux_chord("w", true, false, M::SUPER, true), None, "Cmd-W is recorded");
+        let own = include_str!("mod.rs");
+        let ev = &own[own.find("    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {").unwrap()..];
+        let ev = &ev[..ev.find("self.prompt_event(id, &event)").unwrap()];
+        assert!(ev.contains("aux_chord_of(k, self.aux_mods, self.recorder_listens(id))"), "the window's own recorder is asked");
+        let rl = &own[own.find("fn recorder_listens(").unwrap()..];
+        let rl = &rl[..rl.find("\n    }\n").unwrap()];
+        assert!(rl.contains("self.settings") && rl.contains("self.profiles_win") && rl.contains("recording()"), "Settings and Profiles both");
     }
 
     /// Round 3: Cmd-W while Settings or another panel has the keyboard closes that panel, as in
