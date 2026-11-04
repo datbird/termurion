@@ -387,11 +387,15 @@ pub struct DrawPrefs {
     /// draws the cursor-fx presets, unless a program set one with OSC 12. The effects find the
     /// cursor on screen by this color. None draws the profile's cursor color.
     pub fx_cursor: Option<Rgb>,
+    /// The pane's face gives every ASCII glyph one advance. When it does not (a proportional
+    /// font), each ASCII cell is its own piece at its cell's x, as iTerm2 draws each glyph at its
+    /// cell, so the text stays on the grid the cursor and backgrounds use.
+    pub monospace: bool,
 }
 
 impl Default for DrawPrefs {
     fn default() -> Self {
-        DrawPrefs { underline_hyperlinks: true, solid_underlines: false, metrics: crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 }, scale: 1.0, ligatures: STOCK_LIGATURES, alt_level: 2, masks: crate::fonts::MaskRules::STOCK, custom_boxes: true, powerline: false, powerline_extended: true, powerline_wide: true, table: None, fx_cursor: None }
+        DrawPrefs { underline_hyperlinks: true, solid_underlines: false, metrics: crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 }, scale: 1.0, ligatures: STOCK_LIGATURES, alt_level: 2, masks: crate::fonts::MaskRules::STOCK, custom_boxes: true, powerline: false, powerline_extended: true, powerline_wide: true, table: None, fx_cursor: None, monospace: true }
     }
 }
 
@@ -402,7 +406,7 @@ impl DrawPrefs {
     /// The prefs the live frame and a screenshot both draw with: the two Advanced switches from
     /// `globals`, the renderer's face metrics and the window's scale.
     pub fn from_globals(globals: &crate::globals::Globals, metrics: crate::underline::Metrics, scale: f32) -> DrawPrefs {
-        DrawPrefs { underline_hyperlinks: globals.bool("UnderlineHyperlinks"), solid_underlines: globals.bool("SolidUnderlines"), metrics, scale, ligatures: crate::fonts::LigatureRules { prefer_speed: globals.bool("PreferSpeedToFullLigatureSupport"), ..STOCK_LIGATURES }, alt_level: STOCK_LIGATURES.level, masks: crate::fonts::MaskRules { retina: scale >= 2.0, force_aa_on_retina: globals.bool("ForceAntialiasingOnRetina"), ..crate::fonts::MaskRules::STOCK }, custom_boxes: !globals.bool("DisableCustomBoxDrawing"), powerline: false, powerline_extended: globals.bool("SupportPowerlineExtendedSymbols"), powerline_wide: globals.bool("MakeSomePowerlineSymbolsWide"), table: None, fx_cursor: None }
+        DrawPrefs { underline_hyperlinks: globals.bool("UnderlineHyperlinks"), solid_underlines: globals.bool("SolidUnderlines"), metrics, scale, ligatures: crate::fonts::LigatureRules { prefer_speed: globals.bool("PreferSpeedToFullLigatureSupport"), ..STOCK_LIGATURES }, alt_level: STOCK_LIGATURES.level, masks: crate::fonts::MaskRules { retina: scale >= 2.0, force_aa_on_retina: globals.bool("ForceAntialiasingOnRetina"), ..crate::fonts::MaskRules::STOCK }, custom_boxes: !globals.bool("DisableCustomBoxDrawing"), powerline: false, powerline_extended: globals.bool("SupportPowerlineExtendedSymbols"), powerline_wide: globals.bool("MakeSomePowerlineSymbolsWide"), table: None, fx_cursor: None, monospace: true }
     }
 
     /// The metrics to draw with in a cell of height `ch`: the face's, or (none measured) an
@@ -1399,8 +1403,9 @@ pub fn pane_with(
                     _ => spans.push(span(shown.to_string())),
                 }
                 // Any other non-ASCII character gets its own piece at its cell's x, because
-                // fallback fonts (CJK, emoji) are not monospace.
-                if !ascii && !joinable {
+                // fallback fonts (CJK, emoji) are not monospace. So does every cell of a face
+                // that is not monospace.
+                if (!ascii && !joinable) || !draw.monospace {
                     flush(&mut piece, frame);
                 }
             }

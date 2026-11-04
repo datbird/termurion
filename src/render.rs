@@ -406,6 +406,9 @@ pub struct Face {
     /// The profile's Special Font Config, and the font each of its entries draws in (same order).
     pub table: Option<std::sync::Arc<crate::font_table::Config>>,
     pub table_fonts: std::sync::Arc<[TableFont]>,
+    /// The drawn face gives every ASCII glyph the same advance. When it does not, the terminal
+    /// draws each cell apart (`scene::DrawPrefs::monospace`).
+    pub monospace: bool,
 }
 
 /// One Special Font Config entry's font, resolved once when the face is built.
@@ -555,13 +558,13 @@ impl Renderer {
             face_cap: MAX_FACES,
         };
         r.prose_family = if r.has_family("Segoe UI Variable") { "Segoe UI Variable" } else { "Segoe UI" }.to_string();
-        // Without Segoe (every system but Windows) the bundled symbols face draws the icons.
-        r.font_system.db_mut().load_font_data(crate::egui_host::symbols_face());
         r.icon_family = if r.has_family("Segoe Fluent Icons") {
             "Segoe Fluent Icons"
         } else if r.has_family("Segoe MDL2 Assets") {
             "Segoe MDL2 Assets"
         } else {
+            // No Segoe (every system but Windows): the bundled symbols face draws the icons.
+            r.font_system.db_mut().load_font_data(crate::egui_host::symbols_face());
             "TermurionSymbols"
         }
         .to_string();
@@ -617,6 +620,22 @@ impl Renderer {
         let metrics = fonts::Metrics { ascent: m.ascent, descent: m.descent, leading: m.leading, advance_w };
         let ul = crate::underline::Metrics { underline_offset: m.underline_offset.abs(), thickness: m.stroke_size, x_height: m.x_height, baseline: 0.0 };
         (advance_w > 0.0).then_some((metrics, ul))
+    }
+
+    /// Whether a family draws "i", "W" and "m" at one advance (a face that did not load counts as
+    /// monospace: its stand-in is). The fontdb fixed-pitch flag is not trusted, some fonts lack it.
+    fn is_monospace(&mut self, family: &str, px: f32) -> bool {
+        let family = self.drawn_family(family);
+        let mut advance = |text: &str| {
+            let mut b = Buffer::new(&mut self.font_system, Metrics::new(px, px * 1.2));
+            b.set_size(None, None);
+            b.set_wrap(Wrap::None);
+            b.set_text(text, &Attrs::new().family(Family::Name(&family)), Shaping::Advanced, None);
+            b.shape_until_scroll(&mut self.font_system, false);
+            b.layout_runs().next().map_or(0.0, |r| r.line_w)
+        };
+        let (i, w, m) = (advance("i"), advance("W"), advance("m"));
+        (i - w).abs() < 0.01 && (m - w).abs() < 0.01
     }
 
     /// The metrics `fonts::cell_size` is fed for a family at `px` (tests).
@@ -712,7 +731,8 @@ impl Renderer {
         let blacklisted = self.family_blacklisted(&key.family);
         let alt_blacklisted = key.alt_family.as_deref().map_or(blacklisted, |f| self.family_blacklisted(f));
         let (table, table_fonts) = self.table_of(key);
-        Face { key: key.clone(), cell, base, baseline: ul.baseline, ul, px, bold: self.bold_face(&key.family, key.weight), use_bold: key.use_bold, use_italic: key.use_italic, blacklisted, alt_blacklisted, table, table_fonts: table_fonts.into() }
+        let monospace = self.is_monospace(&key.family, px);
+        Face { key: key.clone(), cell, base, baseline: ul.baseline, ul, px, bold: self.bold_face(&key.family, key.weight), use_bold: key.use_bold, use_italic: key.use_italic, blacklisted, alt_blacklisted, table, table_fonts: table_fonts.into(), monospace }
     }
 
     /// The Special Font Config a key carries and the font of each entry: every name is resolved
@@ -791,6 +811,11 @@ impl Renderer {
         face.and_then(|id| db.with_face_data(id, |data, index| fonts::sfnt_table(data, index, b"gasp").is_some_and(|t| fonts::gasp_smooths(t, ppem)))).unwrap_or(false)
     }
 
+    /// Whether face `id` draws every ASCII glyph at one advance (`Face::monospace`).
+    pub fn face_monospace(&self, id: u16) -> bool {
+        self.face_of(id).monospace
+    }
+
     /// Whether face `id`'s profile draws Powerline symbols itself.
     pub fn face_powerline(&self, id: u16) -> bool {
         self.face_of(id).key.powerline
@@ -810,7 +835,9 @@ impl Renderer {
         let mut key = FaceKey::new(&self.family, self.alt_family.as_deref(), self.font_px, self.h_spacing, self.v_spacing);
         key.profile_bits = 0;
         let ul = self.ul_metrics.unwrap_or(crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 });
-        let face = Face { key: key.clone(), cell: self.cell, base: self.base_cell, baseline: ul.baseline, ul, px: self.font_px, bold: self.default_bold, use_bold: key.use_bold, use_italic: key.use_italic, blacklisted: false, alt_blacklisted: false, table: None, table_fonts: Default::default() };
+        let family = self.family.clone();
+        let monospace = self.is_monospace(&family, self.font_px);
+        let face = Face { key: key.clone(), cell: self.cell, base: self.base_cell, baseline: ul.baseline, ul, px: self.font_px, bold: self.default_bold, use_bold: key.use_bold, use_italic: key.use_italic, blacklisted: false, alt_blacklisted: false, table: None, table_fonts: Default::default(), monospace };
         if self.faces.is_empty() {
             self.faces.push(face);
         } else {
@@ -2479,8 +2506,29 @@ mod tests {
         r.buffers[0].0.layout_runs().flat_map(|run| run.glyphs.iter().map(|g| g.x).collect::<Vec<_>>()).collect()
     }
 
-    /// Item (b): a proportional face (narrow "i", wide "W") still puts every glyph on its column,
-    /// so the cursor, which sits at column * cell width, lands right after the prompt text.
+    /// The x of every glyph a frame's rows drew, from the layout the renderer shaped (each
+    /// buffer is drawn at its row's x).
+    fn drawn_xs(r: &mut Renderer, frame: &Frame, w: u32, h: u32) -> Vec<f32> {
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let tex = r.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&Default::default());
+        r.draw(frame, &view, w, h).unwrap();
+        let mut xs: Vec<f32> = r.buffers.iter().zip(&frame.rows).flat_map(|((b, ..), row)| b.layout_runs().flat_map(|run| run.glyphs.iter().map(|g| row.x + g.x).collect::<Vec<_>>()).collect::<Vec<_>>()).collect();
+        xs.sort_by(f32::total_cmp);
+        xs
+    }
+
+    /// Item (b): with a proportional face (narrow "i", wide "W") every glyph a pane draws sits on
+    /// its column, and the cursor, at column * cell width, sits on the glyph of its column.
     #[test]
     fn a_proportional_face_still_follows_the_cell_grid() {
         let (device, queue) = device();
@@ -2489,10 +2537,39 @@ mod tests {
             println!("skip: DejaVu Sans is not installed");
             return;
         }
-        let xs = laid_out_xs(&mut r, &device, &queue, "iiilllWWWiii mmm");
-        assert_eq!(xs.len(), 16);
-        for (col, x) in xs.iter().enumerate() {
-            assert!((x - col as f32 * r.cell.0).abs() < 0.01, "glyph {col} at x {x}, column x {} (cell {:?})", col as f32 * r.cell.0, r.cell);
+        assert!(!r.face_monospace(DEFAULT_FACE), "DejaVu Sans is proportional");
+        // The cursor goes back onto the first "m" (column 13).
+        let mut screen = crate::screen::Screen::new(40, 2);
+        screen.feed(b"iiilllWWWiii mmm\x1b[3D");
+        let cell = r.cell;
+        let rect = Rect { x: 0.0, y: 0.0, w: 40.0 * cell.0, h: 2.0 * cell.1 };
+        let prefs = crate::scene::DrawPrefs { monospace: r.face_monospace(DEFAULT_FACE), ..Default::default() };
+        let mut frame = Frame::default();
+        crate::scene::pane_with(&mut frame, &screen, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &prefs, None, DEFAULT_FACE);
+        let xs = drawn_xs(&mut r, &frame, rect.w.ceil() as u32, rect.h.ceil() as u32);
+        let cols: Vec<usize> = "iiilllWWWiii mmm".char_indices().filter(|(_, c)| *c != ' ').map(|(i, _)| i).collect();
+        assert_eq!(xs.len(), cols.len(), "{xs:?}");
+        for (x, col) in xs.iter().zip(&cols) {
+            assert!((x - *col as f32 * cell.0).abs() < 0.01, "glyph of column {col} at x {x}, column x {} (cell {cell:?})", *col as f32 * cell.0);
+        }
+        let cursor = frame.quads.iter().find(|q| q.color == rgba(screen.palette.cursor, 1.0)).expect("the cursor box").rect;
+        assert!((cursor.x - xs[cols.iter().position(|c| *c == 13).unwrap()]).abs() < 0.01, "cursor at {}, glyph at {:?}", cursor.x, xs);
+    }
+
+    /// Interface text (tab titles, the status bar, tooltips) keeps its own proportional advances:
+    /// a prose row draws to the width `prose_width` measured for its slot, not to whole cells.
+    #[test]
+    fn interface_text_draws_at_its_measured_width() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans Mono", 16.0);
+        for (text, bold) in [("Allow? New Tab", false), ("iiil WWW mmm", true)] {
+            let span = Span { text: text.into(), color: rgb(255, 255, 255), bold, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 };
+            let row = TextRow { x: 0.0, y: 0.0, spans: vec![span], clip: Rect { x: 0.0, y: 0.0, w: 600.0, h: 32.0 }, scale: 1.0, face: DEFAULT_FACE };
+            let frame = Frame { rows: vec![row], ..Frame::default() };
+            drawn_xs(&mut r, &frame, 600, 32);
+            let end = r.buffers[0].0.layout_runs().flat_map(|run| run.glyphs.iter().map(|g| g.x + g.w).collect::<Vec<_>>()).fold(0.0, f32::max);
+            let want = r.prose_width(text, bold, 1.0);
+            assert!((end - want).abs() < 0.5, "{text:?} draws to {end} px, measured {want} px");
         }
     }
 
