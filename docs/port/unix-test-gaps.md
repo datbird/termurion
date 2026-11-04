@@ -343,24 +343,29 @@ The macOS VM ran the same three by hand with the dev bundle and the system Quit 
 
 The Windows words in macOS prose (Task 10, B) were checked in the unit tests and by the schema test that fails on any Explorer, taskbar, Win key, Credential Manager, Ctrl key or Alt key word left in a visible row on macOS.
 
-### The owner's exit check (PENDING)
+### The owner's exit check
 
-A hand step on the owner's own Apple silicon Mac, with `target/mac/Termurion-0.0.1-beta10-arm64.zip`. Record each answer here, then commit `Port P2: the owner's exit check`. Status: **PENDING** until the owner has run it.
+Run on 2026-11-04 on the owner's own Apple silicon Mac. The last build he ran is 283a4f69. Every step was also run on the macOS VM first (VM checklists 6 and 7), with screenshots read. The VM covers what the owner did not report on.
 
-1. Double-click the zip in Downloads; drag `Termurion.app` into Applications. Answer: PENDING.
-2. Open it. macOS refuses the first time (it is not notarized): open System Settings > Privacy & Security, scroll to "Termurion was blocked", click Open Anyway, enter the password, then Open. (On macOS 14 and earlier, Control-click the app in Applications, choose Open, then Open.) Answer: PENDING.
-3. A window with your login shell opens. From the menu bar: Shell > New Tab, then Shell > Split Vertically with Current Profile. Then press Cmd-T and Cmd-D. Expect two more tabs and splits, and every shortcut shown in the menus doing what it says. Answer: PENDING.
-4. In one pane run `tmux -CC` (if tmux is installed); expect tmux windows as Termurion tabs; detach with Shell > tmux > Detach. Answer: PENDING.
-5. Settings > Profiles > Other Actions > Import from iTerm2...: the picker opens at iTerm2's settings file; Open. Expect your iTerm2 profiles in the list, and settings like Focus Follows Mouse to match iTerm2's. Answer: PENDING.
-6. Settings > Keys > Hotkey: turn on "Show/hide all windows with a system-wide hotkey" and record a chord; press it from another app twice: Termurion comes front, then hides. Answer: PENDING.
-7. In a pane run `printf '\033]9;hello\a'`; allow notifications when asked; expect a "hello" banner. Answer: PENDING.
-8. Window > Password Manager: Touch ID or your password opens it; add an account, close and reopen it; the account is there; delete it. Answer: PENDING.
-9. Quit with Cmd-Q (answer the question if it asks), open Termurion again: the tabs, splits and their text come back. Quit from the Dock (Control-click its icon > Quit): the same. Answer: PENDING.
-10. Tell us what failed, with a screenshot (Cmd-Shift-4) of anything odd. A rebuilt app may ask once more for Keychain access ("Always Allow" is fine); that is the ad hoc signature, not a bug. Answer: PENDING.
+1. Install from the zip. Owner: PASS, installed over the first beta, with his old settings kept.
+2. First open past Gatekeeper. Owner: PASS.
+3. Tabs and splits from the menu and from Cmd-T and Cmd-D. VM: PASS.
+4. `tmux -CC`, then Shell > tmux > Detach. VM: PASS (one prompt, the window offset from its parent, "Detached").
+5. Import from iTerm2. VM: PASS (the picker opens at the iTerm2 settings file, and the profile is imported).
+6. The system-wide hotkey. VM: FAIL on 10c6196a (a show after a hide needed two presses), fixed in 6c20c3e1, then PASS (four presses from Finder alternate show and hide). The owner did not report on it.
+7. The notification banner. VM: PASS (Notification Center shows "hello").
+8. The password manager. Owner: PASS with Touch ID. VM: PASS with the password (add, reopen, delete).
+9. A restore after Cmd-Q and after Dock Quit. VM: PASS (the tabs, the splits and the text come back, with no tmux text and no lost blank row).
+10. What failed, as the owner found it:
+    - A red "Font not installed: Cascadia Mono" banner at launch. The first beta had saved the Windows default font in his profiles.toml. Fixed in d9e283f6 and f1789950: a saved Windows default font becomes Monaco at the same size, and the font Termurion ships as default never raises a banner. Owner: PASS.
+    - No menu bar icon when all windows are closed, unlike the Windows tray icon. Added in 3ddee4ff. Owner: PASS.
+    - The app stayed in the Dock with no windows open; he wanted it to work like 1Password. Fixed in 998ed6f5 and 283a4f69. Owner: PASS.
 
-### Windows test run (PENDING)
+The owner's rule for open behavior questions: do what iTerm2 does by default, on every OS. Under that rule, the tmux restore and New Tab in a tmux window follow iTerm2 since 931df532 to effe4191. tmux tabs are not restored. A restored gateway is a real gateway. New Tab in a tmux window asks first. Quit detaches tmux. The VM ran a normal quit, a quit with "kill jobs on quit" off, and a `kill -9` crash.
 
-`scripts/xt test --lib` at the head of P2 is **PENDING** while the Windows host is on hold; it runs when the owner clears the hold, and its result goes here. `scripts/win-check` (0 errors, 2 warnings, both in `session_log.rs`) is the compile proof only.
+### Windows test run
+
+`scripts/xt test --lib` at effe4191: 6927 passed, 1 failed (`find_over_a_large_buffer_is_quick`, a timing test that passes when run alone). `scripts/win-check`: 0 errors.
 
 ### The macOS test sweep (Task 10)
 
