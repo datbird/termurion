@@ -2569,7 +2569,11 @@ mod tests {
             drawn_xs(&mut r, &frame, 600, 32);
             let end = r.buffers[0].0.layout_runs().flat_map(|run| run.glyphs.iter().map(|g| g.x + g.w).collect::<Vec<_>>()).fold(0.0, f32::max);
             let want = r.prose_width(text, bold, 1.0);
-            assert!((end - want).abs() < 0.5, "{text:?} draws to {end} px, measured {want} px");
+            // cosmic-text rounds each advance of a row with a monospace width to a multiple of
+            // the cell's em width (cell / px, about 0.6 px), so each glyph may move by half that.
+            // Snapping to whole cells (the old vendored patch) was off by about 20 px.
+            let slack = text.chars().count() as f32 * r.cell.0 / 16.0 / 2.0 + 0.01;
+            assert!((end - want).abs() <= slack, "{text:?} draws to {end} px, measured {want} px (slack {slack})");
         }
     }
 
