@@ -2614,31 +2614,41 @@ mod tests {
         }
     }
 
-    /// Round 3: every Segoe icon code point the tab bar, the pane title bar, the status bar, the
-    /// caption buttons and the command buttons draw (read from their source) is in a face the
-    /// renderer loads, so a hovered tab's close button and the rest draw as shapes, not boxes,
-    /// where Segoe is not installed.
+    /// Rounds 3 and 5: every Segoe icon code point in src/ (the renderer's chrome and the egui
+    /// windows both draw them through the bundled symbols face) is in a face the renderer loads,
+    /// so icons draw as shapes, not boxes, where Segoe is not installed. Not icons: the E000
+    /// sentinel, Powerline (E0A0..E0FF, drawn by boxdraw) and NSFunctionKey (F700..F8FF).
     #[test]
     fn every_chrome_icon_is_in_the_icon_face() {
-        let sources = [
-            include_str!("scene.rs"),
-            include_str!("statusbar_components.rs"),
-            include_str!("caption.rs"),
-            include_str!("cmdbuttons.rs"),
-            include_str!("pane_title.rs"),
-            include_str!("tab_icons.rs"),
-        ];
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        let not_icon = |n: u32| n == 0xE000 || (0xE0A0..=0xE0FF).contains(&n) || (0xF700..=0xF8FF).contains(&n);
         let mut points = std::collections::BTreeSet::new();
-        for src in sources {
+        for f in &files {
+            let src = std::fs::read_to_string(f).unwrap();
             for part in src.split("\\u{").skip(1) {
                 let hex: String = part.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
                 if let Ok(n) = u32::from_str_radix(&hex, 16)
-                    && (0xE100..0xF000).contains(&n) {
+                    && (0xE000..=0xF8FF).contains(&n)
+                    && !not_icon(n) {
                         points.insert(n);
                     }
             }
         }
-        assert!(points.contains(&0xE8BB), "the tab close button is in the scan");
+        // The files round 3 missed are in the scan.
+        for n in [0xE8BB, 0xE765, 0xE72B, 0xE895] {
+            assert!(points.contains(&n), "U+{n:04X} is in the scan");
+        }
         let (device, queue) = device();
         let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
         let family = r.icon_family.clone();
