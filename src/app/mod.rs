@@ -6951,7 +6951,7 @@ impl App {
         let mut tip_rect: Option<Rect> = None;
         let line = self.division_height();
         if line > 0.0 {
-            scene::division_line(&mut frame, ww, line, crate::chrome::division_color(self.resolved_style(), self.focused));
+            scene::division_line(&mut frame, ww, self.bar_strip().unwrap_or(0.0), line, crate::chrome::division_color(self.resolved_style(), self.focused));
         }
         self.draw_find_cursor(&mut frame, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
         if let Some((text, _)) = self.toast.as_ref().filter(|(_, until)| Instant::now() < *until) {

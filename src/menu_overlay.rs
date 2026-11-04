@@ -215,6 +215,11 @@ impl Overlay {
         self.open_popup(items, at);
     }
 
+    /// A choice was made and no frame has handed it out yet.
+    pub fn has_choice(&self) -> bool {
+        self.chosen.is_some()
+    }
+
     /// True once after something changed that the window should draw.
     pub fn take_dirty(&mut self) -> bool {
         std::mem::take(&mut self.dirty)

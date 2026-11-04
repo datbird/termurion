@@ -37,7 +37,7 @@ pub(super) struct BarFrame<'a> {
 impl BarUi {
     /// Something of the bar's is to be drawn: a menu is open or a pop-up waits.
     pub(super) fn busy(&self) -> bool {
-        self.overlay.is_open() || self.pending.is_some()
+        self.overlay.is_open() || self.pending.is_some() || self.overlay.has_choice()
     }
 
     pub(super) fn queue(&mut self, popup: crate::platform::chrome::QueuedPopup) {
@@ -59,7 +59,7 @@ impl BarUi {
             }
         }
         let chosen = self.overlay.paint(&self.ctx, bar);
-        let mut out = self.overlay.take_output()?;
+        let Some(mut out) = self.overlay.take_output() else { return chosen };
         let renderer = self.renderer.get_or_insert_with(|| egui_wgpu::Renderer::new(frame.device, frame.format, egui_wgpu::RendererOptions::default()));
         let jobs = self.ctx.tessellate(std::mem::take(&mut out.shapes), out.pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [frame.size.0, frame.size.1], pixels_per_point: out.pixels_per_point };
@@ -122,5 +122,42 @@ impl App {
     /// Sends a chosen item's id the way a native menu does.
     pub(super) fn bar_choice(&self, id: String) {
         let _ = self.proxy.lock().map(|p| p.send_event(UserEvent::Menu(id)));
+    }
+}
+
+#[cfg(test)]
+#[cfg(not(target_os = "macos"))] // test: muda menus are the main thread's on macOS
+mod tests {
+    use super::*;
+    use muda::{Menu, MenuItem};
+    use winit::event::{DeviceId, ElementState, MouseButton};
+
+    fn mouse(ui: &mut BarUi, e: WindowEvent) {
+        let ctx = ui.ctx.clone();
+        ui.overlay.event(&ctx, &e);
+    }
+
+    #[test]
+    fn a_pop_up_choice_with_no_bar_is_delivered_once() {
+        let menu = Menu::new();
+        menu.append(&MenuItem::with_id("pick", "Pick", true, None)).unwrap();
+        let mut ui = BarUi::default();
+        ui.overlay.set_screen(400.0, 300.0, 1.0);
+        ui.queue(crate::platform::chrome::QueuedPopup { items: menu.items(), at: Some((10.0, 10.0)) });
+        let ctx = ui.ctx.clone();
+        // What `draw` does with the queue, without a GPU.
+        let p = ui.pending.take().unwrap();
+        ui.overlay.open_popup(p.items, egui::pos2(10.0, 10.0));
+        assert_eq!(ui.overlay.paint(&ctx, None), None);
+        let at = ui.overlay.row_rect(0, "Pick").unwrap().center();
+        let id = DeviceId::dummy();
+        mouse(&mut ui, WindowEvent::CursorMoved { device_id: id, position: winit::dpi::PhysicalPosition::new(at.x as f64, at.y as f64) });
+        mouse(&mut ui, WindowEvent::MouseInput { device_id: id, state: ElementState::Pressed, button: MouseButton::Left });
+        mouse(&mut ui, WindowEvent::MouseInput { device_id: id, state: ElementState::Released, button: MouseButton::Left });
+        assert!(!ui.overlay.is_open(), "the choice closed the menu");
+        assert!(ui.busy(), "the frame that delivers the choice must still run");
+        assert_eq!(ui.overlay.paint(&ctx, None).as_deref(), Some("pick"));
+        assert!(!ui.busy());
+        assert_eq!(ui.overlay.paint(&ctx, None), None, "delivered exactly once");
     }
 }

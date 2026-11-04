@@ -3098,9 +3098,9 @@ pub fn dividers(frame: &mut Frame, dividers: &[Divider], color: Rgb) {
 }
 
 /// The line under the title bar (`chrome::division_visible`): across the window's full
-/// width at its top, `height` pixels tall (`chrome::division_height`), above a top status bar.
-pub fn division_line(frame: &mut Frame, width: f32, height: f32, color: Rgb) {
-    let rect = Rect { x: 0.0, y: 0.0, w: width, h: height };
+/// width at `top` (under the in-window menu bar when there is one), `height` pixels tall (`chrome::division_height`), above a top status bar.
+pub fn division_line(frame: &mut Frame, width: f32, top: f32, height: f32, color: Rgb) {
+    let rect = Rect { x: 0.0, y: top, w: width, h: height };
     frame.quads.push(Quad { rect, color: rgba(color, 1.0) });
 }
 
@@ -4987,6 +4987,16 @@ mod broadcast_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_division_line_sits_under_the_menu_bar_when_there_is_one() {
+        let mut f = Frame::default();
+        division_line(&mut f, 100.0, 24.0, 1.0, rgb(1, 2, 3));
+        assert_eq!(f.quads[0].rect.y, 24.0, "directly under a 24 px bar");
+        let mut f = Frame::default();
+        division_line(&mut f, 100.0, 0.0, 1.0, rgb(1, 2, 3));
+        assert_eq!(f.quads[0].rect.y, 0.0, "at the top with no bar");
+    }
+
     /// (quads, rows, digest) of the porthole frame in `doc_lines_draw_as_the_porthole_did`, taken from `porthole` before `doc_lines` was extracted from it (retaken when `TextRow` gained `face`: the digest reads the rows' Debug text, and the 10 quads and 15 rows are unchanged).
     const GOLDEN: (usize, usize, u64) = (10, 15, 10881690239227710009);
 

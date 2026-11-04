@@ -119,13 +119,31 @@ impl Lift {
     }
 }
 
+/// A pop-up position in window pixels: a logical one is in points and grows by the window's scale.
+fn to_pixels(p: muda::dpi::Position, scale: f64) -> (f32, f32) {
+    match p {
+        muda::dpi::Position::Physical(p) => (p.x as f32, p.y as f32),
+        muda::dpi::Position::Logical(p) => ((p.x * scale) as f32, (p.y * scale) as f32),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::to_pixels;
+    use muda::dpi::{LogicalPosition, PhysicalPosition, Position};
+
+    #[test]
+    fn a_logical_pop_up_position_grows_with_the_window_scale() {
+        assert_eq!(to_pixels(Position::Logical(LogicalPosition::new(10.0, 20.0)), 2.0), (20.0, 40.0));
+        assert_eq!(to_pixels(Position::Physical(PhysicalPosition::new(10, 20)), 2.0), (10.0, 20.0), "physical stays");
+    }
+}
+
 /// Queues the menu for the window's next frame, where the overlay draws it (Linux). True: it was
 /// queued; the pick comes back as a menu event, not here. macOS pop-ups are `platform::macos`.
 pub fn popup<M: crate::platform::chrome::PopupMenu + ?Sized>(menu: &M, view: isize, position: Option<muda::dpi::Position>) -> bool {
-    let at = position.map(|p| match p {
-        muda::dpi::Position::Physical(p) => (p.x as f32, p.y as f32),
-        muda::dpi::Position::Logical(p) => (p.x as f32, p.y as f32),
-    });
+    let scale = WAKE.with(|w| w.borrow().get(&view).map(|w| w.scale_factor())).unwrap_or(1.0);
+    let at = position.map(|p| to_pixels(p, scale));
     QUEUED.with(|q| q.borrow_mut().insert(view, QueuedPopup { items: menu.entries(), at }));
     if let Some(w) = WAKE.with(|w| w.borrow().get(&view).cloned()) {
         w.request_redraw();
