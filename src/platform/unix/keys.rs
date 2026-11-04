@@ -81,6 +81,6 @@ mod tests {
     #[test]
     fn unix_hotkeys_unsupported() {
         let e = set_hotkeys(Vec::new(), Vec::new(), std::time::Duration::ZERO, std::time::Duration::ZERO).unwrap_err();
-        assert!(e.contains("System-wide hotkeys is not available"), "{e}");
+        assert!(e.contains("System-wide hotkeys are not available"), "{e}");
     }
 }

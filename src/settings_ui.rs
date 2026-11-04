@@ -3052,12 +3052,14 @@ mod tests {
         let near = |v: &Value| Value::Table(v.as_table().unwrap().iter().map(|(k, x)| (k.clone(), Value::Float(x.as_float().unwrap() + 0.0005))).collect());
         q.set("Foreground Color (Dark)", near(fg.seed_dark.as_ref().unwrap()));
         assert!(profile_is_default(&q, fg, "Foreground Color (Dark)"));
-        // Termurion's new-profile font stands in for Monaco 12.
+        // Termurion's new-profile font stands in for Monaco 12 (it is Monaco 12 itself on macOS).
         let font = crate::schema::find("Normal Font").unwrap();
         let mut f = Profile::new("Default");
         assert!(profile_is_default(&f, font, "Normal Font"));
-        f.set("Normal Font", Value::String("Monaco 12".into()));
+        f.set("Normal Font", Value::String("Courier 12".into()));
         assert!(!profile_is_default(&f, font, "Normal Font"));
+        f.set("Normal Font", Value::String(profile::default_font().into()));
+        assert!(profile_is_default(&f, font, "Normal Font"));
     }
 
     /// iTerm2's `hasDefaultValue` overrides for the profile controls that have one.

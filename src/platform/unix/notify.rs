@@ -53,7 +53,7 @@ mod tests {
     #[test]
     fn unix_notify_unsupported() {
         let e = show_with("t", "b", false).unwrap_err();
-        assert!(e.contains("Notifications is not available"), "{e}");
+        assert!(e.contains("Notifications are not available"), "{e}");
         assert!(show(0, "t", "b").is_err());
         assert!(set_resident(true).is_err());
         assert_eq!(shown_count(), 0);

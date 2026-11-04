@@ -56,6 +56,6 @@ mod tests {
     #[test]
     fn unix_coprocess_start_is_unsupported() {
         let e = Coprocess::start("cat", false, std::path::Path::new("."), Arc::new(|| {})).err().unwrap();
-        assert!(e.contains("Coprocesses is not available"), "{e}");
+        assert!(e.contains("Coprocesses are not available"), "{e}");
     }
 }
