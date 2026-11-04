@@ -780,6 +780,9 @@ pub struct App {
     /// The grid a restored session was saved at: its shell starts at that size (iTerm2 makes a
     /// restored session at its saved rows and columns), so no resize follows its first prompt.
     restore_grid: Option<(u16, u16)>,
+    /// The Termurion window that is not a terminal window (Settings, Password Manager, a chat, the
+    /// Cockpit, a prompt) holding the keyboard now, if one does. Cmd-W closes it (`key_window_close`).
+    key_aux: Option<WindowId>,
     /// The hops the next pane reconnects through (Duplicate Session), moved into the new pane
     /// by `start_pane_as`. Set and cleared around one start, so it is not per-window state.
     start_jumps_override: Option<Vec<crate::ssh_jumps::Reconnection>>,
@@ -2393,6 +2396,7 @@ pub fn run() {
         param_answers: HashMap::new(),
         restoring_session: false,
         restore_grid: None,
+        key_aux: None,
         start_jumps_override: None,
         start_env_override: None,
         start_tab: None,
@@ -3795,6 +3799,11 @@ impl App {
             Some(t) => self.content_area_for(t),
             None => self.window_area(),
         }
+    }
+
+    /// Whether `id` is one of the terminal windows (the current one or a parked one).
+    pub(super) fn is_terminal_window(&self, id: WindowId) -> bool {
+        self.gpu.as_ref().is_some_and(|g| g.window.id() == id) || self.windows.parked().any(|(_, s)| s.gpu.as_ref().is_some_and(|g| g.window.id() == id))
     }
 
     /// The side and the top and bottom margins in pixels (`TerminalMargin`, `TerminalVMargin`,
@@ -7873,6 +7882,11 @@ impl ApplicationHandler<UserEvent> for App {
         if self.quitting {
             return;
         }
+        // Which window holds the keyboard, before any window's own handler takes the event.
+        if let WindowEvent::Focused(f) = &event {
+            let terminal = self.is_terminal_window(id);
+            self.key_aux = key_aux_after(self.key_aux, id, *f, terminal);
+        }
         if self.prompt_event(id, &event) || self.param_prompt_event(id, &event) || self.mark_confirm_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.review_window_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.bookmark_editor_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.autofill_card_event(id, &event) || self.basic_auth_window_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.browser_tip_event(id, &event) || self.web_popover_event(id, &event) || self.web_replay_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) || self.panels_event(event_loop, id, &event) {
             return;
         }
@@ -8249,6 +8263,24 @@ fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHan
 }
 
 /// The surface size to use, or None while the window is minimized (0 wide or high).
+/// The key non-terminal window after a focus change of window `id`: a terminal window taking the
+/// keyboard clears it, another window taking it becomes it, and it losing the keyboard clears it.
+fn key_aux_after<T: PartialEq + Copy>(now: Option<T>, id: T, focused: bool, terminal: bool) -> Option<T> {
+    match (focused, terminal) {
+        (true, true) => None,
+        (true, false) => Some(id),
+        (false, _) => now.filter(|k| *k != id),
+    }
+}
+
+/// The window a menu command closes instead of acting on a terminal: Close (Cmd-W) while a
+/// Termurion window that is not a terminal window has the keyboard closes that window, as in iTerm2
+/// (its Settings, Password Manager and other panels close on Cmd-W). Where Cmd is not a key
+/// (Windows, Linux) the chord never comes from those windows' keyboard, so nothing changes there.
+fn key_window_close<T: Copy>(selector: &str, key_aux: Option<T>, cmd_is_a_key: bool) -> Option<T> {
+    (cmd_is_a_key && selector == "closeCurrentSession:").then_some(key_aux).flatten()
+}
+
 fn usable_size(w: u32, h: u32) -> Option<(u32, u32)> {
     (w > 0 && h > 0).then_some((w, h))
 }
@@ -8590,6 +8622,31 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round 3: Cmd-W while Settings or another panel has the keyboard closes that panel, as in
+    /// iTerm2, never the terminal session behind it (which then let typing land in the panel).
+    #[test]
+    fn cmd_w_closes_the_panel_that_has_the_keyboard() {
+        // Focus moves: a panel taking the keyboard is the key panel; a terminal taking it, or the
+        // panel losing it, clears it; another window losing it changes nothing.
+        assert_eq!(key_aux_after(None::<i32>, 7, true, false), Some(7));
+        assert_eq!(key_aux_after(Some(7), 1, true, true), None);
+        assert_eq!(key_aux_after(Some(7), 7, false, false), None);
+        assert_eq!(key_aux_after(Some(7), 1, false, true), Some(7));
+        // Close goes to the panel on macOS; other commands and other systems are unchanged.
+        assert_eq!(key_window_close("closeCurrentSession:", Some(7), true), Some(7));
+        assert_eq!(key_window_close("closeCurrentSession:", None::<i32>, true), None);
+        assert_eq!(key_window_close("newTab:", Some(7), true), None);
+        assert_eq!(key_window_close("closeCurrentSession:", Some(7), false), None);
+        // The menu command checks it first, and focus is noted before any window handler runs.
+        let menu = include_str!("menu.rs");
+        let run = &menu[menu.find("pub(super) fn run_command(").unwrap()..];
+        let check = run.find("super::key_window_close(&item.selector, self.key_aux").expect("run_command asks key_window_close");
+        assert!(check < run.find("\"closeCurrentSession:\" =>").unwrap(), "before the terminal's Close");
+        let own = include_str!("mod.rs");
+        let ev = &own[own.find("    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {").unwrap()..];
+        assert!(ev.find("key_aux_after(").unwrap() < ev.find("self.prompt_event(id, &event)").unwrap());
+    }
 
     /// A right click in a pane builds its menu and the Linux facade queues it for the window: the
     /// items come out once, with Copy among them.

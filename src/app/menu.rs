@@ -922,6 +922,11 @@ impl App {
             return;
         }
         crate::dlog!("menu command {}", crate::dlog::name(&item.selector));
+        // Cmd-W in Settings or another panel closes that window, never the terminal behind it.
+        if let Some(id) = super::key_window_close(&item.selector, self.key_aux, crate::platform::keys::CMD_IS_A_KEY) {
+            self.key_aux = None;
+            return <App as winit::application::ApplicationHandler<UserEvent>>::window_event(self, event_loop, id, winit::event::WindowEvent::CloseRequested);
+        }
         let label = item.label();
         let window = self.gpu.as_ref().map(|g| g.window.clone());
         if self.paste_command(&item.selector, label) {
