@@ -12,7 +12,7 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, sel, AnyThread, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSEventMask, NSImage, NSMenu, NSStatusBar, NSStatusItem};
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask, NSImage, NSMenu, NSStatusBar, NSStatusItem};
 use objc2_foundation::{NSData, NSNotification, NSNotificationCenter, NSObject, NSSize, NSString};
 
 type Click = Box<dyn Fn(bool) + Send + Sync>;
@@ -162,5 +162,34 @@ mod tests {
         assert!(!got.load(Ordering::SeqCst));
         fire(Some(&handler));
         assert!(got.load(Ordering::SeqCst));
+    }
+}
+
+thread_local! {
+    static DOCK: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// The Dock icon: Regular shows it, Accessory takes it away (closed to the menu bar). Coming
+/// back to Regular does not activate the app, so it is activated here and a window made key.
+/// Only a change does anything, so a modal that is open is left alone. Main thread only.
+pub fn set_dock(on: bool) {
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    // A launch starts Regular: nothing to do until the Dock icon has to go.
+    if DOCK.get().unwrap_or(true) == on {
+        DOCK.set(Some(on));
+        return;
+    }
+    let app = NSApplication::sharedApplication(mtm);
+    let policy = if on { NSApplicationActivationPolicy::Regular } else { NSApplicationActivationPolicy::Accessory };
+    if !app.setActivationPolicy(policy) {
+        return;
+    }
+    DOCK.set(Some(on));
+    if on {
+        app.activateIgnoringOtherApps(true);
+        let windows = app.windows();
+        if let Some(w) = windows.iter().find(|w| w.isVisible() && w.canBecomeKeyWindow()) {
+            w.makeKeyAndOrderFront(None);
+        }
     }
 }

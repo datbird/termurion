@@ -37,6 +37,12 @@ pub fn icon_wanted(tray_13g: bool, resident: bool) -> bool {
     tray_13g || resident
 }
 
+/// Whether the app keeps its Dock icon (macOS: Regular policy). It leaves the Dock when the menu
+/// bar icon is all that is left (resident, no window), and always when hidden from the Dock.
+pub fn dock_icon_wanted(ui_element_now: bool, resident: bool) -> bool {
+    !ui_element_now && !resident
+}
+
 /// `AD:1132-1153`: a click on the icon (or a second bare start) opens a window only when none
 /// is on screen and `OpenUntitledFile` is on.
 pub fn reopen_opens_window(open_untitled: bool, visible_windows: usize) -> bool {
@@ -109,6 +115,14 @@ mod tests {
         assert!(reopen_opens_window(true, 0));
         assert!(!reopen_opens_window(false, 0), "OpenUntitledFile off");
         assert!(!reopen_opens_window(true, 1), "a window is on screen");
+    }
+
+    #[test]
+    fn dock_icon_follows_windows_and_hide_setting() {
+        assert!(!dock_icon_wanted(false, true), "no windows, menu bar icon only: out of the Dock");
+        assert!(dock_icon_wanted(false, false), "a window is open");
+        assert!(!dock_icon_wanted(true, false), "hidden from the Dock stays hidden");
+        assert!(!dock_icon_wanted(true, true));
     }
 
     #[test]

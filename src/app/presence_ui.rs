@@ -125,6 +125,7 @@ impl App {
     /// up. Returns the next retry's due time. Every result is logged to host.log.
     pub(super) fn tray_tick(&mut self, ui_element_now: bool) -> Option<Instant> {
         let want = crate::resident::icon_wanted(presence::tray_wanted(ui_element_now, self.globals.bool(presence::STATUS_BAR_ICON_KEY)), self.resident);
+        crate::platform::notify::set_dock_icon(crate::resident::dock_icon_wanted(ui_element_now, self.resident));
         let now = Instant::now();
         if !presence::tray_attempt_due(want, self.tray_on, self.tray_failures, self.tray_due, now) {
             // Waiting for a retry's time, or nothing to do.

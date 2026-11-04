@@ -20,6 +20,14 @@ pub fn still_shown(at: u64, now: u64) -> bool {
     at == now
 }
 
+/// Shows or hides the Dock icon (macOS only; the other systems have nothing to change).
+pub fn set_dock_icon(on: bool) {
+    #[cfg(target_os = "macos")]
+    super::macos::status_item::set_dock(on);
+    #[cfg(not(target_os = "macos"))]
+    let _ = on;
+}
+
 /// Tells the backend whether Termurion is the active app (macOS shows banners only then).
 pub fn set_active(on: bool) {
     #[cfg(target_os = "macos")]
