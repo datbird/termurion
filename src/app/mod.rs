@@ -7400,6 +7400,10 @@ impl ApplicationHandler<UserEvent> for App {
         if startup_hotkey.is_some() || resident_start {
             attrs = crate::platform::window_style::skip_taskbar(attrs.with_visible(false));
         }
+        // Hidden from the Dock: Accessory before the first window shows, so no icon flashes.
+        if self.globals.bool(crate::presence::UI_ELEMENT_KEY) && !self.globals.bool(crate::presence::REQUIRES_HOTKEYS_KEY) {
+            crate::platform::notify::set_dock_icon(false);
+        }
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {

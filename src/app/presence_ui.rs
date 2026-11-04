@@ -125,7 +125,9 @@ impl App {
     /// up. Returns the next retry's due time. Every result is logged to host.log.
     pub(super) fn tray_tick(&mut self, ui_element_now: bool) -> Option<Instant> {
         let want = crate::resident::icon_wanted(presence::tray_wanted(ui_element_now, self.globals.bool(presence::STATUS_BAR_ICON_KEY)), self.resident);
-        crate::platform::notify::set_dock_icon(crate::resident::dock_icon_wanted(ui_element_now, self.resident));
+        // A panel (Settings, updates) is a window too: it keeps the Dock icon and the menu bar.
+        let panels = crate::egui_host::taskbar_windows().iter().any(|w| w.is_visible() != Some(false));
+        crate::platform::notify::set_dock_icon(crate::resident::dock_icon_wanted(ui_element_now, self.resident, panels));
         let now = Instant::now();
         if !presence::tray_attempt_due(want, self.tray_on, self.tray_failures, self.tray_due, now) {
             // Waiting for a retry's time, or nothing to do.
@@ -311,6 +313,17 @@ mod tests {
         assert_eq!(labels, ["New Window", "Settings", "Bring All Windows to Front", "Buried Sessions", "Check For Updates", "Main Menu", "Quit Termurion"]);
         // muda drops a lone & on macOS (a mnemonic on Windows), so none may be in a label.
         assert!(labels.iter().all(|l| !l.contains('&')));
+    }
+
+    /// The tick hands the Dock decision to the platform (nothing else does).
+    #[test]
+    fn the_tick_sets_the_dock_icon_from_the_rule() {
+        let src = include_str!("presence_ui.rs");
+        let body = src.split("fn tray_tick").nth(1).and_then(|r| r.split("\n    }\n").next()).expect("tray_tick");
+        assert!(body.contains("set_dock_icon(crate::resident::dock_icon_wanted(ui_element_now, self.resident, panels))"));
+        assert!(body.contains("taskbar_windows()"), "panels count as windows");
+        let mk = include_str!("mod.rs");
+        assert!(mk.contains("set_dock_icon(false)"), "hidden from the Dock is Accessory before the first window");
     }
 
     /// Minor 5: tray "Bring All Windows to Front" skips hidden hotkey windows (arrangeInFront does).

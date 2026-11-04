@@ -38,9 +38,10 @@ pub fn icon_wanted(tray_13g: bool, resident: bool) -> bool {
 }
 
 /// Whether the app keeps its Dock icon (macOS: Regular policy). It leaves the Dock when the menu
-/// bar icon is all that is left (resident, no window), and always when hidden from the Dock.
-pub fn dock_icon_wanted(ui_element_now: bool, resident: bool) -> bool {
-    !ui_element_now && !resident
+/// bar icon is all that is left (no terminal window, no panel such as Settings), and always when
+/// hidden from the Dock.
+pub fn dock_icon_wanted(ui_element_now: bool, resident: bool, panels_open: bool) -> bool {
+    !ui_element_now && (!resident || panels_open)
 }
 
 /// `AD:1132-1153`: a click on the icon (or a second bare start) opens a window only when none
@@ -119,10 +120,12 @@ mod tests {
 
     #[test]
     fn dock_icon_follows_windows_and_hide_setting() {
-        assert!(!dock_icon_wanted(false, true), "no windows, menu bar icon only: out of the Dock");
-        assert!(dock_icon_wanted(false, false), "a window is open");
-        assert!(!dock_icon_wanted(true, false), "hidden from the Dock stays hidden");
-        assert!(!dock_icon_wanted(true, true));
+        assert!(!dock_icon_wanted(false, true, false), "no windows, menu bar icon only: out of the Dock");
+        assert!(dock_icon_wanted(false, false, false), "a window is open");
+        assert!(dock_icon_wanted(false, true, true), "a panel (Settings) is open with no terminal");
+        assert!(!dock_icon_wanted(true, false, false), "hidden from the Dock stays hidden");
+        assert!(!dock_icon_wanted(true, true, true));
+        assert!(!dock_icon_wanted(true, false, true));
     }
 
     #[test]
