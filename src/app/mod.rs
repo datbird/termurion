@@ -4995,6 +4995,14 @@ impl App {
     /// Takes the renderer's fonts from the default profile. A font that is not
     /// installed is named in the banner.
     fn apply_fonts(&mut self) {
+        // A profile saved with another OS's default font moves to this OS's own, quietly, and
+        // the fix is written back so it sticks.
+        if let Some(g) = self.gpu.as_ref()
+            && self.store.migrate_fonts(crate::platform::OS_NAME, &|f| g.renderer.has_family(f), profile::default_font())
+            && let Err(e) = self.save_store()
+        {
+            self.banners.set("save", format!("Could not save settings: {e}"));
+        }
         let p = self.store.default_profile().clone();
         let mut normal = p.font("Normal Font");
         let mut alt = p.bool("Use Non-ASCII Font").then(|| p.font("Non Ascii Font").family);
@@ -5031,7 +5039,7 @@ impl App {
         // setting does not affect existing windows").
         g.renderer.set_toolbelt_family(&self.globals.string("ToolbeltFont"));
         g.renderer.set_toolbelt_size(self.globals.get("ToolbeltFontSize").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(0.0) as f32);
-        let missing: Vec<String> = std::iter::once(normal.family).chain(alt).filter(|f| !g.renderer.has_family(f)).collect();
+        let missing = profile::banner_fonts(std::iter::once(normal.family).chain(alt).collect(), profile::default_font(), &|f| g.renderer.has_family(f));
         if missing.is_empty() {
             self.banners.clear("font");
         } else {

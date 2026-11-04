@@ -142,6 +142,22 @@ impl Store {
         std::fs::rename(&tmp, &self.path).map_err(|e| format!("{}: {e}", self.path.display()))
     }
 
+    /// Moves every saved and session profile off another OS's shipped default font (see
+    /// `profile::migrated_font`). True when any font changed; the caller saves.
+    pub fn migrate_fonts(&mut self, os: &str, installed: &dyn Fn(&str) -> bool, default: &str) -> bool {
+        let mut changed = false;
+        for p in self.profiles.iter_mut().chain(self.sessions.iter_mut().map(|s| &mut s.profile)) {
+            for key in crate::profile::FONT_KEYS {
+                let new = p.values.get(key).and_then(|v| v.as_str()).and_then(|v| crate::profile::migrated_font(os, v, installed, default));
+                if let Some(n) = new {
+                    p.set(key, Value::String(n));
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
     pub fn default_profile(&self) -> &Profile {
         self.get(&self.default_guid).unwrap_or(&self.profiles[0])
     }
@@ -305,6 +321,83 @@ mod tests {
         match saved_value { Some(v) => st.get_mut(&copy).unwrap().set("Columns", v), None => { st.get_mut(&copy).unwrap().values.remove("Columns"); } }
         st.refresh_overridden(&copy);
         assert!(st.sessions[0].overridden.is_empty(), "{:?}", st.sessions[0].overridden);
+    }
+
+    /// The owner's file: the first macOS beta saved the Windows font into two profiles.
+    fn windows_font_file(tag: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("termurion-store-font-{tag}-{}.toml", std::process::id()));
+        let text = r#"default = "A"
+[[profile]]
+Guid = "A"
+Name = "One"
+"Normal Font" = "Cascadia Mono 12"
+"Non Ascii Font" = "Cascadia Mono 12"
+[[profile]]
+Guid = "B"
+Name = "Two"
+"Normal Font" = "Cascadia Mono 14"
+"Non Ascii Font" = "Fira Code 12"
+"#;
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    #[test]
+    fn another_os_default_font_moves_to_this_os_and_the_file_is_rewritten() {
+        let path = windows_font_file("mac");
+        let mut st = Store::load(&path).unwrap();
+        assert!(st.migrate_fonts("macOS", &|_| false, "Monaco 12"));
+        assert_eq!(st.profiles[0].font("Normal Font").family, "Monaco");
+        assert_eq!(st.profiles[0].font("Non Ascii Font").family, "Monaco");
+        assert_eq!(st.profiles[1].font("Normal Font").family, "Monaco");
+        assert_eq!(st.profiles[1].font("Normal Font").size_pt, 14.0, "the saved size stays");
+        assert_eq!(st.profiles[1].font("Non Ascii Font").family, "Fira Code", "a font the user chose stays");
+        st.save().unwrap();
+        let back = Store::load(&path).unwrap();
+        assert_eq!(back.profiles[0].font("Normal Font").family, "Monaco");
+        assert_eq!(back.profiles[1].font("Normal Font").family, "Monaco");
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("Cascadia"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn menlo_stands_in_when_monaco_is_the_default_missing() {
+        let path = windows_font_file("menlo");
+        let mut st = Store::load(&path).unwrap();
+        assert!(st.migrate_fonts("macOS", &|_| false, "Menlo 12"));
+        assert_eq!(st.profiles[0].string("Normal Font"), "Menlo 12");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn windows_and_an_installed_cascadia_keep_their_font() {
+        let path = windows_font_file("win");
+        let mut st = Store::load(&path).unwrap();
+        assert!(!st.migrate_fonts("Windows", &|_| false, "Cascadia Mono 12"));
+        assert!(!st.migrate_fonts("macOS", &|f| f == "Cascadia Mono", "Monaco 12"), "an installed font stays");
+        assert_eq!(st.profiles[0].string("Normal Font"), "Cascadia Mono 12");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_session_copy_of_the_state_file_moves_too() {
+        let mut t = toml::Table::new();
+        t.insert("Normal Font".into(), toml::Value::String("Cascadia Mono 13".into()));
+        assert!(crate::profile::migrate_font_table(&mut t, "macOS", &|_| false, "Monaco 12"));
+        assert_eq!(t["Normal Font"].as_str(), Some("Monaco 13"));
+        let mut t = toml::Table::new();
+        t.insert("Normal Font".into(), toml::Value::String("Cascadia Mono 13".into()));
+        assert!(!crate::profile::migrate_font_table(&mut t, "Windows", &|_| false, "Cascadia Mono 12"));
+    }
+
+    #[test]
+    fn the_banner_skips_the_shipped_default_but_names_a_missing_user_font() {
+        let none = |_: &str| false;
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(crate::profile::banner_fonts(names(&["Monaco", "Monaco"]), "Monaco 12", &none).is_empty());
+        assert!(crate::profile::banner_fonts(names(&["Menlo"]), "Menlo 12", &none).is_empty());
+        assert_eq!(crate::profile::banner_fonts(names(&["Fira Code", "Monaco"]), "Monaco 12", &none), names(&["Fira Code"]));
+        assert!(crate::profile::banner_fonts(names(&["Fira Code"]), "Monaco 12", &|f| f == "Fira Code").is_empty());
     }
 
     #[test]

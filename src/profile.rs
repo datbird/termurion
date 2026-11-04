@@ -27,6 +27,44 @@ pub fn default_font() -> &'static str {
     default_font_for(crate::platform::OS_NAME, std::path::Path::new("/System/Library/Fonts/Monaco.ttf").exists())
 }
 
+/// The keys that hold a font as "<family> <size>".
+pub const FONT_KEYS: [&str; 2] = ["Normal Font", "Non Ascii Font"];
+
+/// A saved font value that names the Windows shipped default on another OS, with that font not
+/// installed: the value with this OS's default family and the same size. None when the value
+/// stays (Windows itself, any other family, or Cascadia installed).
+pub fn migrated_font(os: &str, value: &str, installed: &dyn Fn(&str) -> bool, default: &str) -> Option<String> {
+    if os == "Windows" {
+        return None;
+    }
+    let f = parse_font(value);
+    let cascadia = parse_font(WINDOWS_FONT).family;
+    if !f.family.eq_ignore_ascii_case(&cascadia) || installed(&f.family) {
+        return None;
+    }
+    Some(format!("{} {}", parse_font(default).family, f.size_pt))
+}
+
+/// `migrated_font` over the font keys of a value table; true when one changed.
+pub fn migrate_font_table(table: &mut toml::Table, os: &str, installed: &dyn Fn(&str) -> bool, default: &str) -> bool {
+    let mut changed = false;
+    for key in FONT_KEYS {
+        let new = table.get(key).and_then(|v| v.as_str()).and_then(|v| migrated_font(os, v, installed, default));
+        if let Some(n) = new {
+            table.insert(key.to_string(), Value::String(n));
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// The fonts a banner may name: the ones that are missing, never the font Termurion ships as
+/// this OS's default (that one falls back to a monospace face without a word).
+pub fn banner_fonts(families: Vec<String>, default: &str, installed: &dyn Fn(&str) -> bool) -> Vec<String> {
+    let shipped = parse_font(default).family;
+    families.into_iter().filter(|f| !installed(f) && !f.eq_ignore_ascii_case(&shipped)).collect()
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Profile {
     pub values: BTreeMap<String, Value>,
