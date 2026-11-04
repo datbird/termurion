@@ -179,7 +179,7 @@ pub struct Unsupported {
 
 impl fmt::Display for Unsupported {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} is not available on {} yet", self.feature, OS_NAME)
+        write!(f, "{} {} not available on {} yet", self.feature, if self.feature.ends_with('s') { "are" } else { "is" }, OS_NAME)
     }
 }
 
@@ -204,7 +204,12 @@ mod tests {
     fn unsupported_names_feature_and_os() {
         assert_eq!(
             Unsupported { feature: "Notifications" }.to_string(),
-            format!("Notifications is not available on {} yet", OS_NAME)
+            format!("Notifications are not available on {} yet", OS_NAME)
+        );
+        assert_eq!(Unsupported { feature: "Printing" }.to_string(), format!("Printing is not available on {} yet", OS_NAME));
+        assert_eq!(
+            Unsupported { feature: "The command line utilities" }.to_string(),
+            format!("The command line utilities are not available on {} yet", OS_NAME)
         );
     }
 

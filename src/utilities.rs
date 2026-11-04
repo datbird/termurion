@@ -78,11 +78,41 @@ pub fn refresh_banner(failed: &[String]) -> Option<String> {
 
 pub use crate::platform::utilities::ensure;
 
+/// What a start does about the folder: its path and the banner to show, if any. A system with no
+/// utilities folder gets neither (a feature this OS lacks is reported only when someone uses it).
+pub fn at_launch(exe_dir: &std::path::Path) -> (Option<PathBuf>, Option<String>) {
+    if !crate::platform::utilities::HAS_FOLDER {
+        return (None, None);
+    }
+    match ensure(exe_dir) {
+        Ok(done) => {
+            let entry = path_entry(&done.folder.to_string_lossy());
+            let banner = if let Some(text) = refresh_banner(&done.failed) {
+                crate::host_base::log(&format!("termurion: {text}"));
+                Some(text)
+            } else if entry.is_none() {
+                Some(format!("The utilities folder {} has a \";\" in its path, so it is not put on PATH.", done.folder.display()))
+            } else {
+                None
+            };
+            (Some(done.folder), banner)
+        }
+        Err(e) => (None, Some(format!("The utilities folder could not be made: {e}"))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[cfg(windows)]
     use std::path::Path;
+
+    /// Item (c): the macOS launch banner "The utilities folder could not be made".
+    #[cfg(unix)]
+    #[test]
+    fn a_launch_without_a_utilities_folder_raises_no_banner() {
+        assert_eq!(at_launch(std::path::Path::new("/nonexistent")), (None, None));
+    }
 
     #[test]
     fn path_follows_iterm2() {

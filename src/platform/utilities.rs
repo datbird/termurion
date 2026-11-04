@@ -14,3 +14,7 @@ use super::windows::utilities as imp;
 pub fn ensure(exe_dir: &Path) -> Result<Ensured, String> {
     imp::ensure(exe_dir)
 }
+
+/// Whether this OS keeps a utilities folder beside the program. Unix has none, so a start there
+/// neither makes one nor says anything about it.
+pub const HAS_FOLDER: bool = cfg!(windows);

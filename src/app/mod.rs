@@ -2108,22 +2108,10 @@ pub fn run() {
         }
         Err(e) => return message_box(&e),
     };
-    let utilities = match crate::utilities::ensure(&exe_dir) {
-        Ok(done) => {
-            let entry = crate::utilities::path_entry(&done.folder.to_string_lossy());
-            if let Some(text) = crate::utilities::refresh_banner(&done.failed) {
-                crate::host_base::log(&format!("termurion: {text}"));
-                banners.set("utilities", text);
-            } else if entry.is_none() {
-                banners.set("utilities", format!("The utilities folder {} has a \";\" in its path, so it is not put on PATH.", done.folder.display()));
-            }
-            Some(done.folder)
-        }
-        Err(e) => {
-            banners.set("utilities", format!("The utilities folder could not be made: {e}"));
-            None
-        }
-    };
+    let (utilities, utilities_banner) = crate::utilities::at_launch(&exe_dir);
+    if let Some(text) = utilities_banner {
+        banners.set("utilities", text);
+    }
 
     // An import staged by the last run is applied to the files before anything reads them.
     let restored_scripts = {
