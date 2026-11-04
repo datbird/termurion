@@ -104,7 +104,8 @@ impl App {
         for line in BANNER {
             p.own_mut().print_message(line);
         }
-        let client = (p.own().term().columns() as u32, p.own().term().screen_lines() as u32);
+        let own = (p.own().term().columns() as u32, p.own().term().screen_lines() as u32);
+        let client = self.tmux_attach_size(pane, own);
         let mut gw = Gateway::new(newline);
         gw.tolerate_unrecognized = self.globals.bool("TolerateUnrecognizedTmuxCommands");
         let mut ctl = crate::tmux_controller::Controller::new(tmux_handshake::FIRST_FREE_TAG);
@@ -112,6 +113,23 @@ impl App {
         ctl.prefs = self.tmux_prefs(pane, client.1);
         crate::rlog!("tmux gateway started: pane {}", pane);
         self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client: name, ctl, selected: None, pause_tick: None, auto_buried: false, bury_pending: false, window_titles: HashMap::new(), window_names: HashMap::new(), tab_overrides: HashMap::new(), tab_sizes: HashMap::new(), panes: HashMap::new() });
+    }
+
+    /// The size the attach asks tmux for: a new tmux tab's (`tmux_windows::attach_size`). A tab in
+    /// the gateway's window is the window's tab area in the tmux profile's cells; a gateway in a
+    /// window that is not current keeps its own grid for that.
+    fn tmux_attach_size(&mut self, gw: PaneId, own: (u32, u32)) -> (u32, u32) {
+        let guid = self.tmux_profile_guid(gw);
+        let p = self.profile(Some(&guid));
+        let profile = (p.int("Columns").clamp(0, 9999) as u32, p.int("Rows").clamp(0, 9999) as u32);
+        let tab = if self.tabs.iter().any(|t| t.layout.panes().contains(&gw)) {
+            let cell = self.profile_cell(&p);
+            let (c, r) = self.grid_size_in(self.content_area(), cell, self.pane_room_for(gw, &p));
+            (u32::from(c), u32::from(r))
+        } else {
+            own
+        };
+        crate::tmux_windows::attach_size(self.globals.bool("TmuxUsesDedicatedProfile"), crate::tmux_windows::OpenIn::from_pref(self.globals.int("OpenTmuxWindowsIn")), profile, tab)
     }
 
     fn tmux_print(&mut self, pane: PaneId, text: &str) {

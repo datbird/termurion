@@ -191,6 +191,14 @@ pub enum OpenIn {
     TabsInAttachingWindow,
 }
 
+/// The client size an attach sends (iTerm2's tmuxClientSize, `PTYTab sessionTmuxSizeWithProfile`):
+/// the tmux profile's Columns and Rows when tmux uses its own profile and windows do not open as
+/// tabs of the attaching window, else the size of a tab in the attaching window (`tab`).
+pub fn attach_size(dedicated: bool, open_in: OpenIn, profile: (u32, u32), tab: (u32, u32)) -> (u32, u32) {
+    let (w, h) = if dedicated && open_in != OpenIn::TabsInAttachingWindow { profile } else { tab };
+    (w.max(2), h.max(2))
+}
+
 impl OpenIn {
     pub fn from_pref(n: i64) -> OpenIn {
         match n {
@@ -336,6 +344,24 @@ pub fn capture_list(pane: u32, max_history: u32, version: Option<f64>, pause_mod
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round 6 (q): the size an attach asks tmux for is the size a new tmux tab will have
+    /// (iTerm2's sessionTmuxSizeWithProfile), never the gateway pane's grid.
+    #[test]
+    fn attach_size_is_the_new_tabs_size() {
+        // The "tmux" profile in its own windows or tabs: the profile's Columns and Rows.
+        assert_eq!(attach_size(true, OpenIn::NativeWindows, (80, 25), (122, 23)), (80, 25));
+        assert_eq!(attach_size(true, OpenIn::TabsInNewWindow, (80, 25), (39, 24)), (80, 25));
+        // Tabs in the attaching window, or the gateway's own profile: that window's tab size.
+        assert_eq!(attach_size(true, OpenIn::TabsInAttachingWindow, (80, 25), (122, 23)), (122, 23));
+        assert_eq!(attach_size(false, OpenIn::NativeWindows, (80, 25), (122, 23)), (122, 23));
+        // At least 2x2, as iTerm2's openWindowsOfSize.
+        assert_eq!(attach_size(true, OpenIn::NativeWindows, (0, 1), (9, 9)), (2, 2));
+        // The gateway takes it, not its pane's grid.
+        let ui = include_str!("app/tmux_ui.rs");
+        let enter = &ui[ui.find("fn tmux_enter(").unwrap()..ui.find("fn tmux_attach_size(").unwrap()];
+        assert!(enter.contains("let client = self.tmux_attach_size(pane, own);") && enter.contains("ctl.client = client;"));
+    }
 
     #[test]
     fn open_list_follows_iterm2() {
