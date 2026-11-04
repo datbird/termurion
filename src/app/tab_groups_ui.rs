@@ -680,10 +680,33 @@ impl App {
     /// this tab beside it (`tab_beside`), and Cancel opens nothing.
     fn new_tab_beside(&mut self, at: usize) {
         let Some(beside) = self.tabs.get(at).map(|t| t.id) else { return };
-        if self.tmux_new_beside(false, true, Some(beside)).is_some() {
+        if self.tmux_new_beside(false, true, beside).is_some() {
             return;
         }
         self.tab_beside(at);
+    }
+
+    /// New Tab's local tab (`AD newTabAtIndex:`): the default profile's tab at the end, joining
+    /// the group of the tab at `from` when it lands right after it.
+    pub(super) fn new_tab_local(&mut self, from: usize) {
+        let before = self.tabs.len();
+        let group = self.tabs.get(from).and_then(|t| t.group.as_ref()).map(|g| g.id.clone());
+        self.new_tab(None);
+        if self.tabs.len() > before {
+            self.new_tab_joins_group(self.tabs.len() - 1, from, group);
+        }
+    }
+
+    /// New Tab's alternate local tab: the default profile's tab just after the tab at `from`,
+    /// selected, joining its group as New Tab would.
+    pub(super) fn new_tab_after(&mut self, from: usize) {
+        let before = self.tabs.len();
+        let group = self.tabs.get(from).and_then(|t| t.group.as_ref()).map(|g| g.id.clone());
+        self.new_tab(None);
+        if let Some(at) = move_new_tab(&mut self.tabs, before, from) {
+            self.active = at;
+            self.new_tab_joins_group(at, from, group);
+        }
     }
 
     /// New Tab to the Right's local tab: the default profile's tab just after the tab at

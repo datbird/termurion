@@ -53,6 +53,8 @@ impl App {
     pub(super) fn save_state_for_quit(&mut self) {
         self.save_state(true);
         self.state_frozen = true;
+        // Then tmux lets go, as iTerm2's quit does.
+        self.tmux_detach_for_quit();
     }
 
     /// Whether this Quit leaves the shells running in the host for the next launch.
@@ -403,6 +405,20 @@ fn restore_date() -> String {
 mod tests {
     use super::*;
     use crate::arrangement::{ADOPT_REF_KEY, SESSION_REF_KEY};
+
+    /// Quit detaches every tmux gateway once the state is saved, whether the jobs are kept or
+    /// not (`iTermApplicationWillTerminate`, `PTYSession tmuxDetach`).
+    #[test]
+    fn quit_detaches_tmux() {
+        let src = include_str!("restore_ui.rs").split("#[cfg(test)]").next().unwrap();
+        let from = src.find("pub(super) fn save_state_for_quit(").unwrap();
+        let quit = &src[from..from + src[from..].find("\n    }\n").unwrap()];
+        assert!(quit.find("self.state_frozen = true;").unwrap() < quit.find("self.tmux_detach_for_quit();").expect("quit detaches tmux"));
+        let ui = include_str!("tmux_tabs_ui.rs");
+        let from = ui.find("pub(super) fn tmux_detach_for_quit(").expect("tmux_detach_for_quit");
+        let detach = &ui[from..from + ui[from..].find("\n    }\n").unwrap()];
+        assert!(detach.contains("self.tmux_print(gw, \"Detaching...\")") && detach.contains("t.gw.detach();") && detach.contains("self.tmux_flush(gw);"), "{detach}");
+    }
 
     #[test]
     fn a_launch_read_makes_saved_references_adoptable() {

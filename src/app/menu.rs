@@ -9,6 +9,7 @@ use muda::{CheckMenuItem, Icon, IconMenuItem, IsMenuItem, Menu, MenuItem, Predef
 use winit::event_loop::ActiveEventLoop;
 
 use super::*;
+use super::tmux_tabs_ui::LocalTab;
 use crate::commands;
 use crate::layout::{Dir, visible_rects};
 use crate::marks::TOGGLES;
@@ -1075,12 +1076,7 @@ impl App {
             "newSession:" => {
                 // From a tmux window iTerm2 asks what kind of tab (`AD newTabAtIndex:didMakeSession:`).
                 if self.tmux_new(false, true).is_none() {
-                    let (before, active) = (self.tabs.len(), self.active);
-                    let group = self.tabs.get(active).and_then(|t| t.group.as_ref()).map(|g| g.id.clone());
-                    self.new_tab(None);
-                    if self.tabs.len() > before {
-                        self.new_tab_joins_group(self.tabs.len() - 1, active, group);
-                    }
+                    self.new_tab_local(self.active);
                 }
             }
             "newWindow:" => {
@@ -1127,27 +1123,25 @@ impl App {
                 self.tmux_new(false, false);
             }
             "newSessionAlternate:" => {
-                // The same question; Use Default Profile opens beside the current tab.
-                let asked = self.tabs.get(self.active).map(|t| t.id).is_some_and(|b| self.tmux_new_beside(false, true, Some(b)).is_some());
-                if !asked {
-                    let (before, active) = (self.tabs.len(), self.active);
-                    let group = self.tabs.get(active).and_then(|t| t.group.as_ref()).map(|g| g.id.clone());
-                    self.new_tab(None);
-                    if let Some(at) = super::move_new_tab(&mut self.tabs, before, active) {
-                        self.active = at;
-                        self.new_tab_joins_group(at, active, group);
-                    }
+                // The same question; Use Default Profile opens where this would.
+                if self.tmux_new_as(false, true, LocalTab::After).is_none() {
+                    self.new_tab_after(self.active);
                 }
             }
+            // From a tmux session both make a tmux window or tab, no question (`IC:332-343`).
             "newWindowWithSameProfile:" => {
-                let g = self.focused_guid();
-                self.new_window(event_loop, g.as_deref());
+                if self.tmux_new(true, false).is_none() {
+                    let g = self.focused_guid();
+                    self.new_window(event_loop, g.as_deref());
+                }
             }
             "duplicateTab:" => self.duplicate_tab(self.active),
             "duplicateSession:" => self.duplicate_session(),
             "newSessionWithSameProfile:" => {
-                let g = self.focused_guid();
-                self.new_tab(g.as_deref());
+                if self.tmux_new(false, false).is_none() {
+                    let g = self.focused_guid();
+                    self.new_tab(g.as_deref());
+                }
             }
             "splitVertically:" => self.split_current(Axis::Row),
             "splitHorizontally:" => self.split_current(Axis::Column),
@@ -1902,13 +1896,21 @@ mod tests {
     /// New Tab (Cmd-T, Ctrl+Shift+T) from a tmux window asks what kind of tab, as iTerm2's
     /// does by default (`AD newTabAtIndex:didMakeSession:`, `possiblyTmuxValueForWindow:`);
     /// its alternate goes the same way.
+    /// New Tab and New Window with Same Profile from a tmux session make a tmux tab or window,
+    /// with no question (`iTermController.m:332-343`).
+    #[test]
+    fn same_profile_from_a_tmux_window_makes_tmux_ones() {
+        assert!(arm("newSessionWithSameProfile:").contains("if self.tmux_new(false, false).is_none() {"), "{}", arm("newSessionWithSameProfile:"));
+        assert!(arm("newWindowWithSameProfile:").contains("if self.tmux_new(true, false).is_none() {"), "{}", arm("newWindowWithSameProfile:"));
+    }
+
     #[test]
     fn new_tab_in_a_tmux_window_asks_what_kind() {
         use crate::menus::{Chord, ChordKey::Char};
         let chord = Chord { key: Char('t'), cmd: true, alt: false, shift: false, ctrl: false };
         assert_eq!(crate::commands::command_for_chord(&chord).unwrap().selector, "newSession:");
         assert!(arm("newSession:").contains("if self.tmux_new(false, true).is_none() {"), "{}", arm("newSession:"));
-        assert!(arm("newSessionAlternate:").contains("self.tmux_new_beside(false, true, Some(b)).is_some());\n                if !asked {"), "{}", arm("newSessionAlternate:"));
+        assert!(arm("newSessionAlternate:").contains("if self.tmux_new_as(false, true, LocalTab::After).is_none() {"), "{}", arm("newSessionAlternate:"));
     }
 
     /// Round 6c: a confirmed quit ends the process even when the event loop does not return,

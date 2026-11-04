@@ -133,7 +133,7 @@ impl App {
         crate::tmux_windows::attach_size(self.globals.bool("TmuxUsesDedicatedProfile"), crate::tmux_windows::OpenIn::from_pref(self.globals.int("OpenTmuxWindowsIn")), profile, tab)
     }
 
-    fn tmux_print(&mut self, pane: PaneId, text: &str) {
+    pub(super) fn tmux_print(&mut self, pane: PaneId, text: &str) {
         if let Some(p) = self.panes.get_mut(&pane) {
             p.own_mut().print_message(text);
         }

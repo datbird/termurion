@@ -3660,7 +3660,7 @@ impl App {
             // iTerm2's New Tab (`PT tabViewDoubleClickTabBar:`), a tmux tab when tmux makes it.
             Release::NewTab => {
                 if self.tmux_new(false, true).is_none() {
-                    self.new_tab(None);
+                    self.new_tab_local(self.active);
                 }
             }
             _ => {}
@@ -5647,7 +5647,7 @@ impl App {
         match action {
             Action::NewTab => {
                 if self.tmux_new(false, true).is_none() {
-                    self.new_tab(None);
+                    self.new_tab_local(self.active);
                 }
             }
             Action::ClosePane => {
