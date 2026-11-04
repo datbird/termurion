@@ -583,6 +583,12 @@ pub fn hotkey_guid(window: &Value) -> Option<String> {
     is.then(|| window.get(HOTKEY_GUID_KEY).and_then(|v| v.as_str()).map(str::to_string)).flatten()
 }
 
+/// The grid a session was saved at (`Columns`, `Rows`).
+pub fn saved_grid(session: &Value) -> Option<(usize, usize)> {
+    let n = |k: &str| session.get(k).and_then(|v| v.as_integer()).filter(|i| (1..10_000).contains(i)).map(|i| i as usize);
+    Some((n("Columns")?, n("Rows")?))
+}
+
 pub fn saved_cursor(session: &Value) -> Option<(usize, usize)> {
     let c = session.get(CURSOR_KEY)?;
     let n = |k: &str| c.get(k).and_then(|v| v.as_integer()).filter(|i| (0..100_000).contains(i)).map(|i| i as usize);

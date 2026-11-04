@@ -580,6 +580,22 @@ impl Screen {
 
     /// Session restoration's contents (SGR-safe styled text) and the optional banner
     /// (text, (background gray, text gray)): real cells, a full-width bar on its own line.
+    /// `feed_restored` for text saved at `saved` (columns, rows): the grid takes that size while
+    /// the text goes in, so the rows wrap as they did and the saved cursor row names the same row,
+    /// then it goes back to its own size (reflow keeps every line). Fed at another size, the
+    /// cursor lands rows above the end and the banner writes over the last lines.
+    pub fn feed_restored_sized(&mut self, text: &str, cursor: Option<(usize, usize)>, banner: Option<(&str, (u8, u8))>, saved: Option<(usize, usize)>) {
+        let own = (self.term.columns(), self.term.screen_lines());
+        let saved = saved.filter(|&(c, r)| (2..=10_000).contains(&c) && (1..=10_000).contains(&r) && (c, r) != own);
+        if let Some((c, r)) = saved {
+            self.resize(c, r);
+        }
+        self.feed_restored(text, cursor, banner);
+        if saved.is_some() {
+            self.resize(own.0, own.1);
+        }
+    }
+
     pub fn feed_restored(&mut self, text: &str, cursor: Option<(usize, usize)>, banner: Option<(&str, (u8, u8))>) {
         let mut bytes = crate::restore_state::sgr_safe(text).replace("\r\n", "\n").replace('\n', "\r\n");
         bytes.push_str("\x1b[0m");
@@ -1446,6 +1462,44 @@ mod tests {
         s.feed(b"\x1b[?1049h\x1b[H");
         s.feed(b"one\r\ntwo\r\nexited\r\n");
         assert_eq!(alerts(&mut s), 1, "the alternate screen's third row is checked");
+    }
+
+    /// Round 2 (l): a pane saved at its own size (a split, not 80x25) and restored the way the
+    /// app does it (made at the default size, laid out at another size, fed, then sized again as
+    /// the window settles) keeps every line, the last one too, through two restores.
+    #[test]
+    fn a_restored_pane_keeps_every_line_through_two_restores() {
+        use alacritty_terminal::index::{Column, Line};
+        let lines = |s: &Screen| -> Vec<String> {
+            let g = s.term().grid();
+            let top = -(g.history_size() as i32);
+            (top..g.screen_lines() as i32).map(|l| (0..g.columns()).map(|c| g[Line(l)][Column(c)].c).collect::<String>().trim_end().to_string()).filter(|t| !t.is_empty()).collect()
+        };
+        let mut s = Screen::with_scrollback(39, 22, 1000);
+        for i in 1..=60 {
+            s.feed(format!("line {i}\r\n").as_bytes());
+        }
+        s.feed(b"MARK-RIGHT\r\n$ ");
+        let saved = |s: &Screen| (crate::styled_copy::sgr_restorable(s), (s.term().columns(), s.term().screen_lines()));
+        let restore = |((text, at), size): ((String, (usize, usize)), (usize, usize))| {
+            let mut r = Screen::with_scrollback(80, 25, 1000);
+            r.resize(50, 27);
+            r.feed_restored_sized(&text, Some(at), Some(("Session Contents Restored", (38, 102))), Some(size));
+            for (c, rows) in [(39, 24), (39, 22), (39, 24)] {
+                r.resize(c, rows);
+            }
+            r
+        };
+        let first = restore(saved(&s));
+        let want: Vec<String> = (1..=60).map(|i| format!("line {i}")).chain(["MARK-RIGHT".to_string()]).collect();
+        let got = lines(&first);
+        let at = got.iter().position(|l| l == "line 1").unwrap_or_else(|| panic!("line 1 is gone: {got:?}"));
+        assert_eq!(got.get(at..at + want.len()), Some(&want[..]), "first restore: {got:?}");
+        let second = restore(saved(&first));
+        let got = lines(&second);
+        let at = got.iter().position(|l| l == "line 1").unwrap_or_else(|| panic!("line 1 is gone: {got:?}"));
+        assert_eq!(got.get(at..at + want.len()), Some(&want[..]), "second restore: {got:?}");
+        assert!(got.iter().filter(|l| l.starts_with("Session Contents Restored")).count() == 2, "{got:?}");
     }
 
     #[test]

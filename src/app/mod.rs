@@ -777,6 +777,9 @@ pub struct App {
     param_answers: HashMap<PaneId, Vec<(String, String)>>,
     /// A session is being rebuilt from an arrangement: it never prompts.
     restoring_session: bool,
+    /// The grid a restored session was saved at: its shell starts at that size (iTerm2 makes a
+    /// restored session at its saved rows and columns), so no resize follows its first prompt.
+    restore_grid: Option<(u16, u16)>,
     /// The hops the next pane reconnects through (Duplicate Session), moved into the new pane
     /// by `start_pane_as`. Set and cleared around one start, so it is not per-window state.
     start_jumps_override: Option<Vec<crate::ssh_jumps::Reconnection>>,
@@ -2389,6 +2392,7 @@ pub fn run() {
         param_profile: None,
         param_answers: HashMap::new(),
         restoring_session: false,
+        restore_grid: None,
         start_jumps_override: None,
         start_env_override: None,
         start_tab: None,
@@ -4411,7 +4415,7 @@ impl App {
         // The new pane's grid comes from its own profile's face, measured now, less its room.
         let p = self.profile(guid);
         let cell = self.profile_cell(&p);
-        let (cols, rows) = self.grid_size_in(rect, cell, self.pane_room_for(id, &p));
+        let (cols, rows) = self.restore_grid.take().unwrap_or_else(|| self.grid_size_in(rect, cell, self.pane_room_for(id, &p)));
         // A console handed over by Windows is the pane; no shell is started (m13v1 Task 5).
         if let Some(h) = self.start_handoff.take() {
             return self.pane_from_handoff(id, p, h, cols, rows);
@@ -5076,6 +5080,25 @@ impl App {
             h = h.min(work.h - outer.height.saturating_sub(inner.height) as f32);
         }
         let _ = crate::platform::caption::request_inner_size(&g.window, winit::dpi::PhysicalSize::new(w.max(1.0).ceil() as u32, h.max(1.0).ceil() as u32));
+        self.adopt_requested_size();
+    }
+
+    /// Where a size request takes effect at once (macOS sets the content size before it returns),
+    /// the surface takes the new size now, so a pane started next gets its real grid and its shell
+    /// is not resized after its first prompt (zsh then shows its reverse-video % mark). Windows
+    /// keeps waiting for its Resized event.
+    pub(super) fn adopt_requested_size(&mut self) {
+        if crate::platform::IS_WINDOWS {
+            return;
+        }
+        let Some(g) = self.gpu.as_mut() else { return };
+        let size = g.window.inner_size();
+        let Some((w, h)) = usable_size(size.width, size.height) else { return };
+        if (w, h) != (g.config.width, g.config.height) {
+            g.config.width = w;
+            g.config.height = h;
+            g.surface.configure(g.render_device(), &g.config);
+        }
     }
 
     /// "Always open in a new window, never in a tab": a new tab of `guid` opens as a window

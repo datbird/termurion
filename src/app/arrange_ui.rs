@@ -672,6 +672,8 @@ impl App {
             });
             let mut launched = true;
             self.restoring_session = true;
+            // Off Windows the shell starts at the grid it was saved at (ConPTY keeps its own rules).
+            self.restore_grid = arrangement::saved_grid(&session).filter(|_| !crate::platform::IS_WINDOWS).map(|(c, r)| (c as u16, r as u16));
             // A browser pane comes back at its saved URL, judged again (an arrangement file is another party's).
             self.browser_url_override = super::browser_app::restored_url(&session);
             // A workgroup's shown member saved its descriptor (Task 9). A restored Code Review or Diff
@@ -712,6 +714,7 @@ impl App {
                 }
             };
             self.restoring_session = false;
+            self.restore_grid = None;
             self.start_dir_override = None;
             self.browser_url_override = None;
             match id {
@@ -749,12 +752,12 @@ impl App {
                             // The saved text, then the banner, whatever the text holds (`MS:6580-6581`).
                             let grays = crate::restore_state::banner_grays(p.screen.palette.bg);
                             let text = crate::restore_state::cap_lines(arrangement::styled_contents(&session).unwrap_or(""), crate::archive::MAX_TEXT_LINES);
-                            p.screen.feed_restored(text, arrangement::saved_cursor(&session), Some((crate::archive::RESTORED_BANNER, grays)));
+                            p.screen.feed_restored_sized(text, arrangement::saved_cursor(&session), Some((crate::archive::RESTORED_BANNER, grays)), arrangement::saved_grid(&session));
                         } else if let Some(text) = arrangement::styled_contents(&session) {
                             // Session restoration: styled text, then the banner when no job came back.
                             let banner = session.get(arrangement::BANNER_KEY).and_then(|b| b.as_str());
                             let grays = crate::restore_state::banner_grays(p.screen.palette.bg);
-                            p.screen.feed_restored(text, arrangement::saved_cursor(&session), banner.map(|b| (b, grays)));
+                            p.screen.feed_restored_sized(text, arrangement::saved_cursor(&session), banner.map(|b| (b, grays)), arrangement::saved_grid(&session));
                         } else if let Some(text) = arrangement::contents(&session) {
                             // The saved text comes back as the session's history, as plain text.
                             p.screen.feed_inert(&format!("{text}\n"));
@@ -956,6 +959,7 @@ impl App {
             let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
             let _ = crate::platform::caption::request_inner_size(&g.window, winit::dpi::PhysicalSize::new((frame.w as u32).saturating_sub(dw).max(1), (frame.h as u32).saturating_sub(dh).max(1)));
         }
+        self.adopt_requested_size();
         self.apply_resizable();
         if launch {
             self.restore_desktop(w);
@@ -1137,6 +1141,34 @@ mod tests {
     use super::*;
     use crate::arrangement::{self, Value};
     use crate::tab_groups::{self, TabGroup};
+
+    /// Round 2 (k): a shell starts at the grid it ends up at, so it is not resized after its
+    /// first prompt (zsh's reverse-video % mark). A restored session starts at its saved grid; a
+    /// new window takes its requested size before its first pane starts; restored text goes in
+    /// at the grid it was saved at.
+    #[test]
+    fn shells_start_at_their_real_size() {
+        let own = include_str!("arrange_ui.rs").split("#[cfg(test)]").next().unwrap();
+        let m = include_str!("mod.rs");
+        let body = |src: &'static str, head: &str| -> &'static str {
+            let from = src.find(head).unwrap_or_else(|| panic!("{head}"));
+            let rest = &src[from..];
+            &rest[..rest.find("\n    }\n").unwrap()]
+        };
+        let build = body(own, "pub(super) fn build_tab(");
+        let set = build.find("self.restore_grid = arrangement::saved_grid(&session)").expect("the saved grid is handed to the start");
+        assert!(set < build.find("self.start_pane(area").unwrap() && build.find("self.restore_grid = None").unwrap() > set);
+        assert!(body(m, "    fn spawn_pane(").contains("self.restore_grid.take().unwrap_or_else("), "the start takes the saved grid");
+        assert!(body(m, "    fn size_window(").contains("self.adopt_requested_size();"));
+        assert!(body(own, "fn apply_arrangement_window(").contains("self.adopt_requested_size();"));
+        let startup = &m[m.find("        self.size_window(None);").unwrap()..];
+        assert!(startup.find("self.new_tab(None)").is_some(), "the first window is sized before its first tab");
+        assert_eq!(own.matches("feed_restored_sized(").count(), 2, "both restore feeds use the saved grid");
+        let mut v = arrangement::session(39, 22, Default::default(), "g", None);
+        assert_eq!(arrangement::saved_grid(&v), Some((39, 22)));
+        v.as_table_mut().unwrap().remove("Rows");
+        assert_eq!(arrangement::saved_grid(&v), None);
+    }
 
     #[test]
     fn restored_panes_keep_their_start_folder() {
