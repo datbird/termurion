@@ -657,8 +657,8 @@ pub struct App {
     tmux: HashMap<PaneId, tmux_ui::TmuxGw>,
     /// Each watched tmux window's status lines, by gateway and window: (left, right).
     tmux_status: HashMap<(PaneId, u32), (String, String)>,
-    /// Restored gateways reading tmux's last lines (`tmux_hook::Restored`).
-    tmux_restored: HashMap<PaneId, crate::tmux_hook::Restored>,
+    /// Writes of restored gateways that ended inside their held second: (pane, when, bytes).
+    tmux_late: Vec<(PaneId, Instant, Vec<u8>)>,
     /// The local tmux panes whose process the job watcher reads (iTerm2's tmuxClientProcessID).
     tmux_pids: HashMap<PaneId, u32>,
     /// A gateway's C key waits for the event loop to open its window.
@@ -2341,7 +2341,7 @@ pub fn run() {
         buried: Default::default(),
         tmux: HashMap::new(),
         tmux_status: HashMap::new(),
-        tmux_restored: HashMap::new(),
+        tmux_late: Vec::new(),
         tmux_pids: HashMap::new(),
         tmux_ask_command: None,
         tmux_prompt: None,

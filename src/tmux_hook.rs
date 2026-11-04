@@ -160,46 +160,6 @@ impl Hook {
     }
 }
 
-/// What a restored gateway does with a line its hook read (`Restored::take`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Do {
-    Nothing,
-    /// Write these bytes to the session.
-    Write(Vec<u8>),
-    /// tmux exited: write the newline tmux 3.2's wait-exit wants, then print "Detached".
-    Detached(Vec<u8>),
-}
-
-/// A gateway restored with its job (iTerm2's tmux recovery, `PS:2457-2466`): tmux's last lines
-/// are read and never drawn. The detach that Quit sent ends in `%exit`; a stream that still
-/// runs (Termurion did not quit cleanly) is asked to detach once.
-pub struct Restored {
-    newline: String,
-    detach_sent: bool,
-}
-
-impl Restored {
-    pub fn new(newline: &str) -> Restored {
-        Restored { newline: newline.into(), detach_sent: false }
-    }
-
-    pub fn take(&mut self, out: &Out) -> Do {
-        match out {
-            Out::Exit(_) => Do::Detached(self.newline.as_bytes().to_vec()),
-            Out::Line(l) if !self.detach_sent && is_notification(l) => {
-                self.detach_sent = true;
-                Do::Write(format!("detach{}", self.newline).into_bytes())
-            }
-            _ => Do::Nothing,
-        }
-    }
-}
-
-/// A notification line (`%output`, `%window-add`, ...), not a reply's frame or text.
-fn is_notification(line: &[u8]) -> bool {
-    line.starts_with(b"%") && !line.starts_with(b"%begin") && !line.starts_with(b"%end") && !line.starts_with(b"%error")
-}
-
 /// A `%begin` line with `%exit` glued to its end (psmux ends control mode this way after
 /// `detach`): the `%begin` part and the `%exit`. Real tmux never prints this line.
 fn split_glued_exit(line: &[u8]) -> Option<(&[u8], &[u8])> {

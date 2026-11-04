@@ -194,23 +194,34 @@ pub fn banner_grays(bg: Rgb) -> (u8, u8) {
 
 #[cfg(test)]
 mod tests {
-    /// A tmux gateway is saved as one (`PS:7912-7920`, "Is Tmux Gateway"); a state file from
-    /// before the flag still loads, and its sessions are not gateways.
+    /// I3/I6: a tmux gateway is saved with its session's name and id and its DCS id
+    /// (`PS:7912-7920`) and comes back from the binary state file; a gateway is restored only with
+    /// the name and id (`PS:2545-2547`). Older state files (no flag, or round 2's bare flag) load,
+    /// and their sessions are plain ones.
     #[test]
-    fn the_gateway_flag_is_saved_and_old_states_load() {
-        use crate::arrangement::{self, Value};
+    fn the_gateway_is_saved_with_its_session_and_old_states_load() {
+        use crate::arrangement::{self, SavedGateway, Value};
+        let saved = SavedGateway { name: "tdef".into(), id: 3, dcs_id: Some("5A1C-DCS".into()) };
         let mut gw = arrangement::session(80, 24, Default::default(), "g", None);
-        arrangement::mark_tmux_gateway(&mut gw);
-        let plain = arrangement::session(80, 24, Default::default(), "p", None);
+        arrangement::mark_tmux_gateway(&mut gw, &saved);
         let state = |s: Value| super::State { host: None, windows: vec![Value::Table([("Session".to_string(), s)].into_iter().collect())] };
-        let back = super::decode(&super::encode(&state(gw)).unwrap()).unwrap();
-        assert!(arrangement::is_tmux_gateway(&back.windows[0]["Session"]), "{back:?}");
-        assert_eq!(arrangement::TMUX_GATEWAY_KEY, "Is Tmux Gateway");
+        let back = super::decode(&super::encode(&state(gw.clone())).unwrap()).unwrap();
+        assert_eq!(arrangement::tmux_gateway(&back.windows[0]["Session"]), Some(saved.clone()), "{back:?}");
+        assert_eq!(gw.get("Is Tmux Gateway").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(gw.get("Tmux Gateway Session Name").and_then(|v| v.as_str()), Some("tdef"));
+        assert_eq!(gw.get("Tmux Gateway Session ID").and_then(|v| v.as_integer()), Some(3));
+        assert_eq!(gw.get("Tmux DCS ID").and_then(|v| v.as_str()), Some("5A1C-DCS"));
+        let mut no_dcs = arrangement::session(80, 24, Default::default(), "g", None);
+        arrangement::mark_tmux_gateway(&mut no_dcs, &SavedGateway { dcs_id: None, ..saved.clone() });
+        assert_eq!(arrangement::tmux_gateway(&no_dcs).map(|g| g.dcs_id), Some(None), "the DCS id is optional");
+        let plain = arrangement::session(80, 24, Default::default(), "p", None);
         let old = super::decode(&super::encode(&state(plain)).unwrap()).unwrap();
         assert_eq!(old.windows.len(), 1);
-        assert!(!arrangement::is_tmux_gateway(&old.windows[0]["Session"]), "no flag: not a gateway");
-        let ui = include_str!("app/arrange_ui.rs");
-        assert!(ui.contains("if self.tmux.contains_key(&id) && matches!(contents, Contents::Plain | Contents::Styled(_)) {\n            arrangement::mark_tmux_gateway(&mut v);"), "a gateway is saved with contents");
+        assert_eq!(arrangement::tmux_gateway(&old.windows[0]["Session"]), None, "no flag: not a gateway");
+        let mut bare = arrangement::session(80, 24, Default::default(), "r2", None);
+        bare.as_table_mut().unwrap().insert("Is Tmux Gateway".into(), Value::Boolean(true));
+        let bare = super::decode(&super::encode(&state(bare)).unwrap()).unwrap();
+        assert_eq!(arrangement::tmux_gateway(&bare.windows[0]["Session"]), None, "a flag with no session: a plain session");
     }
 
     /// The loop ending on its own (the macOS stock Quit, a window manager closing everything) saves

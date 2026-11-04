@@ -626,19 +626,42 @@ pub fn held_idle(session: &Value) -> bool {
     session.get(IDLE_KEY).and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
-/// iTerm2's flag for a session that was a tmux gateway (`PS:289`, written at `PS:7912-7914`).
+/// iTerm2's keys for a session that was a tmux gateway (`PS:289-294`, written at `PS:7912-7920`).
 pub const TMUX_GATEWAY_KEY: &str = "Is Tmux Gateway";
+pub const TMUX_SESSION_NAME_KEY: &str = "Tmux Gateway Session Name";
+pub const TMUX_SESSION_ID_KEY: &str = "Tmux Gateway Session ID";
+pub const TMUX_DCS_ID_KEY: &str = "Tmux DCS ID";
 
-/// Marks a session table as a tmux gateway.
-pub fn mark_tmux_gateway(session: &mut Value) {
-    if let Some(t) = session.as_table_mut() {
-        t.insert(TMUX_GATEWAY_KEY.into(), Value::Boolean(true));
+/// A saved tmux gateway: the tmux session it was attached to and its DCS id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedGateway {
+    pub name: String,
+    pub id: u32,
+    pub dcs_id: Option<String>,
+}
+
+/// Marks a session table as a tmux gateway attached to `g`.
+pub fn mark_tmux_gateway(session: &mut Value, g: &SavedGateway) {
+    let Some(t) = session.as_table_mut() else { return };
+    t.insert(TMUX_GATEWAY_KEY.into(), Value::Boolean(true));
+    t.insert(TMUX_SESSION_NAME_KEY.into(), Value::String(g.name.clone()));
+    t.insert(TMUX_SESSION_ID_KEY.into(), Value::Integer(i64::from(g.id)));
+    if let Some(d) = &g.dcs_id {
+        t.insert(TMUX_DCS_ID_KEY.into(), Value::String(d.clone()));
     }
 }
 
-/// Whether a session table was a tmux gateway: a file without the flag says no.
-pub fn is_tmux_gateway(session: &Value) -> bool {
-    session.get(TMUX_GATEWAY_KEY).and_then(|v| v.as_bool()).unwrap_or(false)
+/// The tmux gateway a session table was. Only a flag with the session's name and id counts
+/// (`PS:2545-2547`), so a file without them (older ones too) restores a plain session.
+pub fn tmux_gateway(session: &Value) -> Option<SavedGateway> {
+    if !session.get(TMUX_GATEWAY_KEY).and_then(|v| v.as_bool()).unwrap_or(false) {
+        return None;
+    }
+    // Plain text of a sane size, as any name a file holds.
+    let text = |k: &str, max: usize| session.get(k).and_then(|v| v.as_str()).filter(|s| s.len() <= max && !s.chars().any(char::is_control)).map(str::to_string);
+    let name = text(TMUX_SESSION_NAME_KEY, 1024)?;
+    let id = session.get(TMUX_SESSION_ID_KEY).and_then(|v| v.as_integer()).and_then(|i| u32::try_from(i).ok())?;
+    Some(SavedGateway { name, id, dcs_id: text(TMUX_DCS_ID_KEY, 128) })
 }
 
 /// The text saved "with contents".

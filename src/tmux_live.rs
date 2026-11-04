@@ -363,7 +363,7 @@ mod tests {
                     }
                     Event::Abort(m) => self.aborts.push(m),
                     Event::InitialFailed(m) => self.aborts.push(format!("initial failed: {m}")),
-                    Event::Exit => self.exited = true,
+                    Event::Exit | Event::Lost => self.exited = true,
                     Event::Gone => {
                         // What the app does: let go of the gateway and end the client.
                         self.gone = true;

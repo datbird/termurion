@@ -1031,12 +1031,12 @@ impl Pane {
         self.set_paused(false);
     }
 
-    /// Ends tmux control mode here without an `%exit`.
     /// A restored gateway: its hook joins the control-mode stream mid-way (`PS:2457-2466`).
     pub fn recover_tmux(&mut self) {
         self.tmux_hook = crate::tmux_hook::Hook::recovering();
     }
 
+    /// Ends tmux control mode here without an `%exit`.
     pub fn unhook_tmux(&mut self) {
         self.tmux_hook.unhook();
     }
@@ -3555,37 +3555,38 @@ mod tests {
         assert_eq!(p.take_ssh(), [Out::Ssh(Token::Unhook, 0)]);
     }
 
-    /// A gateway restored with its job (`PS:2457-2466`): tmux's last lines are read in recovery
-    /// and never drawn; `%exit` ends it with the newline tmux 3.2's wait-exit wants
-    /// (`TmuxGateway.m:976-978`), then "Detached" (`PS:11744`). A stream still running is asked
-    /// to detach once.
+    /// A gateway restored with its job (`PS:2457-2466`): its hook reads tmux's last lines in
+    /// recovery and hands them to the gateway, never to the screen. After `%exit` the pane draws
+    /// again; unhooked, it draws everything.
     #[test]
     fn a_restored_gateway_reads_tmuxs_last_lines_unseen() {
-        use crate::tmux_hook::{Do, Out, Restored};
+        use crate::tmux_hook::Out;
         let mut p = Pane::tmux(5, 1, 3, 20, 4);
         p.recover_tmux();
-        p.tmux_io().unwrap().push_output(b"%begin 1793828748 574 1\n%end 1793828748 574 1\n%exit\n\x1b\\");
+        p.tmux_io().unwrap().push_output(b"put %1 half\n%begin 1793828748 574 1\n%end 1793828748 574 1\n%exit\n\x1b\\");
         p.pump();
         let outs = p.take_tmux();
-        let mut r = Restored::new("\r");
-        let did: Vec<Do> = outs.iter().filter(|o| !matches!(o, Out::Screen(_))).map(|o| r.take(o)).collect();
-        assert_eq!(did, [Do::Nothing, Do::Nothing, Do::Detached(b"\r".to_vec())]);
+        let lines: Vec<&Out> = outs.iter().filter(|o| !matches!(o, Out::Screen(_))).collect();
+        assert_eq!(lines, [&Out::Line(b"%begin 1793828748 574 1".to_vec()), &Out::Line(b"%end 1793828748 574 1".to_vec()), &Out::Exit(b"%exit".to_vec())], "half a line skipped");
         for o in outs {
             if let Out::Screen(b) = o {
                 p.feed_output(&b);
             }
         }
         let text = p.screen.all_text();
-        assert!(!text.contains("%begin") && !text.contains("%end") && !text.contains("%exit"), "{text}");
-        let mut live = Restored::new("\n");
-        assert_eq!(live.take(&Out::Line(b"%output %1 x".to_vec())), Do::Write(b"detach\n".to_vec()));
-        assert_eq!(live.take(&Out::Line(b"%output %1 y".to_vec())), Do::Nothing, "once");
-        let ui = include_str!("app/tmux_ui.rs");
-        assert!(ui.contains("Do::Detached(nl) => {\n                                if let Some(p) = self.panes.get_mut(id) {\n                                    p.reply(&nl);\n                                    p.own_mut().print_message(\"Detached\");"), "the app writes the newline and prints Detached");
-        let restore = include_str!("app/arrange_ui.rs");
-        assert!(restore.contains("gateway_back = arrangement::is_tmux_gateway(&session);"), "an attached gateway comes back as one");
-        let (text, back) = (restore.find("p.screen.feed_inert(&format!").unwrap(), restore.find("if gateway_back {\n                        self.restore_tmux_gateway(id);").unwrap());
-        assert!(text < back, "after its restored text");
+        assert!(!text.contains("%begin") && !text.contains("%end") && !text.contains("%exit") && !text.contains("half"), "{text}");
+        let mut q = Pane::tmux(6, 1, 3, 20, 4);
+        q.recover_tmux();
+        q.unhook_tmux();
+        q.tmux_io().unwrap().push_output(b"$ ");
+        q.pump();
+        for o in q.take_tmux() {
+            assert!(matches!(&o, Out::Screen(_)), "unhooked: output again");
+            if let Out::Screen(b) = o {
+                q.feed_output(&b);
+            }
+        }
+        assert!(q.screen.all_text().contains('$'), "{}", q.screen.all_text());
     }
 
     #[test]

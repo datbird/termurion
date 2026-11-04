@@ -32,8 +32,11 @@ pub enum Event {
     InitialFailed(String),
     /// A line for the gateway session's screen.
     Print(String),
-    /// tmux left (or the stream was not tmux): the gateway is disconnected.
+    /// tmux left: the gateway is disconnected.
     Exit,
+    /// The stream is not tmux (an unrecognized line): the gateway is disconnected and the
+    /// hook must let go, so what follows is drawn (`forceUnhookDCS`).
+    Lost,
     /// psmux sends no `%exit` when the attached session is killed: the gateway is
     /// disconnected, and the app must end the client itself.
     Gone,
@@ -221,6 +224,22 @@ impl Gateway {
         self.out.extend(held);
     }
 
+    /// A restored gateway's session, known before tmux says it (`sessionChangedTo:`). Writes
+    /// stay held: only the restore's delay lets them go.
+    pub fn restored_session(&mut self, id: u32, name: &str) {
+        self.session = Some((id, name.to_string()));
+    }
+
+    /// The writes still held (iTerm2's `_writeQueue`), taken.
+    pub fn take_held(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.held)
+    }
+
+    /// iTerm2's cancelDelayedWritesAndDiscardQueue: the held writes are dropped.
+    pub fn discard_held(&mut self) {
+        self.held.clear();
+    }
+
     /// Bytes to write to the gateway pane now.
     pub fn take_writes(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.out)
@@ -321,9 +340,10 @@ impl Gateway {
                     ev.push(Event::Print("tmux exited unexpectedly.".into()));
                     ev.push(Event::Print(text.clone()));
                 }
+                // Only a server known to be 3.2 or later gets it, held like any write.
                 if self.v3_2 {
                     let nl = self.newline.clone();
-                    self.out.extend_from_slice(nl.as_bytes());
+                    self.write(nl.as_bytes());
                 }
                 self.disconnected = true;
                 ev.push(Event::Exit);
@@ -336,7 +356,7 @@ impl Gateway {
                 ev.push(Event::Print("Unrecognized command from tmux. Did your ssh session die? The command was:".into()));
                 ev.push(Event::Print(text.clone()));
                 self.disconnected = true;
-                ev.push(Event::Exit);
+                ev.push(Event::Lost);
             }
             // %noop, %pane-mode-changed, and notifications Termurion does not know are logged only.
             Ok(Note::Other(_)) => {}
@@ -493,13 +513,49 @@ mod tests {
         let mut g = started();
         assert_eq!(
             feed(&mut g, &["bash: tmux: command not found"]),
-            vec![Event::Print("Unrecognized command from tmux. Did your ssh session die? The command was:".into()), Event::Print("bash: tmux: command not found".into()), Event::Exit]
+            vec![Event::Print("Unrecognized command from tmux. Did your ssh session die? The command was:".into()), Event::Print("bash: tmux: command not found".into()), Event::Lost]
         );
+        assert!(g.disconnected());
         let mut g = started();
         g.v3_2 = true;
         assert_eq!(feed(&mut g, &["%exit server exited"]), vec![Event::Print("tmux exited unexpectedly.".into()), Event::Print("%exit server exited".into()), Event::Exit]);
         assert_eq!(g.take_writes(), b"\r", "tmux 3.2's wait-exit wants a newline");
         assert!(g.disconnected());
+    }
+
+    /// `%exit`'s newline is written as any write is (`TmuxGateway.m:978-980`, `1486-1493`): held
+    /// while writes are, and only for a server known to be 3.2 or later.
+    #[test]
+    fn the_exit_newline_waits_with_the_other_writes() {
+        let mut g = Gateway::new("\r");
+        g.send("phony-command", None, tol());
+        assert_eq!(feed(&mut g, &["%exit"]), vec![Event::Exit]);
+        assert!(g.take_writes().is_empty());
+        assert_eq!(g.take_held(), b"phony-command\r", "no version known: no newline");
+        let mut g = Gateway::new("\r");
+        g.v3_2 = true;
+        g.send("phony-command", None, tol());
+        feed(&mut g, &["%exit"]);
+        assert!(g.take_writes().is_empty(), "held");
+        assert_eq!(g.take_held(), b"phony-command\r\r");
+        g.send("x", None, tol());
+        g.discard_held();
+        assert!(g.take_held().is_empty());
+    }
+
+    /// A restored gateway knows its session from the saved state (`PS:2112-2113`): psmux's
+    /// renames without an id still read, and its writes stay held until the restore lets them go.
+    #[test]
+    fn a_restored_gateway_knows_its_session() {
+        let mut g = Gateway::new("\r");
+        g.psmux = true;
+        g.restored_session(7, "w");
+        g.accept_notifications();
+        assert_eq!(feed(&mut g, &["%session-renamed new name"]), vec![Event::Note(Note::SessionRenamed { session: 7, name: "new name".into() })]);
+        g.send("list-windows", None, tol());
+        assert!(g.take_writes().is_empty(), "still held");
+        g.enable_writes();
+        assert_eq!(g.take_writes(), b"list-windows\r");
     }
 
     #[test]

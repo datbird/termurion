@@ -174,9 +174,9 @@ impl App {
         if let (Some((key, text)), Some(t)) = (saved, v.as_table_mut()) {
             t.insert(key.into(), Value::String(text));
         }
-        // A gateway saved with its contents says so, as iTerm2's does (`PS:7912-7914`).
-        if self.tmux.contains_key(&id) && matches!(contents, Contents::Plain | Contents::Styled(_)) {
-            arrangement::mark_tmux_gateway(&mut v);
+        // A gateway saved with its contents says so, with its tmux session (`PS:7912-7920`).
+        if let Some(g) = self.tmux.get(&id).and_then(|t| saved_gateway(t.ctl.session.as_ref(), &t.dcs_id, contents)) {
+            arrangement::mark_tmux_gateway(&mut v, &g);
         }
         // An archived pane comes back archived (13q final fix 4): the next launch never starts
         // the shell of the profile an archive file embeds; Restart does, under the trust rules.
@@ -261,7 +261,7 @@ impl App {
 
     /// A tmux tab: its panes are a tmux window's (`PTYTab isTmuxTab`).
     fn is_tmux_tab(&self, t: &Tab) -> bool {
-        t.layout.tree().leaves().iter().any(|id| self.panes.get(*id).is_some_and(|p| p.tmux_io().is_some()))
+        tab_is_tmux(&t.layout.tree().leaves(), &self.panes)
     }
 
     /// A tab's panes without a loaded recording's (None when nothing else is left).
@@ -701,7 +701,7 @@ impl App {
             let inhibit = self.restore_inhibits(descriptor.as_ref()).held(held);
             let inhibited = inhibit.with(attach.is_some()) && !archive;
             // A gateway whose job came back is one again, after its text (`PS:2109-2115`).
-            let mut gateway_back = false;
+            let mut gateway_back = None;
             let id = if archive {
                 launched = false;
                 self.archived_pane(area, guid.as_deref())
@@ -710,7 +710,7 @@ impl App {
                 Some((host_id, pid, since)) => match self.attach_pane(area, guid.as_deref(), host_id, pid, since, super::restore_ui::saved_cookie(&session)) {
                     Ok(id) => {
                         launched = false;
-                        gateway_back = arrangement::is_tmux_gateway(&session);
+                        gateway_back = arrangement::tmux_gateway(&session);
                         Some(id)
                     }
                     Err(e) => {
@@ -782,8 +782,8 @@ impl App {
                             p.screen.feed_inert(&format!("{text}\n"));
                         }
                     }
-                    if gateway_back {
-                        self.restore_tmux_gateway(id);
+                    if let Some(g) = &gateway_back {
+                        self.restore_tmux_gateway(id, g);
                     }
                     self.restore_clippings(id, &session);
                     if let Some(p) = self.panes.get_mut(&id) {
@@ -1169,6 +1169,21 @@ fn tab_encoded(tmux_tab: bool, no_tmux: bool) -> bool {
     !(no_tmux && tmux_tab)
 }
 
+/// A tmux tab (`PTYTab isTmuxTab`): one of its panes is a tmux client's.
+fn tab_is_tmux(leaves: &[&PaneId], panes: &HashMap<PaneId, Pane>) -> bool {
+    leaves.iter().any(|id| panes.get(*id).is_some_and(|p| p.tmux_io().is_some()))
+}
+
+/// What a gateway saves (`PS:7912-7920`): only once tmux has named its session, and only when
+/// the contents are saved.
+fn saved_gateway(session: Option<&(u32, String)>, dcs_id: &str, contents: Contents) -> Option<arrangement::SavedGateway> {
+    let (id, name) = session?;
+    if !matches!(contents, Contents::Plain | Contents::Styled(_)) {
+        return None;
+    }
+    Some(arrangement::SavedGateway { name: name.clone(), id: *id, dcs_id: (!dcs_id.is_empty()).then(|| dcs_id.to_string()) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1204,17 +1219,34 @@ mod tests {
     }
 
     /// Relaunch after quitting while attached with tmux -CC: tmux tabs are not restored, as
-    /// their state is on the tmux server, and a window of only tmux tabs is not either
-    /// (`PT tabsToEncodeExcludingTmux:`, `PT shouldSaveRestorableStateLegacy:`). Save Window
-    /// Arrangement leaves them out too; Duplicate Window and a tab's arrangement keep them.
+    /// their state is on the tmux server (`PT tabsToEncodeExcludingTmux:`). A tab is a tmux tab
+    /// when any of its panes is a tmux client's, never for the gateway.
     #[test]
     fn tmux_tabs_stay_out_of_the_saved_windows() {
-        let own = include_str!("arrange_ui.rs").split("#[cfg(test)]").next().unwrap();
-        assert!(own.contains("self.snapshot_tabs(contents, None, true, true)"), "a saved window drops its tmux tabs");
-        assert!(own.contains("self.snapshot_tabs(Contents::None, None, false, false)"), "Duplicate Window keeps them");
-        assert!(own.contains("self.snapshot_tabs(contents, Some(ids), true, false)"), "a tab's arrangement keeps them");
-        assert!(own.contains(".filter(|(_, t)| tab_encoded(self.is_tmux_tab(t), no_tmux))"));
+        let mut panes = HashMap::new();
+        panes.insert(1, Pane::idle(1, 20, 4));
+        panes.insert(2, Pane::tmux(2, 1, 0, 20, 4));
+        panes.insert(3, Pane::idle(3, 20, 4));
+        let mut tmux = crate::layout::Layout::new(3);
+        tmux.split(3, Axis::Column, 2);
+        let local = crate::layout::Layout::new(1);
+        assert!(tab_is_tmux(&tmux.tree().leaves(), &panes), "a split with a tmux pane");
+        assert!(!tab_is_tmux(&local.tree().leaves(), &panes), "the gateway's own tab");
+        assert!(!tab_is_tmux(&crate::layout::Layout::new(9).tree().leaves(), &panes), "a pane that is gone");
         assert!(!tab_encoded(true, true) && tab_encoded(false, true) && tab_encoded(true, false));
+    }
+
+    /// I6: a gateway is saved as one only once tmux named its session (`PS:7912`), with the
+    /// session's name and id and the DCS id, and only with its contents.
+    #[test]
+    fn a_gateway_is_saved_once_tmux_named_its_session() {
+        let s = (3, "tdef".to_string());
+        assert_eq!(saved_gateway(None, "D", Contents::Plain), None, "still in its handshake, or its attach failed");
+        assert_eq!(saved_gateway(Some(&s), "D", Contents::Styled(10)), Some(arrangement::SavedGateway { name: "tdef".into(), id: 3, dcs_id: Some("D".into()) }));
+        assert_eq!(saved_gateway(Some(&s), "D", Contents::Plain).map(|g| g.id), Some(3));
+        assert_eq!(saved_gateway(Some(&s), "D", Contents::None), None, "no contents: a plain session");
+        assert_eq!(saved_gateway(Some(&s), "D", Contents::KeysOnly), None);
+        assert_eq!(saved_gateway(Some(&s), "", Contents::Plain).map(|g| g.dcs_id), Some(None));
     }
 
     #[test]

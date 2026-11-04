@@ -5,7 +5,7 @@
 use super::*;
 use crate::tmux_gateway::{Event, Gateway, Tag};
 use crate::tmux_handshake::{self, Handshake, Step};
-use crate::tmux_hook::{Do, Out};
+use crate::tmux_hook::Out;
 use crate::tmux_proto::Note;
 
 /// iTerm2's banner (startTmuxMode), one message per line.
@@ -55,10 +55,76 @@ pub(super) struct TmuxGw {
     pub(super) window_names: HashMap<u32, String>,
     /// Tab titles the person gave tmux tabs (Edit Tab Title), by tmux window.
     pub(super) tab_overrides: HashMap<u32, String>,
+    /// iTerm2's dcsID: names this control-mode stream, saved with a restorable gateway.
+    pub(super) dcs_id: String,
+    /// A restored gateway's writes are held until then (`enableWritesAfterDelay`).
+    pub(super) writes_at: Option<Instant>,
 }
 
 /// Tags for commands typed through C, above the controller's.
 const TYPED_TAGS: Tag = 1 << 40;
+
+/// How long a restored gateway holds its writes (`enableWritesAfterDelay`, `TmuxGateway.m:1468-1473`).
+pub(super) const RESTORE_WRITE_DELAY: Duration = Duration::from_secs(1);
+
+impl TmuxGw {
+    pub(super) fn new(newline: &str, tolerate_unrecognized: bool, client: String, ctl: crate::tmux_controller::Controller, dcs_id: String) -> TmuxGw {
+        let mut gw = Gateway::new(newline);
+        gw.tolerate_unrecognized = tolerate_unrecognized;
+        TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client, ctl, selected: None, pause_tick: None, auto_buried: false, bury_pending: false, window_titles: HashMap::new(), window_names: HashMap::new(), tab_overrides: HashMap::new(), tab_sizes: HashMap::new(), panes: HashMap::new(), dcs_id, writes_at: None }
+    }
+
+    /// A restored gateway starts again (`PS:2109-2115`): the session it was attached to, then
+    /// `kickOffTmuxForRestoration:YES` (`PS:11589-11604`) with its writes held for a second.
+    /// Returns what goes to the pane at once, before anything else: the ^C (`PS:10850-10857`).
+    pub(super) fn restore(&mut self, session: u32, name: &str, now: Instant) -> Vec<u8> {
+        // Nothing is open yet, so its CloseAll has nothing to close; the windows wait for the version.
+        let _ = self.ctl.session_changed(session, name, &mut self.gw);
+        self.gw.restored_session(session, name);
+        self.writes_at = Some(now + RESTORE_WRITE_DELAY);
+        self.hs.kick_off(&mut self.gw, now);
+        vec![3]
+    }
+
+    /// The restore's delay ran out: writes go from now on. True when it did just now.
+    pub(super) fn writes_due(&mut self, now: Instant) -> bool {
+        if !self.writes_at.is_some_and(|at| now >= at) {
+            return false;
+        }
+        self.writes_at = None;
+        self.gw.enable_writes();
+        true
+    }
+
+    /// A restored gateway at a shell: the held writes are dropped (`PS:11641`).
+    pub(super) fn stop_restored(&mut self) {
+        self.writes_at = None;
+        self.gw.discard_held();
+    }
+
+    /// The gateway is going while its writes are still held: they go to the pane when the delay
+    /// runs out, as iTerm2's delayed enableWrites still fires (`TmuxGateway.m:1468-1503`).
+    pub(super) fn late_writes(&mut self) -> Option<(Instant, Vec<u8>)> {
+        let at = self.writes_at.take()?;
+        let bytes = self.gw.take_held();
+        (!bytes.is_empty()).then_some((at, bytes))
+    }
+
+    /// A reply to one of the handshake's commands: the abort it asks for (title, text), if any.
+    pub(super) fn handshake(&mut self, ask: tmux_handshake::Ask, text: Option<&str>) -> Option<(String, String)> {
+        for step in self.hs.reply(ask, text, &mut self.gw) {
+            match step {
+                Step::Abort(title, text) => return Some((title, text)),
+                Step::VersionKnown => {
+                    let (min, tab_bug, status) = (self.hs.min, self.hs.tab_bug, self.hs.status_bar);
+                    self.ctl.psmux = self.hs.psmux;
+                    self.ctl.version_known(min, tab_bug, status, &mut self.gw);
+                }
+            }
+        }
+        None
+    }
+}
 
 impl App {
     /// Runs what each pane's tmux hook found. True when anything happened.
@@ -75,25 +141,6 @@ impl App {
                         self.api_output(&[*id]);
                     }
                     Out::Enter => self.tmux_enter(*id),
-                    Out::Line(_) | Out::Exit(_) if self.tmux_restored.contains_key(id) => {
-                        let Some(r) = self.tmux_restored.get_mut(id) else { continue };
-                        match r.take(&out) {
-                            Do::Nothing => {}
-                            Do::Write(bytes) => {
-                                if let Some(p) = self.panes.get_mut(id) {
-                                    p.reply(&bytes);
-                                }
-                            }
-                            Do::Detached(nl) => {
-                                if let Some(p) = self.panes.get_mut(id) {
-                                    p.reply(&nl);
-                                    p.own_mut().print_message("Detached");
-                                }
-                                self.tmux_restored.remove(id);
-                                self.redraw();
-                            }
-                        }
-                    }
                     Out::Line(line) | Out::Exit(line) => {
                         let clock = self.started.elapsed().as_secs_f64();
                         let Some(t) = self.tmux.get_mut(id) else { continue };
@@ -112,26 +159,33 @@ impl App {
         if self.tmux.contains_key(&pane) {
             return;
         }
+        let dcs_id = crate::pane::new_session_guid();
+        if let Some(p) = self.panes.get_mut(&pane) {
+            // A bare ^C first: a fake start cannot make Termurion type a command into a shell.
+            p.reply(&[3]);
+        }
+        self.tmux_start(pane, dcs_id);
+    }
+
+    /// startTmuxMode after its ^C: the gateway, its banner and its controller.
+    fn tmux_start(&mut self, pane: PaneId, dcs_id: String) {
         let newline = if self.profile_of(pane).is_some_and(|p| p.bool("Tmux Newline")) { "\n" } else { "\r" };
         let title = self.session_title(pane);
         let Some(shell) = self.panes.get(&pane).map(|p| &p.own().shell) else { return };
         let name = crate::tmux_windows::client_name(shell.user.as_deref(), shell.host.as_deref(), &title);
         let Some(p) = self.panes.get_mut(&pane) else { return };
         p.gateway = true;
-        // A bare ^C first: a fake start cannot make Termurion type a command into a shell.
-        p.reply(&[3]);
         for line in BANNER {
             p.own_mut().print_message(line);
         }
         let own = (p.own().term().columns() as u32, p.own().term().screen_lines() as u32);
         let client = self.tmux_attach_size(pane, own);
-        let mut gw = Gateway::new(newline);
-        gw.tolerate_unrecognized = self.globals.bool("TolerateUnrecognizedTmuxCommands");
         let mut ctl = crate::tmux_controller::Controller::new(tmux_handshake::FIRST_FREE_TAG);
         ctl.client = client;
         ctl.prefs = self.tmux_prefs(pane, client.1);
         crate::rlog!("tmux gateway started: pane {}", pane);
-        self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client: name, ctl, selected: None, pause_tick: None, auto_buried: false, bury_pending: false, window_titles: HashMap::new(), window_names: HashMap::new(), tab_overrides: HashMap::new(), tab_sizes: HashMap::new(), panes: HashMap::new() });
+        let t = TmuxGw::new(newline, self.globals.bool("TolerateUnrecognizedTmuxCommands"), name, ctl, dcs_id);
+        self.tmux.insert(pane, t);
     }
 
     /// The size the attach asks tmux for: a new tmux tab's (`tmux_windows::attach_size`). A tab in
@@ -152,24 +206,28 @@ impl App {
         crate::tmux_windows::attach_size(self.globals.bool("TmuxUsesDedicatedProfile"), crate::tmux_windows::OpenIn::from_pref(self.globals.int("OpenTmuxWindowsIn")), profile, tab)
     }
 
-    /// A restored session that was a gateway, its job taken back (`PS:2109-2115`): tmux mode starts
-    /// again with its menu (`PS:10935-10942`) and the hook reads tmux's last lines unseen. At a
-    /// shell nothing runs tmux: it leaves tmux mode at once (`PS:11625-11645`, "Detached").
-    pub(super) fn restore_tmux_gateway(&mut self, pane: PaneId) {
-        let job = self.panes.get(&pane).and_then(|p| p.shell_pid()).and_then(crate::platform::proc::foreground_job);
-        let at_shell = crate::session_state::is_shell(job.as_ref().map(|j| j.name.as_str()));
-        let newline = if self.profile_of(pane).is_some_and(|p| p.bool("Tmux Newline")) { "\n" } else { "\r" };
+    /// A restored session that was a gateway, its job taken back: a gateway again, as in iTerm2
+    /// (`PS:2109-2115`). The hook reads in recovery (`PS:2457-2466`), tmux mode starts with its ^C
+    /// and banner, the controller takes the saved session, and the handshake waits a second. At a
+    /// shell nothing runs tmux: it ends at once, the held writes dropped (`PS:11619-11645`).
+    pub(super) fn restore_tmux_gateway(&mut self, pane: PaneId, saved: &crate::arrangement::SavedGateway) {
         let Some(p) = self.panes.get_mut(&pane) else { return };
-        for line in BANNER {
-            p.own_mut().print_message(line);
-        }
-        if at_shell {
-            p.own_mut().print_message("Detached");
-            return;
+        p.recover_tmux();
+        let dcs_id = saved.dcs_id.clone().unwrap_or_else(crate::pane::new_session_guid);
+        self.tmux_start(pane, dcs_id);
+        let Some(t) = self.tmux.get_mut(&pane) else { return };
+        let first = t.restore(saved.id, &saved.name, Instant::now());
+        if let Some(p) = self.panes.get_mut(&pane) {
+            p.reply(&first);
         }
         crate::rlog!("tmux gateway restored: pane {}", pane);
-        p.recover_tmux();
-        self.tmux_restored.insert(pane, crate::tmux_hook::Restored::new(newline));
+        let job = self.panes.get(&pane).and_then(|p| p.shell_pid()).and_then(crate::platform::proc::foreground_job);
+        if crate::session_state::is_shell(job.as_ref().map(|j| j.name.as_str())) {
+            if let Some(t) = self.tmux.get_mut(&pane) {
+                t.stop_restored();
+            }
+            self.tmux_disconnected(pane, true);
+        }
     }
 
     pub(super) fn tmux_print(&mut self, pane: PaneId, text: &str) {
@@ -218,17 +276,8 @@ impl App {
                         continue;
                     }
                     if let Some(ask) = tmux_handshake::ask_of(tag) {
-                        let steps = t.hs.reply(ask, ok.then_some(text.as_str()), &mut t.gw);
-                        for step in steps {
-                            match step {
-                                Step::Abort(title, text) => return self.tmux_abort(pane, &title, &text),
-                                Step::VersionKnown => {
-                                    let Some(t) = self.tmux.get_mut(&pane) else { return };
-                                    let (min, tab_bug, status) = (t.hs.min, t.hs.tab_bug, t.hs.status_bar);
-                                    t.ctl.psmux = t.hs.psmux;
-                                    t.ctl.version_known(min, tab_bug, status, &mut t.gw);
-                                }
-                            }
+                        if let Some((title, text)) = t.handshake(ask, ok.then_some(text.as_str())) {
+                            return self.tmux_abort(pane, &title, &text);
                         }
                         if ask == tmux_handshake::Ask::ServerPid {
                             // iTerm2's didLoadServerPID: a server whose process is here is local.
@@ -270,6 +319,14 @@ impl App {
                     // tmux 3.2's wait-exit wants the newline the gateway queued.
                     self.tmux_flush(pane);
                     return self.tmux_disconnected(pane, false);
+                }
+                // Not tmux: the hook lets go too, so what follows is drawn (`PS:11746`).
+                Event::Lost => {
+                    self.tmux_disconnected(pane, false);
+                    if let Some(p) = self.panes.get_mut(&pane) {
+                        p.unhook_tmux();
+                    }
+                    return;
                 }
                 // psmux killed the attached session and sent no %exit: let go (which ends its client).
                 Event::Gone => return self.tmux_disconnected(pane, true),
@@ -323,7 +380,9 @@ impl App {
             self.disinter(pane);
         }
         crate::rlog!("tmux gateway ended: pane {}", pane);
-        self.tmux.remove(&pane);
+        if let Some(late) = self.tmux.remove(&pane).and_then(|mut t| t.late_writes()) {
+            self.tmux_late.push((pane, late.0, late.1));
+        }
         self.tmux_status.retain(|(g, _), _| *g != pane);
         self.tmux_end_panes(pane);
         self.tmux_forget_pids();
@@ -488,7 +547,11 @@ impl App {
         let mut slow = Vec::new();
         let mut hung = Vec::new();
         let mut next: Option<Instant> = None;
+        let mut due = Vec::new();
         for (id, t) in self.tmux.iter_mut() {
+            if t.writes_due(now) {
+                due.push(*id);
+            }
             if t.hs.phony_slow(now) && !silenced {
                 slow.push(*id);
             }
@@ -496,9 +559,21 @@ impl App {
                 t.hung_asked = true;
                 hung.push(*id);
             }
-            let due = [t.hs.phony_due(), (!t.hung_asked).then(|| t.gw.next_hung_check()).flatten()].into_iter().flatten().min();
-            next = [next, due].into_iter().flatten().min();
+            let at = [t.writes_at, t.hs.phony_due(), (!t.hung_asked).then(|| t.gw.next_hung_check()).flatten()].into_iter().flatten().min();
+            next = [next, at].into_iter().flatten().min();
         }
+        for id in due {
+            self.tmux_flush(id);
+        }
+        // A restored gateway that went before its second was up still writes then.
+        let (late, wait): (Vec<_>, Vec<_>) = std::mem::take(&mut self.tmux_late).into_iter().partition(|(_, at, _)| now >= *at);
+        self.tmux_late = wait;
+        for (pane, _, bytes) in late {
+            if let Some(p) = self.panes.get_mut(&pane) {
+                p.reply(&bytes);
+            }
+        }
+        next = [next, self.tmux_late.iter().map(|(_, at, _)| *at).min()].into_iter().flatten().min();
         for id in slow {
             self.ask(
                 id,
@@ -556,4 +631,97 @@ impl App {
 /// An alert with OK (iTerm2's NSAlert with one button).
 fn alert(owner: Option<isize>, title: &str, text: &str) {
     crate::platform::dialog::message(owner, title, text, crate::platform::dialog::Kind::Warning);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tmux_controller::Controller;
+    use std::time::Duration;
+
+    fn restored(now: Instant) -> (TmuxGw, Vec<u8>) {
+        let mut t = TmuxGw::new("\r", false, "client".into(), Controller::new(tmux_handshake::FIRST_FREE_TAG), "DCS-1".into());
+        let first = t.restore(3, "tdef", now);
+        (t, first)
+    }
+
+    /// What a fresh attach's kick-off writes (`PS:11589-11604`).
+    fn kick_off_bytes() -> Vec<u8> {
+        let mut g = Gateway::new("\r");
+        g.enable_writes();
+        Handshake::default().kick_off(&mut g, Instant::now());
+        g.take_writes()
+    }
+
+    fn lines(t: &mut TmuxGw, lines: &[&str]) -> Vec<Event> {
+        lines.iter().flat_map(|l| t.gw.line(l.as_bytes())).collect()
+    }
+
+    /// I2 and I3: a restored gateway writes ^C first (`PS:10850-10857`), knows its session
+    /// (`PS:2112-2113`), holds its writes for a second (`TmuxGateway.m:1468-1473`), then sends
+    /// the same handshake a fresh attach sends.
+    #[test]
+    fn a_restored_gateway_waits_a_second_then_shakes_hands() {
+        let t0 = Instant::now();
+        let (mut t, first) = restored(t0);
+        assert_eq!(first, [3], "the ^C goes first, unconditionally");
+        assert_eq!(t.ctl.session, Some((3, "tdef".to_string())));
+        assert!(t.hs.kicked);
+        assert!(t.gw.take_writes().is_empty(), "held");
+        assert!(!t.writes_due(t0 + Duration::from_millis(999)));
+        assert!(t.gw.take_writes().is_empty());
+        assert!(t.writes_due(t0 + RESTORE_WRITE_DELAY));
+        assert_eq!(t.gw.take_writes(), kick_off_bytes(), "the fresh attach's handshake, phony first");
+        assert!(!t.writes_due(t0 + RESTORE_WRITE_DELAY * 2), "once");
+    }
+
+    /// I3: once the version is known the windows open from the server, as after a crash in
+    /// iTerm2 (`TmuxController.m:580-589`, `823-838`).
+    #[test]
+    fn a_restored_gateway_opens_tmuxs_windows_once_the_version_is_known() {
+        let t0 = Instant::now();
+        let (mut t, _) = restored(t0);
+        t.writes_due(t0 + RESTORE_WRITE_DELAY);
+        t.gw.take_writes();
+        assert_eq!(t.handshake(tmux_handshake::Ask::Version, Some("3.4")), None);
+        let sent = String::from_utf8(t.gw.take_writes()).unwrap();
+        assert!(sent.contains("show -v -q -t $3 @iterm2_size\r"), "{sent}");
+        let mut t = TmuxGw::new("\r", false, "c".into(), Controller::new(tmux_handshake::FIRST_FREE_TAG), "D".into());
+        t.restore(3, "tdef", t0);
+        assert_eq!(t.handshake(tmux_handshake::Ask::AggressiveResize, Some("aggressive-resize on")).map(|a| a.0), Some("Unsupported tmux option".into()));
+    }
+
+    /// I1: the quit's `%exit` reaches a restored gateway before the version is known, so no
+    /// newline goes out (`TmuxGateway.m:978-980`, `826-831`). Its held handshake still goes when
+    /// the second is up, as iTerm2's delayed enableWrites still fires.
+    #[test]
+    fn the_quits_exit_on_a_restored_gateway_writes_no_newline() {
+        let t0 = Instant::now();
+        let (mut t, _) = restored(t0);
+        let ev = lines(&mut t, &["%begin 1793828748 574 1", "%end 1793828748 574 1", "%exit"]);
+        assert_eq!(ev.last(), Some(&Event::Exit), "{ev:?}");
+        assert!(t.gw.take_writes().is_empty());
+        assert_eq!(t.late_writes(), Some((t0 + RESTORE_WRITE_DELAY, kick_off_bytes())), "no newline after the handshake");
+        assert_eq!(t.late_writes(), None, "once");
+    }
+
+    /// I4: a restored pane that is not talking to tmux prints iTerm2's words and lets go
+    /// (`TmuxGateway.m:989-993`).
+    #[test]
+    fn a_restored_gateway_lets_go_of_a_stream_that_is_not_tmux() {
+        let (mut t, _) = restored(Instant::now());
+        let ev = lines(&mut t, &["Connection to host closed."]);
+        assert_eq!(ev, vec![Event::Print("Unrecognized command from tmux. Did your ssh session die? The command was:".into()), Event::Print("Connection to host closed.".into()), Event::Lost]);
+    }
+
+    /// At a shell nothing runs tmux: the held writes are dropped (`PS:11640-11642`).
+    #[test]
+    fn a_restored_gateway_at_a_shell_sends_nothing() {
+        let t0 = Instant::now();
+        let (mut t, _) = restored(t0);
+        t.stop_restored();
+        assert!(!t.writes_due(t0 + RESTORE_WRITE_DELAY));
+        assert!(t.gw.take_writes().is_empty());
+        assert_eq!(t.late_writes(), None);
+    }
 }
