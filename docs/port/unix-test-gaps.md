@@ -5,10 +5,10 @@ P0 made the crate and all programs compile on Linux and macOS. P1 (the Unix core
 Run of 2026-11-03 on the P2 Task 10 tree (debug build, `scripts/check-unix --test`):
 
 - Linux: **6447 passed, 167 failed**. 165 are named by cause below. The other 2, `trigger_eval::tests::inject_does_not_restart_the_budget` and `trigger_eval::tests::lines_gone_before_the_check`, are load flakes of the full run (they pass alone).
-- macOS (arm64 VM, same tree): **6481 passed, 160 failed**. 155 are the same causes as Linux (the counts differ because some path tests happen to pass on a Mac: Windows path and platform rules 107 of 115, Timing 3 of 5), and 5 fail only on macOS (see "macOS-only differences").
+- macOS (arm64 VM, same tree): **6481 passed, 160 failed** at 7e81d1d6; the licenses fix after it moves one to passed (6482 and 159). 155 are the same causes as Linux (the counts differ because some path tests happen to pass on a Mac: Windows path and platform rules 107 of 115, Timing 3 of 5), and 4 fail only on macOS (see "macOS-only differences").
 - Nothing fails that is not named here. At the start of P1 Linux gave 6270 passed, 220 failed; at the end of P1 Linux 6403 passed, 173 failed and macOS 6405 passed, 171 failed.
 
-Windows: the Windows lib, lib tests and binaries type-check from Linux (`scripts/win-check`: 0 errors, 2 warnings, both the `fetch_update` deprecations in `session_log.rs`). **The Windows test run (`scripts/xt test --lib`) is PENDING, not passed**: the Windows host is on hold, so it waits until the owner clears the hold. Until it runs, no claim is made that the Windows suite is green after P1 or P2. P2 changed Windows-visible code in three places (the pointer binding row label, the Settings schema wording through `platform::native_words`, the profile list and tag sidebar scroll fix), each kept byte for byte on Windows by tests that run there.
+Windows: the Windows lib, lib tests and binaries type-check from Linux (`scripts/win-check`: 0 errors, 2 warnings, both the `fetch_update` deprecations in `session_log.rs`). **The Windows test run (`scripts/xt test --lib`) PASSES: 6855 passed, 0 failed, 147 ignored** (2026-11-03, after the P2 head). The first run at 7e81d1d6 gave 3 failures, all tests P2 left behind, none a Windows behavior change: `licenses::tests::every_dependency_is_listed` (it asked for `global-hotkey`, a macOS-only crate), `platform::windows::chrome::menu_bar_replace_tests::install_menus_replaces_through_the_helper` (a source scan still naming `hwnd` after P2 named it `view`) and `remote_prefs::tests::the_live_folder_is_refused` (slash paths, which the judge refuses on Windows). The tests were fixed; the code was not changed.
 
 A failure that passes alone is a flake (see Timing).
 
@@ -239,9 +239,8 @@ Recorded after the Task 8 re-review; none is fixed, each is a residual window af
 
 ## macOS-only differences
 
-macOS has the same failures as Linux except these 5, which fail only on macOS. The pwsh install profile test passes there now (it runs `pwsh` where that is the shell and returns when the program is missing).
+macOS has the same failures as Linux except these 4, which fail only on macOS. The licenses test passes there now: it checks only the crates the running target builds (2026-11-03). The pwsh install profile test passes there now (it runs `pwsh` where that is the shell and returns when the program is missing).
 
-- `licenses::tests::every_dependency_is_listed`: `webview2-com` has no license entry (Windows-only crate, absent from the Unix tree); it passes on Linux now
 - `pane::tests::the_pwsh_script_emits_prompt_marks`: no `pwsh` on the macOS VM
 - `pane::tests::the_pwsh_script_keeps_the_prompt_state`: no `pwsh` on the macOS VM
 - `render::tests::every_effect_lights_both_box_lines_on_enter`: a render test that already failed on the macOS VM at the start of P1; not diagnosed

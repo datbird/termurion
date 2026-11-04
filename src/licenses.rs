@@ -84,8 +84,18 @@ mod tests {
     #[test]
     fn every_dependency_is_listed() {
         let manifest: toml::Table = toml::from_str(include_str!("../Cargo.toml")).unwrap();
+        // The list is built from this target's tree, so only this target's crates are checked
+        // (a macOS-only crate is not in a Windows build, and the other way round).
+        let applies = |key: &str| match key.strip_prefix("cfg").and_then(|k| k.strip_prefix('(')).and_then(|k| k.strip_suffix(')')).unwrap_or(key) {
+            "windows" => crate::platform::IS_WINDOWS,
+            "unix" => !crate::platform::IS_WINDOWS,
+            "target_os = \"macos\"" => crate::platform::OS_NAME == "macOS",
+            "all(unix, not(target_os = \"macos\"))" => crate::platform::OS_NAME == "Linux",
+            other => panic!("teach this test the target {other}"),
+        };
+        let targets = manifest.get("target").and_then(|t| t.as_table()).into_iter().flat_map(|t| t.iter()).filter(|(key, _)| applies(key)).filter_map(|(_, v)| v.as_table());
         let mut names = Vec::new();
-        for table in std::iter::once(&manifest).chain(manifest.get("target").and_then(|t| t.as_table()).into_iter().flat_map(|t| t.values().filter_map(|v| v.as_table()))) {
+        for table in std::iter::once(&manifest).chain(targets) {
             if let Some(d) = table.get("dependencies").and_then(|d| d.as_table()) {
                 names.extend(d.keys().cloned());
             }

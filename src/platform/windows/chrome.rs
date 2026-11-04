@@ -229,7 +229,7 @@ mod menu_bar_replace_tests {
     fn install_menus_replaces_through_the_helper() {
         let src = include_str!("../../app/menu.rs");
         let body = src.split("pub(super) fn install_menus").nth(1).unwrap().split("muda::MenuEvent::set_event_handler").next().unwrap();
-        assert!(body.contains("chrome::replace_menu_bar(earlier, &menu, hwnd, self.want_menu_hidden())") && !body.contains("menu.init_for_hwnd"));
+        assert!(body.contains("chrome::replace_menu_bar(earlier, &menu, view, self.want_menu_hidden())") && !body.contains("menu.init_for_hwnd"));
     }
 }
 

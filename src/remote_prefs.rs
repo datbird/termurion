@@ -617,17 +617,21 @@ mod tests {
 
     #[test]
     fn the_live_folder_is_refused() {
-        let home = Path::new("/u");
-        let live = Path::new("/u/Library/Preferences");
+        // Slash paths off Windows, drive paths on it (the judge refuses a path without a drive there).
+        let by = crate::platform::by_os;
+        let home = Path::new(by(r"C:\u", "/u"));
+        let live_text = by(r"C:\u\Library\Preferences", "/u/Library/Preferences");
+        let live = Path::new(live_text);
         let always = |_: &Path| true;
         let no_link = |_: &Path| None;
-        assert!(!location_valid("/u/Library/Preferences", home, &no_link, &always, Some(live)));
-        assert!(!location_valid("~/Library/Preferences/", home, &no_link, &always, Some(live)));
-        assert!(location_valid("/u/iCloud", home, &no_link, &always, Some(live)));
-        assert!(location_valid("/u/Library/Preferences", home, &no_link, &always, None), "off the Mac nothing is live");
+        assert!(!location_valid(live_text, home, &no_link, &always, Some(live)));
+        assert!(!location_valid(by("~\\Library\\Preferences\\", "~/Library/Preferences/"), home, &no_link, &always, Some(live)));
+        assert!(location_valid(by(r"C:\u\iCloud", "/u/iCloud"), home, &no_link, &always, Some(live)));
+        assert!(location_valid(live_text, home, &no_link, &always, None), "off the Mac nothing is live");
         // A link that leads to it is refused too.
-        let via = |p: &Path| (p == Path::new("/u/prefs")).then(|| PathBuf::from("/u/Library/Preferences"));
-        assert!(!location_valid("/u/prefs", home, &via, &always, Some(live)));
+        let prefs = by(r"C:\u\prefs", "/u/prefs");
+        let via = |p: &Path| (p == Path::new(prefs)).then(|| PathBuf::from(live_text));
+        assert!(!location_valid(prefs, home, &via, &always, Some(live)));
     }
 
     #[test]
