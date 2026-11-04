@@ -3583,7 +3583,9 @@ mod tests {
         let ui = include_str!("app/tmux_ui.rs");
         assert!(ui.contains("Do::Detached(nl) => {\n                                if let Some(p) = self.panes.get_mut(id) {\n                                    p.reply(&nl);\n                                    p.own_mut().print_message(\"Detached\");"), "the app writes the newline and prints Detached");
         let restore = include_str!("app/arrange_ui.rs");
-        assert!(restore.contains("if arrangement::is_tmux_gateway(&session) {\n                            self.restore_tmux_gateway(id);"), "an attached gateway comes back as one");
+        assert!(restore.contains("gateway_back = arrangement::is_tmux_gateway(&session);"), "an attached gateway comes back as one");
+        let (text, back) = (restore.find("p.screen.feed_inert(&format!").unwrap(), restore.find("if gateway_back {\n                        self.restore_tmux_gateway(id);").unwrap());
+        assert!(text < back, "after its restored text");
     }
 
     #[test]

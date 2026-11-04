@@ -700,6 +700,8 @@ impl App {
             let held = !archive && arrangement::held_idle(&session);
             let inhibit = self.restore_inhibits(descriptor.as_ref()).held(held);
             let inhibited = inhibit.with(attach.is_some()) && !archive;
+            // A gateway whose job came back is one again, after its text (`PS:2109-2115`).
+            let mut gateway_back = false;
             let id = if archive {
                 launched = false;
                 self.archived_pane(area, guid.as_deref())
@@ -708,10 +710,7 @@ impl App {
                 Some((host_id, pid, since)) => match self.attach_pane(area, guid.as_deref(), host_id, pid, since, super::restore_ui::saved_cookie(&session)) {
                     Ok(id) => {
                         launched = false;
-                        // Its job came back: a gateway is one again (`PS:2109-2115`).
-                        if arrangement::is_tmux_gateway(&session) {
-                            self.restore_tmux_gateway(id);
-                        }
+                        gateway_back = arrangement::is_tmux_gateway(&session);
                         Some(id)
                     }
                     Err(e) => {
@@ -782,6 +781,9 @@ impl App {
                             // The saved text comes back as the session's history, as plain text.
                             p.screen.feed_inert(&format!("{text}\n"));
                         }
+                    }
+                    if gateway_back {
+                        self.restore_tmux_gateway(id);
                     }
                     self.restore_clippings(id, &session);
                     if let Some(p) = self.panes.get_mut(&id) {
