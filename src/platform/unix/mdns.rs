@@ -6,7 +6,7 @@ pub struct Browser;
 
 impl Browser {
     pub fn start(_notify: crate::platform::pty::Notify) -> Result<Browser, String> {
-        Err(crate::platform::Unsupported { feature: "Bonjour discovery" }.to_string())
+        Err(crate::platform::Unsupported { feature: "Bonjour discovery", plural: false }.to_string())
     }
 
     pub fn try_event(&self) -> Option<Event> {

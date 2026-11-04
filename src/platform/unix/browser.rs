@@ -18,7 +18,7 @@ use crate::webhost::{self, Answer, EnvOptions, Event, Sink, Store, ViewId};
 const FEATURE: &str = "Browser";
 
 fn no() -> String {
-    Unsupported { feature: FEATURE }.to_string()
+    Unsupported { feature: FEATURE, plural: false }.to_string()
 }
 
 pub fn available() -> Result<(), Unsupported> {

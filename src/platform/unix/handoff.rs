@@ -30,7 +30,7 @@ pub fn can_serve(_api: &PtyApi) -> bool {
 }
 
 pub fn register(_send: Box<dyn Fn(Handoff) + Send + Sync>, _api: &PtyApi) -> Result<Server, String> {
-    Err(Unsupported { feature: FEATURE }.into())
+    Err(Unsupported { feature: FEATURE, plural: false }.into())
 }
 
 /// Nothing arrives on Unix, so there is nothing to refuse (process teardown calls it on every OS).

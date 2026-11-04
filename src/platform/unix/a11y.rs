@@ -17,7 +17,7 @@ pub struct Host {
 impl Host {
     /// Always Err: there is no accessibility backend, and the caller shows the text.
     pub fn install(_hwnd: isize, _send: Box<dyn Fn(Request) + Send + Sync>) -> Result<Host, String> {
-        Err(Unsupported { feature: FEATURE }.into())
+        Err(Unsupported { feature: FEATURE, plural: false }.into())
     }
 
     pub fn publish(&self, _snap: WindowSnapshot) {

@@ -22,7 +22,7 @@ pub fn plan(_text: &str, html: &str, rtf: &str) -> Plan {
         };
     }
     if !rtf.is_empty() {
-        return Plan::Refuse(Unsupported { feature: "Copy with styles as RTF" });
+        return Plan::Refuse(Unsupported { feature: "Copy with styles as RTF", plural: false });
     }
     Plan::Plain
 }
@@ -187,7 +187,7 @@ mod tests {
         // A header that cannot be read never reaches the clipboard as HTML.
         assert_eq!(plan("a", "Version:0.9\r\nStartHTML:xx\r\n<b>a</b>", ""), Plan::Plain);
         assert_eq!(plan("a", "<b>a</b>", ""), Plan::Html("<b>a</b>".into()));
-        assert_eq!(plan("a", "", "{\\rtf1}"), Plan::Refuse(Unsupported { feature: "Copy with styles as RTF" }));
+        assert_eq!(plan("a", "", "{\\rtf1}"), Plan::Refuse(Unsupported { feature: "Copy with styles as RTF", plural: false }));
     }
 
     #[test]

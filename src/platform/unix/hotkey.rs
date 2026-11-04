@@ -1,6 +1,6 @@
 //! The hotkey window needs a native handle and a system-wide hotkey, and Unix has neither yet
 //! (`keys::set_hotkeys` reports Unsupported, `window::hwnd_of` is None). Calls that can fail say
-//! `Unsupported { feature: "Hotkey window" }`; the window handle calls below can never be reached with
+//! `Unsupported { feature: "Hotkey window", plural: false }`; the window handle calls below can never be reached with
 //! a handle, and answer "nothing" for one handed in anyway.
 
 use super::super::Unsupported;
@@ -33,7 +33,7 @@ pub fn order_front(_hwnd: isize, _minimized: bool) {}
 
 /// The hotkey window is not available on Unix yet.
 pub fn available() -> Result<(), Unsupported> {
-    Err(Unsupported { feature: FEATURE })
+    Err(Unsupported { feature: FEATURE, plural: false })
 }
 
 /// Nothing to join: Linux has no hotkey window handle.

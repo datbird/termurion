@@ -202,13 +202,13 @@ mod tests {
 
     impl KeyStore for UnsupportedStore {
         fn read(&mut self, _t: &str) -> Result<Option<Secret>, String> {
-            Err(crate::platform::Unsupported { feature: "Password manager" }.to_string())
+            Err(crate::platform::Unsupported { feature: "Password manager", plural: false }.to_string())
         }
         fn write(&mut self, _t: &str, _u: &str, _k: &Secret) -> Result<(), String> {
-            Err(crate::platform::Unsupported { feature: "Password manager" }.to_string())
+            Err(crate::platform::Unsupported { feature: "Password manager", plural: false }.to_string())
         }
         fn delete(&mut self, _t: &str) -> Result<(), String> {
-            Err(crate::platform::Unsupported { feature: "Password manager" }.to_string())
+            Err(crate::platform::Unsupported { feature: "Password manager", plural: false }.to_string())
         }
     }
 

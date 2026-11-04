@@ -13,7 +13,7 @@ pub struct Coprocess {
 
 impl Coprocess {
     pub fn start(_command: &str, _mute: bool, _cwd: &std::path::Path, _notify: Arc<dyn Fn() + Send + Sync>) -> Result<Coprocess, String> {
-        Err(Unsupported { feature: "Coprocesses" }.into())
+        Err(Unsupported { feature: "Coprocesses", plural: true }.into())
     }
 
     pub fn pid(&self) -> u32 {

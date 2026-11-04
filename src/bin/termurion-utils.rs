@@ -11,7 +11,7 @@ fn main() {
     #[cfg(not(windows))]
     {
         // The utilities read the console through Windows' console API; no terminal reader on Unix yet.
-        eprintln!("{}", termurion::platform::Unsupported { feature: "The terminal utilities" });
+        eprintln!("{}", termurion::platform::Unsupported { feature: "The terminal utilities", plural: true });
         std::process::exit(1);
     }
 }

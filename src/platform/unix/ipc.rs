@@ -20,7 +20,7 @@ const API: &str = "The automation API";
 const ALLOW_ALL: &str = "The automation allow-all file";
 
 fn no<T>() -> Result<T, String> {
-    Err(Unsupported { feature: FEATURE }.into())
+    Err(Unsupported { feature: FEATURE, plural: false }.into())
 }
 
 fn euid() -> u32 {
@@ -659,20 +659,20 @@ pub fn user_sid() -> Result<String, String> {
 }
 
 pub fn available() -> Result<(), Unsupported> {
-    Err(Unsupported { feature: ALLOW_ALL })
+    Err(Unsupported { feature: ALLOW_ALL, plural: false })
 }
 
 pub fn set_file_owner_to_user(_file: &std::fs::File) -> Result<(), String> {
-    Err(Unsupported { feature: ALLOW_ALL }.into())
+    Err(Unsupported { feature: ALLOW_ALL, plural: false }.into())
 }
 
 pub fn create_new_for_write(_path: &str, _set_owner: bool) -> Result<std::fs::File, String> {
-    Err(Unsupported { feature: ALLOW_ALL }.into())
+    Err(Unsupported { feature: ALLOW_ALL, plural: false }.into())
 }
 
 /// No peer check on Unix yet, so every connection is refused.
 pub fn check_peer(_peer: std::net::SocketAddr, _local: std::net::SocketAddr) -> Result<u32, String> {
-    Err(Unsupported { feature: API }.into())
+    Err(Unsupported { feature: API, plural: false }.into())
 }
 
 /// No allow-all file is read on Unix: the check is Windows' (owner SID and DACL), so every start

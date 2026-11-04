@@ -53,7 +53,7 @@ pub fn set_hotkeys(chords: Vec<(u32, crate::hotkey::Chord)>, taps: Vec<(u32, u8)
 
 #[cfg(not(target_os = "macos"))]
 pub fn set_hotkeys(_chords: Vec<(u32, crate::hotkey::Chord)>, _taps: Vec<(u32, u8)>, _min: std::time::Duration, _max: std::time::Duration) -> Result<Vec<(u32, Result<(), String>)>, String> {
-    Err(Unsupported { feature: "System-wide hotkeys" }.into())
+    Err(Unsupported { feature: "System-wide hotkeys", plural: true }.into())
 }
 
 /// The text a key types in the keyboard layout; Unix has no virtual key layout lookup, so a key types nothing here.

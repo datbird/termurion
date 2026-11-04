@@ -5,7 +5,7 @@ use super::super::Unsupported;
 const FEATURE: &str = "Notifications";
 
 fn no() -> Result<(), String> {
-    Err(Unsupported { feature: FEATURE }.into())
+    Err(Unsupported { feature: FEATURE, plural: true }.into())
 }
 
 /// What a click on a notification does. Nothing is shown here, so nothing is clicked.

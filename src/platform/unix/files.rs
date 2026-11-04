@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use crate::localfs::{LocalPath, Unfollowed};
 
 fn unsupported<T>(feature: &'static str) -> io::Result<T> {
-    Err(io::Error::other(String::from(super::super::Unsupported { feature })))
+    Err(io::Error::other(String::from(super::super::Unsupported { feature, plural: false })))
 }
 
 /// A Finder alias file (not a symbolic link) and where it points: Some on macOS when `path` is one,
@@ -148,7 +148,7 @@ pub fn shell_verb(verb: &str, p: &LocalPath, cwd: Option<&LocalPath>, background
     // The folder only matters to ShellExecute.
     let _ = cwd;
     if verb != "open" {
-        return Err(crate::platform::Unsupported { feature: "Editing a file with its app" }.into());
+        return Err(crate::platform::Unsupported { feature: "Editing a file with its app", plural: false }.into());
     }
     // open and xdg-open run programs: the open judge shows those, and hands the opener the
     // canonical path it judged (a link swapped after the judge no longer matters).

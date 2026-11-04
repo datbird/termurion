@@ -7,7 +7,7 @@ use crate::script_provision::{Job, Outcome, Runner, Step, BUILD_TIMEOUT};
 
 /// What a program runner would do, which Unix cannot yet.
 fn provisioning_unsupported() -> String {
-    crate::platform::Unsupported { feature: "Installing Python for scripts" }.to_string()
+    crate::platform::Unsupported { feature: "Installing Python for scripts", plural: false }.to_string()
 }
 
 pub struct RealRunner {

@@ -5,5 +5,5 @@ use std::path::Path;
 use crate::utilities::Ensured;
 
 pub fn ensure(_exe_dir: &Path) -> Result<Ensured, String> {
-    Err(crate::platform::Unsupported { feature: "The command line utilities" }.to_string())
+    Err(crate::platform::Unsupported { feature: "The command line utilities", plural: true }.to_string())
 }

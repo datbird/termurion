@@ -175,11 +175,13 @@ pub fn by_cmd<'a>(other: &'a str, mac: &'a str) -> &'a str {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unsupported {
     pub feature: &'static str,
+    /// The feature is a plural noun ("Notifications are"), so the verb agrees.
+    pub plural: bool,
 }
 
 impl fmt::Display for Unsupported {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {} not available on {} yet", self.feature, if self.feature.ends_with('s') { "are" } else { "is" }, OS_NAME)
+        write!(f, "{} {} not available on {} yet", self.feature, if self.plural { "are" } else { "is" }, OS_NAME)
     }
 }
 
@@ -191,9 +193,9 @@ impl From<Unsupported> for String {
     }
 }
 
-/// Shorthand for a stub's return value.
+/// Shorthand for a stub's return value (a singular feature).
 pub fn unsupported<T>(feature: &'static str) -> Result<T, Unsupported> {
-    Err(Unsupported { feature })
+    Err(Unsupported { feature, plural: false })
 }
 
 #[cfg(test)]
@@ -203,19 +205,58 @@ mod tests {
     #[test]
     fn unsupported_names_feature_and_os() {
         assert_eq!(
-            Unsupported { feature: "Notifications" }.to_string(),
+            Unsupported { feature: "Notifications", plural: true }.to_string(),
             format!("Notifications are not available on {} yet", OS_NAME)
         );
-        assert_eq!(Unsupported { feature: "Printing" }.to_string(), format!("Printing is not available on {} yet", OS_NAME));
+        assert_eq!(Unsupported { feature: "Printing", plural: false }.to_string(), format!("Printing is not available on {} yet", OS_NAME));
         assert_eq!(
-            Unsupported { feature: "The command line utilities" }.to_string(),
+            Unsupported { feature: "The command line utilities", plural: true }.to_string(),
             format!("The command line utilities are not available on {} yet", OS_NAME)
         );
     }
 
+    /// Every feature named in the source reads with its own verb (no guess from a final "s").
+    #[test]
+    fn every_unsupported_text_has_its_own_verb() {
+        let want = [
+            "Bonjour discovery is", "Checking for updates is", "Coprocesses are", "Copy with styles as RTF is", "Disable App Nap is",
+            "Download quarantine is", "Dynamic Profiles are", "Editing a file with its app is", "Finding the process on a connection is",
+            "Finding the process on a port is", "Hotkey window is", "Installing Python for scripts is", "Moving to the Trash is",
+            "Notifications are", "Password manager command line tools are", "Password manager is", "Printing is", "Python API scripts are",
+            "Reporting to Termurion is", "Running a command line is", "Running git is", "Saving the debug log is",
+            "Saving the debug log's files is", "Settings from a URL are", "System-wide hotkeys are", "The color dialog is",
+            "The command line utilities are", "The registry is", "The terminal utilities are", "Verifying a signed script archive is", "Virtual desktops are", "X is",
+        ];
+        fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(std::fs::read_to_string(&p).unwrap());
+                }
+            }
+        }
+        let mut sources = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut sources);
+        let mut found = std::collections::BTreeSet::new();
+        for src in &sources {
+            for part in src.split("Unsupported { feature: \"").skip(1) {
+                let Some((feature, rest)) = part.split_once('"') else { continue };
+                let Some(plural) = rest.strip_prefix(", plural: ").and_then(|r| r.split(' ').next()) else { continue };
+                let u = Unsupported { feature: Box::leak(feature.to_string().into_boxed_str()), plural: plural == "true" };
+                found.insert(u.to_string().replace(&format!(" not available on {OS_NAME} yet"), ""));
+            }
+        }
+        assert_eq!(found, want.iter().map(|s| s.to_string()).collect(), "an Unsupported text changed; check its verb");
+        // The two the old guess got wrong, word for word.
+        assert_eq!(Unsupported { feature: "Checking for updates", plural: false }.to_string(), format!("Checking for updates is not available on {OS_NAME} yet"));
+        assert_eq!(Unsupported { feature: "Installing Python for scripts", plural: false }.to_string(), format!("Installing Python for scripts is not available on {OS_NAME} yet"));
+    }
+
     #[test]
     fn unsupported_into_string() {
-        let s = String::from(Unsupported { feature: "X" });
+        let s = String::from(Unsupported { feature: "X", plural: false });
         assert!(s.contains("X is not available"));
     }
 }

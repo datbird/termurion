@@ -217,7 +217,7 @@ pub struct ScriptProcess {
 
 impl ScriptProcess {
     pub fn start(_program: &std::path::Path, _args: &[String], _env: &[(String, String)], _cwd: Option<&std::path::Path>, _notify: crate::platform::pty::Notify) -> Result<ScriptProcess, String> {
-        Err(Unsupported { feature: "Python API scripts" }.into())
+        Err(Unsupported { feature: "Python API scripts", plural: true }.into())
     }
 
     pub fn pid(&self) -> u32 {
@@ -269,13 +269,13 @@ impl ProcessRunner {
 
 impl crate::pwm_run::Runner for ProcessRunner {
     fn run(&mut self, _r: crate::pwm_run::Request) -> Result<crate::pwm_run::Output, String> {
-        Err(Unsupported { feature: "Password manager command line tools" }.into())
+        Err(Unsupported { feature: "Password manager command line tools", plural: true }.into())
     }
 }
 
 /// A command line is cmd.exe's; no shell is chosen for one on Unix yet.
 pub fn command_for_line(_line: &str) -> Result<std::process::Command, Unsupported> {
-    Err(Unsupported { feature: "Running a command line" })
+    Err(Unsupported { feature: "Running a command line", plural: false })
 }
 
 /// A child never opens a console window on Unix.

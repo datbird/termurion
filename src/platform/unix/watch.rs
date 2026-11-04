@@ -17,7 +17,7 @@ fn note() {
 
 /// Dynamic Profiles are read on Windows only until the trusted open exists here.
 pub fn dynamic_profiles() -> Result<(), crate::platform::Unsupported> {
-    Err(crate::platform::Unsupported { feature: "Dynamic Profiles" })
+    Err(crate::platform::Unsupported { feature: "Dynamic Profiles", plural: true })
 }
 
 /// Stops every watch: there is none.

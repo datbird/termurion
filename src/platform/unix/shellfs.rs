@@ -12,7 +12,7 @@ pub fn desktop() -> Option<PathBuf> {
 }
 
 pub fn recycle(_path: &Path) -> Result<(), Unsupported> {
-    Err(Unsupported { feature: "Moving to the Trash" })
+    Err(Unsupported { feature: "Moving to the Trash", plural: false })
 }
 
 /// Nothing says which app edits `.py`; the caller reveals the file instead.

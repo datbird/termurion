@@ -9,7 +9,7 @@ const FEATURE: &str = "AI chat";
 
 /// No fetch tool is used on Unix yet.
 pub fn fetch_text(_url: &str, _timeout: Option<f64>) -> super::super::http::Fetched {
-    Err((-1, Unsupported { feature: "Settings from a URL" }.to_string()))
+    Err((-1, Unsupported { feature: "Settings from a URL", plural: true }.to_string()))
 }
 
 struct NoTransport;
@@ -36,7 +36,7 @@ impl Call for Failed {
 
 impl Transport for NoTransport {
     fn start_bounded(&self, _request: HttpRequest, _options: Options, _bounds: Bounds, notify: Notify) -> Box<dyn Call> {
-        let error = Unsupported { feature: FEATURE }.to_string();
+        let error = Unsupported { feature: FEATURE, plural: false }.to_string();
         notify();
         Box::new(Failed { event: Some(HttpEvent::Done { body: String::new(), error: Some(error) }) })
     }

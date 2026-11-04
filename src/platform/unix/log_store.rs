@@ -14,12 +14,12 @@ pub fn log_dirs() -> Vec<LocalPath> {
 
 /// The debug log is saved by the Windows folder rules; Unix has no log folder yet.
 pub fn save(_header: &str, _body: &str, _footer: &str, _append: bool) -> Result<PathBuf, String> {
-    Err(crate::platform::Unsupported { feature: "Saving the debug log" }.to_string())
+    Err(crate::platform::Unsupported { feature: "Saving the debug log", plural: false }.to_string())
 }
 
 /// The debug log's private files are written by the Windows folder rules; Unix has no log folder yet.
 pub fn save_private(_name: &str, _bytes: &[u8]) -> Result<PathBuf, String> {
-    Err(crate::platform::Unsupported { feature: "Saving the debug log's files" }.to_string())
+    Err(crate::platform::Unsupported { feature: "Saving the debug log's files", plural: false }.to_string())
 }
 
 /// There is no old file to remove: nothing is ever saved.

@@ -275,7 +275,7 @@ mod no_pipe {
 
     /// Always Err: the launch pipe is not available on Unix, and the caller logs the text.
     pub fn listen(_notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<Serving, ListenError> {
-        Err(ListenError::Unsupported(crate::platform::Unsupported { feature: super::LISTEN_FEATURE }))
+        Err(ListenError::Unsupported(crate::platform::Unsupported { feature: super::LISTEN_FEATURE, plural: false }))
     }
 
     /// A served pipe. Nothing makes one on Unix.
@@ -518,7 +518,7 @@ mod tests {
     fn listen_errors_keep_their_text() {
         assert_eq!(ListenError::Failed("x".into()).to_string(), "x");
         let want = format!("Single-instance link handoff is not available on {} yet", crate::platform::OS_NAME);
-        assert_eq!(ListenError::Unsupported(crate::platform::Unsupported { feature: LISTEN_FEATURE }).to_string(), want);
+        assert_eq!(ListenError::Unsupported(crate::platform::Unsupported { feature: LISTEN_FEATURE, plural: false }).to_string(), want);
     }
 
     fn argv(parts: &[&str]) -> Vec<OsString> {

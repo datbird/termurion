@@ -11,7 +11,7 @@ pub struct Setup;
 pub fn page_setup(_owner: isize, _setup: &mut Setup) {}
 
 pub fn print(_owner: isize, _setup: &mut Setup, _title: &str, _rows: &mut [Row], _black_and_white: &mut bool, _cols: usize, _family: &str, _size_pt: f32) -> Result<bool, String> {
-    Err(Unsupported { feature: "Printing" }.into())
+    Err(Unsupported { feature: "Printing", plural: false }.into())
 }
 
 #[cfg(test)]

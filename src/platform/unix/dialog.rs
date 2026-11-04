@@ -87,7 +87,7 @@ pub fn confirm_with_disclosure(_owner: Option<isize>, _topmost: bool, _title: &s
 }
 
 pub fn choose_color(_hwnd: isize, _initial: Option<crate::palette::Rgb>, _swatches: &[crate::palette::Rgb]) -> Result<Option<crate::palette::Rgb>, super::super::Unsupported> {
-    Err(super::super::Unsupported { feature: "The color dialog" })
+    Err(super::super::Unsupported { feature: "The color dialog", plural: false })
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@ use crate::pwm_source::{Caps, Kind, Scope, Source};
 const FEATURE: &str = "Password manager";
 
 fn no<T>() -> Result<T, String> {
-    Err(Unsupported { feature: FEATURE }.into())
+    Err(Unsupported { feature: FEATURE, plural: false }.into())
 }
 
 pub(crate) fn write_generic(_target: &str, _user: &str, _secret: &Secret, _comment: &str, _what: &str) -> Result<(), String> {

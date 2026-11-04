@@ -12,12 +12,12 @@ pub fn check(peer: SocketAddr, local: SocketAddr) -> Result<u32, String> {
 
 /// No connection table on Unix yet.
 pub fn tcp_rows() -> Result<Vec<Row>, String> {
-    Err(Unsupported { feature: "Finding the process on a connection" }.to_string())
+    Err(Unsupported { feature: "Finding the process on a connection", plural: false }.to_string())
 }
 
 /// The listening-port table is a Windows call; Unix reports that it is not available.
 pub fn listen_rows() -> Result<Vec<Row>, String> {
-    Err(Unsupported { feature: "Finding the process on a port" }.to_string())
+    Err(Unsupported { feature: "Finding the process on a port", plural: false }.to_string())
 }
 
 /// The name of a process by id: the one Unix answer, `platform::proc::process_name`.

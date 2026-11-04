@@ -22,7 +22,7 @@ pub fn dll_hardening() -> Result<(), String> {
 }
 
 pub fn opt_out_of_power_throttling() -> Result<(), String> {
-    Err(super::super::Unsupported { feature: "Disable App Nap" }.into())
+    Err(super::super::Unsupported { feature: "Disable App Nap", plural: false }.into())
 }
 
 /// Explorer's "Open with" list has no Unix meaning (a Windows-only extra).

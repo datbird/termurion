@@ -19,7 +19,7 @@ impl Manager {
     }
 
     pub fn move_window(&self, _hwnd: isize, _id: DesktopId) -> Result<(), String> {
-        Err(crate::platform::Unsupported { feature: "Virtual desktops" }.to_string())
+        Err(crate::platform::Unsupported { feature: "Virtual desktops", plural: true }.to_string())
     }
 
     pub fn list(&self) -> Vec<DesktopId> {

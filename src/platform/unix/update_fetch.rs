@@ -6,7 +6,7 @@ use crate::platform::pty::Notify;
 use crate::update::{Fetch, Fetched};
 
 fn unsupported() -> Fetched {
-    Fetched::Transport(crate::platform::Unsupported { feature: "Checking for updates" }.to_string())
+    Fetched::Transport(crate::platform::Unsupported { feature: "Checking for updates", plural: false }.to_string())
 }
 
 pub struct CurlFetch;

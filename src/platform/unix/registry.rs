@@ -11,18 +11,18 @@ impl Registry for HkcuRegistry {
     }
 
     fn set(&mut self, _key: &str, _name: &str, _value: &str) -> Result<(), String> {
-        Err(crate::platform::Unsupported { feature: "The registry" }.to_string())
+        Err(crate::platform::Unsupported { feature: "The registry", plural: false }.to_string())
     }
 
     fn delete_tree(&mut self, _key: &str) -> Result<(), String> {
-        Err(crate::platform::Unsupported { feature: "The registry" }.to_string())
+        Err(crate::platform::Unsupported { feature: "The registry", plural: false }.to_string())
     }
 
     fn delete_value(&mut self, _key: &str, _name: &str) -> Result<(), String> {
-        Err(crate::platform::Unsupported { feature: "The registry" }.to_string())
+        Err(crate::platform::Unsupported { feature: "The registry", plural: false }.to_string())
     }
 
     fn delete_scheme_class(&mut self, _scheme: &str) -> Result<(), String> {
-        Err(crate::platform::Unsupported { feature: "The registry" }.to_string())
+        Err(crate::platform::Unsupported { feature: "The registry", plural: false }.to_string())
     }
 }
