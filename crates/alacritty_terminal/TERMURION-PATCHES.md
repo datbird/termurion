@@ -197,4 +197,8 @@ test data) is left out. Changes:
     step, a shrink pushed main rows into history and the next growth pulled none back, so after the
     program left, the grid's prompt sat far above ConPTY's.
 
+36. `grid/row.rs`: `Row` has an `alt` flag (`alt()`, `set_alt()`), cleared by `reset` and kept by split
+    rows. `term/mod.rs`: `swap_alt` sets it on the alternate screen's history rows as they join the
+    main history, so session restoration can leave them out.
+
 To update alacritty_terminal, copy the new version here and apply these changes again.

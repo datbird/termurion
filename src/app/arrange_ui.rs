@@ -157,7 +157,7 @@ impl App {
         }
         let saved = match contents {
             Contents::None => None,
-            Contents::Plain => Some((arrangement::CONTENTS_KEY, crate::restore_state::cap_lines(&s.all_text(), CONTENT_LINES).to_string())),
+            Contents::Plain => Some((arrangement::CONTENTS_KEY, crate::restore_state::cap_lines(&s.restorable_text(), CONTENT_LINES).to_string())),
             Contents::Styled(_) | Contents::Archive => {
                 let n = if let Contents::Styled(n) = contents { n } else { ARCHIVE_LINES };
                 let (text, (row, col)) = crate::styled_copy::sgr_restorable(s);

@@ -1553,6 +1553,46 @@ mod tests {
         assert_eq!(banner, prompt + 1, "the banner is right under the prompt: {:?}", &got[prompt..banner.min(got.len()).max(prompt)]);
     }
 
+    /// Round 6 (p): a pane that ran plain tmux until its server was killed. The prompt and
+    /// "tmux" fill the row exactly, so zsh wraps onto a blank row, and tmux's last screen joins
+    /// the history when it leaves (iTerm2's alternate scrollback). The saved text keeps the blank
+    /// row and none of tmux's screen, so the restored rows are the ones the pane showed.
+    #[test]
+    fn a_pane_that_ran_tmux_restores_its_own_rows() {
+        use alacritty_terminal::grid::Dimensions;
+        use alacritty_terminal::index::{Column, Line};
+        let rows = |s: &Screen| -> Vec<String> {
+            let g = s.term().grid();
+            let top = -(g.history_size() as i32);
+            (top..g.screen_lines() as i32).map(|l| (0..g.columns()).map(|c| g[Line(l)][Column(c)].c).collect::<String>().trim_end().to_string()).collect()
+        };
+        let prompt = "admin@Manageds-Virtual-Machine ~ % ";
+        let mut s = Screen::with_scrollback(39, 24, 1000);
+        // zsh at the right margin: " \r" wraps onto the next row, then Enter is "\r\r\n".
+        s.feed(format!("{prompt}tmux \r\x1b[K\r\r\n").as_bytes());
+        s.feed(b"\x1b[?1049h\x1b[H\x1b[2Jinner %\x1b[24;1H\x1b[30;42m[0] STATUS\x1b[m\x1b[1;9H");
+        s.feed(b"\x1b[H\x1b[2J\x1b[?1049l[server exited]\r\n");
+        s.feed(format!("{prompt}").as_bytes());
+        let live = rows(&s);
+        assert!(live.iter().any(|l| l.contains("STATUS")), "tmux's screen is in the live history: {live:?}");
+        let shown: Vec<String> = live[live.len() - 24..live.len() - 20].to_vec();
+        assert_eq!(shown, [format!("{prompt}tmux"), String::new(), "[server exited]".into(), prompt.trim_end().to_string()]);
+        let (text, at) = crate::styled_copy::sgr_restorable(&s);
+        assert!(!text.contains("STATUS") && !text.contains("inner"), "{text:?}");
+        let mut r = Screen::with_scrollback(39, 24, 1000);
+        r.feed_restored_sized(&text, Some(at), None, Some((39, 24)));
+        let got = rows(&r);
+        assert!(!got.iter().any(|l| l.contains("STATUS")), "{got:?}");
+        let at_prompt = got.iter().position(|l| l.ends_with("tmux")).unwrap_or_else(|| panic!("{got:?}"));
+        assert_eq!(&got[at_prompt..at_prompt + 4], &shown[..], "{got:?}");
+        // Saved again, the rows stay as they are.
+        let (again, _) = crate::styled_copy::sgr_restorable(&r);
+        assert_eq!(again, text);
+        // Plain contents (an arrangement file) leave tmux's screen out too.
+        assert!(!s.restorable_text().contains("STATUS"));
+        assert!(s.restorable_text().contains("[server exited]"));
+    }
+
     #[test]
     fn restore_matches_the_saved_viewport() {
         use alacritty_terminal::index::{Column, Line};

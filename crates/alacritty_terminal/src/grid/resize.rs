@@ -150,7 +150,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                 row.grow(columns);
             }
             while row.len() > columns {
-                let (time, block, porthole) = (row.time, row.block, row.porthole);
+                let (time, block, porthole, alt) = (row.time, row.block, row.porthole, row.alt);
                 let Some(mut rest) = row.shrink(columns) else { break };
                 if let Some(cell) = row.last_mut() {
                     cell.flags_mut().insert(Flags::WRAPLINE);
@@ -164,6 +164,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                 row.time = time;
                 row.block = block;
                 row.porthole = porthole;
+                row.alt = alt;
             }
             fitted.push(row);
         }
@@ -471,10 +472,12 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                     let time = new_raw.last().map_or(0, |r: &Row<T>| r.time);
                     let block = new_raw.last().map_or(0, |r: &Row<T>| r.block);
                     let porthole = new_raw.last().map_or(0, |r: &Row<T>| r.porthole);
+                    let alt = new_raw.last().is_some_and(|r: &Row<T>| r.alt);
                     row = Row::from_vec(wrapped, occ);
                     row.time = time;
                     row.block = block;
                     row.porthole = porthole;
+                    row.alt = alt;
 
                     if i < self.display_offset {
                         // Since we added a new line, rotate up the viewport.

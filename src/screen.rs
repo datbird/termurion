@@ -2617,6 +2617,24 @@ impl Screen {
     }
 
     /// The whole buffer as text, oldest line first, trailing spaces trimmed.
+    /// The text an arrangement with contents saves: the main screen and its history, less the
+    /// rows a full-screen program left in it (as session restoration saves).
+    pub fn restorable_text(&self) -> String {
+        let grid = self.term.primary_grid();
+        let top = -(grid.history_size() as i32);
+        let mut out = String::new();
+        for line in (top..grid.screen_lines() as i32).filter(|&l| l >= 0 || !grid[Line(l)].alt()) {
+            let mut text = String::new();
+            self.push_row_text(&mut text, &grid[Line(line)]);
+            out.push_str(text.trim_end());
+            out.push('\n');
+        }
+        let trimmed = out.trim_end_matches('\n').len();
+        out.truncate(trimmed);
+        out.push('\n');
+        out
+    }
+
     pub fn all_text(&self) -> String {
         let grid = self.term.grid();
         let top = -(grid.history_size() as i32);

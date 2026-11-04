@@ -1008,7 +1008,11 @@ impl<T> Term<T> {
             // Termurion patch 35: the main screen takes the size that came while it was away.
             self.resize_main_to_current();
             // Termurion patch: the alternate screen's history goes above the main history.
-            let rows = self.grid.take_history();
+            let mut rows = self.grid.take_history();
+            // Termurion patch 36: each row says it came from the alternate screen.
+            for row in &mut rows {
+                row.set_alt(true);
+            }
             let by = rows.len();
             if by > 0 {
                 // Termurion patch: every absolute row number below the main grid's `scrolled_off`

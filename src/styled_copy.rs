@@ -399,13 +399,14 @@ pub fn sgr_all(screen: &Screen) -> String {
 
 /// Session restoration's contents: the main screen's history and every row of its screen
 /// (blank rows too, so the rows line up with the shell's own view), and its cursor as
-/// (row, column) on the screen.
+/// (row, column) on the screen. History rows a full-screen program left behind (the alternate
+/// screen's history) are not saved.
 pub fn sgr_restorable(screen: &Screen) -> (String, (usize, usize)) {
     let g = screen.term().primary_grid();
     let top = -(g.history_size() as i32);
-    let spans: Vec<_> = (top..g.screen_lines() as i32).map(|l| (l, 0, g.columns() - 1)).collect();
+    let spans: Vec<_> = (top..g.screen_lines() as i32).filter(|&l| l >= 0 || !g[Line(l)].alt()).map(|l| (l, 0, g.columns() - 1)).collect();
     let at = g.cursor.point;
-    (sgr_grid(g, &spans, crate::encoding::Form::None, false), (at.line.0.max(0) as usize, at.column.0))
+    (sgr_grid(g, &spans, crate::encoding::Form::None, false, true), (at.line.0.max(0) as usize, at.column.0))
 }
 
 pub fn sgr_text(screen: &Screen) -> String {
@@ -413,24 +414,29 @@ pub fn sgr_text(screen: &Screen) -> String {
 }
 
 pub(crate) fn sgr_over(screen: &Screen, spans: &[(i32, usize, usize)]) -> String {
-    sgr_grid(screen.term().grid(), spans, screen.normalization, false)
+    sgr_grid(screen.term().grid(), spans, screen.normalization, false, false)
 }
 
 /// `sgr_over` for text that is fed to a parser: a control character in a cell (C0, DEL, C1) is
 /// left out, so only the codes written here are sequences (Filter and Zoom, P7).
 pub(crate) fn sgr_over_clean(screen: &Screen, spans: &[(i32, usize, usize)]) -> String {
-    sgr_grid(screen.term().grid(), spans, screen.normalization, true)
+    sgr_grid(screen.term().grid(), spans, screen.normalization, true, false)
 }
 
 /// The cells' text in `form`: Copy with Control Sequences normalizes; session restoration (None)
-/// keeps what the program wrote.
-fn sgr_grid(g: &alacritty_terminal::grid::Grid<Cell>, spans: &[(i32, usize, usize)], form: crate::encoding::Form, clean: bool) -> String {
+/// keeps what the program wrote. `keep_rows`: a blank row that a full row wraps onto is written
+/// as one space, so it wraps there again when the text is fed back (zsh at the right margin).
+fn sgr_grid(g: &alacritty_terminal::grid::Grid<Cell>, spans: &[(i32, usize, usize)], form: crate::encoding::Form, clean: bool, keep_rows: bool) -> String {
     let mut out = String::new();
     let mut last: Option<Vec<String>> = None;
     for (i, (line, from, to)) in spans.iter().enumerate() {
         let hard_end = !wraps_in(g, *line);
         let more = same_line(spans, i);
-        for col in cells_in(g, *line, *from, *to, hard_end && !more) {
+        let cells = cells_in(g, *line, *from, *to, hard_end && !more);
+        if keep_rows && cells.is_empty() && i > 0 && spans[i - 1].0 == line - 1 && wraps_in(g, line - 1) {
+            out.push(' ');
+        }
+        for col in cells {
             let c = &g[Line(*line)][Column(col)];
             let codes = sgr_codes(c);
             if last.as_ref() != Some(&codes) {

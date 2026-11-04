@@ -52,6 +52,9 @@ pub struct Row<T> {
 
     /// Termurion patch: the porthole this row is part of (0 for none).
     pub(crate) porthole: u32,
+
+    /// Termurion patch: the row came from the alternate screen's history.
+    pub(crate) alt: bool,
 }
 
 impl<T: PartialEq> PartialEq for Row<T> {
@@ -82,7 +85,7 @@ impl<T: Default> Row<T> {
             inner.set_len(columns);
         }
 
-        Row { inner, occ: 0, mark: 0, manual: 0, time: 0, fold: 0, note: 0, block: 0, button: 0, porthole: 0 }
+        Row { inner, occ: 0, mark: 0, manual: 0, time: 0, fold: 0, note: 0, block: 0, button: 0, porthole: 0, alt: false }
     }
 
     /// Increase the number of columns in the row.
@@ -145,6 +148,7 @@ impl<T: Default> Row<T> {
         self.block = 0;
         self.button = 0;
         self.porthole = 0;
+        self.alt = false;
     }
 }
 
@@ -152,7 +156,7 @@ impl<T: Default> Row<T> {
 impl<T> Row<T> {
     #[inline]
     pub fn from_vec(vec: Vec<T>, occ: usize) -> Row<T> {
-        Row { inner: vec, occ, mark: 0, manual: 0, time: 0, fold: 0, note: 0, block: 0, button: 0, porthole: 0 }
+        Row { inner: vec, occ, mark: 0, manual: 0, time: 0, fold: 0, note: 0, block: 0, button: 0, porthole: 0, alt: false }
     }
 
     /// Termurion patch: the mark id on this row, 0 for none.
@@ -222,6 +226,17 @@ impl<T> Row<T> {
     #[inline]
     pub fn set_porthole(&mut self, id: u32) {
         self.porthole = id;
+    }
+
+    /// Termurion patch: whether the row came from the alternate screen's history.
+    #[inline]
+    pub fn alt(&self) -> bool {
+        self.alt
+    }
+
+    #[inline]
+    pub fn set_alt(&mut self, alt: bool) {
+        self.alt = alt;
     }
 
     /// Termurion patch: the fold this row stands for.
