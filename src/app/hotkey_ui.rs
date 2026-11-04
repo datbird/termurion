@@ -119,6 +119,9 @@ impl App {
         for (pane, why) in plan.refused {
             self.hotkey_errors.insert(crate::session_hotkeys::error_key(pane), why.text().to_string());
         }
+        // With no hotkey set nothing was asked for: an OS without system-wide hotkeys says nothing
+        // at launch (an Unsupported shows only when a person uses the feature).
+        let asked = !chords.is_empty() || !taps.is_empty();
         match crate::platform::keys::set_hotkeys(chords, taps, min, max) {
             Ok(results) => {
                 for (id, r) in results {
@@ -140,6 +143,7 @@ impl App {
                 }
                 self.banners.clear("hotkeys");
             }
+            Err(_) if !asked => self.banners.clear("hotkeys"),
             Err(e) => self.banners.set("hotkeys", format!("Hotkeys are unavailable: {e}")),
         }
         if too_many {

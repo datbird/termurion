@@ -402,6 +402,8 @@ fn launch(host: &Shared, api: &PtyApi, wake: &mpsc::Sender<u64>, t: Transport, t
             h.sessions.insert(id, Session { pty: Some(pty), ring: Ring::new(RING), pid, cmdline, cwd, cols, rows, exited: None, attached: true, pending: 0, prompt: Default::default() });
             h.send(&Msg::Launched { tag, id, pid });
             drop(h);
+            // The start size, so a resize line after it shows whether the shell started at its real grid.
+            log(&format!("pty: start {cols}x{rows} (session {id})"));
             // Output that came before the session was in the table.
             pump(host, id);
         }

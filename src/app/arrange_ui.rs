@@ -955,13 +955,18 @@ impl App {
             let monitors: Vec<crate::placement::Rect> = super::requests_ui::work_areas().into_iter().map(|(x, y, w, h)| crate::placement::Rect { x: x as f32, y: y as f32, w: w as f32, h: h as f32 }).collect();
             frame = crate::placement::within_screens(frame, &crate::placement::primary_first(monitors));
         }
+        let mut want = None;
         if let Some(g) = self.gpu.as_ref().filter(|_| frame.w > 0.0 && frame.h > 0.0) {
             g.window.set_outer_position(winit::dpi::PhysicalPosition::new(frame.x.round() as i32, frame.y.round() as i32));
             let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
             let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
-            let _ = crate::platform::caption::request_inner_size(&g.window, winit::dpi::PhysicalSize::new((frame.w as u32).saturating_sub(dw).max(1), (frame.h as u32).saturating_sub(dh).max(1)));
+            let size = ((frame.w as u32).saturating_sub(dw).max(1), (frame.h as u32).saturating_sub(dh).max(1));
+            let _ = crate::platform::caption::request_inner_size(&g.window, winit::dpi::PhysicalSize::new(size.0, size.1));
+            want = Some(size);
         }
-        self.adopt_requested_size();
+        if let Some(want) = want {
+            self.adopt_requested_size(want);
+        }
         self.apply_resizable();
         if launch {
             self.restore_desktop(w);
@@ -1161,8 +1166,8 @@ mod tests {
         let set = build.find("self.restore_grid = arrangement::saved_grid(&session)").expect("the saved grid is handed to the start");
         assert!(set < build.find("self.start_pane(area").unwrap() && build.find("self.restore_grid = None").unwrap() > set);
         assert!(body(m, "    fn spawn_pane(").contains("self.restore_grid.take().unwrap_or_else("), "the start takes the saved grid");
-        assert!(body(m, "    fn size_window(").contains("self.adopt_requested_size();"));
-        assert!(body(own, "fn apply_arrangement_window(").contains("self.adopt_requested_size();"));
+        assert!(body(m, "    fn size_window(").contains("self.adopt_requested_size(want);"));
+        assert!(body(own, "fn apply_arrangement_window(").contains("self.adopt_requested_size(want);"));
         let startup = &m[m.find("        self.size_window(None);").unwrap()..];
         assert!(startup.find("self.new_tab(None)").is_some(), "the first window is sized before its first tab");
         assert_eq!(own.matches("feed_restored_sized(").count(), 2, "both restore feeds use the saved grid");

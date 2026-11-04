@@ -49,6 +49,7 @@ fn rebuild_window_gpu(old: Gpu, primary: &GpuHandles, alpha: Option<&AlphaGpu>) 
         shape,
         fx: None,
         bar: Default::default(),
+        layout: None,
         window,
     })
 }

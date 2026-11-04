@@ -429,6 +429,10 @@ struct Gpu {
     fx: Option<fx_ui::FxRuntime>,
     /// The menu bar drawn in this window (Linux; idle elsewhere).
     bar: menu_bar_ui::BarUi,
+    /// A size asked for that the window has not reported yet (X11 applies a size request later;
+    /// a Maximized or Full Screen style is applied after the first tab): panes are laid out for it,
+    /// so a shell starts at its real grid (`adopt_requested_size`).
+    layout: Option<PendingSize>,
     // Dropped last, after the surface.
     window: Arc<Window>,
 }
@@ -3767,7 +3771,7 @@ impl App {
     /// toolbelt, the tab bar and the sessions share (`window_layout`). The line's pixel is
     /// taken here, so panes and tmux's size report see it (`PT:13235-13237`).
     fn window_room(&self) -> Rect {
-        let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
+        let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| g.layout.map_or((g.config.width as f32, g.config.height as f32), |p| (p.want.0 as f32, p.want.1 as f32)));
         let bottom = if self.banners.text().is_some() { self.cell().1 + 8.0 } else { 0.0 };
         let top = self.division_height() + self.bar_strip().unwrap_or(0.0);
         Rect { x: 0.0, y: top, w, h: (h - bottom - top).max(1.0) }
@@ -5058,7 +5062,14 @@ impl App {
         // window opens with its columns.
         let (padx, pady) = (2.0 * side + self.scroll_room(), 2.0 * vert);
         // The line under the title bar is part of the window's decoration (`PT:13235-13237`).
-        let line = self.division_height() + self.caption_strip().unwrap_or(0.0) + self.bar_strip().unwrap_or(0.0);
+        // A menu bar drawn in the window is there before the first tab, so the window is made with
+        // room for it and the first shell does not lose rows after it starts (Linux).
+        if crate::platform::chrome::IN_WINDOW_BAR && self.menu_bar.is_none() {
+            self.install_menus();
+        }
+        // A banner showing at launch takes its row from the window, not from the first shell's grid.
+        let banner = if crate::platform::IS_WINDOWS || self.banners.text().is_none() { 0.0 } else { self.cell().1 + 8.0 };
+        let line = self.division_height() + self.caption_strip().unwrap_or(0.0) + self.bar_strip().unwrap_or(0.0) + banner;
         let Some(g) = self.gpu.as_ref() else { return };
         // A percent-eligible type sizes by its explicit percentages of the work area, in whole
         // cells (`TerminalWindowSizeHelper.measurements`, `measurementToCells`).
@@ -5088,26 +5099,53 @@ impl App {
             w = w.min(work.w - outer.width.saturating_sub(inner.width) as f32);
             h = h.min(work.h - outer.height.saturating_sub(inner.height) as f32);
         }
-        let _ = crate::platform::caption::request_inner_size(&g.window, winit::dpi::PhysicalSize::new(w.max(1.0).ceil() as u32, h.max(1.0).ceil() as u32));
-        self.adopt_requested_size();
+        let want = (w.max(1.0).ceil() as u32, h.max(1.0).ceil() as u32);
+        let _ = crate::platform::caption::request_inner_size(&g.window, winit::dpi::PhysicalSize::new(want.0, want.1));
+        // A Maximized or Full Screen window is applied after its first tab: lay out for its frame now.
+        let want = self.style_inner_size(p.int("Window Type")).unwrap_or(want);
+        self.adopt_requested_size(want);
     }
 
-    /// Where a size request takes effect at once (macOS sets the content size before it returns),
-    /// the surface takes the new size now, so a pane started next gets its real grid and its shell
-    /// is not resized after its first prompt (zsh then shows its reverse-video % mark). Windows
-    /// keeps waiting for its Resized event.
-    pub(super) fn adopt_requested_size(&mut self) {
+    /// The inner size a Maximized or Full Screen window will have on this window's monitor (the work
+    /// area or the whole screen, less the title bar a maximized window keeps). None for other types,
+    /// or when the monitor is not known.
+    fn style_inner_size(&self, style: i64) -> Option<(u32, u32)> {
+        use crate::frames;
+        let g = self.gpu.as_ref()?;
+        let s = frames::unthemed(style);
+        let full = matches!(s, frames::FULL_SCREEN | frames::LION_FULL_SCREEN);
+        if !full && s != frames::MAXIMIZED {
+            return None;
+        }
+        let monitor = g.window.current_monitor()?;
+        let screen = (monitor.size().width, monitor.size().height);
+        if full {
+            return Some(screen);
+        }
+        let work = self.monitor_rects().map_or(screen, |(work, _)| (work.w as u32, work.h as u32));
+        let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
+        Some((work.0.saturating_sub(outer.width.saturating_sub(inner.width)).max(1), work.1.saturating_sub(outer.height.saturating_sub(inner.height)).max(1)))
+    }
+
+    /// The window was asked for inner size `want` (physical pixels). Where the request took effect
+    /// at once (macOS, Wayland) the surface takes it now; where it applies later (X11), or the window
+    /// type changes the frame after the first tab (Maximized, Full Screen), the panes are laid out for
+    /// `want` until the window reports it. Either way a pane started next gets its real grid and its
+    /// shell is not resized after its first prompt (zsh then shows its reverse-video % mark).
+    /// Windows keeps waiting for its Resized event.
+    pub(super) fn adopt_requested_size(&mut self, want: (u32, u32)) {
         if crate::platform::IS_WINDOWS {
             return;
         }
         let Some(g) = self.gpu.as_mut() else { return };
         let size = g.window.inner_size();
-        let Some((w, h)) = usable_size(size.width, size.height) else { return };
-        if (w, h) != (g.config.width, g.config.height) {
-            g.config.width = w;
-            g.config.height = h;
+        let Some(now) = usable_size(size.width, size.height) else { return };
+        if now != (g.config.width, g.config.height) {
+            g.config.width = now.0;
+            g.config.height = now.1;
             g.surface.configure(g.render_device(), &g.config);
         }
+        g.layout = pending_for(now, want, std::time::Instant::now());
     }
 
     /// "Always open in a new window, never in a tab": a new tab of `guid` opens as a window
@@ -8056,6 +8094,18 @@ impl ApplicationHandler<UserEvent> for App {
                 let size = if crate::platform::IS_WINDOWS { size } else { self.gpu.as_ref().map_or(size, |g| g.window.inner_size()) };
                 // Minimizing reports 0x0. Keep every pty at its size, or ConPTY reflows the screen.
                 let Some((w, h)) = usable_size(size.width, size.height) else { return };
+                // The size from before a request that has not landed yet (X11): the surface follows the
+                // window, the panes stay laid out for the size asked for.
+                if let Some(g) = self.gpu.as_mut()
+                    && let Some(p) = g.layout {
+                        if resized_is_stale(p, (w, h), std::time::Instant::now()) {
+                            g.config.width = w;
+                            g.config.height = h;
+                            g.surface.configure(g.render_device(), &g.config);
+                            return;
+                        }
+                        g.layout = None;
+                    }
                 if let Some(g) = self.gpu.as_mut() {
                     g.config.width = w;
                     g.config.height = h;
@@ -8259,7 +8309,7 @@ fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHan
     };
     surface.configure(&device, &config);
     let renderer = Renderer::new(&device, &queue, format, &first_font(), FONT_PX * window.scale_factor() as f32);
-    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, fx: None, bar: Default::default(), window })
+    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, window })
 }
 
 /// The surface size to use, or None while the window is minimized (0 wide or high).
@@ -8279,6 +8329,29 @@ fn key_aux_after<T: PartialEq + Copy>(now: Option<T>, id: T, focused: bool, term
 /// (Windows, Linux) the chord never comes from those windows' keyboard, so nothing changes there.
 fn key_window_close<T: Copy>(selector: &str, key_aux: Option<T>, cmd_is_a_key: bool) -> Option<T> {
     (cmd_is_a_key && selector == "closeCurrentSession:").then_some(key_aux).flatten()
+}
+
+/// A size asked of a window that has not reported it yet: what to lay out for, and the size the
+/// window had when it was asked (a Resized with that size soon after is stale).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PendingSize {
+    want: (u32, u32),
+    before: (u32, u32),
+    at: std::time::Instant,
+}
+
+/// How long a Resized with the old size counts as stale after a request.
+const STALE_RESIZE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// What a window whose inner size is `now` keeps after asking for `want`: nothing when it has it.
+fn pending_for(now: (u32, u32), want: (u32, u32), at: std::time::Instant) -> Option<PendingSize> {
+    let want = (want.0.max(1), want.1.max(1));
+    (now != want).then_some(PendingSize { want, before: now, at })
+}
+
+/// Whether a Resized to `size` is the old size coming back before the request landed.
+fn resized_is_stale(p: PendingSize, size: (u32, u32), now: std::time::Instant) -> bool {
+    size == p.before && size != p.want && now.duration_since(p.at) < STALE_RESIZE
 }
 
 fn usable_size(w: u32, h: u32) -> Option<(u32, u32)> {
@@ -8622,6 +8695,38 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round 4 (I2 on X11): with no hotkey set, an OS without system-wide hotkeys raises no banner
+    /// at launch (the banner shrank the first pane after its shell started).
+    #[test]
+    fn no_hotkey_set_raises_no_banner() {
+        let src = include_str!("hotkey_ui.rs");
+        let body = &src[src.find("pub(super) fn register_hotkeys(").unwrap()..];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        assert!(body.contains("let asked = !chords.is_empty() || !taps.is_empty();"));
+        assert!(body.find("Err(_) if !asked => self.banners.clear(\"hotkeys\")").unwrap() < body.find("Hotkeys are unavailable").unwrap());
+    }
+
+    /// Round 4 (I2): a size request that has not landed yet (X11's request_inner_size gives None
+    /// and the old size; a Maximized or Full Screen type applied after the first tab) is what the
+    /// panes are laid out for, and the old size coming back right after is stale.
+    #[test]
+    fn a_size_not_landed_yet_is_laid_out_for() {
+        let at = std::time::Instant::now();
+        // macOS and Wayland: the window has the size at once, nothing is pending.
+        assert_eq!(pending_for((656, 449), (656, 449), at), None);
+        // X11: the window still reports its first size.
+        let p = pending_for((1000, 650), (656, 449), at).expect("pending on X11");
+        assert_eq!((p.want, p.before), ((656, 449), (1000, 650)));
+        assert!(resized_is_stale(p, (1000, 650), at + std::time::Duration::from_millis(50)), "the old size right after is stale");
+        assert!(!resized_is_stale(p, (656, 449), at), "the size asked for lands");
+        assert!(!resized_is_stale(p, (700, 500), at), "another size (the person resized, the WM chose) is taken");
+        assert!(!resized_is_stale(p, (1000, 650), at + STALE_RESIZE), "a late old size is taken (the WM refused)");
+        // The room panes are laid out in reads the pending size.
+        let own = include_str!("mod.rs");
+        let room = &own[own.find("    fn window_room(&self) -> Rect {").unwrap()..];
+        assert!(room[..room.find("\n    }\n").unwrap()].contains("g.layout.map_or("));
+    }
 
     /// Round 3: Cmd-W while Settings or another panel has the keyboard closes that panel, as in
     /// iTerm2, never the terminal session behind it (which then let typing land in the panel).
