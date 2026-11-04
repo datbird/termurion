@@ -1340,6 +1340,8 @@ impl<T> Term<T> {
         // Termurion patch: the row remembers when it was last written.
         let line = self.grid.cursor.point.line;
         self.grid[line].time = self.stamp;
+        // Termurion patch 36: a row written now is this screen's, whatever it held before.
+        self.grid[line].alt = false;
         if self.block != 0 {
             self.grid[line].block = self.block;
         }

@@ -1593,6 +1593,31 @@ mod tests {
         assert!(s.restorable_text().contains("[server exited]"));
     }
 
+    /// Round 6c: tmux's last screen in the history, then the pane gets taller and the grid pulls
+    /// those rows onto the screen. The save leaves them out there too, the cursor still names
+    /// the prompt's row, and a row the terminal writes over is the shell's again.
+    #[test]
+    fn a_taller_pane_saves_no_alternate_rows() {
+        use alacritty_terminal::index::{Column, Line};
+        let mut s = Screen::with_scrollback(10, 3, 100);
+        s.feed(b"m1\r\nm2\r\n$ ");
+        s.feed(b"\x1b[?1049h\x1b[2;1HTMUXTEXT\r\nSTATUS\x1b[H\x1b[2J\x1b[?1049l");
+        s.resize(10, 8);
+        let (text, at) = crate::styled_copy::sgr_restorable(&s);
+        assert!(!text.contains("TMUXTEXT") && !text.contains("STATUS"), "{text:?}");
+        assert!(text.contains("m1") && text.contains("m2"), "{text:?}");
+        assert!(!s.restorable_text().contains("TMUXTEXT"));
+        let mut r = Screen::with_scrollback(10, 8, 100);
+        r.feed_restored(&text, Some(at), None);
+        let c = r.term().grid().cursor.point;
+        let row: String = (0..2).map(|x| r.term().grid()[Line(c.line.0)][Column(x)].c).collect();
+        assert_eq!((row.as_str(), c.column.0), ("$ ", 2), "{text:?} {at:?}");
+        // Output written over a pulled-down row belongs to the shell.
+        s.feed(b"\x1b[1;1HKEEP");
+        let (text, _) = crate::styled_copy::sgr_restorable(&s);
+        assert!(text.contains("KEEP"), "{text:?}");
+    }
+
     /// Round 6b (Minor 1): the space that keeps a wrapped blank row is plain, whatever color the
     /// row above ends in.
     #[test]
@@ -1616,12 +1641,15 @@ mod tests {
         for cols in [20, 8] {
             let mut s = Screen::with_scrollback(10, 3, 100);
             s.feed(b"AAAAAAAAAAAAA\r\nb\r\nc");
-            s.feed(b"\x1b[?1049hTMUXTEXT\x1b[2J\x1b[?1049l");
+            // The alternate screen scrolls first, so its history starts with a text row (T1) right
+            // after the A row.
+            s.feed(b"\x1b[?1049hT1\r\nT2\r\nT3\r\nT4\r\nTMUXTEXT\x1b[2J\x1b[?1049l");
             s.resize(cols, 3);
             let (text, _) = crate::styled_copy::sgr_restorable(&s);
             let plain: String = crate::restore_state::sgr_safe(&text).split('\x1b').map(|p| p.split_once('m').map_or(p, |(_, t)| t)).collect();
-            assert!(!plain.contains("TMUX") && !plain.contains("XT"), "{cols} columns: {plain:?}");
-            assert!(plain.replace('\n', "").contains(&"A".repeat(13)), "{cols} columns: {plain:?}");
+            assert!(!plain.contains('T') && !plain.contains("XT"), "{cols} columns: {plain:?}");
+            // Kept and still one line (Round 6b Minor 1).
+            assert!(plain.contains(&"A".repeat(13)), "{cols} columns: {plain:?}");
         }
     }
 

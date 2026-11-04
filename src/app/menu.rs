@@ -1499,6 +1499,14 @@ impl App {
             self.quitting = true;
             crate::platform::app_events::answer_terminate(true);
             event_loop.exit();
+            // A confirmed quit always ends the process: a loop that never returns (seen on macOS
+            // with a panel still open) is ended after a while, with a line in the log.
+            quit_backstop(QUIT_BACKSTOP, &super::LOOP_ENDED, || {
+                crate::host_base::log("quit: the event loop did not end; ending the process");
+                // Off the UI thread: what needs that thread fails quietly, and the process end undoes it.
+                super::teardown_process();
+                std::process::exit(0);
+            });
         }
     }
 
@@ -1507,6 +1515,19 @@ impl App {
     pub(super) fn visible(&self, tab: &Tab) -> Vec<(PaneId, Rect)> {
         crate::layout::only_live(visible_rects(&tab.layout, tab.zoomed, self.pane_area_for(tab), self.gap()), |id| self.panes.contains_key(&id)).into_iter().map(|(id, r)| (id, self.gutter_split(id, self.pane_bar_split(tab, id, r).0).0)).collect()
     }
+}
+
+/// How long a confirmed quit waits for the event loop to return.
+const QUIT_BACKSTOP: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Runs `end` after `after` unless `ended` is set by then (the event loop returned).
+fn quit_backstop(after: std::time::Duration, ended: &'static std::sync::atomic::AtomicBool, end: impl FnOnce() + Send + 'static) {
+    std::thread::spawn(move || {
+        std::thread::sleep(after);
+        if !ended.load(std::sync::atomic::Ordering::SeqCst) {
+            end();
+        }
+    });
 }
 
 /// View > Current Tab Color: its title (`ViewMenu.CurrentTabColor`) and the ids of its entries.
@@ -1856,6 +1877,30 @@ pub(super) fn restart_spec() -> crate::warnings::Spec {
 #[cfg(test)]
 mod tests {
     use crate::menus;
+
+    /// Round 6c: a confirmed quit ends the process even when the event loop does not return,
+    /// and does nothing more when it does.
+    #[test]
+    fn a_confirmed_quit_always_ends() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        static STUCK: AtomicBool = AtomicBool::new(false);
+        static RETURNED: AtomicBool = AtomicBool::new(false);
+        let (a, b) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        let (a2, b2) = (a.clone(), b.clone());
+        super::quit_backstop(std::time::Duration::from_millis(20), &STUCK, move || a2.store(true, Ordering::SeqCst));
+        RETURNED.store(true, Ordering::SeqCst);
+        super::quit_backstop(std::time::Duration::from_millis(20), &RETURNED, move || b2.store(true, Ordering::SeqCst));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(a.load(Ordering::SeqCst), "a stuck loop is ended");
+        assert!(!b.load(Ordering::SeqCst), "a loop that returned is left alone");
+        let own = include_str!("menu.rs");
+        let body = &own[own.find("pub(super) fn quit_confirmed(").unwrap()..];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        assert!(body.find("event_loop.exit();").unwrap() < body.find("quit_backstop(QUIT_BACKSTOP, &super::LOOP_ENDED").unwrap());
+        let run = include_str!("mod.rs");
+        assert!(run.contains("message_box(&format!(\"Termurion stopped: {e}\"));\n    }\n    LOOP_ENDED.store(true"));
+    }
 
     /// Not a check: prints where the bar's titles and the Shell items sit in a 1000 by 650 window,
     /// for `scripts/unix-gui-check menubar` to click. `cargo test --lib print_bar_layout -- --ignored --nocapture`.

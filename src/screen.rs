@@ -2621,9 +2621,8 @@ impl Screen {
     /// has the alternate screen up, the main screen is saved, not the program's.
     pub fn restorable_text(&self) -> String {
         let grid = self.term.primary_grid();
-        let top = -(grid.history_size() as i32);
         let mut out = String::new();
-        for line in (top..grid.screen_lines() as i32).filter(|&l| l >= 0 || !grid[Line(l)].alt()) {
+        for line in crate::styled_copy::restorable_lines(grid) {
             let mut text = String::new();
             self.push_row_text(&mut text, &grid[Line(line)]);
             out.push_str(text.trim_end());

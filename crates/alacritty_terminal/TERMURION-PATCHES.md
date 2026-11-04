@@ -202,6 +202,7 @@ test data) is left out. Changes:
     main history, so session restoration can leave them out, and clears the wrap on the newest of
     them (its continuation was not kept). `grid/resize.rs`: reflow never joins an alternate row with
     a main one (`grow_columns` does not merge them, `shrink_columns` does not carry wrapped cells
-    across).
+    across; a row that stops at such a boundary keeps its wrap on its last column), and
+    `write_at_cursor` clears the flag on the row it writes.
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

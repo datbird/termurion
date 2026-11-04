@@ -217,8 +217,17 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             // start of its text there even when it continues a line above the screen.
             let at_top_of_screen = self.grow_keeps_rows && reflow && i + 1 == self.lines;
             let last_row = match reversed.last_mut() {
-                // Termurion patch 36: an alternate screen row never merges with a main one.
-                Some(last_row) if should_reflow(last_row) && !at_top_of_screen && last_row.alt == row.alt => last_row,
+                // Termurion patch 36: an alternate screen row never merges with a main one. The row
+                // keeps its wrap on its last column, so its line still reads as going on.
+                Some(last_row) if should_reflow(last_row) && last_row.alt != row.alt => {
+                    let end = last_row.len() - 1;
+                    last_row[Column(end)].flags_mut().remove(Flags::WRAPLINE);
+                    last_row.grow(columns);
+                    last_row[Column(columns - 1)].flags_mut().insert(Flags::WRAPLINE);
+                    reversed.push(row);
+                    continue;
+                },
+                Some(last_row) if should_reflow(last_row) && !at_top_of_screen => last_row,
                 _ => {
                     reversed.push(row);
                     continue;
@@ -471,8 +480,17 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
                     // Make sure new row is at least as long as new width.
                     let occ = wrapped.len();
+                    // Termurion patch 36: cells that wrapped toward a row of the other kind keep
+                    // the wrap on the new row's last column.
+                    let wraps_on = i >= 1 && alts[i - 1] != alt && wrapped.last().is_some_and(|c| c.flags().contains(Flags::WRAPLINE));
                     if occ < columns {
+                        if wraps_on && let Some(c) = wrapped.last_mut() {
+                            c.flags_mut().remove(Flags::WRAPLINE);
+                        }
                         wrapped.resize_with(columns, T::default);
+                        if wraps_on && let Some(c) = wrapped.last_mut() {
+                            c.flags_mut().insert(Flags::WRAPLINE);
+                        }
                     }
                     // Termurion patch: the split-off part keeps the line's time.
                     let time = new_raw.last().map_or(0, |r: &Row<T>| r.time);

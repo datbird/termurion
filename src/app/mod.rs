@@ -787,7 +787,7 @@ pub struct App {
     /// The Termurion window that is not a terminal window (Settings, Password Manager, a chat, the
     /// Cockpit, a prompt) holding the keyboard now, if one does. Cmd-W closes it (`key_window_close`).
     key_aux: Option<WindowId>,
-    /// The modifiers held in a window that is not a terminal window (its Cmd-W, `is_cmd_w`).
+    /// The modifiers held in a window that is not a terminal window (its Cmd-W and Cmd-Q, `aux_chord`).
     aux_mods: winit::keyboard::ModifiersState,
     /// The hops the next pane reconnects through (Duplicate Session), moved into the new pane
     /// by `start_pane_as`. Set and cleared around one start, so it is not per-window state.
@@ -2978,6 +2978,7 @@ pub fn run() {
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Termurion stopped: {e}"));
     }
+    LOOP_ENDED.store(true, std::sync::atomic::Ordering::SeqCst);
     // Stop browsing: the callbacks end before the process does.
     app.bonjour = None;
     teardown_process();
@@ -7928,16 +7929,22 @@ impl ApplicationHandler<UserEvent> for App {
             let terminal = self.is_terminal_window(id);
             self.key_aux = key_aux_after(self.key_aux, id, *f, terminal);
         }
-        // Cmd-W that reaches a panel as a key (AppKit gave it to the window, not the menu) closes it.
+        // Cmd-W or Cmd-Q that reaches a panel as a key (AppKit gave it to the window, not the menu):
+        // Cmd-W closes the panel, Cmd-Q quits as the menu's Quit does.
         if crate::platform::keys::CMD_IS_A_KEY && !self.is_terminal_window(id) {
             if let WindowEvent::ModifiersChanged(m) = &event {
                 self.aux_mods = m.state();
             }
-            if let WindowEvent::KeyboardInput { event: k, .. } = &event
-                && is_cmd_w(k, self.aux_mods) {
-                    self.key_aux = None;
-                    return self.window_event(event_loop, id, WindowEvent::CloseRequested);
+            if let WindowEvent::KeyboardInput { event: k, .. } = &event {
+                match aux_chord_of(k, self.aux_mods) {
+                    Some(AuxChord::Close) => {
+                        self.key_aux = None;
+                        return self.window_event(event_loop, id, WindowEvent::CloseRequested);
+                    }
+                    Some(AuxChord::Quit) => return self.quit(event_loop),
+                    None => {}
                 }
+            }
         }
         if self.prompt_event(id, &event) || self.param_prompt_event(id, &event) || self.mark_confirm_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.ssh_panel_event(id, &event) || self.chat_window_event(id, &event, event_loop) || self.cockpit_event(event_loop, id, &event) || self.cc_onboarding_event(id, &event) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.review_window_event(id, &event) || self.locale_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.bookmark_editor_event(id, &event) || self.update_window_event(id, &event) || self.tip_window_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.autofill_card_event(id, &event) || self.basic_auth_window_event(id, &event) || self.ai_engage_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.browser_tip_event(id, &event) || self.web_popover_event(id, &event) || self.web_replay_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) || self.special_exceptions_event(id, &event) || self.trigger_import_event(id, &event) || self.cmdinfo_event(id, &event) || self.panels_event(event_loop, id, &event) {
             return;
@@ -8326,6 +8333,9 @@ fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHan
     Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, window })
 }
 
+/// Set when the event loop returns, so a confirmed quit's backstop leaves the teardown alone.
+static LOOP_ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The surface size to use, or None while the window is minimized (0 wide or high).
 /// The key non-terminal window after a focus change of window `id`: a terminal window taking the
 /// keyboard clears it, another window taking it becomes it, and it losing the keyboard clears it.
@@ -8337,16 +8347,38 @@ fn key_aux_after<T: PartialEq + Copy>(now: Option<T>, id: T, focused: bool, term
     }
 }
 
+/// A menu chord that reaches a panel as a key (AppKit hands Cmd keys to the key window there).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuxChord {
+    /// Cmd-W: the panel closes.
+    Close,
+    /// Cmd-Q: Quit, as from the menu.
+    Quit,
+}
+
+fn aux_chord_of(k: &winit::event::KeyEvent, mods: winit::keyboard::ModifiersState) -> Option<AuxChord> {
+    let winit::keyboard::Key::Character(c) = &k.logical_key else { return None };
+    aux_chord(c, k.state == winit::event::ElementState::Pressed, k.repeat, mods)
+}
+
+/// Cmd alone with W or Q, pressed and not repeating.
+fn aux_chord(key: &str, pressed: bool, repeat: bool, mods: winit::keyboard::ModifiersState) -> Option<AuxChord> {
+    if !pressed || repeat || !mods.super_key() || mods.control_key() || mods.alt_key() || mods.shift_key() {
+        return None;
+    }
+    if key.eq_ignore_ascii_case("w") {
+        Some(AuxChord::Close)
+    } else if key.eq_ignore_ascii_case("q") {
+        Some(AuxChord::Quit)
+    } else {
+        None
+    }
+}
+
 /// The window a menu command closes instead of acting on a terminal: Close (Cmd-W) while a
 /// Termurion window that is not a terminal window has the keyboard closes that window, as in iTerm2
 /// (its Settings, Password Manager and other panels close on Cmd-W). Where Cmd is not a key
 /// (Windows, Linux) the chord never comes from those windows' keyboard, so nothing changes there.
-/// A Cmd-W press: Cmd alone with W (Close in iTerm2's menu).
-fn is_cmd_w(k: &winit::event::KeyEvent, mods: winit::keyboard::ModifiersState) -> bool {
-    let w = matches!(&k.logical_key, winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("w"));
-    k.state == winit::event::ElementState::Pressed && !k.repeat && w && mods.super_key() && !mods.control_key() && !mods.alt_key() && !mods.shift_key()
-}
-
 fn key_window_close<T: Copy>(selector: &str, key_aux: Option<T>, cmd_is_a_key: bool) -> Option<T> {
     (cmd_is_a_key && selector == "closeCurrentSession:").then_some(key_aux).flatten()
 }
@@ -8748,6 +8780,24 @@ mod tests {
         assert!(room[..room.find("\n    }\n").unwrap()].contains("g.layout.map_or("));
     }
 
+    /// Round 6c: Cmd-Q in a panel (the update question, Settings, any egui window) quits as the
+    /// menu's Quit does; before, AppKit handed it to the panel as a key and it was lost.
+    #[test]
+    fn cmd_q_in_a_panel_quits() {
+        use winit::keyboard::ModifiersState as M;
+        assert_eq!(aux_chord("q", true, false, M::SUPER), Some(AuxChord::Quit));
+        assert_eq!(aux_chord("Q", true, false, M::SUPER), Some(AuxChord::Quit));
+        assert_eq!(aux_chord("w", true, false, M::SUPER), Some(AuxChord::Close));
+        assert_eq!(aux_chord("q", true, false, M::SUPER | M::SHIFT), None, "Cmd-Shift-Q is not Quit");
+        assert_eq!(aux_chord("q", true, true, M::SUPER), None, "a repeat");
+        assert_eq!(aux_chord("q", false, false, M::SUPER), None, "a release");
+        assert_eq!(aux_chord("q", true, false, M::empty()), None, "plain q is typing");
+        let own = include_str!("mod.rs");
+        let ev = &own[own.find("    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {").unwrap()..];
+        let ev = &ev[..ev.find("self.prompt_event(id, &event)").unwrap()];
+        assert!(ev.contains("Some(AuxChord::Quit) => return self.quit(event_loop)"), "the panel path quits before any panel sees the key");
+    }
+
     /// Round 3: Cmd-W while Settings or another panel has the keyboard closes that panel, as in
     /// iTerm2, never the terminal session behind it (which then let typing land in the panel).
     #[test]
@@ -8773,9 +8823,9 @@ mod tests {
         assert!(ev.find("key_aux_after(").unwrap() < ev.find("self.prompt_event(id, &event)").unwrap());
         // AppKit hands Cmd-W to a panel as a key, not to the menu: that key closes the panel too,
         // before the panel's own handler (a text field) sees it.
-        let key = ev.find("&& is_cmd_w(k, self.aux_mods)").expect("the key path");
+        let key = ev.find("Some(AuxChord::Close) => {").expect("the key path");
         assert!(key < ev.find("self.prompt_event(id, &event)").unwrap());
-        assert!(ev[key..].starts_with("&& is_cmd_w(k, self.aux_mods) {") && ev[key..ev.find("self.prompt_event(id, &event)").unwrap()].contains("WindowEvent::CloseRequested"));
+        assert!(ev[key..ev.find("self.prompt_event(id, &event)").unwrap()].contains("WindowEvent::CloseRequested"));
     }
 
     /// A right click in a pane builds its menu and the Linux facade queues it for the window: the

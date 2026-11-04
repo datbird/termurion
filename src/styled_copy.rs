@@ -112,7 +112,7 @@ fn wraps_in(g: &alacritty_terminal::grid::Grid<Cell>, line: i32) -> bool {
 
 /// A cell iTerm2 would hold as empty: a default blank past the text.
 fn empty(c: &Cell) -> bool {
-    c.c == ' ' && c.fg == Color::Named(NamedColor::Foreground) && c.bg == Color::Named(NamedColor::Background) && c.flags.is_empty() && c.hyperlink().is_none()
+    c.c == ' ' && c.fg == Color::Named(NamedColor::Foreground) && c.bg == Color::Named(NamedColor::Background) && (c.flags - Flags::WRAPLINE).is_empty() && c.hyperlink().is_none()
 }
 
 /// The selection as styled runs, with the pane's colors (bold, dim, reverse, and hidden
@@ -399,14 +399,26 @@ pub fn sgr_all(screen: &Screen) -> String {
 
 /// Session restoration's contents: the main screen's history and every row of its screen
 /// (blank rows too, so the rows line up with the shell's own view), and its cursor as
-/// (row, column) on the screen. History rows a full-screen program left behind (the alternate
-/// screen's history) are not saved.
+/// (row, column) on the screen. Rows a full-screen program left behind (the alternate screen's
+/// history) are not saved, in the history or where a taller window pulled them onto the screen;
+/// the cursor row counts the rows that are saved.
 pub fn sgr_restorable(screen: &Screen) -> (String, (usize, usize)) {
     let g = screen.term().primary_grid();
-    let top = -(g.history_size() as i32);
-    let spans: Vec<_> = (top..g.screen_lines() as i32).filter(|&l| l >= 0 || !g[Line(l)].alt()).map(|l| (l, 0, g.columns() - 1)).collect();
+    let lines = restorable_lines(g);
+    let spans: Vec<_> = lines.iter().map(|&l| (l, 0, g.columns() - 1)).collect();
     let at = g.cursor.point;
-    (sgr_grid(g, &spans, crate::encoding::Form::None, false, true), (at.line.0.max(0) as usize, at.column.0))
+    // The restored screen is the last screen-full of saved rows.
+    let index = lines.iter().position(|&l| l == at.line.0).unwrap_or(lines.len().saturating_sub(1));
+    let row = index - lines.len().saturating_sub(g.screen_lines()).min(index);
+    (sgr_grid(g, &spans, crate::encoding::Form::None, false, true), (row, at.column.0))
+}
+
+/// The grid lines session restoration saves, oldest first: every row but the alternate screen's,
+/// which are kept from the cursor's row down (the cursor's own screen stays whole there).
+pub fn restorable_lines(g: &alacritty_terminal::grid::Grid<Cell>) -> Vec<i32> {
+    let top = -(g.history_size() as i32);
+    let cursor = g.cursor.point.line.0;
+    (top..g.screen_lines() as i32).filter(|&l| l >= cursor || !g[Line(l)].alt()).collect()
 }
 
 pub fn sgr_text(screen: &Screen) -> String {
@@ -432,7 +444,10 @@ fn sgr_grid(g: &alacritty_terminal::grid::Grid<Cell>, spans: &[(i32, usize, usiz
     for (i, (line, from, to)) in spans.iter().enumerate() {
         let hard_end = !wraps_in(g, *line);
         let more = same_line(spans, i);
-        let cells = cells_in(g, *line, *from, *to, hard_end && !more);
+        // A row that wraps across rows left out of the save (a program's screen between the two
+        // parts of a line) has no padding to keep: its text runs on into the next saved row.
+        let across = keep_rows && !hard_end && spans.get(i + 1).is_some_and(|n| n.0 != line + 1);
+        let cells = cells_in(g, *line, *from, *to, (hard_end && !more) || across);
         if keep_rows && cells.is_empty() && i > 0 && spans[i - 1].0 == line - 1 && wraps_in(g, line - 1) {
             // A plain space: the row above may end in a colored cell.
             out.push_str("\x1b[0m ");
