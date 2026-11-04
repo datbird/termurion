@@ -555,7 +555,16 @@ impl Renderer {
             face_cap: MAX_FACES,
         };
         r.prose_family = if r.has_family("Segoe UI Variable") { "Segoe UI Variable" } else { "Segoe UI" }.to_string();
-        r.icon_family = if r.has_family("Segoe Fluent Icons") { "Segoe Fluent Icons" } else { "Segoe MDL2 Assets" }.to_string();
+        // Without Segoe (every system but Windows) the bundled symbols face draws the icons.
+        r.font_system.db_mut().load_font_data(crate::egui_host::symbols_face());
+        r.icon_family = if r.has_family("Segoe Fluent Icons") {
+            "Segoe Fluent Icons"
+        } else if r.has_family("Segoe MDL2 Assets") {
+            "Segoe MDL2 Assets"
+        } else {
+            "TermurionSymbols"
+        }
+        .to_string();
         r.set_font_px(font_px);
         r
     }
@@ -2500,6 +2509,28 @@ mod tests {
         let g = r.buffers[0].0.layout_runs().next().unwrap().glyphs[0].font_id;
         let mono = r.font_system.db().face(g).is_some_and(|f| f.monospaced);
         assert!(mono, "the fallback face is not monospace");
+    }
+
+    /// Item (e) follow-up: the terminal's own icon buttons (command buttons at a pane's top right)
+    /// are drawn from the renderer's icon family. Every glyph they use is in a face the renderer
+    /// loads, so a Mac or Linux box with no Segoe shows icons, not boxes.
+    #[test]
+    fn the_command_button_icons_are_in_the_icon_face() {
+        use crate::cmdbuttons::Button::*;
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let family = r.icon_family.clone();
+        for b in [Settings, Copy, Bookmark, Share, Info, Fold, Unfold] {
+            let c = b.glyph();
+            let mut buf = Buffer::new(&mut r.font_system, Metrics::new(16.0, 19.0));
+            buf.set_size(None, None);
+            buf.set_text(&c.to_string(), &Attrs::new().family(Family::Name(&family)), Shaping::Advanced, None);
+            buf.shape_until_scroll(&mut r.font_system, false);
+            let g = buf.layout_runs().next().and_then(|run| run.glyphs.first().cloned()).expect("a glyph");
+            let font = r.font_system.get_font(g.font_id, g.font_weight).expect("a font");
+            let mapped = font.as_swash().charmap().map(c);
+            assert!(mapped != 0, "{b:?} U+{:04X} is not in any face the renderer loads", c as u32);
+        }
     }
 
     #[test]
