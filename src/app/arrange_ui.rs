@@ -174,6 +174,10 @@ impl App {
         if let (Some((key, text)), Some(t)) = (saved, v.as_table_mut()) {
             t.insert(key.into(), Value::String(text));
         }
+        // A gateway saved with its contents says so, as iTerm2's does (`PS:7912-7914`).
+        if self.tmux.contains_key(&id) && matches!(contents, Contents::Plain | Contents::Styled(_)) {
+            arrangement::mark_tmux_gateway(&mut v);
+        }
         // An archived pane comes back archived (13q final fix 4): the next launch never starts
         // the shell of the profile an archive file embeds; Restart does, under the trust rules.
         if p.archived {
@@ -704,6 +708,10 @@ impl App {
                 Some((host_id, pid, since)) => match self.attach_pane(area, guid.as_deref(), host_id, pid, since, super::restore_ui::saved_cookie(&session)) {
                     Ok(id) => {
                         launched = false;
+                        // Its job came back: a gateway is one again (`PS:2109-2115`).
+                        if arrangement::is_tmux_gateway(&session) {
+                            self.restore_tmux_gateway(id);
+                        }
                         Some(id)
                     }
                     Err(e) => {

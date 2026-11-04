@@ -626,6 +626,21 @@ pub fn held_idle(session: &Value) -> bool {
     session.get(IDLE_KEY).and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
+/// iTerm2's flag for a session that was a tmux gateway (`PS:289`, written at `PS:7912-7914`).
+pub const TMUX_GATEWAY_KEY: &str = "Is Tmux Gateway";
+
+/// Marks a session table as a tmux gateway.
+pub fn mark_tmux_gateway(session: &mut Value) {
+    if let Some(t) = session.as_table_mut() {
+        t.insert(TMUX_GATEWAY_KEY.into(), Value::Boolean(true));
+    }
+}
+
+/// Whether a session table was a tmux gateway: a file without the flag says no.
+pub fn is_tmux_gateway(session: &Value) -> bool {
+    session.get(TMUX_GATEWAY_KEY).and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
 /// The text saved "with contents".
 pub fn contents(session: &Value) -> Option<&str> {
     session.get(CONTENTS_KEY).and_then(|v| v.as_str())

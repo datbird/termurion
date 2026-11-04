@@ -5,7 +5,7 @@
 use super::*;
 use crate::tmux_gateway::{Event, Gateway, Tag};
 use crate::tmux_handshake::{self, Handshake, Step};
-use crate::tmux_hook::Out;
+use crate::tmux_hook::{Do, Out};
 use crate::tmux_proto::Note;
 
 /// iTerm2's banner (startTmuxMode), one message per line.
@@ -75,6 +75,25 @@ impl App {
                         self.api_output(&[*id]);
                     }
                     Out::Enter => self.tmux_enter(*id),
+                    Out::Line(_) | Out::Exit(_) if self.tmux_restored.contains_key(id) => {
+                        let Some(r) = self.tmux_restored.get_mut(id) else { continue };
+                        match r.take(&out) {
+                            Do::Nothing => {}
+                            Do::Write(bytes) => {
+                                if let Some(p) = self.panes.get_mut(id) {
+                                    p.reply(&bytes);
+                                }
+                            }
+                            Do::Detached(nl) => {
+                                if let Some(p) = self.panes.get_mut(id) {
+                                    p.reply(&nl);
+                                    p.own_mut().print_message("Detached");
+                                }
+                                self.tmux_restored.remove(id);
+                                self.redraw();
+                            }
+                        }
+                    }
                     Out::Line(line) | Out::Exit(line) => {
                         let clock = self.started.elapsed().as_secs_f64();
                         let Some(t) = self.tmux.get_mut(id) else { continue };
@@ -131,6 +150,26 @@ impl App {
             own
         };
         crate::tmux_windows::attach_size(self.globals.bool("TmuxUsesDedicatedProfile"), crate::tmux_windows::OpenIn::from_pref(self.globals.int("OpenTmuxWindowsIn")), profile, tab)
+    }
+
+    /// A restored session that was a gateway, its job taken back (`PS:2109-2115`): tmux mode starts
+    /// again with its menu (`PS:10935-10942`) and the hook reads tmux's last lines unseen. At a
+    /// shell nothing runs tmux: it leaves tmux mode at once (`PS:11625-11645`, "Detached").
+    pub(super) fn restore_tmux_gateway(&mut self, pane: PaneId) {
+        let job = self.panes.get(&pane).and_then(|p| p.shell_pid()).and_then(crate::platform::proc::foreground_job);
+        let at_shell = crate::session_state::is_shell(job.as_ref().map(|j| j.name.as_str()));
+        let newline = if self.profile_of(pane).is_some_and(|p| p.bool("Tmux Newline")) { "\n" } else { "\r" };
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        for line in BANNER {
+            p.own_mut().print_message(line);
+        }
+        if at_shell {
+            p.own_mut().print_message("Detached");
+            return;
+        }
+        crate::rlog!("tmux gateway restored: pane {}", pane);
+        p.recover_tmux();
+        self.tmux_restored.insert(pane, crate::tmux_hook::Restored::new(newline));
     }
 
     pub(super) fn tmux_print(&mut self, pane: PaneId, text: &str) {

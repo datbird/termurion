@@ -194,6 +194,25 @@ pub fn banner_grays(bg: Rgb) -> (u8, u8) {
 
 #[cfg(test)]
 mod tests {
+    /// A tmux gateway is saved as one (`PS:7912-7920`, "Is Tmux Gateway"); a state file from
+    /// before the flag still loads, and its sessions are not gateways.
+    #[test]
+    fn the_gateway_flag_is_saved_and_old_states_load() {
+        use crate::arrangement::{self, Value};
+        let mut gw = arrangement::session(80, 24, Default::default(), "g", None);
+        arrangement::mark_tmux_gateway(&mut gw);
+        let plain = arrangement::session(80, 24, Default::default(), "p", None);
+        let state = |s: Value| super::State { host: None, windows: vec![Value::Table([("Session".to_string(), s)].into_iter().collect())] };
+        let back = super::decode(&super::encode(&state(gw)).unwrap()).unwrap();
+        assert!(arrangement::is_tmux_gateway(&back.windows[0]["Session"]), "{back:?}");
+        assert_eq!(arrangement::TMUX_GATEWAY_KEY, "Is Tmux Gateway");
+        let old = super::decode(&super::encode(&state(plain)).unwrap()).unwrap();
+        assert_eq!(old.windows.len(), 1);
+        assert!(!arrangement::is_tmux_gateway(&old.windows[0]["Session"]), "no flag: not a gateway");
+        let ui = include_str!("app/arrange_ui.rs");
+        assert!(ui.contains("if self.tmux.contains_key(&id) && matches!(contents, Contents::Plain | Contents::Styled(_)) {\n            arrangement::mark_tmux_gateway(&mut v);"), "a gateway is saved with contents");
+    }
+
     /// The loop ending on its own (the macOS stock Quit, a window manager closing everything) saves
     /// the windows once: never after App::quit (quitting), a last-window close or a second copy (frozen).
     #[test]
