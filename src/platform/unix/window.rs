@@ -10,20 +10,20 @@ pub fn hwnd_of(_window: &Window) -> Option<isize> {
     None
 }
 
-/// The NSView on macOS; Linux has no native handle to give.
+/// The NSView on macOS. On Linux a per-window token: the X window id on X11, the winit window id
+/// on Wayland (which has no number a client can read). Menus and the hotkey window key on it.
 pub fn view_of(window: &Window) -> Option<isize> {
-    #[cfg(target_os = "macos")]
-    {
-        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        match window.window_handle().ok()?.as_raw() {
-            RawWindowHandle::AppKit(h) => Some(h.ns_view.as_ptr() as isize),
-            _ => None,
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = window;
-        None
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match window.window_handle().ok()?.as_raw() {
+        #[cfg(target_os = "macos")]
+        RawWindowHandle::AppKit(h) => Some(h.ns_view.as_ptr() as isize),
+        #[cfg(not(target_os = "macos"))]
+        RawWindowHandle::Xlib(h) => Some(h.window as isize),
+        #[cfg(not(target_os = "macos"))]
+        RawWindowHandle::Xcb(h) => Some(h.window.get() as isize),
+        #[cfg(not(target_os = "macos"))]
+        RawWindowHandle::Wayland(_) => Some(u64::from(window.id()) as isize),
+        _ => None,
     }
 }
 

@@ -13,6 +13,9 @@ use crate::platform::Unsupported;
 
 pub use super::super::unix::chrome::{Lift, guard_theme, install_menu_tips, invisible_top_bottom, set_border, set_corners, shift_down, theme_reset_handled};
 
+/// The bar is the screen's, not a strip in the window.
+pub const IN_WINDOW_BAR: bool = false;
+
 /// AppKit draws each item's shortcut from its key equivalent.
 pub const NATIVE_ACCELERATORS: bool = true;
 

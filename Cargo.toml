@@ -24,7 +24,6 @@ egui = "0.36"
 egui-wgpu = "0.36"
 egui-winit = "0.36"
 glyphon = "0.12"
-muda = "0.20"
 plist = "1"
 pollster = "0.4"
 prost = "0.14"
@@ -55,6 +54,8 @@ libc = "0.2"
 # Wayland sessions get the clipboard and the primary selection through the data-control protocol.
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 arboard = { version = "3", features = ["wayland-data-control"] }
+# The menu model only: the bar is drawn in the window (src/menu_overlay.rs), so no GTK and no libxdo.
+muda = { version = "0.20", default-features = false }
 
 # The user's locale on macOS (CFLocaleCopyCurrent); already in the tree through winit.
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -73,6 +74,9 @@ security-framework = "3"
 # The CFData an item update takes (the same 0.10 security-framework uses).
 core-foundation = "0.10"
 objc2-local-authentication = { version = "0.3", default-features = false, features = ["std", "block2", "LAContext", "LAError"] }
+
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+muda = "0.20"
 
 [target.'cfg(windows)'.dependencies]
 # Windows Hello for the password manager's gate (UserConsentVerifier); both are already in the

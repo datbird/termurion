@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drives the real Termurion window on a private X server and says PASS or FAIL for one scenario.
-# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, host, job, clipboard, tmux, tmux-nolang, tmux-lcall, tmux-windows,
+# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, menubar, host, job, clipboard, tmux, tmux-nolang, tmux-lcall, tmux-windows,
 # restore-windows, restore-host, tmux-restore [a|b|c|d]
 #
 # tmux-restore: a relaunch on the same config after a tmux -CC gateway was open. Variant a: shells in
@@ -13,7 +13,8 @@
 # `echo $$ >> $SCRATCH/pids`, and a screenshot (screen.png) is kept for a person to look at.
 # The app runs with HOME, TMPDIR and XDG_RUNTIME_DIR under target/gui-check/<scenario>/.
 # Keys go through XTEST (xdotool type/key, never --window), with no window manager, so the
-# window is focused by hand. No chord uses the Super key: Command is Ctrl+Shift (shortcut_key.rs),
+# window is focused by hand. The menubar scenario clicks the in-window menu bar; where its titles and
+# items sit comes from the ignored test app::menu::tests::print_bar_layout (same fonts, same layout code). No chord uses the Super key: Command is Ctrl+Shift (shortcut_key.rs),
 # so New Tab (newSession:, Cmd+T) is ctrl+shift+t and Split Vertically (splitVertically:, Cmd+D)
 # is ctrl+shift+d.
 set -uo pipefail
@@ -22,7 +23,7 @@ cd "$repo"
 scenario="${1:-}"
 variant="${2:-}"
 case "$scenario" in
-    shell | layout | host | job | clipboard | tmux | tmux-nolang | tmux-lcall | tmux-windows | restore-windows | restore-host) ;;
+    shell | layout | menubar | host | job | clipboard | tmux | tmux-nolang | tmux-lcall | tmux-windows | restore-windows | restore-host) ;;
     tmux-restore)
         case "$variant" in
             a | b | c | d) ;;
@@ -36,7 +37,7 @@ case "$scenario" in
             *) echo "usage: scripts/unix-gui-check tmux-restore [a|b|c|d]" >&2; exit 2 ;;
         esac
         ;;
-    *) echo "usage: scripts/unix-gui-check <shell|layout|host|job|clipboard|tmux|tmux-nolang|tmux-lcall|tmux-windows|restore-windows|restore-host|tmux-restore [a|b|c|d]>" >&2; exit 2 ;;
+    *) echo "usage: scripts/unix-gui-check <shell|layout|menubar|host|job|clipboard|tmux|tmux-nolang|tmux-lcall|tmux-windows|restore-windows|restore-host|tmux-restore [a|b|c|d]>" >&2; exit 2 ;;
 esac
 # The tmux scenarios: tmux (tabs in the attaching window), tmux-nolang (the app starts with no locale
 # variable), tmux-lcall (the app starts with LC_ALL=C), tmux-windows (the default: a new Termurion window).
@@ -50,7 +51,7 @@ done
 # xclip may sit in ~/.local/bin, which a non-login shell does not have on PATH.
 xclip_bin=$(command -v xclip || true)
 [ -z "$xclip_bin" ] && [ -x "$HOME/.local/bin/xclip" ] && xclip_bin="$HOME/.local/bin/xclip"
-if [ "$scenario" = clipboard ] && [ -z "$xclip_bin" ]; then
+if { [ "$scenario" = clipboard ] || [ "$scenario" = menubar ]; } && [ -z "$xclip_bin" ]; then
     echo "FAIL $scenario: xclip is not installed"
     exit 1
 fi
@@ -198,6 +199,64 @@ case "$scenario" in
         type_pid_line
         xdotool key ctrl+shift+d
         sleep 1.5
+        type_pid_line
+        shoot
+        [ "$(sort -u "$scratch/pids" | wc -l)" -eq 3 ] || fail "expected 3 distinct pids: $(tr '\n' ' ' < "$scratch/pids")"
+        ;;
+    menubar)
+        sleep 1
+        # Where the bar's titles and the Shell items are, from the layout code itself.
+        layout=$(cargo test --lib print_bar_layout -- --ignored --nocapture 2> /dev/null | sed -n 's/^LAYOUT //p')
+        [ -n "$layout" ] || fail "no bar layout from the print_bar_layout test"
+        at() { echo "$layout" | awk -v k="$1" -v n="$2" '$0 ~ "^"k" "n" [0-9]+ [0-9]+$" { print $(NF-1), $NF }'; }
+        eval "$(xdotool getwindowgeometry --shell "$win")"
+        click_at() {
+            local x y
+            read -r x y <<< "$(at "$1" "$2")"
+            [ -n "$x" ] || fail "no layout for $1 $2"
+            xdotool mousemove $((X + x)) $((Y + y))
+            sleep 0.2
+            xdotool click 1
+            sleep 0.6
+        }
+        # A click on View, then away from it, must not select in the pane: rows of text, a drag that
+        # selects (the control), another program taking the primary selection, then the View click and
+        # a drag that starts outside the open menu. The primary selection must still be the other program's.
+        xdotool type --delay 20 "printf '\\033[2J\\033[H'; for i in \$(seq 20); do echo SELECTME; done; cat > /dev/null"
+        xdotool key Return
+        sleep 1
+        xdotool mousemove $((X + 2)) $((Y + 60))
+        xdotool mousedown 1
+        for x in 60 120 200 300; do xdotool mousemove $((X + x)) $((Y + 60)); sleep 0.1; done
+        xdotool mouseup 1
+        sleep 0.6
+        shoot
+        got=$(timeout 5 "$xclip_bin" -o -selection primary 2> /dev/null | tr -d '\n' | sed 's/ *$//')
+        case "$got" in *SELECTME*) ;; *) fail "the control drag selected '$got'" ;; esac
+        printf other | "$xclip_bin" -quiet -selection primary > /dev/null 2>&1 &
+        xclip_pid=$!
+        sleep 0.6
+        click_at title View
+        shoot
+        xdotool mousemove $((X + 2)) $((Y + 60))
+        xdotool mousedown 1
+        for x in 60 120 200 300; do xdotool mousemove $((X + x)) $((Y + 60)); sleep 0.1; done
+        xdotool mouseup 1
+        sleep 0.6
+        got=$(timeout 5 "$xclip_bin" -o -selection primary 2> /dev/null | tr -d '\n' | sed 's/ *$//')
+        kill "$xclip_pid" 2> /dev/null
+        [ "$got" = other ] || fail "a click away from the open View menu reached the pane: the selection is '$got'"
+        xdotool key ctrl+d
+        sleep 0.5
+        # The menu as the way to a tab and a split.
+        type_pid_line
+        click_at title Shell
+        click_at row "New Tab"
+        sleep 1
+        type_pid_line
+        click_at title Shell
+        click_at row "Split Vertically with Current Profile"
+        sleep 1
         type_pid_line
         shoot
         [ "$(sort -u "$scratch/pids" | wc -l)" -eq 3 ] || fail "expected 3 distinct pids: $(tr '\n' ' ' < "$scratch/pids")"

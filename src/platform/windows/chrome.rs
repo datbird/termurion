@@ -143,6 +143,9 @@ pub fn install_menu_tips(hwnd: isize, delay: std::time::Duration) {
 /// Windows draws its shortcut text after a tab in the label.
 pub const NATIVE_ACCELERATORS: bool = false;
 
+/// The bar is the window's own Win32 menu, not a strip the app draws.
+pub const IN_WINDOW_BAR: bool = false;
+
 /// Each window keeps its own bar on Windows; there is no screen bar to hand over.
 pub fn bar_focused(_menu: &muda::Menu) {}
 

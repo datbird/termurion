@@ -111,7 +111,7 @@ impl App {
             self.menu_peek.clear();
         }
         let hide = self.want_menu_hidden();
-        let (Some(hwnd), Some(bar)) = (self.hwnd(), self.menu_bar.as_ref()) else { return };
+        let (Some(hwnd), Some(bar)) = (self.view(), self.menu_bar.as_ref()) else { return };
         if !menu_needs_change(hide, menu_attached(hwnd)) || self.menu_refused == Some(hide) {
             return;
         }

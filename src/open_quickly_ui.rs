@@ -273,6 +273,7 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
     for (f, list) in families {
         defs.families.insert(f, list);
     }
+    crate::egui_host::add_fallback_faces(&mut defs);
     ctx.set_fonts(defs);
 }
 

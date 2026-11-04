@@ -86,6 +86,32 @@ pub fn delayed_repaints(now: std::time::Instant) -> Option<std::time::Instant> {
     })
 }
 
+/// Gives `ctx` the fonts the menu bar and the key lists need: egui's own, then a face with the
+/// check mark and the Mac modifier glyphs (see `fallback_faces`).
+pub fn install_menu_fonts(ctx: &egui::Context) {
+    let mut defs = egui::FontDefinitions::default();
+    add_fallback_faces(&mut defs);
+    ctx.set_fonts(defs);
+}
+
+/// Appends the symbol faces behind every family already set, so a missing glyph falls through.
+pub fn add_fallback_faces(defs: &mut egui::FontDefinitions) {
+    for (i, bytes) in fallback_faces().into_iter().enumerate() {
+        let name = format!("termurion-symbols-{i}");
+        defs.font_data.insert(name.clone(), Arc::new(egui::FontData::from_owned(bytes)));
+        for list in defs.families.values_mut() {
+            list.push(name.clone());
+        }
+    }
+}
+
+/// The faces behind egui's own: the check mark and the Mac modifier keys, which egui's fonts lack
+/// (a box showed in the Settings key lists and would in the menus). A subset of DejaVu Sans,
+/// licensed in resources/fonts.
+fn fallback_faces() -> Vec<Vec<u8>> {
+    vec![include_bytes!("../resources/fonts/TermurionSymbols.ttf").to_vec()]
+}
+
 pub struct EguiHost {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
@@ -153,6 +179,7 @@ impl EguiHost {
         };
         surface.configure(device, &config);
         let ctx = egui::Context::default();
+        install_menu_fonts(&ctx);
         let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, Some(device.limits().max_texture_dimension_2d as usize));
         let renderer = egui_wgpu::Renderer::new(device, format, egui_wgpu::RendererOptions::default());
         Ok(EguiHost { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, window, probe: false, probed: None })
@@ -343,6 +370,44 @@ pub fn probe_plan(real_copy: bool, text_field_focused: bool) -> ProbePlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every character the menu bar, the shortcut text and the Keys page draw.
+    fn shown_text() -> String {
+        let mut all = String::from("\u{2713}\u{2303}\u{2325}\u{2318}\u{21e7}\u{2026}");
+        for t in crate::app::menu_texts() {
+            all.push_str(&t);
+        }
+        // The Keys page spells a chord from its key names.
+        // The macOS function-key codes the Keys page names (arrows to Page Down, F1 to F35, Clear).
+        for ch in (0x20u32..0x7f).chain(0xf700..0xf72a).chain(0xf72b..0xf72e).chain([0xf739]) {
+            all.push_str(&crate::keystroke::Keystroke::new(ch, crate::keystroke::SHIFT | crate::keystroke::OPTION | crate::keystroke::CONTROL | crate::keystroke::COMMAND, None, ch).label());
+        }
+        all.push_str(&crate::keystroke::modifiers_label(crate::keystroke::SHIFT | crate::keystroke::OPTION | crate::keystroke::CONTROL | crate::keystroke::COMMAND));
+        all
+    }
+
+    #[test]
+    fn menu_and_key_text_glyphs_are_in_the_font() {
+        let ctx = egui::Context::default();
+        install_menu_fonts(&ctx);
+        let mut missing = std::collections::BTreeSet::new();
+        // Fonts exist after a first frame; the set takes effect on the next.
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(100.0, 100.0))), ..Default::default() }, |_| {});
+            out.textures_delta.clear();
+        }
+        let text = shown_text();
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            let id = egui::FontId::new(14.0, family);
+            for c in text.chars().filter(|c| !c.is_control()) {
+                // `has_glyph` calls the main face's own letters missing; a missing character has no width.
+                if ctx.fonts_mut(|f| f.glyph_width(&id, c)) <= 0.0 {
+                    missing.insert(c);
+                }
+            }
+        }
+        assert!(missing.is_empty(), "no glyph in the configured fonts for: {}", missing.iter().map(|c| format!("{c} U+{:04X}", *c as u32)).collect::<Vec<_>>().join(", "));
+    }
 
     #[test]
     fn the_selection_probe_never_takes_a_real_copy_or_a_text_fields_selection() {

@@ -48,6 +48,7 @@ fn rebuild_window_gpu(old: Gpu, primary: &GpuHandles, alpha: Option<&AlphaGpu>) 
         alpha: target.cloned(),
         shape,
         fx: None,
+        bar: Default::default(),
         window,
     })
 }

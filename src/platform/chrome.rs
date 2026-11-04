@@ -22,6 +22,34 @@ pub fn available() -> Result<(), super::Unsupported> {
 /// an item gets a native key equivalent instead.
 pub const NATIVE_ACCELERATORS: bool = imp::NATIVE_ACCELERATORS;
 
+/// The bar is a strip the app draws inside the window (Linux), so the layout reserves its height.
+pub const IN_WINDOW_BAR: bool = imp::IN_WINDOW_BAR;
+
+/// What a pop-up can show: a muda menu or submenu. The native systems pop the menu up themselves; the
+/// in-window bar reads its items and draws them (`entries`).
+pub trait PopupMenu: muda::ContextMenu {
+    fn entries(&self) -> Vec<muda::MenuItemKind>;
+}
+
+impl PopupMenu for muda::Menu {
+    fn entries(&self) -> Vec<muda::MenuItemKind> {
+        self.items()
+    }
+}
+
+impl PopupMenu for muda::Submenu {
+    fn entries(&self) -> Vec<muda::MenuItemKind> {
+        self.items()
+    }
+}
+
+/// A pop-up waiting for its window's next frame.
+pub struct QueuedPopup {
+    pub items: Vec<muda::MenuItemKind>,
+    /// Window pixels; None: where the pointer is.
+    pub at: Option<(f32, f32)>,
+}
+
 /// Gives the window's frame a border color (a COLORREF); a no-op where the OS draws the border.
 pub fn set_border(hwnd: isize, color: u32) {
     imp::set_border(hwnd, color)
@@ -77,8 +105,35 @@ pub use imp::Lift;
 /// Shows the menu as a pop-up at `position` (the window's client pixels; None: at the pointer).
 /// True when an item was picked, false when it was dismissed. The handle is a live window of this
 /// thread, as the app gets it from `window::view_of`.
-pub fn popup<M: muda::ContextMenu + ?Sized>(menu: &M, view: isize, position: Option<muda::dpi::Position>) -> bool {
+pub fn popup<M: PopupMenu + ?Sized>(menu: &M, view: isize, position: Option<muda::dpi::Position>) -> bool {
     imp::popup(menu, view, position)
+}
+
+/// Tells the in-window bar which window to ask for a frame when a pop-up is queued (Linux).
+pub fn bind_window(view: isize, window: std::sync::Arc<winit::window::Window>) {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    imp::bind_window(view, window);
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    let _ = (view, window);
+}
+
+/// The pop-up the last `popup` call queued for this window, to draw in its next frame (Linux).
+pub fn take_popup(view: isize) -> Option<QueuedPopup> {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    return imp::take_popup(view);
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    {
+        let _ = view;
+        None
+    }
+}
+
+/// The window is going away: its bar state goes (Linux).
+pub fn forget_window(view: isize) {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    imp::forget_window(view);
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    let _ = view;
 }
 
 /// Attaches `menu` as `hwnd`'s menu bar after taking `earlier` (the window's bar so far) off it.

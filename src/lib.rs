@@ -360,6 +360,7 @@ mod ui_labels;
 pub mod settings_presets;
 
 pub mod egui_host;
+pub mod menu_overlay;
 
 pub mod prompt_ui;
 pub mod basic_auth_ui;

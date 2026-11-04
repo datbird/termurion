@@ -138,6 +138,7 @@ mod presence_ui;
 mod resident_ui;
 mod sizing_ui;
 mod caption_ui;
+mod menu_bar_ui;
 mod tab_drag_ui;
 mod tab_groups_ui;
 mod undo_ui;
@@ -423,6 +424,8 @@ struct Gpu {
     shape: Option<crate::pointer_shape::Shape>,
     /// Render plugins for this window (`fx_ui`); None when its profile lists none.
     fx: Option<fx_ui::FxRuntime>,
+    /// The menu bar drawn in this window (Linux; idle elsewhere).
+    bar: menu_bar_ui::BarUi,
     // Dropped last, after the surface.
     window: Arc<Window>,
 }
@@ -3767,7 +3770,7 @@ impl App {
     fn window_room(&self) -> Rect {
         let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
         let bottom = if self.banners.text().is_some() { self.cell().1 + 8.0 } else { 0.0 };
-        let top = self.division_height();
+        let top = self.division_height() + self.bar_strip().unwrap_or(0.0);
         Rect { x: 0.0, y: top, w, h: (h - bottom - top).max(1.0) }
     }
 
@@ -5051,7 +5054,7 @@ impl App {
         // window opens with its columns.
         let (padx, pady) = (2.0 * side + self.scroll_room(), 2.0 * vert);
         // The line under the title bar is part of the window's decoration (`PT:13235-13237`).
-        let line = self.division_height() + self.caption_strip().unwrap_or(0.0);
+        let line = self.division_height() + self.caption_strip().unwrap_or(0.0) + self.bar_strip().unwrap_or(0.0);
         let Some(g) = self.gpu.as_ref() else { return };
         // A percent-eligible type sizes by its explicit percentages of the work area, in whole
         // cells (`TerminalWindowSizeHelper.measurements`, `measurementToCells`).
@@ -7107,6 +7110,13 @@ impl App {
             p.fx_signal.tick(Instant::now());
             p.fx_signal.clone()
         });
+        // The in-window menu bar (Linux): what it needs, read before the surface is borrowed.
+        let bar_on = self.bar_strip().is_some();
+        let bar_dark = self.dark();
+        let bar_scale = self.scale();
+        if let (Some(p), Some(g)) = (self.view().and_then(crate::platform::chrome::take_popup), self.gpu.as_mut()) {
+            g.bar.queue(p);
+        }
         let Some(gpu) = self.gpu.as_mut() else { return };
         gpu.window.set_title(&title);
         let wait_start = Instant::now();
@@ -7178,6 +7188,16 @@ impl App {
             }
             self.banners.set("gpu", e);
         }
+        // The menu bar and any open menu go over the terminal, on the same frame.
+        let mut chosen = None;
+        if let Some(gpu) = self.gpu.as_mut()
+            && (bar_on || gpu.bar.busy())
+        {
+            let (device, queue) = (gpu.render_device().clone(), gpu.render_queue().clone());
+            let frame = menu_bar_ui::BarFrame { device: &device, queue: &queue, target: &view, format: gpu.config.format, size: (w, h), scale: bar_scale, dark: bar_dark };
+            let menu = self.menu_bar.as_ref().map(|b| &b.menu).filter(|_| bar_on);
+            chosen = gpu.bar.draw(&frame, menu);
+        }
         let present_start = timing.then(Instant::now);
         if let Some(gpu) = self.gpu.as_ref() {
             gpu.render_queue().present(texture);
@@ -7188,6 +7208,9 @@ impl App {
         }
         if let Some(t) = present_start {
             self.draw_timers.stats[3].add(t.elapsed().as_secs_f64(), 1);
+        }
+        if let Some(id) = chosen {
+            self.bar_choice(id);
         }
     }
 }
@@ -7961,6 +7984,10 @@ impl ApplicationHandler<UserEvent> for App {
         if !self.enter(id) {
             return;
         }
+        // The in-window menu bar takes the events that are its own first (Linux).
+        if self.bar_event(&event) {
+            return;
+        }
         match event {
             WindowEvent::ThemeChanged(_) => {
                 self.theme_applied = Some(self.dark());
@@ -8200,7 +8227,7 @@ fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHan
     };
     surface.configure(&device, &config);
     let renderer = Renderer::new(&device, &queue, format, FONT, FONT_PX * window.scale_factor() as f32);
-    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, fx: None, window })
+    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, fx: None, bar: Default::default(), window })
 }
 
 /// The surface size to use, or None while the window is minimized (0 wide or high).
@@ -9079,4 +9106,11 @@ mod banner_tests {
         b.clear("font");
         assert_eq!(b.text(), None);
     }
+}
+
+// Last in the file: tests that read the live source stop at the first test marker.
+/// The menu bar's texts, for the egui font test.
+#[cfg(test)]
+pub(crate) fn menu_texts() -> Vec<String> {
+    menu::all_texts()
 }

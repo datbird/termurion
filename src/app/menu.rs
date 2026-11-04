@@ -250,6 +250,7 @@ pub(super) fn window_gone(window: &Window) {
     }
     if let Some(v) = crate::platform::window::view_of(window) {
         crate::platform::chrome::forget_key_equivalents(v);
+        crate::platform::chrome::forget_window(v);
         crate::platform::hotkey::forget(v);
     }
 }
@@ -396,6 +397,10 @@ impl App {
         self.menu_refused = None;
         if let Err(e) = crate::platform::chrome::replace_menu_bar(earlier, &menu, view, self.want_menu_hidden()) {
             self.banners.set("menu", format!("Could not attach the menu bar: {e}"));
+        }
+        // Linux draws the bar in the window, so a pop-up needs the window to ask for its frame.
+        if let Some(g) = self.gpu.as_ref() {
+            crate::platform::chrome::bind_window(view, g.window.clone());
         }
         // The bar is the app's now, so AppKit can take the Help menu; the terminal view then takes
         // Cmd keys before the menu does, so key mappings win (macOS; no-ops elsewhere).
@@ -1839,6 +1844,77 @@ pub(super) fn restart_spec() -> crate::warnings::Spec {
 #[cfg(test)]
 mod tests {
     use crate::menus;
+
+    /// Not a check: prints where the bar's titles and the Shell items sit in a 1000 by 650 window,
+    /// for `scripts/unix-gui-check menubar` to click. `cargo test --lib print_bar_layout -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    #[cfg(not(target_os = "macos"))] // test: muda menus are the main thread's on macOS
+    fn print_bar_layout() {
+        use crate::menu_overlay::Overlay;
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        let bar = muda::Menu::new();
+        let mut subs: std::collections::HashMap<Vec<String>, muda::Submenu> = Default::default();
+        for item in menus::shown_items() {
+            let parent = &item.path[..item.path.len() - 1];
+            let kind: Box<dyn muda::IsMenuItem> = if item.separator {
+                Box::new(muda::PredefinedMenuItem::separator())
+            } else if item.submenu {
+                let s = muda::Submenu::new(item.label().replace('&', "&&"), true);
+                subs.insert(item.path.clone(), s.clone());
+                Box::new(s)
+            } else {
+                Box::new(muda::MenuItem::with_id(item.id(), super::menu_text(item), true, None))
+            };
+            if parent.is_empty() {
+                bar.append(kind.as_ref()).unwrap();
+            } else if let Some(s) = subs.get(parent) {
+                s.append(kind.as_ref()).unwrap();
+            }
+        }
+        let ctx = egui::Context::default();
+        crate::egui_host::install_menu_fonts(&ctx);
+        let mut o = Overlay::new();
+        o.set_screen(1000.0, 650.0, 1.0);
+        o.paint(&ctx, Some(&bar));
+        o.paint(&ctx, Some(&bar));
+        let click = |o: &mut Overlay, ctx: &egui::Context, p: egui::Pos2| {
+            let id = winit::event::DeviceId::dummy();
+            o.event(ctx, &WindowEvent::CursorMoved { device_id: id, position: winit::dpi::PhysicalPosition::new(p.x as f64, p.y as f64) });
+            o.event(ctx, &WindowEvent::MouseInput { device_id: id, state: ElementState::Pressed, button: MouseButton::Left });
+            o.paint(ctx, Some(&bar));
+            o.event(ctx, &WindowEvent::MouseInput { device_id: id, state: ElementState::Released, button: MouseButton::Left });
+            o.paint(ctx, Some(&bar));
+        };
+        for name in ["Shell", "View"] {
+            let r = o.title_rect(name).expect("title");
+            println!("LAYOUT title {name} {} {}", r.center().x.round(), r.center().y.round());
+        }
+        let shell = o.title_rect("Shell").unwrap();
+        click(&mut o, &ctx, shell.center());
+        for name in ["New Tab", "Split Vertically with Current Profile"] {
+            let r = o.row_rect(0, name).expect("row");
+            println!("LAYOUT row {name} {} {}", (r.min.x + 30.0).round(), r.center().y.round());
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")] // test: only Linux draws its bar in the window
+    fn linux_attaches_a_bar() {
+        assert!(crate::platform::chrome::available().is_ok(), "Linux draws its own menus");
+        assert!(crate::platform::chrome::IN_WINDOW_BAR);
+        // The window token is the X window id or the winit id, and hide/show are kept per token.
+        let bar = muda::Menu::new();
+        crate::platform::chrome::replace_menu_bar(None, &bar, 42, false).unwrap();
+        assert!(crate::platform::chrome::menu_attached(42));
+        crate::platform::chrome::hide_menu(&bar, 42).unwrap();
+        assert!(!crate::platform::chrome::menu_attached(42));
+        crate::platform::chrome::show_menu(&bar, 42).unwrap();
+        assert!(crate::platform::chrome::menu_attached(42));
+        assert!(crate::platform::chrome::hide_menu(&bar, 43).is_err(), "a window with no bar says so");
+        crate::platform::chrome::forget_window(42);
+        assert!(!crate::platform::chrome::menu_attached(42));
+    }
     use crate::platform::chrome::NATIVE_ACCELERATORS;
 
     /// With the OS drawing the shortcuts, the label has no tab and chord text of its own.
@@ -2003,4 +2079,17 @@ mod tests {
         let list = super::window_list(&entries, Some(7), false, 6);
         assert_eq!(list, [(3, "a".to_string(), false), (7, "b".to_string(), true)]);
     }
+}
+
+// Last in the file: tests that read the live source stop at the first test marker.
+/// Every text the menu bar draws, labels and shortcut text as the menu would hold them, for the
+/// font's glyph test (`egui_host`).
+#[cfg(test)]
+pub(crate) fn all_texts() -> Vec<String> {
+    let mut out = Vec::new();
+    for item in menus::shown_items() {
+        out.push(menus::shown_label(item.label()));
+        out.push(menu_text(item));
+    }
+    out
 }
