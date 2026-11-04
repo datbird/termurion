@@ -2614,6 +2614,49 @@ mod tests {
         }
     }
 
+    /// Round 3: every Segoe icon code point the tab bar, the pane title bar, the status bar, the
+    /// caption buttons and the command buttons draw (read from their source) is in a face the
+    /// renderer loads, so a hovered tab's close button and the rest draw as shapes, not boxes,
+    /// where Segoe is not installed.
+    #[test]
+    fn every_chrome_icon_is_in_the_icon_face() {
+        let sources = [
+            include_str!("scene.rs"),
+            include_str!("statusbar_components.rs"),
+            include_str!("caption.rs"),
+            include_str!("cmdbuttons.rs"),
+            include_str!("pane_title.rs"),
+            include_str!("tab_icons.rs"),
+        ];
+        let mut points = std::collections::BTreeSet::new();
+        for src in sources {
+            for part in src.split("\\u{").skip(1) {
+                let hex: String = part.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+                if let Ok(n) = u32::from_str_radix(&hex, 16)
+                    && (0xE100..0xF000).contains(&n) {
+                        points.insert(n);
+                    }
+            }
+        }
+        assert!(points.contains(&0xE8BB), "the tab close button is in the scan");
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let family = r.icon_family.clone();
+        let mut missing = Vec::new();
+        for n in points {
+            let c = char::from_u32(n).unwrap();
+            let mut buf = Buffer::new(&mut r.font_system, Metrics::new(16.0, 19.0));
+            buf.set_size(None, None);
+            buf.set_text(&c.to_string(), &Attrs::new().family(Family::Name(&family)), Shaping::Advanced, None);
+            buf.shape_until_scroll(&mut r.font_system, false);
+            let mapped = buf.layout_runs().next().and_then(|run| run.glyphs.first().cloned()).and_then(|g| r.font_system.get_font(g.font_id, g.font_weight)).is_some_and(|f| f.as_swash().charmap().map(c) != 0);
+            if !mapped {
+                missing.push(format!("U+{n:04X}"));
+            }
+        }
+        assert!(missing.is_empty(), "no face of the renderer has {missing:?} (icon family {family})");
+    }
+
     #[test]
     fn postscript_names_resolve_to_installed_families() {
         let (device, queue) = device();
