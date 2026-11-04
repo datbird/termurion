@@ -123,3 +123,73 @@ pub fn monitor_rects(hwnd: isize) -> Option<(Rect, Rect)> {
 pub fn placement(hwnd: isize) -> Option<(u32, u32, [i32; 4], (i32, i32))> {
     imp::placement(hwnd)
 }
+
+#[cfg(all(test, target_os = "linux"))] // test: windows on a private X server are Linux's
+mod tests {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    use winit::application::ApplicationHandler;
+    use winit::event::WindowEvent;
+    use winit::event_loop::{ActiveEventLoop, EventLoop};
+    use winit::platform::pump_events::EventLoopExtPumpEvents;
+    use winit::platform::x11::EventLoopBuilderExtX11;
+    use winit::window::{Window, WindowId};
+
+    struct Two(Vec<Window>);
+
+    impl ApplicationHandler for Two {
+        fn resumed(&mut self, el: &ActiveEventLoop) {
+            if self.0.is_empty() {
+                for _ in 0..2 {
+                    self.0.push(el.create_window(Window::default_attributes()).unwrap());
+                }
+            }
+        }
+        fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+    }
+
+    /// The part that needs a display: the parent test starts one and runs this in a child.
+    #[test]
+    #[ignore = "run by linux_views_are_distinct_per_window, which gives it an X server"]
+    fn two_windows_on_the_display() {
+        let mut el = EventLoop::builder().with_x11().with_any_thread(true).build().unwrap();
+        let mut app = Two(Vec::new());
+        el.pump_app_events(Some(std::time::Duration::from_millis(200)), &mut app);
+        assert_eq!(app.0.len(), 2, "both windows exist");
+        let a = super::view_of(&app.0[0]).expect("a view for the first");
+        let b = super::view_of(&app.0[1]).expect("a view for the second");
+        println!("VIEWS {a} {b}");
+        assert_ne!(a, b, "one token per window");
+        assert!(super::hwnd_of(&app.0[0]).is_none(), "no HWND on Linux");
+    }
+
+    #[test]
+    fn linux_views_are_distinct_per_window() {
+        // A private X server on a display it picks itself.
+        let mut xvfb = Command::new("Xvfb")
+            .args(["-displayfd", "1", "-screen", "0", "800x600x24", "-nolisten", "tcp"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Xvfb is installed (the Linux checks need it)");
+        let mut num = String::new();
+        let mut out = xvfb.stdout.take().unwrap();
+        let mut byte = [0u8; 1];
+        while out.read(&mut byte).unwrap_or(0) == 1 && byte[0] != b'\n' {
+            num.push(byte[0] as char);
+        }
+        let me = std::env::current_exe().unwrap();
+        let run = Command::new(me)
+            .args(["--exact", "platform::window::tests::two_windows_on_the_display", "--ignored", "--nocapture", "--test-threads=1"])
+            .env("DISPLAY", format!(":{}", num.trim()))
+            .env_remove("WAYLAND_DISPLAY")
+            .output();
+        let _ = xvfb.kill();
+        let _ = xvfb.wait();
+        let run = run.unwrap();
+        let text = String::from_utf8_lossy(&run.stdout).to_string() + &String::from_utf8_lossy(&run.stderr);
+        assert!(run.status.success(), "{text}");
+        assert!(text.contains("VIEWS "), "{text}");
+    }
+}

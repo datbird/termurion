@@ -494,13 +494,8 @@ impl App {
     /// "&" is doubled so Windows shows it. The menu lives until the next one: the pick arrives after it closes.
     pub(super) fn show_context_rows(&mut self, rows: &[crate::ctx_menu::Row]) {
         let Some(hwnd) = self.popup_hwnd() else { return };
-        let context = Menu::new();
-        let mut results = Vec::new();
-        for row in rows {
-            let entry = context_row_item(row, &mut results);
-            results.push(context.append(entry.as_ref()));
-        }
-        if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
+        let (context, failed) = context_menu(rows);
+        if let Some(e) = failed {
             self.banners.set("menu", format!("Context menu: {e}"));
         }
         crate::platform::chrome::popup(&context, hwnd, None);
@@ -1521,6 +1516,18 @@ pub(super) enum ColorTarget {
     Group(String),
 }
 
+/// The right-click menu's rows as a muda menu, and the first refusal the menu library gave.
+pub(super) fn context_menu(rows: &[crate::ctx_menu::Row]) -> (Menu, Option<muda::Error>) {
+    let context = Menu::new();
+    let mut results = Vec::new();
+    for row in rows {
+        let entry = context_row_item(row, &mut results);
+        results.push(context.append(entry.as_ref()));
+    }
+    let failed = results.into_iter().find_map(Result::err);
+    (context, failed)
+}
+
 /// One row of the right-click menu as a muda item (a submenu's rows are appended to it).
 fn context_row_item(row: &crate::ctx_menu::Row, results: &mut Vec<muda::Result<()>>) -> Box<dyn IsMenuItem> {
     use crate::ctx_menu::{Row, CTX_ID};
@@ -1896,6 +1903,46 @@ mod tests {
             let r = o.row_rect(0, name).expect("row");
             println!("LAYOUT row {name} {} {}", (r.min.x + 30.0).round(), r.center().y.round());
         }
+    }
+
+    /// Not a check: prints where the Copy row of a pane's pop-up sits, for `scripts/unix-gui-check popup`
+    /// to click. The pop-up opens at PX,PY (points) in a window W by H; the menu is the one a selected
+    /// word gets. `W=.. H=.. PX=.. PY=.. cargo test --lib print_popup_layout -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "linux")] // test: the pop-up overlay is Linux's
+    fn print_popup_layout() {
+        use crate::menu_overlay::Overlay;
+        let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or_else(|| panic!("{k}"));
+        let word = std::env::var("WORD").expect("WORD");
+        let groups = crate::ctx_help::groups(Some(&word), Some((&word, &word)));
+        let c = crate::ctx_menu::Ctx {
+            at_point: true,
+            has_selection: true,
+            reasonable: true,
+            short: Some(word.clone()),
+            helpers: groups.map(|h| super::super::ctx_menu_app::helper_row(&h)),
+            scp_title: "Download with scp".into(),
+            pasteable: true,
+            new_window: vec![crate::ctx_menu::item("newwin:0", "Default", true)],
+            new_tab: vec![crate::ctx_menu::item("newtab:0", "Default", true)],
+            replacements: vec![crate::ctx_menu::Replace::Base64Encode],
+            move_to_tab_ok: false,
+            ..Default::default()
+        };
+        let (context, failed) = super::context_menu(&crate::ctx_menu::build(&c));
+        assert!(failed.is_none());
+        let ctx = egui::Context::default();
+        crate::egui_host::install_menu_fonts(&ctx);
+        let mut o = Overlay::new();
+        o.set_screen(env("W"), env("H"), 1.0);
+        o.open_popup(context.items(), egui::pos2(env("PX"), env("PY")));
+        // The window shows its bar, which the pop-up keeps clear of.
+        let bar = muda::Menu::new();
+        o.paint(&ctx, Some(&bar));
+        o.paint(&ctx, Some(&bar));
+        let r = o.row_rect(0, "Copy").expect("a Copy row");
+        println!("LAYOUT popup Copy {} {}", (r.min.x + 20.0).round(), r.center().y.round());
     }
 
     #[test]

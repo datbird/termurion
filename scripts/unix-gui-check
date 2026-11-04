@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drives the real Termurion window on a private X server and says PASS or FAIL for one scenario.
-# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, menubar, host, job, clipboard, tmux, tmux-nolang, tmux-lcall, tmux-windows,
+# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, menubar, popup, host, job, clipboard, tmux, tmux-nolang, tmux-lcall, tmux-windows,
 # restore-windows, restore-host, tmux-restore [a|b|c|d]
 #
 # tmux-restore: a relaunch on the same config after a tmux -CC gateway was open. Variant a: shells in
@@ -23,7 +23,7 @@ cd "$repo"
 scenario="${1:-}"
 variant="${2:-}"
 case "$scenario" in
-    shell | layout | menubar | host | job | clipboard | tmux | tmux-nolang | tmux-lcall | tmux-windows | restore-windows | restore-host) ;;
+    shell | layout | menubar | popup | host | job | clipboard | tmux | tmux-nolang | tmux-lcall | tmux-windows | restore-windows | restore-host) ;;
     tmux-restore)
         case "$variant" in
             a | b | c | d) ;;
@@ -37,7 +37,7 @@ case "$scenario" in
             *) echo "usage: scripts/unix-gui-check tmux-restore [a|b|c|d]" >&2; exit 2 ;;
         esac
         ;;
-    *) echo "usage: scripts/unix-gui-check <shell|layout|menubar|host|job|clipboard|tmux|tmux-nolang|tmux-lcall|tmux-windows|restore-windows|restore-host|tmux-restore [a|b|c|d]>" >&2; exit 2 ;;
+    *) echo "usage: scripts/unix-gui-check <shell|layout|menubar|popup|host|job|clipboard|tmux|tmux-nolang|tmux-lcall|tmux-windows|restore-windows|restore-host|tmux-restore [a|b|c|d]>" >&2; exit 2 ;;
 esac
 # The tmux scenarios: tmux (tabs in the attaching window), tmux-nolang (the app starts with no locale
 # variable), tmux-lcall (the app starts with LC_ALL=C), tmux-windows (the default: a new Termurion window).
@@ -51,7 +51,7 @@ done
 # xclip may sit in ~/.local/bin, which a non-login shell does not have on PATH.
 xclip_bin=$(command -v xclip || true)
 [ -z "$xclip_bin" ] && [ -x "$HOME/.local/bin/xclip" ] && xclip_bin="$HOME/.local/bin/xclip"
-if { [ "$scenario" = clipboard ] || [ "$scenario" = menubar ]; } && [ -z "$xclip_bin" ]; then
+if { [ "$scenario" = clipboard ] || [ "$scenario" = menubar ] || [ "$scenario" = popup ]; } && [ -z "$xclip_bin" ]; then
     echo "FAIL $scenario: xclip is not installed"
     exit 1
 fi
@@ -260,6 +260,57 @@ case "$scenario" in
         type_pid_line
         shoot
         [ "$(sort -u "$scratch/pids" | wc -l)" -eq 3 ] || fail "expected 3 distinct pids: $(tr '\n' ' ' < "$scratch/pids")"
+        ;;
+    popup)
+        sleep 1
+        # A word in the pane, selected by a double click; a right click opens the pane's pop-up (drawn
+        # in the window); a click on its Copy row puts the word on the clipboard.
+        word=POPUPWORDX
+        xdotool type --delay 20 "printf '\\033[2J\\033[H'; echo $word; cat > /dev/null"
+        xdotool key Return
+        sleep 1
+        eval "$(xdotool getwindowgeometry --shell "$win")"
+        # The word sits on the first text row under the bar (about 36 px down); try a few y values until the
+        # double click makes the primary selection the word.
+        px=40 py=""
+        for y in 36 32 40 44 30; do
+            xdotool mousemove $((X + px)) $((Y + y))
+            sleep 0.2
+            xdotool click --repeat 2 --delay 80 1
+            sleep 0.6
+            got=$(timeout 5 "$xclip_bin" -o -selection primary 2> /dev/null | tr -d '\n' | sed 's/ *$//')
+            if [ "$got" = "$word" ]; then py=$y; break; fi
+        done
+        [ -n "$py" ] || { shoot; fail "the double click never selected $word (primary is '$got')"; }
+        # Selecting copies to the clipboard by itself, so a stale value goes there now: only the
+        # pop-up's Copy can put the word back.
+        printf stale | "$xclip_bin" -quiet -selection clipboard > /dev/null 2>&1 &
+        stale_pid=$!
+        sleep 0.5
+        before="$scratch/before.png"
+        import -window root "$before" 2> /dev/null
+        xdotool click 3
+        sleep 1
+        shoot
+        cp "$scratch/screen.png" "$scratch/popup-open.png"
+        # The pop-up is in the picture: a good part of the area right of and below the pointer changed.
+        changed=$(compare -metric AE -crop 300x400+$((X + px))+$((Y + py)) "$before" "$scratch/screen.png" null: 2>&1 || true)
+        [ "${changed:-0}" -gt 5000 ] 2> /dev/null || fail "no pop-up in the screenshot: $changed pixels changed (see $scratch/screen.png)"
+        # Where its Copy row is, from the layout code (the pop-up opens at the pointer, window points).
+        layout=$(WORD=$word W=$WIDTH H=$HEIGHT PX=$px PY=$py cargo test --lib print_popup_layout -- --ignored --nocapture 2> /dev/null | sed -n 's/^LAYOUT popup Copy //p')
+        [ -n "$layout" ] || fail "no pop-up layout from the print_popup_layout test"
+        read -r cx cy <<< "$layout"
+        xdotool mousemove $((X + cx)) $((Y + cy))
+        sleep 0.3
+        xdotool click 1
+        sleep 1
+        shoot
+        got=$(timeout 5 "$xclip_bin" -o -selection clipboard 2> /dev/null | tr -d '\n')
+        kill "$stale_pid" 2> /dev/null
+        # And the pop-up is gone from the screen after the pick.
+        gone=$(compare -metric AE -crop 300x400+$((X + px))+$((Y + py)) "$scratch/popup-open.png" "$scratch/screen.png" null: 2>&1 || true)
+        [ "${gone:-0}" -gt 5000 ] 2> /dev/null || fail "the pop-up is still drawn after the pick: $gone pixels differ (see $scratch/screen.png)"
+        [ "$got" = "$word" ] || fail "Copy in the pop-up left '$got' on the clipboard, not $word (see $scratch/screen.png)"
         ;;
     job)
         sleep 1

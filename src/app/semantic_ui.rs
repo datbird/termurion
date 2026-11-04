@@ -792,6 +792,7 @@ mod tests {
 
     /// Callers of a sink whose input is not text a remote host wrote, and why.
     const NOT_PANE_TEXT: &[(&str, &str, &str)] = &[
+        ("platform/window.rs", "linux_views_are_distinct_per_window", "a test: starts a private Xvfb and re-runs the test binary against it, fixed arguments, never pane text"),
         ("platform/unix/pty.rs", "spawn_transport", "starts a pane's shell from its profile's command line (split into words, never handed to a shell), never pane text"),
         ("platform/unix/pty.rs", "spawn_with_env", "starts a pane's shell from its profile's command line (split into words, never handed to a shell), never pane text"),
         ("platform/unix/pty.rs", "spawn_notify", "starts a pane's shell from its profile's command line (split into words, never handed to a shell), never pane text"),

@@ -8564,6 +8564,21 @@ impl App {
 mod tests {
     use super::*;
 
+    /// A right click in a pane builds its menu and the Linux facade queues it for the window: the
+    /// items come out once, with Copy among them.
+    #[test]
+    #[cfg(target_os = "linux")] // test: only Linux queues a pop-up for the overlay
+    fn the_pane_menu_opens_on_linux() {
+        let c = crate::ctx_menu::Ctx { at_point: true, has_selection: true, ..Default::default() };
+        let (menu, failed) = menu::context_menu(&crate::ctx_menu::build(&c));
+        assert!(failed.is_none(), "{failed:?}");
+        assert!(crate::platform::chrome::popup(&menu, 9101, None), "the pop-up is queued");
+        let queued = crate::platform::chrome::take_popup(9101).expect("queued for its window");
+        let names: Vec<String> = queued.items.iter().filter_map(|k| if let muda::MenuItemKind::MenuItem(i) = k { Some(i.text()) } else { None }).collect();
+        assert!(names.iter().any(|n| n == "Copy"), "{names:?}");
+        assert!(crate::platform::chrome::take_popup(9101).is_none(), "once");
+    }
+
     /// The text of `name`'s body in `src` (to its closing brace at `indent`).
     fn fn_body<'a>(src: &'a str, name: &str, indent: &str) -> &'a str {
         let rest = src.split(name).nth(1).unwrap_or_else(|| panic!("{name}"));

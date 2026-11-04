@@ -107,7 +107,7 @@ pub(super) fn ctx_pick(item: &str, pend_pane: PaneId, focused: Option<PaneId>, i
 }
 
 /// A row's label made inert and cut: the selection is a program's text.
-fn helper_row(h: &crate::ctx_help::Helper) -> HelperRow {
+pub(super) fn helper_row(h: &crate::ctx_help::Helper) -> HelperRow {
     HelperRow { label: crate::browser_ctx::inert_label(&h.title), enabled: h.copy.is_some(), swatch: h.color }
 }
 

@@ -129,13 +129,24 @@ fn to_pixels(p: muda::dpi::Position, scale: f64) -> (f32, f32) {
 
 #[cfg(test)]
 mod tests {
-    use super::to_pixels;
+    use super::{popup, take_popup, to_pixels};
     use muda::dpi::{LogicalPosition, PhysicalPosition, Position};
 
     #[test]
     fn a_logical_pop_up_position_grows_with_the_window_scale() {
         assert_eq!(to_pixels(Position::Logical(LogicalPosition::new(10.0, 20.0)), 2.0), (20.0, 40.0));
         assert_eq!(to_pixels(Position::Physical(PhysicalPosition::new(10, 20)), 2.0), (10.0, 20.0), "physical stays");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")] // test: muda menus are the main thread's on macOS, and macOS pops up natively
+    fn a_popup_is_queued_for_its_window() {
+        let menu = muda::Menu::new();
+        menu.append(&muda::MenuItem::new("Copy", true, None)).unwrap();
+        assert!(popup(&menu, 7, None));
+        assert_eq!(take_popup(7).map(|q| q.items.len()), Some(1));
+        assert!(take_popup(7).is_none(), "once");
+        assert!(take_popup(8).is_none(), "another window has none");
     }
 }
 
