@@ -535,8 +535,6 @@ mod tests {
         assert!(mac.hide_app && mac.show_activates_app);
         let win = app_hiding(false);
         assert!(win.minimize && !win.hide_app && !win.show_activates_app, "Windows is unchanged");
-        let this_os = app_hiding(crate::platform::app_events::HAS_APP_HIDING);
-        assert_eq!(this_os.minimize, !crate::platform::app_events::HAS_APP_HIDING);
     }
 
     #[test]

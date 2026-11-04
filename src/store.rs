@@ -361,6 +361,26 @@ Name = "Two"
     }
 
     #[test]
+    fn a_second_migration_pass_changes_nothing_on_every_os() {
+        for (os, default) in [("macOS", "Monaco 12"), ("macOS", "Menlo 12"), ("Linux", "Cascadia Mono 12"), ("Windows", "Cascadia Mono 12")] {
+            let path = windows_font_file("twice");
+            let mut st = Store::load(&path).unwrap();
+            st.migrate_fonts(os, &|_| false, default);
+            assert!(!st.migrate_fonts(os, &|_| false, default), "{os} {default}: the pass settles");
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    #[test]
+    fn linux_keeps_cascadia_as_its_own_default_and_never_reports_a_change() {
+        let path = windows_font_file("linux");
+        let mut st = Store::load(&path).unwrap();
+        assert!(!st.migrate_fonts("Linux", &|_| false, "Cascadia Mono 12"));
+        assert_eq!(st.profiles[0].string("Normal Font"), "Cascadia Mono 12");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn menlo_stands_in_when_monaco_is_the_default_missing() {
         let path = windows_font_file("menlo");
         let mut st = Store::load(&path).unwrap();

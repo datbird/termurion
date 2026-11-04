@@ -32,13 +32,17 @@ pub const FONT_KEYS: [&str; 2] = ["Normal Font", "Non Ascii Font"];
 
 /// A saved font value that names the Windows shipped default on another OS, with that font not
 /// installed: the value with this OS's default family and the same size. None when the value
-/// stays (Windows itself, any other family, or Cascadia installed).
+/// stays (Windows itself, an OS whose default is Cascadia, any other family, or Cascadia installed).
 pub fn migrated_font(os: &str, value: &str, installed: &dyn Fn(&str) -> bool, default: &str) -> Option<String> {
     if os == "Windows" {
         return None;
     }
     let f = parse_font(value);
     let cascadia = parse_font(WINDOWS_FONT).family;
+    // This OS ships Cascadia as its own default (Linux): the value is already home.
+    if parse_font(default).family.eq_ignore_ascii_case(&cascadia) {
+        return None;
+    }
     if !f.family.eq_ignore_ascii_case(&cascadia) || installed(&f.family) {
         return None;
     }

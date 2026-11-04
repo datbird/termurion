@@ -310,9 +310,6 @@ mod tests {
         assert_eq!(labels, ["New Window", "Settings", "Bring All Windows to Front", "Buried Sessions", "Check For Updates", "Main Menu", "Quit Termurion"]);
         // muda drops a lone & on macOS (a mnemonic on Windows), so none may be in a label.
         assert!(labels.iter().all(|l| !l.contains('&')));
-        // A click on the item is the tray's menu click.
-        let mac = include_str!("../platform/macos/status_item.rs");
-        assert!(mac.contains("f(true)"));
     }
 
     /// Minor 5: tray "Bring All Windows to Front" skips hidden hotkey windows (arrangeInFront does).

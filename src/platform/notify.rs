@@ -51,11 +51,9 @@ mod tests {
 
     /// Off the main thread the item is refused, not a crash (AppKit is main thread only).
     #[test]
+    #[cfg_attr(not(target_os = "macos"), ignore = "only macOS has a status item to refuse")]
     fn the_status_item_refuses_off_the_main_thread() {
-        // Only here: on Windows this would really add the icon.
-        if MENU_AT_ICON {
-            let r = std::thread::spawn(|| set_resident(true)).join().expect("no panic");
-            assert!(r.is_err());
-        }
+        let r = std::thread::spawn(|| set_resident(true)).join().expect("no panic");
+        assert!(r.is_err());
     }
 }
