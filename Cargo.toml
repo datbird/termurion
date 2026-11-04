@@ -140,3 +140,5 @@ alacritty_terminal = { path = "crates/alacritty_terminal" }
 vte = { path = "crates/vte" }
 # glyphon with a mask filter for aliased and thin text (crates/glyphon/TERMURION-PATCHES.md).
 glyphon = { path = "crates/glyphon" }
+# cosmic-text with proportional glyphs snapped to the cell grid (crates/cosmic-text/TERMURION-PATCHES.md).
+cosmic-text = { path = "crates/cosmic-text" }

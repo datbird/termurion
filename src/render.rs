@@ -597,7 +597,8 @@ impl Renderer {
         let mut b = Buffer::new(&mut self.font_system, Metrics::new(px, px * 1.2));
         b.set_size(None, None);
         b.set_wrap(Wrap::None);
-        b.set_text("W", &Attrs::new().family(Family::Name(family)), Shaping::Advanced, None);
+        let family = self.drawn_family(family);
+        b.set_text("W", &Attrs::new().family(Family::Name(&family)), Shaping::Advanced, None);
         b.shape_until_scroll(&mut self.font_system, false);
         let run = b.layout_runs().next()?;
         let g = run.glyphs.first()?;
@@ -1030,6 +1031,17 @@ impl Renderer {
         b.layout_runs().map(|r| r.line_w).fold(0.0, f32::max)
     }
 
+    /// The family a terminal face draws with: the font itself when it is installed, else the first
+    /// installed monospace face (a missing font must not fall to a proportional one, whose glyphs
+    /// would not fill the cell), else the name as it is.
+    fn drawn_family(&self, name: &str) -> String {
+        const MONOSPACE: [&str; 11] = ["Menlo", "Monaco", "SF Mono", "Consolas", "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", "Courier New", "Courier", "Lucida Console", "Cascadia Mono"];
+        if self.has_family(name) {
+            return name.to_string();
+        }
+        MONOSPACE.iter().find(|f| self.has_family(f)).map_or_else(|| name.to_string(), |f| f.to_string())
+    }
+
     /// True when a font family with this name is installed.
     pub fn has_family(&self, name: &str) -> bool {
         if let Some(r) = self.installed.borrow().get(name) {
@@ -1385,6 +1397,8 @@ impl Renderer {
         while self.buffers.len() < all_rows.len() {
             self.buffers.push((Buffer::new(&mut self.font_system, metrics), Vec::new(), 0.0, 1.0, DEFAULT_FACE));
         }
+        // Each face's drawn family, looked up before the buffers are borrowed.
+        let drawn: Vec<String> = self.faces.iter().map(|f| self.drawn_family(&f.key.family)).collect();
         for (slot, row) in self.buffers.iter_mut().zip(all_rows.iter().copied()) {
             let (buffer, last, last_w, last_scale, last_face) = slot;
             if *last == row.spans && *last_w == row.clip.w && *last_scale == row.scale && *last_face == row.face {
@@ -1394,7 +1408,7 @@ impl Renderer {
             // shaped with these).
             let face = self.faces.get(row.face as usize).unwrap_or(&self.faces[0]);
             let ((cw, ch), px) = (face.cell, face.px);
-            let (family, alt_family) = (face.key.family.clone(), face.key.alt_family.clone());
+            let (family, alt_family) = (drawn.get(row.face as usize).unwrap_or(&drawn[0]).clone(), face.key.alt_family.clone());
             let (bold_weight, use_bold, use_italic, regular_weight) = (face.bold, face.use_bold, face.use_italic, face.key.weight);
             let table_fonts = if row.spans.iter().any(|s| s.font != 0) { face.table_fonts.clone() } else { Default::default() };
             let metrics = Metrics::new(px * row.scale, ch * row.scale);
@@ -2405,6 +2419,81 @@ mod tests {
         let right = (0..w).rev().find(|&x| lit(x)).unwrap() as f32 + 1.0;
         let want = n as f32 * r.cell.0;
         assert!((right - want).abs() < r.cell.0 / 2.0, "text ends at {right} px, cells end at {want} px (cell {:?})", r.cell);
+    }
+
+    /// The x of every glyph a row shaped, from the layout the renderer drew.
+    fn laid_out_xs(r: &mut Renderer, device: &wgpu::Device, queue: &wgpu::Queue, text: &str) -> Vec<f32> {
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: 600, height: 32, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&Default::default());
+        let frame = Frame {
+            clear: rgba(rgb(0, 0, 0), 1.0),
+            fade: 1.0,
+            quads: vec![],
+            images: vec![],
+            rows: vec![TextRow {
+                x: 0.0,
+                y: 0.0,
+                spans: vec![Span { text: text.into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: false, ligatures: 0, mask: 0, font: 0 }],
+                clip: Rect { x: 0.0, y: 0.0, w: 600.0, h: 32.0 },
+                scale: 1.0,
+                face: crate::render::DEFAULT_FACE,
+            }],
+            glyphs: vec![],
+            overlay: vec![],
+            underlines: vec![],
+            strikes: vec![],
+            gap_underlines: false,
+            popups: vec![],
+            scrollbars: vec![],
+            backgrounds: vec![],
+            face_heights: vec![],
+            fx: None,
+        };
+        r.draw(&frame, &view, 600, 32).unwrap();
+        let _ = queue;
+        r.buffers[0].0.layout_runs().flat_map(|run| run.glyphs.iter().map(|g| g.x).collect::<Vec<_>>()).collect()
+    }
+
+    /// Item (b): a proportional face (narrow "i", wide "W") still puts every glyph on its column,
+    /// so the cursor, which sits at column * cell width, lands right after the prompt text.
+    #[test]
+    fn a_proportional_face_still_follows_the_cell_grid() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans", 16.0);
+        if !r.has_family("DejaVu Sans") {
+            println!("skip: DejaVu Sans is not installed");
+            return;
+        }
+        let xs = laid_out_xs(&mut r, &device, &queue, "iiilllWWWiii mmm");
+        assert_eq!(xs.len(), 16);
+        for (col, x) in xs.iter().enumerate() {
+            assert!((x - col as f32 * r.cell.0).abs() < 0.01, "glyph {col} at x {x}, column x {} (cell {:?})", col as f32 * r.cell.0, r.cell);
+        }
+    }
+
+    /// Item (b): a font that is not installed draws in a monospace face, and on the grid.
+    #[test]
+    fn a_missing_font_falls_back_to_a_monospace_face_on_the_grid() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "No Such Font Anywhere", 16.0);
+        let xs = laid_out_xs(&mut r, &device, &queue, "iiilllWWWiii mmm");
+        assert_eq!(xs.len(), 16);
+        for (col, x) in xs.iter().enumerate() {
+            assert!((x - col as f32 * r.cell.0).abs() < 0.01, "glyph {col} at x {x}, column x {} (cell {:?})", col as f32 * r.cell.0, r.cell);
+        }
+        let g = r.buffers[0].0.layout_runs().next().unwrap().glyphs[0].font_id;
+        let mono = r.font_system.db().face(g).is_some_and(|f| f.monospaced);
+        assert!(mono, "the fallback face is not monospace");
     }
 
     #[test]
