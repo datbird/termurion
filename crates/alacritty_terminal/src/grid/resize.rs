@@ -497,7 +497,8 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                     let block = new_raw.last().map_or(0, |r: &Row<T>| r.block);
                     let porthole = new_raw.last().map_or(0, |r: &Row<T>| r.porthole);
                     let alt = new_raw.last().is_some_and(|r: &Row<T>| r.alt);
-                    row = Row::from_vec(wrapped, occ);
+                    // A wrap moved to the last column counts as written, so a reset clears it.
+                    row = Row::from_vec(wrapped, if wraps_on { columns } else { occ });
                     row.time = time;
                     row.block = block;
                     row.porthole = porthole;

@@ -1499,14 +1499,7 @@ impl App {
             self.quitting = true;
             crate::platform::app_events::answer_terminate(true);
             event_loop.exit();
-            // A confirmed quit always ends the process: a loop that never returns (seen on macOS
-            // with a panel still open) is ended after a while, with a line in the log.
-            quit_backstop(QUIT_BACKSTOP, &super::LOOP_ENDED, || {
-                crate::host_base::log("quit: the event loop did not end; ending the process");
-                // Off the UI thread: what needs that thread fails quietly, and the process end undoes it.
-                super::teardown_process();
-                std::process::exit(0);
-            });
+            start_quit_backstop();
         }
     }
 
@@ -1519,6 +1512,18 @@ impl App {
 
 /// How long a confirmed quit waits for the event loop to return.
 const QUIT_BACKSTOP: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A confirmed quit always ends the process: a loop that never returns (seen on macOS with a
+/// panel still open) is ended after a while, with a line in the log. Called right after
+/// `event_loop.exit()`, from the menu's Quit and from the settings folder question's answer.
+pub(super) fn start_quit_backstop() {
+    quit_backstop(QUIT_BACKSTOP, &super::LOOP_ENDED, || {
+        crate::host_base::log("quit: the event loop did not end; ending the process");
+        // Off the UI thread: what needs that thread fails quietly, and the process end undoes it.
+        super::teardown_process();
+        std::process::exit(0);
+    });
+}
 
 /// Runs `end` after `after` unless `ended` is set by then (the event loop returned).
 fn quit_backstop(after: std::time::Duration, ended: &'static std::sync::atomic::AtomicBool, end: impl FnOnce() + Send + 'static) {
@@ -1897,9 +1902,16 @@ mod tests {
         let own = include_str!("menu.rs");
         let body = &own[own.find("pub(super) fn quit_confirmed(").unwrap()..];
         let body = &body[..body.find("\n    }\n").unwrap()];
-        assert!(body.find("event_loop.exit();").unwrap() < body.find("quit_backstop(QUIT_BACKSTOP, &super::LOOP_ENDED").unwrap());
+        assert!(body.find("event_loop.exit();").unwrap() < body.find("start_quit_backstop();").unwrap());
+        // The settings folder question's later exit has the backstop too (6d Minor 2).
+        let prefs = include_str!("prefs_ui.rs");
+        let tick = &prefs[prefs.find("if self.prefs_exit_pending && !self.prefs_quit_question_open() {").unwrap()..];
+        let tick = &tick[..tick.find("\n        }\n").unwrap()];
+        assert!(tick.find("event_loop.exit();").unwrap() < tick.find("super::menu::start_quit_backstop();").unwrap(), "{tick}");
         let run = include_str!("mod.rs");
-        assert!(run.contains("message_box(&format!(\"Termurion stopped: {e}\"));\n    }\n    LOOP_ENDED.store(true"));
+        // The loop counts as ended before the error dialog, so the backstop never kills it (6d Minor 1).
+        let ended = run.find("    LOOP_ENDED.store(true").unwrap();
+        assert!(ended < run.find("message_box(&format!(\"Termurion stopped: {e}\"));").unwrap(), "the dialog comes after");
     }
 
     /// Not a check: prints where the bar's titles and the Shell items sit in a 1000 by 650 window,

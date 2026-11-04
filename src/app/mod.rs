@@ -2975,10 +2975,12 @@ pub fn run() {
     app.start_debug_logging_automatically();
     // The handoff class is registered before the first window, so COM's wait for it is short.
     app.sync_handoff_server();
-    if let Err(e) = event_loop.run_app(&mut app) {
+    let ran = event_loop.run_app(&mut app);
+    // Set before the error dialog, so the quit backstop never ends the process under it.
+    LOOP_ENDED.store(true, std::sync::atomic::Ordering::SeqCst);
+    if let Err(e) = ran {
         message_box(&format!("Termurion stopped: {e}"));
     }
-    LOOP_ENDED.store(true, std::sync::atomic::Ordering::SeqCst);
     // Stop browsing: the callbacks end before the process does.
     app.bonjour = None;
     teardown_process();

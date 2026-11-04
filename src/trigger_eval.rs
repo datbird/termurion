@@ -1612,10 +1612,62 @@ mod tests {
         let c = r.term().grid().cursor.point;
         let row: String = (0..2).map(|x| r.term().grid()[Line(c.line.0)][Column(x)].c).collect();
         assert_eq!((row.as_str(), c.column.0), ("$ ", 2), "{text:?} {at:?}");
-        // Output written over a pulled-down row belongs to the shell.
-        s.feed(b"\x1b[1;1HKEEP");
+        // Output written over a pulled-down row belongs to the shell. The cursor goes back
+        // below it, so only the cleared mark can keep it (Round 6d Important 3).
+        s.feed(b"\x1b[1;1HKEEP\x1b[8;1H");
         let (text, _) = crate::styled_copy::sgr_restorable(&s);
         assert!(text.contains("KEEP"), "{text:?}");
+    }
+
+    /// Round 6d: every way the terminal writes a row over a pulled-down tmux row makes it the
+    /// shell's (its mark goes), and rows that only move keep theirs. Rows 0..3 are tmux's
+    /// (blank, TMUXTEXT, STATUS), then m1, m2 and the prompt.
+    #[test]
+    fn each_write_over_an_alternate_row_clears_its_mark() {
+        use alacritty_terminal::index::{Column, Line};
+        let taller = || {
+            let mut s = Screen::with_scrollback(10, 3, 100);
+            s.feed(b"m1\r\nm2\r\n$ ");
+            s.feed(b"\x1b[?1049h\x1b[2;1HTMUXTEXT\r\nSTATUS\x1b[H\x1b[2J\x1b[?1049l");
+            s.resize(10, 8);
+            s
+        };
+        let marks = |s: &Screen| -> Vec<bool> { (0..8).map(|l| s.term().grid()[Line(l)].alt()).collect() };
+        let text = |s: &Screen| crate::styled_copy::sgr_restorable(s).0;
+        let (t, f) = (true, false);
+        assert_eq!(marks(&taller()), [t, t, t, f, f, f, f, f]);
+        // Each case: what is fed (the cursor then goes to the last row), the marks after it,
+        // and the text the save keeps (never tmux's).
+        let cases: [(&str, &[u8], [bool; 8], &[&str]); 12] = [
+            ("print", b"\x1b[2;1HKEEP", [t, f, t, f, f, f, f, f], &["KEEP", "m1", "m2"]),
+            ("erase the whole line", b"\x1b[2;1H\x1b[2K", [t, f, t, f, f, f, f, f], &["m1", "m2"]),
+            ("erase from the first column", b"\x1b[2;1H\x1b[K", [t, f, t, f, f, f, f, f], &["m1", "m2"]),
+            ("erase the left of a line", b"\x1b[2;10H\x1b[1K", [t, f, t, f, f, f, f, f], &["m1", "m2"]),
+            ("erase part of a line", b"\x1b[2;4H\x1b[K", [t, t, t, f, f, f, f, f], &["m1", "m2"]),
+            ("erase below", b"\x1b[2;1H\x1b[J", [t, f, f, f, f, f, f, f], &[]),
+            ("erase above from row 2", b"\x1b[2;10H\x1b[1J", [f, f, t, f, f, f, f, f], &["m1", "m2"]),
+            ("erase the screen", b"\x1b[2J", [f; 8], &["m1", "m2"]),
+            ("insert line", b"\x1b[1;1H\x1b[L", [f, t, t, t, f, f, f, f], &["m1", "m2"]),
+            ("delete line", b"\x1b[1;1H\x1b[M", [t, t, f, f, f, f, f, f], &["m1", "m2"]),
+            ("scroll a region up", b"\x1b[1;3r\x1b[3;1H\n\x1b[r", [t, t, f, f, f, f, f, f], &["m1", "m2"]),
+            ("scroll a region down", b"\x1b[1;3r\x1b[1;1H\x1bM\x1b[r", [f, t, t, f, f, f, f, f], &["m1", "m2"]),
+        ];
+        for (what, feed, want, kept) in cases {
+            let mut s = taller();
+            s.feed(feed);
+            s.feed(b"\x1b[8;1H");
+            assert_eq!(marks(&s), want, "{what}");
+            let saved = text(&s);
+            assert!(!saved.contains("TMUXTEXT") && !saved.contains("STATUS"), "{what}: {saved:?}");
+            for k in kept {
+                assert!(saved.contains(k), "{what}: {saved:?}");
+            }
+        }
+        // Erase above from the second row clears the first row too.
+        let mut s = Screen::with_scrollback(10, 3, 100);
+        s.feed(b"ab\r\ncd\x1b[1J");
+        let g = s.term().grid();
+        assert_eq!(g[Line(0)][Column(0)].c, ' ', "the row above is erased");
     }
 
     /// Round 6b (Minor 1): the space that keeps a wrapped blank row is plain, whatever color the

@@ -446,6 +446,8 @@ fn sgr_grid(g: &alacritty_terminal::grid::Grid<Cell>, spans: &[(i32, usize, usiz
         let more = same_line(spans, i);
         // A row that wraps across rows left out of the save (a program's screen between the two
         // parts of a line) has no padding to keep: its text runs on into the next saved row.
+        // A real space in its last column is trimmed too; a resize's padding looks the same, and
+        // a line split across a program's screen that ends in a space is rare.
         let across = keep_rows && !hard_end && spans.get(i + 1).is_some_and(|n| n.0 != line + 1);
         let cells = cells_in(g, *line, *from, *to, (hard_end && !more) || across);
         if keep_rows && cells.is_empty() && i > 0 && spans[i - 1].0 == line - 1 && wraps_in(g, line - 1) {

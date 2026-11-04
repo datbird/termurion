@@ -388,3 +388,24 @@ fn wrap_cell(c: char) -> Cell {
     cell.flags.insert(Flags::WRAPLINE);
     cell
 }
+
+// Termurion patch 36 (round 6d): a row narrowed at an alternate boundary keeps its wrap on its
+// last column, and a later reset of that row (its reuse as a fresh line) clears it.
+#[test]
+fn a_row_narrowed_at_an_alternate_boundary_resets_clean() {
+    let mut grid = Grid::<Cell>::new(2, 5, 10);
+    for (i, c) in "123WX".chars().enumerate() {
+        grid[Line(0)][Column(i)] = cell(c);
+    }
+    grid[Line(0)][Column(4)].flags.insert(Flags::WRAPLINE);
+    grid[Line(1)][Column(0)] = cell('a');
+    grid[Line(1)].set_alt(true);
+
+    grid.resize(true, 2, 3);
+
+    let top = -(grid.history_size() as i32);
+    let at = (top..2).find(|&l| grid[Line(l)][Column(0)].c == 'W').expect("the WX row");
+    assert!(grid[Line(at)][Column(2)].flags.contains(Flags::WRAPLINE), "the wrap stays on the last column");
+    grid[Line(at)].reset(&Cell::default());
+    assert!((0..3).all(|c| !grid[Line(at)][Column(c)].flags.contains(Flags::WRAPLINE)), "stray WRAPLINE after reset");
+}

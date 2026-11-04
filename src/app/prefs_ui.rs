@@ -594,6 +594,7 @@ impl App {
             self.catalog_flush();
             crate::platform::app_events::answer_terminate(true);
             event_loop.exit();
+            super::menu::start_quit_backstop();
         }
     }
 }

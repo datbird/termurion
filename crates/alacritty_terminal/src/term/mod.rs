@@ -2199,9 +2199,14 @@ impl<T: EventListener> Handler for Term<T> {
 
         self.damage.damage_line(point.line.0 as usize, left.0, right.0 - 1);
 
+        let whole = left.0 == 0 && right.0 == self.columns();
         let row = &mut self.grid[point.line];
         for cell in &mut row[left..right] {
             *cell = bg.into();
+        }
+        // Termurion patch 36: a row erased whole is this screen's blank row.
+        if whole {
+            row.alt = false;
         }
 
         let range = self.grid.cursor.point.line..=self.grid.cursor.point.line;
@@ -2317,9 +2322,9 @@ impl<T: EventListener> Handler for Term<T> {
             ansi::ClearMode::Above => {
                 let cursor = self.grid.cursor.point;
 
-                // If clearing more than one line.
-                if cursor.line > 1 {
-                    // Fully clear all lines before the current line.
+                // Termurion patch: every line above, the first one too when the cursor is on
+                // the second (upstream skipped it).
+                if cursor.line > 0 {
                     self.grid.reset_region(..cursor.line);
                 }
 
@@ -2327,6 +2332,10 @@ impl<T: EventListener> Handler for Term<T> {
                 let end = cmp::min(cursor.column + 1, Column(self.columns()));
                 for cell in &mut self.grid[cursor.line][..end] {
                     *cell = bg.into();
+                }
+                // Termurion patch 36: a row erased whole is this screen's blank row.
+                if end.0 == self.columns() {
+                    self.grid[cursor.line].alt = false;
                 }
 
                 let range = Line(0)..=cursor.line;
@@ -2346,6 +2355,10 @@ impl<T: EventListener> Handler for Term<T> {
                 }
                 for cell in &mut self.grid[cursor.line][cursor.column..] {
                     *cell = bg.into();
+                }
+                // Termurion patch 36: a row erased whole is this screen's blank row.
+                if cursor.column.0 == 0 {
+                    self.grid[cursor.line].alt = false;
                 }
 
                 if (cursor.line.0 as usize) < screen_lines - 1 {
