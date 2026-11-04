@@ -12,6 +12,10 @@ pub fn hide_app() -> bool {
     false
 }
 
+pub fn unhide_app() -> bool {
+    false
+}
+
 pub fn hide_others() -> bool {
     false
 }

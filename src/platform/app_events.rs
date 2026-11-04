@@ -37,6 +37,11 @@ pub fn hide_app() -> bool {
     imp::hide_app()
 }
 
+/// Shows this app again after a hide, without activating it. False where the OS has no such thing.
+pub fn unhide_app() -> bool {
+    imp::unhide_app()
+}
+
 /// Hides every other app. False where the OS has no such thing.
 pub fn hide_others() -> bool {
     imp::hide_others()

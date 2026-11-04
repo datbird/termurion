@@ -92,6 +92,10 @@ pub fn hide_app() -> bool {
     with_app(|app| app.hide(None))
 }
 
+pub fn unhide_app() -> bool {
+    with_app(|app| app.unhideWithoutActivation())
+}
+
 pub fn hide_others() -> bool {
     with_app(|app| app.hideOtherApplications(None))
 }

@@ -325,6 +325,25 @@ pub fn app_press(active: bool, windows: usize) -> AppAct {
     }
 }
 
+/// How the app hotkey hides the terminal windows and brings them back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppHiding {
+    /// Each window goes down to the Dock or taskbar, and comes back up on show.
+    pub minimize: bool,
+    /// The app itself is hidden.
+    pub hide_app: bool,
+    /// The show unhides and activates the app itself, then makes the last window key, without
+    /// going through winit's focus_window (it does nothing for a hidden or still restoring window).
+    pub show_activates_app: bool,
+}
+
+/// Windows has no "hide app", so its windows are minimized and restored one by one. macOS only
+/// hides the app, as iTerm2 does: minimizing first left a Dock tile, and the restore's animation
+/// ate the activation, so every show after a hide took two presses.
+pub fn app_hiding(has_app_hiding: bool) -> AppHiding {
+    AppHiding { minimize: !has_app_hiding, hide_app: has_app_hiding, show_activates_app: has_app_hiding }
+}
+
 /// The sibling groups a press reaches, each once (iTerm2's `handled` set): `pressed` are
 /// the profiles whose hotkey matched.
 pub fn groups_for(pressed: &[String], all: &[(String, Prefs)]) -> Vec<Vec<String>> {
@@ -506,6 +525,18 @@ mod tests {
         assert_eq!(app_press(false, 2), AppAct::ShowAll);
         assert_eq!(app_press(false, 0), AppAct::OpenWindow);
         assert_eq!(app_press(true, 0), AppAct::HideAll, "in front with only a hotkey window up");
+    }
+
+    /// vmcheck6: on macOS the hide never minimizes, and the show activates the app directly.
+    #[test]
+    fn app_hotkey_hides_the_way_the_os_can() {
+        let mac = app_hiding(true);
+        assert!(!mac.minimize, "no Dock tile, no restore animation to lose the activation in");
+        assert!(mac.hide_app && mac.show_activates_app);
+        let win = app_hiding(false);
+        assert!(win.minimize && !win.hide_app && !win.show_activates_app, "Windows is unchanged");
+        let this_os = app_hiding(crate::platform::app_events::HAS_APP_HIDING);
+        assert_eq!(this_os.minimize, !crate::platform::app_events::HAS_APP_HIDING);
     }
 
     #[test]

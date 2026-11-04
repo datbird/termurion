@@ -704,14 +704,16 @@ impl App {
     }
 
     /// The app hotkey: Show/hide all windows. Windows has no "hide app", so the terminal
-    /// windows are minimized (and shown hotkey windows hidden), then restored.
+    /// windows are minimized (and shown hotkey windows hidden), then restored. macOS hides the
+    /// app only, as iTerm2 does (`hotkey::app_hiding`).
     fn app_hotkey_pressed(&mut self) {
         let hotkeys = self.hotkey_windows();
         let regular: Vec<WindowId> = self.registry.order().into_iter().filter_map(|k| self.window_id_of_key(k)).filter(|w| !hotkeys.contains(w)).collect();
+        let how = hotkey::app_hiding(crate::platform::app_events::HAS_APP_HIDING);
         match hotkey::app_press(termurion_in_front(), regular.len()) {
             hotkey::AppAct::HideAll => {
                 self.app_hidden.clear();
-                for w in regular {
+                for w in regular.iter().copied().filter(|_| how.minimize) {
                     self.enter(w);
                     if let Some(g) = &self.gpu
                         && !g.window.is_minimized().unwrap_or(false) {
@@ -727,7 +729,9 @@ impl App {
                     self.enter(b);
                 }
                 // macOS keeps an app with no window in front; hiding it hands the front to the app before.
-                crate::platform::app_events::hide_app();
+                if how.hide_app {
+                    crate::platform::app_events::hide_app();
+                }
             }
             hotkey::AppAct::ShowAll => {
                 let back = std::mem::take(&mut self.app_hidden);
@@ -737,9 +741,17 @@ impl App {
                             g.window.set_minimized(false);
                         }
                 }
-                if let Some(w) = self.last_window.filter(|w| regular.contains(w)).or_else(|| regular.last().copied()) {
-                    self.focus_terminal_window(w);
+                let Some(w) = self.last_window.filter(|w| regular.contains(w)).or_else(|| regular.last().copied()) else { return };
+                if !how.show_activates_app {
+                    return self.focus_terminal_window(w);
                 }
+                // The app comes back and forward in one go, its last window key.
+                crate::platform::app_events::unhide_app();
+                if self.enter(w)
+                    && let Some(h) = self.view() {
+                        crate::platform::window::set_foreground(h);
+                        self.last_window = Some(w);
+                    }
             }
             hotkey::AppAct::OpenWindow => self.pending_windows.push(NewWindow::Profile(None)),
         }
