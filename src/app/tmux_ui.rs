@@ -59,6 +59,8 @@ pub(super) struct TmuxGw {
     pub(super) dcs_id: String,
     /// A restored gateway's writes are held until then (`enableWritesAfterDelay`).
     pub(super) writes_at: Option<Instant>,
+    /// The client size was read before the restored gateway's tab existed: read it again.
+    size_stale: bool,
 }
 
 /// Tags for commands typed through C, above the controller's.
@@ -71,7 +73,7 @@ impl TmuxGw {
     pub(super) fn new(newline: &str, tolerate_unrecognized: bool, client: String, ctl: crate::tmux_controller::Controller, dcs_id: String) -> TmuxGw {
         let mut gw = Gateway::new(newline);
         gw.tolerate_unrecognized = tolerate_unrecognized;
-        TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client, ctl, selected: None, pause_tick: None, auto_buried: false, bury_pending: false, window_titles: HashMap::new(), window_names: HashMap::new(), tab_overrides: HashMap::new(), tab_sizes: HashMap::new(), panes: HashMap::new(), dcs_id, writes_at: None }
+        TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client, ctl, selected: None, pause_tick: None, auto_buried: false, bury_pending: false, window_titles: HashMap::new(), window_names: HashMap::new(), tab_overrides: HashMap::new(), tab_sizes: HashMap::new(), panes: HashMap::new(), dcs_id, writes_at: None, size_stale: false }
     }
 
     /// A restored gateway starts again (`PS:2109-2115`): the session it was attached to, then
@@ -82,6 +84,8 @@ impl TmuxGw {
         let _ = self.ctl.session_changed(session, name, &mut self.gw);
         self.gw.restored_session(session, name);
         self.writes_at = Some(now + RESTORE_WRITE_DELAY);
+        // Its tab is built after this: the size is read again before the windows open.
+        self.size_stale = true;
         self.hs.kick_off(&mut self.gw, now);
         vec![3]
     }
@@ -94,6 +98,12 @@ impl TmuxGw {
         self.writes_at = None;
         self.gw.enable_writes();
         true
+    }
+
+    /// True once when the client size must be read again, now that the restored gateway's tab
+    /// exists (iTerm2 asks `tmuxClientSize` only when it opens the windows, `TC:841-853`).
+    pub(super) fn take_size_stale(&mut self) -> bool {
+        std::mem::take(&mut self.size_stale)
     }
 
     /// A restored gateway at a shell: the held writes are dropped (`PS:11641`).
@@ -222,11 +232,23 @@ impl App {
         }
         crate::rlog!("tmux gateway restored: pane {}", pane);
         let job = self.panes.get(&pane).and_then(|p| p.shell_pid()).and_then(crate::platform::proc::foreground_job);
-        if crate::session_state::is_shell(job.as_ref().map(|j| j.name.as_str())) {
-            if let Some(t) = self.tmux.get_mut(&pane) {
-                t.stop_restored();
-            }
+        if self.tmux.get_mut(&pane).is_some_and(|t| stop_if_at_shell(t, job.as_ref().map(|j| j.name.as_str()))) {
             self.tmux_disconnected(pane, true);
+        }
+    }
+
+    /// A restored gateway's tab exists by the time its writes go: its client size is read
+    /// again, as iTerm2 reads it only when it opens the windows (`TC:841-853`).
+    fn tmux_resize_restored(&mut self, pane: PaneId) {
+        if !self.tmux.get_mut(&pane).is_some_and(|t| t.take_size_stale()) {
+            return;
+        }
+        let Some(own) = self.panes.get(&pane).map(|p| (p.own().term().columns() as u32, p.own().term().screen_lines() as u32)) else { return };
+        let client = self.tmux_attach_size(pane, own);
+        let prefs = self.tmux_prefs(pane, client.1);
+        if let Some(t) = self.tmux.get_mut(&pane) {
+            t.ctl.client = client;
+            t.ctl.prefs = prefs;
         }
     }
 
@@ -256,6 +278,8 @@ impl App {
     }
 
     pub(super) fn tmux_events(&mut self, pane: PaneId, events: Vec<Event>, event_loop: &ActiveEventLoop) {
+        // A reply may open the windows: a restored gateway's size is read first.
+        self.tmux_resize_restored(pane);
         for e in events {
             let Some(t) = self.tmux.get_mut(&pane) else { return };
             match e {
@@ -315,18 +339,12 @@ impl App {
                 }
                 Event::Abort(msg) => return self.tmux_abort(pane, "tmux Reported a Problem", &msg),
                 Event::InitialFailed(text) => self.tmux_print(pane, &format!("tmux failed with error: \u{201c}{text}\u{201d}")),
-                Event::Exit => {
+                // %exit, or a stream that is not tmux (then the hook lets go too, and psmux's
+                // client is ended, so what follows is drawn: `PS:11746`).
+                e @ (Event::Exit | Event::Lost) => {
                     // tmux 3.2's wait-exit wants the newline the gateway queued.
                     self.tmux_flush(pane);
-                    return self.tmux_disconnected(pane, false);
-                }
-                // Not tmux: the hook lets go too, so what follows is drawn (`PS:11746`).
-                Event::Lost => {
-                    self.tmux_disconnected(pane, false);
-                    if let Some(p) = self.panes.get_mut(&pane) {
-                        p.unhook_tmux();
-                    }
-                    return;
+                    return self.tmux_disconnected(pane, unhooks(&e));
                 }
                 // psmux killed the attached session and sent no %exit: let go (which ends its client).
                 Event::Gone => return self.tmux_disconnected(pane, true),
@@ -563,12 +581,11 @@ impl App {
             next = [next, at].into_iter().flatten().min();
         }
         for id in due {
+            self.tmux_resize_restored(id);
             self.tmux_flush(id);
         }
         // A restored gateway that went before its second was up still writes then.
-        let (late, wait): (Vec<_>, Vec<_>) = std::mem::take(&mut self.tmux_late).into_iter().partition(|(_, at, _)| now >= *at);
-        self.tmux_late = wait;
-        for (pane, _, bytes) in late {
+        for (pane, bytes) in due_late(&mut self.tmux_late, now) {
             if let Some(p) = self.panes.get_mut(&pane) {
                 p.reply(&bytes);
             }
@@ -626,6 +643,29 @@ impl App {
         }
         true
     }
+}
+
+/// Whether the gateway's end lets go of the hook: after `%exit` it has left already; a stream
+/// that is not tmux, or psmux's silent end, still holds it (`PS:11746`).
+fn unhooks(e: &Event) -> bool {
+    !matches!(e, Event::Exit)
+}
+
+/// A restored gateway whose job is a shell runs no tmux: its held writes are dropped and it
+/// ends (`PS:11625-11645`). True when it must end.
+fn stop_if_at_shell(t: &mut TmuxGw, job: Option<&str>) -> bool {
+    if !crate::session_state::is_shell(job) {
+        return false;
+    }
+    t.stop_restored();
+    true
+}
+
+/// The late writes whose second is up, taken from `late`.
+fn due_late(late: &mut Vec<(PaneId, Instant, Vec<u8>)>, now: Instant) -> Vec<(PaneId, Vec<u8>)> {
+    let (due, wait): (Vec<_>, Vec<_>) = std::mem::take(late).into_iter().partition(|(_, at, _)| now >= *at);
+    *late = wait;
+    due.into_iter().map(|(pane, _, bytes)| (pane, bytes)).collect()
 }
 
 /// An alert with OK (iTerm2's NSAlert with one button).
@@ -712,6 +752,55 @@ mod tests {
         let (mut t, _) = restored(Instant::now());
         let ev = lines(&mut t, &["Connection to host closed."]);
         assert_eq!(ev, vec![Event::Print("Unrecognized command from tmux. Did your ssh session die? The command was:".into()), Event::Print("Connection to host closed.".into()), Event::Lost]);
+    }
+
+    /// I-a and M-b: how each end lets go. A line that is not tmux unhooks, and so for psmux ends
+    /// the client and seals the hook in `tmux_disconnected` as every other let-go does.
+    #[test]
+    fn each_end_lets_go_of_the_hook_as_it_must() {
+        assert!(!unhooks(&Event::Exit), "after %exit the hook has left already");
+        assert!(unhooks(&Event::Lost));
+        assert!(unhooks(&Event::Gone));
+        let mut g = Gateway::new("\r");
+        g.psmux = true;
+        let ev = g.line(b"not tmux");
+        assert!(ev.last().is_some_and(unhooks), "{ev:?}");
+    }
+
+    /// M-b: the restore's checks the app runs. At a shell it ends with nothing written; under
+    /// another job, or none known, it keeps tmux mode (`processNameIsAShell:`).
+    #[test]
+    fn a_restored_gateway_ends_only_at_a_shell() {
+        let t0 = Instant::now();
+        let (mut t, _) = restored(t0);
+        assert!(!stop_if_at_shell(&mut t, Some("tmux")));
+        assert!(!stop_if_at_shell(&mut t, None), "no job known: kept");
+        assert!(t.writes_at.is_some());
+        assert!(stop_if_at_shell(&mut t, Some("zsh")));
+        assert_eq!((t.writes_at, t.late_writes()), (None, None), "nothing held, nothing late");
+    }
+
+    /// M-b: late writes go when their second is up, each once.
+    #[test]
+    fn late_writes_go_when_their_second_is_up() {
+        let t0 = Instant::now();
+        let mut late = vec![(1, t0 + RESTORE_WRITE_DELAY, b"a".to_vec()), (2, t0 + RESTORE_WRITE_DELAY * 2, b"b".to_vec())];
+        assert!(due_late(&mut late, t0).is_empty());
+        assert_eq!(due_late(&mut late, t0 + RESTORE_WRITE_DELAY), vec![(1, b"a".to_vec())]);
+        assert_eq!(late.len(), 1);
+        assert_eq!(due_late(&mut late, t0 + RESTORE_WRITE_DELAY * 2), vec![(2, b"b".to_vec())]);
+        assert!(late.is_empty());
+    }
+
+    /// M-a: a restored gateway reads its client size again once, after its tab exists; a fresh
+    /// one never needs to.
+    #[test]
+    fn a_restored_gateway_reads_its_size_again() {
+        let mut fresh = TmuxGw::new("\r", false, "c".into(), Controller::new(tmux_handshake::FIRST_FREE_TAG), "D".into());
+        assert!(!fresh.take_size_stale());
+        let (mut t, _) = restored(Instant::now());
+        assert!(t.take_size_stale());
+        assert!(!t.take_size_stale(), "once");
     }
 
     /// At a shell nothing runs tmux: the held writes are dropped (`PS:11640-11642`).
