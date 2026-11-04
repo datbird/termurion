@@ -1515,6 +1515,34 @@ mod tests {
         assert_eq!(alerts(&mut s), 0, "triggers do not see the banner");
     }
 
+    /// Item (f): the banner bar is filled to the width the pane had when it was fed (a restored
+    /// window is made wider than it ends up). Narrowing must cut the bar, not wrap its tail onto a
+    /// gray block of its own.
+    #[test]
+    fn a_narrowed_banner_bar_leaves_no_gray_block() {
+        use alacritty_terminal::index::{Column, Line};
+        use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
+        let mut s = Screen::new(40, 6);
+        s.feed_restored("abc", None, Some(("Session Contents Restored on X", (38, 102))));
+        s.resize(30, 6);
+        let g = s.term().grid();
+        let bar = Color::Spec(Rgb { r: 38, g: 38, b: 38 });
+        assert_eq!(g[Line(1)][Column(29)].bg, bar, "the bar still spans the new width");
+        for line in 2..6 {
+            for c in 0..30 {
+                assert_eq!(g[Line(line)][Column(c)].bg, Color::Named(NamedColor::Background), "gray at line {line} column {c}");
+            }
+        }
+        // A wrapped line's colored tail is part of its text and stays.
+        let mut w = Screen::new(20, 4);
+        w.feed(b"\x1b[41m");
+        w.feed("x".repeat(30).as_bytes());
+        w.feed(b"\x1b[0m");
+        w.resize(10, 4);
+        let g = w.term().grid();
+        assert_eq!(g[Line(1)][Column(9)].bg, Color::Named(NamedColor::Red));
+    }
+
     #[test]
     fn gateway_messages_print_literally() {
         let mut s = Screen::new(40, 5);
