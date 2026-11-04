@@ -3,7 +3,7 @@
 //! the output tmux had not finished sending.
 
 /// iTerm2's list-panes format: `key=#{key}` joined by tabs.
-pub const KEYS: [&str; 21] = [
+pub const KEYS: [&str; 22] = [
     "pane_id",
     "alternate_on",
     "alternate_saved_x",
@@ -25,6 +25,8 @@ pub const KEYS: [&str; 21] = [
     "mouse_sgr_flag",
     "bracket_paste_flag",
     "pane_key_mode",
+    // Not in iTerm2's list: which pane tmux has active, so a window opens on it.
+    "pane_active",
 ];
 
 pub fn format() -> String {
@@ -64,6 +66,11 @@ impl PaneState {
             Some(n) if !n.is_empty() => PaneState { values: vec![("n".into(), n.into())] }.int("n"),
             _ => -1,
         })
+    }
+
+    /// True when tmux says this is its window's active pane.
+    pub fn active(&self) -> bool {
+        self.flag("pane_active") == Some(true)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -229,11 +236,13 @@ mod tests {
     #[test]
     fn pane_state_parses() {
         assert!(format().starts_with("pane_id=#{pane_id}\talternate_on=#{alternate_on}\t"));
-        assert!(format().ends_with("bracket_paste_flag=#{bracket_paste_flag}\tpane_key_mode=#{pane_key_mode}"));
+        assert!(format().ends_with("pane_key_mode=#{pane_key_mode}\tpane_active=#{pane_active}"));
         let reply = format!("{}\n{}", line(&[("pane_id", "%3"), ("cursor_x", "4")]), line(&[("pane_id", "%7"), ("cursor_x", "9")]));
         let s = parse(&reply, 7, false);
         assert_eq!((s.pane(), s.int("cursor_x")), (Some(7), 9));
         assert!(parse(&reply, 8, false).is_empty(), "no line for the pane");
+        let two = format!("{}\n{}", line(&[("pane_id", "%3"), ("pane_active", "0")]), line(&[("pane_id", "%7"), ("pane_active", "1")]));
+        assert_eq!((parse(&two, 3, false).active(), parse(&two, 7, false).active(), parse(&reply, 3, false).active()), (false, true, false));
         let bug = "pane_id=%2\\tcursor_y=5";
         assert_eq!(parse(bug, 2, true).int("cursor_y"), 5, "tmux next-3.4 printed \\t");
         assert_eq!(parse(bug, 2, false).int("cursor_y"), 0, "without the workaround it is one field; intValue still reads the pane");

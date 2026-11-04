@@ -122,6 +122,8 @@ pub struct PaneOpen {
     pub pending: Vec<u8>,
     /// Its `user.*` variables from `@uservars` (tmux 3.1 and later).
     pub user_vars: BTreeMap<String, String>,
+    /// tmux's active pane of its window.
+    pub active: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1506,7 +1508,7 @@ impl Controller {
                 let state = tmux_state::parse(&c.state, p, tab_bug);
                 let user_vars = crate::tmux_persist::parse_user_vars(&c.user_vars);
                 self.user_vars.insert(p, user_vars.clone());
-                PaneOpen { pane: p, w, h, restore: tmux_state::restore_bytes(&state, &c.primary, &c.alt, h as usize), pending: c.pending, user_vars }
+                PaneOpen { pane: p, w, h, restore: tmux_state::restore_bytes(&state, &c.primary, &c.alt, h as usize), pending: c.pending, user_vars, active: state.active() }
             })
             .collect();
         let all = tmux_layout::panes(&o.node);
@@ -1615,13 +1617,16 @@ impl Controller {
                     }
             }
             Note::WindowPaneChanged { window, pane } => {
-                // A split's new pane is still being captured: the app has no pane to focus yet,
-                // so the choice waits for the capture to finish (`focus_after`).
-                if self.openers.values().any(|o| o.window.id == window && o.panes.contains(&pane)) {
-                    self.focus_after.insert(window, pane);
-                } else if self.windows.get(&window).is_some_and(|ps| ps.contains(&pane)) {
+                // tmux says the new pane is active before it sends the layout that holds it (and
+                // the pane is captured after that), so the app has no pane to focus yet: the choice
+                // waits until the pane opens (`focus_after`).
+                let pending = self.openers.values().any(|o| o.window.id == window && o.panes.contains(&pane));
+                if !pending && self.windows.get(&window).is_some_and(|ps| ps.contains(&pane)) {
                     self.focus_after.remove(&window);
                     return vec![Action::SelectPane(window, pane)];
+                }
+                if self.windows.contains_key(&window) || pending {
+                    self.focus_after.insert(window, pane);
                 }
             }
             Note::SessionWindowChanged { session, window } => {
@@ -1842,13 +1847,37 @@ mod tests {
         assert!(r.ctl.windows.is_empty());
     }
 
-    /// Item (h): after split-window tmux says the new pane is active right after the layout, before
-    /// the app has the pane; the focus follows once the pane opens.
+    /// Item (h), the attach: each pane says whether tmux has it active, so the window opens on it.
+    #[test]
+    fn an_opened_pane_says_whether_tmux_has_it_active() {
+        let mut r = opened();
+        r.lines(&["%layout-change @0 8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1} 8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1} *"]);
+        r.answer(Some(""));
+        r.answer(Some(""));
+        r.answer(Some("pane_id=%1\tpane_active=1"));
+        r.answer(Some(""));
+        let a = r.answer(Some(""));
+        let [Action::Relayout { added, .. }, ..] = &a[..] else { panic!("{a:?}") };
+        assert!(added[0].active);
+    }
+
+    /// Item (h): after split-window tmux says the new pane is active (before the layout that holds
+    /// it, or right after it); the app has no pane then, so the focus follows once the pane opens.
     #[test]
     fn a_split_focuses_the_new_pane_once_it_is_open() {
+        const LAYOUT: &str = "%layout-change @0 8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1} 8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1} *";
+        // Real tmux 3.8 order: the pane change first.
         let mut r = opened();
-        let a = r.lines(&["%layout-change @0 8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1} 8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1} *"]);
-        assert!(a.is_empty());
+        assert!(r.lines(&["%window-pane-changed @0 %1"]).is_empty(), "the pane is not known yet");
+        assert!(r.lines(&[LAYOUT]).is_empty());
+        for _ in 0..4 {
+            r.answer(Some(""));
+        }
+        let a = r.answer(Some(""));
+        assert!(matches!(&a[..], [Action::Relayout { window: 0, .. }, Action::SelectPane(0, 1)]), "{a:?}");
+        // The layout first, then the pane change while the capture runs.
+        let mut r = opened();
+        assert!(r.lines(&[LAYOUT]).is_empty());
         let a = r.lines(&["%window-pane-changed @0 %1"]);
         assert!(a.is_empty(), "the pane is not open yet: {a:?}");
         for _ in 0..4 {

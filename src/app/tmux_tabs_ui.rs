@@ -809,7 +809,9 @@ impl App {
             // iTerm2's opener completes even so: a waiting CreateWindow gets no tab ("0").
             return self.api_tmux_window_opened(gw, window_id, None);
         };
-        let focused = ids.get(&panes.first().map_or(0, |p| p.pane)).copied().unwrap_or(0);
+        // The window opens on the pane tmux has active, else its first.
+        let first = panes.iter().find(|p| p.active).or(panes.first()).map_or(0, |p| p.pane);
+        let focused = ids.get(&first).copied().unwrap_or(0);
         let mut tab = Tab::new(self.next_tab_id, layout, focused);
         tab.title = Some(self.tmux_title(&window.name));
         tab.tmux_node = Some(node.clone());
