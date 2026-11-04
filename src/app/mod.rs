@@ -712,6 +712,8 @@ pub struct App {
     win_follow_desktop: bool,
     /// The monitor (primary first) the current window's profile anchors it to (`placement::anchor`).
     win_anchor: Option<usize>,
+    /// The frame of the window a tmux window opens from, for `place_window`'s cascade.
+    cascade_parent: Option<crate::placement::Rect>,
     /// DWM was last told this window's backdrop is blurred (the frame is extended); `set_blur` runs on a change.
     blur_applied: bool,
     /// The look `presence_tick` last applied to the current window.
@@ -2355,6 +2357,7 @@ pub fn run() {
         win_alpha_failed: false,
         win_follow_desktop: false,
         win_anchor: None,
+        cascade_parent: None,
         blur_applied: false,
         look_seen: None,
         belt: Default::default(),

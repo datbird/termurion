@@ -132,12 +132,11 @@ pub fn place(policy: i64, saved: Option<Rect>, windows: usize, work: Rect, other
     }
 }
 
-/// A new window at a sibling's frame (within `step`, which a menu bar or a title bar can add)
-/// hides it: it moves down and right by `step`, again while a sibling is still there (iTerm2
-/// cascades new windows), and stays on a monitor.
-pub fn clear_of_siblings(r: Rect, siblings: &[Rect], step: f32, monitors: &[Rect]) -> Rect {
-    let same = |a: &Rect, b: &Rect| (a.x - b.x).abs() < step && (a.y - b.y).abs() < step;
-    let mut r = r;
+/// A tmux window opened from another window: down and right of its parent by `step` at the
+/// window's own size, and on past any sibling already there (a cascade), kept on a monitor.
+pub fn cascade(parent: Rect, size: (f32, f32), step: f32, siblings: &[Rect], monitors: &[Rect]) -> Rect {
+    let same = |a: &Rect, b: &Rect| (a.x - b.x).abs() < step / 2.0 && (a.y - b.y).abs() < step / 2.0;
+    let mut r = Rect { x: parent.x + step, y: parent.y + step, w: size.0, h: size.1 };
     for _ in 0..64 {
         if !siblings.iter().any(|s| same(&r, s)) {
             break;
@@ -145,7 +144,11 @@ pub fn clear_of_siblings(r: Rect, siblings: &[Rect], step: f32, monitors: &[Rect
         r.x += step;
         r.y += step;
     }
-    clamp_to_monitors(r, monitors)
+    // Kept wholly on the parent's monitor (the first one when the parent is on none).
+    let (cx, cy) = (parent.x + parent.w / 2.0, parent.y + parent.h / 2.0);
+    let Some(m) = monitors.iter().find(|m| cx >= m.x && cx < m.x + m.w && cy >= m.y && cy < m.y + m.h).or(monitors.first()) else { return r };
+    let (w, h) = (r.w.min(m.w), r.h.min(m.h));
+    Rect { x: r.x.clamp(m.x, m.x + m.w - w), y: r.y.clamp(m.y, m.y + m.h - h), w, h }
 }
 
 /// The profile's Screen setting: -1 the window's monitor, -2 the monitor with the cursor,
@@ -271,19 +274,20 @@ mod tests {
         assert!(r.x >= 500.0, "away from the other window: {r:?}");
     }
 
+    /// Item (j): a tmux window opens down and right of its parent, never on it or at the top left.
     #[test]
-    fn a_new_window_never_sits_exactly_on_a_sibling() {
+    fn a_tmux_window_cascades_from_its_parent() {
         let mons = [WORK];
-        let parent = Rect { x: 100.0, y: 80.0, w: 400.0, h: 300.0 };
-        let moved = clear_of_siblings(parent, &[parent], 22.0, &mons);
-        assert_eq!((moved.x, moved.y, moved.w, moved.h), (122.0, 102.0, 400.0, 300.0));
-        // Two siblings on the cascade: it goes past both.
-        let second = Rect { x: 122.0, y: 102.0, ..parent };
-        assert_eq!(clear_of_siblings(parent, &[parent, second], 22.0, &mons).x, 144.0);
-        // A frame that is not on a sibling stays.
-        let apart = Rect { x: 600.0, ..parent };
-        assert_eq!(clear_of_siblings(apart, &[parent], 22.0, &mons), apart);
-        assert_eq!(clear_of_siblings(apart, &[], 22.0, &mons), apart);
+        let parent = Rect { x: 300.0, y: 200.0, w: 800.0, h: 600.0 };
+        let r = cascade(parent, (640.0, 480.0), 22.0, &[parent], &mons);
+        assert_eq!((r.x, r.y, r.w, r.h), (322.0, 222.0, 640.0, 480.0));
+        // A sibling already on the first step: one more step.
+        let first = Rect { x: 322.0, y: 222.0, w: 640.0, h: 480.0 };
+        assert_eq!(cascade(parent, (640.0, 480.0), 22.0, &[parent, first], &mons).x, 344.0);
+        // A parent at the bottom right still gives a window on the monitor.
+        let corner = Rect { x: WORK.x + WORK.w - 100.0, y: WORK.y + WORK.h - 100.0, w: 800.0, h: 600.0 };
+        let r = cascade(corner, (640.0, 480.0), 22.0, &[corner], &mons);
+        assert!(r.x + r.w <= WORK.x + WORK.w && r.y + r.h <= WORK.y + WORK.h, "{r:?}");
     }
 
     #[test]
