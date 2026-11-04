@@ -646,12 +646,6 @@ impl App {
             }
         };
         let previous = self.current_window();
-        // A tmux window cascades from the window that was current (its parent: the gateway's
-        // window or the tmux window opened before it).
-        self.cascade_parent = match (&first, &gpu) {
-            (NewWindow::Tabs(ts), Some(_)) if ts.iter().any(|t| t.tmux_node.is_some()) => self.gpu.as_ref().map(Self::outer_rect),
-            _ => None,
-        };
         // "Reuse previous session's directory" for a new window reads the focused pane of the
         // window that was current; the swap below puts an empty window in its place (R3).
         let from_pane = self.focused_id();
@@ -1815,12 +1809,9 @@ impl App {
             // A Screen preference moves even a window Windows placed.
             (pref != -1).then(|| placement::move_to(current, monitors.get(window_monitor).copied().unwrap_or(work), work))
         });
-        let step = 22.0 * g.window.scale_factor() as f32;
-        let target = match self.cascade_parent.take() {
-            Some(parent) => Some(placement::cascade(parent, (current.w, current.h), step, &others, &monitors)),
-            None => target,
-        };
         let Some(r) = target else { return };
+        // Never exactly on top of a window that is already open (the parent of a tmux window).
+        let r = placement::clear_of_siblings(r, &others, 22.0 * g.window.scale_factor() as f32, &monitors);
         let w = &g.window;
         w.set_outer_position(PhysicalPosition::new(r.x.round() as i32, r.y.round() as i32));
         if (r.w, r.h) != (current.w, current.h) {
