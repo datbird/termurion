@@ -586,7 +586,8 @@ impl Screen {
     /// cursor lands rows above the end and the banner writes over the last lines.
     pub fn feed_restored_sized(&mut self, text: &str, cursor: Option<(usize, usize)>, banner: Option<(&str, (u8, u8))>, saved: Option<(usize, usize)>) {
         let own = (self.term.columns(), self.term.screen_lines());
-        let saved = saved.filter(|&(c, r)| (2..=10_000).contains(&c) && (1..=10_000).contains(&r) && (c, r) != own);
+        // A size far from the pane's own (a corrupt file) is not used: the text goes in as before.
+        let saved = saved.and_then(|g| crate::arrangement::usable_saved_grid(g, own)).filter(|&(c, _)| c >= 2).filter(|g| *g != own);
         if let Some((c, r)) = saved {
             self.resize(c, r);
         }
@@ -1500,6 +1501,17 @@ mod tests {
         let at = got.iter().position(|l| l == "line 1").unwrap_or_else(|| panic!("line 1 is gone: {got:?}"));
         assert_eq!(got.get(at..at + want.len()), Some(&want[..]), "second restore: {got:?}");
         assert!(got.iter().filter(|l| l.starts_with("Session Contents Restored")).count() == 2, "{got:?}");
+    }
+
+    /// Round 4 (I1): a 9999x9999 saved size never sizes the grid; the text goes in at the
+    /// pane's own grid and the pane keeps it.
+    #[test]
+    fn a_huge_saved_size_is_not_used() {
+        let mut r = Screen::with_scrollback(39, 22, 1000);
+        let started = std::time::Instant::now();
+        r.feed_restored_sized("one\ntwo\n", Some((2, 0)), None, Some((9999, 9999)));
+        assert_eq!((r.term().columns(), r.term().screen_lines()), (39, 22));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
     }
 
     #[test]

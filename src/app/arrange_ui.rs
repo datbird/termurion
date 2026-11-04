@@ -673,7 +673,9 @@ impl App {
             let mut launched = true;
             self.restoring_session = true;
             // Off Windows the shell starts at the grid it was saved at (ConPTY keeps its own rules).
-            self.restore_grid = arrangement::saved_grid(&session).filter(|_| !crate::platform::IS_WINDOWS).map(|(c, r)| (c as u16, r as u16));
+            // A saved grid far larger than the pane's area (a corrupt file) is not used.
+            let own = self.grid_size_in(area, self.cell(), 0.0);
+            self.restore_grid = arrangement::saved_grid(&session).and_then(|g| arrangement::usable_saved_grid(g, (own.0 as usize, own.1 as usize))).filter(|_| !crate::platform::IS_WINDOWS).map(|(c, r)| (c as u16, r as u16));
             // A browser pane comes back at its saved URL, judged again (an arrangement file is another party's).
             self.browser_url_override = super::browser_app::restored_url(&session);
             // A workgroup's shown member saved its descriptor (Task 9). A restored Code Review or Diff
