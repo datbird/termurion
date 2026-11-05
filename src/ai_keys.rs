@@ -123,7 +123,7 @@ pub fn read_problem(v: Vendor) -> Option<String> {
     shared().lock().unwrap_or_else(|e| e.into_inner()).get_checked(v, &mut *system_store()).err()
 }
 
-/// The system's key store: Credential Manager on Windows, the Keychain on macOS; on Linux every call reports Unsupported.
+/// The system's key store: Credential Manager on Windows, the Keychain on macOS, the Secret Service on Linux.
 pub fn system_store() -> Box<dyn KeyStore> {
     Box::new(CredStore)
 }
@@ -327,18 +327,5 @@ mod tests {
         assert!(key_matches("anything", Vendor::Llama));
         assert!(key_matches("anything", Vendor::Apple));
         assert!(key_matches("sk-1", Vendor::DeepSeek));
-    }
-
-    /// Off Windows and macOS the store reports Unsupported: a read is an error, never an empty answer.
-    #[test]
-    fn the_system_store_is_unsupported_off_windows() {
-        // macOS has the Keychain store (P2), tested live in platform::unix::credentials.
-        if crate::platform::IS_WINDOWS || cfg!(target_os = "macos") {
-            return;
-        }
-        let mut s = system_store();
-        assert!(s.read("TermurionAI/OpenAI").unwrap_err().contains("Password manager is not available"));
-        assert!(s.write("TermurionAI/OpenAI", "u", &Secret::new("k".into())).is_err());
-        assert!(s.delete("TermurionAI/OpenAI").is_err());
     }
 }

@@ -11,9 +11,6 @@ pub mod clipboard;
 pub mod clock;
 pub mod cmd_help;
 pub mod coproc;
-// macOS has the Keychain (platform/macos/keychain.rs).
-#[cfg(not(target_os = "macos"))]
-pub mod credentials;
 pub mod dialog;
 pub mod desktops;
 pub mod display;

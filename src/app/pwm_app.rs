@@ -3086,7 +3086,7 @@ mod tests {
         assert!(files.len() > 100);
         for f in files {
             let name = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
-            if name == "app/pwm_app.rs" || name.starts_with("pwm_") || name.starts_with("bin/") || name == "platform/windows/credentials.rs" || name == "platform/unix/credentials.rs" || name == "platform/macos/keychain.rs" {
+            if name == "app/pwm_app.rs" || name.starts_with("pwm_") || name.starts_with("bin/") || name == "platform/windows/credentials.rs" || name == "platform/linux/secrets.rs" || name == "platform/macos/keychain.rs" {
                 continue;
             }
             let text = std::fs::read_to_string(&f).unwrap();

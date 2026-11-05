@@ -143,14 +143,35 @@ const MAC_WORDS: &[(&str, &str)] = &[
     ("Explorer", "Finder"),
 ];
 
+/// Windows words and the Linux ones, longest first: only the credential store has another name.
+const LINUX_WORDS: &[(&str, &str)] = &[
+    ("the Windows Credential Manager", "the Secret Service"),
+    ("Windows Credential Manager", "the Secret Service"),
+    ("the Credential Manager", "the Secret Service"),
+    ("Credential Manager", "the Secret Service"),
+];
+
 /// A text written in Windows words, in the words of this OS: on macOS the Finder, the Keychain, the
-/// Dock and the Mac's key names; Windows and Linux get it back unchanged, byte for byte.
+/// Dock and the Mac's key names, on Linux the Secret Service; Windows gets it back unchanged.
 pub fn native_words(text: &str) -> std::borrow::Cow<'_, str> {
     if cfg!(target_os = "macos") {
         std::borrow::Cow::Owned(mac_words(text))
+    } else if cfg!(target_os = "linux") {
+        std::borrow::Cow::Owned(linux_words(text))
     } else {
         std::borrow::Cow::Borrowed(text)
     }
+}
+
+/// `native_words` for Linux, whatever OS this is (so the table is tested everywhere).
+pub fn linux_words(text: &str) -> String {
+    let mut s = text.to_string();
+    for (from, to) in LINUX_WORDS {
+        if s.contains(from) {
+            s = s.replace(from, to);
+        }
+    }
+    s
 }
 
 /// `native_words` for macOS, whatever OS this is (so the table is tested everywhere).
@@ -262,7 +283,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod words_tests {
+mod native_words_tests {
     use super::*;
 
     #[test]
@@ -277,6 +298,19 @@ mod words_tests {
         // Windows alone is the app's windows: never replaced.
         assert_eq!(mac_words("Windows have square corners."), "Windows have square corners.");
         assert_eq!(mac_words("Restore windows to same desktops"), "Restore windows to same desktops");
+    }
+
+    #[test]
+    fn linux_names_the_secret_service() {
+        assert_eq!(linux_words("Keys are stored securely in the Windows Credential Manager."), "Keys are stored securely in the Secret Service.");
+        assert_eq!(linux_words("it stores them in Windows Credential Manager, but"), "it stores them in the Secret Service, but");
+        assert_eq!(linux_words("removed manually from Credential Manager if"), "removed manually from the Secret Service if");
+        assert_eq!(linux_words("Windows Credential Manager"), "the Secret Service");
+        // Windows alone is the app's windows, and the Mac words stay out of it.
+        assert_eq!(linux_words("Windows have square corners. Reveal in Explorer"), "Windows have square corners. Reveal in Explorer");
+        if cfg!(all(unix, not(target_os = "macos"))) {
+            assert_eq!(native_words("the Windows Credential Manager"), "the Secret Service");
+        }
     }
 
     #[test]
