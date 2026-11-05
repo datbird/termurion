@@ -29,10 +29,6 @@ pub mod key_record;
 pub mod keys;
 pub mod locale;
 pub mod mdns;
-pub mod user_auth;
-// macOS watches com.apple.screenIsLocked (platform/macos/screen_lock.rs).
-#[cfg(not(target_os = "macos"))]
-pub mod screen_lock;
 pub mod watch;
 pub mod metrics;
 pub mod gitrun;

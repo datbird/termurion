@@ -391,6 +391,8 @@ One table (`platform::native_words`, applied on macOS only; Windows text is unch
 
 The password manager and the AI keys use the Secret Service (`platform::linux::secrets`, the `secret-service` crate on the one `zbus` 5 of the tree). Linux failures: no test failed on "Password manager is not available" at the P2 count, so the 165 do not move; the stand-in's own test (`unix_credentials_unsupported`) and the AI keys test that asserted Unsupported (`ai_keys::tests::the_system_store_is_unsupported_off_windows`, which would now reach a real keyring) are gone, replaced by `platform::linux::secrets::tests`, each keyring test in a child process under its own `dbus-run-session`, `gnome-keyring-daemon` and scratch HOME. On Linux `native_words` maps "Credential Manager" to "the Secret Service". The unlock prompt is tested with a stand-in for the desktop prompter (`org.gnome.keyring.SystemPrompter`) on the private bus: a call made while the prompt is open answers "locked" at once, a dismissal lets the next call ask again, and a hung service trips a latch so later calls fail at once until a background probe gets an answer.
 
+The password manager gate and the screen lock on Linux (P3 Task 5): the gate is the account password, asked in Termurion's own window and checked by PAM (`platform::linux::user_auth`, service `login`, authenticate only; libpam.so.0 is opened at run time, so there is no build dependency). Three wrong passwords fail it. The check runs on a worker thread and answers through `UserEvent::PwmGate`. A browser basic-auth save that needs the gate answers "locked" until the manager has been opened once. The screen lock is logind's `Session.Lock` for this login session plus `ActiveChanged(true)` of `org.freedesktop.ScreenSaver` and `org.gnome.ScreenSaver` (`platform::linux::screen_lock`); tests run a fake logind on a private bus. No Linux failure count moves: the full lib run showed three extra load flakes (render, two in trigger_eval) that pass alone.
+
 ## Deferred after P2
 
 Each with its reason.
@@ -409,5 +411,4 @@ Each with its reason.
 - The open judge's three known gaps (above): a writable ancestor, ACLs, and the ignore list for alias targets.
 - Known macOS limit: a profile with shortcut key Q never opens from its key. Its chord is Ctrl+Cmd+Q, which macOS takes system-wide for Lock Screen before any app sees it. iTerm2 has the same clash (its profile shortcuts are also Ctrl+Cmd+letter). The Profiles menu item still opens it.
 - Chord collisions that predate P2 and match Windows (Decrease and Increase Height against Select Pane Above and Below; Cmd+Shift+= Show Clippings against Make Text Bigger): FIXES.md item 20.
-- Screen lock for the password manager on Linux: no lock event is read there yet (P3). macOS watches `com.apple.screenIsLocked` since the P2 final fix round.
 - The Python API scripts' virtual environment layout is Windows-only (`Scripts\python.exe`); macOS and Linux use `bin/python` when that phase lands.

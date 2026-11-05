@@ -2,8 +2,8 @@
 
 #[cfg(target_os = "macos")]
 use super::macos::screen_lock as imp;
-#[cfg(all(unix, not(target_os = "macos")))]
-use super::unix::screen_lock as imp;
+#[cfg(target_os = "linux")]
+use super::linux::screen_lock as imp;
 #[cfg(windows)]
 use super::windows::screen_lock as imp;
 

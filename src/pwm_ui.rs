@@ -826,6 +826,96 @@ fn busy_modal(ctx: &egui::Context, acts: &mut Vec<PwmAct>) {
     });
 }
 
+/// What the password gate window answered.
+pub enum GateResult {
+    Open,
+    Cancel,
+    /// The typed password, moved out of the field.
+    Ok(Secret),
+}
+
+/// Asks for the account password before the manager opens (Linux): one masked field, OK and
+/// Cancel. The typed password is a `Secret` from the first key press until it is handed over.
+pub struct GateWindow {
+    host: EguiHost,
+    user: String,
+    password: Secret,
+    /// Shown under the field after a wrong answer.
+    note: Option<String>,
+    /// The check is running: the field and buttons wait.
+    checking: bool,
+    focus: bool,
+    opened: Option<u64>,
+}
+
+const GATE_FIELD: f32 = 320.0;
+
+impl GateWindow {
+    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, user: &str) -> Result<GateWindow, String> {
+        let host = EguiHost::open(event_loop, instance, adapter, device, queue, "Termurion", f64::from(GATE_FIELD) + 40.0, 190.0)?;
+        Ok(GateWindow { host, user: user.to_string(), password: Secret::new(String::new()), note: None, checking: false, focus: true, opened: None })
+    }
+
+    pub fn id(&self) -> WindowId {
+        self.host.id()
+    }
+
+    pub fn event(&mut self, event: &WindowEvent) -> bool {
+        self.host.event(event)
+    }
+
+    /// The answer is being checked: nothing can be typed or pressed until it comes back.
+    pub fn checking(&mut self) {
+        self.checking = true;
+        self.host.request_redraw();
+    }
+
+    /// The check failed: say so, empty the field and take typing again.
+    pub fn retry(&mut self, note: &str) {
+        self.checking = false;
+        self.note = Some(note.to_string());
+        self.password.clear();
+        self.focus = true;
+        self.host.request_redraw();
+    }
+
+    pub fn redraw(&mut self) -> GateResult {
+        let (mut ok, mut cancel) = (false, false);
+        let (user, password, note, checking, focus, opened) = (&self.user, &mut self.password, &self.note, self.checking, &mut self.focus, &mut self.opened);
+        self.host.paint(|ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                ui.label(format!("Termurion wants to open the password manager. Enter the password for {user}."));
+                ui.add_space(8.0);
+                let id = egui::Id::new("pwm-gate-password");
+                crate::secret_field::secret_field(ui, id, password, !checking, Some("Password"), GATE_FIELD, false);
+                if std::mem::take(focus) {
+                    ui.memory_mut(|m| m.request_focus(id));
+                }
+                ui.add_space(4.0);
+                if checking {
+                    ui.label("Checking...");
+                } else if let Some(n) = note {
+                    ui.colored_label(ui.visuals().error_fg_color, n.as_str());
+                }
+                ui.add_space(10.0);
+                let first = *opened.get_or_insert_with(|| ui.ctx().cumulative_frame_nr());
+                let (enter, escape) = crate::settings_ai::modal_keys(ui, first, &[id]);
+                ui.horizontal(|ui| {
+                    ok = ui.add_enabled(!checking, egui::Button::new("OK").min_size(egui::vec2(76.0, 24.0))).clicked() || (enter && !checking);
+                    cancel = ui.add(egui::Button::new("Cancel").min_size(egui::vec2(76.0, 24.0))).clicked() || escape;
+                });
+            });
+        });
+        if cancel {
+            GateResult::Cancel
+        } else if ok && !self.password.is_empty() {
+            GateResult::Ok(self.password.duplicate())
+        } else {
+            GateResult::Open
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

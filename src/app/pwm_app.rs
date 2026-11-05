@@ -27,7 +27,7 @@ use crate::pwm::{self, Account, AccountPanel, Alert, Auth, Busy, GearItem, Secre
 use crate::pwm_cli::{self, OpNotUsable};
 use crate::pwm_prompt;
 use crate::pwm_source::{self, Caps, Field, Kind, Scope, Source};
-use crate::pwm_ui::{PwmAct, PwmView, PwmWindow};
+use crate::pwm_ui::{GateResult, GateWindow, PwmAct, PwmView, PwmWindow};
 use crate::warnings::Preempt;
 
 /// Where the CLIs picked with Locate are remembered (menu-only globals, no settings rows; iTerm2
@@ -143,9 +143,19 @@ enum AlertFor {
     LpAuthFailed(String),
 }
 
+/// The account-password gate while it waits for the person or for PAM (Linux): the open it
+/// holds back, the window that asks and the count of wrong answers.
+struct Gating {
+    open: PwmOpen,
+    user: String,
+    window: Option<GateWindow>,
+    tries: crate::platform::user_auth::Gate,
+}
+
 /// The password manager's app-wide state.
 #[derive(Default)]
 pub(super) struct PwmState {
+    gate: Option<Gating>,
     auth: Auth,
     worker: Option<Worker>,
     /// The source as the worker last reported it: kind, name, capabilities.
@@ -475,6 +485,7 @@ impl App {
                     self.basic_auth_picked(n, None);
                 }
         }
+        self.open_gate_window(event_loop);
         if let Some(email) = self.pwm.lp_terminal.take() {
             self.open_lp_login(event_loop, &email);
         }
@@ -520,6 +531,7 @@ impl App {
     /// True when a manager opened (or the open was refused as iTerm2 refuses it); false when a picker's
     /// challenge must end because nothing opened.
     fn open_pwm_now(&mut self, event_loop: &ActiveEventLoop, o: PwmOpen, handled: &mut Vec<WindowId>) -> bool {
+        let again = o.clone();
         let PwmOpen { account, pane, scope, for_user, send_both, target, focus_after_user, from_page, pick_page } = o;
         let session = target == PwmTarget::Session;
         if let Some(p) = pane {
@@ -555,6 +567,9 @@ impl App {
         let every = self.pwm_setting(pwm::REQUIRE_EVERY_KEY);
         let prompted = self.pwm_auth(scope).needs_prompt(required, every);
         if prompted {
+            if crate::platform::user_auth::GATE_IN_APP {
+                return self.begin_gate(again, hold, session);
+            }
             if !self.authenticate(scope) {
                 // The prompt took the focus: the hold ends when the window gets it back.
                 if let Some(p) = hold {
@@ -632,6 +647,11 @@ impl App {
     /// `deviceOwnerAuthentication`), else the Windows credential prompt checked with `LogonUserW`
     /// (`requestAuthenticationIfNeeded`). A failure or a cancel shows iTerm2's alert.
     pub(super) fn authenticate(&mut self, scope: Scope) -> bool {
+        // The account password is asked in the app's own window, which this call cannot wait for.
+        if crate::platform::user_auth::GATE_IN_APP {
+            self.gate_failed(scope, crate::platform::user_auth::Answer::Failed("the password manager is locked; open it and enter the account password first.".to_string()));
+            return false;
+        }
         let owner = self.hwnd().unwrap_or(0);
         // Windows Hello (PIN, fingerprint, face) where it is set up, else the password prompt.
         let answer = crate::platform::user_auth::hello(owner).unwrap_or_else(|| crate::platform::user_auth::prompt(owner));
@@ -643,6 +663,110 @@ impl App {
                     self.pwm_warning(AUTH_FAILED_TITLE, &format!("Authentication failed because {reason}"));
                 }
                 false
+            }
+        }
+    }
+
+    /// Holds an open back until the account password is right: the window comes on the next pass.
+    /// Answers as the failed gate does, so a picker's challenge ends and a session's does not.
+    fn begin_gate(&mut self, open: PwmOpen, hold: Option<PaneId>, session: bool) -> bool {
+        if let Some(p) = hold {
+            self.pwm.holds.push(p);
+        }
+        if self.pwm.gate.is_some() {
+            return session;
+        }
+        match crate::platform::user_auth::account_name() {
+            Ok(user) => self.pwm.gate = Some(Gating { open, user, window: None, tries: Default::default() }),
+            Err(e) => self.gate_failed(open.scope, crate::platform::user_auth::Answer::Failed(e)),
+        }
+        self.redraw();
+        session
+    }
+
+    fn open_gate_window(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(g) = self.pwm.gate.as_ref().filter(|g| g.window.is_none()) else { return };
+        let scope = g.open.scope;
+        let opened = match self.gpu.as_ref() {
+            Some(gpu) => GateWindow::open(event_loop, &gpu.instance, &gpu.adapter, &gpu.device, &gpu.queue, &g.user),
+            None => Err("there is no window to ask in.".to_string()),
+        };
+        match opened {
+            Ok(w) => {
+                if let Some(g) = self.pwm.gate.as_mut() {
+                    g.window = Some(w);
+                }
+            }
+            Err(e) => {
+                self.pwm.gate = None;
+                self.gate_failed(scope, crate::platform::user_auth::Answer::Failed(e));
+            }
+        }
+    }
+
+    /// The gate ended without a grant: the store stays locked and the person is told why.
+    fn gate_failed(&mut self, scope: Scope, answer: crate::platform::user_auth::Answer) {
+        let alert = alert_wanted(&answer, crate::platform::user_auth::SILENT_CANCEL);
+        if let Err(reason) = self.pwm.apply_answer(scope, answer)
+            && alert {
+                self.pwm_warning(AUTH_FAILED_TITLE, &format!("Authentication failed because {reason}"));
+            }
+    }
+
+    /// Events for the password window. False for other windows.
+    pub(super) fn pwm_gate_event(&mut self, id: WindowId, event: &WindowEvent) -> bool {
+        let Some(w) = self.pwm.gate.as_mut().and_then(|g| g.window.as_mut()).filter(|w| w.id() == id) else { return false };
+        let result = match event {
+            WindowEvent::CloseRequested => GateResult::Cancel,
+            WindowEvent::RedrawRequested => w.redraw(),
+            other => {
+                w.event(other);
+                return true;
+            }
+        };
+        match result {
+            GateResult::Open => {}
+            GateResult::Cancel => {
+                if let Some(g) = self.pwm.gate.take() {
+                    self.gate_failed(g.open.scope, crate::platform::user_auth::Answer::Canceled);
+                }
+            }
+            GateResult::Ok(password) => {
+                w.checking();
+                let user = self.pwm.gate.as_ref().map(|g| g.user.clone()).unwrap_or_default();
+                let proxy = self.proxy.clone();
+                // PAM waits out its failure delay, so it never runs on this thread.
+                let spawned = std::thread::Builder::new().name("pwm-gate".into()).spawn(move || {
+                    let checked = crate::platform::user_auth::check(&user, &password);
+                    drop(password);
+                    let _ = proxy.lock().map(|p| p.send_event(UserEvent::PwmGate(checked)));
+                });
+                if let Err(e) = spawned {
+                    self.pwm_gate_checked(Err(format!("the check could not start ({e}).")));
+                }
+            }
+        }
+        true
+    }
+
+    /// PAM's verdict on the typed password (`UserEvent::PwmGate`).
+    pub(super) fn pwm_gate_checked(&mut self, checked: Result<(), String>) {
+        use crate::platform::user_auth::{Answer, Next};
+        let Some(g) = self.pwm.gate.as_mut() else { return };
+        match g.tries.answer(checked) {
+            Next::Again => {
+                if let Some(w) = g.window.as_mut() {
+                    w.retry("That password was not accepted. Try again.");
+                }
+            }
+            Next::Done(answer) => {
+                let Some(g) = self.pwm.gate.take() else { return };
+                if matches!(answer, Answer::Granted) {
+                    let _ = self.pwm.apply_answer(g.open.scope, answer);
+                    self.open_password_manager_with(g.open);
+                } else {
+                    self.gate_failed(g.open.scope, answer);
+                }
             }
         }
     }

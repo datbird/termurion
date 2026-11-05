@@ -655,6 +655,7 @@ mod tests {
         ("platform/linux/proc_table.rs", "rows", 1, "the kernel's own /proc process table, a fixed path with only a process id in it"),
         ("platform/linux/proc_table.rs", "image", 1, "the kernel's own /proc process table, a fixed path with only a process id in it"),
         ("platform/linux/proc_table.rs", "cmdline", 1, "the kernel's own /proc process table, a fixed path with only a process id in it"),
+        ("platform/linux/user_auth.rs", "service_present", 1, "the system's own PAM login service files, two fixed paths no pane or profile can name"),
         ("platform/unix/ipc.rs", "connect", 1, "the session host socket in Termurion's own private runtime folder; lstat is the point (a link or a foreign folder is refused), and no path from outside reaches it"),
         ("platform/unix/ipc.rs", "check_parent", 2, "the session host socket in Termurion's own private runtime folder; lstat is the point (a link or a foreign folder is refused), and no path from outside reaches it"),
         ("platform/unix/ipc.rs", "take", 1, "the session host socket in Termurion's own private runtime folder; lstat is the point (a link or a foreign folder is refused), and no path from outside reaches it"),
