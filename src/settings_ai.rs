@@ -597,7 +597,9 @@ fn keys() -> std::sync::MutexGuard<'static, Keys> {
 }
 
 /// Opens the key dialog: each vendor's key is read once (a read that fails prefills blank).
-/// Credential Manager calls run on the UI thread; they never prompt (Decision).
+/// Store calls run on the UI thread. On Linux each is bounded to 5 s and, after one timeout, later
+/// calls fail at once until the service answers (platform::linux::secrets), so a hung service
+/// cannot stall this loop more than once.
 fn open_key_dialog(opened: u64) -> KeyDialog {
     let mut store = ai_keys::system_store();
     let mut cache = keys();
