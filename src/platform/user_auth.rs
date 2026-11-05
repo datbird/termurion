@@ -10,12 +10,18 @@ use super::windows::user_auth as imp;
 
 pub use imp::{hello, prompt};
 #[cfg(target_os = "linux")]
-pub use imp::{account_name, check};
+pub use imp::{account_name, check, ready};
 
 /// Without the in-app gate there is no name to ask for and nothing to check.
 #[cfg(not(target_os = "linux"))]
 pub fn account_name() -> Result<String, String> {
     Err(format!("the account password is not asked for here ({}).", super::OS_NAME))
+}
+
+/// See `account_name`.
+#[cfg(not(target_os = "linux"))]
+pub fn ready() -> Result<(), String> {
+    Err(format!("the account password is not checked here ({}).", super::OS_NAME))
 }
 
 /// See `account_name`.

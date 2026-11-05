@@ -16,6 +16,7 @@ const PAM_SUCCESS: c_int = 0;
 const PAM_AUTH_ERR: c_int = 7;
 const PAM_CONV_ERR: c_int = 19;
 const PAM_PROMPT_ECHO_OFF: c_int = 1;
+#[cfg(test)]
 const PAM_PROMPT_ECHO_ON: c_int = 2;
 const PAM_ERROR_MSG: c_int = 3;
 const PAM_TEXT_INFO: c_int = 4;
@@ -47,6 +48,8 @@ struct Pam {
     authenticate: unsafe extern "C" fn(*mut c_void, c_int) -> c_int,
     end: unsafe extern "C" fn(*mut c_void, c_int) -> c_int,
     strerror: unsafe extern "C" fn(*mut c_void, c_int) -> *const c_char,
+    /// Linux-PAM 1.4 and later; used by the tests to point at a scratch service folder.
+    start_confdir: Option<unsafe extern "C" fn(*const c_char, *const c_char, *const Conv, *const c_char, *mut *mut c_void) -> c_int>,
 }
 
 /// The library is opened once and kept for the life of the process.
@@ -72,18 +75,29 @@ fn load() -> Result<Pam, String> {
             authenticate: std::mem::transmute::<*mut c_void, _>(sym(c"pam_authenticate")?),
             end: std::mem::transmute::<*mut c_void, _>(sym(c"pam_end")?),
             strerror: std::mem::transmute::<*mut c_void, _>(sym(c"pam_strerror")?),
+            start_confdir: {
+                let p = libc::dlsym(lib, c"pam_start_confdir".as_ptr());
+                if p.is_null() { None } else { Some(std::mem::transmute::<*mut c_void, _>(p)) }
+            },
         })
     }
 }
 
-/// Answers PAM's questions with the password: `data` is the password, NUL ended. Anything that
-/// is not a password prompt or a plain message is refused.
+/// What the conversation knows: the password (NUL ended) and whether it was already given.
+struct Talk {
+    password: Vec<u8>,
+    given: bool,
+}
+
+/// Answers the first hidden prompt with the password. A visible prompt, a second hidden one or
+/// anything unknown is refused, so the password goes to nothing that did not ask for it.
 unsafe extern "C" fn converse(count: c_int, msgs: *mut *const Message, out: *mut *mut Response, data: *mut c_void) -> c_int {
     if count <= 0 || count > 32 || msgs.is_null() || out.is_null() || data.is_null() {
         return PAM_CONV_ERR;
     }
-    // SAFETY: PAM hands over `count` messages; the array is calloc'd for PAM to free.
+    // SAFETY: PAM hands over `count` messages; the array is calloc'd for PAM to free. `data` is our Talk.
     unsafe {
+        let talk = &mut *(data as *mut Talk);
         let n = count as usize;
         let replies = libc::calloc(n, std::mem::size_of::<Response>()) as *mut Response;
         if replies.is_null() {
@@ -92,12 +106,13 @@ unsafe extern "C" fn converse(count: c_int, msgs: *mut *const Message, out: *mut
         for i in 0..n {
             let style = (**msgs.add(i)).style;
             match style {
-                PAM_PROMPT_ECHO_OFF | PAM_PROMPT_ECHO_ON => {
-                    let copy = libc::strdup(data as *const c_char);
+                PAM_PROMPT_ECHO_OFF if !talk.given => {
+                    let copy = libc::strdup(talk.password.as_ptr() as *const c_char);
                     if copy.is_null() {
                         free_replies(replies, i);
                         return PAM_CONV_ERR;
                     }
+                    talk.given = true;
                     (*replies.add(i)).resp = copy;
                 }
                 PAM_ERROR_MSG | PAM_TEXT_INFO => {}
@@ -158,19 +173,41 @@ pub fn account_name() -> Result<String, String> {
     }
 }
 
-/// Checks `password` for `user` with PAM. Takes as long as the system's failure delay on a wrong one.
-pub fn check(user: &str, password: &Secret) -> Result<(), String> {
+/// Whether a password can be checked here at all: a PAM `login` service and a loadable libpam.
+/// Asked before the window opens, so the person is told why at once.
+pub fn ready() -> Result<(), String> {
     if !service_present() {
         return Err("this system has no PAM login service to check the password with.".to_string());
     }
-    let pam = pam()?;
+    pam().map(|_| ())
+}
+
+/// Checks `password` for `user` with PAM. Takes as long as the system's failure delay on a wrong one.
+pub fn check(user: &str, password: &Secret) -> Result<(), String> {
+    ready()?;
+    run(pam()?, SERVICE, None, user, password)
+}
+
+/// One pam_start, pam_authenticate and pam_end for `service` (in `confdir` when given).
+fn run(pam: &Pam, service: &[u8], confdir: Option<&CStr>, user: &str, password: &Secret) -> Result<(), String> {
     let user = CString::new(user).map_err(|_| "the account name is not valid.".to_string())?;
-    let mut pw = CString::new(password.expose()).map_err(|_| WRONG.to_string())?.into_bytes_with_nul();
-    let conv = Conv { conv: converse, data: pw.as_mut_ptr() as *mut c_void };
+    // A NUL can never be in a password; refuse before any copy is made.
+    let bytes = password.expose().as_bytes();
+    if bytes.contains(&0) {
+        return Err(WRONG.to_string());
+    }
+    let mut talk = Talk { password: Vec::with_capacity(bytes.len() + 1), given: false };
+    talk.password.extend_from_slice(bytes);
+    talk.password.push(0);
+    let conv = Conv { conv: converse, data: &mut talk as *mut Talk as *mut c_void };
     let mut handle: *mut c_void = std::ptr::null_mut();
-    // SAFETY: the signatures match libpam's; `conv` and `pw` outlive every call that can use them.
+    // SAFETY: the signatures match libpam's; `conv` and `talk` outlive every call that can use them.
     let result = unsafe {
-        let rc = (pam.start)(SERVICE.as_ptr() as *const c_char, user.as_ptr(), &conv, &mut handle);
+        let rc = match (confdir, pam.start_confdir) {
+            (Some(dir), Some(f)) => f(service.as_ptr() as *const c_char, user.as_ptr(), &conv, dir.as_ptr(), &mut handle),
+            (Some(_), None) => return Err("this libpam cannot start from a scratch folder.".to_string()),
+            (None, _) => (pam.start)(service.as_ptr() as *const c_char, user.as_ptr(), &conv, &mut handle),
+        };
         if rc != PAM_SUCCESS {
             Err(reason(None, rc, pam))
         } else {
@@ -180,7 +217,7 @@ pub fn check(user: &str, password: &Secret) -> Result<(), String> {
             r
         }
     };
-    wipe(&mut pw);
+    wipe(&mut talk.password);
     result
 }
 
@@ -219,10 +256,23 @@ mod tests {
         format!("{:x}{:x}", t, std::process::id())
     }
 
+    /// The real account is only asked when the runner opts in: a wrong password is a line in the
+    /// journal and a count against any lockout policy of the machine.
+    fn real_account_allowed() -> bool {
+        if std::env::var("TERMURION_PAM_TEST").as_deref() != Ok("1") {
+            println!("skipped: set TERMURION_PAM_TEST=1 to check a wrong password against the real account");
+            return false;
+        }
+        if ready().is_err() {
+            println!("skipped: no PAM login service or libpam here");
+            return false;
+        }
+        true
+    }
+
     #[test]
     fn a_wrong_password_fails() {
-        if !service_present() || pam().is_err() {
-            println!("skipped: no PAM login service or libpam here");
+        if !real_account_allowed() {
             return;
         }
         let user = account_name().expect("the current account");
@@ -232,8 +282,7 @@ mod tests {
 
     #[test]
     fn a_missing_user_is_not_a_grant() {
-        if !service_present() || pam().is_err() {
-            println!("skipped: no PAM login service or libpam here");
+        if !real_account_allowed() {
             return;
         }
         let bad = Secret::new(format!("not-the-password-{}", random_tail()));
@@ -242,7 +291,85 @@ mod tests {
 
     #[test]
     fn a_password_with_a_nul_is_refused() {
-        assert!(check("anyone", &Secret::new("a\0b".to_string())).is_err());
+        assert!(run_nothing("a\0b").is_err());
+    }
+
+    fn run_nothing(pw: &str) -> Result<(), String> {
+        match pam() {
+            Ok(p) => run(p, b"termurion-test\0", None, "anyone", &Secret::new(pw.to_string())),
+            Err(_) => Err(WRONG.to_string()),
+        }
+    }
+
+    /// A scratch PAM service folder with one `auth` line using `module`; None (with the reason
+    /// printed) where libpam or the module is missing.
+    fn scratch_service(module: &str) -> Option<(std::path::PathBuf, &'static Pam)> {
+        let p = match pam() {
+            Ok(p) if p.start_confdir.is_some() => p,
+            _ => {
+                println!("skipped: this libpam has no pam_start_confdir");
+                return None;
+            }
+        };
+        let dirs = ["/lib/x86_64-linux-gnu/security", "/usr/lib/x86_64-linux-gnu/security", "/lib64/security", "/usr/lib64/security", "/usr/lib/security", "/lib/security"];
+        let Some(path) = dirs.iter().map(|d| std::path::Path::new(d).join(module)).find(|m| m.exists()) else {
+            println!("skipped: {module} was not found");
+            return None;
+        };
+        let dir = std::env::temp_dir().join(format!("termurion-pam-{}-{}", std::process::id(), random_tail()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("termurion-test"), format!("auth required {}\n", path.display())).unwrap();
+        Some((dir, p))
+    }
+
+    fn through(module: &str) -> Option<Result<(), String>> {
+        let (dir, p) = scratch_service(module)?;
+        let confdir = CString::new(dir.to_str().unwrap()).unwrap();
+        let r = run(p, b"termurion-test\0", Some(&confdir), "anyone", &Secret::new("whatever".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Some(r)
+    }
+
+    /// The whole FFI path (start, conversation setup, authenticate, end) against a scratch service.
+    #[test]
+    fn pam_deny_fails_and_pam_permit_grants() {
+        if let Some(r) = through("pam_deny.so") {
+            assert!(r.is_err(), "pam_deny granted");
+        }
+        if let Some(r) = through("pam_permit.so") {
+            assert_eq!(r, Ok(()));
+        }
+    }
+
+    fn message(style: c_int) -> Message {
+        Message { style, msg: c"Password:".as_ptr() }
+    }
+
+    /// Calls the conversation as PAM would; the reply text when it answered with one.
+    fn ask(talk: &mut Talk, style: c_int) -> Result<Option<String>, c_int> {
+        let m = message(style);
+        let mut list: [*const Message; 1] = [&m];
+        let mut out: *mut Response = std::ptr::null_mut();
+        // SAFETY: valid message list and Talk; the reply array is freed below.
+        unsafe {
+            let rc = converse(1, list.as_mut_ptr(), &mut out, talk as *mut Talk as *mut c_void);
+            if rc != PAM_SUCCESS {
+                return Err(rc);
+            }
+            let r = (*out).resp;
+            let text = if r.is_null() { None } else { Some(CStr::from_ptr(r).to_string_lossy().into_owned()) };
+            free_replies(out, 1);
+            Ok(text)
+        }
+    }
+
+    #[test]
+    fn only_the_first_hidden_prompt_gets_the_password() {
+        let mut talk = Talk { password: b"secret\0".to_vec(), given: false };
+        assert_eq!(ask(&mut talk, PAM_PROMPT_ECHO_ON), Err(PAM_CONV_ERR), "a visible prompt never gets it");
+        assert_eq!(ask(&mut talk, PAM_PROMPT_ECHO_OFF), Ok(Some("secret".to_string())));
+        assert_eq!(ask(&mut talk, PAM_PROMPT_ECHO_OFF), Err(PAM_CONV_ERR), "a second hidden prompt (an OTP) gets nothing");
+        assert_eq!(ask(&mut talk, PAM_TEXT_INFO), Ok(None));
     }
 
     /// The module never puts the password in a log line or a formatted string.

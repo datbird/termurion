@@ -143,10 +143,36 @@ enum AlertFor {
     LpAuthFailed(String),
 }
 
-/// The account-password gate while it waits for the person or for PAM (Linux): the open it
-/// holds back, the window that asks and the count of wrong answers.
+/// What the gate holds back until the account password is right (Linux).
+pub(super) enum GateThen {
+    /// A manager open; it runs once, without asking again.
+    Open(PwmOpen),
+    /// A basic-auth login the person asked to remember.
+    Save { pane: PaneId, space: SpaceKey, credential: crate::browser_basic_auth::Credential },
+}
+
+impl GateThen {
+    /// The basic-auth challenge a picker open belongs to: it stays alive while the gate waits.
+    fn challenge(&self) -> Option<u64> {
+        match self {
+            GateThen::Open(PwmOpen { target: PwmTarget::BasicAuth(n), .. }) => Some(*n),
+            _ => None,
+        }
+    }
+
+    fn scope(&self) -> Scope {
+        match self {
+            GateThen::Open(o) => o.scope,
+            GateThen::Save { .. } => Scope::Browser,
+        }
+    }
+}
+
+/// The account-password gate while it waits for the person or for PAM (Linux).
 struct Gating {
-    open: PwmOpen,
+    /// Which gate a PAM verdict belongs to.
+    id: u64,
+    then: GateThen,
     user: String,
     window: Option<GateWindow>,
     tries: crate::platform::user_auth::Gate,
@@ -156,6 +182,8 @@ struct Gating {
 #[derive(Default)]
 pub(super) struct PwmState {
     gate: Option<Gating>,
+    /// The last gate number handed out.
+    gate_seq: u64,
     auth: Auth,
     worker: Option<Worker>,
     /// The source as the worker last reported it: kind, name, capabilities.
@@ -211,6 +239,8 @@ pub(super) struct PwmOpen {
     /// A basic-auth picker's challenge origin (https): the list shows only its accounts and a pick
     /// must match it (`account_matches`). None with a picker target lists nothing.
     pub(super) pick_page: Option<PwPage>,
+    /// The account-password gate was just passed for this open: it does not ask again.
+    pub(super) gated: bool,
 }
 
 /// What the manager's entries go to.
@@ -250,6 +280,18 @@ fn open_request(account: Option<String>, pane: Option<PaneId>, focused: Option<P
     } else {
         PwmOpen { account, pane, ..PwmOpen::default() }
     }
+}
+
+/// Whether an open asks for the password now: not when the gate was just passed for this very open
+/// (with "every open" on, the cached grant never counts, so asking again would never end).
+fn gate_wanted(prompted: bool, gated: bool) -> bool {
+    prompted && !gated
+}
+
+/// What the gate does with a PAM verdict.
+enum Verdict {
+    Retry,
+    Done(GateThen, crate::platform::user_auth::Answer),
 }
 
 /// What opening does with the window's one `pwm_window` slot. iTerm2's refuse-if-open rule is the
@@ -338,6 +380,21 @@ fn page_steps(send_both: bool, user: &str, focus: Option<&(String, u64)>, epoch:
 }
 
 impl PwmState {
+    /// Counts a verdict for gate `gate`; None when that gate is not the open one.
+    fn gate_verdict(&mut self, gate: u64, checked: Result<(), String>) -> Option<Verdict> {
+        use crate::platform::user_auth::Next;
+        let g = self.gate.as_mut().filter(|g| g.id == gate)?;
+        match g.tries.answer(checked) {
+            Next::Again => {
+                if let Some(w) = g.window.as_mut() {
+                    w.retry("That password was not accepted. Try again.");
+                }
+                Some(Verdict::Retry)
+            }
+            Next::Done(answer) => self.gate.take().map(|g| Verdict::Done(g.then, answer)),
+        }
+    }
+
     pub(super) fn auth_mut(&mut self, scope: Scope) -> &mut Auth {
         match scope {
             Scope::Terminal => &mut self.auth,
@@ -532,7 +589,7 @@ impl App {
     /// challenge must end because nothing opened.
     fn open_pwm_now(&mut self, event_loop: &ActiveEventLoop, o: PwmOpen, handled: &mut Vec<WindowId>) -> bool {
         let again = o.clone();
-        let PwmOpen { account, pane, scope, for_user, send_both, target, focus_after_user, from_page, pick_page } = o;
+        let PwmOpen { account, pane, scope, for_user, send_both, target, focus_after_user, from_page, pick_page, gated } = o;
         let session = target == PwmTarget::Session;
         if let Some(p) = pane {
             // Unburied first, else it has no window (`AD:650-653`).
@@ -566,9 +623,9 @@ impl App {
         let required = self.pwm_setting(pwm::REQUIRE_OPEN_KEY);
         let every = self.pwm_setting(pwm::REQUIRE_EVERY_KEY);
         let prompted = self.pwm_auth(scope).needs_prompt(required, every);
-        if prompted {
+        if gate_wanted(prompted, gated) {
             if crate::platform::user_auth::GATE_IN_APP {
-                return self.begin_gate(again, hold, session);
+                return self.begin_gate(GateThen::Open(again), hold, session);
             }
             if !self.authenticate(scope) {
                 // The prompt took the focus: the hold ends when the window gets it back.
@@ -667,26 +724,42 @@ impl App {
         }
     }
 
-    /// Holds an open back until the account password is right: the window comes on the next pass.
-    /// Answers as the failed gate does, so a picker's challenge ends and a session's does not.
-    fn begin_gate(&mut self, open: PwmOpen, hold: Option<PaneId>, session: bool) -> bool {
+    /// Holds `then` back until the account password is right: the window comes on the next pass.
+    /// True while the gate is pending, so a picker's challenge stays alive; false (the challenge
+    /// ends) only when a second gate is refused. The failure paths end the challenge themselves.
+    fn begin_gate(&mut self, then: GateThen, hold: Option<PaneId>, session: bool) -> bool {
         if let Some(p) = hold {
             self.pwm.holds.push(p);
         }
         if self.pwm.gate.is_some() {
-            return session;
+            return match then {
+                GateThen::Save { pane, space, credential } => {
+                    self.basic_auth_saved_now(pane, space, credential, false);
+                    true
+                }
+                GateThen::Open(_) => session,
+            };
         }
-        match crate::platform::user_auth::account_name() {
-            Ok(user) => self.pwm.gate = Some(Gating { open, user, window: None, tries: Default::default() }),
-            Err(e) => self.gate_failed(open.scope, crate::platform::user_auth::Answer::Failed(e)),
+        // No PAM or no login service: say so now, before a password is typed.
+        let ready = crate::platform::user_auth::ready().and_then(|()| crate::platform::user_auth::account_name());
+        match ready {
+            Ok(user) => {
+                self.pwm.gate_seq += 1;
+                self.pwm.gate = Some(Gating { id: self.pwm.gate_seq, then, user, window: None, tries: Default::default() });
+            }
+            Err(e) => self.gate_ended(then, crate::platform::user_auth::Answer::Failed(e)),
         }
         self.redraw();
-        session
+        true
+    }
+
+    /// A login to remember waits for the gate.
+    pub(super) fn begin_save_gate(&mut self, pane: PaneId, space: SpaceKey, credential: crate::browser_basic_auth::Credential) {
+        self.begin_gate(GateThen::Save { pane, space, credential }, None, false);
     }
 
     fn open_gate_window(&mut self, event_loop: &ActiveEventLoop) {
         let Some(g) = self.pwm.gate.as_ref().filter(|g| g.window.is_none()) else { return };
-        let scope = g.open.scope;
         let opened = match self.gpu.as_ref() {
             Some(gpu) => GateWindow::open(event_loop, &gpu.instance, &gpu.adapter, &gpu.device, &gpu.queue, &g.user),
             None => Err("there is no window to ask in.".to_string()),
@@ -698,13 +771,26 @@ impl App {
                 }
             }
             Err(e) => {
-                self.pwm.gate = None;
-                self.gate_failed(scope, crate::platform::user_auth::Answer::Failed(e));
+                if let Some(g) = self.pwm.gate.take() {
+                    self.gate_ended(g.then, crate::platform::user_auth::Answer::Failed(e));
+                }
             }
         }
     }
 
-    /// The gate ended without a grant: the store stays locked and the person is told why.
+    /// The gate ended without a grant: the store stays locked, the person is told why, and what
+    /// waited on it ends (a picker's challenge, a login that was to be saved).
+    fn gate_ended(&mut self, then: GateThen, answer: crate::platform::user_auth::Answer) {
+        self.gate_failed(then.scope(), answer);
+        if let Some(n) = then.challenge() {
+            self.basic_auth_picked(n, None);
+        }
+        if let GateThen::Save { pane, space, credential } = then {
+            self.basic_auth_saved_now(pane, space, credential, false);
+        }
+    }
+
+    /// The gate failed with no waiting action to end.
     fn gate_failed(&mut self, scope: Scope, answer: crate::platform::user_auth::Answer) {
         let alert = alert_wanted(&answer, crate::platform::user_auth::SILENT_CANCEL);
         if let Err(reason) = self.pwm.apply_answer(scope, answer)
@@ -728,44 +814,42 @@ impl App {
             GateResult::Open => {}
             GateResult::Cancel => {
                 if let Some(g) = self.pwm.gate.take() {
-                    self.gate_failed(g.open.scope, crate::platform::user_auth::Answer::Canceled);
+                    self.gate_ended(g.then, crate::platform::user_auth::Answer::Canceled);
                 }
             }
             GateResult::Ok(password) => {
                 w.checking();
-                let user = self.pwm.gate.as_ref().map(|g| g.user.clone()).unwrap_or_default();
+                let (gate, user) = self.pwm.gate.as_ref().map(|g| (g.id, g.user.clone())).unwrap_or_default();
                 let proxy = self.proxy.clone();
                 // PAM waits out its failure delay, so it never runs on this thread.
                 let spawned = std::thread::Builder::new().name("pwm-gate".into()).spawn(move || {
                     let checked = crate::platform::user_auth::check(&user, &password);
                     drop(password);
-                    let _ = proxy.lock().map(|p| p.send_event(UserEvent::PwmGate(checked)));
+                    let _ = proxy.lock().map(|p| p.send_event(UserEvent::PwmGate(gate, checked)));
                 });
                 if let Err(e) = spawned {
-                    self.pwm_gate_checked(Err(format!("the check could not start ({e}).")));
+                    self.pwm_gate_checked(gate, Err(format!("the check could not start ({e}).")));
                 }
             }
         }
         true
     }
 
-    /// PAM's verdict on the typed password (`UserEvent::PwmGate`).
-    pub(super) fn pwm_gate_checked(&mut self, checked: Result<(), String>) {
-        use crate::platform::user_auth::{Answer, Next};
-        let Some(g) = self.pwm.gate.as_mut() else { return };
-        match g.tries.answer(checked) {
-            Next::Again => {
-                if let Some(w) = g.window.as_mut() {
-                    w.retry("That password was not accepted. Try again.");
+    /// PAM's verdict on the typed password (`UserEvent::PwmGate`). A verdict for a gate that is
+    /// gone (cancelled while it was checking) is dropped.
+    pub(super) fn pwm_gate_checked(&mut self, gate: u64, checked: Result<(), String>) {
+        use crate::platform::user_auth::Answer;
+        match self.pwm.gate_verdict(gate, checked) {
+            None | Some(Verdict::Retry) => {}
+            Some(Verdict::Done(then, answer)) => {
+                if !matches!(answer, Answer::Granted) {
+                    self.gate_ended(then, answer);
+                    return;
                 }
-            }
-            Next::Done(answer) => {
-                let Some(g) = self.pwm.gate.take() else { return };
-                if matches!(answer, Answer::Granted) {
-                    let _ = self.pwm.apply_answer(g.open.scope, answer);
-                    self.open_password_manager_with(g.open);
-                } else {
-                    self.gate_failed(g.open.scope, answer);
+                let _ = self.pwm.apply_answer(then.scope(), answer);
+                match then {
+                    GateThen::Open(o) => self.open_password_manager_with(PwmOpen { gated: true, ..o }),
+                    GateThen::Save { pane, space, credential } => self.basic_auth_saved_now(pane, space, credential, true),
                 }
             }
         }
@@ -3022,6 +3106,61 @@ mod tests {
         assert!(prod.contains("fn page_accepts") && prod.contains("bp::account_matches(account, &p)"));
         assert!(!prod.contains("fn account_matches") && !prod.contains("fn origin_matches"), "one matcher");
         assert!(between(prod, "PwmAct::EnterPassword => {", "PwmAct::EnterUserName").find("pick_why").unwrap() < between(prod, "PwmAct::EnterPassword => {", "PwmAct::EnterUserName").find("Work::Fetch").unwrap(), "bound before the fetch");
+    }
+
+    fn gating(id: u64, then: GateThen) -> Gating {
+        Gating { id, then, user: "me".into(), window: None, tries: Default::default() }
+    }
+
+    /// With "every open" on, the cached grant never counts, so the open the gate just passed must
+    /// not ask again (review I1).
+    #[test]
+    fn a_passed_gate_does_not_ask_again_with_every_open_on() {
+        let mut auth = Auth::default();
+        auth.granted(true);
+        assert!(auth.needs_prompt(true, true), "every open: a grant is never reused");
+        assert!(!gate_wanted(true, true), "the open the gate passed goes straight in");
+        assert!(gate_wanted(true, false), "the next open asks");
+        assert!(!gate_wanted(false, false));
+    }
+
+    /// A picker's challenge stays alive while the gate waits and is the one a cancel ends; a plain
+    /// open has none (review I2).
+    #[test]
+    fn a_picker_gate_names_its_challenge() {
+        let picker = GateThen::Open(PwmOpen { target: PwmTarget::BasicAuth(7), scope: Scope::Browser, ..PwmOpen::default() });
+        assert_eq!(picker.challenge(), Some(7));
+        assert_eq!(GateThen::Open(PwmOpen::default()).challenge(), None);
+        let src = include_str!("pwm_app.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        let begin = between(prod, "fn begin_gate", "fn open_gate_window");
+        assert!(begin.trim_end().ends_with("true\n    }") || begin.contains("        true\n    }"), "a pending gate keeps the challenge alive");
+        assert!(between(prod, "fn gate_ended", "/// The gate failed with no waiting").contains("then.challenge()"), "the failure ends it");
+    }
+
+    /// A remembered login waits for the gate in the browser's store and is saved after a grant
+    /// (review I3).
+    #[test]
+    fn a_save_waits_for_the_gate_in_the_browser_store() {
+        let src = include_str!("browser_basic_auth_app.rs");
+        let persist = between(src, "Action::Persist { space, credential } => {", "Action::Toast");
+        assert!(persist.contains("begin_save_gate"));
+        let pwm = include_str!("pwm_app.rs");
+        assert!(pwm.contains("GateThen::Save { pane, space, credential } => self.basic_auth_saved_now(pane, space, credential, true)"));
+    }
+
+    /// A verdict for a gate that was cancelled does not touch the next one (review M1).
+    #[test]
+    fn a_late_verdict_belongs_to_its_own_gate() {
+        use crate::platform::user_auth::{Answer, WRONG};
+        let mut st = PwmState::default();
+        st.gate = Some(gating(2, GateThen::Open(PwmOpen::default())));
+        assert!(st.gate_verdict(1, Err(WRONG.to_string())).is_none(), "gate 1 is gone");
+        assert!(st.gate_verdict(1, Ok(())).is_none(), "a late right password does not grant gate 2");
+        assert!(st.gate.is_some());
+        assert!(matches!(st.gate_verdict(2, Err(WRONG.to_string())), Some(Verdict::Retry)));
+        assert!(matches!(st.gate_verdict(2, Ok(())), Some(Verdict::Done(_, Answer::Granted))));
+        assert!(st.gate.is_none());
     }
 
     #[test]

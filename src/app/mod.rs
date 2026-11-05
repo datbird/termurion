@@ -314,8 +314,8 @@ pub enum UserEvent {
     ShutdownAnswer(bool),
     /// The Save Page As worker finished a file operation for pane `pane`'s save `id` (`page_saver_app`).
     PageSaveFile { pane: PaneId, id: u64, done: page_saver_app::FileDone },
-    /// PAM's verdict on the password typed at the password manager's gate (Linux).
-    PwmGate(Result<(), String>),
+    /// PAM's verdict (gate number, result) on the password typed at the password manager's gate (Linux).
+    PwmGate(u64, Result<(), String>),
 }
 
 #[derive(Clone)]
@@ -7867,7 +7867,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::JobsChanged => return self.jobs_changed(),
             UserEvent::DebugLogSaved(result, announce) => return self.debug_log_saved(result, announce),
             UserEvent::PageSaveFile { pane, id, done } => return self.page_save_file_done(pane, id, done),
-            UserEvent::PwmGate(checked) => return self.pwm_gate_checked(checked),
+            UserEvent::PwmGate(gate, checked) => return self.pwm_gate_checked(gate, checked),
             UserEvent::DisplayChanged => {
                 let delay = crate::placement::display_delay(self.globals.number("UpdateScreenParamsDelay").unwrap_or(1.0));
                 self.display_due = Some(Instant::now() + delay);

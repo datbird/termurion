@@ -415,19 +415,37 @@ impl App {
                 Action::ClosePicker(id) => self.basic_auth_picker_gone(id),
                 Action::Persist { space, credential } => {
                     let needs = self.basic_auth_save_needs_prompt();
-                    let ok = authorize_save(needs, &mut |scope| self.authenticate(scope));
-                    let host = space.host.clone();
-                    let sent = ok && {
-                        let work = AuthWork::Save { pane, space: space.clone(), name: name_of(&space), user: credential.user.clone(), password: credential.password.duplicate() };
-                        self.basic_auth_store_job(work)
-                    };
-                    if !sent {
-                        todo.extend(self.basic_auth.get_mut(&pane).map(|a| a.saved(space, host, false)).unwrap_or_default());
+                    // The account password is asked in the app's own window; the save runs after it.
+                    if needs && crate::platform::user_auth::GATE_IN_APP {
+                        self.begin_save_gate(pane, space, credential);
+                        continue;
                     }
+                    let ok = authorize_save(needs, &mut |scope| self.authenticate(scope));
+                    todo.extend(self.basic_auth_save_acts(pane, space, credential, ok));
                 }
                 Action::Toast(t) => self.show_toast(&t),
             }
         }
+    }
+
+    /// Sends a remembered login to the store, or, when `ok` is false (the person was not
+    /// authenticated, or it cannot be sent), tells the coordinator it was not saved.
+    fn basic_auth_save_acts(&mut self, pane: PaneId, space: SpaceKey, credential: Credential, ok: bool) -> Vec<Action> {
+        let host = space.host.clone();
+        let sent = ok && {
+            let work = AuthWork::Save { pane, space: space.clone(), name: name_of(&space), user: credential.user.clone(), password: credential.password.duplicate() };
+            self.basic_auth_store_job(work)
+        };
+        if sent {
+            return Vec::new();
+        }
+        self.basic_auth.get_mut(&pane).map(|a| a.saved(space, host, false)).unwrap_or_default()
+    }
+
+    /// A save the account-password gate held back, now decided.
+    pub(super) fn basic_auth_saved_now(&mut self, pane: PaneId, space: SpaceKey, credential: Credential, ok: bool) {
+        let acts = self.basic_auth_save_acts(pane, space, credential, ok);
+        self.basic_auth_run(pane, acts);
     }
 
     /// Takes the store's answers, opens a prompt that is wanted, answers the coordinators dropped
