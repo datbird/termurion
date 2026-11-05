@@ -241,7 +241,7 @@ mod tests {
     fn every_unsupported_text_has_its_own_verb() {
         let want = [
             "Bonjour discovery is", "Checking for updates is", "Coprocesses are", "Copy with styles as RTF is", "Disable App Nap is",
-            "Download quarantine is", "Dynamic Profiles are", "Editing a file with its app is", "Finding the process on a connection is",
+            "Dynamic Profiles are", "Editing a file with its app is", "Finding the process on a connection is",
             "Finding the process on a port is", "Installing Python for scripts is", "Moving to the Trash is",
             "Notifications are", "Password manager command line tools are", "Password manager is", "Printing is", "Python API scripts are",
             "Reporting to Termurion is", "Running a command line is", "Running git is", "Saving the debug log is",

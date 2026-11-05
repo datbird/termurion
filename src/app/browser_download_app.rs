@@ -249,6 +249,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     fn src() -> &'static str {
         include_str!("browser_download_app.rs").split("#[cfg(test)]").next().unwrap()
     }
@@ -286,5 +288,22 @@ mod tests {
         assert!(reset.contains("self.browser_downloads_view_gone(pane);"));
         let db = include_str!("browser_db_app.rs");
         assert!(db.contains("Reply::Downloads(msg) => self.browser_downloads_message(pane, source, msg),"));
+    }
+
+    /// A download whose mark Linux used to refuse now ends as done, with its origin recorded.
+    #[test]
+    fn a_linux_download_finishes() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").join("download-finish-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (temp, dest) = (dir.join(format!(".part-{}", std::process::id())), dir.join(format!("done-{}.bin", std::process::id())));
+        let _ = std::fs::remove_file(&dest);
+        std::fs::write(&temp, "bytes").unwrap();
+        let mark = |p: &std::path::Path, u: &str| crate::inert_files::mark_strict(p, bd::mark_url(u).as_deref());
+        let r = crate::ssh_local::finish_no_replace(&temp, &dest, "https://h.test/x.bin", &mark);
+        let kept = std::fs::read(&dest).ok();
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(&temp);
+        assert_eq!(r, Ok(dest));
+        assert_eq!(kept.as_deref(), Some(&b"bytes"[..]));
     }
 }

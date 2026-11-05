@@ -1,5 +1,5 @@
 //! The "from the internet" mark on a downloaded file. Windows writes the Zone.Identifier stream, macOS
-//! the quarantine attribute; Linux has no mark and reports Unsupported.
+//! the quarantine attribute, Linux the freedesktop origin attributes.
 
 use std::path::Path;
 
@@ -18,9 +18,20 @@ pub fn host_url(zone_text: &str) -> Option<&str> {
     zone_text.lines().find_map(|l| l.trim_end_matches('\r').strip_prefix("HostUrl=")).filter(|u| !u.is_empty())
 }
 
+/// The page that linked to the file: the `ReferrerUrl=` line, read like `host_url`.
+pub fn referrer_url(zone_text: &str) -> Option<&str> {
+    zone_text.lines().find_map(|l| l.trim_end_matches('\r').strip_prefix("ReferrerUrl=")).filter(|u| !u.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_referrer_is_read() {
+        assert_eq!(referrer_url("[ZoneTransfer]\r\nReferrerUrl=https://r/p\r\nHostUrl=https://h/x\r\n"), Some("https://r/p"));
+        assert_eq!(referrer_url("[ZoneTransfer]\r\nHostUrl=https://h/x\r\n"), None);
+    }
 
     #[test]
     fn the_source_url_is_read() {

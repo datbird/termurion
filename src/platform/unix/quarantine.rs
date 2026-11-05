@@ -1,13 +1,10 @@
-//! No download quarantine mark on Linux; macOS has its own (`platform::macos::quarantine`).
+//! Picks the Unix mark: macOS has the quarantine attribute, Linux the freedesktop origin attributes.
 
 use std::path::Path;
 
-#[cfg(not(target_os = "macos"))]
-pub fn mark(_path: &Path, _text: &str) -> std::io::Result<()> {
-    Err(std::io::Error::other(super::super::Unsupported { feature: "Download quarantine", plural: false }.to_string()))
-}
-
-#[cfg(target_os = "macos")]
 pub fn mark(path: &Path, text: &str) -> std::io::Result<()> {
-    super::super::macos::quarantine::mark(path, text)
+    #[cfg(target_os = "macos")]
+    return super::super::macos::quarantine::mark(path, text);
+    #[cfg(not(target_os = "macos"))]
+    super::super::linux::quarantine::mark(path, text)
 }

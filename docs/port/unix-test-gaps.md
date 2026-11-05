@@ -12,7 +12,7 @@ Windows: the Windows lib, lib tests and binaries type-check from Linux (`scripts
 
 A failure that passes alone is a flake (see Timing).
 
-## Failures by cause on Linux (every failure is in exactly one cause; the counts sum to 165)
+## Failures by cause on Linux (every failure is in exactly one cause; the counts sum to 159)
 
 | Cause | Count |
 |---|---|
@@ -20,10 +20,10 @@ A failure that passes alone is a flake (see Timing).
 | Dynamic Profiles are Windows only | 8 |
 | Windows-only tools missing | 19 |
 | Fonts and text metrics | 5 |
-| Windows path and platform rules in assertions | 115 |
+| Windows path and platform rules in assertions | 109 |
 | Timing | 5 |
 | Text encoding and normalization | 11 |
-| Total | 165 |
+| Total | 159 |
 
 Gone since P0, because P1 fixed them: "Local shells are Unsupported" (29, the pty backend), "Session host is Unsupported" (19, the Unix socket host), the Licenses test on Linux, and two path-rule tests (`profile::tests::a_missing_start_dir_falls_back_to_home_with_a_warning` and `start_dir_is_home_by_default_and_expands_tilde`). Two of the old "Local shells" tests moved into the new Coprocesses cause.
 
@@ -83,7 +83,7 @@ Text widths and face lookup measured against Windows fonts (Cascadia Mono is not
 - `render::tests::text_advance_matches_the_cell_width`
 - `render::tests::underlines_break_around_glyph_ink`
 
-### Windows path and platform rules in assertions (115)
+### Windows path and platform rules in assertions (109)
 
 Expected values are `C:\` paths, `\` separators, drive letters, UNC and subst rules, 8.3 names, PATHEXT, explorer.exe, USERPROFILE, the registry, or a path judge that refuses `/tmp` paths. Named by module below.
 
@@ -91,11 +91,6 @@ Expected values are `C:\` paths, `\` separators, drive letters, UNC and subst ru
 - `ai_actions::tests::get_help_runs_system_powershell`
 - `app::dynamic_profiles_app::tests::write_back_stays_in_the_folder`
 - `app::git_ui::tests::single_use_windows_follow_iterm2`
-- `app::page_saver_app::tests::a_huge_url_list_is_capped`
-- `app::page_saver_app::tests::a_large_resource_is_saved_up_to_the_stated_cap`
-- `app::page_saver_app::tests::save_flow_follows_iterm2`
-- `app::page_saver_app::tests::the_alert_shows_sanitized_text_and_the_door_refuses_types`
-- `app::page_saver_app::tests::write_failures_follow_iterm2`
 - `app::scripts_app::tests::autolaunch_follows_iterm2`
 - `app::scripts_app::tests::autolaunch_skips_network_links`
 - `app::scripts_app::tests::menu_entries_follow_iterm2`
@@ -126,7 +121,6 @@ Expected values are `C:\` paths, `\` separators, drive letters, UNC and subst ru
 - `git_state::tests::a_git_program_runs_only_through_the_launch`
 - `git_state::tests::fetch_state_with_asks_only_for_what_is_wanted`
 - `git_state::tests::log_is_hardened_and_truncated_like_iterm2`
-- `inert_files::tests::write_new_checked_never_overwrites_and_marks`
 - `kitty_dnd::tests::kitty_dnd_is_bounded`
 - `launch::tests::hostile_command_lines_are_refused`
 - `launch::tests::requests_follow_the_command_line`
@@ -404,7 +398,7 @@ Each with its reason.
 - Opening URLs and files handed over by Finder or other apps (`application:openURLs:`), and the Default Term handler for `ssh:` and `.command`: not in the spec's P2 list.
 - A second copy started from the bare binary (no launch pipe on Unix, Decision 18).
 - The Windows Transfers menu's Open without the open judge (parked from P1): Windows behavior does not change in the port; it belongs to a Windows fix.
-- Quarantine on Linux (downloads there still fail with "Failed to quarantine"): P3 decides what Linux marks.
+- Quarantine on Linux: done in P3 Task 7. Downloads there carry the freedesktop origin attributes (`user.xdg.origin.url`, `user.xdg.referrer.url`) and no longer fail with "Failed to quarantine". Six tests that failed only on that mark now pass (`app::page_saver_app::tests::a_huge_url_list_is_capped`, `a_large_resource_is_saved_up_to_the_stated_cap`, `save_flow_follows_iterm2`, `the_alert_shows_sanitized_text_and_the_door_refuses_types`, `write_failures_follow_iterm2`, and `inert_files::tests::write_new_checked_never_overwrites_and_marks`).
 - The Unix stand-ins P1 named for later phases (coprocesses, saving debug logs, Python API scripts, password manager command-line tools, Dynamic Profiles, the automation API peer check): not in the spec's P2 list.
 - Reading iTerm2's own Keychain items (its passwords): another app's items ask for access one by one; the import copies settings, not secrets.
 - The CI matrix (Decision 17).
