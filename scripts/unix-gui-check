@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drives the real Termurion window on a private X server and says PASS or FAIL for one scenario.
-# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, menubar, popup, host, job, clipboard, tmux, tmux-nolang, tmux-lcall, tmux-windows,
+# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, menubar, popup, host, job, clipboard, notify, tmux, tmux-nolang, tmux-lcall, tmux-windows,
 # restore-windows, restore-host, tmux-restore [a|b|c|d]
 #
 # tmux-restore: a relaunch on the same config after a tmux -CC gateway was open. Variant a: shells in
@@ -23,7 +23,7 @@ cd "$repo"
 scenario="${1:-}"
 variant="${2:-}"
 case "$scenario" in
-    shell | layout | menubar | popup | host | job | clipboard | tmux | tmux-nolang | tmux-lcall | tmux-windows | restore-windows | restore-host) ;;
+    shell | layout | menubar | popup | host | job | clipboard | notify | tmux | tmux-nolang | tmux-lcall | tmux-windows | restore-windows | restore-host) ;;
     tmux-restore)
         case "$variant" in
             a | b | c | d) ;;
@@ -37,8 +37,15 @@ case "$scenario" in
             *) echo "usage: scripts/unix-gui-check tmux-restore [a|b|c|d]" >&2; exit 2 ;;
         esac
         ;;
-    *) echo "usage: scripts/unix-gui-check <shell|layout|menubar|popup|host|job|clipboard|tmux|tmux-nolang|tmux-lcall|tmux-windows|restore-windows|restore-host|tmux-restore [a|b|c|d]>" >&2; exit 2 ;;
+    *) echo "usage: scripts/unix-gui-check <shell|layout|menubar|popup|host|job|clipboard|notify|tmux|tmux-nolang|tmux-lcall|tmux-windows|restore-windows|restore-host|tmux-restore [a|b|c|d]>" >&2; exit 2 ;;
 esac
+# The notify scenario runs on a private session bus, watched by dbus-monitor for the Notify call.
+if [ "$scenario" = notify ] && [ -z "${GUICHECK_BUS:-}" ]; then
+    for tool in dbus-run-session dbus-monitor; do
+        command -v "$tool" > /dev/null || { echo "FAIL $scenario: $tool is not installed"; exit 1; }
+    done
+    exec env GUICHECK_BUS=1 dbus-run-session -- "$0" "$@"
+fi
 # The tmux scenarios: tmux (tabs in the attaching window), tmux-nolang (the app starts with no locale
 # variable), tmux-lcall (the app starts with LC_ALL=C), tmux-windows (the default: a new Termurion window).
 is_tmux=false
@@ -65,7 +72,7 @@ mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/run"
 chmod 700 "$scratch/run"
 : > "$scratch/pids"
 
-xvfb_pid="" app_pid="" zenity_pid=""
+xvfb_pid="" app_pid="" zenity_pid="" monitor_pid=""
 cleanup() {
     [ -n "$app_pid" ] && kill "$app_pid" 2> /dev/null
     # The job scenario's question box is a child that would outlive the app.
@@ -78,6 +85,7 @@ cleanup() {
     done
     # The tmux scenario's server, by its own socket name.
     $is_tmux && tmux -L guicheck kill-server 2> /dev/null
+    [ -n "$monitor_pid" ] && kill "$monitor_pid" 2> /dev/null
     [ -n "$xvfb_pid" ] && kill "$xvfb_pid" 2> /dev/null
     return 0
 }
@@ -154,6 +162,7 @@ find_window() {
     xdotool windowfocus --sync "$win" 2> /dev/null || true
     sleep 2
 }
+[ "$scenario" = notify ] && { dbus-monitor --session "interface='org.freedesktop.Notifications',member='Notify'" > "$scratch/bus.log" 2>&1 & monitor_pid=$!; sleep 1; }
 launch_app
 find_window
 
@@ -177,6 +186,16 @@ case "$scenario" in
         type_pid_line
         shoot
         [ "$(sort -u "$scratch/pids" | wc -l)" -eq 1 ] || fail "expected one pid: $(tr '\n' ' ' < "$scratch/pids")"
+        ;;
+    notify)
+        sleep 1
+        # OSC 9 is a notification; the bus sees a Notify call whose body ends in the text (the app puts the session name in front).
+        xdotool type --delay 20 "printf '\\033]9;hello\\a'"
+        xdotool key Return
+        for _ in $(seq 50); do grep -q 'string ".*hello"' "$scratch/bus.log" && break; sleep 0.1; done
+        shoot
+        grep -q 'member=Notify' "$scratch/bus.log" || fail "no Notify call on the bus (see $scratch/bus.log, $scratch/app.log)"
+        grep -q 'string ".*hello"' "$scratch/bus.log" || fail "the Notify call has no body ending in hello (see $scratch/bus.log)"
         ;;
     host)
         sleep 1

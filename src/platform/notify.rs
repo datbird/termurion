@@ -1,10 +1,10 @@
 //! Desktop notifications and the resident tray icon. Windows uses a notification area balloon;
-//! macOS uses UserNotifications from the app bundle; Linux has no backend yet and every show reports Unsupported.
+//! macOS uses UserNotifications from the app bundle; Linux uses the session bus (org.freedesktop.Notifications).
 
 #[cfg(target_os = "macos")]
 use super::macos::notify as imp;
-#[cfg(all(unix, not(target_os = "macos")))]
-use super::unix::notify as imp;
+#[cfg(target_os = "linux")]
+use super::linux::notify as imp;
 #[cfg(windows)]
 use super::windows::notify as imp;
 

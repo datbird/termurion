@@ -56,6 +56,10 @@ libc = "0.2"
 arboard = { version = "3", features = ["wayland-data-control"] }
 # The menu model only: the bar is drawn in the window (src/menu_overlay.rs), so no GTK and no libxdo.
 muda = { version = "0.20", default-features = false }
+# Desktop notifications over the session bus (src/platform/linux/notify.rs), the pure Rust zbus backend.
+notify-rust = { version = "4", default-features = false, features = ["z"] }
+# The CloseNotification call and the test listener; the version notify-rust already pulls in.
+zbus = "5"
 
 # The user's locale on macOS (CFLocaleCopyCurrent); already in the tree through winit.
 [target.'cfg(target_os = "macos")'.dependencies]
