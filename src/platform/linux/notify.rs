@@ -194,10 +194,13 @@ fn work(rx: Receiver<Cmd>) {
         match cmd {
             Cmd::Show { title, body, silent } => match notify(&title, &body, silent) {
                 Ok(id) => {
+                    *lock(&FAILURE) = None;
                     *lock(&LAST_ID) = id;
                     remember(id);
                 }
                 Err(e) => {
+                    // The show was counted when it was queued; it never appeared.
+                    SHOWN.fetch_sub(1, Ordering::SeqCst);
                     *lock(&LAST_ID) = 0;
                     dlog!("The notification was not shown");
                     *lock(&FAILURE) = Some(e);
@@ -227,9 +230,11 @@ fn queue() -> Result<&'static SyncSender<Cmd>, String> {
 /// Queues a notification and returns at once; a failure to reach the service is logged by the
 /// sender thread, as on the other systems.
 pub fn show_with(title: &str, body: &str, silent: bool) -> Result<(), String> {
+    // An earlier send failed: say so now, and still try this one.
+    let earlier = lock(&FAILURE).clone();
     queue()?.try_send(Cmd::Show { title: title.to_string(), body: body.to_string(), silent }).map_err(|_| "The notification service is not answering".to_string())?;
     SHOWN.fetch_add(1, Ordering::SeqCst);
-    Ok(())
+    earlier.map_or(Ok(()), Err)
 }
 
 /// Closes the notification if it is still the one on screen (nothing was shown since `at`).
@@ -345,6 +350,10 @@ mod tests {
     /// A bus whose Notify handler takes `hang` to answer.
     fn bus_hanging(hang: Duration) -> Bus {
         reset();
+        start_bus(hang)
+    }
+
+    fn start_bus(hang: Duration) -> Bus {
         let saved = std::env::var_os("DBUS_SESSION_BUS_ADDRESS");
         let mut child = Command::new("dbus-daemon").args(["--session", "--nofork", "--print-address=1"]).stdout(Stdio::piped()).spawn().expect("dbus-daemon");
         let mut addr = String::new();
@@ -389,6 +398,31 @@ mod tests {
         restore_bus(saved);
         let e = lock(&FAILURE).clone().unwrap();
         assert!(e.contains("notification service"), "{e}");
+    }
+
+    /// A dead service is told to the caller on the next show, and a failed show is not counted.
+    #[test]
+    fn a_failed_send_reaches_the_next_caller_and_is_not_counted() {
+        let _g = BUS.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        let saved = std::env::var_os("DBUS_SESSION_BUS_ADDRESS");
+        let dir = std::env::temp_dir().join(format!("termurion-nobus2-{}", std::process::id()));
+        // SAFETY: the BUS lock keeps the other tests off the environment.
+        unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}/none", dir.display())) };
+        let before = shown_count();
+        assert!(show_with("t", "b", false).is_ok(), "the first show cannot know yet");
+        wait_for("the failure", || lock(&FAILURE).is_some());
+        assert_eq!(shown_count(), before, "a failed show is not counted");
+        // The service comes up; the next show still hears about the earlier failure, and retries.
+        let b = start_bus(Duration::ZERO);
+        let t = Instant::now();
+        let e = show_with("t", "b", false).unwrap_err();
+        assert!(t.elapsed() < Duration::from_millis(500), "took {:?}", t.elapsed());
+        assert!(e.contains("notification service"), "{e}");
+        wait_for("the retry", || !b.calls.lock().unwrap().is_empty());
+        wait_for("the failure to clear", || lock(&FAILURE).is_none());
+        assert_eq!(shown_count(), before + 1, "only the retry counts");
+        restore_bus(saved);
     }
 
     #[test]
