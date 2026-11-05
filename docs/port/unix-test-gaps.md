@@ -1,29 +1,37 @@
-# Unix test gaps after P2
+# Unix test gaps after P3
 
-P0 made the crate and all programs compile on Linux and macOS. P1 (the Unix core) added the pseudo terminal, the session host, job tracking, paths, the clipboard, opening URLs and files, tmux `-CC` and window restore, and moved the remaining Win32 code under `src/platform/`. P2 (macOS) added the Cmd shortcut key, the native menu bar, Quit and Dock handling, the ad hoc signed `Termurion.app`, system-wide hotkeys, notifications, the Keychain and Touch ID gate, quarantine and Finder aliases, and the iTerm2 settings import. This file records what still fails and why.
+P0 made the crate and all programs compile on Linux and macOS. P1 (the Unix core) added the pseudo terminal, the session host, job tracking, paths, the clipboard, opening URLs and files, tmux `-CC` and window restore, and moved the remaining Win32 code under `src/platform/`. P2 (macOS) added the Cmd shortcut key, the native menu bar, Quit and Dock handling, the ad hoc signed `Termurion.app`, system-wide hotkeys, notifications, the Keychain and Touch ID gate, quarantine and Finder aliases, and the iTerm2 settings import. P3 (Linux) added the in-window menu bar and pop-up menus, desktop notifications, the Secret Service and the account password gate, system-wide hotkeys on X11, downloads that keep their origin, and the AppImage. This file records what still fails and why.
 
-Run of 2026-11-03 on the P2 Task 10 tree (debug build, `scripts/check-unix --test`):
+Run of 2026-11-05 on the P3 Task 8 tree (debug build, `scripts/check-unix --test`):
+
+- Linux: **6602 passed, 158 failed**, every one named by cause below.
+- macOS (arm64 on funtimes, same tree): **6568 passed, 156 failed**. 153 are the same failures as Linux; 3 fail only on macOS (see "macOS-only differences"). 5 Linux failures pass on the Mac: `extract::tests::one_walk_checks_and_writes`, `find::tests::find_over_a_large_buffer_is_quick`, `ssh_procs::tests::a_huge_remote_list_closes_quickly_and_briefly`, `synthetic::tests::filtering_a_large_buffer_is_quick` and `trigger_eval::tests::each_line_is_checked_once`.
+- Load flakes of the full Linux run, which pass alone: `find::tests::find_over_a_large_buffer_is_quick`, `ssh_procs::tests::a_huge_remote_list_closes_quickly_and_briefly`, the `trigger_eval` timing tests and `host::tests::host_launches_and_echoes`. They sit in their causes below (Timing) or pass in a given run.
+
+The older run, kept for the history. Run of 2026-11-03 on the P2 Task 10 tree (debug build, `scripts/check-unix --test`):
 
 - Linux: **6447 passed, 167 failed**. 165 are named by cause below. The other 2, `trigger_eval::tests::inject_does_not_restart_the_budget` and `trigger_eval::tests::lines_gone_before_the_check`, are load flakes of the full run (they pass alone).
 - macOS (arm64 VM, same tree): **6481 passed, 160 failed** at 7e81d1d6; the licenses fix after it moves one to passed (6482 and 159). 155 are the same causes as Linux (the counts differ because some path tests happen to pass on a Mac: Windows path and platform rules 107 of 115, Timing 3 of 5), and 4 fail only on macOS (see "macOS-only differences").
 - Nothing fails that is not named here. At the start of P1 Linux gave 6270 passed, 220 failed; at the end of P1 Linux 6403 passed, 173 failed and macOS 6405 passed, 171 failed.
 
-Windows: the Windows lib, lib tests and binaries type-check from Linux (`scripts/win-check`: 0 errors, 2 warnings, both the `fetch_update` deprecations in `session_log.rs`). **The Windows test run (`scripts/xt test --lib`) PASSES: 6855 passed, 0 failed, 147 ignored** (2026-11-03, after the P2 head). The first run at 7e81d1d6 gave 3 failures, all tests P2 left behind, none a Windows behavior change: `licenses::tests::every_dependency_is_listed` (it asked for `global-hotkey`, a macOS-only crate), `platform::windows::chrome::menu_bar_replace_tests::install_menus_replaces_through_the_helper` (a source scan still naming `hwnd` after P2 named it `view`) and `remote_prefs::tests::the_live_folder_is_refused` (slash paths, which the judge refuses on Windows). The tests were fixed; the code was not changed.
+Windows at the P3 Task 8 head: `scripts/win-check` 0 errors, 2 warnings (the same two `fetch_update` deprecations); **`scripts/xt test --lib` PASSES: 6935 passed, 0 failed, 149 ignored**.
+
+Windows at the P2 head: the Windows lib, lib tests and binaries type-check from Linux (`scripts/win-check`: 0 errors, 2 warnings, both the `fetch_update` deprecations in `session_log.rs`). **The Windows test run (`scripts/xt test --lib`) PASSES: 6855 passed, 0 failed, 147 ignored** (2026-11-03, after the P2 head). The first run at 7e81d1d6 gave 3 failures, all tests P2 left behind, none a Windows behavior change: `licenses::tests::every_dependency_is_listed` (it asked for `global-hotkey`, a macOS-only crate), `platform::windows::chrome::menu_bar_replace_tests::install_menus_replaces_through_the_helper` (a source scan still naming `hwnd` after P2 named it `view`) and `remote_prefs::tests::the_live_folder_is_refused` (slash paths, which the judge refuses on Windows). The tests were fixed; the code was not changed.
 
 A failure that passes alone is a flake (see Timing).
 
-## Failures by cause on Linux (every failure is in exactly one cause; the counts sum to 159)
+## Failures by cause on Linux (every failure is in exactly one cause; the counts sum to 158)
 
 | Cause | Count |
 |---|---|
 | Coprocesses are Unsupported | 2 |
 | Dynamic Profiles are Windows only | 8 |
 | Windows-only tools missing | 19 |
-| Fonts and text metrics | 5 |
+| Fonts and text metrics | 3 |
 | Windows path and platform rules in assertions | 109 |
-| Timing | 5 |
+| Timing | 6 |
 | Text encoding and normalization | 11 |
-| Total | 159 |
+| Total | 158 |
 
 Gone since P0, because P1 fixed them: "Local shells are Unsupported" (29, the pty backend), "Session host is Unsupported" (19, the Unix socket host), the Licenses test on Linux, and two path-rule tests (`profile::tests::a_missing_start_dir_falls_back_to_home_with_a_warning` and `start_dir_is_home_by_default_and_expands_tilde`). Two of the old "Local shells" tests moved into the new Coprocesses cause.
 
@@ -73,15 +81,13 @@ tar.exe, powershell.exe, cmd.exe (mklink), zip creation, and the Windows log-fol
 - `util_tip::tests::it2tip_follows_the_script`
 - `workgroup_run::tests::cmd_parsed_lines_refuse_cmd_syntax`
 
-### Fonts and text metrics (5)
+### Fonts and text metrics (3)
 
-Text widths and face lookup measured against Windows fonts (Cascadia Mono is not installed).
+Text widths and face lookup measured against Windows fonts (Cascadia Mono is not installed). Three tests of this group that failed after P2 (`faces_follow_profiles`, `text_advance_matches_the_cell_width`, `underlines_break_around_glyph_ink`) pass in the P3 run (not traced to one change). `every_effect_lights_both_box_lines_on_enter` asks for Consolas, which is not installed, and the embers effect leaves the top box line dark with the stand-in face ("Consolas 20 input 6 embers: top 0"); it fails the same way on macOS and every run, and was not diagnosed further.
 
+- `render::tests::every_effect_lights_both_box_lines_on_enter`
 - `render::tests::face_lookup_does_not_scan_fonts_per_call`
-- `render::tests::faces_follow_profiles`
 - `render::tests::postscript_names_resolve_to_installed_families`
-- `render::tests::text_advance_matches_the_cell_width`
-- `render::tests::underlines_break_around_glyph_ink`
 
 ### Windows path and platform rules in assertions (109)
 
@@ -197,14 +203,15 @@ Expected values are `C:\` paths, `\` separators, drive letters, UNC and subst ru
 - `webhost::tests::folders_and_options_follow_windows`
 - `workgroup_run::tests::a_member_never_runs_git_unchecked`
 
-### Timing (5)
+### Timing (6)
 
-Time-bounded tests on a loaded debug build, and thread-count tests. `find_over_a_large_buffer_is_quick` is the known flake.
+Time-bounded tests on a loaded debug build, and thread-count tests. `find_over_a_large_buffer_is_quick` and `a_huge_remote_list_closes_quickly_and_briefly` are the known flakes.
 
 - `app::git_ui::tests::a_stuck_path_never_takes_a_second_thread`
 - `app::git_ui::tests::worker_bounds_threads_and_abandons_stuck_ones`
 - `find::tests::find_over_a_large_buffer_is_quick`
 - `scripts::tests::slow_scan_follows_iterm2`
+- `ssh_procs::tests::a_huge_remote_list_closes_quickly_and_briefly`
 - `synthetic::tests::filtering_a_large_buffer_is_quick`
 
 ### Text encoding and normalization (11)
@@ -233,11 +240,10 @@ Recorded after the Task 8 re-review; none is fixed, each is a residual window af
 
 ## macOS-only differences
 
-macOS has the same failures as Linux except these 4, which fail only on macOS. The licenses test passes there now: it checks only the crates the running target builds (2026-11-03). The pwsh install profile test passes there now (it runs `pwsh` where that is the shell and returns when the program is missing).
+macOS has the same failures as Linux except these 3, which fail only on macOS (`every_effect_lights_both_box_lines_on_enter` fails on Linux too now and is named under Fonts). The licenses test passes there now: it checks only the crates the running target builds (2026-11-03). The pwsh install profile test passes there now (it runs `pwsh` where that is the shell and returns when the program is missing).
 
 - `pane::tests::the_pwsh_script_emits_prompt_marks`: no `pwsh` on the macOS VM
 - `pane::tests::the_pwsh_script_keeps_the_prompt_state`: no `pwsh` on the macOS VM
-- `render::tests::every_effect_lights_both_box_lines_on_enter`: a render test that already failed on the macOS VM at the start of P1; not diagnosed
 - `render::tests::lightning_enter_surge_finds_the_claude_box_lines`: a render test that already failed on the macOS VM at the start of P1; not diagnosed
 
 ## Live tmux lines
@@ -386,6 +392,56 @@ One table (`platform::native_words`, applied on macOS only; Windows text is unch
 The password manager and the AI keys use the Secret Service (`platform::linux::secrets`, the `secret-service` crate on the one `zbus` 5 of the tree). Linux failures: no test failed on "Password manager is not available" at the P2 count, so the 165 do not move; the stand-in's own test (`unix_credentials_unsupported`) and the AI keys test that asserted Unsupported (`ai_keys::tests::the_system_store_is_unsupported_off_windows`, which would now reach a real keyring) are gone, replaced by `platform::linux::secrets::tests`, each keyring test in a child process under its own `dbus-run-session`, `gnome-keyring-daemon` and scratch HOME. On Linux `native_words` maps "Credential Manager" to "the Secret Service". The unlock prompt is tested with a stand-in for the desktop prompter (`org.gnome.keyring.SystemPrompter`) on the private bus: a call made while the prompt is open answers "locked" at once, a dismissal lets the next call ask again, and a hung service trips a latch so later calls fail at once until a background probe gets an answer.
 
 The password manager gate and the screen lock on Linux (P3 Task 5): the gate is the account password, asked in Termurion's own window and checked by PAM (`platform::linux::user_auth`, service `login`, authenticate only; libpam.so.0 is opened at run time, so there is no build dependency). Three wrong passwords fail it. The check runs on a worker thread and answers through `UserEvent::PwmGate`. A browser basic-auth save that needs the gate opens the same window at save time and saves after a grant (cancel or failure reports it unsaved); a basic-auth picker keeps its challenge alive while the gate waits. The screen lock is logind's `Session.Lock` for this login session plus `ActiveChanged(true)` of `org.freedesktop.ScreenSaver` and `org.gnome.ScreenSaver` (`platform::linux::screen_lock`); tests run a fake logind on a private bus. No Linux failure count moves: the full lib run showed three extra load flakes (render, two in trigger_eval) that pass alone.
+
+## P3 exit checks
+
+Run on 2026-11-05 on the P3 Task 8 tree. The AppImage is `target/linux/Termurion-0.0.1-beta10-x86_64.AppImage`, built by `scripts/linux-appimage` (the release build, an AppDir with `termurion`, `termurion-host`, `termurion-git` and `termurion-utils` side by side, the `.desktop` file and the icon, packed by appimagetool 1.9.1 with its SHA-256 checked first). The session host is found by the lookup the app already does (the file beside the running binary), so `AppRun` only starts `usr/bin/termurion`.
+
+### The AppImage
+
+| Check | Result |
+|---|---|
+| `unix-gui-check shell` with `TERMURION_BIN` set to the AppImage (`--appimage-extract-and-run`) on Xvfb | PASS |
+| `xprop WM_CLASS` on its window | `"termurion", "dev.termurion.Termurion"` (the class is the app id and equals the `.desktop` `StartupWMClass`) |
+| First launch with an empty config under Xvfb | a window with the menu bar and the login shell; no banner (screenshot `.superpowers/sdd/2026-11-03-p3-linux/task-8-shots/first-launch.png`). Cascadia Mono is not installed, and the font Termurion ships as default never raises a banner, so the pane draws with DejaVu Sans Mono and nothing is shown. |
+| Wayland smoke: headless `weston --socket=wl-test`, no `DISPLAY` | the window opened on Wayland (`xdg_toplevel.set_app_id("dev.termurion.Termurion")`, title "Termurion") and the shell started (`pty: start 80x25` in host.log). The Settings hotkey row's Wayland reason is pinned by `platform::unix::keys::tests::hotkeys_on_wayland_name_wayland`; the row itself was not looked at under weston, since headless weston has no screenshot path here. |
+
+### Linux `scripts/unix-gui-check`, every scenario (Xvfb, the debug build)
+
+| Scenario | Result |
+|---|---|
+| shell, layout, menubar, popup, host, job, notify, hotkey, hotkey-refused | PASS |
+| tmux, tmux-nolang, tmux-lcall, tmux-windows | PASS |
+| restore-windows, restore-host | PASS |
+| clipboard | PASS after a fix to the script: it dragged at screen point (2, 10), which was the window's corner before the window was centered and the menu bar took the top strip. It now drags inside the window under the bar. No app change. |
+| tmux-restore a, b | PASS |
+| tmux-restore c | FAIL. After the relaunch the pane shows the replayed tmux text and "Detached", draws no prompt, and a typed line never reaches the shell. It fails the same way at 762760e2 (the P2 head) and at the P3 base, so it is not from P3. The likely start is the P2 change that makes a restored gateway a real gateway (db168bd7 to effe4191), which came after the P2 table above (that table passed variant c). Not fixed here; it needs its own look at what a restored gateway does when its tmux server is gone. |
+
+### Tests
+
+- Linux `scripts/check-unix --linux-only --test`: 6602 passed, 158 failed, all named above.
+- macOS on funtimes: 6568 passed, 156 failed (see the top of this file).
+- `scripts/win-check`: 0 errors, 2 warnings. `scripts/xt test --lib`: 6935 passed, 0 failed.
+- `scripts/cfg-audit`: exit 0.
+
+### The owner's exit check
+
+Pending. The steps are in the P3 plan, Task 8 Step 8; each answer is recorded here when he has run them.
+
+## Deferred after P3
+
+Each with its reason.
+
+- The tray icon (StatusNotifierItem): a new D-Bus service with its own menu; not in the spec's P3 list.
+- System-wide hotkeys on Wayland through the GlobalShortcuts portal: the spec says "Wayland portal later".
+- Double-tap hotkeys on Linux: they need a global key monitor, which X11 gives only through XInput2 raw events and Wayland not at all.
+- Packages beyond the AppImage (deb, rpm, Flatpak): the spec says "AppImage first".
+- aarch64 Linux: x86_64 first.
+- A systemd user unit for the session host (the spec's call): P1's detached host already does the job, as on macOS (P2 Decision 1).
+- Printing through `lp`: the spec lists it under "Later: printing panels".
+- The CI matrix (Decision 13).
+- The Unix stand-ins P1 named for later phases (coprocesses, saving debug logs, Python API scripts, password manager command-line tools, Dynamic Profiles, the automation API peer check).
+- `tmux-restore c` (above): a restored gateway whose tmux server is gone leaves a pane that takes no input.
 
 ## Deferred after P2
 

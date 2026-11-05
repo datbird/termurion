@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Builds target/linux/Termurion-<version>-x86_64.AppImage from a release build.
+# appimagetool is fetched once to ~/.cache/termurion/ at a pinned release and run only after its
+# SHA-256 matches. Usage: scripts/linux-appimage
+set -euo pipefail
+repo="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$repo"
+tool_ver=1.9.1
+tool_sha=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+tool_url="https://github.com/AppImage/appimagetool/releases/download/$tool_ver/appimagetool-x86_64.AppImage"
+cache="$HOME/.cache/termurion"
+tool="$cache/appimagetool-$tool_ver-x86_64.AppImage"
+die() { echo "linux-appimage: $1" >&2; exit 1; }
+[ "$(uname -m)" = x86_64 ] || die "x86_64 only"
+
+ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+[ -n "$ver" ] || die "no version in Cargo.toml"
+
+mkdir -p "$cache"
+ok() { [ -f "$tool" ] && [ "$(sha256sum "$tool" | cut -d' ' -f1)" = "$tool_sha" ]; }
+if ! ok; then
+  rm -f "$tool"
+  curl -fsSL -o "$tool.part" "$tool_url" || die "download failed"
+  mv "$tool.part" "$tool"
+  ok || { rm -f "$tool"; die "appimagetool hash mismatch, not running it"; }
+fi
+chmod +x "$tool"
+
+~/.cargo/bin/cargo build --release --bins || die "build failed"
+
+app=target/linux/AppDir
+rm -rf "$app"
+mkdir -p "$app/usr/bin" "$app/usr/share/icons/hicolor/256x256/apps"
+for b in termurion termurion-host termurion-git termurion-utils; do
+  [ -x "target/release/$b" ] && cp "target/release/$b" "$app/usr/bin/"
+done
+[ -x "$app/usr/bin/termurion-host" ] || die "termurion-host was not built"
+cp packaging/linux/AppRun "$app/AppRun"
+cp packaging/linux/dev.termurion.Termurion.desktop "$app/"
+icon=docs/assets/termurion/termurion-icon-256.png
+cp "$icon" "$app/dev.termurion.Termurion.png"
+cp "$icon" "$app/usr/share/icons/hicolor/256x256/apps/dev.termurion.Termurion.png"
+
+out="target/linux/Termurion-$ver-x86_64.AppImage"
+rm -f "$out"
+ARCH=x86_64 "$tool" --appimage-extract-and-run "$app" "$out" >&2 || die "appimagetool failed"
+echo "linux-appimage: $out"

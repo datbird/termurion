@@ -331,7 +331,7 @@ impl App {
         let old_desktop = old_hwnd.and_then(|h| self.desktops().and_then(|m| m.window_desktop(h)));
         let hotkey_shown = self.hotkey.as_ref().map(|h| h.shown);
         let look = crate::presence::with_accessory(crate::presence::window_look(self.ui_element_now, hotkey_shown, self.globals.bool(crate::presence::EXCLUDED_FROM_CYCLING_KEY)), self.win_style == crate::frames::ACCESSORY);
-        let mut attrs = Window::default_attributes()
+        let mut attrs = crate::platform::window::with_app_id(Window::default_attributes())
             .with_title(old.title())
             .with_window_icon(crate::presence::window_icon())
             .with_inner_size(size)

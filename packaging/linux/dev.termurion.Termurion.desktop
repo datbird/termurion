@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Termurion
+Comment=Terminal emulator
+Exec=termurion %U
+Icon=dev.termurion.Termurion
+Terminal=false
+Categories=System;TerminalEmulator;
+StartupWMClass=dev.termurion.Termurion

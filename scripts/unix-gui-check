@@ -15,6 +15,8 @@
 # and a second press hands focus back to the xterm that had it. hotkey-refused sets the hotkey to
 # Ctrl+Alt+F12, which the stock keymap makes a console switch: the grab is refused, and the app must
 # not be left with no window.
+# TERMURION_BIN names another build to run (an AppImage; add TERMURION_BIN_ARGS=--appimage-extract-and-run
+# where FUSE is missing) and skips the debug build.
 # The app runs with HOME, TMPDIR and XDG_RUNTIME_DIR under target/gui-check/<scenario>/.
 # Keys go through XTEST (xdotool type/key, never --window), with no window manager, so the
 # window is focused by hand. The menubar scenario clicks the in-window menu bar; where its titles and
@@ -70,7 +72,7 @@ fi
 # shellcheck disable=SC1090
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 
-display=:97
+display="${GUICHECK_DISPLAY:-:97}"
 scratch="$repo/target/gui-check/$scenario${variant:+-$variant}"
 rm -rf "$scratch"
 mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/run"
@@ -78,8 +80,14 @@ chmod 700 "$scratch/run"
 : > "$scratch/pids"
 
 xvfb_pid="" app_pid="" zenity_pid="" monitor_pid="" wm_pid="" xterm_pid=""
+# The pid and its children, grandchildren and so on (an AppImage's runtime starts the app as a child).
+family() {
+    local p
+    echo "$1"
+    for p in $(pgrep -P "$1" 2> /dev/null); do family "$p"; done
+}
 cleanup() {
-    [ -n "$app_pid" ] && kill "$app_pid" 2> /dev/null
+    [ -n "$app_pid" ] && kill $(family "$app_pid") 2> /dev/null
     # The job scenario's question box is a child that would outlive the app.
     [ -n "$zenity_pid" ] && kill "$zenity_pid" 2> /dev/null
     # A session host this run started holds this scratch XDG_RUNTIME_DIR in its environment.
@@ -105,7 +113,7 @@ fail() {
 }
 
 $is_tmux && tmux -L guicheck kill-server 2> /dev/null
-cargo build --bins > "$scratch/build.log" 2>&1 || { tail -5 "$scratch/build.log" >&2; fail "cargo build --bins"; }
+[ -n "${TERMURION_BIN:-}" ] || cargo build --bins > "$scratch/build.log" 2>&1 || { tail -5 "$scratch/build.log" >&2; fail "cargo build --bins"; }
 
 Xvfb "$display" -screen 0 1600x1000x24 -nolisten tcp > "$scratch/xvfb.log" 2>&1 &
 xvfb_pid=$!
@@ -176,8 +184,18 @@ if [ "$scenario" = restore-windows ] || [ "$scenario" = tmux-restore ]; then
 fi
 launch_app() {
     env -u TMUX -u WAYLAND_DISPLAY -u XDG_CONFIG_HOME -u XDG_STATE_HOME "${locale_env[@]}" HOME="$scratch/home" TMPDIR="$scratch/tmp" XDG_RUNTIME_DIR="$scratch/run" \
-        "$repo/target/debug/termurion" >> "$scratch/app.log" 2>&1 &
+        "${TERMURION_BIN:-$repo/target/debug/termurion}" ${TERMURION_BIN_ARGS:-} >> "$scratch/app.log" 2>&1 &
     app_pid=$!
+    # Behind an AppImage runtime the app is a child: from here app_pid is the app itself.
+    if [ -n "${TERMURION_BIN:-}" ]; then
+        local p
+        for _ in $(seq 100); do
+            for p in $(family "$app_pid"); do
+                [ "$(cat "/proc/$p/comm" 2> /dev/null)" = termurion ] && { app_pid=$p; return; }
+            done
+            sleep 0.1
+        done
+    fi
 }
 # Finds the app's window and focuses it by hand (no window manager).
 find_window() {
@@ -565,10 +583,11 @@ case "$scenario" in
         xdotool type --delay 20 "printf '\\033[2J\\033[HSELECTME\\n'; cat > \"\$SCRATCH/got\""
         xdotool key Return
         sleep 1
-        # A drag along row 0 selects the line; the primary selection must then hold the word.
-        xdotool mousemove 2 10
+        # A drag along row 0 (under the menu bar) selects the line; the primary selection must then hold the word.
+        eval "$(xdotool getwindowgeometry --shell "$win")"
+        xdotool mousemove $((X + 2)) $((Y + 36))
         xdotool mousedown 1
-        for x in 60 120 200 300; do xdotool mousemove "$x" 10; sleep 0.1; done
+        for x in 60 120 200 300; do xdotool mousemove $((X + x)) $((Y + 36)); sleep 0.1; done
         xdotool mouseup 1
         sleep 1
         shoot
@@ -579,7 +598,7 @@ case "$scenario" in
         printf other | "$xclip_bin" -quiet -selection primary > /dev/null 2>&1 &
         xclip_pid=$!
         sleep 1
-        xdotool mousemove 600 300
+        xdotool mousemove $((X + 600)) $((Y + 300))
         xdotool click 2
         sleep 1
         xdotool key Return

@@ -217,6 +217,8 @@ Get the newest beta from [Releases](https://github.com/datbird/termurion/release
 - `Termurion-<version>-setup.exe` installs for your user (no admin) and adds Start menu entries.
 - `Termurion-<version>-windows-x64.zip` runs from any folder.
 
+Linux, x86_64: build the AppImage with `scripts/linux-appimage` (it writes `target/linux/Termurion-<version>-x86_64.AppImage`), then `chmod +x` it and run it. It needs a desktop with X11 or Wayland. Where FUSE is missing, start it with `--appimage-extract-and-run`. System-wide hotkeys work on X11 only.
+
 Windows 10 or 11, x64. [Installing](docs/help/installing.md) shows each installer page. Report bugs in [Issues](https://github.com/datbird/termurion/issues).
 
 ## Building

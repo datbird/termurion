@@ -596,7 +596,7 @@ impl App {
 
     fn open_window_with(&mut self, event_loop: &ActiveEventLoop, first: NewWindow) -> Result<WindowId, String> {
         let hotkey = matches!(first, NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..));
-        let mut attrs = Window::default_attributes().with_title("Termurion").with_window_icon(crate::presence::window_icon()).with_inner_size(LogicalSize::new(1000.0, 650.0));
+        let mut attrs = crate::platform::window::with_app_id(Window::default_attributes()).with_title("Termurion").with_window_icon(crate::presence::window_icon()).with_inner_size(LogicalSize::new(1000.0, 650.0));
         if hotkey {
             // A hotkey window starts hidden and has no taskbar button (a Quake-style window).
             attrs = crate::platform::window_style::skip_taskbar(attrs.with_visible(false));

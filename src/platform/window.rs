@@ -12,6 +12,22 @@ use super::unix::window as imp;
 #[cfg(windows)]
 use super::windows::window as imp;
 
+/// The app id: the macOS bundle id, the X11 window class and the Wayland app id, and the name of
+/// the Linux `.desktop` file, so a launcher finds the running window.
+pub const APP_ID: &str = "dev.termurion.Termurion";
+
+/// `attrs` carrying the app id where the window system takes one (X11 class, Wayland app id).
+pub fn with_app_id(attrs: winit::window::WindowAttributes) -> winit::window::WindowAttributes {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        use winit::platform::wayland::WindowAttributesExtWayland;
+        use winit::platform::x11::WindowAttributesExtX11;
+        return WindowAttributesExtX11::with_name(WindowAttributesExtWayland::with_name(attrs, APP_ID, "termurion"), APP_ID, "termurion");
+    }
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    attrs
+}
+
 /// How `show` changes a window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Show {
@@ -127,6 +143,18 @@ pub fn placement(hwnd: isize) -> Option<(u32, u32, [i32; 4], (i32, i32))> {
 #[cfg(all(test, target_os = "linux"))] // test: windows on a private X server are Linux's
 mod tests {
     use std::io::Read;
+
+    #[test]
+    fn the_desktop_file_names_the_app_id() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/linux");
+        let file = dir.join(format!("{}.desktop", super::APP_ID));
+        let text = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+        let has = |line: &str| text.lines().any(|l| l == line);
+        assert!(has(&format!("StartupWMClass={}", super::APP_ID)), "{text}");
+        assert!(has("Exec=termurion %U"), "{text}");
+        assert!(has("Categories=System;TerminalEmulator;"), "{text}");
+    }
+
     use std::process::{Command, Stdio};
 
     use winit::application::ApplicationHandler;

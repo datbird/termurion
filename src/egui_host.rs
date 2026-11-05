@@ -146,7 +146,7 @@ impl EguiHost {
         w: f64,
         h: f64,
     ) -> Result<EguiHost, String> {
-        let attrs = Window::default_attributes().with_title(title).with_inner_size(winit::dpi::LogicalSize::new(w, h));
+        let attrs = crate::platform::window::with_app_id(Window::default_attributes()).with_title(title).with_inner_size(winit::dpi::LogicalSize::new(w, h));
         let host = Self::open_with(event_loop, instance, adapter, device, queue, attrs)?;
         host.track_taskbar();
         Ok(host)

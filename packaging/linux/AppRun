@@ -1,0 +1,4 @@
+#!/bin/sh
+# The session host sits beside termurion, and the app finds it there by itself.
+here="$(dirname "$(readlink -f "$0")")"
+exec "$here/usr/bin/termurion" "$@"
