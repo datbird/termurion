@@ -74,7 +74,8 @@ impl App {
     /// Registers the profiles' hotkeys (and the app hotkey). Called once the keyboard hook
     /// runs and again when profiles or settings change. Failures are kept per profile for
     /// the Configure Hotkey Window sheet.
-    pub(super) fn register_hotkeys(&mut self) {
+    /// True when some hotkey is working, or none was asked for.
+    pub(super) fn register_hotkeys(&mut self) -> bool {
         let mut chords = Vec::new();
         let mut taps = Vec::new();
         self.hotkey_ids.clear();
@@ -122,7 +123,9 @@ impl App {
         // With no hotkey set nothing was asked for: an OS without system-wide hotkeys says nothing
         // at launch (an Unsupported shows only when a person uses the feature).
         let asked = !chords.is_empty() || !taps.is_empty();
-        match crate::platform::keys::set_hotkeys(chords, taps, min, max) {
+        let answer = crate::platform::keys::set_hotkeys(chords, taps, min, max);
+        let worked = hotkey::grabs_worked(asked, &answer);
+        match answer {
             Ok(results) => {
                 for (id, r) in results {
                     if let Err(e) = r {
@@ -152,18 +155,25 @@ impl App {
         for s in [self.settings.as_mut(), self.profiles_win.as_mut()].into_iter().flatten() {
             s.hotkeys.errors = self.hotkey_errors.clone();
         }
-        self.release_stale_hotkey_windows();
+        self.release_hotkey_windows(false);
+        worked
     }
 
-    /// A hotkey window whose profile lost its hotkey (turned off, or deleted) becomes a
-    /// regular window: shown, with a taskbar button, so it can be reached and closed.
-    fn release_stale_hotkey_windows(&mut self) {
+    /// At launch, when no hotkey could be set: the app made only a hidden hotkey window, which
+    /// nothing can show now, so it becomes a regular window.
+    pub(super) fn open_window_for_failed_hotkeys(&mut self) {
+        self.release_hotkey_windows(true);
+    }
+
+    /// A hotkey window whose profile lost its hotkey (turned off, or deleted), or every one when
+    /// `all_windows`, becomes a regular window: shown, with a taskbar button, so it can be reached and closed.
+    fn release_hotkey_windows(&mut self, all_windows: bool) {
         let back = self.current_window();
-        let all = self.hotkey_prefs();
+        let prefs = self.hotkey_prefs();
         for w in self.hotkey_windows() {
             self.enter(w);
             let Some(guid) = self.hotkey.as_ref().map(|h| h.guid.clone()) else { continue };
-            if hotkey::stale_windows(&[guid], &all).is_empty() {
+            if !all_windows && hotkey::stale_windows(&[guid], &prefs).is_empty() {
                 continue;
             }
             self.hotkey = None;
@@ -370,6 +380,8 @@ impl App {
         let Some(g) = &self.gpu else { return };
         crate::platform::hotkey::cloak(hwnd, false);
         g.window.focus_window();
+        // Where winit's own request is too early or too weak, the window manager is asked as a pager would.
+        crate::platform::hotkey::take_focus(hwnd);
         let now = Instant::now();
         if let Some(h) = self.hotkey.as_mut() {
             h.shown = true;

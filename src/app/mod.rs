@@ -911,6 +911,8 @@ pub struct App {
     hotkey_ids: Vec<String>,
     hotkey_errors: std::collections::HashMap<String, String>,
     hotkeys_registered: bool,
+    /// No hotkey worked at launch, before the launch made its hidden hotkey window.
+    hotkeys_failed_at_launch: bool,
     /// Session hotkeys: the ones the person set or allowed (the only ones that register) and those
     /// waiting for an answer; the sessions of each registered group, by id from
     /// `SESSION_HOTKEY_BASE`; and a pass is due to register them again. App-wide.
@@ -2255,6 +2257,7 @@ pub fn run() {
         hotkey_ids: Vec::new(),
         hotkey_errors: Default::default(),
         hotkeys_registered: false,
+        hotkeys_failed_at_launch: false,
         session_hotkeys: Default::default(),
         session_hotkey_ids: Vec::new(),
         session_hotkeys_dirty: false,
@@ -7584,6 +7587,10 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_pending_urls();
         self.open_launch_queue(event_loop);
         self.open_handoff_queue(event_loop);
+        // The launch made only a hidden hotkey window and no hotkey works: nothing could show it.
+        if std::mem::take(&mut self.hotkeys_failed_at_launch) {
+            self.open_window_for_failed_hotkeys();
+        }
         self.register_open_with();
         // After the first window and the launch's own requests: the second launch's question.
         self.update_start();

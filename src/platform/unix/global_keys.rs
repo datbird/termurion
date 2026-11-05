@@ -84,10 +84,56 @@ fn on_main_thread() -> bool {
     objc2::MainThreadMarker::new().is_some()
 }
 
-/// The manager has its own thread on X11, and the app calls from its main thread.
+/// The first thread to ask is the main thread; a call from any other would build a second manager
+/// whose grabs collide with the first.
 #[cfg(not(target_os = "macos"))]
 fn on_main_thread() -> bool {
-    true
+    let me = std::thread::current().id();
+    *locked(&MAIN).get_or_insert(me) == me
+}
+
+#[cfg(not(target_os = "macos"))]
+static MAIN: Mutex<Option<std::thread::ThreadId>> = Mutex::new(None);
+
+/// Forgets which thread is the main one (tests run each case on its own thread).
+#[cfg(all(test, not(target_os = "macos")))]
+pub fn reset_main_thread() {
+    *locked(&MAIN) = None;
+}
+
+/// Whether the manager's worker answers: a hotkey no X table maps is refused by a live worker, while
+/// a dead one (display lost, xkb refused) lets the request drop and `register` says Ok.
+#[cfg(not(target_os = "macos"))]
+pub fn worker_alive(m: &GlobalHotKeyManager) -> bool {
+    let probe = HotKey::new(None, Code::Fn);
+    match m.register(probe) {
+        Err(_) => true,
+        Ok(()) => {
+            let _ = m.unregister(probe);
+            false
+        }
+    }
+}
+
+/// Why a chord cannot work here, in words for the person, or None. The crate's X table maps the
+/// apostrophe key to a keysym no keyboard has, and the X server takes Ctrl+Alt+F1 to F12 for a
+/// console switch when the keymap says so.
+#[cfg(not(target_os = "macos"))]
+fn unusable(code: Code, mods: Modifiers) -> Option<String> {
+    if code == Code::Quote {
+        return Some("The apostrophe key cannot be used in a system-wide shortcut on this system; pick another key".into());
+    }
+    let n = match code {
+        Code::F1 => 1, Code::F2 => 2, Code::F3 => 3, Code::F4 => 4, Code::F5 => 5, Code::F6 => 6,
+        Code::F7 => 7, Code::F8 => 8, Code::F9 => 9, Code::F10 => 10, Code::F11 => 11, Code::F12 => 12,
+        _ => return None,
+    };
+    (mods == Modifiers::CONTROL | Modifiers::ALT && crate::platform::linux::hotkey::switches_console(n)).then(|| format!("Ctrl+Alt+F{n} switches to a text console on this system; pick another shortcut"))
+}
+
+#[cfg(target_os = "macos")]
+fn unusable(_code: Code, _mods: Modifiers) -> Option<String> {
+    None
 }
 
 /// Hotkey id (the crate's hash of the chord) to the app's ids for it.
@@ -207,18 +253,23 @@ fn plan(chords: &[(u32, Chord)]) -> Vec<(Resolved, Vec<u32>)> {
 
 /// Replaces the registered hotkeys with `chords`; the answer holds each chord's and tap's outcome.
 pub fn set_hotkeys(chords: Vec<(u32, Chord)>, taps: Vec<(u32, u8)>) -> Result<Results, String> {
-    if !on_main_thread() {
-        return Err("system-wide hotkeys can only be set on the main thread".into());
-    }
     #[cfg(not(target_os = "macos"))]
     if let Some(why) = session_refusal() {
         return Err(why);
+    }
+    if !on_main_thread() {
+        return Err("system-wide hotkeys can only be set on the main thread".into());
     }
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         if s.is_none() {
             let manager = GlobalHotKeyManager::new().map_err(|e| e.to_string())?;
             *s = Some(State { manager, keys: Vec::new(), last: Vec::new(), answers: HashMap::new() });
+        }
+        #[cfg(not(target_os = "macos"))]
+        if !worker_alive(&s.as_ref().expect("made above").manager) {
+            *s = None;
+            return Err("System-wide hotkeys could not start: the key grab lost its X connection".into());
         }
         let st = s.as_mut().expect("made above");
         st.last = chords.clone();
@@ -242,6 +293,7 @@ fn register(st: &mut State, chords: &[(u32, Chord)], paused: bool) -> Results {
         } else {
             Some(match resolved {
                 None => Err(format!("This key has no {OS_NAME} key code")),
+                Some((code, mods)) if unusable(code, mods).is_some() => Err(unusable(code, mods).unwrap_or_default()),
                 Some((code, mods)) => {
                     let key = HotKey::new(if mods.is_empty() { None } else { Some(mods) }, code);
                     match st.manager.register(key) {

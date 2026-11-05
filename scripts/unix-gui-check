@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drives the real Termurion window on a private X server and says PASS or FAIL for one scenario.
-# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, menubar, popup, host, job, clipboard, notify, hotkey, tmux, tmux-nolang, tmux-lcall, tmux-windows,
+# Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, menubar, popup, host, job, clipboard, notify, hotkey, hotkey-refused, tmux, tmux-nolang, tmux-lcall, tmux-windows,
 # restore-windows, restore-host, tmux-restore [a|b|c|d]
 #
 # tmux-restore: a relaunch on the same config after a tmux -CC gateway was open. Variant a: shells in
@@ -11,8 +11,10 @@
 #
 # Needs Xvfb, xdotool and ImageMagick's import. Proof is a file, not pixels: each pane runs
 # `echo $$ >> $SCRATCH/pids`, and a screenshot (screen.png) is kept for a person to look at.
-# The hotkey scenario also needs openbox, xterm and setxkbmap: the hotkey window comes front on Ctrl+Alt+F12,
-# and a second press hands focus back to the xterm that had it.
+# The hotkey scenario also needs openbox and xterm: the hotkey window comes front on Ctrl+Alt+Space,
+# and a second press hands focus back to the xterm that had it. hotkey-refused sets the hotkey to
+# Ctrl+Alt+F12, which the stock keymap makes a console switch: the grab is refused, and the app must
+# not be left with no window.
 # The app runs with HOME, TMPDIR and XDG_RUNTIME_DIR under target/gui-check/<scenario>/.
 # Keys go through XTEST (xdotool type/key, never --window), with no window manager, so the
 # window is focused by hand. The menubar scenario clicks the in-window menu bar; where its titles and
@@ -25,7 +27,7 @@ cd "$repo"
 scenario="${1:-}"
 variant="${2:-}"
 case "$scenario" in
-    shell | layout | menubar | popup | host | job | clipboard | notify | hotkey | tmux | tmux-nolang | tmux-lcall | tmux-windows | restore-windows | restore-host) ;;
+    shell | layout | menubar | popup | host | job | clipboard | notify | hotkey | hotkey-refused | tmux | tmux-nolang | tmux-lcall | tmux-windows | restore-windows | restore-host) ;;
     tmux-restore)
         case "$variant" in
             a | b | c | d) ;;
@@ -39,7 +41,7 @@ case "$scenario" in
             *) echo "usage: scripts/unix-gui-check tmux-restore [a|b|c|d]" >&2; exit 2 ;;
         esac
         ;;
-    *) echo "usage: scripts/unix-gui-check <shell|layout|menubar|popup|host|job|clipboard|notify|hotkey|tmux|tmux-nolang|tmux-lcall|tmux-windows|restore-windows|restore-host|tmux-restore [a|b|c|d]>" >&2; exit 2 ;;
+    *) echo "usage: scripts/unix-gui-check <shell|layout|menubar|popup|host|job|clipboard|notify|hotkey|hotkey-refused|tmux|tmux-nolang|tmux-lcall|tmux-windows|restore-windows|restore-host|tmux-restore [a|b|c|d]>" >&2; exit 2 ;;
 esac
 # The notify scenario runs on a private session bus, watched by dbus-monitor for the Notify call.
 if [ "$scenario" = notify ] && [ -z "${GUICHECK_BUS:-}" ]; then
@@ -54,7 +56,7 @@ is_tmux=false
 case "$scenario" in tmux*) is_tmux=true ;; esac
 tools="Xvfb xdotool import"
 $is_tmux && tools="$tools tmux"
-[ "$scenario" = hotkey ] && tools="$tools openbox xterm setxkbmap xprop"
+case "$scenario" in hotkey | hotkey-refused) tools="$tools openbox xterm xprop" ;; esac
 for tool in $tools; do
     command -v "$tool" > /dev/null || { echo "FAIL $scenario: $tool is not installed"; exit 1; }
 done
@@ -143,19 +145,23 @@ if [ "$scenario" = job ]; then
     mkdir -p "$scratch/home/.config/termurion"
     printf 'default = "job-check"\n\n[[profile]]\nGuid = "job-check"\nName = "Default"\n"Prompt Before Closing 2" = 2\n' > "$scratch/home/.config/termurion/profiles.toml"
 fi
-# The hotkey scenario has a profile whose hotkey is Ctrl+Alt+F12 (F12 is key code 0x6F; Control and Option flags).
-if [ "$scenario" = hotkey ]; then
-    mkdir -p "$scratch/home/.config/termurion"
-    printf 'default = "hk-main"\n\n[[profile]]\nGuid = "hk-main"\nName = "Default"\n\n[[profile]]\nGuid = "hk-drop"\nName = "Dropdown"\n"Has Hotkey" = true\n"HotKey Key Code" = 111\n"HotKey Modifier Flags" = 786432\n"HotKey Characters Ignoring Modifiers" = "\uF70F"\n"HotKey Window AutoHides" = true\n"HotKey Window Animates" = false\n' > "$scratch/home/.config/termurion/profiles.toml"
-    # With a hotkey profile and nothing to restore the app starts with only a hidden hotkey window, so a plain window is asked for.
-    printf '[settings]\nSUEnableAutomaticChecks = false\nAlwaysOpenWindowAtStartup = true\n' > "$scratch/home/.config/termurion/settings.toml"
-    HOME="$scratch/home" openbox --sm-disable > "$scratch/openbox.log" 2>&1 &
-    wm_pid=$!
-    for _ in $(seq 50); do xprop -root _NET_SUPPORTING_WM_CHECK 2> /dev/null | grep -q "window id" && break; sleep 0.1; done
-    # The server turns Ctrl+Alt+Fn into a VT switch and eats the press unless told not to. It is set
-    # while the window manager is connected: a server with no client resets its keymap.
-    setxkbmap -option srvrkeys:none || fail "setxkbmap"
-fi
+# The hotkey scenarios have a profile with a hotkey (key code 0x31 is Space, 111 is F12; Control and Option flags).
+case "$scenario" in
+    hotkey | hotkey-refused)
+        mkdir -p "$scratch/home/.config/termurion"
+        code=49 chars=" "
+        [ "$scenario" = hotkey-refused ] && code=111 chars=$(printf '\357\234\217')
+        printf 'default = "hk-main"\n\n[[profile]]\nGuid = "hk-main"\nName = "Default"\n\n[[profile]]\nGuid = "hk-drop"\nName = "Dropdown"\n"Has Hotkey" = true\n"HotKey Key Code" = %s\n"HotKey Modifier Flags" = 786432\n"HotKey Characters Ignoring Modifiers" = "%s"\n"HotKey Window AutoHides" = true\n"HotKey Window Animates" = false\n' "$code" "$chars" > "$scratch/home/.config/termurion/profiles.toml"
+        # With a hotkey profile and nothing to restore the app starts with only a hidden hotkey window, so
+        # the hotkey scenario asks for a plain window; hotkey-refused must get one by itself.
+        always=true
+        [ "$scenario" = hotkey-refused ] && always=false
+        printf '[settings]\nSUEnableAutomaticChecks = false\nAlwaysOpenWindowAtStartup = %s\n' "$always" > "$scratch/home/.config/termurion/settings.toml"
+        HOME="$scratch/home" openbox --sm-disable > "$scratch/openbox.log" 2>&1 &
+        wm_pid=$!
+        for _ in $(seq 50); do xprop -root _NET_SUPPORTING_WM_CHECK 2> /dev/null | grep -q "window id" && break; sleep 0.1; done
+        ;;
+esac
 # The locale the app itself starts under, for the tmux variants.
 locale_env=()
 [ "$scenario" = tmux-nolang ] && locale_env=(-u LANG -u LC_ALL -u LC_CTYPE)
@@ -221,6 +227,11 @@ case "$scenario" in
         grep -q 'member=Notify' "$scratch/bus.log" || fail "no Notify call on the bus (see $scratch/bus.log, $scratch/app.log)"
         grep -q 'string ".*hello"' "$scratch/bus.log" || fail "the Notify call has no body ending in hello (see $scratch/bus.log)"
         ;;
+    hotkey-refused)
+        # The window the app opened by itself is the proof: find_window found it. It is a normal window, shown.
+        [ -n "$win" ] || fail "no window"
+        shoot
+        ;;
     hotkey)
         sleep 1
         # An xterm holds focus. The chord shows the hotkey window (a second window of the app, active); the
@@ -238,7 +249,7 @@ case "$scenario" in
         active() { xdotool getactivewindow 2> /dev/null; }
         for _ in $(seq 50); do [ "$(active)" = "$xt" ] && break; sleep 0.1; done
         [ "$(active)" = "$xt" ] || fail "the xterm never took focus"
-        xdotool key ctrl+alt+F12
+        xdotool key ctrl+alt+space
         hk=""
         for _ in $(seq 80); do
             a=$(active)
@@ -247,13 +258,13 @@ case "$scenario" in
         done
         shoot
         [ -n "$hk" ] || fail "the chord did not bring a hotkey window forward (active is $(active), see $scratch/app.log)"
-        xdotool key ctrl+alt+F12
+        xdotool key ctrl+alt+space
         for _ in $(seq 80); do [ "$(active)" = "$xt" ] && break; sleep 0.1; done
         shoot
         [ "$(active)" = "$xt" ] || fail "the second chord did not give focus back to the xterm (active is $(active))"
         xdotool search --onlyvisible --pid "$app_pid" 2> /dev/null | grep -qx "$hk" && fail "the hotkey window is still visible after the second chord"
         # A third press brings it back: the window is only hidden, not gone.
-        xdotool key ctrl+alt+F12
+        xdotool key ctrl+alt+space
         for _ in $(seq 80); do [ "$(active)" = "$hk" ] && break; sleep 0.1; done
         [ "$(active)" = "$hk" ] || fail "the third chord did not bring the hotkey window back (active is $(active))"
         ;;

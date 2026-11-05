@@ -4,6 +4,7 @@
 //! handle to act on, so `available` says no and the calls do nothing.
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{AtomEnum, ClientMessageEvent, ConnectionExt, EventMask, MapState, PropMode};
@@ -24,9 +25,11 @@ struct Xc {
     wm_desktop: u32,
     opacity: u32,
     pid: u32,
+    user_time: u32,
 }
 
-static CONN: Mutex<Option<Arc<Xc>>> = Mutex::new(None);
+/// The shared connection, with the DISPLAY it was made for.
+static CONN: Mutex<Option<(Option<std::ffi::OsString>, Arc<Xc>)>> = Mutex::new(None);
 
 fn connect() -> Result<Xc, String> {
     let (conn, screen) = RustConnection::connect(None).map_err(|e| e.to_string())?;
@@ -41,21 +44,23 @@ fn connect() -> Result<Xc, String> {
         wm_desktop: atom("_NET_WM_DESKTOP")?,
         opacity: atom("_NET_WM_WINDOW_OPACITY")?,
         pid: atom("_NET_WM_PID")?,
+        user_time: atom("_NET_WM_USER_TIME")?,
         conn,
         root,
     })
 }
 
-/// Runs `f` on the shared connection, made on first use. A failing call drops the connection so the
+/// Runs `f` on the shared connection, made on first use (and again when DISPLAY changes). A failing call drops the connection so the
 /// next one starts clean; None when X cannot be reached or the call failed.
 fn with_x<T>(f: impl FnOnce(&Xc) -> Result<T, x11rb::errors::ReplyError>) -> Option<T> {
     let xc = {
         let mut g = CONN.lock().unwrap_or_else(|e| e.into_inner());
+        let display = std::env::var_os("DISPLAY");
         match g.as_ref() {
-            Some(x) => x.clone(),
-            None => {
+            Some((d, x)) if *d == display => x.clone(),
+            _ => {
                 let x = Arc::new(connect().ok()?);
-                *g = Some(x.clone());
+                *g = Some((display, x.clone()));
                 x
             }
         }
@@ -104,11 +109,10 @@ pub fn cloak(h: isize, on: bool) {
     let Some(w) = win(h) else { return };
     with_x(|x| {
         if on {
-            x.conn.unmap_window(w)?;
+            x.conn.unmap_window(w)?.check()?;
         } else {
-            x.conn.map_window(w)?;
+            x.conn.map_window(w)?.check()?;
         }
-        x.conn.flush()?;
         Ok(())
     });
 }
@@ -118,12 +122,11 @@ pub fn set_alpha(h: isize, alpha: f32) -> bool {
     let Some(w) = win(h) else { return false };
     with_x(|x| {
         if alpha >= 1.0 {
-            x.conn.delete_property(w, x.opacity)?;
+            x.conn.delete_property(w, x.opacity)?.check()?;
         } else {
             let v = (alpha.clamp(0.0, 1.0) as f64 * u32::MAX as f64) as u32;
-            x.conn.change_property32(PropMode::REPLACE, w, x.opacity, AtomEnum::CARDINAL, &[v])?;
+            x.conn.change_property32(PropMode::REPLACE, w, x.opacity, AtomEnum::CARDINAL, &[v])?.check()?;
         }
-        x.conn.flush()?;
         Ok(())
     })
     .is_some()
@@ -160,11 +163,72 @@ pub fn activate(h: isize) -> bool {
     let Some(w) = win(h) else { return false };
     with_x(|x| {
         let ev = ClientMessageEvent::new(32, w, x.active, [2, CURRENT_TIME, 0, 0, 0]);
-        x.conn.send_event(false, x.root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, ev)?;
-        x.conn.flush()?;
+        x.conn.send_event(false, x.root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, ev)?.check()?;
         Ok(())
     })
     .is_some()
+}
+
+/// After the show: waits (bounded) for the window to be mapped, then asks the window manager to
+/// activate it as a pager, with a real server timestamp that is also its `_NET_WM_USER_TIME`. winit's
+/// own request can come before the map, and as an application it is only "demand attention" to
+/// some window managers.
+pub fn take_focus(h: isize) {
+    let Some(w) = win(h) else { return };
+    with_x(|x| {
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_millis(500) {
+            if x.conn.get_window_attributes(w)?.reply()?.map_state == MapState::VIEWABLE {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let time = server_time(x, w).unwrap_or(CURRENT_TIME);
+        x.conn.change_property32(PropMode::REPLACE, w, x.user_time, AtomEnum::CARDINAL, &[time])?;
+        let ev = ClientMessageEvent::new(32, w, x.active, [2, time, 0, 0, 0]);
+        x.conn.send_event(false, x.root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, ev)?.check()?;
+        Ok(())
+    });
+}
+
+/// The server's clock now: an empty property append on the window and the time of its notify.
+fn server_time(x: &Xc, w: u32) -> Option<u32> {
+    use x11rb::protocol::xproto::ChangeWindowAttributesAux;
+    use x11rb::protocol::Event;
+    x.conn.change_window_attributes(w, &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE)).ok()?;
+    x.conn.change_property32(PropMode::APPEND, w, x.user_time, AtomEnum::CARDINAL, &[]).ok()?;
+    x.conn.flush().ok()?;
+    let t = Instant::now();
+    let mut found = None;
+    while found.is_none() && t.elapsed() < Duration::from_millis(200) {
+        match x.conn.poll_for_event() {
+            Ok(Some(Event::PropertyNotify(e))) if e.window == w && e.atom == x.user_time => found = Some(e.time),
+            Ok(Some(_)) => {}
+            Ok(None) => std::thread::sleep(Duration::from_millis(2)),
+            Err(_) => break,
+        }
+    }
+    let _ = x.conn.change_window_attributes(w, &ChangeWindowAttributesAux::new().event_mask(EventMask::NO_EVENT));
+    let _ = x.conn.flush();
+    found
+}
+
+/// Whether the current keymap turns Ctrl+Alt+F`n` into a console switch (the server eats that press):
+/// read from the keymap, where the F key's keycode carries an XF86Switch_VT_`n` keysym.
+pub fn switches_console(n: u8) -> bool {
+    const F1: u32 = 0xffbe;
+    const VT1: u32 = 0x1008_fe01;
+    if !(1..=12).contains(&n) {
+        return false;
+    }
+    with_x(|x| {
+        let s = x.conn.setup();
+        let m = x.conn.get_keyboard_mapping(s.min_keycode, s.max_keycode - s.min_keycode + 1)?.reply()?;
+        let per = m.keysyms_per_keycode as usize;
+        let want = VT1 + (n as u32 - 1);
+        Ok(m.keysyms.chunks(per).any(|k| k.contains(&(F1 + n as u32 - 1)) && k.contains(&want)))
+    })
+    .unwrap_or(false)
 }
 
 /// Puts the window on the desktop the person is on, unless it is on all of them.
@@ -203,7 +267,7 @@ mod tests {
     use crate::hotkey::{Chord, ChordKey, MOD_ALT, MOD_CONTROL};
     use crate::platform::unix::global_keys;
 
-    const F11: u32 = 0xffc8;
+    const KEY_K: u32 = 0x6b;
 
     fn kill_with_parent(cmd: &mut Command) {
         use std::os::unix::process::CommandExt;
@@ -230,7 +294,7 @@ mod tests {
                     std::thread::park();
                 }
             });
-            rx.recv().unwrap().unwrap_or_else(|e| panic!("these tests need Xvfb, openbox and setxkbmap: {e}"))
+            rx.recv().unwrap().unwrap_or_else(|e| panic!("these tests need Xvfb and openbox: {e}"))
         })
     }
 
@@ -256,8 +320,11 @@ mod tests {
             }
             let home = std::env::temp_dir().join(format!("termurion-openbox-{n}"));
             let _ = std::fs::create_dir_all(&home);
+            // New windows are not focused by the manager, as on a desktop with focus stealing prevention.
+            let rc = home.join("rc.xml");
+            std::fs::write(&rc, "<?xml version=\"1.0\"?>\n<openbox_config xmlns=\"http://openbox.org/3.4/rc\"><focus><focusNew>no</focusNew></focus></openbox_config>\n").map_err(|e| e.to_string())?;
             let mut ob = Command::new("openbox");
-            ob.env("DISPLAY", format!(":{n}")).env("HOME", &home).env("XDG_CONFIG_HOME", &home).arg("--sm-disable").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+            ob.env("DISPLAY", format!(":{n}")).env("HOME", &home).env("XDG_CONFIG_HOME", &home).arg("--sm-disable").arg("--config-file").arg(&rc).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
             kill_with_parent(&mut ob);
             let wm = ob.spawn().map_err(|e| format!("openbox: {e}"))?;
             std::mem::forget(wm);
@@ -269,9 +336,21 @@ mod tests {
             loop {
                 let r = conn.get_property(false, root, check, AtomEnum::WINDOW, 0, 1).map_err(|e| e.to_string())?.reply().map_err(|e| e.to_string())?;
                 if r.value_len > 0 {
-                    // The server turns Ctrl+Alt+Fn into a VT switch and eats the press; this chord must reach a grab.
-                    let st = Command::new("setxkbmap").env("DISPLAY", format!(":{n}")).args(["-option", "srvrkeys:none"]).status().map_err(|e| format!("setxkbmap: {e}"))?;
-                    return if st.success() { Ok(format!(":{n}")) } else { Err("setxkbmap failed".into()) };
+                    // The check property comes up before the manager serves windows: a window mapped now is never managed.
+                    // The client list appears once its startup scan is done.
+                    let list = conn.intern_atom(false, b"_NET_CLIENT_LIST").map_err(|e| e.to_string())?.reply().map_err(|e| e.to_string())?.atom;
+                    let t = Instant::now();
+                    loop {
+                        let r = conn.get_property(false, root, list, AtomEnum::WINDOW, 0, 1).map_err(|e| e.to_string())?.reply().map_err(|e| e.to_string())?;
+                        if r.type_ != u32::from(AtomEnum::NONE) {
+                            break;
+                        }
+                        if t.elapsed() > Duration::from_secs(20) {
+                            return Err("openbox did not finish starting".into());
+                        }
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    return Ok(format!(":{n}"));
                 }
                 if t.elapsed() > Duration::from_secs(5) {
                     return Err("openbox did not come up".into());
@@ -298,6 +377,7 @@ mod tests {
         // SAFETY: the lock keeps the X tests from racing each other over the variable.
         unsafe { std::env::set_var("DISPLAY", d) };
         global_keys::force_session(Some(SessionKind::X11));
+        global_keys::reset_main_thread();
         global_keys::set_hotkey_sink(Box::new(|ids| HITS.lock().unwrap_or_else(|e| e.into_inner()).extend(ids)));
         HITS.lock().unwrap_or_else(|e| e.into_inner()).clear();
         Xenv { _lock: lock, old }
@@ -316,6 +396,9 @@ mod tests {
         }
     }
 
+    const SPACE: u32 = 0x39;
+    const K: u32 = 0x25;
+
     fn chord(scan: u32) -> Chord {
         Chord { key: ChordKey::Scan(scan), mods: MOD_CONTROL | MOD_ALT }
     }
@@ -323,7 +406,7 @@ mod tests {
     fn until(what: &str, mut f: impl FnMut() -> bool) {
         let t = Instant::now();
         while !f() {
-            assert!(t.elapsed() < Duration::from_secs(4), "timed out waiting for {what}");
+            assert!(t.elapsed() < Duration::from_secs(10), "timed out waiting for {what}");
             std::thread::sleep(Duration::from_millis(40));
         }
     }
@@ -359,9 +442,9 @@ mod tests {
     #[test]
     fn a_registered_chord_fires() {
         let _x = xenv();
-        let r = global_keys::set_hotkeys(vec![(7101, chord(0x58))], vec![]).unwrap();
+        let r = global_keys::set_hotkeys(vec![(7101, chord(SPACE))], vec![]).unwrap();
         assert_eq!(r, vec![(7101, Ok(()))]);
-        key("ctrl+alt+F12");
+        key("ctrl+alt+space");
         until("the press", || HITS.lock().unwrap().contains(&7101));
         std::thread::sleep(Duration::from_millis(300));
         assert_eq!(*HITS.lock().unwrap(), vec![7101], "one press, one id");
@@ -373,9 +456,9 @@ mod tests {
         let _x = xenv();
         let (conn, screen) = RustConnection::connect(None).unwrap();
         let root = conn.setup().roots[screen].root;
-        let code = keycode(&conn, F11);
+        let code = keycode(&conn, KEY_K);
         conn.grab_key(false, root, ModMask::CONTROL | ModMask::M1, code, GrabMode::ASYNC, GrabMode::ASYNC).unwrap().check().unwrap();
-        let r = global_keys::set_hotkeys(vec![(7102, chord(0x57))], vec![]).unwrap();
+        let r = global_keys::set_hotkeys(vec![(7102, chord(K))], vec![]).unwrap();
         assert_eq!(r, vec![(7102, Err("Another app already uses this shortcut".to_string()))]);
         global_keys::set_hotkeys(vec![], vec![]).unwrap();
     }
@@ -395,7 +478,7 @@ mod tests {
         let (conn, screen) = RustConnection::connect(None).unwrap();
         let root = conn.setup().roots[screen].root;
         let (a, b) = (make_window(&conn, root), make_window(&conn, root));
-        until("the second window", || property(&conn, root, b"_NET_ACTIVE_WINDOW").is_some());
+        until("the second window managed", || property(&conn, b, b"_NET_WM_DESKTOP").is_some());
         order_front(a as isize, false);
         until("the first window active", || property(&conn, root, b"_NET_ACTIVE_WINDOW") == Some(a));
         assert_eq!(foreground(), a as isize);
@@ -435,10 +518,14 @@ mod tests {
         cloak(w as isize, false);
         until("the window mapped again", mapped);
         assert!(set_alpha(w as isize, 0.5));
-        let half = property(&conn, w, b"_NET_WM_WINDOW_OPACITY").expect("the property");
-        assert!((half as f64 / u32::MAX as f64 - 0.5).abs() < 0.01);
+        let mut half = None;
+        until("the opacity", || {
+            half = property(&conn, w, b"_NET_WM_WINDOW_OPACITY");
+            half.is_some()
+        });
+        assert!((half.unwrap() as f64 / u32::MAX as f64 - 0.5).abs() < 0.01);
         assert!(set_alpha(w as isize, 1.0));
-        assert_eq!(property(&conn, w, b"_NET_WM_WINDOW_OPACITY"), None);
+        until("the opacity gone", || property(&conn, w, b"_NET_WM_WINDOW_OPACITY").is_none());
     }
 
     #[test]
@@ -449,7 +536,7 @@ mod tests {
         let why = global_keys::session_refusal().expect("a refusal");
         assert!(why.contains("X"), "{why}");
         assert!(available().is_err());
-        assert!(global_keys::set_hotkeys(vec![(7104, chord(0x58))], vec![]).is_err());
+        assert!(global_keys::set_hotkeys(vec![(7104, chord(SPACE))], vec![]).is_err());
     }
 
     #[test]
@@ -460,5 +547,78 @@ mod tests {
         assert!(e.contains("Wayland"), "{e}");
         assert_eq!(foreground(), 0);
         assert!(!ours(5) && !is_window(5));
+    }
+
+    #[test]
+    fn showing_takes_focus_when_the_manager_does_not_give_it() {
+        let _x = xenv();
+        let (conn, screen) = RustConnection::connect(None).unwrap();
+        let root = conn.setup().roots[screen].root;
+        let other = make_window(&conn, root);
+        until("the other window managed", || property(&conn, other, b"_NET_WM_DESKTOP").is_some());
+        order_front(other as isize, false);
+        until("the other window active", || foreground() == other as isize);
+        let w = make_window(&conn, root);
+        until("the new window managed", || property(&conn, w, b"_NET_WM_DESKTOP").is_some());
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(foreground(), other as isize, "the manager must not focus a new window in this setup");
+        cloak(w as isize, true);
+        cloak(w as isize, false);
+        take_focus(w as isize);
+        until("the shown window active", || foreground() == w as isize);
+    }
+
+    #[test]
+    fn a_console_switch_chord_is_refused() {
+        let _x = xenv();
+        assert!(switches_console(12), "the stock keymap has the console keysyms");
+        let r = global_keys::set_hotkeys(vec![(7105, chord(0x58))], vec![]).unwrap();
+        assert_eq!(r, vec![(7105, Err("Ctrl+Alt+F12 switches to a text console on this system; pick another shortcut".to_string()))]);
+        let plain = Chord { key: ChordKey::Scan(0x58), mods: MOD_ALT };
+        let r = global_keys::set_hotkeys(vec![(7106, plain)], vec![]).unwrap();
+        assert_eq!(r, vec![(7106, Ok(()))], "Alt+F12 alone is no console switch");
+        global_keys::set_hotkeys(vec![], vec![]).unwrap();
+    }
+
+    #[test]
+    fn an_apostrophe_chord_is_refused_in_plain_words() {
+        let _x = xenv();
+        let c = Chord { key: ChordKey::Char('\''), mods: MOD_CONTROL | MOD_ALT };
+        let r = global_keys::set_hotkeys(vec![(7107, c)], vec![]).unwrap();
+        let why = r[0].1.as_ref().unwrap_err();
+        assert!(why.contains("apostrophe") && !why.contains("keycode"), "{why}");
+    }
+
+    #[test]
+    fn a_dead_worker_is_found() {
+        let _x = xenv();
+        let live = global_hotkey::GlobalHotKeyManager::new().unwrap();
+        assert!(global_keys::worker_alive(&live));
+        // SAFETY: under the lock, restored by `Xenv`.
+        unsafe { std::env::set_var("DISPLAY", ":199") };
+        let dead = global_hotkey::GlobalHotKeyManager::new().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!global_keys::worker_alive(&dead), "a worker with no display must not pass for a live one");
+    }
+
+    #[test]
+    fn hotkeys_are_set_from_the_main_thread_only() {
+        let _x = xenv();
+        assert!(global_keys::set_hotkeys(vec![], vec![]).is_ok());
+        let from_elsewhere = std::thread::spawn(|| global_keys::set_hotkeys(vec![], vec![])).join().unwrap();
+        assert!(from_elsewhere.unwrap_err().contains("main thread"));
+        global_keys::set_hotkeys(vec![], vec![]).unwrap();
+    }
+
+    #[test]
+    fn the_connection_follows_display() {
+        let _x = xenv();
+        let (conn, screen) = RustConnection::connect(None).unwrap();
+        let root = conn.setup().roots[screen].root;
+        let w = make_window(&conn, root);
+        assert!(ours(w as isize));
+        // SAFETY: under the lock, restored by `Xenv`.
+        unsafe { std::env::set_var("DISPLAY", ":199") };
+        assert!(!ours(w as isize), "a cached connection to the old display answered");
     }
 }

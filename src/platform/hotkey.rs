@@ -10,4 +10,4 @@ use super::linux::hotkey as imp;
 #[cfg(windows)]
 use super::windows::hotkey as imp;
 
-pub use imp::{available, cloak, foreground, is_window, forget, join_active_space, order_front, ours, set_alpha};
+pub use imp::{available, cloak, foreground, is_window, forget, join_active_space, order_front, ours, set_alpha, take_focus};

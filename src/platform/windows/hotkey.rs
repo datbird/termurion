@@ -42,6 +42,9 @@ pub fn foreground() -> isize {
 /// Windows follows the desktop through `desktops::follows`, so there is nothing to set.
 pub fn join_active_space(_hwnd: isize) {}
 
+/// The window takes focus through winit's own request here, so there is nothing more to ask.
+pub fn take_focus(_hwnd: isize) {}
+
 /// No per-window state is kept here.
 pub fn forget(_view: isize) {}
 

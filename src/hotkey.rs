@@ -156,6 +156,11 @@ pub fn chord(s: &Shortcut) -> Option<Chord> {
     Some(Chord { key, mods })
 }
 
+/// Whether some hotkey is working after a registration: none asked for counts as working.
+pub fn grabs_worked(asked: bool, answer: &Result<Vec<(u32, Result<(), String>)>, String>) -> bool {
+    !asked || answer.as_ref().is_ok_and(|r| r.iter().any(|(_, one)| one.is_ok()))
+}
+
 /// Profiles whose hotkeys toggle together with `guid`'s: the same shortcuts, or the same
 /// double-tap key (iTerm2's siblings). `guid` itself is not in the list.
 pub fn siblings(guid: &str, all: &[(String, Prefs)]) -> Vec<String> {
@@ -369,6 +374,16 @@ pub fn stale_windows(windows: &[String], all: &[(String, Prefs)]) -> Vec<String>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn grabs_worked_needs_one_good_registration() {
+        let ok: Result<Vec<(u32, Result<(), String>)>, String> = Ok(vec![(1, Err("taken".into())), (2, Ok(()))]);
+        let none: Result<Vec<(u32, Result<(), String>)>, String> = Ok(vec![(1, Err("taken".into()))]);
+        assert!(grabs_worked(true, &ok));
+        assert!(!grabs_worked(true, &none));
+        assert!(!grabs_worked(true, &Err("no X".into())));
+        assert!(grabs_worked(false, &Err("no X".into())), "nothing asked for is not a failure");
+    }
+
     use super::*;
 
     fn short(keycode: u16, flags: u64, ch: &str) -> Shortcut {

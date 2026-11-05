@@ -436,7 +436,10 @@ impl App {
             Err(e) => self.banners.set("keys", format!("Modifier remapping and system-wide hotkeys are unavailable: {e}")),
             Ok(()) if !self.hotkeys_registered => {
                 self.hotkeys_registered = true;
-                self.register_hotkeys();
+                // The launch may not have made its hotkey window yet: then it is dealt with when it has.
+                if !self.register_hotkeys() {
+                    self.hotkeys_failed_at_launch = true;
+                }
             }
             Ok(()) => {}
         }

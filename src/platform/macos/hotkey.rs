@@ -115,6 +115,9 @@ pub fn order_front(view: isize, minimized: bool) {
     w.orderFront(None);
 }
 
+/// The app is activated by the show path already, so there is nothing more to ask.
+pub fn take_focus(_view: isize) {}
+
 /// The window shows on the Space the person is on, also over a full screen app (iTerm2's hotkey window).
 pub fn join_active_space(view: isize) {
     let Some(w) = window_of(view) else { return };
