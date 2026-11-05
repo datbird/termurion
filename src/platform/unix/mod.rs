@@ -16,10 +16,8 @@ pub mod desktops;
 pub mod display;
 pub mod files;
 pub mod drag;
-#[cfg(target_os = "macos")]
 pub mod global_keys;
 pub mod handoff;
-pub mod hotkey;
 pub mod http;
 pub mod ipc;
 pub mod iterm2_prefs;

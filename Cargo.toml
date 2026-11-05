@@ -50,6 +50,8 @@ winresource = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# System-wide hotkeys: Carbon hot keys on macOS, an X11 key grab on Linux (src/platform/unix/global_keys.rs).
+global-hotkey = "0.9.0"
 
 # Wayland sessions get the clipboard and the primary selection through the data-control protocol.
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
@@ -58,6 +60,8 @@ arboard = { version = "3", features = ["wayland-data-control"] }
 muda = { version = "0.20", default-features = false }
 # Desktop notifications over the session bus (src/platform/linux/notify.rs): one shared connection.
 zbus = "5"
+# The hotkey window's X11 calls (src/platform/linux/hotkey.rs); already in the tree through arboard.
+x11rb = "0.13"
 secret-service = { version = "5", default-features = false, features = ["rt-async-io-crypto-rust"] }
 
 # The user's locale on macOS (CFLocaleCopyCurrent); already in the tree through winit.
@@ -68,7 +72,6 @@ core-foundation-sys = "0.8.7"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSArray", "NSBundle", "NSURL", "NSDictionary", "NSDate", "NSError", "NSNotification", "NSDistributedNotificationCenter", "NSOperation", "NSData", "block2"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSMenu", "NSResponder", "NSView", "NSWindow", "NSRunningApplication", "NSWorkspace", "NSScreen", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSImage", "objc2-core-foundation", "libc"] }
-global-hotkey = "0.9.0"
 # Notifications (src/platform/macos/notify.rs).
 block2 = "0.6"
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationSound", "UNNotificationResponse", "UNNotificationSettings", "UNNotification", "UNNotificationTrigger", "UNError"] }

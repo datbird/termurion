@@ -67,10 +67,9 @@ pub fn chord_key_from(logical: &Key, unmodified: &Key, physical: PhysicalKey) ->
     ascii(logical).or_else(|| ascii(unmodified)).or_else(|| chord_key(physical))
 }
 
-/// On macOS the system-wide hotkeys are released while the recorder listens; Linux has none.
-pub fn set_recording(_on: bool) {
-    #[cfg(target_os = "macos")]
-    super::global_keys::set_recording(_on);
+/// The system-wide hotkeys are released while the recorder listens, so it gets the keys.
+pub fn set_recording(on: bool) {
+    super::global_keys::set_recording(on);
 }
 
 /// No keyboard hook, so no remapping to count the window in.

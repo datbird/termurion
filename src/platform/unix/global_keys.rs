@@ -1,6 +1,7 @@
-//! System-wide hotkeys on macOS, through the global-hotkey crate (Carbon hot keys). One manager,
-//! made on the main thread; a press maps back to the ids the app registered the chord under.
-//! Double-tap hotkeys need an event tap and the Accessibility permission, so they are refused by name.
+//! System-wide hotkeys through the global-hotkey crate: Carbon hot keys on macOS, an X11 key grab
+//! on Linux. One manager, made on the main thread; a press maps back to the ids the app registered
+//! the chord under. Double-tap hotkeys need an event tap (macOS) or a key snoop (X11), so they are
+//! refused by name. A Wayland session has no global grab at all and says so.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -10,11 +11,11 @@ use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
 use crate::hotkey::{Chord, ChordKey, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN};
+use crate::platform::OS_NAME;
 
 type Sink = Box<dyn Fn(Vec<u32>) + Send + Sync>;
 type Results = Vec<(u32, Result<(), String>)>;
 
-const TAPS_REFUSED: &str = "Double-tap hotkeys are not available on macOS yet";
 const TAKEN: &str = "Another app already uses this shortcut";
 
 struct State {
@@ -27,6 +28,66 @@ struct State {
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+}
+
+/// Which window system the app runs on, read once from the first window's handle.
+#[cfg(not(target_os = "macos"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionKind {
+    X11,
+    Wayland,
+    /// No window has been looked at yet.
+    None,
+}
+
+#[cfg(not(target_os = "macos"))]
+static SESSION: std::sync::OnceLock<SessionKind> = std::sync::OnceLock::new();
+
+#[cfg(all(test, not(target_os = "macos")))]
+thread_local! {
+    static FORCED: std::cell::Cell<Option<SessionKind>> = const { std::cell::Cell::new(None) };
+}
+
+/// Remembers the kind of the first window; later windows change nothing.
+#[cfg(not(target_os = "macos"))]
+pub fn note_session(kind: SessionKind) {
+    let _ = SESSION.set(kind);
+}
+
+/// The window system of the app, or `None` until a window has been seen.
+#[cfg(not(target_os = "macos"))]
+pub fn session_kind() -> SessionKind {
+    #[cfg(test)]
+    if let Some(k) = FORCED.with(|f| f.get()) {
+        return k;
+    }
+    SESSION.get().copied().unwrap_or(SessionKind::None)
+}
+
+/// Pretends the session is `kind` on this thread only (tests).
+#[cfg(all(test, not(target_os = "macos")))]
+pub fn force_session(kind: Option<SessionKind>) {
+    FORCED.with(|f| f.set(kind));
+}
+
+/// Why the hotkeys cannot work in this session, or None when they can be tried.
+#[cfg(not(target_os = "macos"))]
+pub fn session_refusal() -> Option<String> {
+    match session_kind() {
+        SessionKind::Wayland => Some("System-wide hotkeys need X11; Wayland has no global shortcut grab yet".into()),
+        _ => crate::platform::linux::hotkey::x_server_refusal(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn on_main_thread() -> bool {
+    objc2::MainThreadMarker::new().is_some()
+}
+
+/// The manager has its own thread on X11, and the app calls from its main thread.
+#[cfg(not(target_os = "macos"))]
+fn on_main_thread() -> bool {
+    true
 }
 
 /// Hotkey id (the crate's hash of the chord) to the app's ids for it.
@@ -110,10 +171,11 @@ pub fn mods_of(mods: u32) -> Modifiers {
 
 /// Every double tap is refused: the answer `set_hotkeys` gives for them.
 pub fn tap_results(taps: &[(u32, u8)]) -> Results {
-    taps.iter().map(|(id, _)| (*id, Err(TAPS_REFUSED.to_string()))).collect()
+    taps.iter().map(|(id, _)| (*id, Err(format!("Double-tap hotkeys are not available on {OS_NAME} yet")))).collect()
 }
 
-/// A chord's registration error as the person reads it. Carbon refuses a chord another app owns.
+/// A chord's registration error as the person reads it. Carbon refuses a chord another app owns;
+/// an X server answers a grab of a taken chord with an access error (`AlreadyRegistered`).
 fn refusal_text(e: &global_hotkey::Error) -> String {
     match e {
         global_hotkey::Error::FailedToRegister(m) if m.contains("RegisterEventHotKey") => TAKEN.to_string(),
@@ -145,8 +207,12 @@ fn plan(chords: &[(u32, Chord)]) -> Vec<(Resolved, Vec<u32>)> {
 
 /// Replaces the registered hotkeys with `chords`; the answer holds each chord's and tap's outcome.
 pub fn set_hotkeys(chords: Vec<(u32, Chord)>, taps: Vec<(u32, u8)>) -> Result<Results, String> {
-    if objc2::MainThreadMarker::new().is_none() {
+    if !on_main_thread() {
         return Err("system-wide hotkeys can only be set on the main thread".into());
+    }
+    #[cfg(not(target_os = "macos"))]
+    if let Some(why) = session_refusal() {
+        return Err(why);
     }
     STATE.with(|s| {
         let mut s = s.borrow_mut();
@@ -175,7 +241,7 @@ fn register(st: &mut State, chords: &[(u32, Chord)], paused: bool) -> Results {
             None
         } else {
             Some(match resolved {
-                None => Err("This key has no macOS key code".to_string()),
+                None => Err(format!("This key has no {OS_NAME} key code")),
                 Some((code, mods)) => {
                     let key = HotKey::new(if mods.is_empty() { None } else { Some(mods) }, code);
                     match st.manager.register(key) {
@@ -261,6 +327,7 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].0, 3);
         assert!(r[0].1.as_ref().unwrap_err().contains("Double-tap"));
+        assert!(r[0].1.as_ref().unwrap_err().contains(OS_NAME));
     }
 
     #[test]

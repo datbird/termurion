@@ -4284,6 +4284,7 @@ dependencies = [
  "windows-sys 0.59.0",
  "winit",
  "winresource",
+ "x11rb",
  "zbus",
  "zeno",
 ]

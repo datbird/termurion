@@ -14,6 +14,15 @@ pub fn hwnd_of(_window: &Window) -> Option<isize> {
 /// on Wayland (which has no number a client can read). Menus and the hotkey window key on it.
 pub fn view_of(window: &Window) -> Option<isize> {
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    #[cfg(not(target_os = "macos"))]
+    {
+        use super::global_keys::{note_session, SessionKind};
+        match window.window_handle().ok()?.as_raw() {
+            RawWindowHandle::Xlib(_) | RawWindowHandle::Xcb(_) => note_session(SessionKind::X11),
+            RawWindowHandle::Wayland(_) => note_session(SessionKind::Wayland),
+            _ => {}
+        }
+    }
     match window.window_handle().ok()?.as_raw() {
         #[cfg(target_os = "macos")]
         RawWindowHandle::AppKit(h) => Some(h.ns_view.as_ptr() as isize),
@@ -40,12 +49,13 @@ pub fn screen_to_client(_hwnd: isize, _x: i32, _y: i32) -> Option<(i32, i32)> {
     None
 }
 
-/// macOS activates the app of a negative handle (another app) or makes our window key; Linux has no handles.
+/// macOS activates the app of a negative handle (another app) or makes our window key; X11 asks
+/// the window manager to activate the window (the hotkey window hands focus back this way).
 pub fn set_foreground(_hwnd: isize) -> bool {
     #[cfg(target_os = "macos")]
     return crate::platform::macos::hotkey::bring_front(_hwnd);
     #[cfg(not(target_os = "macos"))]
-    false
+    crate::platform::linux::hotkey::activate(_hwnd)
 }
 
 pub fn is_foreground(_hwnd: isize) -> bool {
