@@ -7242,7 +7242,8 @@ impl App {
             g.bar.queue(p);
         }
         let Some(gpu) = self.gpu.as_mut() else { return };
-        gpu.window.set_title(&crate::platform::window::os_title(&title));
+        // Only a changed title goes out: the compositor hears every set_title (H2).
+        crate::platform::window::set_title_if_changed(&gpu.window, &crate::platform::window::os_title(&title));
         let wait_start = Instant::now();
         let acquired = gpu.surface.get_current_texture();
         // The renderer's timings for Copy Performance Stats: counters and milliseconds only.

@@ -69,6 +69,32 @@ pub fn os_title(title: &str) -> std::borrow::Cow<'_, str> {
     imp::os_title(title)
 }
 
+/// Remembers each window's last title, so a title goes to the window system only when it changes
+/// (Wayland sends every `set_title` to the compositor; the frame loop would repeat it each frame).
+#[derive(Default)]
+pub struct TitleCache(std::collections::HashMap<winit::window::WindowId, String>);
+
+impl TitleCache {
+    /// True when `title` differs from what `id` last had (and records it).
+    pub fn changed(&mut self, id: winit::window::WindowId, title: &str) -> bool {
+        if self.0.get(&id).is_some_and(|t| t == title) {
+            return false;
+        }
+        self.0.insert(id, title.to_string());
+        true
+    }
+}
+
+/// Sets `window`'s title unless it already has that one.
+pub fn set_title_if_changed(window: &Window, title: &str) {
+    thread_local! {
+        static LAST: std::cell::RefCell<TitleCache> = std::cell::RefCell::new(TitleCache::default());
+    }
+    if LAST.with(|l| l.borrow_mut().changed(window.id(), title)) {
+        window.set_title(title);
+    }
+}
+
 /// Starts, off the UI thread, what `os_title` needs to know (Linux: the title bar's font).
 pub fn prepare_os_title(window: &Window) {
     imp::prepare_os_title(window)
@@ -169,6 +195,21 @@ pub fn monitor_rects(hwnd: isize) -> Option<(Rect, Rect)> {
 /// in screen coordinates already.
 pub fn placement(hwnd: isize) -> Option<(u32, u32, [i32; 4], (i32, i32))> {
     imp::placement(hwnd)
+}
+
+#[cfg(test)]
+mod title_tests {
+    /// A title goes out only when it changes, per window.
+    #[test]
+    fn a_title_is_sent_only_when_it_changes() {
+        let mut c = super::TitleCache::default();
+        let (a, b) = (winit::window::WindowId::from(1u64), winit::window::WindowId::from(2u64));
+        assert!(c.changed(a, "x"));
+        assert!(!c.changed(a, "x"), "the same title again: nothing sent");
+        assert!(c.changed(b, "x"), "another window");
+        assert!(c.changed(a, "y"));
+        assert!(c.changed(a, "x"));
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))] // test: windows on a private X server are Linux's
