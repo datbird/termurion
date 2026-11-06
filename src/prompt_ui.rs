@@ -58,6 +58,9 @@ fn ok_label_of(custom: Option<&str>) -> &str {
     custom.unwrap_or("OK")
 }
 
+/// Room kept under a prompt with a History list, in points (about nine rows).
+const HISTORY_ROOM: f64 = 9.0 * 18.0;
+
 impl PromptWindow {
     #[allow(clippy::too_many_arguments)]
     pub fn open(
@@ -78,6 +81,12 @@ impl PromptWindow {
 
     /// Earlier entries, offered in a list under the text.
     pub fn with_choices(mut self, choices: Vec<String>) -> PromptWindow {
+        // The History list drops down inside the window: while it is open there is room for
+        // about nine rows under it.
+        if !choices.is_empty() {
+            let h = f64::from(self.host.window.inner_size().height) / self.host.window.scale_factor();
+            self.host.set_dialog_floor(h + HISTORY_ROOM);
+        }
         self.choices = choices;
         self
     }
@@ -390,6 +399,137 @@ pub struct ConfirmWindow {
     guard: Option<InputGuard>,
 }
 
+/// What the alert's body draws from (the window's fields, borrowed for one frame).
+struct ConfirmBody<'a> {
+    text: &'a String,
+    suppress: &'a mut bool,
+    checkbox: bool,
+    checkbox_label: &'static str,
+    ok: &'a String,
+    cancel: &'a Option<String>,
+    enter_cancels: bool,
+    actions: &'a Vec<String>,
+    shortcuts: &'a Vec<Option<(usize, char)>>,
+    underline: bool,
+    forget: bool,
+    close: &'a Option<String>,
+    gated: Option<usize>,
+    read: &'a mut bool,
+    spaces: &'a mut Option<i32>,
+    guard: Option<InputGuard>,
+    guard_armed: bool,
+}
+
+/// The alert's content: the text (scrolling past a height cap), the accessory, the checkbox and
+/// the buttons. Its frame and title row are `dialog_frame`'s.
+fn confirm_body(ui: &mut egui::Ui, b: ConfirmBody) -> ConfirmResult {
+    let ConfirmBody { text, suppress, checkbox, checkbox_label, ok, cancel, enter_cancels, actions, shortcuts, underline, forget, close, gated, read, spaces, guard, guard_armed } = b;
+    let mut result = ConfirmResult::Open;
+    // The body scrolls inside the window and the buttons stay below it, so no text or
+    // button is ever cut off.
+    let reserve = 48.0 + if spaces.is_some() { 30.0 } else { 0.0 } + if checkbox { 28.0 } else { 0.0 } + if gated.is_some() { 20.0 } else { 0.0 };
+    let out = egui::ScrollArea::vertical().max_height((ui.available_height() - reserve).max(60.0)).auto_shrink([false, true]).show(ui, |ui| {
+        ui.label(text.as_str());
+    });
+    if gated.is_some() && scrolled_to_end(out.state.offset.y, out.inner_rect.height(), out.content_size.y) {
+        *read = true;
+    }
+    if gated.is_some() && !*read {
+        ui.label("Scroll to the end of the text to enable the button.");
+    }
+    ui.add_space(6.0);
+    if let Some(n) = spaces.as_mut() {
+        ui.horizontal(|ui| {
+            ui.label(TAB_SIZE_LABEL);
+            ui.add(egui::DragValue::new(n).range(0..=100));
+        });
+        ui.add_space(6.0);
+    }
+    if checkbox {
+        ui.checkbox(suppress, checkbox_label);
+        ui.add_space(6.0);
+    }
+    let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+    // A guarded window has no default button and no focused widget (Enter and Space
+    // would press it), and says why its buttons wait.
+    let (enter, escape) = if guard.is_some() {
+        let ctx = ui.ctx().clone();
+        ctx.memory_mut(|m| {
+            if let Some(f) = m.focused() {
+                m.surrender_focus(f);
+            }
+        });
+        if !guard_armed {
+            ui.label("The buttons turn on in a moment.");
+        }
+        (false, false)
+    } else {
+        (enter, escape)
+    };
+    ui.horizontal(|ui| {
+        if !actions.is_empty() {
+            let labels: Vec<&str> = actions.iter().map(String::as_str).collect();
+            let enter_index = action_keys(&labels).0;
+            let escape_index = escape_index(&labels, close.as_deref());
+            for (index, label) in button_labels(&labels, forget).iter().enumerate() {
+                let open = gate_open(gated, *read, index) && guard_armed;
+                let response = match shortcuts.get(index).copied().flatten() {
+                    Some((at, _)) if underline => ui.add_enabled(open, egui::Button::new(underlined(ui, label, at))),
+                    _ => ui.add_enabled(open, egui::Button::new(label.as_str())),
+                };
+                // A guarded window counts only a real pointer release over the button.
+                let clicked = response.clicked() && (guard.is_none() || (response.hovered() && ui.input(|i| i.pointer.primary_released())));
+                if clicked {
+                    result = ConfirmResult::Action { index, suppress: *suppress };
+                }
+            }
+            // Alt plus a shortcut letter (iTerm2's Command plus the letter).
+            let pressed = ui.input(|i| {
+                i.events.iter().find_map(|e| match e {
+                    egui::Event::Key { key, pressed: true, modifiers, .. } if modifiers.alt && !modifiers.ctrl => {
+                        let name = key.name();
+                        let mut chars = name.chars();
+                        match (chars.next(), chars.next()) {
+                            (Some(c), None) if c.is_ascii_alphabetic() => shortcut_press(shortcuts, c),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                })
+            });
+            let pressed = pressed.filter(|i| gate_open(gated, *read, *i) && guard_armed);
+            if let Some(index) = pressed {
+                result = ConfirmResult::Action { index, suppress: *suppress };
+            } else if enter && gate_open(gated, *read, enter_index) {
+                result = ConfirmResult::Action { index: enter_index, suppress: *suppress };
+            } else if let (true, Some(index)) = (escape, escape_index) {
+                result = ConfirmResult::Action { index, suppress: *suppress };
+            }
+            return;
+        }
+        if enter_cancels {
+            if let Some(c) = cancel
+                && (ui.button(c.as_str()).clicked() || enter) {
+                    result = ConfirmResult::Cancel;
+                }
+            if ui.button(ok.as_str()).clicked() {
+                result = ConfirmResult::Ok { suppress: *suppress };
+            }
+            if escape {
+                result = ConfirmResult::Cancel;
+            }
+            return;
+        }
+        if ui.button(ok.as_str()).clicked() || enter {
+            result = ConfirmResult::Ok { suppress: *suppress };
+        }
+        if cancel.as_ref().is_some_and(|c| ui.button(c.as_str()).clicked()) || escape {
+            result = ConfirmResult::Cancel;
+        }
+    });
+    result
+}
+
 impl ConfirmWindow {
     /// The checkbox's label (`iTermWarning.m:400-406`).
     pub const SUPPRESS: &'static str = "Suppress this message permanently";
@@ -548,115 +688,11 @@ impl ConfirmWindow {
 
     pub fn redraw(&mut self) -> ConfirmResult {
         let mut result = ConfirmResult::Open;
-        let (text, suppress, checkbox, checkbox_label, ok, cancel, enter_cancels, actions) = (&self.text, &mut self.suppress, self.checkbox, self.checkbox_label, &self.ok, &self.cancel, self.enter_cancels, &self.actions);
-        let (shortcuts, underline, forget, close) = (&self.shortcuts, self.underline, self.forget, &self.close);
-        let (gated, read) = (self.gated, &mut self.read);
-        let spaces = &mut self.spaces;
         let guard = self.guard;
         let guard_armed = guard.is_none_or(|g| g.armed(std::time::Instant::now()));
-        self.host.paint_dialog(|ui| {
-            // The body scrolls inside the window and the buttons stay below it, so no text or
-            // button is ever cut off.
-            let reserve = 48.0 + if spaces.is_some() { 30.0 } else { 0.0 } + if checkbox { 28.0 } else { 0.0 } + if gated.is_some() { 20.0 } else { 0.0 };
-            let out = egui::ScrollArea::vertical().max_height((ui.available_height() - reserve).max(60.0)).auto_shrink([false, true]).show(ui, |ui| {
-                ui.label(text.as_str());
-            });
-            if gated.is_some() && scrolled_to_end(out.state.offset.y, out.inner_rect.height(), out.content_size.y) {
-                *read = true;
-            }
-            if gated.is_some() && !*read {
-                ui.label("Scroll to the end of the text to enable the button.");
-            }
-            ui.add_space(6.0);
-            if let Some(n) = spaces.as_mut() {
-                ui.horizontal(|ui| {
-                    ui.label(TAB_SIZE_LABEL);
-                    ui.add(egui::DragValue::new(n).range(0..=100));
-                });
-                ui.add_space(6.0);
-            }
-            if checkbox {
-                ui.checkbox(suppress, checkbox_label);
-                ui.add_space(6.0);
-            }
-            let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
-            // A guarded window has no default button and no focused widget (Enter and Space
-            // would press it), and says why its buttons wait.
-            let (enter, escape) = if guard.is_some() {
-                let ctx = ui.ctx().clone();
-                ctx.memory_mut(|m| {
-                    if let Some(f) = m.focused() {
-                        m.surrender_focus(f);
-                    }
-                });
-                if !guard_armed {
-                    ui.label("The buttons turn on in a moment.");
-                }
-                (false, false)
-            } else {
-                (enter, escape)
-            };
-            ui.horizontal(|ui| {
-                if !actions.is_empty() {
-                    let labels: Vec<&str> = actions.iter().map(String::as_str).collect();
-                    let enter_index = action_keys(&labels).0;
-                    let escape_index = escape_index(&labels, close.as_deref());
-                    for (index, label) in button_labels(&labels, forget).iter().enumerate() {
-                        let open = gate_open(gated, *read, index) && guard_armed;
-                        let response = match shortcuts.get(index).copied().flatten() {
-                            Some((at, _)) if underline => ui.add_enabled(open, egui::Button::new(underlined(ui, label, at))),
-                            _ => ui.add_enabled(open, egui::Button::new(label.as_str())),
-                        };
-                        // A guarded window counts only a real pointer release over the button.
-                        let clicked = response.clicked() && (guard.is_none() || (response.hovered() && ui.input(|i| i.pointer.primary_released())));
-                        if clicked {
-                            result = ConfirmResult::Action { index, suppress: *suppress };
-                        }
-                    }
-                    // Alt plus a shortcut letter (iTerm2's Command plus the letter).
-                    let pressed = ui.input(|i| {
-                        i.events.iter().find_map(|e| match e {
-                            egui::Event::Key { key, pressed: true, modifiers, .. } if modifiers.alt && !modifiers.ctrl => {
-                                let name = key.name();
-                                let mut chars = name.chars();
-                                match (chars.next(), chars.next()) {
-                                    (Some(c), None) if c.is_ascii_alphabetic() => shortcut_press(shortcuts, c),
-                                    _ => None,
-                                }
-                            }
-                            _ => None,
-                        })
-                    });
-                    let pressed = pressed.filter(|i| gate_open(gated, *read, *i) && guard_armed);
-                    if let Some(index) = pressed {
-                        result = ConfirmResult::Action { index, suppress: *suppress };
-                    } else if enter && gate_open(gated, *read, enter_index) {
-                        result = ConfirmResult::Action { index: enter_index, suppress: *suppress };
-                    } else if let (true, Some(index)) = (escape, escape_index) {
-                        result = ConfirmResult::Action { index, suppress: *suppress };
-                    }
-                    return;
-                }
-                if enter_cancels {
-                    if let Some(c) = cancel
-                        && (ui.button(c.as_str()).clicked() || enter) {
-                            result = ConfirmResult::Cancel;
-                        }
-                    if ui.button(ok.as_str()).clicked() {
-                        result = ConfirmResult::Ok { suppress: *suppress };
-                    }
-                    if escape {
-                        result = ConfirmResult::Cancel;
-                    }
-                    return;
-                }
-                if ui.button(ok.as_str()).clicked() || enter {
-                    result = ConfirmResult::Ok { suppress: *suppress };
-                }
-                if cancel.as_ref().is_some_and(|c| ui.button(c.as_str()).clicked()) || escape {
-                    result = ConfirmResult::Cancel;
-                }
-            });
+        let Self { host, text, suppress, checkbox, checkbox_label, ok, cancel, enter_cancels, actions, shortcuts, underline, forget, close, spaces, gated, read, .. } = self;
+        host.paint_dialog(|ui| {
+            result = confirm_body(ui, ConfirmBody { text, suppress, checkbox: *checkbox, checkbox_label, ok, cancel, enter_cancels: *enter_cancels, actions, shortcuts, underline: *underline, forget: *forget, close, gated: *gated, read, spaces, guard, guard_armed });
         });
         if guard.is_some() && !guard_armed {
             self.host.request_redraw();
@@ -681,7 +717,7 @@ mod tests {
         assert!(!g.armed(t0 + Duration::from_secs(5)), "regaining focus starts it over");
         assert!(g.armed(t0 + Duration::from_secs(5) + GUARD_DELAY));
         let src = include_str!("prompt_ui.rs");
-        let f = &src[src.find("pub fn redraw(&mut self) -> ConfirmResult").unwrap()..src.find("mod tests {").unwrap()];
+        let f = &src[src.find("fn confirm_body(").unwrap()..src.find("mod tests {").unwrap()];
         assert!(f.contains("guard_armed"), "buttons and access keys ask the guard");
         assert!(f.contains("(false, false)"), "a guarded window ignores Enter and Escape");
         assert!(f.contains("surrender_focus"), "no widget holds the focus for Enter or Space");
@@ -740,10 +776,38 @@ mod tests {
         assert_eq!(window_height("short"), 130.0);
         assert_eq!(window_height(&"x\n".repeat(5000)), 560.0, "capped at what a small screen holds");
         let src = include_str!("prompt_ui.rs");
-        let f = &src[src.find("pub fn redraw(&mut self) -> ConfirmResult").unwrap()..];
+        let f = &src[src.find("fn confirm_body(").unwrap()..];
         assert!(f.contains("egui::ScrollArea::vertical()"), "the body scrolls");
         assert!(f.contains("gate_open(gated"), "the gated button and its access key ask the gate");
         assert!(f.contains("scrolled_to_end("));
+    }
+
+    /// A long alert, fitted frame after frame: the height settles, the whole text shows without
+    /// scrolling (it is under the cap), and a text past the cap settles at the cap and scrolls.
+    #[test]
+    fn a_long_alert_settles_with_its_text_shown() {
+        for (sentences, all_shown) in [(12, true), (60, false)] {
+            let text = "This alert has a sentence that is long enough to wrap in the window. ".repeat(sentences);
+            let (mut suppress, mut read, mut spaces) = (false, false, None);
+            let (ok, cancel, actions, shortcuts, close) = ("OK".to_string(), Some("Cancel".to_string()), Vec::new(), Vec::new(), None);
+            let mut fits = false;
+            let start = window_height(&text) as f32;
+            let hs = crate::dialog_frame::settle(480.0, start, 30, &mut |ui| {
+                let before = ui.min_rect().max.y;
+                confirm_body(ui, ConfirmBody { text: &text, suppress: &mut suppress, checkbox: true, checkbox_label: ConfirmWindow::SUPPRESS, ok: &ok, cancel: &cancel, enter_cancels: false, actions: &actions, shortcuts: &shortcuts, underline: false, forget: false, close: &close, gated: None, read: &mut read, spaces: &mut spaces, guard: None, guard_armed: true });
+                // All of it shows when the body is taller than the label's text alone.
+                let label_h = ui.painter().layout(text.clone(), egui::TextStyle::Body.resolve(ui.style()), egui::Color32::WHITE, ui.available_width()).size().y;
+                fits = ui.min_rect().max.y - before >= label_h;
+            });
+            let last = hs[hs.len() - 5..].to_vec();
+            assert!(last.windows(2).all(|w| w[0] == w[1]), "{sentences}: the height settles: {hs:?}");
+            assert!(hs.last().unwrap() <= &(crate::dialog_frame::BODY_CAP + 80.0), "{sentences}: past the cap: {hs:?}");
+            if all_shown {
+                assert!(fits, "{sentences}: the text is squeezed into a scroll box: {hs:?}");
+            } else {
+                assert!(*hs.last().unwrap() >= crate::dialog_frame::BODY_CAP - 40.0, "{sentences}: a long text uses the room up to the cap: {hs:?}");
+            }
+        }
     }
 
     #[test]

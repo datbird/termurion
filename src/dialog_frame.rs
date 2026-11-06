@@ -10,10 +10,21 @@ pub const OWN_FRAME: bool = crate::platform::window::DIALOGS_DRAW_OWN_FRAME;
 /// The panel's margin on each side; the window adds it around the content.
 pub const MARGIN: f32 = 8.0;
 
+/// The tallest a dialog's body may be, in points (a scrolling text stops growing there).
+pub const BODY_CAP: f32 = 480.0;
+
 /// A dialog's window: on Linux a fixed size and no frame; elsewhere as any small window.
 pub fn attributes(title: &str, w: f64, h: f64) -> winit::window::WindowAttributes {
     let attrs = crate::platform::window::attributes().with_title(title).with_inner_size(winit::dpi::LogicalSize::new(w, h));
     if OWN_FRAME { attrs.with_resizable(false).with_decorations(false) } else { attrs }
+}
+
+/// The height to ask the window for after a frame whose content needs `content`, or None to keep
+/// `last`: never under `floor` (a dialog whose drop-down list needs room below it), and no ask
+/// for less than a point of change.
+pub fn next_height(content: f32, last: f32, floor: f32) -> Option<f32> {
+    let want = content.ceil().max(floor);
+    (content > 0.0 && (want - last).abs() >= 1.0).then_some(want)
 }
 
 /// What a frame of the dialog asked for.
@@ -25,6 +36,8 @@ pub struct Framed {
     pub drag: bool,
     /// The height the window needs, in points (the content and the margins).
     pub height: f32,
+    /// A drop-down list is open: the dialog's floor holds, so the list has room.
+    pub list_open: bool,
 }
 
 /// Draws the dialog's panel and `body` in it; with `own_frame`, the title row first and a thin
@@ -32,29 +45,42 @@ pub struct Framed {
 pub fn show(ui: &mut egui::Ui, title: &str, own_frame: bool, body: &mut dyn FnMut(&mut egui::Ui)) -> Framed {
     let mut out = Framed::default();
     let frame = if own_frame { egui::Frame::central_panel(ui.style()).inner_margin(MARGIN).stroke(ui.visuals().window_stroke) } else { egui::Frame::central_panel(ui.style()) };
+    let margins = frame.total_margin().sum().y;
     egui::CentralPanel::default().frame(frame).show(ui, |ui| {
+        if !own_frame {
+            // Windows and macOS: the panel the dialog always had, nothing measured.
+            body(ui);
+            return;
+        }
         // Measured in its own column: the panel's ui is as tall as the window, whatever it holds.
         let column = ui.vertical(|ui| {
-            if own_frame {
-                ui.horizontal(|ui| {
-                    let name = ui.add(egui::Label::new(egui::RichText::new(title).strong()).sense(egui::Sense::click_and_drag()));
+            ui.horizontal(|ui| {
+                // One row tall (the row's available height is the whole panel's). The close
+                // button's room is kept first, so a long name is cut short with an ellipsis.
+                let row_h = ui.spacing().interact_size.y;
+                let close_w = row_h + ui.spacing().item_spacing.x;
+                let name_w = (ui.available_width() - close_w).max(0.0);
+                ui.allocate_ui_with_layout(egui::vec2(name_w, row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let name = ui.add(egui::Label::new(egui::RichText::new(title).strong()).truncate().sense(egui::Sense::click_and_drag()));
                     // Only the press starts a move: during the move the window manager has the
                     // pointer, and egui never hears the release.
                     out.drag = name.drag_started_by(egui::PointerButton::Primary);
-                    // One row tall (the row's available height is the whole panel's): the close
-                    // button at the right, and the rest of the row moves the window too.
-                    let row = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
-                    ui.allocate_ui_with_layout(row, egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        out.close = ui.add(egui::Button::new("\u{2715}").frame(false)).on_hover_text("Close").clicked();
-                        let rest = ui.allocate_response(egui::vec2(ui.available_width(), row.y), egui::Sense::drag());
-                        out.drag |= rest.drag_started_by(egui::PointerButton::Primary);
-                    });
+                    // The rest of the name's room moves the window too.
+                    let rest = ui.allocate_response(egui::vec2(ui.available_width(), row_h), egui::Sense::drag());
+                    out.drag |= rest.drag_started_by(egui::PointerButton::Primary);
                 });
-                ui.separator();
-            }
-            body(ui);
+                ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), row_h), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    out.close = ui.add(egui::Button::new("\u{2715}").frame(false)).on_hover_text("Close").clicked();
+                });
+            });
+            ui.separator();
+            // The body lays out in a fixed budget, never in the window's height: what it draws
+            // then does not depend on the last fit, so the fit settles in one step.
+            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), BODY_CAP), egui::Layout::top_down(egui::Align::Min), |ui| body(ui));
         });
-        out.height = column.response.rect.height() + 2.0 * MARGIN;
+        // The margins and the edge, top and bottom.
+        out.height = column.response.rect.height() + margins;
+        out.list_open = egui::Popup::is_any_open(ui.ctx());
     });
     out
 }
@@ -74,9 +100,75 @@ pub fn request_close(id: winit::window::WindowId) {
     }
 }
 
+/// Runs `frames` frames of a dialog as `paint_dialog` and the window system do: each frame's
+/// window is as tall as the last frame asked for. The heights, frame by frame.
+#[cfg(test)]
+pub(crate) fn settle(width: f32, start: f32, frames: usize, body: &mut dyn FnMut(&mut egui::Ui)) -> Vec<f32> {
+    let ctx = egui::Context::default();
+    let mut h = start;
+    let mut seen = Vec::new();
+    for _ in 0..frames {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, h))), ..Default::default() };
+        let mut next = h;
+        let mut out = ctx.run_ui(input, |ui| {
+            let f = show(ui, "Termurion", true, body);
+            next = next_height(f.height, h, 0.0).unwrap_or(h);
+        });
+        out.textures_delta.clear();
+        h = next;
+        seen.push(h);
+    }
+    seen
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A floor keeps the window from shrinking under it (room for a drop-down list); a change of
+    /// under a point asks for nothing.
+    #[test]
+    fn the_next_height_keeps_the_floor() {
+        assert_eq!(next_height(120.0, 200.0, 200.0), None, "at the floor already");
+        assert_eq!(next_height(120.0, 300.0, 200.0), Some(200.0));
+        assert_eq!(next_height(250.4, 200.0, 200.0), Some(251.0));
+        assert_eq!(next_height(250.4, 251.0, 0.0), None);
+        assert_eq!(next_height(0.0, 100.0, 0.0), None, "nothing measured yet");
+    }
+
+    /// A title wider than the window still leaves the close button inside it.
+    #[test]
+    fn a_long_title_keeps_the_close_button_in_the_window() {
+        let ctx = egui::Context::default();
+        let title = "A Python API script named something long enough to fill the whole title row and then some more";
+        let mut close_x = f32::MAX;
+        for _ in 0..2 {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 200.0))), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                show(ui, title, true, &mut |ui| {
+                    ui.label("x");
+                });
+            });
+            out.textures_delta.clear();
+            close_x = out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.job.text == "\u{2715}" => Some(t.pos.x + t.galley.size().x),
+                _ => None,
+            }).unwrap_or(f32::MAX);
+        }
+        assert!(close_x <= 420.0, "the close glyph ends at {close_x}, past the 420 pt window");
+    }
+
+    /// The fitted height leaves the same room under the content as over it: the margin and the
+    /// edge on both sides.
+    #[test]
+    fn the_fit_counts_the_edge_on_both_sides() {
+        let mut bottom = 0.0;
+        let hs = settle(360.0, 300.0, 6, &mut |ui| {
+            bottom = ui.label("last line").rect.max.y;
+        });
+        let h = *hs.last().unwrap();
+        assert!((h - bottom - (MARGIN + 1.0)).abs() <= 1.0, "window {h}, content ends at {bottom}");
+    }
 
     fn texts(out: &egui::FullOutput) -> Vec<String> {
         out.shapes.iter().filter_map(|s| match &s.shape {

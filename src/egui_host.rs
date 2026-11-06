@@ -132,8 +132,9 @@ pub struct EguiHost {
     probe: bool,
     /// What the last probe found.
     pub probed: Option<String>,
-    /// An alert or small dialog (`open_dialog`): its name and the height last fitted, in points.
-    dialog: Option<(String, f32)>,
+    /// An alert or small dialog (`open_dialog`): its name, the height last fitted and the least
+    /// height it keeps, in points.
+    dialog: Option<(String, f32, f32)>,
 }
 
 impl EguiHost {
@@ -174,8 +175,16 @@ impl EguiHost {
 
     /// Marks a window made from `dialog_frame::attributes` as a dialog `paint_dialog` draws.
     pub fn as_dialog(mut self, title: &str, h: f64) -> EguiHost {
-        self.dialog = Some((title.to_string(), h as f32));
+        self.dialog = Some((title.to_string(), h as f32, 0.0));
         self
+    }
+
+    /// A dialog that keeps at least this height (points) while one of its drop-down lists is
+    /// open, so the list has room in the window.
+    pub fn set_dialog_floor(&mut self, h: f64) {
+        if let Some(d) = self.dialog.as_mut() {
+            d.2 = h as f32;
+        }
     }
 
     /// Lists this window for the taskbar and Alt+Tab exclusion (a window with a taskbar button).
@@ -284,7 +293,7 @@ impl EguiHost {
     /// then follows the row's close and drag and fits the height to the content.
     pub fn paint_dialog(&mut self, mut body: impl FnMut(&mut egui::Ui)) {
         let own = crate::dialog_frame::OWN_FRAME && self.dialog.is_some();
-        let title = self.dialog.as_ref().map(|(t, _)| t.clone()).unwrap_or_default();
+        let title = self.dialog.as_ref().map(|(t, _, _)| t.clone()).unwrap_or_default();
         let mut framed = crate::dialog_frame::Framed::default();
         self.paint(|ui| framed = crate::dialog_frame::show(ui, &title, own, &mut body));
         if !own {
@@ -298,10 +307,8 @@ impl EguiHost {
         }
         // A fixed-size window keeps its min and max at its first size on Wayland, so both move
         // with each fit (X11 takes the new size the same way).
-        let want = framed.height.ceil();
-        if let Some((_, fit)) = self.dialog.as_mut()
-            && framed.height > 0.0
-            && (want - *fit).abs() >= 1.0
+        if let Some((_, fit, floor)) = self.dialog.as_mut()
+            && let Some(want) = crate::dialog_frame::next_height(framed.height, *fit, if framed.list_open { *floor } else { 0.0 })
         {
             *fit = want;
             let w = f64::from(self.window.inner_size().width) / self.window.scale_factor();
