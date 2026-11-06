@@ -237,7 +237,8 @@ pub fn mark_strict(path: &Path, host_url: Option<&str>) -> std::io::Result<()> {
 
 /// Writes `bytes` to `path`, then the Zone.Identifier stream, so SmartScreen or Protected View
 /// meets a file opened after it was revealed. A drive without streams (FAT) keeps the file
-/// unmarked. On Linux the mark is the origin attributes, which a bare zone mark has no page to fill.
+/// unmarked. On Linux nothing is written: an inline file comes from the pane, not from a page, and
+/// the origin attributes record only a page.
 pub fn write_marked(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     crate::localfs::write(&crate::localfs::judge_io(path)?, bytes)?;
     mark(path);

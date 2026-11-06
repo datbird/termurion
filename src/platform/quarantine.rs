@@ -15,12 +15,16 @@ pub fn mark(path: &Path, text: &str) -> std::io::Result<()> {
 
 /// The page a file came from: the value of the `HostUrl=` line of zone text (CRLF or LF).
 pub fn host_url(zone_text: &str) -> Option<&str> {
-    zone_text.lines().find_map(|l| l.trim_end_matches('\r').strip_prefix("HostUrl=")).filter(|u| !u.is_empty())
+    zone_value(zone_text, "HostUrl=")
 }
 
 /// The page that linked to the file: the `ReferrerUrl=` line, read like `host_url`.
 pub fn referrer_url(zone_text: &str) -> Option<&str> {
-    zone_text.lines().find_map(|l| l.trim_end_matches('\r').strip_prefix("ReferrerUrl=")).filter(|u| !u.is_empty())
+    zone_value(zone_text, "ReferrerUrl=")
+}
+
+fn zone_value<'a>(zone_text: &'a str, key: &str) -> Option<&'a str> {
+    zone_text.lines().find_map(|l| l.trim_end_matches('\r').strip_prefix(key)).filter(|u| !u.is_empty())
 }
 
 #[cfg(test)]

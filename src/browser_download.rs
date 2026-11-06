@@ -151,10 +151,21 @@ pub fn temp_path(dir: &Path, uuid: &str) -> PathBuf {
     dir.join(format!("{}{}", crate::ssh_local::temp_name(uuid), crate::inert_files::NEUTRAL_SUFFIX))
 }
 
-/// The source address a Mark of the Web may carry: http or https, bounded, no control character.
+/// The source address a Mark of the Web may carry: http or https, bounded, no control character,
+/// and never a user name or password (`https://user:pass@host/` keeps only `https://host/`), since
+/// copies and file managers carry and show the mark.
 pub fn mark_url(url: &str) -> Option<String> {
     let low = url.get(..8).unwrap_or(url).to_ascii_lowercase();
-    ((low.starts_with("http://") || low.starts_with("https://")) && url.len() <= MAX_MARK_URL && !url.chars().any(|c| c.is_control())).then(|| url.to_string())
+    ((low.starts_with("http://") || low.starts_with("https://")) && url.len() <= MAX_MARK_URL && !url.chars().any(|c| c.is_control())).then(|| without_userinfo(url))
+}
+
+fn without_userinfo(url: &str) -> String {
+    let Some(start) = url.find("://").map(|i| i + 3) else { return url.to_string() };
+    let end = url[start..].find(['/', '?', '#']).map_or(url.len(), |i| start + i);
+    match url[start..end].rfind('@') {
+        Some(at) => format!("{}{}", &url[..start], &url[start + at + 1..]),
+        None => url.to_string(),
+    }
 }
 
 /// The place a download will be finished at: a free name in `dir` (never asks: `prompt: false`),
@@ -370,6 +381,10 @@ mod tests {
         assert_eq!(verdict(false, 1, 1), Verdict::Allow);
         assert!(mark_url("https://h/x").is_some() && mark_url("blob:https://h/x").is_none() && mark_url("javascript:1").is_none());
         assert!(mark_url("https://h/x\r\nHostUrl=evil").is_none());
+        // The user name and password never reach the mark; an @ after the host is kept.
+        assert_eq!(mark_url("https://user:pass@host/f?a=b@c").as_deref(), Some("https://host/f?a=b@c"));
+        assert_eq!(mark_url("http://u@h:8080").as_deref(), Some("http://h:8080"));
+        assert_eq!(mark_url("https://h/p/x@y").as_deref(), Some("https://h/p/x@y"));
         assert!(temp_path(Path::new("D:\\dl"), "u").to_string_lossy().ends_with(".download"));
     }
 
