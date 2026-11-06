@@ -661,6 +661,9 @@ pub struct App {
     tmux_status: HashMap<(PaneId, u32), (String, String)>,
     /// Writes of restored gateways that ended inside their held second: (pane, when, bytes).
     tmux_late: Vec<(PaneId, Instant, Vec<u8>)>,
+    /// tmux clients left waiting for an empty line after `%exit`: when to look again, the newline,
+    /// and how many more may go (each only while the client is still the pane's job).
+    tmux_release: Vec<(PaneId, Instant, Vec<u8>, u8)>,
     /// The local tmux panes whose process the job watcher reads (iTerm2's tmuxClientProcessID).
     tmux_pids: HashMap<PaneId, u32>,
     /// A gateway's C key waits for the event loop to open its window.
@@ -2352,6 +2355,7 @@ pub fn run() {
         tmux: HashMap::new(),
         tmux_status: HashMap::new(),
         tmux_late: Vec::new(),
+        tmux_release: Vec::new(),
         tmux_pids: HashMap::new(),
         tmux_ask_command: None,
         tmux_prompt: None,

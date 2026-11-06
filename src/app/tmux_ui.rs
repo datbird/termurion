@@ -350,8 +350,13 @@ impl App {
                     let job = self.pane_job(pane);
                     let Some(t) = self.tmux.get_mut(&pane) else { return };
                     let (nl, unhook) = ending(t, &e, job.as_deref());
-                    if let (Some(nl), Some(p)) = (nl, self.panes.get_mut(&pane)) {
-                        p.reply(&nl);
+                    if let Some(nl) = nl {
+                        if let Some(p) = self.panes.get_mut(&pane) {
+                            p.reply(&nl);
+                        }
+                        // The restore's ^C may sit in the client's line, so that newline only ended
+                        // it: look again, and send another only while the client still waits.
+                        self.tmux_release.push((pane, Instant::now() + RELEASE_LOOK, nl, RELEASE_TRIES));
                     }
                     // tmux 3.2's wait-exit wants the newline the gateway queued.
                     self.tmux_flush(pane);
@@ -605,6 +610,19 @@ impl App {
             }
         }
         next = [next, self.tmux_late.iter().map(|(_, at, _)| *at).min()].into_iter().flatten().min();
+        for (pane, nl, left) in due_release(&mut self.tmux_release, now) {
+            let job = self.pane_job(pane);
+            if !job.as_deref().is_some_and(is_tmux_client) {
+                continue;
+            }
+            if let Some(p) = self.panes.get_mut(&pane) {
+                p.reply(&nl);
+            }
+            if left > 0 {
+                self.tmux_release.push((pane, now + RELEASE_LOOK, nl, left - 1));
+            }
+        }
+        next = [next, self.tmux_release.iter().map(|(_, at, _, _)| *at).min()].into_iter().flatten().min();
         for id in slow {
             self.ask(
                 id,
@@ -703,6 +721,18 @@ fn exited(t: &mut TmuxGw, job: Option<&str>) -> Option<Vec<u8>> {
 /// A tmux client by its process name: tmux names its client process "tmux: client".
 fn is_tmux_client(name: &str) -> bool {
     name == "tmux" || name.starts_with("tmux:")
+}
+
+/// How long after a wait-exit newline the pane's job is looked at again, and how many more
+/// newlines may follow (the restore's ^C takes one).
+const RELEASE_LOOK: Duration = Duration::from_millis(300);
+const RELEASE_TRIES: u8 = 2;
+
+/// The release looks that are due, taken from `list`: (pane, newline, tries left after this one).
+fn due_release(list: &mut Vec<(PaneId, Instant, Vec<u8>, u8)>, now: Instant) -> Vec<(PaneId, Vec<u8>, u8)> {
+    let (due, wait): (Vec<_>, Vec<_>) = std::mem::take(list).into_iter().partition(|(_, at, _, _)| now >= *at);
+    *list = wait;
+    due.into_iter().map(|(p, _, nl, left)| (p, nl, left.saturating_sub(1))).collect()
 }
 
 /// The late writes whose second is up, taken from `late`.
@@ -816,6 +846,17 @@ mod tests {
         lines(&mut t, &["%exit"]);
         assert_eq!(exited(&mut t, Some("tmux")), None);
         assert_eq!(t.gw.take_writes(), b"\r", "the gateway's own wait-exit newline");
+    }
+
+    /// The restore's ^C sits in a waiting client's line, so its first newline only ends that
+    /// line: the release looks again, each look once, at most RELEASE_TRIES times.
+    #[test]
+    fn a_release_looks_again_a_bounded_number_of_times() {
+        let t0 = Instant::now();
+        let mut list = vec![(7, t0 + RELEASE_LOOK, b"\r".to_vec(), RELEASE_TRIES)];
+        assert!(due_release(&mut list, t0).is_empty());
+        assert_eq!(due_release(&mut list, t0 + RELEASE_LOOK), vec![(7, b"\r".to_vec(), RELEASE_TRIES - 1)]);
+        assert!(list.is_empty(), "taken once; the app puts it back only while the client waits");
     }
 
     /// m1: the Exit and Lost arm. `%exit` releases a waiting client and keeps the hook (it left
