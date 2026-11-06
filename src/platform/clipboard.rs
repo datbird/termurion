@@ -21,8 +21,10 @@ pub fn attach(display: &dyn winit::raw_window_handle::HasDisplayHandle) {
     imp::attach(display)
 }
 
-/// Lets go of what `attach` made, while the display still lives. Twice is safe.
-pub fn detach() {
+/// Lets go of what `attach` made, while the display still lives. Twice is safe. True when a
+/// clipboard read that never ended keeps part of it alive (Linux): the process must end before the
+/// display closes.
+pub fn detach() -> bool {
     imp::detach()
 }
 

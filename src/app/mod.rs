@@ -1959,7 +1959,7 @@ pub(crate) fn teardown_process() {
     // `exiting` has already let go of it on every winit way out; this is the backstop for a panic
     // on the main thread, and a second call does nothing.
     crate::platform::window::forget_activation();
-    crate::platform::clipboard::detach();
+    let _ = crate::platform::clipboard::detach();
     crate::platform::keys::uninstall();
     crate::input_locale::restore_after_panic();
     crate::platform::notify::remove(0);
@@ -7384,15 +7384,21 @@ impl ApplicationHandler<UserEvent> for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         // While winit's display still lives (the process exit is too late for it).
         crate::platform::window::forget_activation();
-        crate::platform::clipboard::detach();
+        let stuck = crate::platform::clipboard::detach();
         // No panes: an idle embedding start or an already emptied app has nothing to save, and an empty state would wipe the last one.
-        if self.panes.is_empty() || !crate::restore_state::exit_saves(self.quitting, self.state_frozen) {
-            return;
+        if !self.panes.is_empty() && crate::restore_state::exit_saves(self.quitting, self.state_frozen) {
+            crate::rlog!("the loop ended without a quit: saving the windows");
+            self.save_state_for_quit();
+            let keep = self.keep_jobs_on_quit();
+            self.leave_host(keep);
         }
-        crate::rlog!("the loop ended without a quit: saving the windows");
-        self.save_state_for_quit();
-        let keep = self.keep_jobs_on_quit();
-        self.leave_host(keep);
+        // A clipboard read that never ended keeps a worker on winit's display: the process ends
+        // here, before the loop closes the display under it.
+        if stuck && !loop_end_claimed() {
+            crate::rlog!("quit: a selection read never ended; ending the process now");
+            teardown_process();
+            std::process::exit(0);
+        }
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -8932,7 +8938,12 @@ mod tests {
         let ex = &own[own.find("    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {").unwrap()..];
         let ex = &ex[..ex.find("\n    }\n").unwrap()];
         let forget = ex.find("crate::platform::window::forget_activation();").expect("exiting lets it go");
-        assert!(forget < ex.find("return;").unwrap(), "before the early return");
+        assert!(forget < ex.find("self.save_state_for_quit()").unwrap(), "first thing");
+        // A clipboard read that never ended keeps a worker on the display: exiting ends the process
+        // itself, before the loop closes the display (round 3 Minor 3).
+        let stuck = ex.find("let stuck = crate::platform::clipboard::detach();").expect("exiting asks the clipboard");
+        let end = ex.find("if stuck && !loop_end_claimed() {").expect("and ends the process on a stuck read");
+        assert!(stuck < end && ex[end..].contains("std::process::exit(0);"));
         let teardown = &own[own.find("pub(crate) fn teardown_process(").unwrap()..];
         assert!(teardown[..teardown.find("\n}\n").unwrap()].contains("crate::platform::window::forget_activation();"));
     }

@@ -82,7 +82,9 @@ pub fn attach(_display: &dyn winit::raw_window_handle::HasDisplayHandle) {}
 
 /// Nothing to let go of on macOS.
 #[cfg(target_os = "macos")]
-pub fn detach() {}
+pub fn detach() -> bool {
+    false
+}
 
 /// Which way the clipboard's text goes.
 #[cfg(not(target_os = "macos"))]
@@ -139,9 +141,11 @@ mod window {
         *BOARD.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(Shared(unsafe { smithay_clipboard::Clipboard::new(w.display.as_ptr()) })));
     }
 
-    /// A read still stuck keeps its own reference: that board goes with the exit.
-    pub fn detach() {
-        BOARD.lock().unwrap_or_else(|e| e.into_inner()).take();
+    /// True when a read still holds the board (stuck, or waiting behind a stuck one): its worker
+    /// then lives on, and the caller must end the process before winit closes the display.
+    pub fn detach() -> bool {
+        let board = BOARD.lock().unwrap_or_else(|e| e.into_inner()).take();
+        board.is_some_and(|b| Arc::strong_count(&b) > 1)
     }
 
     pub fn attached() -> bool {
@@ -181,16 +185,19 @@ mod window {
 /// for its answer only so long: a read the owner never answers leaves that thread waiting, not the app.
 #[cfg(not(target_os = "macos"))]
 mod loader {
-    use std::sync::mpsc::{channel, sync_channel, Sender};
+    use std::sync::mpsc::{sync_channel, SyncSender};
     use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
 
     type Job = Box<dyn FnOnce() + Send>;
 
-    fn jobs() -> &'static Mutex<Sender<Job>> {
-        static JOBS: OnceLock<Mutex<Sender<Job>>> = OnceLock::new();
+    /// Reads that may wait behind one that is running; more are refused at once.
+    pub const MAX_WAITING: usize = 4;
+
+    fn jobs() -> &'static Mutex<SyncSender<Job>> {
+        static JOBS: OnceLock<Mutex<SyncSender<Job>>> = OnceLock::new();
         JOBS.get_or_init(|| {
-            let (tx, rx) = channel::<Job>();
+            let (tx, rx) = sync_channel::<Job>(MAX_WAITING);
             std::thread::spawn(move || {
                 for job in rx {
                     job();
@@ -206,7 +213,8 @@ mod loader {
         let job: Job = Box::new(move || {
             let _ = tx.send(work());
         });
-        jobs().lock().unwrap_or_else(|e| e.into_inner()).send(job).ok()?;
+        // A full queue (reads behind a stuck one): refused at once, never run later.
+        jobs().lock().unwrap_or_else(|e| e.into_inner()).try_send(job).ok()?;
         rx.recv_timeout(wait).ok()
     }
 }
@@ -217,10 +225,11 @@ pub fn attach(display: &dyn winit::raw_window_handle::HasDisplayHandle) {
     window::attach(display);
 }
 
-/// Ends it while winit's display still lives. Twice is safe.
+/// Ends it while winit's display still lives. Twice is safe. True when a read that never ended
+/// keeps it alive: the caller ends the process before the display closes.
 #[cfg(not(target_os = "macos"))]
-pub fn detach() {
-    window::detach();
+pub fn detach() -> bool {
+    window::detach()
 }
 
 /// The app's clipboard: text through the window's connection when attached, else arboard.
@@ -420,11 +429,16 @@ mod tests {
         assert!(files().is_empty());
     }
 
+    /// The loader is one for the process: its tests take turns.
+    #[cfg(not(target_os = "macos"))]
+    static LOADER_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// A read nobody answers times out, the next read waits behind it and times out too, and once
     /// the stuck one ends a new read is answered.
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn a_clipboard_read_that_never_ends_holds_up_no_caller() {
+        let _one = LOADER_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         use std::time::{Duration, Instant};
         let (release, stuck) = std::sync::mpsc::channel::<()>();
         let t = Instant::now();
@@ -433,6 +447,35 @@ mod tests {
         assert!(t.elapsed() < Duration::from_secs(2));
         release.send(()).unwrap();
         assert_eq!(loader::run(|| 7, Duration::from_secs(5)), Some(7));
+    }
+
+    /// Reads that time out do not pile up: behind a stuck read only a few wait, the rest are
+    /// refused at once, and only those few run once it ends.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn reads_behind_a_stuck_one_are_capped() {
+        let _one = LOADER_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        let (release, stuck) = std::sync::mpsc::channel::<()>();
+        assert_eq!(loader::run(move || stuck.recv().is_ok(), Duration::from_millis(50)), None);
+        let ran = Arc::new(AtomicUsize::new(0));
+        let t = Instant::now();
+        for _ in 0..20 {
+            let r = ran.clone();
+            assert_eq!(loader::run(move || r.fetch_add(1, Ordering::SeqCst), Duration::from_millis(20)), None);
+        }
+        assert!(t.elapsed() < Duration::from_secs(2));
+        release.send(()).unwrap();
+        // Once the queue has drained, a read is taken again.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut got = None;
+        while got.is_none() && Instant::now() < deadline {
+            got = loader::run(|| 1, Duration::from_secs(1));
+        }
+        assert_eq!(got, Some(1));
+        assert!(ran.load(Ordering::SeqCst) <= loader::MAX_WAITING, "{} waiting reads ran", ran.load(Ordering::SeqCst));
     }
 
     // GNOME and weston have no data-control: arboard would fall back to X11, which a Wayland

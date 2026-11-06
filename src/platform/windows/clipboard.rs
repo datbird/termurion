@@ -103,7 +103,9 @@ pub type Clipboard = arboard::Clipboard;
 pub fn attach(_display: &dyn winit::raw_window_handle::HasDisplayHandle) {}
 
 /// Nothing to let go of on Windows.
-pub fn detach() {}
+pub fn detach() -> bool {
+    false
+}
 
 /// Windows has no primary selection (a call with no meaning here).
 pub fn set_selection(_text: &str) -> Result<(), String> {
