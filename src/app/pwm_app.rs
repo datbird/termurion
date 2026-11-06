@@ -182,6 +182,9 @@ struct Gating {
 #[derive(Default)]
 pub(super) struct PwmState {
     gate: Option<Gating>,
+    /// Logins to remember that came while a gate was open: each runs after it, as on macOS where
+    /// the prompt holds the loop and the next save follows.
+    queued_saves: std::collections::VecDeque<GateThen>,
     /// The last gate number handed out.
     gate_seq: u64,
     auth: Auth,
@@ -380,6 +383,33 @@ fn page_steps(send_both: bool, user: &str, focus: Option<&(String, u64)>, epoch:
 }
 
 impl PwmState {
+    /// A save that comes while a gate is open waits for it. Gives the action back when nothing
+    /// was queued.
+    fn queue_save(&mut self, then: GateThen) -> Option<GateThen> {
+        if self.gate.is_some() && matches!(then, GateThen::Save { .. }) {
+            self.queued_saves.push_back(then);
+            return None;
+        }
+        Some(then)
+    }
+
+    /// Drops the gate that waits to open challenge `id`'s picker (its window closes with it).
+    fn drop_gate_for(&mut self, id: u64) -> bool {
+        if !self.gate.as_ref().is_some_and(|g| g.then.challenge() == Some(id)) {
+            return false;
+        }
+        self.gate = None;
+        true
+    }
+
+    /// The next waiting save, once no gate is open.
+    fn next_save(&mut self) -> Option<GateThen> {
+        if self.gate.is_some() {
+            return None;
+        }
+        self.queued_saves.pop_front()
+    }
+
     /// Counts a verdict for gate `gate`; None when that gate is not the open one.
     fn gate_verdict(&mut self, gate: u64, checked: Result<(), String>) -> Option<Verdict> {
         use crate::platform::user_auth::Next;
@@ -731,14 +761,9 @@ impl App {
         if let Some(p) = hold {
             self.pwm.holds.push(p);
         }
+        let Some(then) = self.pwm.queue_save(then) else { return true };
         if self.pwm.gate.is_some() {
-            return match then {
-                GateThen::Save { pane, space, credential } => {
-                    self.basic_auth_saved_now(pane, space, credential, false);
-                    true
-                }
-                GateThen::Open(_) => session,
-            };
+            return session;
         }
         // No PAM or no login service: say so now, before a password is typed.
         let ready = crate::platform::user_auth::ready().and_then(|()| crate::platform::user_auth::account_name());
@@ -787,6 +812,18 @@ impl App {
         }
         if let GateThen::Save { pane, space, credential } = then {
             self.basic_auth_saved_now(pane, space, credential, false);
+        }
+        self.run_queued_saves();
+    }
+
+    /// The saves that waited for the gate: each is saved now, or asks again (as a new save would).
+    fn run_queued_saves(&mut self) {
+        while let Some(GateThen::Save { pane, space, credential }) = self.pwm.next_save() {
+            if self.basic_auth_save_needs_prompt() {
+                self.begin_save_gate(pane, space, credential);
+            } else {
+                self.basic_auth_saved_now(pane, space, credential, true);
+            }
         }
     }
 
@@ -851,6 +888,7 @@ impl App {
                     GateThen::Open(o) => self.open_password_manager_with(PwmOpen { gated: true, ..o }),
                     GateThen::Save { pane, space, credential } => self.basic_auth_saved_now(pane, space, credential, true),
                 }
+                self.run_queued_saves();
             }
         }
     }
@@ -1462,6 +1500,12 @@ impl App {
         self.pwm.requests.retain(|o| o.target != PwmTarget::BasicAuth(id));
         if self.pwm_window.as_ref().is_some_and(|w| w.target == PwmTarget::BasicAuth(id)) {
             self.close_pwm();
+        }
+        // A gate asking for that picker has nothing left to open: it goes with no alert (a late
+        // verdict is dropped by its gate number).
+        if self.pwm.drop_gate_for(id) {
+            self.run_queued_saves();
+            self.redraw();
         }
     }
 
@@ -3147,6 +3191,37 @@ mod tests {
         assert!(persist.contains("begin_save_gate"));
         let pwm = include_str!("pwm_app.rs");
         assert!(pwm.contains("GateThen::Save { pane, space, credential } => self.basic_auth_saved_now(pane, space, credential, true)"));
+    }
+
+    /// A second login to remember while a gate is open waits for it, as on macOS, instead of
+    /// being refused; the queue runs only once no gate is open.
+    #[test]
+    fn a_second_save_waits_for_the_open_gate() {
+        let mut st = PwmState::default();
+        st.gate = Some(gating(1, GateThen::Open(PwmOpen::default())));
+        let space = SpaceKey { scheme: "https".into(), host: "h".into(), port: 443, realm: "r".into() };
+        let save = || GateThen::Save { pane: 4, space: space.clone(), credential: crate::browser_basic_auth::Credential { user: "u".into(), password: Secret::new("p".into()) } };
+        assert!(st.queue_save(save()).is_none(), "queued, not refused");
+        assert!(st.queue_save(GateThen::Open(PwmOpen::default())).is_some(), "an open is not a save");
+        assert!(st.next_save().is_none(), "the gate is still open");
+        st.gate = None;
+        assert!(matches!(st.next_save(), Some(GateThen::Save { pane: 4, .. })));
+        assert!(st.next_save().is_none());
+        assert!(st.queue_save(save()).is_some(), "no gate: nothing to wait for");
+    }
+
+    /// A gate waiting to open a basic-auth picker goes when its challenge ends elsewhere; another
+    /// gate stays.
+    #[test]
+    fn a_gate_for_a_gone_picker_is_dropped() {
+        let mut st = PwmState::default();
+        st.gate = Some(gating(1, GateThen::Open(PwmOpen { target: PwmTarget::BasicAuth(9), ..PwmOpen::default() })));
+        assert!(!st.drop_gate_for(8));
+        assert!(st.gate.is_some());
+        assert!(st.drop_gate_for(9));
+        assert!(st.gate.is_none());
+        st.gate = Some(gating(2, GateThen::Open(PwmOpen::default())));
+        assert!(!st.drop_gate_for(9), "not a picker's gate");
     }
 
     /// A verdict for a gate that was cancelled does not touch the next one (review M1).

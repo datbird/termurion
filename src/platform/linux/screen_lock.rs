@@ -149,6 +149,11 @@ fn listen(conn: &Connection, rule: Option<MatchRule<'static>>, epoch: u64, wants
                 break;
             }
             let Ok(msg) = msg else { break };
+            // Real Lock and ActiveChanged signals are broadcast. One sent to us alone gets past
+            // any match rule, so it is not believed.
+            if msg.header().destination().is_some() {
+                continue;
+            }
             if wants_true && !matches!(msg.body().deserialize::<bool>(), Ok(true)) {
                 continue;
             }
@@ -340,6 +345,30 @@ mod tests {
         emit(&other_saver, SAVER_PATH, "org.freedesktop.ScreenSaver", "ActiveChanged", Some(true));
         std::thread::sleep(Duration::from_millis(400));
         assert!(!take(), "a signal from a client that does not own the name locked");
+    }
+
+    /// A signal sent to Termurion alone gets past the match rules (dbus-daemon delivers it), so it
+    /// is ignored even from the name's real owner; the real ones are broadcast.
+    #[test]
+    fn a_lock_sent_to_us_alone_is_ignored() {
+        let _g = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(r) = rig() else { return };
+        start(&r);
+        until_taken("the real Lock", || emit(&r.logind, SESSION, "org.freedesktop.login1.Session", "Lock", None));
+        let unicast = |c: &Connection, path: &str, iface: &str, member: &str, active: Option<bool>| {
+            let me = c.unique_name().map(|n| n.to_string());
+            let names = zbus::blocking::fdo::DBusProxy::new(c).unwrap().list_names().unwrap();
+            for n in names.iter().map(|n| n.to_string()).filter(|n| n.starts_with(':') && Some(n) != me.as_ref()) {
+                match active {
+                    Some(a) => c.emit_signal(Some(n.as_str()), path, iface, member, &(a,)).unwrap(),
+                    None => c.emit_signal(Some(n.as_str()), path, iface, member, &()).unwrap(),
+                }
+            }
+        };
+        unicast(&r.logind, SESSION, "org.freedesktop.login1.Session", "Lock", None);
+        unicast(&r.saver, SAVER_PATH, "org.freedesktop.ScreenSaver", "ActiveChanged", Some(true));
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(!take(), "a signal sent to Termurion alone locked");
     }
 
     #[test]

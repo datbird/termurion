@@ -89,6 +89,13 @@ struct Talk {
     given: bool,
 }
 
+impl Drop for Talk {
+    // Every way out of `run` wipes the copy.
+    fn drop(&mut self) {
+        wipe(&mut self.password);
+    }
+}
+
 /// Answers the first hidden prompt with the password. A visible prompt, a second hidden one or
 /// anything unknown is refused, so the password goes to nothing that did not ask for it.
 unsafe extern "C" fn converse(count: c_int, msgs: *mut *const Message, out: *mut *mut Response, data: *mut c_void) -> c_int {
@@ -191,6 +198,10 @@ pub fn check(user: &str, password: &Secret) -> Result<(), String> {
 /// One pam_start, pam_authenticate and pam_end for `service` (in `confdir` when given).
 fn run(pam: &Pam, service: &[u8], confdir: Option<&CStr>, user: &str, password: &Secret) -> Result<(), String> {
     let user = CString::new(user).map_err(|_| "the account name is not valid.".to_string())?;
+    let start_in = match confdir {
+        Some(dir) => Some((dir, pam.start_confdir.ok_or_else(|| "this libpam cannot start from a scratch folder.".to_string())?)),
+        None => None,
+    };
     // A NUL can never be in a password; refuse before any copy is made.
     let bytes = password.expose().as_bytes();
     if bytes.contains(&0) {
@@ -203,10 +214,9 @@ fn run(pam: &Pam, service: &[u8], confdir: Option<&CStr>, user: &str, password: 
     let mut handle: *mut c_void = std::ptr::null_mut();
     // SAFETY: the signatures match libpam's; `conv` and `talk` outlive every call that can use them.
     let result = unsafe {
-        let rc = match (confdir, pam.start_confdir) {
-            (Some(dir), Some(f)) => f(service.as_ptr() as *const c_char, user.as_ptr(), &conv, dir.as_ptr(), &mut handle),
-            (Some(_), None) => return Err("this libpam cannot start from a scratch folder.".to_string()),
-            (None, _) => (pam.start)(service.as_ptr() as *const c_char, user.as_ptr(), &conv, &mut handle),
+        let rc = match start_in {
+            Some((dir, f)) => f(service.as_ptr() as *const c_char, user.as_ptr(), &conv, dir.as_ptr(), &mut handle),
+            None => (pam.start)(service.as_ptr() as *const c_char, user.as_ptr(), &conv, &mut handle),
         };
         if rc != PAM_SUCCESS {
             Err(reason(None, rc, pam))
@@ -217,7 +227,7 @@ fn run(pam: &Pam, service: &[u8], confdir: Option<&CStr>, user: &str, password: 
             r
         }
     };
-    wipe(&mut talk.password);
+    drop(talk);
     result
 }
 
@@ -339,6 +349,16 @@ mod tests {
         if let Some(r) = through("pam_permit.so") {
             assert_eq!(r, Ok(()));
         }
+    }
+
+    /// A libpam with no pam_start_confdir: the scratch-folder start is refused before the password
+    /// is copied anywhere (the copy is also wiped on every return, by Talk's Drop).
+    #[test]
+    fn an_old_libpam_is_refused_before_the_password_is_copied() {
+        let Ok(p) = pam() else { return };
+        let old = Pam { start: p.start, authenticate: p.authenticate, end: p.end, strerror: p.strerror, start_confdir: None };
+        let r = run(&old, b"termurion-test\0", Some(c"/nonexistent"), "anyone", &Secret::new("x".into()));
+        assert_eq!(r, Err("this libpam cannot start from a scratch folder.".to_string()));
     }
 
     fn message(style: c_int) -> Message {
