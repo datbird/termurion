@@ -7397,6 +7397,12 @@ impl ApplicationHandler<UserEvent> for App {
         if stuck && !loop_end_claimed() {
             crate::rlog!("quit: a selection read never ended; ending the process now");
             teardown_process();
+            // The restart after Import All Settings and Data still happens on this way out.
+            if self.relaunch_on_exit {
+                if let Err(e) = settings_export_ui::start_relaunched() {
+                    message_box(&format!("Could not start Termurion again: {e}. Start it to finish the import."));
+                }
+            }
             std::process::exit(0);
         }
     }
