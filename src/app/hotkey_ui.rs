@@ -174,7 +174,7 @@ impl App {
     /// A hotkey window whose profile lost its hotkey (turned off, or deleted), and when
     /// `unreachable` one whose own hotkey did not register, becomes a regular window: shown, with
     /// a taskbar button, so it can be reached and closed.
-    fn release_hotkey_windows(&mut self, unreachable: bool) {
+    pub(super) fn release_hotkey_windows(&mut self, unreachable: bool) {
         let back = self.current_window();
         let prefs = self.hotkey_prefs();
         for w in self.hotkey_windows() {

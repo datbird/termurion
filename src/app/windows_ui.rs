@@ -845,6 +845,11 @@ impl App {
         if reused && !hotkey {
             self.show_awake_window();
         }
+        // A saved hotkey window restored after the launch fallback ran, whose own hotkey failed,
+        // would stay hidden with nothing to show it: it becomes a regular window.
+        if restored_hotkey && first_guid.as_deref().is_some_and(|g| crate::hotkey::restored_unreachable(self.hotkeys_registered, g, &self.hotkeys_reachable)) {
+            self.release_hotkey_windows(true);
+        }
         Ok(id)
     }
 

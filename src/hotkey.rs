@@ -182,6 +182,12 @@ pub fn unreachable_window(guid: &str, reachable: &[String]) -> bool {
     !reachable.iter().any(|g| g == guid)
 }
 
+/// Whether a saved hotkey window the launch restores is to be let go at once: the hotkeys are
+/// registered already (before that, the launch fallback decides) and its own hotkey failed.
+pub fn restored_unreachable(registered: bool, guid: &str, reachable: &[String]) -> bool {
+    registered && unreachable_window(guid, reachable)
+}
+
 /// Profiles whose hotkeys toggle together with `guid`'s: the same shortcuts, or the same
 /// double-tap key (iTerm2's siblings). `guid` itself is not in the list.
 pub fn siblings(guid: &str, all: &[(String, Prefs)]) -> Vec<String> {
@@ -407,6 +413,23 @@ mod tests {
         let taken: Result<Vec<(u32, Result<(), String>)>, String> = Ok(vec![(9000, Ok(())), (1, Ok(())), (2, Err("taken".into()))]);
         assert!(grabs_worked(true, &taken, &[1]));
         assert!(!grabs_worked(true, &taken, &[1, 2]), "an unreachable hotkey window is not working");
+    }
+
+    /// n2: a saved hotkey window the launch restores after its fallback ran is let go when its
+    /// own hotkey failed; before the registration the launch fallback decides.
+    #[test]
+    fn a_restored_hotkey_window_whose_own_hotkey_failed_is_let_go() {
+        let reachable = vec!["B".to_string()];
+        assert!(restored_unreachable(true, "A", &reachable));
+        assert!(!restored_unreachable(true, "B", &reachable));
+        assert!(!restored_unreachable(false, "A", &reachable), "not registered yet");
+        let w = include_str!("app/windows_ui.rs");
+        let w = &w[..w.find("\n#[cfg(test)]").unwrap()];
+        let open = &w[w.find("    fn open_window_with(").unwrap()..];
+        let open = &open[..open.find("\n        Ok(id)\n    }\n").unwrap()];
+        let ask = open.rfind("hotkey::restored_unreachable(self.hotkeys_registered, ").expect("the restored window is checked");
+        assert!(open[ask..].contains("self.release_hotkey_windows(true);"));
+        assert!(ask > open.find("NewWindow::HotkeyRestored(guid, w) =>").unwrap(), "after the window is a hotkey window");
     }
 
     /// I1: profile A's chord is taken, profile B's works. Only A's hotkey window is let go at
