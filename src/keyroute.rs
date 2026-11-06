@@ -199,6 +199,15 @@ pub fn chord_bound(s: &Snapshot, chord: &Chord) -> bool {
     s.keys.contains(&a) || s.keys.contains(&b) || menu || profile
 }
 
+/// True when the person has a key mapping on this Cmd chord (not only a menu command): a mapping
+/// runs before the menu even on the system keys (Cmd-Q, Cmd-H, Cmd-M), as in iTerm2.
+pub fn chord_mapped(s: &Snapshot, chord: &Chord) -> bool {
+    let p = press_from_chord(chord);
+    let mut typed = p.stroke.clone();
+    typed.char_is_modified = true;
+    s.keys.contains(&p.stroke.legacy()) || s.keys.contains(&typed.modified_key())
+}
+
 /// The key of a profile shortcut chord: Cmd+Ctrl+<A-Z or 0-9>, with Option for the alternate
 /// (a new window). Never a bare key, and never with Shift.
 pub fn profile_chord(chord: &Chord) -> Option<(char, bool)> {
@@ -256,6 +265,18 @@ mod tests {
     }
     fn win(key: ChordKey) -> Chord {
         Chord { key, cmd: true, alt: false, shift: false, ctrl: false }
+    }
+
+    /// A mapping on Cmd-Q counts as mapped; the Quit menu command alone does not.
+    #[test]
+    fn a_mapping_on_cmd_q_is_mapped_and_the_menu_alone_is_not() {
+        let e = toml::Table::new();
+        let q = win(ChordKey::Char('q'));
+        let none = Snapshot::new(&ctx(&e, &toml::Table::new()));
+        assert!(chord_bound(&none, &q), "the Quit command binds it");
+        assert!(!chord_mapped(&none, &q));
+        let mapped = Snapshot::new(&ctx(&e, &map("0x71-0x100000", 13)));
+        assert!(chord_mapped(&mapped, &q));
     }
 
     /// TWEAKS 9 review I4: a literal Ctrl+Shift+X mapping beats the Cmd+X menu command the same

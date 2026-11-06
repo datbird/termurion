@@ -5,7 +5,8 @@
 //! windows) are claimed; Settings and chat windows keep AppKit's own Cmd+C, Cmd+V, Cmd+W and so on.
 //! While a shortcut recorder listens, every view claims Cmd keys, so Cmd-T records instead of
 //! opening a tab, and Cmd-Q records instead of quitting (iTerm2's shortcut field gets every key
-//! down first). Cmd-H and Cmd-M stay the menu's even then.
+//! down first), Cmd-H and Cmd-M included. A key mapping on Cmd-Q, Cmd-H or Cmd-M in a terminal
+//! window runs before the menu, as iTerm2's key mappings do (`handleKeypressInTerminalWindow`).
 
 use std::collections::HashSet;
 use std::ffi::CString;
@@ -32,10 +33,10 @@ pub fn system_chord(c: &Chord) -> bool {
 
 /// The whole rule: a registered terminal view, and a chord the key path takes (`bound`: a key
 /// mapping or a command). An unbound chord such as Cmd-Ctrl-Space (Emoji & Symbols) is AppKit's.
-/// While the recorder listens (`recording`), any view takes any chord but Cmd-H and Cmd-M.
-pub fn takes(registered: bool, chord: &Chord, bound: bool, recording: bool) -> bool {
-    let quit = chord.cmd && !chord.shift && !chord.ctrl && !chord.alt && chord.key == ChordKey::Char('q');
-    (recording || (registered && bound)) && (!system_chord(chord) || (recording && quit))
+/// A system chord stays the menu's unless the person mapped it (`mapped`). While the recorder
+/// listens (`recording`), any view takes any chord.
+pub fn takes(registered: bool, chord: &Chord, bound: bool, mapped: bool, recording: bool) -> bool {
+    recording || (registered && bound && (!system_chord(chord) || mapped))
 }
 
 /// Terminal views (addresses) that take Cmd keys.
@@ -60,12 +61,17 @@ fn bound(chord: &Chord) -> bool {
     route.is_some_and(|r| crate::keyroute::chord_bound(&r.read().unwrap_or_else(|e| e.into_inner()), chord))
 }
 
+fn mapped(chord: &Chord) -> bool {
+    let route = ROUTE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    route.is_some_and(|r| crate::keyroute::chord_mapped(&r.read().unwrap_or_else(|e| e.into_inner()), chord))
+}
+
 extern "C-unwind" fn perform_key_equivalent(this: &AnyObject, _sel: Sel, event: &NSEvent) -> Bool {
     if event.r#type() == NSEventType::KeyDown && event.modifierFlags().contains(NSEventModifierFlags::Command) {
         let chars = event.charactersIgnoringModifiers().map(|s| s.to_string()).unwrap_or_default();
         let flags = event.modifierFlags();
         let chord = crate::menus::chord_of_key(&chars, true, flags.contains(NSEventModifierFlags::Option), flags.contains(NSEventModifierFlags::Shift), flags.contains(NSEventModifierFlags::Control));
-        let wanted = claims(true, &chars) && chord.as_ref().is_some_and(|c| takes(is_registered(this as *const AnyObject as usize), c, bound(c), crate::platform::unix::global_keys::recording()));
+        let wanted = claims(true, &chars) && chord.as_ref().is_some_and(|c| takes(is_registered(this as *const AnyObject as usize), c, bound(c), mapped(c), crate::platform::unix::global_keys::recording()));
         if wanted {
             // SAFETY: `this` is the view; keyDown: takes the event.
             let _: () = unsafe { msg_send![this, keyDown: event] };
@@ -131,14 +137,14 @@ mod tests {
         assert!(!claims(true, "`"));
         assert!(!claims(true, "~"));
         assert!(!claims(false, "t"));
-        assert!(takes(true, &cmd('t'), true, false));
+        assert!(takes(true, &cmd('t'), true, false, false));
     }
 
     /// Only a terminal window's view claims keys: Cmd+C, Cmd+V and Cmd+W in Settings and chat go to AppKit.
     #[test]
     fn only_terminal_views_claim_keys() {
         for key in ['c', 'v', 'x', 'a', 'z', 'w'] {
-            assert!(!takes(false, &cmd(key), true, false), "{key} in a window that is not a terminal");
+            assert!(!takes(false, &cmd(key), true, false, false), "{key} in a window that is not a terminal");
         }
     }
 
@@ -146,32 +152,44 @@ mod tests {
     #[test]
     fn unbound_and_system_chords_stay_with_appkit() {
         let emoji = Chord { key: ChordKey::Space, ctrl: true, ..cmd('t') };
-        assert!(!takes(true, &emoji, false, false), "Cmd+Ctrl+Space is Emoji & Symbols");
+        assert!(!takes(true, &emoji, false, false, false), "Cmd+Ctrl+Space is Emoji & Symbols");
         for key in ['q', 'h', 'm'] {
-            assert!(!takes(true, &cmd(key), true, false));
+            assert!(!takes(true, &cmd(key), true, false, false));
         }
-        assert!(!takes(true, &Chord { alt: true, ..cmd('h') }, true, false), "Hide Others");
-        assert!(takes(true, &Chord { shift: true, ..cmd('h') }, true, false), "a mapping on Cmd+Shift+H wins");
-        assert!(takes(true, &Chord { alt: true, ..cmd('m') }, true, false));
+        assert!(!takes(true, &Chord { alt: true, ..cmd('h') }, true, false, false), "Hide Others");
+        assert!(takes(true, &Chord { shift: true, ..cmd('h') }, true, false, false), "a mapping on Cmd+Shift+H wins");
+        assert!(takes(true, &Chord { alt: true, ..cmd('m') }, true, false, false));
     }
 
     /// While the recorder listens, a Settings or Profiles view takes a Cmd chord that has a menu
-    /// item (Cmd-T records, no tab opens), bound or not, and Cmd-Q; Cmd-H, Cmd-Opt-H and Cmd-M stay the menu's.
+    /// item (Cmd-T records, no tab opens), bound or not, and Cmd-Q, Cmd-H and Cmd-M.
     #[test]
     fn the_recorder_gets_cmd_chords_in_any_window() {
         for key in ['t', 'd', 'k', 'w', 'c', 'v', '1'] {
-            assert!(takes(false, &cmd(key), false, true), "{key} while recording");
-            assert!(!takes(false, &cmd(key), false, false), "{key} when not recording");
+            assert!(takes(false, &cmd(key), false, false, true), "{key} while recording");
+            assert!(!takes(false, &cmd(key), false, false, false), "{key} when not recording");
         }
-        assert!(takes(false, &Chord { shift: true, ..cmd('h') }, false, true));
+        assert!(takes(false, &Chord { shift: true, ..cmd('h') }, false, false, true));
         // Cmd-Q records, as iTerm2's shortcut field gets every key down first.
-        assert!(takes(false, &cmd('q'), false, true), "Cmd-Q while recording");
-        assert!(takes(true, &cmd('q'), false, true));
+        assert!(takes(false, &cmd('q'), false, false, true), "Cmd-Q while recording");
+        assert!(takes(true, &cmd('q'), false, false, true));
+        // Cmd-H, Cmd-Opt-H and Cmd-M record too (iTerm2's shortcut field gets them).
         for key in ['h', 'm'] {
-            assert!(!takes(false, &cmd(key), true, true), "{key} stays the menu's");
-            assert!(!takes(true, &cmd(key), true, true));
+            assert!(takes(false, &cmd(key), true, false, true), "{key} records");
+            assert!(takes(true, &cmd(key), true, false, true));
         }
-        assert!(!takes(false, &Chord { alt: true, ..cmd('h') }, false, true), "Hide Others");
+        assert!(takes(false, &Chord { alt: true, ..cmd('h') }, false, false, true), "Hide Others records");
+    }
+
+    /// A key mapping on Cmd-Q, Cmd-H or Cmd-M in a terminal window runs before the menu (iTerm2's
+    /// key mappings come first); with no mapping the menu keeps them, and other windows never take them.
+    #[test]
+    fn a_mapped_system_chord_runs_its_mapping_in_a_terminal() {
+        for key in ['q', 'h', 'm'] {
+            assert!(takes(true, &cmd(key), true, true, false), "{key} mapped");
+            assert!(!takes(true, &cmd(key), true, false, false), "{key} unmapped");
+            assert!(!takes(false, &cmd(key), true, true, false), "{key} outside a terminal");
+        }
     }
 
     /// A destroyed window's view no longer takes keys.

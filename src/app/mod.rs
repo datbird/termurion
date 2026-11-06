@@ -8407,8 +8407,23 @@ enum AuxChord {
 }
 
 fn aux_chord_of(k: &winit::event::KeyEvent, mods: winit::keyboard::ModifiersState, recording: bool) -> Option<AuxChord> {
+    use winit::keyboard::{KeyCode, PhysicalKey};
     let winit::keyboard::Key::Character(c) = &k.logical_key else { return None };
-    aux_chord(c, k.state == winit::event::ElementState::Pressed, k.repeat, mods, recording)
+    let key = aux_key(c, match k.physical_key {
+        PhysicalKey::Code(KeyCode::KeyW) => Some('w'),
+        PhysicalKey::Code(KeyCode::KeyQ) => Some('q'),
+        _ => None,
+    });
+    aux_chord(&key, k.state == winit::event::ElementState::Pressed, k.repeat, mods, recording)
+}
+
+/// The letter a Cmd chord names: the typed one on a Latin layout, else the key's place (on a
+/// Russian layout the W key types "ц", and AppKit's Cmd-W still closes).
+fn aux_key(typed: &str, place: Option<char>) -> String {
+    if typed.chars().all(|c| c.is_ascii()) {
+        return typed.to_string();
+    }
+    place.map_or_else(|| typed.to_string(), String::from)
 }
 
 /// Cmd alone with W or Q, pressed and not repeating, while no shortcut recorder listens there
@@ -8839,6 +8854,11 @@ mod tests {
         assert_eq!(aux_chord("q", true, false, M::SUPER, false), Some(AuxChord::Quit));
         assert_eq!(aux_chord("Q", true, false, M::SUPER, false), Some(AuxChord::Quit));
         assert_eq!(aux_chord("w", true, false, M::SUPER, false), Some(AuxChord::Close));
+        // M5: a layout that types another letter on the W and Q keys still closes and quits.
+        assert_eq!(aux_key("ц", Some('w')), "w");
+        assert_eq!(aux_key("й", Some('q')), "q");
+        assert_eq!(aux_key("w", None), "w");
+        assert_eq!(aux_key("ж", None), "ж", "another key is not W");
         assert_eq!(aux_chord("q", true, false, M::SUPER | M::SHIFT, false), None, "Cmd-Shift-Q is not Quit");
         assert_eq!(aux_chord("q", true, true, M::SUPER, false), None, "a repeat");
         assert_eq!(aux_chord("q", false, false, M::SUPER, false), None, "a release");
