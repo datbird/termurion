@@ -132,6 +132,8 @@ pub struct EguiHost {
     probe: bool,
     /// What the last probe found.
     pub probed: Option<String>,
+    /// An alert or small dialog (`open_dialog`): its name and the height last fitted, in points.
+    dialog: Option<(String, f32)>,
 }
 
 impl EguiHost {
@@ -150,6 +152,30 @@ impl EguiHost {
         let host = Self::open_with(event_loop, instance, adapter, device, queue, attrs)?;
         host.track_taskbar();
         Ok(host)
+    }
+
+    /// An alert or small dialog: on Linux it draws its own frame (`dialog_frame`), elsewhere it
+    /// is the window `open` makes. Draw it with `paint_dialog`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_dialog(
+        event_loop: &ActiveEventLoop,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        title: &str,
+        w: f64,
+        h: f64,
+    ) -> Result<EguiHost, String> {
+        let host = Self::open_with(event_loop, instance, adapter, device, queue, crate::dialog_frame::attributes(title, w, h))?;
+        host.track_taskbar();
+        Ok(host.as_dialog(title, h))
+    }
+
+    /// Marks a window made from `dialog_frame::attributes` as a dialog `paint_dialog` draws.
+    pub fn as_dialog(mut self, title: &str, h: f64) -> EguiHost {
+        self.dialog = Some((title.to_string(), h as f32));
+        self
     }
 
     /// Lists this window for the taskbar and Alt+Tab exclusion (a window with a taskbar button).
@@ -189,7 +215,7 @@ impl EguiHost {
         install_menu_fonts(&ctx);
         let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, Some(device.limits().max_texture_dimension_2d as usize));
         let renderer = egui_wgpu::Renderer::new(device, format, egui_wgpu::RendererOptions::default());
-        Ok(EguiHost { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, window, probe: false, probed: None })
+        Ok(EguiHost { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, window, probe: false, probed: None, dialog: None })
     }
 
     pub fn id(&self) -> WindowId {
@@ -254,6 +280,38 @@ impl EguiHost {
     }
 
     /// Runs one egui frame with `f` and draws it.
+    /// Draws a dialog from `open_dialog`: its panel and `body`, and on Linux its own title row,
+    /// then follows the row's close and drag and fits the height to the content.
+    pub fn paint_dialog(&mut self, mut body: impl FnMut(&mut egui::Ui)) {
+        let own = crate::dialog_frame::OWN_FRAME && self.dialog.is_some();
+        let title = self.dialog.as_ref().map(|(t, _)| t.clone()).unwrap_or_default();
+        let mut framed = crate::dialog_frame::Framed::default();
+        self.paint(|ui| framed = crate::dialog_frame::show(ui, &title, own, &mut body));
+        if !own {
+            return;
+        }
+        if framed.drag {
+            let _ = self.window.drag_window();
+        }
+        if framed.close {
+            crate::dialog_frame::request_close(self.window.id());
+        }
+        // A fixed-size window keeps its min and max at its first size on Wayland, so both move
+        // with each fit (X11 takes the new size the same way).
+        let want = framed.height.ceil();
+        if let Some((_, fit)) = self.dialog.as_mut()
+            && framed.height > 0.0
+            && (want - *fit).abs() >= 1.0
+        {
+            *fit = want;
+            let w = f64::from(self.window.inner_size().width) / self.window.scale_factor();
+            let size = winit::dpi::LogicalSize::new(w, f64::from(want));
+            self.window.set_min_inner_size(Some(size));
+            self.window.set_max_inner_size(Some(size));
+            let _ = self.window.request_inner_size(size);
+        }
+    }
+
     pub fn paint(&mut self, f: impl FnMut(&mut egui::Ui)) {
         let mut input = self.state.take_egui_input(&self.window);
         let mut probing = false;
@@ -612,7 +670,7 @@ mod tests {
     #[test]
     fn paint_keeps_the_delayed_repaint_and_the_app_wakes_for_it() {
         let source = include_str!("egui_host.rs").split("#[cfg(test)]").next().unwrap().to_string();
-        let paint = source.split("pub fn paint").nth(1).unwrap();
+        let paint = source.split("pub fn paint(").nth(1).unwrap();
         assert!(paint.contains("d.record("), "a host that drops request_repaint_after loses tooltips and refresh timers");
         let app = include_str!("app/mod.rs");
         let wait = &app[app.find("fn about_to_wait").unwrap()..];
@@ -622,7 +680,7 @@ mod tests {
     #[test]
     fn paint_redraws_when_egui_asks_for_a_frame() {
         let source = include_str!("egui_host.rs").split("#[cfg(test)]").next().unwrap().to_string();
-        let paint = source.split("pub fn paint").nth(1).unwrap();
+        let paint = source.split("pub fn paint(").nth(1).unwrap();
         assert!(paint.contains("wants_redraw_now(&out)"), "a host that drops egui's repaint requests shows popups half drawn");
     }
 }

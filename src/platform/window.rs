@@ -16,6 +16,10 @@ use super::windows::window as imp;
 /// the Linux `.desktop` file, so a launcher finds the running window.
 pub const APP_ID: &str = "dev.termurion.Termurion";
 
+/// Alerts and small dialogs draw their own frame (Linux: winit cannot take minimize and maximize
+/// off a frame there); Windows and macOS keep the system's.
+pub const DIALOGS_DRAW_OWN_FRAME: bool = cfg!(target_os = "linux");
+
 /// A new window's attributes: every Termurion window starts here, so each carries the app id
 /// and a dock groups them all under the one launcher.
 pub fn attributes() -> winit::window::WindowAttributes {

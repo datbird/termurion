@@ -103,12 +103,11 @@ pub struct TagEditor {
 impl TagEditor {
     #[allow(clippy::too_many_arguments)]
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, pane: PaneId, url: String, title: Option<String>, tags: Vec<String>, all: Vec<String>, center: (f64, f64)) -> Result<TagEditor, String> {
-        let attrs = crate::platform::window::attributes()
-            .with_title(TITLE)
-            .with_inner_size(winit::dpi::LogicalSize::new(f64::from(SIZE.0), f64::from(SIZE.1)))
+        // A small dialog: on Linux its own frame (`dialog_frame`).
+        let attrs = crate::dialog_frame::attributes(TITLE, f64::from(SIZE.0), f64::from(SIZE.1))
             .with_resizable(false)
             .with_window_level(winit::window::WindowLevel::AlwaysOnTop);
-        let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+        let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?.as_dialog(TITLE, f64::from(SIZE.1));
         host.follow_theme(None);
         // Centered on the browser window (`BVC:1442-1462`), in this window's own pixels.
         let scale = host.window.scale_factor();
@@ -152,57 +151,55 @@ impl TagEditor {
     fn redraw(&mut self) -> Option<TagAct> {
         let mut out = None;
         let (title, url, text, all, first) = (&self.title, &self.shown, &mut self.text, &self.all, &mut self.first);
-        self.host.paint(|ui| {
-            egui::CentralPanel::default().show(ui, |ui| {
-                let secondary = ui.visuals().weak_text_color();
-                for (label, value) in [(TITLE_LABEL, title), (URL_LABEL, url)] {
-                    ui.horizontal(|ui| {
-                        ui.add_sized([50.0, 18.0], egui::Label::new(label));
-                        ui.add(egui::Label::new(egui::RichText::new(value.as_str()).color(secondary)).truncate());
-                    });
-                }
+        self.host.paint_dialog(|ui| {
+            let secondary = ui.visuals().weak_text_color();
+            for (label, value) in [(TITLE_LABEL, title), (URL_LABEL, url)] {
                 ui.horizontal(|ui| {
-                    ui.add_sized([50.0, 18.0], egui::Label::new(TAGS_LABEL));
-                    let field = ui.add(egui::TextEdit::singleline(text).hint_text(TAGS_PLACEHOLDER).char_limit(MAX_FIELD).desired_width(f32::INFINITY));
-                    if *first {
-                        field.request_focus();
-                        *first = false;
-                    }
+                    ui.add_sized([50.0, 18.0], egui::Label::new(label));
+                    ui.add(egui::Label::new(egui::RichText::new(value.as_str()).color(secondary)).truncate());
                 });
-                // Completions for the token being typed, tags already in the field left out.
-                let have = parse_tokens(text.rfind(',').map_or("", |i| &text[..i]));
-                let prefix = current_token(text).to_string();
-                if !prefix.is_empty() {
-                    let mut pick = None;
-                    for tag in completions(all, &prefix).into_iter().filter(|t| !have.contains(t)).take(MAX_COMPLETIONS) {
-                        if ui.selectable_label(false, &tag).clicked() {
-                            pick = Some(tag);
-                        }
-                    }
-                    if let Some(tag) = pick {
-                        *text = complete_token(text, &tag);
-                    }
-                }
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button(DELETE).clicked() {
-                        out = Some(TagAct::Delete);
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(SAVE).clicked() {
-                            out = Some(TagAct::Save(parse_tokens(text)));
-                        }
-                        if ui.button(CANCEL).clicked() {
-                            out = Some(TagAct::Cancel);
-                        }
-                    });
-                });
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    out = Some(TagAct::Cancel);
-                } else if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    out = Some(TagAct::Save(parse_tokens(text)));
+            }
+            ui.horizontal(|ui| {
+                ui.add_sized([50.0, 18.0], egui::Label::new(TAGS_LABEL));
+                let field = ui.add(egui::TextEdit::singleline(text).hint_text(TAGS_PLACEHOLDER).char_limit(MAX_FIELD).desired_width(f32::INFINITY));
+                if *first {
+                    field.request_focus();
+                    *first = false;
                 }
             });
+            // Completions for the token being typed, tags already in the field left out.
+            let have = parse_tokens(text.rfind(',').map_or("", |i| &text[..i]));
+            let prefix = current_token(text).to_string();
+            if !prefix.is_empty() {
+                let mut pick = None;
+                for tag in completions(all, &prefix).into_iter().filter(|t| !have.contains(t)).take(MAX_COMPLETIONS) {
+                    if ui.selectable_label(false, &tag).clicked() {
+                        pick = Some(tag);
+                    }
+                }
+                if let Some(tag) = pick {
+                    *text = complete_token(text, &tag);
+                }
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(DELETE).clicked() {
+                    out = Some(TagAct::Delete);
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(SAVE).clicked() {
+                        out = Some(TagAct::Save(parse_tokens(text)));
+                    }
+                    if ui.button(CANCEL).clicked() {
+                        out = Some(TagAct::Cancel);
+                    }
+                });
+            });
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                out = Some(TagAct::Cancel);
+            } else if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                out = Some(TagAct::Save(parse_tokens(text)));
+            }
         });
         out
     }

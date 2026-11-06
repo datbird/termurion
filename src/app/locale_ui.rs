@@ -77,7 +77,7 @@ pub(super) struct PickerWindow {
 impl PickerWindow {
     #[allow(clippy::too_many_arguments)]
     fn open(event_loop: &ActiveEventLoop, gpu: (&wgpu::Instance, &wgpu::Adapter, &wgpu::Device, &wgpu::Queue), purpose: Purpose, picker: Picker, current: Option<&str>, message: &str, remember_label: Option<String>, minimal: bool) -> Result<PickerWindow, String> {
-        let host = EguiHost::open(event_loop, gpu.0, gpu.1, gpu.2, gpu.3, "Locale", 480.0, if remember_label.is_some() { 230.0 } else { 200.0 })?;
+        let host = EguiHost::open_dialog(event_loop, gpu.0, gpu.1, gpu.2, gpu.3, "Locale", 480.0, if remember_label.is_some() { 230.0 } else { 200.0 })?;
         let selected = current.and_then(|c| picker.find(c)).or(picker.default);
         Ok(PickerWindow { host, purpose, picker, selected, message: message.to_string(), remember_label, remember: false, minimal })
     }
@@ -90,45 +90,43 @@ impl PickerWindow {
         let mut out = Pick::Open;
         let (picker, selected, remember, label) = (&self.picker, &mut self.selected, &mut self.remember, &self.remember_label);
         let (message, minimal) = (&self.message, self.minimal);
-        self.host.paint(|ui| {
-            egui::CentralPanel::default().show(ui, |ui| {
-                ui.add(egui::Label::new(message.as_str()).wrap());
-                ui.add_space(8.0);
-                let shown = selected.and_then(|at| picker.entry(at)).map_or(String::new(), |e| e.title.clone());
-                egui::ComboBox::from_id_salt("locale_pick").width(ui.available_width() - 8.0).selected_text(shown).show_ui(ui, |ui| {
-                    for (i, e) in picker.good.iter().enumerate() {
-                        if ui.selectable_label(*selected == Some((false, i)), &e.title).clicked() {
-                            *selected = Some((false, i));
-                        }
+        self.host.paint_dialog(|ui| {
+            ui.add(egui::Label::new(message.as_str()).wrap());
+            ui.add_space(8.0);
+            let shown = selected.and_then(|at| picker.entry(at)).map_or(String::new(), |e| e.title.clone());
+            egui::ComboBox::from_id_salt("locale_pick").width(ui.available_width() - 8.0).selected_text(shown).show_ui(ui, |ui| {
+                for (i, e) in picker.good.iter().enumerate() {
+                    if ui.selectable_label(*selected == Some((false, i)), &e.title).clicked() {
+                        *selected = Some((false, i));
                     }
-                    if !picker.bad.is_empty() {
-                        ui.separator();
-                        ui.add_enabled(false, egui::Label::new(locale_guess::WRONG_ENCODING_SECTION));
-                        for (i, e) in picker.bad.iter().enumerate() {
-                            if ui.selectable_label(*selected == Some((true, i)), &e.title).clicked() {
-                                *selected = Some((true, i));
-                            }
-                        }
-                    }
-                });
-                if let Some(label) = label {
-                    ui.add_space(6.0);
-                    ui.checkbox(remember, label.as_str());
                 }
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let chosen = selected.and_then(|at| picker.entry(at)).map(|e| e.locale.clone());
-                    if ui.add_enabled(chosen.is_some(), egui::Button::new(crate::api_auth::OK)).clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) && chosen.is_some() {
-                        out = Pick::Locale(chosen.clone().unwrap_or_default(), *remember);
+                if !picker.bad.is_empty() {
+                    ui.separator();
+                    ui.add_enabled(false, egui::Label::new(locale_guess::WRONG_ENCODING_SECTION));
+                    for (i, e) in picker.bad.iter().enumerate() {
+                        if ui.selectable_label(*selected == Some((true, i)), &e.title).clicked() {
+                            *selected = Some((true, i));
+                        }
                     }
-                    if ui.button(if minimal { locale_guess::USE_MINIMAL } else { crate::api_auth::CANCEL }).clicked() {
-                        out = if minimal { Pick::Minimal(*remember) } else { Pick::Cancel };
-                    }
-                });
-                if !minimal && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    out = Pick::Cancel;
                 }
             });
+            if let Some(label) = label {
+                ui.add_space(6.0);
+                ui.checkbox(remember, label.as_str());
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let chosen = selected.and_then(|at| picker.entry(at)).map(|e| e.locale.clone());
+                if ui.add_enabled(chosen.is_some(), egui::Button::new(crate::api_auth::OK)).clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) && chosen.is_some() {
+                    out = Pick::Locale(chosen.clone().unwrap_or_default(), *remember);
+                }
+                if ui.button(if minimal { locale_guess::USE_MINIMAL } else { crate::api_auth::CANCEL }).clicked() {
+                    out = if minimal { Pick::Minimal(*remember) } else { Pick::Cancel };
+                }
+            });
+            if !minimal && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                out = Pick::Cancel;
+            }
         });
         out
     }

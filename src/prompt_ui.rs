@@ -72,7 +72,7 @@ impl PromptWindow {
     ) -> Result<PromptWindow, String> {
         // A long label (an alert's explanation) wraps; the window grows by a line for each 55 characters.
         let lines = (label.chars().count() as f64 / 55.0).ceil().max(1.0);
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, title, 420.0, 112.0 + 18.0 * lines)?;
+        let host = EguiHost::open_dialog(event_loop, instance, adapter, device, queue, title, 420.0, 112.0 + 18.0 * lines)?;
         Ok(PromptWindow { host, label: label.into(), text: initial.into(), first: true, choices: Vec::new(), check: None, refuse_blank: false, extra: None, hint: String::new(), ok_only: false, ok_label: None, select_all: false })
     }
 
@@ -157,55 +157,53 @@ impl PromptWindow {
         let ok_label = ok_label_of(self.ok_label.as_deref()).to_string();
         let select_all = self.select_all;
         let (label, text, first, choices, check, refuse_blank, extra, hint, ok_only) = (&self.label, &mut self.text, &mut self.first, &self.choices, &mut self.check, self.refuse_blank, &self.extra, &self.hint, self.ok_only);
-        self.host.paint(|ui| {
-            egui::CentralPanel::default().show(ui, |ui| {
-                ui.label(label.as_str());
-                let before = text.clone();
-                let edit = egui::TextEdit::singleline(text).hint_text(hint.as_str()).desired_width(f32::INFINITY).show(ui);
-                let r = edit.response;
-                if *first {
-                    r.request_focus();
-                    if select_all {
-                        let mut state = edit.state;
-                        let end = egui::text::CCursor::new(text.chars().count());
-                        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), end)));
-                        state.store(ui.ctx(), r.id);
-                    }
-                    *first = false;
+        self.host.paint_dialog(|ui| {
+            ui.label(label.as_str());
+            let before = text.clone();
+            let edit = egui::TextEdit::singleline(text).hint_text(hint.as_str()).desired_width(f32::INFINITY).show(ui);
+            let r = edit.response;
+            if *first {
+                r.request_focus();
+                if select_all {
+                    let mut state = edit.state;
+                    let end = egui::text::CCursor::new(text.chars().count());
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), end)));
+                    state.store(ui.ctx(), r.id);
                 }
-                if !choices.is_empty() {
-                    egui::ComboBox::from_id_salt("choices").selected_text("History").width(ui.available_width()).show_ui(ui, |ui| {
-                        for c in choices {
-                            if ui.selectable_label(false, c.as_str()).clicked() {
-                                *text = c.clone();
-                            }
+                *first = false;
+            }
+            if !choices.is_empty() {
+                egui::ComboBox::from_id_salt("choices").selected_text("History").width(ui.available_width()).show_ui(ui, |ui| {
+                    for c in choices {
+                        if ui.selectable_label(false, c.as_str()).clicked() {
+                            *text = c.clone();
                         }
-                    });
-                }
-                if let Some((label, on, checked_for)) = check.as_mut() {
-                    if *text != before {
-                        *on = checked_for.iter().any(|c| c == text);
-                    }
-                    ui.checkbox(on, label.as_str());
-                }
-                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                let escape = !ok_only && ui.input(|i| i.key_pressed(egui::Key::Escape));
-                ui.horizontal(|ui| {
-                    if ui.button(ok_label.as_str()).clicked() || enter {
-                        if refuse_blank && text.trim().is_empty() {
-                            crate::platform::clock::beep();
-                        } else {
-                            result = PromptResult::Ok(text.clone());
-                        }
-                    }
-                    if let Some(x) = extra
-                        && ui.button(x.as_str()).clicked() {
-                            result = PromptResult::Extra(text.clone());
-                        }
-                    if (!ok_only && ui.button("Cancel").clicked()) || escape {
-                        result = PromptResult::Cancel;
                     }
                 });
+            }
+            if let Some((label, on, checked_for)) = check.as_mut() {
+                if *text != before {
+                    *on = checked_for.iter().any(|c| c == text);
+                }
+                ui.checkbox(on, label.as_str());
+            }
+            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let escape = !ok_only && ui.input(|i| i.key_pressed(egui::Key::Escape));
+            ui.horizontal(|ui| {
+                if ui.button(ok_label.as_str()).clicked() || enter {
+                    if refuse_blank && text.trim().is_empty() {
+                        crate::platform::clock::beep();
+                    } else {
+                        result = PromptResult::Ok(text.clone());
+                    }
+                }
+                if let Some(x) = extra
+                    && ui.button(x.as_str()).clicked() {
+                        result = PromptResult::Extra(text.clone());
+                    }
+                if (!ok_only && ui.button("Cancel").clicked()) || escape {
+                    result = PromptResult::Cancel;
+                }
             });
         });
         result
@@ -409,7 +407,7 @@ impl ConfirmWindow {
         // Windows words (Explorer, taskbar) read as the Mac's on macOS.
         let (heading, text) = (crate::platform::native_words(heading), crate::platform::native_words(text));
         let (heading, text) = (heading.as_ref(), text.as_ref());
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, heading, 480.0, window_height(text))?;
+        let host = EguiHost::open_dialog(event_loop, instance, adapter, device, queue, heading, 480.0, window_height(text))?;
         Ok(ConfirmWindow { host, text: text.into(), suppress: false, checkbox: true, checkbox_label: Self::SUPPRESS, ok: "OK".into(), cancel: Some("Cancel".into()), enter_cancels: false, actions: Vec::new(), shortcuts: Vec::new(), underline: false, forget: false, close: None, spaces: None, gated: None, read: false, guard: None })
     }
 
@@ -556,110 +554,108 @@ impl ConfirmWindow {
         let spaces = &mut self.spaces;
         let guard = self.guard;
         let guard_armed = guard.is_none_or(|g| g.armed(std::time::Instant::now()));
-        self.host.paint(|ui| {
-            egui::CentralPanel::default().show(ui, |ui| {
-                // The body scrolls inside the window and the buttons stay below it, so no text or
-                // button is ever cut off.
-                let reserve = 48.0 + if spaces.is_some() { 30.0 } else { 0.0 } + if checkbox { 28.0 } else { 0.0 } + if gated.is_some() { 20.0 } else { 0.0 };
-                let out = egui::ScrollArea::vertical().max_height((ui.available_height() - reserve).max(60.0)).auto_shrink([false, true]).show(ui, |ui| {
-                    ui.label(text.as_str());
-                });
-                if gated.is_some() && scrolled_to_end(out.state.offset.y, out.inner_rect.height(), out.content_size.y) {
-                    *read = true;
-                }
-                if gated.is_some() && !*read {
-                    ui.label("Scroll to the end of the text to enable the button.");
-                }
-                ui.add_space(6.0);
-                if let Some(n) = spaces.as_mut() {
-                    ui.horizontal(|ui| {
-                        ui.label(TAB_SIZE_LABEL);
-                        ui.add(egui::DragValue::new(n).range(0..=100));
-                    });
-                    ui.add_space(6.0);
-                }
-                if checkbox {
-                    ui.checkbox(suppress, checkbox_label);
-                    ui.add_space(6.0);
-                }
-                let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
-                // A guarded window has no default button and no focused widget (Enter and Space
-                // would press it), and says why its buttons wait.
-                let (enter, escape) = if guard.is_some() {
-                    let ctx = ui.ctx().clone();
-                    ctx.memory_mut(|m| {
-                        if let Some(f) = m.focused() {
-                            m.surrender_focus(f);
-                        }
-                    });
-                    if !guard_armed {
-                        ui.label("The buttons turn on in a moment.");
-                    }
-                    (false, false)
-                } else {
-                    (enter, escape)
-                };
+        self.host.paint_dialog(|ui| {
+            // The body scrolls inside the window and the buttons stay below it, so no text or
+            // button is ever cut off.
+            let reserve = 48.0 + if spaces.is_some() { 30.0 } else { 0.0 } + if checkbox { 28.0 } else { 0.0 } + if gated.is_some() { 20.0 } else { 0.0 };
+            let out = egui::ScrollArea::vertical().max_height((ui.available_height() - reserve).max(60.0)).auto_shrink([false, true]).show(ui, |ui| {
+                ui.label(text.as_str());
+            });
+            if gated.is_some() && scrolled_to_end(out.state.offset.y, out.inner_rect.height(), out.content_size.y) {
+                *read = true;
+            }
+            if gated.is_some() && !*read {
+                ui.label("Scroll to the end of the text to enable the button.");
+            }
+            ui.add_space(6.0);
+            if let Some(n) = spaces.as_mut() {
                 ui.horizontal(|ui| {
-                    if !actions.is_empty() {
-                        let labels: Vec<&str> = actions.iter().map(String::as_str).collect();
-                        let enter_index = action_keys(&labels).0;
-                        let escape_index = escape_index(&labels, close.as_deref());
-                        for (index, label) in button_labels(&labels, forget).iter().enumerate() {
-                            let open = gate_open(gated, *read, index) && guard_armed;
-                            let response = match shortcuts.get(index).copied().flatten() {
-                                Some((at, _)) if underline => ui.add_enabled(open, egui::Button::new(underlined(ui, label, at))),
-                                _ => ui.add_enabled(open, egui::Button::new(label.as_str())),
-                            };
-                            // A guarded window counts only a real pointer release over the button.
-                            let clicked = response.clicked() && (guard.is_none() || (response.hovered() && ui.input(|i| i.pointer.primary_released())));
-                            if clicked {
-                                result = ConfirmResult::Action { index, suppress: *suppress };
-                            }
-                        }
-                        // Alt plus a shortcut letter (iTerm2's Command plus the letter).
-                        let pressed = ui.input(|i| {
-                            i.events.iter().find_map(|e| match e {
-                                egui::Event::Key { key, pressed: true, modifiers, .. } if modifiers.alt && !modifiers.ctrl => {
-                                    let name = key.name();
-                                    let mut chars = name.chars();
-                                    match (chars.next(), chars.next()) {
-                                        (Some(c), None) if c.is_ascii_alphabetic() => shortcut_press(shortcuts, c),
-                                        _ => None,
-                                    }
-                                }
-                                _ => None,
-                            })
-                        });
-                        let pressed = pressed.filter(|i| gate_open(gated, *read, *i) && guard_armed);
-                        if let Some(index) = pressed {
-                            result = ConfirmResult::Action { index, suppress: *suppress };
-                        } else if enter && gate_open(gated, *read, enter_index) {
-                            result = ConfirmResult::Action { index: enter_index, suppress: *suppress };
-                        } else if let (true, Some(index)) = (escape, escape_index) {
-                            result = ConfirmResult::Action { index, suppress: *suppress };
-                        }
-                        return;
+                    ui.label(TAB_SIZE_LABEL);
+                    ui.add(egui::DragValue::new(n).range(0..=100));
+                });
+                ui.add_space(6.0);
+            }
+            if checkbox {
+                ui.checkbox(suppress, checkbox_label);
+                ui.add_space(6.0);
+            }
+            let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+            // A guarded window has no default button and no focused widget (Enter and Space
+            // would press it), and says why its buttons wait.
+            let (enter, escape) = if guard.is_some() {
+                let ctx = ui.ctx().clone();
+                ctx.memory_mut(|m| {
+                    if let Some(f) = m.focused() {
+                        m.surrender_focus(f);
                     }
-                    if enter_cancels {
-                        if let Some(c) = cancel
-                            && (ui.button(c.as_str()).clicked() || enter) {
-                                result = ConfirmResult::Cancel;
-                            }
-                        if ui.button(ok.as_str()).clicked() {
-                            result = ConfirmResult::Ok { suppress: *suppress };
+                });
+                if !guard_armed {
+                    ui.label("The buttons turn on in a moment.");
+                }
+                (false, false)
+            } else {
+                (enter, escape)
+            };
+            ui.horizontal(|ui| {
+                if !actions.is_empty() {
+                    let labels: Vec<&str> = actions.iter().map(String::as_str).collect();
+                    let enter_index = action_keys(&labels).0;
+                    let escape_index = escape_index(&labels, close.as_deref());
+                    for (index, label) in button_labels(&labels, forget).iter().enumerate() {
+                        let open = gate_open(gated, *read, index) && guard_armed;
+                        let response = match shortcuts.get(index).copied().flatten() {
+                            Some((at, _)) if underline => ui.add_enabled(open, egui::Button::new(underlined(ui, label, at))),
+                            _ => ui.add_enabled(open, egui::Button::new(label.as_str())),
+                        };
+                        // A guarded window counts only a real pointer release over the button.
+                        let clicked = response.clicked() && (guard.is_none() || (response.hovered() && ui.input(|i| i.pointer.primary_released())));
+                        if clicked {
+                            result = ConfirmResult::Action { index, suppress: *suppress };
                         }
-                        if escape {
+                    }
+                    // Alt plus a shortcut letter (iTerm2's Command plus the letter).
+                    let pressed = ui.input(|i| {
+                        i.events.iter().find_map(|e| match e {
+                            egui::Event::Key { key, pressed: true, modifiers, .. } if modifiers.alt && !modifiers.ctrl => {
+                                let name = key.name();
+                                let mut chars = name.chars();
+                                match (chars.next(), chars.next()) {
+                                    (Some(c), None) if c.is_ascii_alphabetic() => shortcut_press(shortcuts, c),
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        })
+                    });
+                    let pressed = pressed.filter(|i| gate_open(gated, *read, *i) && guard_armed);
+                    if let Some(index) = pressed {
+                        result = ConfirmResult::Action { index, suppress: *suppress };
+                    } else if enter && gate_open(gated, *read, enter_index) {
+                        result = ConfirmResult::Action { index: enter_index, suppress: *suppress };
+                    } else if let (true, Some(index)) = (escape, escape_index) {
+                        result = ConfirmResult::Action { index, suppress: *suppress };
+                    }
+                    return;
+                }
+                if enter_cancels {
+                    if let Some(c) = cancel
+                        && (ui.button(c.as_str()).clicked() || enter) {
                             result = ConfirmResult::Cancel;
                         }
-                        return;
-                    }
-                    if ui.button(ok.as_str()).clicked() || enter {
+                    if ui.button(ok.as_str()).clicked() {
                         result = ConfirmResult::Ok { suppress: *suppress };
                     }
-                    if cancel.as_ref().is_some_and(|c| ui.button(c.as_str()).clicked()) || escape {
+                    if escape {
                         result = ConfirmResult::Cancel;
                     }
-                });
+                    return;
+                }
+                if ui.button(ok.as_str()).clicked() || enter {
+                    result = ConfirmResult::Ok { suppress: *suppress };
+                }
+                if cancel.as_ref().is_some_and(|c| ui.button(c.as_str()).clicked()) || escape {
+                    result = ConfirmResult::Cancel;
+                }
             });
         });
         if guard.is_some() && !guard_armed {

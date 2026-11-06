@@ -85,7 +85,7 @@ impl AuthWindow {
         remember_by_default: bool,
         offer_password_manager: bool,
     ) -> Result<AuthWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, "Termurion", 420.0, 230.0)?;
+        let host = EguiHost::open_dialog(event_loop, instance, adapter, device, queue, "Termurion", 420.0, 230.0)?;
         let layout = layout(offer_remember, offer_password_manager, !user.is_empty());
         let pw = password.map(Secret::duplicate).unwrap_or_else(|| Secret::new(String::new()));
         let start = (user.len(), pw.expose().len());
@@ -132,56 +132,54 @@ impl AuthWindow {
         let mut answer: Option<AuthAnswer> = None;
         let armed = self.guard.armed(std::time::Instant::now());
         let (text, user, password, remember, lay, prefilled, typed, first, start) = (&self.text, &mut self.user, &mut self.password, &mut self.remember, &self.layout, self.prefilled, &mut self.typed, &mut self.first, self.start);
-        self.host.paint(|ui| {
-            egui::CentralPanel::default().show(ui, |ui| {
-                ui.label(text.as_str());
-                ui.add_space(6.0);
-                let (uid, pid) = (egui::Id::new("basic-auth-user"), egui::Id::new("basic-auth-password"));
-                let w = ui.available_width();
-                secret_field(ui, uid, user, armed, Some(ba::USER_PLACEHOLDER), w, true);
+        self.host.paint_dialog(|ui| {
+            ui.label(text.as_str());
+            ui.add_space(6.0);
+            let (uid, pid) = (egui::Id::new("basic-auth-user"), egui::Id::new("basic-auth-password"));
+            let w = ui.available_width();
+            secret_field(ui, uid, user, armed, Some(ba::USER_PLACEHOLDER), w, true);
+            ui.add_space(4.0);
+            secret_field(ui, pid, password, armed, Some(ba::PASSWORD_PLACEHOLDER), w, false);
+            if *first {
+                ui.ctx().memory_mut(|m| m.request_focus(if lay.first_focus == FirstFocus::User { uid } else { pid }));
+                *first = false;
+            }
+            if (user.expose().len(), password.expose().len()) != start || ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(_)))) {
+                *typed = true;
+            }
+            if lay.remember {
                 ui.add_space(4.0);
-                secret_field(ui, pid, password, armed, Some(ba::PASSWORD_PLACEHOLDER), w, false);
-                if *first {
-                    ui.ctx().memory_mut(|m| m.request_focus(if lay.first_focus == FirstFocus::User { uid } else { pid }));
-                    *first = false;
-                }
-                if (user.expose().len(), password.expose().len()) != start || ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(_)))) {
-                    *typed = true;
-                }
-                if lay.remember {
-                    ui.add_space(4.0);
-                    ui.add_enabled(armed, egui::Checkbox::new(remember, ba::REMEMBER));
-                }
-                let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
-                ui.add_space(8.0);
-                let done = |user: &Secret, password: &Secret, remember: bool| -> AuthAnswer {
-                    AuthAnswer::Ok { user: user.expose().to_string(), password: password.duplicate(), remember }
-                };
-                ui.horizontal(|ui| {
-                    for label in &lay.buttons {
-                        let r = ui.add_enabled(armed, egui::Button::new(*label));
-                        // Only a real pointer release over the button counts.
-                        let clicked = r.clicked() && r.hovered() && ui.input(|i| i.pointer.primary_released() || i.pointer.any_released());
-                        if !clicked {
-                            continue;
-                        }
-                        answer = Some(match *label {
-                            ba::OK => done(user, password, *remember),
-                            ba::PASSWORD_MANAGER => AuthAnswer::PasswordManager { user: user.expose().to_string(), password: password.duplicate() },
-                            _ => AuthAnswer::Cancel,
-                        });
+                ui.add_enabled(armed, egui::Checkbox::new(remember, ba::REMEMBER));
+            }
+            let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+            ui.add_space(8.0);
+            let done = |user: &Secret, password: &Secret, remember: bool| -> AuthAnswer {
+                AuthAnswer::Ok { user: user.expose().to_string(), password: password.duplicate(), remember }
+            };
+            ui.horizontal(|ui| {
+                for label in &lay.buttons {
+                    let r = ui.add_enabled(armed, egui::Button::new(*label));
+                    // Only a real pointer release over the button counts.
+                    let clicked = r.clicked() && r.hovered() && ui.input(|i| i.pointer.primary_released() || i.pointer.any_released());
+                    if !clicked {
+                        continue;
                     }
-                });
-                if answer.is_none() && armed && enter && enter_answers(prefilled, *typed) {
-                    answer = Some(done(user, password, *remember));
-                }
-                if answer.is_none() && escape {
-                    answer = Some(AuthAnswer::Cancel);
-                }
-                if !armed {
-                    ui.label("The buttons turn on in a moment.");
+                    answer = Some(match *label {
+                        ba::OK => done(user, password, *remember),
+                        ba::PASSWORD_MANAGER => AuthAnswer::PasswordManager { user: user.expose().to_string(), password: password.duplicate() },
+                        _ => AuthAnswer::Cancel,
+                    });
                 }
             });
+            if answer.is_none() && armed && enter && enter_answers(prefilled, *typed) {
+                answer = Some(done(user, password, *remember));
+            }
+            if answer.is_none() && escape {
+                answer = Some(AuthAnswer::Cancel);
+            }
+            if !armed {
+                ui.label("The buttons turn on in a moment.");
+            }
         });
         answer
     }

@@ -27,6 +27,7 @@ pub mod remap;
 pub mod keyroute;
 pub mod mru;
 pub mod desktops;
+pub mod dialog_frame;
 pub mod dark_menu;
 #[cfg(windows)]
 pub mod dragtext_win;

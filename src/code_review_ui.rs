@@ -136,7 +136,7 @@ pub struct NameWindow {
 
 impl NameWindow {
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<NameWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, cr::SAVE_TITLE, 380.0, 170.0)?;
+        let host = EguiHost::open_dialog(event_loop, instance, adapter, device, queue, cr::SAVE_TITLE, 380.0, 170.0)?;
         Ok(NameWindow { host, name: String::new(), first: true })
     }
 
@@ -155,28 +155,26 @@ impl NameWindow {
     pub fn redraw(&mut self) -> NameEvent {
         let mut out = NameEvent::None;
         let (name, first) = (&mut self.name, &mut self.first);
-        self.host.paint(|ui| {
-            egui::CentralPanel::default().show(ui, |ui| {
-                ui.strong(cr::SAVE_TITLE);
-                ui.label(cr::SAVE_TEXT);
-                let field = ui.add(egui::TextEdit::singleline(name).hint_text(cr::NAME_PLACEHOLDER).desired_width(f32::INFINITY));
-                if std::mem::take(first) {
-                    field.request_focus();
-                }
-                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                let ready = !name.trim().is_empty();
-                ui.horizontal(|ui| {
-                    if ui.button(crate::api_auth::CANCEL).clicked() {
-                        out = NameEvent::Cancel;
-                    }
-                    if (ui.add_enabled(ready, egui::Button::new("Save")).clicked() || enter) && ready {
-                        out = NameEvent::Save(name.trim().to_string());
-                    }
-                });
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        self.host.paint_dialog(|ui| {
+            ui.strong(cr::SAVE_TITLE);
+            ui.label(cr::SAVE_TEXT);
+            let field = ui.add(egui::TextEdit::singleline(name).hint_text(cr::NAME_PLACEHOLDER).desired_width(f32::INFINITY));
+            if std::mem::take(first) {
+                field.request_focus();
+            }
+            let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let ready = !name.trim().is_empty();
+            ui.horizontal(|ui| {
+                if ui.button(crate::api_auth::CANCEL).clicked() {
                     out = NameEvent::Cancel;
                 }
+                if (ui.add_enabled(ready, egui::Button::new("Save")).clicked() || enter) && ready {
+                    out = NameEvent::Save(name.trim().to_string());
+                }
             });
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                out = NameEvent::Cancel;
+            }
         });
         out
     }
