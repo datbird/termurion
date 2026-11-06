@@ -8923,7 +8923,7 @@ mod tests {
         let ex = &ex[..ex.find("\n    }\n").unwrap()];
         let forget = ex.find("crate::platform::window::forget_activation();").expect("exiting lets it go");
         assert!(forget < ex.find("return;").unwrap(), "before the early return");
-        let teardown = &own[own.find("pub(crate) fn teardown_process() {").unwrap()..];
+        let teardown = &own[own.find("pub(crate) fn teardown_process(").unwrap()..];
         assert!(teardown[..teardown.find("\n}\n").unwrap()].contains("crate::platform::window::forget_activation();"));
     }
 
