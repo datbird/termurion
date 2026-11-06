@@ -7311,6 +7311,9 @@ impl App {
             let frame = menu_bar_ui::BarFrame { device: &device, queue: &queue, target: &view, format: gpu.config.format, size: (w, h), scale: bar_scale, dark: bar_dark };
             let menu = self.menu_bar.as_ref().map(|b| &b.menu).filter(|_| bar_on);
             chosen = gpu.bar.draw(&frame, menu);
+            if gpu.bar.animating() {
+                gpu.window.request_redraw();
+            }
         }
         let present_start = timing.then(Instant::now);
         if let Some(gpu) = self.gpu.as_ref() {

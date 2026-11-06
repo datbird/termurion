@@ -40,6 +40,11 @@ impl BarUi {
         self.overlay.is_open() || self.pending.is_some() || self.overlay.has_choice()
     }
 
+    /// A menu scrolls under a resting pointer: the window asks for the next frame.
+    pub(super) fn animating(&self) -> bool {
+        self.overlay.animating()
+    }
+
     pub(super) fn queue(&mut self, popup: crate::platform::chrome::QueuedPopup) {
         self.pending = Some(popup);
     }

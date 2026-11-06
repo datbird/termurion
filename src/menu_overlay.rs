@@ -19,6 +19,10 @@ const GAP: f32 = 28.0;
 const TITLE_PAD: f32 = 10.0;
 const TEXT_PT: f32 = 14.0;
 const EDGE: f32 = 4.0;
+/// The strip at the top or bottom of a menu taller than the window, with its scroll arrow.
+const SCROLL_STRIP_PT: f32 = 16.0;
+/// How fast a menu scrolls while the pointer rests on an arrow, in points a second.
+const AUTOSCROLL_PT_S: f32 = 360.0;
 
 /// Whether the overlay took an event; a consumed one does not reach the terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,6 +115,9 @@ struct LevelFrame {
     rect: Rect,
     /// The visible rows: (rect, index in the level's items).
     rows: Vec<(Rect, usize)>,
+    /// The scroll arrows' strips, when the level is taller than the window and can go that way.
+    up: Option<Rect>,
+    down: Option<Rect>,
 }
 
 pub struct Overlay {
@@ -131,6 +138,9 @@ pub struct Overlay {
     out: Option<egui::FullOutput>,
     dirty: bool,
     started: std::time::Instant,
+    /// The pointer rests on a scroll arrow: the level and the way (-1 up, 1 down).
+    autoscroll: Option<(usize, f32)>,
+    last_paint: std::time::Instant,
 }
 
 impl Drop for Overlay {
@@ -165,7 +175,14 @@ impl Overlay {
             out: None,
             dirty: false,
             started: std::time::Instant::now(),
+            autoscroll: None,
+            last_paint: std::time::Instant::now(),
         }
+    }
+
+    /// A menu is scrolling under a resting pointer: the window keeps drawing frames.
+    pub fn animating(&self) -> bool {
+        self.is_open() && self.autoscroll.is_some()
     }
 
     /// The strip's height in pixels at `scale`.
@@ -199,6 +216,7 @@ impl Overlay {
         }
         self.levels.clear();
         self.title = None;
+        self.autoscroll = None;
     }
 
     /// Shows `items` as a pop-up menu with its corner at `at` (points, window coordinates).
@@ -327,7 +345,23 @@ impl Overlay {
             self.open_title(t);
             return;
         }
-        let Some(l) = self.frame.levels.iter().rposition(|l| l.rect.contains(p)) else { return };
+        let Some(l) = self.frame.levels.iter().rposition(|l| l.rect.contains(p)) else {
+            self.autoscroll = None;
+            return;
+        };
+        // On a scroll arrow: a row at once, then on with each frame while the pointer stays.
+        let lf = &self.frame.levels[l];
+        let way = if lf.up.is_some_and(|r| r.contains(p)) { Some(-1.0) } else if lf.down.is_some_and(|r| r.contains(p)) { Some(1.0) } else { None };
+        if let Some(way) = way {
+            if self.autoscroll != Some((l, way)) {
+                self.autoscroll = Some((l, way));
+                self.levels[l].scroll = (self.levels[l].scroll + way * ROW_PT).max(0.0);
+                self.last_paint = std::time::Instant::now();
+            }
+            self.dirty = true;
+            return;
+        }
+        self.autoscroll = None;
         let Some(&(_, idx)) = self.frame.levels[l].rows.iter().find(|(r, _)| r.contains(p)) else { return };
         let rows = self.levels[l].rows();
         if !matches!(rows.get(idx), Some(Row::Item { .. })) {
@@ -542,6 +576,14 @@ impl Overlay {
             viewport_id: egui::ViewportId::ROOT,
             ..Default::default()
         };
+        let now = std::time::Instant::now();
+        if let Some((l, way)) = self.autoscroll
+            && let Some(level) = self.levels.get_mut(l)
+        {
+            level.scroll = (level.scroll + way * AUTOSCROLL_PT_S * (now - self.last_paint).as_secs_f32().min(0.1)).max(0.0);
+            self.dirty = true;
+        }
+        self.last_paint = now;
         let mut frame = Frame::default();
         let mut out = ctx.run_ui(input, |ui| self.draw(ui.ctx(), &mut frame, bar.is_some()));
         // The fonts' texture changes ride in the output: a frame nobody drew first hands its
@@ -618,42 +660,60 @@ impl Overlay {
             };
             let top_limit = if with_bar { BAR_PT } else { 0.0 };
             let height = total.min((screen.y - top_limit - 2.0).max(ROW_PT));
-            if x + width > screen.x {
-                x = if l == 0 { (screen.x - width).max(0.0) } else { (parent.map_or(0.0, |p| p.min.x) - width + 2.0).max(0.0) };
+            match parent.filter(|_| l > 0) {
+                Some(p) => x = submenu_x(p, width, screen.x),
+                None if x + width > screen.x => x = (screen.x - width).max(0.0),
+                None => {}
             }
             if y + height > screen.y {
                 y = (screen.y - height).max(top_limit);
             }
             let rect = Rect::from_min_size(pos2(x, y), vec2(width, height));
             let max_scroll = (total - height).max(0.0);
+            // A level that overflows keeps room for its scroll arrows, so no row hides under one.
+            let margin = EDGE + if max_scroll > 0.0 { SCROLL_STRIP_PT } else { 0.0 };
             // Keyboard selection scrolls into view.
             if self.levels[l].reveal {
                 self.levels[l].reveal = false;
                 if let Some(h) = self.levels[l].hot {
                     let top: f32 = rows[..h].iter().map(|r| if matches!(r, Row::Sep) { SEP_PT } else { ROW_PT }).sum::<f32>() + EDGE;
                     let sc = &mut self.levels[l].scroll;
-                    if top < *sc + EDGE {
-                        *sc = (top - EDGE).max(0.0);
-                    } else if top + ROW_PT > *sc + height - EDGE {
-                        *sc = top + ROW_PT - height + EDGE;
+                    if top < *sc + margin {
+                        *sc = (top - margin).max(0.0);
+                    } else if top + ROW_PT > *sc + height - margin {
+                        *sc = top + ROW_PT - height + margin;
                     }
                 }
             }
             let scroll = self.levels[l].scroll.clamp(0.0, max_scroll);
             self.levels[l].scroll = scroll;
-            let clip = pop.with_clip_rect(rect);
+            let up = (scroll > 0.0).then(|| Rect::from_min_size(rect.min, vec2(width, SCROLL_STRIP_PT)));
+            let down = (scroll < max_scroll).then(|| Rect::from_min_max(pos2(rect.min.x, rect.max.y - SCROLL_STRIP_PT), rect.max));
+            // The pointer's arrow went away at the end of the scroll.
+            if self.autoscroll.is_some_and(|(al, way)| al == l && (if way < 0.0 { up.is_none() } else { down.is_none() })) {
+                self.autoscroll = None;
+            }
+            let rows_rect = Rect::from_min_max(pos2(rect.min.x, up.map_or(rect.min.y, |r| r.max.y)), pos2(rect.max.x, down.map_or(rect.max.y, |r| r.min.y)));
+            let clip = pop.with_clip_rect(rows_rect);
             // Shadow, body and edge.
             pop.rect_filled(rect.translate(vec2(2.0, 3.0)), 4.0, Color32::from_black_alpha(60));
             pop.rect_filled(rect, 4.0, visuals.window_fill);
             pop.rect_stroke(rect, 4.0, Stroke::new(1.0, visuals.window_stroke.color), egui::StrokeKind::Inside);
-            let mut lf = LevelFrame { rect, rows: Vec::new() };
+            for (strip, way) in [(up, -1.0f32), (down, 1.0)] {
+                if let Some(r) = strip {
+                    let c = r.center();
+                    let tip = c + vec2(0.0, 4.0 * way);
+                    pop.add(Shape::convex_polygon(vec![tip, c + vec2(5.0, -4.0 * way), c + vec2(-5.0, -4.0 * way)], text_color, Stroke::NONE));
+                }
+            }
+            let mut lf = LevelFrame { rect, rows: Vec::new(), up, down };
             let mut cy = y + EDGE - scroll;
             let hot = self.levels[l].hot;
             for (i, (row, cell)) in rows.iter().zip(cells).enumerate() {
                 let h = if matches!(row, Row::Sep) { SEP_PT } else { ROW_PT };
                 let rr = Rect::from_min_size(pos2(x + EDGE / 2.0, cy), vec2(width - EDGE, h));
                 cy += h;
-                if rr.max.y <= rect.min.y || rr.min.y >= rect.max.y {
+                if rr.max.y <= rows_rect.min.y || rr.min.y >= rows_rect.max.y {
                     continue;
                 }
                 match (row, cell) {
@@ -680,7 +740,7 @@ impl Overlay {
                             let c = pos2(rr.max.x - PAD, rr.center().y);
                             clip.add(Shape::convex_polygon(vec![c + vec2(-3.0, -4.0), c + vec2(3.0, 0.0), c + vec2(-3.0, 4.0)], ink, Stroke::NONE));
                         }
-                        let vis = rr.intersect(rect);
+                        let vis = rr.intersect(rows_rect);
                         if vis.height() > 0.0 {
                             lf.rows.push((vis, i));
                         }
@@ -709,6 +769,12 @@ impl Overlay {
         lf.rows.iter().find(|(_, i)| matches!(&rows[*i], Row::Item { text: t, .. } if t == text)).map(|(r, _)| *r)
     }
 
+    /// The scroll arrows' strips of open level `level`, in points.
+    #[cfg(test)]
+    pub(crate) fn arrows(&self, level: usize) -> (Option<Rect>, Option<Rect>) {
+        self.frame.levels.get(level).map_or((None, None), |l| (l.up, l.down))
+    }
+
     #[cfg(test)]
     pub(crate) fn hot_text(&self, level: usize) -> Option<String> {
         let l = self.levels.get(level)?;
@@ -716,6 +782,23 @@ impl Overlay {
             Row::Item { text, .. } => Some(text.clone()),
             Row::Sep => None,
         }
+    }
+}
+
+/// Where a submenu of `width` goes beside its parent's row `p`: right of it, else left of it, else
+/// (room on neither side) against the window edge on the roomier side, which covers the least of the
+/// parent, so each parent row keeps a part the pointer can reach.
+fn submenu_x(p: Rect, width: f32, screen_w: f32) -> f32 {
+    let right = p.max.x - 2.0;
+    let left = p.min.x - width + 2.0;
+    if right + width <= screen_w {
+        right
+    } else if left >= 0.0 {
+        left
+    } else if screen_w - p.max.x >= p.min.x {
+        (screen_w - width).max(0.0)
+    } else {
+        0.0
     }
 }
 
@@ -907,6 +990,77 @@ mod tests {
         rig.click(center(t));
         rig.o.set_screen(900.0, 600.0, 1.0);
         assert!(!rig.o.is_open(), "a new size closes it");
+    }
+
+    fn tall_menu(n: usize) -> Menu {
+        let bar = Menu::new();
+        let shell = Submenu::new("Shell", true);
+        for i in 0..n {
+            shell.append(&MenuItem::with_id(format!("r{i}"), format!("Row {i}"), true, None)).unwrap();
+        }
+        bar.append(&shell).unwrap();
+        bar
+    }
+
+    /// A menu taller than the window says so: a down arrow at the bottom, and an up arrow once it
+    /// has scrolled; the pointer resting on an arrow scrolls the menu (as a Mac menu does).
+    #[test]
+    fn a_menu_taller_than_the_window_shows_scroll_arrows() {
+        let mut rig = Rig::new(tall_menu(40));
+        rig.o.set_screen(800.0, 300.0, 1.0);
+        rig.frame();
+        let t = rig.o.title_rect("Shell").unwrap();
+        rig.click(center(t));
+        let (up, down) = rig.o.arrows(0);
+        assert!(up.is_none(), "at the top: no up arrow");
+        let down = down.expect("more rows below: a down arrow");
+        assert!(down.max.y <= 300.0, "the arrow is inside the window");
+        // No row can be hit under the arrow.
+        assert!(!rig.o.frame.levels[0].rows.iter().any(|(r, _)| r.intersects(down.shrink(1.0))), "rows stop above the arrow");
+        rig.mv(center(down));
+        rig.frame();
+        assert!(rig.o.levels[0].scroll > 0.0, "resting on the arrow scrolls");
+        assert!(rig.o.animating(), "and keeps scrolling while the pointer stays");
+        let (up, _) = rig.o.arrows(0);
+        assert!(up.is_some(), "scrolled: an up arrow");
+        // A menu that fits has neither.
+        let mut small = Rig::new(tall_menu(3));
+        let t = small.o.title_rect("Shell").unwrap();
+        small.click(center(t));
+        assert_eq!(small.o.arrows(0), (None, None));
+        assert!(!small.o.animating());
+    }
+
+    /// A submenu with no room on either side goes where it covers the least of its parent, so
+    /// every parent row keeps a part the pointer can reach.
+    #[test]
+    fn a_submenu_without_room_leaves_the_parent_rows_reachable() {
+        let bar = Menu::new();
+        let shell = Submenu::new("Shell", true);
+        let wide = "A long row that makes the menu wide enough";
+        shell.append(&MenuItem::with_id("a", wide, true, None)).unwrap();
+        let sub = Submenu::new("Broadcast Input", true);
+        for i in 0..3 {
+            sub.append(&MenuItem::with_id(format!("s{i}"), format!("{wide} {i}"), true, None)).unwrap();
+        }
+        shell.append(&sub).unwrap();
+        shell.append(&MenuItem::with_id("t", "tmux", true, None)).unwrap();
+        bar.append(&shell).unwrap();
+        let mut rig = Rig::new(bar);
+        // The Shell menu sits at the left edge: no room on the left, a little on the right.
+        rig.o.set_screen(520.0, 600.0, 1.0);
+        rig.frame();
+        let t = rig.o.title_rect("Shell").unwrap();
+        rig.click(center(t));
+        let row = rig.o.row_rect(0, "Broadcast Input").unwrap();
+        rig.mv(center(row));
+        rig.frame();
+        let sub_rect = rig.o.frame.levels.get(1).expect("the submenu opened").rect;
+        for name in [wide, "Broadcast Input", "tmux"] {
+            let r = rig.o.row_rect(0, name).unwrap();
+            let free = if sub_rect.min.x > r.min.x { sub_rect.min.x - r.min.x } else { r.max.x - sub_rect.max.x };
+            assert!(free >= 40.0, "{name}: only {free} pt of the parent row is outside the submenu {sub_rect:?} {r:?}");
+        }
     }
 
     #[test]
