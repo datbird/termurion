@@ -1049,8 +1049,9 @@ impl SettingsWindow {
                         let changed = match page {
                             Page::Keys => {
                                 crate::color_presets::remember_names(globals);
-                                let mut c = settings_keys::keys_page(ui, globals, keys, &profiles, &key_maps);
-                                match crate::settings_hotkey::keys_section(ui, globals, store, hk, keys) {
+                                let mut hotkeys = crate::settings_hotkey::KeysEdit::None;
+                                let mut c = settings_keys::keys_page(ui, globals, keys, &profiles, &key_maps, &mut |ui, g, k| hotkeys = crate::settings_hotkey::keys_section(ui, g, store, hk, k));
+                                match hotkeys {
                                     crate::settings_hotkey::KeysEdit::None => {}
                                     crate::settings_hotkey::KeysEdit::Globals => c = true,
                                     crate::settings_hotkey::KeysEdit::Profile(g) => edit = Edit::Changed(g),

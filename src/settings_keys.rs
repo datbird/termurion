@@ -1263,7 +1263,9 @@ fn globals_in(section: &str) -> Vec<&'static Setting> {
 
 /// iTerm2's Keys pane.
 /// `key_maps` are every profile's Key Mappings, for the possible override warning.
-pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profiles: &[(String, String)], key_maps: &[toml::Table]) -> bool {
+/// Settings > Keys. `tail` draws what follows the page (the Hotkey section) inside its scroll area,
+/// so a short window still reaches it.
+pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profiles: &[(String, String)], key_maps: &[toml::Table], tail: &mut dyn FnMut(&mut egui::Ui, &mut Globals, &mut KeysState)) -> bool {
     let mut changed = false;
     if let Some(k) = st.leader_recorded.take() {
         g.set("Leader", Value::String(k.serialized()));
@@ -1344,6 +1346,7 @@ pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profile
             }
             changed = true;
         }
+        tail(ui, g, st);
     });
     if st.key_editor.as_ref().is_some_and(|e| e.target == Target::Global) {
         let mut map = g.table("GlobalKeyMap");
@@ -4252,7 +4255,42 @@ mod tests {
     #[test]
     fn the_shortcut_key_row_is_hidden_on_macos() {
         assert_eq!(row_hidden("ShortcutKey"), crate::platform::keys::CMD_IS_A_KEY);
-        assert_eq!(row_hidden("AllowSymbolicHotKeys"), crate::platform::keys::CMD_IS_A_KEY);
+        // Only Windows has a hook that could hand its own Win shortcuts back.
+        assert_eq!(row_hidden("AllowSymbolicHotKeys"), !crate::platform::IS_WINDOWS);
+    }
+
+    /// Linux has no global hook: the Super shortcuts are the desktop's anyway, and a remap only
+    /// ever sees the keys Termurion gets, so neither switch has anything to set there.
+    /// What Settings > Keys draws after the page (the Hotkey section) scrolls with it: a window
+    /// too short for the page still reaches it.
+    #[test]
+    fn the_keys_page_tail_scrolls_with_the_page() {
+        let ctx = egui::Context::default();
+        let mut g = Globals::empty(std::path::Path::new("keys-tail-test.toml"));
+        let mut st = KeysState::default();
+        let mut seen = false;
+        for frame in 0..6 {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 240.0))), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                keys_page(ui, &mut g, &mut st, &[], &[], &mut |ui, _, _| {
+                    let r = ui.label("THE TAIL").rect;
+                    if frame == 2 {
+                        ui.scroll_to_rect_animation(r, None, egui::style::ScrollAnimation::none());
+                    }
+                    if frame == 5 {
+                        seen = ui.is_rect_visible(r) && r.max.y <= 240.0;
+                    }
+                });
+            });
+            out.textures_delta.clear();
+        }
+        assert!(seen, "the tail scrolled into view");
+    }
+
+    #[test]
+    fn the_windows_hook_switches_are_hidden_on_linux() {
+        assert_eq!(row_hidden("RemapModifiersGlobally"), cfg!(target_os = "linux"));
+        assert_eq!(row_hidden("AllowSymbolicHotKeys"), !crate::platform::IS_WINDOWS);
     }
 
     #[test]

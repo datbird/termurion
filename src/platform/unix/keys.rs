@@ -44,6 +44,16 @@ pub fn set_hotkeys(chords: Vec<(u32, crate::hotkey::Chord)>, taps: Vec<(u32, u8)
     super::global_keys::set_hotkeys(chords, taps)
 }
 
+/// Why this session can have no system-wide hotkey at all (Wayland), for Settings to say; None
+/// where one can be tried. It looks only at the session kind, so it is cheap to ask each frame.
+pub fn session_hotkey_refusal() -> Option<String> {
+    #[cfg(not(target_os = "macos"))]
+    if super::global_keys::session_kind() == super::global_keys::SessionKind::Wayland {
+        return super::global_keys::session_refusal();
+    }
+    None
+}
+
 /// The text a key types in the keyboard layout; Unix has no virtual key layout lookup, so a key types nothing here.
 pub fn text_for(_vk: u16, _scan: u32, _mods: Mods) -> Option<String> {
     None

@@ -543,6 +543,11 @@ fn fire(ids: &[u32]) {
 
 /// Replaces the system-wide hotkeys: chords (RegisterHotKey on the hook thread, or the hook
 /// for chords the shell owns) and double taps (modifier, id). Returns each chord's outcome.
+/// Windows always has system-wide hotkeys to try: nothing to say.
+pub fn session_hotkey_refusal() -> Option<String> {
+    None
+}
+
 pub fn set_hotkeys(chords: Vec<(u32, crate::hotkey::Chord)>, taps: Vec<(u32, u8)>, min: std::time::Duration, max: std::time::Duration) -> Result<Vec<(u32, Result<(), String>)>, String> {
     use windows_sys::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
     let thread = HOOK_THREAD.load(Ordering::Acquire);

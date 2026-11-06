@@ -470,6 +470,10 @@ pub fn keys_section(ui: &mut egui::Ui, g: &mut Globals, store: &mut Store, st: &
     let others: Vec<(String, Prefs)> = store.profiles.iter().map(|p| (p.guid(), Prefs::from_profile(p))).collect();
     ui.add_space(8.0);
     ui.strong("Hotkey");
+    // A Wayland session has no global grab: say so before any row that would need one.
+    if let Some(why) = crate::platform::keys::session_hotkey_refusal() {
+        ui.colored_label(WARN, format!("Warning: {why}"));
+    }
     ui.horizontal(|ui| {
         ui.label("Hotkey Window:");
         if ui.button("Create a Dedicated Hotkey Window...").clicked() {
@@ -623,6 +627,37 @@ pub fn keys_section(ui: &mut egui::Ui, g: &mut Globals, store: &mut Store, st: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Wayland session has no global grab: the Hotkey section says why at its top.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn the_hotkey_section_says_why_wayland_has_none() {
+        use crate::platform::unix::global_keys::{force_session, SessionKind};
+        let texts = |kind| {
+            force_session(Some(kind));
+            let ctx = egui::Context::default();
+            let mut g = Globals::empty(std::path::Path::new("hotkey-note-test.toml"));
+            let mut store = Store::fresh(std::path::Path::new("hotkey-note-test.toml"));
+            let (mut st, mut keys) = (HotkeyUi::default(), KeysState::default());
+            let mut out = Vec::new();
+            for _ in 0..2 {
+                let mut full = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    keys_section(ui, &mut g, &mut store, &mut st, &mut keys);
+                });
+                full.textures_delta.clear();
+                out = full.shapes.iter().filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.job.text.clone()),
+                    _ => None,
+                }).collect::<Vec<_>>();
+            }
+            force_session(None);
+            out
+        };
+        let wayland = texts(SessionKind::Wayland);
+        assert!(wayland.iter().any(|t| t.contains("Wayland has no global shortcut grab")), "{wayland:?}");
+        let x11 = texts(SessionKind::X11);
+        assert!(!x11.iter().any(|t| t.contains("Wayland")), "{x11:?}");
+    }
 
     #[test]
     fn session_row_marks_a_waiting_value() {
