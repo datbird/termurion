@@ -6,7 +6,7 @@
 //! Every call runs on a worker thread and the caller waits at most 5 s. A call that is stuck in an
 //! unlock prompt answers "locked" and later calls answer it at once while the prompt is open. A
 //! create or delete the service asks a person about is dismissed when the caller gives up, so a
-//! change reported as not made never happens later; calls meanwhile answer at once too. A call
+//! prompt the caller gave up on never makes the change later; calls meanwhile answer at once too. A call
 //! that is stuck anywhere else (a hung service) trips a latch: later calls answer "did not
 //! answer" at once until a background probe gets an answer. Every bus call has a 5 s bound and a
 //! prompt left open is let go after `PROMPT_LIFE`, so no worker thread lives on for good. A
@@ -38,7 +38,7 @@ const PROMPT_IFACE: &str = "org.freedesktop.Secret.Prompt";
 /// How long a prompt nobody answers keeps its worker; the connection is closed after it.
 const PROMPT_LIFE: Duration = Duration::from_secs(120);
 const BUSY: &str = "The Secret Service is still closing an earlier confirmation; try again";
-const NOT_MADE: &str = "The Secret Service asked to confirm the change and no answer came in time, so it was not made; try again";
+const NOT_MADE: &str = "The Secret Service did not finish the change in time, so it may not have been made; try again";
 
 // What a worker is doing, so a timeout can tell a prompt from a hang.
 const CONNECT: u8 = 0;
@@ -316,7 +316,7 @@ fn with_keyring<T: Send + 'static>(f: impl FnOnce(&Run) -> Result<T, String> + S
             let (owner, conn) = {
                 let mut w = watch.lock().unwrap_or_else(|e| e.into_inner());
                 if ph == MUTATE {
-                    // The caller is told the change was not made, so it must not happen later.
+                    // The caller is told the change may not have been made; a prompt must not make it later.
                     w.dismiss = true;
                     if let (Some(c), Some(p)) = (w.conn.clone(), w.prompt.take()) {
                         dismiss(c, p);
@@ -538,6 +538,13 @@ mod tests {
     use std::process::{Command, Stdio};
 
     const MARKER: &str = "TERMURION_SS_SANDBOX";
+
+    /// m7: a change past its wait may still be made by a slow service, so the person is not told
+    /// it was not made.
+    #[test]
+    fn a_slow_change_may_still_have_been_made() {
+        assert!(NOT_MADE.contains("may not have been made"), "{NOT_MADE}");
+    }
 
     /// How a child test gets its bus.
     #[derive(Clone, Copy, PartialEq)]
