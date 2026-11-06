@@ -1078,7 +1078,6 @@ impl Renderer {
         MONOSPACE.iter().find(|f| self.has_family(f)).map_or_else(|| name.to_string(), |f| f.to_string())
     }
 
-    /// True when a font family with this name is installed.
     /// The installed monospace families, each once.
     pub fn monospace_families(&self) -> Vec<String> {
         let mut out: Vec<String> = self.font_system.db().faces().filter(|f| f.monospaced).filter_map(|f| f.families.first().map(|(n, _)| n.clone())).collect();
@@ -1087,6 +1086,7 @@ impl Renderer {
         out
     }
 
+    /// True when a font family with this name is installed.
     pub fn has_family(&self, name: &str) -> bool {
         if let Some(r) = self.installed.borrow().get(name) {
             return *r;
