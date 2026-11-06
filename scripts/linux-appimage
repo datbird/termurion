@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
 # Builds target/linux/Termurion-<version>-x86_64.AppImage from a release build.
-# appimagetool is fetched once to ~/.cache/termurion/ at a pinned release and run only after its
-# SHA-256 matches. Usage: scripts/linux-appimage
+# appimagetool and the type2 runtime (the first code that runs on a user's machine) are fetched once
+# to ~/.cache/termurion/ at pinned releases and used only after their SHA-256 matches; the runtime is
+# handed to appimagetool, which would otherwise fetch the moving "continuous" one.
+# Usage: scripts/linux-appimage
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo"
 tool_ver=1.9.1
 tool_sha=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
 tool_url="https://github.com/AppImage/appimagetool/releases/download/$tool_ver/appimagetool-x86_64.AppImage"
+# Release 20251108 of AppImage/type2-runtime; its runtime-x86_64.sig checks against the release key.
+runtime_ver=20251108
+runtime_sha=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+runtime_url="https://github.com/AppImage/type2-runtime/releases/download/$runtime_ver/runtime-x86_64"
 cache="$HOME/.cache/termurion"
 tool="$cache/appimagetool-$tool_ver-x86_64.AppImage"
+runtime="$cache/runtime-$runtime_ver-x86_64"
 die() { echo "linux-appimage: $1" >&2; exit 1; }
 [ "$(uname -m)" = x86_64 ] || die "x86_64 only"
 
@@ -17,13 +24,18 @@ ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 [ -n "$ver" ] || die "no version in Cargo.toml"
 
 mkdir -p "$cache"
-ok() { [ -f "$tool" ] && [ "$(sha256sum "$tool" | cut -d' ' -f1)" = "$tool_sha" ]; }
-if ! ok; then
-  rm -f "$tool"
-  curl -fsSL -o "$tool.part" "$tool_url" || die "download failed"
-  mv "$tool.part" "$tool"
-  ok || { rm -f "$tool"; die "appimagetool hash mismatch, not running it"; }
-fi
+# fetch <file> <sha256> <url> <name>: the cached file when its hash matches, else a fresh download
+# that must match before anything uses it.
+ok() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d' ' -f1)" = "$2" ]; }
+fetch() {
+  ok "$1" "$2" && return 0
+  rm -f "$1"
+  curl -fsSL -o "$1.part" "$3" || die "$4 download failed"
+  mv "$1.part" "$1"
+  ok "$1" "$2" || { rm -f "$1"; die "$4 hash mismatch, not using it"; }
+}
+fetch "$tool" "$tool_sha" "$tool_url" appimagetool
+fetch "$runtime" "$runtime_sha" "$runtime_url" "the AppImage runtime"
 chmod +x "$tool"
 
 ~/.cargo/bin/cargo build --release --bins || die "build failed"
@@ -43,5 +55,7 @@ cp "$icon" "$app/usr/share/icons/hicolor/256x256/apps/dev.termurion.Termurion.pn
 
 out="target/linux/Termurion-$ver-x86_64.AppImage"
 rm -f "$out"
-ARCH=x86_64 "$tool" --appimage-extract-and-run "$app" "$out" >&2 || die "appimagetool failed"
+# Checked again right before use: nothing may swap the cached runtime after the fetch.
+ok "$runtime" "$runtime_sha" || die "the AppImage runtime changed in the cache, not using it"
+ARCH=x86_64 "$tool" --appimage-extract-and-run --runtime-file "$runtime" "$app" "$out" >&2 || die "appimagetool failed"
 echo "linux-appimage: $out"

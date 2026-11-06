@@ -234,6 +234,9 @@ case "$scenario" in
         type_pid_line
         shoot
         [ "$(sort -u "$scratch/pids" | wc -l)" -eq 1 ] || fail "expected one pid: $(tr '\n' ' ' < "$scratch/pids")"
+        # An AppImage's runtime variables are the app's, never the shell's.
+        leaked=$(tr '\0' '\n' < "/proc/$(head -1 "$scratch/pids")/environ" 2> /dev/null | grep -E '^(APPDIR|APPIMAGE|ARGV0|OWD)=' | cut -d= -f1 | tr '\n' ' ')
+        [ -z "$leaked" ] || fail "the shell has the AppImage's $leaked"
         ;;
     notify)
         sleep 1

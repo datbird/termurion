@@ -1,4 +1,6 @@
 #!/bin/sh
 # The session host sits beside termurion, and the app finds it there by itself.
 here="$(dirname "$(readlink -f "$0")")"
+# The runtime's variables describe this mount, not the shells the app starts; nothing reads them.
+unset APPDIR APPIMAGE ARGV0 OWD
 exec "$here/usr/bin/termurion" "$@"
