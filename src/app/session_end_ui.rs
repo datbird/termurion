@@ -554,7 +554,7 @@ mod tests {
         let ui = include_str!("tmux_ui.rs");
         assert!(ui.contains("Event::Gone => return self.tmux_disconnected(pane, true),"));
         let gone = body(ui, "    pub(super) fn tmux_disconnected(");
-        assert!(gone.contains("let psmux = self.tmux.get(&pane).is_some_and(|t| t.gw.psmux);") && gone.contains("p.end_client()"));
+        assert!(gone.contains("let psmux = known.is_some_and(|(p, k)| is_psmux(p, k, job.as_deref()));") && gone.contains("p.end_client()"));
         assert!(gone.find("p.end_client()").unwrap() < gone.find("p.seal_tmux();").unwrap(), "what the ended client still writes is dropped");
         assert!(gone.find("p.unhook_tmux();").unwrap() < gone.find("p.end_client()").unwrap(), "only when the hook is let go, never after tmux's own %exit");
         let flush = body(ui, "    pub(super) fn tmux_flush(");

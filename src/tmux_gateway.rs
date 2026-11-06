@@ -230,6 +230,11 @@ impl Gateway {
         self.session = Some((id, name.to_string()));
     }
 
+    /// What ends a command line here ("\r" or "\n").
+    pub fn newline(&self) -> &str {
+        &self.newline
+    }
+
     /// The writes still held (iTerm2's `_writeQueue`), taken.
     pub fn take_held(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.held)

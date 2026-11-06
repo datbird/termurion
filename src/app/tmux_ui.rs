@@ -231,10 +231,15 @@ impl App {
             p.reply(&first);
         }
         crate::rlog!("tmux gateway restored: pane {}", pane);
-        let job = self.panes.get(&pane).and_then(|p| p.shell_pid()).and_then(crate::platform::proc::foreground_job);
-        if self.tmux.get_mut(&pane).is_some_and(|t| stop_if_at_shell(t, job.as_ref().map(|j| j.name.as_str()))) {
+        let job = self.pane_job(pane);
+        if self.tmux.get_mut(&pane).is_some_and(|t| stop_if_at_shell(t, job.as_deref())) {
             self.tmux_disconnected(pane, true);
         }
+    }
+
+    /// The name of the pane's foreground job, as `processNameIsAShell:` reads it.
+    fn pane_job(&self, pane: PaneId) -> Option<String> {
+        self.panes.get(&pane).and_then(|p| p.shell_pid()).and_then(crate::platform::proc::foreground_job).map(|j| j.name)
     }
 
     /// A restored gateway's tab exists by the time its writes go: its client size is read
@@ -342,9 +347,15 @@ impl App {
                 // %exit, or a stream that is not tmux (then the hook lets go too, and psmux's
                 // client is ended, so what follows is drawn: `PS:11746`).
                 e @ (Event::Exit | Event::Lost) => {
+                    let job = self.pane_job(pane);
+                    let Some(t) = self.tmux.get_mut(&pane) else { return };
+                    let (nl, unhook) = ending(t, &e, job.as_deref());
+                    if let (Some(nl), Some(p)) = (nl, self.panes.get_mut(&pane)) {
+                        p.reply(&nl);
+                    }
                     // tmux 3.2's wait-exit wants the newline the gateway queued.
                     self.tmux_flush(pane);
-                    return self.tmux_disconnected(pane, unhooks(&e));
+                    return self.tmux_disconnected(pane, unhook);
                 }
                 // psmux killed the attached session and sent no %exit: let go (which ends its client).
                 Event::Gone => return self.tmux_disconnected(pane, true),
@@ -392,7 +403,10 @@ impl App {
         }
         self.api_tmux_gone(pane);
         // psmux's client does not leave by itself when its gateway lets go: it is ended here.
-        let psmux = self.tmux.get(&pane).is_some_and(|t| t.gw.psmux);
+        // A restored gateway learns psmux from its first reply, so before that the job tells.
+        let known = self.tmux.get(&pane).map(|t| (t.gw.psmux, t.hs.known));
+        let job = if known.is_some_and(|(p, k)| !p && !k && unhook) { self.pane_job(pane) } else { None };
+        let psmux = known.is_some_and(|(p, k)| is_psmux(p, k, job.as_deref()));
         // A buried gateway comes back first (iTerm2 restores it before anything else).
         if self.buried.contains(pane) {
             self.disinter(pane);
@@ -661,6 +675,36 @@ fn stop_if_at_shell(t: &mut TmuxGw, job: Option<&str>) -> bool {
     true
 }
 
+/// How the gateway ends on `%exit` or on a stream that is not tmux: what goes to the pty first,
+/// and whether the hook must be let go.
+fn ending(t: &mut TmuxGw, e: &Event, job: Option<&str>) -> (Option<Vec<u8>>, bool) {
+    let nl = if *e == Event::Exit { exited(t, job) } else { None };
+    (nl, unhooks(e))
+}
+
+/// Whether the gateway talks to psmux: its first reply says so, and before that (a restored
+/// gateway) the pane's job does.
+fn is_psmux(said: bool, known: bool, job: Option<&str>) -> bool {
+    said || (!known && job.is_some_and(|j| j.eq_ignore_ascii_case("psmux")))
+}
+
+/// `%exit` reached the gateway. One that never learned tmux's version (a restored gateway whose
+/// server died) did not queue tmux 3.2's wait-exit newline, so its client may still wait for an
+/// empty line and eat everything typed. The newline goes straight out while tmux is still the
+/// pane's job, never into a shell. A restore's held handshake is dropped: once the client is
+/// gone it would be typed into the shell.
+fn exited(t: &mut TmuxGw, job: Option<&str>) -> Option<Vec<u8>> {
+    if t.writes_at.take().is_some() {
+        t.gw.discard_held();
+    }
+    (!t.hs.known && job.is_some_and(is_tmux_client)).then(|| t.gw.newline().as_bytes().to_vec())
+}
+
+/// A tmux client by its process name: tmux names its client process "tmux: client".
+fn is_tmux_client(name: &str) -> bool {
+    name == "tmux" || name.starts_with("tmux:")
+}
+
 /// The late writes whose second is up, taken from `late`.
 fn due_late(late: &mut Vec<(PaneId, Instant, Vec<u8>)>, now: Instant) -> Vec<(PaneId, Vec<u8>)> {
     let (due, wait): (Vec<_>, Vec<_>) = std::mem::take(late).into_iter().partition(|(_, at, _)| now >= *at);
@@ -731,9 +775,9 @@ mod tests {
         assert_eq!(t.handshake(tmux_handshake::Ask::AggressiveResize, Some("aggressive-resize on")).map(|a| a.0), Some("Unsupported tmux option".into()));
     }
 
-    /// I1: the quit's `%exit` reaches a restored gateway before the version is known, so no
-    /// newline goes out (`TmuxGateway.m:978-980`, `826-831`). Its held handshake still goes when
-    /// the second is up, as iTerm2's delayed enableWrites still fires.
+    /// I1: the quit's `%exit` reaches a restored gateway before the version is known, so the
+    /// gateway queues no newline (`TmuxGateway.m:978-980`, `826-831`). The client left with the
+    /// quit, so the shell is the job: nothing is written, and the held handshake is dropped.
     #[test]
     fn the_quits_exit_on_a_restored_gateway_writes_no_newline() {
         let t0 = Instant::now();
@@ -741,8 +785,62 @@ mod tests {
         let ev = lines(&mut t, &["%begin 1793828748 574 1", "%end 1793828748 574 1", "%exit"]);
         assert_eq!(ev.last(), Some(&Event::Exit), "{ev:?}");
         assert!(t.gw.take_writes().is_empty());
-        assert_eq!(t.late_writes(), Some((t0 + RESTORE_WRITE_DELAY, kick_off_bytes())), "no newline after the handshake");
-        assert_eq!(t.late_writes(), None, "once");
+        assert_eq!(exited(&mut t, Some("zsh")), None);
+        assert_eq!(t.late_writes(), None, "the handshake is not typed into the shell");
+    }
+
+    /// tmux-restore c: the server died while the app was gone, so the restored gateway gets
+    /// `%exit` before any version. Its client sits in tmux 3.2's wait-exit as the pane's job: it
+    /// gets the newline at once, and the held handshake is dropped, never typed into the shell.
+    #[test]
+    fn an_exit_before_the_version_releases_a_waiting_client_and_drops_the_held_writes() {
+        let t0 = Instant::now();
+        let (mut t, _) = restored(t0);
+        let ev = lines(&mut t, &["%exit"]);
+        assert_eq!(ev.last(), Some(&Event::Exit), "{ev:?}");
+        assert_eq!(exited(&mut t, Some("tmux: client")), Some(b"\r".to_vec()), "the client still waits");
+        assert_eq!(t.late_writes(), None, "nothing is typed a second later");
+        assert!(!t.writes_due(t0 + RESTORE_WRITE_DELAY));
+        assert!(t.gw.take_writes().is_empty());
+        // At a shell the newline would be typed into it: none.
+        let (mut t, _) = restored(t0);
+        lines(&mut t, &["%exit"]);
+        assert_eq!(exited(&mut t, Some("bash")), None);
+        assert_eq!(exited(&mut t, None), None, "no job known: no newline");
+        assert_eq!(t.late_writes(), None);
+        // A known version queued its own newline (or needs none): nothing extra.
+        let (mut t, _) = restored(t0);
+        t.writes_due(t0 + RESTORE_WRITE_DELAY);
+        t.handshake(tmux_handshake::Ask::Version, Some("3.4"));
+        t.gw.take_writes();
+        lines(&mut t, &["%exit"]);
+        assert_eq!(exited(&mut t, Some("tmux")), None);
+        assert_eq!(t.gw.take_writes(), b"\r", "the gateway's own wait-exit newline");
+    }
+
+    /// m1: the Exit and Lost arm. `%exit` releases a waiting client and keeps the hook (it left
+    /// already); a stream that is not tmux writes nothing and lets go of the hook.
+    #[test]
+    fn the_exit_and_lost_arm_writes_and_unhooks_as_it_must() {
+        let t0 = Instant::now();
+        let (mut t, _) = restored(t0);
+        assert_eq!(ending(&mut t, &Event::Exit, Some("tmux: client")), (Some(b"\r".to_vec()), false));
+        let (mut t, _) = restored(t0);
+        assert_eq!(ending(&mut t, &Event::Exit, Some("tmux")).0, Some(b"\r".to_vec()));
+        let (mut t, _) = restored(t0);
+        assert_eq!(ending(&mut t, &Event::Lost, Some("tmux")), (None, true));
+        assert!(t.writes_at.is_some(), "a lost stream keeps iTerm2's delayed writes");
+    }
+
+    /// m2: a restored psmux gateway that loses its stream before its first reply still ends
+    /// psmux's client; a tmux one, or one whose version is known, goes by what tmux said.
+    #[test]
+    fn a_restored_psmux_gateway_is_known_by_its_job_before_its_first_reply() {
+        assert!(is_psmux(false, false, Some("psmux")));
+        assert!(!is_psmux(false, false, Some("tmux")));
+        assert!(!is_psmux(false, true, Some("psmux")), "the reply said tmux");
+        assert!(is_psmux(true, true, None));
+        assert!(!is_psmux(false, false, None));
     }
 
     /// I4: a restored pane that is not talking to tmux prints iTerm2's words and lets go
