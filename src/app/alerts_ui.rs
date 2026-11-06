@@ -78,8 +78,11 @@ impl App {
         self.activation = click.activation;
         let newest = crate::platform::notify::shown_count();
         if click.shown != newest {
-            if let Some(pane) = notified_session(&self.notified, click.shown) {
-                self.reveal_pane(pane);
+            // One that named no session (a script failure, a debug notice, a link) still brings
+            // Termurion forward.
+            match older_click(&self.notified, click.shown) {
+                OlderClick::Session(pane) => self.reveal_pane(pane),
+                OlderClick::Forward => self.bring_forward(),
             }
             self.activation = None;
             return;
@@ -214,6 +217,19 @@ fn notified_session(list: &std::collections::VecDeque<(u64, PaneId)>, shown: u64
     list.iter().rev().find(|(n, _)| *n == shown).map(|(_, p)| *p)
 }
 
+/// What a click on an older notification does.
+#[derive(Debug, PartialEq)]
+enum OlderClick {
+    /// Reveals the session it was about.
+    Session(PaneId),
+    /// It named no session: Termurion comes forward.
+    Forward,
+}
+
+fn older_click(list: &std::collections::VecDeque<(u64, PaneId)>, shown: u64) -> OlderClick {
+    notified_session(list, shown).map_or(OlderClick::Forward, OlderClick::Session)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +247,16 @@ mod tests {
             remember_notified(&mut list, 100 + n, 12);
         }
         assert_eq!(notified_session(&list, 4), None, "the oldest are forgotten");
+    }
+
+    /// m3: a click on an older notification that named no session (a script failure, a debug
+    /// notice, a link) still brings Termurion forward.
+    #[test]
+    fn an_older_click_with_no_session_brings_the_window_forward() {
+        let mut list = std::collections::VecDeque::new();
+        remember_notified(&mut list, 4, 10);
+        assert_eq!(older_click(&list, 4), OlderClick::Session(10));
+        assert_eq!(older_click(&list, 3), OlderClick::Forward);
     }
 
     /// m6: a show whose call tells the earlier show's failure was queued itself, so its click
