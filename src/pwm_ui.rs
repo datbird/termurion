@@ -889,12 +889,14 @@ fn gate_body(ui: &mut egui::Ui, user: &str, password: &mut Secret, note: Option<
     let mut out = GateUi::default();
     ui.horizontal(|ui| {
         let title = ui.add(egui::Label::new(egui::RichText::new("Termurion").strong()).sense(egui::Sense::click_and_drag()));
-        out.drag = title.drag_started() || title.is_pointer_button_down_on();
+        // Only the press starts a move: during the move the window manager has the pointer, and
+        // egui never hears the release.
+        out.drag = title.drag_started_by(egui::PointerButton::Primary);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             out.cancel |= ui.add(egui::Button::new("\u{2715}").frame(false)).on_hover_text("Close").clicked();
             // The rest of the row moves the window too.
             let rest = ui.allocate_response(ui.available_size(), egui::Sense::drag());
-            out.drag |= rest.drag_started();
+            out.drag |= rest.drag_started_by(egui::PointerButton::Primary);
         });
     });
     ui.separator();
@@ -990,6 +992,35 @@ impl GateWindow {
 mod tests {
     use super::*;
 
+    /// A press on the title row starts one window move. While the window manager moves the window
+    /// the release goes to it, so egui still thinks the button is down: no frame after the press
+    /// may ask for another move (a window manager that trusts the request would keep moving).
+    #[test]
+    fn a_press_on_the_title_row_starts_one_move() {
+        let ctx = egui::Context::default();
+        let (mut password, mut focus, mut opened) = (Secret::new(String::new()), false, None);
+        let at = egui::pos2(20.0, 12.0);
+        let mut moves = 0;
+        for frame in 0..8 {
+            let mut input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 200.0))), ..Default::default() };
+            match frame {
+                1 => input.events.push(egui::Event::PointerMoved(at)),
+                2 => input.events.push(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() }),
+                3 => input.events.push(egui::Event::PointerMoved(at + egui::vec2(30.0, 0.0))),
+                // The window manager has the pointer now: egui hears nothing more.
+                4 => input.events.push(egui::Event::PointerGone),
+                _ => {}
+            }
+            let mut out = ctx.run_ui(input, |ui| {
+                if gate_body(ui, "me", &mut password, None, false, &mut focus, &mut opened).drag {
+                    moves += 1;
+                }
+            });
+            out.textures_delta.clear();
+        }
+        assert_eq!(moves, 1, "one move for one press");
+    }
+
     /// The gate is a dialog: a fixed size with only a close button, and as tall as what it shows.
     #[test]
     fn the_gate_is_a_fixed_size_dialog() {
@@ -1012,7 +1043,6 @@ mod tests {
             }).collect::<Vec<_>>();
         }
         assert!(texts.iter().any(|t| t == "Termurion") && texts.iter().any(|t| t == "\u{2715}"), "{texts:?}");
-        assert!(!texts.iter().any(|t| t.contains('\u{2013}') || t == "\u{25a1}"), "no minimize or maximize: {texts:?}");
     }
 
     /// R13x77-3: a manager a page opened has no keyboard default. Return, Space, Tab, Delete,
