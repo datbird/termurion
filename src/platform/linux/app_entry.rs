@@ -4,6 +4,7 @@
 //! under the user's data folder, and a later run from a moved AppImage points the entry there.
 //! An entry a package installed, or one the user wrote, is never touched.
 
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -27,6 +28,8 @@ pub enum Installed {
     PackageHasOne,
     /// An entry without the mark is there (the user's own): left alone.
     NotOurs,
+    /// The AppImage's path cannot go into an entry, and why.
+    Refused(&'static str),
 }
 
 /// The packaged entry, with Exec pointing at `appimage` and the mark added.
@@ -77,6 +80,12 @@ fn write_whole(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// Installs the entry for `appimage` under `data_home` (and copies `icon` beside it), unless a
 /// system data folder already has one or the one there is not ours.
 pub fn install_in(data_home: &Path, system_dirs: &[PathBuf], appimage: &Path, icon: Option<&Path>) -> io::Result<Installed> {
+    // A line break in the path would add lines to the entry (the last Exec wins); a path that is
+    // not UTF-8 cannot be written into it at all. Either way no entry is made.
+    let Some(path) = appimage.to_str() else { return Ok(Installed::Refused("the AppImage's path is not UTF-8")) };
+    if path.chars().any(char::is_control) {
+        return Ok(Installed::Refused("the AppImage's path has a control character"));
+    }
     let name = format!("{APP_ID}.desktop");
     if system_dirs.iter().any(|d| d.join("applications").join(&name).is_file()) {
         return Ok(Installed::PackageHasOne);
@@ -103,6 +112,17 @@ pub fn install_in(data_home: &Path, system_dirs: &[PathBuf], appimage: &Path, ic
     Ok(outcome)
 }
 
+/// The user's data folder and the system ones, as the XDG Base Directory spec reads them: a
+/// relative value is ignored (the default stands), and a system folder that is the user's own
+/// (some profiles list it) is left out, so the entry written there is never taken for a package's.
+pub fn data_folders(home: Option<OsString>, data_home: Option<OsString>, data_dirs: Option<OsString>) -> Option<(PathBuf, Vec<PathBuf>)> {
+    let absolute = |v: Option<OsString>| v.map(PathBuf::from).filter(|p| p.is_absolute());
+    let user = absolute(data_home).or_else(|| absolute(home).map(|h| h.join(".local/share")))?;
+    let listed = data_dirs.filter(|v| !v.is_empty()).unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    let system = std::env::split_paths(&listed).filter(|p| p.is_absolute() && *p != user).collect();
+    Some((user, system))
+}
+
 /// At startup, before any thread: takes the AppImage's path out of the environment and, when
 /// there is one, installs the entry for it.
 pub fn install_at_startup() {
@@ -110,14 +130,14 @@ pub fn install_at_startup() {
     // SAFETY: called first thing in `run`, before any thread exists.
     unsafe { std::env::remove_var(APPIMAGE_VAR) };
     let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
-    let Some(data_home) = var("XDG_DATA_HOME").map(PathBuf::from).or_else(|| var("HOME").map(|h| PathBuf::from(h).join(".local/share"))) else { return };
-    let system: Vec<PathBuf> = std::env::split_paths(&var("XDG_DATA_DIRS").unwrap_or_else(|| "/usr/local/share:/usr/share".into())).collect();
+    let Some((data_home, system)) = data_folders(var("HOME"), var("XDG_DATA_HOME"), var("XDG_DATA_DIRS")) else { return };
     // The AppDir's icon, beside the running binary (usr/bin/termurion).
     let icon = std::env::current_exe().ok().and_then(|e| e.parent()?.parent().map(|usr| usr.join("share/icons/hicolor/256x256/apps").join(format!("{APP_ID}.png")))).filter(|p| p.is_file());
     match install_in(&data_home, &system, Path::new(&appimage), icon.as_deref()) {
         Ok(Installed::Wrote) => crate::rlog!("installed the desktop entry for this AppImage"),
         Ok(Installed::Updated) => crate::rlog!("the desktop entry now points at this AppImage"),
         Ok(_) => {}
+        Ok(Installed::Refused(why)) => crate::rlog!("no desktop entry for this AppImage: {}", why),
         Err(_) => crate::rlog!("could not install the desktop entry"),
     }
 }
@@ -179,6 +199,44 @@ mod tests {
         std::fs::write(home.join(format!("applications/{APP_ID}.desktop")), "[Desktop Entry]\nExec=mine\n").unwrap();
         assert_eq!(install_in(&home, std::slice::from_ref(&other), app, None).unwrap(), Installed::NotOurs);
         assert_eq!(entry(&home), "[Desktop Entry]\nExec=mine\n");
+    }
+
+    /// A path with a line break (or any control character) would add lines to the entry, and
+    /// the last Exec wins: no entry is written for it.
+    #[test]
+    fn a_path_with_a_control_character_gets_no_entry() {
+        let s = Scratch::new("control");
+        let home = s.0.join("home");
+        for bad in ["/a/x\nExec=sh -c evil\nX=/T.AppImage", "/a/tab\there.AppImage", "/a/cr\r.AppImage"] {
+            assert!(matches!(install_in(&home, &[], Path::new(bad), None), Ok(Installed::Refused(_))), "{bad:?}");
+        }
+        assert!(!home.join("applications").exists(), "nothing written");
+    }
+
+    #[test]
+    fn data_folders_follow_the_xdg_spec() {
+        let os = |s: &str| Some(OsString::from(s));
+        let (user, system) = data_folders(os("/home/me"), None, None).unwrap();
+        assert_eq!((user, system), (PathBuf::from("/home/me/.local/share"), vec![PathBuf::from("/usr/local/share"), PathBuf::from("/usr/share")]));
+        // A relative XDG_DATA_HOME is ignored, and so is a relative system folder.
+        let (user, system) = data_folders(os("/home/me"), os("rel/data"), os("rel:/usr/share")).unwrap();
+        assert_eq!((user, system), (PathBuf::from("/home/me/.local/share"), vec![PathBuf::from("/usr/share")]));
+        // The user's own folder listed among the system ones is left out of them.
+        let (user, system) = data_folders(os("/home/me"), os("/home/me/data"), os("/home/me/data:/usr/share")).unwrap();
+        assert_eq!((user, system), (PathBuf::from("/home/me/data"), vec![PathBuf::from("/usr/share")]));
+        assert_eq!(data_folders(None, os("rel"), None), None, "no absolute folder at all: nothing");
+    }
+
+    /// The entry written last run is ours, also when the user's folder is listed as a system one:
+    /// a moved AppImage still updates it.
+    #[test]
+    fn a_user_folder_listed_as_a_system_one_still_gets_updates() {
+        let s = Scratch::new("listed");
+        let home = s.0.join("home");
+        let os = |p: &Path| Some(OsString::from(p));
+        let (user, system) = data_folders(None, os(&home), os(&home)).unwrap();
+        assert_eq!(install_in(&user, &system, Path::new("/a/T.AppImage"), None).unwrap(), Installed::Wrote);
+        assert_eq!(install_in(&user, &system, Path::new("/b/T.AppImage"), None).unwrap(), Installed::Updated);
     }
 
     #[test]

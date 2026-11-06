@@ -295,7 +295,14 @@ case "$scenario" in
         case "${TERMURION_BIN:-}" in
             *.AppImage)
                 entry="$scratch/home/.local/share/applications/dev.termurion.Termurion.desktop"
-                grep -qxF "Exec=\"$TERMURION_BIN\" %U" "$entry" 2> /dev/null || fail "no desktop entry for the AppImage at $entry"
+                grep -qxF "X-Termurion-AppImage=true" "$entry" 2> /dev/null || fail "no desktop entry for the AppImage at $entry"
+                # Exec names the AppImage by its absolute path (the runtime's APPIMAGE); a path with a
+                # character the entry escapes is checked only for the quoted form.
+                appimage=$(realpath "$TERMURION_BIN")
+                case "$appimage" in
+                    *[!A-Za-z0-9/._+-]*) grep -q '^Exec=".*" %U$' "$entry" || fail "the entry's Exec is not one quoted path" ;;
+                    *) grep -qxF "Exec=\"$appimage\" %U" "$entry" || fail "the entry's Exec is not $appimage" ;;
+                esac
                 [ -s "$scratch/home/.local/share/icons/hicolor/256x256/apps/dev.termurion.Termurion.png" ] || fail "no icon beside the desktop entry"
                 ;;
         esac

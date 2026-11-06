@@ -276,7 +276,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("host_client.rs", 2),
     ("jobwatch.rs", 2),
     ("perm_queue.rs", 1),
-    ("platform/linux/app_entry.rs", 3),
+    ("platform/linux/app_entry.rs", 4),
     ("platform/linux/hotkey.rs", 1),
     ("platform/linux/notify.rs", 1),
     ("platform/linux/quarantine.rs", 2),
