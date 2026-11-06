@@ -79,8 +79,8 @@ impl PickerWindow {
     fn open(event_loop: &ActiveEventLoop, gpu: (&wgpu::Instance, &wgpu::Adapter, &wgpu::Device, &wgpu::Queue), purpose: Purpose, picker: Picker, current: Option<&str>, message: &str, remember_label: Option<String>, minimal: bool) -> Result<PickerWindow, String> {
         let height = if remember_label.is_some() { 230.0 } else { 200.0 };
         let mut host = EguiHost::open_dialog(event_loop, gpu.0, gpu.1, gpu.2, gpu.3, "Locale", 480.0, height)?;
-        // The locale list drops down inside the window: while it is open the window keeps its
-        // old height, so about nine rows show at once.
+        // The locale list drops down inside the window: the window keeps its old height, so
+        // about nine rows show when it opens.
         host.set_dialog_floor(height);
         let selected = current.and_then(|c| picker.find(c)).or(picker.default);
         Ok(PickerWindow { host, purpose, picker, selected, message: message.to_string(), remember_label, remember: false, minimal })

@@ -179,8 +179,9 @@ impl EguiHost {
         self
     }
 
-    /// A dialog that keeps at least this height (points) while one of its drop-down lists is
-    /// open, so the list has room in the window.
+    /// A dialog that keeps at least this height (points) for its whole life: a drop-down list is
+    /// sized in the frame it opens, to the room under it, and never grows into a window that
+    /// grows after, so the room has to be there before it opens.
     pub fn set_dialog_floor(&mut self, h: f64) {
         if let Some(d) = self.dialog.as_mut() {
             d.2 = h as f32;
@@ -308,7 +309,7 @@ impl EguiHost {
         // A fixed-size window keeps its min and max at its first size on Wayland, so both move
         // with each fit (X11 takes the new size the same way).
         if let Some((_, fit, floor)) = self.dialog.as_mut()
-            && let Some(want) = crate::dialog_frame::next_height(framed.height, *fit, if framed.list_open { *floor } else { 0.0 })
+            && let Some(want) = crate::dialog_frame::next_height(framed.height, *fit, *floor)
         {
             *fit = want;
             let w = f64::from(self.window.inner_size().width) / self.window.scale_factor();

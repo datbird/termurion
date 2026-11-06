@@ -81,8 +81,8 @@ impl PromptWindow {
 
     /// Earlier entries, offered in a list under the text.
     pub fn with_choices(mut self, choices: Vec<String>) -> PromptWindow {
-        // The History list drops down inside the window: while it is open there is room for
-        // about nine rows under it.
+        // The History list drops down inside the window: room for about nine rows under it,
+        // kept for the window's life (a list is sized when it opens).
         if !choices.is_empty() {
             let h = f64::from(self.host.window.inner_size().height) / self.host.window.scale_factor();
             self.host.set_dialog_floor(h + HISTORY_ROOM);

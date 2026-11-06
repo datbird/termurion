@@ -36,8 +36,6 @@ pub struct Framed {
     pub drag: bool,
     /// The height the window needs, in points (the content and the margins).
     pub height: f32,
-    /// A drop-down list is open: the dialog's floor holds, so the list has room.
-    pub list_open: bool,
 }
 
 /// Draws the dialog's panel and `body` in it; with `own_frame`, the title row first and a thin
@@ -80,7 +78,6 @@ pub fn show(ui: &mut egui::Ui, title: &str, own_frame: bool, body: &mut dyn FnMu
         });
         // The margins and the edge, top and bottom.
         out.height = column.response.rect.height() + margins;
-        out.list_open = egui::Popup::is_any_open(ui.ctx());
     });
     out
 }
@@ -104,21 +101,30 @@ pub fn request_close(id: winit::window::WindowId) {
 /// window is as tall as the last frame asked for. The heights, frame by frame.
 #[cfg(test)]
 pub(crate) fn settle(width: f32, start: f32, frames: usize, body: &mut dyn FnMut(&mut egui::Ui)) -> Vec<f32> {
+    settle_with(width, start, 0.0, frames, &mut |_| Vec::new(), body).0
+}
+
+/// `settle` for a dialog with a least height `floor`, with `events(frame)` as each frame's input.
+/// Also gives back the last frame's output.
+#[cfg(test)]
+pub(crate) fn settle_with(width: f32, start: f32, floor: f32, frames: usize, events: &mut dyn FnMut(usize) -> Vec<egui::Event>, body: &mut dyn FnMut(&mut egui::Ui)) -> (Vec<f32>, egui::FullOutput) {
     let ctx = egui::Context::default();
     let mut h = start;
     let mut seen = Vec::new();
-    for _ in 0..frames {
-        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, h))), ..Default::default() };
+    let mut last = egui::FullOutput::default();
+    for frame in 0..frames {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, h))), events: events(frame), ..Default::default() };
         let mut next = h;
         let mut out = ctx.run_ui(input, |ui| {
             let f = show(ui, "Termurion", true, body);
-            next = next_height(f.height, h, 0.0).unwrap_or(h);
+            next = next_height(f.height, h, floor).unwrap_or(h);
         });
         out.textures_delta.clear();
         h = next;
         seen.push(h);
+        last = out;
     }
-    seen
+    (seen, last)
 }
 
 #[cfg(test)]
@@ -134,6 +140,40 @@ mod tests {
         assert_eq!(next_height(250.4, 200.0, 200.0), Some(251.0));
         assert_eq!(next_height(250.4, 251.0, 0.0), None);
         assert_eq!(next_height(0.0, 100.0, 0.0), None, "nothing measured yet");
+    }
+
+    /// A dialog with a drop-down list (Locale) keeps room for it: clicked open, the list shows
+    /// about nine rows inside the window.
+    #[test]
+    fn a_dialog_with_a_list_shows_about_nine_rows() {
+        let combo = std::cell::Cell::new(egui::Rect::NOTHING);
+        let mut sel = 0;
+        let (hs, out) = settle_with(480.0, 200.0, 200.0, 40, &mut |frame| {
+            let at = combo.get().center();
+            match frame {
+                20 => vec![egui::Event::PointerMoved(at), egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() }],
+                21 => vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() }],
+                _ => Vec::new(),
+            }
+        }, &mut |ui| {
+            ui.label("Choose the locale Termurion uses for this.");
+            combo.set(egui::ComboBox::from_id_salt("locale_pick").width(ui.available_width() - 8.0).selected_text(format!("item {sel}")).show_ui(ui, |ui| {
+                for i in 0..40 {
+                    ui.selectable_value(&mut sel, i, format!("item {i}"));
+                }
+            }).response.rect);
+            ui.horizontal(|ui| {
+                let _ = ui.button("Cancel");
+                let _ = ui.button("OK");
+            });
+        });
+        let h = *hs.last().unwrap();
+        // Each "item" text drawn whole inside its clip and the window (the combo's own label too).
+        let rows = out.shapes.iter().filter(|c| match &c.shape {
+            egui::Shape::Text(t) => t.galley.job.text.starts_with("item ") && c.clip_rect.contains(t.pos + egui::vec2(1.0, t.galley.size().y - 1.0)) && t.pos.y + t.galley.size().y <= h,
+            _ => false,
+        }).count();
+        assert!(rows >= 9, "{rows} rows show in a {h} pt window: {hs:?}");
     }
 
     /// A title wider than the window still leaves the close button inside it.
