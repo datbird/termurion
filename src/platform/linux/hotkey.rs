@@ -658,7 +658,10 @@ mod tests {
             if !ours(w as isize) {
                 bad += 1;
             }
+            // Leave the shared test display as we found it.
+            conn.destroy_window(w).unwrap();
         }
+        conn.sync().unwrap();
         assert_eq!(bad, 0, "ours missed a fresh window");
     }
 

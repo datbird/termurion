@@ -1956,8 +1956,8 @@ fn message_box(text: &str) {
 /// with the process; the icon lingers until hovered). It runs on the UI thread, and twice is safe.
 pub(crate) fn teardown_process() {
     crate::dlog::stop_at_exit();
-    // Every exit comes here while the app's windows still hold the Wayland display (a loop that
-    // ended with an error skipped `exiting`).
+    // `exiting` has already let go of it on every winit way out; this is the backstop for a panic
+    // on the main thread, and a second call does nothing.
     crate::platform::window::forget_activation();
     crate::platform::keys::uninstall();
     crate::input_locale::restore_after_panic();
