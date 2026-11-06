@@ -563,7 +563,6 @@ mod tests {
         let c = calls.last().expect("a Notify call");
         assert_eq!((c.app.as_str(), c.title.as_str(), c.body.as_str()), ("Termurion", "Build done", "all green"));
         assert!(c.actions.iter().any(|a| a == "default"), "{:?}", c.actions);
-        assert_eq!(c.entry, desktop_entry(), "the installed .desktop file's name, or no hint");
     }
 
     /// The hint names an installed entry only: GNOME shows a named entry that is not there as the

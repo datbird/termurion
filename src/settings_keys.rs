@@ -4259,8 +4259,6 @@ mod tests {
         assert_eq!(row_hidden("AllowSymbolicHotKeys"), !crate::platform::IS_WINDOWS);
     }
 
-    /// Linux has no global hook: the Super shortcuts are the desktop's anyway, and a remap only
-    /// ever sees the keys Termurion gets, so neither switch has anything to set there.
     /// What Settings > Keys draws after the page (the Hotkey section) scrolls with it: a window
     /// too short for the page still reaches it.
     #[test]
@@ -4287,6 +4285,8 @@ mod tests {
         assert!(seen, "the tail scrolled into view");
     }
 
+    /// Linux has no global hook: the Super shortcuts are the desktop's anyway, and a remap only
+    /// ever sees the keys Termurion gets, so neither switch has anything to set there.
     #[test]
     fn the_windows_hook_switches_are_hidden_on_linux() {
         assert_eq!(row_hidden("RemapModifiersGlobally"), cfg!(target_os = "linux"));

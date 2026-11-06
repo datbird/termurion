@@ -320,10 +320,6 @@ pub fn chord_label(c: &Chord) -> String {
 mod tests {
     use super::*;
 
-    /// The class (Task 3 round 1): ONE filter hides Capture GPU Frame (release) and Check Settings
-    /// Control Truncation (always) from every menu copy and every list of menu actions: the window
-    /// menu, the tray's Main Menu, the key-binding targets, Open Quickly and the API's lookups.
-    /// A list is built from `shown_items()`; `items()` is only searched by selector.
     /// The Windows default terminal pair (a registry setting) and the Mac's Services submenu have
     /// nothing to do on Linux, so its menus leave them out.
     #[test]
@@ -335,6 +331,10 @@ mod tests {
         assert_eq!(shown_items().any(|i| i.path == ["Termurion", "Services"]), !linux, "Services");
     }
 
+    /// The class (Task 3 round 1): ONE filter hides Capture GPU Frame (release) and Check Settings
+    /// Control Truncation (always) from every menu copy and every list of menu actions: the window
+    /// menu, the tray's Main Menu, the key-binding targets, Open Quickly and the API's lookups.
+    /// A list is built from `shown_items()`; `items()` is only searched by selector.
     #[test]
     fn every_menu_list_goes_through_the_one_filter() {
         for sel in ["newPsmuxSession:", "newWslTmuxSession:"] {
