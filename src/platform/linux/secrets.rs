@@ -3,12 +3,14 @@
 //! `application = termurion`, `target = <Credential Manager target>`, `user = <user>`; the password
 //! manager lists by `application = termurion`, so another program's item is never read or touched.
 //!
-//! Every call runs on a worker thread and the caller waits at most 5 s. A call that is stuck in a
-//! prompt (an unlock, or a create or delete the service asks a person about) answers "locked" and
-//! later calls answer it at once while the prompt is open. A call that is stuck anywhere else
-//! (a hung service) trips a latch: later calls answer "did not answer" at once until a background
-//! probe gets an answer. A missing service is an error naming it, never "nothing stored". No secret
-//! is ever logged.
+//! Every call runs on a worker thread and the caller waits at most 5 s. A call that is stuck in an
+//! unlock prompt answers "locked" and later calls answer it at once while the prompt is open. A
+//! create or delete the service asks a person about is dismissed when the caller gives up, so a
+//! change reported as not made never happens later; calls meanwhile answer at once too. A call
+//! that is stuck anywhere else (a hung service) trips a latch: later calls answer "did not
+//! answer" at once until a background probe gets an answer. Every bus call has a 5 s bound and a
+//! prompt left open is let go after `PROMPT_LIFE`, so no worker thread lives on for good. A
+//! missing service is an error naming it, never "nothing stored". No secret is ever logged.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
@@ -17,6 +19,8 @@ use std::time::{Duration, Instant};
 
 use secret_service::blocking::{Collection, SecretService};
 use secret_service::{EncryptionType, Error as SsError};
+use zbus::blocking::Connection;
+use zbus::zvariant::OwnedObjectPath;
 
 use crate::platform::credentials::guard;
 use crate::pwm::{Account, Secret};
@@ -30,6 +34,11 @@ const LOCKED: &str = "The Secret Service is locked; unlock it and try again";
 const NO_ANSWER: &str = "The Secret Service did not answer in 5 seconds.";
 const UTF8: &str = "text/plain";
 const BUS_NAME: &str = "org.freedesktop.secrets";
+const PROMPT_IFACE: &str = "org.freedesktop.Secret.Prompt";
+/// How long a prompt nobody answers keeps its worker; the connection is closed after it.
+const PROMPT_LIFE: Duration = Duration::from_secs(120);
+const BUSY: &str = "The Secret Service is still closing an earlier confirmation; try again";
+const NOT_MADE: &str = "The Secret Service asked to confirm the change and no answer came in time, so it was not made; try again";
 
 // What a worker is doing, so a timeout can tell a prompt from a hang.
 const CONNECT: u8 = 0;
@@ -40,8 +49,9 @@ const READ: u8 = 3;
 /// Whether calls may go to the service.
 enum Gate {
     Open,
-    /// A person is looking at a prompt that call `id` raised.
-    Prompting { id: u64, owner: Option<String> },
+    /// A person is looking at a prompt that call `id` raised: an unlock, or (`unlock` false) a
+    /// create or delete being dismissed.
+    Prompting { id: u64, owner: Option<String>, unlock: bool },
     /// Call `id` hung. A probe started at `since` clears it when the service answers.
     Down { id: u64, probing: bool, since: Instant },
 }
@@ -72,37 +82,58 @@ fn within<T: Send + 'static>(limit: Duration, f: impl FnOnce() -> Option<T> + Se
     rx.recv_timeout(limit).ok().flatten()
 }
 
+/// A session bus connection whose every call gives up after `limit`, so no thread waits on it for good.
+fn session(limit: Duration) -> zbus::Result<Connection> {
+    zbus::blocking::connection::Builder::session()?.method_timeout(limit).build()
+}
+
 /// The service's bus owner and whether its default keyring is locked; None when it cannot be asked.
 fn look() -> Option<(Option<String>, bool)> {
-    within(Duration::from_secs(2), || {
-        let ss = SecretService::connect(EncryptionType::Plain).ok()?;
+    let limit = Duration::from_secs(1);
+    within(limit, move || {
+        let c = session(limit).ok()?;
+        let owner = bus_owner(&c);
+        let ss = SecretService::connect_with_existing(EncryptionType::Plain, c).ok()?;
         let locked = ss.get_default_collection().ok()?.is_locked().ok()?;
-        Some((bus_owner(), locked))
+        Some((owner, locked))
     })
 }
 
-fn bus_owner() -> Option<String> {
-    let c = zbus::blocking::Connection::session().ok()?;
-    let p = zbus::blocking::fdo::DBusProxy::new(&c).ok()?;
+fn bus_owner(c: &Connection) -> Option<String> {
+    let p = zbus::blocking::fdo::DBusProxy::new(c).ok()?;
     let name = zbus::names::BusName::try_from(BUS_NAME).ok()?;
     p.get_name_owner(name).ok().map(|o| o.to_string())
 }
 
 /// Decides whether a call may go to the service now.
 fn admit() -> Result<(), String> {
+    admit_with(look)
+}
+
+/// `admit` with the look at the keyring passed in. An open unlock prompt answers locked while the
+/// keyring stays locked under the same service; the gate opens only if it still holds the prompt
+/// it looked at (another call may have set a newer state meanwhile).
+fn admit_with(look: impl FnOnce() -> Option<(Option<String>, bool)>) -> Result<(), String> {
     let mut g = gate();
     match &mut *g {
         Gate::Open => Ok(()),
-        Gate::Prompting { owner, .. } => {
-            let was = owner.clone();
+        // A create or delete is being dismissed: its worker opens the gate when it ends.
+        Gate::Prompting { unlock: false, .. } => Err(BUSY.to_string()),
+        Gate::Prompting { owner, id, .. } => {
+            let (was, seen) = (owner.clone(), *id);
             drop(g);
-            // Still locked under the same service: the prompt is open. Anything else clears it.
-            match look() {
-                Some((now, true)) if now == was => Err(LOCKED.to_string()),
-                _ => {
-                    *gate() = Gate::Open;
+            if matches!(look(), Some((now, true)) if now == was) {
+                return Err(LOCKED.to_string());
+            }
+            let mut g = gate();
+            match &*g {
+                Gate::Prompting { id, .. } if *id == seen => {
+                    *g = Gate::Open;
                     Ok(())
                 }
+                Gate::Open => Ok(()),
+                Gate::Prompting { .. } => Err(LOCKED.to_string()),
+                Gate::Down { .. } => Err(NO_ANSWER.to_string()),
             }
         }
         Gate::Down { probing, since, id } => {
@@ -120,27 +151,97 @@ fn admit() -> Result<(), String> {
 /// Asks a service that stopped answering whether it is back. Any answer (even an error) opens the
 /// gate: the next call then reports what is really wrong. No answer leaves it down.
 fn probe(id: u64) {
-    let _ = SecretService::connect(EncryptionType::Plain).and_then(|ss| ss.get_default_collection().map(|_| ()));
+    let _ = session(BOUND).map_err(SsError::from).and_then(|c| SecretService::connect_with_existing(EncryptionType::Plain, c)).and_then(|ss| ss.get_default_collection().map(|_| ()));
     let mut g = gate();
     if matches!(&*g, Gate::Down { id: d, .. } if *d == id) {
         *g = Gate::Open;
     }
 }
 
-/// A finished worker lets go of the gate it holds.
-struct Settle(u64);
+/// A finished worker lets go of the gate it holds, and says it is done under the gate's lock, so a
+/// caller that gives up at the same moment never holds the gate for a worker that has ended.
+struct Settle {
+    id: u64,
+    done: Arc<AtomicBool>,
+}
 
 impl Drop for Settle {
     fn drop(&mut self) {
         let mut g = gate();
+        self.done.store(true, Ordering::SeqCst);
         let mine = match &*g {
-            Gate::Prompting { id, .. } | Gate::Down { id, .. } => *id == self.0,
+            Gate::Prompting { id, .. } | Gate::Down { id, .. } => *id == self.id,
             Gate::Open => false,
         };
         if mine {
             *g = Gate::Open;
         }
     }
+}
+
+/// The caller gave up on its worker: the gate holds it as prompting or hung, unless the worker
+/// already ended. False when it had ended (its answer is waiting).
+fn hold(done: &AtomicBool, gate_then: Gate) -> bool {
+    let mut g = gate();
+    if done.load(Ordering::SeqCst) {
+        return false;
+    }
+    *g = gate_then;
+    true
+}
+
+/// What a worker's connection learned: the service's owner and the prompt a create or delete
+/// opened, so a caller that gives up can dismiss it.
+#[derive(Default)]
+struct Watch {
+    owner: Option<String>,
+    prompt: Option<OwnedObjectPath>,
+    conn: Option<Connection>,
+    /// The caller gave up on a create or delete: a prompt seen from now on is dismissed at once.
+    dismiss: bool,
+}
+
+/// The prompt path in a reply of CreateItem `(item, prompt)`, Delete `(prompt)` or Unlock
+/// `(unlocked, prompt)`; "/" means no prompt.
+fn prompt_in(msg: &zbus::Message) -> Option<OwnedObjectPath> {
+    let body = msg.body();
+    let path = body
+        .deserialize::<(OwnedObjectPath, OwnedObjectPath)>()
+        .map(|b| b.1)
+        .or_else(|_| body.deserialize::<(Vec<OwnedObjectPath>, OwnedObjectPath)>().map(|b| b.1))
+        .or_else(|_| body.deserialize::<OwnedObjectPath>())
+        .ok()?;
+    // A collection or item path (ReadAlias answers with one) is not a prompt.
+    (path.as_str() != "/" && path.as_str().contains("/prompt/")).then_some(path)
+}
+
+/// Dismisses the prompt on its own thread (the call is bounded by the connection's timeout).
+fn dismiss(c: Connection, prompt: OwnedObjectPath) {
+    std::thread::spawn(move || {
+        let _ = c.call_method(Some(BUS_NAME), prompt.as_str(), Some(PROMPT_IFACE), "Dismiss", &());
+    });
+}
+
+/// Reads the replies on a worker's connection for the prompt a create or delete opens. It ends
+/// when the connection closes.
+fn watch_prompts(c: &Connection, watch: Arc<Mutex<Watch>>) -> zbus::Result<()> {
+    let rule = zbus::MatchRule::builder().msg_type(zbus::message::Type::MethodReturn).build();
+    let replies = zbus::blocking::MessageIterator::for_match_rule(rule, c, Some(64))?;
+    std::thread::spawn(move || {
+        for msg in replies {
+            let Ok(msg) = msg else { break };
+            let Some(p) = prompt_in(&msg) else { continue };
+            let mut w = watch.lock().unwrap_or_else(|e| e.into_inner());
+            if w.dismiss {
+                if let Some(c) = w.conn.clone() {
+                    dismiss(c, p);
+                }
+            } else {
+                w.prompt = Some(p);
+            }
+        }
+    });
+    Ok(())
 }
 
 /// What a worker tells the keyring body: it is about to change something (and may be prompted).
@@ -156,30 +257,47 @@ impl Run<'_> {
 }
 
 /// Connects, finds the default keyring, unlocks it and runs `f` there. The caller waits at most 5 s;
-/// a worker stuck in a prompt keeps the gate "locked", one stuck anywhere else trips the latch.
+/// a worker stuck in an unlock prompt keeps the gate "locked", a create or delete prompt is
+/// dismissed, and one stuck anywhere else trips the latch.
 fn with_keyring<T: Send + 'static>(f: impl FnOnce(&Run) -> Result<T, String> + Send + 'static) -> Result<T, String> {
     admit()?;
     let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
     let phase = Arc::new(AtomicU8::new(CONNECT));
     let abandoned = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false));
+    let watch = Arc::new(Mutex::new(Watch::default()));
     let (tx, rx) = mpsc::channel();
     {
-        let (phase, abandoned) = (phase.clone(), abandoned.clone());
+        let (phase, abandoned, done, watch) = (phase.clone(), abandoned.clone(), done.clone(), watch.clone());
         std::thread::spawn(move || {
-            let _settle = Settle(id);
+            let _settle = Settle { id, done };
             let r = (|| {
-                let ss = SecretService::connect(EncryptionType::Dh).map_err(describe)?;
-                let col = ss.get_default_collection().map_err(describe)?;
-                if col.is_locked().map_err(describe)? {
-                    phase.store(UNLOCK, Ordering::SeqCst);
-                    col.unlock().map_err(describe)?;
-                    // Unlocked after the caller left: the caller was told "locked", so do nothing.
-                    if abandoned.load(Ordering::SeqCst) {
-                        return Err(LOCKED.to_string());
-                    }
+                let c = session(BOUND).map_err(|e| describe(e.into()))?;
+                let owner = bus_owner(&c);
+                {
+                    let mut w = watch.lock().unwrap_or_else(|e| e.into_inner());
+                    w.owner = owner;
+                    w.conn = Some(c.clone());
                 }
-                phase.store(READ, Ordering::SeqCst);
-                f(&Run { col: &col, phase: &phase })
+                watch_prompts(&c, watch.clone()).map_err(|e| describe(e.into()))?;
+                let r = (|| {
+                    let ss = SecretService::connect_with_existing(EncryptionType::Dh, c.clone()).map_err(describe)?;
+                    let col = ss.get_default_collection().map_err(describe)?;
+                    if col.is_locked().map_err(describe)? {
+                        phase.store(UNLOCK, Ordering::SeqCst);
+                        col.unlock().map_err(describe)?;
+                        // Unlocked after the caller left: the caller was told "locked", so do nothing.
+                        if abandoned.load(Ordering::SeqCst) {
+                            return Err(LOCKED.to_string());
+                        }
+                    }
+                    phase.store(READ, Ordering::SeqCst);
+                    f(&Run { col: &col, phase: &phase })
+                })();
+                // Ends the reply watcher, and with it every thread of this call.
+                watch.lock().unwrap_or_else(|e| e.into_inner()).conn = None;
+                let _ = c.close();
+                r
             })();
             let _ = tx.send(r);
         });
@@ -195,13 +313,30 @@ fn with_keyring<T: Send + 'static>(f: impl FnOnce(&Run) -> Result<T, String> + S
         let prompting = ph == UNLOCK || ph == MUTATE;
         if waited >= BOUND || (prompting && waited >= PROMPT_WAIT) {
             abandoned.store(true, Ordering::SeqCst);
-            return if prompting {
-                *gate() = Gate::Prompting { id, owner: bus_owner() };
-                Err(LOCKED.to_string())
-            } else {
-                *gate() = Gate::Down { id, probing: false, since: Instant::now() };
-                Err(NO_ANSWER.to_string())
+            let (owner, conn) = {
+                let mut w = watch.lock().unwrap_or_else(|e| e.into_inner());
+                if ph == MUTATE {
+                    // The caller is told the change was not made, so it must not happen later.
+                    w.dismiss = true;
+                    if let (Some(c), Some(p)) = (w.conn.clone(), w.prompt.take()) {
+                        dismiss(c, p);
+                    }
+                }
+                (w.owner.clone(), w.conn.clone())
             };
+            let then = if prompting { Gate::Prompting { id, owner, unlock: ph == UNLOCK } } else { Gate::Down { id, probing: false, since: Instant::now() } };
+            if !hold(&done, then) {
+                // The worker ended just now: its answer is the one to give.
+                return rx.recv().unwrap_or_else(|_| Err("The Secret Service call failed.".to_string()));
+            }
+            // A prompt nobody answers lets go of its worker after a while.
+            if let Some(c) = conn {
+                std::thread::spawn(move || {
+                    std::thread::sleep(PROMPT_LIFE);
+                    let _ = c.close();
+                });
+            }
+            return Err(if ph == MUTATE { NOT_MADE } else if prompting { LOCKED } else { NO_ANSWER }.to_string());
         }
     }
 }
@@ -505,6 +640,85 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
         }
         panic!("the test keyring never came up: {:?}", CredentialManager::new().accounts().err());
+    }
+
+    /// The gate tests take turns: the gate is one for the process. None of them talks to a bus.
+    static GATE_TESTS: Mutex<()> = Mutex::new(());
+
+    fn gate_test() -> std::sync::MutexGuard<'static, ()> {
+        let g = GATE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        *gate() = Gate::Open;
+        g
+    }
+
+    fn prompting(id: u64, unlock: bool) -> Gate {
+        Gate::Prompting { id, owner: Some(":1.5".into()), unlock }
+    }
+
+    /// A dismiss that lands as the caller gives up at the 3 s mark: the worker ended first, so the
+    /// gate is not left prompting for it (the next call may ask again).
+    #[test]
+    fn a_worker_that_ended_as_its_caller_gave_up_leaves_the_gate_open() {
+        let _g = gate_test();
+        let done = AtomicBool::new(false);
+        drop(Settle { id: 7, done: Arc::new(AtomicBool::new(false)) });
+        done.store(true, Ordering::SeqCst);
+        assert!(!hold(&done, prompting(7, true)), "the ended worker's answer is given instead");
+        assert!(matches!(*gate(), Gate::Open));
+        let live = AtomicBool::new(false);
+        assert!(hold(&live, prompting(8, true)));
+        assert!(matches!(*gate(), Gate::Prompting { id: 8, .. }));
+        *gate() = Gate::Open;
+    }
+
+    /// A create or delete prompt being dismissed answers later calls at once, with no look at the
+    /// service and no second prompt.
+    #[test]
+    fn a_change_prompt_being_dismissed_answers_at_once() {
+        let _g = gate_test();
+        *gate() = prompting(3, false);
+        let e = admit_with(|| panic!("no look at the service")).unwrap_err();
+        assert_eq!(e, BUSY);
+        // Its worker ends: the gate opens.
+        drop(Settle { id: 3, done: Arc::new(AtomicBool::new(false)) });
+        assert!(admit_with(|| None).is_ok());
+    }
+
+    /// An unlock prompt that went away opens the gate only if the gate still holds that prompt;
+    /// a newer state another call set meanwhile is kept.
+    #[test]
+    fn an_unlock_prompt_opens_only_the_gate_it_looked_at() {
+        let _g = gate_test();
+        *gate() = prompting(1, true);
+        assert_eq!(admit_with(|| Some((Some(":1.5".into()), true))).unwrap_err(), LOCKED, "still locked, same service");
+        let e = admit_with(|| {
+            *gate() = prompting(2, true);
+            None
+        })
+        .unwrap_err();
+        assert_eq!(e, LOCKED);
+        assert!(matches!(*gate(), Gate::Prompting { id: 2, .. }), "the newer prompt is kept");
+        assert!(admit_with(|| Some((Some(":1.9".into()), true))).is_ok(), "another service: open");
+        assert!(matches!(*gate(), Gate::Open));
+    }
+
+    /// The prompt a create, a delete or an unlock opens is read from its reply; "/" and the
+    /// collection ReadAlias names are not prompts.
+    #[test]
+    fn the_prompt_of_a_change_is_read_from_its_reply() {
+        let call = zbus::Message::method_call("/org/freedesktop/secrets", "CreateItem").unwrap().build(&()).unwrap();
+        let reply = |body: &dyn Fn(zbus::message::Builder<'_>) -> zbus::Message| body(zbus::Message::method_return(&call.header()).unwrap());
+        let p = |s: &str| OwnedObjectPath::try_from(s).unwrap();
+        let made = reply(&|b| b.build(&(p("/"), p("/org/freedesktop/secrets/prompt/u3"))).unwrap());
+        assert_eq!(prompt_in(&made).map(|o| o.to_string()).as_deref(), Some("/org/freedesktop/secrets/prompt/u3"));
+        let none = reply(&|b| b.build(&(p("/org/freedesktop/secrets/collection/login/1"), p("/"))).unwrap());
+        assert_eq!(prompt_in(&none), None);
+        let deleted = reply(&|b| b.build(&(p("/org/freedesktop/secrets/prompt/p9"),)).unwrap());
+        assert!(prompt_in(&deleted).is_some());
+        let alias = reply(&|b| b.build(&(p("/org/freedesktop/secrets/collection/login"),)).unwrap());
+        assert_eq!(prompt_in(&alias), None);
+        let unlock = reply(&|b| b.build(&(Vec::<OwnedObjectPath>::new(), p("/org/freedesktop/secrets/prompt/u4"))).unwrap());
+        assert!(prompt_in(&unlock).is_some());
     }
 
     #[test]
