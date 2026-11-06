@@ -16,7 +16,11 @@ pub const BODY_CAP: f32 = 480.0;
 /// A dialog's window: on Linux a fixed size and no frame; elsewhere as any small window.
 pub fn attributes(title: &str, w: f64, h: f64) -> winit::window::WindowAttributes {
     let attrs = crate::platform::window::attributes().with_title(title).with_inner_size(winit::dpi::LogicalSize::new(w, h));
-    if OWN_FRAME { attrs.with_resizable(false).with_decorations(false) } else { attrs }
+    // Hidden until its first frame has measured it (X11; Wayland maps a window with its first
+    // drawn frame anyway), and resizable until then, so its first commit names no size (GNOME
+    // kept a fixed creation size and sent it back after a later fit). `paint_dialog` fixes the
+    // size once measured.
+    if OWN_FRAME { attrs.with_decorations(false).with_visible(false) } else { attrs }
 }
 
 /// The height to ask the window for after a frame whose content needs `content`, or None to keep
@@ -25,6 +29,63 @@ pub fn attributes(title: &str, w: f64, h: f64) -> winit::window::WindowAttribute
 pub fn next_height(content: f32, last: f32, floor: f32) -> Option<f32> {
     let want = content.ceil().max(floor);
     (content > 0.0 && (want - last).abs() >= 1.0).then_some(want)
+}
+
+/// How a fitted dialog's window follows its content, frame by frame (Linux).
+///
+/// The first frame is laid out and measured but not shown: the window is asked for the measured
+/// height before anything maps, so no size change races the compositor's first configures (on
+/// GNOME 50.1 a change made just after the window mapped was answered with a configure back to
+/// the creation size). After that, a fit asks again when the content changes, and when the
+/// compositor answers with another height than the one asked, it asks once or twice more.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DialogFit {
+    /// The height asked for last, in points.
+    pub fit: f32,
+    /// The least height (room for a drop-down list).
+    pub floor: f32,
+    shown: bool,
+    retries: u8,
+}
+
+/// What one frame of a fitted dialog does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FitStep {
+    /// Draw this frame to the screen (false only for the first, measuring frame).
+    pub present: bool,
+    /// Ask the window for this height (min, max and size).
+    pub ask: Option<f32>,
+}
+
+/// How often a fit is asked again when the compositor answers with another height.
+const FIT_RETRIES: u8 = 2;
+
+impl DialogFit {
+    pub fn new(start: f32) -> DialogFit {
+        DialogFit { fit: start, floor: 0.0, shown: false, retries: 0 }
+    }
+
+    /// Whether the first, measuring frame is done (the dialog draws to the screen from now on).
+    pub fn shown(&self) -> bool {
+        self.shown
+    }
+
+    /// The step for a frame whose content needs `content` points, in a window `actual` points tall.
+    pub fn step(&mut self, content: f32, actual: f32) -> FitStep {
+        let present = std::mem::replace(&mut self.shown, true);
+        if let Some(want) = next_height(content, self.fit, self.floor) {
+            self.fit = want;
+            self.retries = 0;
+            return FitStep { present, ask: Some(want) };
+        }
+        // The compositor sized the window otherwise (GNOME's configure right after mapping):
+        // ask again, a bounded number of times.
+        if present && (actual - self.fit).abs() >= 1.0 && self.retries < FIT_RETRIES {
+            self.retries += 1;
+            return FitStep { present, ask: Some(self.fit) };
+        }
+        FitStep { present, ask: None }
+    }
 }
 
 /// What a frame of the dialog asked for.
@@ -176,6 +237,26 @@ mod tests {
         assert!(rows >= 9, "{rows} rows show in a {h} pt window: {hs:?}");
     }
 
+    /// The first frame measures and asks, unseen; a compositor that answers with its own height is
+    /// asked again a bounded number of times; a content change asks once.
+    #[test]
+    fn a_dialog_is_sized_before_it_shows_and_holds_its_fit() {
+        let mut f = DialogFit::new(130.0);
+        assert_eq!(f.step(90.0, 130.0), FitStep { present: false, ask: Some(90.0) }, "measured, asked, not drawn");
+        assert_eq!(f.step(90.0, 90.0), FitStep { present: true, ask: None }, "drawn at its height");
+        // GNOME answered with the creation size: ask again, twice at most.
+        assert_eq!(f.step(90.0, 130.0), FitStep { present: true, ask: Some(90.0) });
+        assert_eq!(f.step(90.0, 130.0), FitStep { present: true, ask: Some(90.0) });
+        assert_eq!(f.step(90.0, 130.0), FitStep { present: true, ask: None }, "no endless asking");
+        // New content (the wrong-password line) asks once for the new height.
+        assert_eq!(f.step(108.0, 130.0), FitStep { present: true, ask: Some(108.0) });
+        assert_eq!(f.step(108.0, 108.0), FitStep { present: true, ask: None });
+        // A floor holds from the first frame.
+        let mut g = DialogFit::new(150.0);
+        g.floor = 200.0;
+        assert_eq!(g.step(120.0, 150.0).ask, Some(200.0));
+    }
+
     /// A title wider than the window still leaves the close button inside it.
     #[test]
     fn a_long_title_keeps_the_close_button_in_the_window() {
@@ -317,7 +398,8 @@ mod tests {
     fn only_linux_dialogs_lose_the_window_frame() {
         let a = attributes("T", 300.0, 200.0);
         assert_eq!(a.decorations, !cfg!(target_os = "linux"));
-        assert_eq!(a.resizable, !cfg!(target_os = "linux"));
+        assert!(a.resizable, "fixed only once measured (paint_dialog)");
+        assert_eq!(a.visible, !cfg!(target_os = "linux"), "hidden until measured");
         assert_eq!(OWN_FRAME, cfg!(target_os = "linux"));
     }
 }

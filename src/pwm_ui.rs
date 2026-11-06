@@ -958,7 +958,8 @@ mod tests {
     #[test]
     fn the_gate_window_is_the_old_one_off_linux() {
         let a = gate_attributes();
-        assert!(!a.resizable);
+        // Linux fixes its size once measured (`paint_dialog`); elsewhere it is fixed from the start.
+        assert_eq!(a.resizable, cfg!(target_os = "linux"));
         assert_eq!(a.inner_size, Some(winit::dpi::Size::Logical(winit::dpi::LogicalSize::new(f64::from(GATE_WIDTH), f64::from(GATE_START_H)))));
         if cfg!(target_os = "linux") {
             assert!(!a.decorations);

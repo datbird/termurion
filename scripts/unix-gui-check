@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Drives the real Termurion window on a private X server and says PASS or FAIL for one scenario.
 # Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, menubar, popup, host, job, clipboard, notify, hotkey, hotkey-refused, tmux, tmux-nolang, tmux-lcall, tmux-windows,
-# restore-windows, restore-host, tmux-restore [a|b|c|d], paste [x11|wayland]
+# restore-windows, restore-host, tmux-restore [a|b|c|d], paste [x11|wayland], alert [x11|wayland]
+#
+# alert: the update question ("Check for updates automatically?") a second launch asks, a dialog
+# fitted to its content. Its window must get its height before it shows and keep it: on X11 the
+# window's height stays the same once mapped and is under its creation height; on Wayland (weston,
+# WAYLAND_DEBUG) every set_window_geometry of its surface is the same height, under the creation
+# height, and no configure from the compositor names another height.
 #
 # paste: a word copied in one pane (Ctrl+Shift+C, with copy on select off) and pasted in the other
 # (Ctrl+Shift+V). Variant x11 runs the app on Xvfb; wayland runs it on a weston nested in Xvfb (x11
@@ -61,7 +67,19 @@ case "$scenario" in
             *) echo "usage: scripts/unix-gui-check paste [x11|wayland]" >&2; exit 2 ;;
         esac
         ;;
-    *) echo "usage: scripts/unix-gui-check <shell|layout|menubar|popup|host|job|clipboard|notify|hotkey|hotkey-refused|tmux|tmux-nolang|tmux-lcall|tmux-windows|restore-windows|restore-host|tmux-restore [a|b|c|d]|paste [x11|wayland]>" >&2; exit 2 ;;
+    alert)
+        case "$variant" in
+            x11 | wayland) ;;
+            "")
+                bad=0
+                for v in x11 wayland; do "$0" alert "$v" || bad=1; done
+                [ "$bad" -eq 0 ] && echo "PASS alert"
+                exit "$bad"
+                ;;
+            *) echo "usage: scripts/unix-gui-check alert [x11|wayland]" >&2; exit 2 ;;
+        esac
+        ;;
+    *) echo "usage: scripts/unix-gui-check <shell|layout|menubar|popup|host|job|clipboard|notify|hotkey|hotkey-refused|tmux|tmux-nolang|tmux-lcall|tmux-windows|restore-windows|restore-host|tmux-restore [a|b|c|d]|paste [x11|wayland]|alert [x11|wayland]>" >&2; exit 2 ;;
 esac
 # The notify scenario runs on a private session bus, watched by dbus-monitor for the Notify call.
 if [ "$scenario" = notify ] && [ -z "${GUICHECK_BUS:-}" ]; then
@@ -78,7 +96,8 @@ tools="Xvfb xdotool import"
 $is_tmux && tools="$tools tmux"
 case "$scenario" in hotkey | hotkey-refused) tools="$tools openbox xterm xprop" ;; popup) tools="$tools compare" ;; esac
 wayland=false
-[ "$scenario" = paste ] && [ "$variant" = wayland ] && { wayland=true; tools="$tools weston"; }
+{ [ "$scenario" = paste ] || [ "$scenario" = alert ]; } && [ "$variant" = wayland ] && { wayland=true; tools="$tools weston"; }
+[ "$scenario" = alert ] && tools="$tools xwininfo"
 for tool in $tools; do
     command -v "$tool" > /dev/null || { echo "FAIL $scenario: $tool is not installed"; exit 1; }
 done
@@ -145,11 +164,19 @@ export DISPLAY="$display" SCRATCH="$scratch" SHELL=/bin/bash
 # The Wayland variant: a weston window on the Xvfb takes the XTEST keys and clicks and hands them to
 # its Wayland clients. Kiosk shell puts the app full size at the output's corner.
 if $wayland; then
-    XDG_RUNTIME_DIR="$scratch/run" weston --backend=x11-backend.so --renderer=pixman --shell=kiosk-shell.so \
+    # Kiosk shell makes every window full screen; the alert scenario needs a desktop's own sizing.
+    wshell=kiosk-shell.so
+    [ "$scenario" = alert ] && wshell=desktop-shell.so
+    XDG_RUNTIME_DIR="$scratch/run" weston --backend=x11-backend.so --renderer=pixman --shell="$wshell" \
         --socket=wl-guicheck --width=1200 --height=800 --idle-time=0 > "$scratch/weston.log" 2>&1 &
     weston_pid=$!
     for _ in $(seq 50); do [ -S "$scratch/run/wl-guicheck" ] && break; sleep 0.1; done
     [ -S "$scratch/run/wl-guicheck" ] || fail "weston did not start (see $scratch/weston.log)"
+fi
+# A second launch (SUHasLaunchedBefore) that never answered the update question asks it at once.
+if [ "$scenario" = alert ]; then
+    mkdir -p "$scratch/home/.config/termurion"
+    printf '[settings]\nSUHasLaunchedBefore = true\n' > "$scratch/home/.config/termurion/settings.toml"
 fi
 # Copy on select is off for paste, so only the Copy key can put the word on the clipboard.
 if [ "$scenario" = paste ]; then
@@ -221,6 +248,8 @@ launch_app() {
     # On weston the app has no X server: no DISPLAY, only the weston socket.
     local display_env=(-u WAYLAND_DISPLAY) wayland_env=()
     $wayland && { display_env=(-u DISPLAY); wayland_env=(WAYLAND_DISPLAY=wl-guicheck); }
+    # The alert scenario reads the Wayland requests and events from the app's log.
+    [ "$scenario" = alert ] && $wayland && wayland_env+=(WAYLAND_DEBUG=client)
     env -u TMUX "${display_env[@]}" -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_DATA_HOME "${locale_env[@]}" "${wayland_env[@]}" HOME="$scratch/home" TMPDIR="$scratch/tmp" XDG_RUNTIME_DIR="$scratch/run" \
         "${TERMURION_BIN:-$repo/target/debug/termurion}" ${TERMURION_BIN_ARGS:-} >> "$scratch/app.log" 2>&1 &
     app_pid=$!
@@ -650,6 +679,53 @@ case "$scenario" in
             [ "$(sort -u "$scratch/pids1")" = "$(sort -u "$scratch/pids2")" ] || fail "pids2 ($(sort -u "$scratch/pids2" | tr '\n' ' ')) is not pids1 ($(sort -u "$scratch/pids1" | tr '\n' ' '))"
         else
             [ -z "$(sort -u "$scratch/pids1" "$scratch/pids2" | uniq -d)" ] || fail "a restored pane kept an old shell pid"
+        fi
+        ;;
+    alert)
+        title='Check for updates automatically?'
+        # The text it opens with: window_height() of the question's text (src/prompt_ui.rs) is at least 130.
+        created=130
+        if $wayland; then
+            # Its toplevel (by title), then its xdg_surface (the one that made that toplevel).
+            top="" surf=""
+            for _ in $(seq 100); do
+                top=$(grep -a "set_title(\"$title\")" "$scratch/app.log" 2> /dev/null | head -1 | sed -n 's/.*-> xdg_toplevel[#@]\([0-9]*\)\.set_title.*/\1/p')
+                [ -n "$top" ] && break
+                sleep 0.1
+            done
+            [ -n "$top" ] || fail "the alert never opened (no set_title \"$title\" in $scratch/app.log)"
+            surf=$(grep -a "get_toplevel(new id xdg_toplevel[#@]$top)" "$scratch/app.log" | head -1 | sed -n 's/.*-> xdg_surface[#@]\([0-9]*\)\.get_toplevel.*/\1/p')
+            sleep 4
+            shoot
+            grep -a -e "xdg_surface[#@]$surf\.set_window_geometry" -e "xdg_toplevel[#@]$top\.configure(" -e "xdg_toplevel[#@]$top\.set_m" "$scratch/app.log" > "$scratch/alert-wayland.log"
+            # The height the window has at each drawn frame: the geometry in force when a buffer is
+            # committed (a geometry set before the first buffer never shows).
+            ws=$(grep -a "get_xdg_surface(new id xdg_surface[#@]$surf," "$scratch/app.log" | head -1 | sed -n 's/.*wl_surface[#@]\([0-9]*\)).*/\1/p')
+            heights=$(awk -v s="$surf" -v w="$ws" '
+                $0 ~ "xdg_surface[#@]" s "\\.set_window_geometry\\(" { g = $0; sub(/.*set_window_geometry\(0, 0, [0-9]+, /, "", g); sub(/\).*/, "", g); h = g }
+                $0 ~ "wl_surface[#@]" w "\\.attach\\(" { att = 1 }
+                $0 ~ "wl_surface[#@]" w "\\.commit\\(" && att { print h; att = 0 }' "$scratch/app.log" | sort -u)
+            [ -n "$heights" ] || fail "the alert never drew a frame with a geometry (see $scratch/alert-wayland.log)"
+            [ "$(echo "$heights" | wc -l)" -eq 1 ] || fail "the alert was mapped at one height and changed after: $(echo $heights) (see $scratch/alert-wayland.log)"
+            [ "$heights" -lt "$created" ] || fail "the alert kept its creation height $heights"
+            others=$(grep -a "xdg_toplevel[#@]$top\.configure(" "$scratch/app.log" | sed -n 's/.*configure([0-9]*, \([0-9]*\),.*/\1/p' | grep -vx -e 0 -e "$heights" | head -1)
+            [ -z "$others" ] || fail "weston configured the alert at $others, not its $heights (see $scratch/alert-wayland.log)"
+            echo "alert wayland: every drawn frame at height $heights; configures: $(grep -a "xdg_toplevel[#@]$top\.configure(" "$scratch/app.log" | sed -n 's/.*configure(\([^)]*\)).*/(\1)/p' | tr '\n' ' ')"
+        else
+            alert=""
+            for _ in $(seq 100); do
+                alert=$(xdotool search --onlyvisible --name "Check for updates automatically" 2> /dev/null | head -1)
+                [ -n "$alert" ] && break
+                sleep 0.1
+            done
+            [ -n "$alert" ] || fail "the alert never showed"
+            h1=$(xwininfo -id "$alert" | sed -n 's/^ *Height: //p')
+            sleep 3
+            h2=$(xwininfo -id "$alert" | sed -n 's/^ *Height: //p')
+            shoot
+            [ "$h1" = "$h2" ] || fail "the alert showed at $h1 and changed to $h2"
+            [ "$h1" -lt "$created" ] || fail "the alert kept its creation height $h1"
+            echo "alert x11: shown at height $h1, still $h2 three seconds later"
         fi
         ;;
     paste)

@@ -134,7 +134,7 @@ pub struct EguiHost {
     pub probed: Option<String>,
     /// An alert or small dialog (`open_dialog`): its name, the height last fitted and the least
     /// height it keeps, in points.
-    dialog: Option<(String, f32, f32)>,
+    dialog: Option<(String, crate::dialog_frame::DialogFit)>,
 }
 
 impl EguiHost {
@@ -175,7 +175,9 @@ impl EguiHost {
 
     /// Marks a window made from `dialog_frame::attributes` as a dialog `paint_dialog` draws.
     pub fn as_dialog(mut self, title: &str, h: f64) -> EguiHost {
-        self.dialog = Some((title.to_string(), h as f32, 0.0));
+        self.dialog = Some((title.to_string(), crate::dialog_frame::DialogFit::new(h as f32)));
+        // The first frame measures it (the window shows once it has its height).
+        self.window.request_redraw();
         self
     }
 
@@ -183,8 +185,8 @@ impl EguiHost {
     /// sized in the frame it opens, to the room under it, and never grows into a window that
     /// grows after, so the room has to be there before it opens.
     pub fn set_dialog_floor(&mut self, h: f64) {
-        if let Some(d) = self.dialog.as_mut() {
-            d.2 = h as f32;
+        if let Some((_, fit)) = self.dialog.as_mut() {
+            fit.floor = h as f32;
         }
     }
 
@@ -294,33 +296,63 @@ impl EguiHost {
     /// then follows the row's close and drag and fits the height to the content.
     pub fn paint_dialog(&mut self, mut body: impl FnMut(&mut egui::Ui)) {
         let own = crate::dialog_frame::OWN_FRAME && self.dialog.is_some();
-        let title = self.dialog.as_ref().map(|(t, _, _)| t.clone()).unwrap_or_default();
+        let title = self.dialog.as_ref().map(|(t, _)| t.clone()).unwrap_or_default();
         let mut framed = crate::dialog_frame::Framed::default();
-        self.paint(|ui| framed = crate::dialog_frame::show(ui, &title, own, &mut body));
         if !own {
+            self.paint(|ui| framed = crate::dialog_frame::show(ui, &title, own, &mut body));
             return;
         }
+        // The first frame is measured, not shown (see `DialogFit`).
+        let present = self.dialog.as_ref().is_some_and(|(_, f)| f.shown());
+        self.paint_with(|ui| framed = crate::dialog_frame::show(ui, &title, own, &mut body), present);
         if framed.drag {
             let _ = self.window.drag_window();
         }
         if framed.close {
             crate::dialog_frame::request_close(self.window.id());
         }
+        let scale = self.window.scale_factor();
+        let actual = (f64::from(self.window.inner_size().height) / scale) as f32;
+        let Some((_, fit)) = self.dialog.as_mut() else { return };
+        let step = fit.step(framed.height, actual);
+        let w = f64::from(self.window.inner_size().width) / scale;
+        let size = winit::dpi::LogicalSize::new(w, f64::from(fit.fit));
+        if !step.present {
+            // Measured: the size is fixed now, before anything shows. The window was made
+            // resizable so its first commit carried no size of its own for the compositor to keep.
+            self.window.set_resizable(false);
+        }
         // A fixed-size window keeps its min and max at its first size on Wayland, so both move
         // with each fit (X11 takes the new size the same way).
-        if let Some((_, fit, floor)) = self.dialog.as_mut()
-            && let Some(want) = crate::dialog_frame::next_height(framed.height, *fit, *floor)
-        {
-            *fit = want;
-            let w = f64::from(self.window.inner_size().width) / self.window.scale_factor();
-            let size = winit::dpi::LogicalSize::new(w, f64::from(want));
+        if step.ask.is_some() || !step.present {
             self.window.set_min_inner_size(Some(size));
             self.window.set_max_inner_size(Some(size));
             let _ = self.window.request_inner_size(size);
         }
+        if !step.present {
+            // Sized: now it may show (X11 maps it; Wayland maps it with its first drawn frame,
+            // the next one).
+            self.window.set_visible(true);
+            self.window.request_redraw();
+        }
     }
 
+
     pub fn paint(&mut self, f: impl FnMut(&mut egui::Ui)) {
+        self.paint_with(f, true);
+    }
+
+    /// A frame; with `present` false it is laid out (and its textures loaded) but not drawn.
+    fn paint_with(&mut self, f: impl FnMut(&mut egui::Ui), present: bool) {
+        // The surface is always the window's size: a size winit took without a Resized event
+        // (a requested one) would otherwise leave egui drawing a smaller frame into it, and the
+        // rest unpainted.
+        let size = self.window.inner_size();
+        if size.width > 0 && size.height > 0 && (size.width, size.height) != (self.config.width, self.config.height) {
+            self.config.width = size.width;
+            self.config.height = size.height;
+            self.surface.configure(&self.device, &self.config);
+        }
         let mut input = self.state.take_egui_input(&self.window);
         let mut probing = false;
         if self.probe {
@@ -368,6 +400,13 @@ impl EguiHost {
             for delta in deltas {
                 self.renderer.update_texture(&self.device, &self.queue, *id, delta);
             }
+        }
+        if !present {
+            for id in &out.textures_delta.free {
+                self.renderer.free_texture(id);
+            }
+            out.textures_delta.clear();
+            return;
         }
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,

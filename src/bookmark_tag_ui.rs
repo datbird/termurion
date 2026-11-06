@@ -104,9 +104,9 @@ impl TagEditor {
     #[allow(clippy::too_many_arguments)]
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, pane: PaneId, url: String, title: Option<String>, tags: Vec<String>, all: Vec<String>, center: (f64, f64)) -> Result<TagEditor, String> {
         // A small dialog: on Linux its own frame (`dialog_frame`).
-        let attrs = crate::dialog_frame::attributes(TITLE, f64::from(SIZE.0), f64::from(SIZE.1))
-            .with_resizable(false)
-            .with_window_level(winit::window::WindowLevel::AlwaysOnTop);
+        let attrs = crate::dialog_frame::attributes(TITLE, f64::from(SIZE.0), f64::from(SIZE.1)).with_window_level(winit::window::WindowLevel::AlwaysOnTop);
+        // Fixed size: from the start where the system frames it; on Linux once measured (`paint_dialog`).
+        let attrs = if crate::dialog_frame::OWN_FRAME { attrs } else { attrs.with_resizable(false) };
         let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?.as_dialog(TITLE, f64::from(SIZE.1));
         host.follow_theme(None);
         // Centered on the browser window (`BVC:1442-1462`), in this window's own pixels.
