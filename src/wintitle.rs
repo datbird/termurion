@@ -153,7 +153,7 @@ pub fn evaluate(format: &str, lookup: &dyn Fn(&str) -> Option<String>, lax: bool
 }
 
 /// `text` for the OS title bar, which draws with the system's fonts: each character `covers`
-/// says no font has is left out, with one space after it when it would leave two (or lead).
+/// says no font has is left out, with a space beside it that would be doubled, lead or end the title.
 pub fn drawable_title(text: &str, covers: impl Fn(char) -> bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut dropped = false;
@@ -166,6 +166,10 @@ pub fn drawable_title(text: &str, covers: impl Fn(char) -> bool) -> String {
         } else {
             dropped = true;
         }
+    }
+    // A dropped last character leaves no space before it.
+    if dropped && out.ends_with(' ') {
+        out.pop();
     }
     out
 }
@@ -184,6 +188,7 @@ mod tests {
         assert_eq!(drawable_title("a\u{21a3}b", covers), "ab");
         assert_eq!(drawable_title("plain \u{e9}t\u{e9}", covers), "plain \u{e9}t\u{e9}");
         assert_eq!(drawable_title("\u{21a3} ", covers), "");
+        assert_eq!(drawable_title("x \u{21a3}", covers), "x", "no space left at the end either");
     }
 
     #[test]
