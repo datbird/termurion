@@ -153,6 +153,7 @@ const MAC_WORDS: &[(&str, &str)] = &[
 /// Windows words and the Linux ones, longest first: the credential store, and the Win key, which
 /// Linux calls Super.
 const LINUX_WORDS: &[(&str, &str)] = &[
+    ("Windows keeps the Win key", "The desktop keeps the Super key"),
     ("Left Win key", "Left Super key"),
     ("Right Win key", "Right Super key"),
     ("left Win key", "left Super key"),
@@ -324,6 +325,9 @@ mod native_words_tests {
         assert_eq!(linux_words("Left Win key:"), "Left Super key:");
         assert_eq!(linux_words("Right Win"), "Right Super");
         assert_eq!(linux_words("Remap right Win key to:"), "Remap right Super key to:");
+        // The Super key is the desktop's on Linux, as the Win key is Windows'.
+        assert_eq!(linux_words("Bindings. Windows keeps the Win key, so no shortcut uses it. Ctrl+Alt"), "Bindings. The desktop keeps the Super key, so no shortcut uses it. Ctrl+Alt");
+        assert_eq!(linux_words("Windows keeps the Win key for itself, so a shortcut cannot use it."), "The desktop keeps the Super key for itself, so a shortcut cannot use it.");
         // Windows alone is the app's windows, and the Mac words stay out of it.
         assert_eq!(linux_words("Windows have square corners. Reveal in Explorer"), "Windows have square corners. Reveal in Explorer");
         if cfg!(all(unix, not(target_os = "macos"))) {

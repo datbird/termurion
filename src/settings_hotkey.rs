@@ -190,7 +190,7 @@ fn recorder(ui: &mut egui::Ui, keys: &mut KeysState, slot: HotkeySlot, current: 
             keys.win_note = false;
         }
         if keys.hotkey_recording == Some(slot) && keys.win_note {
-            ui.weak(crate::settings_keys::WIN_NOTE);
+            ui.weak(crate::platform::native_words(crate::settings_keys::WIN_NOTE).into_owned());
         }
         if current.is_some() && ui.add_enabled(enabled, egui::Button::new("x")).on_hover_text("Clear").clicked() {
             cleared = true;

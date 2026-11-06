@@ -729,7 +729,7 @@ pub fn key_editor(ctx: &egui::Context, e: &mut KeyEditor, profiles: &[(String, S
             }
         });
         if e.recording && e.note {
-            ui.weak(WIN_NOTE);
+            ui.weak(crate::platform::native_words(WIN_NOTE).into_owned());
         }
         ui.horizontal(|ui| {
             ui.label("Action:");
@@ -776,7 +776,7 @@ pub fn pointer_editor(ctx: &egui::Context, e: &mut PointerEditor, profiles: &[(S
             });
         });
         ui.horizontal(|ui| {
-            ui.checkbox(&mut e.mods.cmd, crate::shortcut_key::mode().show("Win+").trim_end_matches('+')).on_hover_text("iTerm2's Command, pressed as these keys. Windows keeps the Win key.");
+            ui.checkbox(&mut e.mods.cmd, crate::shortcut_key::mode().show("Win+").trim_end_matches('+')).on_hover_text(crate::platform::native_words("iTerm2's Command, pressed as these keys. Windows keeps the Win key.").into_owned());
             ui.checkbox(&mut e.mods.alt, "Alt");
             ui.checkbox(&mut e.mods.shift, "Shift");
             ui.checkbox(&mut e.mods.ctrl, "Ctrl");
@@ -1311,7 +1311,7 @@ pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profile
             }
         });
         if st.leader_recording && st.win_note {
-            ui.weak(WIN_NOTE);
+            ui.weak(crate::platform::native_words(WIN_NOTE).into_owned());
         }
         for s in globals_in("Key Bindings").into_iter().filter(|s| s.kind == Kind::Bool) {
             changed |= global_control(ui, g, s, true);
