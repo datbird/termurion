@@ -7566,7 +7566,7 @@ impl ApplicationHandler<UserEvent> for App {
             let first = self.tabs.first().and_then(|t| t.layout.panes().first().copied()).and_then(|id| self.panes.get(&id)).and_then(|p| self.store.get(&p.profile));
             self.win_transparency = crate::transparency::WinTransparency::new(crate::transparency::initial_use(first, self.store.default_profile()));
         }
-        self.install_menus();
+        self.menus_once_per_window();
         // A window the default arrangement filled keeps its frame, style, and locks.
         let steps = crate::winmodel::open_steps(arranged);
         if resident_start {
@@ -7616,6 +7616,20 @@ impl ApplicationHandler<UserEvent> for App {
 
     /// Runs the cursor blink when the focused pane's profile asks for it.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // A size request the window manager never answered (it kept the old size, with no
+        // Resized at all): once the stale window is past, the panes follow the size it has.
+        if self.gpu.as_ref().and_then(|g| g.layout).is_some_and(|p| pending_expired(p, std::time::Instant::now())) {
+            if let Some(g) = self.gpu.as_mut() {
+                g.layout = None;
+                let s = g.window.inner_size();
+                if let Some((w, h)) = usable_size(s.width, s.height) {
+                    g.config.width = w;
+                    g.config.height = h;
+                    g.surface.configure(g.render_device(), &g.config);
+                }
+            }
+            self.relayout();
+        }
         // An `-Embedding` start waits for its handoff with no window. Work that reached it (a launch,
         // a link, files) makes it the main instance; with none it stops serving the pipe after
         // `IDLE_EXIT` and ends on the next pass, once what the pipe took has arrived (review I3).
@@ -8472,6 +8486,11 @@ fn resized_is_stale(p: PendingSize, size: (u32, u32), now: std::time::Instant) -
     size == p.before && size != p.want && now.duration_since(p.at) < STALE_RESIZE
 }
 
+/// Whether a size asked for at `p.at` has waited past the stale window with no report.
+fn pending_expired(p: PendingSize, now: std::time::Instant) -> bool {
+    now.duration_since(p.at) >= STALE_RESIZE
+}
+
 fn usable_size(w: u32, h: u32) -> Option<(u32, u32)> {
     (w > 0 && h > 0).then_some((w, h))
 }
@@ -8840,6 +8859,9 @@ mod tests {
         assert!(!resized_is_stale(p, (656, 449), at), "the size asked for lands");
         assert!(!resized_is_stale(p, (700, 500), at), "another size (the person resized, the WM chose) is taken");
         assert!(!resized_is_stale(p, (1000, 650), at + STALE_RESIZE), "a late old size is taken (the WM refused)");
+        // M2: no Resized ever comes; past the window the pending size is dropped.
+        assert!(!pending_expired(p, at + STALE_RESIZE / 2));
+        assert!(pending_expired(p, at + STALE_RESIZE));
         // The room panes are laid out in reads the pending size.
         let own = include_str!("mod.rs");
         let room = &own[own.find("    fn window_room(&self) -> Rect {").unwrap()..];

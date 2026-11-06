@@ -140,12 +140,25 @@ pub fn pop(view: isize, menu: *mut std::ffi::c_void) -> bool {
     let block = RcBlock::new(move |_n: NonNull<NSNotification>| seen.store(true, Ordering::Relaxed));
     let center = NSNotificationCenter::defaultCenter();
     let name = NSString::from_str("NSMenuDidSendActionNotification");
-    // SAFETY: main thread; the block touches only an atomic. Removed again below.
+    // SAFETY: main thread; the block touches only an atomic. The guard removes it, a panic too.
     let token = unsafe { center.addObserverForName_object_queue_usingBlock(Some(&name), None, None, &block) };
+    let _observer = Observer { center: center.clone(), token };
     unsafe { button.performClick(None) };
-    unsafe { center.removeObserver(&*(Retained::as_ptr(&token) as *const AnyObject)) };
     item.setMenu(None);
     picked.load(Ordering::Relaxed)
+}
+
+/// An observer token taken off its notification center when the guard goes, however `pop` ends.
+struct Observer<T: objc2::Message> {
+    center: Retained<NSNotificationCenter>,
+    token: Retained<T>,
+}
+
+impl<T: objc2::Message> Drop for Observer<T> {
+    fn drop(&mut self) {
+        // SAFETY: the token is the object the center handed out for this observer.
+        unsafe { self.center.removeObserver(&*(Retained::as_ptr(&self.token) as *const AnyObject)) };
+    }
 }
 
 #[cfg(test)]

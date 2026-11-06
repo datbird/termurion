@@ -159,7 +159,9 @@ impl App {
         self.tray_on = false;
         self.tray_failures = 0;
         self.tray_due = None;
-        self.tray_tick(false);
+        // The live UI element state, as the loop's own tick passes it.
+        let ui_element = self.presence_tick();
+        self.tray_tick(ui_element);
     }
 
     /// Terminal windows: (id, Some(shown) for a hotkey window, on screen), current first.
@@ -323,7 +325,10 @@ mod tests {
         assert!(body.contains("set_dock_icon(crate::resident::dock_icon_wanted(ui_element_now, self.resident, panels))"));
         assert!(body.contains("taskbar_windows()"), "panels count as windows");
         let mk = include_str!("mod.rs");
-        assert!(mk.contains("set_dock_icon(false)"), "hidden from the Dock is Accessory before the first window");
+        let gate = "if self.globals.bool(crate::presence::UI_ELEMENT_KEY) && !self.globals.bool(crate::presence::REQUIRES_HOTKEYS_KEY) {\n            crate::platform::notify::set_dock_icon(false);";
+        let at = mk.find(gate).expect("hidden from the Dock is Accessory, under its two settings");
+        let made = mk[at..].find("event_loop.create_window(attrs)").expect("the first window is made after it");
+        assert!(made < 400, "the Dock choice comes right before the first window is made");
     }
 
     /// Minor 5: tray "Bring All Windows to Front" skips hidden hotkey windows (arrangeInFront does).

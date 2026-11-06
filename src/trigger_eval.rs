@@ -612,8 +612,9 @@ impl Screen {
                 b.push_str("\r\n");
             }
             // Erasing with the bar's background paints the whole line (iTerm2 does the same).
-            self.restored_bar = Some(self.row_number(self.term.grid().cursor.point.line.0) + i64::from(!b.is_empty()));
-            b += &format!("\x1b[48;2;{bg};{bg};{bg}m\x1b[38;2;{fg};{fg};{fg}m\x1b[2K{}\x1b[0m\r\n", crate::arrangement::inert_text(line));
+            let text = crate::arrangement::inert_text(line);
+            self.restored_bar = Some((self.row_number(self.term.grid().cursor.point.line.0) + i64::from(!b.is_empty()), text.chars().take_while(|c| c.is_ascii_graphic() || *c == ' ').take(self.term.columns().min(24)).collect()));
+            b += &format!("\x1b[48;2;{bg};{bg};{bg}m\x1b[38;2;{fg};{fg};{fg}m\x1b[2K{}\x1b[0m\r\n", text);
             self.feed_quiet(b.as_bytes());
         }
     }
@@ -1795,6 +1796,23 @@ mod tests {
     /// Item (f): the banner bar is filled to the width the pane had when it was fed (a restored
     /// window is made wider than it ends up). Narrowing must cut the bar, not wrap its tail onto a
     /// gray block of its own.
+    /// A program that later draws its own full-width bar on the banner's row keeps that bar's
+    /// tail: the banner was written over, so it is forgotten.
+    #[test]
+    fn a_bar_drawn_over_the_banner_row_is_the_programs() {
+        use alacritty_terminal::index::{Column, Line};
+        use alacritty_terminal::vte::ansi::{Color, NamedColor};
+        let mut s = Screen::new(40, 6);
+        s.feed_restored("abc", None, Some(("Session Contents Restored on X", (38, 102))));
+        s.feed(b"\x1b[2;1H\x1b[44m\x1b[2Kprompt\x1b[0m\r\n");
+        s.resize(30, 6);
+        let g = s.term().grid();
+        let top = -(g.history_size() as i32);
+        let blue = (top..g.screen_lines() as i32).flat_map(|l| (0..30).map(move |c| (l, c))).filter(|&(l, c)| g[Line(l)][Column(c)].bg == Color::Named(NamedColor::Blue)).count();
+        assert_eq!(blue, 40, "the program's bar keeps all 40 cells");
+        assert!(s.restored_bar.is_none(), "the banner row is forgotten");
+    }
+
     #[test]
     fn a_narrowed_banner_bar_leaves_no_gray_block() {
         use alacritty_terminal::index::{Column, Line};

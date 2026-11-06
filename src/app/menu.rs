@@ -279,6 +279,14 @@ impl App {
     }
 
     /// Builds the menu bar from iTerm2's menus, the right-click menu, and the Win chord hook.
+    /// `install_menus` after a new window's first tab, unless the in-window bar was already built
+    /// for it when the window was sized (Linux): the menus, hotkeys and key hook are made once.
+    pub(super) fn menus_once_per_window(&mut self) {
+        if !(crate::platform::chrome::IN_WINDOW_BAR && self.menu_bar.is_some()) {
+            self.install_menus();
+        }
+    }
+
     pub(super) fn install_menus(&mut self) {
         // The shortcut key, before any menu text or key reads it (also on an OS with no menu bar).
         crate::shortcut_key::set_mode(crate::shortcut_key::ShortcutKey::from_globals(&self.globals));

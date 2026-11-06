@@ -251,9 +251,10 @@ pub struct Screen {
     /// Output comes through ConPTY, whose own screen must match this one, so the terminal
     /// never moves the cursor on its own (no fresh line for a prompt).
     pub pty_backed: bool,
-    /// The row number (`row_number`) of the restored-session banner bar, filled to the width the
-    /// pane had when it was fed. A narrowing cuts that row's fill (`cut_bar_tail`).
-    pub(crate) restored_bar: Option<i64>,
+    /// The row number (`row_number`) of the restored-session banner bar and its text, filled to
+    /// the width the pane had when it was fed. A narrowing cuts that row's fill (`cut_bar_tail`)
+    /// while the row still shows that text; once written over it is forgotten.
+    pub(crate) restored_bar: Option<(i64, String)>,
     /// A fixed clock for row stamps (tests); None uses the time.
     clock: Option<u32>,
     /// Inline images, by id.
@@ -1017,7 +1018,7 @@ impl Screen {
     fn cut_bar_tail(&mut self, cols: usize) {
         use alacritty_terminal::vte::ansi::{Color, NamedColor};
         let old = self.term.columns();
-        let Some(number) = self.restored_bar else { return };
+        let Some((number, text)) = self.restored_bar.clone() else { return };
         if cols == 0 || cols >= old {
             return;
         }
@@ -1028,7 +1029,12 @@ impl Screen {
         }
         let row = &mut grid[Line(line as i32)];
         let bg = row[Column(old - 1)].bg;
-        // The row still holds the bar (a program may have written over it since).
+        let shown: String = (0..old).map(|c| row[Column(c)].c).collect();
+        // A program wrote over the bar: its row is the program's from now on, whatever it draws.
+        if !shown.starts_with(text.as_str()) {
+            self.restored_bar = None;
+            return;
+        }
         if bg == Color::Named(NamedColor::Background) || !(cols..old).all(|c| row[Column(c)].c == ' ' && row[Column(c)].bg == bg) {
             return;
         }

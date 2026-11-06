@@ -2540,12 +2540,18 @@ mod tests {
     #[test]
     fn a_proportional_face_still_follows_the_cell_grid() {
         let (device, queue) = device();
-        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans", 16.0);
-        if !r.has_family("DejaVu Sans") {
-            println!("skip: DejaVu Sans is not installed");
-            return;
-        }
-        assert!(!r.face_monospace(DEFAULT_FACE), "DejaVu Sans is proportional");
+        // Any installed proportional face (DejaVu Sans when it is there): a box with none fails
+        // here instead of passing without checking anything.
+        let probe = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans", 16.0);
+        let face = if probe.has_family("DejaVu Sans") {
+            "DejaVu Sans".to_string()
+        } else {
+            let mut names: Vec<String> = probe.font_system.db().faces().filter(|f| !f.monospaced).filter_map(|f| f.families.first().map(|(n, _)| n.clone())).collect();
+            names.sort();
+            names.into_iter().next().expect("this test needs one proportional font installed")
+        };
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, &face, 16.0);
+        assert!(!r.face_monospace(DEFAULT_FACE), "{face} is proportional");
         // The cursor goes back onto the first "m" (column 13).
         let mut screen = crate::screen::Screen::new(40, 2);
         screen.feed(b"iiilllWWWiii mmm\x1b[3D");

@@ -779,7 +779,7 @@ impl App {
         if !arranged {
             self.apply_custom_window_title(first_guid.as_deref());
         }
-        self.install_menus();
+        self.menus_once_per_window();
         // An arrangement's window has its own frame, style, and locks. A hotkey window's
         // frame is its style's (it is not placed like a new window).
         let restored_hotkey = hotkey && arranged;
