@@ -1798,7 +1798,12 @@ pub fn row_visible(g: &Globals, key: &str) -> bool {
 pub fn row_hidden(key: &str) -> bool {
     // On macOS Cmd is the shortcut key and the system keeps its own shortcuts: neither the Shortcut
     // key choice nor Windows' "respect its shortcuts" switch has anything to set.
-    matches!(key, "aiGeneratedTabTitles" | "logAITabTitleCorpus") || (matches!(key, "ShortcutKey" | "AllowSymbolicHotKeys") && crate::platform::keys::CMD_IS_A_KEY)
+    // Linux has no global hook: its Super shortcuts are the desktop's anyway, and a remap only ever
+    // sees the keys Termurion gets, so the two hook switches are Windows' alone.
+    matches!(key, "aiGeneratedTabTitles" | "logAITabTitleCorpus")
+        || (key == "ShortcutKey" && crate::platform::keys::CMD_IS_A_KEY)
+        || (key == "AllowSymbolicHotKeys" && !crate::platform::IS_WINDOWS)
+        || (key == "RemapModifiersGlobally" && cfg!(target_os = "linux"))
 }
 
 /// The global rows a schema page draws, in schema order: the tab's rows without the General

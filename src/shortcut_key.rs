@@ -1013,7 +1013,8 @@ mod tests {
                 Rest::All => (true, true, true),
             };
             let c = Chord { key: e.key.clone(), cmd: true, alt, shift, ctrl };
-            let hidden = e.key == ChordKey::Char('g') && e.rest == Rest::All;
+            // Capture GPU Frame is the debug build's; Linux has no Windows default terminal pair.
+            let hidden = (e.key == ChordKey::Char('g') && e.rest == Rest::All) || (cfg!(target_os = "linux") && e.key == ChordKey::Char('\\'));
             assert!(hidden || chords.iter().any(|(_, _, d)| *d == c), "{c:?} is no default");
         }
     }

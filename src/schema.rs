@@ -182,14 +182,15 @@ mod tests {
         }
     }
 
-    /// The wording follows the OS: Windows and Linux keep the file's text, macOS says Finder, the
-    /// Keychain, the Dock and the Mac's key names.
+    /// The wording follows the OS: Windows keeps the file's text, Linux calls the Win key Super, and
+    /// macOS says Finder, the Keychain, the Dock and the Mac's key names.
     #[test]
     fn wording_follows_this_os() {
         let by = crate::platform::by_cmd;
+        let linux = cfg!(target_os = "linux");
         let left = find_global("LeftCommand").expect("LeftCommand");
-        assert_eq!(left.label, by("Remap left Win key to:", "Remap left command (\u{2318}) key to:"));
-        assert_eq!(left.choices.iter().find(|c| c.value.as_integer() == Some(7)).map(|c| c.label.as_str()), Some(by("Left Win", "Left Command")));
+        assert_eq!(left.label, by(if linux { "Remap left Super key to:" } else { "Remap left Win key to:" }, "Remap left command (\u{2318}) key to:"));
+        assert_eq!(left.choices.iter().find(|c| c.value.as_integer() == Some(7)).map(|c| c.label.as_str()), Some(by(if linux { "Left Super" } else { "Left Win" }, "Left Command")));
         let export = find_global("RevealExportedSettingsAndData").expect("the export reveal row");
         assert_eq!(export.label.contains("Finder"), crate::platform::keys::CMD_IS_A_KEY, "{}", export.label);
         if crate::platform::keys::CMD_IS_A_KEY {

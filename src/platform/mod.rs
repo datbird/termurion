@@ -143,8 +143,15 @@ const MAC_WORDS: &[(&str, &str)] = &[
     ("Explorer", "Finder"),
 ];
 
-/// Windows words and the Linux ones, longest first: only the credential store has another name.
+/// Windows words and the Linux ones, longest first: the credential store, and the Win key, which
+/// Linux calls Super.
 const LINUX_WORDS: &[(&str, &str)] = &[
+    ("Left Win key", "Left Super key"),
+    ("Right Win key", "Right Super key"),
+    ("left Win key", "left Super key"),
+    ("right Win key", "right Super key"),
+    ("Left Win", "Left Super"),
+    ("Right Win", "Right Super"),
     ("the Windows Credential Manager", "the Secret Service"),
     ("Windows Credential Manager", "the Secret Service"),
     ("the Credential Manager", "the Secret Service"),
@@ -306,6 +313,10 @@ mod native_words_tests {
         assert_eq!(linux_words("it stores them in Windows Credential Manager, but"), "it stores them in the Secret Service, but");
         assert_eq!(linux_words("removed manually from Credential Manager if"), "removed manually from the Secret Service if");
         assert_eq!(linux_words("Windows Credential Manager"), "the Secret Service");
+        // The Win key is the Super key on Linux.
+        assert_eq!(linux_words("Left Win key:"), "Left Super key:");
+        assert_eq!(linux_words("Right Win"), "Right Super");
+        assert_eq!(linux_words("Remap right Win key to:"), "Remap right Super key to:");
         // Windows alone is the app's windows, and the Mac words stay out of it.
         assert_eq!(linux_words("Windows have square corners. Reveal in Explorer"), "Windows have square corners. Reveal in Explorer");
         if cfg!(all(unix, not(target_os = "macos"))) {
@@ -318,6 +329,9 @@ mod native_words_tests {
         let text = "Reveal in Explorer, Left Win key, the taskbar";
         if cfg!(target_os = "macos") {
             assert_ne!(native_words(text), text);
+        } else if cfg!(target_os = "linux") {
+            // Only the Win key gets its Linux name.
+            assert_eq!(native_words(text), "Reveal in Explorer, Left Super key, the taskbar");
         } else {
             assert_eq!(native_words(text), text);
         }

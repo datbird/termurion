@@ -76,7 +76,17 @@ pub(crate) const SHIFTED: [(char, char); 21] = [
 /// Check Settings Control Truncation unless built for development (Termurion's Settings wrap text,
 /// so it is never built, R5). The one rule every menu copy and list of menu actions applies.
 pub fn hidden_in_menu(selector: &str, debug_build: bool) -> bool {
-    hidden_on(selector, debug_build, crate::platform::IS_WINDOWS)
+    hidden_on(selector, debug_build, crate::platform::IS_WINDOWS) || (cfg!(target_os = "linux") && linux_hidden(selector))
+}
+
+/// Items with nothing to do on Linux: the Windows default terminal pair (a registry setting).
+fn linux_hidden(selector: &str) -> bool {
+    matches!(selector, "makeDefaultTerminal:" | "unmakeDefaultTerminal:")
+}
+
+/// The Mac's Services submenu: the system fills it on macOS; Linux has no such thing.
+fn services_hidden(i: &Item) -> bool {
+    cfg!(target_os = "linux") && i.path == ["Termurion", "Services"]
 }
 
 /// `hidden_in_menu` for a given OS. Shell > tmux's psmux and WSL starters are Windows programs:
@@ -95,7 +105,7 @@ pub fn hidden_on(selector: &str, debug_build: bool, windows: bool) -> bool {
 /// The items of this build's menus: `items()` without what `hidden_in_menu` removes. Every menu
 /// builder and list of menu actions reads this, never `items()`.
 pub fn shown_items() -> impl Iterator<Item = &'static Item> {
-    items().iter().filter(|i| !hidden_in_menu(&i.selector, cfg!(debug_assertions)))
+    items().iter().filter(|i| !hidden_in_menu(&i.selector, cfg!(debug_assertions)) && !services_hidden(i))
 }
 
 pub fn items() -> &'static [Item] {
@@ -314,6 +324,17 @@ mod tests {
     /// Control Truncation (always) from every menu copy and every list of menu actions: the window
     /// menu, the tray's Main Menu, the key-binding targets, Open Quickly and the API's lookups.
     /// A list is built from `shown_items()`; `items()` is only searched by selector.
+    /// The Windows default terminal pair (a registry setting) and the Mac's Services submenu have
+    /// nothing to do on Linux, so its menus leave them out.
+    #[test]
+    fn linux_menus_leave_out_the_windows_and_mac_only_items() {
+        let linux = cfg!(target_os = "linux");
+        for sel in ["makeDefaultTerminal:", "unmakeDefaultTerminal:"] {
+            assert_eq!(shown_items().any(|i| i.selector == sel), !linux, "{sel}");
+        }
+        assert_eq!(shown_items().any(|i| i.path == ["Termurion", "Services"]), !linux, "Services");
+    }
+
     #[test]
     fn every_menu_list_goes_through_the_one_filter() {
         for sel in ["newPsmuxSession:", "newWslTmuxSession:"] {
