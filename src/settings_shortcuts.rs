@@ -116,7 +116,7 @@ fn new_action_editor() -> ActionEditor {
 }
 
 pub fn clipboard_text() -> Option<String> {
-    arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok()
+    crate::platform::clipboard::Clipboard::new().and_then(|mut c| c.get_text()).ok()
 }
 
 /// Rows picked with a click: Ctrl adds or removes one, a plain click picks one.

@@ -11,6 +11,21 @@ pub fn set(text: &str, html: &str, rtf: &str) -> Result<(), String> {
     imp::set(text, html, rtf)
 }
 
+/// The app's clipboard: arboard on Windows and macOS; on Linux text may go through the window's
+/// Wayland connection instead (see `attach`).
+pub use imp::Clipboard;
+
+/// Called with the event loop before the first clipboard is opened: on a Wayland session without
+/// the data-control protocol (GNOME, weston) text then goes through the window's own connection.
+pub fn attach(display: &dyn winit::raw_window_handle::HasDisplayHandle) {
+    imp::attach(display)
+}
+
+/// Lets go of what `attach` made, while the display still lives. Twice is safe.
+pub fn detach() {
+    imp::detach()
+}
+
 /// The first file on the clipboard (a copied file in Explorer), if any.
 pub fn first_file() -> Option<std::path::PathBuf> {
     files().into_iter().next()
@@ -38,6 +53,6 @@ pub fn request_selection(done: Box<dyn FnOnce(Option<String>) + Send>) {
 
 /// Replaces the clipboard with a secret `text`, kept out of the clipboard history and the cloud clipboard
 /// where the OS has them (Windows history and cloud clipboard, the Linux password hint, macOS concealed type).
-pub fn set_private_text(cb: &mut arboard::Clipboard, text: &str) -> Result<(), arboard::Error> {
+pub fn set_private_text(cb: &mut Clipboard, text: &str) -> Result<(), arboard::Error> {
     imp::set_private_text(cb, text)
 }

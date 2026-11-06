@@ -96,6 +96,15 @@ pub fn files() -> Vec<std::path::PathBuf> {
     out
 }
 
+/// The Windows clipboard needs no window, so arboard is the clipboard as it is.
+pub type Clipboard = arboard::Clipboard;
+
+/// Nothing to attach on Windows.
+pub fn attach(_display: &dyn winit::raw_window_handle::HasDisplayHandle) {}
+
+/// Nothing to let go of on Windows.
+pub fn detach() {}
+
 /// Windows has no primary selection (a call with no meaning here).
 pub fn set_selection(_text: &str) -> Result<(), String> {
     Ok(())
@@ -106,7 +115,7 @@ pub fn request_selection(done: Box<dyn FnOnce(Option<String>) + Send>) {
     done(None);
 }
 
-pub fn set_private_text(cb: &mut arboard::Clipboard, text: &str) -> Result<(), arboard::Error> {
+pub fn set_private_text(cb: &mut Clipboard, text: &str) -> Result<(), arboard::Error> {
     use arboard::SetExtWindows;
     cb.set().exclude_from_history().exclude_from_cloud().text(text)
 }

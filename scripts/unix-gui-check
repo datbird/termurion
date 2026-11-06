@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Drives the real Termurion window on a private X server and says PASS or FAIL for one scenario.
 # Usage: scripts/unix-gui-check <scenario>      scenarios: shell, layout, menubar, popup, host, job, clipboard, notify, hotkey, hotkey-refused, tmux, tmux-nolang, tmux-lcall, tmux-windows,
-# restore-windows, restore-host, tmux-restore [a|b|c|d]
+# restore-windows, restore-host, tmux-restore [a|b|c|d], paste [x11|wayland]
+#
+# paste: a word copied in one pane (Ctrl+Shift+C, with copy on select off) and pasted in the other
+# (Ctrl+Shift+V). Variant x11 runs the app on Xvfb; wayland runs it on a weston nested in Xvfb (x11
+# backend, kiosk shell, no Xwayland, so no X server for the app), which has no data-control protocol,
+# like GNOME. With no variant the scenario runs both.
 #
 # tmux-restore: a relaunch on the same config after a tmux -CC gateway was open. Variant a: shells in
 # the app, quit with the chord. b: shells in the session host, kill -9 of the app (the host reopens
@@ -43,7 +48,19 @@ case "$scenario" in
             *) echo "usage: scripts/unix-gui-check tmux-restore [a|b|c|d]" >&2; exit 2 ;;
         esac
         ;;
-    *) echo "usage: scripts/unix-gui-check <shell|layout|menubar|popup|host|job|clipboard|notify|hotkey|hotkey-refused|tmux|tmux-nolang|tmux-lcall|tmux-windows|restore-windows|restore-host|tmux-restore [a|b|c|d]>" >&2; exit 2 ;;
+    paste)
+        case "$variant" in
+            x11 | wayland) ;;
+            "")
+                bad=0
+                for v in x11 wayland; do "$0" paste "$v" || bad=1; done
+                [ "$bad" -eq 0 ] && echo "PASS paste"
+                exit "$bad"
+                ;;
+            *) echo "usage: scripts/unix-gui-check paste [x11|wayland]" >&2; exit 2 ;;
+        esac
+        ;;
+    *) echo "usage: scripts/unix-gui-check <shell|layout|menubar|popup|host|job|clipboard|notify|hotkey|hotkey-refused|tmux|tmux-nolang|tmux-lcall|tmux-windows|restore-windows|restore-host|tmux-restore [a|b|c|d]|paste [x11|wayland]>" >&2; exit 2 ;;
 esac
 # The notify scenario runs on a private session bus, watched by dbus-monitor for the Notify call.
 if [ "$scenario" = notify ] && [ -z "${GUICHECK_BUS:-}" ]; then
@@ -59,6 +76,8 @@ case "$scenario" in tmux*) is_tmux=true ;; esac
 tools="Xvfb xdotool import"
 $is_tmux && tools="$tools tmux"
 case "$scenario" in hotkey | hotkey-refused) tools="$tools openbox xterm xprop" ;; popup) tools="$tools compare" ;; esac
+wayland=false
+[ "$scenario" = paste ] && [ "$variant" = wayland ] && { wayland=true; tools="$tools weston"; }
 for tool in $tools; do
     command -v "$tool" > /dev/null || { echo "FAIL $scenario: $tool is not installed"; exit 1; }
 done
@@ -79,7 +98,7 @@ mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/run"
 chmod 700 "$scratch/run"
 : > "$scratch/pids"
 
-xvfb_pid="" app_pid="" zenity_pid="" monitor_pid="" wm_pid="" xterm_pid=""
+xvfb_pid="" app_pid="" zenity_pid="" monitor_pid="" wm_pid="" xterm_pid="" weston_pid=""
 # The pid and its children, grandchildren and so on (an AppImage's runtime starts the app as a child).
 family() {
     local p
@@ -101,6 +120,7 @@ cleanup() {
     [ -n "$monitor_pid" ] && kill "$monitor_pid" 2> /dev/null
     [ -n "$xterm_pid" ] && kill "$xterm_pid" 2> /dev/null
     [ -n "$wm_pid" ] && kill "$wm_pid" 2> /dev/null
+    [ -n "$weston_pid" ] && kill "$weston_pid" 2> /dev/null
     [ -n "$xvfb_pid" ] && kill "$xvfb_pid" 2> /dev/null
     return 0
 }
@@ -121,6 +141,20 @@ for _ in $(seq 50); do [ -S "/tmp/.X11-unix/X${display#:}" ] && break; sleep 0.1
 [ -S "/tmp/.X11-unix/X${display#:}" ] || fail "Xvfb did not start"
 
 export DISPLAY="$display" SCRATCH="$scratch" SHELL=/bin/bash
+# The Wayland variant: a weston window on the Xvfb takes the XTEST keys and clicks and hands them to
+# its Wayland clients. Kiosk shell puts the app full size at the output's corner.
+if $wayland; then
+    XDG_RUNTIME_DIR="$scratch/run" weston --backend=x11-backend.so --renderer=pixman --shell=kiosk-shell.so \
+        --socket=wl-guicheck --width=1200 --height=800 --idle-time=0 > "$scratch/weston.log" 2>&1 &
+    weston_pid=$!
+    for _ in $(seq 50); do [ -S "$scratch/run/wl-guicheck" ] && break; sleep 0.1; done
+    [ -S "$scratch/run/wl-guicheck" ] || fail "weston did not start (see $scratch/weston.log)"
+fi
+# Copy on select is off for paste, so only the Copy key can put the word on the clipboard.
+if [ "$scenario" = paste ]; then
+    mkdir -p "$scratch/home/.config/termurion"
+    printf '[settings]\nCopySelection = false\nSUEnableAutomaticChecks = false\n' > "$scratch/home/.config/termurion/settings.toml"
+fi
 # The host scenario runs its shells in termurion-host (the setting is read at startup).
 if [ "$scenario" = host ] || [ "$scenario" = restore-host ]; then
     mkdir -p "$scratch/home/.config/termurion"
@@ -183,7 +217,10 @@ if [ "$scenario" = restore-windows ] || [ "$scenario" = tmux-restore ]; then
     export PATH="$scratch/bin:$PATH"
 fi
 launch_app() {
-    env -u TMUX -u WAYLAND_DISPLAY -u XDG_CONFIG_HOME -u XDG_STATE_HOME "${locale_env[@]}" HOME="$scratch/home" TMPDIR="$scratch/tmp" XDG_RUNTIME_DIR="$scratch/run" \
+    # On weston the app has no X server: no DISPLAY, only the weston socket.
+    local display_env=(-u WAYLAND_DISPLAY) wayland_env=()
+    $wayland && { display_env=(-u DISPLAY); wayland_env=(WAYLAND_DISPLAY=wl-guicheck); }
+    env -u TMUX "${display_env[@]}" -u XDG_CONFIG_HOME -u XDG_STATE_HOME "${locale_env[@]}" "${wayland_env[@]}" HOME="$scratch/home" TMPDIR="$scratch/tmp" XDG_RUNTIME_DIR="$scratch/run" \
         "${TERMURION_BIN:-$repo/target/debug/termurion}" ${TERMURION_BIN_ARGS:-} >> "$scratch/app.log" 2>&1 &
     app_pid=$!
     # Behind an AppImage runtime the app is a child: from here app_pid is the app itself.
@@ -197,12 +234,28 @@ launch_app() {
         done
     fi
 }
+# The pane shells of this run: bash under the app or its host, with this run's SCRATCH.
+run_shells() {
+    local p parent
+    for p in /proc/[0-9]*; do
+        [ "$(cat "$p/comm" 2> /dev/null)" = bash ] || continue
+        parent=$(ps -o comm= -p "$(ps -o ppid= -p "${p#/proc/}" 2> /dev/null | tr -d ' ')" 2> /dev/null)
+        case "$parent" in termurion | termurion-host) ;; *) continue ;; esac
+        tr '\0' '\n' < "$p/environ" 2> /dev/null | grep -qx "SCRATCH=$scratch" && echo "${p#/proc/}"
+    done
+}
 # Finds the app's window and focuses it by hand (no window manager).
 find_window() {
     # Polled: `search --sync` never returns under a window manager that reparents the window.
     win=""
     for _ in $(seq 300); do
-        win=$(xdotool search --onlyvisible --pid "$app_pid" 2> /dev/null | tail -1)
+        if $wayland; then
+            # On weston the X window is weston's (it sets no pid); the app is up once a shell of this run is.
+            win=$(xdotool search --onlyvisible --classname weston 2> /dev/null | tail -1)
+            [ -n "$win" ] && [ -z "$(run_shells)" ] && win=""
+        else
+            win=$(xdotool search --onlyvisible --pid "$app_pid" 2> /dev/null | tail -1)
+        fi
         [ -n "$win" ] && break
         sleep 0.1
     done
@@ -579,6 +632,43 @@ case "$scenario" in
         else
             [ -z "$(sort -u "$scratch/pids1" "$scratch/pids2" | uniq -d)" ] || fail "a restored pane kept an old shell pid"
         fi
+        ;;
+    paste)
+        sleep 1
+        # Pane one shows the word alone on row 0; a split makes pane two, which writes what it reads to a file.
+        word=PASTEWORDX
+        xdotool type --delay 20 "printf '\\033[2J\\033[H$word\\n'; cat > /dev/null"
+        xdotool key Return
+        sleep 1
+        xdotool key ctrl+shift+d
+        sleep 3
+        xdotool type --delay 20 "cat > \"\$SCRATCH/pasted\""
+        xdotool key Return
+        sleep 1
+        # A double click on the word selects it (and focuses pane one); Copy puts it on the clipboard.
+        # With two panes each has a title row, so the word's row is about 58 px down; on weston the
+        # window is full screen, which has no menu bar, so 24 px less.
+        eval "$(xdotool getwindowgeometry --shell "$win")"
+        wy=58
+        $wayland && wy=34
+        xdotool mousemove $((X + 40)) $((Y + wy))
+        sleep 0.2
+        xdotool click --repeat 2 --delay 80 1
+        sleep 0.6
+        xdotool key ctrl+shift+c
+        sleep 0.6
+        shoot
+        cp "$scratch/screen.png" "$scratch/copied.png"
+        # To pane two (Cmd+], next pane) and Paste, then end the cat.
+        xdotool key ctrl+shift+braceright
+        sleep 1
+        xdotool key ctrl+shift+v
+        sleep 1
+        xdotool key Return
+        xdotool key ctrl+d
+        for _ in $(seq 50); do [ -s "$scratch/pasted" ] && break; sleep 0.1; done
+        shoot
+        [ "$(tr -d '\n' < "$scratch/pasted" 2> /dev/null)" = "$word" ] || fail "Copy then Paste gave '$(cat "$scratch/pasted" 2> /dev/null)', not $word (see $scratch/copied.png, $scratch/screen.png)"
         ;;
     clipboard)
         sleep 1

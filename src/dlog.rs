@@ -280,7 +280,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("platform/linux/notify.rs", 1),
     ("platform/linux/quarantine.rs", 2),
     ("platform/macos/notify.rs", 1),
-    ("platform/unix/clipboard.rs", 1),
+    ("platform/unix/clipboard.rs", 2),
     ("platform/unix/clock.rs", 1),
     ("platform/unix/dialog.rs", 3),
     ("platform/unix/ipc.rs", 4),

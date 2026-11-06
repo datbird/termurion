@@ -1294,7 +1294,7 @@ pub struct App {
     banners: Banners,
     /// The `utilities` folder beside termurion.exe, when `utilities::ensure` made it at start.
     utilities: Option<PathBuf>,
-    clipboard: Option<arboard::Clipboard>,
+    clipboard: Option<crate::platform::clipboard::Clipboard>,
     store: Store,
     settings: Option<SettingsWindow>,
     profiles_win: Option<SettingsWindow>,
@@ -1959,6 +1959,7 @@ pub(crate) fn teardown_process() {
     // `exiting` has already let go of it on every winit way out; this is the backstop for a panic
     // on the main thread, and a second call does nothing.
     crate::platform::window::forget_activation();
+    crate::platform::clipboard::detach();
     crate::platform::keys::uninstall();
     crate::input_locale::restore_after_panic();
     crate::platform::notify::remove(0);
@@ -2060,6 +2061,8 @@ pub fn run() {
         Ok(l) => l,
         Err(e) => return message_box(&format!("Could not start the event loop: {e}")),
     };
+    // Before the app's clipboard opens: on Wayland it may need this display.
+    crate::platform::clipboard::attach(&event_loop);
     let proxy = Arc::new(Mutex::new(event_loop.create_proxy()));
     let clicks = proxy.clone();
     crate::platform::notify::on_click(Box::new(move |click| {
@@ -2673,7 +2676,7 @@ pub fn run() {
         tab_clicks: (Instant::now(), None, 0),
         banners,
         utilities,
-        clipboard: arboard::Clipboard::new().ok(),
+        clipboard: crate::platform::clipboard::Clipboard::new().ok(),
         store,
         settings: None,
         save_due: None,
@@ -7375,6 +7378,7 @@ impl ApplicationHandler<UserEvent> for App {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         // While winit's display still lives (the process exit is too late for it).
         crate::platform::window::forget_activation();
+        crate::platform::clipboard::detach();
         // No panes: an idle embedding start or an already emptied app has nothing to save, and an empty state would wipe the last one.
         if self.panes.is_empty() || !crate::restore_state::exit_saves(self.quitting, self.state_frozen) {
             return;

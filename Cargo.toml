@@ -56,6 +56,10 @@ global-hotkey = "0.9.0"
 # Wayland sessions get the clipboard and the primary selection through the data-control protocol.
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 arboard = { version = "3", features = ["wayland-data-control"] }
+# Without data-control (GNOME, weston) the clipboard goes through the window's own Wayland
+# connection (src/platform/unix/clipboard.rs); wl-clipboard-rs only tells which. Both already in the tree.
+smithay-clipboard = "0.7"
+wl-clipboard-rs = "0.9"
 # The menu model only: the bar is drawn in the window (src/menu_overlay.rs), so no GTK and no libxdo.
 muda = { version = "0.20", default-features = false }
 # Desktop notifications over the session bus (src/platform/linux/notify.rs): one shared connection.
