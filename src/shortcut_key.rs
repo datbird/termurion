@@ -103,8 +103,25 @@ const fn ex(rest: Rest, key: ChordKey, held: Held, press: ChordKey) -> Extra {
     Extra { rest, key, held, press }
 }
 
-use ChordKey::{Char, Enter, PageDown, PageUp, Up, Down, F};
+use ChordKey::{Char, Enter, Home, PageDown, PageUp, Up, Down, F};
 use Rest::{All, CtrlShift as CtrlShiftRest, OptionShift};
+
+/// Shell > tmux's n-th chord (1 Detach, 2 New Tmux Window, 3 New Tmux Tab, 4 Pause Pane, 5 Dashboard).
+/// Ctrl+Alt+F1 to F12 switch to a text console on Linux, so there the five take the F keys the
+/// table leaves free: Shift+Alt+F10 to F12, then Ctrl+Shift+F12 and Shift+Alt+Home (Shift+Alt+Enter is Select Matches).
+const fn tmux_press(n: u8) -> (Held, ChordKey) {
+    if cfg!(target_os = "linux") {
+        match n {
+            1 => (SA, F(10)),
+            2 => (SA, F(11)),
+            3 => (SA, F(12)),
+            4 => (CS, F(12)),
+            _ => (SA, Home),
+        }
+    } else {
+        (CA, F(n))
+    }
+}
 
 /// The explicit remap of every chord with no free pair. The test `every_default_has_a_chord_without_win`
 /// checks that each shipped command is here or has a pair, and that no two share a press.
@@ -140,12 +157,12 @@ const EXTRAS: &[Extra] = &[
     ex(OptionShift, Char('b'), SA, F(6)),
     ex(CtrlShiftRest, Char('y'), SA, F(7)),
     ex(OptionShift, Char('c'), SA, F(8)),
-    // tmux: Ctrl+Alt+F1 to F5.
-    ex(CtrlShiftRest, Char('d'), CA, F(1)),
-    ex(CtrlShiftRest, Char('n'), CA, F(2)),
-    ex(CtrlShiftRest, Char('t'), CA, F(3)),
-    ex(CtrlShiftRest, Char('p'), CA, F(4)),
-    ex(CtrlShiftRest, Enter, CA, F(5)),
+    // tmux: Ctrl+Alt+F1 to F5 (Linux: see `tmux_press`).
+    ex(CtrlShiftRest, Char('d'), tmux_press(1).0, tmux_press(1).1),
+    ex(CtrlShiftRest, Char('n'), tmux_press(2).0, tmux_press(2).1),
+    ex(CtrlShiftRest, Char('t'), tmux_press(3).0, tmux_press(3).1),
+    ex(CtrlShiftRest, Char('p'), tmux_press(4).0, tmux_press(4).1),
+    ex(CtrlShiftRest, Enter, tmux_press(5).0, tmux_press(5).1),
     // Make default, and the debug build's Capture GPU Frame: Ctrl+Shift+Alt+F10 to F12.
     ex(CtrlShiftRest, Char('\\'), CSA, F(10)),
     ex(All, Char('\\'), CSA, F(11)),
@@ -961,6 +978,20 @@ mod tests {
                 let (h, key) = mode.form(c).unwrap();
                 let got = mode.window_chord(Mods { ctrl: h.ctrl, shift: h.shift, alt: h.alt, cmd: false }, false, key);
                 assert_eq!(got.as_ref(), Some(c), "{mode:?} {scope:?} {what}");
+            }
+        }
+    }
+
+    /// Ctrl+Alt+F1 to F12 switch to a text console on Linux (the server takes the press), so no
+    /// default may be pressed that way there, in either mode.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn no_default_is_a_linux_console_switch() {
+        for mode in MODES {
+            for (_, what, c) in default_chords() {
+                if let Some((h, k)) = mode.form(&c) {
+                    assert!(!(h == CA && matches!(k, ChordKey::F(_))), "{mode:?} {what} is pressed as Ctrl+Alt+{k:?}");
+                }
             }
         }
     }

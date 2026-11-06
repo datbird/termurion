@@ -120,6 +120,8 @@ A chord that asks for three of iTerm2's modifiers at once (Cmd+Option+Shift, Cmd
 | Workgroup peer 1 to 9 | Cmd+Option+Shift+1 to 9 | Ctrl+Shift+Alt+F1 to F9 |
 | A profile's new-window shortcut | Cmd+Ctrl+Option+key | Ctrl+Shift+Alt+key |
 
+On Linux, where Ctrl+Alt+F1 to F12 switch to a text console, the five tmux items in this table are Shift+Alt+F10 (Detach), Shift+Alt+F11 (New Tmux Window), Shift+Alt+F12 (New Tmux Tab), Ctrl+Shift+F12 (Pause Pane) and Shift+Alt+Home (Dashboard).
+
 A profile's new-window shortcut is Ctrl+Shift+Alt+key. That press is also Cmd+Shift+key, so a key that Cmd+Shift already uses for a command keeps the command, and that profile opens in a tab with its Ctrl+Alt+key shortcut (Alt+Shift+key with Ctrl+Alt as the Shortcut Key). The keys Q, R, X and 1 to 9 are free for a window.
 
 Settings > Keys does not record a Win key press. It shows a note instead.
