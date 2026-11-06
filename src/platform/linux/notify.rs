@@ -260,7 +260,7 @@ pub fn show_with(title: &str, body: &str, silent: bool) -> Result<(), String> {
     let q = queue()?;
     let shown = SHOWN.fetch_add(1, Ordering::SeqCst) + 1;
     q.try_send(Cmd::Show { shown, title: title.to_string(), body: body.to_string(), silent }).map_err(|_| "The notification service is not answering".to_string())?;
-    lock(&FAILURE).take().map_or(Ok(()), |e| Err(format!("The last notification was not shown. {e}")))
+    lock(&FAILURE).take().map_or(Ok(()), |e| Err(format!("{} {e}", super::super::notify::EARLIER_NOT_SHOWN)))
 }
 
 /// Closes the notification if it is still the one on screen (nothing was shown since `at`).
@@ -452,6 +452,7 @@ mod tests {
         let e = show_with("t", "b", false).unwrap_err();
         assert!(t.elapsed() < Duration::from_millis(500), "took {:?}", t.elapsed());
         assert!(e.starts_with("The last notification was not shown.") && e.contains("notification service"), "{e}");
+        assert!(super::super::super::notify::went_out(&Err(e.clone())), "this show was queued: m6");
         wait_for("the retry", || !b.calls.lock().unwrap().is_empty());
         let retry = shown_count();
         assert_eq!(retry, failed + 1);

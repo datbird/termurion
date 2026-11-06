@@ -23,6 +23,15 @@ pub use imp::{clear_if_shown, on_click, on_taskbar_created, on_tray, remove, set
 /// a window of Termurion's.
 pub const MENU_AT_ICON: bool = imp::MENU_AT_ICON;
 
+/// How an Err from `show_with` begins when it tells an earlier show's failure (Linux learns of a
+/// failure only after the call): the show asked for was queued all the same.
+pub const EARLIER_NOT_SHOWN: &str = "The last notification was not shown.";
+
+/// Whether the show `show_with` answered `r` for went out: Ok, or an Err about an earlier show.
+pub fn went_out(r: &Result<(), String>) -> bool {
+    r.as_ref().map_or_else(|e| e.starts_with(EARLIER_NOT_SHOWN), |_| true)
+}
+
 /// Whether the balloon shown when `shown_count()` was `at` is still the one on screen, now that
 /// it is `now`: nothing was shown since (whoever showed it).
 pub fn still_shown(at: u64, now: u64) -> bool {
@@ -48,6 +57,15 @@ pub fn set_active(on: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// m6: an Err that names the earlier show still means this one went out (Linux queues it and
+    /// tells the last failure); any other Err means this show failed.
+    #[test]
+    fn a_show_that_tells_an_earlier_failure_went_out() {
+        assert!(went_out(&Ok(())));
+        assert!(went_out(&Err(format!("{EARLIER_NOT_SHOWN} The service is gone."))));
+        assert!(!went_out(&Err("Windows did not show the notification".into())));
+    }
 
     /// The resident icon is the notification area icon on Windows and the menu bar status item on
     /// macOS, under the one rule (`resident::icon_wanted`): resident with no window, or 13g's

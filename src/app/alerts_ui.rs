@@ -42,18 +42,18 @@ impl App {
         }
         let (name, tab) = self.session_label(pane);
         let (title, body) = alerts::text(&kind, &name, tab, self.globals.bool("SimpleNotifications"), &self.globals.string("SessionEndMessageText"));
-        match crate::platform::notify::show_with(&title, &body, self.globals.bool("SilentUserNotifications")) {
-            Ok(()) => {
-                self.notified_pane(pane);
-                // The balloon holds one notification: a web one it replaces is told it closed.
-                self.web_note_replaced();
-                true
-            }
-            Err(e) => {
-                self.banners.set("notify", format!("Could not show a notification: {e}"));
-                false
-            }
+        let r = crate::platform::notify::show_with(&title, &body, self.globals.bool("SilentUserNotifications"));
+        // An Err that tells the earlier show's failure still queued this one.
+        let went = crate::platform::notify::went_out(&r);
+        if went {
+            self.notified_pane(pane);
+            // The balloon holds one notification: a web one it replaces is told it closed.
+            self.web_note_replaced();
         }
+        if let Err(e) = r {
+            self.banners.set("notify", format!("Could not show a notification: {e}"));
+        }
+        went
     }
 
     /// OSC 9 and OSC 1337 Notification.
@@ -231,5 +231,16 @@ mod tests {
             remember_notified(&mut list, 100 + n, 12);
         }
         assert_eq!(notified_session(&list, 4), None, "the oldest are forgotten");
+    }
+
+    /// m6: a show whose call tells the earlier show's failure was queued itself, so its click
+    /// reveals its own session.
+    #[test]
+    fn a_show_that_tells_the_earlier_failure_is_recorded() {
+        let src = include_str!("alerts_ui.rs");
+        let body = &src[src.find("    pub(super) fn post_alert(").unwrap()..];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        let went = body.find("notify::went_out(&r)").expect("post_alert asks whether this show went out");
+        assert!(went < body.find("self.notified_pane(pane)").unwrap());
     }
 }
