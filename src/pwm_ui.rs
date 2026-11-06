@@ -853,6 +853,22 @@ const GATE_WIDTH: f32 = GATE_FIELD + 40.0;
 /// The first guess at the height, before the content has been measured.
 const GATE_START_H: f32 = 150.0;
 
+/// The gate's window. Linux: a dialog with its own frame (`dialog_frame`). Elsewhere it stays the
+/// window it was before Linux needed that (round 1 of the W541 fixes): fixed size, framed by the
+/// system, a close button only. (The gate opens only where `GATE_IN_APP`, Linux, today.)
+fn gate_attributes() -> winit::window::WindowAttributes {
+    let (w, h) = (f64::from(GATE_WIDTH), f64::from(GATE_START_H));
+    if crate::dialog_frame::OWN_FRAME {
+        crate::dialog_frame::attributes("Termurion", w, h)
+    } else {
+        crate::platform::window::attributes()
+            .with_title("Termurion")
+            .with_inner_size(winit::dpi::LogicalSize::new(w, h))
+            .with_resizable(false)
+            .with_enabled_buttons(winit::window::WindowButtons::CLOSE)
+    }
+}
+
 /// What a frame of the gate asked for.
 #[derive(Default)]
 struct GateUi {
@@ -889,8 +905,9 @@ fn gate_body(ui: &mut egui::Ui, user: &str, password: &mut Secret, note: Option<
 
 impl GateWindow {
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, user: &str) -> Result<GateWindow, String> {
-        // An alert-like dialog: on Linux its own frame, close button only, fitted to its content.
-        let host = EguiHost::open_dialog(event_loop, instance, adapter, device, queue, "Termurion", f64::from(GATE_WIDTH), f64::from(GATE_START_H))?;
+        let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, gate_attributes())?;
+        host.track_taskbar();
+        let host = host.as_dialog("Termurion", f64::from(GATE_START_H));
         Ok(GateWindow { host, user: user.to_string(), password: Secret::new(String::new()), note: None, checking: false, focus: true, opened: None })
     }
 
@@ -935,6 +952,21 @@ impl GateWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Off Linux the gate is the fixed-size, close-only, system-framed window it was before Linux
+    /// needed its own frame; on Linux it has no system frame.
+    #[test]
+    fn the_gate_window_is_the_old_one_off_linux() {
+        let a = gate_attributes();
+        assert!(!a.resizable);
+        assert_eq!(a.inner_size, Some(winit::dpi::Size::Logical(winit::dpi::LogicalSize::new(f64::from(GATE_WIDTH), f64::from(GATE_START_H)))));
+        if cfg!(target_os = "linux") {
+            assert!(!a.decorations);
+        } else {
+            assert!(a.decorations);
+            assert_eq!(a.enabled_buttons, winit::window::WindowButtons::CLOSE);
+        }
+    }
 
     /// Escape is the gate's Cancel (and so is its own close button, as a window close).
     #[test]
