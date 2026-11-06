@@ -111,14 +111,45 @@ fn link() -> Result<(u64, Connection), String> {
     Ok((gen_id, c))
 }
 
-/// Whether `sender` is the notification service itself. Any program on the bus can emit these
-/// signals, so only the owner of the service's name is believed (asked again when it changes).
-fn from_service(dbus: &zbus::blocking::fdo::DBusProxy, owner: &mut Option<String>, sender: Option<&str>) -> bool {
-    let Some(sender) = sender else { return false };
-    if owner.as_deref() != Some(sender) {
-        *owner = zbus::names::BusName::try_from(BUS_NAME).ok().and_then(|n| dbus.get_name_owner(n).ok()).map(|o| o.to_string());
+/// Who owns the service's name. Any program on the bus can emit the service's signals, so only
+/// the owner is believed. It is asked once, then followed by the bus's NameOwnerChanged, so a
+/// stranger's signals cost no bus call each.
+#[derive(Default)]
+struct Owner {
+    name: Option<String>,
+    asked: bool,
+}
+
+impl Owner {
+    /// Whether `sender` is the service itself; `ask` reads the owner the first time.
+    fn believes(&mut self, sender: Option<&str>, ask: &dyn Fn() -> Option<String>) -> bool {
+        let Some(sender) = sender else { return false };
+        if !self.asked {
+            self.asked = true;
+            self.name = ask();
+        }
+        self.name.as_deref() == Some(sender)
     }
-    owner.as_deref() == Some(sender)
+
+    /// The bus said the name moved to `new` (empty: nobody owns it).
+    fn changed(&mut self, new: &str) {
+        self.asked = true;
+        self.name = (!new.is_empty()).then(|| new.to_string());
+    }
+}
+
+fn ask_owner(dbus: &zbus::blocking::fdo::DBusProxy) -> Option<String> {
+    zbus::names::BusName::try_from(BUS_NAME).ok().and_then(|n| dbus.get_name_owner(n).ok()).map(|o| o.to_string())
+}
+
+/// A NameOwnerChanged for the service's name, from the bus itself: the new owner.
+fn owner_change(msg: &zbus::Message) -> Option<String> {
+    let header = msg.header();
+    if header.sender().map(|s| s.as_str()) != Some("org.freedesktop.DBus") || header.member().map(|m| m.as_str()) != Some("NameOwnerChanged") {
+        return None;
+    }
+    let (name, _, new) = msg.body().deserialize::<(String, String, String)>().ok()?;
+    (name == BUS_NAME).then_some(new)
 }
 
 /// Starts the one thread that reads the service's signals on `c`.
@@ -128,16 +159,23 @@ fn listen(c: Connection, gen_id: u64) -> zbus::Result<()> {
         let rule = zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal).interface(BUS_NAME)?.member(member)?.build();
         proxy.add_match_rule(rule)?;
     }
+    // Before the owner is first asked, so no move is missed.
+    let moved = zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal).sender("org.freedesktop.DBus")?.interface("org.freedesktop.DBus")?.member("NameOwnerChanged")?.add_arg(BUS_NAME)?.build();
+    proxy.add_match_rule(moved)?;
     let messages = zbus::blocking::MessageIterator::from(c);
     let spawned = std::thread::Builder::new().name("notify-listener".into()).spawn(move || {
-        let mut owner = None;
+        let mut owner = Owner::default();
         for msg in messages {
             let Ok(msg) = msg else { break };
+            if let Some(new) = owner_change(&msg) {
+                owner.changed(&new);
+                continue;
+            }
             let header = msg.header();
             if header.message_type() != zbus::message::Type::Signal || header.interface().map(|i| i.as_str()) != Some(BUS_NAME) {
                 continue;
             }
-            if !from_service(&proxy, &mut owner, header.sender().map(|s| s.as_str())) {
+            if !owner.believes(header.sender().map(|s| s.as_str()), &|| ask_owner(&proxy)) {
                 continue;
             }
             match header.member().map(|m| m.as_str()) {
@@ -537,6 +575,52 @@ mod tests {
         wait_for("the service's click", || {
             let _ = b.conn.emit_signal(None::<&str>, BUS_PATH, BUS_NAME, "ActionInvoked", &(id, "default"));
             !got.lock().unwrap().is_empty()
+        });
+    }
+
+    /// m4: the service's owner is asked once, then followed by NameOwnerChanged; a stranger
+    /// sending signals costs no bus call each.
+    #[test]
+    fn a_stranger_costs_no_bus_call_per_signal() {
+        let asks = std::cell::Cell::new(0);
+        let ask = || {
+            asks.set(asks.get() + 1);
+            Some(":1.5".to_string())
+        };
+        let mut o = Owner::default();
+        assert!(o.believes(Some(":1.5"), &ask));
+        for _ in 0..100 {
+            assert!(!o.believes(Some(":1.9"), &ask));
+        }
+        assert!(!o.believes(None, &ask));
+        assert_eq!(asks.get(), 1, "asked once");
+        o.changed(":1.9");
+        assert!(o.believes(Some(":1.9"), &ask), "the new owner is believed");
+        assert!(!o.believes(Some(":1.5"), &ask), "the old one is not");
+        o.changed("");
+        assert!(!o.believes(Some(":1.9"), &ask), "nobody owns the name");
+        assert_eq!(asks.get(), 1);
+    }
+
+    /// m4: a service that restarts under a new connection is believed once the bus says the name
+    /// moved.
+    #[test]
+    fn a_restarted_service_is_believed() {
+        let _g = BUS.lock().unwrap_or_else(|e| e.into_inner());
+        let b = bus();
+        let got = clicks();
+        show_with("t", "b", false).expect("shown");
+        id_of(shown_count());
+        let addr = std::env::var("DBUS_SESSION_BUS_ADDRESS").unwrap();
+        b.conn.release_name(BUS_NAME).unwrap();
+        let daemon = Daemon { calls: Arc::default(), closed: Arc::default(), senders: Arc::default(), hang: Duration::ZERO };
+        let next = zbus::blocking::connection::Builder::address(addr.as_str()).unwrap().name(BUS_NAME).unwrap().serve_at(BUS_PATH, daemon).unwrap().build().unwrap();
+        show_with("t", "b", false).expect("shown");
+        let shown = shown_count();
+        let id = id_of(shown);
+        wait_for("the new owner's click", || {
+            let _ = next.emit_signal(None::<&str>, BUS_PATH, BUS_NAME, "ActionInvoked", &(id, "default"));
+            got.lock().unwrap().iter().any(|c| c.shown == shown)
         });
     }
 
