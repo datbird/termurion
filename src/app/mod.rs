@@ -1956,6 +1956,9 @@ fn message_box(text: &str) {
 /// with the process; the icon lingers until hovered). It runs on the UI thread, and twice is safe.
 pub(crate) fn teardown_process() {
     crate::dlog::stop_at_exit();
+    // Every exit comes here while the app's windows still hold the Wayland display (a loop that
+    // ended with an error skipped `exiting`).
+    crate::platform::window::forget_activation();
     crate::platform::keys::uninstall();
     crate::input_locale::restore_after_panic();
     crate::platform::notify::remove(0);
@@ -2998,8 +3001,6 @@ pub fn run() {
     // The handoff class is registered before the first window, so COM's wait for it is short.
     app.sync_handoff_server();
     let ran = event_loop.run_app(&mut app);
-    // A loop that ended with an error skipped `exiting`; the app's windows still hold the display.
-    crate::platform::window::forget_activation();
     // Before the dialog; if the quit backstop won, it ends the process.
     if loop_end_claimed() {
         loop { std::thread::park(); }
@@ -8912,8 +8913,8 @@ mod tests {
     }
 
     /// N1: the Wayland activation binding goes while winit's display still lives: in `exiting`
-    /// before any early return, and after `run_app` returns while the app's windows still hold
-    /// the display (a loop that ended with an error skips `exiting`).
+    /// before any early return, and in the one teardown every exit runs while the app's windows
+    /// still hold the display (a loop that ended with an error skips `exiting`).
     #[test]
     fn the_activation_binding_goes_before_the_display() {
         let own = include_str!("mod.rs");
@@ -8922,8 +8923,8 @@ mod tests {
         let ex = &ex[..ex.find("\n    }\n").unwrap()];
         let forget = ex.find("crate::platform::window::forget_activation();").expect("exiting lets it go");
         assert!(forget < ex.find("return;").unwrap(), "before the early return");
-        let run = &own[own.find("let ran = event_loop.run_app(&mut app);").unwrap()..];
-        assert!(run[..run.find("teardown_process();").unwrap()].contains("crate::platform::window::forget_activation();"));
+        let teardown = &own[own.find("pub(crate) fn teardown_process() {").unwrap()..];
+        assert!(teardown[..teardown.find("\n}\n").unwrap()].contains("crate::platform::window::forget_activation();"));
     }
 
     /// Item 18 M5: Cmd held in a terminal window across Cmd-` into a panel. winit sends no
