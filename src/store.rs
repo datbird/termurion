@@ -406,6 +406,19 @@ Name = "Two"
         let _ = std::fs::remove_file(&path);
     }
 
+    /// m8: on macOS a missing DejaVu Sans Mono is the person's own pick, never a font Termurion
+    /// shipped there: it stays, and the banner names it. Only the shipped Cascadia moves.
+    #[test]
+    fn macos_keeps_a_missing_dejavu_for_its_banner() {
+        let none = |_: &str| false;
+        assert_eq!(crate::profile::migrated_font("macOS", "DejaVu Sans Mono 13", &none, "Monaco 12"), None);
+        assert_eq!(crate::profile::migrated_font("macOS", "Cascadia Mono 13", &none, "Monaco 12").as_deref(), Some("Monaco 13"));
+        assert_eq!(crate::profile::banner_fonts(vec!["DejaVu Sans Mono".into()], "Monaco 12", &none), vec!["DejaVu Sans Mono".to_string()]);
+        // Linux keeps moving both.
+        assert_eq!(crate::profile::migrated_font("Linux", "DejaVu Sans Mono 13", &none, "Liberation Mono 12").as_deref(), Some("Liberation Mono 13"));
+        assert_eq!(crate::profile::migrated_font("Linux", "Cascadia Mono 13", &none, "Liberation Mono 12").as_deref(), Some("Liberation Mono 13"));
+    }
+
     #[test]
     fn a_session_copy_of_the_state_file_moves_too() {
         let mut t = toml::Table::new();

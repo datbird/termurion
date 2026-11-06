@@ -57,17 +57,21 @@ pub fn default_font() -> &'static str {
 /// The keys that hold a font as "<family> <size>".
 pub const FONT_KEYS: [&str; 2] = ["Normal Font", "Non Ascii Font"];
 
-/// A saved font value that names a default Termurion shipped (Windows' Cascadia Mono, or Linux's
-/// DejaVu Sans Mono or the Cascadia it once had), with that font not installed: the value with
-/// this OS's default family and the same size. None when the value stays (Windows itself, any
-/// other family, the font installed, or already this OS's default).
+/// A saved font value that names a default Termurion shipped on this OS (the Cascadia Mono it
+/// once had on macOS and Linux, and Linux's DejaVu Sans Mono), with that font not installed: the
+/// value with this OS's default family and the same size. None when the value stays (Windows
+/// itself, any other family, the font installed, or already this OS's default). A DejaVu Sans
+/// Mono on macOS was the person's own pick, so it stays and the missing-font banner names it.
 pub fn migrated_font(os: &str, value: &str, installed: &dyn Fn(&str) -> bool, default: &str) -> Option<String> {
     if os == "Windows" {
         return None;
     }
     let f = parse_font(value);
     let home = parse_font(default).family;
-    let shipped = [parse_font(WINDOWS_FONT).family, parse_font(LINUX_FONT).family];
+    let mut shipped = vec![parse_font(WINDOWS_FONT).family];
+    if os == "Linux" {
+        shipped.push(parse_font(LINUX_FONT).family);
+    }
     if !shipped.iter().any(|s| f.family.eq_ignore_ascii_case(s)) || f.family.eq_ignore_ascii_case(&home) || installed(&f.family) {
         return None;
     }
