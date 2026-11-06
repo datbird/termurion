@@ -12,6 +12,14 @@ pub fn os_title(title: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Borrowed(title)
 }
 
+/// Starts working out what the title bar can draw (Linux), once the first window has told the
+/// session kind; nothing on macOS.
+pub fn prepare_os_title(window: &Window) {
+    let _ = view_of(window);
+    #[cfg(not(target_os = "macos"))]
+    title_glyphs::prepare();
+}
+
 /// `title` as the title bar can draw it: a character the font that draws the bar lacks is left
 /// out (it would show as a box). Which font that is, `title_glyphs` works out once per run.
 #[cfg(not(target_os = "macos"))]
@@ -113,24 +121,34 @@ mod title_glyphs {
         globals.contents().with_list(|l| l.iter().any(|g| g.interface == "zxdg_decoration_manager_v1"))
     }
 
-    /// The characters the bar can draw, worked out once.
-    fn bar_charset() -> &'static Option<Charset> {
-        static BAR: OnceLock<Option<Charset>> = OnceLock::new();
-        BAR.get_or_init(|| {
-            use super::super::global_keys::{session_kind, SessionKind};
-            if session_kind() == SessionKind::Wayland && !server_decorations() {
-                let pattern = titlebar_pattern(titlebar_setting().as_deref());
-                // sctk-adwaita draws with its own Cantarell when fontconfig gives no face: Latin only.
-                Some(face_charset(&pattern).unwrap_or_else(|| parse_charset("20-7e a0-24f")))
-            } else {
-                any_font_charset()
-            }
-        })
+    /// The characters the bar can draw, once `prepare` has worked them out.
+    static BAR: OnceLock<Option<Charset>> = OnceLock::new();
+
+    fn bar_charset() -> Option<Charset> {
+        use super::super::global_keys::{session_kind, SessionKind};
+        if session_kind() == SessionKind::Wayland && !server_decorations() {
+            let pattern = titlebar_pattern(titlebar_setting().as_deref());
+            // sctk-adwaita draws with its own Cantarell when fontconfig gives no face: Latin only.
+            Some(face_charset(&pattern).unwrap_or_else(|| parse_charset("20-7e a0-24f")))
+        } else {
+            any_font_charset()
+        }
     }
 
-    /// Unknown (no fontconfig answer at all): the character stays.
+    /// Works the set out off the UI thread (a registry round trip, gsettings, fontconfig), once,
+    /// when the first window is up and the session kind is known.
+    pub fn prepare() {
+        static STARTED: std::sync::Once = std::sync::Once::new();
+        STARTED.call_once(|| {
+            std::thread::spawn(|| {
+                let _ = BAR.set(bar_charset());
+            });
+        });
+    }
+
+    /// Not worked out yet, or no fontconfig answer at all: the character stays.
     pub fn covered(c: char) -> bool {
-        bar_charset().as_ref().is_none_or(|cs| cs.has(c))
+        BAR.get().and_then(Option::as_ref).is_none_or(|cs| cs.has(c))
     }
 
     #[cfg(test)]
@@ -155,14 +173,13 @@ mod title_glyphs {
         }
 
         /// The W541's title face: Noto Sans Bold has no U+21A3, though other fonts on a desktop
-        /// may (DejaVu Sans), so the face alone decides. Skipped where fontconfig picks another file.
+        /// may (DejaVu Sans), so the face alone decides. It needs that font installed, so it runs
+        /// only when asked (`cargo test --lib -- --ignored noto_sans_bold`).
         #[test]
+        #[ignore = "needs NotoSans-Bold.ttf, the W541's title face"]
         fn noto_sans_bold_has_no_tmux_arrow() {
             let file = run(Command::new("fc-match").arg("-f").arg("%{file}").arg("Noto Sans:Bold")).unwrap_or_default();
-            if !file.ends_with("NotoSans-Bold.ttf") {
-                eprintln!("skipped: fontconfig gives {file:?} for Noto Sans:Bold");
-                return;
-            }
+            assert!(file.ends_with("NotoSans-Bold.ttf"), "fontconfig gives {file:?} for Noto Sans:Bold");
             let cs = face_charset("Noto Sans:Bold").expect("a charset");
             assert!(cs.has('A') && cs.has('\u{2100}'));
             assert!(!cs.has('\u{21a3}'), "the face that draws the bar lacks the arrow");

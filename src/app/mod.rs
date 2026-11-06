@@ -7462,6 +7462,8 @@ impl ApplicationHandler<UserEvent> for App {
         window.set_ime_allowed(true);
         let prefer = power::chosen_preference(self.globals.bool("preferIntegratedGPU"));
         self.display_handle = Some(event_loop.owned_display_handle());
+        // What the title bar can draw is worked out now, off this thread, before any title needs it.
+        crate::platform::window::prepare_os_title(&window);
         match init_gpu(window, event_loop, prefer) {
             Ok(gpu) => {
                 let k = windows_ui::key(gpu.window.id());

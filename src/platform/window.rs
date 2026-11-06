@@ -65,6 +65,11 @@ pub fn os_title(title: &str) -> std::borrow::Cow<'_, str> {
     imp::os_title(title)
 }
 
+/// Starts, off the UI thread, what `os_title` needs to know (Linux: the title bar's font).
+pub fn prepare_os_title(window: &Window) {
+    imp::prepare_os_title(window)
+}
+
 pub fn hwnd_of(window: &Window) -> Option<isize> {
     imp::hwnd_of(window)
 }

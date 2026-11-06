@@ -18,6 +18,9 @@ pub fn os_title(title: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Borrowed(title)
 }
 
+/// Nothing to work out on Windows.
+pub fn prepare_os_title(_window: &Window) {}
+
 pub fn hwnd_of(window: &Window) -> Option<isize> {
     match window.window_handle().ok()?.as_raw() {
         RawWindowHandle::Win32(h) => Some(h.hwnd.get()),

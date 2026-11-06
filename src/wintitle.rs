@@ -168,8 +168,10 @@ pub fn drawable_title(text: &str, covers: impl Fn(char) -> bool) -> String {
         }
     }
     // A dropped last character leaves no space before it.
-    if dropped && out.ends_with(' ') {
-        out.pop();
+    if dropped {
+        while out.ends_with(' ') {
+            out.pop();
+        }
     }
     out
 }
@@ -189,6 +191,7 @@ mod tests {
         assert_eq!(drawable_title("plain \u{e9}t\u{e9}", covers), "plain \u{e9}t\u{e9}");
         assert_eq!(drawable_title("\u{21a3} ", covers), "");
         assert_eq!(drawable_title("x \u{21a3}", covers), "x", "no space left at the end either");
+        assert_eq!(drawable_title("x  \u{21a3}", covers), "x", "nor two");
     }
 
     #[test]
