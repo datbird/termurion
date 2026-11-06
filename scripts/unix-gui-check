@@ -303,7 +303,10 @@ case "$scenario" in
                     *[!A-Za-z0-9/._+-]*) grep -q '^Exec=".*" %U$' "$entry" || fail "the entry's Exec is not one quoted path" ;;
                     *) grep -qxF "Exec=\"$appimage\" %U" "$entry" || fail "the entry's Exec is not $appimage" ;;
                 esac
-                [ -s "$scratch/home/.local/share/icons/hicolor/256x256/apps/dev.termurion.Termurion.png" ] || fail "no icon beside the desktop entry"
+                icon="$scratch/home/.local/share/icons/hicolor/256x256/apps/dev.termurion.Termurion.png"
+                [ -s "$icon" ] || fail "no icon beside the desktop entry"
+                # The icon by its absolute path, so gnome-shell finds it without a restart.
+                grep -qxF "Icon=$icon" "$entry" || fail "the entry's Icon is not $icon"
                 ;;
         esac
         ;;

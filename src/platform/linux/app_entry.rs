@@ -32,13 +32,17 @@ pub enum Installed {
     Refused(&'static str),
 }
 
-/// The packaged entry, with Exec pointing at `appimage` and the mark added.
-fn entry_text(appimage: &Path) -> String {
+/// The packaged entry, with Exec pointing at `appimage`, Icon at the copied PNG by its absolute
+/// path when there is one (gnome-shell reads the icon theme once, at its start, so a themed name
+/// installed later is never found until it restarts), and the mark added.
+fn entry_text(appimage: &Path, icon: Option<&Path>) -> String {
     let packaged = include_str!("../../../packaging/linux/dev.termurion.Termurion.desktop");
     let mut out = String::new();
     for line in packaged.lines() {
         if line.starts_with("Exec=") {
             out.push_str(&format!("Exec={} %U\n", exec_arg(&appimage.to_string_lossy())));
+        } else if let (true, Some(icon)) = (line.starts_with("Icon="), icon.and_then(Path::to_str).filter(|p| !p.chars().any(|c| c.is_control() || c == '\\'))) {
+            out.push_str(&format!("Icon={icon}\n"));
         } else {
             out.push_str(line);
             out.push('\n');
@@ -91,7 +95,8 @@ pub fn install_in(data_home: &Path, system_dirs: &[PathBuf], appimage: &Path, ic
         return Ok(Installed::PackageHasOne);
     }
     let entry = data_home.join("applications").join(&name);
-    let want = entry_text(appimage);
+    let icon_to = data_home.join("icons/hicolor/256x256/apps").join(format!("{APP_ID}.png"));
+    let want = entry_text(appimage, icon.map(|_| icon_to.as_path()));
     let outcome = match std::fs::read_to_string(&entry) {
         Ok(have) if !have.lines().any(|l| l == MARK) => return Ok(Installed::NotOurs),
         Ok(have) if have == want => Installed::Unchanged,
@@ -100,10 +105,9 @@ pub fn install_in(data_home: &Path, system_dirs: &[PathBuf], appimage: &Path, ic
         Err(e) => return Err(e),
     };
     if let Some(icon) = icon {
-        let to = data_home.join("icons/hicolor/256x256/apps").join(format!("{APP_ID}.png"));
         let art = std::fs::read(icon)?;
-        if std::fs::read(&to).ok().as_deref() != Some(art.as_slice()) {
-            write_whole(&to, &art)?;
+        if std::fs::read(&icon_to).ok().as_deref() != Some(art.as_slice()) {
+            write_whole(&icon_to, &art)?;
         }
     }
     if outcome != Installed::Unchanged {
@@ -177,7 +181,9 @@ mod tests {
         assert_eq!(install_in(&home, std::slice::from_ref(&sys), first, Some(&icon)).unwrap(), Installed::Wrote);
         let text = entry(&home);
         assert!(text.lines().any(|l| l == "Exec=\"/home/me/Apps/Termurion.AppImage\" %U"), "{text}");
-        assert!(text.lines().any(|l| l == format!("Icon={APP_ID}")) && text.lines().any(|l| l == format!("StartupWMClass={APP_ID}")), "{text}");
+        // The icon by its absolute path: gnome-shell finds it without a restart.
+        let png = home.join(format!("icons/hicolor/256x256/apps/{APP_ID}.png"));
+        assert!(text.lines().any(|l| l == format!("Icon={}", png.display())) && text.lines().any(|l| l == format!("StartupWMClass={APP_ID}")), "{text}");
         assert_eq!(std::fs::read(home.join(format!("icons/hicolor/256x256/apps/{APP_ID}.png"))).unwrap(), b"png bytes");
         assert_eq!(install_in(&home, std::slice::from_ref(&sys), first, Some(&icon)).unwrap(), Installed::Unchanged);
         let moved = Path::new("/home/me/Downloads/Termurion.AppImage");
@@ -193,6 +199,10 @@ mod tests {
         std::fs::write(sys.join(format!("applications/{APP_ID}.desktop")), "[Desktop Entry]\n").unwrap();
         let app = Path::new("/a/T.AppImage");
         assert_eq!(install_in(&home, std::slice::from_ref(&sys), app, None).unwrap(), Installed::PackageHasOne);
+        // With no icon to copy the entry keeps the themed name.
+        let bare = s.0.join("bare");
+        assert_eq!(install_in(&bare, &[], app, None).unwrap(), Installed::Wrote);
+        assert!(entry(&bare).lines().any(|l| l == format!("Icon={APP_ID}")));
         assert!(!home.join("applications").exists(), "nothing written beside a package's entry");
         let other = s.0.join("none");
         std::fs::create_dir_all(home.join("applications")).unwrap();
