@@ -442,7 +442,9 @@ mod tests {
         let pid = conn.intern_atom(false, b"_NET_WM_PID").unwrap().reply().unwrap().atom;
         conn.change_property32(PropMode::REPLACE, id, pid, AtomEnum::CARDINAL, &[std::process::id()]).unwrap();
         conn.map_window(id).unwrap();
-        conn.flush().unwrap();
+        // A round trip, not just a flush: the code under test reads the window over its own
+        // connection, and the server may not have handled this one's requests yet.
+        conn.sync().unwrap();
         id
     }
 
@@ -640,6 +642,24 @@ mod tests {
         let from_elsewhere = std::thread::spawn(|| global_keys::set_hotkeys(vec![], vec![])).join().unwrap();
         assert!(from_elsewhere.unwrap_err().contains("main thread"));
         global_keys::set_hotkeys(vec![], vec![]).unwrap();
+    }
+
+    /// The flake of `the_connection_follows_display`: `make_window` only flushed, so `ours`, on
+    /// its own connection, could read before the server handled the window (about half of 2000
+    /// tries missed). The helper now waits for a round trip.
+    #[test]
+    fn a_window_made_by_the_helper_is_seen_at_once() {
+        let _x = xenv();
+        let (conn, screen) = RustConnection::connect(None).unwrap();
+        let root = conn.setup().roots[screen].root;
+        let mut bad = 0;
+        for _ in 0..300 {
+            let w = make_window(&conn, root);
+            if !ours(w as isize) {
+                bad += 1;
+            }
+        }
+        assert_eq!(bad, 0, "ours missed a fresh window");
     }
 
     #[test]
