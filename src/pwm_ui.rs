@@ -857,18 +857,69 @@ const GATE_MARGIN: f32 = 8.0;
 /// The first guess at the height, before the content has been measured.
 const GATE_START_H: f32 = 150.0;
 
-/// A dialog's window: a fixed size and a close button only (no minimize, no maximize).
+/// A dialog's window: a fixed size and no window-manager frame. winit 0.30 ignores enabled
+/// buttons on Linux, and GNOME's frame (sctk-adwaita on Wayland) always has minimize and
+/// maximize, so the gate draws its own title row with only a close button.
 fn gate_attributes() -> winit::window::WindowAttributes {
     crate::platform::window::attributes()
         .with_title("Termurion")
         .with_inner_size(winit::dpi::LogicalSize::new(f64::from(GATE_WIDTH), f64::from(GATE_START_H)))
         .with_resizable(false)
-        .with_enabled_buttons(winit::window::WindowButtons::CLOSE)
+        .with_decorations(false)
 }
 
 /// The window's height for content `content_h` points tall: the content and the panel's margins.
 fn gate_height(content_h: f32) -> f32 {
     content_h + 2.0 * GATE_MARGIN
+}
+
+/// What a frame of the gate asked for.
+#[derive(Default)]
+struct GateUi {
+    ok: bool,
+    cancel: bool,
+    /// A press on the title row: the window follows the pointer.
+    drag: bool,
+    content_h: f32,
+}
+
+/// The gate's content: its own title row (the name and a close button, which is Cancel), the
+/// prompt, the field, the note and OK and Cancel.
+fn gate_body(ui: &mut egui::Ui, user: &str, password: &mut Secret, note: Option<&str>, checking: bool, focus: &mut bool, opened: &mut Option<u64>) -> GateUi {
+    let mut out = GateUi::default();
+    ui.horizontal(|ui| {
+        let title = ui.add(egui::Label::new(egui::RichText::new("Termurion").strong()).sense(egui::Sense::click_and_drag()));
+        out.drag = title.drag_started() || title.is_pointer_button_down_on();
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            out.cancel |= ui.add(egui::Button::new("\u{2715}").frame(false)).on_hover_text("Close").clicked();
+            // The rest of the row moves the window too.
+            let rest = ui.allocate_response(ui.available_size(), egui::Sense::drag());
+            out.drag |= rest.drag_started();
+        });
+    });
+    ui.separator();
+    ui.label(format!("Termurion wants to open the password manager. Enter the password for {user}."));
+    ui.add_space(8.0);
+    let id = egui::Id::new("pwm-gate-password");
+    crate::secret_field::secret_field(ui, id, password, !checking, Some("Password"), GATE_FIELD, false);
+    if std::mem::take(focus) {
+        ui.memory_mut(|m| m.request_focus(id));
+    }
+    ui.add_space(4.0);
+    if checking {
+        ui.label("Checking...");
+    } else if let Some(n) = note {
+        ui.colored_label(ui.visuals().error_fg_color, n);
+    }
+    ui.add_space(10.0);
+    let first = *opened.get_or_insert_with(|| ui.ctx().cumulative_frame_nr());
+    let (enter, escape) = crate::settings_ai::modal_keys(ui, first, &[id]);
+    ui.horizontal(|ui| {
+        out.ok = ui.add_enabled(!checking, egui::Button::new("OK").min_size(egui::vec2(76.0, 24.0))).clicked() || (enter && !checking);
+        out.cancel |= ui.add(egui::Button::new("Cancel").min_size(egui::vec2(76.0, 24.0))).clicked() || escape;
+    });
+    out.content_h = ui.min_rect().height();
+    out
 }
 
 impl GateWindow {
@@ -902,40 +953,29 @@ impl GateWindow {
     }
 
     pub fn redraw(&mut self) -> GateResult {
-        let (mut ok, mut cancel) = (false, false);
-        let (user, password, note, checking, focus, opened) = (&self.user, &mut self.password, &self.note, self.checking, &mut self.focus, &mut self.opened);
-        let mut content_h = 0.0;
+        let (user, password, note, checking, focus, opened) = (&self.user, &mut self.password, self.note.as_deref(), self.checking, &mut self.focus, &mut self.opened);
+        let mut got = GateUi::default();
         self.host.paint(|ui| {
-            egui::CentralPanel::default().frame(egui::Frame::central_panel(ui.style()).inner_margin(GATE_MARGIN)).show(ui, |ui| {
-                ui.label(format!("Termurion wants to open the password manager. Enter the password for {user}."));
-                ui.add_space(8.0);
-                let id = egui::Id::new("pwm-gate-password");
-                crate::secret_field::secret_field(ui, id, password, !checking, Some("Password"), GATE_FIELD, false);
-                if std::mem::take(focus) {
-                    ui.memory_mut(|m| m.request_focus(id));
-                }
-                ui.add_space(4.0);
-                if checking {
-                    ui.label("Checking...");
-                } else if let Some(n) = note {
-                    ui.colored_label(ui.visuals().error_fg_color, n.as_str());
-                }
-                ui.add_space(10.0);
-                let first = *opened.get_or_insert_with(|| ui.ctx().cumulative_frame_nr());
-                let (enter, escape) = crate::settings_ai::modal_keys(ui, first, &[id]);
-                ui.horizontal(|ui| {
-                    ok = ui.add_enabled(!checking, egui::Button::new("OK").min_size(egui::vec2(76.0, 24.0))).clicked() || (enter && !checking);
-                    cancel = ui.add(egui::Button::new("Cancel").min_size(egui::vec2(76.0, 24.0))).clicked() || escape;
-                });
-                content_h = ui.min_rect().height();
+            // No window frame: a thin edge so the dialog stands apart from what is behind it.
+            let frame = egui::Frame::central_panel(ui.style()).inner_margin(GATE_MARGIN).stroke(ui.visuals().window_stroke);
+            egui::CentralPanel::default().frame(frame).show(ui, |ui| {
+                got = gate_body(ui, user, password, note, checking, focus, opened);
             });
         });
-        // The window is as tall as what it shows (the note line comes and goes).
-        let want = gate_height(content_h).ceil();
-        if content_h > 0.0 && (want - self.fit).abs() >= 1.0 {
-            self.fit = want;
-            let _ = self.host.window.request_inner_size(winit::dpi::LogicalSize::new(f64::from(GATE_WIDTH), f64::from(want)));
+        if got.drag {
+            let _ = self.host.window.drag_window();
         }
+        // The window is as tall as what it shows (the note line comes and goes). A fixed-size
+        // window keeps its min and max at its first size on Wayland, so both move with it.
+        let want = gate_height(got.content_h).ceil();
+        if got.content_h > 0.0 && (want - self.fit).abs() >= 1.0 {
+            self.fit = want;
+            let size = winit::dpi::LogicalSize::new(f64::from(GATE_WIDTH), f64::from(want));
+            self.host.window.set_min_inner_size(Some(size));
+            self.host.window.set_max_inner_size(Some(size));
+            let _ = self.host.window.request_inner_size(size);
+        }
+        let (ok, cancel) = (got.ok, got.cancel);
         if cancel {
             GateResult::Cancel
         } else if ok && !self.password.is_empty() {
@@ -955,8 +995,24 @@ mod tests {
     fn the_gate_is_a_fixed_size_dialog() {
         let a = gate_attributes();
         assert!(!a.resizable);
-        assert_eq!(a.enabled_buttons, winit::window::WindowButtons::CLOSE);
-        assert_eq!(gate_height(120.0), 120.0 + 2.0 * GATE_MARGIN, "the content and the panel's margins, no more");
+        // No frame: the window manager's own buttons (minimize and maximize too) never show.
+        assert!(!a.decorations);
+        // Its own title row has the name and one button, Close, which cancels.
+        let ctx = egui::Context::default();
+        let (mut password, mut focus, mut opened) = (Secret::new(String::new()), false, None);
+        let mut texts = Vec::new();
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                gate_body(ui, "me", &mut password, None, false, &mut focus, &mut opened);
+            });
+            out.textures_delta.clear();
+            texts = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.job.text.clone()),
+                _ => None,
+            }).collect::<Vec<_>>();
+        }
+        assert!(texts.iter().any(|t| t == "Termurion") && texts.iter().any(|t| t == "\u{2715}"), "{texts:?}");
+        assert!(!texts.iter().any(|t| t.contains('\u{2013}') || t == "\u{25a1}"), "no minimize or maximize: {texts:?}");
     }
 
     /// R13x77-3: a manager a page opened has no keyboard default. Return, Space, Tab, Delete,
