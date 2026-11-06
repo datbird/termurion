@@ -663,7 +663,7 @@ pub struct App {
     tmux_late: Vec<(PaneId, Instant, Vec<u8>)>,
     /// tmux clients left waiting for an empty line after `%exit`: when to look again, the newline,
     /// and how many more may go (each only while the client is still the pane's job).
-    tmux_release: Vec<(PaneId, Instant, Vec<u8>, u8)>,
+    tmux_release: Vec<tmux_ui::Release>,
     /// The local tmux panes whose process the job watcher reads (iTerm2's tmuxClientProcessID).
     tmux_pids: HashMap<PaneId, u32>,
     /// A gateway's C key waits for the event loop to open its window.
