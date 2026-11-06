@@ -1987,6 +1987,9 @@ pub fn run() {
         // the API server) exists, so nothing reads the environment meanwhile.
         unsafe { std::env::remove_var(name) };
     }
+    // An AppImage run (Linux) takes its path out of the environment, still before any thread,
+    // and installs its desktop entry so the dock has an icon.
+    crate::platform::install_app_entry();
     // An ssh: URL from a protocol handler (m14e): a running Termurion of this user takes it and this
     // process ends; a refused command line opens nothing. Before any window or thread exists.
     let mut pending_urls_at_start = Vec::new();

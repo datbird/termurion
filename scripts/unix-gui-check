@@ -22,7 +22,8 @@
 # not be left with no window.
 # TERMURION_BIN names another build to run (an AppImage; add TERMURION_BIN_ARGS=--appimage-extract-and-run
 # where FUSE is missing) and skips the debug build.
-# The app runs with HOME, TMPDIR and XDG_RUNTIME_DIR under target/gui-check/<scenario>/.
+# The app runs with HOME, TMPDIR and XDG_RUNTIME_DIR under target/gui-check/<scenario>/ (and no
+# XDG_DATA_HOME, so an AppImage run's desktop entry lands in that HOME).
 # Keys go through XTEST (xdotool type/key, never --window), with no window manager, so the
 # window is focused by hand. The menubar scenario clicks the in-window menu bar; where its titles and
 # items sit comes from the ignored test app::menu::tests::print_bar_layout (same fonts, same layout code). No chord uses the Super key: Command is Ctrl+Shift (shortcut_key.rs),
@@ -220,7 +221,7 @@ launch_app() {
     # On weston the app has no X server: no DISPLAY, only the weston socket.
     local display_env=(-u WAYLAND_DISPLAY) wayland_env=()
     $wayland && { display_env=(-u DISPLAY); wayland_env=(WAYLAND_DISPLAY=wl-guicheck); }
-    env -u TMUX "${display_env[@]}" -u XDG_CONFIG_HOME -u XDG_STATE_HOME "${locale_env[@]}" "${wayland_env[@]}" HOME="$scratch/home" TMPDIR="$scratch/tmp" XDG_RUNTIME_DIR="$scratch/run" \
+    env -u TMUX "${display_env[@]}" -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_DATA_HOME "${locale_env[@]}" "${wayland_env[@]}" HOME="$scratch/home" TMPDIR="$scratch/tmp" XDG_RUNTIME_DIR="$scratch/run" \
         "${TERMURION_BIN:-$repo/target/debug/termurion}" ${TERMURION_BIN_ARGS:-} >> "$scratch/app.log" 2>&1 &
     app_pid=$!
     # Behind an AppImage runtime the app is a child: from here app_pid is the app itself.
@@ -288,8 +289,16 @@ case "$scenario" in
         shoot
         [ "$(sort -u "$scratch/pids" | wc -l)" -eq 1 ] || fail "expected one pid: $(tr '\n' ' ' < "$scratch/pids")"
         # An AppImage's runtime variables are the app's, never the shell's.
-        leaked=$(tr '\0' '\n' < "/proc/$(head -1 "$scratch/pids")/environ" 2> /dev/null | grep -E '^(APPDIR|APPIMAGE|ARGV0|OWD)=' | cut -d= -f1 | tr '\n' ' ')
+        leaked=$(tr '\0' '\n' < "/proc/$(head -1 "$scratch/pids")/environ" 2> /dev/null | grep -E '^(APPDIR|APPIMAGE|ARGV0|OWD|TERMURION_APPIMAGE)=' | cut -d= -f1 | tr '\n' ' ')
         [ -z "$leaked" ] || fail "the shell has the AppImage's $leaked"
+        # An AppImage run installs its desktop entry (and icon) under the scratch home, Exec on the AppImage.
+        case "${TERMURION_BIN:-}" in
+            *.AppImage)
+                entry="$scratch/home/.local/share/applications/dev.termurion.Termurion.desktop"
+                grep -qxF "Exec=\"$TERMURION_BIN\" %U" "$entry" 2> /dev/null || fail "no desktop entry for the AppImage at $entry"
+                [ -s "$scratch/home/.local/share/icons/hicolor/256x256/apps/dev.termurion.Termurion.png" ] || fail "no icon beside the desktop entry"
+                ;;
+        esac
         ;;
     notify)
         sleep 1

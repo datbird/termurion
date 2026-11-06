@@ -1,6 +1,7 @@
 //! Linux-only implementations (what macOS does differently).
 
 pub mod activation;
+pub mod app_entry;
 pub mod hotkey;
 pub mod notify;
 pub mod proc_table;

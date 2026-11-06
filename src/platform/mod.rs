@@ -18,6 +18,13 @@ pub mod browser;
 pub mod caption;
 pub mod chrome;
 pub mod clipboard;
+
+/// An AppImage run installs its desktop entry and icon (Linux, `linux::app_entry`); nothing elsewhere.
+#[cfg(target_os = "linux")]
+pub use linux::app_entry::install_at_startup as install_app_entry;
+/// An AppImage run installs its desktop entry and icon (Linux); nothing elsewhere.
+#[cfg(not(target_os = "linux"))]
+pub fn install_app_entry() {}
 pub mod clock;
 pub mod cmd_help;
 pub mod coproc;
