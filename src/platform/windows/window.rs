@@ -13,6 +13,11 @@ use winit::window::Window;
 use super::super::window::{Flash, Show};
 use crate::layout::Rect;
 
+/// Windows' title bar falls back to a font that has the character: the title as it is.
+pub fn os_title(title: &str) -> std::borrow::Cow<'_, str> {
+    std::borrow::Cow::Borrowed(title)
+}
+
 pub fn hwnd_of(window: &Window) -> Option<isize> {
     match window.window_handle().ok()?.as_raw() {
         RawWindowHandle::Win32(h) => Some(h.hwnd.get()),

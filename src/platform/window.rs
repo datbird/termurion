@@ -59,6 +59,12 @@ pub enum Flash {
 }
 
 /// A window's native handle, when the OS gives it one.
+/// `title` as the OS title bar can draw it. Linux leaves out a character no installed font has
+/// (the desktop draws the bar with its own fonts); Windows and macOS fall back to a font that has it.
+pub fn os_title(title: &str) -> std::borrow::Cow<'_, str> {
+    imp::os_title(title)
+}
+
 pub fn hwnd_of(window: &Window) -> Option<isize> {
     imp::hwnd_of(window)
 }

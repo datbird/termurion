@@ -152,9 +152,39 @@ pub fn evaluate(format: &str, lookup: &dyn Fn(&str) -> Option<String>, lax: bool
     }
 }
 
+/// `text` for the OS title bar, which draws with the system's fonts: each character `covers`
+/// says no font has is left out, with one space after it when it would leave two (or lead).
+pub fn drawable_title(text: &str, covers: impl Fn(char) -> bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut dropped = false;
+    for c in text.chars() {
+        if c.is_ascii() || covers(c) {
+            if !(dropped && c == ' ' && (out.is_empty() || out.ends_with(' '))) {
+                out.push(c);
+            }
+            dropped = false;
+        } else {
+            dropped = true;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The OS draws the title bar with its own fonts: a character none of them has (the tmux
+    /// prefix's arrow on a desktop without it) is left out, with the space it leaves.
+    #[test]
+    fn an_os_title_drops_what_no_system_font_draws() {
+        let covers = |c: char| c != '\u{21a3}';
+        assert_eq!(drawable_title("\u{21a3} Default [bob@box]", covers), "Default [bob@box]");
+        assert_eq!(drawable_title("1. \u{21a3} vi", covers), "1. vi");
+        assert_eq!(drawable_title("a\u{21a3}b", covers), "ab");
+        assert_eq!(drawable_title("plain \u{e9}t\u{e9}", covers), "plain \u{e9}t\u{e9}");
+        assert_eq!(drawable_title("\u{21a3} ", covers), "");
+    }
 
     #[test]
     fn window_title_follows_iterm2() {

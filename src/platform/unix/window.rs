@@ -6,6 +6,74 @@ use winit::window::Window;
 use super::super::window::{Flash, Show};
 use crate::layout::Rect;
 
+/// The Mac's title bar falls back to a font that has the character: the title as it is.
+#[cfg(target_os = "macos")]
+pub fn os_title(title: &str) -> std::borrow::Cow<'_, str> {
+    std::borrow::Cow::Borrowed(title)
+}
+
+/// The desktop draws the title bar with its own fonts, found by fontconfig: a character no
+/// installed font has is left out. Each character is asked once, off the UI thread; until the
+/// answer comes it stays.
+#[cfg(not(target_os = "macos"))]
+pub fn os_title(title: &str) -> std::borrow::Cow<'_, str> {
+    if title.is_ascii() {
+        return std::borrow::Cow::Borrowed(title);
+    }
+    std::borrow::Cow::Owned(crate::wintitle::drawable_title(title, title_glyphs::covered))
+}
+
+#[cfg(not(target_os = "macos"))]
+mod title_glyphs {
+    use std::collections::HashMap;
+    use std::sync::mpsc::{channel, Sender};
+    use std::sync::{Mutex, OnceLock};
+
+    /// Each character asked about: None while fontconfig is being asked.
+    static KNOWN: Mutex<Option<HashMap<char, Option<bool>>>> = Mutex::new(None);
+
+    fn asker() -> &'static Mutex<Sender<char>> {
+        static ASK: OnceLock<Mutex<Sender<char>>> = OnceLock::new();
+        ASK.get_or_init(|| {
+            let (tx, rx) = channel::<char>();
+            std::thread::spawn(move || {
+                for c in rx {
+                    let has = font_has(c);
+                    KNOWN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(c, Some(has));
+                }
+            });
+            Mutex::new(tx)
+        })
+    }
+
+    /// fontconfig's own answer (the one the desktop uses): some installed font has `c`. With no
+    /// fc-list to ask, the character is kept.
+    fn font_has(c: char) -> bool {
+        let out = std::process::Command::new("fc-list").arg("--format=%{family}\n").arg(format!(":charset={:x}", c as u32)).stderr(std::process::Stdio::null()).output();
+        match out {
+            Ok(o) if o.status.success() => !o.stdout.is_empty(),
+            _ => {
+                crate::dlog!("fc-list could not say whether a font has U+{:04X}; the character is kept", c as u32);
+                true
+            }
+        }
+    }
+
+    pub fn covered(c: char) -> bool {
+        let mut known = KNOWN.lock().unwrap_or_else(|e| e.into_inner());
+        let known = known.get_or_insert_with(HashMap::new);
+        match known.get(&c) {
+            Some(Some(has)) => *has,
+            Some(None) => true,
+            None => {
+                known.insert(c, None);
+                let _ = asker().lock().unwrap_or_else(|e| e.into_inner()).send(c);
+                true
+            }
+        }
+    }
+}
+
 pub fn hwnd_of(_window: &Window) -> Option<isize> {
     None
 }

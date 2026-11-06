@@ -287,6 +287,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("platform/unix/metrics.rs", 1),
     ("platform/unix/shell_open.rs", 2),
     ("platform/unix/watch.rs", 1),
+    ("platform/unix/window.rs", 1),
     ("trigger_eval.rs", 1),
     ("view_source.rs", 1),
     ("webhost_win.rs", 22),

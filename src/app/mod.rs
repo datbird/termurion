@@ -7232,7 +7232,7 @@ impl App {
             g.bar.queue(p);
         }
         let Some(gpu) = self.gpu.as_mut() else { return };
-        gpu.window.set_title(&title);
+        gpu.window.set_title(&crate::platform::window::os_title(&title));
         let wait_start = Instant::now();
         let acquired = gpu.surface.get_current_texture();
         // The renderer's timings for Copy Performance Stats: counters and milliseconds only.
