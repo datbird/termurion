@@ -20,7 +20,7 @@ use std::time::Instant;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::Key;
-use winit::window::{Window, WindowId};
+use winit::window::WindowId;
 
 use crate::egui_host::EguiHost;
 use crate::pwm::{self, Account, Buttons, Entry, RowItem, Secret};
@@ -148,7 +148,7 @@ impl PwmWindow {
         forced: Option<bool>,
     ) -> Result<PwmWindow, String> {
         let (w, h) = pwm::WINDOW_SIZE;
-        let attrs = Window::default_attributes()
+        let attrs = crate::platform::window::attributes()
             .with_title(pwm::TITLE_WINDOW)
             .with_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64))
             .with_min_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64))

@@ -16,15 +16,20 @@ use super::windows::window as imp;
 /// the Linux `.desktop` file, so a launcher finds the running window.
 pub const APP_ID: &str = "dev.termurion.Termurion";
 
+/// A new window's attributes: every Termurion window starts here, so each carries the app id
+/// and a dock groups them all under the one launcher.
+pub fn attributes() -> winit::window::WindowAttributes {
+    with_app_id(Window::default_attributes())
+}
+
 /// `attrs` carrying the app id where the window system takes one (X11 class, Wayland app id).
 pub fn with_app_id(attrs: winit::window::WindowAttributes) -> winit::window::WindowAttributes {
     #[cfg(all(unix, not(target_os = "macos")))]
-    {
+    let attrs = {
         use winit::platform::wayland::WindowAttributesExtWayland;
         use winit::platform::x11::WindowAttributesExtX11;
-        return WindowAttributesExtX11::with_name(WindowAttributesExtWayland::with_name(attrs, APP_ID, "termurion"), APP_ID, "termurion");
-    }
-    #[cfg(not(all(unix, not(target_os = "macos"))))]
+        WindowAttributesExtX11::with_name(WindowAttributesExtWayland::with_name(attrs, APP_ID, "termurion"), APP_ID, "termurion")
+    };
     attrs
 }
 
@@ -148,6 +153,27 @@ pub fn placement(hwnd: isize) -> Option<(u32, u32, [i32; 4], (i32, i32))> {
 
 #[cfg(all(test, target_os = "linux"))] // test: windows on a private X server are Linux's
 mod tests {
+
+    /// Every window is built from `attributes`, so none goes without the app id (on Wayland a
+    /// dock would not group it with the launcher).
+    #[test]
+    fn every_window_carries_the_app_id() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    if !p.ends_with("platform") {
+                        walk(&p, out);
+                    }
+                } else if p.extension().is_some_and(|x| x == "rs") && std::fs::read_to_string(&p).unwrap().contains(concat!("default_", "attributes()")) {
+                    out.push(p.display().to_string());
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut found);
+        assert!(found.is_empty(), "windows built without platform::window::attributes: {found:?}");
+    }
     use std::io::Read;
 
     #[test]

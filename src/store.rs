@@ -362,7 +362,7 @@ Name = "Two"
 
     #[test]
     fn a_second_migration_pass_changes_nothing_on_every_os() {
-        for (os, default) in [("macOS", "Monaco 12"), ("macOS", "Menlo 12"), ("Linux", "Cascadia Mono 12"), ("Windows", "Cascadia Mono 12")] {
+        for (os, default) in [("macOS", "Monaco 12"), ("macOS", "Menlo 12"), ("Linux", "DejaVu Sans Mono 12"), ("Linux", "Liberation Mono 12"), ("Windows", "Cascadia Mono 12")] {
             let path = windows_font_file("twice");
             let mut st = Store::load(&path).unwrap();
             st.migrate_fonts(os, &|_| false, default);
@@ -371,12 +371,19 @@ Name = "Two"
         }
     }
 
+    /// Linux once shipped Cascadia Mono, which a stock Ubuntu does not have: a saved Cascadia, and a
+    /// DejaVu Sans Mono on a box without it, move to the installed default; a user's font stays.
     #[test]
-    fn linux_keeps_cascadia_as_its_own_default_and_never_reports_a_change() {
+    fn linux_moves_a_missing_shipped_font_to_the_installed_default() {
         let path = windows_font_file("linux");
         let mut st = Store::load(&path).unwrap();
-        assert!(!st.migrate_fonts("Linux", &|_| false, "Cascadia Mono 12"));
-        assert_eq!(st.profiles[0].string("Normal Font"), "Cascadia Mono 12");
+        assert!(st.migrate_fonts("Linux", &|f| f == "DejaVu Sans Mono", "DejaVu Sans Mono 12"));
+        assert_eq!(st.profiles[0].string("Normal Font"), "DejaVu Sans Mono 12");
+        assert_eq!(st.profiles[1].font("Normal Font").size_pt, 14.0);
+        assert_eq!(st.profiles[1].font("Non Ascii Font").family, "Fira Code");
+        assert!(!st.migrate_fonts("Linux", &|f| f == "DejaVu Sans Mono", "DejaVu Sans Mono 12"), "settled");
+        assert!(st.migrate_fonts("Linux", &|_| false, "Liberation Mono 12"), "no DejaVu: the installed monospace");
+        assert_eq!(st.profiles[0].string("Normal Font"), "Liberation Mono 12");
         let _ = std::fs::remove_file(&path);
     }
 

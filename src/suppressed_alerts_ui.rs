@@ -131,7 +131,7 @@ pub struct SuppressedWindow {
 impl SuppressedWindow {
     #[allow(clippy::too_many_arguments)]
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, rows: Vec<Row>, show_remembered: bool) -> Result<SuppressedWindow, String> {
-        let attrs = winit::window::Window::default_attributes()
+        let attrs = crate::platform::window::attributes()
             .with_title(TITLE)
             .with_inner_size(winit::dpi::LogicalSize::new(SIZE.0, SIZE.1))
             .with_min_inner_size(winit::dpi::LogicalSize::new(MIN_SIZE.0, MIN_SIZE.1));

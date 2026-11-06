@@ -6,7 +6,7 @@
 
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{Window, WindowId};
+use winit::window::WindowId;
 
 use crate::egui_host::EguiHost;
 
@@ -60,7 +60,7 @@ impl GitLogWindow {
         let w = font.cell_w * COLUMNS + MARGIN_PT * 2.0 * font.scale;
         let h = HEIGHT_PT * font.scale;
         let y = if at.above { at.y - h } else { at.y };
-        let attrs = Window::default_attributes()
+        let attrs = crate::platform::window::attributes()
             .with_title("git log")
             .with_decorations(false)
             .with_inner_size(winit::dpi::PhysicalSize::new(w, h))

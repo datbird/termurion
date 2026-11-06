@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
-use winit::window::{Window, WindowId};
+use winit::window::WindowId;
 
 use crate::egui_host::EguiHost;
 use crate::web_replay::{self, Clock};
@@ -58,7 +58,7 @@ impl PlaybackWindow {
             return Err("nothing was recorded".to_string());
         }
         let (w, h) = (f64::from(size.0.max(1)).clamp(MIN_SIZE.0, MAX_SIZE.0), f64::from(size.1.max(1)).clamp(MIN_SIZE.1, MAX_SIZE.1 - CONTROLS));
-        let attrs = Window::default_attributes()
+        let attrs = crate::platform::window::attributes()
             .with_title(web_replay::WINDOW_TITLE)
             .with_resizable(true)
             .with_inner_size(winit::dpi::LogicalSize::new(w, h + CONTROLS));

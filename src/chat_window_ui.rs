@@ -331,7 +331,7 @@ pub struct ChatWindow {
 
 impl ChatWindow {
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<ChatWindow, String> {
-        let attrs = winit::window::Window::default_attributes()
+        let attrs = crate::platform::window::attributes()
             .with_title(tb::WINDOW_TITLE)
             .with_inner_size(winit::dpi::LogicalSize::new(tb::SIZE.0, tb::SIZE.1))
             .with_min_inner_size(winit::dpi::LogicalSize::new(tb::MIN_SIZE.0, tb::MIN_SIZE.1));

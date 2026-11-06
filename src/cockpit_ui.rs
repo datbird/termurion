@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{Window, WindowId};
+use winit::window::WindowId;
 
 use crate::cockpit::{self, Act, Frame, Tint, View};
 use crate::cockpit_rows::{self, Row, RowKey, World};
@@ -261,7 +261,7 @@ impl CockpitWindow {
         dark: bool,
     ) -> Result<CockpitWindow, String> {
         let min_h = cockpit::FILTER_BAR_HEIGHT + cockpit::LIST_MIN + cockpit::COMPOSER_MIN + 40.0;
-        let attrs = Window::default_attributes()
+        let attrs = crate::platform::window::attributes()
             .with_title(cockpit::TITLE)
             .with_resizable(true)
             .with_enabled_buttons(winit::window::WindowButtons::CLOSE)

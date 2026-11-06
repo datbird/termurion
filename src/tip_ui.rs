@@ -4,7 +4,7 @@
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{Window, WindowId};
+use winit::window::WindowId;
 
 use crate::egui_host::EguiHost;
 use crate::tips::Tip;
@@ -138,7 +138,7 @@ impl TipWindow {
         offset: (f32, f32),
     ) -> Result<TipWindow, String> {
         let start_h = 220.0_f64;
-        let attrs = Window::default_attributes()
+        let attrs = crate::platform::window::attributes()
             .with_title(TITLE)
             .with_decorations(false)
             .with_resizable(false)

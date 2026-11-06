@@ -103,7 +103,7 @@ pub struct TagEditor {
 impl TagEditor {
     #[allow(clippy::too_many_arguments)]
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, pane: PaneId, url: String, title: Option<String>, tags: Vec<String>, all: Vec<String>, center: (f64, f64)) -> Result<TagEditor, String> {
-        let attrs = winit::window::Window::default_attributes()
+        let attrs = crate::platform::window::attributes()
             .with_title(TITLE)
             .with_inner_size(winit::dpi::LogicalSize::new(f64::from(SIZE.0), f64::from(SIZE.1)))
             .with_resizable(false)

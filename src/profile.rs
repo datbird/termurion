@@ -12,13 +12,40 @@ pub const NAME: &str = "Name";
 /// The Windows stand-in for iTerm2's default Monaco 12.
 pub const WINDOWS_FONT: &str = "Cascadia Mono 12";
 
+/// Linux's default when it is installed (stock Ubuntu, Debian and Fedora have it).
+pub const LINUX_FONT: &str = "DejaVu Sans Mono 12";
+
+/// Linux's default as settled against the installed fonts (`settle_default_font`).
+static LINUX_SETTLED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 /// The default font for `os`: iTerm2's own Monaco 12 on macOS (Menlo 12 when Monaco is missing),
-/// the Cascadia stand-in everywhere else.
+/// an installed monospace on Linux, the Cascadia stand-in on Windows.
 fn default_font_for(os: &str, monaco_present: bool) -> &'static str {
-    match (os == "macOS", monaco_present) {
-        (true, true) => "Monaco 12",
-        (true, false) => "Menlo 12",
+    match (os, monaco_present) {
+        ("macOS", true) => "Monaco 12",
+        ("macOS", false) => "Menlo 12",
+        ("Linux", _) => LINUX_SETTLED.get().map_or(LINUX_FONT, String::as_str),
         _ => WINDOWS_FONT,
+    }
+}
+
+/// The Linux default on this machine: DejaVu Sans Mono when installed, else the first installed
+/// monospace family (the fontconfig font set the renderer reads), else DejaVu Sans Mono anyway.
+pub fn linux_default(installed: &dyn Fn(&str) -> bool, monospaced: &[String]) -> String {
+    let dejavu = parse_font(LINUX_FONT).family;
+    if installed(&dejavu) {
+        return LINUX_FONT.to_string();
+    }
+    let mut mono: Vec<&String> = monospaced.iter().collect();
+    mono.sort();
+    mono.first().map_or_else(|| LINUX_FONT.to_string(), |f| format!("{f} 12"))
+}
+
+/// Fixes Linux's default to a font that is installed, once the renderer can say which are; a
+/// no-op elsewhere. A new profile then names the font it draws with.
+pub fn settle_default_font(os: &str, installed: &dyn Fn(&str) -> bool, monospaced: &dyn Fn() -> Vec<String>) {
+    if os == "Linux" && LINUX_SETTLED.get().is_none() {
+        let _ = LINUX_SETTLED.set(linux_default(installed, &monospaced()));
     }
 }
 
@@ -30,23 +57,21 @@ pub fn default_font() -> &'static str {
 /// The keys that hold a font as "<family> <size>".
 pub const FONT_KEYS: [&str; 2] = ["Normal Font", "Non Ascii Font"];
 
-/// A saved font value that names the Windows shipped default on another OS, with that font not
-/// installed: the value with this OS's default family and the same size. None when the value
-/// stays (Windows itself, an OS whose default is Cascadia, any other family, or Cascadia installed).
+/// A saved font value that names a default Termurion shipped (Windows' Cascadia Mono, or Linux's
+/// DejaVu Sans Mono or the Cascadia it once had), with that font not installed: the value with
+/// this OS's default family and the same size. None when the value stays (Windows itself, any
+/// other family, the font installed, or already this OS's default).
 pub fn migrated_font(os: &str, value: &str, installed: &dyn Fn(&str) -> bool, default: &str) -> Option<String> {
     if os == "Windows" {
         return None;
     }
     let f = parse_font(value);
-    let cascadia = parse_font(WINDOWS_FONT).family;
-    // This OS ships Cascadia as its own default (Linux): the value is already home.
-    if parse_font(default).family.eq_ignore_ascii_case(&cascadia) {
+    let home = parse_font(default).family;
+    let shipped = [parse_font(WINDOWS_FONT).family, parse_font(LINUX_FONT).family];
+    if !shipped.iter().any(|s| f.family.eq_ignore_ascii_case(s)) || f.family.eq_ignore_ascii_case(&home) || installed(&f.family) {
         return None;
     }
-    if !f.family.eq_ignore_ascii_case(&cascadia) || installed(&f.family) {
-        return None;
-    }
-    Some(format!("{} {}", parse_font(default).family, f.size_pt))
+    Some(format!("{home} {}", f.size_pt))
 }
 
 /// `migrated_font` over the font keys of a value table; true when one changed.
@@ -819,9 +844,18 @@ mod tests {
     #[test]
     fn the_default_font_is_per_os() {
         assert_eq!(default_font_for("Windows", true), "Cascadia Mono 12");
-        assert_eq!(default_font_for("Linux", true), "Cascadia Mono 12");
+        assert_eq!(default_font_for("Linux", true), LINUX_SETTLED.get().map_or(LINUX_FONT, String::as_str));
         assert_eq!(default_font_for("macOS", true), "Monaco 12");
         assert_eq!(default_font_for("macOS", false), "Menlo 12");
+    }
+
+    /// Linux settles on an installed font: DejaVu Sans Mono, else the first installed monospace.
+    #[test]
+    fn the_linux_default_is_an_installed_font() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(linux_default(&|f| f == "DejaVu Sans Mono", &names(&["Liberation Mono"])), "DejaVu Sans Mono 12");
+        assert_eq!(linux_default(&|_| false, &names(&["Ubuntu Mono", "Liberation Mono"])), "Liberation Mono 12");
+        assert_eq!(linux_default(&|_| false, &[]), "DejaVu Sans Mono 12", "nothing to choose: the name stays");
     }
 
     #[test]

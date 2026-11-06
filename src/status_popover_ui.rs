@@ -7,7 +7,7 @@
 
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{Window, WindowId};
+use winit::window::WindowId;
 
 use crate::egui_host::EguiHost;
 use crate::layout::Rect;
@@ -39,7 +39,7 @@ pub enum PopoverEvent {
 /// The window attributes of a popover: frameless, no taskbar button, hidden until placed, `w` by
 /// `h` points of content.
 pub(crate) fn popover_attributes(title: &str, w: f64, h: f64) -> winit::window::WindowAttributes {
-    let attrs = Window::default_attributes()
+    let attrs = crate::platform::window::attributes()
         .with_title(title)
         .with_decorations(false)
         .with_visible(false)

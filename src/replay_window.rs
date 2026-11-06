@@ -7,7 +7,7 @@
 
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{Window, WindowId};
+use winit::window::WindowId;
 
 use crate::egui_host::EguiHost;
 use crate::replay_panel::{self, Export, Panel, PanelAct};
@@ -67,7 +67,7 @@ impl ReplayWindow {
         forced: Option<bool>,
     ) -> Result<ReplayWindow, String> {
         let (w, h) = replay_panel::SIZE;
-        let attrs = Window::default_attributes()
+        let attrs = crate::platform::window::attributes()
             .with_title(replay_panel::TITLE)
             .with_resizable(true)
             .with_enabled_buttons(winit::window::WindowButtons::CLOSE)

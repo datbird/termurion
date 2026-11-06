@@ -179,7 +179,7 @@ use std::time::Instant;
 
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{Window, WindowId};
+use winit::window::WindowId;
 
 use crate::egui_host::EguiHost;
 
@@ -349,7 +349,7 @@ impl OpenQuicklyWindow {
         dark: bool,
         duration: f32,
     ) -> Result<OpenQuicklyWindow, String> {
-        let attrs = Window::default_attributes()
+        let attrs = crate::platform::window::attributes()
             .with_title("Open Quickly")
             .with_decorations(false)
             .with_resizable(false)
@@ -657,7 +657,7 @@ pub struct PreviewWindow {
 
 impl PreviewWindow {
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, dark: bool) -> Result<PreviewWindow, String> {
-        let attrs = Window::default_attributes()
+        let attrs = crate::platform::window::attributes()
             .with_title("Open Quickly Preview")
             .with_decorations(false)
             .with_resizable(false)

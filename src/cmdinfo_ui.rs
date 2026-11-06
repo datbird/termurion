@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{Window, WindowId};
+use winit::window::WindowId;
 
 use crate::cmdinfo::{self, Info};
 use crate::egui_host::EguiHost;
@@ -90,7 +90,7 @@ impl CmdInfoWindow {
         dark: bool,
     ) -> Result<CmdInfoWindow, String> {
         let h = cmdinfo::height(started.is_some(), false);
-        let attrs = Window::default_attributes()
+        let attrs = crate::platform::window::attributes()
             .with_title("Command Info")
             .with_decorations(false)
             .with_visible(false)
