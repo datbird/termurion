@@ -627,6 +627,7 @@ mod tests {
         ("platform/unix/open_judge.rs", "climbs_past", 1, "lstat of Contents inside an ancestor of a path the reveal path already judged, to climb out of a bundle; nothing is opened"),
         ("platform/unix/open_judge.rs", "fallback_folder_by", 2, "the kind of the canonical folder judged_open just passed, so only a folder is the reveal fallback"),
         ("platform/unix/open_judge.rs", "is_bundle", 1, "lstat of Contents inside a folder the open path already passed through netpath::may_probe; nothing is opened"),
+        ("platform/linux/notify.rs", "desktop_entry_in", 3, "the desktop entry files under the XDG data dirs' applications folders, only read to name the installed entry; nothing is opened or run"),
         ("platform/unix/proc.rs", "start_detached", 1, "the root folder, a constant: the detached host keeps no mount busy"),
         ("platform/unix/files.rs", "rename_no_replace", 1, "a path localfs judged, handed over as a judged Unfollowed or LocalPath (the gate's own calls, moved under platform)"),
         ("platform/unix/files.rs", "move_no_replace", 3, "a path localfs judged, handed over as a judged Unfollowed or LocalPath (the gate's own calls, moved under platform)"),

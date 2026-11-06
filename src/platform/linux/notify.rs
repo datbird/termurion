@@ -245,10 +245,50 @@ fn forget(id: u32) -> Option<Live> {
     live.remove(at)
 }
 
+/// The installed desktop entry that launches Termurion, looked up once (an AppImage run has none
+/// until something installs one).
+fn desktop_entry() -> Option<String> {
+    static ENTRY: OnceLock<Option<String>> = OnceLock::new();
+    ENTRY.get_or_init(|| desktop_entry_in(&xdg_data_dirs())).clone()
+}
+
+/// XDG_DATA_HOME, then XDG_DATA_DIRS, with the spec's defaults.
+fn xdg_data_dirs() -> Vec<std::path::PathBuf> {
+    let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
+    let mut dirs: Vec<std::path::PathBuf> = var("XDG_DATA_HOME").map(Into::into).or_else(|| var("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share"))).into_iter().collect();
+    let system = var("XDG_DATA_DIRS").unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    dirs.extend(std::env::split_paths(&system));
+    dirs
+}
+
+/// The entry's id (its file name without `.desktop`) under `<dir>/applications`: the app id's own
+/// file first, else one whose StartupWMClass is the app id (an integrator's renamed copy).
+fn desktop_entry_in(dirs: &[std::path::PathBuf]) -> Option<String> {
+    if dirs.iter().any(|d| d.join("applications").join(format!("{APP_ID}.desktop")).is_file()) {
+        return Some(APP_ID.to_string());
+    }
+    let class = format!("StartupWMClass={APP_ID}");
+    for d in dirs {
+        let Ok(list) = std::fs::read_dir(d.join("applications")) else { continue };
+        for e in list.flatten() {
+            let path = e.path();
+            if path.extension().is_some_and(|x| x == "desktop")
+                && std::fs::read_to_string(&path).is_ok_and(|t| t.lines().any(|l| l.trim() == class))
+            {
+                return path.file_stem().map(|s| s.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
 fn notify(title: &str, body: &str, silent: bool) -> Result<u32, String> {
     let (gen_id, c) = link()?;
     let mut hints: HashMap<&str, Value> = HashMap::new();
-    hints.insert("desktop-entry", Value::from(APP_ID));
+    // GNOME shows a named entry that is not installed as its raw id; without the hint it shows APP_NAME.
+    if let Some(entry) = desktop_entry() {
+        hints.insert("desktop-entry", Value::from(entry));
+    }
     if silent {
         hints.insert("suppress-sound", Value::from(true));
     }
@@ -523,7 +563,27 @@ mod tests {
         let c = calls.last().expect("a Notify call");
         assert_eq!((c.app.as_str(), c.title.as_str(), c.body.as_str()), ("Termurion", "Build done", "all green"));
         assert!(c.actions.iter().any(|a| a == "default"), "{:?}", c.actions);
-        assert_eq!(c.entry.as_deref(), Some("dev.termurion.Termurion"), "the .desktop file's name");
+        assert_eq!(c.entry, desktop_entry(), "the installed .desktop file's name, or no hint");
+    }
+
+    /// The hint names an installed entry only: GNOME shows a named entry that is not there as the
+    /// raw id. An AppImage integrator's copy under another file name is found by its class.
+    #[test]
+    fn the_desktop_entry_hint_needs_an_installed_entry() {
+        let root = std::env::temp_dir().join(format!("termurion-entry-{}", std::process::id()));
+        let (home, sys) = (root.join("home"), root.join("sys"));
+        for d in [&home, &sys] {
+            std::fs::create_dir_all(d.join("applications")).unwrap();
+        }
+        let dirs = [home.clone(), sys.clone()];
+        assert_eq!(desktop_entry_in(&dirs), None, "nothing installed: no hint");
+        std::fs::write(sys.join("applications/other.desktop"), "[Desktop Entry]\nStartupWMClass=other\n").unwrap();
+        assert_eq!(desktop_entry_in(&dirs), None);
+        std::fs::write(home.join("applications/appimagekit_ab12-Termurion.desktop"), format!("[Desktop Entry]\nName=Termurion\nStartupWMClass={APP_ID}\n")).unwrap();
+        assert_eq!(desktop_entry_in(&dirs).as_deref(), Some("appimagekit_ab12-Termurion"));
+        std::fs::write(sys.join(format!("applications/{APP_ID}.desktop")), "[Desktop Entry]\n").unwrap();
+        assert_eq!(desktop_entry_in(&dirs).as_deref(), Some(APP_ID), "the app id's own file wins");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
