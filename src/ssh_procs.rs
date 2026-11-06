@@ -396,19 +396,31 @@ mod tests {
         // A hostile remote lists 20000 distinct programs under the shell: reading them for the
         // close prompt stays fast and the question stays short.
         use crate::close_rules::{body, counted, Subject};
-        let mut p = Provider::new(1);
-        let mut text = format!("$begin ps\n+1 0 Ss {T0} -zsh\n");
-        for i in 2..=MAX_ROWS {
-            text.push_str(&format!("+{i} 1 S {T0} /bin/p{i}{}\n", "x".repeat(58)));
-        }
-        p.handle(&text);
+        let list = |rows: usize| {
+            let mut p = Provider::new(1);
+            let mut text = format!("$begin ps\n+1 0 Ss {T0} -zsh\n");
+            for i in 2..=rows {
+                text.push_str(&format!("+{i} 1 S {T0} /bin/p{i}{}\n", "x".repeat(58)));
+            }
+            p.handle(&text);
+            p
+        };
+        // CPU time of this thread, and the full list against a quarter of it: a loaded machine or a
+        // debug build does not fail it, a walk that grows faster than the list does.
+        let cpu = crate::platform::clock::thread_cpu_time;
+        let quarter = list(MAX_ROWS / 4);
+        let before = cpu();
+        let _ = body(Subject::Tab, &counted(&quarter.descendant_names(1)));
+        let small = cpu() - before;
+        let p = list(MAX_ROWS);
         assert_eq!(p.rows().len(), MAX_ROWS);
-        let t = std::time::Instant::now();
+        let before = cpu();
         let names = p.descendant_names(1);
         let question = body(Subject::Tab, &counted(&names));
-        let took = t.elapsed();
+        let took = cpu() - before;
         assert_eq!(names.len(), MAX_ROWS - 1);
-        assert!(took < std::time::Duration::from_secs(1), "{took:?}");
+        assert!(took < small * 8 + std::time::Duration::from_millis(50), "4x the rows took {took:?} against {small:?}");
+        assert!(took < std::time::Duration::from_secs(5), "{took:?}");
         assert!(question.len() < 4096, "{} bytes", question.len());
         assert!(question.ends_with(&format!("plus {} others.", MAX_ROWS - 1 - crate::close_rules::NAMES_SHOWN)), "{}", &question[question.len() - 40..]);
     }

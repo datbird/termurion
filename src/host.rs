@@ -640,8 +640,17 @@ pub(crate) mod tests {
         let c = Conn::open(&name);
         assert!(c.hello().is_empty());
         let id = c.launch(crate::platform::by_os("cmd.exe /d /c echo hello-host", "/bin/sh -c 'echo hello-host'"));
-        c.output_until(id, "hello-host");
-        assert_eq!(c.wait(|m| matches!(m, Msg::Exited { id: i, .. } if *i == id).then_some(())), ());
+        // The exit can be told before the last output is read (a pseudo console flushes late), so
+        // the two are awaited together: waiting for the text first could swallow the Exited.
+        let (mut all, mut exited) = (String::new(), false);
+        c.wait(|m| {
+            match m {
+                Msg::Output { id: i, bytes, .. } if *i == id => all.push_str(&String::from_utf8_lossy(bytes)),
+                Msg::Exited { id: i, .. } if *i == id => exited = true,
+                _ => {}
+            }
+            (exited && all.contains("hello-host")).then_some(())
+        });
     }
 
     /// Version 3: Launch's `env` reaches the session's shell.

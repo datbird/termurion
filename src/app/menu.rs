@@ -506,11 +506,10 @@ impl App {
     /// "&" is doubled so Windows shows it. The menu lives until the next one: the pick arrives after it closes.
     pub(super) fn show_context_rows(&mut self, rows: &[crate::ctx_menu::Row]) {
         let Some(hwnd) = self.popup_hwnd() else { return };
-        let (context, failed) = context_menu(rows);
+        let (context, failed) = pop_up_rows(rows, hwnd);
         if let Some(e) = failed {
             self.banners.set("menu", format!("Context menu: {e}"));
         }
-        crate::platform::chrome::popup(&context, hwnd, None);
         self.popup_menu = Some(context);
     }
 
@@ -1558,6 +1557,14 @@ const VIEW_COLOR_ID: &str = "view-tab-color:";
 pub(super) enum ColorTarget {
     Tab(u64),
     Group(String),
+}
+
+/// The right click's pop-up for `rows` on window `view`: built and handed to the platform (on
+/// Linux it is queued for that window's overlay). The menu is kept by the caller while it shows.
+pub(super) fn pop_up_rows(rows: &[crate::ctx_menu::Row], view: isize) -> (Menu, Option<muda::Error>) {
+    let (context, failed) = context_menu(rows);
+    crate::platform::chrome::popup(&context, view, None);
+    (context, failed)
 }
 
 /// The right-click menu's rows as a muda menu, and the first refusal the menu library gave.

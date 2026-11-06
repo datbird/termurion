@@ -58,7 +58,7 @@ is_tmux=false
 case "$scenario" in tmux*) is_tmux=true ;; esac
 tools="Xvfb xdotool import"
 $is_tmux && tools="$tools tmux"
-case "$scenario" in hotkey | hotkey-refused) tools="$tools openbox xterm xprop" ;; esac
+case "$scenario" in hotkey | hotkey-refused) tools="$tools openbox xterm xprop" ;; popup) tools="$tools compare" ;; esac
 for tool in $tools; do
     command -v "$tool" > /dev/null || { echo "FAIL $scenario: $tool is not installed"; exit 1; }
 done
@@ -418,9 +418,10 @@ case "$scenario" in
         shoot
         got=$(timeout 5 "$xclip_bin" -o -selection clipboard 2> /dev/null | tr -d '\n')
         kill "$stale_pid" 2> /dev/null
-        # And the pop-up is gone from the screen after the pick.
-        gone=$(compare -metric AE -crop 300x400+$((X + px))+$((Y + py)) "$scratch/popup-open.png" "$scratch/screen.png" null: 2>&1 || true)
-        [ "${gone:-0}" -gt 5000 ] 2> /dev/null || fail "the pop-up is still drawn after the pick: $gone pixels differ (see $scratch/screen.png)"
+        # And the pop-up is gone after the pick: the area is back to the shot before the right click
+        # (the selection was already in it; a little room for the cursor and anti-aliasing).
+        gone=$(compare -metric AE -fuzz 10% -crop 300x400+$((X + px))+$((Y + py)) "$before" "$scratch/screen.png" null: 2>&1 || true)
+        [ "${gone:-99999}" -lt 1500 ] 2> /dev/null || fail "the area is not back to what it was before the pop-up: $gone pixels differ (see $scratch/screen.png)"
         [ "$got" = "$word" ] || fail "Copy in the pop-up left '$got' on the clipboard, not $word (see $scratch/screen.png)"
         ;;
     job)

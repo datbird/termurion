@@ -403,6 +403,14 @@ pub fn local_user() -> String {
 mod tests {
     use super::*;
 
+    /// Removes a test's scratch folder when the test ends, panicking or not.
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     const BOOLS: &str = "46AaCfGgKkMNnqsTtVvXxYy";
 
     fn w(s: &str) -> Vec<String> {
@@ -569,6 +577,7 @@ mod tests {
         assert_eq!(c.hostname("a"), "second");
 
         let dir = std::env::temp_dir().join(format!("termurion-ssh-args-{}", std::process::id()));
+        let _scratch = Scratch(dir.clone());
         std::fs::create_dir_all(&dir).unwrap();
         let real = dir.join("config");
         std::fs::write(&real, "Host z\n HostName zed\n").unwrap();

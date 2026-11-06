@@ -643,6 +643,14 @@ pub fn tarballs(payloads: &[Payload]) -> (Vec<(Vec<u8>, String)>, Vec<String>) {
 mod tests {
     use super::*;
 
+    /// Removes a test's scratch folder when the test ends, panicking or not.
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
     }
@@ -865,6 +873,7 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("termurion-ssh-inject-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        let _scratch = Scratch(dir.clone());
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::fs::write(dir.join("bin").join("a"), b"alpha").unwrap();
         std::fs::write(dir.join(".vimrc"), b"set nu\n").unwrap();
@@ -904,6 +913,7 @@ mod tests {
         assert_eq!((MAX_JOB_BYTES, MAX_JOB_ENTRIES), (64 << 20, 10_000));
         let dir = std::env::temp_dir().join(format!("termurion-ssh-caps-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        let _scratch = Scratch(dir.clone());
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         for name in ["a", "b", "c"] {
             std::fs::write(dir.join("bin").join(name), b"12345").unwrap();

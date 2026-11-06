@@ -8942,10 +8942,11 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")] // test: only Linux queues a pop-up for the overlay
     fn the_pane_menu_opens_on_linux() {
+        // The rows a right click on a selection builds, through the call `show_context_rows`
+        // makes (the click itself is the popup scenario of scripts/unix-gui-check).
         let c = crate::ctx_menu::Ctx { at_point: true, has_selection: true, ..Default::default() };
-        let (menu, failed) = menu::context_menu(&crate::ctx_menu::build(&c));
+        let (_menu, failed) = menu::pop_up_rows(&crate::ctx_menu::build(&c), 9101);
         assert!(failed.is_none(), "{failed:?}");
-        assert!(crate::platform::chrome::popup(&menu, 9101, None), "the pop-up is queued");
         let queued = crate::platform::chrome::take_popup(9101).expect("queued for its window");
         let names: Vec<String> = queued.items.iter().filter_map(|k| if let muda::MenuItemKind::MenuItem(i) = k { Some(i.text()) } else { None }).collect();
         assert!(names.iter().any(|n| n == "Copy"), "{names:?}");

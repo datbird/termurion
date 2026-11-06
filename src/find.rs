@@ -750,20 +750,25 @@ mod tests {
 
     #[test]
     fn find_over_a_large_buffer_is_quick() {
-        let n = 100_000;
-        let mut s = Screen::with_scrollback(80, 24, n);
-        let mut text = String::new();
-        for i in 0..n {
-            text.push_str(&format!("line {i} {}\r\n", if i % 1000 == 0 { "needle" } else { "hay" }));
-        }
-        s.feed(text.as_bytes());
-        // This thread's CPU time, not the clock, so a machine busy with other work (a parallel
-        // test run, a game) does not fail the test.
+        // This thread's CPU time, not the clock, so a busy machine does not fail the test, and a
+        // buffer four times as big must cost about four times as much: a debug build's speed is
+        // not judged, a search that grows faster than the buffer (rescanning rows) is.
         let cpu = crate::platform::clock::thread_cpu_time;
-        let before = cpu();
-        let hits = find_all(&s, "needle").unwrap();
-        let took = cpu() - before;
-        assert_eq!(hits.len(), 100);
-        assert!(took < std::time::Duration::from_millis(500), "{took:?}");
+        let search = |n: usize| {
+            let mut s = Screen::with_scrollback(80, 24, n);
+            let mut text = String::new();
+            for i in 0..n {
+                text.push_str(&format!("line {i} {}\r\n", if i % 1000 == 0 { "needle" } else { "hay" }));
+            }
+            s.feed(text.as_bytes());
+            let before = cpu();
+            let hits = find_all(&s, "needle").unwrap();
+            assert_eq!(hits.len(), n / 1000);
+            cpu() - before
+        };
+        let small = search(25_000);
+        let big = search(100_000);
+        assert!(big < small * 8 + std::time::Duration::from_millis(50), "4x the rows took {big:?} against {small:?}");
+        assert!(big < std::time::Duration::from_secs(5), "{big:?}");
     }
 }

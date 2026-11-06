@@ -1878,6 +1878,8 @@ mod tests {
     fn each_line_is_checked_once() {
         let mut s = Screen::with_scrollback(40, 5, 10000);
         s.set_triggers(vec![trig(r"^line (\d+)$", "iTermSetUserVariableTrigger", "last\u{1}\\1", false)], TriggerPrefs::default());
+        // This counts lines, not time: a loaded machine must not spend the read's budget.
+        s.triggers.budget = Some(Duration::from_secs(60));
         // In reads of a hundred lines: one read has a time budget (B5).
         for chunk in 0..30 {
             let text: String = (chunk * 100..chunk * 100 + 100).map(|i| format!("line {i}\r\n")).collect();
@@ -1933,6 +1935,7 @@ mod tests {
     fn lines_gone_before_the_check() {
         let mut s = Screen::with_scrollback(40, 3, 2);
         s.set_triggers(vec![trig("line", "HighlightTrigger", "{#ff0000,}", false)], TriggerPrefs::default());
+        s.triggers.budget = Some(Duration::from_secs(60));
         let text: String = (0..50).map(|i| format!("line {i}\r\n")).collect();
         s.feed(text.as_bytes());
         // The read goes in pieces, so every line is checked before it scrolls away, and no

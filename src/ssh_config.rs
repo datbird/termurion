@@ -144,6 +144,14 @@ pub fn controls_enabled(c: &SshConfig, selected: Option<usize>) -> (bool, bool) 
 mod tests {
     use super::*;
 
+    /// Removes a test's scratch folder when the test ends, panicking or not.
+    struct Scratch(std::path::PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     fn strings(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
     }
@@ -199,6 +207,7 @@ mod tests {
         assert_eq!(ok_path(""), None);
         assert_eq!(ok_path("C:\\s.exe"), Some("C:\\s.exe".to_string()));
         let dir = std::env::temp_dir().join(format!("termurion-ssh-config-{}", std::process::id()));
+        let _scratch = Scratch(dir.clone());
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("x.EXE");
         let txt = dir.join("x.txt");
