@@ -103,7 +103,7 @@ Everything else the live suite checks (attach, sizing, new window, split, resize
 | Pause Pane | Pauses output for the current pane (tmux 3.2 or later). |
 | Dashboard | Opens the tmux Dashboard (Ctrl+Alt+F5; Shift+Alt+Home on Linux). |
 
-Detach (Ctrl+Alt+F1), New Tmux Window (Ctrl+Alt+F2), New Tmux Tab (Ctrl+Alt+F3), and Pause Pane (Ctrl+Alt+F4) have keys of their own, the same in both Shortcut Key modes. On Linux Ctrl+Alt+F1 to F12 switch to a text console, so there the five are Shift+Alt+F10 (Detach), Shift+Alt+F11 (New Tmux Window), Shift+Alt+F12 (New Tmux Tab), Ctrl+Shift+F12 (Pause Pane) and Shift+Alt+Home (Dashboard). The menu shows the exact keys for your setup.
+Detach (Ctrl+Alt+F1), New Tmux Window (Ctrl+Alt+F2), New Tmux Tab (Ctrl+Alt+F3), and Pause Pane (Ctrl+Alt+F4) have keys of their own, the same in both Shortcut Key modes. On Linux Ctrl+Alt+F1 to F12 switch to a text console, so there the five are Shift+Alt+F10 (Detach), Shift+Alt+F11 (New Tmux Window), Shift+Alt+End (New Tmux Tab), Ctrl+Shift+F12 (Pause Pane) and Shift+Alt+Home (Dashboard). The menu shows the exact keys for your setup.
 
 New Tab and New Window ask what you want while a tmux pane is current: a new tmux window, a window or tab with your default profile, or Cancel. Two Advanced settings let you answer once and not be asked again.
 

@@ -103,18 +103,20 @@ const fn ex(rest: Rest, key: ChordKey, held: Held, press: ChordKey) -> Extra {
     Extra { rest, key, held, press }
 }
 
-use ChordKey::{Char, Enter, Home, PageDown, PageUp, Up, Down, F};
+use ChordKey::{Char, End, Enter, Home, PageDown, PageUp, Up, Down, F};
 use Rest::{All, CtrlShift as CtrlShiftRest, OptionShift};
 
 /// Shell > tmux's n-th chord (1 Detach, 2 New Tmux Window, 3 New Tmux Tab, 4 Pause Pane, 5 Dashboard).
 /// Ctrl+Alt+F1 to F12 switch to a text console on Linux, so there the five take the F keys the
-/// table leaves free: Shift+Alt+F10 to F12, then Ctrl+Shift+F12 and Shift+Alt+Home (Shift+Alt+Enter is Select Matches).
+/// table leaves free: Shift+Alt+F10 and F11, Shift+Alt+End, Ctrl+Shift+F12 and Shift+Alt+Home
+/// (Shift+Alt+Enter is Select Matches).
 const fn tmux_press(n: u8) -> (Held, ChordKey) {
     if cfg!(target_os = "linux") {
         match n {
             1 => (SA, F(10)),
             2 => (SA, F(11)),
-            3 => (SA, F(12)),
+            // Not Shift+Alt+F12: KWin takes it for Suspend Compositing.
+            3 => (SA, End),
             4 => (CS, F(12)),
             _ => (SA, Home),
         }
@@ -994,6 +996,13 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// KWin takes Shift+Alt+F12 (Suspend Compositing) on Plasma, so no Linux press is that.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn no_linux_press_is_kwins_suspend_compositing() {
+        assert!(!EXTRAS.iter().any(|e| e.held == SA && e.press == ChordKey::F(12)));
     }
 
     /// No two table entries share a modifier set and a key, and none of them is the pair press of a
