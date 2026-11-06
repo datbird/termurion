@@ -846,14 +846,36 @@ pub struct GateWindow {
     checking: bool,
     focus: bool,
     opened: Option<u64>,
+    /// The height the window was last fitted to, in points.
+    fit: f32,
 }
 
 const GATE_FIELD: f32 = 320.0;
+const GATE_WIDTH: f32 = GATE_FIELD + 40.0;
+/// The central panel's margin on each side, which the window adds around the content.
+const GATE_MARGIN: f32 = 8.0;
+/// The first guess at the height, before the content has been measured.
+const GATE_START_H: f32 = 150.0;
+
+/// A dialog's window: a fixed size and a close button only (no minimize, no maximize).
+fn gate_attributes() -> winit::window::WindowAttributes {
+    crate::platform::window::attributes()
+        .with_title("Termurion")
+        .with_inner_size(winit::dpi::LogicalSize::new(f64::from(GATE_WIDTH), f64::from(GATE_START_H)))
+        .with_resizable(false)
+        .with_enabled_buttons(winit::window::WindowButtons::CLOSE)
+}
+
+/// The window's height for content `content_h` points tall: the content and the panel's margins.
+fn gate_height(content_h: f32) -> f32 {
+    content_h + 2.0 * GATE_MARGIN
+}
 
 impl GateWindow {
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, user: &str) -> Result<GateWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, "Termurion", f64::from(GATE_FIELD) + 40.0, 190.0)?;
-        Ok(GateWindow { host, user: user.to_string(), password: Secret::new(String::new()), note: None, checking: false, focus: true, opened: None })
+        let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, gate_attributes())?;
+        host.track_taskbar();
+        Ok(GateWindow { host, user: user.to_string(), password: Secret::new(String::new()), note: None, checking: false, focus: true, opened: None, fit: GATE_START_H })
     }
 
     pub fn id(&self) -> WindowId {
@@ -882,8 +904,9 @@ impl GateWindow {
     pub fn redraw(&mut self) -> GateResult {
         let (mut ok, mut cancel) = (false, false);
         let (user, password, note, checking, focus, opened) = (&self.user, &mut self.password, &self.note, self.checking, &mut self.focus, &mut self.opened);
+        let mut content_h = 0.0;
         self.host.paint(|ui| {
-            egui::CentralPanel::default().show(ui, |ui| {
+            egui::CentralPanel::default().frame(egui::Frame::central_panel(ui.style()).inner_margin(GATE_MARGIN)).show(ui, |ui| {
                 ui.label(format!("Termurion wants to open the password manager. Enter the password for {user}."));
                 ui.add_space(8.0);
                 let id = egui::Id::new("pwm-gate-password");
@@ -904,8 +927,15 @@ impl GateWindow {
                     ok = ui.add_enabled(!checking, egui::Button::new("OK").min_size(egui::vec2(76.0, 24.0))).clicked() || (enter && !checking);
                     cancel = ui.add(egui::Button::new("Cancel").min_size(egui::vec2(76.0, 24.0))).clicked() || escape;
                 });
+                content_h = ui.min_rect().height();
             });
         });
+        // The window is as tall as what it shows (the note line comes and goes).
+        let want = gate_height(content_h).ceil();
+        if content_h > 0.0 && (want - self.fit).abs() >= 1.0 {
+            self.fit = want;
+            let _ = self.host.window.request_inner_size(winit::dpi::LogicalSize::new(f64::from(GATE_WIDTH), f64::from(want)));
+        }
         if cancel {
             GateResult::Cancel
         } else if ok && !self.password.is_empty() {
@@ -919,6 +949,15 @@ impl GateWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The gate is a dialog: a fixed size with only a close button, and as tall as what it shows.
+    #[test]
+    fn the_gate_is_a_fixed_size_dialog() {
+        let a = gate_attributes();
+        assert!(!a.resizable);
+        assert_eq!(a.enabled_buttons, winit::window::WindowButtons::CLOSE);
+        assert_eq!(gate_height(120.0), 120.0 + 2.0 * GATE_MARGIN, "the content and the panel's margins, no more");
+    }
 
     /// R13x77-3: a manager a page opened has no keyboard default. Return, Space, Tab, Delete,
     /// Ctrl+C and the typed `u` of Win+U never reach it; only moving and Escape do; the Win+U chord
