@@ -39,6 +39,11 @@ pub fn html_part(cf_html: &str) -> Option<&str> {
     cf_html.get(start..end).filter(|d| !d.is_empty())
 }
 
+/// Why Copy with Styles is refused on a Wayland desktop without data-control. It names the setting
+/// that makes every copy a styled one, since with it on no copy works there.
+#[cfg(not(target_os = "macos"))]
+const STYLES_REFUSED: &str = "Copy with styles needs the data-control protocol, which this Wayland desktop does not have. Plain Copy works; if Settings > Advanced > \u{201c}Copy to pasteboard on selection includes color and font style\u{201d} is on, turn it off to copy.";
+
 /// Plain text, or HTML with the plain text beside it. A refused copy leaves the old clipboard alone.
 pub fn set(text: &str, html: &str, rtf: &str) -> Result<(), String> {
     let plan = plan(text, html, rtf);
@@ -49,7 +54,7 @@ pub fn set(text: &str, html: &str, rtf: &str) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     if window::attached() {
         if let Plan::Html(_) = plan {
-            return Err("Copy with styles needs the data-control protocol, which this Wayland desktop does not have; Copy still works".to_string());
+            return Err(STYLES_REFUSED.to_string());
         }
         window::store(text);
         return Ok(());
@@ -99,12 +104,26 @@ fn route(wayland: bool, data_control: bool) -> Route {
 /// The clipboard through the window's Wayland connection, one for the process, from `attach` to `detach`.
 #[cfg(not(target_os = "macos"))]
 mod window {
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
-    static BOARD: Mutex<Option<smithay_clipboard::Clipboard>> = Mutex::new(None);
+    /// The board, shared between the UI thread (stores) and the loader thread (reads).
+    struct Shared(smithay_clipboard::Clipboard);
 
-    fn board() -> std::sync::MutexGuard<'static, Option<smithay_clipboard::Clipboard>> {
-        BOARD.lock().unwrap_or_else(|e| e.into_inner())
+    // SAFETY: only `load` and `load_primary` touch the board's reply receiver (the one part that
+    // is not Sync), and only the loader thread calls them, one at a time. Stores and the drop use
+    // the request sender, which is Sync.
+    unsafe impl Sync for Shared {}
+
+    /// The lock is held only to clone the board out, never across a read: a read that never ends
+    /// (an owner that does not answer) holds up no Copy and no Quit, only later reads, which time out.
+    static BOARD: Mutex<Option<Arc<Shared>>> = Mutex::new(None);
+
+    /// How long a read waits for the selection's owner before it is called failed.
+    const LOAD_WAIT: Duration = Duration::from_secs(2);
+
+    fn board() -> Option<Arc<Shared>> {
+        BOARD.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn attach(display: &dyn winit::raw_window_handle::HasDisplayHandle) {
@@ -116,12 +135,13 @@ mod window {
             return;
         }
         crate::dlog!("No data-control protocol: copy and paste go through the window's Wayland connection");
-        // SAFETY: the display is winit's and outlives this: `detach` drops the board in `exiting`, before the loop closes it.
-        *board() = Some(unsafe { smithay_clipboard::Clipboard::new(w.display.as_ptr()) });
+        // SAFETY: the display is winit's and outlives this: `detach` lets go of the board in `exiting`, before the loop closes it.
+        *BOARD.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(Shared(unsafe { smithay_clipboard::Clipboard::new(w.display.as_ptr()) })));
     }
 
+    /// A read still stuck keeps its own reference: that board goes with the exit.
     pub fn detach() {
-        board().take();
+        BOARD.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 
     pub fn attached() -> bool {
@@ -130,25 +150,64 @@ mod window {
 
     /// False when nothing is attached.
     pub fn store(text: &str) -> bool {
-        board().as_ref().map(|b| b.store(text)).is_some()
+        board().map(|b| b.0.store(text)).is_some()
     }
 
     pub fn store_primary(text: &str) -> bool {
-        board().as_ref().map(|b| b.store_primary(text)).is_some()
+        board().map(|b| b.0.store_primary(text)).is_some()
     }
 
     /// None when nothing is attached. An empty clipboard reads as arboard's ContentNotAvailable.
     pub fn load() -> Option<Result<String, arboard::Error>> {
-        board().as_ref().map(|b| b.load().map_err(to_arboard))
+        let b = board()?;
+        Some(match super::loader::run(move || b.0.load(), LOAD_WAIT) {
+            Some(r) => r.map_err(to_arboard),
+            None => Err(arboard::Error::Unknown { description: "the program that owns the clipboard did not answer".into() }),
+        })
     }
 
     pub fn load_primary() -> Option<Option<String>> {
-        board().as_ref().map(|b| b.load_primary().ok())
+        let b = board()?;
+        Some(super::loader::run(move || b.0.load_primary().ok(), LOAD_WAIT).flatten())
     }
 
     fn to_arboard(e: std::io::Error) -> arboard::Error {
         let empty = e.kind() == std::io::ErrorKind::NotFound || e.to_string() == "selection is empty";
         if empty { arboard::Error::ContentNotAvailable } else { arboard::Error::Unknown { description: e.to_string() } }
+    }
+}
+
+/// One thread runs the clipboard reads in turn (they share one reply channel), and a caller waits
+/// for its answer only so long: a read the owner never answers leaves that thread waiting, not the app.
+#[cfg(not(target_os = "macos"))]
+mod loader {
+    use std::sync::mpsc::{channel, sync_channel, Sender};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Duration;
+
+    type Job = Box<dyn FnOnce() + Send>;
+
+    fn jobs() -> &'static Mutex<Sender<Job>> {
+        static JOBS: OnceLock<Mutex<Sender<Job>>> = OnceLock::new();
+        JOBS.get_or_init(|| {
+            let (tx, rx) = channel::<Job>();
+            std::thread::spawn(move || {
+                for job in rx {
+                    job();
+                }
+            });
+            Mutex::new(tx)
+        })
+    }
+
+    /// `work`'s answer, or None when it did not come within `wait`.
+    pub fn run<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static, wait: Duration) -> Option<T> {
+        let (tx, rx) = sync_channel(1);
+        let job: Job = Box::new(move || {
+            let _ = tx.send(work());
+        });
+        jobs().lock().unwrap_or_else(|e| e.into_inner()).send(job).ok()?;
+        rx.recv_timeout(wait).ok()
     }
 }
 
@@ -359,6 +418,21 @@ mod tests {
     #[test]
     fn unix_clipboard_files_empty() {
         assert!(files().is_empty());
+    }
+
+    /// A read nobody answers times out, the next read waits behind it and times out too, and once
+    /// the stuck one ends a new read is answered.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_clipboard_read_that_never_ends_holds_up_no_caller() {
+        use std::time::{Duration, Instant};
+        let (release, stuck) = std::sync::mpsc::channel::<()>();
+        let t = Instant::now();
+        assert_eq!(loader::run(move || stuck.recv().is_ok(), Duration::from_millis(200)), None);
+        assert_eq!(loader::run(|| 5, Duration::from_millis(200)), None, "waits behind the stuck read");
+        assert!(t.elapsed() < Duration::from_secs(2));
+        release.send(()).unwrap();
+        assert_eq!(loader::run(|| 7, Duration::from_secs(5)), Some(7));
     }
 
     // GNOME and weston have no data-control: arboard would fall back to X11, which a Wayland
