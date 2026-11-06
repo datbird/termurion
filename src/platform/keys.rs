@@ -19,6 +19,22 @@ pub const CTRL_ALT_IS_ALTGR: bool = cfg!(windows);
 /// Win or Super key belongs to the system and no shortcut uses it.
 pub const CMD_IS_A_KEY: bool = cfg!(target_os = "macos");
 
+/// The chord modifiers in AppKit's modifier flag bits (NSEventModifierFlags: Shift, Control,
+/// Option, Command).
+pub fn mods_from_flags(bits: usize) -> winit::keyboard::ModifiersState {
+    use winit::keyboard::ModifiersState as M;
+    [(1 << 17, M::SHIFT), (1 << 18, M::CONTROL), (1 << 19, M::ALT), (1 << 20, M::SUPER)].into_iter().filter(|(b, _)| bits & b != 0).fold(M::empty(), |m, (_, k)| m | k)
+}
+
+/// The modifiers held right now, for a window that gains focus (winit sends no ModifiersChanged
+/// then). macOS asks AppKit; elsewhere Cmd is no key, so none are read.
+pub fn held_mods() -> winit::keyboard::ModifiersState {
+    #[cfg(target_os = "macos")]
+    return mods_from_flags(objc2_app_kit::NSEvent::modifierFlags_class().0);
+    #[cfg(not(target_os = "macos"))]
+    winit::keyboard::ModifiersState::empty()
+}
+
 /// Double-tap hotkeys work only on Windows, whose keyboard hook watches them (macOS and Linux
 /// refuse them as not available yet).
 pub const DOUBLE_TAPS_WORK: bool = cfg!(windows);

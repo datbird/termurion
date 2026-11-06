@@ -8001,6 +8001,10 @@ impl ApplicationHandler<UserEvent> for App {
             if let WindowEvent::ModifiersChanged(m) = &event {
                 self.aux_mods = m.state();
             }
+            // Cmd held across Cmd-` into a panel: winit tells no modifiers on focus gain.
+            if let WindowEvent::Focused(f) = &event {
+                self.aux_mods = aux_mods_on_focus(*f, crate::platform::keys::held_mods);
+            }
             if let WindowEvent::KeyboardInput { event: k, .. } = &event {
                 match aux_chord_of(k, self.aux_mods, self.recorder_listens(id)) {
                     Some(AuxChord::Close) => {
@@ -8436,6 +8440,11 @@ fn aux_chord_of(k: &winit::event::KeyEvent, mods: winit::keyboard::ModifiersStat
         _ => None,
     });
     aux_chord(&key, k.state == winit::event::ElementState::Pressed, k.repeat, mods, recording)
+}
+
+/// A panel's modifiers as its focus changes: the held ones on a gain, none on a loss.
+fn aux_mods_on_focus(focused: bool, held: impl FnOnce() -> winit::keyboard::ModifiersState) -> winit::keyboard::ModifiersState {
+    if focused { held() } else { winit::keyboard::ModifiersState::empty() }
 }
 
 /// The letter a Cmd chord names: the typed one on a Latin layout, else the key's place (on a
@@ -8896,6 +8905,25 @@ mod tests {
         let ev = &own[own.find("    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {").unwrap()..];
         let ev = &ev[..ev.find("self.prompt_event(id, &event)").unwrap()];
         assert!(ev.contains("Some(AuxChord::Quit) => return self.quit(event_loop)"), "the panel path quits before any panel sees the key");
+    }
+
+    /// Item 18 M5: Cmd held in a terminal window across Cmd-` into a panel. winit sends no
+    /// ModifiersChanged on focus gain, so the panel reads the held modifiers then, and its
+    /// Cmd-W closes it.
+    #[test]
+    fn a_panel_gaining_focus_reads_the_held_modifiers() {
+        use winit::keyboard::ModifiersState as M;
+        let keys = |b: usize| crate::platform::keys::mods_from_flags(b);
+        assert_eq!(keys(1 << 20), M::SUPER, "Command");
+        assert_eq!(keys((1 << 17) | (1 << 18) | (1 << 19) | (1 << 20)), M::SHIFT | M::CONTROL | M::ALT | M::SUPER);
+        assert_eq!(keys(1 << 16), M::empty(), "Caps Lock is no chord modifier");
+        assert_eq!(aux_mods_on_focus(true, || M::SUPER), M::SUPER);
+        assert_eq!(aux_mods_on_focus(false, || M::SUPER), M::empty(), "nothing stale after a loss");
+        assert_eq!(aux_chord("w", true, false, aux_mods_on_focus(true, || M::SUPER), false), Some(AuxChord::Close));
+        let own = include_str!("mod.rs");
+        let ev = &own[own.find("    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {").unwrap()..];
+        let ev = &ev[..ev.find("self.prompt_event(id, &event)").unwrap()];
+        assert!(ev.contains("self.aux_mods = aux_mods_on_focus(*f, crate::platform::keys::held_mods);"), "the focus gain reads them");
     }
 
     /// Round 6d: a Settings or Profiles recorder that listens records Cmd-Q and Cmd-W, as iTerm2
