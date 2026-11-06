@@ -6,7 +6,7 @@
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
-use super::super::notify::still_shown;
+use super::super::notify::{still_shown, Click};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -24,7 +24,7 @@ static ADDED: AtomicBool = AtomicBool::new(false);
 /// An add failed or timed out: the icon may exist anyway, so the next try modifies first.
 static ADD_UNSURE: AtomicBool = AtomicBool::new(false);
 static WINDOW: AtomicIsize = AtomicIsize::new(0);
-static ON_CLICK: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+static ON_CLICK: OnceLock<Box<dyn Fn(Click) + Send + Sync>> = OnceLock::new();
 static ON_TRAY: OnceLock<Box<dyn Fn(bool) + Send + Sync>> = OnceLock::new();
 /// Told when Explorer restarted (TaskbarCreated): the app owns the tray, so it re-adds the icon.
 static ON_TASKBAR: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
@@ -50,8 +50,9 @@ fn copy(dst: &mut [u16], s: &str) {
     dst[wide.len()] = 0;
 }
 
-/// What a click on a notification does (called on the window's thread).
-pub fn on_click(f: Box<dyn Fn() + Send + Sync>) {
+/// What a click on a notification does (called on the window's thread). The balloon holds one
+/// notification, so the click is always the newest show's.
+pub fn on_click(f: Box<dyn Fn(Click) + Send + Sync>) {
     let _ = ON_CLICK.set(f);
 }
 
@@ -93,7 +94,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         let low = lparam as u32 & 0xFFFF;
         if low == BALLOON_CLICK {
             if let Some(f) = ON_CLICK.get() {
-                f();
+                f(Click { shown: shown_count(), activation: None });
             }
         } else if let (Some(right), Some(f)) = (click_of(low), ON_TRAY.get()) {
             f(right);

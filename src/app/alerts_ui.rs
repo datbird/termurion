@@ -44,9 +44,7 @@ impl App {
         let (title, body) = alerts::text(&kind, &name, tab, self.globals.bool("SimpleNotifications"), &self.globals.string("SessionEndMessageText"));
         match crate::platform::notify::show_with(&title, &body, self.globals.bool("SilentUserNotifications")) {
             Ok(()) => {
-                self.last_notified = Some(pane);
-                self.last_notified_script = None;
-                self.last_notified_debug = None;
+                self.notified_pane(pane);
                 // The balloon holds one notification: a web one it replaces is told it closed.
                 self.web_note_replaced();
                 true
@@ -65,17 +63,40 @@ impl App {
         }
     }
 
+    /// A notification about `pane` was just shown: a click on it reveals that session.
+    pub(super) fn notified_pane(&mut self, pane: PaneId) {
+        self.last_notified = Some(pane);
+        self.last_notified_script = None;
+        self.last_notified_debug = None;
+        remember_notified(&mut self.notified, crate::platform::notify::shown_count(), pane);
+    }
+
     /// A click on a notification: Termurion comes forward on the session it named, or on the
-    /// Script Console entry of the script that failed.
-    pub(super) fn reveal_notified(&mut self) {
+    /// Script Console entry of the script that failed. An older notification (Linux keeps
+    /// several clickable) reveals its own session.
+    pub(super) fn reveal_notified(&mut self, click: crate::platform::notify::Click) {
+        self.activation = click.activation;
+        let newest = crate::platform::notify::shown_count();
+        if click.shown != newest {
+            if let Some(pane) = notified_session(&self.notified, click.shown) {
+                self.reveal_pane(pane);
+            }
+            self.activation = None;
+            return;
+        }
+        self.reveal_newest(newest);
+        self.activation = None;
+    }
+
+    fn reveal_newest(&mut self, newest: u64) {
         if let Some((at, url)) = self.last_notified_link.take()
-            && crate::platform::notify::still_shown(at, crate::platform::notify::shown_count()) {
+            && crate::platform::notify::still_shown(at, newest) {
                 if let Err(e) = super::semantic_ui::shell_open(&url, false) {
                     self.banners.set("action", e);
                 }
                 return;
             }
-        if crate::dlog::same_notice(self.last_notified_debug, crate::platform::notify::shown_count()) {
+        if crate::dlog::same_notice(self.last_notified_debug, newest) {
             return self.disable_debug_logging_from_notice();
         }
         if let Some(id) = self.last_notified_script.clone() {
@@ -175,5 +196,40 @@ impl App {
             wake = Some(wake.map_or(next, |w| w.min(next)));
         }
         wake
+    }
+}
+
+/// How many notifications' sessions are kept for their clicks (Linux keeps 64 clickable).
+const NOTIFIED_CAP: usize = 64;
+
+fn remember_notified(list: &mut std::collections::VecDeque<(u64, PaneId)>, shown: u64, pane: PaneId) {
+    list.push_back((shown, pane));
+    if list.len() > NOTIFIED_CAP {
+        list.pop_front();
+    }
+}
+
+/// The session the notification shown as `shown` was about.
+fn notified_session(list: &std::collections::VecDeque<(u64, PaneId)>, shown: u64) -> Option<PaneId> {
+    list.iter().rev().find(|(n, _)| *n == shown).map(|(_, p)| *p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two sessions each posted: a click on the first notification names the first session.
+    #[test]
+    fn a_click_on_an_older_notification_names_its_own_session() {
+        let mut list = std::collections::VecDeque::new();
+        remember_notified(&mut list, 4, 10);
+        remember_notified(&mut list, 5, 11);
+        assert_eq!(notified_session(&list, 4), Some(10));
+        assert_eq!(notified_session(&list, 5), Some(11));
+        assert_eq!(notified_session(&list, 3), None, "not one of ours");
+        for n in 0..NOTIFIED_CAP as u64 {
+            remember_notified(&mut list, 100 + n, 12);
+        }
+        assert_eq!(notified_session(&list, 4), None, "the oldest are forgotten");
     }
 }

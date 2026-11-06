@@ -274,8 +274,8 @@ pub enum UserEvent {
     DebugLogSaved(Result<PathBuf, String>, bool),
     /// A menu item was clicked (its id).
     Menu(String),
-    /// A notification was clicked.
-    NotificationClicked,
+    /// A notification was clicked: which one, and its activation token.
+    NotificationClicked(crate::platform::notify::Click),
     /// The monitors or a work area changed.
     DisplayChanged,
     /// The notification area icon was clicked (true for a right click).
@@ -1051,6 +1051,11 @@ pub struct App {
     /// Notifications: the session of the last one, the escape-sequence limit, Notify on
     /// Status Change, and the idle codes sent.
     last_notified: Option<PaneId>,
+    /// The session of each recent notification, by its show number, so a click on an older one
+    /// reveals its own session.
+    notified: std::collections::VecDeque<(u64, PaneId)>,
+    /// The activation token of the notification click being answered (Wayland).
+    activation: Option<String>,
     alert_limits: crate::triggers::RateLimit<PaneId>,
     /// Window > Notify on Status Change for the current window (per window: `WinSlot`).
     status_armed: bool,
@@ -2049,8 +2054,8 @@ pub fn run() {
     };
     let proxy = Arc::new(Mutex::new(event_loop.create_proxy()));
     let clicks = proxy.clone();
-    crate::platform::notify::on_click(Box::new(move || {
-        let _ = clicks.lock().map(|p| p.send_event(UserEvent::NotificationClicked));
+    crate::platform::notify::on_click(Box::new(move |click| {
+        let _ = clicks.lock().map(|p| p.send_event(UserEvent::NotificationClicked(click)));
     }));
     let trays = proxy.clone();
     crate::platform::notify::on_tray(Box::new(move |right| {
@@ -2538,6 +2543,8 @@ pub fn run() {
         activity: HashMap::new(),
         badges: HashMap::new(),
         last_notified: None,
+        notified: std::collections::VecDeque::new(),
+        activation: None,
         alert_limits: crate::triggers::RateLimit::default(),
         status_armed: false,
         ime: Default::default(),
@@ -7868,7 +7875,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 return self.run_menu_id(&id, event_loop);
             }
-            UserEvent::NotificationClicked => return self.reveal_notified(),
+            UserEvent::NotificationClicked(click) => return self.reveal_notified(click),
             UserEvent::Tray(right) => return self.tray_clicked(right, event_loop),
             UserEvent::TaskbarCreated => return self.taskbar_created(),
             UserEvent::JobsChanged => return self.jobs_changed(),

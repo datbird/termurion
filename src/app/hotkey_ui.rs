@@ -665,9 +665,17 @@ impl App {
             self.roll_in();
             return;
         }
+        let token = self.activation.take();
         if let Some(g) = &self.gpu {
             g.window.set_minimized(false);
-            g.window.focus_window();
+            match crate::platform::window::activate(&g.window, token.as_deref()) {
+                Ok(true) => {}
+                Ok(false) => g.window.focus_window(),
+                Err(_) => {
+                    crate::dlog!("The notification click's window activation failed");
+                    g.window.focus_window();
+                }
+            }
         }
     }
 

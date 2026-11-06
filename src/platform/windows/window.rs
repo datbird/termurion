@@ -24,6 +24,11 @@ pub fn view_of(window: &Window) -> Option<isize> {
     hwnd_of(window)
 }
 
+/// Windows has no activation tokens: the caller raises the window as always.
+pub fn activate(_window: &Window, _token: Option<&str>) -> Result<bool, String> {
+    Ok(false)
+}
+
 pub fn cursor_pos() -> Option<(i32, i32)> {
     let mut p = POINT { x: 0, y: 0 };
     (unsafe { GetCursorPos(&mut p) } != 0).then_some((p.x, p.y))

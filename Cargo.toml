@@ -63,6 +63,11 @@ zbus = "5"
 # The hotkey window's X11 calls (src/platform/linux/hotkey.rs); already in the tree through arboard.
 x11rb = "0.13"
 secret-service = { version = "5", default-features = false, features = ["rt-async-io-crypto-rust"] }
+# A notification click's window activation on Wayland (src/platform/linux/activation.rs); all three
+# are already in the tree through winit.
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
 # The user's locale on macOS (CFLocaleCopyCurrent); already in the tree through winit.
 [target.'cfg(target_os = "macos")'.dependencies]

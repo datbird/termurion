@@ -36,6 +36,18 @@ pub fn view_of(window: &Window) -> Option<isize> {
     }
 }
 
+/// Brings `window` front with the activation token a notification click carried (Wayland);
+/// false when there is none to use or the window is not a Wayland one, and the caller raises it
+/// the usual way. macOS has no tokens.
+pub fn activate(window: &Window, token: Option<&str>) -> Result<bool, String> {
+    #[cfg(not(target_os = "macos"))]
+    if let Some(t) = token {
+        return super::super::linux::activation::activate(window, t);
+    }
+    let _ = (window, token);
+    Ok(false)
+}
+
 /// winit has no global pointer query; callers with a window use its cursor events instead.
 pub fn cursor_pos() -> Option<(i32, i32)> {
     None

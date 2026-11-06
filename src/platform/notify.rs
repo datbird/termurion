@@ -8,6 +8,15 @@ use super::linux::notify as imp;
 #[cfg(windows)]
 use super::windows::notify as imp;
 
+/// A click on a notification: which show it was (`shown_count()` right after that show), and the
+/// window system's activation token when the notification server sent one (Wayland), which lets
+/// the window come front.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Click {
+    pub shown: u64,
+    pub activation: Option<String>,
+}
+
 pub use imp::{clear_if_shown, on_click, on_taskbar_created, on_tray, remove, set_resident, show_with, shown_count, window_handle};
 
 /// Whether the tray menu opens at the icon itself (the macOS menu bar status item) rather than on

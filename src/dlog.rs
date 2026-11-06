@@ -252,7 +252,7 @@ pub const CALL_SITES: &[(&str, usize)] = &[
     ("app/chat_window_app.rs", 3),
     ("app/clipboard_ui.rs", 1),
     ("app/dynamic_profiles_app.rs", 1),
-    ("app/hotkey_ui.rs", 2),
+    ("app/hotkey_ui.rs", 3),
     ("app/menu.rs", 3),
     ("app/mod.rs", 8),
     ("app/page_saver_app.rs", 1),
@@ -1128,7 +1128,7 @@ mod tests {
         let n = include_str!("platform/windows/notify.rs");
         assert!(n.split("pub fn show_with(").nth(1).unwrap().split("\n}").next().unwrap().contains("SHOWN.fetch_add"), "show_with counts every notification");
         let a = include_str!("app/alerts_ui.rs");
-        assert!(a.split("fn reveal_notified(").nth(1).unwrap().split("\n    }").next().unwrap().contains("same_notice("), "the click compares");
+        assert!(a.split("fn reveal_newest(").nth(1).unwrap().split("\n    }").next().unwrap().contains("same_notice("), "the click compares");
     }
 
     /// `AD:1130`, P21: the one teardown stops the log and writes the file, and a panic reaches

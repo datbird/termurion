@@ -17,6 +17,7 @@ use objc2_user_notifications::{
     UNNotificationResponse, UNNotificationSettings, UNNotificationSound, UNUserNotificationCenter, UNUserNotificationCenterDelegate,
 };
 
+use super::super::notify::Click;
 use crate::dlog;
 
 const NO_BUNDLE: &str = "Notifications need Termurion to run as Termurion.app";
@@ -25,8 +26,8 @@ const TURNED_OFF: &str = "Notifications are turned off for Termurion in System S
 static SHOWN: AtomicU64 = AtomicU64::new(0);
 static PENDING: Mutex<Pending> = Mutex::new(Pending::new());
 const QUEUE_CAP: usize = 8;
-type Click = Arc<dyn Fn() + Send + Sync>;
-static CLICK: Mutex<Option<Click>> = Mutex::new(None);
+type OnClick = Arc<dyn Fn(Click) + Send + Sync>;
+static CLICK: Mutex<Option<OnClick>> = Mutex::new(None);
 
 /// A show waiting for the permission answer.
 #[derive(Clone, Debug, PartialEq)]
@@ -99,8 +100,13 @@ pub fn request_id(n: u64) -> String {
     format!("termurion-{n}")
 }
 
-/// What a click on a notification does.
-pub fn on_click(f: Box<dyn Fn() + Send + Sync>) {
+/// The show number in a request id (`request_id`'s inverse).
+fn shown_of(id: &str) -> Option<u64> {
+    id.strip_prefix("termurion-")?.parse().ok()
+}
+
+/// What a click on a notification does; it is told which show was clicked.
+pub fn on_click(f: Box<dyn Fn(Click) + Send + Sync>) {
     *CLICK.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::from(f));
 }
 
@@ -166,10 +172,11 @@ define_class!(
         }
 
         #[unsafe(method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:))]
-        fn did_receive(&self, _center: &UNUserNotificationCenter, _r: &UNNotificationResponse, done: &block2::DynBlock<dyn Fn()>) {
+        fn did_receive(&self, _center: &UNUserNotificationCenter, r: &UNNotificationResponse, done: &block2::DynBlock<dyn Fn()>) {
             let f = CLICK.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let id = r.notification().request().identifier().to_string();
             if let Some(f) = f {
-                f();
+                f(Click { shown: shown_of(&id).unwrap_or_else(shown_count), activation: None });
             }
             done.call(());
         }
@@ -275,6 +282,8 @@ mod tests {
     #[test]
     fn request_ids_are_numbered() {
         assert_eq!(request_id(7), "termurion-7");
+        assert_eq!(shown_of(&request_id(7)), Some(7), "a click names its own show");
+        assert_eq!(shown_of("other"), None);
     }
 
     #[test]

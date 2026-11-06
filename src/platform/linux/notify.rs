@@ -12,13 +12,13 @@ use std::time::Duration;
 use zbus::blocking::Connection;
 use zbus::zvariant::Value;
 
+use super::super::notify::Click;
+use super::super::window::APP_ID;
 use super::super::Unsupported;
 use crate::dlog;
 
 /// The name the notification shows under.
 const APP_NAME: &str = "Termurion";
-/// The desktop entry (app id) the shell matches to Termurion's launcher and icon.
-const APP_ID: &str = "termurion";
 const BUS_NAME: &str = "org.freedesktop.Notifications";
 const BUS_PATH: &str = "/org/freedesktop/Notifications";
 /// How long a call to the service may take before it is called failed.
@@ -28,31 +28,39 @@ const QUEUE_CAP: usize = 32;
 /// Notifications whose clicks are still routed; older ones are forgotten.
 const LIVE_CAP: usize = 64;
 
+/// The number of the newest show queued; each show gets the next one, and a failed show keeps
+/// its number, so a number never names two notifications.
 static SHOWN: AtomicU64 = AtomicU64::new(0);
-/// The service's id of the last notification shown, for closing it (0: none).
-static LAST_ID: Mutex<u32> = Mutex::new(0);
-/// Ids of shown notifications that can still be clicked.
-static LIVE: Mutex<VecDeque<u32>> = Mutex::new(VecDeque::new());
-/// Why the last send failed, for a person reading the log.
+/// Shown notifications that can still be clicked, oldest first.
+static LIVE: Mutex<VecDeque<Live>> = Mutex::new(VecDeque::new());
+/// Why the last send failed, told once to the next caller.
 static FAILURE: Mutex<Option<String>> = Mutex::new(None);
-type Click = Arc<dyn Fn() + Send + Sync>;
-static CLICK: Mutex<Option<Click>> = Mutex::new(None);
+type OnClick = Arc<dyn Fn(Click) + Send + Sync>;
+static CLICK: Mutex<Option<OnClick>> = Mutex::new(None);
 /// The shared connection, and which one it is (the listener clears only its own).
 static LINK: Mutex<Option<(u64, Connection)>> = Mutex::new(None);
 static LINK_GEN: AtomicU64 = AtomicU64::new(0);
 static QUEUE: OnceLock<SyncSender<Cmd>> = OnceLock::new();
 
+/// One notification on screen: the service's id, Termurion's number for the show, and the
+/// activation token the server sent for a click on it (spec 1.2, before ActionInvoked).
+struct Live {
+    id: u32,
+    shown: u64,
+    activation: Option<String>,
+}
+
 enum Cmd {
-    Show { title: String, body: String, silent: bool },
-    Close,
+    Show { shown: u64, title: String, body: String, silent: bool },
+    Close { shown: u64 },
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// What a click on a notification does.
-pub fn on_click(f: Box<dyn Fn() + Send + Sync>) {
+/// What a click on a notification does; it is told which show was clicked.
+pub fn on_click(f: Box<dyn Fn(Click) + Send + Sync>) {
     *lock(&CLICK) = Some(Arc::from(f));
 }
 
@@ -74,14 +82,15 @@ pub fn set_resident(_on: bool) -> Result<(), String> {
     Err(Unsupported { feature: "The resident icon", plural: false }.into())
 }
 
+/// The number of the newest show (see `SHOWN`).
 pub fn shown_count() -> u64 {
     SHOWN.load(Ordering::SeqCst)
 }
 
-fn run_click() {
+fn run_click(click: Click) {
     let f = lock(&CLICK).clone();
     if let Some(f) = f {
-        f();
+        f(click);
     }
 }
 
@@ -102,28 +111,49 @@ fn link() -> Result<(u64, Connection), String> {
     Ok((gen_id, c))
 }
 
+/// Whether `sender` is the notification service itself. Any program on the bus can emit these
+/// signals, so only the owner of the service's name is believed (asked again when it changes).
+fn from_service(dbus: &zbus::blocking::fdo::DBusProxy, owner: &mut Option<String>, sender: Option<&str>) -> bool {
+    let Some(sender) = sender else { return false };
+    if owner.as_deref() != Some(sender) {
+        *owner = zbus::names::BusName::try_from(BUS_NAME).ok().and_then(|n| dbus.get_name_owner(n).ok()).map(|o| o.to_string());
+    }
+    owner.as_deref() == Some(sender)
+}
+
 /// Starts the one thread that reads the service's signals on `c`.
 fn listen(c: Connection, gen_id: u64) -> zbus::Result<()> {
     let proxy = zbus::blocking::fdo::DBusProxy::new(&c)?;
-    for member in ["ActionInvoked", "NotificationClosed"] {
+    for member in ["ActionInvoked", "ActivationToken", "NotificationClosed"] {
         let rule = zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal).interface(BUS_NAME)?.member(member)?.build();
         proxy.add_match_rule(rule)?;
     }
     let messages = zbus::blocking::MessageIterator::from(c);
     let spawned = std::thread::Builder::new().name("notify-listener".into()).spawn(move || {
+        let mut owner = None;
         for msg in messages {
             let Ok(msg) = msg else { break };
             let header = msg.header();
-            if header.interface().map(|i| i.as_str()) != Some(BUS_NAME) {
+            if header.message_type() != zbus::message::Type::Signal || header.interface().map(|i| i.as_str()) != Some(BUS_NAME) {
+                continue;
+            }
+            if !from_service(&proxy, &mut owner, header.sender().map(|s| s.as_str())) {
                 continue;
             }
             match header.member().map(|m| m.as_str()) {
+                Some("ActivationToken") => {
+                    if let Ok((id, token)) = msg.body().deserialize::<(u32, String)>() {
+                        if let Some(l) = lock(&LIVE).iter_mut().find(|l| l.id == id) {
+                            l.activation = Some(token);
+                        }
+                    }
+                }
                 Some("ActionInvoked") => {
                     if let Ok((id, action)) = msg.body().deserialize::<(u32, String)>()
                         && action == "default"
-                        && forget(id)
+                        && let Some(l) = forget(id)
                     {
-                        run_click();
+                        run_click(Click { shown: l.shown, activation: l.activation });
                     }
                 }
                 Some("NotificationClosed") => {
@@ -153,20 +183,19 @@ fn drop_link(gen_id: u64, c: Connection) {
     let _ = c.graceful_shutdown();
 }
 
-fn remember(id: u32) {
+fn remember(id: u32, shown: u64) {
     let mut live = lock(&LIVE);
-    live.push_back(id);
+    live.push_back(Live { id, shown, activation: None });
     if live.len() > LIVE_CAP {
         live.pop_front();
     }
 }
 
-/// Drops the id from the clickable set; whether it was there.
-fn forget(id: u32) -> bool {
+/// Takes the notification out of the clickable set.
+fn forget(id: u32) -> Option<Live> {
     let mut live = lock(&LIVE);
-    let before = live.len();
-    live.retain(|n| *n != id);
-    live.len() != before
+    let at = live.iter().position(|l| l.id == id)?;
+    live.remove(at)
 }
 
 fn notify(title: &str, body: &str, silent: bool) -> Result<u32, String> {
@@ -188,32 +217,30 @@ fn notify(title: &str, body: &str, silent: bool) -> Result<u32, String> {
     reply.body().deserialize::<u32>().map_err(unreachable_text)
 }
 
+/// Closes the service's notification for show `shown`, if it appeared and is still up.
+fn close(shown: u64) {
+    let Some(id) = lock(&LIVE).iter().find(|l| l.shown == shown).map(|l| l.id) else { return };
+    let Ok((gen_id, c)) = link() else { return };
+    if c.call_method(Some(BUS_NAME), BUS_PATH, Some(BUS_NAME), "CloseNotification", &(id,)).is_err() {
+        drop_link(gen_id, c);
+    }
+}
+
 /// The sender thread: shows and closes in the order they were queued.
 fn work(rx: Receiver<Cmd>) {
     for cmd in rx {
         match cmd {
-            Cmd::Show { title, body, silent } => match notify(&title, &body, silent) {
+            Cmd::Show { shown, title, body, silent } => match notify(&title, &body, silent) {
                 Ok(id) => {
                     *lock(&FAILURE) = None;
-                    *lock(&LAST_ID) = id;
-                    remember(id);
+                    remember(id, shown);
                 }
                 Err(e) => {
-                    // The show was counted when it was queued; it never appeared.
-                    SHOWN.fetch_sub(1, Ordering::SeqCst);
-                    *lock(&LAST_ID) = 0;
                     dlog!("The notification was not shown");
                     *lock(&FAILURE) = Some(e);
                 }
             },
-            Cmd::Close => {
-                let id = std::mem::take(&mut *lock(&LAST_ID));
-                if id != 0
-                    && let Ok((_, c)) = link()
-                {
-                    let _ = c.call_method(Some(BUS_NAME), BUS_PATH, Some(BUS_NAME), "CloseNotification", &(id,));
-                }
-            }
+            Cmd::Close { shown } => close(shown),
         }
     }
 }
@@ -227,14 +254,13 @@ fn queue() -> Result<&'static SyncSender<Cmd>, String> {
     Ok(QUEUE.get_or_init(|| tx))
 }
 
-/// Queues a notification and returns at once; a failure to reach the service is logged by the
-/// sender thread, as on the other systems.
+/// Queues a notification and returns at once. The sender thread finds out later whether it
+/// appeared, so a failure is told to the next caller, named as the earlier show's.
 pub fn show_with(title: &str, body: &str, silent: bool) -> Result<(), String> {
-    // An earlier send failed: say so now, and still try this one.
-    let earlier = lock(&FAILURE).clone();
-    queue()?.try_send(Cmd::Show { title: title.to_string(), body: body.to_string(), silent }).map_err(|_| "The notification service is not answering".to_string())?;
-    SHOWN.fetch_add(1, Ordering::SeqCst);
-    earlier.map_or(Ok(()), Err)
+    let q = queue()?;
+    let shown = SHOWN.fetch_add(1, Ordering::SeqCst) + 1;
+    q.try_send(Cmd::Show { shown, title: title.to_string(), body: body.to_string(), silent }).map_err(|_| "The notification service is not answering".to_string())?;
+    lock(&FAILURE).take().map_or(Ok(()), |e| Err(format!("The last notification was not shown. {e}")))
 }
 
 /// Closes the notification if it is still the one on screen (nothing was shown since `at`).
@@ -242,7 +268,7 @@ pub fn clear_if_shown(at: u64) -> bool {
     if shown_count() != at {
         return false;
     }
-    queue().is_ok_and(|q| q.try_send(Cmd::Close).is_ok())
+    queue().is_ok_and(|q| q.try_send(Cmd::Close { shown: at }).is_ok())
 }
 
 pub fn show(_owner: isize, title: &str, body: &str) -> Result<(), String> {
@@ -257,7 +283,6 @@ mod tests {
     use std::collections::HashMap;
     use std::io::{BufRead, BufReader};
     use std::process::{Child, Command, Stdio};
-    use std::sync::atomic::AtomicUsize;
     use std::time::Instant;
 
     /// The bus address is process wide, so the tests take turns.
@@ -337,14 +362,22 @@ mod tests {
     /// A clean slate: the shared connection and the last send's state belong to the last bus.
     fn reset() {
         *lock(&LINK) = None;
-        *lock(&LAST_ID) = 0;
         *lock(&FAILURE) = None;
         lock(&LIVE).clear();
     }
 
-    fn last_id() -> u32 {
-        wait_for("the service's id", || *lock(&LAST_ID) != 0);
-        *lock(&LAST_ID)
+    /// The service's id for show `shown`, once it appeared.
+    fn id_of(shown: u64) -> u32 {
+        wait_for("the service's id", || lock(&LIVE).iter().any(|l| l.shown == shown));
+        lock(&LIVE).iter().find(|l| l.shown == shown).map(|l| l.id).unwrap()
+    }
+
+    /// Records each click the listener runs.
+    fn clicks() -> Arc<Mutex<Vec<Click>>> {
+        let got = Arc::new(Mutex::new(Vec::new()));
+        let g = got.clone();
+        on_click(Box::new(move |c| g.lock().unwrap().push(c)));
+        got
     }
 
     /// A bus whose Notify handler takes `hang` to answer.
@@ -400,28 +433,34 @@ mod tests {
         assert!(e.contains("notification service"), "{e}");
     }
 
-    /// A dead service is told to the caller on the next show, and a failed show is not counted.
+    /// A dead service is told to the next caller as the earlier show's failure, and a failed
+    /// show's number is never another notification's, so it cannot close a later one.
     #[test]
-    fn a_failed_send_reaches_the_next_caller_and_is_not_counted() {
+    fn a_failed_send_reaches_the_next_caller_and_its_number_names_no_later_show() {
         let _g = BUS.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         let saved = std::env::var_os("DBUS_SESSION_BUS_ADDRESS");
         let dir = std::env::temp_dir().join(format!("termurion-nobus2-{}", std::process::id()));
         // SAFETY: the BUS lock keeps the other tests off the environment.
         unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}/none", dir.display())) };
-        let before = shown_count();
         assert!(show_with("t", "b", false).is_ok(), "the first show cannot know yet");
+        let failed = shown_count();
         wait_for("the failure", || lock(&FAILURE).is_some());
-        assert_eq!(shown_count(), before, "a failed show is not counted");
         // The service comes up; the next show still hears about the earlier failure, and retries.
         let b = start_bus(Duration::ZERO);
         let t = Instant::now();
         let e = show_with("t", "b", false).unwrap_err();
         assert!(t.elapsed() < Duration::from_millis(500), "took {:?}", t.elapsed());
-        assert!(e.contains("notification service"), "{e}");
+        assert!(e.starts_with("The last notification was not shown.") && e.contains("notification service"), "{e}");
         wait_for("the retry", || !b.calls.lock().unwrap().is_empty());
-        wait_for("the failure to clear", || lock(&FAILURE).is_none());
-        assert_eq!(shown_count(), before + 1, "only the retry counts");
+        let retry = shown_count();
+        assert_eq!(retry, failed + 1);
+        let id = id_of(retry);
+        assert!(lock(&FAILURE).is_none(), "told once");
+        assert!(!clear_if_shown(failed), "the failed show's number is not the retry's");
+        assert!(clear_if_shown(retry));
+        wait_for("the close", || b.closed.lock().unwrap().contains(&id));
+        assert_eq!(b.closed.lock().unwrap().len(), 1);
         restore_bus(saved);
     }
 
@@ -437,27 +476,82 @@ mod tests {
         let c = calls.last().expect("a Notify call");
         assert_eq!((c.app.as_str(), c.title.as_str(), c.body.as_str()), ("Termurion", "Build done", "all green"));
         assert!(c.actions.iter().any(|a| a == "default"), "{:?}", c.actions);
-        assert_eq!(c.entry.as_deref(), Some("termurion"));
+        assert_eq!(c.entry.as_deref(), Some("dev.termurion.Termurion"), "the .desktop file's name");
     }
 
     #[test]
     fn a_click_runs_on_click() {
         let _g = BUS.lock().unwrap_or_else(|e| e.into_inner());
         let b = bus();
-        let ran = Arc::new(AtomicUsize::new(0));
-        let r = ran.clone();
-        on_click(Box::new(move || {
-            r.fetch_add(1, Ordering::SeqCst);
-        }));
+        let got = clicks();
         show_with("t", "b", false).expect("shown");
-        let id = last_id();
+        let id = id_of(shown_count());
         // The listener thread may not have subscribed yet, so signal until it answers.
         wait_for("the click", || {
             let _ = b.conn.emit_signal(None::<&str>, BUS_PATH, BUS_NAME, "ActionInvoked", &(id, "default"));
-            ran.load(Ordering::SeqCst) >= 1
+            !got.lock().unwrap().is_empty()
         });
         std::thread::sleep(Duration::from_millis(200));
-        assert_eq!(ran.load(Ordering::SeqCst), 1, "the closure ran once");
+        assert_eq!(got.lock().unwrap().len(), 1, "the closure ran once");
+    }
+
+    /// A click on an older notification names that show, not the newest, and carries the
+    /// activation token the server sent first (spec 1.2), so its own session comes front.
+    #[test]
+    fn a_click_names_its_own_show_and_its_activation_token() {
+        let _g = BUS.lock().unwrap_or_else(|e| e.into_inner());
+        let b = bus();
+        let got = clicks();
+        show_with("first", "b", false).expect("shown");
+        let first = shown_count();
+        show_with("second", "b", false).expect("shown");
+        let (id1, _) = (id_of(first), id_of(shown_count()));
+        // The listener may not have subscribed yet: send the token until it is kept, then click.
+        wait_for("the token", || {
+            let _ = b.conn.emit_signal(None::<&str>, BUS_PATH, BUS_NAME, "ActivationToken", &(id1, "tok-1"));
+            lock(&LIVE).iter().any(|l| l.activation.is_some())
+        });
+        b.conn.emit_signal(None::<&str>, BUS_PATH, BUS_NAME, "ActionInvoked", &(id1, "default")).unwrap();
+        wait_for("the click", || !got.lock().unwrap().is_empty());
+        assert_eq!(got.lock().unwrap()[0], Click { shown: first, activation: Some("tok-1".into()) });
+    }
+
+    /// Only the notification service is believed: another program on the bus that emits a click
+    /// for a live id does nothing.
+    #[test]
+    fn a_click_from_another_program_is_ignored() {
+        let _g = BUS.lock().unwrap_or_else(|e| e.into_inner());
+        let b = bus();
+        let got = clicks();
+        show_with("t", "b", false).expect("shown");
+        let id = id_of(shown_count());
+        let addr = std::env::var("DBUS_SESSION_BUS_ADDRESS").unwrap();
+        let rogue = zbus::blocking::connection::Builder::address(addr.as_str()).unwrap().build().unwrap();
+        for _ in 0..20 {
+            rogue.emit_signal(None::<&str>, BUS_PATH, BUS_NAME, "ActionInvoked", &(id, "default")).unwrap();
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(got.lock().unwrap().is_empty(), "a stranger's signal ran the click");
+        wait_for("the service's click", || {
+            let _ = b.conn.emit_signal(None::<&str>, BUS_PATH, BUS_NAME, "ActionInvoked", &(id, "default"));
+            !got.lock().unwrap().is_empty()
+        });
+    }
+
+    /// A failed CloseNotification drops the connection, so the next call makes a fresh one.
+    #[test]
+    fn a_failed_close_resets_the_connection() {
+        let _g = BUS.lock().unwrap_or_else(|e| e.into_inner());
+        let b = bus();
+        show_with("t", "b", false).expect("shown");
+        let at = shown_count();
+        id_of(at);
+        let before = lock(&LINK).as_ref().map(|(n, _)| *n).expect("a connection");
+        // The service leaves the bus: the close finds nobody.
+        b.conn.release_name(BUS_NAME).unwrap();
+        assert!(clear_if_shown(at));
+        wait_for("the connection to go", || lock(&LINK).as_ref().is_none_or(|(n, _)| *n != before));
     }
 
     #[test]
@@ -466,7 +560,7 @@ mod tests {
         let b = bus();
         show_with("t", "b", false).expect("shown");
         let at = shown_count();
-        let id = last_id();
+        let id = id_of(at);
         assert!(!clear_if_shown(at - 1), "a newer show is not ours to clear");
         assert!(clear_if_shown(at));
         wait_for("the close", || b.closed.lock().unwrap().contains(&id));
@@ -482,7 +576,7 @@ mod tests {
         assert!(t.elapsed() < Duration::from_millis(500), "show_with held the caller for {:?}", t.elapsed());
         assert!(r.is_ok(), "{r:?}");
         // Let the sender finish its slow call, so it is idle for the next test.
-        last_id();
+        id_of(shown_count());
     }
 
     /// Many notifications share one bus connection and a fixed few threads.
