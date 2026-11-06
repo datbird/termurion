@@ -891,6 +891,22 @@ mod tests {
         assert!(!still_waiting(41, None));
     }
 
+    /// n3: both release sites carry the client: the Exit arm stores the pid it saw, and the tick
+    /// sends only while that pid still waits.
+    #[test]
+    fn both_release_sites_carry_the_client() {
+        let src = include_str!("tmux_ui.rs");
+        let src = &src[..src.find("\n#[cfg(test)]").unwrap()];
+        let exit = &src[src.find("e @ (Event::Exit | Event::Lost) => {").unwrap()..];
+        let exit = &exit[..exit.find("return self.tmux_disconnected(pane, unhook);").unwrap()];
+        assert!(exit.contains("if let (Some(nl), Some(client)) = (nl, job.map(|j| j.pid))"));
+        assert!(exit.contains("RELEASE_TRIES, client));"));
+        let tick = &src[src.find("in due_release(&mut self.tmux_release, now) {").unwrap()..];
+        let tick = &tick[..tick.find("next = [next, self.tmux_release").unwrap()];
+        assert!(tick.contains("if !still_waiting(client, job.as_ref().map(|j| (j.name.as_str(), j.pid))) {"));
+        assert!(tick.contains("left - 1, client));"));
+    }
+
     /// m1: a new gateway on the pane drops the old gateway's pending releases (an empty line
     /// would end the new control-mode client).
     #[test]
