@@ -172,9 +172,18 @@ pub fn activate(h: isize) -> bool {
 /// After the show: waits (bounded) for the window to be mapped, then asks the window manager to
 /// activate it as a pager, with a real server timestamp that is also its `_NET_WM_USER_TIME`. winit's
 /// own request can come before the map, and as an application it is only "demand attention" to
-/// some window managers.
+/// some window managers. The waits run on their own thread, never the UI's; one at a time, so two
+/// quick shows do not take each other's timestamp.
 pub fn take_focus(h: isize) {
+    static ONE: Mutex<()> = Mutex::new(());
     let Some(w) = win(h) else { return };
+    let _ = std::thread::Builder::new().name("hotkey-focus".into()).spawn(move || {
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        focus_when_mapped(w);
+    });
+}
+
+fn focus_when_mapped(w: u32) {
     with_x(|x| {
         let t = Instant::now();
         while t.elapsed() < Duration::from_millis(500) {
@@ -183,7 +192,10 @@ pub fn take_focus(h: isize) {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        let time = server_time(x, w).unwrap_or(CURRENT_TIME);
+        let time = server_time(x, w).unwrap_or_else(|| {
+            crate::dlog!("The dropdown window's server time did not come; its focus request goes with CURRENT_TIME");
+            CURRENT_TIME
+        });
         x.conn.change_property32(PropMode::REPLACE, w, x.user_time, AtomEnum::CARDINAL, &[time])?;
         let ev = ClientMessageEvent::new(32, w, x.active, [2, time, 0, 0, 0]);
         x.conn.send_event(false, x.root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, ev)?.check()?;
@@ -568,12 +580,32 @@ mod tests {
         until("the shown window active", || foreground() == w as isize);
     }
 
+    /// The map wait and the server time poll run off the caller (the UI thread): a window that
+    /// never maps costs the caller nothing.
+    #[test]
+    fn taking_focus_never_holds_the_caller() {
+        let _x = xenv();
+        let (conn, screen) = RustConnection::connect(None).unwrap();
+        let root = conn.setup().roots[screen].root;
+        let w = make_window(&conn, root);
+        cloak(w as isize, true);
+        let t = Instant::now();
+        take_focus(w as isize);
+        assert!(t.elapsed() < Duration::from_millis(50), "take_focus held the caller for {:?}", t.elapsed());
+        // Let the worker finish before the next test uses the server.
+        std::thread::sleep(Duration::from_millis(800));
+    }
+
     #[test]
     fn a_console_switch_chord_is_refused() {
         let _x = xenv();
         assert!(switches_console(12), "the stock keymap has the console keysyms");
         let r = global_keys::set_hotkeys(vec![(7105, chord(0x58))], vec![]).unwrap();
         assert_eq!(r, vec![(7105, Err("Ctrl+Alt+F12 switches to a text console on this system; pick another shortcut".to_string()))]);
+        // The keymap ignores Super for this switch, so the chord with Super is refused too.
+        let sup = Chord { key: ChordKey::Scan(0x58), mods: MOD_CONTROL | MOD_ALT | crate::hotkey::MOD_WIN };
+        let r = global_keys::set_hotkeys(vec![(7107, sup)], vec![]).unwrap();
+        assert!(matches!(&r[..], [(7107, Err(e))] if e.contains("switches to a text console")), "{r:?}");
         let plain = Chord { key: ChordKey::Scan(0x58), mods: MOD_ALT };
         let r = global_keys::set_hotkeys(vec![(7106, plain)], vec![]).unwrap();
         assert_eq!(r, vec![(7106, Ok(()))], "Alt+F12 alone is no console switch");

@@ -8802,7 +8802,7 @@ mod tests {
         let src = include_str!("hotkey_ui.rs");
         let body = &src[src.find("pub(super) fn register_hotkeys(").unwrap()..];
         let body = &body[..body.find("\n    }\n").unwrap()];
-        assert!(body.contains("let asked = !chords.is_empty() || !taps.is_empty();"));
+        assert!(body.contains("let asked = !chords.is_empty() || !taps.is_empty() || !self.hotkey_errors.is_empty();"));
         assert!(body.find("Err(_) if !asked => self.banners.clear(\"hotkeys\")").unwrap() < body.find("Hotkeys are unavailable").unwrap());
     }
 

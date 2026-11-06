@@ -121,10 +121,12 @@ impl App {
             self.hotkey_errors.insert(crate::session_hotkeys::error_key(pane), why.text().to_string());
         }
         // With no hotkey set nothing was asked for: an OS without system-wide hotkeys says nothing
-        // at launch (an Unsupported shows only when a person uses the feature).
-        let asked = !chords.is_empty() || !taps.is_empty();
+        // at launch (an Unsupported shows only when a person uses the feature). A session chord
+        // the plan refused was asked for too.
+        let asked = !chords.is_empty() || !taps.is_empty() || !self.hotkey_errors.is_empty();
+        let windows: Vec<u32> = (1..=self.hotkey_ids.len() as u32).collect();
         let answer = crate::platform::keys::set_hotkeys(chords, taps, min, max);
-        let worked = hotkey::grabs_worked(asked, &answer);
+        let worked = hotkey::grabs_worked(asked, &answer, &windows);
         match answer {
             Ok(results) => {
                 for (id, r) in results {

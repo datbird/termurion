@@ -128,7 +128,9 @@ fn unusable(code: Code, mods: Modifiers) -> Option<String> {
         Code::F7 => 7, Code::F8 => 8, Code::F9 => 9, Code::F10 => 10, Code::F11 => 11, Code::F12 => 12,
         _ => return None,
     };
-    (mods == Modifiers::CONTROL | Modifiers::ALT && crate::platform::linux::hotkey::switches_console(n)).then(|| format!("Ctrl+Alt+F{n} switches to a text console on this system; pick another shortcut"))
+    // The keymap's CTRL+ALT type looks only at these, so Ctrl+Alt+Super+F`n` switches too.
+    let base = mods & (Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT | Modifiers::ALT_GRAPH);
+    (base == Modifiers::CONTROL | Modifiers::ALT && crate::platform::linux::hotkey::switches_console(n)).then(|| format!("Ctrl+Alt+F{n} switches to a text console on this system; pick another shortcut"))
 }
 
 #[cfg(target_os = "macos")]
@@ -262,12 +264,14 @@ pub fn set_hotkeys(chords: Vec<(u32, Chord)>, taps: Vec<(u32, u8)>) -> Result<Re
     }
     STATE.with(|s| {
         let mut s = s.borrow_mut();
-        if s.is_none() {
+        let fresh = s.is_none();
+        if fresh {
             let manager = GlobalHotKeyManager::new().map_err(|e| e.to_string())?;
             *s = Some(State { manager, keys: Vec::new(), last: Vec::new(), answers: HashMap::new() });
         }
+        // The probe costs one worker pass (about 50 ms): only for a new manager or chords to grab.
         #[cfg(not(target_os = "macos"))]
-        if !worker_alive(&s.as_ref().expect("made above").manager) {
+        if (fresh || !chords.is_empty()) && !worker_alive(&s.as_ref().expect("made above").manager) {
             *s = None;
             return Err("System-wide hotkeys could not start: the key grab lost its X connection".into());
         }

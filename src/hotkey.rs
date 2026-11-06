@@ -156,9 +156,15 @@ pub fn chord(s: &Shortcut) -> Option<Chord> {
     Some(Chord { key, mods })
 }
 
-/// Whether some hotkey is working after a registration: none asked for counts as working.
-pub fn grabs_worked(asked: bool, answer: &Result<Vec<(u32, Result<(), String>)>, String>) -> bool {
-    !asked || answer.as_ref().is_ok_and(|r| r.iter().any(|(_, one)| one.is_ok()))
+/// Whether the hotkeys asked for work after a registration: some hotkey works (none asked for
+/// counts as working), and each hotkey window in `windows` (its registration ids) has one of its
+/// own that works, so none is left hidden with no way to show it.
+pub fn grabs_worked(asked: bool, answer: &Result<Vec<(u32, Result<(), String>)>, String>, windows: &[u32]) -> bool {
+    if !asked {
+        return true;
+    }
+    let Ok(r) = answer else { return false };
+    r.iter().any(|(_, one)| one.is_ok()) && windows.iter().all(|w| r.iter().any(|(id, one)| id == w && one.is_ok()))
 }
 
 /// Profiles whose hotkeys toggle together with `guid`'s: the same shortcuts, or the same
@@ -378,10 +384,14 @@ mod tests {
     fn grabs_worked_needs_one_good_registration() {
         let ok: Result<Vec<(u32, Result<(), String>)>, String> = Ok(vec![(1, Err("taken".into())), (2, Ok(()))]);
         let none: Result<Vec<(u32, Result<(), String>)>, String> = Ok(vec![(1, Err("taken".into()))]);
-        assert!(grabs_worked(true, &ok));
-        assert!(!grabs_worked(true, &none));
-        assert!(!grabs_worked(true, &Err("no X".into())));
-        assert!(grabs_worked(false, &Err("no X".into())), "nothing asked for is not a failure");
+        assert!(grabs_worked(true, &ok, &[]));
+        assert!(!grabs_worked(true, &none, &[]));
+        assert!(!grabs_worked(true, &Err("no X".into()), &[]));
+        assert!(grabs_worked(false, &Err("no X".into()), &[]), "nothing asked for is not a failure");
+        // The App Hotkey works but hotkey window 2's chord is taken: that window has no way in.
+        let taken: Result<Vec<(u32, Result<(), String>)>, String> = Ok(vec![(9000, Ok(())), (1, Ok(())), (2, Err("taken".into()))]);
+        assert!(grabs_worked(true, &taken, &[1]));
+        assert!(!grabs_worked(true, &taken, &[1, 2]), "an unreachable hotkey window is not working");
     }
 
     use super::*;
