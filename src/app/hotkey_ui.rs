@@ -124,9 +124,12 @@ impl App {
         // at launch (an Unsupported shows only when a person uses the feature). A session chord
         // the plan refused was asked for too.
         let asked = !chords.is_empty() || !taps.is_empty() || !self.hotkey_errors.is_empty();
-        let windows: Vec<u32> = (1..=self.hotkey_ids.len() as u32).collect();
+        // A double tap the platform watches itself is a way in with no result of its own.
+        let tapped: Vec<u32> = if crate::platform::keys::DOUBLE_TAPS_WORK { taps.iter().map(|(id, _)| *id).collect() } else { Vec::new() };
+        let windows: Vec<u32> = (1..=self.hotkey_ids.len() as u32).filter(|id| !tapped.contains(id)).collect();
         let answer = crate::platform::keys::set_hotkeys(chords, taps, min, max);
         let worked = hotkey::grabs_worked(asked, &answer, &windows);
+        self.hotkeys_reachable = hotkey::reachable_profiles(&answer, &self.hotkey_ids, &tapped);
         match answer {
             Ok(results) => {
                 for (id, r) in results {
@@ -161,21 +164,24 @@ impl App {
         worked
     }
 
-    /// At launch, when no hotkey could be set: the app made only a hidden hotkey window, which
-    /// nothing can show now, so it becomes a regular window.
+    /// At launch, when a hotkey window's own hotkey could not be set: the app made it hidden, and
+    /// nothing can show it now, so it becomes a regular window. A hotkey window whose own hotkey
+    /// works stays as it is, whatever happened to another profile's.
     pub(super) fn open_window_for_failed_hotkeys(&mut self) {
         self.release_hotkey_windows(true);
     }
 
-    /// A hotkey window whose profile lost its hotkey (turned off, or deleted), or every one when
-    /// `all_windows`, becomes a regular window: shown, with a taskbar button, so it can be reached and closed.
-    fn release_hotkey_windows(&mut self, all_windows: bool) {
+    /// A hotkey window whose profile lost its hotkey (turned off, or deleted), and when
+    /// `unreachable` one whose own hotkey did not register, becomes a regular window: shown, with
+    /// a taskbar button, so it can be reached and closed.
+    fn release_hotkey_windows(&mut self, unreachable: bool) {
         let back = self.current_window();
         let prefs = self.hotkey_prefs();
         for w in self.hotkey_windows() {
             self.enter(w);
             let Some(guid) = self.hotkey.as_ref().map(|h| h.guid.clone()) else { continue };
-            if !all_windows && hotkey::stale_windows(&[guid], &prefs).is_empty() {
+            let lost = unreachable && hotkey::unreachable_window(&guid, &self.hotkeys_reachable);
+            if !lost && hotkey::stale_windows(&[guid], &prefs).is_empty() {
                 continue;
             }
             self.hotkey = None;

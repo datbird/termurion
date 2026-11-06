@@ -167,6 +167,21 @@ pub fn grabs_worked(asked: bool, answer: &Result<Vec<(u32, Result<(), String>)>,
     r.iter().any(|(_, one)| one.is_ok()) && windows.iter().all(|w| r.iter().any(|(id, one)| id == w && one.is_ok()))
 }
 
+/// The hotkey profiles (`ids`, profile i is registration id i+1) that a hotkey of their own can
+/// show after a registration. Another profile's hotkey, or the App Hotkey, is no way in.
+/// `tapped` are the ids whose double tap works once the answer is Ok (Windows' hook watches
+/// taps itself and lists no result for them).
+pub fn reachable_profiles(answer: &Result<Vec<(u32, Result<(), String>)>, String>, ids: &[String], tapped: &[u32]) -> Vec<String> {
+    let Ok(r) = answer else { return Vec::new() };
+    let works = |n: u32| tapped.contains(&n) || r.iter().any(|(id, one)| *id == n && one.is_ok());
+    ids.iter().zip(1u32..).filter(|(_, n)| works(*n)).map(|(g, _)| g.clone()).collect()
+}
+
+/// Whether the hotkey window of profile `guid` has no hotkey of its own that works.
+pub fn unreachable_window(guid: &str, reachable: &[String]) -> bool {
+    !reachable.iter().any(|g| g == guid)
+}
+
 /// Profiles whose hotkeys toggle together with `guid`'s: the same shortcuts, or the same
 /// double-tap key (iTerm2's siblings). `guid` itself is not in the list.
 pub fn siblings(guid: &str, all: &[(String, Prefs)]) -> Vec<String> {
@@ -392,6 +407,28 @@ mod tests {
         let taken: Result<Vec<(u32, Result<(), String>)>, String> = Ok(vec![(9000, Ok(())), (1, Ok(())), (2, Err("taken".into()))]);
         assert!(grabs_worked(true, &taken, &[1]));
         assert!(!grabs_worked(true, &taken, &[1, 2]), "an unreachable hotkey window is not working");
+    }
+
+    /// I1: profile A's chord is taken, profile B's works. Only A's hotkey window is let go at
+    /// launch; B's hidden window stays B's, shown by its own hotkey.
+    #[test]
+    fn a_taken_chord_lets_go_of_only_its_own_hotkey_window() {
+        let ids = ["A".to_string(), "B".to_string()];
+        let answer: Result<Vec<(u32, Result<(), String>)>, String> = Ok(vec![(1, Err("taken".into())), (2, Ok(()))]);
+        let reachable = reachable_profiles(&answer, &ids, &[]);
+        assert_eq!(reachable, vec!["B".to_string()]);
+        assert!(!unreachable_window("B", &reachable), "B's hidden window stays hidden");
+        assert!(unreachable_window("A", &reachable), "A's window has no way in");
+        // A profile past the registration cap was never registered: its window has no way in.
+        assert!(unreachable_window("C", &reachable));
+        // No hotkey could be set at all: every hotkey window is let go.
+        assert!(reachable_profiles(&Err("no X".into()), &ids, &[]).is_empty());
+        // Another hotkey working (the App Hotkey) does not make A's window reachable.
+        let app: Result<Vec<(u32, Result<(), String>)>, String> = Ok(vec![(9000, Ok(())), (1, Err("taken".into()))]);
+        assert!(reachable_profiles(&app, &ids, &[]).is_empty());
+        // Windows: A's chord is taken but its double tap works (the hook lists no result for a tap).
+        assert_eq!(reachable_profiles(&answer, &ids, &[1]), ids.to_vec());
+        assert!(reachable_profiles(&Err("no hook".into()), &ids, &[1]).is_empty(), "no hook, no tap");
     }
 
     use super::*;

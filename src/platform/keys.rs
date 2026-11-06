@@ -19,6 +19,10 @@ pub const CTRL_ALT_IS_ALTGR: bool = cfg!(windows);
 /// Win or Super key belongs to the system and no shortcut uses it.
 pub const CMD_IS_A_KEY: bool = cfg!(target_os = "macos");
 
+/// Double-tap hotkeys work only on Windows, whose keyboard hook watches them (macOS and Linux
+/// refuse them as not available yet).
+pub const DOUBLE_TAPS_WORK: bool = cfg!(windows);
+
 /// Windows Terminal's habits beside iTerm2's chords (F11 full screen, Ctrl+V paste). Off on macOS,
 /// where Ctrl+V is literal-next in a shell and Cmd is the shortcut key.
 pub const WINDOWS_KEY_CONVENTIONS: bool = !CMD_IS_A_KEY;
