@@ -416,7 +416,7 @@ Run on 2026-11-05 on the P3 Task 8 tree. The AppImage is `target/linux/Termurion
 | `unix-gui-check shell` with `TERMURION_BIN` set to the AppImage (`--appimage-extract-and-run`) on Xvfb | PASS |
 | `xprop WM_CLASS` on its window | `"termurion", "dev.termurion.Termurion"` (the class is the app id and equals the `.desktop` `StartupWMClass`) |
 | First launch with an empty config under Xvfb | a window with the menu bar and the login shell; no banner (screenshot `.superpowers/sdd/2026-11-03-p3-linux/task-8-shots/first-launch.png`). Cascadia Mono is not installed, and the font Termurion ships as default never raises a banner, so the pane draws with DejaVu Sans Mono and nothing is shown. |
-| Wayland smoke: headless `weston --socket=wl-test`, no `DISPLAY` | the window opened on Wayland (`xdg_toplevel.set_app_id("dev.termurion.Termurion")`, title "Termurion") and the shell started (`pty: start 80x25` in host.log). The Settings hotkey row's Wayland reason is pinned by `platform::unix::keys::tests::hotkeys_on_wayland_name_wayland`; the row itself was not looked at under weston, since headless weston has no screenshot path here. |
+| Wayland smoke: headless `weston --socket=wl-test`, no `DISPLAY` | the window opened on Wayland (`xdg_toplevel.set_app_id("dev.termurion.Termurion")`, title "Termurion") and the shell started (`pty: start 80x25` in host.log). The Settings hotkey row's Wayland reason is pinned by `platform::unix::keys::tests::hotkeys_on_wayland_name_wayland` and, since the W541 fixes, drawn at the top of the Hotkey section (`settings_hotkey::tests::the_hotkey_section_says_why_wayland_has_none`). A weston nested in Xvfb (x11 backend, kiosk shell) now gives the GUI check a Wayland path it can type into and photograph (`unix-gui-check paste wayland`). |
 
 ### Linux `scripts/unix-gui-check`, every scenario (Xvfb, the debug build)
 
@@ -439,6 +439,19 @@ Run on 2026-11-05 on the P3 Task 8 tree. The AppImage is `target/linux/Termurion
 ### The owner's exit check
 
 Pending. The steps are in the P3 plan, Task 8 Step 8; each answer is recorded here when he has run them.
+
+## W541 hand check 1 fixes (2026-11-06)
+
+The first hand check on the W541 (GNOME 50 Wayland) found eight faults; each is fixed and pinned:
+
+- F1 Copy then Paste pasted nothing. On a Wayland session without the data-control protocol (GNOME, weston) arboard fell back to X11 (Xwayland, or no X at all under weston), which a Wayland window's paste never sees. The clipboard text and the primary selection now go through the window's own Wayland connection (core `wl_data_device`, smithay-clipboard on winit's display) when the compositor has no data-control; X11 sessions and data-control compositors (KDE, sway) keep arboard as before (`platform::unix::clipboard`). The GUI check `paste` copies a word in one pane and pastes it in the other, on Xvfb (`paste x11`) and on a weston nested in Xvfb with no Xwayland (`paste wayland`); the Wayland run failed before the fix (pasted nothing) and passes now. Named gaps on such a desktop: Copy with Styles is refused with a message (the window connection carries plain text only), images go through arboard as before (no Wayland path), and a password manager copy carries no clipboard-history hint.
+- F2 Settings > Keys: the Hotkey section is drawn inside the page's scroll area, and on Wayland it starts with the reason no system-wide hotkey can work (`settings_keys::tests::the_keys_page_tail_scrolls_with_the_page`, `settings_hotkey::tests::the_hotkey_section_says_why_wayland_has_none`).
+- F3 In-window menus taller than the window show a scroll arrow at the bottom (and at the top once scrolled); the pointer resting on one scrolls the menu, as a Mac menu does. A submenu with no room on either side goes against the window edge on the roomier side, so each parent row keeps a reachable part (`menu_overlay::tests::a_menu_taller_than_the_window_shows_scroll_arrows`, `a_submenu_without_room_leaves_the_parent_rows_reachable`).
+- F4 Shell > tmux on Linux: Ctrl+Alt+F1 to F12 switch to a text console, so the five tmux chords are Shift+Alt+F10 (Detach), Shift+Alt+F11 (New Tmux Window), Shift+Alt+F12 (New Tmux Tab), Ctrl+Shift+F12 (Pause Pane) and Shift+Alt+Home (Dashboard). Windows keeps Ctrl+Alt+F1 to F5 (`shortcut_key::tests::no_default_is_a_linux_console_switch`).
+- F5 A notification names the desktop entry only when one is installed in the XDG data dirs (the app id's own file, or an integrator's renamed copy found by `StartupWMClass`); otherwise GNOME shows the app name Termurion. The dock icon on Wayland comes only from an installed desktop entry: winit 0.30 has no `xdg_toplevel_icon_v1`, so an AppImage run shows a generic icon until something installs the entry (an AppImage integrator, or the owner). On X11 the window icon is set as before.
+- F6 Linux wording: the Remap Modifiers rows say Super for the Win key; "Respect shortcuts from ..." and "Remap modifiers globally" are hidden on Linux (no global hook there, as the first is hidden on macOS); Termurion > Make Termurion Default Term, Make Terminal Default Term (a Windows registry setting) and the empty Services submenu are left out of Linux menus.
+- F7 The OS window title leaves out a character no installed font has (fontconfig's answer, asked once per character off the UI thread), so the tmux prefix arrow does not draw as a box on a desktop without it (`wintitle::tests::an_os_title_drops_what_no_system_font_draws`). The tab bar, drawn with Termurion's own fonts, keeps it.
+- F8 The password gate is a fixed-size dialog with only a close button, fitted to its content (`pwm_ui::tests::the_gate_is_a_fixed_size_dialog`).
 
 ## Deferred after P3
 
