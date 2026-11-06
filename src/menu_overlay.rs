@@ -256,6 +256,8 @@ impl Overlay {
         if let Some(MenuItemKind::Submenu(s)) = self.bar_items.get(bar_index) {
             self.levels = vec![Level::new(s.items())];
             self.title = Some(bar_index);
+            // The scroll belonged to the menu that was open.
+            self.autoscroll = None;
             self.dirty = true;
         }
     }
@@ -388,6 +390,7 @@ impl Overlay {
         if let Some(MenuItemKind::Submenu(s)) = self.levels[l].items.get(h) {
             let items = s.items();
             self.levels.truncate(l + 1);
+            self.autoscroll = self.autoscroll.filter(|(al, _)| *al <= l);
             self.levels.push(Level::new(items));
             self.dirty = true;
         }
@@ -499,6 +502,7 @@ impl Overlay {
             ArrowLeft => {
                 if self.levels.len() > 1 {
                     self.levels.pop();
+                    self.autoscroll = None;
                 } else {
                     self.next_title(false);
                 }
@@ -506,6 +510,7 @@ impl Overlay {
             Escape => {
                 if self.levels.len() > 1 {
                     self.levels.pop();
+                    self.autoscroll = None;
                 } else {
                     self.close();
                 }
@@ -577,6 +582,10 @@ impl Overlay {
             ..Default::default()
         };
         let now = std::time::Instant::now();
+        // A level the keys closed has no scroll left.
+        if self.autoscroll.is_some_and(|(l, _)| l >= self.levels.len()) {
+            self.autoscroll = None;
+        }
         if let Some((l, way)) = self.autoscroll
             && let Some(level) = self.levels.get_mut(l)
         {
@@ -1029,6 +1038,44 @@ mod tests {
         small.click(center(t));
         assert_eq!(small.o.arrows(0), (None, None));
         assert!(!small.o.animating());
+    }
+
+    /// A key that closes or swaps the scrolling level ends its scroll: no frames keep coming for a
+    /// level that is gone, and the next tall menu does not scroll by itself.
+    #[test]
+    fn a_key_that_closes_the_scrolling_level_ends_the_scroll() {
+        let bar = Menu::new();
+        let shell = Submenu::new("Shell", true);
+        let sub = Submenu::new("Many", true);
+        for i in 0..40 {
+            sub.append(&MenuItem::with_id(format!("m{i}"), format!("Row {i}"), true, None)).unwrap();
+        }
+        shell.append(&sub).unwrap();
+        bar.append(&shell).unwrap();
+        let view = Submenu::new("View", true);
+        for i in 0..40 {
+            view.append(&MenuItem::with_id(format!("v{i}"), format!("View {i}"), true, None)).unwrap();
+        }
+        bar.append(&view).unwrap();
+        let mut rig = Rig::new(bar);
+        rig.o.set_screen(800.0, 300.0, 1.0);
+        rig.frame();
+        let t = rig.o.title_rect("Shell").unwrap();
+        rig.click(center(t));
+        let row = rig.o.row_rect(0, "Many").unwrap();
+        rig.mv(center(row));
+        rig.frame();
+        let (_, down) = rig.o.arrows(1);
+        rig.mv(center(down.expect("the submenu overflows")));
+        rig.frame();
+        assert!(rig.o.animating());
+        rig.o.key(egui::Key::Escape);
+        rig.frame();
+        assert!(!rig.o.animating(), "Escape closed the submenu: its scroll ends");
+        // Swapping the top menu with the keys ends it too.
+        rig.o.key(egui::Key::ArrowRight);
+        rig.frame();
+        assert!(!rig.o.animating());
     }
 
     /// A submenu with no room on either side goes where it covers the least of its parent, so
