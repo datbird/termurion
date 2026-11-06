@@ -29,6 +29,9 @@ pub fn activate(_window: &Window, _token: Option<&str>) -> Result<bool, String> 
     Ok(false)
 }
 
+/// Nothing is kept on Windows.
+pub fn forget_activation() {}
+
 pub fn cursor_pos() -> Option<(i32, i32)> {
     let mut p = POINT { x: 0, y: 0 };
     (unsafe { GetCursorPos(&mut p) } != 0).then_some((p.x, p.y))

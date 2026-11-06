@@ -2998,6 +2998,8 @@ pub fn run() {
     // The handoff class is registered before the first window, so COM's wait for it is short.
     app.sync_handoff_server();
     let ran = event_loop.run_app(&mut app);
+    // A loop that ended with an error skipped `exiting`; the app's windows still hold the display.
+    crate::platform::window::forget_activation();
     // Before the dialog; if the quit backstop won, it ends the process.
     if loop_end_claimed() {
         loop { std::thread::park(); }
@@ -7370,6 +7372,8 @@ impl ApplicationHandler<UserEvent> for App {
     /// The loop ended without App::quit (the macOS stock Quit item, a window manager closing
     /// everything): save the windows and let the host keep or end its shells, once.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // While winit's display still lives (the process exit is too late for it).
+        crate::platform::window::forget_activation();
         // No panes: an idle embedding start or an already emptied app has nothing to save, and an empty state would wipe the last one.
         if self.panes.is_empty() || !crate::restore_state::exit_saves(self.quitting, self.state_frozen) {
             return;
@@ -8905,6 +8909,21 @@ mod tests {
         let ev = &own[own.find("    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {").unwrap()..];
         let ev = &ev[..ev.find("self.prompt_event(id, &event)").unwrap()];
         assert!(ev.contains("Some(AuxChord::Quit) => return self.quit(event_loop)"), "the panel path quits before any panel sees the key");
+    }
+
+    /// N1: the Wayland activation binding goes while winit's display still lives: in `exiting`
+    /// before any early return, and after `run_app` returns while the app's windows still hold
+    /// the display (a loop that ended with an error skips `exiting`).
+    #[test]
+    fn the_activation_binding_goes_before_the_display() {
+        let own = include_str!("mod.rs");
+        let own = &own[..own.find("\n#[cfg(test)]").unwrap()];
+        let ex = &own[own.find("    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {").unwrap()..];
+        let ex = &ex[..ex.find("\n    }\n").unwrap()];
+        let forget = ex.find("crate::platform::window::forget_activation();").expect("exiting lets it go");
+        assert!(forget < ex.find("return;").unwrap(), "before the early return");
+        let run = &own[own.find("let ran = event_loop.run_app(&mut app);").unwrap()..];
+        assert!(run[..run.find("teardown_process();").unwrap()].contains("crate::platform::window::forget_activation();"));
     }
 
     /// Item 18 M5: Cmd held in a terminal window across Cmd-` into a panel. winit sends no

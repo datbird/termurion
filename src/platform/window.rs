@@ -76,6 +76,11 @@ pub fn activate(window: &Window, token: Option<&str>) -> Result<bool, String> {
     imp::activate(window, token)
 }
 
+/// Lets go of what `activate` keeps on the window system's display, while the display lives.
+pub fn forget_activation() {
+    imp::forget_activation()
+}
+
 /// The pointer's screen point.
 /// Flashes the window for attention. Unix has no handle to flash (the app never holds one).
 pub fn flash(hwnd: isize, how: Flash) {

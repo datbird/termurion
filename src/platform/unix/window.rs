@@ -48,6 +48,12 @@ pub fn activate(window: &Window, token: Option<&str>) -> Result<bool, String> {
     Ok(false)
 }
 
+/// Lets go of the Wayland activation binding (macOS keeps nothing).
+pub fn forget_activation() {
+    #[cfg(not(target_os = "macos"))]
+    super::super::linux::activation::forget();
+}
+
 /// winit has no global pointer query; callers with a window use its cursor events instead.
 pub fn cursor_pos() -> Option<(i32, i32)> {
     None
