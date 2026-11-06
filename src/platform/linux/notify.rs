@@ -7,7 +7,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use zbus::blocking::Connection;
 use zbus::zvariant::Value;
@@ -117,23 +117,32 @@ fn link() -> Result<(u64, Connection), String> {
 #[derive(Default)]
 struct Owner {
     name: Option<String>,
-    asked: bool,
+    /// The owner is known: an ask answered, or the bus told a move.
+    known: bool,
+    /// When an ask last failed (a timeout, a bus hiccup, nobody owning the name yet).
+    failed_at: Option<Instant>,
 }
 
+/// How long after a failed ask the owner is asked again.
+const OWNER_RETRY: Duration = Duration::from_secs(1);
+
 impl Owner {
-    /// Whether `sender` is the service itself; `ask` reads the owner the first time.
-    fn believes(&mut self, sender: Option<&str>, ask: &dyn Fn() -> Option<String>) -> bool {
+    /// Whether `sender` is the service itself. `ask` reads the owner while it is not known: the
+    /// first time, and after a failed ask at most once per OWNER_RETRY.
+    fn believes(&mut self, sender: Option<&str>, ask: &dyn Fn() -> Option<String>, now: Instant) -> bool {
         let Some(sender) = sender else { return false };
-        if !self.asked {
-            self.asked = true;
+        if !self.known && self.failed_at.is_none_or(|t| now.duration_since(t) >= OWNER_RETRY) {
             self.name = ask();
+            self.known = self.name.is_some();
+            self.failed_at = (!self.known).then_some(now);
         }
         self.name.as_deref() == Some(sender)
     }
 
     /// The bus said the name moved to `new` (empty: nobody owns it).
     fn changed(&mut self, new: &str) {
-        self.asked = true;
+        self.known = true;
+        self.failed_at = None;
         self.name = (!new.is_empty()).then(|| new.to_string());
     }
 }
@@ -175,7 +184,7 @@ fn listen(c: Connection, gen_id: u64) -> zbus::Result<()> {
             if header.message_type() != zbus::message::Type::Signal || header.interface().map(|i| i.as_str()) != Some(BUS_NAME) {
                 continue;
             }
-            if !owner.believes(header.sender().map(|s| s.as_str()), &|| ask_owner(&proxy)) {
+            if !owner.believes(header.sender().map(|s| s.as_str()), &|| ask_owner(&proxy), Instant::now()) {
                 continue;
             }
             match header.member().map(|m| m.as_str()) {
@@ -321,7 +330,6 @@ mod tests {
     use std::collections::HashMap;
     use std::io::{BufRead, BufReader};
     use std::process::{Child, Command, Stdio};
-    use std::time::Instant;
 
     /// The bus address is process wide, so the tests take turns.
     static BUS: Mutex<()> = Mutex::new(());
@@ -588,18 +596,43 @@ mod tests {
             Some(":1.5".to_string())
         };
         let mut o = Owner::default();
-        assert!(o.believes(Some(":1.5"), &ask));
+        let t = Instant::now();
+        assert!(o.believes(Some(":1.5"), &ask, t));
         for _ in 0..100 {
-            assert!(!o.believes(Some(":1.9"), &ask));
+            assert!(!o.believes(Some(":1.9"), &ask, t));
         }
-        assert!(!o.believes(None, &ask));
+        assert!(!o.believes(None, &ask, t));
         assert_eq!(asks.get(), 1, "asked once");
         o.changed(":1.9");
-        assert!(o.believes(Some(":1.9"), &ask), "the new owner is believed");
-        assert!(!o.believes(Some(":1.5"), &ask), "the old one is not");
+        assert!(o.believes(Some(":1.9"), &ask, t), "the new owner is believed");
+        assert!(!o.believes(Some(":1.5"), &ask, t), "the old one is not");
         o.changed("");
-        assert!(!o.believes(Some(":1.9"), &ask), "nobody owns the name");
+        assert!(!o.believes(Some(":1.9"), &ask, t), "nobody owns the name");
         assert_eq!(asks.get(), 1);
+    }
+
+    /// n1: a failed owner ask is tried again, at most once per OWNER_RETRY, so a bus hiccup does
+    /// not refuse the real service for good and a stranger still costs no call per signal.
+    #[test]
+    fn a_failed_owner_ask_is_tried_again_later() {
+        let asks = std::cell::Cell::new(0);
+        let answer = std::cell::RefCell::new(None::<String>);
+        let ask = || {
+            asks.set(asks.get() + 1);
+            answer.borrow().clone()
+        };
+        let t0 = Instant::now();
+        let mut o = Owner::default();
+        assert!(!o.believes(Some(":1.5"), &ask, t0));
+        for i in 0..100 {
+            assert!(!o.believes(Some(":1.5"), &ask, t0 + Duration::from_millis(i)));
+        }
+        assert_eq!(asks.get(), 1, "not asked again per signal");
+        *answer.borrow_mut() = Some(":1.5".into());
+        assert!(o.believes(Some(":1.5"), &ask, t0 + OWNER_RETRY), "asked again a while later");
+        assert_eq!(asks.get(), 2);
+        assert!(!o.believes(Some(":1.9"), &ask, t0 + OWNER_RETRY * 5));
+        assert_eq!(asks.get(), 2, "a known owner is not asked again");
     }
 
     /// m4: a service that restarts under a new connection is believed once the bus says the name
