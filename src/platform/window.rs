@@ -197,21 +197,6 @@ pub fn placement(hwnd: isize) -> Option<(u32, u32, [i32; 4], (i32, i32))> {
     imp::placement(hwnd)
 }
 
-#[cfg(test)]
-mod title_tests {
-    /// A title goes out only when it changes, per window.
-    #[test]
-    fn a_title_is_sent_only_when_it_changes() {
-        let mut c = super::TitleCache::default();
-        let (a, b) = (winit::window::WindowId::from(1u64), winit::window::WindowId::from(2u64));
-        assert!(c.changed(a, "x"));
-        assert!(!c.changed(a, "x"), "the same title again: nothing sent");
-        assert!(c.changed(b, "x"), "another window");
-        assert!(c.changed(a, "y"));
-        assert!(c.changed(a, "x"));
-    }
-}
-
 #[cfg(all(test, target_os = "linux"))] // test: windows on a private X server are Linux's
 mod tests {
 
@@ -312,5 +297,20 @@ mod tests {
         let text = String::from_utf8_lossy(&run.stdout).to_string() + &String::from_utf8_lossy(&run.stderr);
         assert!(run.status.success(), "{text}");
         assert!(text.contains("VIEWS "), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    /// A title goes out only when it changes, per window.
+    #[test]
+    fn a_title_is_sent_only_when_it_changes() {
+        let mut c = super::TitleCache::default();
+        let (a, b) = (winit::window::WindowId::from(1u64), winit::window::WindowId::from(2u64));
+        assert!(c.changed(a, "x"));
+        assert!(!c.changed(a, "x"), "the same title again: nothing sent");
+        assert!(c.changed(b, "x"), "another window");
+        assert!(c.changed(a, "y"));
+        assert!(c.changed(a, "x"));
     }
 }
