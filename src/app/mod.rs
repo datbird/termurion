@@ -437,6 +437,9 @@ struct Gpu {
     /// a Maximized or Full Screen style is applied after the first tab): panes are laid out for it,
     /// so a shell starts at its real grid (`adopt_requested_size`).
     layout: Option<PendingSize>,
+    /// The title last sent for this window: it goes with the window, so a new window on a reused
+    /// id sends its own.
+    title_sent: crate::platform::window::SentTitle,
     // Dropped last, after the surface.
     window: Arc<Window>,
 }
@@ -7243,7 +7246,7 @@ impl App {
         }
         let Some(gpu) = self.gpu.as_mut() else { return };
         // Only a changed title goes out: the compositor hears every set_title (H2).
-        crate::platform::window::set_title_if_changed(&gpu.window, &crate::platform::window::os_title(&title));
+        gpu.title_sent.send(&gpu.window, &crate::platform::window::os_title(&title));
         let wait_start = Instant::now();
         let acquired = gpu.surface.get_current_texture();
         // The renderer's timings for Copy Performance Stats: counters and milliseconds only.
@@ -8438,7 +8441,7 @@ fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHan
     };
     surface.configure(&device, &config);
     let renderer = Renderer::new(&device, &queue, format, &first_font(), FONT_PX * window.scale_factor() as f32);
-    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, window })
+    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), window })
 }
 
 /// Set when the event loop returns, so a confirmed quit's backstop leaves the teardown alone.

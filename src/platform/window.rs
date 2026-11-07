@@ -69,29 +69,28 @@ pub fn os_title(title: &str) -> std::borrow::Cow<'_, str> {
     imp::os_title(title)
 }
 
-/// Remembers each window's last title, so a title goes to the window system only when it changes
-/// (Wayland sends every `set_title` to the compositor; the frame loop would repeat it each frame).
+/// The title a window last sent to the window system, kept with that window so it goes when the
+/// window goes (a closed window's id can come back for a new one). A title is sent only when it
+/// changes: Wayland passes every `set_title` to the compositor, and the frame loop computes it
+/// each frame.
 #[derive(Default)]
-pub struct TitleCache(std::collections::HashMap<winit::window::WindowId, String>);
+pub struct SentTitle(Option<String>);
 
-impl TitleCache {
-    /// True when `title` differs from what `id` last had (and records it).
-    pub fn changed(&mut self, id: winit::window::WindowId, title: &str) -> bool {
-        if self.0.get(&id).is_some_and(|t| t == title) {
+impl SentTitle {
+    /// True when `title` differs from what was sent last (and records it).
+    pub fn changed(&mut self, title: &str) -> bool {
+        if self.0.as_deref() == Some(title) {
             return false;
         }
-        self.0.insert(id, title.to_string());
+        self.0 = Some(title.to_string());
         true
     }
-}
 
-/// Sets `window`'s title unless it already has that one.
-pub fn set_title_if_changed(window: &Window, title: &str) {
-    thread_local! {
-        static LAST: std::cell::RefCell<TitleCache> = std::cell::RefCell::new(TitleCache::default());
-    }
-    if LAST.with(|l| l.borrow_mut().changed(window.id(), title)) {
-        window.set_title(title);
+    /// Sets `window`'s title unless this window already sent that one.
+    pub fn send(&mut self, window: &Window, title: &str) {
+        if self.changed(title) {
+            window.set_title(title);
+        }
     }
 }
 
@@ -302,15 +301,33 @@ mod tests {
 
 #[cfg(test)]
 mod title_tests {
-    /// A title goes out only when it changes, per window.
+    use super::SentTitle;
+
+    /// A title goes out only when it changes.
     #[test]
     fn a_title_is_sent_only_when_it_changes() {
-        let mut c = super::TitleCache::default();
-        let (a, b) = (winit::window::WindowId::from(1u64), winit::window::WindowId::from(2u64));
-        assert!(c.changed(a, "x"));
-        assert!(!c.changed(a, "x"), "the same title again: nothing sent");
-        assert!(c.changed(b, "x"), "another window");
-        assert!(c.changed(a, "y"));
-        assert!(c.changed(a, "x"));
+        let mut t = SentTitle::default();
+        assert!(t.changed("x"));
+        assert!(!t.changed("x"), "the same title again: nothing sent");
+        assert!(t.changed("y"));
+        assert!(t.changed("x"));
+    }
+
+    /// A window that closes takes its last title with it: a new window, even one that gets the
+    /// closed window's id back (a freed address on Wayland and macOS, a reused HWND), sends the same
+    /// title again. The record lives in the window's own state, never in a table keyed by id.
+    #[test]
+    fn a_new_window_on_a_reused_id_still_sends_its_title() {
+        let (id, title) = (winit::window::WindowId::from(7u64), "tbird@host: ~    Alt+Shift+1");
+        let mut windows: std::collections::HashMap<winit::window::WindowId, SentTitle> = Default::default();
+        assert!(windows.entry(id).or_default().changed(title));
+        windows.remove(&id); // closed: its state is dropped
+        assert!(windows.entry(id).or_default().changed(title), "the new window on the same id sends it");
+        let me = include_str!("window.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(!me.contains("thread_local!") && !me.contains("HashMap<winit::window::WindowId"), "no title table keyed by id");
+        let app = include_str!("../app/mod.rs");
+        let gpu = &app[app.find("struct Gpu {").unwrap()..];
+        assert!(gpu[..gpu.find("\n}").unwrap()].contains("title_sent: crate::platform::window::SentTitle"), "kept with the window");
+        assert!(app.contains("gpu.title_sent.send(&gpu.window, "));
     }
 }
