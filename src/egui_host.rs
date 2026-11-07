@@ -135,6 +135,8 @@ pub struct EguiHost {
     /// An alert or small dialog (`open_dialog`): its name, the height last fitted and the least
     /// height it keeps, in points.
     dialog: Option<(String, crate::dialog_frame::DialogFit)>,
+    /// The window system sized the window since the last dialog frame (a fit retries only then).
+    answered: bool,
 }
 
 impl EguiHost {
@@ -227,7 +229,7 @@ impl EguiHost {
         install_menu_fonts(&ctx);
         let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, Some(device.limits().max_texture_dimension_2d as usize));
         let renderer = egui_wgpu::Renderer::new(device, format, egui_wgpu::RendererOptions::default());
-        Ok(EguiHost { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, window, probe: false, probed: None, dialog: None })
+        Ok(EguiHost { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, window, probe: false, probed: None, dialog: None, answered: false })
     }
 
     pub fn id(&self) -> WindowId {
@@ -276,6 +278,7 @@ impl EguiHost {
                 self.config.width = s.width;
                 self.config.height = s.height;
                 self.surface.configure(&self.device, &self.config);
+                self.answered = true;
             }
         let r = self.state.on_window_event(&self.window, event);
         if r.repaint {
@@ -313,27 +316,30 @@ impl EguiHost {
         }
         let scale = self.window.scale_factor();
         let actual = (f64::from(self.window.inner_size().height) / scale) as f32;
+        let answered = std::mem::take(&mut self.answered);
         let Some((_, fit)) = self.dialog.as_mut() else { return };
-        let step = fit.step(framed.height, actual);
+        let step = fit.step(framed.height, actual, answered);
         let w = f64::from(self.window.inner_size().width) / scale;
-        let size = winit::dpi::LogicalSize::new(w, f64::from(fit.fit));
-        if !step.present {
-            // Measured: the size is fixed now, before anything shows. The window was made
-            // resizable so its first commit carried no size of its own for the compositor to keep.
-            self.window.set_resizable(false);
-        }
-        // A fixed-size window keeps its min and max at its first size on Wayland, so both move
-        // with each fit (X11 takes the new size the same way).
-        if step.ask.is_some() || !step.present {
-            self.window.set_min_inner_size(Some(size));
-            self.window.set_max_inner_size(Some(size));
-            let _ = self.window.request_inner_size(size);
-        }
-        if !step.present {
-            // Sized: now it may show (X11 maps it; Wayland maps it with its first drawn frame,
-            // the next one).
-            self.window.set_visible(true);
-            self.window.request_redraw();
+        for op in step.ops(fit.fit) {
+            match op {
+                // Measured: the size is fixed now, before anything shows. The window was made
+                // resizable so its first commit carried no size of its own for the compositor to keep.
+                crate::dialog_frame::WinOp::Fix => self.window.set_resizable(false),
+                // A fixed-size window keeps its min and max at its first size on Wayland, so both
+                // move with each fit (X11 takes the new size the same way).
+                crate::dialog_frame::WinOp::Size(h) => {
+                    let size = winit::dpi::LogicalSize::new(w, f64::from(h));
+                    self.window.set_min_inner_size(Some(size));
+                    self.window.set_max_inner_size(Some(size));
+                    let _ = self.window.request_inner_size(size);
+                }
+                // Sized: now it may show (X11 maps it; Wayland maps it with its first drawn frame,
+                // the next one).
+                crate::dialog_frame::WinOp::Show => {
+                    self.window.set_visible(true);
+                    self.window.request_redraw();
+                }
+            }
         }
     }
 
@@ -482,6 +488,27 @@ pub fn probe_plan(real_copy: bool, text_field_focused: bool) -> ProbePlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `paint_dialog` draws the measuring frame without presenting it and shows the window only
+    /// through `FitStep::ops` (Fix, Size, Show, tested in `dialog_frame`); `paint_with` leaves
+    /// before the surface texture when it must not present.
+    #[test]
+    fn the_measuring_frame_is_not_presented_and_the_window_shows_after_its_size() {
+        let src = include_str!("egui_host.rs").split("#[cfg(test)]").next().unwrap();
+        let pd = &src[src.find("pub fn paint_dialog(").unwrap()..];
+        let pd = &pd[..pd.find("\n    pub fn paint(").unwrap()];
+        let at = |s: &str, n: &str| s.find(n).unwrap_or_else(|| panic!("{n} missing"));
+        assert!(at(pd, "let present = self.dialog.as_ref().is_some_and(|(_, f)| f.shown());") < at(pd, "self.paint_with(|ui|"));
+        assert!(pd.contains("&mut body), present);"), "the frame is presented only once shown");
+        assert!(at(pd, "self.paint_with(") < at(pd, "fit.step(framed.height, actual, answered)"), "measured, then stepped");
+        assert!(at(pd, "for op in step.ops(fit.fit)") < at(pd, "WinOp::Show =>"));
+        assert_eq!(pd.matches("set_visible(true)").count(), 1, "only Show maps it");
+        assert!(at(pd, "WinOp::Show =>") < at(pd, "set_visible(true)"));
+        let pw = &src[src.find("fn paint_with(").unwrap()..];
+        assert!(at(pw, "if !present {") < at(pw, "self.surface.get_current_texture()"), "no texture for the measuring frame");
+        let skip = &pw[at(pw, "if !present {")..at(pw, "self.surface.get_current_texture()")];
+        assert!(skip.contains("return;"));
+    }
 
     /// Every character the menu bar, the shortcut text and the Keys page draw.
     fn shown_text() -> String {

@@ -70,21 +70,53 @@ impl DialogFit {
         self.shown
     }
 
-    /// The step for a frame whose content needs `content` points, in a window `actual` points tall.
-    pub fn step(&mut self, content: f32, actual: f32) -> FitStep {
+    /// The step for a frame whose content needs `content` points, in a window `actual` points tall;
+    /// `answered` is true when the window system sized the window since the last frame.
+    pub fn step(&mut self, content: f32, actual: f32, answered: bool) -> FitStep {
         let present = std::mem::replace(&mut self.shown, true);
         if let Some(want) = next_height(content, self.fit, self.floor) {
             self.fit = want;
             self.retries = 0;
             return FitStep { present, ask: Some(want) };
         }
-        // The compositor sized the window otherwise (GNOME's configure right after mapping):
-        // ask again, a bounded number of times.
-        if present && (actual - self.fit).abs() >= 1.0 && self.retries < FIT_RETRIES {
+        // The window system answered with another height (GNOME's configure right after mapping,
+        // a late X11 window manager): ask again, a bounded number of times. A frame that only
+        // reads the old height before any answer came waits and spends nothing.
+        if present && answered && (actual - self.fit).abs() >= 1.0 && self.retries < FIT_RETRIES {
             self.retries += 1;
             return FitStep { present, ask: Some(self.fit) };
         }
         FitStep { present, ask: None }
+    }
+}
+
+/// What `paint_dialog` does to the window after a frame, in this order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WinOp {
+    /// Fix the size (not resizable from now on).
+    Fix,
+    /// Min, max and size at this height.
+    Size(f32),
+    /// Show the window and ask for the first drawn frame.
+    Show,
+}
+
+impl FitStep {
+    /// The window changes for this step: after the measuring frame the size is fixed and set before
+    /// the window shows; later, only an ask sets it.
+    pub fn ops(&self, fit: f32) -> Vec<WinOp> {
+        let first = !self.present;
+        let mut ops = Vec::new();
+        if first {
+            ops.push(WinOp::Fix);
+        }
+        if first || self.ask.is_some() {
+            ops.push(WinOp::Size(self.ask.unwrap_or(fit)));
+        }
+        if first {
+            ops.push(WinOp::Show);
+        }
+        ops
     }
 }
 
@@ -242,19 +274,59 @@ mod tests {
     #[test]
     fn a_dialog_is_sized_before_it_shows_and_holds_its_fit() {
         let mut f = DialogFit::new(130.0);
-        assert_eq!(f.step(90.0, 130.0), FitStep { present: false, ask: Some(90.0) }, "measured, asked, not drawn");
-        assert_eq!(f.step(90.0, 90.0), FitStep { present: true, ask: None }, "drawn at its height");
+        assert_eq!(f.step(90.0, 130.0, false), FitStep { present: false, ask: Some(90.0) }, "measured, asked, not drawn");
+        assert_eq!(f.step(90.0, 90.0, true), FitStep { present: true, ask: None }, "drawn at its height");
         // GNOME answered with the creation size: ask again, twice at most.
-        assert_eq!(f.step(90.0, 130.0), FitStep { present: true, ask: Some(90.0) });
-        assert_eq!(f.step(90.0, 130.0), FitStep { present: true, ask: Some(90.0) });
-        assert_eq!(f.step(90.0, 130.0), FitStep { present: true, ask: None }, "no endless asking");
+        assert_eq!(f.step(90.0, 130.0, true), FitStep { present: true, ask: Some(90.0) });
+        assert_eq!(f.step(90.0, 130.0, true), FitStep { present: true, ask: Some(90.0) });
+        assert_eq!(f.step(90.0, 130.0, true), FitStep { present: true, ask: None }, "no endless asking");
         // New content (the wrong-password line) asks once for the new height.
-        assert_eq!(f.step(108.0, 130.0), FitStep { present: true, ask: Some(108.0) });
-        assert_eq!(f.step(108.0, 108.0), FitStep { present: true, ask: None });
+        assert_eq!(f.step(108.0, 130.0, false), FitStep { present: true, ask: Some(108.0) });
+        assert_eq!(f.step(108.0, 108.0, true), FitStep { present: true, ask: None });
         // A floor holds from the first frame.
         let mut g = DialogFit::new(150.0);
         g.floor = 200.0;
-        assert_eq!(g.step(120.0, 150.0).ask, Some(200.0));
+        assert_eq!(g.step(120.0, 150.0, false).ask, Some(200.0));
+    }
+
+    /// A frame that still reads the old height before the window system answered spends no retry,
+    /// so a late wrong answer (an X11 window manager's ConfigureNotify) still gets its asks.
+    #[test]
+    fn only_a_real_answer_spends_a_retry() {
+        let mut f = DialogFit::new(130.0);
+        assert_eq!(f.step(105.0, 130.0, false).ask, Some(105.0));
+        // Frames before the answer: the old height, nothing asked, nothing spent.
+        for _ in 0..5 {
+            assert_eq!(f.step(105.0, 130.0, false), FitStep { present: true, ask: None });
+        }
+        // The answer is the wrong height, late: asked again, twice, then no more.
+        assert_eq!(f.step(105.0, 130.0, true).ask, Some(105.0));
+        assert_eq!(f.step(105.0, 130.0, false).ask, None, "waits for the next answer");
+        assert_eq!(f.step(105.0, 130.0, true).ask, Some(105.0));
+        assert_eq!(f.step(105.0, 130.0, true).ask, None, "bounded");
+        // A right answer asks nothing.
+        let mut g = DialogFit::new(130.0);
+        g.step(105.0, 130.0, false);
+        assert_eq!(g.step(105.0, 105.0, true).ask, None);
+    }
+
+    /// The measuring frame is never drawn, and the window shows only after its size is fixed and
+    /// set; later frames change the window only to ask.
+    #[test]
+    fn the_window_shows_after_its_size_is_set() {
+        let mut f = DialogFit::new(130.0);
+        assert!(!f.shown());
+        let first = f.step(105.0, 130.0, false);
+        assert!(!first.present, "the measuring frame is not drawn");
+        assert_eq!(first.ops(f.fit), vec![WinOp::Fix, WinOp::Size(105.0), WinOp::Show]);
+        assert!(f.shown());
+        let next = f.step(105.0, 105.0, true);
+        assert!(next.present);
+        assert!(next.ops(f.fit).is_empty());
+        assert_eq!(f.step(120.0, 105.0, false).ops(f.fit), vec![WinOp::Size(120.0)]);
+        // An empty body still fixes, sizes and shows (no next_height change).
+        let mut e = DialogFit::new(105.0);
+        assert_eq!(e.step(105.0, 105.0, false).ops(e.fit), vec![WinOp::Fix, WinOp::Size(105.0), WinOp::Show]);
     }
 
     /// A title wider than the window still leaves the close button inside it.
