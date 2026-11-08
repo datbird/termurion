@@ -470,6 +470,10 @@ G1 and the new dialog frame passed on the W541 (AppImage at 9fb3d803). Two findi
 - H2 The main window sent `set_title` with the same text every 500 ms; a title now goes to the window system only when it changes (`TitleCache`; the alert scenario's Wayland log shows 4 set_title calls where the old code sent 439).
 - Re-review of round 7: the title record now lives in each window's own state (`SentTitle` in `Gpu`), so it goes with the window; an id table could match a new window that got a closed window's id back (a freed address on Wayland and macOS, a reused HWND) and leave it showing "Termurion". A fit's retry is spent only when the window system really sized the window since the last frame (a Resized), so frames that read the old height before a late X11 window manager answers spend nothing. `FitStep::ops` (Fix, Size, Show) and a source test pin that `paint_dialog` never presents the measuring frame and shows the window only after its size is set.
 
+## Tart check of P3 (2026-11-08)
+
+K1 On macOS "See Tips of the Day?" opened about 170 pt tall for about 90 pt of content. Owner ruling: fix it on macOS now. macOS alerts and small dialogs now take the Linux fit (`dialog_frame::FIT`, `DIALOGS_FIT_CONTENT`) under the system's own title bar and traffic lights: created hidden, the first frame measures the body (no title row of Termurion's own) and is not drawn, the size is fixed at the measured height, then the window shows. Checked on funtimes with a mac-bundle build (VM config backed up and restored): "Check for updates automatically?" and "See Tips of the Day?" each open 480x105 including the title bar, with no band and nothing cut; Run Coprocess opens 420x127 with its field, check box and buttons. The password gate opens only on Linux, so it was not seen on macOS (its window is hidden until measured there too). Locale's list floor is shared code (`set_dialog_floor`) and was not opened in the VM. Windows is unchanged and still opens each dialog at the height it guesses (the same band shows there).
+
 ## Deferred after P3
 
 Each with its reason.
