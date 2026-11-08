@@ -109,6 +109,24 @@ pub enum WinOp {
     Show,
 }
 
+/// Where a window goes after a fit so its center stays where it was: `at` and `was` are its outer
+/// top-left and size before the fit, `now` its size after, all in pixels. Kept inside `work` (the
+/// monitor's work area as x, y, width, height) when known, its title bar first: the top edge is
+/// never above the work area's top.
+pub fn kept_center(at: (i32, i32), was: (u32, u32), now: (u32, u32), work: Option<(i32, i32, i32, i32)>) -> (i32, i32) {
+    let half = |a: u32, b: u32| (i64::from(a) - i64::from(b)) / 2;
+    let mut x = i64::from(at.0) + half(was.0, now.0);
+    let mut y = i64::from(at.1) + half(was.1, now.1);
+    if let Some((wx, wy, ww, wh)) = work {
+        let (wx, wy) = (i64::from(wx), i64::from(wy));
+        // The far edges first, then the near ones, so a window larger than the area sits at its
+        // top-left (the title bar and the close button stay reachable).
+        x = x.min(wx + i64::from(ww) - i64::from(now.0)).max(wx);
+        y = y.min(wy + i64::from(wh) - i64::from(now.1)).max(wy);
+    }
+    (x as i32, y as i32)
+}
+
 /// Whether the first fit keeps the dialog's center: where the system frames the window (macOS,
 /// Windows) and places it where it is told. Linux's window manager places a window when it maps.
 pub const KEEP_CENTER: bool = !OWN_FRAME;
@@ -319,6 +337,29 @@ mod tests {
         let mut g = DialogFit::new(150.0);
         g.floor = 200.0;
         assert_eq!(g.step(120.0, 150.0, false).ask, Some(200.0));
+    }
+
+    /// The kept center: a shrink lowers the top by half the change, a growth raises it by half,
+    /// and the work area holds the window (the title bar never above its top).
+    #[test]
+    fn a_fitted_dialog_keeps_its_center_inside_the_work_area() {
+        // Shrink 186 to 105: the top moves down by 40 (half of 81, rounded toward zero).
+        assert_eq!(kept_center((600, 200), (480, 186), (480, 105), None), (600, 240));
+        // Growth 130 to 190: the top moves up by 30.
+        assert_eq!(kept_center((600, 200), (480, 130), (480, 190), None), (600, 170));
+        // A narrower window moves right by half too.
+        assert_eq!(kept_center((600, 200), (500, 130), (480, 130), None), (610, 200));
+        let work = Some((0, 25, 1920, 1015));
+        // Growth near the top: held at the work area's top, never above it.
+        assert_eq!(kept_center((600, 30), (480, 130), (480, 190), work), (600, 25));
+        // Off the right and the bottom: pulled back inside.
+        assert_eq!(kept_center((1800, 1000), (480, 130), (480, 130), work), (1440, 910));
+        // Off the left: pulled back.
+        assert_eq!(kept_center((-50, 100), (480, 130), (480, 130), work), (0, 100));
+        // Taller and wider than the area: its top-left corner at the area's.
+        assert_eq!(kept_center((100, 100), (480, 130), (2000, 1100), work), (0, 25));
+        // A second monitor left of the main one (negative x): held inside that one.
+        assert_eq!(kept_center((-1900, 10), (480, 130), (480, 190), Some((-1920, 0, 1920, 1040))), (-1900, 0));
     }
 
     /// A frame that still reads the old height before the window system answered spends no retry,

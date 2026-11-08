@@ -349,16 +349,27 @@ impl EguiHost {
                 crate::dialog_frame::WinOp::KeepCenter => {
                     if let Some((Some(at), was)) = before {
                         let now = self.window.outer_size();
-                        let half = |a: u32, b: u32| (i64::from(a) - i64::from(b)) / 2;
-                        let x = i64::from(at.x) + half(was.width, now.width);
-                        let y = i64::from(at.y) + half(was.height, now.height);
-                        self.window.set_outer_position(winit::dpi::PhysicalPosition::new(x as i32, y as i32));
+                        // The work area of the monitor it is on (Windows: without the taskbar;
+                        // macOS: without the menu bar and the Dock), else the whole monitor (a
+                        // window never shown may have no screen of its own yet on macOS).
+                        let work = crate::platform::window::view_of(&self.window)
+                            .and_then(crate::platform::window::monitor_rects)
+                            .map(|(w, _)| (w.x.round() as i32, w.y.round() as i32, w.w.round() as i32, w.h.round() as i32))
+                            .or_else(|| {
+                                let m = self.window.current_monitor()?;
+                                let (p, s) = (m.position(), m.size());
+                                Some((p.x, p.y, s.width as i32, s.height as i32))
+                            });
+                        let (x, y) = crate::dialog_frame::kept_center((at.x, at.y), (was.width, was.height), (now.width, now.height), work);
+                        self.window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
                     }
                 }
                 // Sized: now it may show (X11 maps it; Wayland maps it with its first drawn frame,
                 // the next one).
                 crate::dialog_frame::WinOp::Show => {
                     self.window.set_visible(true);
+                    // Windows and macOS focus it now; on Linux this does nothing (X11 not mapped
+                    // yet, Wayland has no focus call) and the window manager focuses it on map.
                     if self.focus_on_show.take() {
                         self.window.focus_window();
                     }
