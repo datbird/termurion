@@ -25,6 +25,8 @@ pub fn attributes(title: &str, w: f64, h: f64) -> winit::window::WindowAttribute
     // kept a fixed creation size and sent it back after a later fit). `paint_dialog` fixes the
     // size once measured.
     let attrs = if OWN_FRAME { attrs.with_decorations(false) } else { attrs };
+    // Windows: no minimize or maximize, only close (Windows hides both boxes when neither is on).
+    let attrs = if crate::platform::window::DIALOGS_CLOSE_ONLY { attrs.with_enabled_buttons(winit::window::WindowButtons::CLOSE) } else { attrs };
     attrs.with_visible(!FIT)
 }
 
@@ -337,6 +339,16 @@ mod tests {
         let mut g = DialogFit::new(150.0);
         g.floor = 200.0;
         assert_eq!(g.step(120.0, 150.0, false).ask, Some(200.0));
+    }
+
+    /// Windows dialogs have only a close button (owner ruling, round 12); Linux draws its own row
+    /// with close only, and macOS keeps its traffic lights. The gate's own window agrees.
+    #[test]
+    fn windows_dialogs_have_only_a_close_button() {
+        let a = attributes("T", 300.0, 200.0);
+        let want = if cfg!(target_os = "windows") { winit::window::WindowButtons::CLOSE } else { winit::window::WindowButtons::all() };
+        assert_eq!(a.enabled_buttons, want);
+        assert_eq!(crate::platform::window::DIALOGS_CLOSE_ONLY, cfg!(target_os = "windows"));
     }
 
     /// The kept center: a shrink lowers the top by half the change, a growth raises it by half,

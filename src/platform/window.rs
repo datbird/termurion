@@ -20,6 +20,10 @@ pub const APP_ID: &str = "dev.termurion.Termurion";
 /// off a frame there); Windows and macOS keep the system's.
 pub const DIALOGS_DRAW_OWN_FRAME: bool = cfg!(target_os = "linux");
 
+/// Alerts and small dialogs on Windows have only a close button in the system's title bar, as Linux's
+/// own title row does (macOS keeps its traffic lights).
+pub const DIALOGS_CLOSE_ONLY: bool = cfg!(target_os = "windows");
+
 /// Alerts and small dialogs take their content's height (measured before they show), on every OS.
 pub const DIALOGS_FIT_CONTENT: bool = cfg!(any(target_os = "linux", target_os = "macos", target_os = "windows"));
 
