@@ -37,9 +37,9 @@ fn add_body(ui: &mut egui::Ui, title: &mut String, detail: &mut String, first: &
         out = AddEvent::Add(title.clone(), detail.clone());
     }
     ui.label("Detail:");
-    // Linux fits the window to its content, so the editor has a height of its own there; elsewhere
-    // it fills the window as it always did.
-    let room = if crate::dialog_frame::OWN_FRAME { DETAIL_H } else { ui.available_height() - 36.0 };
+    // Linux and macOS fit the window to its content, so the editor has a height of its own there;
+    // on Windows it fills the window as it always did.
+    let room = if crate::dialog_frame::FIT { DETAIL_H } else { ui.available_height() - 36.0 };
     let d = egui::ScrollArea::vertical().max_height(room.max(40.0)).show(ui, |ui| ui.add_sized([ui.available_width(), room.max(40.0)], egui::TextEdit::multiline(detail))).inner;
     // Shift+Return in the detail adds too.
     if d.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.shift) {

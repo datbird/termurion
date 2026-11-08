@@ -296,18 +296,19 @@ impl EguiHost {
 
     /// Runs one egui frame with `f` and draws it.
     /// Draws a dialog from `open_dialog`: its panel and `body`, and on Linux its own title row,
-    /// then follows the row's close and drag and fits the height to the content.
+    /// then follows the row's close and drag; on Linux and macOS it fits the height to the content.
     pub fn paint_dialog(&mut self, mut body: impl FnMut(&mut egui::Ui)) {
         let own = crate::dialog_frame::OWN_FRAME && self.dialog.is_some();
+        let fit = crate::dialog_frame::FIT && self.dialog.is_some();
         let title = self.dialog.as_ref().map(|(t, _)| t.clone()).unwrap_or_default();
         let mut framed = crate::dialog_frame::Framed::default();
-        if !own {
-            self.paint(|ui| framed = crate::dialog_frame::show(ui, &title, own, &mut body));
+        if !fit {
+            self.paint(|ui| framed = crate::dialog_frame::show(ui, &title, own, fit, &mut body));
             return;
         }
         // The first frame is measured, not shown (see `DialogFit`).
         let present = self.dialog.as_ref().is_some_and(|(_, f)| f.shown());
-        self.paint_with(|ui| framed = crate::dialog_frame::show(ui, &title, own, &mut body), present);
+        self.paint_with(|ui| framed = crate::dialog_frame::show(ui, &title, own, fit, &mut body), present);
         if framed.drag {
             let _ = self.window.drag_window();
         }

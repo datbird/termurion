@@ -7,20 +7,26 @@
 /// Whether dialogs draw their own frame on this OS.
 pub const OWN_FRAME: bool = crate::platform::window::DIALOGS_DRAW_OWN_FRAME;
 
+/// Whether a dialog's window takes its content's height (Linux and macOS); macOS keeps the system's
+/// title bar and fits only the content under it.
+pub const FIT: bool = crate::platform::window::DIALOGS_FIT_CONTENT;
+
 /// The panel's margin on each side; the window adds it around the content.
 pub const MARGIN: f32 = 8.0;
 
 /// The tallest a dialog's body may be, in points (a scrolling text stops growing there).
 pub const BODY_CAP: f32 = 480.0;
 
-/// A dialog's window: on Linux a fixed size and no frame; elsewhere as any small window.
+/// A dialog's window: on Linux no frame; on Linux and macOS hidden until measured; on Windows as
+/// any small window.
 pub fn attributes(title: &str, w: f64, h: f64) -> winit::window::WindowAttributes {
     let attrs = crate::platform::window::attributes().with_title(title).with_inner_size(winit::dpi::LogicalSize::new(w, h));
     // Hidden until its first frame has measured it (X11; Wayland maps a window with its first
     // drawn frame anyway), and resizable until then, so its first commit names no size (GNOME
     // kept a fixed creation size and sent it back after a later fit). `paint_dialog` fixes the
     // size once measured.
-    if OWN_FRAME { attrs.with_decorations(false).with_visible(false) } else { attrs }
+    let attrs = if OWN_FRAME { attrs.with_decorations(false) } else { attrs };
+    attrs.with_visible(!FIT)
 }
 
 /// The height to ask the window for after a frame whose content needs `content`, or None to keep
@@ -133,38 +139,41 @@ pub struct Framed {
 
 /// Draws the dialog's panel and `body` in it; with `own_frame`, the title row first and a thin
 /// edge around it all.
-pub fn show(ui: &mut egui::Ui, title: &str, own_frame: bool, body: &mut dyn FnMut(&mut egui::Ui)) -> Framed {
+pub fn show(ui: &mut egui::Ui, title: &str, own_frame: bool, fit: bool, body: &mut dyn FnMut(&mut egui::Ui)) -> Framed {
     let mut out = Framed::default();
     let frame = if own_frame { egui::Frame::central_panel(ui.style()).inner_margin(MARGIN).stroke(ui.visuals().window_stroke) } else { egui::Frame::central_panel(ui.style()) };
     let margins = frame.total_margin().sum().y;
     egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-        if !own_frame {
-            // Windows and macOS: the panel the dialog always had, nothing measured.
+        if !own_frame && !fit {
+            // Windows: the panel the dialog always had, nothing measured.
             body(ui);
             return;
         }
         // Measured in its own column: the panel's ui is as tall as the window, whatever it holds.
         let column = ui.vertical(|ui| {
-            ui.horizontal(|ui| {
-                // One row tall (the row's available height is the whole panel's). The close
-                // button's room is kept first, so a long name is cut short with an ellipsis.
-                let row_h = ui.spacing().interact_size.y;
-                let close_w = row_h + ui.spacing().item_spacing.x;
-                let name_w = (ui.available_width() - close_w).max(0.0);
-                ui.allocate_ui_with_layout(egui::vec2(name_w, row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let name = ui.add(egui::Label::new(egui::RichText::new(title).strong()).truncate().sense(egui::Sense::click_and_drag()));
-                    // Only the press starts a move: during the move the window manager has the
-                    // pointer, and egui never hears the release.
-                    out.drag = name.drag_started_by(egui::PointerButton::Primary);
-                    // The rest of the name's room moves the window too.
-                    let rest = ui.allocate_response(egui::vec2(ui.available_width(), row_h), egui::Sense::drag());
-                    out.drag |= rest.drag_started_by(egui::PointerButton::Primary);
+            // macOS: the system's title bar is above the content, so only the body is drawn here.
+            if own_frame {
+                ui.horizontal(|ui| {
+                    // One row tall (the row's available height is the whole panel's). The close
+                    // button's room is kept first, so a long name is cut short with an ellipsis.
+                    let row_h = ui.spacing().interact_size.y;
+                    let close_w = row_h + ui.spacing().item_spacing.x;
+                    let name_w = (ui.available_width() - close_w).max(0.0);
+                    ui.allocate_ui_with_layout(egui::vec2(name_w, row_h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        let name = ui.add(egui::Label::new(egui::RichText::new(title).strong()).truncate().sense(egui::Sense::click_and_drag()));
+                        // Only the press starts a move: during the move the window manager has the
+                        // pointer, and egui never hears the release.
+                        out.drag = name.drag_started_by(egui::PointerButton::Primary);
+                        // The rest of the name's room moves the window too.
+                        let rest = ui.allocate_response(egui::vec2(ui.available_width(), row_h), egui::Sense::drag());
+                        out.drag |= rest.drag_started_by(egui::PointerButton::Primary);
+                    });
+                    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), row_h), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        out.close = ui.add(egui::Button::new("\u{2715}").frame(false)).on_hover_text("Close").clicked();
+                    });
                 });
-                ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), row_h), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    out.close = ui.add(egui::Button::new("\u{2715}").frame(false)).on_hover_text("Close").clicked();
-                });
-            });
-            ui.separator();
+                ui.separator();
+            }
             // The body lays out in a fixed budget, never in the window's height: what it draws
             // then does not depend on the last fit, so the fit settles in one step.
             ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), BODY_CAP), egui::Layout::top_down(egui::Align::Min), |ui| body(ui));
@@ -209,7 +218,8 @@ pub(crate) fn settle_with(width: f32, start: f32, floor: f32, frames: usize, eve
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, h))), events: events(frame), ..Default::default() };
         let mut next = h;
         let mut out = ctx.run_ui(input, |ui| {
-            let f = show(ui, "Termurion", true, body);
+            // As the dialog is drawn here: its own title row on Linux, the body alone on macOS.
+            let f = show(ui, "Termurion", OWN_FRAME, true, body);
             next = next_height(f.height, h, floor).unwrap_or(h);
         });
         out.textures_delta.clear();
@@ -338,7 +348,7 @@ mod tests {
         for _ in 0..2 {
             let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 200.0))), ..Default::default() };
             let mut out = ctx.run_ui(input, |ui| {
-                show(ui, title, true, &mut |ui| {
+                show(ui, title, true, true, &mut |ui| {
                     ui.label("x");
                 });
             });
@@ -383,7 +393,7 @@ mod tests {
             let mut shown = Vec::new();
             for _ in 0..2 {
                 let mut out = ctx.run_ui(input(Vec::new()), |ui| {
-                    show(ui, "Check for updates automatically?", own, &mut |ui| {
+                    show(ui, "Check for updates automatically?", own, own, &mut |ui| {
                         ui.label("BODY");
                     });
                 });
@@ -404,7 +414,7 @@ mod tests {
             let mut h = 0.0;
             for _ in 0..2 {
                 let mut out = ctx.run_ui(input(Vec::new()), |ui| {
-                    h = show(ui, "T", true, &mut |ui| {
+                    h = show(ui, "T", true, true, &mut |ui| {
                         for i in 0..lines {
                             ui.label(format!("line {i}"));
                         }
@@ -437,7 +447,7 @@ mod tests {
                 _ => Vec::new(),
             };
             let mut out = ctx.run_ui(input(events), |ui| {
-                if show(ui, "T", true, &mut |ui| {
+                if show(ui, "T", true, true, &mut |ui| {
                     ui.label("x");
                 })
                 .drag
@@ -471,7 +481,34 @@ mod tests {
         let a = attributes("T", 300.0, 200.0);
         assert_eq!(a.decorations, !cfg!(target_os = "linux"));
         assert!(a.resizable, "fixed only once measured (paint_dialog)");
-        assert_eq!(a.visible, !cfg!(target_os = "linux"), "hidden until measured");
         assert_eq!(OWN_FRAME, cfg!(target_os = "linux"));
+    }
+
+    /// macOS fits its dialogs as Linux does (K1, the Tart check: "See Tips of the Day?" kept a band
+    /// under its buttons), with the system's title bar kept; Windows does not, yet.
+    #[test]
+    fn linux_and_macos_dialogs_fit_their_content() {
+        assert_eq!(FIT, cfg!(any(target_os = "linux", target_os = "macos")));
+        let a = attributes("T", 300.0, 200.0);
+        assert_eq!(a.visible, !FIT, "hidden until measured");
+        if cfg!(target_os = "macos") {
+            assert!(a.decorations, "macOS keeps its title bar and window buttons");
+        }
+        let host = include_str!("egui_host.rs");
+        assert!(host.contains("let fit = crate::dialog_frame::FIT && self.dialog.is_some();") && host.contains("if !fit {"), "paint_dialog fits wherever FIT");
+        // Without the title row the body alone is measured: the margins and what it draws.
+        let ctx = egui::Context::default();
+        let mut h = 0.0;
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(input(Vec::new()), |ui| {
+                h = show(ui, "T", false, true, &mut |ui| {
+                    ui.allocate_space(egui::vec2(10.0, 50.0));
+                })
+                .height;
+            });
+            out.textures_delta.clear();
+        }
+        let margins = egui::Frame::central_panel(&egui::Style::default()).total_margin().sum().y;
+        assert!((h - (50.0 + margins)).abs() < 1.0, "{h}");
     }
 }

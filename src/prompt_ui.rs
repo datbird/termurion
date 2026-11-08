@@ -810,6 +810,23 @@ mod tests {
         }
     }
 
+    /// K1 (Tart check): "See Tips of the Day?" opened about 170 pt tall for about 90 pt of content.
+    /// Its first, measuring frame finds the content's height, and the dialog keeps it.
+    #[test]
+    fn the_tips_question_takes_its_content_height() {
+        let text = "Termurion can show you a Tip of the Day message to help you learn about its many features. Are you interested?".to_string();
+        let (mut suppress, mut read, mut spaces) = (false, false, None);
+        let (ok, cancel, actions, shortcuts, close) = ("Yes".to_string(), Some("No".to_string()), Vec::new(), Vec::new(), None);
+        let start = window_height(&text) as f32;
+        let hs = crate::dialog_frame::settle(480.0, start, 6, &mut |ui| {
+            confirm_body(ui, ConfirmBody { text: &text, suppress: &mut suppress, checkbox: false, checkbox_label: ConfirmWindow::SUPPRESS, ok: &ok, cancel: &cancel, enter_cancels: false, actions: &actions, shortcuts: &shortcuts, underline: false, forget: false, close: &close, gated: None, read: &mut read, spaces: &mut spaces, guard: None, guard_armed: true });
+        });
+        // The first frame's measure is the height the window shows with, and it holds.
+        assert!(hs.windows(2).all(|w| w[0] == w[1]), "{hs:?}");
+        assert!(hs[0] < start - 30.0, "no band: content {} against the guess {start}", hs[0]);
+        assert!(hs[1] > 60.0, "{hs:?}");
+    }
+
     #[test]
     fn ok_label_follows_the_caller() {
         assert_eq!(ok_label_of(Some("Rename")), "Rename");
