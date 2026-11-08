@@ -271,6 +271,8 @@ pub enum UserEvent {
     Wake,
     /// A dialog's own close button (Linux, `dialog_frame`): handled as the window manager's close.
     CloseWindow(winit::window::WindowId),
+    /// A hidden dialog's measuring frame (`dialog_frame::request_first_frame`): run as its redraw.
+    DialogFirstFrame(winit::window::WindowId),
     /// The debug log was written on its worker thread: the file's path or the reason it failed,
     /// and whether to say it stopped (`dlog_ui`).
     DebugLogSaved(Result<PathBuf, String>, bool),
@@ -2080,6 +2082,10 @@ pub fn run() {
     let closes = proxy.clone();
     crate::dialog_frame::set_close_sink(Box::new(move |id| {
         let _ = closes.lock().map(|p| p.send_event(UserEvent::CloseWindow(id)));
+    }));
+    let first_frames = proxy.clone();
+    crate::dialog_frame::set_first_frame_sink(Box::new(move |id| {
+        let _ = first_frames.lock().map(|p| p.send_event(UserEvent::DialogFirstFrame(id)));
     }));
     let trays = proxy.clone();
     crate::platform::notify::on_tray(Box::new(move |right| {
@@ -7942,6 +7948,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::NotificationClicked(click) => return self.reveal_notified(click),
             UserEvent::CloseWindow(id) => return self.window_event(event_loop, id, WindowEvent::CloseRequested),
+            UserEvent::DialogFirstFrame(id) => return self.window_event(event_loop, id, WindowEvent::RedrawRequested),
             UserEvent::Tray(right) => return self.tray_clicked(right, event_loop),
             UserEvent::TaskbarCreated => return self.taskbar_created(),
             UserEvent::JobsChanged => return self.jobs_changed(),

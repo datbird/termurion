@@ -855,7 +855,7 @@ const GATE_START_H: f32 = 150.0;
 
 /// The gate's window. Linux: a dialog with its own frame (`dialog_frame`). Elsewhere it stays the
 /// window it was before Linux needed that (round 1 of the W541 fixes): fixed size, framed by the
-/// system, a close button only; macOS fits its height to the content like every dialog there. (The gate opens only where `GATE_IN_APP`, Linux, today.)
+/// system, a close button only; its height fits the content like every dialog's. (The gate opens only where `GATE_IN_APP`, Linux, today.)
 fn gate_attributes() -> winit::window::WindowAttributes {
     let (w, h) = (f64::from(GATE_WIDTH), f64::from(GATE_START_H));
     if crate::dialog_frame::OWN_FRAME {
@@ -866,7 +866,7 @@ fn gate_attributes() -> winit::window::WindowAttributes {
             .with_inner_size(winit::dpi::LogicalSize::new(w, h))
             .with_resizable(false)
             .with_enabled_buttons(winit::window::WindowButtons::CLOSE)
-            // macOS fits it to its content before it shows (`paint_dialog`).
+            // Fitted to its content before it shows (`paint_dialog`).
             .with_visible(!crate::dialog_frame::FIT)
     }
 }
@@ -968,7 +968,7 @@ mod tests {
         } else {
             assert!(a.decorations);
             assert_eq!(a.enabled_buttons, winit::window::WindowButtons::CLOSE);
-            assert_eq!(a.visible, !cfg!(target_os = "macos"), "macOS: hidden until measured");
+            assert!(!a.visible, "hidden until measured");
         }
     }
 

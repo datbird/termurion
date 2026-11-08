@@ -7,8 +7,8 @@
 /// Whether dialogs draw their own frame on this OS.
 pub const OWN_FRAME: bool = crate::platform::window::DIALOGS_DRAW_OWN_FRAME;
 
-/// Whether a dialog's window takes its content's height (Linux and macOS); macOS keeps the system's
-/// title bar and fits only the content under it.
+/// Whether a dialog's window takes its content's height; macOS and Windows keep the system's title
+/// bar and fit only the content under it.
 pub const FIT: bool = crate::platform::window::DIALOGS_FIT_CONTENT;
 
 /// The panel's margin on each side; the window adds it around the content.
@@ -17,8 +17,7 @@ pub const MARGIN: f32 = 8.0;
 /// The tallest a dialog's body may be, in points (a scrolling text stops growing there).
 pub const BODY_CAP: f32 = 480.0;
 
-/// A dialog's window: on Linux no frame; on Linux and macOS hidden until measured; on Windows as
-/// any small window.
+/// A dialog's window: hidden until measured; on Linux with no frame of the system's.
 pub fn attributes(title: &str, w: f64, h: f64) -> winit::window::WindowAttributes {
     let attrs = crate::platform::window::attributes().with_title(title).with_inner_size(winit::dpi::LogicalSize::new(w, h));
     // Hidden until its first frame has measured it (X11; Wayland maps a window with its first
@@ -103,9 +102,16 @@ pub enum WinOp {
     Fix,
     /// Min, max and size at this height.
     Size(f32),
+    /// Put the window's center back where it was before the first fit (macOS keeps a resized
+    /// window's bottom-left corner, Windows its top-left, so a centered dialog would move).
+    KeepCenter,
     /// Show the window and ask for the first drawn frame.
     Show,
 }
+
+/// Whether the first fit keeps the dialog's center: where the system frames the window (macOS,
+/// Windows) and places it where it is told. Linux's window manager places a window when it maps.
+pub const KEEP_CENTER: bool = !OWN_FRAME;
 
 impl FitStep {
     /// The window changes for this step: after the measuring frame the size is fixed and set before
@@ -118,6 +124,9 @@ impl FitStep {
         }
         if first || self.ask.is_some() {
             ops.push(WinOp::Size(self.ask.unwrap_or(fit)));
+        }
+        if first && KEEP_CENTER {
+            ops.push(WinOp::KeepCenter);
         }
         if first {
             ops.push(WinOp::Show);
@@ -186,6 +195,19 @@ pub fn show(ui: &mut egui::Ui, title: &str, own_frame: bool, fit: bool, body: &m
 
 type CloseSink = Box<dyn Fn(winit::window::WindowId) + Send + Sync>;
 static CLOSE: std::sync::OnceLock<CloseSink> = std::sync::OnceLock::new();
+static FIRST_FRAME: std::sync::OnceLock<CloseSink> = std::sync::OnceLock::new();
+
+/// Where a hidden dialog's measuring frame is asked for: the app runs the window's redraw. Windows
+/// sends no WM_PAINT to a hidden window, so `request_redraw` alone would leave it hidden.
+pub fn set_first_frame_sink(sink: CloseSink) {
+    let _ = FIRST_FRAME.set(sink);
+}
+
+pub fn request_first_frame(id: winit::window::WindowId) {
+    if let Some(sink) = FIRST_FRAME.get() {
+        sink(id);
+    }
+}
 
 /// Where a dialog's close button goes: the app hands the window a close request, as the window
 /// manager's would be (so each dialog closes the way its own close handling says).
@@ -219,7 +241,7 @@ pub(crate) fn settle_with(width: f32, start: f32, floor: f32, frames: usize, eve
         let mut next = h;
         let mut out = ctx.run_ui(input, |ui| {
             // As the dialog is drawn here: its own title row on Linux, the body alone on macOS.
-            let f = show(ui, "Termurion", OWN_FRAME, true, body);
+            let f = show(ui, "Termurion", OWN_FRAME, FIT, body);
             next = next_height(f.height, h, floor).unwrap_or(h);
         });
         out.textures_delta.clear();
@@ -328,7 +350,8 @@ mod tests {
         assert!(!f.shown());
         let first = f.step(105.0, 130.0, false);
         assert!(!first.present, "the measuring frame is not drawn");
-        assert_eq!(first.ops(f.fit), vec![WinOp::Fix, WinOp::Size(105.0), WinOp::Show]);
+        let centered: &[WinOp] = if KEEP_CENTER { &[WinOp::KeepCenter] } else { &[] };
+        assert_eq!(first.ops(f.fit), [&[WinOp::Fix, WinOp::Size(105.0)][..], centered, &[WinOp::Show]].concat());
         assert!(f.shown());
         let next = f.step(105.0, 105.0, true);
         assert!(next.present);
@@ -336,7 +359,10 @@ mod tests {
         assert_eq!(f.step(120.0, 105.0, false).ops(f.fit), vec![WinOp::Size(120.0)]);
         // An empty body still fixes, sizes and shows (no next_height change).
         let mut e = DialogFit::new(105.0);
-        assert_eq!(e.step(105.0, 105.0, false).ops(e.fit), vec![WinOp::Fix, WinOp::Size(105.0), WinOp::Show]);
+        assert_eq!(e.step(105.0, 105.0, false).ops(e.fit), [&[WinOp::Fix, WinOp::Size(105.0)][..], centered, &[WinOp::Show]].concat());
+        // macOS and Windows keep a dialog where it was placed (round 9 re-review M1); Linux leaves
+        // the placement to its window manager.
+        assert_eq!(KEEP_CENTER, !cfg!(target_os = "linux"));
     }
 
     /// A title wider than the window still leaves the close button inside it.
@@ -484,16 +510,21 @@ mod tests {
         assert_eq!(OWN_FRAME, cfg!(target_os = "linux"));
     }
 
-    /// macOS fits its dialogs as Linux does (K1, the Tart check: "See Tips of the Day?" kept a band
-    /// under its buttons), with the system's title bar kept; Windows does not, yet.
+    /// Every OS fits its dialogs (K1, the Tart check: "See Tips of the Day?" kept a band under its
+    /// buttons on macOS, and on Windows by the same guess), with the system's title bar kept off Linux.
     #[test]
-    fn linux_and_macos_dialogs_fit_their_content() {
-        assert_eq!(FIT, cfg!(any(target_os = "linux", target_os = "macos")));
+    fn every_os_fits_its_dialogs_to_their_content() {
+        assert!(FIT, "fitted on this OS too");
         let a = attributes("T", 300.0, 200.0);
-        assert_eq!(a.visible, !FIT, "hidden until measured");
-        if cfg!(target_os = "macos") {
-            assert!(a.decorations, "macOS keeps its title bar and window buttons");
-        }
+        assert!(!a.visible, "hidden until measured");
+        assert_eq!(a.decorations, !cfg!(target_os = "linux"), "macOS and Windows keep their title bar");
+        // A hidden window gets its measuring frame from the app, not only from request_redraw
+        // (Windows paints no hidden window).
+        let host = include_str!("egui_host.rs").split("#[cfg(test)]").next().unwrap();
+        let as_dialog = &host[host.find("pub fn as_dialog(").unwrap()..];
+        assert!(as_dialog[..as_dialog.find("\n    }").unwrap()].contains("crate::dialog_frame::request_first_frame(self.window.id());"));
+        let app = include_str!("app/mod.rs");
+        assert!(app.contains("crate::dialog_frame::set_first_frame_sink(") && app.contains("UserEvent::DialogFirstFrame(id) => return self.window_event(event_loop, id, WindowEvent::RedrawRequested),"));
         let host = include_str!("egui_host.rs");
         assert!(host.contains("let fit = crate::dialog_frame::FIT && self.dialog.is_some();") && host.contains("if !fit {"), "paint_dialog fits wherever FIT");
         // Without the title row the body alone is measured: the margins and what it draws.

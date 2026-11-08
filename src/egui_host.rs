@@ -137,6 +137,8 @@ pub struct EguiHost {
     dialog: Option<(String, crate::dialog_frame::DialogFit)>,
     /// The window system sized the window since the last dialog frame (a fit retries only then).
     answered: bool,
+    /// `focus` was asked while the dialog was hidden: it is done when the dialog shows.
+    focus_on_show: std::cell::Cell<bool>,
 }
 
 impl EguiHost {
@@ -178,8 +180,10 @@ impl EguiHost {
     /// Marks a window made from `dialog_frame::attributes` as a dialog `paint_dialog` draws.
     pub fn as_dialog(mut self, title: &str, h: f64) -> EguiHost {
         self.dialog = Some((title.to_string(), crate::dialog_frame::DialogFit::new(h as f32)));
-        // The first frame measures it (the window shows once it has its height).
+        // The first frame measures it (the window shows once it has its height). The app runs it
+        // too: Windows sends no WM_PAINT to a hidden window.
         self.window.request_redraw();
+        crate::dialog_frame::request_first_frame(self.window.id());
         self
     }
 
@@ -229,7 +233,7 @@ impl EguiHost {
         install_menu_fonts(&ctx);
         let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, Some(device.limits().max_texture_dimension_2d as usize));
         let renderer = egui_wgpu::Renderer::new(device, format, egui_wgpu::RendererOptions::default());
-        Ok(EguiHost { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, window, probe: false, probed: None, dialog: None, answered: false })
+        Ok(EguiHost { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, window, probe: false, probed: None, dialog: None, answered: false, focus_on_show: std::cell::Cell::new(false) })
     }
 
     pub fn id(&self) -> WindowId {
@@ -237,6 +241,12 @@ impl EguiHost {
     }
 
     pub fn focus(&self) {
+        // A dialog still hidden for its measuring frame takes the focus when it shows (winit
+        // focuses only a visible window).
+        if self.dialog.as_ref().is_some_and(|(_, f)| !f.shown()) {
+            self.focus_on_show.set(true);
+            return;
+        }
         self.window.focus_window();
     }
 
@@ -321,6 +331,8 @@ impl EguiHost {
         let Some((_, fit)) = self.dialog.as_mut() else { return };
         let step = fit.step(framed.height, actual, answered);
         let w = f64::from(self.window.inner_size().width) / scale;
+        // Where the window is before the first fit, to keep its center there.
+        let before = (!step.present).then(|| (self.window.outer_position().ok(), self.window.outer_size()));
         for op in step.ops(fit.fit) {
             match op {
                 // Measured: the size is fixed now, before anything shows. The window was made
@@ -334,10 +346,22 @@ impl EguiHost {
                     self.window.set_max_inner_size(Some(size));
                     let _ = self.window.request_inner_size(size);
                 }
+                crate::dialog_frame::WinOp::KeepCenter => {
+                    if let Some((Some(at), was)) = before {
+                        let now = self.window.outer_size();
+                        let half = |a: u32, b: u32| (i64::from(a) - i64::from(b)) / 2;
+                        let x = i64::from(at.x) + half(was.width, now.width);
+                        let y = i64::from(at.y) + half(was.height, now.height);
+                        self.window.set_outer_position(winit::dpi::PhysicalPosition::new(x as i32, y as i32));
+                    }
+                }
                 // Sized: now it may show (X11 maps it; Wayland maps it with its first drawn frame,
                 // the next one).
                 crate::dialog_frame::WinOp::Show => {
                     self.window.set_visible(true);
+                    if self.focus_on_show.take() {
+                        self.window.focus_window();
+                    }
                     self.window.request_redraw();
                 }
             }

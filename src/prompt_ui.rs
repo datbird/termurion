@@ -811,7 +811,8 @@ mod tests {
     }
 
     /// K1 (Tart check): "See Tips of the Day?" opened about 170 pt tall for about 90 pt of content.
-    /// Its first, measuring frame finds the content's height, and the dialog keeps it.
+    /// Its first, measuring frame finds the content's height, and the dialog keeps it. `settle`
+    /// measures as this OS does (`dialog_frame::FIT`), so with the fit off here this fails.
     #[test]
     fn the_tips_question_takes_its_content_height() {
         let text = "Termurion can show you a Tip of the Day message to help you learn about its many features. Are you interested?".to_string();

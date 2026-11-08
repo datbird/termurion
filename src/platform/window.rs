@@ -20,9 +20,8 @@ pub const APP_ID: &str = "dev.termurion.Termurion";
 /// off a frame there); Windows and macOS keep the system's.
 pub const DIALOGS_DRAW_OWN_FRAME: bool = cfg!(target_os = "linux");
 
-/// Alerts and small dialogs take their content's height (measured before they show). Linux and
-/// macOS; Windows keeps the height each dialog guesses.
-pub const DIALOGS_FIT_CONTENT: bool = cfg!(any(target_os = "linux", target_os = "macos"));
+/// Alerts and small dialogs take their content's height (measured before they show), on every OS.
+pub const DIALOGS_FIT_CONTENT: bool = cfg!(any(target_os = "linux", target_os = "macos", target_os = "windows"));
 
 /// A new window's attributes: every Termurion window starts here, so each carries the app id
 /// and a dock groups them all under the one launcher.
