@@ -1,0 +1,30 @@
+
+
+[38;5;214m────────────────────────────────────────[39m          
+[1m[38;5;214m●[0m [1mhello[0m                  
+[2;3mInitializing agent...[0m    
+[38;5;214m────────────────────────────────────────[39m          
+
+⚠️   API call failed (attempt 1/3): AuthenticationError [HTTP 401]                                   
+   🔌 Provider: openrouter  Model: z-ai/glm-5.3   
+   🌐 Endpoint: https://openrouter.ai/api/v1      
+   📝 Error: HTTP 401: Missing Authentication header                                                
+   📋 Details: {'message': 'Missing Authentication header', 'code': 401}                            
+   ⏱️   Elapsed: 0.55s  Context: 2 msgs, ~1,986 tokens                                               
+❌ Non-retryable error (HTTP 401): HTTP 401: Missing Authentication header                          
+❌ Non-retryable client error (HTTP 401). Aborting.                                                 
+   🔌 Provider: openrouter  Model: z-ai/glm-5.3   
+   🌐 Endpoint: https://openrouter.ai/api/v1      
+   💡 Your API key was rejected by the provider. Check:                                             
+      • Is the key valid? Run: hermes setup       
+      • Does your account have access to z-ai/glm-5.3?                                              
+      • Check credits: https://openrouter.ai/settings/credits                                       
+[38;5;220m ─ [1m ⚕ Hermes [0m[38;5;220m ───────────────────────────────────────────────────────────────────────────────────── 
+ [38;5;230m                                                                                                  [38;5;220m 
+ [38;5;230m    HTTP 401: Missing Authentication header                                                       [38;5;220m 
+ [38;5;230m                                                                                                  [38;5;220m 
+ ────────────────────────────────────────────────────────────────────────────────────────────────── 
+[38;5;230m[48;5;234m ⚕ [1m[38;5;220mglm-5.3[0m[38;5;136m[48;5;234m │ 0/1M │ [1m[38;5;71m[░░░░░░░░░░][0m[38;5;136m[48;5;234m [1m[38;5;71m0%[0m[38;5;136m[48;5;234m │ 18s │ ⏲ 1s │ ✓ 0s[38;5;230m [39m[49m                                            
+[38;5;173m────────────────────────────────────────────────────────────────────────────────────────────────────
+[38;5;230m❯ [39m                       
+[38;5;173m────────────────────────────────────────────────────────────────────────────────────────────────────
