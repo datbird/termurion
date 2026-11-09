@@ -643,6 +643,29 @@ pub fn cursor_cell(screen: &Screen) -> Option<(usize, usize, bool)> {
     Some((p.line, p.column.0, wide))
 }
 
+/// Whether a visible row is a box line: most of its cells are a horizontal line glyph.
+fn box_line(term: &alacritty_terminal::Term<crate::screen::Listener>, display_offset: usize, row: usize) -> bool {
+    let cols = term.columns();
+    let line = alacritty_terminal::index::Line(row as i32 - display_offset as i32);
+    let n = (0..cols).filter(|&c| matches!(term.grid()[line][alacritty_terminal::index::Column(c)].c, '\u{2500}' | '\u{2501}')).count();
+    cols > 0 && n * 10 >= cols * 8
+}
+
+/// The cursor Claude Code paints when it hides the real one: the one reverse-video cell between
+/// the lowest two box lines on screen (its input box). Row, column, wide, as `cursor_cell`.
+pub fn painted_cursor(screen: &Screen) -> Option<(usize, usize, bool)> {
+    let term = screen.term();
+    let offset = term.grid().display_offset();
+    let bottom = (1..term.screen_lines()).rev().find(|&r| box_line(term, offset, r))?;
+    let top = (0..bottom).rev().find(|&r| box_line(term, offset, r))?;
+    let mut cells = (top + 1..bottom).flat_map(|row| {
+        let line = &term.grid()[alacritty_terminal::index::Line(row as i32 - offset as i32)];
+        (0..term.columns()).filter(move |&c| line[alacritty_terminal::index::Column(c)].flags.contains(Flags::INVERSE)).map(move |c| (row, c, line[alacritty_terminal::index::Column(c)].flags.contains(Flags::WIDE_CHAR)))
+    });
+    let one = cells.next()?;
+    cells.next().is_none().then_some(one)
+}
+
 /// Whether the cursor blinks where someone can see it: a program that hid it (DECTCEM) or
 /// scrolled it off the view leaves nothing to blink, so no blink clock runs for it.
 pub fn cursor_blinks_shown(screen: &Screen) -> bool {
@@ -1099,12 +1122,16 @@ pub fn pane_with(
     // except at a password prompt, where the key glyph is the cursor (P11).
     let ime = look.ime.as_ref().filter(|_| !key_cursor);
     // The cursor's logical cell; `cursor` below is where it draws once rows are in display order.
-    let cursor_at = cursor_cell(screen).filter(|_| ime.is_none() && look.visible && look.alpha > CURSOR_MIN_ALPHA && !(look.hide_unfocused && !focused)).map(|(row, col, _)| (row, col));
-    let wide_cursor = cursor_cell(screen).is_some_and(|(_, _, w)| w);
+    // While an effect runs, Claude Code's painted cursor stands in for a hidden real one, so the
+    // effects find a cursor in their color (`painted_cursor`).
+    let painted = (draw.fx_cursor.is_some() && focused && ime.is_none() && cursor_cell(screen).is_none()).then(|| painted_cursor(screen)).flatten();
+    let shape = if painted.is_some() { CursorShape::Block } else { content.cursor.shape };
+    let cursor_at = cursor_cell(screen).or(painted).filter(|_| ime.is_none() && look.visible && look.alpha > CURSOR_MIN_ALPHA && !(look.hide_unfocused && !focused)).map(|(row, col, _)| (row, col));
+    let wide_cursor = cursor_cell(screen).or(painted).is_some_and(|(_, _, w)| w);
     let bg_brightness = crate::tab_theme::perceived(palette.bg);
     let bg_alpha = highlights.map_or(1.0, |h| h.bg_alpha);
     let opaque_colors = highlights.is_some_and(|h| h.opaque_colors);
-    let block_cursor = !key_cursor && focused && content.cursor.shape == CursorShape::Block;
+    let block_cursor = !key_cursor && focused && shape == CursorShape::Block;
     // Smart Cursor Color: a focused box only (`iTermMetalPerFrameState.m:455-490`). The cell's
     // own colors and its neighbors' backgrounds come before selection and match highlights.
     // A render plugin's cursor color wins: the effects find the cursor by it (`DrawPrefs::fx_cursor`).
@@ -1499,22 +1526,22 @@ pub fn pane_with(
     } else if let Some((row, col)) = cursor {
         let origin = (rect.x, rect.y);
         let r = box_rect(&look.geometry, origin, cell, row, col, wide_cursor);
-        let mut solid = cursor_rect(&look.geometry, content.cursor.shape, origin, cell, row, col, wide_cursor);
+        let mut solid = cursor_rect(&look.geometry, shape, origin, cell, row, col, wide_cursor);
         // A sliding bar or underline is drawn at its slid place, with its shadow and outline.
         solid.x += look.offset.0;
         solid.y += look.offset.1;
         let color = rgba(palette.cursor, look.alpha);
-        match content.cursor.shape {
+        match shape {
             CursorShape::Beam | CursorShape::Underline => {
                 frame.overlay.push(Quad { rect: solid, color });
                 // The shadow follows the cursor and fades with it; the outline is a second
                 // pass over the text (`iTermTextDrawingHelper.m:556-565`).
-                if let Some((r, mut c)) = look.shadow.then(|| crate::cursor_look::shadow(content.cursor.shape, solid, palette.cursor, look.geometry.scale)).flatten() {
+                if let Some((r, mut c)) = look.shadow.then(|| crate::cursor_look::shadow(shape, solid, palette.cursor, look.geometry.scale)).flatten() {
                     c[3] *= look.alpha;
                     frame.overlay.push(Quad { rect: r, color: c });
                 }
                 if look.outline {
-                    for (r, mut c) in crate::cursor_look::outline(content.cursor.shape, solid, palette.bg, look.geometry.scale) {
+                    for (r, mut c) in crate::cursor_look::outline(shape, solid, palette.bg, look.geometry.scale) {
                         c[3] *= look.alpha;
                         frame.overlay.push(Quad { rect: r, color: c });
                     }
@@ -1539,8 +1566,8 @@ pub fn pane_with(
         let fx_cursor = cursor.filter(|_| !key_cursor).map(|(row, col)| {
             let origin = (rect.x, rect.y);
             let block = box_rect(&look.geometry, origin, cell, row, col, wide_cursor);
-            let solid = cursor_rect(&look.geometry, content.cursor.shape, origin, cell, row, col, wide_cursor);
-            let (r, kind) = match content.cursor.shape {
+            let solid = cursor_rect(&look.geometry, shape, origin, cell, row, col, wide_cursor);
+            let (r, kind) = match shape {
                 CursorShape::Beam => (solid, style::BAR),
                 CursorShape::Underline => (solid, style::UNDERLINE),
                 CursorShape::HollowBlock => (block, style::BLOCK_HOLLOW),
@@ -1551,12 +1578,7 @@ pub fn pane_with(
             crate::render_fx::Cursor { rect: [r.x, r.y, r.w, r.h], color: [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0, 1.0], style: kind, visible: true }
         });
         let program_cursor = term.colors()[alacritty_terminal::vte::ansi::NamedColor::Cursor as usize];
-        // A row is a box line when most of its cells are a horizontal line glyph.
-        let box_row = |row: usize| -> bool {
-            let line = alacritty_terminal::index::Line(row as i32 - content.display_offset as i32);
-            let n = (0..cols).filter(|&c| matches!(term.grid()[line][alacritty_terminal::index::Column(c)].c, '\u{2500}' | '\u{2501}')).count();
-            cols > 0 && n * 10 >= cols * 8
-        };
+        let box_row = |row: usize| box_line(term, content.display_offset, row);
         let input_box = cursor.and_then(|(row, _)| {
             let bottom = (row + 1..lines.min(row + 3)).find(|&r| box_row(r))?;
             let top = (0..row).rev().find(|&r| box_row(r))?;
@@ -9455,5 +9477,83 @@ mod drawn_overlay_tests {
         assert_eq!(f.overlay.len(), 1);
         assert_eq!(f.overlay[0].color, rgba(rgb(10, 20, 30), 0.25));
         assert_eq!(f.overlay[0].rect, pane);
+    }
+}
+
+#[cfg(test)]
+mod painted_cursor_tests {
+    use super::*;
+
+    /// Draws `screen` as a focused pane, with an effect on when `fx`.
+    fn frame_of(s: &crate::screen::Screen, fx: bool) -> Frame {
+        let rect = crate::layout::Rect { x: 0.0, y: 0.0, w: 800.0, h: 300.0 };
+        let draw = DrawPrefs { fx_cursor: fx.then(|| crate::palette::rgb(255, 0, 0)), ..Default::default() };
+        let mut frame = Frame::default();
+        pane_with(&mut frame, s, rect, (10.0, 20.0), true, &crate::cursor_look::CursorLook::shown(true), &draw, None, crate::render::DEFAULT_FACE);
+        frame
+    }
+
+    /// What the effects get for `screen` with an effect on.
+    fn fx_of(s: &crate::screen::Screen) -> FxPane {
+        frame_of(s, true).fx.expect("an fx pane")
+    }
+
+    /// Whether a quad in the effect's red covers the cell at `x`, `y`.
+    fn red_at(f: &Frame, x: f32, y: f32) -> bool {
+        f.quads.iter().chain(&f.overlay).any(|q| q.color[0] > 0.99 && q.color[1] < 0.01 && q.rect.x <= x && q.rect.y <= y && q.rect.x + q.rect.w > x && q.rect.y + q.rect.h > y)
+    }
+
+    #[test]
+    fn the_painted_cell_is_drawn_in_the_effect_color_only_while_an_effect_runs() {
+        let s = claude_box(true);
+        assert!(red_at(&frame_of(&s, true), 75.0, 230.0), "the shaders find the cursor by its color");
+        assert!(!red_at(&frame_of(&s, false), 75.0, 230.0), "no effect: Claude Code's own cell as it drew it");
+        assert!(frame_of(&s, false).fx.unwrap().cursor.is_none());
+    }
+
+    /// Claude Code's input box as it draws it when it hides the real cursor: the cursor is a
+    /// reverse-video cell after the prompt text.
+    fn claude_box(hide: bool) -> crate::screen::Screen {
+        let line = "\u{2500}".repeat(80);
+        let mut s = crate::screen::Screen::new(80, 15);
+        let o = format!("\x1b[2J\x1b[11;1H{line}\x1b[12;1H\u{276f} hello\x1b[7m \x1b[0m\x1b[13;1H{line}\x1b[14;3Hstatus{}", if hide { "\x1b[?25l" } else { "" });
+        s.feed(o.as_bytes());
+        s
+    }
+
+    #[test]
+    fn a_hidden_cursor_follows_claude_codes_painted_cell() {
+        let fx = fx_of(&claude_box(true));
+        let c = fx.cursor.expect("the painted cell is the effects' cursor");
+        // Row 12, column 8 (1-based): "❯ hello" takes 7 cells.
+        assert_eq!((c.rect[0], c.rect[1]), (70.0, 220.0));
+        assert!(c.visible);
+        assert_eq!(fx.input_box, Some([210.0, 250.0]), "the box is found from the painted cell's row");
+    }
+
+    #[test]
+    fn a_shown_cursor_still_wins() {
+        let s = claude_box(false);
+        let fx = fx_of(&s);
+        let (row, col, _) = cursor_cell(&s).unwrap();
+        let c = fx.cursor.unwrap();
+        assert_eq!((c.rect[0], c.rect[1]), (col as f32 * 10.0, row as f32 * 20.0));
+    }
+
+    #[test]
+    fn a_hidden_cursor_outside_a_box_gives_no_cursor() {
+        // A full-screen program's reverse-video status line, with no input box around it.
+        let mut s = crate::screen::Screen::new(80, 15);
+        s.feed(b"\x1b[2J\x1b[15;1H\x1b[7m x \x1b[0m\x1b[3;3H\x1b[7m \x1b[0m\x1b[?25l");
+        assert!(fx_of(&s).cursor.is_none());
+    }
+
+    #[test]
+    fn two_reverse_cells_in_the_box_give_no_cursor() {
+        // A selection or a highlighted word: not one painted cursor cell.
+        let line = "\u{2500}".repeat(80);
+        let mut s = crate::screen::Screen::new(80, 15);
+        s.feed(format!("\x1b[2J\x1b[11;1H{line}\x1b[12;1H\u{276f} \x1b[7mhe\x1b[0mllo\x1b[13;1H{line}\x1b[?25l").as_bytes());
+        assert!(fx_of(&s).cursor.is_none());
     }
 }
