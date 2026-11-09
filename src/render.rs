@@ -3337,6 +3337,8 @@ mod tests {
         let mut chain = crate::render_fx_gpu::Chain::new(&device, wgpu::TextureFormat::Bgra8UnormSrgb, compiled, false).unwrap();
         let (mut clock, mut u, mut sig) = (Clock::default(), Uniforms::default(), Signals::default());
         u.background = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
+        let fg = frame.fx.as_ref().unwrap().fg;
+        u.foreground = [fg.r as f32 / 255.0, fg.g as f32 / 255.0, fg.b as f32 / 255.0];
         let b = frame.fx.as_ref().and_then(|f| f.input_box).filter(|_| boxed);
         u.input_box = b.map_or([0.0; 4], |b| b.uniform());
         u.input_box_x = b.map_or([0.0; 4], |b| b.uniform_x());
@@ -3436,32 +3438,65 @@ mod tests {
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
-    /// LINE_TINT with no signal: a band has no line ink, so each edge gets a thin line in the
-    /// effect's line color (the cursor's) inside the band's columns.
+    /// LINE_TINT with no signal: a band has no line ink, so each edge gets a thin line inside the
+    /// band's columns, colored as lineTint colors Claude Code's lines: a grey halfway from the
+    /// background to the text, tinted toward the cursor by the plugin's LINE_COLOR. LINE_EFFECT is
+    /// off so its light (on in Fireworks) does not cover the tint.
     #[test]
     fn line_tint_draws_a_bands_edges() {
         let (device, queue) = device();
         let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
         let cw = r.cell.0;
+        let amount_re = regex::Regex::new(r"const float LINE_COLOR\s*=\s*([0-9.]+);").unwrap();
         let mut bad = Vec::new();
-        for name in ["codex", "opencode", "opencode-after"] {
-            for p in crate::render_fx::discover(None).0 {
-                let preset = preset_of(&p);
+        for p in crate::render_fx::discover(None).0 {
+            let text = p.shader_text(&p.manifest.shaders[0]).unwrap();
+            let own: f32 = amount_re.captures(&text).expect("LINE_COLOR")[1].parse().unwrap();
+            let preset = preset_of(&p);
+            let mut codex_at = Vec::new();
+            for (name, amount) in [("codex", own), ("opencode", own), ("opencode-after", own), ("codex", 1.0)] {
                 let (frame, size, bg) = agent_frame(&r, name, preset);
-                let b = frame.fx.as_ref().and_then(|f| f.input_box).expect("a band");
-                let cursor_x = frame.fx.as_ref().and_then(|f| f.cursor).map(|c| c.rect[0]).unwrap();
-                let shot = fx_shots(&mut r, p.compile_with(&[("LINE_TINT", true)]).unwrap(), &frame, size, bg, preset, true, false, &[600]).remove(0);
-                let at = |x: usize, y: usize| { let i = (y * size.0 as usize + x) * 4; [shot[i], shot[i + 1], shot[i + 2]] };
-                let close = |c: [u8; 3]| (0..3).all(|k| (c[k] as i32 - preset[k] as i32).abs() <= 48);
+                let plain = r.draw_offscreen(&frame, size.0, size.1).unwrap();
+                let fx = frame.fx.as_ref().unwrap();
+                let (b, fg) = (fx.input_box.expect("a band"), fx.fg);
+                let cursor_x = fx.cursor.map(|c| c.rect[0]).unwrap();
+                let body = amount_re.replace(&text, format!("const float LINE_COLOR = {amount:.2};").as_str());
+                let compiled = crate::render_fx::compile_glsl(&crate::render_fx::with_switches(&body, &[("LINE_TINT", true), ("LINE_EFFECT", false)])).unwrap();
+                let shot = fx_shots(&mut r, vec![compiled], &frame, size, bg, preset, true, false, &[600]).remove(0);
+                let px = |img: &[u8], x: usize, y: usize| { let i = (y * size.0 as usize + x) * 4; [img[i] as f32, img[i + 1] as f32, img[i + 2] as f32] };
+                // lineTint's formula, in 0..255.
+                let expect = |base: [f32; 3]| {
+                    let lum = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+                    let k = [preset[0] as f32, preset[1] as f32, preset[2] as f32];
+                    let scale = 1.25 * lum(base) / lum(k).max(1e-3);
+                    [0, 1, 2].map(|c| base[c] + ((k[c] * scale).min(255.0) - base[c]) * amount)
+                };
                 for edge in [b.top, b.bottom] {
-                    // The pixel rows on either side of the edge: the line's core covers one of them.
                     let rows = [(edge - 0.5).floor().max(0.0) as usize, (edge + 0.5).floor() as usize];
+                    let beside = if edge == b.top { (edge - 4.0) as usize } else { (edge + 4.0) as usize };
                     let xs: Vec<usize> = (0..40).map(|i| (b.left + cw + (b.right - b.left - 2.0 * cw) * i as f32 / 39.0) as usize).filter(|&x| (x as f32 - cursor_x).abs() > 2.0 * cw).collect();
-                    let hits = xs.iter().filter(|&&x| rows.iter().any(|&y| close(at(x, y)))).count();
+                    let mut hits = 0;
+                    for &x in &xs {
+                        let o = px(&plain, x, beside);
+                        let want = expect([0, 1, 2].map(|c| 0.5 * (o[c] + [fg.r, fg.g, fg.b][c] as f32)));
+                        if rows.iter().any(|&y| (0..3).all(|c| (px(&shot, x, y)[c] - want[c]).abs() <= 16.0)) {
+                            hits += 1;
+                        }
+                        if name == "codex" {
+                            codex_at.push((amount, px(&shot, x, rows[0]), px(&shot, x, rows[1])));
+                        }
+                    }
                     if hits * 10 < xs.len() * 9 {
-                        bad.push(format!("{name} {} edge {edge}: {hits} of {} points in the line color {:?}, e.g. {:?}", p.id, xs.len(), preset, at(xs[0], rows[0])));
+                        bad.push(format!("{name} {} LINE_COLOR {amount} edge {edge}: {hits} of {} points in the tinted line color", p.id, xs.len()));
                     }
                 }
+            }
+            // LINE_COLOR changes the line: codex at the plugin's own amount against 1.0.
+            type Px = (f32, [f32; 3], [f32; 3]);
+            let (own_px, full_px): (Vec<&Px>, Vec<&Px>) = codex_at.iter().partition(|c| c.0 == own);
+            let changed = own_px.iter().zip(&full_px).filter(|(a, b)| (0..3).any(|c| (a.1[c] - b.1[c]).abs() > 6.0 || (a.2[c] - b.2[c]).abs() > 6.0)).count();
+            if (own - 1.0).abs() > 0.05 && changed * 2 < own_px.len() {
+                bad.push(format!("{}: LINE_COLOR {own} and 1.0 look the same at {} of {} points", p.id, own_px.len() - changed, own_px.len()));
             }
         }
         assert!(bad.is_empty(), "{}", bad.join("\n"));
@@ -4124,4 +4159,3 @@ mod tests {
         assert_eq!(c.get("ab", 1), None, "past the cap the cache starts over");
     }
 }
-

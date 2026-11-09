@@ -207,18 +207,21 @@ pub fn patch_input_box(body: &str) -> String {
         // Inside a band, more than half a row from both edges, is its text: no line there.
         format!(" if (iInputBox.z > 0.5) {{ float tA = {top}, tB = {bottom}; if ({}) return -1.0; float tN = abs({at} - tA) < abs({at} - tB) ? tA : tB; if (iInputBox.z > 1.5 && ({at} - tA) * ({at} - tB) < 0.0 && abs({at} - tN) > 0.5 * iCurrentCursor.w) return -1.0; return abs({at} - tN) <= reach ? tN : -1.0; }}", outside(x))
     };
-    // The tint color in the screen texture's color space, read off the background beside the edge.
+    // A band's line: halfway from the background beside the edge to the text color (a box
+    // glyph's grey), tinted as lineTint tints a line, all in the screen texture's color space.
     let band_tint = format!(
-        " if (iInputBox.z > 1.5) {{ vec3 tBg = screenAt(vec2(p.x, lineY + (lineY > 0.5 * ({top} + {bottom}) ? 4.0 : -4.0)) / res).rgb; return termurionBandLine(p, col, lineY, distance(tBg, sRGBToLinear(iBackgroundColor)) < distance(tBg, iBackgroundColor) ? sRGBToLinear(iCurrentCursorColor.rgb) : iCurrentCursorColor.rgb); }}"
+        " if (iInputBox.z > 1.5) {{ vec3 tBg = screenAt(vec2(p.x, lineY + (lineY > 0.5 * ({top} + {bottom}) ? 4.0 : -4.0)) / res).rgb; bool tLin = distance(tBg, sRGBToLinear(iBackgroundColor)) < distance(tBg, iBackgroundColor); return termurionBandLine(p, col, lineY, mix(tBg, tLin ? sRGBToLinear(iForegroundColor) : iForegroundColor, 0.5), tLin ? sRGBToLinear(iCurrentCursorColor.rgb) : iCurrentCursorColor.rgb, LINE_COLOR); }}"
     );
     let rows_exit = "if (p.y < cur.y - 2.6 * h || p.y > cur.y + 6.5 * h || (p.y > cur.y - h && p.y < cur.y)) return col;";
     let band_rows = format!("if (iInputBox.z > 1.5 ? min(abs(p.y - {top}), abs(p.y - {bottom})) > 0.5 * h : (p.y < cur.y - 2.6 * h || p.y > cur.y + 6.5 * h || (p.y > cur.y - h && p.y < cur.y))) return col;");
-    // The prompt mark's tests compare with the background. In a band the band's shade (read just
-    // inside its top left corner) counts as background too: Codex leaves the mark's cell unshaded.
-    let mark_bg = format!(" vec3 tMarkBg = iInputBox.z > 1.5 ? screenAt(vec2(iInputBoxX.x + 1.0, {top} + (Y_DOWN ? -2.0 : 2.0)) / res).rgb : iBackgroundColor;");
+    // The prompt mark's tests compare with the background. In a band the band's shade (read once
+    // per pixel in mainImage, just inside its top left corner) counts as background too: Codex
+    // leaves the mark's cell unshaded. At z <= 1.5 the helper ignores `band`, which is safe only
+    // because every patched call passes the background there (termurionMarkBg is iBackgroundColor).
+    let mark_bg = format!(" termurionMarkBg = iInputBox.z > 1.5 ? screenAt(vec2(iInputBoxX.x + 1.0, {top} + (Y_DOWN ? -2.0 : 2.0)) / iResolution.xy).rgb : iBackgroundColor;");
     let mark_dist = "float termurionMarkDist(vec3 s, vec3 band) { float d = colorDist(s, iBackgroundColor); return iInputBox.z > 1.5 ? min(d, distance(s, band)) : d; } ";
     let mark_fns = ["float clMarkInk(vec2 at, vec2 m, float w, float h, vec2 res)", "bool clChevron(float x, float w, vec4 cur, vec2 res)", "float clMarkLeft(vec4 cur, vec2 res)"];
-    let mut in_mark = false;
+    let (mut in_mark, mut have_mark_dist) = (false, false);
     let mut out = String::with_capacity(body.len() + 1024);
     for line in body.split_inclusive('\n') {
         let (text, end) = match line.strip_suffix('\n') {
@@ -228,19 +231,24 @@ pub fn patch_input_box(body: &str) -> String {
         let trimmed = text.trim_end();
         let mut text = text.to_string();
         if in_mark {
-            in_mark = trimmed != "}";
-            text = text.replace("colorDist(", "termurionMarkDist(").replace("iBackgroundColor", "tMarkBg");
+            // A function ends at the first line starting with `}` in column 0 (its body is
+            // indented), a trailing comment after it or not.
+            in_mark = !text.starts_with('}');
+            text = text.replace("colorDist(", "termurionMarkDist(").replace("iBackgroundColor", "termurionMarkBg");
         } else if mark_fns.iter().any(|f| trimmed.starts_with(f)) && trimmed.ends_with('{') {
             in_mark = true;
-            // The helper goes on the same line as the first of them, so line numbers stay.
-            if trimmed.starts_with(mark_fns[0]) {
+            // The helper goes on the line of whichever comes first, so line numbers stay.
+            if !have_mark_dist {
                 text.insert_str(0, mark_dist);
+                have_mark_dist = true;
             }
+        } else if trimmed.starts_with("void mainImage(out vec4 fragColor, in vec2 fragCoord)") && trimmed.ends_with('{') {
             text.push_str(&mark_bg);
         } else if trimmed.starts_with("float boxLineY(vec2 p, vec2 center, vec4 cur, vec2 res, float reach)") && trimmed.ends_with('{') {
             text.push_str(&nearest("p.y", "p.x"));
         } else if trimmed.starts_with("float clLineNear(float y0, float reach, vec2 res)") && trimmed.ends_with('{') {
-            // No x here: the pixel being drawn decides.
+            // No x here, so it gates on the pixel being drawn (gl_FragCoord.x), not the column
+            // the caller asks about.
             text.push_str(&nearest("y0", "gl_FragCoord.x"));
         } else if trimmed.starts_with("vec2 boxLines(vec4 cur, vec2 center, float cellW, float cellH, vec2 res)") && trimmed.ends_with('{') {
             text.push_str(&format!(" if ({}) return vec2(-1.0); if (iInputBox.z > 0.5) return vec2({top}, {bottom});", outside("gl_FragCoord.x")));
@@ -1032,7 +1040,8 @@ mod tests {
             }
             assert!(!patched.contains("|| (p.y > cur.y - h && p.y < cur.y)) return col;"), "{}: linesLook's row bounds reach a band's edges", p.id);
             assert!(patched.contains("termurionBelow(cellH, "), "{}: the Enter look reaches a band's bottom edge", p.id);
-            assert_eq!(patched.matches("vec3 tMarkBg = ").count(), 3, "{}: the prompt mark's tests see a band's shade as background", p.id);
+            assert_eq!(patched.matches(" termurionMarkBg = ").count(), 1, "{}: mainImage reads a band's shade once", p.id);
+            assert_eq!(patched.matches("termurionMarkBg)").count(), 4, "{}: the prompt mark's tests see a band's shade as background", p.id);
             assert!(patched.contains("float termurionMarkDist(") && !patched.contains("colorDist(screenAt(vec2(x + f * w, y) / res).rgb, iBackgroundColor)"), "{}: clChevron reads ink with it", p.id);
             assert!(patched.contains("(iInputBox.z > 1.5 ? 0.0 : clLineNear(cur.y - 1.7"), "{}: a band counts as a box below the cursor", p.id);
         }

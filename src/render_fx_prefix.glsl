@@ -56,11 +56,18 @@ float termurionBelow(float cellH, float rows) {
 }
 
 // Termurion: a band (z = 2) has no line ink for LINE_TINT to color, so its edge at lineY
-// gets a thin line of color k instead, about a box glyph thick with soft edges.
-vec3 termurionBandLine(vec2 p, vec3 col, float lineY, vec3 k) {
+// gets a thin line instead, about a box glyph thick with soft edges: the grey `base` tinted
+// toward k by `amount` (LINE_COLOR) at base's brightness, as each shader's lineTint does.
+vec3 termurionBandLine(vec2 p, vec3 col, float lineY, vec3 base, vec3 k, float amount) {
+    vec3 lw = vec3(0.2126, 0.7152, 0.0722);
+    vec3 matched = k * (1.25 * dot(base, lw) / max(dot(k, lw), 1e-3));
+    vec3 line = mix(base, min(matched, vec3(1.0)), amount);
     float core = max(0.75, 0.04 * iCurrentCursor.w);
-    return mix(col, k, 1.0 - smoothstep(core, core + 1.0, abs(p.y - lineY)));
+    return mix(col, line, 1.0 - smoothstep(core, core + 1.0, abs(p.y - lineY)));
 }
+
+// Termurion: the prompt mark's background inside a band, set once per pixel in mainImage.
+vec3 termurionMarkBg;
 
 #define CURSORSTYLE_BLOCK        0
 #define CURSORSTYLE_BLOCK_HOLLOW 1
