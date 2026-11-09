@@ -192,13 +192,22 @@ pub fn wrap_glsl(body: &str) -> String {
 /// Termurion's patch for cursor-fx-style shaders (each line stays one line, so error line numbers
 /// still match the file): they look for Claude Code's input box lines by scanning pixels near the
 /// cursor, at most 4 rows up, so a box that grows with a long prompt loses its top line. When
-/// Termurion found the box in the grid (`iInputBox`), `boxLineY`, `clLineNear` and `boxLines`
-/// answer with its lines, and the "how far above the cursor" bounds reach the top line. Shaders
-/// without these functions are left as they are.
+/// Termurion found a box in the grid (`iInputBox`), it patches:
 ///
-/// A shaded band (`iInputBox.z` 2) answers with its top and bottom edge, only between its left
-/// and right edge (`iInputBoxX`). It has no line ink, so linesLook's quick exits are skipped,
-/// its row bounds follow the edges, and LINE_TINT draws a thin line on each edge.
+/// - Box lines: `boxLineY`, `clLineNear` and `boxLines` answer with the box's top and bottom line
+///   (a band's edges, only between its left and right edge, `iInputBoxX`), and the "how far above
+///   the cursor" bounds reach the top line.
+/// - The below bound: "a box line just below the cursor" and "a box around the cursor" checks
+///   count a band as a box, and linesLook's row bounds follow a band's edges.
+/// - lineTint for a band (`iInputBox.z` 2): it has no line ink, so linesLook's quick exits are
+///   skipped and LINE_TINT draws a thin line on each edge. Hologram's panel and Cyber's rain keep
+///   out of a band's text.
+/// - The mark functions (`clMarkInk`, `clChevron`, `clMarkLeft`): their background tests also
+///   take a band's shade as background.
+/// - mainImage: reads that shade once per pixel, only in a shader that has a mark function.
+///
+/// Every patch keys on a built-in's own function or line, so a shader without them (a plain
+/// Ghostty shader) is left as it is.
 pub fn patch_input_box(body: &str) -> String {
     let up = |v: &str| format!("(Y_DOWN ? iResolution.y - {v} : {v})");
     let (top, bottom) = (up("iInputBox.x"), up("iInputBox.y"));
@@ -242,7 +251,9 @@ pub fn patch_input_box(body: &str) -> String {
                 text.insert_str(0, mark_dist);
                 have_mark_dist = true;
             }
-        } else if trimmed.starts_with("void mainImage(out vec4 fragColor, in vec2 fragCoord)") && trimmed.ends_with('{') {
+        } else if have_mark_dist && trimmed.starts_with("void mainImage(out vec4 fragColor, in vec2 fragCoord)") && trimmed.ends_with('{') {
+            // Only after a mark function: screenAt and Y_DOWN are the built-ins' own, so a
+            // plain Ghostty shader would not compile with this line.
             text.push_str(&mark_bg);
         } else if trimmed.starts_with("float boxLineY(vec2 p, vec2 center, vec4 cur, vec2 res, float reach)") && trimmed.ends_with('{') {
             text.push_str(&nearest("p.y", "p.x"));
@@ -1048,6 +1059,17 @@ mod tests {
         // A shader without the functions is untouched.
         let plain = "void mainImage(out vec4 c, in vec2 p) { c = vec4(1.0); }";
         assert_eq!(patch_input_box(plain), plain);
+    }
+
+    #[test]
+    fn a_plain_ghostty_shader_is_left_as_it_is_and_compiles() {
+        // A user's cursor shader in Ghostty's form: the standard mainImage line, none of the
+        // built-ins' helpers (no clMark functions, no screenAt, no Y_DOWN).
+        let ghostty = "float sdBox(vec2 p, vec2 b) {\n    vec2 d = abs(p) - b;\n    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);\n}\n\nvoid mainImage(out vec4 fragColor, in vec2 fragCoord) {\n    vec2 uv = fragCoord / iResolution.xy;\n    fragColor = texture(iChannel0, uv);\n    vec2 c = iCurrentCursor.xy + 0.5 * iCurrentCursor.zw;\n    float d = sdBox(fragCoord - c, 0.5 * iCurrentCursor.zw);\n    fragColor = mix(fragColor, iCurrentCursorColor, step(d, 0.0) * 0.5);\n}\n";
+        assert_eq!(patch_input_box(ghostty), ghostty);
+        if let Err(e) = compile_glsl(ghostty) {
+            panic!("a plain Ghostty shader compiles: {e}");
+        }
     }
 
     #[test]

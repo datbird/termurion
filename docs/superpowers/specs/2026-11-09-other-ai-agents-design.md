@@ -71,7 +71,7 @@ Add a second box shape next to `box_line` in `src/scene.rs`:
 
 `iInputBox` keeps its meaning for a line box (z = 1). For a band box: x and y are the band's top and bottom edge in pixels, z = 2. A new uniform `vec4 iInputBoxX` holds the band's left and right edge in pixels (zero for a line box). It goes at the end of `Globals` in `src/render_fx_prefix.glsl` and in the Rust uniform struct, with the std140 rules that file's comments describe.
 
-`painted_cursor` also accepts a band box, so a future tool that paints its cursor in a band works the same as Claude Code. With the real cursor hidden there is no cursor row to start from, so the band is searched around each reverse-video cell, and the cursor is the one such cell inside exactly one band.
+`painted_cursor` also accepts a band box, so a future tool that paints its cursor in a band works the same as Claude Code. With the real cursor hidden there is no cursor row to start from, so the screen must hold exactly one reverse-video cell outside a line box, and it is the cursor when a band holds it (one band search per frame at most).
 
 ### 2. Shaders
 

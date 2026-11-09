@@ -686,7 +686,9 @@ fn box_line(term: &alacritty_terminal::Term<crate::screen::Listener>, display_of
 /// rows with the same run (within 2 cells). It is 2 to 12 rows and at most half the screen,
 /// and the rows around it differ over its columns (or are the screen edge). A `▀` row in the
 /// band color under it joins as a half row. Returns (top row, bottom row, first col, last col,
-/// bottom is a half-block edge row). Colors compare as resolved RGB.
+/// bottom is a half-block edge row). Colors compare as resolved RGB. The default background is
+/// never a band, and neither is a run whose rows above and below are both single strips with the
+/// band color past them (a vim window between status lines).
 fn band_box(term: &alacritty_terminal::Term<crate::screen::Listener>, palette: &crate::palette::Palette, display_offset: usize, row: usize, col: usize) -> Option<(usize, usize, usize, usize, bool)> {
     use alacritty_terminal::index::{Column, Line};
     let (cols, lines) = (term.columns(), term.screen_lines());
@@ -711,6 +713,10 @@ fn band_box(term: &alacritty_terminal::Term<crate::screen::Listener>, palette: &
         Some((l, e))
     };
     let color = bg(row, col);
+    // The default background is no band: a shell prompt under a colored row would be one.
+    if color == palette.bg {
+        return None;
+    }
     let (left, right) = run(row, col, color)?;
     if (right - left + 1) * 2 < cols {
         return None;
@@ -739,12 +745,20 @@ fn band_box(term: &alacritty_terminal::Term<crate::screen::Listener>, palette: &
     if after < lines && !differs(after) {
         return None;
     }
+    // A vim window between two status lines: each neighbor is one row with the band color
+    // again past it.
+    let strip_above = top >= 2 && !differs(top - 2);
+    let strip_below = after + 1 < lines && !differs(after + 1);
+    if strip_above && strip_below {
+        return None;
+    }
     Some((top, if edge { bottom + 1 } else { bottom }, left, right, edge))
 }
 
 /// The cursor a program paints when it hides the real one: the one reverse-video cell between
 /// the lowest two box lines on screen (Claude Code's input box), else the one reverse-video cell
-/// inside a shaded band (`band_box`: Codex, opencode). Row, column, wide, as `cursor_cell`.
+/// on screen when it sits in a shaded band (`band_box`: Codex, opencode). Row, column, wide, as
+/// `cursor_cell`.
 pub fn painted_cursor(screen: &Screen) -> Option<(usize, usize, bool)> {
     use alacritty_terminal::index::{Column, Line};
     let term = screen.term();
@@ -766,10 +780,14 @@ pub fn painted_cursor(screen: &Screen) -> Option<(usize, usize, bool)> {
             return Some(one);
         }
     }
-    // A band: exactly one reverse cell on screen that sits in a band box.
-    let mut cells = reverse(0..term.screen_lines()).filter(|&(r, c, _)| band_box(term, &screen.palette, offset, r, c).is_some());
+    // A band: exactly one reverse cell on screen, and it sits in a band box. The scan stops at
+    // a second cell, so band_box runs once at most.
+    let mut cells = reverse(0..term.screen_lines());
     let one = cells.next()?;
-    cells.next().is_none().then_some(one)
+    if cells.next().is_some() {
+        return None;
+    }
+    band_box(term, &screen.palette, offset, one.0, one.1).map(|_| one)
 }
 
 /// Whether the cursor blinks where someone can see it: a program that hid it (DECTCEM) or
@@ -9695,6 +9713,23 @@ mod painted_cursor_tests {
     fn two_painted_cells_in_a_band_give_no_cursor() {
         assert!(fx_of(&codex_painted(2)).cursor.is_none());
     }
+
+    #[test]
+    fn a_full_width_reverse_row_gives_no_cursor() {
+        // tig or htop in mono: a reverse selection bar across the screen, the cursor hidden.
+        let mut s = crate::screen::Screen::new(80, 15);
+        s.feed(format!("\x1b[2J\x1b[6;1H\x1b[7m{:<80}\x1b[0m\x1b[?25l", "commit 1234").as_bytes());
+        assert!(fx_of(&s).cursor.is_none());
+    }
+
+    #[test]
+    fn a_band_cell_with_another_reverse_cell_on_screen_gives_no_cursor() {
+        // The rule is exactly one painted cell outside a line box: a reverse status row
+        // elsewhere means no painted cursor.
+        let mut s = codex_painted(1);
+        s.feed(b"\x1b[2;1H\x1b[7mstatus\x1b[0m");
+        assert!(fx_of(&s).cursor.is_none());
+    }
 }
 
 #[cfg(test)]
@@ -9780,6 +9815,33 @@ mod agent_box_tests {
         assert_eq!(feed(20, &format!("\x1b[2J{}\x1b[20;3H", row(20, "48;2;0;128;0", "status"))).input_box, None);
         // A plain prompt.
         assert_eq!(feed(20, "\x1b[2J\x1b[5;1H$ ").input_box, None);
+    }
+
+    #[test]
+    fn no_band_for_a_shell_prompt_under_a_colored_row() {
+        // A full-width colored row (delta or bat diff output, a banner), then default rows
+        // down to the screen foot with the prompt's cursor in them.
+        let row = format!("\x1b[16;1H\x1b[48;2;40;80;40m{:<80}\x1b[0m", "+ added line");
+        assert_eq!(feed(20, &format!("\x1b[2J{row}\x1b[18;1H$ ls\x1b[19;1Hfile\x1b[20;1H$ ")).input_box, None);
+    }
+
+    #[test]
+    fn no_band_for_a_vim_window_between_status_lines() {
+        // A vim split whose scheme paints every cell one color: a window 3 rows high bounded
+        // above and below by status lines with another background, the cursor inside.
+        let row = |n: usize, bg: &str, text: &str| format!("\x1b[{n};1H\x1b[{bg}m{text:<80}\x1b[0m");
+        let mut o = String::from("\x1b[2J");
+        for r in 1..=10 {
+            o += &row(r, "48;2;30;30;46", "upper window");
+        }
+        o += &row(11, "48;2;90;90;120", "upper.txt");
+        for r in 12..=14 {
+            o += &row(r, "48;2;30;30;46", "lower window");
+        }
+        o += &row(15, "48;2;90;90;120", "lower.txt");
+        o += &row(16, "48;2;30;30;46", "");
+        o += "\x1b[13;5H";
+        assert_eq!(feed(16, &o).input_box, None);
     }
 
     #[test]
