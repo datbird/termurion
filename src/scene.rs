@@ -742,17 +742,32 @@ fn band_box(term: &alacritty_terminal::Term<crate::screen::Listener>, palette: &
     Some((top, if edge { bottom + 1 } else { bottom }, left, right, edge))
 }
 
-/// The cursor Claude Code paints when it hides the real one: the one reverse-video cell between
-/// the lowest two box lines on screen (its input box). Row, column, wide, as `cursor_cell`.
+/// The cursor a program paints when it hides the real one: the one reverse-video cell between
+/// the lowest two box lines on screen (Claude Code's input box), else the one reverse-video cell
+/// inside a shaded band (`band_box`: Codex, opencode). Row, column, wide, as `cursor_cell`.
 pub fn painted_cursor(screen: &Screen) -> Option<(usize, usize, bool)> {
+    use alacritty_terminal::index::{Column, Line};
     let term = screen.term();
     let offset = term.grid().display_offset();
-    let bottom = (1..term.screen_lines()).rev().find(|&r| box_line(term, offset, r))?;
-    let top = (0..bottom).rev().find(|&r| box_line(term, offset, r))?;
-    let mut cells = (top + 1..bottom).flat_map(|row| {
-        let line = &term.grid()[alacritty_terminal::index::Line(row as i32 - offset as i32)];
-        (0..term.columns()).filter(move |&c| line[alacritty_terminal::index::Column(c)].flags.contains(Flags::INVERSE)).map(move |c| (row, c, line[alacritty_terminal::index::Column(c)].flags.contains(Flags::WIDE_CHAR)))
-    });
+    let reverse = |rows: std::ops::Range<usize>| {
+        rows.flat_map(move |row| {
+            let line = &term.grid()[Line(row as i32 - offset as i32)];
+            (0..term.columns()).filter(move |&c| line[Column(c)].flags.contains(Flags::INVERSE)).map(move |c| (row, c, line[Column(c)].flags.contains(Flags::WIDE_CHAR)))
+        })
+    };
+    let lines_box = (|| {
+        let bottom = (1..term.screen_lines()).rev().find(|&r| box_line(term, offset, r))?;
+        let top = (0..bottom).rev().find(|&r| box_line(term, offset, r))?;
+        Some((top, bottom))
+    })();
+    if let Some((top, bottom)) = lines_box {
+        let mut cells = reverse(top + 1..bottom);
+        if let Some(one) = cells.next().filter(|_| cells.next().is_none()) {
+            return Some(one);
+        }
+    }
+    // A band: exactly one reverse cell on screen that sits in a band box.
+    let mut cells = reverse(0..term.screen_lines()).filter(|&(r, c, _)| band_box(term, &screen.palette, offset, r, c).is_some());
     let one = cells.next()?;
     cells.next().is_none().then_some(one)
 }
@@ -9655,6 +9670,31 @@ mod painted_cursor_tests {
         s.feed(format!("\x1b[2J\x1b[11;1H{line}\x1b[12;1H\u{276f} \x1b[7mhe\x1b[0mllo\x1b[13;1H{line}\x1b[?25l").as_bytes());
         assert!(fx_of(&s).cursor.is_none());
     }
+
+    /// The recorded Codex screen with its real cursor hidden and `n` painted reverse cells
+    /// on the input row, from column 8.
+    fn codex_painted(n: usize) -> crate::screen::Screen {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/agents/");
+        let text = std::fs::read_to_string(format!("{dir}codex.ansi")).unwrap();
+        let rows: Vec<String> = text.trim_end_matches('\n').split('\n').map(|r| format!("\x1b[0m{r}")).collect();
+        let mut s = crate::screen::Screen::new(100, 30);
+        s.feed(format!("\x1b[2J\x1b[H{}\x1b[27;8H\x1b[48;2;44;44;44;7m{}\x1b[0m\x1b[?25l", rows.join("\r\n"), " ".repeat(n)).as_bytes());
+        s
+    }
+
+    #[test]
+    fn a_hidden_cursor_follows_a_painted_cell_in_a_band() {
+        let fx = fx_of(&codex_painted(1));
+        let c = fx.cursor.expect("the painted cell is the effects' cursor");
+        // Row 27, column 8 (1-based) on a 10 by 20 pixel grid.
+        assert_eq!((c.rect[0], c.rect[1]), (70.0, 520.0));
+        assert_eq!(fx.input_box.map(|b| b.kind), Some(BoxKind::Band));
+    }
+
+    #[test]
+    fn two_painted_cells_in_a_band_give_no_cursor() {
+        assert!(fx_of(&codex_painted(2)).cursor.is_none());
+    }
 }
 
 #[cfg(test)]
@@ -9747,6 +9787,7 @@ mod agent_box_tests {
         let line = "\u{2500}".repeat(80);
         let shade = |n: usize| format!("\x1b[{n};1H\x1b[48;2;40;40;40m{:<80}\x1b[0m", "");
         let o = format!("\x1b[2J\x1b[5;1H{line}{}{}\x1b[8;1H{line}\x1b[6;3H", shade(6), shade(7));
-        assert_eq!(feed(20, &o).input_box.map(|b| b.kind), Some(BoxKind::Lines));
+        let b = feed(20, &o).input_box.expect("a line box");
+        assert_eq!((b.kind, b.top, b.bottom), (BoxKind::Lines, 90.0, 150.0));
     }
 }

@@ -3123,7 +3123,7 @@ mod tests {
                     u.background = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
                     u.foreground = [222.0 / 255.0; 3];
                     u.input_box = fx.input_box.map_or([0.0; 4], |b| b.uniform());
-                u.input_box_x = fx.input_box.map_or([0.0; 4], |b| b.uniform_x());
+                    u.input_box_x = fx.input_box.map_or([0.0; 4], |b| b.uniform_x());
                     let px = r.draw_offscreen_fx(&frame, Some((&mut chain, u)), w, h).unwrap();
                     image::RgbaImage::from_raw(w, h, px).unwrap().save(out.join(format!("f{:05}.png", n.get()))).unwrap();
                     n.set(n.get() + 1);

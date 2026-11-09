@@ -367,8 +367,8 @@ pub struct Uniforms {
     pub cursor_text: [f32; 3],
     pub selection_foreground: [f32; 3],
     pub selection_background: [f32; 3],
-    /// Termurion's `iInputBox`: the input box's top and bottom line (pixels from the top), and
-    /// 1 when there is one.
+    /// Termurion's `iInputBox`: the input box's top and bottom (pixels from the top), and z:
+    /// 1 for a line box, 2 for a shaded band, 0 when there is none.
     pub input_box: [f32; 4],
     /// `iInputBoxX`: a band box's left and right edge in pixels, zeros for lines.
     pub input_box_x: [f32; 4],

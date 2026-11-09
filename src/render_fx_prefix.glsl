@@ -34,8 +34,8 @@ layout(set = 0, binding = 1, std140) uniform Globals {
     vec3  iCursorText;
     vec3  iSelectionForegroundColor;
     vec3  iSelectionBackgroundColor;
-    // Termurion: Claude Code's input box lines as read from the grid (y of the top and the
-    // bottom line in pixels from the top, z = 1 when there is a box). Not in Ghostty.
+    // Termurion: the input box as read from the grid (x, y: top and bottom in pixels from the
+    // top; z = 1 for a line box, 2 for a shaded band, 0 for none). Not in Ghostty.
     vec4  iInputBox;
     // Termurion: a band box's left and right edge in pixels (x, y), zeros for a line box.
     vec4  iInputBoxX;
