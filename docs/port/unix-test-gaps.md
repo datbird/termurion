@@ -20,18 +20,18 @@ Windows at the P2 head: the Windows lib, lib tests and binaries type-check from 
 
 A failure that passes alone is a flake (see Timing).
 
-## Failures by cause on Linux (every failure is in exactly one cause; the counts sum to 155)
+## Failures by cause on Linux (every failure is in exactly one cause; the counts sum to 152)
 
 | Cause | Count |
 |---|---|
 | Coprocesses are Unsupported | 2 |
 | Dynamic Profiles are Windows only | 8 |
 | Windows-only tools missing | 19 |
-| Fonts and text metrics | 3 |
+| Fonts and text metrics | 0 |
 | Windows path and platform rules in assertions | 108 |
 | Timing | 4 |
 | Text encoding and normalization | 11 |
-| Total | 155 |
+| Total | 152 |
 
 Gone since P0, because P1 fixed them: "Local shells are Unsupported" (29, the pty backend), "Session host is Unsupported" (19, the Unix socket host), the Licenses test on Linux, and two path-rule tests (`profile::tests::a_missing_start_dir_falls_back_to_home_with_a_warning` and `start_dir_is_home_by_default_and_expands_tilde`). Two of the old "Local shells" tests moved into the new Coprocesses cause.
 
@@ -81,13 +81,12 @@ tar.exe, powershell.exe, cmd.exe (mklink), zip creation, and the Windows log-fol
 - `util_tip::tests::it2tip_follows_the_script`
 - `workgroup_run::tests::cmd_parsed_lines_refuse_cmd_syntax`
 
-### Fonts and text metrics (3)
+### Fonts and text metrics (0)
 
-Text widths and face lookup measured against Windows fonts (Cascadia Mono is not installed). Three tests of this group that failed after P2 (`faces_follow_profiles`, `text_advance_matches_the_cell_width`, `underlines_break_around_glyph_ink`) pass in the P3 run (not traced to one change). `every_effect_lights_both_box_lines_on_enter` asks for Consolas, which is not installed, and the embers effect leaves the top box line dark with the stand-in face ("Consolas 20 input 6 embers: top 0"); it fails the same way on macOS and every run, and was not diagnosed further.
+All three passed after the render plugin fixes of 2026-11-08 (cf3bfaad and the commit after it):
 
-- `render::tests::every_effect_lights_both_box_lines_on_enter`
-- `render::tests::face_lookup_does_not_scan_fonts_per_call`
-- `render::tests::postscript_names_resolve_to_installed_families`
+- `every_effect_lights_both_box_lines_on_enter`: Embers' Enter effect stopped 5.5 rows above the cursor (`p.y > center.y + 5.5 * cellH`). Termurion's input box patch did not match that form, so a 6-row prompt at a large cell size left the top line dark. The patch now also stretches a summed bound to the box top (`above_re`), and `the_input_box_patch_reaches_every_builtin` checks it.
+- `face_lookup_does_not_scan_fonts_per_call` and `postscript_names_resolve_to_installed_families` assumed Cascadia Mono was installed. They now pick an installed face whose PostScript name differs from its family name (`postscript_pair`), so they test the lookup on any machine.
 
 ### Windows path and platform rules in assertions (108)
 
@@ -237,11 +236,12 @@ Recorded after the Task 8 re-review; none is fixed, each is a residual window af
 
 ## macOS-only differences
 
-macOS has the same failures as Linux except these 3, which fail only on macOS (`every_effect_lights_both_box_lines_on_enter` fails on Linux too now and is named under Fonts). The licenses test passes there now: it checks only the crates the running target builds (2026-11-03). The pwsh install profile test passes there now (it runs `pwsh` where that is the shell and returns when the program is missing).
+macOS has the same failures as Linux except these 2, which fail only on macOS. The licenses test passes there now: it checks only the crates the running target builds (2026-11-03). The pwsh install profile test passes there now (it runs `pwsh` where that is the shell and returns when the program is missing).
 
 - `pane::tests::the_pwsh_script_emits_prompt_marks`: no `pwsh` on the macOS VM
 - `pane::tests::the_pwsh_script_keeps_the_prompt_state`: no `pwsh` on the macOS VM
-- `render::tests::lightning_enter_surge_finds_the_claude_box_lines`: a render test that already failed on the macOS VM at the start of P1; not diagnosed
+
+`render::tests::lightning_enter_surge_finds_the_claude_box_lines` passes on macOS since cf3bfaad (2026-11-08). The cause was the same as for the effects that drew nothing in the app on a Mac: naga's Metal output packs `float iChannelTime[4]` 4 bytes apart, the uniform buffer is std140 (16 apart), so every uniform after it read zero on macOS (the cursor looked hidden). The prefix declares it a `vec4` now, and `the_uniform_block_has_no_scalar_array` keeps scalar arrays out of the block.
 
 ## Live tmux lines
 

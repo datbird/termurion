@@ -214,7 +214,7 @@ pub fn patch_input_box(body: &str) -> String {
         } else if trimmed.starts_with("vec2 boxLines(vec4 cur, vec2 center, float cellW, float cellH, vec2 res)") && trimmed.ends_with('{') {
             text.push_str(&format!(" if (iInputBox.z > 0.5) return vec2({top}, {bottom});"));
         }
-        out.push_str(&bounds_re().replace_all(&text, |c: &regex::Captures| {
+        let line = bounds_re().replace_all(&text, |c: &regex::Captures| {
             let unit = if c[2].contains("cur.w") { "cur.w" } else { "cellH" };
             let m = &c[2];
             if let Some(name) = m.strip_prefix("(4.0 + ").and_then(|r| r.strip_suffix(") * cellH")) {
@@ -224,6 +224,12 @@ pub fn patch_input_box(body: &str) -> String {
             } else {
                 format!("{}termurionAbove({unit})", &c[1])
             }
+        });
+        // A "rows above the cursor" limit written as a sum (Embers' Enter: 4 rows plus 1.5 for
+        // its rising embers) reaches the box top the same way, keeping what it adds past 4 rows.
+        out.push_str(&above_re().replace_all(&line, |c: &regex::Captures| {
+            let rows: f32 = c[2].parse().unwrap_or(0.0);
+            if rows < 4.0 { c[0].to_string() } else { format!("{}termurionAbove(cellH) + {:.1} * cellH", &c[1], rows - 4.0) }
         }));
         out.push_str(end);
     }
@@ -233,6 +239,11 @@ pub fn patch_input_box(body: &str) -> String {
 fn bounds_re() -> &'static regex::Regex {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| regex::Regex::new(r"(center\.y\s*[<>]\s*)(\(4\.0 \+ [A-Z_]+\) \* cellH|4\.5 \* cellH|4\.0 \* cellH|4\.0 \* cur\.w)").unwrap())
+}
+
+fn above_re() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"(p\.y\s*>\s*center\.y\s*\+\s*)(\d+(?:\.\d+)?) \* cellH").unwrap())
 }
 
 /// A shader compiled and validated.
@@ -941,6 +952,7 @@ mod tests {
             assert_eq!(text.lines().count(), patched.lines().count(), "{}: line numbers stay", p.id);
             assert!(patched.contains("iInputBox.z > 0.5) { float tA"), "{}: boxLineY answers from the grid", p.id);
             assert!(!bounds_re().is_match(&patched), "{}: every 4-row bound reaches the box top", p.id);
+            assert!(!above_re().captures_iter(&patched).any(|c| c[2].parse::<f32>().unwrap_or(0.0) >= 4.0), "{}: every summed bound reaches the box top", p.id);
             assert!(patched.matches("termurionAbove(").count() >= 1, "{}", p.id);
         }
         // A shader without the functions is untouched.

@@ -2390,14 +2390,40 @@ mod tests {
     #[test]
     fn face_lookup_does_not_scan_fonts_per_call() {
         let (device, queue) = device();
-        let r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let (ps, family) = postscript_pair();
+        let r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, &family, 16.0);
         let before = r.resolve_scans();
         for _ in 0..1000 {
-            assert_eq!(r.resolve_family("CascadiaMono-Regular"), "Cascadia Mono");
-            assert!(r.has_family("Cascadia Mono"));
+            assert_eq!(r.resolve_family(&ps), family);
+            assert!(r.has_family(&family));
         }
-        // The renderer already looked up "Cascadia Mono" when it measured the face.
+        // The renderer already looked up the family when it measured the face.
         assert_eq!(r.resolve_scans() - before, 1, "one scan for each name, then memoized");
+    }
+
+    /// An installed face whose PostScript name is not its family name ("DejaVuSansMono" for
+    /// "DejaVu Sans Mono", "AndaleMono" for "Andale Mono"): (PostScript name, family). The tests
+    /// that resolve PostScript names use it, so they hold on any machine, not only one with
+    /// Cascadia Mono installed.
+    fn postscript_pair() -> (String, String) {
+        let mut db = glyphon::fontdb::Database::new();
+        db.load_system_fonts();
+        let squash = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
+        let mut pairs: Vec<(bool, String, String)> = db
+            .faces()
+            .filter_map(|f| {
+                let (family, _) = f.families.first()?;
+                let ps = &f.post_script_name;
+                let guess = crate::import::family_from_postscript(ps);
+                (family.contains(' ') && !ps.contains(' ') && squash(&guess) == squash(family)
+                    // The name must not also be some face's family, or it resolves as itself.
+                    && !db.faces().any(|g| g.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(ps))))
+                .then(|| (!f.monospaced, ps.clone(), family.clone()))
+            })
+            .collect();
+        pairs.sort();
+        let (_, ps, family) = pairs.into_iter().next().expect("an installed font whose PostScript name differs from its family name");
+        (ps, family)
     }
 
     #[test]
@@ -2684,9 +2710,11 @@ mod tests {
     #[test]
     fn postscript_names_resolve_to_installed_families() {
         let (device, queue) = device();
-        let r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
-        assert_eq!(r.resolve_family("CascadiaMono-Regular"), "Cascadia Mono");
-        assert_eq!(r.resolve_family("Cascadia Mono"), "Cascadia Mono");
+        let (ps, family) = postscript_pair();
+        let r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, &family, 16.0);
+        assert_eq!(r.resolve_family(&ps), family);
+        assert_eq!(r.resolve_family(&family), family);
+        assert_eq!(r.resolve_family(&family.to_uppercase()), family, "case does not matter");
         // Not installed: the dash heuristic is the best guess.
         assert_eq!(r.resolve_family("MesloLGS-NF-Regular"), "MesloLGS NF");
     }
