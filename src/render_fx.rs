@@ -438,6 +438,8 @@ impl Uniforms {
         f("iSelectionForegroundColor", floats(&self.selection_foreground));
         f("iSelectionBackgroundColor", floats(&self.selection_background));
         f("iInputBox", floats(&self.input_box));
+        // A vec4 here (see the prefix): channel 0 runs on the frame's clock.
+        f("iChannelTime", floats(&[self.time, 0.0, 0.0, 0.0]));
         // Arrays: element i at offset + i * stride.
         let mut array = |name: &str, items: Vec<Vec<u8>>| {
             if let Some(&(off, stride)) = layout.fields.get(name) {
@@ -446,7 +448,6 @@ impl Uniforms {
                 }
             }
         };
-        array("iChannelTime", (0..4).map(|i| floats(&[if i == 0 { self.time } else { 0.0 }])).collect());
         array("iChannelResolution", (0..4).map(|i| floats(&if i == 0 { [self.resolution[0], self.resolution[1], 1.0] } else { [0.0; 3] })).collect());
         array("iPalette", self.palette.iter().take(256).map(|c| floats(c)).collect());
         buf
@@ -751,8 +752,9 @@ mod tests {
         assert_eq!(l.fields["iResolution"], (0, 0));
         assert_eq!(l.fields["iTime"], (12, 0));
         // std140 arrays have a 16 byte stride.
-        assert_eq!(l.fields["iChannelTime"].1, 16);
         assert_eq!(l.fields["iPalette"].1, 16);
+        // iChannelTime is a vec4 right after iFrame's 16 byte slot, not an array.
+        assert_eq!(l.fields["iChannelTime"], (32, 0));
         assert_eq!(l.size % 16, 0);
         let mut u = Uniforms { time: 2.5, ..Default::default() };
         u.palette[3] = [0.25, 0.5, 0.75];
@@ -761,6 +763,24 @@ mod tests {
         assert_eq!(f32::from_le_bytes(b[12..16].try_into().unwrap()), 2.5);
         let p3 = (l.fields["iPalette"].0 + 3 * 16) as usize;
         assert_eq!(f32::from_le_bytes(b[p3 + 4..p3 + 8].try_into().unwrap()), 0.5);
+        assert_eq!(f32::from_le_bytes(b[32..36].try_into().unwrap()), 2.5, "iChannelTime[0] is the clock");
+    }
+
+    /// naga's Metal output lays a scalar array out 4 bytes apart, while the buffer is packed with
+    /// std140's 16, so every member after one read zeros on macOS and no effect drew. The block
+    /// must hold no scalar array (vec3 and vec4 arrays are 16 apart in Metal too).
+    #[test]
+    fn the_uniform_block_has_no_scalar_array() {
+        let c = compile_glsl("void mainImage(out vec4 c, in vec2 p) { c = vec4(iTime); }").unwrap();
+        let m = &c.module;
+        let var = m.global_variables.iter().map(|(_, v)| v).find(|v| v.space == naga::AddressSpace::Uniform).unwrap();
+        let naga::TypeInner::Struct { members, .. } = &m.types[var.ty].inner else { panic!("the block is a struct") };
+        let bad: Vec<_> = members
+            .iter()
+            .filter(|mem| matches!(m.types[mem.ty].inner, naga::TypeInner::Array { base, .. } if matches!(m.types[base].inner, naga::TypeInner::Scalar(_))))
+            .map(|mem| mem.name.clone().unwrap_or_default())
+            .collect();
+        assert!(bad.is_empty(), "scalar arrays in the uniform block: {bad:?}");
     }
 
     #[test]

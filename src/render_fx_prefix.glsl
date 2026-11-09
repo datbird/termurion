@@ -10,7 +10,9 @@ layout(set = 0, binding = 1, std140) uniform Globals {
     float iTimeDelta;
     float iFrameRate;
     int   iFrame;
-    float iChannelTime[4];
+    // Termurion: a vec4, not Ghostty's float[4]. naga's Metal output packs a float array 4 bytes
+    // apart, not std140's 16, so every member after it read zeros on macOS. iChannelTime[i] still works.
+    vec4  iChannelTime;
     vec3  iChannelResolution[4];
     vec4  iMouse;
     vec4  iDate;
