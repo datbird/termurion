@@ -195,10 +195,30 @@ pub fn wrap_glsl(body: &str) -> String {
 /// Termurion found the box in the grid (`iInputBox`), `boxLineY`, `clLineNear` and `boxLines`
 /// answer with its lines, and the "how far above the cursor" bounds reach the top line. Shaders
 /// without these functions are left as they are.
+///
+/// A shaded band (`iInputBox.z` 2) answers with its top and bottom edge, only between its left
+/// and right edge (`iInputBoxX`). It has no line ink, so linesLook's quick exits are skipped,
+/// its row bounds follow the edges, and LINE_TINT draws a thin line on each edge.
 pub fn patch_input_box(body: &str) -> String {
     let up = |v: &str| format!("(Y_DOWN ? iResolution.y - {v} : {v})");
     let (top, bottom) = (up("iInputBox.x"), up("iInputBox.y"));
-    let nearest = |at: &str| format!(" if (iInputBox.z > 0.5) {{ float tA = {top}, tB = {bottom}; float tN = abs({at} - tA) < abs({at} - tB) ? tA : tB; return abs({at} - tN) <= reach ? tN : -1.0; }}");
+    let outside = |x: &str| format!("iInputBox.z > 1.5 && ({x} < iInputBoxX.x || {x} > iInputBoxX.y)");
+    let nearest = |at: &str, x: &str| {
+        // Inside a band, more than half a row from both edges, is its text: no line there.
+        format!(" if (iInputBox.z > 0.5) {{ float tA = {top}, tB = {bottom}; if ({}) return -1.0; float tN = abs({at} - tA) < abs({at} - tB) ? tA : tB; if (iInputBox.z > 1.5 && ({at} - tA) * ({at} - tB) < 0.0 && abs({at} - tN) > 0.5 * iCurrentCursor.w) return -1.0; return abs({at} - tN) <= reach ? tN : -1.0; }}", outside(x))
+    };
+    // The tint color in the screen texture's color space, read off the background beside the edge.
+    let band_tint = format!(
+        " if (iInputBox.z > 1.5) {{ vec3 tBg = screenAt(vec2(p.x, lineY + (lineY > 0.5 * ({top} + {bottom}) ? 4.0 : -4.0)) / res).rgb; return termurionBandLine(p, col, lineY, distance(tBg, sRGBToLinear(iBackgroundColor)) < distance(tBg, iBackgroundColor) ? sRGBToLinear(iCurrentCursorColor.rgb) : iCurrentCursorColor.rgb); }}"
+    );
+    let rows_exit = "if (p.y < cur.y - 2.6 * h || p.y > cur.y + 6.5 * h || (p.y > cur.y - h && p.y < cur.y)) return col;";
+    let band_rows = format!("if (iInputBox.z > 1.5 ? min(abs(p.y - {top}), abs(p.y - {bottom})) > 0.5 * h : (p.y < cur.y - 2.6 * h || p.y > cur.y + 6.5 * h || (p.y > cur.y - h && p.y < cur.y))) return col;");
+    // The prompt mark's tests compare with the background. In a band the band's shade (read just
+    // inside its top left corner) counts as background too: Codex leaves the mark's cell unshaded.
+    let mark_bg = format!(" vec3 tMarkBg = iInputBox.z > 1.5 ? screenAt(vec2(iInputBoxX.x + 1.0, {top} + (Y_DOWN ? -2.0 : 2.0)) / res).rgb : iBackgroundColor;");
+    let mark_dist = "float termurionMarkDist(vec3 s, vec3 band) { float d = colorDist(s, iBackgroundColor); return iInputBox.z > 1.5 ? min(d, distance(s, band)) : d; } ";
+    let mark_fns = ["float clMarkInk(vec2 at, vec2 m, float w, float h, vec2 res)", "bool clChevron(float x, float w, vec4 cur, vec2 res)", "float clMarkLeft(vec4 cur, vec2 res)"];
+    let mut in_mark = false;
     let mut out = String::with_capacity(body.len() + 1024);
     for line in body.split_inclusive('\n') {
         let (text, end) = match line.strip_suffix('\n') {
@@ -207,13 +227,37 @@ pub fn patch_input_box(body: &str) -> String {
         };
         let trimmed = text.trim_end();
         let mut text = text.to_string();
-        if trimmed.starts_with("float boxLineY(vec2 p, vec2 center, vec4 cur, vec2 res, float reach)") && trimmed.ends_with('{') {
-            text.push_str(&nearest("p.y"));
+        if in_mark {
+            in_mark = trimmed != "}";
+            text = text.replace("colorDist(", "termurionMarkDist(").replace("iBackgroundColor", "tMarkBg");
+        } else if mark_fns.iter().any(|f| trimmed.starts_with(f)) && trimmed.ends_with('{') {
+            in_mark = true;
+            // The helper goes on the same line as the first of them, so line numbers stay.
+            if trimmed.starts_with(mark_fns[0]) {
+                text.insert_str(0, mark_dist);
+            }
+            text.push_str(&mark_bg);
+        } else if trimmed.starts_with("float boxLineY(vec2 p, vec2 center, vec4 cur, vec2 res, float reach)") && trimmed.ends_with('{') {
+            text.push_str(&nearest("p.y", "p.x"));
         } else if trimmed.starts_with("float clLineNear(float y0, float reach, vec2 res)") && trimmed.ends_with('{') {
-            text.push_str(&nearest("y0"));
+            // No x here: the pixel being drawn decides.
+            text.push_str(&nearest("y0", "gl_FragCoord.x"));
         } else if trimmed.starts_with("vec2 boxLines(vec4 cur, vec2 center, float cellW, float cellH, vec2 res)") && trimmed.ends_with('{') {
-            text.push_str(&format!(" if (iInputBox.z > 0.5) return vec2({top}, {bottom});"));
+            text.push_str(&format!(" if ({}) return vec2(-1.0); if (iInputBox.z > 0.5) return vec2({top}, {bottom});", outside("gl_FragCoord.x")));
+        } else if trimmed.starts_with("vec3 lineTint(vec2 p, vec3 col, float lineY, vec2 res)") && trimmed.ends_with('{') {
+            text.push_str(&band_tint);
+        } else if trimmed.trim_start() == rows_exit {
+            text = text.replace(rows_exit, &band_rows);
+        } else {
+            // linesLook's quick exits for pixels that are no line ink: a band's edges have none.
+            text = text.replace("if (!look && ", "if (!look && iInputBox.z < 1.5 && ").replace("if (!LINE_EFFECT && colorDist", "if (!LINE_EFFECT && iInputBox.z < 1.5 && colorDist");
+            // A band's middle holds the typed text: Hologram's panel and Cyber's rain stay out of it.
+            text = text.replace("bool inBox = p.y >= y0 && p.y <= y1;", "bool inBox = iInputBox.z < 1.5 && p.y >= y0 && p.y <= y1;").replace("yBot = bot + 3.0;", "yBot = iInputBox.z > 1.5 ? top + 3.0 : bot + 3.0;");
         }
+        // "A box line just below the cursor" and "a box around the cursor": a band is a box
+        // wherever its edges are.
+        let text = below_check_re().replace_all(&text, "(iInputBox.z > 1.5 ? 0.0 : $0)");
+        let text = around_check_re().replace_all(&text, "(iInputBox.z > 1.5 ? 0.0 : $0)");
         let line = bounds_re().replace_all(&text, |c: &regex::Captures| {
             let unit = if c[2].contains("cur.w") { "cur.w" } else { "cellH" };
             let m = &c[2];
@@ -227,9 +271,15 @@ pub fn patch_input_box(body: &str) -> String {
         });
         // A "rows above the cursor" limit written as a sum (Embers' Enter: 4 rows plus 1.5 for
         // its rising embers) reaches the box top the same way, keeping what it adds past 4 rows.
-        out.push_str(&above_re().replace_all(&line, |c: &regex::Captures| {
+        let line = above_re().replace_all(&line, |c: &regex::Captures| {
             let rows: f32 = c[2].parse().unwrap_or(0.0);
             if rows < 4.0 { c[0].to_string() } else { format!("{}termurionAbove(cellH) + {:.1} * cellH", &c[1], rows - 4.0) }
+        });
+        // "Rows below the cursor" limits reach a band's bottom edge, however far down it is.
+        out.push_str(&below_re().replace_all(&line, |c: &regex::Captures| match (c.get(2), c.get(3), c.get(4)) {
+            (Some(rows), _, _) => format!("{}termurionBelow(cellH, {})", &c[1], rows.as_str()),
+            (_, Some(rows), Some(name)) => format!("{}(termurionBelow(cellH, {}) + {} * cellH)", &c[1], rows.as_str(), name.as_str()),
+            _ => c[0].to_string(),
         }));
         out.push_str(end);
     }
@@ -244,6 +294,21 @@ fn bounds_re() -> &'static regex::Regex {
 fn above_re() -> &'static regex::Regex {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| regex::Regex::new(r"(p\.y\s*>\s*center\.y\s*\+\s*)(\d+(?:\.\d+)?) \* cellH").unwrap())
+}
+
+fn below_check_re() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"clLineNear\(cur\.y - 1\.7 \* (h|cur\.w), 0\.7 \* (h|cur\.w), res\)").unwrap())
+}
+
+fn around_check_re() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"boxLineY\(center [+-] vec2\(0\.0, 0\.5 \* cellH\), center, cur, res, 0\.9 \* cellH\)").unwrap())
+}
+
+fn below_re() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"(center\.y - p\.y\s*[<>]\s*|p\.y\s*<\s*center\.y\s*-\s*)(?:(\d+\.\d+) \* cellH|\((\d+\.\d+) \+ ([A-Z_]+)\) \* cellH)").unwrap())
 }
 
 /// A shader compiled and validated.
@@ -958,6 +1023,18 @@ mod tests {
             assert!(!bounds_re().is_match(&patched), "{}: every 4-row bound reaches the box top", p.id);
             assert!(!above_re().captures_iter(&patched).any(|c| c[2].parse::<f32>().unwrap_or(0.0) >= 4.0), "{}: every summed bound reaches the box top", p.id);
             assert!(patched.matches("termurionAbove(").count() >= 1, "{}", p.id);
+            // A band: its edges only between its left and right edge, linesLook's quick exits
+            // skipped, and LINE_TINT drawing a line of its own.
+            assert!(patched.matches("iInputBoxX.x").count() >= 2, "{}: boxLineY and clLineNear keep to the band's columns", p.id);
+            assert!(patched.contains("return termurionBandLine("), "{}: lineTint draws a band's edges", p.id);
+            for exit in ["if (!look && colorDist", "if (!look && (colorDist", "if (!LINE_EFFECT && colorDist"] {
+                assert!(!patched.contains(exit), "{}: `{exit}` is skipped for a band", p.id);
+            }
+            assert!(!patched.contains("|| (p.y > cur.y - h && p.y < cur.y)) return col;"), "{}: linesLook's row bounds reach a band's edges", p.id);
+            assert!(patched.contains("termurionBelow(cellH, "), "{}: the Enter look reaches a band's bottom edge", p.id);
+            assert_eq!(patched.matches("vec3 tMarkBg = ").count(), 3, "{}: the prompt mark's tests see a band's shade as background", p.id);
+            assert!(patched.contains("float termurionMarkDist(") && !patched.contains("colorDist(screenAt(vec2(x + f * w, y) / res).rgb, iBackgroundColor)"), "{}: clChevron reads ink with it", p.id);
+            assert!(patched.contains("(iInputBox.z > 1.5 ? 0.0 : clLineNear(cur.y - 1.7"), "{}: a band counts as a box below the cursor", p.id);
         }
         // A shader without the functions is untouched.
         let plain = "void mainImage(out vec4 c, in vec2 p) { c = vec4(1.0); }";

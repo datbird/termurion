@@ -48,6 +48,20 @@ float termurionAbove(float cellH) {
     return max(4.0 * cellH, iCurrentCursor.y - iInputBox.x + cellH);
 }
 
+// Termurion: how far below the cursor's middle a band's bottom edge reaches (opencode's box
+// can run several rows under the cursor): at least the `rows` the shader assumes.
+float termurionBelow(float cellH, float rows) {
+    if (iInputBox.z < 1.5) return rows * cellH;
+    return max(rows * cellH, iInputBox.y - iCurrentCursor.y + 0.5 * cellH);
+}
+
+// Termurion: a band (z = 2) has no line ink for LINE_TINT to color, so its edge at lineY
+// gets a thin line of color k instead, about a box glyph thick with soft edges.
+vec3 termurionBandLine(vec2 p, vec3 col, float lineY, vec3 k) {
+    float core = max(0.75, 0.04 * iCurrentCursor.w);
+    return mix(col, k, 1.0 - smoothstep(core, core + 1.0, abs(p.y - lineY)));
+}
+
 #define CURSORSTYLE_BLOCK        0
 #define CURSORSTYLE_BLOCK_HOLLOW 1
 #define CURSORSTYLE_BAR          2

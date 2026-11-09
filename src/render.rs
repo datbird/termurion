@@ -3306,6 +3306,193 @@ mod tests {
         assert!(bad.is_empty(), "box lines not lit:\n{}", bad.join("\n"));
     }
 
+    /// A recorded agent screen (tests/fixtures/agents) at 100 by 30 cells, the cursor where
+    /// `cursors.txt` says, drawn with the effect cursor in `preset`. Returns the frame, its size
+    /// and the screen's background.
+    fn agent_frame(r: &Renderer, name: &str, preset: [u8; 3]) -> (Frame, (u32, u32), crate::palette::Rgb) {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/agents/");
+        let text = std::fs::read_to_string(format!("{dir}{name}.ansi")).unwrap();
+        let cursors = std::fs::read_to_string(format!("{dir}cursors.txt")).unwrap();
+        let line = cursors.lines().find(|l| l.split(' ').next() == Some(name)).unwrap();
+        let num = |key: &str| -> usize { line.split(' ').find_map(|w| w.strip_prefix(key)).unwrap().parse().unwrap() };
+        let rows: Vec<String> = text.trim_end_matches('\n').split('\n').map(|r| format!("\x1b[0m{r}")).collect();
+        let mut s = crate::screen::Screen::new(100, 30);
+        s.feed(format!("\x1b[2J\x1b[H{}\x1b[{};{}H", rows.join("\r\n"), num("y=") + 1, num("x=") + 1).as_bytes());
+        let cell = r.cell;
+        let (w, h) = ((100.0 * cell.0).ceil() as u32, (30.0 * cell.1).ceil() as u32);
+        let rect = crate::layout::Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
+        let draw = crate::scene::DrawPrefs { fx_cursor: Some(rgb(preset[0], preset[1], preset[2])), ..Default::default() };
+        let mut frame = Frame { clear: rgba(s.palette.bg, 1.0), fade: 1.0, ..Default::default() };
+        crate::scene::pane_with(&mut frame, &s, rect, cell, true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE);
+        (frame, (w, h), s.palette.bg)
+    }
+
+    /// The effect's frames at each of `shots` (ms, multiples of 50), with Enter at 1000 ms when
+    /// `enter`. `boxed` false gives the shader no input box (iInputBox zeros).
+    #[allow(clippy::too_many_arguments)]
+    fn fx_shots(r: &mut Renderer, compiled: Vec<crate::render_fx::Compiled>, frame: &Frame, (w, h): (u32, u32), bg: crate::palette::Rgb, preset: [u8; 3], boxed: bool, enter: bool, shots: &[u64]) -> Vec<Vec<u8>> {
+        use crate::render_fx::{Clock, Signals, Uniforms};
+        use std::time::{Duration, Instant};
+        let (device, _) = device();
+        let mut chain = crate::render_fx_gpu::Chain::new(&device, wgpu::TextureFormat::Bgra8UnormSrgb, compiled, false).unwrap();
+        let (mut clock, mut u, mut sig) = (Clock::default(), Uniforms::default(), Signals::default());
+        u.background = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
+        let b = frame.fx.as_ref().and_then(|f| f.input_box).filter(|_| boxed);
+        u.input_box = b.map_or([0.0; 4], |b| b.uniform());
+        u.input_box_x = b.map_or([0.0; 4], |b| b.uniform_x());
+        let t0 = Instant::now();
+        let mut out = Vec::new();
+        for ms in (0..=shots.iter().copied().max().unwrap_or(0)).step_by(50) {
+            let now = t0 + Duration::from_millis(ms);
+            if enter && ms == 1000 {
+                sig.enter(now);
+            }
+            let mut cur = frame.fx.clone().unwrap().cursor;
+            if let Some(c) = cur.as_mut() {
+                let [cr, cg, cb] = sig.apply(preset, now);
+                c.color = [cr as f32 / 255.0, cg as f32 / 255.0, cb as f32 / 255.0, 1.0];
+            }
+            clock.frame(&mut u, now, (w, h), cur, true);
+            if shots.contains(&ms) {
+                out.push(r.draw_offscreen_fx(frame, Some((&mut chain, &u)), w, h).unwrap());
+            }
+        }
+        out
+    }
+
+    /// Pixels in rows `ys` and columns `xs` that differ from `plain` by more than 30 in a channel.
+    fn lit_in(lit: &[u8], plain: &[u8], w: u32, ys: std::ops::Range<f32>, xs: std::ops::Range<f32>) -> usize {
+        let (y0, y1) = (ys.start.max(0.0).round() as usize, (ys.end.max(0.0).round() as usize).min(lit.len() / 4 / w as usize));
+        let (x0, x1) = (xs.start.max(0.0).round() as usize, (xs.end.max(0.0).round() as usize).min(w as usize));
+        (y0..y1).flat_map(|y| (x0..x1).map(move |x| (y * w as usize + x) * 4)).filter(|&i| (0..3).any(|k| (lit[i + k] as i32 - plain[i + k] as i32).abs() > 30)).count()
+    }
+
+    fn preset_of(p: &crate::render_fx::Plugin) -> [u8; 3] {
+        let c = crate::render_fx::hex_color(p.manifest.cursor_color.as_deref().unwrap()).unwrap();
+        [(c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8]
+    }
+
+    /// Enter shots like `every_effect_lights_both_box_lines_on_enter`: every 150 ms after it.
+    const ENTER_SHOTS: [u64; 11] = [1050, 1200, 1350, 1500, 1650, 1800, 1950, 2100, 2250, 2400, 2550];
+
+    /// Every built-in effect's Enter look runs along a shaded band's top and bottom edges (Codex,
+    /// opencode after a prompt), and leaves the band's middle as it is with no box at all.
+    #[test]
+    fn every_effect_lights_a_bands_edges_on_enter() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let ch = r.cell.1;
+        let mut bad = Vec::new();
+        let mut report = Vec::new();
+        for name in ["codex", "opencode-after"] {
+            for p in crate::render_fx::discover(None).0 {
+                let preset = preset_of(&p);
+                let (frame, size, bg) = agent_frame(&r, name, preset);
+                let b = frame.fx.as_ref().and_then(|f| f.input_box).expect("a band");
+                assert_eq!(b.kind, crate::scene::BoxKind::Band, "{name}");
+                let plain = r.draw_offscreen(&frame, size.0, size.1).unwrap();
+                let lit = fx_shots(&mut r, p.compile().unwrap(), &frame, size, bg, preset, true, true, &ENTER_SHOTS);
+                let unboxed = fx_shots(&mut r, p.compile().unwrap(), &frame, size, bg, preset, false, true, &ENTER_SHOTS);
+                let cols = b.left..b.right;
+                let near = |y: f32| (y - 0.25 * ch)..(y + 0.25 * ch);
+                let middle = (b.top + 0.5 * ch)..(b.bottom - 0.5 * ch);
+                let best = |shots: &[Vec<u8>], ys: std::ops::Range<f32>| shots.iter().map(|s| lit_in(s, &plain, size.0, ys.clone(), cols.clone())).max().unwrap_or(0);
+                let (top, bottom) = (best(&lit, near(b.top)), best(&lit, near(b.bottom)));
+                let (mid, mid_unboxed) = (best(&lit, middle.clone()), best(&unboxed, middle.clone()));
+                report.push(format!("{name} {}: top {top} bottom {bottom} middle {mid} (no box {mid_unboxed})", p.id));
+                if top < 40 || bottom < 40 || mid > mid_unboxed {
+                    bad.push(report.last().unwrap().clone());
+                }
+            }
+        }
+        eprintln!("{}", report.join("\n"));
+        assert!(bad.is_empty(), "band edges not lit, or its middle lit:\n{}", bad.join("\n"));
+    }
+
+    /// opencode's start screen centers its input panel at 75% of the width: the effects light its
+    /// edges only between the panel's left and right edge.
+    #[test]
+    fn a_band_lights_only_inside_its_columns() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let ch = r.cell.1;
+        let mut bad = Vec::new();
+        for p in crate::render_fx::discover(None).0 {
+            let preset = preset_of(&p);
+            let (frame, size, bg) = agent_frame(&r, "opencode", preset);
+            let b = frame.fx.as_ref().and_then(|f| f.input_box).expect("a band");
+            assert!(b.left > 0.0 && b.right < size.0 as f32, "the panel is narrower than the window");
+            let plain = r.draw_offscreen(&frame, size.0, size.1).unwrap();
+            let lit = fx_shots(&mut r, p.compile().unwrap(), &frame, size, bg, preset, true, true, &ENTER_SHOTS);
+            for edge in [b.top, b.bottom] {
+                let ys = (edge - 0.25 * ch)..(edge + 0.25 * ch);
+                let out = lit.iter().map(|s| lit_in(s, &plain, size.0, ys.clone(), 0.0..b.left) + lit_in(s, &plain, size.0, ys.clone(), b.right..size.0 as f32)).max().unwrap_or(0);
+                let inside = lit.iter().map(|s| lit_in(s, &plain, size.0, ys.clone(), b.left..b.right)).max().unwrap_or(0);
+                if out > 0 || inside < 40 {
+                    bad.push(format!("{} edge {edge}: {out} lit outside the panel, {inside} inside", p.id));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
+    /// LINE_TINT with no signal: a band has no line ink, so each edge gets a thin line in the
+    /// effect's line color (the cursor's) inside the band's columns.
+    #[test]
+    fn line_tint_draws_a_bands_edges() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let cw = r.cell.0;
+        let mut bad = Vec::new();
+        for name in ["codex", "opencode", "opencode-after"] {
+            for p in crate::render_fx::discover(None).0 {
+                let preset = preset_of(&p);
+                let (frame, size, bg) = agent_frame(&r, name, preset);
+                let b = frame.fx.as_ref().and_then(|f| f.input_box).expect("a band");
+                let cursor_x = frame.fx.as_ref().and_then(|f| f.cursor).map(|c| c.rect[0]).unwrap();
+                let shot = fx_shots(&mut r, p.compile_with(&[("LINE_TINT", true)]).unwrap(), &frame, size, bg, preset, true, false, &[600]).remove(0);
+                let at = |x: usize, y: usize| { let i = (y * size.0 as usize + x) * 4; [shot[i], shot[i + 1], shot[i + 2]] };
+                let close = |c: [u8; 3]| (0..3).all(|k| (c[k] as i32 - preset[k] as i32).abs() <= 48);
+                for edge in [b.top, b.bottom] {
+                    // The pixel rows on either side of the edge: the line's core covers one of them.
+                    let rows = [(edge - 0.5).floor().max(0.0) as usize, (edge + 0.5).floor() as usize];
+                    let xs: Vec<usize> = (0..40).map(|i| (b.left + cw + (b.right - b.left - 2.0 * cw) * i as f32 / 39.0) as usize).filter(|&x| (x as f32 - cursor_x).abs() > 2.0 * cw).collect();
+                    let hits = xs.iter().filter(|&&x| rows.iter().any(|&y| close(at(x, y)))).count();
+                    if hits * 10 < xs.len() * 9 {
+                        bad.push(format!("{name} {} edge {edge}: {hits} of {} points in the line color {:?}, e.g. {:?}", p.id, xs.len(), preset, at(xs[0], rows[0])));
+                    }
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
+    /// PROMPT_EFFECT restyles Codex's bold `›` and agy's `>` prompt mark, in every built-in that
+    /// has it.
+    #[test]
+    fn prompt_marks_of_codex_and_agy_change_their_look() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let (cw, ch) = r.cell;
+        let mut bad = Vec::new();
+        for (name, row) in [("codex", 26.0f32), ("agy", 8.0)] {
+            for p in crate::render_fx::discover(None).0 {
+                if !p.shader_text(&p.manifest.shaders[0]).unwrap().contains("PROMPT_EFFECT") {
+                    continue;
+                }
+                let preset = preset_of(&p);
+                let (frame, size, bg) = agent_frame(&r, name, preset);
+                let plain = r.draw_offscreen(&frame, size.0, size.1).unwrap();
+                let shot = fx_shots(&mut r, p.compile_with(&[("PROMPT_EFFECT", true)]).unwrap(), &frame, size, bg, preset, true, false, &[600]).remove(0);
+                let lit = lit_in(&shot, &plain, size.0, (row * ch)..((row + 1.0) * ch), 0.0..cw);
+                if lit < 8 {
+                    bad.push(format!("{name} {}: {lit} pixels of the mark's cell changed", p.id));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
     /// Lightning's Enter surge runs along Claude Code's input box lines (above and below the
     /// prompt), drawn the way Termurion really draws them, for several fonts and sizes and a
     /// dark tinted background like a real profile's. The uniforms come from the frame, as the
@@ -3937,3 +4124,4 @@ mod tests {
         assert_eq!(c.get("ab", 1), None, "past the cap the cache starts over");
     }
 }
+
