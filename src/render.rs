@@ -2995,7 +2995,8 @@ mod tests {
                 clock.frame(&mut u, now, (w, h), cur, true);
                 u.background = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
                 u.foreground = [222.0 / 255.0; 3];
-                u.input_box = fx.input_box.map_or([0.0; 4], |[t, b]| [t, b, 1.0, 0.0]);
+                u.input_box = fx.input_box.map_or([0.0; 4], |b| b.uniform());
+                u.input_box_x = fx.input_box.map_or([0.0; 4], |b| b.uniform_x());
                 let px = r.draw_offscreen_fx(&frame, Some((chain, &u)), w, h).unwrap();
                 let img = image::RgbImage::from_fn(w, h, |x, y| {
                     let i = ((y * w + x) * 4) as usize;
@@ -3121,7 +3122,8 @@ mod tests {
                     clock.frame(u, now, (w, h), cur, true);
                     u.background = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
                     u.foreground = [222.0 / 255.0; 3];
-                    u.input_box = fx.input_box.map_or([0.0; 4], |[t, b]| [t, b, 1.0, 0.0]);
+                    u.input_box = fx.input_box.map_or([0.0; 4], |b| b.uniform());
+                u.input_box_x = fx.input_box.map_or([0.0; 4], |b| b.uniform_x());
                     let px = r.draw_offscreen_fx(&frame, Some((&mut chain, u)), w, h).unwrap();
                     image::RgbaImage::from_raw(w, h, px).unwrap().save(out.join(format!("f{:05}.png", n.get()))).unwrap();
                     n.set(n.get() + 1);
@@ -3206,7 +3208,8 @@ mod tests {
                 }
                 clock.frame(u, now, (w, h), cur, true);
                 u.background = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
-                u.input_box = frame.fx.as_ref().and_then(|f| f.input_box).map_or([0.0; 4], |[t, b]| [t, b, 1.0, 0.0]);
+                u.input_box = frame.fx.as_ref().and_then(|f| f.input_box).map_or([0.0; 4], |b| b.uniform());
+                u.input_box_x = frame.fx.as_ref().and_then(|f| f.input_box).map_or([0.0; 4], |b| b.uniform_x());
                 let px = r.draw_offscreen_fx(&frame, Some((&mut chain, u)), w, h).unwrap();
                 if let Some(name) = save {
                     image::RgbaImage::from_raw(w, h, px).unwrap().save(out.join(name)).unwrap();
@@ -3267,7 +3270,8 @@ mod tests {
                     let mut chain = crate::render_fx_gpu::Chain::new(&device, format, p.compile().unwrap(), false).unwrap();
                     let (mut clock, mut u, mut sig) = (Clock::default(), Uniforms::default(), Signals::default());
                     u.background = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
-                    u.input_box = frame.fx.as_ref().and_then(|f| f.input_box).map_or([0.0; 4], |[t, b]| [t, b, 1.0, 0.0]);
+                    u.input_box = frame.fx.as_ref().and_then(|f| f.input_box).map_or([0.0; 4], |b| b.uniform());
+                u.input_box_x = frame.fx.as_ref().and_then(|f| f.input_box).map_or([0.0; 4], |b| b.uniform_x());
                     assert!(u.input_box[2] > 0.5, "{family} {px} input {input}: the scene finds the box");
                     let t0 = Instant::now();
                     let mut best = (0usize, 0usize);

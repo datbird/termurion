@@ -143,10 +143,40 @@ pub struct FxPane {
     pub selection: Rgb,
     pub selected_text: Option<Rgb>,
     pub ansi: [Rgb; 16],
-    /// Claude Code's input box around the cursor, read from the grid: the middle of its top and
-    /// its bottom line row, in window pixels from the top (the box grows upward with a long
-    /// prompt). None without a box.
-    pub input_box: Option<[f32; 2]>,
+    /// The input box around the cursor, read from the grid (Claude Code's lines, or a shaded
+    /// band as Codex and opencode draw). None without a box.
+    pub input_box: Option<InputBox>,
+}
+
+/// Which shape an input box has.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BoxKind {
+    Lines,
+    Band,
+}
+
+/// An input box in window pixels. For lines: the middle of the top and bottom line row (the
+/// box grows upward with a long prompt), left and right are 0. For a band: its top edge, its
+/// bottom edge (the middle of a half-block edge row) and its left and right edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InputBox {
+    pub top: f32,
+    pub bottom: f32,
+    pub kind: BoxKind,
+    pub left: f32,
+    pub right: f32,
+}
+
+impl InputBox {
+    /// iInputBox: top, bottom, z = 1 lines or 2 band, 0.
+    pub fn uniform(&self) -> [f32; 4] {
+        [self.top, self.bottom, if self.kind == BoxKind::Band { 2.0 } else { 1.0 }, 0.0]
+    }
+
+    /// iInputBoxX: left and right edge in pixels for a band, zeros for lines.
+    pub fn uniform_x(&self) -> [f32; 4] {
+        if self.kind == BoxKind::Band { [self.left, self.right, 0.0, 0.0] } else { [0.0; 4] }
+    }
 }
 
 impl Default for Frame {
@@ -649,6 +679,67 @@ fn box_line(term: &alacritty_terminal::Term<crate::screen::Listener>, display_of
     let line = alacritty_terminal::index::Line(row as i32 - display_offset as i32);
     let n = (0..cols).filter(|&c| matches!(term.grid()[line][alacritty_terminal::index::Column(c)].c, '\u{2500}' | '\u{2501}')).count();
     cols > 0 && n * 10 >= cols * 8
+}
+
+/// The shaded band around the cursor cell, as Codex and opencode draw their input: a run of one
+/// background color over at least half the columns on the cursor's row, grown up and down over
+/// rows with the same run (within 2 cells). It is 2 to 12 rows and at most half the screen,
+/// and the rows around it differ over its columns (or are the screen edge). A `▀` row in the
+/// band color under it joins as a half row. Returns (top row, bottom row, first col, last col,
+/// bottom is a half-block edge row). Colors compare as resolved RGB.
+fn band_box(term: &alacritty_terminal::Term<crate::screen::Listener>, palette: &crate::palette::Palette, display_offset: usize, row: usize, col: usize) -> Option<(usize, usize, usize, usize, bool)> {
+    use alacritty_terminal::index::{Column, Line};
+    let (cols, lines) = (term.columns(), term.screen_lines());
+    if row >= lines || col >= cols {
+        return None;
+    }
+    let cell = |r: usize, c: usize| &term.grid()[Line(r as i32 - display_offset as i32)][Column(c)];
+    let bg = |r: usize, c: usize| palette.color(cell(r, c).bg);
+    // The run of `color` on row `r` that holds column `at`.
+    let run = |r: usize, at: usize, color: Rgb| -> Option<(usize, usize)> {
+        if bg(r, at) != color {
+            return None;
+        }
+        let mut l = at;
+        while l > 0 && bg(r, l - 1) == color {
+            l -= 1;
+        }
+        let mut e = at;
+        while e + 1 < cols && bg(r, e + 1) == color {
+            e += 1;
+        }
+        Some((l, e))
+    };
+    let color = bg(row, col);
+    let (left, right) = run(row, col, color)?;
+    if (right - left + 1) * 2 < cols {
+        return None;
+    }
+    let mid = (left + right) / 2;
+    let same = |r: usize| run(r, mid, color).is_some_and(|(l, e)| l.abs_diff(left) <= 2 && e.abs_diff(right) <= 2);
+    let (mut top, mut bottom) = (row, row);
+    while top > 0 && same(top - 1) {
+        top -= 1;
+    }
+    while bottom + 1 < lines && same(bottom + 1) {
+        bottom += 1;
+    }
+    let rows = bottom - top + 1;
+    if rows < 2 || rows > 12 || rows * 2 > lines {
+        return None;
+    }
+    // A row differs from the band when under half of the band's columns have its color.
+    let differs = |r: usize| (left..=right).filter(|&c| bg(r, c) == color).count() * 2 < right - left + 1;
+    if top > 0 && !differs(top - 1) {
+        return None;
+    }
+    // A `▀` edge row: the band color on the upper half of most of the band's columns.
+    let edge = bottom + 1 < lines && (left..=right).filter(|&c| cell(bottom + 1, c).c == '\u{2580}' && palette.color(cell(bottom + 1, c).fg) == color).count() * 2 >= right - left + 1;
+    let after = bottom + 1 + edge as usize;
+    if after < lines && !differs(after) {
+        return None;
+    }
+    Some((top, if edge { bottom + 1 } else { bottom }, left, right, edge))
 }
 
 /// The cursor Claude Code paints when it hides the real one: the one reverse-video cell between
@@ -1579,11 +1670,19 @@ pub fn pane_with(
         });
         let program_cursor = term.colors()[alacritty_terminal::vte::ansi::NamedColor::Cursor as usize];
         let box_row = |row: usize| box_line(term, content.display_offset, row);
-        let input_box = cursor.and_then(|(row, _)| {
-            let bottom = (row + 1..lines.min(row + 3)).find(|&r| box_row(r))?;
-            let top = (0..row).rev().find(|&r| box_row(r))?;
+        let input_box = cursor.and_then(|(row, col)| {
             let mid = |r: usize| rect.y + r as f32 * ch + ch / 2.0;
-            Some([mid(top), mid(bottom)])
+            let lines_box = (|| {
+                let bottom = (row + 1..lines.min(row + 3)).find(|&r| box_row(r))?;
+                let top = (0..row).rev().find(|&r| box_row(r))?;
+                Some(InputBox { top: mid(top), bottom: mid(bottom), kind: BoxKind::Lines, left: 0.0, right: 0.0 })
+            })();
+            // A line box wins over a band.
+            lines_box.or_else(|| {
+                let (top, bottom, left, right, half) = band_box(term, palette, content.display_offset, row, col)?;
+                let bottom_px = if half { mid(bottom) } else { rect.y + (bottom + 1) as f32 * ch };
+                Some(InputBox { top: rect.y + top as f32 * ch, bottom: bottom_px, kind: BoxKind::Band, left: rect.x + left as f32 * cw, right: rect.x + (right + 1) as f32 * cw })
+            })
         });
         frame.fx = Some(FxPane {
             cursor: fx_cursor,
@@ -9528,7 +9627,7 @@ mod painted_cursor_tests {
         // Row 12, column 8 (1-based): "❯ hello" takes 7 cells.
         assert_eq!((c.rect[0], c.rect[1]), (70.0, 220.0));
         assert!(c.visible);
-        assert_eq!(fx.input_box, Some([210.0, 250.0]), "the box is found from the painted cell's row");
+        assert_eq!(fx.input_box.map(|b| [b.top, b.bottom]), Some([210.0, 250.0]), "the box is found from the painted cell's row");
     }
 
     #[test]
@@ -9555,5 +9654,99 @@ mod painted_cursor_tests {
         let mut s = crate::screen::Screen::new(80, 15);
         s.feed(format!("\x1b[2J\x1b[11;1H{line}\x1b[12;1H\u{276f} \x1b[7mhe\x1b[0mllo\x1b[13;1H{line}\x1b[?25l").as_bytes());
         assert!(fx_of(&s).cursor.is_none());
+    }
+}
+
+#[cfg(test)]
+mod agent_box_tests {
+    use super::*;
+
+    /// One recorded agent screen with the cursor where `cursors.txt` says; `swap` edits the capture first.
+    fn load(name: &str, swap: Option<(&str, &str)>) -> FxPane {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/agents/");
+        let mut text = std::fs::read_to_string(format!("{dir}{name}.ansi")).unwrap();
+        if let Some((a, b)) = swap {
+            text = text.replace(a, b);
+        }
+        let cursors = std::fs::read_to_string(format!("{dir}cursors.txt")).unwrap();
+        let line = cursors.lines().find(|l| l.split(' ').next() == Some(name)).unwrap();
+        let num = |key: &str| -> usize { line.split(' ').find_map(|w| w.strip_prefix(key)).unwrap().parse().unwrap() };
+        let rows: Vec<String> = text.trim_end_matches('\n').split('\n').map(|r| format!("\x1b[0m{r}")).collect();
+        let mut s = crate::screen::Screen::new(100, 30);
+        s.feed(format!("\x1b[2J\x1b[H{}\x1b[{};{}H", rows.join("\r\n"), num("y=") + 1, num("x=") + 1).as_bytes());
+        fx_of(&s)
+    }
+
+    /// What the effects get for `screen`: 10 by 20 pixel cells, an effect cursor on.
+    fn fx_of(s: &crate::screen::Screen) -> FxPane {
+        let rect = crate::layout::Rect { x: 0.0, y: 0.0, w: 1000.0, h: 600.0 };
+        let draw = DrawPrefs { fx_cursor: Some(crate::palette::rgb(255, 0, 0)), ..Default::default() };
+        let mut frame = Frame::default();
+        pane_with(&mut frame, s, rect, (10.0, 20.0), true, &crate::cursor_look::CursorLook::shown(true), &draw, None, crate::render::DEFAULT_FACE);
+        frame.fx.expect("an fx pane")
+    }
+
+    fn feed(rows: usize, o: &str) -> FxPane {
+        let mut s = crate::screen::Screen::new(80, rows);
+        s.feed(o.as_bytes());
+        fx_of(&s)
+    }
+
+    #[test]
+    fn hermes_and_agy_get_a_line_box() {
+        for n in ["hermes", "hermes-after", "agy"] {
+            assert_eq!(load(n, None).input_box.map(|b| b.kind), Some(BoxKind::Lines), "{n}");
+        }
+    }
+
+    #[test]
+    fn codex_gets_a_band_box_with_the_cursor() {
+        let b = load("codex", None).input_box.expect("codex band");
+        assert_eq!((b.kind, b.top, b.bottom), (BoxKind::Band, 500.0, 540.0));
+        let a = load("codex-after", None).input_box.expect("codex-after band");
+        assert_eq!((a.kind, a.top, a.bottom), (BoxKind::Band, 500.0, 540.0), "rows 25-26, not the history band at 12-13");
+    }
+
+    #[test]
+    fn opencode_gets_a_band_box_with_its_edge() {
+        // The start screen's panel is centered; after Enter the box runs along the screen's foot.
+        let b = load("opencode", None).input_box.expect("opencode");
+        assert_eq!((b.kind, b.left, b.right), (BoxKind::Band, 140.0, 880.0));
+        let a = load("opencode-after", None).input_box.expect("opencode-after");
+        assert_eq!((a.kind, a.top, a.bottom, a.left, a.right), (BoxKind::Band, 440.0, 530.0, 30.0, 980.0), "rows 22-25 and the middle of the edge row 26");
+    }
+
+    #[test]
+    fn opencode_band_is_found_on_any_screen_color() {
+        for n in ["opencode", "opencode-after"] {
+            let plain = load(n, None).input_box;
+            assert_eq!(load(n, Some(("48;2;10;10;10", "48;2;60;20;20"))).input_box, plain, "{n}");
+            assert!(plain.is_some());
+        }
+    }
+
+    #[test]
+    fn no_box_for_other_screens() {
+        let row = |n: usize, bg: &str, text: &str| format!("\x1b[{n};1H\x1b[{bg}m{text:<80}\x1b[0m");
+        // vim cursorline: one shaded row.
+        assert_eq!(feed(20, &format!("\x1b[2J{}\x1b[10;3H", row(10, "48;2;40;40;40", "line"))).input_box, None);
+        // The whole screen one color.
+        let all: String = (1..=20).map(|r| row(r, "48;2;10;10;10", "")).collect();
+        assert_eq!(feed(20, &format!("{all}\x1b[10;3H")).input_box, None);
+        // A 13-row block.
+        let block: String = (3..16).map(|r| row(r, "48;2;40;40;40", "")).collect();
+        assert_eq!(feed(30, &format!("\x1b[2J{block}\x1b[8;3H")).input_box, None);
+        // A shaded tmux status row on the last row.
+        assert_eq!(feed(20, &format!("\x1b[2J{}\x1b[20;3H", row(20, "48;2;0;128;0", "status"))).input_box, None);
+        // A plain prompt.
+        assert_eq!(feed(20, "\x1b[2J\x1b[5;1H$ ").input_box, None);
+    }
+
+    #[test]
+    fn a_line_box_wins_over_a_band() {
+        let line = "\u{2500}".repeat(80);
+        let shade = |n: usize| format!("\x1b[{n};1H\x1b[48;2;40;40;40m{:<80}\x1b[0m", "");
+        let o = format!("\x1b[2J\x1b[5;1H{line}{}{}\x1b[8;1H{line}\x1b[6;3H", shade(6), shade(7));
+        assert_eq!(feed(20, &o).input_box.map(|b| b.kind), Some(BoxKind::Lines));
     }
 }

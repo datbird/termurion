@@ -1,0 +1,30 @@
+                         
+  [38;2;99;168;248m>_ [1m[39mOpenAI Codex[0;2m (v0.167.0)[0m                      
+     [2m~/work…/agents/work[0m   
+                         
+[2m  To get started, describe a task or try one of these commands:[0m                                     
+                         
+  /init[2m - create an AGENTS.md file with instructions for Codex[0m                                      
+  /status[2m - show current session configuration[0m                                                      
+  /permissions[2m - choose what Codex is allowed to do[0m                                                 
+  /model[2m - choose what model and reasoning effort to use[0m                                            
+  /review[2m - review any changes and find issues[0m                                                      
+                                                                                                    
+[48;2;54;54;54m                                                                                                    
+[1;2m› [0m[48;2;54;54;54mhello                                                                                             
+                                                                                                    
+[49m                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+[1m[38;2;224;224;224m•[0m [38;2;120;120;120mReconnecting... 5/5[39m [2m(11s • [0;1m[38;2;224;224;224mesc[0;2m to interrupt)[0m                                                      
+[2m  └ Unexpected status 401 Unauthorized: Incorrect API key provided: sk-dummy*****real. You can find[0m 
+[2m    your API key at https://platform.openai.com/account/api-keys., url: https://api.openai.com/v1/[0m  
+[2m    responses, cf-ray: (removed), request id: req_(removed), auth…
+[0m                         
+[48;2;44;44;44m                                                                                                    
+[1m›[0m[48;2;44;44;44m [2mAsk Codex to do anything[0m[48;2;44;44;44m                                                                          
+                                                                                                    
+[49m  [38;2;246;226;183mGPT-6.1-Sol default[38;2;140;140;140m · [38;2;171;223;167m~/work…
+[39m  [1m[38;2;224;224;224m←[0m[38;2;140;140;140m for agents · [1m[38;2;224;224;224m?[0m[38;2;140;140;140m for shortcuts[39m                                          [38;2;140;140;140m⚠ [38;2;196;167;103m2 warnings[38;2;140;140;140m · [1m[38;2;224;224;224mf2[0m[38;2;140;140;140m to view[39m 

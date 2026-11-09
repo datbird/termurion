@@ -370,6 +370,8 @@ pub struct Uniforms {
     /// Termurion's `iInputBox`: the input box's top and bottom line (pixels from the top), and
     /// 1 when there is one.
     pub input_box: [f32; 4],
+    /// `iInputBoxX`: a band box's left and right edge in pixels, zeros for lines.
+    pub input_box_x: [f32; 4],
 }
 
 impl Default for Uniforms {
@@ -400,6 +402,7 @@ impl Default for Uniforms {
             selection_foreground: [0.0; 3],
             selection_background: [1.0; 3],
             input_box: [0.0; 4],
+            input_box_x: [0.0; 4],
         }
     }
 }
@@ -449,6 +452,7 @@ impl Uniforms {
         f("iSelectionForegroundColor", floats(&self.selection_foreground));
         f("iSelectionBackgroundColor", floats(&self.selection_background));
         f("iInputBox", floats(&self.input_box));
+        f("iInputBoxX", floats(&self.input_box_x));
         // A vec4 here (see the prefix): channel 0 runs on the frame's clock.
         f("iChannelTime", floats(&[self.time, 0.0, 0.0, 0.0]));
         // Arrays: element i at offset + i * stride.

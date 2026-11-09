@@ -37,6 +37,8 @@ layout(set = 0, binding = 1, std140) uniform Globals {
     // Termurion: Claude Code's input box lines as read from the grid (y of the top and the
     // bottom line in pixels from the top, z = 1 when there is a box). Not in Ghostty.
     vec4  iInputBox;
+    // Termurion: a band box's left and right edge in pixels (x, y), zeros for a line box.
+    vec4  iInputBoxX;
 };
 
 // Termurion: how far above the cursor the input box reaches (it grows with a long prompt):

@@ -1,0 +1,7 @@
+codex cursor_flag=1 x=7 y=26 alt=1
+codex-after cursor_flag=1 x=2 y=26 alt=1
+opencode cursor_flag=1 x=21 y=15 alt=1
+opencode-after cursor_flag=1 x=5 y=23 alt=1
+hermes cursor_flag=1 x=7 y=28 alt=0
+hermes-after cursor_flag=1 x=2 y=28 alt=0
+agy cursor_flag=1 x=7 y=8 alt=0
