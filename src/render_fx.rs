@@ -23,12 +23,12 @@ pub const USER_FOLDER: &str = "RenderPlugins";
 /// default, group). Termurion sets them in each shader before it compiles it, so one profile
 /// setting drives every effect. `None` as the constant is Termurion's own signals.
 pub const SWITCHES: &[(&str, Option<&str>, &str, bool, &str)] = &[
-    ("Effects Claude Enter", Some("ENTER_EFFECT"), "Enter surge (a prompt sent, a command run)", true, "Claude Code"),
-    ("Effects Claude Done", Some("DONE_EFFECT"), "Done surge (Claude finished, a long command ended)", true, "Claude Code"),
-    ("Effects Claude Line Color", Some("LINE_TINT"), "Input box lines in the effect's color", true, "Claude Code"),
-    ("Effects Claude Live Lines", Some("LINE_EFFECT"), "Input box lines always alive", false, "Claude Code"),
-    ("Effects Claude Prompt", Some("PROMPT_EFFECT"), "Prompt mark (\u{276f}) look", true, "Claude Code"),
-    ("Effects Signals", None, "Termurion sends the Enter and done signals itself (no hooks needed)", true, "Claude Code"),
+    ("Effects Claude Enter", Some("ENTER_EFFECT"), "Enter surge (a prompt sent, a command run)", true, "Claude Code and other agents"),
+    ("Effects Claude Done", Some("DONE_EFFECT"), "Done surge (an agent finished, a long command ended)", true, "Claude Code and other agents"),
+    ("Effects Claude Line Color", Some("LINE_TINT"), "Input box lines (or a shaded box's edges) in the effect's color", true, "Claude Code and other agents"),
+    ("Effects Claude Live Lines", Some("LINE_EFFECT"), "Input box lines (or a shaded box's edges) always alive", false, "Claude Code and other agents"),
+    ("Effects Claude Prompt", Some("PROMPT_EFFECT"), "Prompt mark (\u{276f}, \u{203a}, >) look", true, "Claude Code and other agents"),
+    ("Effects Signals", None, "Termurion sends the Enter and done signals itself (no hooks needed)", true, "Claude Code and other agents"),
     ("Effects Jumps", Some("JUMP_EFFECTS"), "Bolt when the cursor jumps along its row", true, "General"),
     ("Effects Idle", Some("IDLE_EFFECTS"), "Idle animation", true, "General"),
 ];

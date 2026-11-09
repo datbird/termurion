@@ -17,3 +17,19 @@ grid, so a box that grows with a long prompt keeps its effects.
 where Claude Code runs, then merge `hooks/claude-code-hooks.json` into that host's
 `~/.claude/settings.json`. Put your effect's `cursor_color` (from its `plugin.toml`) in both
 commands. See docs/render-plugins.md.
+
+## Testing with AI agents
+
+Do this for each agent: Claude Code 2.1.319, Codex 0.167.0, opencode 1.19.5, Hermes Agent 0.19.0
+and agy 1.5.3.
+
+1. Pick the Shockwave effect and turn it on in Settings > Profiles > Window > Effects.
+2. Start the agent in Termurion.
+3. Type a word, press Enter, and wait for the answer.
+4. Check these:
+   - The cursor ring shows.
+   - On Enter, both lines of the input box light and take the effect's color. This is for Claude
+     Code, Hermes Agent and agy. For Codex and opencode the input box is shaded, so both edges
+     of the shaded box light instead.
+   - The prompt mark changes look. Skip this for opencode, which has no prompt mark.
+   - The done surge plays when the answer is in.
