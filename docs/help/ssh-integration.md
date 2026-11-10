@@ -8,7 +8,7 @@ SSH integration makes an ssh session more than a plain terminal. When you connec
 - Upload files by dropping them on the session.
 - Reconnect through the same chain of hops when you duplicate a session or split a pane.
 
-Termurion runs your normal Windows OpenSSH client (`ssh.exe`) for the connection. It connects the client through its shipped ConPTY so the protocol passes through unchanged.
+Termurion runs your normal OpenSSH client for the connection: `ssh.exe` on Windows, through its shipped ConPTY, and `ssh` on macOS and Linux. The protocol passes through unchanged.
 
 ## Make an SSH profile
 
@@ -24,7 +24,7 @@ The Configure SSH sheet has these settings:
 | SSH Integration | On by default. With it off, the profile runs plain `ssh`. |
 | Environment Variables to Copy to Remote Host | Names of local variables to set on the remote side. |
 | Files to Copy to Remote Host | Files or folders to copy, each with a destination folder on the remote host. Add them with Files... or Folder.... |
-| Path to SSH | The ssh program to run. The placeholder is `C:\Windows\System32\OpenSSH\ssh.exe`. Browse picks a file and checks that it is executable. |
+| Path to SSH | The ssh program to run. The placeholder is `C:\Windows\System32\OpenSSH\ssh.exe` on Windows and `/usr/bin/ssh` on macOS and Linux. Browse picks a file and checks that it is executable. |
 
 If the command is empty, or SSH Integration is off, the profile runs plain `ssh`. A profile's Working Directory is used on the remote host only if it is a POSIX path (starting with `/` or `~`).
 

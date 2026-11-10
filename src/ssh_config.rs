@@ -15,7 +15,10 @@ pub const FILE_COLUMN: &str = "File or Folder";
 pub const DEST_COLUMN: &str = "Destination";
 pub const PATH_LABEL: &str = "Path to SSH:";
 /// iTerm2's placeholder is `/usr/bin/ssh`; Windows' OpenSSH lives here.
+#[cfg(windows)]
 pub const PATH_PLACEHOLDER: &str = "C:\\Windows\\System32\\OpenSSH\\ssh.exe";
+#[cfg(not(windows))]
+pub const PATH_PLACEHOLDER: &str = "/usr/bin/ssh";
 pub const BROWSE: &str = "Browse";
 pub const SELECT_TITLE: &str = "Select SSH Binary";
 pub const NOT_EXECUTABLE: &str = "Selected file must be an executable.";
@@ -233,7 +236,7 @@ mod tests {
         assert_eq!(FILE_COLUMN, "File or Folder");
         assert_eq!(DEST_COLUMN, "Destination");
         assert_eq!(PATH_LABEL, "Path to SSH:");
-        assert_eq!(PATH_PLACEHOLDER, r"C:\Windows\System32\OpenSSH\ssh.exe");
+        assert_eq!(PATH_PLACEHOLDER, if cfg!(windows) { r"C:\Windows\System32\OpenSSH\ssh.exe" } else { "/usr/bin/ssh" });
         assert_eq!(BROWSE, "Browse");
         assert_eq!(SELECT_TITLE, "Select SSH Binary");
         assert_eq!(NOT_EXECUTABLE, "Selected file must be an executable.");

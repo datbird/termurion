@@ -52,8 +52,8 @@ Termurion is running, Setup closes it first.
 
 #### Uninstall
 
-Open Settings > Apps > Installed apps, find Termurion, and choose Uninstall. Your settings stay in
-`%APPDATA%\Termurion`, and logs and crash reports in `%LOCALAPPDATA%\Termurion`. Delete those
+Open Settings > Apps > Installed apps, find Termurion, and choose Uninstall. Your settings and the log file `host.log` stay in
+`%APPDATA%\Termurion`, and crash reports and other local data in `%LOCALAPPDATA%\Termurion`. Delete those
 folders too for a clean removal.
 
 #### Silent install
@@ -81,8 +81,8 @@ Termurion needs an Apple Silicon Mac (arm64).
 The Shortcut Key is Cmd, as in iTerm2. Termurion has the native menu bar, the Dock icon, and
 system-wide hotkeys. Passwords go in the macOS Keychain.
 
-Your settings are in `~/Library/Application Support/Termurion`. Logs and other local data are in
-`~/Library/Caches/Termurion`. To uninstall, drag `Termurion.app` to the Trash. Delete those two
+Your settings and the log file `host.log` are in `~/Library/Application Support/Termurion`. Other local
+data is in `~/Library/Caches/Termurion`. To uninstall, drag `Termurion.app` to the Trash. Delete those two
 folders too for a clean removal.
 
 ## Linux
@@ -102,8 +102,8 @@ Termurion running with its icon in the top bar. The icon's menu has New Window, 
 Settings, and Quit. A desktop with no tray quits when the last window closes. System-wide hotkeys
 work on X11 only. Passwords go in the Secret Service (GNOME Keyring, KeePassXC, or KWallet).
 
-Your settings are in `~/.config/termurion` (or `$XDG_CONFIG_HOME/termurion`). Logs and other local
-data are in `~/.local/state/termurion` (or `$XDG_STATE_HOME/termurion`). To uninstall, delete the
+Your settings and the log file `host.log` are in `~/.config/termurion` (or `$XDG_CONFIG_HOME/termurion`).
+Other local data is in `~/.local/state/termurion` (or `$XDG_STATE_HOME/termurion`). To uninstall, delete the
 AppImage and the launcher entry, `~/.local/share/applications/dev.termurion.Termurion.desktop`.
 Delete the two folders too for a clean removal.
 
