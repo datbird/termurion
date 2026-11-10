@@ -7302,9 +7302,10 @@ impl App {
         let drawn = match gpu.fx.as_mut().filter(|f| f.active()) {
             Some(fx) => {
                 // The passes write the window through its non-sRGB view (fx_sync made sure it has one).
-                let out = texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(crate::render_fx_gpu::raw_format(gpu.config.format)), ..Default::default() });
                 fx.prepare(frame.fx.as_ref(), fx_signals.as_ref(), (w, h), focused_window, fx_now);
                 let (chain, uniforms) = fx.chain_mut().expect("active");
+                // Without view formats (OpenGL) the chain's last copy writes the window's own view.
+                let out = if chain.wants_raw_out() { texture.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(crate::render_fx_gpu::raw_format(gpu.config.format)), ..Default::default() }) } else { view.clone() };
                 gpu.renderer.draw_fx(&frame, chain, uniforms, &out, w, h)
             }
             None => gpu.renderer.draw_with(&frame, &view, raw.as_ref(), w, h),
@@ -8382,6 +8383,14 @@ fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference:
     for (backends, label) in gpu_pick::backend_order(crate::platform::IS_WINDOWS, forced.as_deref()) {
         match init_gpu_on(window.clone(), &display, power_preference, backends) {
             Ok(gpu) => {
+                let gpu = match integrated_on_gl(gpu, &window, &display, power_preference, forced.is_some()) {
+                    Ok(g) => g,
+                    Err(e) => {
+                        crate::host_base::log(&format!("renderer: {label} unavailable: {e}"));
+                        failures.push(format!("{label}: {e}"));
+                        continue;
+                    }
+                };
                 if !failures.is_empty() {
                     crate::host_base::log(&format!("renderer: fell back to {label} because {}", failures.join("; ")));
                 }
@@ -8394,6 +8403,45 @@ fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference:
         }
     }
     Err(failures.join("; "))
+}
+
+/// "Prefer integrated" got a discrete GPU because the API in use listed no integrated one: when
+/// OpenGL lists it, the window moves there (`gpu_pick::look_for_integrated_on_gl`). The first
+/// GPU is dropped before the second is made, so the window never has two swap chains.
+fn integrated_on_gl(gpu: Gpu, window: &Arc<Window>, display: &winit::event_loop::OwnedDisplayHandle, pref: wgpu::PowerPreference, forced: bool) -> Result<Gpu, String> {
+    let chosen = gpu_pick::Facts::of(&gpu.adapter.get_info());
+    if !gpu_pick::look_for_integrated_on_gl(pref, &chosen, forced) {
+        return Ok(gpu);
+    }
+    let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display.clone()));
+    desc.backends = wgpu::Backends::GL;
+    let gl: Vec<gpu_pick::Facts> = pollster::block_on(wgpu::Instance::new(desc).enumerate_adapters(wgpu::Backends::GL)).iter().map(|a| gpu_pick::Facts::of(&a.get_info())).collect();
+    if !gpu_pick::gl_has_integrated(&gl) {
+        return Ok(gpu);
+    }
+    drop(gpu);
+    match init_gpu_on(window.clone(), display, pref, wgpu::Backends::GL) {
+        Ok(g) => {
+            crate::host_base::log(&format!("renderer: moved to OpenGL on {} (Prefer integrated to discrete GPU is on and {:?} offered no integrated GPU)", g.adapter.get_info().name, chosen.backend));
+            Ok(g)
+        }
+        Err(e) => {
+            crate::host_base::log(&format!("renderer: OpenGL's integrated GPU failed ({e}), back to {:?}", chosen.backend));
+            // The first API worked a moment ago; if it now fails too, the caller tries the next API.
+            init_gpu_on(window.clone(), display, pref, gpu_backends_of(chosen.backend))
+        }
+    }
+}
+
+/// The wgpu backend set holding one backend.
+fn gpu_backends_of(b: wgpu::Backend) -> wgpu::Backends {
+    match b {
+        wgpu::Backend::Vulkan => wgpu::Backends::VULKAN,
+        wgpu::Backend::Metal => wgpu::Backends::METAL,
+        wgpu::Backend::Dx12 => wgpu::Backends::DX12,
+        wgpu::Backend::Gl => wgpu::Backends::GL,
+        _ => wgpu::Backends::PRIMARY,
+    }
 }
 
 /// One API's instance, adapter, device and queue for `window`, with the unconfigured surface it was
@@ -8447,7 +8495,8 @@ fn init_gpu_on(window: Arc<Window>, display: &winit::event_loop::OwnedDisplayHan
         color_space: wgpu::SurfaceColorSpace::Auto,
     };
     surface.configure(&device, &config);
-    let renderer = Renderer::new(&device, &queue, format, &first_font(), FONT_PX * window.scale_factor() as f32);
+    let mut renderer = Renderer::new(&device, &queue, format, &first_font(), FONT_PX * window.scale_factor() as f32);
+    renderer.set_view_formats(crate::render_fx_gpu::view_formats_supported(&adapter));
     Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), window })
 }
 

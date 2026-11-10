@@ -476,6 +476,8 @@ pub struct Renderer {
     weights: std::cell::RefCell<std::collections::HashMap<String, Vec<u16>>>,
     /// The texture format the pipelines draw into.
     format: wgpu::TextureFormat,
+    /// Whether the card can view a texture in a second format (not on OpenGL).
+    view_formats: bool,
     /// The faces, by id; id 0 is the default face `set_fonts` makes.
     faces: Vec<Face>,
     face_ids: std::collections::HashMap<FaceKey, u16>,
@@ -524,6 +526,7 @@ impl Renderer {
             buffers: Vec::new(),
             family: family.to_string(),
             format,
+            view_formats: true,
             alt_family: None,
             icon_family: String::new(),
             prose_family: String::new(),
@@ -1207,10 +1210,15 @@ impl Renderer {
     /// offscreen texture, then the passes write `out`, a non-sRGB view of the target.
     pub fn draw_fx(&mut self, frame: &Frame, chain: &mut crate::render_fx_gpu::Chain, uniforms: &crate::render_fx::Uniforms, out: &wgpu::TextureView, w: u32, h: u32) -> Result<(), String> {
         let (view, raw) = chain.frame_views(&self.device, (w, h));
-        let (view, raw) = (view.clone(), raw.clone());
-        self.draw_with(frame, &view, Some(&raw), w, h)?;
+        let (view, raw) = (view.clone(), raw.cloned());
+        self.draw_with(frame, &view, raw.as_ref(), w, h)?;
         chain.run(&self.device, &self.queue, uniforms, out);
         Ok(())
+    }
+
+    /// Says whether the card can view a texture in a second format (`render_fx_gpu::view_formats_supported`).
+    pub fn set_view_formats(&mut self, ok: bool) {
+        self.view_formats = ok;
     }
 
     /// The device and queue this renderer draws with.
@@ -1224,6 +1232,7 @@ impl Renderer {
         if w == 0 || h == 0 || w > max || h > max {
             return Err(format!("an image of {w} x {h} pixels is larger than the graphics card allows ({max})"));
         }
+        let raw_format = self.format.remove_srgb_suffix();
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("offscreen"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
@@ -1232,13 +1241,17 @@ impl Renderer {
             dimension: wgpu::TextureDimension::D2,
             format: self.format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[self.format.remove_srgb_suffix()],
+            // A second view only where the card has them (not OpenGL) and the format has an sRGB twin.
+            view_formats: if self.view_formats && self.format.is_srgb() { std::slice::from_ref(&raw_format) } else { &[] },
         });
         let view = tex.create_view(&Default::default());
-        let raw = tex.create_view(&wgpu::TextureViewDescriptor { format: Some(self.format.remove_srgb_suffix()), ..Default::default() });
+        let raw = (self.view_formats && self.format.is_srgb()).then(|| tex.create_view(&wgpu::TextureViewDescriptor { format: Some(raw_format), ..Default::default() }));
         match fx {
-            Some((chain, uniforms)) => self.draw_fx(frame, chain, uniforms, &raw, w, h)?,
-            None => self.draw_with(frame, &view, Some(&raw), w, h)?,
+            Some((chain, uniforms)) => {
+                let out = if chain.wants_raw_out() { raw.as_ref().unwrap_or(&view) } else { &view };
+                self.draw_fx(frame, chain, uniforms, out, w, h)?
+            }
+            None => self.draw_with(frame, &view, raw.as_ref(), w, h)?,
         }
         // Rows are copied out padded to 256 bytes, then the padding is dropped.
         let row = w * 4;
@@ -3636,6 +3649,46 @@ mod tests {
                 bad.push(format!("{}: {:?} where the frame has {:?}", p.id, at(&out, 5, 5), at(&plain, 5, 5)));
             }
         }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
+    /// OpenGL has no second view of a texture, so the chain copies the frame into plain textures
+    /// and back (`without_view_formats`). Every built-in effect must give the same pixels both
+    /// ways, so an effect looks the same on OpenGL as on Vulkan, Metal and DirectX.
+    #[test]
+    fn effects_look_the_same_without_view_formats() {
+        let (device, queue) = device();
+        let format = wgpu::TextureFormat::Bgra8UnormSrgb;
+        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let (w, h) = (96u32, 48u32);
+        let frame = Frame {
+            clear: rgba(rgb(20, 22, 30), 1.0),
+            fade: 1.0,
+            quads: vec![Quad { rect: Rect { x: 0.0, y: 0.0, w: 40.0, h: 20.0 }, color: rgba(rgb(200, 40, 10), 1.0) }, Quad { rect: Rect { x: 50.0, y: 24.0, w: 8.0, h: 12.0 }, color: rgba(rgb(158, 209, 254), 1.0) }],
+            ..Default::default()
+        };
+        let mut u = crate::render_fx::Uniforms { resolution: [w as f32, h as f32, 1.0], ..Default::default() };
+        let mut clock = crate::render_fx::Clock::default();
+        let cursor = crate::render_fx::Cursor { rect: [50.0, 24.0, 8.0, 12.0], color: [0.62, 0.82, 0.996, 1.0], style: crate::render_fx::style::BLOCK, visible: true };
+        clock.frame(&mut u, std::time::Instant::now(), (w, h), Some(cursor), true);
+        let mut bad = Vec::new();
+        for p in crate::render_fx::discover(None).0 {
+            for keep in [false, true] {
+                r.set_view_formats(true);
+                let mut with = crate::render_fx_gpu::Chain::new(&device, format, p.compile().unwrap(), keep).unwrap();
+                assert!(with.wants_raw_out());
+                let a = r.draw_offscreen_fx(&frame, Some((&mut with, &u)), w, h).unwrap();
+                r.set_view_formats(false);
+                let mut plain = crate::render_fx_gpu::Chain::new(&device, format, p.compile().unwrap(), keep).unwrap().without_view_formats(&device);
+                assert!(!plain.wants_raw_out());
+                let b = r.draw_offscreen_fx(&frame, Some((&mut plain, &u)), w, h).unwrap();
+                let worst = a.iter().zip(&b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+                if worst > 1 {
+                    bad.push(format!("{} (keep alpha {keep}): a channel differs by {worst}", p.id));
+                }
+            }
+        }
+        r.set_view_formats(true);
         assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 

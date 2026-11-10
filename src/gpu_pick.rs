@@ -101,6 +101,19 @@ pub fn describe(list: &[Facts]) -> String {
     list.iter().map(|f| format!("{:?} {} ({:?})", f.backend, f.name, f.kind)).collect::<Vec<_>>().join("; ")
 }
 
+/// "Prefer integrated" asked for the low-power GPU, but the API in use offered none: some
+/// integrated GPUs have only an OpenGL driver that wgpu can use (a 2013 Intel Haswell next to a
+/// discrete card, whose Vulkan driver is incomplete). Then OpenGL is worth a look, unless an API
+/// was forced or OpenGL is already in use.
+pub fn look_for_integrated_on_gl(pref: PowerPreference, chosen: &Facts, forced: bool) -> bool {
+    pref == PowerPreference::LowPower && !forced && chosen.kind != DeviceType::IntegratedGpu && chosen.backend != wgpu::Backend::Gl
+}
+
+/// Whether OpenGL's list has the integrated GPU the preference asked for.
+pub fn gl_has_integrated(gl: &[Facts]) -> bool {
+    gl.iter().any(|f| f.kind == DeviceType::IntegratedGpu)
+}
+
 /// The iTerm2 setting only matters when an integrated and a discrete GPU both exist.
 pub fn both_kinds(list: &[Facts]) -> bool {
     list.iter().any(|f| f.kind == DeviceType::IntegratedGpu) && list.iter().any(|f| f.kind == DeviceType::DiscreteGpu)
@@ -302,6 +315,19 @@ impl Recovery {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn prefer_integrated_looks_on_opengl_when_vulkan_has_none() {
+        let f = |backend, kind| Facts { backend, name: String::new(), kind };
+        let nvk = f(wgpu::Backend::Vulkan, DeviceType::DiscreteGpu);
+        assert!(look_for_integrated_on_gl(PowerPreference::LowPower, &nvk, false), "the W541: Vulkan offered only the Quadro");
+        assert!(!look_for_integrated_on_gl(PowerPreference::HighPerformance, &nvk, false), "the setting is off");
+        assert!(!look_for_integrated_on_gl(PowerPreference::LowPower, &nvk, true), "TERMURION_RENDERER chose the API");
+        assert!(!look_for_integrated_on_gl(PowerPreference::LowPower, &f(wgpu::Backend::Vulkan, DeviceType::IntegratedGpu), false), "got what it asked for");
+        assert!(!look_for_integrated_on_gl(PowerPreference::LowPower, &f(wgpu::Backend::Gl, DeviceType::Cpu), false), "already on OpenGL");
+        assert!(gl_has_integrated(&[f(wgpu::Backend::Gl, DeviceType::IntegratedGpu)]));
+        assert!(!gl_has_integrated(&[f(wgpu::Backend::Gl, DeviceType::Cpu)]), "llvmpipe is no integrated GPU");
+    }
+
     use super::*;
 
     fn f(backend: Backend, name: &str, kind: DeviceType) -> Facts {

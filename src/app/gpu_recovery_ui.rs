@@ -32,11 +32,12 @@ fn rebuild_window_gpu(old: Gpu, primary: &GpuHandles, alpha: Option<&AlphaGpu>) 
     let config = wgpu::SurfaceConfiguration {
         format,
         alpha_mode,
-        view_formats: if old_alpha.is_some() && format.is_srgb() { vec![format.remove_srgb_suffix()] } else { vec![] },
+        view_formats: if old_alpha.is_some() && format.is_srgb() && crate::render_fx_gpu::view_formats_supported(adapter) { vec![format.remove_srgb_suffix()] } else { vec![] },
         ..old_config
     };
     surface.configure(device, &config);
     renderer.rebuild_gpu(device, queue, format);
+    renderer.set_view_formats(crate::render_fx_gpu::view_formats_supported(adapter));
     Ok(Gpu {
         surface,
         adapter: primary.adapter.clone(),
