@@ -199,33 +199,85 @@ pub fn token_ok(t: &str) -> bool {
     (1..=MAX_TOKEN).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_graphic())
 }
 
-/// The Linux socket's message: the request as `encode` writes it, after an optional
-/// `activation` line pair carrying the token the desktop gave the second start, so the window
-/// it wakes may come front (Windows' AllowSetForegroundWindow has no message part).
-pub fn encode_with_token(r: &Request, token: Option<&str>) -> Option<Vec<u8>> {
+/// A start's request id, at most this long: its retries carry the same one.
+pub const MAX_ID: usize = 32;
+
+/// Whether `id` may name a request: 1 to `MAX_ID` ASCII letters and digits.
+pub fn id_ok(id: &str) -> bool {
+    (1..=MAX_ID).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+/// A request as the Linux socket carries it: the request, the start's id (the same on every
+/// retry, so a request the server already took is not run twice), and the desktop's token.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Envelope {
+    pub request: Request,
+    pub id: Option<String>,
+    pub token: Option<String>,
+}
+
+/// The Linux socket's message: an optional `id` line pair, an optional `activation` line pair
+/// carrying the token the desktop gave the second start (so the window it wakes may come front;
+/// Windows' AllowSetForegroundWindow has no message part), then the request as `encode` writes it.
+pub fn encode_envelope(r: &Request, id: Option<&str>, token: Option<&str>) -> Option<Vec<u8>> {
     let body = encode(r)?;
-    let Some(t) = token.filter(|t| token_ok(t)) else { return Some(body) };
-    let mut out = format!("activation\n{t}\n").into_bytes();
+    let mut out = Vec::new();
+    if let Some(i) = id.filter(|i| id_ok(i)) {
+        out.extend_from_slice(format!("id\n{i}\n").as_bytes());
+    }
+    if let Some(t) = token.filter(|t| token_ok(t)) {
+        out.extend_from_slice(format!("activation\n{t}\n").as_bytes());
+    }
     out.extend_from_slice(&body);
     (out.len() <= MAX_MESSAGE).then_some(out)
 }
 
-/// `decode` of a message that may start with the activation pair. A bad token drops the whole
-/// message, as any other bad line does.
-pub fn decode_with_token(bytes: &[u8]) -> Option<(Request, Option<String>)> {
+pub fn encode_with_token(r: &Request, token: Option<&str>) -> Option<Vec<u8>> {
+    encode_envelope(r, None, token)
+}
+
+/// `decode` of a message that may start with the id and activation pairs, in that order. A bad
+/// id or token drops the whole message, as any other bad line does.
+pub fn decode_envelope(bytes: &[u8]) -> Option<Envelope> {
     if bytes.len() > MAX_MESSAGE {
         return None;
     }
-    let Some(rest) = bytes.strip_prefix(b"activation\n") else { return decode(bytes).map(|r| (r, None)) };
-    let end = rest.iter().position(|b| *b == b'\n')?;
-    let token = std::str::from_utf8(&rest[..end]).ok().filter(|t| token_ok(t))?;
-    decode(&rest[end + 1..]).map(|r| (r, Some(token.to_string())))
+    // One `name\nvalue\n` pair, when the message starts with `name`.
+    fn pair<'a>(bytes: &'a [u8], name: &str, ok: fn(&str) -> bool) -> Option<(Option<String>, &'a [u8])> {
+        let Some(rest) = bytes.strip_prefix(format!("{name}\n").as_bytes()) else { return Some((None, bytes)) };
+        let end = rest.iter().position(|b| *b == b'\n')?;
+        let value = std::str::from_utf8(&rest[..end]).ok().filter(|v| ok(v))?;
+        Some((Some(value.to_string()), &rest[end + 1..]))
+    }
+    let (id, rest) = pair(bytes, "id", id_ok)?;
+    let (token, rest) = pair(rest, "activation", token_ok)?;
+    decode(rest).map(|request| Envelope { request, id, token })
+}
+
+pub fn decode_with_token(bytes: &[u8]) -> Option<(Request, Option<String>)> {
+    decode_envelope(bytes).map(|e| (e.request, e.token))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    /// A start's id travels first, so a retry of a request the server already took is known.
+    #[test]
+    fn an_id_travels_before_the_token_and_the_request() {
+        let r = Request::Reopen;
+        let m = encode_envelope(&r, Some("a1B2"), Some("tok")).unwrap();
+        assert_eq!(m, b"id\na1B2\nactivation\ntok\nreopen\n".to_vec());
+        assert_eq!(decode_envelope(&m), Some(Envelope { request: r.clone(), id: Some("a1B2".into()), token: Some("tok".into()) }));
+        assert_eq!(decode_envelope(b"id\nx9\nreopen\n").map(|e| (e.id, e.token)), Some((Some("x9".into()), None)));
+        assert_eq!(decode_envelope(b"reopen\n").map(|e| e.id), Some(None));
+        for bad in [&b"id\n\nreopen\n"[..], b"id\na-b\nreopen\n", b"activation\ntok\nid\nx\nreopen\n", b"id\nx\n"] {
+            assert_eq!(decode_envelope(bad), None, "{:?}", String::from_utf8_lossy(bad));
+        }
+        assert!(!id_ok(&"a".repeat(MAX_ID + 1)));
+        assert_eq!(encode_envelope(&r, Some("bad id"), None), encode(&r), "an unusable id is left out");
+    }
 
     /// The Linux socket carries the desktop's activation token before the request; the request
     /// itself is the Windows pipe's message unchanged.

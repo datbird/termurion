@@ -480,8 +480,9 @@ mod tests {
         assert!(body(production(PRESENCE), "tray_clicked").contains("self.drop_unused_activation()"));
     }
 
-    /// Review R3: a second start that opens files keeps its token until their answers act, and the
-    /// window they open in takes it.
+    /// Review R3 and the last round: a second start that opens files keeps its token for its own
+    /// batch only. It rides the batch's worker to the window those files open in; an empty,
+    /// ignored-only or unstarted batch drops it, and a later batch never takes it.
     #[test]
     fn a_file_start_keeps_its_token_for_the_files_window() {
         let launch = production(include_str!("launch_ui.rs"));
@@ -489,10 +490,16 @@ mod tests {
         let open = receive.find("self.open_batch.push(paths").unwrap();
         assert!(receive[open..].starts_with("self.open_batch.push(paths, Instant::now());\n            self.keep_activation_for_files();"));
         assert!(body(launch, "launch_request_now").contains("self.keep_activation_for_files();"));
-        assert!(body(launch, "keep_activation_for_files").contains("self.open_activation = Some(t)"));
-        let tick = body(production(include_str!("open_file_ui.rs")), "open_tick");
-        let back = tick.find("self.activation = Some(t)").expect("the token comes back for the files");
-        assert!(back < tick.find("self.opened(r, event_loop)").unwrap() && tick.contains("self.drop_unused_activation()"));
+        assert!(body(launch, "keep_activation_for_files").contains("batch_token(self.open_activation.take(), self.open_batch_no, token)"));
+        let files = production(include_str!("open_file_ui.rs"));
+        let tick = body(files, "open_tick");
+        let taken = tick.find("token_for_batch(self.open_activation.take(), batch, !paths.is_empty())").expect("only this batch's token, only with paths");
+        assert!(taken < tick.find("self.spawn_inspect(paths, false, token)").unwrap());
+        assert!(tick.contains("self.open_batch_no += 1;"), "the next Open is the next batch's");
+        let back = tick.find("Done::Inspected(list, token) => {").expect("the token comes back with its own batch");
+        assert!(tick[back..].find("self.activation = Some(t)").unwrap() < tick[back..].find("self.opened(r, event_loop)").unwrap());
+        assert!(!tick.contains("self.open_activation.take() {"), "a worker's answer never takes a pending token");
+        assert!(body(files, "spawn_inspect").contains("Done::Inspected(list, token)"), "the token rides the worker");
     }
 
     /// Wayland cannot hide a window: with a tray on the desktop the resident window is destroyed

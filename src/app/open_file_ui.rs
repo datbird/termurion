@@ -25,8 +25,9 @@ const MAX_WORKERS: usize = 4;
 
 /// What a worker found.
 pub(super) enum Done {
-    /// The facts of each path of a batch, in order.
-    Inspected(Vec<Result<Facts, String>>),
+    /// The facts of each path of a batch, in order, with the second start's activation token
+    /// for the window they open in (that batch's own, carried through the worker).
+    Inspected(Vec<Result<Facts, String>>, Option<String>),
     /// The file of a "Add it anyway", checked again before it is read.
     Recheck(Result<Facts, String>),
 }
@@ -105,18 +106,22 @@ impl App {
     pub(super) fn open_tick(&mut self, event_loop: &ActiveEventLoop) -> Option<Instant> {
         if self.gpu.is_some()
             && let Some((paths, ignored)) = self.open_batch.take(Instant::now()) {
+                // This batch's token goes with its paths, or with nothing: never to a later batch.
+                let batch = self.open_batch_no;
+                self.open_batch_no += 1;
+                let token = crate::open_file::token_for_batch(self.open_activation.take(), batch, !paths.is_empty());
                 if ignored > 0 {
                     self.open_files_ignored(ignored);
                 }
                 if !paths.is_empty() {
-                    self.open_paths(paths, event_loop);
+                    self.spawn_inspect(paths, false, token);
                 }
             }
         while let Ok(done) = self.open_work.rx.try_recv() {
             match done {
-                Done::Inspected(list) => {
+                Done::Inspected(list, token) => {
                     // The second start's token is for the window these files open in.
-                    if let Some(t) = self.open_activation.take() {
+                    if let Some(t) = token {
                         self.activation = Some(t);
                     }
                     for r in list {
@@ -135,17 +140,14 @@ impl App {
         if self.gpu.is_some() { self.open_batch.due() } else { None }
     }
 
-    /// Hands the paths of one batch to a worker; each is checked there, in order.
-    pub(super) fn open_paths(&mut self, paths: Vec<PathBuf>, _event_loop: &ActiveEventLoop) {
-        self.spawn_inspect(paths, false);
-    }
-
     /// An "Add it anyway": the file is checked again (it may have changed since) before it is read.
     pub(super) fn open_recheck(&mut self, path: PathBuf) {
-        self.spawn_inspect(vec![path], true);
+        self.spawn_inspect(vec![path], true, None);
     }
 
-    fn spawn_inspect(&mut self, paths: Vec<PathBuf>, recheck: bool) {
+    /// Hands paths to a worker; each is checked there, in order. A worker that is not started
+    /// drops `token` with its paths.
+    fn spawn_inspect(&mut self, paths: Vec<PathBuf>, recheck: bool, token: Option<String>) {
         if self.open_work.inflight.load(Ordering::SeqCst) >= MAX_WORKERS {
             return self.open_files_ignored(paths.len());
         }
@@ -156,7 +158,7 @@ impl App {
             move || {
                 let list: Vec<Result<Facts, String>> = paths.iter().map(|p| open_file::inspect(p, &open_file::RealProbe)).collect();
                 inflight.fetch_sub(1, Ordering::SeqCst);
-                let done = if recheck { Done::Recheck(list.into_iter().next().unwrap_or_else(|| Err(open_file::NETWORK_BANNER.to_string()))) } else { Done::Inspected(list) };
+                let done = if recheck { Done::Recheck(list.into_iter().next().unwrap_or_else(|| Err(open_file::NETWORK_BANNER.to_string()))) } else { Done::Inspected(list, token) };
                 if tx.send(done).is_ok() {
                     notify();
                 }

@@ -63,9 +63,8 @@ impl App {
     /// Files open on a later pass, after their batch and the worker: the token waits for them
     /// (`open_tick` hands it back when their answers act; review R3).
     fn keep_activation_for_files(&mut self) {
-        if let Some(t) = self.activation.take() {
-            self.open_activation = Some(t);
-        }
+        let token = self.activation.take();
+        self.open_activation = crate::open_file::batch_token(self.open_activation.take(), self.open_batch_no, token);
     }
 
     /// The second start's activation token is for the window this request raises or makes; one

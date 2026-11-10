@@ -316,6 +316,23 @@ impl IgnoredCount {
     }
 }
 
+/// The token kept for the batch numbered `batch` after an Open with `token` arrives: the first
+/// token of a batch stays (a second Open into the same batch does not replace it), and one left
+/// from an earlier batch is replaced.
+pub fn batch_token(kept: Option<(u64, String)>, batch: u64, token: Option<String>) -> Option<(u64, String)> {
+    match (kept, token) {
+        (Some((b, t)), _) if b == batch => Some((b, t)),
+        (_, Some(t)) => Some((batch, t)),
+        (kept, None) => kept.filter(|(b, _)| *b == batch),
+    }
+}
+
+/// The token a batch that just came out hands to its worker: only its own, and only when it
+/// has paths to inspect (an empty or ignored-only batch drops it).
+pub fn token_for_batch(kept: Option<(u64, String)>, batch: u64, has_paths: bool) -> Option<String> {
+    kept.filter(|(b, _)| *b == batch && has_paths).map(|(_, t)| t)
+}
+
 /// Paths waiting for their batch window, and the budget of files opened lately.
 #[derive(Debug, Default)]
 pub struct Batch {
@@ -395,6 +412,25 @@ pub fn open_with_entries(exe: &Path) -> Vec<(String, String, String)> {
         v.push((format!("{APPLICATION_KEY}\\SupportedTypes"), ext.to_string(), String::new()));
     }
     v
+}
+
+#[cfg(test)]
+mod batch_token_tests {
+    use super::*;
+
+    /// One token per batch: the first stays, a later batch's is its own, and a batch that comes
+    /// out empty or ignored-only takes none along.
+    #[test]
+    fn a_files_token_belongs_to_its_batch() {
+        let t = |s: &str| Some(s.to_string());
+        assert_eq!(batch_token(None, 3, t("a")), Some((3, "a".into())));
+        assert_eq!(batch_token(Some((3, "a".into())), 3, t("b")), Some((3, "a".into())), "a second Open does not overwrite");
+        assert_eq!(batch_token(Some((2, "old".into())), 3, t("b")), Some((3, "b".into())), "an earlier batch's is replaced");
+        assert_eq!(batch_token(Some((2, "old".into())), 3, None), None, "an earlier batch's is never kept");
+        assert_eq!(token_for_batch(Some((3, "a".into())), 3, true), t("a"));
+        assert_eq!(token_for_batch(Some((3, "a".into())), 3, false), None, "empty or ignored-only");
+        assert_eq!(token_for_batch(Some((2, "a".into())), 3, true), None, "not this batch's");
+    }
 }
 
 #[cfg(test)]

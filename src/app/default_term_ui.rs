@@ -160,6 +160,9 @@ impl App {
                 Err(e) => {
                     crate::host_base::log(&format!("embedding: the launch pipe is taken: {e}"));
                     let paths = self.open_batch.take_all();
+                    // Their token leaves with them.
+                    self.open_activation = None;
+                    self.open_batch_no += 1;
                     let urls = std::mem::take(&mut self.pending_urls_at_start).into_iter().map(|url| crate::launch::Request::Url { url });
                     let opens = (!paths.is_empty()).then_some(crate::launch::Request::Open { paths });
                     let handed: Vec<(crate::launch::Request, crate::url_launch::AfterHand)> = urls.chain(std::mem::take(&mut self.launch_queue)).chain(opens).map(|r| {

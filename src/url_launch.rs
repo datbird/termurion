@@ -348,8 +348,10 @@ mod sock {
             }
         };
         let token = own_token();
+        // One id for this start: every retry carries it, so a request taken once is run once.
+        let id = request_id();
         let mut attempt = || {
-            let handed = hand_request_on(&name, request, token.as_deref(), &verify_server);
+            let handed = hand_envelope_on(&name, request, Some(&id), token.as_deref(), &verify_server);
             if let Handed::OtherOwner(e) = &handed {
                 crate::host_base::log(&format!("launch: the launch socket is held by another program, so this Termurion runs: {e}"));
             }
@@ -357,6 +359,17 @@ mod sock {
         };
         let tries = std::cell::Cell::new(0u32);
         hand_over(&mut attempt, HAND_TRIES, &|| std::thread::sleep(hand_pause(tries.replace(tries.get() + 1))))
+    }
+
+    /// A fresh request id: 16 random bytes as hex.
+    pub fn request_id() -> String {
+        let mut b = [0u8; 16];
+        if getrandom::fill(&mut b).is_err() {
+            // No random source: the pid and the time still tell two starts apart.
+            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+            return format!("{:x}{:x}", std::process::id(), t);
+        }
+        b.iter().map(|x| format!("{x:02x}")).collect()
     }
 
     /// A busy running Termurion is asked this many times (a burst of starts, review R1).
@@ -457,9 +470,14 @@ mod sock {
         }
     }
 
-    /// The only writer to the socket: one message, one connection, counted taken only on the ack.
+    /// `hand_envelope_on` with no request id.
     pub fn hand_request_on(name: &str, request: &crate::launch::Request, token: Option<&str>, verify: &dyn Fn(u32) -> Result<(), String>) -> Handed {
-        let Some(message) = crate::launch::encode_with_token(request, token) else { return Handed::Failed("the request is not one Termurion accepts".into()) };
+        hand_envelope_on(name, request, None, token, verify)
+    }
+
+    /// The only writer to the socket: one message, one connection, counted taken only on the ack.
+    pub fn hand_envelope_on(name: &str, request: &crate::launch::Request, id: Option<&str>, token: Option<&str>, verify: &dyn Fn(u32) -> Result<(), String>) -> Handed {
+        let Some(message) = crate::launch::encode_envelope(request, id, token) else { return Handed::Failed("the request is not one Termurion accepts".into()) };
         // A socket that can never serve is no Termurion: this one runs without it (and says so).
         if let Some(why) = unusable(std::path::Path::new(name)) {
             return Handed::OtherOwner(why);
@@ -520,13 +538,23 @@ mod sock {
     /// reader is free, never closed unanswered (review R1).
     pub const READERS: usize = 4;
 
-    type Notify = std::sync::Arc<std::sync::Mutex<Box<dyn Fn(crate::launch::Request) + Send>>>;
+    /// The app's sink and the ids of the requests it was handed lately, under one lock, so two
+    /// readers of the same retried request cannot both hand it on.
+    struct Served {
+        notify: Box<dyn Fn(crate::launch::Request) + Send>,
+        seen: std::collections::VecDeque<String>,
+    }
+
+    /// Request ids remembered; a retry comes within seconds, long before 64 other starts.
+    pub const SEEN_IDS: usize = 64;
+
+    type Notify = std::sync::Arc<std::sync::Mutex<Served>>;
 
     pub fn serve_on(name: &str, wait: Duration, notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<Serving, String> {
         let mut listener = ipc::Listener::bind(name).map_err(|e| e.replace("session host", "Termurion"))?;
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopping = stop.clone();
-        let notify: Notify = std::sync::Arc::new(std::sync::Mutex::new(notify));
+        let notify: Notify = std::sync::Arc::new(std::sync::Mutex::new(Served { notify, seen: Default::default() }));
         let thread = std::thread::Builder::new()
             .name("launch-socket".into())
             .spawn(move || {
@@ -573,17 +601,28 @@ mod sock {
             let _ = pipe.write_all(&[ACK]);
         }
         pipe.shutdown();
-        if let Some((request, token)) = got {
+        if let Some(e) = got {
             // One request at a time, its token just before it.
-            let n = notify.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(t) = token {
+            let mut served = notify.lock().unwrap_or_else(|e| e.into_inner());
+            // A retry of a request already handed on (its ack was late) is acked, not run again.
+            if let Some(id) = &e.id {
+                if served.seen.contains(id) {
+                    crate::host_base::log("launch: a retried request was already taken");
+                    return;
+                }
+                if served.seen.len() >= SEEN_IDS {
+                    served.seen.pop_front();
+                }
+                served.seen.push_back(id.clone());
+            }
+            if let Some(t) = e.token {
                 tell_activation(t);
             }
-            n(request);
+            (served.notify)(e.request);
         }
     }
 
-    fn read_message(pipe: &ipc::Pipe, wait: Duration) -> Option<(crate::launch::Request, Option<String>)> {
+    fn read_message(pipe: &ipc::Pipe, wait: Duration) -> Option<crate::launch::Envelope> {
         let end = Instant::now() + wait;
         let mut bytes: Vec<u8> = Vec::new();
         let mut chunk = [0u8; 1024];
@@ -596,7 +635,7 @@ mod sock {
                 Ok(Some(n)) if n > 0 => bytes.extend_from_slice(&chunk[..n]),
                 _ => return None,
             }
-            if let Some(got) = crate::launch::decode_with_token(&bytes) {
+            if let Some(got) = crate::launch::decode_envelope(&bytes) {
                 return Some(got);
             }
         }
@@ -809,6 +848,28 @@ mod sock {
             assert_eq!(hand_pause(0), Duration::from_millis(100));
             assert_eq!(hand_pause(9), Duration::from_secs(1));
             assert!((0..HAND_TRIES as u32 - 1).map(hand_pause).sum::<Duration>() <= Duration::from_secs(3), "a few seconds in all");
+        }
+
+        /// A start whose ack came late tries again with the same id: the request runs once, and
+        /// both tries count as taken.
+        #[test]
+        fn a_retried_request_runs_once() {
+            let d = dir();
+            let name = d.0.join("launch.sock").to_string_lossy().to_string();
+            let (tx, rx) = mpsc::channel();
+            let tx = std::sync::Mutex::new(tx);
+            let mut serving = serve_on(&name, Duration::from_secs(2), Box::new(move |r| drop(tx.lock().unwrap().send(r)))).unwrap();
+            let id = request_id();
+            assert!(crate::launch::id_ok(&id) && id != request_id(), "{id}");
+            let r = crate::launch::Request::NewTab { guid: None };
+            assert_eq!(hand_envelope_on(&name, &r, Some(&id), None, &ok), Handed::Taken);
+            assert_eq!(hand_envelope_on(&name, &r, Some(&id), None, &ok), Handed::Taken, "the retry is acked");
+            assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), r);
+            assert!(rx.recv_timeout(Duration::from_millis(500)).is_err(), "not run twice");
+            // Another start's request is its own.
+            assert_eq!(hand_envelope_on(&name, &r, Some(&request_id()), None, &ok), Handed::Taken);
+            assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), r);
+            serving.stop();
         }
 
         /// Review N9: a silent client of this user does not hold up a real second start.
