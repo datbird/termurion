@@ -134,6 +134,8 @@ impl App {
         if want && self.tray_on && up && self.tray_failures > 0 {
             self.tray_failures = 0;
             self.tray_due = None;
+            // A failure's banner is stale once the icon is up (review R4).
+            self.banners.clear("tray");
         }
         if !presence::tray_attempt_due(want, self.tray_on, self.tray_failures, self.tray_due, now) {
             // Waiting for a retry's time, or nothing to do.
@@ -141,6 +143,13 @@ impl App {
         }
         // A failure leaves the state as it was, so the next try is the retry (Explorer not up yet).
         let result = crate::platform::notify::set_resident(want);
+        // Before the panel's first answer (Linux, at login) an add is early, not failed: no count,
+        // no banner, and it is tried again shortly (review R4).
+        if presence::tray_add_early(want, result.is_ok(), crate::platform::notify::icon_state() == crate::resident::Icon::Unknown) {
+            crate::host_base::log("tray: add waits for the panel's first answer");
+            self.tray_due = Some(now + presence::TRAY_EARLY_RETRY);
+            return self.tray_due;
+        }
         self.tray_on = presence::tray_settle(want, self.tray_on, result.is_ok());
         let before = self.tray_failures;
         // An add Linux started is counted when it ends (`tray_lost`, or the reset above).

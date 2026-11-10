@@ -480,6 +480,21 @@ mod tests {
         assert!(body(production(PRESENCE), "tray_clicked").contains("self.drop_unused_activation()"));
     }
 
+    /// Review R3: a second start that opens files keeps its token until their answers act, and the
+    /// window they open in takes it.
+    #[test]
+    fn a_file_start_keeps_its_token_for_the_files_window() {
+        let launch = production(include_str!("launch_ui.rs"));
+        let receive = body(launch, "receive_launch");
+        let open = receive.find("self.open_batch.push(paths").unwrap();
+        assert!(receive[open..].starts_with("self.open_batch.push(paths, Instant::now());\n            self.keep_activation_for_files();"));
+        assert!(body(launch, "launch_request_now").contains("self.keep_activation_for_files();"));
+        assert!(body(launch, "keep_activation_for_files").contains("self.open_activation = Some(t)"));
+        let tick = body(production(include_str!("open_file_ui.rs")), "open_tick");
+        let back = tick.find("self.activation = Some(t)").expect("the token comes back for the files");
+        assert!(back < tick.find("self.opened(r, event_loop)").unwrap() && tick.contains("self.drop_unused_activation()"));
+    }
+
     /// Wayland cannot hide a window: with a tray on the desktop the resident window is destroyed
     /// (its device kept) and made again by every wake; with none, the last close quits.
     #[test]

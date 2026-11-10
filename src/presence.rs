@@ -157,6 +157,15 @@ pub fn tray_attempt_due(want: bool, on: bool, _failures: u32, due: Option<std::t
     tray_changes(want, on) && due.is_none_or(|d| now >= d)
 }
 
+/// How soon an add made before the panel answered is tried again.
+pub const TRAY_EARLY_RETRY: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// An add that failed only because the panel has not answered yet (Linux at login): it is
+/// retried soon and counts as no failure.
+pub fn tray_add_early(want: bool, ok: bool, panel_unknown: bool) -> bool {
+    want && !ok && panel_unknown
+}
+
 /// Whether this failure is the one that ends the backoff (logged once).
 pub fn tray_enters_steady_retry(before: u32, after: u32) -> bool {
     before < TRAY_MAX_ATTEMPTS && after == TRAY_MAX_ATTEMPTS
@@ -334,6 +343,22 @@ pub fn dock_click(visible_hotkey_windows: usize, profiles: &[(String, i64)], vis
 
 #[cfg(test)]
 mod tests {
+    /// Review R4: an add before the panel's first answer is early, not a failure, and the
+    /// failure banner goes once the icon is up.
+    #[test]
+    fn an_early_add_is_no_failure() {
+        assert!(tray_add_early(true, false, true));
+        assert!(!tray_add_early(true, false, false), "a real failure counts");
+        assert!(!tray_add_early(true, true, true));
+        assert!(!tray_add_early(false, false, true), "a remove is never early");
+        let src = include_str!("app/presence_ui.rs");
+        let tick = src.split("fn tray_tick").nth(1).unwrap().split("\n    }\n").next().unwrap();
+        let early = tick.find("presence::tray_add_early(").expect("the early case is decided");
+        assert!(early < tick.find("tray_failures_after(").unwrap() && early < tick.find("self.banners.set(\"tray\"").unwrap(), "before any count or banner");
+        let reset = tick.find("self.tray_failures = 0;").unwrap();
+        assert!(tick[reset..].contains("self.banners.clear(\"tray\")"), "the stale banner goes when the icon is up");
+    }
+
     use super::*;
 
     /// The bundle template, filled, is a plist that names Termurion and no iTerm2.

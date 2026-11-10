@@ -115,9 +115,14 @@ impl App {
         while let Ok(done) = self.open_work.rx.try_recv() {
             match done {
                 Done::Inspected(list) => {
+                    // The second start's token is for the window these files open in.
+                    if let Some(t) = self.open_activation.take() {
+                        self.activation = Some(t);
+                    }
                     for r in list {
                         self.opened(r, event_loop);
                     }
+                    self.drop_unused_activation();
                 }
                 Done::Recheck(Ok(f)) => self.add_duplicate_color(&f.path),
                 Done::Recheck(Err(e)) => self.open_file_banner(e),

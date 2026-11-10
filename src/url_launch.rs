@@ -355,7 +355,16 @@ mod sock {
             }
             handed
         };
-        hand_over(&mut attempt, 3, &|| std::thread::sleep(Duration::from_millis(300)))
+        let tries = std::cell::Cell::new(0u32);
+        hand_over(&mut attempt, HAND_TRIES, &|| std::thread::sleep(hand_pause(tries.replace(tries.get() + 1))))
+    }
+
+    /// A busy running Termurion is asked this many times (a burst of starts, review R1).
+    pub const HAND_TRIES: usize = 6;
+
+    /// The wait before try `n + 2`: 100 ms doubling to at most 1 s (about 2.5 s in all).
+    pub fn hand_pause(n: u32) -> Duration {
+        Duration::from_millis((100u64 << n.min(4)).min(1000))
     }
 
     /// Whether a Termurion of this user answers on the socket, with nothing sent.
@@ -472,10 +481,12 @@ mod sock {
             return Handed::Failed(e);
         }
         let mut answer = [0u8; 1];
+        // A close without the ack after the message went out is a busy or stopping Termurion,
+        // not none: tried again, and a gone socket is NoServer on that try (review R1).
         match pipe.read_timeout(&mut answer, Duration::from_secs(2)) {
             Ok(Some(1)) if answer[0] == ACK => Handed::Taken,
             Ok(None) => Handed::Failed("the running Termurion did not answer".into()),
-            _ => Handed::NoServer,
+            _ => Handed::Failed("the running Termurion closed without an answer".into()),
         }
     }
 
@@ -505,7 +516,8 @@ mod sock {
     }
 
     /// Clients read at once at most. A silent client holds only its own reader, never the next
-    /// start (review N9); past the cap a client is closed unanswered and its start retries.
+    /// start (review N9). Past the cap the next client waits in the socket's backlog until a
+    /// reader is free, never closed unanswered (review R1).
     pub const READERS: usize = 4;
 
     type Notify = std::sync::Arc<std::sync::Mutex<Box<dyn Fn(crate::launch::Request) + Send>>>;
@@ -520,11 +532,6 @@ mod sock {
             .spawn(move || {
                 let mut readers: Vec<std::thread::JoinHandle<()>> = Vec::new();
                 let serve = |p: ipc::Pipe, readers: &mut Vec<std::thread::JoinHandle<()>>| {
-                    readers.retain(|r| !r.is_finished());
-                    if readers.len() >= READERS {
-                        p.shutdown();
-                        return;
-                    }
                     let n = notify.clone();
                     match std::thread::Builder::new().name("launch-read".into()).spawn(move || take_one(&p, wait, &n)) {
                         Ok(r) => readers.push(r),
@@ -532,6 +539,12 @@ mod sock {
                     }
                 };
                 while !stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                    // All readers busy: the next client stays queued in the backlog meanwhile.
+                    readers.retain(|r| !r.is_finished());
+                    if readers.len() >= READERS {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
                     match listener.accept(Duration::from_secs(1)) {
                         Ok(Some(p)) => serve(p, &mut readers),
                         Ok(None) => {}
@@ -718,9 +731,12 @@ mod sock {
             assert!(t.elapsed() < Duration::from_millis(300), "{:?}", t.elapsed());
         }
 
-        /// Review N7: a start that lost the lock to another waits for that one's socket.
+        /// Review N7: a start that lost the lock to another waits for that one's socket. The lock
+        /// stays held while the other binds and answers, as a real Listener holds it from before its
+        /// bind for its whole life, so there is no gap to race (review R2).
         #[test]
         fn a_start_waits_for_the_one_holding_the_lock() {
+            use std::io::{Read, Write};
             use std::os::fd::AsRawFd;
             let d = dir();
             let path = d.0.join("launch.sock");
@@ -730,20 +746,69 @@ mod sock {
             let f = std::fs::File::create(std::path::Path::new(&lock)).unwrap();
             assert_eq!(unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) }, 0);
             assert!(lock_held(&path), "/proc/locks shows the lock");
-            let (tx, rx) = mpsc::channel();
-            let n2 = name.clone();
-            let late = std::thread::spawn(move || {
+            let p2 = path.clone();
+            // The other start: it binds 300 ms later under the held lock and acks one request.
+            let other = std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(300));
-                drop(f);
-                let tx = std::sync::Mutex::new(tx);
-                serve_on(&n2, Duration::from_secs(2), Box::new(move |r| drop(tx.lock().unwrap().send(r)))).unwrap()
+                let l = std::os::unix::net::UnixListener::bind(&p2).unwrap();
+                let (mut c, _) = l.accept().unwrap();
+                let mut got = Vec::new();
+                let mut buf = [0u8; 256];
+                while crate::launch::decode_with_token(&got).is_none() {
+                    let n = c.read(&mut buf).unwrap();
+                    assert!(n > 0, "the client closed early");
+                    got.extend_from_slice(&buf[..n]);
+                }
+                c.write_all(&[ACK]).unwrap();
+                crate::launch::decode_with_token(&got).unwrap().0
             });
             assert_eq!(hand_request_on(&name, &crate::launch::Request::Reopen, None, &ok), Handed::Taken, "it waited for the socket");
-            assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), crate::launch::Request::Reopen);
-            late.join().unwrap().stop();
+            assert_eq!(other.join().unwrap(), crate::launch::Request::Reopen);
+            drop(f);
             assert!(locks_name("1: FLOCK  ADVISORY  WRITE 12 00:1a:345 0 EOF\n", 345));
             assert!(!locks_name("1: POSIX  ADVISORY  WRITE 12 00:1a:345 0 EOF\n", 345));
             assert!(!locks_name("1: FLOCK  ADVISORY  WRITE 12 00:1a:1345 0 EOF\n", 345));
+        }
+
+        /// Review R1: a burst of starts, more than there are readers, all reach the one Termurion:
+        /// none is closed unanswered (each would be a second Termurion).
+        #[test]
+        fn a_burst_of_starts_all_reach_the_running_one() {
+            let d = dir();
+            let name = d.0.join("launch.sock").to_string_lossy().to_string();
+            let (tx, rx) = mpsc::channel();
+            let tx = std::sync::Mutex::new(tx);
+            let mut serving = serve_on(&name, Duration::from_millis(500), Box::new(move |r| drop(tx.lock().unwrap().send(r)))).unwrap();
+            // Every reader held by a silent client first, so the burst must queue.
+            let silent: Vec<_> = (0..READERS).map(|_| std::os::unix::net::UnixStream::connect(&name).unwrap()).collect();
+            std::thread::sleep(Duration::from_millis(100));
+            let burst: Vec<_> = (0..10)
+                .map(|i| {
+                    let n = name.clone();
+                    std::thread::spawn(move || {
+                        let r = crate::launch::Request::Arrangement { name: format!("a{i}") };
+                        let tries = std::cell::Cell::new(0u32);
+                        hand_over(&mut || hand_request_on(&n, &r, None, &ok), HAND_TRIES, &|| std::thread::sleep(hand_pause(tries.replace(tries.get() + 1))))
+                    })
+                })
+                .collect();
+            let after: Vec<AfterHand> = burst.into_iter().map(|t| t.join().unwrap()).collect();
+            assert!(after.iter().all(|a| *a == AfterHand::Exit), "no second Termurion: {after:?}");
+            let mut got: Vec<String> = (0..10)
+                .map(|_| match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    crate::launch::Request::Arrangement { name } => name,
+                    other => panic!("{other:?}"),
+                })
+                .collect();
+            got.sort();
+            let mut want: Vec<String> = (0..10).map(|i| format!("a{i}")).collect();
+            want.sort();
+            assert_eq!(got, want);
+            drop(silent);
+            serving.stop();
+            assert_eq!(hand_pause(0), Duration::from_millis(100));
+            assert_eq!(hand_pause(9), Duration::from_secs(1));
+            assert!((0..HAND_TRIES as u32 - 1).map(hand_pause).sum::<Duration>() <= Duration::from_secs(3), "a few seconds in all");
         }
 
         /// Review N9: a silent client of this user does not hold up a real second start.

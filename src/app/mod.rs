@@ -594,6 +594,8 @@ pub struct App {
     resident_window_gone: Option<WindowId>,
     /// When a stranded resident Termurion last tried its rescue (`resident_upkeep`).
     rescue_tried: Option<Instant>,
+    /// A second start's activation token waiting for the files it opens (`open_tick`).
+    open_activation: Option<String>,
     /// When Wayland's resident window was last made again after a failure (`remake_if_gone`).
     remake_tried: Option<Instant>,
     /// A resident start whose plan opened no window, until a window first shows (N3).
@@ -2386,6 +2388,7 @@ pub fn run() {
         resident_window_gone: None,
         rescue_tried: None,
         remake_tried: None,
+        open_activation: None,
         never_shown: false,
         wake_owed: false,
         color_pick: None,

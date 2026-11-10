@@ -18,7 +18,7 @@ impl App {
         // the launch flood cap never drops them silently.
         if let Request::Open { paths } = r {
             self.open_batch.push(paths, Instant::now());
-            self.drop_unused_activation();
+            self.keep_activation_for_files();
             return;
         }
         if !self.launch_flood.admit(Instant::now()) {
@@ -58,6 +58,14 @@ impl App {
     pub(super) fn launch_request(&mut self, r: Request, event_loop: &ActiveEventLoop) {
         self.launch_request_now(r, event_loop);
         self.drop_unused_activation();
+    }
+
+    /// Files open on a later pass, after their batch and the worker: the token waits for them
+    /// (`open_tick` hands it back when their answers act; review R3).
+    fn keep_activation_for_files(&mut self) {
+        if let Some(t) = self.activation.take() {
+            self.open_activation = Some(t);
+        }
     }
 
     /// The second start's activation token is for the window this request raises or makes; one
@@ -102,7 +110,10 @@ impl App {
                 self.bring_forward();
                 self.redraw();
             }
-            Request::Open { paths } => self.open_batch.push(paths, Instant::now()),
+            Request::Open { paths } => {
+                self.open_batch.push(paths, Instant::now());
+                self.keep_activation_for_files();
+            }
             Request::Url { .. } | Request::Embedding => {}
         }
     }

@@ -244,14 +244,14 @@ impl App {
     }
 }
 
-/// Whether a window is on screen: not hidden, not minimized and, for a hotkey window, shown
-/// (`shown` false means DWM-cloaked, which winit still reports as visible).
 /// The current window's `window_on_screen`: the resident one never is, whatever the window
 /// system says (winit on Wayland answers None for a window it never mapped; review N1, N2).
 pub(super) fn current_on_screen(resident: bool, visible: Option<bool>, minimized: Option<bool>, shown: Option<bool>) -> bool {
     !resident && window_on_screen(visible, minimized, shown)
 }
 
+/// Whether a window is on screen: not hidden, not minimized and, for a hotkey window, shown
+/// (`shown` false means DWM-cloaked, which winit still reports as visible).
 pub(super) fn window_on_screen(visible: Option<bool>, minimized: Option<bool>, shown: Option<bool>) -> bool {
     visible != Some(false) && minimized != Some(true) && shown != Some(false)
 }
