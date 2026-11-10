@@ -9,15 +9,15 @@ beta is out.
 
 | | |
 |---|---|
-| Release | 0.0.1-beta10 (2026-11-01) |
+| Release | 0.0.1-beta11 (2026-11-10), the first with macOS and Linux builds |
 | Milestones done | 0 to 14, including 13a to 13y2 and the AI browser tools |
-| Tests | 6,791 |
-| Rust | about 496,000 lines |
-| Commits | about 2,230 |
+| Tests | 6,983 |
+| Rust | about 548,000 lines |
+| Commits | about 2,530 |
 
 ## Next
 
-- macOS and Linux ports, from one tree with a shared Unix layer: [`superpowers/specs/2026-10-31-macos-linux-port-design.md`](superpowers/specs/2026-10-31-macos-linux-port-design.md). P0 (compile everywhere) is done: the whole crate and all five programs build on Linux and macOS, and a feature with no Unix backend reports "<feature> is not available on <OS> yet". Test status on Unix: [`port/unix-test-gaps.md`](port/unix-test-gaps.md). P1 (the Unix core) is done: a local shell, the session host, job tracking, paths, the clipboard, tmux `-CC` and window restore run on Linux and macOS, and the Win32 twins moved under `src/platform/`; its Windows test run is pending until the Windows host is back. P2 (macOS: the Cmd shortcut key, the native menu bar, Quit and Dock handling, the ad hoc signed `Termurion.app`, system-wide hotkeys, notifications, the Keychain and Touch ID, quarantine, Finder aliases and the iTerm2 settings import) is done on the macOS VM; the owner's own run on a Mac and the Windows test run are pending, and the record is in [`port/unix-test-gaps.md`](port/unix-test-gaps.md). P3 (Linux) is next. Render plugins (beta8, [`render-plugins.md`](render-plugins.md)) already use only wgpu.
+- macOS and Linux ports, from one tree with a shared Unix layer: [`superpowers/specs/2026-10-31-macos-linux-port-design.md`](superpowers/specs/2026-10-31-macos-linux-port-design.md). P0 (compile everywhere) is done: the whole crate and all five programs build on Linux and macOS, and a feature with no Unix backend reports "<feature> is not available on <OS> yet". Test status on Unix: [`port/unix-test-gaps.md`](port/unix-test-gaps.md). P1 (the Unix core) is done: a local shell, the session host, job tracking, paths, the clipboard, tmux `-CC` and window restore run on Linux and macOS, and the Win32 twins moved under `src/platform/`; its Windows test run is pending until the Windows host is back. P2 (macOS: the Cmd shortcut key, the native menu bar, Quit and Dock handling, the ad hoc signed `Termurion.app`, system-wide hotkeys, notifications, the Keychain and Touch ID, quarantine, Finder aliases and the iTerm2 settings import) is done on the macOS VM; the owner's own run on a Mac and the Windows test run are pending, and the record is in [`port/unix-test-gaps.md`](port/unix-test-gaps.md). P3 (Linux: an AppImage, the GNOME tray icon, the launch socket, Wayland and X11) is done, and beta11 ships the macOS and Linux builds for the first time. Render plugins (beta8, [`render-plugins.md`](render-plugins.md)) already use only wgpu.
 - tmux on Windows: psmux (native), WSL tmux, and tmux over ssh each have a live suite (FIXES item 3, and `docs/probe/2026-10-14-psmux-wsl-tmux-results.md`).
 - Fixes from beta testers. File bugs at https://github.com/datbird/termurion/issues.
 - The open items in [`FIXES.md`](FIXES.md) (found after the beta) and [`TWEAKS.md`](TWEAKS.md).
