@@ -4,15 +4,15 @@
 
 # Termurion
 
-**iTerm2, on Windows. All of it.**
+**iTerm2, on Windows, macOS, and Linux. All of it.**
 
-A native Windows terminal, written in Rust, that aims at full 1:1 parity with iTerm2:
+A native terminal for Windows, macOS, and Linux, written in Rust, that aims at full 1:1 parity with iTerm2:
 the same settings, the same menus, the same mouse, the same tmux integration, the same Python API.
 
-![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4?style=flat-square)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D4?style=flat-square)
 ![Language](https://img.shields.io/badge/Rust-2024%20edition-B7410E?style=flat-square)
 ![Renderer](https://img.shields.io/badge/renderer-wgpu-5b8cff?style=flat-square)
-![Status](https://img.shields.io/badge/status-beta-7a5cff?style=flat-square)
+![Status](https://img.shields.io/badge/release-1.0.0-7a5cff?style=flat-square)
 
 [Why Termurion](#why-termurion) ·
 [Features](#features) ·
@@ -31,6 +31,9 @@ the same settings, the same menus, the same mouse, the same tmux integration, th
 
 ## Why Termurion
 
+Termurion 1.0.0 is the first stable release. It runs on Windows 10 and 11, on macOS (Apple
+Silicon), and on Linux (x86_64), from one code base.
+
 If you live in iTerm2 on a Mac, every Windows terminal feels like a step down. Some have tabs and
 splits. A few have a drop-down window. None of them has tmux control mode, triggers, the toolbelt,
 Instant Replay, or iTerm2's mouse.
@@ -42,7 +45,7 @@ rows until they read `have`. Where iTerm2 has a quirk, Termurion keeps it and wr
 - **Your Mac settings, as they are.** Termurion reads iTerm2's own plist. Profiles, colors, keys,
   triggers, and arrangements come across without a conversion step.
 - **Your scripts, unchanged.** The stock `iterm2` pip package connects to Termurion and works.
-- **Your muscle memory.** iTerm2's menu bar, key actions, and pointer actions, with Ctrl+Shift in place of Cmd (or Ctrl+Alt, your pick). No shortcut uses the Win key.
+- **Your muscle memory.** iTerm2's menu bar, key actions, and pointer actions, with Ctrl+Shift in place of Cmd on Windows and Linux (or Ctrl+Alt, your pick), and the real Cmd key on macOS. No shortcut uses the Win key.
 
 ## Features
 
@@ -51,12 +54,12 @@ rows until they read `have`. Where iTerm2 has a quirk, Termurion keeps it and wr
 <td width="50%" valign="top">
 
 ### Terminal
-- Native ConPTY sessions, with the current OpenConsole shipped beside the exe
+- Native sessions: ConPTY on Windows, with the current OpenConsole shipped beside the exe, and a pseudo terminal on macOS and Linux
 - GPU renderer on wgpu, ligatures, box drawing, bidi, and true color
 - Inline images: OSC 1337 File, sixel, the kitty graphics protocol, animated GIFs
 - Every keyboard protocol: CSI u, modifyOtherKeys, and kitty flags with key releases
 - Mouse reporting that works in vim, tmux, and htop, on WSL and native shells
-- Sessions in `termurion-host.exe`, so shells outlive a crashed window
+- Sessions in `termurion-host` (`termurion-host.exe` on Windows), so shells outlive a crashed window
 
 </td>
 <td width="50%" valign="top">
@@ -66,7 +69,7 @@ rows until they read `have`. Where iTerm2 has a quirk, Termurion keeps it and wr
 - Pause and resume, the tmux dashboard, and option monitors
 - Edits, moves, clipboard, client lists, and persistence
 - The tmux status bar inside Termurion's own status bar
-- Three ways to run tmux on Windows: psmux (recommended for native tmux, no WSL; `winget install psmux`, https://github.com/psmux/psmux), tmux in WSL, and tmux over ssh
+- On macOS and Linux, tmux `-CC` runs your own `tmux`. Three ways to run tmux on Windows: psmux (recommended for native tmux, no WSL; `winget install psmux`, https://github.com/psmux/psmux), tmux in WSL, and tmux over ssh
 - Shell > tmux > New psmux Session and New tmux Session in WSL start the first two
 - Native Windows support is tested against psmux 3.3.8, and WSL support against tmux 3.4, with a live suite that drives real servers
 
@@ -77,7 +80,7 @@ rows until they read `have`. Where iTerm2 has a quirk, Termurion keeps it and wr
 
 ### Shell integration
 - OSC 133 marks, OSC 7 directories, and the 1337 shell keys
-- A PowerShell script, plus iTerm2's own installer for bash and zsh
+- A PowerShell script on Windows, plus iTerm2's own installer for bash, zsh, and fish
 - Command history, recent directories, prompt navigation, and alerts on finish
 - Automatic Profile Switching by host, user, path, and job
 
@@ -86,7 +89,7 @@ rows until they read `have`. Where iTerm2 has a quirk, Termurion keeps it and wr
 
 ### Triggers and automation
 - Triggers in iTerm2's stored form, with every action iTerm2 lists
-- Coprocesses, badges, Windows notifications, and idle and output alerts
+- Coprocesses (Windows only), badges, system notifications, and idle and output alerts
 - Broadcast input across panes, tabs, and windows
 - Smart Selection and Semantic History, with all of their actions
 
@@ -128,8 +131,8 @@ rows until they read `have`. Where iTerm2 has a quirk, Termurion keeps it and wr
 - AI chat, inline help, and the Cockpit, with Anthropic, Gemini, DeepSeek, and Ollama
 - Claude Code integration through a `cc-status` hook
 - iTerm2's SSH integration: the conductor, file transfers, and `ssh:` URLs
-- A WebView2 browser pane with find, Copy Mode, marks, triggers, and reader mode
-- A password manager on Windows Credential Manager, 1Password, and LastPass
+- A WebView2 browser pane (Windows only) with find, Copy Mode, marks, triggers, and reader mode
+- A password manager on Windows Credential Manager, the macOS Keychain, or the Linux Secret Service, plus 1Password and LastPass on Windows
 
 </td>
 </tr>
@@ -163,7 +166,7 @@ on the host. Drawn by Termurion's own renderer
 </tr>
 </table>
 
-iTerm2's menu bar, settings window and key bindings, on Windows. The Shortcut Key (iTerm2's Cmd) is Ctrl+Shift by default.
+iTerm2's menu bar, settings window and key bindings, shown on Windows. The Shortcut Key (iTerm2's Cmd) is Ctrl+Shift by default on Windows and Linux. On macOS it is Cmd.
 
 <p align="center"><img src="docs/assets/screenshots/tmux-over-ssh.png" width="900" alt="tmux over ssh with Claude Code running, a header row of colored status chips above and two status lines below"></p>
 
@@ -207,23 +210,35 @@ flowchart LR
   `crates/alacritty_terminal/TERMURION-PATCHES.md`.
 - **ConPTY.** Termurion has its own ConPTY code. The shipped `conpty.dll` and `OpenConsole.exe` load
   from beside the exe, never from the inbox console host by accident.
+- **Unix.** macOS and Linux share one Unix layer under `src/platform/`. A feature that has no Unix backend yet says "<feature> is not available on <OS> yet". The list is in [`docs/port/unix-test-gaps.md`](docs/port/unix-test-gaps.md).
 - **Safety.** Every program links the C runtime statically and loads its imports from System32
   only. Downloads, imports, and escape sequences that can act go through trust gates first.
 
 ## Download
 
-Get the newest beta from [Releases](https://github.com/datbird/termurion/releases):
+Termurion 1.0.0 is the first stable release. Get it from
+[Releases](https://github.com/datbird/termurion/releases) (the 1.0.0 release is marked Latest). There is one file for each system. [Installing](docs/help/installing.md) has the steps in full. Report bugs in [Issues](https://github.com/datbird/termurion/issues).
 
-- `Termurion-<version>-setup.exe` installs for your user (no admin) and adds Start menu entries.
-- `Termurion-<version>-windows-x64.zip` runs from any folder.
+**Windows 10 or 11 (x64)**
 
-Linux, x86_64: build the AppImage with `scripts/linux-appimage` (it writes `target/linux/Termurion-<version>-x86_64.AppImage`), then `chmod +x` it and run it. It needs a desktop with X11 or Wayland. Where FUSE is missing, start it with `--appimage-extract-and-run`. System-wide hotkeys work on X11 only.
+- `Termurion-1.0.0-setup.exe` installs for your user (no admin prompt), adds Start Menu entries, and upgrades earlier betas in place.
+- `Termurion-1.0.0-windows-x64.zip` is the portable build. Unzip it anywhere and run `termurion.exe`. Keep all the files together.
+- The files are not code-signed yet. If SmartScreen says they are unrecognized, choose More info, then Run anyway.
 
-Windows 10 or 11, x64. [Installing](docs/help/installing.md) shows each installer page. Report bugs in [Issues](https://github.com/datbird/termurion/issues).
+**macOS (Apple Silicon)**
+
+- `Termurion-1.0.0-macos-arm64.zip` holds `Termurion.app`. Unzip it and move the app to Applications.
+- The app is ad hoc signed and not notarized, so the first open is blocked. Open System Settings > Privacy & Security, choose Open Anyway, then open the app again.
+
+**Linux (x86_64)**
+
+- `Termurion-1.0.0-linux-x86_64.AppImage`. Run `chmod +x` on it, then run it. The first run adds Termurion to the app launcher with its icon.
+- It needs FUSE (`fusermount3`), which most desktops have. Where FUSE is missing, start it with `--appimage-extract-and-run`.
+- Tested on Ubuntu 26.04 with GNOME on Wayland. X11 also works. System-wide hotkeys work on X11 only.
 
 ## Building
 
-Termurion builds on Windows with the MSVC Rust toolchain.
+Termurion builds on Windows with the MSVC Rust toolchain. The steps below are for Windows.
 
 ```powershell
 # 1. Fetch the pinned ConPTY package (checked by SHA-256)
@@ -239,13 +254,15 @@ cargo build --release
 The build copies `conpty.dll` and `OpenConsole.exe` next to the exe. The browser pane needs the
 WebView2 runtime, which Windows 10 and 11 normally have.
 
+On macOS and Linux, `cargo build --release` builds the same programs. `scripts/linux-appimage` makes the Linux AppImage (it writes `target/linux/Termurion-<version>-x86_64.AppImage`).
+
 `.cargo/config.toml` sets `+crt-static`. The build stops if that flag is missing.
 
 ### Repository layout
 
 | Path | What it holds |
 |---|---|
-| `src/` | The app, about 520 modules |
+| `src/` | The app, about 560 top-level modules |
 | `src/bin/` | `termurion`, `termurion-host`, `termurion-utils`, `termurion-git`, `cc-status`, and the probes |
 | `crates/` | Patched copies of `alacritty_terminal`, `vte`, and `glyphon` |
 | `resources/` | Shell integration, color presets, tab icons, terminfo, and AI prompts |
@@ -279,5 +296,5 @@ Termurion stands on these projects:
 Termurion shows every bundled license at runtime, gathered at build time into one list.
 
 <div align="center">
-<sub>Built for people who miss iTerm2 every time they sit down at a Windows machine.</sub>
+<sub>Built for people who miss iTerm2 every time they sit down at a machine that is not a Mac.</sub>
 </div>

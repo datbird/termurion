@@ -2,6 +2,8 @@
 
 Termurion has a built-in web browser. A browser pane is a pane, tab, or window that shows a web page instead of a shell. You can split it, move it, search it, and use copy mode in it, like any terminal pane. Pages are drawn by the Microsoft WebView2 Runtime, so that runtime must be installed.
 
+The browser pane is available on Windows only. On macOS and Linux, Termurion says "Browser is not available on <OS> yet".
+
 ## Requirements
 
 The WebView2 Runtime ships with current Windows 10 and 11 and with Microsoft Edge. If it is missing, Termurion asks before it opens a page. The question is "WebView2 Runtime Required", with buttons to download the runtime or use your system browser. If the runtime is in a folder that cannot be detected (a fixed-version runtime), set "Location of the WebView2 Runtime folder" in Settings > Advanced.

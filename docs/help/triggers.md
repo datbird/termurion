@@ -56,7 +56,7 @@ Termurion offers these actions:
 | Report Directory | Tells Termurion the current folder |
 | Report User & Host | Tells Termurion the user and host |
 | Ring Bell | Rings the bell |
-| Run Command... | Runs a command (through cmd.exe) |
+| Run Command... | Runs a command (through cmd.exe, so on Windows only) |
 | Run Coprocess... | Starts a coprocess that reads the session's output |
 | Run Silent Coprocess... | Same, but hides its output |
 | Send Text... | Types text into the session |

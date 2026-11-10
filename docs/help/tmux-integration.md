@@ -6,7 +6,9 @@ This works through tmux control mode. You do not need to learn tmux keys to use 
 
 ## Choosing a tmux
 
-Termurion works with tmux control mode on Windows three ways.
+On macOS and Linux, run your own `tmux -CC new-session -A -s main` (or `tmux -CC attach`) in a tab. Termurion sees control mode start and shows the tmux windows as native tabs, as on Windows. The Windows menu items for psmux and WSL do not apply there.
+
+On Windows, Termurion works with tmux control mode three ways.
 
 | Way | Use it when | Install |
 |---|---|---|

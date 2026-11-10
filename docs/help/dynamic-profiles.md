@@ -2,6 +2,8 @@
 
 Dynamic Profiles let you define profiles in files instead of in Settings. You put a JSON or property list file in a watched folder. Termurion reads it, builds the profiles, and shows them in the Profiles menu and the profile list. When the file changes, the profiles change. When the file goes away, the profiles go away. Use this to generate profiles from a script, share them from a repository, or keep them under version control.
 
+Dynamic Profiles are read on Windows only. On macOS and Linux, Termurion logs that once and skips the folder.
+
 ## The folder
 
 By default the folder is:

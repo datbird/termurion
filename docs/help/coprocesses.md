@@ -2,6 +2,8 @@
 
 A coprocess is a program that runs beside a terminal session and is wired to it. Everything the session prints goes to the coprocess's input. Everything the coprocess prints goes to the session as if you had typed it. This lets a small program watch a session and answer it, for example to log in, answer prompts, or react to output.
 
+Coprocesses are available on Windows only. On macOS and Linux, Termurion says "Coprocesses are not available on <OS> yet".
+
 ## Start and stop
 
 - Start: Session > Run Coprocess...

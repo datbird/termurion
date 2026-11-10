@@ -1,6 +1,6 @@
 # Password Manager
 
-The password manager stores account names, user names, and passwords, and types them into a terminal session for you. Passwords stay out of your shell history, because Termurion sends them straight to the program that asked, with echo off. The window can keep passwords in Windows Credential Manager, or it can read them from LastPass, 1Password, KeePassXC, Bitwarden, or Keeper.
+The password manager stores account names, user names, and passwords, and types them into a terminal session for you. Passwords stay out of your shell history, because Termurion sends them straight to the program that asked, with echo off. The window can keep passwords in the system store (Windows Credential Manager, the macOS Keychain, or the Linux Secret Service), or it can read them from LastPass, 1Password, KeePassXC, Bitwarden, or Keeper. On macOS and Linux only the system store works yet.
 
 ## Open it
 
@@ -27,7 +27,7 @@ The + and - buttons add and remove accounts. Edit changes the account name, user
 The gear menu at the bottom of the window holds:
 
 - The password source (see below).
-- Require Authentication to Open Password Manager, Require Authentication after Screen Locks, and Require Authentication on Every Open. These ask for Windows Hello or your Windows password before the window opens. The first has a matching setting in Settings > Advanced, so a failed prompt can never lock you out.
+- Require Authentication to Open Password Manager, Require Authentication after Screen Locks, and Require Authentication on Every Open. These ask for Windows Hello or your Windows password before the window opens. On macOS they ask for Touch ID or your password, and on Linux for your account password. The first has a matching setting in Settings > Advanced, so a failed prompt can never lock you out.
 - Probe Before Sending Password: first checks that the session is really at a password prompt (it sends a space and a backspace and watches whether the terminal echoes them), and asks you if it is not sure.
 - Automatically Send Return Key after Password.
 - Switch Account (for sources that have more than one account).
@@ -39,7 +39,7 @@ The gear menu at the bottom of the window holds:
 
 | Source | What you need | Notes |
 |---|---|---|
-| Windows Credential Manager | Nothing. | The default. Termurion stores each account as a generic credential whose name starts with `Termurion/`. Only your Windows account can read them. |
+| System store | Nothing. | The default. It is Windows Credential Manager on Windows, the macOS Keychain on macOS, and the Secret Service (GNOME Keyring, KeePassXC, or KWallet) on Linux. On Windows, Termurion stores each account as a generic credential whose name starts with `Termurion/`. Only your Windows account can read them. |
 | LastPass Integration | The LastPass command line client, `lpass.exe`. | See "LastPass" below. |
 | 1Password Integration | The 1Password command line client, `op`, version 2.23 or later. | Termurion looks on PATH and in WinGet's link folder. If it is elsewhere, press Locate. The Advanced setting "1Password account name" chooses the account. |
 | KeePassXC Integration | `keepassxc-cli` and a database file. | Termurion asks for the path to the database and for your master password. |

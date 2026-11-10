@@ -11,6 +11,8 @@ Termurion then listens on `127.0.0.1` and `[::1]`, port 1912. It accepts connect
 
 Read [Python API Security](python-api-security.md) before you turn it on. A script that connects can read and change anything in Termurion. [Python API Authentication](python-api-auth.md) explains how Termurion decides which programs may connect.
 
+Launching scripts from the Scripts menu is not available on macOS and Linux yet. Termurion says "Python API scripts are not available on <OS> yet".
+
 ## Run a script
 
 Scripts live in `%APPDATA%\Termurion\Scripts`. To use another folder, turn on Custom Python API Scripts Folder in the same settings section and choose a folder that exists and has no spaces in its path.

@@ -1,4 +1,4 @@
-# Fixes and tweaks (beta)
+# Fixes and tweaks
 
 Things found while using Termurion after 0.0.1-beta1. Add new items at the end of Open. Each
 item says what is wrong, what it should do, and where it was seen. Move an item to Done with its

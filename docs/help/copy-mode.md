@@ -72,6 +72,8 @@ In Settings > Keys, a key binding can use the "Copy Mode Commands" action. Its p
 
 ## Shortcut keys on Windows
 
+This section is for Windows and Linux. On macOS the Shortcut Key is Cmd and every shortcut is iTerm2's own, so the tables below do not apply there. On Linux the five tmux items use other keys, listed after the table.
+
 In these docs, "Shortcut Key" is the modifier pair that stands in for iTerm2's Cmd. It is Ctrl+Shift by default. You can change it to Ctrl+Alt in Settings > Keys. Alt stands in for iTerm2's Option. A menu always shows the keys that apply to your choice.
 
 No Termurion shortcut uses the Win key. Windows keeps it. A setting saved as Win becomes Ctrl+Shift.

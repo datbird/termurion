@@ -1,26 +1,30 @@
 # GPU Renderer
 
-Termurion draws every window on the GPU through DirectX 12, the native Windows graphics API that Windows Terminal also uses. The see-through (transparent) windows use it too, so all windows run on one API and one GPU.
+Termurion draws every window on the GPU. On Windows it uses DirectX 12, the native graphics API that Windows Terminal also uses. The see-through (transparent) windows use it too, so all windows run on one API and one GPU. On macOS and Linux it uses Metal or Vulkan, with OpenGL as the fallback.
 
 ## Which API
 
-Termurion tries DirectX 12 first. Only if DirectX 12 cannot make an adapter, a surface or a device does it try Vulkan, and then OpenGL. The log file host.log says which one drew and why a fallback happened:
+On Windows, Termurion tries DirectX 12 first. Only if DirectX 12 cannot make an adapter, a surface or a device does it try Vulkan, and then OpenGL. The log file host.log, in the settings folder (see [Installing](installing.md)), says which one drew and why a fallback happened:
 
 - `renderer: Dx12 on <GPU> (...)` is the normal line.
 - `renderer: DirectX 12 unavailable: ...` and `renderer: fell back to Vulkan because ...` appear only after a failure.
 - `adapters: ...` lists every GPU Windows offers, once per run.
 - `renderer: device lost (...)`, then `renderer: recovered on <API> <GPU>`, appear when the driver resets or the GPU goes away.
 
-To test another API, set the environment variable `TERMURION_RENDERER` to `dx12`, `vulkan` or `gl` before starting Termurion. That API is tried first; the others still follow as fallbacks.
+On macOS and Linux, Termurion tries Vulkan or Metal first (Metal on macOS, Vulkan on Linux), then OpenGL. The log lines name the API that was used. Effects work on all of them, OpenGL included.
+
+To test another API, set the environment variable `TERMURION_RENDERER` to `dx12` (Windows only), `vulkan` or `gl` before starting Termurion. That API is tried first; the others still follow as fallbacks.
 
 ## Which GPU
 
 Settings > General > GPU Renderer has "Prefer integrated to discrete GPU", as in iTerm2. It is on by default. The row is enabled only on a computer that has both an integrated and a discrete GPU, and a change applies after you restart Termurion.
 
-- On: Termurion asks Windows for the low-power GPU (the integrated one). A terminal needs little GPU power, and this keeps a discrete card idle.
+- On: Termurion asks the system for the low-power GPU (the integrated one). A terminal needs little GPU power, and this keeps a discrete card idle.
 - Off: Termurion asks for the high-performance GPU (the discrete one).
 
-host.log records the choice, for example `renderer: Dx12 on <GPU> (Prefer integrated to discrete GPU is on: asked for the low-power GPU; got IntegratedGpu; honored)`. If Windows hands out a different kind of GPU than the setting asks for, the line says `NOT honored`.
+On Linux, with the setting on, a computer whose integrated GPU has no usable Vulkan driver draws on that GPU through OpenGL instead of falling back to the discrete card.
+
+host.log records the choice, for example `renderer: Dx12 on <GPU> (Prefer integrated to discrete GPU is on: asked for the low-power GPU; got IntegratedGpu; honored)`. If the system hands out a different kind of GPU than the setting asks for, the line says `NOT honored`.
 
 ## If the GPU is lost
 

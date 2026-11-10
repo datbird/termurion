@@ -53,7 +53,7 @@ Termurion leaves a command line alone if it already runs something or cannot tak
 
 ## bash, zsh, and fish
 
-Inside WSL, Git Bash, or an ssh session, choose Termurion > Install Shell Integration. Termurion asks whether to also install the utilities (scripts to download files, show images inline, and more). Then it types one of these into your session:
+On macOS and Linux, and inside WSL, Git Bash, or an ssh session, choose Termurion > Install Shell Integration. Termurion asks whether to also install the utilities (scripts to download files, show images inline, and more). Then it types one of these into your session:
 
 ```
 curl -L https://raw.githubusercontent.com/datbird/termurion/main/dist/install_shell_integration.sh | bash
