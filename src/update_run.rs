@@ -23,6 +23,10 @@ pub(crate) trait Ender: Send + Sync {
     fn exited(&self, child: &mut Child) -> std::io::Result<bool>;
     /// Ends curl and anything it started. Twice is safe.
     fn end(&self);
+    /// True once something else reaped curl: its id may be reused, so nothing may signal or wait on it.
+    fn lost(&self) -> bool {
+        false
+    }
 }
 
 /// The running curl's ender, so quitting or cancelling can end it, and the cancel count a request
@@ -94,25 +98,30 @@ pub(crate) fn finish(mut child: Child, mut out_r: impl Read + Send + 'static, mu
     let too_big = Arc::new(AtomicBool::new(false));
     let big = too_big.clone();
     let (out_tx, out_rx) = channel();
-    std::thread::spawn(move || {
+    // Builder, not spawn: out of threads is a failed check, never a panic that leaves curl running.
+    let out_reader = std::thread::Builder::new().spawn(move || {
         let (bytes, over) = read_capped(&mut out_r, STDOUT_CAP);
         big.store(over, Ordering::SeqCst);
         let _ = out_tx.send(bytes);
     });
     let (err_tx, err_rx) = channel();
-    std::thread::spawn(move || {
+    let err_reader = std::thread::Builder::new().spawn(move || {
         let (bytes, _) = read_capped(&mut err_r, 8192);
         let _ = err_tx.send(bytes);
     });
     let deadline = Instant::now() + TIME_CAP;
-    let end = loop {
-        match ender.exited(&mut child) {
-            Ok(true) => break Ok(()),
-            Ok(false) if CANCELS.load(Ordering::SeqCst) != started => break Err("cancelled"),
-            Ok(false) if too_big.load(Ordering::SeqCst) => break Err("big"),
-            Ok(false) if Instant::now() >= deadline => break Err("timed out"),
-            Ok(false) => std::thread::sleep(Duration::from_millis(25)),
-            Err(_) => break Err("lost"),
+    let end = if out_reader.is_err() || err_reader.is_err() {
+        Err("no thread")
+    } else {
+        loop {
+            match ender.exited(&mut child) {
+                Ok(true) => break Ok(()),
+                Ok(false) if CANCELS.load(Ordering::SeqCst) != started => break Err("cancelled"),
+                Ok(false) if too_big.load(Ordering::SeqCst) => break Err("big"),
+                Ok(false) if Instant::now() >= deadline => break Err("timed out"),
+                Ok(false) => std::thread::sleep(Duration::from_millis(25)),
+                Err(_) => break Err("lost"),
+            }
         }
     };
     // Whatever curl left running holds the pipes: end it all, then the readers finish. Unregistered
@@ -124,8 +133,13 @@ pub(crate) fn finish(mut child: Child, mut out_r: impl Read + Send + 'static, mu
             *running = None;
         }
     }
-    let _ = child.kill();
-    let code = child.wait().ok().and_then(|s| s.code());
+    // Reaped elsewhere: its id is not ours to kill or wait on any more.
+    let code = if ender.lost() {
+        None
+    } else {
+        let _ = child.kill();
+        child.wait().ok().and_then(|s| s.code())
+    };
     let stdout = out_rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
     let stderr = err_rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
     match end {
@@ -135,6 +149,7 @@ pub(crate) fn finish(mut child: Child, mut out_r: impl Read + Send + 'static, mu
         Err("big") => Fetched::Transport("feed too large".into()),
         Err("cancelled") => Fetched::Transport("cancelled".into()),
         Err("timed out") => Fetched::Transport("the update check timed out".into()),
+        Err("no thread") => Fetched::Transport("could not start the update check".into()),
         Err(_) => Fetched::Transport("could not wait for curl".into()),
     }
 }
@@ -167,7 +182,8 @@ impl Checker {
                 if shared.lock().unwrap_or_else(|e| e.into_inner()).epoch != epoch {
                     continue;
                 }
-                let got = fetch.get(update::RELEASES_URL);
+                // A panic in the fetch is a failed check, so the Checker never stays busy.
+                let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fetch.get(update::RELEASES_URL))).unwrap_or_else(|_| Fetched::Transport("the update check failed".into()));
                 let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
                 if s.epoch == epoch {
                     s.result = Some(got);
@@ -306,6 +322,30 @@ mod tests {
         assert_eq!(wait_result(&c), Some(Fetched::Status { code: 200, body: "[]".into() }));
         // The cancelled request may never have started; the new one ran.
         assert!((1..=2).contains(&calls.load(Ordering::SeqCst)));
+    }
+
+    /// Panics on the first call, then answers.
+    struct Panics(Arc<AtomicUsize>);
+
+    impl Fetch for Panics {
+        fn get(&self, _url: &str) -> Fetched {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("a fetch that fails hard");
+            }
+            Fetched::Status { code: 200, body: "[]".into() }
+        }
+    }
+
+    #[test]
+    fn a_panic_in_the_fetch_leaves_the_checker_free() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = Checker::start(Box::new(Panics(calls.clone())), Arc::new(|| {}));
+        c.check();
+        assert_eq!(wait_result(&c), Some(Fetched::Transport("the update check failed".into())));
+        assert!(!c.busy(), "a panic is a finished check");
+        c.check();
+        assert_eq!(wait_result(&c), Some(Fetched::Status { code: 200, body: "[]".into() }), "the worker still runs");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     /// Answers each connection in turn with `status` and a small JSON body, then closes.

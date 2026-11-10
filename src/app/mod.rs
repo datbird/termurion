@@ -1991,7 +1991,7 @@ pub(crate) fn teardown_process() {
     crate::input_locale::restore_after_panic();
     crate::platform::notify::remove(0);
     crate::platform::handoff::begin_closing();
-    // A running update check ends with Termurion (its curl.exe), not after it.
+    // A running update check ends with Termurion (its curl), not after it.
     crate::platform::update_fetch::cancel_running();
     // The Dynamic Profiles folder's watch stops with Termurion.
     crate::platform::watch::stop_all();
