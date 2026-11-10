@@ -253,13 +253,31 @@ pub fn lost_pipe(after: &[AfterHand], console_waiting: bool) -> LostPipe {
 /// request as taken only when it reads this.
 pub const ACK: u8 = 0x06;
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 pub use no_pipe::{Serving, hand_to_running, listen, probe_running};
+#[cfg(target_os = "linux")]
+pub use sock::{Serving, hand_request_on, hand_to_running, listen, probe_running, serve_on, verify_image};
 #[cfg(windows)]
 pub use pipe::{Serving, hand_request_checked, hand_request_on, hand_to_running, hand_to_running_on, listen, listen_on, probe_on, probe_running, serve_on};
 
-/// Unix has no single-instance link pipe: it is not available on Unix yet, so nothing runs to hand to, and nothing can be served.
-#[cfg(unix)]
+type TokenSink = Box<dyn Fn(String) + Send>;
+static ACTIVATION: std::sync::Mutex<Option<TokenSink>> = std::sync::Mutex::new(None);
+
+/// What the app does with the activation token a second start sent with its request (Linux):
+/// called just before that request is handed on, on the same thread. Elsewhere nothing calls it.
+pub fn on_activation(f: Box<dyn Fn(String) + Send>) {
+    *ACTIVATION.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+}
+
+#[cfg(target_os = "linux")]
+fn tell_activation(token: String) {
+    if let Some(f) = ACTIVATION.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        f(token);
+    }
+}
+
+/// macOS has no single-instance link pipe: the system's reopen event wakes the running app, so nothing runs to hand to, and nothing can be served.
+#[cfg(target_os = "macos")]
 mod no_pipe {
     use super::*;
 
@@ -301,6 +319,287 @@ mod no_pipe {
         fn unix_launch_pipe_is_unsupported() {
             assert!(matches!(listen(Box::new(|_| {})), Err(ListenError::Unsupported(_))));
             assert_eq!(probe_running(), Handed::NoServer);
+        }
+    }
+}
+
+/// The Linux launch socket: `launch.sock` in the private 0700 runtime folder
+/// (`$XDG_RUNTIME_DIR/termurion`), 0600, a peer of another user dropped unread, and a socket left
+/// by a dead Termurion replaced (`platform::unix::ipc`). The messages are the Windows pipe's, with
+/// the desktop's activation token in front when the second start was given one.
+#[cfg(target_os = "linux")]
+mod sock {
+    use super::*;
+    use crate::platform::ipc;
+
+    /// The token the desktop gave this start (GNOME, KDE: XDG activation; X11: startup notification).
+    fn own_token() -> Option<String> {
+        ["XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"].iter().find_map(|v| std::env::var(v).ok()).filter(|t| crate::launch::token_ok(t))
+    }
+
+    /// Hands `request` to a running Termurion of this user, retrying a busy socket briefly. With no
+    /// socket name (no private runtime folder) this one starts, and says why.
+    pub fn hand_to_running(request: &crate::launch::Request) -> AfterHand {
+        let name = match ipc::url_pipe_name() {
+            Ok(n) => n,
+            Err(e) => {
+                crate::host_base::log(&format!("launch: no launch socket ({e}), so this Termurion runs"));
+                return AfterHand::Start;
+            }
+        };
+        let token = own_token();
+        let mut attempt = || {
+            let handed = hand_request_on(&name, request, token.as_deref(), &verify_server);
+            if let Handed::OtherOwner(e) = &handed {
+                crate::host_base::log(&format!("launch: the launch socket is held by another program, so this Termurion runs: {e}"));
+            }
+            handed
+        };
+        hand_over(&mut attempt, 3, &|| std::thread::sleep(Duration::from_millis(300)))
+    }
+
+    /// Whether a Termurion of this user answers on the socket, with nothing sent.
+    pub fn probe_running() -> Handed {
+        let name = match ipc::url_pipe_name() {
+            Ok(n) => n,
+            Err(e) => return Handed::Failed(format!("no launch socket: {e}")),
+        };
+        match ipc::connect_owned(&name, Duration::from_secs(1)) {
+            Ok(Some(p)) => match p.server_pid().and_then(verify_server) {
+                Ok(()) => Handed::Taken,
+                Err(e) => Handed::OtherOwner(e),
+            },
+            Ok(None) => Handed::NoServer,
+            Err(ipc::ConnectError::Denied(e)) => Handed::OtherOwner(e),
+            Err(ipc::ConnectError::Other(e)) => Handed::Failed(e),
+        }
+    }
+
+    /// Whether the program `theirs` serving the socket is this Termurion: the same program name
+    /// (an AppImage mounts each run somewhere new, and an updated binary reads "(deleted)"). The
+    /// boundary is the user: the private folder and the peer uid keep everyone else out.
+    pub fn verify_image(theirs: &std::path::Path, mine: &std::path::Path) -> Result<(), String> {
+        let name = |p: &std::path::Path| p.file_name().map(|n| n.to_string_lossy().trim_end_matches(" (deleted)").to_string());
+        match (name(theirs), name(mine)) {
+            (Some(a), Some(b)) if a == b => Ok(()),
+            (Some(_), _) => Err("the launch socket is held by a program that is not Termurion".into()),
+            (None, _) => Err("the program holding the launch socket could not be identified".into()),
+        }
+    }
+
+    fn verify_server(pid: u32) -> Result<(), String> {
+        let theirs = std::fs::read_link(format!("/proc/{pid}/exe")).map_err(|_| "the program holding the launch socket could not be identified".to_string())?;
+        let mine = std::env::current_exe().map_err(|e| e.to_string())?;
+        verify_image(&theirs, &mine)
+    }
+
+    /// The only writer to the socket: one message, one connection, counted taken only on the ack.
+    pub fn hand_request_on(name: &str, request: &crate::launch::Request, token: Option<&str>, verify: &dyn Fn(u32) -> Result<(), String>) -> Handed {
+        let Some(message) = crate::launch::encode_with_token(request, token) else { return Handed::Failed("the request is not one Termurion accepts".into()) };
+        let pipe = match ipc::connect_owned(name, Duration::from_secs(1)) {
+            Ok(Some(p)) => p,
+            Ok(None) => return Handed::NoServer,
+            Err(ipc::ConnectError::Denied(e)) => return Handed::OtherOwner(e),
+            Err(ipc::ConnectError::Other(e)) => return Handed::Failed(e),
+        };
+        if let Err(e) = pipe.server_is_this_user() {
+            return Handed::OtherOwner(e);
+        }
+        match pipe.server_pid().and_then(verify) {
+            Ok(()) => {}
+            Err(e) => return Handed::OtherOwner(e),
+        }
+        if let Err(e) = pipe.write_all(&message) {
+            return Handed::Failed(e);
+        }
+        let mut answer = [0u8; 1];
+        match pipe.read_timeout(&mut answer, Duration::from_secs(2)) {
+            Ok(Some(1)) if answer[0] == ACK => Handed::Taken,
+            Ok(None) => Handed::Failed("the running Termurion did not answer".into()),
+            _ => Handed::NoServer,
+        }
+    }
+
+    /// The launch socket served on its own thread until `stop`.
+    pub fn listen(notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<Serving, ListenError> {
+        serve_on(&ipc::url_pipe_name().map_err(ListenError::Failed)?, Duration::from_secs(2), notify).map_err(ListenError::Failed)
+    }
+
+    /// A served socket. `stop` ends the serving: every request read before it returns has been
+    /// handed on, and the socket file is gone afterwards.
+    pub struct Serving {
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Serving {
+        pub fn stop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
+            }
+        }
+
+        pub fn stopped(&self) -> bool {
+            self.thread.is_none()
+        }
+    }
+
+    pub fn serve_on(name: &str, wait: Duration, notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<Serving, String> {
+        let mut listener = ipc::Listener::bind(name).map_err(|e| e.replace("session host", "Termurion"))?;
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopping = stop.clone();
+        let thread = std::thread::Builder::new()
+            .name("launch-socket".into())
+            .spawn(move || {
+                while !stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                    match listener.accept(Duration::from_secs(1)) {
+                        Ok(Some(p)) => take_one(&p, wait, &notify),
+                        Ok(None) => {}
+                        Err(e) => {
+                            crate::host_base::log(&format!("launch: accept failed: {e}"));
+                            std::thread::sleep(Duration::from_millis(200));
+                        }
+                    }
+                }
+                if let Ok(Some(p)) = listener.accept(Duration::ZERO) {
+                    take_one(&p, wait, &notify);
+                }
+            })
+            .map_err(|e| format!("the launch socket thread did not start: {e}"))?;
+        Ok(Serving { stop, thread: Some(thread) })
+    }
+
+    /// One client: read, acknowledged once held, closed, then handed on (its token first).
+    fn take_one(pipe: &ipc::Pipe, wait: Duration, notify: &dyn Fn(crate::launch::Request)) {
+        let got = read_message(pipe, wait);
+        if got.is_some() {
+            let _ = pipe.write_all(&[ACK]);
+        }
+        pipe.shutdown();
+        if let Some((request, token)) = got {
+            if let Some(t) = token {
+                tell_activation(t);
+            }
+            notify(request);
+        }
+    }
+
+    fn read_message(pipe: &ipc::Pipe, wait: Duration) -> Option<(crate::launch::Request, Option<String>)> {
+        let end = Instant::now() + wait;
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() || bytes.len() > crate::launch::MAX_MESSAGE {
+                return None;
+            }
+            match pipe.read_timeout(&mut chunk, left) {
+                Ok(Some(n)) if n > 0 => bytes.extend_from_slice(&chunk[..n]),
+                _ => return None,
+            }
+            if let Some(got) = crate::launch::decode_with_token(&bytes) {
+                return Some(got);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        use std::sync::mpsc;
+
+        /// A private scratch folder for the sockets (never the real runtime folder), removed after.
+        struct Dir(std::path::PathBuf);
+        impl Drop for Dir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        fn dir() -> Dir {
+            let d = std::env::temp_dir().join(crate::platform::ipc::test_name("launch-sock"));
+            std::fs::DirBuilder::new().mode(0o700).create(&d).unwrap();
+            Dir(d)
+        }
+        fn ok(_: u32) -> Result<(), String> {
+            Ok(())
+        }
+
+        #[test]
+        fn the_socket_name_is_in_the_private_runtime_folder() {
+            let name = ipc::url_pipe_name().unwrap();
+            assert!(name.ends_with("/launch.sock"), "{name}");
+        }
+
+        /// A second start hands every kind over with its token; the token reaches the app first.
+        #[test]
+        fn a_second_start_hands_its_request_and_token_over() {
+            let d = dir();
+            let name = d.0.join("launch.sock").to_string_lossy().to_string();
+            assert_eq!(hand_request_on(&name, &crate::launch::Request::Reopen, None, &ok), Handed::NoServer, "nothing listens yet");
+            let (tx, rx) = mpsc::channel();
+            let tx = std::sync::Mutex::new(tx);
+            let tokens = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let t2 = tokens.clone();
+            on_activation(Box::new(move |t| t2.lock().unwrap().push(t)));
+            let mut serving = serve_on(&name, Duration::from_secs(2), Box::new(move |r| drop(tx.lock().unwrap().send(r)))).unwrap();
+            let mode = std::fs::symlink_metadata(&name).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "only this user may connect");
+            use crate::launch::Request::*;
+            for r in [Reopen, NewWindow { guid: Some("ABC-1".into()) }, NewTab { guid: None }, Arrangement { name: "Dev".into() }, Open { paths: vec!["/home/u/a b.sh".into()] }, Url { url: "ssh://h".into() }] {
+                assert_eq!(hand_request_on(&name, &r, None, &ok), Handed::Taken, "{r:?}");
+                assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), r);
+            }
+            assert_eq!(hand_request_on(&name, &Reopen, Some("tok-1"), &ok), Handed::Taken);
+            assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Reopen);
+            assert_eq!(*tokens.lock().unwrap(), vec!["tok-1".to_string()]);
+            // A server the check refuses is sent nothing.
+            assert!(matches!(hand_request_on(&name, &Reopen, None, &|_| Err("not Termurion".into())), Handed::OtherOwner(_)));
+            assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+            // A second listener on the same name loses: one Termurion per user.
+            assert!(serve_on(&name, Duration::from_secs(2), Box::new(|_| {})).is_err());
+            serving.stop();
+            assert!(std::fs::symlink_metadata(&name).is_err(), "the socket goes with the listener");
+            assert_eq!(hand_request_on(&name, &Reopen, None, &ok), Handed::NoServer);
+        }
+
+        /// A socket a crashed Termurion left behind is no server: the next start replaces it.
+        #[test]
+        fn a_stale_socket_is_replaced() {
+            let d = dir();
+            let path = d.0.join("launch.sock");
+            let name = path.to_string_lossy().to_string();
+            // Bound and dropped without unlinking: what a killed process leaves.
+            let raw = std::os::unix::net::UnixListener::bind(&path).unwrap();
+            drop(raw);
+            assert!(std::fs::symlink_metadata(&path).is_ok());
+            assert_eq!(hand_request_on(&name, &crate::launch::Request::Reopen, None, &ok), Handed::NoServer, "a dead socket answers nobody");
+            let (tx, rx) = mpsc::channel();
+            let tx = std::sync::Mutex::new(tx);
+            let mut serving = serve_on(&name, Duration::from_secs(2), Box::new(move |r| drop(tx.lock().unwrap().send(r)))).unwrap();
+            assert_eq!(hand_request_on(&name, &crate::launch::Request::Reopen, None, &ok), Handed::Taken);
+            assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), crate::launch::Request::Reopen);
+            serving.stop();
+        }
+
+        /// A folder other users can enter is refused: the folder is the boundary.
+        #[test]
+        fn an_open_folder_is_refused() {
+            let d = dir();
+            std::fs::set_permissions(&d.0, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let name = d.0.join("launch.sock").to_string_lossy().to_string();
+            assert!(serve_on(&name, Duration::from_secs(2), Box::new(|_| {})).is_err());
+        }
+
+        #[test]
+        fn the_server_must_be_termurion() {
+            use std::path::Path;
+            assert!(verify_image(Path::new("/opt/t/termurion"), Path::new("/usr/bin/termurion")).is_ok());
+            assert!(verify_image(Path::new("/tmp/.mount_ab12/usr/bin/termurion"), Path::new("/tmp/.mount_cd34/usr/bin/termurion")).is_ok(), "two AppImage runs");
+            assert!(verify_image(Path::new("/usr/bin/termurion (deleted)"), Path::new("/usr/bin/termurion")).is_ok(), "updated under a running copy");
+            assert!(verify_image(Path::new("/usr/bin/python3"), Path::new("/usr/bin/termurion")).is_err());
+            assert!(verify_image(Path::new("/"), Path::new("/usr/bin/termurion")).is_err());
         }
     }
 }

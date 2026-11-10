@@ -129,6 +129,12 @@ impl App {
         let panels = crate::egui_host::taskbar_windows().iter().any(|w| w.is_visible() != Some(false));
         crate::platform::notify::set_dock_icon(crate::resident::dock_icon_wanted(ui_element_now, self.resident, panels));
         let now = Instant::now();
+        let up = crate::platform::notify::icon_state() == crate::resident::Icon::Up;
+        // Linux's add finished on its own thread since: the failures in a row end there.
+        if want && self.tray_on && up && self.tray_failures > 0 {
+            self.tray_failures = 0;
+            self.tray_due = None;
+        }
         if !presence::tray_attempt_due(want, self.tray_on, self.tray_failures, self.tray_due, now) {
             // Waiting for a retry's time, or nothing to do.
             return if presence::tray_changes(want, self.tray_on) { self.tray_due } else { None };
@@ -137,7 +143,11 @@ impl App {
         let result = crate::platform::notify::set_resident(want);
         self.tray_on = presence::tray_settle(want, self.tray_on, result.is_ok());
         let before = self.tray_failures;
-        self.tray_failures = presence::tray_failures_after(self.tray_failures, result.is_ok());
+        // An add Linux started is counted when it ends (`tray_lost`, or the reset above).
+        let settled = result.is_err() || !want || crate::platform::notify::icon_state() == crate::resident::Icon::Up;
+        if settled {
+            self.tray_failures = presence::tray_failures_after(self.tray_failures, result.is_ok());
+        }
         if presence::tray_enters_steady_retry(before, self.tray_failures) {
             crate::host_base::log(&format!("tray: {before} failures, retrying every 30 s while resident with no icon"));
         }
@@ -183,9 +193,36 @@ impl App {
     /// dock click (`HKC:362-402`, `AD:946-952`).
     pub(super) fn tray_clicked(&mut self, right: bool, event_loop: &ActiveEventLoop) {
         if right {
+            // The panel asked for the menu it shows; an icon gone meanwhile wants none, and the
+            // anchor would fall back to the terminal window (review M3).
+            if crate::platform::notify::MENU_EXPORTED && crate::platform::notify::window_handle().is_none() {
+                return;
+            }
             return self.show_tray_menu();
         }
+        // The panel's token for this click, so the window it wakes may come front (GNOME).
+        if let Some(t) = crate::platform::notify::take_tray_token() {
+            self.activation = Some(t);
+        }
         self.dock_click_now(event_loop);
+    }
+
+    /// The icon stopped being a way back (Linux). A failed add counts as tray_tick's own failures
+    /// do (the retry waits its delay); the pass after this checks Termurion can still be reached.
+    pub(super) fn tray_lost(&mut self, why: Option<String>) {
+        let Some(e) = why else {
+            crate::host_base::log("tray: the panel that showed the icon is gone");
+            return;
+        };
+        self.tray_on = false;
+        let before = self.tray_failures;
+        self.tray_failures = presence::tray_failures_after(self.tray_failures, false);
+        if presence::tray_enters_steady_retry(before, self.tray_failures) {
+            crate::host_base::log(&format!("tray: {before} failures, retrying every 30 s while resident with no icon"));
+        }
+        crate::host_base::log(&format!("tray: add failed ({e}), failures in a row {}", self.tray_failures));
+        self.banners.set("tray", e);
+        self.tray_due = presence::tray_retry_delay(self.tray_failures).map(|d| Instant::now() + d);
     }
 
     /// iTerm2's dock click (`AD:946-952`): the icon's left click, and a second bare start of

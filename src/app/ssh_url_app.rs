@@ -187,7 +187,8 @@ impl App {
         if !self.url_flood.admit(now) {
             return self.ignored_urls_banner();
         }
-        if self.gpu.is_none() {
+        // Only before the first window (Wayland's resident one may be gone: the wake makes it).
+        if self.before_first_window() {
             if !crate::url_launch::queue_for_start(&mut self.pending_urls_at_start, &mut self.url_flood, url) {
                 self.ignored_urls_banner();
             }

@@ -104,10 +104,13 @@ pub fn describe(list: &[Facts]) -> String {
 /// "Prefer integrated" asked for the low-power GPU, but the API in use offered none: some
 /// integrated GPUs have only an OpenGL driver that wgpu can use (a 2013 Intel Haswell next to a
 /// discrete card, whose Vulkan driver is incomplete). Then OpenGL is worth a look, unless an API
-/// was forced or OpenGL is already in use.
-pub fn look_for_integrated_on_gl(pref: PowerPreference, chosen: &Facts, forced: bool) -> bool {
-    pref == PowerPreference::LowPower && !forced && chosen.kind != DeviceType::IntegratedGpu && chosen.backend != wgpu::Backend::Gl
+/// was forced or OpenGL is already in use. Linux only (`linux`): Windows and macOS keep their API.
+pub fn look_for_integrated_on_gl(pref: PowerPreference, chosen: &Facts, forced: bool, linux: bool) -> bool {
+    linux && pref == PowerPreference::LowPower && !forced && chosen.kind != DeviceType::IntegratedGpu && chosen.backend != wgpu::Backend::Gl
 }
+
+/// Where the OpenGL look runs at all.
+pub const GL_LOOK_OS: bool = cfg!(target_os = "linux");
 
 /// Whether OpenGL's list has the integrated GPU the preference asked for.
 pub fn gl_has_integrated(gl: &[Facts]) -> bool {
@@ -175,12 +178,23 @@ pub fn watch(device: &wgpu::Device, generation: u64) {
     });
     device.on_uncaptured_error(Arc::new(move |e| {
         let text = error_text(&e);
-        if text.to_ascii_lowercase().contains("lost") {
+        if error_means_lost(matches!(e, wgpu::Error::Validation { .. }), &text) {
             report_lost(generation, format!("device lost (error): {text}"));
-        } else if first_time(&text) {
-            crate::host_base::log(&format!("renderer: GPU error (later copies are not logged): {text}"));
+        } else {
+            match first_time(&text, std::time::Instant::now()) {
+                Logged::First => crate::host_base::log(&format!("renderer: GPU error (later copies are not logged): {text}")),
+                Logged::Overflow(n) => crate::host_base::log(&format!("renderer: {n} more distinct GPU errors not logged; the newest: {text}")),
+                Logged::Quiet => {}
+            }
         }
     }));
+}
+
+/// Whether an uncaptured error says the device is gone. A validation error never does, whatever
+/// its description mentions (a label, "surface lost or outdated"): only the device-lost callback
+/// and the other kinds count, as before the full text was read.
+pub fn error_means_lost(validation: bool, text: &str) -> bool {
+    !validation && text.to_ascii_lowercase().contains("lost")
 }
 
 /// The whole text of a GPU error. A validation error's `Display` is only "Validation Error"; its
@@ -192,14 +206,54 @@ fn error_text(e: &wgpu::Error) -> String {
     }
 }
 
-/// True the first time `text` is seen this run: an error raised each frame is logged once, not
-/// thousands of times a minute.
-fn first_time(text: &str) -> bool {
-    static SEEN: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+/// What the log does with one GPU error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Logged {
+    /// The first copy of this text: logged.
+    First,
+    /// Seen before, or the set is full and a count line went out lately.
+    Quiet,
+    /// The set is full: one line says how many new texts went unlogged since the last such line.
+    Overflow(u64),
+}
+
+/// Distinct texts kept; errors that differ each frame cannot grow the set without end.
+const SEEN_CAP: usize = 64;
+/// With the set full, at most one count line this often.
+const OVERFLOW_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The texts seen this run and the unlogged count once full.
+#[derive(Default)]
+pub struct Seen {
+    texts: std::collections::HashSet<String>,
+    unlogged: u64,
+    told_at: Option<std::time::Instant>,
+}
+
+impl Seen {
+    /// An error raised each frame is logged once, not thousands of times a minute. Once the set is
+    /// full a new text is still counted, and told at most once a minute (review M2).
+    pub fn note(&mut self, text: &str, now: std::time::Instant) -> Logged {
+        if self.texts.contains(text) {
+            return Logged::Quiet;
+        }
+        if self.texts.len() < SEEN_CAP {
+            self.texts.insert(text.to_string());
+            return Logged::First;
+        }
+        self.unlogged += 1;
+        if self.told_at.is_some_and(|t| now.duration_since(t) < OVERFLOW_EVERY) {
+            return Logged::Quiet;
+        }
+        self.told_at = Some(now);
+        Logged::Overflow(std::mem::take(&mut self.unlogged))
+    }
+}
+
+fn first_time(text: &str, now: std::time::Instant) -> Logged {
+    static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
     let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
-    let seen = seen.get_or_insert_with(Default::default);
-    // A bound, so errors that differ each frame cannot grow the set without end.
-    seen.len() < 64 && seen.insert(text.to_string())
+    seen.get_or_insert_with(Default::default).note(text, now)
 }
 
 /// Whether a loss has been reported and not yet taken.
@@ -315,15 +369,43 @@ impl Recovery {
 
 #[cfg(test)]
 mod tests {
+    /// Review M1: a validation error whose text says "lost" is no device loss.
+    #[test]
+    fn only_a_non_validation_error_can_mean_lost() {
+        assert!(!error_means_lost(true, "Surface is lost or outdated"));
+        assert!(!error_means_lost(true, "Buffer with 'lost-and-found' label is invalid"));
+        assert!(error_means_lost(false, "Parent device is lost"));
+        assert!(!error_means_lost(false, "Out of memory"));
+    }
+
+    /// Review M2: a full set still tells of new errors, at most once a minute.
+    #[test]
+    fn a_full_error_set_still_counts_new_errors() {
+        let t0 = std::time::Instant::now();
+        let mut seen = Seen::default();
+        for i in 0..SEEN_CAP {
+            assert_eq!(seen.note(&format!("e{i}"), t0), Logged::First);
+        }
+        assert_eq!(seen.note("e0", t0), Logged::Quiet, "a copy");
+        assert_eq!(seen.note("new 1", t0), Logged::Overflow(1), "the first unlogged one is told");
+        assert_eq!(seen.note("new 2", t0), Logged::Quiet);
+        assert_eq!(seen.note("new 3", t0 + std::time::Duration::from_secs(30)), Logged::Quiet);
+        assert_eq!(seen.note("new 4", t0 + OVERFLOW_EVERY), Logged::Overflow(3), "the count since the last line");
+    }
+
     #[test]
     fn prefer_integrated_looks_on_opengl_when_vulkan_has_none() {
         let f = |backend, kind| Facts { backend, name: String::new(), kind };
         let nvk = f(wgpu::Backend::Vulkan, DeviceType::DiscreteGpu);
-        assert!(look_for_integrated_on_gl(PowerPreference::LowPower, &nvk, false), "the W541: Vulkan offered only the Quadro");
-        assert!(!look_for_integrated_on_gl(PowerPreference::HighPerformance, &nvk, false), "the setting is off");
-        assert!(!look_for_integrated_on_gl(PowerPreference::LowPower, &nvk, true), "TERMURION_RENDERER chose the API");
-        assert!(!look_for_integrated_on_gl(PowerPreference::LowPower, &f(wgpu::Backend::Vulkan, DeviceType::IntegratedGpu), false), "got what it asked for");
-        assert!(!look_for_integrated_on_gl(PowerPreference::LowPower, &f(wgpu::Backend::Gl, DeviceType::Cpu), false), "already on OpenGL");
+        assert!(look_for_integrated_on_gl(PowerPreference::LowPower, &nvk, false, true), "the W541: Vulkan offered only the Quadro");
+        assert!(!look_for_integrated_on_gl(PowerPreference::HighPerformance, &nvk, false, true), "the setting is off");
+        assert!(!look_for_integrated_on_gl(PowerPreference::LowPower, &nvk, true, true), "TERMURION_RENDERER chose the API");
+        assert!(!look_for_integrated_on_gl(PowerPreference::LowPower, &f(wgpu::Backend::Vulkan, DeviceType::IntegratedGpu), false, true), "got what it asked for");
+        assert!(!look_for_integrated_on_gl(PowerPreference::LowPower, &f(wgpu::Backend::Gl, DeviceType::Cpu), false, true), "already on OpenGL");
+        // Windows and macOS never look: DX12 or Metal stays, whatever it picked (review I7).
+        let dx = f(wgpu::Backend::Dx12, DeviceType::DiscreteGpu);
+        assert!(!look_for_integrated_on_gl(PowerPreference::LowPower, &dx, false, false));
+        assert!(!look_for_integrated_on_gl(PowerPreference::LowPower, &nvk, false, false));
         assert!(gl_has_integrated(&[f(wgpu::Backend::Gl, DeviceType::IntegratedGpu)]));
         assert!(!gl_has_integrated(&[f(wgpu::Backend::Gl, DeviceType::Cpu)]), "llvmpipe is no integrated GPU");
     }

@@ -634,7 +634,14 @@ pub fn secret_pipe_name() -> Result<String, String> {
     no()
 }
 
+/// The launch socket a second start hands its request to (Linux; macOS has the reopen event).
 pub fn url_pipe_name() -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let path = runtime_dir()?.join("launch.sock");
+        path.to_str().map(str::to_string).ok_or_else(|| format!("{} is not text", path.display()))
+    }
+    #[cfg(not(target_os = "linux"))]
     no()
 }
 
@@ -994,7 +1001,7 @@ mod tests {
         assert!(own_peer().is_err());
         assert!(thread_peer().is_err());
         assert!(secret_pipe_name().is_err());
-        assert!(url_pipe_name().is_err());
+        assert_eq!(url_pipe_name().is_err(), cfg!(target_os = "macos"), "Linux has its launch socket");
     }
 
     #[test]

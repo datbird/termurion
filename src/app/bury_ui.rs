@@ -39,6 +39,13 @@ impl App {
             self.banners.set("bury", "The last session cannot be buried: Termurion quits when its last window closes (Settings > General > Closing).");
             return false;
         }
+        // The one rule for having no window (C1): with no tray icon to bring it back, the
+        // buried session could never be reached again.
+        let hotkeys = self.hotkey_windows().len().saturating_sub(usize::from(self.hotkey.is_some()));
+        if only && !self.windowless_allowed(hotkeys) {
+            self.banners.set("bury", "The last session cannot be buried: no panel on this desktop shows Termurion's tray icon, so nothing could bring the session back (on GNOME, turn on the AppIndicator extension).");
+            return false;
+        }
         let Some(t) = self.tabs.iter().position(|t| t.layout.panes().contains(&id)) else { return false };
         let (Some(window), tab) = (self.windows.current(), self.tabs[t].id) else { return false };
         let name = self.session_title(id);

@@ -117,12 +117,28 @@ impl App {
         let display = self.display_handle.clone().ok_or("no display handle")?;
         let probe = match self.gpu.as_ref() {
             Some(g) => g.window.clone(),
-            None => self.windows.parked().find_map(|(_, s)| s.gpu.as_ref().map(|g| g.window.clone())).ok_or("no window")?,
+            None => match self.windows.parked().find_map(|(_, s)| s.gpu.as_ref().map(|g| g.window.clone())) {
+                Some(w) => w,
+                // No terminal window (Wayland's resident one is gone): nothing to move, and the
+                // next window makes fresh handles (the caller drops the kept ones; review I3).
+                None => return Ok("with no terminal window: the next one gets new handles".to_string()),
+            },
         };
         // Only devices made from here on may report a loss.
         gpu_pick::next_generation();
-        let (primary, probe_surface, facts) = make_handles(&probe, &display, power::chosen(), backends)?;
+        let (mut primary, probe_surface, mut facts) = make_handles(&probe, &display, power::chosen(), backends)?;
         drop(probe_surface);
+        // Start-up's OpenGL move again, so a recovery keeps the integrated GPU it chose.
+        let forced = std::env::var(gpu_pick::FORCE_ENV).is_ok();
+        if wants_gl_move(&gpu_pick::Facts::of(&primary.adapter.get_info()), &display, power::chosen(), forced) {
+            match make_handles(&probe, &display, power::chosen(), wgpu::Backends::GL) {
+                Ok((gl, s, f)) => {
+                    drop(s);
+                    (primary, facts) = (gl, f);
+                }
+                Err(e) => crate::host_base::log(&format!("renderer: OpenGL's integrated GPU failed in the recovery ({e}), staying on {:?}", primary.adapter.get_info().backend)),
+            }
+        }
         let info = primary.adapter.get_info();
         let needs_alpha = self.gpu.iter().any(|g| g.alpha.is_some()) || self.windows.parked().any(|(_, s)| s.gpu.as_ref().is_some_and(|g| g.alpha.is_some()));
         let alpha = if needs_alpha {

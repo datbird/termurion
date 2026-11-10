@@ -99,7 +99,7 @@ impl App {
         let format = gpu.config.format;
         // The passes write the window through its non-sRGB view, so the surface must offer one.
         // A card with no second view (OpenGL) gets copy passes instead (`without_view_formats`).
-        let views = render_fx_gpu::view_formats_supported(&gpu.adapter);
+        let views = render_fx_gpu::view_formats_supported(gpu.render_adapter());
         let raw = render_fx_gpu::raw_format(format);
         if views && raw != format && !gpu.config.view_formats.contains(&raw) {
             gpu.config.view_formats.push(raw);

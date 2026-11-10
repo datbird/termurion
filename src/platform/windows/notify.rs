@@ -71,9 +71,17 @@ pub fn on_taskbar_created(f: Box<dyn Fn() + Send + Sync>) {
 /// Tray menu picks come back as menu events here; nothing else to hear.
 pub fn on_tray_pick(_f: Box<dyn Fn(String) + Send + Sync>) {}
 
-/// The icon can always be shown here.
-pub fn icon_can_show() -> bool {
-    true
+/// The icon counts as up here: a failed add is retried as before, and nothing quits for it.
+pub fn icon_state() -> crate::resident::Icon {
+    crate::resident::Icon::Up
+}
+
+/// Nothing to hear: the icon's state never changes the resident rule here.
+pub fn on_icon_lost(_f: Box<dyn Fn(Option<String>) + Send + Sync>) {}
+
+/// No activation tokens here.
+pub fn take_tray_token() -> Option<String> {
+    None
 }
 
 /// Termurion's icon (the 32 px art from docs/assets/termurion, `presence::icon_rgba`), the generic application icon if

@@ -31,14 +31,55 @@ pub fn after_last_window(restoring: bool, terminals_left: usize, interacted: boo
     }
 }
 
-/// The resident window is the last window hidden. Where windows cannot be hidden (Wayland) it is
-/// destroyed instead and made again on the wake, which needs the icon to wake it from: with no
-/// tray on the desktop and no terminal left, Termurion quits.
-pub fn after_last_window_where(can_hide: bool, icon_can_show: bool, terminals_left: usize, decision: AfterLast) -> AfterLast {
-    if !can_hide && !icon_can_show && terminals_left == 0 {
-        AfterLast::Quit
+/// Where the resident icon stands. Windows and macOS always say `Up`: their rules never change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Icon {
+    /// Added, and the panel took it.
+    Up,
+    /// Being added now.
+    Adding,
+    /// A panel is there, but no icon is up or on its way (none wanted yet, or a failed add waits).
+    Idle,
+    /// No panel shows tray icons (Linux: nothing owns StatusNotifierWatcher).
+    Absent,
+}
+
+/// THE rule for a Termurion with no window: it may be left so only while its icon can bring it
+/// back (up, on its way, or a panel there to take it), or a hotkey window can still be called.
+pub fn may_be_windowless(icon: Icon, hotkey_windows: usize) -> bool {
+    hotkey_windows > 0 || icon != Icon::Absent
+}
+
+/// The resident window is the last window hidden; where nothing could bring it back and no
+/// terminal is left, Termurion quits instead.
+pub fn after_last_window_where(may_be_windowless: bool, decision: AfterLast) -> AfterLast {
+    if may_be_windowless { decision } else { AfterLast::Quit }
+}
+
+/// Whether a windowless Termurion can no longer be reached: no icon up or being added, no hotkey
+/// window, no panel open and no window on its way.
+pub fn stranded(windowless: bool, icon: Icon, hotkey_windows: usize, panels_open: bool, window_coming: bool) -> bool {
+    windowless && !matches!(icon, Icon::Up | Icon::Adding) && hotkey_windows == 0 && !panels_open && !window_coming
+}
+
+/// What a stranded Termurion does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rescue {
+    /// Tabs already wait in the resident slot: its window shows them.
+    WakeWithTabs,
+    /// The newest buried session comes back in a window (as when the last tab closes).
+    Disinter,
+    /// No session is left to keep: it quits.
+    Quit,
+}
+
+pub fn rescue(tabs_waiting: bool, buried: bool) -> Rescue {
+    if tabs_waiting {
+        Rescue::WakeWithTabs
+    } else if buried {
+        Rescue::Disinter
     } else {
-        decision
+        Rescue::Quit
     }
 }
 
@@ -47,7 +88,8 @@ pub fn after_last_window_where(can_hide: bool, icon_can_show: bool, terminals_le
 pub enum Away {
     /// Hidden, kept with its GPU (Windows, macOS, X11).
     Hide,
-    /// Destroyed; its device is kept and the wake makes a new window (Wayland).
+    /// Destroyed (Wayland has no hide), then made again unmapped on its kept device, so the
+    /// resident slot has a window as on the other systems.
     Destroy,
 }
 
@@ -136,16 +178,37 @@ mod tests {
     }
 
     #[test]
-    fn a_window_that_cannot_hide_stays_only_with_a_tray() {
+    fn a_windowless_termurion_needs_a_way_back() {
         use AfterLast::*;
-        assert_eq!(after_last_window_where(false, true, 0, StayResident), StayResident, "Wayland with a tray: resident, as iTerm2");
-        assert_eq!(after_last_window_where(false, true, 0, Quit), Quit, "the quit setting still quits");
-        assert_eq!(after_last_window_where(false, false, 0, StayResident), Quit, "Wayland with no tray: nothing to wake it from");
-        assert_eq!(after_last_window_where(false, false, 1, StayResident), StayResident, "a terminal is left");
-        assert_eq!(after_last_window_where(true, false, 0, StayResident), StayResident, "X11, Windows and macOS follow iTerm2");
-        assert_eq!(after_last_window_where(true, true, 0, Quit), Quit);
+        use Icon::*;
+        for icon in [Up, Adding, Idle] {
+            assert!(may_be_windowless(icon, 0), "{icon:?}: the icon is up or can be");
+        }
+        assert!(!may_be_windowless(Absent, 0), "no panel, X11 or Wayland: nothing to wake it from");
+        assert!(may_be_windowless(Absent, 1), "a hotkey window is left");
+        assert_eq!(after_last_window_where(true, StayResident), StayResident, "with a tray: resident, as iTerm2");
+        assert_eq!(after_last_window_where(true, Quit), Quit, "the quit setting still quits");
+        assert_eq!(after_last_window_where(false, StayResident), Quit);
         assert_eq!(resident_away(true), Away::Hide);
         assert_eq!(resident_away(false), Away::Destroy, "Wayland cannot hide it");
+    }
+
+    /// Review C1/I1/I2: a windowless Termurion whose icon failed or went away makes a window again
+    /// (or quits with no session left); one with a way back is left alone.
+    #[test]
+    fn a_stranded_termurion_comes_back_or_quits() {
+        use Icon::*;
+        assert!(!stranded(false, Absent, 0, false, false), "a window is there");
+        assert!(!stranded(true, Up, 0, false, false));
+        assert!(!stranded(true, Adding, 0, false, false), "the add is on its way");
+        assert!(stranded(true, Idle, 0, false, false), "the add failed and waits for its retry");
+        assert!(stranded(true, Absent, 0, false, false), "the watcher left");
+        assert!(!stranded(true, Absent, 1, false, false), "a hotkey window can be called");
+        assert!(!stranded(true, Absent, 0, true, false), "Settings is open");
+        assert!(!stranded(true, Absent, 0, false, true), "a window is on its way");
+        assert_eq!(rescue(true, true), Rescue::WakeWithTabs);
+        assert_eq!(rescue(false, true), Rescue::Disinter);
+        assert_eq!(rescue(false, false), Rescue::Quit);
     }
 
     #[test]

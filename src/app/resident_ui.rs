@@ -40,12 +40,73 @@ impl App {
         // The window that is closing is no terminal left (a hotkey window counts while it exists).
         let hotkeys = self.hotkey_windows().len().saturating_sub(usize::from(self.hotkey.is_some()));
         let decision = resident::after_last_window(false, hotkeys, self.user_interacted, ran, min, self.globals.bool(QUIT_KEY));
-        let decision = resident::after_last_window_where(crate::platform::window_style::can_hide(), crate::platform::notify::icon_can_show(), hotkeys, decision);
+        let decision = resident::after_last_window_where(self.windowless_allowed(hotkeys), decision);
         let graced = !self.user_interacted && (ran.as_secs_f64() < min) && self.globals.bool(QUIT_KEY) && hotkeys == 0;
         if graced && decision == AfterLast::StayResident {
             crate::host_base::log(resident::grace_note());
         }
         decision
+    }
+
+    /// THE one decision on being left with no window (C1, I1, I2): only while the icon can bring
+    /// Termurion back, or one of `hotkeys` hotkey windows can. Closing the last window, burying the
+    /// last session and every later pass (`resident_upkeep`) ask it. Windows and macOS always say yes.
+    pub(super) fn windowless_allowed(&self, hotkeys: usize) -> bool {
+        resident::may_be_windowless(crate::platform::notify::icon_state(), hotkeys)
+    }
+
+    /// Each pass while resident, after the icon's tick: the destroyed Wayland window is made again
+    /// (unmapped, so the slot has a window as on the other systems: tool windows, launches and
+    /// device recovery find it), and a Termurion nothing can reach any more (its icon failed or
+    /// the panel left) makes a window again, or quits with no session left. It schedules no wake:
+    /// the icon's loss arrives as an event (`UserEvent::TrayLost`), and a rescue whose window failed
+    /// is tried again on a later pass, at most every 30 s.
+    pub(super) fn resident_upkeep(&mut self, event_loop: &ActiveEventLoop) {
+        if !self.resident {
+            self.rescue_tried = None;
+            return;
+        }
+        self.remake_if_gone(event_loop);
+        let hotkeys = self.hotkey_windows().len();
+        let panels = crate::egui_host::taskbar_windows().iter().any(|w| w.is_visible() != Some(false));
+        let coming = !self.pending_windows.is_empty() || self.wake_owed;
+        let icon = crate::platform::notify::icon_state();
+        if !resident::stranded(true, icon, hotkeys, panels, coming) {
+            self.rescue_tried = None;
+            return;
+        }
+        if self.rescue_tried.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(30)) {
+            return;
+        }
+        self.rescue_tried = Some(Instant::now());
+        let how = resident::rescue(!self.tabs.is_empty(), self.buried.newest().is_some());
+        crate::host_base::log(&format!("resident: nothing can bring Termurion back (icon {icon:?}), so {how:?}"));
+        match how {
+            resident::Rescue::WakeWithTabs => {
+                self.wake_owed = true;
+                self.pay_wake_owed(event_loop);
+            }
+            resident::Rescue::Disinter => {
+                if let Some(id) = self.buried.newest() {
+                    self.disinter(id);
+                }
+            }
+            resident::Rescue::Quit => self.quit_confirmed(event_loop),
+        }
+    }
+
+    /// No window was ever made yet: requests from outside wait for the startup plan.
+    pub(super) fn before_first_window(&self) -> bool {
+        self.gpu.is_none() && self.resident_window_gone.is_none()
+    }
+
+    /// Wayland's destroyed resident window, made again when it is gone (a failure is logged and
+    /// tried on the next pass that needs it).
+    pub(super) fn remake_if_gone(&mut self, event_loop: &ActiveEventLoop) {
+        if self.resident && self.gpu.is_none() && self.resident_window_gone.is_some()
+            && let Err(e) = self.remake_resident_window(event_loop) {
+                crate::host_base::log(&format!("resident: the window was not made again: {e}"));
+            }
     }
 
     /// The last window's last tab closed and Termurion stays: the sessions end, the host stays up, the
@@ -107,7 +168,8 @@ impl App {
             crate::platform::window_style::set_skip_taskbar(&g.window, true);
             g.window.set_visible(false);
         }
-        // Wayland has no hide: the window goes, its device stays for the next one.
+        // Wayland has no hide: the window goes, its device stays, and the next pass makes an
+        // unmapped one in its place (`resident_upkeep`).
         if resident::resident_away(crate::platform::window_style::can_hide()) == resident::Away::Destroy {
             self.drop_resident_window();
         }
@@ -138,12 +200,16 @@ impl App {
         }
     }
 
-    /// Shows the (former) resident window and brings it forward.
+    /// Shows the (former) resident window and brings it forward, with the activation token the
+    /// click or the second start brought (GNOME raises a window only with one).
     pub(super) fn show_awake_window(&mut self) {
+        let token = self.activation.take();
         if let Some(g) = &self.gpu {
             g.window.set_visible(true);
             g.window.set_minimized(false);
-            g.window.focus_window();
+            if !matches!(crate::platform::window::activate(&g.window, token.as_deref()), Ok(true)) {
+                g.window.focus_window();
+            }
         }
         self.relayout();
     }
@@ -354,12 +420,38 @@ mod tests {
         assert!(presence.contains("presence::DockClick::Unhandled => self.reopen(event_loop)") && !presence.contains("Reopen::Focus(w) => self.focus_terminal_window(w)"), "the tray's click is the one reopen");
     }
 
+    /// Review C1/I1/I2: ONE rule decides whether Termurion may be left with no window, and every way
+    /// to that state asks it: the last close, the last bury, and each pass while resident (which
+    /// also catches an icon that failed or went away later and brings a window back).
+    #[test]
+    fn every_way_to_no_window_asks_the_one_rule() {
+        let own = production(OWN);
+        assert!(body(own, "windowless_allowed").contains("resident::may_be_windowless(crate::platform::notify::icon_state(), hotkeys)"));
+        let bury = body(production(include_str!("bury_ui.rs")), "bury_pane");
+        let ask = bury.find("self.windowless_allowed(hotkeys)").expect("the last bury asks");
+        assert!(ask < bury.find("self.buried.bury(").unwrap(), "before anything is buried");
+        let upkeep = body(own, "resident_upkeep");
+        for step in ["self.remake_if_gone(event_loop)", "resident::stranded(", "resident::rescue(", "self.disinter(id)", "self.quit_confirmed(event_loop)", "self.pay_wake_owed(event_loop)"] {
+            assert!(upkeep.contains(step), "the upkeep runs {step}");
+        }
+        let m = production(MOD);
+        assert!(body(m, "about_to_wait").contains("self.resident_upkeep(event_loop)"), "every pass");
+        assert!(m.contains("UserEvent::TrayLost(why) => return self.tray_lost(why)"), "a lost icon wakes the loop");
+        assert!(body(m, "render_frame").contains("if self.resident && !crate::platform::window_style::can_hide() {"), "Wayland's remade resident window is never drawn, so never mapped");
+        // Requests from outside wait only for the startup plan, not for a gone resident window.
+        assert!(body(production(include_str!("launch_ui.rs")), "receive_launch").contains("self.before_first_window()"));
+        assert!(body(production(include_str!("ssh_url_app.rs")), "receive_url").contains("self.before_first_window()"));
+        // I5: a failed remake buries the tabs again.
+        let open = body(production(WINDOWS), "open_window_with");
+        assert!(open.contains("if reused && self.gpu.is_none() {") && open.contains("self.rebury_tabs("));
+    }
+
     /// Wayland cannot hide a window: with a tray on the desktop the resident window is destroyed
     /// (its device kept) and made again by every wake; with none, the last close quits.
     #[test]
     fn a_resident_window_on_wayland_is_destroyed_and_made_again() {
         let after = body(production(OWN), "after_last_window_now");
-        assert!(after.contains("after_last_window_where(crate::platform::window_style::can_hide(), crate::platform::notify::icon_can_show(), hotkeys, decision)"));
+        assert!(after.contains("after_last_window_where(self.windowless_allowed(hotkeys), decision)"));
         let go = body(production(OWN), "go_resident");
         let away = go.find("resident::Away::Destroy").expect("the destroy is decided by the pure rule");
         assert!(go.find("set_visible(false)").unwrap() < away && go[away..].contains("self.drop_resident_window()"), "after the hidden window's last steps");

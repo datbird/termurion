@@ -17,11 +17,15 @@ pub struct Click {
     pub activation: Option<String>,
 }
 
-pub use imp::{clear_if_shown, icon_can_show, on_click, on_taskbar_created, on_tray, on_tray_pick, remove, set_resident, show_with, shown_count, window_handle};
+pub use imp::{clear_if_shown, icon_state, on_click, on_icon_lost, on_taskbar_created, on_tray, on_tray_pick, remove, set_resident, show_with, shown_count, take_tray_token, window_handle};
 
 /// Whether the tray menu opens at the icon itself (the macOS menu bar status item) rather than on
 /// a window of Termurion's.
 pub const MENU_AT_ICON: bool = imp::MENU_AT_ICON;
+
+/// Whether the panel draws the tray menu from an exported copy (Linux's dbusmenu), so it is
+/// asked for only while the icon is up.
+pub const MENU_EXPORTED: bool = cfg!(target_os = "linux");
 
 /// How an Err from `show_with` begins when it tells an earlier show's failure (Linux learns of a
 /// failure only after the call): the show asked for was queued all the same.

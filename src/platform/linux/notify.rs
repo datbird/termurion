@@ -92,9 +92,19 @@ pub fn set_resident(on: bool) -> Result<(), String> {
     super::tray::set(on)
 }
 
-/// Whether a panel on this desktop shows tray icons at all.
-pub fn icon_can_show() -> bool {
-    super::tray::host_up()
+/// Where the resident icon stands (the one rule for a windowless Termurion reads it).
+pub fn icon_state() -> crate::resident::Icon {
+    super::tray::state()
+}
+
+/// The icon stopped being a way back: an add failed (Some, with why) or the panel left (None).
+pub fn on_icon_lost(f: Box<dyn Fn(Option<String>) + Send + Sync>) {
+    super::tray::on_lost(f);
+}
+
+/// The activation token the panel gave for the click being handled (Wayland), once.
+pub fn take_tray_token() -> Option<String> {
+    super::tray::take_token()
 }
 
 /// The number of the newest show (see `SHOWN`).

@@ -23,7 +23,8 @@ impl App {
         if !self.launch_flood.admit(Instant::now()) {
             return self.ignored_launch_banner();
         }
-        if self.gpu.is_none() {
+        // Only before the first window (Wayland's resident one may be gone: the wake makes it).
+        if self.before_first_window() {
             if self.launch_queue.len() >= crate::url_launch::QUEUE_MAX {
                 self.launch_flood.ignore();
                 return self.ignored_launch_banner();

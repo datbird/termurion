@@ -190,10 +190,60 @@ pub fn decode(bytes: &[u8]) -> Option<Request> {
     (valid(&request) && payload.iter().all(|l| crate::pathnav::safe_text(l).is_some())).then_some(request)
 }
 
+/// An XDG activation token, at most this long.
+pub const MAX_TOKEN: usize = 512;
+
+/// Whether `t` may be used as an XDG activation token: printable ASCII, no space, bounded. A
+/// token only lets a window ask to come front, so nothing more is checked of it.
+pub fn token_ok(t: &str) -> bool {
+    (1..=MAX_TOKEN).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_graphic())
+}
+
+/// The Linux socket's message: the request as `encode` writes it, after an optional
+/// `activation` line pair carrying the token the desktop gave the second start, so the window
+/// it wakes may come front (Windows' AllowSetForegroundWindow has no message part).
+pub fn encode_with_token(r: &Request, token: Option<&str>) -> Option<Vec<u8>> {
+    let body = encode(r)?;
+    let Some(t) = token.filter(|t| token_ok(t)) else { return Some(body) };
+    let mut out = format!("activation\n{t}\n").into_bytes();
+    out.extend_from_slice(&body);
+    (out.len() <= MAX_MESSAGE).then_some(out)
+}
+
+/// `decode` of a message that may start with the activation pair. A bad token drops the whole
+/// message, as any other bad line does.
+pub fn decode_with_token(bytes: &[u8]) -> Option<(Request, Option<String>)> {
+    if bytes.len() > MAX_MESSAGE {
+        return None;
+    }
+    let Some(rest) = bytes.strip_prefix(b"activation\n") else { return decode(bytes).map(|r| (r, None)) };
+    let end = rest.iter().position(|b| *b == b'\n')?;
+    let token = std::str::from_utf8(&rest[..end]).ok().filter(|t| token_ok(t))?;
+    decode(&rest[end + 1..]).map(|r| (r, Some(token.to_string())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    /// The Linux socket carries the desktop's activation token before the request; the request
+    /// itself is the Windows pipe's message unchanged.
+    #[test]
+    fn a_token_travels_before_the_request() {
+        let r = Request::NewTab { guid: None };
+        assert_eq!(encode_with_token(&r, None), encode(&r), "no token: the Windows message");
+        let m = encode_with_token(&r, Some("gnome-shell/Termurion/1234-5-host_TIME42")).unwrap();
+        assert_eq!(m, b"activation\ngnome-shell/Termurion/1234-5-host_TIME42\nnew-tab\n\n".to_vec());
+        assert_eq!(decode_with_token(&m), Some((r.clone(), Some("gnome-shell/Termurion/1234-5-host_TIME42".to_string()))));
+        assert_eq!(decode_with_token(b"reopen\n"), Some((Request::Reopen, None)));
+        assert_eq!(encode_with_token(&r, Some("has space")), encode(&r), "an unusable token is left out");
+        for bad in [&b"activation\n\nreopen\n"[..], b"activation\na b\nreopen\n", b"activation\ntok\n", b"activation\ntok\nreopen\nextra\n", b"activation\ntok", b"activation\n\x1b[31m\nreopen\n"] {
+            assert_eq!(decode_with_token(bad), None, "{:?}", String::from_utf8_lossy(bad));
+        }
+        assert!(!token_ok(&"a".repeat(MAX_TOKEN + 1)));
+        assert!(token_ok(&"a".repeat(MAX_TOKEN)));
+    }
 
     /// The Windows argv rules (CommandLineToArgvW for the cases `quote_arg` produces): a quote
     /// toggles, `2n` backslashes before a quote are `n`, `2n+1` are `n` and a literal quote.

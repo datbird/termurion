@@ -286,6 +286,11 @@ pub enum UserEvent {
     Tray(bool),
     /// Explorer restarted (TaskbarCreated): the icon is added again.
     TaskbarCreated,
+    /// The resident icon stopped being a way back (Linux): an add failed, with why, or the panel
+    /// left. The pass after it checks that Termurion can still be reached (`resident_upkeep`).
+    TrayLost(Option<String>),
+    /// The activation token a second start sent with its request (Linux), just before it.
+    Activation(String),
     /// A shell's foreground job changed.
     JobsChanged,
     /// A system-wide hotkey was pressed (the ids of every hotkey it matched).
@@ -587,6 +592,8 @@ pub struct App {
     /// Wayland cannot hide a window, so the resident one is destroyed: the id its slot still has,
     /// until the wake makes a new window there (`remake_resident_window`).
     resident_window_gone: Option<WindowId>,
+    /// When a stranded resident Termurion last tried its rescue (`resident_upkeep`).
+    rescue_tried: Option<Instant>,
     /// An in-place wake came while the resident window was destroyed: the next Wake makes it.
     wake_owed: bool,
     /// The open Tab Color picker: what it colors and the swatches it was built from, kept
@@ -2105,6 +2112,14 @@ pub fn run() {
     crate::platform::notify::on_taskbar_created(Box::new(move || {
         let _ = taskbars.lock().map(|p| p.send_event(UserEvent::TaskbarCreated));
     }));
+    let lost = proxy.clone();
+    crate::platform::notify::on_icon_lost(Box::new(move |why| {
+        let _ = lost.lock().map(|p| p.send_event(UserEvent::TrayLost(why)));
+    }));
+    let tokens = proxy.clone();
+    crate::url_launch::on_activation(Box::new(move |t| {
+        let _ = tokens.lock().map(|p| p.send_event(UserEvent::Activation(t)));
+    }));
     let displays = proxy.clone();
     crate::platform::display::on_change(Box::new(move || {
         let _ = displays.lock().map(|p| p.send_event(UserEvent::DisplayChanged));
@@ -2365,6 +2380,7 @@ pub fn run() {
         popup_menu: None,
         tray_pick: false,
         resident_window_gone: None,
+        rescue_tried: None,
         wake_owed: false,
         color_pick: None,
         shortcuts: None,
@@ -7206,6 +7222,11 @@ impl App {
         if self.gpu_recovery_blocks() {
             return;
         }
+        // Where windows cannot hide (Wayland) the resident window is one never drawn: a first
+        // frame would map it on screen.
+        if self.resident && !crate::platform::window_style::can_hide() {
+            return;
+        }
         // Focus moves between windows and panes, as the debug log reports them.
         if crate::dlog::is_on() {
             let focus = self.focused_id();
@@ -7907,6 +7928,7 @@ impl ApplicationHandler<UserEvent> for App {
         let desktop_due = self.desktop_tick();
         let ui_element = self.presence_tick();
         let tray_due = self.tray_tick(ui_element);
+        self.resident_upkeep(event_loop);
         if self.settings.as_mut().is_some_and(|s| s.take_space_warning()) {
             self.ask_scripts(scripts_alerts::ask(crate::desktops::SPACES_WARNING_HEADING, crate::desktops::SPACES_WARNING, &["OK"], Some(crate::desktops::SPACES_WARNING_ID), crate::warnings::Kind::Permanent, scripts_alerts::Then::Nothing));
         }
@@ -7949,6 +7971,9 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Hotkey(ids) => self.hotkey_pressed(&ids, event_loop),
             UserEvent::Uia(r) => self.uia_request(r),
             UserEvent::Menu(id) => {
+                // A pick from the panel's menu while Wayland's window is gone: it is made again
+                // first, so every command finds the window it would find on Windows (hidden there).
+                self.remake_if_gone(event_loop);
                 // A menu command ends a peek at the bar: it goes away again.
                 self.menu_peek.clear();
                 let traced = std::mem::take(&mut self.tray_pick);
@@ -7965,6 +7990,11 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::DialogFirstFrame(id) => return self.window_event(event_loop, id, WindowEvent::RedrawRequested),
             UserEvent::Tray(right) => return self.tray_clicked(right, event_loop),
             UserEvent::TaskbarCreated => return self.taskbar_created(),
+            UserEvent::TrayLost(why) => return self.tray_lost(why),
+            UserEvent::Activation(token) => {
+                self.activation = Some(token);
+                return;
+            }
             UserEvent::JobsChanged => return self.jobs_changed(),
             UserEvent::DebugLogSaved(result, announce) => return self.debug_log_saved(result, announce),
             UserEvent::PageSaveFile { pane, id, done } => return self.page_save_file_done(pane, id, done),
@@ -8426,13 +8456,7 @@ fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop, power_preference:
 /// GPU is dropped before the second is made, so the window never has two swap chains.
 fn integrated_on_gl(gpu: Gpu, window: &Arc<Window>, display: &winit::event_loop::OwnedDisplayHandle, pref: wgpu::PowerPreference, forced: bool) -> Result<Gpu, String> {
     let chosen = gpu_pick::Facts::of(&gpu.adapter.get_info());
-    if !gpu_pick::look_for_integrated_on_gl(pref, &chosen, forced) {
-        return Ok(gpu);
-    }
-    let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display.clone()));
-    desc.backends = wgpu::Backends::GL;
-    let gl: Vec<gpu_pick::Facts> = pollster::block_on(wgpu::Instance::new(desc).enumerate_adapters(wgpu::Backends::GL)).iter().map(|a| gpu_pick::Facts::of(&a.get_info())).collect();
-    if !gpu_pick::gl_has_integrated(&gl) {
+    if !wants_gl_move(&chosen, display, pref, forced) {
         return Ok(gpu);
     }
     drop(gpu);
@@ -8447,6 +8471,18 @@ fn integrated_on_gl(gpu: Gpu, window: &Arc<Window>, display: &winit::event_loop:
             init_gpu_on(window.clone(), display, pref, gpu_backends_of(chosen.backend))
         }
     }
+}
+
+/// Whether `chosen` should give way to OpenGL's integrated GPU: Linux only, the preference on,
+/// and OpenGL listing one. Start-up and the device-loss recovery ask the same question.
+fn wants_gl_move(chosen: &gpu_pick::Facts, display: &winit::event_loop::OwnedDisplayHandle, pref: wgpu::PowerPreference, forced: bool) -> bool {
+    if !gpu_pick::look_for_integrated_on_gl(pref, chosen, forced, gpu_pick::GL_LOOK_OS) {
+        return false;
+    }
+    let mut desc = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display.clone()));
+    desc.backends = wgpu::Backends::GL;
+    let gl: Vec<gpu_pick::Facts> = pollster::block_on(wgpu::Instance::new(desc).enumerate_adapters(wgpu::Backends::GL)).iter().map(|a| gpu_pick::Facts::of(&a.get_info())).collect();
+    gpu_pick::gl_has_integrated(&gl)
 }
 
 /// The wgpu backend set holding one backend.

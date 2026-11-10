@@ -8,8 +8,8 @@
 //! A second connection, started with the app, follows whether a watcher exists at all, so a
 //! watcher that restarts gets the icon again (Windows' TaskbarCreated).
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -36,13 +36,22 @@ type Hook<T> = Mutex<Option<Arc<T>>>;
 static CLICK: Hook<dyn Fn(bool) + Send + Sync> = Mutex::new(None);
 static PICK: Hook<dyn Fn(String) + Send + Sync> = Mutex::new(None);
 static HOST_BACK: Hook<dyn Fn() + Send + Sync> = Mutex::new(None);
+/// What the app hears when the icon cannot bring it back any more: an add failed (with why), or
+/// the watcher left (None).
+static LOST: Hook<dyn Fn(Option<String>) + Send + Sync> = Mutex::new(None);
 /// The icon's own connection while it is up.
 static ITEM: Mutex<Option<Connection>> = Mutex::new(None);
 /// Whether a watcher owns its name now (followed by `watch`).
 static HOST_UP: AtomicBool = AtomicBool::new(false);
 static ITEM_SEQ: AtomicU32 = AtomicU32::new(0);
+/// Adds run on threads of their own (the UI never waits on the bus); this counts those running.
+static ADDING: AtomicU32 = AtomicU32::new(0);
+/// Bumped by every `set`: an add that finishes after a newer `set` keeps nothing.
+static WANT_GEN: AtomicU64 = AtomicU64::new(0);
+/// The activation token the panel gave before its last Activate (KDE's ProvideXdgActivationToken).
+static TOKEN: Mutex<Option<String>> = Mutex::new(None);
 /// The exported menu and its revision; the condvar wakes an AboutToShow waiting for a rebuild.
-static MENU: Mutex<Exported> = Mutex::new(Exported { table: Vec::new(), revision: 0 });
+static MENU: Mutex<Exported> = Mutex::new(Exported { table: BTreeMap::new(), revision: 0, ids: Ids { by_key: None, next: 0 } });
 static MENU_CHANGED: Condvar = Condvar::new();
 
 fn lock<T: ?Sized>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -66,9 +75,40 @@ pub fn on_host_back(f: Box<dyn Fn() + Send + Sync>) {
     *lock(&HOST_BACK) = Some(Arc::from(f));
 }
 
+/// What the app hears when the icon stops being a way back (see `LOST`).
+pub fn on_lost(f: Box<dyn Fn(Option<String>) + Send + Sync>) {
+    *lock(&LOST) = Some(Arc::from(f));
+}
+
+fn tell_lost(why: Option<String>) {
+    if let Some(f) = run(&LOST) {
+        f(why);
+    }
+}
+
 /// Whether a panel could show the icon right now (a watcher is on the bus).
 pub fn host_up() -> bool {
     HOST_UP.load(Ordering::SeqCst)
+}
+
+/// Where the icon stands: up only while the watcher that took it is still on the bus.
+pub fn state() -> crate::resident::Icon {
+    icon_of(host_up(), lock(&ITEM).is_some(), ADDING.load(Ordering::SeqCst) > 0)
+}
+
+pub fn icon_of(host: bool, item: bool, adding: bool) -> crate::resident::Icon {
+    use crate::resident::Icon;
+    match (host, item, adding) {
+        (false, _, _) => Icon::Absent,
+        (true, true, _) => Icon::Up,
+        (true, false, true) => Icon::Adding,
+        (true, false, false) => Icon::Idle,
+    }
+}
+
+/// The token the panel handed over for the click that is being handled, once.
+pub fn take_token() -> Option<String> {
+    lock(&TOKEN).take()
 }
 
 /// The menu anchor while the icon is up.
@@ -97,11 +137,30 @@ pub struct Row {
     pub children: Vec<Row>,
 }
 
-/// A muda label as dbusmenu shows it: Windows' `&&` is one `&`, the shortcut after the tab
-/// is dropped (the panel draws none), and `_` is doubled (dbusmenu's mnemonic mark).
+/// A muda label as dbusmenu shows it: Windows' `&&` is one `&`, a single `&` mnemonic becomes
+/// dbusmenu's `_`, a real `_` is doubled, and the shortcut after the tab is dropped (the panel
+/// draws none).
 pub fn label_of(text: &str) -> String {
     let text = text.split('\t').next().unwrap_or_default();
-    text.replace("&&", "&").replace('_', "__")
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '_' => out.push_str("__"),
+            '&' if chars.peek() == Some(&'&') => {
+                chars.next();
+                out.push('&');
+            }
+            '&' => {
+                // A trailing lone `&` marks nothing.
+                if chars.peek().is_some() {
+                    out.push('_');
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 pub fn rows_of(items: &[muda::MenuItemKind]) -> Vec<Row> {
@@ -123,29 +182,75 @@ pub fn rows_of(items: &[muda::MenuItemKind]) -> Vec<Row> {
         .collect()
 }
 
-/// A row with its dbusmenu id; the index in the table is the id, 0 is the root.
+/// A row with its dbusmenu id (the table's key; 0 is the root).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Flat {
     pub row: Option<Row>,
     pub children: Vec<i32>,
 }
 
-/// Numbers the rows depth first from 1 under the root 0.
-pub fn flatten(rows: &[Row]) -> Vec<Flat> {
-    fn add(table: &mut Vec<Flat>, rows: &[Row]) -> Vec<i32> {
-        let mut ids = Vec::new();
-        for r in rows {
-            let id = table.len() as i32;
-            table.push(Flat { row: Some(Row { children: Vec::new(), ..r.clone() }), children: Vec::new() });
-            let kids = add(table, &r.children);
-            table[id as usize].children = kids;
-            ids.push(id);
-        }
-        ids
+/// The dbusmenu ids, kept across exports: a row keeps its id while it is in the menu, and an id is
+/// never given to another row, so a click on a menu the panel showed before a rebuild runs the
+/// same command or nothing (review I4).
+#[derive(Debug)]
+pub struct Ids {
+    /// Row key to id, for the rows of the last export.
+    by_key: Option<HashMap<String, i32>>,
+    next: i32,
+}
+
+impl Default for Ids {
+    fn default() -> Self {
+        Ids { by_key: None, next: 0 }
     }
-    let mut table = vec![Flat { row: None, children: Vec::new() }];
-    let kids = add(&mut table, rows);
-    table[0].children = kids;
+}
+
+/// Numbers the rows under the root 0: a command row by its muda id, any other row by its place
+/// (parent and label). New rows take ids after every id given before.
+pub fn flatten(rows: &[Row], ids: &mut Ids) -> BTreeMap<i32, Flat> {
+    struct Walk<'a> {
+        table: BTreeMap<i32, Flat>,
+        old: HashMap<String, i32>,
+        fresh: HashMap<String, i32>,
+        ids: &'a mut Ids,
+    }
+    fn add(w: &mut Walk<'_>, rows: &[Row], parent: &str) -> Vec<i32> {
+        let mut out = Vec::new();
+        for r in rows {
+            let base = match r.kind {
+                Kind::Item | Kind::Check(_) => format!("p:{}", r.pick),
+                Kind::Submenu | Kind::Separator => format!("{parent}/{}", r.label),
+            };
+            // The same command twice (New Window at the top and in Main Menu) gets two ids.
+            let mut key = base.clone();
+            let mut n = 1;
+            while w.fresh.contains_key(&key) {
+                key = format!("{base}#{n}");
+                n += 1;
+            }
+            let id = match w.old.get(&key) {
+                Some(id) => *id,
+                None => {
+                    w.ids.next = w.ids.next.wrapping_add(1).max(1);
+                    w.ids.next
+                }
+            };
+            w.fresh.insert(key.clone(), id);
+            w.table.insert(id, Flat { row: Some(Row { children: Vec::new(), ..r.clone() }), children: Vec::new() });
+            let kids = add(w, &r.children, &key);
+            if let Some(f) = w.table.get_mut(&id) {
+                f.children = kids;
+            }
+            out.push(id);
+        }
+        out
+    }
+    let old = ids.by_key.take().unwrap_or_default();
+    let mut w = Walk { table: BTreeMap::new(), old, fresh: HashMap::new(), ids };
+    let kids = add(&mut w, rows, "");
+    let Walk { mut table, fresh, ids, .. } = w;
+    table.insert(0, Flat { row: None, children: kids });
+    ids.by_key = Some(fresh);
     table
 }
 
@@ -177,8 +282,8 @@ pub fn props(f: &Flat, names: &[String]) -> HashMap<String, OwnedValue> {
 }
 
 /// The `(ia{sv}av)` of `id` and its children down `depth` levels (-1: all).
-fn node(table: &[Flat], id: i32, depth: i32, names: &[String]) -> (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>) {
-    let Some(f) = table.get(id as usize) else { return (id, HashMap::new(), Vec::new()) };
+fn node(table: &BTreeMap<i32, Flat>, id: i32, depth: i32, names: &[String]) -> (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>) {
+    let Some(f) = table.get(&id) else { return (id, HashMap::new(), Vec::new()) };
     let kids = if depth == 0 {
         Vec::new()
     } else {
@@ -195,8 +300,9 @@ fn node(table: &[Flat], id: i32, depth: i32, names: &[String]) -> (i32, HashMap<
 }
 
 struct Exported {
-    table: Vec<Flat>,
+    table: BTreeMap<i32, Flat>,
     revision: u32,
+    ids: Ids,
 }
 
 /// The UI thread's tray menu, as the panel will show it next. Tells the panel it changed.
@@ -205,20 +311,21 @@ pub fn export(items: &[muda::MenuItemKind]) {
 }
 
 fn export_rows(rows: &[Row]) {
-    let table = flatten(rows);
     let revision = {
         let mut m = lock(&MENU);
-        m.table = table;
+        let m = &mut *m;
+        m.table = flatten(rows, &mut m.ids);
         m.revision = m.revision.wrapping_add(1);
         m.revision
     };
     MENU_CHANGED.notify_all();
-    // The signal goes out on a thread of its own: the UI never waits on the bus.
-    if let Some(c) = lock(&ITEM).clone() {
-        let _ = std::thread::Builder::new().name("tray-layout".into()).spawn(move || {
-            let _ = c.emit_signal(None::<()>, MENU_PATH, "com.canonical.dbusmenu", "LayoutUpdated", &(revision, 0i32));
-        });
-    }
+    // The signal goes out on a thread of its own: the UI never waits on the bus. The thread takes
+    // the connection only if it is still the icon's, so a removal is not held up by it (review M6).
+    let Some(name) = lock(&ITEM).as_ref().and_then(|c| c.unique_name().map(|n| n.to_string())) else { return };
+    let _ = std::thread::Builder::new().name("tray-layout".into()).spawn(move || {
+        let Some(c) = lock(&ITEM).clone().filter(|c| c.unique_name().is_some_and(|n| n.as_str() == name)) else { return };
+        let _ = c.emit_signal(None::<()>, MENU_PATH, "com.canonical.dbusmenu", "LayoutUpdated", &(revision, 0i32));
+    });
 }
 
 // ---- The icon ----
@@ -311,6 +418,11 @@ impl Item {
         OwnedObjectPath::try_from(MENU_PATH).expect("a valid path")
     }
 
+    /// KDE's extension: the token for the click that follows, so the window may come front.
+    fn provide_xdg_activation_token(&self, token: String) {
+        *lock(&TOKEN) = crate::launch::token_ok(&token).then_some(token);
+    }
+
     /// A left click: the dock click, as on Windows and macOS.
     fn activate(&self, _x: i32, _y: i32) {
         dlog!("tray: activate");
@@ -352,13 +464,13 @@ impl DbusMenu {
 
     fn get_group_properties(&self, ids: Vec<i32>, names: Vec<String>) -> Vec<(i32, HashMap<String, OwnedValue>)> {
         let m = lock(&MENU);
-        let all: Vec<i32> = if ids.is_empty() { (0..m.table.len() as i32).collect() } else { ids };
-        all.into_iter().filter_map(|id| m.table.get(id as usize).map(|f| (id, props(f, &names)))).collect()
+        let all: Vec<i32> = if ids.is_empty() { m.table.keys().copied().collect() } else { ids };
+        all.into_iter().filter_map(|id| m.table.get(&id).map(|f| (id, props(f, &names)))).collect()
     }
 
     fn get_property(&self, id: i32, name: String) -> zbus::fdo::Result<OwnedValue> {
         let m = lock(&MENU);
-        let f = m.table.get(id as usize).ok_or_else(|| zbus::fdo::Error::InvalidArgs(format!("no item {id}")))?;
+        let f = m.table.get(&id).ok_or_else(|| zbus::fdo::Error::InvalidArgs(format!("no item {id}")))?;
         props(f, &[name.clone()]).remove(&name).ok_or_else(|| zbus::fdo::Error::InvalidArgs(format!("no property {name}")))
     }
 
@@ -390,7 +502,7 @@ fn clicked(id: i32, event: &str) {
     if event != "clicked" {
         return;
     }
-    let pick = lock(&MENU).table.get(id as usize).and_then(|f| f.row.as_ref()).filter(|r| matches!(r.kind, Kind::Item | Kind::Check(_)) && r.enabled).map(|r| r.pick.clone());
+    let pick = lock(&MENU).table.get(&id).and_then(|f| f.row.as_ref()).filter(|r| matches!(r.kind, Kind::Item | Kind::Check(_)) && r.enabled).map(|r| r.pick.clone());
     dlog!("tray: menu row {} clicked, picks {}", id, pick.is_some());
     if let (Some(p), Some(f)) = (pick, run(&PICK)) {
         f(p);
@@ -428,11 +540,25 @@ fn add_on(bus: zbus::blocking::connection::Builder<'_>) -> Result<Connection, St
     }
 }
 
+/// The add on this thread, as the bus tests drive it.
+#[cfg(test)]
 fn add_with(bus: impl FnOnce() -> zbus::Result<zbus::blocking::connection::Builder<'static>>) -> Result<(), String> {
+    add_for(bus, WANT_GEN.load(Ordering::SeqCst))
+}
+
+/// The add for the `set` numbered `generation`: a newer `set` meanwhile keeps nothing of it.
+fn add_for(bus: impl FnOnce() -> zbus::Result<zbus::blocking::connection::Builder<'static>>, generation: u64) -> Result<(), String> {
     let b = bus().map_err(|e| format!("Termurion could not reach the session bus for its tray icon: {e}"))?;
     let c = add_on(b)?;
-    // An icon that was up already is replaced (a watcher that came back).
-    *lock(&ITEM) = Some(c);
+    {
+        let mut item = lock(&ITEM);
+        if WANT_GEN.load(Ordering::SeqCst) != generation {
+            return Ok(());
+        }
+        // An icon that was up already is replaced (a watcher that came back).
+        *item = Some(c);
+    }
+    crate::host_base::log("tray: icon registered with the StatusNotifierWatcher");
     // The panel reads the menu before any click: the app builds the first one now.
     if let Some(f) = run(&CLICK) {
         f(true);
@@ -440,12 +566,36 @@ fn add_with(bus: impl FnOnce() -> zbus::Result<zbus::blocking::connection::Build
     Ok(())
 }
 
-/// Adds the icon, or takes it down. Taking it down drops its connection, which the watcher sees.
+/// Adds the icon, or takes it down. The add runs on a thread of its own (review M5): Ok means it
+/// started, and a failure reaches the app through `on_lost`. Taking it down drops the connection,
+/// which the watcher sees.
 pub fn set(on: bool) -> Result<(), String> {
-    if on {
-        return add_with(zbus::blocking::connection::Builder::session);
+    set_with(on, zbus::blocking::connection::Builder::session)
+}
+
+fn set_with(on: bool, bus: impl FnOnce() -> zbus::Result<zbus::blocking::connection::Builder<'static>> + Send + 'static) -> Result<(), String> {
+    let generation = WANT_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    if !on {
+        lock(&ITEM).take();
+        return Ok(());
     }
-    lock(&ITEM).take();
+    if !host_up() {
+        return Err(no_host_text());
+    }
+    ADDING.fetch_add(1, Ordering::SeqCst);
+    let spawned = std::thread::Builder::new().name("tray-add".into()).spawn(move || {
+        let result = add_for(bus, generation);
+        ADDING.fetch_sub(1, Ordering::SeqCst);
+        if let Err(e) = result
+            && WANT_GEN.load(Ordering::SeqCst) == generation
+        {
+            tell_lost(Some(e));
+        }
+    });
+    if let Err(e) = spawned {
+        ADDING.fetch_sub(1, Ordering::SeqCst);
+        return Err(format!("The tray icon was not added: {e}"));
+    }
     Ok(())
 }
 
@@ -479,17 +629,31 @@ fn watch_on(bus: impl FnOnce() -> zbus::Result<zbus::blocking::connection::Build
         let up = zbus::names::BusName::try_from(WATCHER).ok().and_then(|n| proxy.name_has_owner(n).ok()).unwrap_or(false);
         HOST_UP.store(up, Ordering::SeqCst);
         dlog!("tray: watcher present {}", up);
+        let mut why = "the session bus closed".to_string();
         for msg in messages {
-            let Ok(msg) = msg else { break };
+            let msg = match msg {
+                Ok(m) => m,
+                Err(e) => {
+                    why = e.to_string();
+                    break;
+                }
+            };
             let Some(new) = watcher_change(&msg) else { continue };
             let up = !new.is_empty();
             HOST_UP.store(up, Ordering::SeqCst);
             crate::host_base::log(&format!("tray: StatusNotifierWatcher {}", if up { "came onto the bus" } else { "left the bus" }));
-            if up && let Some(f) = run(&HOST_BACK) {
-                f();
+            if up {
+                if let Some(f) = run(&HOST_BACK) {
+                    f();
+                }
+            } else {
+                tell_lost(None);
             }
         }
+        // No longer followed: from now on there is no panel to count on (review I1, scenario C).
         HOST_UP.store(false, Ordering::SeqCst);
+        crate::host_base::log(&format!("tray: stopped following the StatusNotifierWatcher ({why})"));
+        tell_lost(None);
     });
     if spawned.is_err() {
         dlog!("tray: the watcher thread did not start");
@@ -530,25 +694,64 @@ mod tests {
         assert_eq!(label_of("Tom && Jerry"), "Tom & Jerry");
         assert_eq!(label_of("New Window\tCtrl+N"), "New Window");
         assert_eq!(label_of("my_host"), "my__host", "an underscore is not a mnemonic");
+        // Review M4: a single & is the mnemonic, dbusmenu's _.
+        assert_eq!(label_of("&File"), "_File");
+        assert_eq!(label_of("Save &As && Quit"), "Save _As & Quit");
+        assert_eq!(label_of("a_&b"), "a___b");
+        assert_eq!(label_of("end&"), "end");
+    }
+
+    /// Review I4: a row keeps its id across exports and a gone row's id is never reused, so a
+    /// click on a menu shown before a rebuild runs the same command or nothing.
+    #[test]
+    fn ids_survive_a_rebuild() {
+        let mut ids = Ids::default();
+        let before = vec![row("Win 1", Kind::Item, "w1", vec![]), row("Win 2", Kind::Item, "w2", vec![]), row("", Kind::Separator, "s1", vec![]), row("New Window", Kind::Item, "new", vec![]), row("Quit", Kind::Item, "quit", vec![])];
+        let t1 = flatten(&before, &mut ids);
+        let id_of = |t: &BTreeMap<i32, Flat>, pick: &str| t.iter().find(|(_, f)| f.row.as_ref().is_some_and(|r| r.pick == pick)).map(|(id, _)| *id);
+        let (w2, new, quit) = (id_of(&t1, "w2").unwrap(), id_of(&t1, "new").unwrap(), id_of(&t1, "quit").unwrap());
+        // Window 2 closes; the separator's own muda id is new each build.
+        let after = vec![row("Win 1", Kind::Item, "w1", vec![]), row("", Kind::Separator, "s2", vec![]), row("New Window", Kind::Item, "new", vec![]), row("Quit", Kind::Item, "quit", vec![])];
+        let t2 = flatten(&after, &mut ids);
+        assert_eq!(id_of(&t2, "new"), Some(new));
+        assert_eq!(id_of(&t2, "quit"), Some(quit));
+        assert!(!t2.contains_key(&w2), "the old row's id now names nothing (it was not Quit)");
+        let t3 = flatten(&before, &mut ids);
+        assert_ne!(id_of(&t3, "w2"), Some(w2), "a row that comes back gets a fresh id");
+        assert_eq!(id_of(&t3, "quit"), Some(quit));
+        // The same command twice gets two ids, both its own.
+        let twice = vec![row("New Window", Kind::Item, "new", vec![]), row("Main Menu", Kind::Submenu, "m", vec![row("New Window", Kind::Item, "new", vec![])])];
+        let t4 = flatten(&twice, &mut ids);
+        assert_eq!(t4.values().filter(|f| f.row.as_ref().is_some_and(|r| r.pick == "new")).count(), 2);
+        assert_eq!(t4.len(), 4);
+    }
+
+    #[test]
+    fn the_icon_state_needs_the_watcher() {
+        use crate::resident::Icon;
+        assert_eq!(icon_of(false, true, false), Icon::Absent, "the watcher left: the icon is no way back");
+        assert_eq!(icon_of(true, true, false), Icon::Up);
+        assert_eq!(icon_of(true, false, true), Icon::Adding);
+        assert_eq!(icon_of(true, false, false), Icon::Idle);
     }
 
     #[test]
     fn rows_are_numbered_depth_first_under_the_root() {
         let rows = vec![row("New Window", Kind::Item, "a", vec![]), row("", Kind::Separator, "s", vec![]), row("Main Menu", Kind::Submenu, "m", vec![row("Copy", Kind::Item, "c", vec![]), row("Wrap", Kind::Check(true), "w", vec![])]), row("Quit", Kind::Item, "q", vec![])];
-        let t = flatten(&rows);
+        let t = flatten(&rows, &mut Ids::default());
         assert_eq!(t.len(), 7);
-        assert_eq!(t[0].children, vec![1, 2, 3, 6]);
-        assert_eq!(t[3].children, vec![4, 5]);
-        assert_eq!(t[4].row.as_ref().unwrap().pick, "c");
-        assert!(t[3].row.as_ref().unwrap().children.is_empty(), "children live in the table, not the row");
+        assert_eq!(t[&0].children, vec![1, 2, 3, 6]);
+        assert_eq!(t[&3].children, vec![4, 5]);
+        assert_eq!(t[&4].row.as_ref().unwrap().pick, "c");
+        assert!(t[&3].row.as_ref().unwrap().children.is_empty(), "children live in the table, not the row");
         let s = |f: &Flat, k: &str| props(f, &[]).get(k).and_then(|v| <&str>::try_from(&**v).ok().map(str::to_string));
-        assert_eq!(s(&t[0], "children-display").as_deref(), Some("submenu"));
-        assert_eq!(s(&t[2], "type").as_deref(), Some("separator"));
-        assert!(!props(&t[2], &[]).contains_key("label"));
-        assert_eq!(s(&t[3], "children-display").as_deref(), Some("submenu"));
-        assert_eq!(s(&t[5], "toggle-type").as_deref(), Some("checkmark"));
-        assert_eq!(props(&t[5], &[]).get("toggle-state").and_then(|v| i32::try_from(&**v).ok()), Some(1));
-        assert_eq!(props(&t[1], &["label".to_string()]).len(), 1, "only the properties asked for");
+        assert_eq!(s(&t[&0], "children-display").as_deref(), Some("submenu"));
+        assert_eq!(s(&t[&2], "type").as_deref(), Some("separator"));
+        assert!(!props(&t[&2], &[]).contains_key("label"));
+        assert_eq!(s(&t[&3], "children-display").as_deref(), Some("submenu"));
+        assert_eq!(s(&t[&5], "toggle-type").as_deref(), Some("checkmark"));
+        assert_eq!(props(&t[&5], &[]).get("toggle-state").and_then(|v| i32::try_from(&**v).ok()), Some(1));
+        assert_eq!(props(&t[&1], &["label".to_string()]).len(), 1, "only the properties asked for");
     }
 
     #[test]
@@ -620,8 +823,10 @@ mod tests {
         *lock(&CLICK) = None;
         *lock(&PICK) = None;
         *lock(&HOST_BACK) = None;
+        *lock(&LOST) = None;
         let mut m = lock(&MENU);
-        m.table = Vec::new();
+        m.table = BTreeMap::new();
+        m.ids = Ids::default();
     }
 
     #[test]
@@ -711,6 +916,47 @@ mod tests {
         assert!(view().is_none());
         let dbus = zbus::blocking::fdo::DBusProxy::new(&panel).unwrap();
         wait_for("the name to go", || !dbus.name_has_owner(zbus::names::BusName::try_from(name.as_str()).unwrap()).unwrap());
+    }
+
+    /// A watcher that cannot take the icon (no RegisterStatusNotifierItem), for the failed add.
+    struct Broken;
+
+    #[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
+    impl Broken {
+        fn other(&self) {}
+    }
+
+    /// Review I1/M5: the add runs off the UI thread; the icon counts as up only once the watcher
+    /// took it, a failed add and a watcher that leaves are both told to the app.
+    #[test]
+    fn the_add_is_told_back_and_the_icon_follows_the_watcher() {
+        let _t = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        reset();
+        let b = bus();
+        let lost = Arc::new(Mutex::new(Vec::<Option<String>>::new()));
+        let l2 = lost.clone();
+        on_lost(Box::new(move |why| l2.lock().unwrap().push(why)));
+        let (w, registered) = watcher(&b.addr);
+        watch_on(builder(&b.addr));
+        wait_for("the watcher", host_up);
+        assert_eq!(state(), crate::resident::Icon::Idle, "a panel, no icon yet");
+        set_with(true, builder(&b.addr)).expect("the add started");
+        wait_for("the icon up", || state() == crate::resident::Icon::Up);
+        assert_eq!(registered.lock().unwrap().len(), 1);
+        drop(w);
+        wait_for("the watcher to leave", || state() == crate::resident::Icon::Absent);
+        wait_for("the app told", || lost.lock().unwrap().contains(&None));
+        assert!(set_with(true, builder(&b.addr)).is_err(), "no panel: the add says so at once");
+        set_with(false, builder(&b.addr)).unwrap();
+        // A watcher that refuses: the failure reaches the app, and nothing is up.
+        let _broken = zbus::blocking::connection::Builder::address(b.addr.as_str()).unwrap().name(WATCHER).unwrap().serve_at(WATCHER_PATH, Broken).unwrap().build().unwrap();
+        wait_for("the second watcher", host_up);
+        set_with(true, builder(&b.addr)).expect("the add started");
+        wait_for("the failure told", || lost.lock().unwrap().iter().any(|w| w.as_deref().is_some_and(|e| e.contains("not added"))));
+        wait_for("the add ended", || state() == crate::resident::Icon::Idle);
+        drop(b);
+        wait_for("the bus to end the watch", || !host_up());
+        reset();
     }
 
     #[test]

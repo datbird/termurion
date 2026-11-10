@@ -632,6 +632,16 @@ impl App {
             Err(e) => {
                 super::ssh_url_app::forget_hotkey_url(&mut self.hotkey_urls, &first);
                 // A tab on its way to the new window stays where it was.
+                // Unless Wayland's resident window could not be made again: then it is buried again,
+                // not left in a slot with no window (review I5).
+                if reused && self.gpu.is_none() {
+                    match first {
+                        NewWindow::Tab(tab) | NewWindow::TornOff(tab, _) => self.rebury_tabs(vec![tab], &e),
+                        NewWindow::Tabs(tabs) => self.rebury_tabs(tabs, &e),
+                        _ => {}
+                    }
+                    return Err(e);
+                }
                 match first {
                     NewWindow::Tab(tab) | NewWindow::TornOff(tab, _) => self.tabs.push(tab),
                     NewWindow::Tabs(tabs) => self.tabs.extend(tabs),
@@ -845,6 +855,9 @@ impl App {
         // The resident window was hidden: a regular window shows now (a hotkey window waits for its key).
         if reused && !hotkey {
             self.show_awake_window();
+        } else if !hotkey && let (Some(t), Some(g)) = (self.activation.take(), &self.gpu) {
+            // A new window for a click or a second start comes front with its token (GNOME).
+            let _ = crate::platform::window::activate(&g.window, Some(&t));
         }
         // A saved hotkey window restored after the launch fallback ran, whose own hotkey failed,
         // would stay hidden with nothing to show it: it becomes a regular window.
@@ -880,8 +893,10 @@ impl App {
         let attrs = crate::platform::window::attributes().with_title("Termurion").with_window_icon(crate::presence::window_icon()).with_inner_size(LogicalSize::new(1000.0, 650.0));
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         window.set_ime_allowed(true);
-        // An opaque window: one whose profile wants alpha is remade for it as any window is.
-        let gpu = match &self.prefs_gpu {
+        // An opaque window: one whose profile wants alpha is remade for it as any window is. A
+        // device lost meanwhile is not reused: the window gets fresh handles (review I3).
+        let kept = self.prefs_gpu.as_ref().filter(|_| !self.gpu_recovery_blocks());
+        let gpu = match kept {
             Some(h) => init_gpu_from(window.clone(), h),
             None => self.gpu_for(event_loop, window.clone(), crate::transparency::SurfaceKind::Opaque),
         }?;
@@ -899,6 +914,21 @@ impl App {
         self.install_menus();
         crate::host_base::log("resident: window made again");
         Ok(())
+    }
+
+    /// Tabs whose window could not be made while resident: every session in them is buried again
+    /// (still running, listed in Buried Sessions), and a notification says so.
+    fn rebury_tabs(&mut self, tabs: Vec<Tab>, why: &str) {
+        let window = self.current_window().map(key).unwrap_or_default();
+        for t in tabs {
+            for pane in t.layout.panes() {
+                let name = self.session_title(pane);
+                self.buried.bury(crate::bury::Buried { pane, window, tab: t.id, name });
+            }
+        }
+        self.menus_dirty = true;
+        self.refresh_buried_menu();
+        self.outside_note("bury", format!("A window could not be made ({why}); the sessions stay buried."));
     }
 
     /// A Wake after an in-place wake found no window (`wake_in_place`): the window is made, then
