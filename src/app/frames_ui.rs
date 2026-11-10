@@ -74,7 +74,7 @@ impl App {
     /// window is not on screen.
     pub(super) fn tab_panes_here(&self) -> (Vec<PaneId>, Vec<PaneId>) {
         let shown = self.hotkey.as_ref().map(|h| h.shown);
-        let on_screen = self.gpu.as_ref().is_some_and(|g| window_on_screen(g.window.is_visible(), g.window.is_minimized(), shown));
+        let on_screen = self.gpu.as_ref().is_some_and(|g| current_on_screen(self.resident, g.window.is_visible(), g.window.is_minimized(), shown));
         if !on_screen {
             return Default::default();
         }
@@ -209,7 +209,8 @@ impl App {
             self.redraw_here();
         }
         let mut due = self.pacer.due();
-        if self.gpu.as_ref().is_some_and(|g| on_screen(&g.window, self.hotkey.as_ref())) {
+        // The resident window is never on screen: Wayland reports an unmapped one as visible (N2).
+        if !self.resident && self.gpu.as_ref().is_some_and(|g| on_screen(&g.window, self.hotkey.as_ref())) {
             due = [due, forced_frame(self.pacer.last(), period, now, || self.redraw_here())].into_iter().flatten().min();
         }
         for (_, s) in self.windows.parked_mut() {
@@ -245,6 +246,12 @@ impl App {
 
 /// Whether a window is on screen: not hidden, not minimized and, for a hotkey window, shown
 /// (`shown` false means DWM-cloaked, which winit still reports as visible).
+/// The current window's `window_on_screen`: the resident one never is, whatever the window
+/// system says (winit on Wayland answers None for a window it never mapped; review N1, N2).
+pub(super) fn current_on_screen(resident: bool, visible: Option<bool>, minimized: Option<bool>, shown: Option<bool>) -> bool {
+    !resident && window_on_screen(visible, minimized, shown)
+}
+
 pub(super) fn window_on_screen(visible: Option<bool>, minimized: Option<bool>, shown: Option<bool>) -> bool {
     visible != Some(false) && minimized != Some(true) && shown != Some(false)
 }
@@ -267,6 +274,21 @@ mod tests {
     /// 13l Task 4 fix (P18): a window is forced a frame only when it is on screen: not hidden,
     /// not minimized and, for a hotkey window, not cloaked (winit still calls a cloaked window
     /// visible).
+    /// Review N1/N2: Wayland's unmapped resident window reports visibility None; it is never on
+    /// screen, so the dock click opens a window and no frame is forced for it.
+    #[test]
+    fn the_resident_window_is_never_on_screen() {
+        assert!(!current_on_screen(true, None, None, None), "Wayland's unmapped resident window");
+        assert!(!current_on_screen(true, Some(true), Some(false), None));
+        assert!(current_on_screen(false, None, None, None), "a Wayland window that is a window");
+        let src = include_str!("frames_ui.rs");
+        let wake = src.split("fn frame_wake").nth(1).unwrap().split("\n    }\n").next().unwrap();
+        assert!(wake.contains("if !self.resident && self.gpu.as_ref()"), "no forced frame for the resident window");
+        let presence = include_str!("presence_ui.rs");
+        let states = presence.split("fn terminal_window_states").nth(1).unwrap().split("\n    }\n").next().unwrap();
+        assert!(states.contains("current_on_screen(self.resident"), "the dock click does not count it");
+    }
+
     #[test]
     fn cloaked_hotkey_windows_are_not_on_screen() {
         assert!(window_on_screen(Some(true), Some(false), None));

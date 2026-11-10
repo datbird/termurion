@@ -594,6 +594,10 @@ pub struct App {
     resident_window_gone: Option<WindowId>,
     /// When a stranded resident Termurion last tried its rescue (`resident_upkeep`).
     rescue_tried: Option<Instant>,
+    /// When Wayland's resident window was last made again after a failure (`remake_if_gone`).
+    remake_tried: Option<Instant>,
+    /// A resident start whose plan opened no window, until a window first shows (N3).
+    never_shown: bool,
     /// An in-place wake came while the resident window was destroyed: the next Wake makes it.
     wake_owed: bool,
     /// The open Tab Color picker: what it colors and the swatches it was built from, kept
@@ -2381,6 +2385,8 @@ pub fn run() {
         tray_pick: false,
         resident_window_gone: None,
         rescue_tried: None,
+        remake_tried: None,
+        never_shown: false,
         wake_owed: false,
         color_pick: None,
         shortcuts: None,
@@ -7532,6 +7538,7 @@ impl ApplicationHandler<UserEvent> for App {
                 // A resident start has no window in the list until a tab makes it one.
                 if resident_start {
                     self.resident = true;
+                    self.never_shown = true;
                     // The icon is the way back: add it now, not on some later event (TWEAKS 8).
                     self.tray_tick(false);
                 } else {
@@ -7973,6 +7980,8 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Menu(id) => {
                 // A pick from the panel's menu while Wayland's window is gone: it is made again
                 // first, so every command finds the window it would find on Windows (hidden there).
+                // A person's pick tries now, whatever an earlier failure's wait says.
+                self.remake_tried = None;
                 self.remake_if_gone(event_loop);
                 // A menu command ends a peek at the bar: it goes away again.
                 self.menu_peek.clear();

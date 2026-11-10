@@ -375,16 +375,21 @@ mod sock {
         }
     }
 
-    /// Whether the program `theirs` serving the socket is this Termurion: the same program name
-    /// (an AppImage mounts each run somewhere new, and an updated binary reads "(deleted)"). The
-    /// boundary is the user: the private folder and the peer uid keep everyone else out.
+    /// Whether the program `theirs` serving the socket is this Termurion: the same program file,
+    /// as Windows compares image paths (review N11). Two runs of one AppImage each mount it
+    /// somewhere new (`/tmp/.mount_XXXX`), so there the path inside the mount is compared; an
+    /// updated binary under a running copy reads "(deleted)".
     pub fn verify_image(theirs: &std::path::Path, mine: &std::path::Path) -> Result<(), String> {
-        let name = |p: &std::path::Path| p.file_name().map(|n| n.to_string_lossy().trim_end_matches(" (deleted)").to_string());
-        match (name(theirs), name(mine)) {
-            (Some(a), Some(b)) if a == b => Ok(()),
-            (Some(_), _) => Err("the launch socket is held by a program that is not Termurion".into()),
-            (None, _) => Err("the program holding the launch socket could not be identified".into()),
+        let theirs = theirs.to_string_lossy();
+        let theirs = theirs.trim_end_matches(" (deleted)");
+        let mine = mine.to_string_lossy();
+        if !theirs.starts_with('/') {
+            return Err("the program holding the launch socket could not be identified".into());
         }
+        // The path after an AppImage's mount folder (`.mount_` and its random tail).
+        let inside = |p: &str| p.split('/').position(|c| c.starts_with(".mount_")).map(|i| p.split('/').skip(i + 1).collect::<Vec<_>>().join("/"));
+        let same = theirs == mine || matches!((inside(theirs), inside(&mine)), (Some(a), Some(b)) if a == b);
+        if same { Ok(()) } else { Err("the launch socket is held by a program that is not this Termurion".into()) }
     }
 
     fn verify_server(pid: u32) -> Result<(), String> {
@@ -393,10 +398,64 @@ mod sock {
         verify_image(&theirs, &mine)
     }
 
+    /// Why the socket at `path` can never serve: a file that is not a socket, or a path longer
+    /// than a socket address holds. Then Termurion runs without it instead of refusing to
+    /// start (review N6).
+    pub fn unusable(path: &std::path::Path) -> Option<String> {
+        use std::os::unix::fs::FileTypeExt;
+        // sockaddr_un's 108 bytes, with room for the NUL.
+        if path.as_os_str().len() >= 108 {
+            return Some(format!("the launch socket path {} is too long", path.display()));
+        }
+        match std::fs::symlink_metadata(path) {
+            Ok(m) if !m.file_type().is_socket() => Some(format!("{} is not a socket", path.display())),
+            _ => None,
+        }
+    }
+
+    /// Whether another Termurion holds the socket's lock now (it is between taking the lock and
+    /// listening). Read from /proc/locks, never by taking the lock, which would make that start
+    /// lose its own bind (review N7).
+    pub fn lock_held(path: &std::path::Path) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        let mut lock = path.as_os_str().to_owned();
+        lock.push(".lock");
+        let Ok(m) = std::fs::symlink_metadata(std::path::Path::new(&lock)) else { return false };
+        let Ok(locks) = std::fs::read_to_string("/proc/locks") else { return false };
+        locks_name(&locks, m.ino())
+    }
+
+    /// Whether /proc/locks lists a FLOCK on inode `ino` (its device is not compared: btrfs's stat
+    /// names another device than /proc/locks does). Only a short wait rests on it.
+    pub fn locks_name(locks: &str, ino: u64) -> bool {
+        let tail = format!(":{ino}");
+        locks.lines().any(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            f.get(1) == Some(&"FLOCK") && f.get(5).is_some_and(|d| d.ends_with(&tail))
+        })
+    }
+
+    /// Connects at once: a refused connect is a dead socket, answered at once (review N8), unless
+    /// another start holds the lock, which is about to listen; then it is waited for up to 1 s (N7).
+    fn connect_now(name: &str) -> Result<Option<ipc::Pipe>, ipc::ConnectError> {
+        let end = Instant::now() + Duration::from_secs(1);
+        loop {
+            match ipc::connect_owned(name, Duration::ZERO)? {
+                Some(p) => return Ok(Some(p)),
+                None if Instant::now() < end && lock_held(std::path::Path::new(name)) => std::thread::sleep(Duration::from_millis(20)),
+                None => return Ok(None),
+            }
+        }
+    }
+
     /// The only writer to the socket: one message, one connection, counted taken only on the ack.
     pub fn hand_request_on(name: &str, request: &crate::launch::Request, token: Option<&str>, verify: &dyn Fn(u32) -> Result<(), String>) -> Handed {
         let Some(message) = crate::launch::encode_with_token(request, token) else { return Handed::Failed("the request is not one Termurion accepts".into()) };
-        let pipe = match ipc::connect_owned(name, Duration::from_secs(1)) {
+        // A socket that can never serve is no Termurion: this one runs without it (and says so).
+        if let Some(why) = unusable(std::path::Path::new(name)) {
+            return Handed::OtherOwner(why);
+        }
+        let pipe = match connect_now(name) {
             Ok(Some(p)) => p,
             Ok(None) => return Handed::NoServer,
             Err(ipc::ConnectError::Denied(e)) => return Handed::OtherOwner(e),
@@ -445,16 +504,36 @@ mod sock {
         }
     }
 
+    /// Clients read at once at most. A silent client holds only its own reader, never the next
+    /// start (review N9); past the cap a client is closed unanswered and its start retries.
+    pub const READERS: usize = 4;
+
+    type Notify = std::sync::Arc<std::sync::Mutex<Box<dyn Fn(crate::launch::Request) + Send>>>;
+
     pub fn serve_on(name: &str, wait: Duration, notify: Box<dyn Fn(crate::launch::Request) + Send>) -> Result<Serving, String> {
         let mut listener = ipc::Listener::bind(name).map_err(|e| e.replace("session host", "Termurion"))?;
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopping = stop.clone();
+        let notify: Notify = std::sync::Arc::new(std::sync::Mutex::new(notify));
         let thread = std::thread::Builder::new()
             .name("launch-socket".into())
             .spawn(move || {
+                let mut readers: Vec<std::thread::JoinHandle<()>> = Vec::new();
+                let serve = |p: ipc::Pipe, readers: &mut Vec<std::thread::JoinHandle<()>>| {
+                    readers.retain(|r| !r.is_finished());
+                    if readers.len() >= READERS {
+                        p.shutdown();
+                        return;
+                    }
+                    let n = notify.clone();
+                    match std::thread::Builder::new().name("launch-read".into()).spawn(move || take_one(&p, wait, &n)) {
+                        Ok(r) => readers.push(r),
+                        Err(e) => crate::host_base::log(&format!("launch: no reader thread: {e}")),
+                    }
+                };
                 while !stopping.load(std::sync::atomic::Ordering::SeqCst) {
                     match listener.accept(Duration::from_secs(1)) {
-                        Ok(Some(p)) => take_one(&p, wait, &notify),
+                        Ok(Some(p)) => serve(p, &mut readers),
                         Ok(None) => {}
                         Err(e) => {
                             crate::host_base::log(&format!("launch: accept failed: {e}"));
@@ -463,7 +542,11 @@ mod sock {
                     }
                 }
                 if let Ok(Some(p)) = listener.accept(Duration::ZERO) {
-                    take_one(&p, wait, &notify);
+                    serve(p, &mut readers);
+                }
+                // Every request read before `stop` returns is handed on.
+                for r in readers {
+                    let _ = r.join();
                 }
             })
             .map_err(|e| format!("the launch socket thread did not start: {e}"))?;
@@ -471,17 +554,19 @@ mod sock {
     }
 
     /// One client: read, acknowledged once held, closed, then handed on (its token first).
-    fn take_one(pipe: &ipc::Pipe, wait: Duration, notify: &dyn Fn(crate::launch::Request)) {
+    fn take_one(pipe: &ipc::Pipe, wait: Duration, notify: &Notify) {
         let got = read_message(pipe, wait);
         if got.is_some() {
             let _ = pipe.write_all(&[ACK]);
         }
         pipe.shutdown();
         if let Some((request, token)) = got {
+            // One request at a time, its token just before it.
+            let n = notify.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(t) = token {
                 tell_activation(t);
             }
-            notify(request);
+            n(request);
         }
     }
 
@@ -592,14 +677,90 @@ mod sock {
             assert!(serve_on(&name, Duration::from_secs(2), Box::new(|_| {})).is_err());
         }
 
+        /// Review N11: the same program file, as on Windows; an AppImage compares inside its mount.
         #[test]
         fn the_server_must_be_termurion() {
             use std::path::Path;
-            assert!(verify_image(Path::new("/opt/t/termurion"), Path::new("/usr/bin/termurion")).is_ok());
+            assert!(verify_image(Path::new("/usr/bin/termurion"), Path::new("/usr/bin/termurion")).is_ok());
+            assert!(verify_image(Path::new("/opt/t/termurion"), Path::new("/usr/bin/termurion")).is_err(), "another build named termurion is not this one");
+            assert!(verify_image(Path::new("/home/u/bin/termurion"), Path::new("/tmp/.mount_cd34/usr/bin/termurion")).is_err());
             assert!(verify_image(Path::new("/tmp/.mount_ab12/usr/bin/termurion"), Path::new("/tmp/.mount_cd34/usr/bin/termurion")).is_ok(), "two AppImage runs");
+            assert!(verify_image(Path::new("/tmp/.mount_ab12/usr/bin/other"), Path::new("/tmp/.mount_cd34/usr/bin/termurion")).is_err());
             assert!(verify_image(Path::new("/usr/bin/termurion (deleted)"), Path::new("/usr/bin/termurion")).is_ok(), "updated under a running copy");
             assert!(verify_image(Path::new("/usr/bin/python3"), Path::new("/usr/bin/termurion")).is_err());
-            assert!(verify_image(Path::new("/"), Path::new("/usr/bin/termurion")).is_err());
+            assert!(verify_image(Path::new(""), Path::new("/usr/bin/termurion")).is_err());
+        }
+
+        /// Review N6: a file that is not a socket, or a path too long for one, never stops a start:
+        /// the hand-over is OtherOwner, so this Termurion runs without the socket and says so.
+        #[test]
+        fn an_unusable_socket_path_lets_termurion_run() {
+            let d = dir();
+            let path = d.0.join("launch.sock");
+            std::fs::write(&path, b"x").unwrap();
+            let name = path.to_string_lossy().to_string();
+            assert!(serve_on(&name, Duration::from_secs(2), Box::new(|_| {})).is_err());
+            assert!(matches!(hand_request_on(&name, &crate::launch::Request::Reopen, None, &ok), Handed::OtherOwner(_)));
+            assert_eq!(hand_over(&mut || hand_request_on(&name, &crate::launch::Request::Reopen, None, &ok), 3, &|| {}), AfterHand::Start);
+            assert_eq!(lost_pipe(&[AfterHand::Start], false), LostPipe::RunWithout, "run() then runs without it");
+            let long = d.0.join("a".repeat(120)).to_string_lossy().to_string();
+            assert!(matches!(hand_request_on(&long, &crate::launch::Request::Reopen, None, &ok), Handed::OtherOwner(e) if e.contains("too long")));
+        }
+
+        /// Review N8: a socket a crashed Termurion left answers "nobody" at once, not after a second.
+        #[test]
+        fn a_dead_socket_answers_at_once() {
+            let d = dir();
+            let path = d.0.join("launch.sock");
+            drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+            let t = Instant::now();
+            assert_eq!(hand_request_on(&path.to_string_lossy(), &crate::launch::Request::Reopen, None, &ok), Handed::NoServer);
+            assert!(t.elapsed() < Duration::from_millis(300), "{:?}", t.elapsed());
+        }
+
+        /// Review N7: a start that lost the lock to another waits for that one's socket.
+        #[test]
+        fn a_start_waits_for_the_one_holding_the_lock() {
+            use std::os::fd::AsRawFd;
+            let d = dir();
+            let path = d.0.join("launch.sock");
+            let name = path.to_string_lossy().to_string();
+            let mut lock = path.as_os_str().to_owned();
+            lock.push(".lock");
+            let f = std::fs::File::create(std::path::Path::new(&lock)).unwrap();
+            assert_eq!(unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) }, 0);
+            assert!(lock_held(&path), "/proc/locks shows the lock");
+            let (tx, rx) = mpsc::channel();
+            let n2 = name.clone();
+            let late = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                drop(f);
+                let tx = std::sync::Mutex::new(tx);
+                serve_on(&n2, Duration::from_secs(2), Box::new(move |r| drop(tx.lock().unwrap().send(r)))).unwrap()
+            });
+            assert_eq!(hand_request_on(&name, &crate::launch::Request::Reopen, None, &ok), Handed::Taken, "it waited for the socket");
+            assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), crate::launch::Request::Reopen);
+            late.join().unwrap().stop();
+            assert!(locks_name("1: FLOCK  ADVISORY  WRITE 12 00:1a:345 0 EOF\n", 345));
+            assert!(!locks_name("1: POSIX  ADVISORY  WRITE 12 00:1a:345 0 EOF\n", 345));
+            assert!(!locks_name("1: FLOCK  ADVISORY  WRITE 12 00:1a:1345 0 EOF\n", 345));
+        }
+
+        /// Review N9: a silent client of this user does not hold up a real second start.
+        #[test]
+        fn a_silent_client_does_not_hold_up_the_next() {
+            let d = dir();
+            let name = d.0.join("launch.sock").to_string_lossy().to_string();
+            let (tx, rx) = mpsc::channel();
+            let tx = std::sync::Mutex::new(tx);
+            let mut serving = serve_on(&name, Duration::from_secs(2), Box::new(move |r| drop(tx.lock().unwrap().send(r)))).unwrap();
+            let _silent = std::os::unix::net::UnixStream::connect(&name).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            let t = Instant::now();
+            assert_eq!(hand_request_on(&name, &crate::launch::Request::Reopen, None, &ok), Handed::Taken);
+            assert!(t.elapsed() < Duration::from_millis(1000), "{:?}", t.elapsed());
+            assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), crate::launch::Request::Reopen);
+            serving.stop();
         }
     }
 }

@@ -79,7 +79,7 @@ impl App {
             return;
         }
         self.rescue_tried = Some(Instant::now());
-        let how = resident::rescue(!self.tabs.is_empty(), self.buried.newest().is_some());
+        let how = resident::rescue(!self.tabs.is_empty(), self.buried.newest().is_some(), self.never_shown);
         crate::host_base::log(&format!("resident: nothing can bring Termurion back (icon {icon:?}), so {how:?}"));
         match how {
             resident::Rescue::WakeWithTabs => {
@@ -91,6 +91,7 @@ impl App {
                     self.disinter(id);
                 }
             }
+            resident::Rescue::NewWindow => self.new_window(event_loop, None),
             resident::Rescue::Quit => self.quit_confirmed(event_loop),
         }
     }
@@ -102,11 +103,21 @@ impl App {
 
     /// Wayland's destroyed resident window, made again when it is gone (a failure is logged and
     /// tried on the next pass that needs it).
+    /// A failed remake is tried again at most every 30 s (review N10).
     pub(super) fn remake_if_gone(&mut self, event_loop: &ActiveEventLoop) {
-        if self.resident && self.gpu.is_none() && self.resident_window_gone.is_some()
-            && let Err(e) = self.remake_resident_window(event_loop) {
+        if !(self.resident && self.gpu.is_none() && self.resident_window_gone.is_some()) {
+            return;
+        }
+        if self.remake_tried.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(30)) {
+            return;
+        }
+        match self.remake_resident_window(event_loop) {
+            Ok(()) => self.remake_tried = None,
+            Err(e) => {
+                self.remake_tried = Some(Instant::now());
                 crate::host_base::log(&format!("resident: the window was not made again: {e}"));
             }
+        }
     }
 
     /// The last window's last tab closed and Termurion stays: the sessions end, the host stays up, the
@@ -183,6 +194,8 @@ impl App {
             return;
         }
         self.resident = false;
+        self.never_shown = false;
+        self.remake_tried = None;
         self.pending_wake = None;
         // The screen reader's host comes back with the window (a hidden resident window has none:
         // `go_resident` dropped it with the window's registration); the next pass publishes.
@@ -444,6 +457,27 @@ mod tests {
         // I5: a failed remake buries the tabs again.
         let open = body(production(WINDOWS), "open_window_with");
         assert!(open.contains("if reused && self.gpu.is_none() {") && open.contains("self.rebury_tabs("));
+    }
+
+    /// Re-review round 2: a start that showed no window opens one instead of quitting (N3), a
+    /// failed remake waits before the next try (N10), and an activation token no window took is
+    /// dropped (N5).
+    #[test]
+    fn round_two_rescue_remake_and_tokens() {
+        let own = production(OWN);
+        let m = production(MOD);
+        assert!(m.contains("if resident_start {\n                    self.resident = true;\n                    self.never_shown = true;"), "a resident start has shown no window");
+        assert!(body(own, "leave_resident_for").contains("self.never_shown = false;"));
+        let upkeep = body(own, "resident_upkeep");
+        assert!(upkeep.contains("self.never_shown)") && upkeep.contains("resident::Rescue::NewWindow => self.new_window(event_loop, None)"));
+        let remake = body(own, "remake_if_gone");
+        let wait = remake.find("self.remake_tried.is_some_and(").expect("a failed remake waits");
+        assert!(wait < remake.find("self.remake_resident_window(event_loop)").unwrap());
+        assert!(m.contains("self.remake_tried = None;\n                self.remake_if_gone(event_loop);"), "a person's pick tries at once");
+        let launch = production(include_str!("launch_ui.rs"));
+        assert!(body(launch, "launch_request").contains("self.drop_unused_activation()"));
+        assert!(body(launch, "drop_unused_activation").contains("self.pending_windows.is_empty() && !self.wake_owed"), "a window on its way keeps it");
+        assert!(body(production(PRESENCE), "tray_clicked").contains("self.drop_unused_activation()"));
     }
 
     /// Wayland cannot hide a window: with a tray on the desktop the resident window is destroyed

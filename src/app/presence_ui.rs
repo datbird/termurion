@@ -179,7 +179,9 @@ impl App {
         let on_screen = |w: &winit::window::Window| w.is_visible() != Some(false) && w.is_minimized() != Some(true);
         let mut out = Vec::new();
         if let Some(g) = &self.gpu {
-            out.push((g.window.id(), self.hotkey.as_ref().map(|h| h.shown), on_screen(&g.window)));
+            // The resident window is never on screen (Wayland calls an unmapped one visible).
+            let shown = self.hotkey.as_ref().map(|h| h.shown);
+            out.push((g.window.id(), shown, super::frames_ui::current_on_screen(self.resident, g.window.is_visible(), g.window.is_minimized(), None)));
         }
         for (_, s) in self.windows.parked() {
             if let Some(g) = &s.gpu {
@@ -205,6 +207,7 @@ impl App {
             self.activation = Some(t);
         }
         self.dock_click_now(event_loop);
+        self.drop_unused_activation();
     }
 
     /// The icon stopped being a way back (Linux). A failed add counts as tray_tick's own failures

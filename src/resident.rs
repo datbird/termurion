@@ -38,16 +38,27 @@ pub enum Icon {
     Up,
     /// Being added now.
     Adding,
-    /// A panel is there, but no icon is up or on its way (none wanted yet, or a failed add waits).
+    /// A panel is there and nothing failed: the icon is added on this pass.
     Idle,
+    /// A panel is there but the last add failed; the next try waits its delay. Not up (review N4).
+    Retrying,
+    /// The watcher's first answer has not come yet (just started, or a login still bringing the
+    /// panel up), for a bounded time: it may yet be there (review N3).
+    Unknown,
     /// No panel shows tray icons (Linux: nothing owns StatusNotifierWatcher).
     Absent,
 }
 
+/// Whether `icon` can bring a windowless Termurion back: up, on its way, or not known yet.
+fn icon_reaches(icon: Icon) -> bool {
+    matches!(icon, Icon::Up | Icon::Adding | Icon::Idle | Icon::Unknown)
+}
+
 /// THE rule for a Termurion with no window: it may be left so only while its icon can bring it
-/// back (up, on its way, or a panel there to take it), or a hotkey window can still be called.
+/// back, or a hotkey window can still be called. `stranded` is its other face, so a window that
+/// may close never bounces straight back.
 pub fn may_be_windowless(icon: Icon, hotkey_windows: usize) -> bool {
-    hotkey_windows > 0 || icon != Icon::Absent
+    hotkey_windows > 0 || icon_reaches(icon)
 }
 
 /// The resident window is the last window hidden; where nothing could bring it back and no
@@ -59,7 +70,7 @@ pub fn after_last_window_where(may_be_windowless: bool, decision: AfterLast) -> 
 /// Whether a windowless Termurion can no longer be reached: no icon up or being added, no hotkey
 /// window, no panel open and no window on its way.
 pub fn stranded(windowless: bool, icon: Icon, hotkey_windows: usize, panels_open: bool, window_coming: bool) -> bool {
-    windowless && !matches!(icon, Icon::Up | Icon::Adding) && hotkey_windows == 0 && !panels_open && !window_coming
+    windowless && !may_be_windowless(icon, hotkey_windows) && !panels_open && !window_coming
 }
 
 /// What a stranded Termurion does.
@@ -69,15 +80,20 @@ pub enum Rescue {
     WakeWithTabs,
     /// The newest buried session comes back in a window (as when the last tab closes).
     Disinter,
+    /// A start that showed no window yet (its plan opened none): the person asked for
+    /// Termurion, so a window opens instead of a quit (review N3).
+    NewWindow,
     /// No session is left to keep: it quits.
     Quit,
 }
 
-pub fn rescue(tabs_waiting: bool, buried: bool) -> Rescue {
+pub fn rescue(tabs_waiting: bool, buried: bool, never_shown: bool) -> Rescue {
     if tabs_waiting {
         Rescue::WakeWithTabs
     } else if buried {
         Rescue::Disinter
+    } else if never_shown {
+        Rescue::NewWindow
     } else {
         Rescue::Quit
     }
@@ -181,9 +197,10 @@ mod tests {
     fn a_windowless_termurion_needs_a_way_back() {
         use AfterLast::*;
         use Icon::*;
-        for icon in [Up, Adding, Idle] {
+        for icon in [Up, Adding, Idle, Unknown] {
             assert!(may_be_windowless(icon, 0), "{icon:?}: the icon is up or can be");
         }
+        assert!(!may_be_windowless(Retrying, 0), "a failed add between retries is not up (N4)");
         assert!(!may_be_windowless(Absent, 0), "no panel, X11 or Wayland: nothing to wake it from");
         assert!(may_be_windowless(Absent, 1), "a hotkey window is left");
         assert_eq!(after_last_window_where(true, StayResident), StayResident, "with a tray: resident, as iTerm2");
@@ -201,14 +218,21 @@ mod tests {
         assert!(!stranded(false, Absent, 0, false, false), "a window is there");
         assert!(!stranded(true, Up, 0, false, false));
         assert!(!stranded(true, Adding, 0, false, false), "the add is on its way");
-        assert!(stranded(true, Idle, 0, false, false), "the add failed and waits for its retry");
+        assert!(!stranded(true, Idle, 0, false, false), "the add starts on this pass");
+        assert!(stranded(true, Retrying, 0, false, false), "the add failed and waits for its retry");
+        assert!(!stranded(true, Unknown, 0, false, false), "the watcher has not answered yet (N3)");
+        // N4: the two rules agree for every icon, so a closed last window never bounces back.
+        for icon in [Up, Adding, Idle, Retrying, Unknown, Absent] {
+            assert_eq!(stranded(true, icon, 0, false, false), !may_be_windowless(icon, 0), "{icon:?}");
+        }
         assert!(stranded(true, Absent, 0, false, false), "the watcher left");
         assert!(!stranded(true, Absent, 1, false, false), "a hotkey window can be called");
         assert!(!stranded(true, Absent, 0, true, false), "Settings is open");
         assert!(!stranded(true, Absent, 0, false, true), "a window is on its way");
-        assert_eq!(rescue(true, true), Rescue::WakeWithTabs);
-        assert_eq!(rescue(false, true), Rescue::Disinter);
-        assert_eq!(rescue(false, false), Rescue::Quit);
+        assert_eq!(rescue(true, true, false), Rescue::WakeWithTabs);
+        assert_eq!(rescue(false, true, false), Rescue::Disinter);
+        assert_eq!(rescue(false, false, false), Rescue::Quit);
+        assert_eq!(rescue(false, false, true), Rescue::NewWindow, "a start that opened no window opens one (N3)");
     }
 
     #[test]

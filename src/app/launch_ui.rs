@@ -18,9 +18,11 @@ impl App {
         // the launch flood cap never drops them silently.
         if let Request::Open { paths } = r {
             self.open_batch.push(paths, Instant::now());
+            self.drop_unused_activation();
             return;
         }
         if !self.launch_flood.admit(Instant::now()) {
+            self.drop_unused_activation();
             return self.ignored_launch_banner();
         }
         // Only before the first window (Wayland's resident one may be gone: the wake makes it).
@@ -54,6 +56,20 @@ impl App {
     /// One request, now. `Open` gathers into `open_batch` (Task 2), `Url` (which arrives as `UserEvent::OpenUrl`) is
     /// `receive_url`, `Embedding` is Task 5: each does nothing here until it lands.
     pub(super) fn launch_request(&mut self, r: Request, event_loop: &ActiveEventLoop) {
+        self.launch_request_now(r, event_loop);
+        self.drop_unused_activation();
+    }
+
+    /// The second start's activation token is for the window this request raises or makes; one
+    /// no window took (a tab into a window already in front, a file batch, a dropped request)
+    /// is not left for some later window (review N5). A window still on its way keeps it.
+    pub(super) fn drop_unused_activation(&mut self) {
+        if self.pending_windows.is_empty() && !self.wake_owed {
+            self.activation = None;
+        }
+    }
+
+    fn launch_request_now(&mut self, r: Request, event_loop: &ActiveEventLoop) {
         match r {
             Request::Reopen => self.dock_click_now(event_loop),
             Request::NewWindow { guid } => {

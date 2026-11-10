@@ -46,6 +46,14 @@ static HOST_UP: AtomicBool = AtomicBool::new(false);
 static ITEM_SEQ: AtomicU32 = AtomicU32::new(0);
 /// Adds run on threads of their own (the UI never waits on the bus); this counts those running.
 static ADDING: AtomicU32 = AtomicU32::new(0);
+/// The last add failed (cleared by a success or a watcher coming back): not up (review N4).
+static ADD_FAILED: AtomicBool = AtomicBool::new(false);
+/// The watch thread has had its first answer (the watcher there or not).
+static WATCH_KNOWN: AtomicBool = AtomicBool::new(false);
+/// When the watch started: its first answer is waited for at most `KNOWN_WAIT` (review N3).
+static WATCH_STARTED: OnceLock<std::time::Instant> = OnceLock::new();
+/// How long a start waits for the watcher's first answer before it counts as absent.
+pub const KNOWN_WAIT: Duration = Duration::from_secs(5);
 /// Bumped by every `set`: an add that finishes after a newer `set` keeps nothing.
 static WANT_GEN: AtomicU64 = AtomicU64::new(0);
 /// The activation token the panel gave before its last Activate (KDE's ProvideXdgActivationToken).
@@ -93,16 +101,21 @@ pub fn host_up() -> bool {
 
 /// Where the icon stands: up only while the watcher that took it is still on the bus.
 pub fn state() -> crate::resident::Icon {
-    icon_of(host_up(), lock(&ITEM).is_some(), ADDING.load(Ordering::SeqCst) > 0)
+    // Before the watch started (tests, or no app) nothing is waited for.
+    let waiting = !WATCH_KNOWN.load(Ordering::SeqCst) && WATCH_STARTED.get().is_some_and(|t| t.elapsed() < KNOWN_WAIT);
+    icon_of(waiting, host_up(), lock(&ITEM).is_some(), ADDING.load(Ordering::SeqCst) > 0, ADD_FAILED.load(Ordering::SeqCst))
 }
 
-pub fn icon_of(host: bool, item: bool, adding: bool) -> crate::resident::Icon {
+/// `waiting`: the watcher's first answer has not come and the bounded wait is not over.
+pub fn icon_of(waiting: bool, host: bool, item: bool, adding: bool, failed: bool) -> crate::resident::Icon {
     use crate::resident::Icon;
-    match (host, item, adding) {
-        (false, _, _) => Icon::Absent,
-        (true, true, _) => Icon::Up,
-        (true, false, true) => Icon::Adding,
-        (true, false, false) => Icon::Idle,
+    match (host, item, adding, failed) {
+        (false, ..) if waiting => Icon::Unknown,
+        (false, ..) => Icon::Absent,
+        (true, true, ..) => Icon::Up,
+        (true, false, true, _) => Icon::Adding,
+        (true, false, false, true) => Icon::Retrying,
+        (true, false, false, false) => Icon::Idle,
     }
 }
 
@@ -502,6 +515,8 @@ fn clicked(id: i32, event: &str) {
     if event != "clicked" {
         return;
     }
+    // A token given for an Activate that never came is not left for a later one (review N5).
+    lock(&TOKEN).take();
     let pick = lock(&MENU).table.get(&id).and_then(|f| f.row.as_ref()).filter(|r| matches!(r.kind, Kind::Item | Kind::Check(_)) && r.enabled).map(|r| r.pick.clone());
     dlog!("tray: menu row {} clicked, picks {}", id, pick.is_some());
     if let (Some(p), Some(f)) = (pick, run(&PICK)) {
@@ -558,6 +573,7 @@ fn add_for(bus: impl FnOnce() -> zbus::Result<zbus::blocking::connection::Builde
         // An icon that was up already is replaced (a watcher that came back).
         *item = Some(c);
     }
+    ADD_FAILED.store(false, Ordering::SeqCst);
     crate::host_base::log("tray: icon registered with the StatusNotifierWatcher");
     // The panel reads the menu before any click: the app builds the first one now.
     if let Some(f) = run(&CLICK) {
@@ -580,7 +596,8 @@ fn set_with(on: bool, bus: impl FnOnce() -> zbus::Result<zbus::blocking::connect
         return Ok(());
     }
     if !host_up() {
-        return Err(no_host_text());
+        // Before the watcher's first answer the add is only early: the retry comes in a moment.
+        return Err(if state() == crate::resident::Icon::Unknown { "The tray icon waits for the panel to answer".to_string() } else { no_host_text() });
     }
     ADDING.fetch_add(1, Ordering::SeqCst);
     let spawned = std::thread::Builder::new().name("tray-add".into()).spawn(move || {
@@ -589,6 +606,7 @@ fn set_with(on: bool, bus: impl FnOnce() -> zbus::Result<zbus::blocking::connect
         if let Err(e) = result
             && WANT_GEN.load(Ordering::SeqCst) == generation
         {
+            ADD_FAILED.store(true, Ordering::SeqCst);
             tell_lost(Some(e));
         }
     });
@@ -614,6 +632,14 @@ fn watcher_change(msg: &zbus::Message) -> Option<String> {
 /// Starts following the watcher on a connection from `bus`, once per process.
 fn watch_on(bus: impl FnOnce() -> zbus::Result<zbus::blocking::connection::Builder<'static>> + Send + 'static) {
     let spawned = std::thread::Builder::new().name("tray-watch".into()).spawn(move || {
+        // Whatever happens below, the wait for a first answer ends with this thread.
+        struct Known;
+        impl Drop for Known {
+            fn drop(&mut self) {
+                WATCH_KNOWN.store(true, Ordering::SeqCst);
+            }
+        }
+        let _known = Known;
         let Ok(c) = bus().and_then(|b| b.method_timeout(CALL_BOUND).build()) else {
             dlog!("tray: no session bus, so no tray icon");
             return;
@@ -628,6 +654,7 @@ fn watch_on(bus: impl FnOnce() -> zbus::Result<zbus::blocking::connection::Build
         let messages = zbus::blocking::MessageIterator::from(c);
         let up = zbus::names::BusName::try_from(WATCHER).ok().and_then(|n| proxy.name_has_owner(n).ok()).unwrap_or(false);
         HOST_UP.store(up, Ordering::SeqCst);
+        WATCH_KNOWN.store(true, Ordering::SeqCst);
         dlog!("tray: watcher present {}", up);
         let mut why = "the session bus closed".to_string();
         for msg in messages {
@@ -643,6 +670,8 @@ fn watch_on(bus: impl FnOnce() -> zbus::Result<zbus::blocking::connection::Build
             HOST_UP.store(up, Ordering::SeqCst);
             crate::host_base::log(&format!("tray: StatusNotifierWatcher {}", if up { "came onto the bus" } else { "left the bus" }));
             if up {
+                // A new watcher gets a fresh try.
+                ADD_FAILED.store(false, Ordering::SeqCst);
                 if let Some(f) = run(&HOST_BACK) {
                     f();
                 }
@@ -663,7 +692,10 @@ fn watch_on(bus: impl FnOnce() -> zbus::Result<zbus::blocking::connection::Build
 /// Follows the session bus's watcher from now on (the app calls it once, at its start).
 pub fn watch() {
     static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| watch_on(zbus::blocking::connection::Builder::session));
+    ONCE.call_once(|| {
+        let _ = WATCH_STARTED.set(std::time::Instant::now());
+        watch_on(zbus::blocking::connection::Builder::session)
+    });
 }
 
 #[cfg(test)]
@@ -729,10 +761,14 @@ mod tests {
     #[test]
     fn the_icon_state_needs_the_watcher() {
         use crate::resident::Icon;
-        assert_eq!(icon_of(false, true, false), Icon::Absent, "the watcher left: the icon is no way back");
-        assert_eq!(icon_of(true, true, false), Icon::Up);
-        assert_eq!(icon_of(true, false, true), Icon::Adding);
-        assert_eq!(icon_of(true, false, false), Icon::Idle);
+        assert_eq!(icon_of(false, false, true, false, false), Icon::Absent, "the watcher left: the icon is no way back");
+        assert_eq!(icon_of(false, true, true, false, false), Icon::Up);
+        assert_eq!(icon_of(false, true, false, true, false), Icon::Adding);
+        assert_eq!(icon_of(false, true, false, false, false), Icon::Idle);
+        assert_eq!(icon_of(false, true, false, false, true), Icon::Retrying, "a failed add between retries (N4)");
+        assert_eq!(icon_of(false, true, false, true, true), Icon::Adding, "the retry is on its way");
+        assert_eq!(icon_of(true, false, false, false, false), Icon::Unknown, "no first answer yet (N3)");
+        assert_eq!(icon_of(true, true, false, false, false), Icon::Idle, "an answer that came wins");
     }
 
     #[test]
@@ -819,6 +855,7 @@ mod tests {
     }
 
     fn reset() {
+        ADD_FAILED.store(false, Ordering::SeqCst);
         lock(&ITEM).take();
         *lock(&CLICK) = None;
         *lock(&PICK) = None;
@@ -953,7 +990,7 @@ mod tests {
         wait_for("the second watcher", host_up);
         set_with(true, builder(&b.addr)).expect("the add started");
         wait_for("the failure told", || lost.lock().unwrap().iter().any(|w| w.as_deref().is_some_and(|e| e.contains("not added"))));
-        wait_for("the add ended", || state() == crate::resident::Icon::Idle);
+        wait_for("the add ended", || state() == crate::resident::Icon::Retrying);
         drop(b);
         wait_for("the bus to end the watch", || !host_up());
         reset();

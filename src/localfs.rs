@@ -600,6 +600,9 @@ mod tests {
     /// files shipped beside it, the temp folder it made), Windows' own folders, and PATH lookups. A
     /// new raw probe in a listed function changes its count and fails too.
     const OWN: &[(&str, &str, usize, &str)] = &[
+        ("url_launch.rs", "verify_server", 1, "the kernel's /proc/<pid>/exe link of the peer that serves the launch socket, read to compare programs; never a user's path, nothing is opened"),
+        ("url_launch.rs", "unusable", 1, "the launch socket path in Termurion's own private runtime folder (ipc::url_pipe_name), its kind only, without following a link"),
+        ("url_launch.rs", "lock_held", 2, "the launch socket's own lock file in the private runtime folder (its inode, without following a link) and the kernel's /proc/locks"),
         ("render_fx.rs", "discover_in", 2, "plugin.toml files in Termurion's own RenderPlugins folder beside its settings (render_fx::user_dir)"),
         ("render_fx.rs", "shader_text", 1, "a shader file inside a plugin folder of Termurion's own RenderPlugins folder; names with a separator or .. are refused first"),
         ("settings_effects.rs", "editor", 1, "creates Termurion's own RenderPlugins folder beside its settings on the person's click"),
