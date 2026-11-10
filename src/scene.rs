@@ -684,10 +684,28 @@ fn is_border_glyph(c: char) -> bool {
     matches!(c, '\u{2502}' | '\u{2503}' | '\u{2551}' | '|' | '\u{251C}' | '\u{2524}' | '\u{253C}' | '\u{252C}' | '\u{2534}' | '\u{2523}' | '\u{252B}' | '\u{254B}' | '\u{2533}' | '\u{253B}')
 }
 
-/// A glyph only a border row has at a pane's edge: a junction or a frame corner.
+/// A glyph where a border meets another: only a border row has it in its cells.
 fn is_junction_glyph(c: char) -> bool {
-    matches!(c, '\u{251C}' | '\u{2524}' | '\u{253C}' | '\u{252C}' | '\u{2534}' | '\u{2523}' | '\u{252B}' | '\u{254B}' | '\u{2533}' | '\u{253B}')
-        || ('\u{250C}'..='\u{2510}').contains(&c) || ('\u{2514}'..='\u{2518}').contains(&c) || ('\u{256D}'..='\u{2570}').contains(&c)
+    matches!(c, '\u{251C}' | '\u{2524}' | '\u{253C}' | '\u{252C}' | '\u{2534}' | '\u{2523}' | '\u{252B}' | '\u{254B}' | '\u{2533}' | '\u{253B}'
+        | '\u{255F}' | '\u{2562}' | '\u{2560}' | '\u{2563}' | '\u{2566}' | '\u{2569}' | '\u{256C}')
+}
+
+/// A frame corner: a pane frame's top or bottom row has one at the pane's edge.
+fn is_corner_glyph(c: char) -> bool {
+    ('\u{250C}'..='\u{2510}').contains(&c) || ('\u{2514}'..='\u{2518}').contains(&c) || ('\u{256D}'..='\u{2570}').contains(&c)
+}
+
+/// Whether a row carries a tmux pane title: two quotes with the title between them, closed
+/// by the border line again (`──0 "title"──`).
+fn title_row(term: &alacritty_terminal::Term<crate::screen::Listener>, display_offset: usize, row: usize) -> bool {
+    let cells: Vec<char> = (0..term.columns()).map(|c| glyph(term, display_offset, row, c)).collect();
+    let (Some(first), Some(last)) = (cells.iter().position(|&c| c == '"'), cells.iter().rposition(|&c| c == '"')) else { return false };
+    if first >= last {
+        return false;
+    }
+    let inside = &cells[first + 1..last];
+    let line = |c: &char| matches!(c, '\u{2500}' | '\u{2501}');
+    !inside.windows(3).any(|w| w.iter().all(line)) && cells[last + 1..].iter().find(|&&c| c != ' ').is_none_or(line)
 }
 
 /// The rows a column of border glyphs covers around `row`, if it is one at all: at least three
@@ -725,7 +743,7 @@ fn pane_walled(term: &alacritty_terminal::Term<crate::screen::Listener>, display
 
 /// Whether a visible row is a box line: most of the pane's cells (columns `pane`, the whole
 /// width without a split) are a horizontal line glyph. A tmux or zellij border row is not one:
-/// it has a junction or frame corner at the pane's edge, or in its cells.
+/// it has a junction or frame corner at the pane's edge, a junction in its cells, or a pane title.
 fn box_line(term: &alacritty_terminal::Term<crate::screen::Listener>, display_offset: usize, row: usize, pane: (usize, usize)) -> bool {
     let cols = term.columns();
     let (left, right) = pane;
@@ -738,9 +756,12 @@ fn box_line(term: &alacritty_terminal::Term<crate::screen::Listener>, display_of
         return false;
     }
     let edges = [left.checked_sub(1), Some(right + 1).filter(|&c| c < cols)];
-    let border = edges.iter().flatten().any(|&c| is_junction_glyph(glyph(term, display_offset, row, c)));
-    let inner = (left..=right).any(|c| is_junction_glyph(glyph(term, display_offset, row, c)) || glyph(term, display_offset, row, c) == '"');
-    !border && !inner
+    let border = edges.iter().flatten().any(|&c| {
+        let g = glyph(term, display_offset, row, c);
+        is_junction_glyph(g) || is_corner_glyph(g)
+    });
+    let inner = (left..=right).any(|c| is_junction_glyph(glyph(term, display_offset, row, c)));
+    !border && !inner && !title_row(term, display_offset, row)
 }
 
 /// The shaded band around the cursor cell, as Codex and opencode draw their input: a run of one
@@ -848,7 +869,7 @@ pub fn painted_cursor(screen: &Screen) -> Option<(usize, usize, bool)> {
     // the pane's columns, and no other reverse cell between the two.
     let in_pane = (|| {
         let mut found = None;
-        for (row, col, wide) in reverse(0..term.screen_lines()).take(64) {
+        for (row, col, wide) in reverse(0..term.screen_lines()).take(8) {
             let pane = pane_cols(term, offset, row, col);
             if pane == whole {
                 continue;
@@ -1792,10 +1813,11 @@ pub fn pane_with(
         let program_cursor = term.colors()[alacritty_terminal::vte::ansi::NamedColor::Cursor as usize];
         let input_box = cursor.and_then(|(row, col)| {
             let pane = pane_cols(term, content.display_offset, row, col);
-            let box_row = |r: usize| box_line(term, content.display_offset, r, pane);
-            let split = pane != (0, term.columns().saturating_sub(1));
+            let whole = (0, term.columns().saturating_sub(1));
             let mid = |r: usize| rect.y + r as f32 * ch + ch / 2.0;
-            let lines_box = (|| {
+            let lines_in = |pane: (usize, usize)| {
+                let box_row = |r: usize| box_line(term, content.display_offset, r, pane);
+                let split = pane != whole;
                 let bottom = (row + 1..lines.min(row + 3)).find(|&r| box_row(r))?;
                 let top = (0..row).rev().find(|&r| box_row(r))?;
                 if split && !pane_walled(term, content.display_offset, pane, top, bottom) {
@@ -1804,7 +1826,10 @@ pub fn pane_with(
                 // In a split pane the lines stop at the pane's edges.
                 let (left, right) = if split { (rect.x + pane.0 as f32 * cw, rect.x + (pane.1 + 1) as f32 * cw) } else { (0.0, 0.0) };
                 Some(InputBox { top: mid(top), bottom: mid(bottom), kind: BoxKind::Lines, left, right })
-            })();
+            };
+            // A tall rounded box has `│` columns that look like a border: when the pane finds
+            // nothing, the whole width is judged as before.
+            let lines_box = lines_in(pane).or_else(|| if pane != whole { lines_in(whole) } else { None });
             // A line box wins over a band.
             lines_box.or_else(|| {
                 let (top, bottom, left, right, half) = band_box(term, palette, content.display_offset, row, col, pane)?;
@@ -10027,6 +10052,76 @@ mod agent_box_tests {
     fn a_full_width_box_keeps_zero_x() {
         let b = load("hermes", None).input_box.expect("hermes");
         assert_eq!((b.left, b.right, b.uniform_x()), (0.0, 0.0, [0.0; 4]));
+    }
+
+    /// A full-width box drawn with `tl`, `h`, `tr` corners and `v` sides, `prompt` rows high,
+    /// the cursor on its last prompt row.
+    fn framed(tl: char, tr: char, bl: char, br: char, prompt: usize) -> Option<InputBox> {
+        let inner = "\u{2500}".repeat(78);
+        let mut o = format!("\x1b[2J\x1b[5;1H{tl}{inner}{tr}");
+        for i in 0..prompt {
+            o += &format!("\x1b[{};1H\u{2502} \u{276f}{:<76}\u{2502}", 6 + i, "");
+        }
+        o += &format!("\x1b[{};1H{bl}{inner}{br}\x1b[{};5H", 6 + prompt, 5 + prompt);
+        feed(20, &o).input_box
+    }
+
+    #[test]
+    fn rounded_and_plain_full_width_boxes_still_match() {
+        for (c, name) in [(['\u{256D}', '\u{256E}', '\u{2570}', '\u{256F}'], "rounded"), (['\u{250C}', '\u{2510}', '\u{2514}', '\u{2518}'], "plain")] {
+            // One prompt row, and three (the side columns then look like a border).
+            let one = framed(c[0], c[1], c[2], c[3], 1).unwrap_or_else(|| panic!("{name} box"));
+            assert_eq!((one.kind, one.top, one.bottom, one.left, one.right), (BoxKind::Lines, 90.0, 130.0, 0.0, 0.0), "{name}");
+            let three = framed(c[0], c[1], c[2], c[3], 3).unwrap_or_else(|| panic!("{name} tall box"));
+            assert_eq!((three.kind, three.top, three.bottom, three.left, three.right), (BoxKind::Lines, 90.0, 170.0, 0.0, 0.0), "{name} tall");
+        }
+    }
+
+    #[test]
+    fn a_quote_in_a_box_rule_is_no_title() {
+        let line = "\u{2500}".repeat(80);
+        // One quote, and a quote pair ending the rule's text with no line after it.
+        for rule in [format!("{}\"{}", "\u{2500}".repeat(40), "\u{2500}".repeat(39)), format!("{} \"hi\" x", "\u{2500}".repeat(70))] {
+            let o = format!("\x1b[2J\x1b[5;1H{rule}\x1b[6;1H\u{276f} \x1b[7;1H{line}\x1b[6;3H");
+            let b = feed(20, &o).input_box.expect("a line box");
+            assert_eq!((b.kind, b.top, b.bottom), (BoxKind::Lines, 90.0, 130.0));
+        }
+    }
+
+    #[test]
+    fn a_quoted_title_inside_a_border_run_is_no_box_line() {
+        let line = "\u{2500}".repeat(80);
+        let title = format!("{}0 \"shell\"{}", "\u{2500}".repeat(2), "\u{2500}".repeat(69));
+        let o = format!("\x1b[2J\x1b[5;1H{title}\x1b[6;1H$ \x1b[7;1H{line}\x1b[6;3H");
+        assert_eq!(feed(20, &o).input_box, None);
+    }
+
+    #[test]
+    fn double_line_junctions_make_a_border_row() {
+        let line = "\u{2500}".repeat(49);
+        let mut o = String::from("\x1b[2J");
+        for r in 1..=29 {
+            o += &format!("\x1b[{r};50H\u{2551}");
+        }
+        o += &format!("\x1b[10;1H{line}\x1b[10;50H\u{2560}\x1b[10;51H{line}\x1b[12;1H{line}\x1b[12;50H\u{256C}\x1b[12;51H{line}\x1b[11;3H");
+        assert_eq!(feed(30, &o).input_box, None);
+    }
+
+    #[test]
+    fn the_split_pane_pass_looks_at_a_few_cells_only() {
+        // Eight reverse cells come before the box's one in reading order: the pass gives up.
+        let mut s = crate::screen::Screen::new(100, 30);
+        let line = "\u{2500}".repeat(49);
+        let mut o = String::from("\x1b[2J");
+        for r in 1..=29 {
+            o += &format!("\x1b[{r};50H\u{2502}");
+        }
+        for r in 1..=8 {
+            o += &format!("\x1b[{r};1H\x1b[7m \x1b[0m");
+        }
+        o += &format!("\x1b[20;51H{line}\x1b[21;51H\u{276f} \x1b[7m \x1b[0m\x1b[22;51H{line}\x1b[?25l");
+        s.feed(o.as_bytes());
+        assert_eq!(painted_cursor(&s), None);
     }
 
     #[test]
