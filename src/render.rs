@@ -1471,8 +1471,12 @@ impl Renderer {
             let metrics = Metrics::new(px * row.scale, ch * row.scale);
             buffer.set_metrics_and_size(metrics, Some(row.clip.w + cw * row.scale), Some(ch * row.scale));
             buffer.set_wrap(Wrap::None);
-            // The toolbelt font keeps its own advance (it is not the terminal's cell).
-            buffer.set_monospace_width((!row.spans.iter().any(|s| s.toolbelt)).then_some(cw));
+            // The toolbelt font keeps its own advance. So does terminal text whose font advance is
+            // already the cell: cosmic-text rounds advances to multiples of cell / px, which drifts
+            // off the cells at a fractional px (any zoom step).
+            let terminal = !row.spans.iter().any(|s| s.prose || s.badge || s.icon || s.toolbelt);
+            let own_advance = terminal && face.monospace && face.cell.0 == face.base.0;
+            buffer.set_monospace_width((!own_advance && !row.spans.iter().any(|s| s.toolbelt)).then_some(cw));
             let base = Attrs::new().family(Family::Name(&family));
             let alt = alt_family.as_deref().map(|f| Attrs::new().family(Family::Name(f)));
             let icons = Attrs::new().family(Family::Name(&self.icon_family));
@@ -2627,6 +2631,28 @@ mod tests {
             // Snapping to whole cells (the old vendored patch) was off by about 20 px.
             let slack = text.chars().count() as f32 * r.cell.0 / 16.0 / 2.0 + 0.01;
             assert!((end - want).abs() <= slack, "{text:?} draws to {end} px, measured {want} px (slack {slack})");
+        }
+    }
+
+    /// A zoom lands the font on a fractional pixel size (13 pt at 2x is 34.67 px). Every glyph of a
+    /// long row must still sit at column * cell width, where the backgrounds and the cursor are.
+    #[test]
+    fn glyphs_stay_on_the_cell_grid_at_fractional_sizes() {
+        let (device, queue) = device();
+        for family in ["DejaVu Sans Mono", "Cascadia Mono"] {
+            for pt in [9.0f32, 11.0, 13.0, 14.0, 17.0, 19.0] {
+                for scale in [1.0f32, 2.0] {
+                    let px = quantize_px(pt * 4.0 / 3.0 * scale);
+                    let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, family, px);
+                    let n = 200;
+                    let xs = laid_out_xs(&mut r, &device, &queue, &"W".repeat(n));
+                    assert_eq!(xs.len(), n);
+                    for (col, x) in xs.iter().enumerate() {
+                        let want = col as f32 * r.cell.0;
+                        assert!((x - want).abs() < 0.05, "{family} {pt}pt x{scale} ({px} px): glyph {col} at x {x}, column x {want} (cell {:?})", r.cell);
+                    }
+                }
+            }
         }
     }
 
