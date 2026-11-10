@@ -514,6 +514,14 @@ A review of the resident icon round found ways to leave Termurion running with n
 - An activation token no window took is dropped, except a file start's, which belongs to its file batch alone (the first token of a batch, carried through that batch's worker to the window its files open in, dropped with an empty or ignored-only batch); a failed remake of the resident window is tried again at most every 30 s (a person's tray pick tries at once).
 - Smoke run (weston 13 nested in Xvfb, a private `dbus-daemon`, a stand-in StatusNotifierWatcher, scratch HOME and XDG dirs, a shell that ends after 6 s): the last window's close left no window, the icon registered, and the resident window was made again without a buffer (unmapped, no frames after it); `Activate` opened a window with a new shell; a bare second start of the binary handed over and exited in 18 ms and the first process opened the window (one process); from the tray menu with no window, Settings, the Password Manager and the Script Console opened and drew, and no terminal window was woken. Not seen: the activation token raising a window (weston 13 has no `xdg_activation_v1`).
 
+## Checking for updates on macOS and Linux (2026-11-10)
+
+- Checking for updates works on macOS and Linux as on Windows: the manual check and the scheduled one read the GitHub releases feed and the Software Update window shows the answer (it was the Unsupported text before). Nothing is downloaded; Learn More opens the release page.
+- curl comes from `/usr/bin/curl`, else `/bin/curl`, never PATH (a folder the user can write, such as Homebrew's, could hold a curl that trusts anything); macOS always has `/usr/bin/curl`. No curl in either: the check fails with "curl was not found in /usr/bin/curl or /bin/curl".
+- curl runs with the same fixed arguments (`update::fetch_args`, `-q` first, https only), the same filtered environment (`curl_env`), stdin empty, from `/`, in a process group of its own. Cancel and quitting (`cancel_running`, called by the teardown) kill the group, so curl and anything it started end. The exit is seen with `waitid(WNOWAIT)`, so the group id is never reused before the kill.
+- The watching, the caps (feed size, 35 s), the result rules and the worker are shared with Windows in `update_run.rs`; each OS keeps only its start (`update_fetch_win.rs` with the job, `platform/unix/update_fetch.rs` with the group).
+- Tests (Linux, loopback server only, never GitHub): `update_run::tests` (`curl_reports_the_status`, `quitting_cancels_a_running_fetch`, `feed_over_the_cap_is_a_transport_error`, `exits_become_fetches`, `curl_never_reads_its_trust_from_the_environment`, `checker_uses_the_fake`) run on every OS now; `platform::unix::update_fetch::tests::a_cancel_ends_what_curl_started` checks the group kill ends a child left behind.
+
 ## Deferred after P3
 
 Each with its reason.

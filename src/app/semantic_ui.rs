@@ -917,6 +917,7 @@ mod tests {
         ("script_proc.rs", "start", "a local Python API script"),
         ("platform/windows/provision.rs", "run_watched", "the scripts' Python setup steps"),
         ("update_fetch_win.rs", "fetch", "curl.exe from System32 with Termurion's own fixed arguments (update::fetch_args), https only"),
+        ("platform/unix/update_fetch.rs", "fetch", "the system curl (/usr/bin or /bin, never PATH) with Termurion's own fixed arguments (update::fetch_args), https only"),
         ("app/tips_app.rs", "tip_learn_more", "a URL from the static tips, a fixed https page, through guard_open"),
         ("app/update_app.rs", "learn_more_target", "the pinned releases page (update::release_url) through guard_open"),
         ("app/update_app.rs", "learn_more", "opens what learn_more_target settled, the pinned releases page"),

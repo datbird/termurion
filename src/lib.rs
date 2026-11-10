@@ -461,6 +461,7 @@ pub mod data_file_sync;
 pub mod dynamic_profiles_scan;
 #[cfg(windows)]
 pub mod update_fetch_win;
+pub mod update_run;
 pub mod update_ui;
 pub mod url_open;
 pub mod link_scheme;
