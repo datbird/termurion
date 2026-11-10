@@ -111,6 +111,6 @@ Delete the two folders too for a clean removal.
 
 Some features have no macOS or Linux backend yet. Where you use one, Termurion says "<feature> is
 not available on <OS> yet". These include coprocesses, the browser pane, Dynamic Profiles,
-printing, virtual desktops, launching Python API scripts, and 1Password and LastPass in the
-password manager. The full list and its status are in
+printing, virtual desktops, launching Python API scripts, the Claude Code status hook
+(`cc-status`), the terminal utilities, and 1Password and LastPass in the password manager. The full list and its status are in
 [unix-test-gaps.md](../port/unix-test-gaps.md).

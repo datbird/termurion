@@ -33,7 +33,7 @@ If you have not set it up, Termurion may ask "Want to try Termurion's Claude Cod
 
 ## The hook
 
-The hook is `cc-status.exe`, installed beside `termurion.exe`. Claude Code runs it on each of these events: UserPromptSubmit, Stop, StopFailure, Notification, PermissionRequest, SessionEnd, PreToolUse, PostToolUse, SessionStart, and SubagentStop. Termurion keeps its own entries in `%USERPROFILE%\.claude\settings.json`. It leaves the rest of the file alone, keeps a backup, and writes the file by replacing it whole. If the file cannot be read or parsed, Termurion does not write to it.
+The hook is `cc-status.exe`, installed beside `termurion.exe`. It works on Windows only for now: on macOS and Linux the hook reports nothing, so Claude Code's status does not show. Claude Code runs it on each of these events: UserPromptSubmit, Stop, StopFailure, Notification, PermissionRequest, SessionEnd, PreToolUse, PostToolUse, SessionStart, and SubagentStop. Termurion keeps its own entries in `%USERPROFILE%\.claude\settings.json`. It leaves the rest of the file alone, keeps a backup, and writes the file by replacing it whole. If the file cannot be read or parsed, Termurion does not write to it.
 
 The hook reads one event from standard input and reports a status to Termurion over the Python API. It maps events like this:
 
