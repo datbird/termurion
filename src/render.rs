@@ -364,6 +364,34 @@ impl FaceKey {
     }
 }
 
+/// The weight and slant a terminal span draws in: the profile's regular member, its bold member
+/// for bold (the regular one when Use Bold Font is off or none is heavy enough; the double strike
+/// is a second row), italic only with Use Italic Font.
+fn terminal_style(s: &Span, regular: u16, use_bold: bool, bold: Option<u16>, use_italic: bool) -> (Weight, bool) {
+    let weight = if !s.bold {
+        Weight(regular)
+    } else if s.fake_bold {
+        match (use_bold, bold) {
+            (true, Some(w)) => Weight(w),
+            _ => Weight::NORMAL,
+        }
+    } else {
+        Weight::BOLD
+    };
+    (weight, s.italic && use_italic)
+}
+
+/// The advance of one shaped "W" in `family` at this weight and slant (0 when it has none).
+fn w_advance(fs: &mut FontSystem, family: &str, weight: Weight, italic: bool, px: f32) -> f32 {
+    let mut b = Buffer::new(fs, Metrics::new(px, px * 1.2));
+    b.set_size(None, None);
+    b.set_wrap(Wrap::None);
+    let attrs = Attrs::new().family(Family::Name(family)).weight(weight).style(if italic { Style::Italic } else { Style::Normal });
+    b.set_text("W", &attrs, Shaping::Advanced, None);
+    b.shape_until_scroll(fs, false);
+    b.layout_runs().next().map_or(0.0, |r| r.line_w)
+}
+
 /// A pixel size to 1/64 pixel: faces re-measured after a scale change land on the keys the app
 /// builds for the new scale.
 pub fn quantize_px(px: f32) -> f32 {
@@ -445,6 +473,8 @@ pub struct Renderer {
     toolbelt_family: String,
     /// The toolbelt font's size in points (`toolbeltFontSize`, 0 meaning 11).
     toolbelt_pt: f32,
+    /// The advance of "W" in a terminal span's font: (family, weight, italic, pixel size bits).
+    advances: std::collections::HashMap<(String, u16, bool, u32), f32>,
     /// Widths of prose words already measured: (text, pixel size bits, bold) to pixels.
     widths: std::collections::HashMap<(String, u32, bool), f32>,
     /// Widths of runs already measured in the toolbelt font: (text, pixel size bits) to pixels.
@@ -535,6 +565,7 @@ impl Renderer {
             toolbelt_family: "Consolas".into(),
             toolbelt_pt: 11.0,
             widths: std::collections::HashMap::new(),
+            advances: std::collections::HashMap::new(),
             toolbelt_widths: WidthCache::default(),
             h_spacing: 1.0,
             v_spacing: 1.0,
@@ -1471,19 +1502,35 @@ impl Renderer {
             let metrics = Metrics::new(px * row.scale, ch * row.scale);
             buffer.set_metrics_and_size(metrics, Some(row.clip.w + cw * row.scale), Some(ch * row.scale));
             buffer.set_wrap(Wrap::None);
-            // The toolbelt font keeps its own advance. So does terminal text whose font advance is
-            // already the cell: cosmic-text rounds advances to multiples of cell / px, which drifts
-            // off the cells at a fractional px (any zoom step).
+            // Terminal text of a monospace face places its own glyphs on the grid: each span is
+            // tracked by the cell minus its font's advance, so a glyph keeps its natural size at
+            // the start of its cell (iTerm2's horizontal spacing) and a wider bold still fits.
+            // cosmic-text's monospace width is not used there: it rounds advances to multiples of
+            // cell / px, which drifts at a fractional px (any zoom step). The toolbelt keeps its
+            // own advance.
             let terminal = !row.spans.iter().any(|s| s.prose || s.badge || s.icon || s.toolbelt);
-            let own_advance = terminal && face.monospace && face.cell.0 == face.base.0;
+            let own_advance = terminal && face.monospace && row.spans.iter().all(|s| s.font == 0);
             buffer.set_monospace_width((!own_advance && !row.spans.iter().any(|s| s.toolbelt)).then_some(cw));
+            let tracking: Vec<f32> = row
+                .spans
+                .iter()
+                .map(|s| {
+                    if !own_advance || s.alt_font {
+                        return 0.0;
+                    }
+                    let (weight, italic) = terminal_style(s, regular_weight, use_bold, bold_weight, use_italic);
+                    let key = (family.clone(), weight.0, italic, px.to_bits());
+                    let advance = *self.advances.entry(key).or_insert_with(|| w_advance(&mut self.font_system, &family, weight, italic, px));
+                    if advance > 0.0 { (cw - advance) / px } else { 0.0 }
+                })
+                .collect();
             let base = Attrs::new().family(Family::Name(&family));
             let alt = alt_family.as_deref().map(|f| Attrs::new().family(Family::Name(f)));
             let icons = Attrs::new().family(Family::Name(&self.icon_family));
             let prose = Attrs::new().family(Family::Name(&self.prose_family));
             let badge = Attrs::new().family(Family::Name(&self.badge_family));
             let toolbelt = Attrs::new().family(Family::Name(&self.toolbelt_family));
-            let spans = row.spans.iter().map(|s| {
+            let spans = row.spans.iter().zip(&tracking).map(|(s, &tracking)| {
                 // A terminal span a Special Font Config entry draws takes that entry's font and size
                 // (an entry past the table, or a font that is not installed, draws as the face does).
                 let entry = (s.font as usize).checked_sub(1).and_then(|i| table_fonts.get(i)).filter(|_| !(s.icon || s.badge || s.toolbelt || s.prose));
@@ -1510,20 +1557,13 @@ impl Renderer {
                 // chrome and prose never do. A terminal bold span draws in the face's bold weight,
                 // or in the regular one when none is heavy enough (the double strike is a second row).
                 let terminal = !(s.icon || s.badge || s.toolbelt || s.prose);
-                let weight = if s.badge {
-                    badge_weight
-                } else if !s.bold {
-                    // Terminal text is the profile's regular member of the family.
-                    if terminal { Weight(regular_weight) } else { Weight::NORMAL }
-                } else if s.fake_bold && terminal {
-                    match (use_bold, bold_weight) {
-                        (false, _) | (true, None) => Weight::NORMAL,
-                        (true, Some(w)) => Weight(w),
-                    }
+                let (weight, slant) = if s.badge {
+                    (badge_weight, s.italic)
+                } else if terminal {
+                    terminal_style(s, regular_weight, use_bold, bold_weight, use_italic)
                 } else {
-                    Weight::BOLD
+                    (if s.bold { Weight::BOLD } else { Weight::NORMAL }, s.italic)
                 };
-                let slant = s.italic && (use_italic || !terminal);
                 // Terminal text shapes with its ligature level's features. Non-ASCII text at level 0
                 // is one cell per piece (or a joined run of a cursive script), so it keeps the
                 // shaper's own features: nothing can ligate there and Arabic keeps its forms.
@@ -1532,6 +1572,7 @@ impl Renderer {
                 // Terminal text carries its mask mode in the glyph cache key (`from_bits_retain`
                 // keeps Termurion's bits), so each mode is cached apart and filtered in glyphon.
                 let start = if terminal { start.cache_key_flags(CacheKeyFlags::from_bits_retain(fonts::MaskMode::from_code(s.mask).flags())) } else { start };
+                let start = if tracking != 0.0 { start.letter_spacing(tracking) } else { start };
                 let attrs = start
                     .color(Color::rgb(s.color.r, s.color.g, s.color.b))
                     .weight(weight)
@@ -2634,23 +2675,70 @@ mod tests {
         }
     }
 
+    /// Every glyph of a frame row drawn in the renderer's default face: (x, font size).
+    fn row_glyphs(r: &mut Renderer, spans: Vec<Span>) -> Vec<(f32, f32)> {
+        let row = TextRow { x: 0.0, y: 0.0, spans, clip: Rect { x: 0.0, y: 0.0, w: 600.0, h: 32.0 }, scale: 1.0, face: DEFAULT_FACE };
+        let frame = Frame { rows: vec![row], ..Frame::default() };
+        drawn_xs(r, &frame, 600, 32);
+        r.buffers[0].0.layout_runs().flat_map(|run| run.glyphs.iter().map(|g| (g.x, g.font_size)).collect::<Vec<_>>()).collect()
+    }
+
+    fn terminal_span(text: &str, bold: bool, italic: bool) -> Span {
+        Span { text: text.into(), color: rgb(255, 255, 255), bold, italic, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false, fake_bold: bold, ligatures: 0, mask: 0, font: 0 }
+    }
+
     /// A zoom lands the font on a fractional pixel size (13 pt at 2x is 34.67 px). Every glyph of a
-    /// long row must still sit at column * cell width, where the backgrounds and the cursor are.
+    /// long row must still sit at column * cell width, where the backgrounds and the cursor are,
+    /// with or without Horizontal Spacing. Spacing widens the cell and leaves the glyph its own
+    /// size, at the start of the cell (iTerm2 places each glyph at column * cell width).
     #[test]
     fn glyphs_stay_on_the_cell_grid_at_fractional_sizes() {
         let (device, queue) = device();
         for family in ["DejaVu Sans Mono", "Cascadia Mono"] {
             for pt in [9.0f32, 11.0, 13.0, 14.0, 17.0, 19.0] {
                 for scale in [1.0f32, 2.0] {
-                    let px = quantize_px(pt * 4.0 / 3.0 * scale);
-                    let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, family, px);
-                    let n = 200;
-                    let xs = laid_out_xs(&mut r, &device, &queue, &"W".repeat(n));
-                    assert_eq!(xs.len(), n);
-                    for (col, x) in xs.iter().enumerate() {
-                        let want = col as f32 * r.cell.0;
-                        assert!((x - want).abs() < 0.05, "{family} {pt}pt x{scale} ({px} px): glyph {col} at x {x}, column x {want} (cell {:?})", r.cell);
+                    for h in [1.0f32, 0.9, 1.1, 1.25] {
+                        let px = quantize_px(pt * 4.0 / 3.0 * scale);
+                        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, family, px);
+                        r.set_fonts(family, None, px, h, 1.0);
+                        let n = 200;
+                        let glyphs = row_glyphs(&mut r, vec![terminal_span(&"W".repeat(n), false, false)]);
+                        assert_eq!(glyphs.len(), n);
+                        for (col, (x, size)) in glyphs.iter().enumerate() {
+                            let want = col as f32 * r.cell.0;
+                            assert!((x - want).abs() < 0.05, "{family} {pt}pt x{scale} h {h} ({px} px): glyph {col} at x {x}, column x {want} (cell {:?})", r.cell);
+                            assert!((size - px).abs() < 0.01, "{family} {pt}pt x{scale} h {h}: glyph {col} drawn at {size} px, the font is {px} px");
+                        }
                     }
+                }
+            }
+        }
+    }
+
+    /// A bold (or italic) member of the family wider than the regular one still lands every glyph
+    /// on its column: the cell is the regular advance, the bold run is tracked down to it.
+    #[test]
+    fn a_wider_bold_face_stays_on_the_cell_grid() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans Mono", 16.0);
+        r.font_system.db_mut().load_font_data(include_bytes!("../tests/fixtures/fonts/TermurionWideBoldTest-Regular.ttf").to_vec());
+        r.font_system.db_mut().load_font_data(include_bytes!("../tests/fixtures/fonts/TermurionWideBoldTest-Bold.ttf").to_vec());
+        let family = "Termurion Wide Bold Test";
+        for px in [16.0f32, quantize_px(13.0 * 8.0 / 3.0)] {
+            for h in [1.0f32, 1.25] {
+                r.set_fonts(family, None, px, h, 1.0);
+                let regular = w_advance(&mut r.font_system, family, Weight(400), false, px);
+                let bold = w_advance(&mut r.font_system, family, Weight(700), false, px);
+                assert!(bold > regular * 1.05, "the test font's bold is wider ({bold} vs {regular})");
+                assert!(r.face_monospace(DEFAULT_FACE));
+                // Regular, bold, bold italic, italic, regular: 10 columns each.
+                let spans = vec![terminal_span("WWWWWWWWWW", false, false), terminal_span("WWWWWWWWWW", true, false), terminal_span("WWWWWWWWWW", true, true), terminal_span("WWWWWWWWWW", false, true), terminal_span("WWWWWWWWWW", false, false)];
+                let glyphs = row_glyphs(&mut r, spans);
+                assert_eq!(glyphs.len(), 50);
+                for (col, (x, size)) in glyphs.iter().enumerate() {
+                    let want = col as f32 * r.cell.0;
+                    assert!((x - want).abs() < 0.05, "{px} px h {h}: glyph {col} at x {x}, column x {want} (cell {:?})", r.cell);
+                    assert!((size - px).abs() < 0.01, "glyph {col} drawn at {size} px, the font is {px} px");
                 }
             }
         }
