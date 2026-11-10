@@ -392,6 +392,58 @@ fn w_advance(fs: &mut FontSystem, family: &str, weight: Weight, italic: bool, px
     b.layout_runs().next().map_or(0.0, |r| r.line_w)
 }
 
+/// The rich text of a row: each span with its attributes, and the character at each byte offset
+/// in `fixes` split out with that much more tracking (in ems).
+fn pieces<'a>(spans: &'a [Span], attrs: &[Attrs<'a>], tracking: &[f32], fixes: &[(usize, f32)]) -> Vec<(&'a str, Attrs<'a>)> {
+    let mut out = Vec::new();
+    let mut off = 0;
+    for ((s, a), &t) in spans.iter().zip(attrs).zip(tracking) {
+        let end = off + s.text.len();
+        let mut at = off;
+        for &(b, extra) in fixes.iter().filter(|(b, _)| *b >= off && *b < end) {
+            if b > at {
+                out.push((&s.text[at - off..b - off], a.clone()));
+            }
+            let len = s.text[b - off..].chars().next().map_or(1, char::len_utf8);
+            out.push((&s.text[b - off..b - off + len], a.clone().letter_spacing(t + extra)));
+            at = b + len;
+        }
+        if at < end {
+            out.push((&s.text[at - off..], a.clone()));
+        }
+        off = end;
+    }
+    out
+}
+
+/// Where a shaped row's glyphs do not advance one cell per column they cover (a ligature that
+/// stands for several characters, a glyph whose advance is not the font's "W"): the byte offset
+/// of each such cluster and the tracking (in ems) that makes it whole cells. Glyphs that share a
+/// cluster split the difference, since each takes the tracking of the cluster's first character.
+fn cluster_fixes(buffer: &Buffer, spans: &[Span], cell: f32) -> Vec<(usize, f32)> {
+    use unicode_width::UnicodeWidthChar;
+    let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+    let mut fixes = Vec::new();
+    for run in buffer.layout_runs() {
+        let glyphs = run.glyphs;
+        let mut i = 0;
+        while i < glyphs.len() {
+            let g = &glyphs[i];
+            let k = glyphs[i..].iter().take_while(|o| o.start == g.start).count();
+            let end = glyphs[i..i + k].iter().map(|o| o.end).max().unwrap_or(g.end);
+            let advance: f32 = glyphs[i..i + k].iter().map(|o| o.w).sum();
+            let cells: usize = text.get(g.start..end).unwrap_or("").chars().map(|c| c.width().unwrap_or(0)).sum();
+            let want = cells as f32 * cell;
+            if (want - advance).abs() > 0.01 && g.font_size > 0.0 {
+                fixes.push((g.start, (want - advance) / (k as f32 * g.font_size)));
+            }
+            i += k;
+        }
+    }
+    fixes.sort_by_key(|f| f.0);
+    fixes
+}
+
 /// A pixel size to 1/64 pixel: faces re-measured after a scale change land on the keys the app
 /// builds for the new scale.
 pub fn quantize_px(px: f32) -> f32 {
@@ -1504,12 +1556,14 @@ impl Renderer {
             buffer.set_wrap(Wrap::None);
             // Terminal text of a monospace face places its own glyphs on the grid: each span is
             // tracked by the cell minus its font's advance, so a glyph keeps its natural size at
-            // the start of its cell (iTerm2's horizontal spacing) and a wider bold still fits.
+            // the start of its cell (iTerm2's horizontal spacing), and a wider bold or a Special
+            // Font Config entry still fits. Whatever the shaper then advances differently (a
+            // ligature, a glyph wider than "W") is corrected per cluster (`cluster_fixes`).
             // cosmic-text's monospace width is not used there: it rounds advances to multiples of
             // cell / px, which drifts at a fractional px (any zoom step). The toolbelt keeps its
             // own advance.
             let terminal = !row.spans.iter().any(|s| s.prose || s.badge || s.icon || s.toolbelt);
-            let own_advance = terminal && face.monospace && row.spans.iter().all(|s| s.font == 0);
+            let own_advance = terminal && face.monospace;
             buffer.set_monospace_width((!own_advance && !row.spans.iter().any(|s| s.toolbelt)).then_some(cw));
             let tracking: Vec<f32> = row
                 .spans
@@ -1518,10 +1572,16 @@ impl Renderer {
                     if !own_advance || s.alt_font {
                         return 0.0;
                     }
+                    // The font and size the span draws in (a Special Font Config entry's own).
+                    let entry = (s.font as usize).checked_sub(1).and_then(|i| table_fonts.get(i));
+                    let (font, size) = match entry.and_then(|e| e.family.as_deref()) {
+                        Some(f) => (f, entry.and_then(|e| e.px).unwrap_or(px)),
+                        None => (family.as_str(), px),
+                    };
                     let (weight, italic) = terminal_style(s, regular_weight, use_bold, bold_weight, use_italic);
-                    let key = (family.clone(), weight.0, italic, px.to_bits());
-                    let advance = *self.advances.entry(key).or_insert_with(|| w_advance(&mut self.font_system, &family, weight, italic, px));
-                    if advance > 0.0 { (cw - advance) / px } else { 0.0 }
+                    let key = (font.to_string(), weight.0, italic, size.to_bits());
+                    let advance = *self.advances.entry(key).or_insert_with(|| w_advance(&mut self.font_system, font, weight, italic, size));
+                    if advance > 0.0 { (cw - advance) / size } else { 0.0 }
                 })
                 .collect();
             let base = Attrs::new().family(Family::Name(&family));
@@ -1530,7 +1590,7 @@ impl Renderer {
             let prose = Attrs::new().family(Family::Name(&self.prose_family));
             let badge = Attrs::new().family(Family::Name(&self.badge_family));
             let toolbelt = Attrs::new().family(Family::Name(&self.toolbelt_family));
-            let spans = row.spans.iter().zip(&tracking).map(|(s, &tracking)| {
+            let attrs: Vec<Attrs> = row.spans.iter().zip(&tracking).map(|(s, &tracking)| {
                 // A terminal span a Special Font Config entry draws takes that entry's font and size
                 // (an entry past the table, or a font that is not installed, draws as the face does).
                 let entry = (s.font as usize).checked_sub(1).and_then(|i| table_fonts.get(i)).filter(|_| !(s.icon || s.badge || s.toolbelt || s.prose));
@@ -1577,10 +1637,17 @@ impl Renderer {
                     .color(Color::rgb(s.color.r, s.color.g, s.color.b))
                     .weight(weight)
                     .style(if slant { Style::Italic } else { Style::Normal });
-                (s.text.as_str(), attrs)
-            });
-            buffer.set_rich_text(spans, &base, Shaping::Advanced, None);
+                attrs
+            }).collect();
+            buffer.set_rich_text(pieces(&row.spans, &attrs, &tracking, &[]), &base, Shaping::Advanced, None);
             buffer.shape_until_scroll(&mut self.font_system, false);
+            if own_advance {
+                let fixes = cluster_fixes(buffer, &row.spans, cw * row.scale);
+                if !fixes.is_empty() {
+                    buffer.set_rich_text(pieces(&row.spans, &attrs, &tracking, &fixes), &base, Shaping::Advanced, None);
+                    buffer.shape_until_scroll(&mut self.font_system, false);
+                }
+            }
             *last = row.spans.clone();
             *last_w = row.clip.w;
             *last_scale = row.scale;
@@ -2739,6 +2806,55 @@ mod tests {
                     let want = col as f32 * r.cell.0;
                     assert!((x - want).abs() < 0.05, "{px} px h {h}: glyph {col} at x {x}, column x {want} (cell {:?})", r.cell);
                     assert!((size - px).abs() < 0.01, "glyph {col} drawn at {size} px, the font is {px} px");
+                }
+            }
+        }
+    }
+
+    /// A Special Font Config entry draws its span in another font and size; that span still keeps
+    /// to the cells, at a zoomed size and with spacing.
+    #[test]
+    fn a_special_font_config_span_stays_on_the_cell_grid() {
+        let (device, queue) = device();
+        let family = "DejaVu Sans Mono";
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, family, 16.0);
+        assert!(r.has_family("Liberation Mono"), "this test needs Liberation Mono installed");
+        for px in [16.0f32, quantize_px(13.0 * 8.0 / 3.0)] {
+            for h in [1.0f32, 1.25] {
+                r.set_fonts(family, None, px, h, 1.0);
+                r.faces[DEFAULT_FACE as usize].table_fonts = vec![TableFont { family: Some("Liberation Mono".into()), px: Some(quantize_px(px * 0.9)) }].into();
+                let entry = Span { font: 1, ..terminal_span("WWWWWWWWWW", false, false) };
+                let glyphs = row_glyphs(&mut r, vec![terminal_span("WWWWWWWWWW", false, false), entry, terminal_span("WWWWWWWWWW", false, false)]);
+                assert_eq!(glyphs.len(), 30);
+                for (col, (x, _)) in glyphs.iter().enumerate() {
+                    let want = col as f32 * r.cell.0;
+                    assert!((x - want).abs() < 0.05, "{px} px h {h}: glyph {col} at x {x}, column x {want} (cell {:?})", r.cell);
+                }
+            }
+        }
+    }
+
+    /// A ligature glyph that stands for several characters advances one cell per character: what
+    /// follows "=>" and "===" stays on its column (the test font draws each as one arrow one cell
+    /// wide). Each glyph sits at the column of the first character it covers.
+    #[test]
+    fn a_ligature_advances_one_cell_per_character() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "DejaVu Sans Mono", 16.0);
+        r.font_system.db_mut().load_font_data(include_bytes!("../tests/fixtures/fonts/TermurionLigatureTest-Regular.ttf").to_vec());
+        let family = "Termurion Ligature Test";
+        let text = "a=>b===c==W";
+        for px in [16.0f32, quantize_px(13.0 * 8.0 / 3.0)] {
+            for h in [1.0f32, 1.25] {
+                r.set_fonts(family, None, px, h, 1.0);
+                let span = Span { ligatures: 1, ..terminal_span(text, false, false) };
+                let row = TextRow { x: 0.0, y: 0.0, spans: vec![span], clip: Rect { x: 0.0, y: 0.0, w: 600.0, h: 32.0 }, scale: 1.0, face: DEFAULT_FACE };
+                drawn_xs(&mut r, &Frame { rows: vec![row], ..Frame::default() }, 600, 32);
+                let glyphs: Vec<(usize, f32)> = r.buffers[0].0.layout_runs().flat_map(|run| run.glyphs.iter().map(|g| (g.start, g.x)).collect::<Vec<_>>()).collect();
+                assert_eq!(glyphs.iter().map(|g| g.0).collect::<Vec<_>>(), vec![0, 1, 3, 4, 7, 8, 9, 10], "the two arrows are ligatures");
+                for (col, x) in glyphs {
+                    let want = col as f32 * r.cell.0;
+                    assert!((x - want).abs() < 0.05, "{px} px h {h}: the glyph of column {col} at x {x}, column x {want} (cell {:?})", r.cell);
                 }
             }
         }

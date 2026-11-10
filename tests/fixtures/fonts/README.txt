@@ -2,4 +2,6 @@ TermurionWideBoldTest-Regular.ttf and -Bold.ttf: a test family whose bold member
 wider than the regular one (render::tests::a_wider_bold_face_stays_on_the_cell_grid). Built from
 DejaVu Sans Mono and DejaVu Sans Mono Bold, ASCII only, renamed, with make.py (fontTools):
   python3 make.py tests/fixtures/fonts
-DejaVu fonts license: resources/fonts/LICENSE-DejaVu.
+DejaVu fonts license: LICENSE-DejaVu in this folder.
+TermurionLigatureTest-Regular.ttf: DejaVu Sans Mono with "=>" and "===" turned into one arrow
+glyph one cell wide by a liga feature (render::tests::a_ligature_advances_one_cell_per_character).

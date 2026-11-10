@@ -26,3 +26,21 @@ for src, style, weight, widen in [
     for nid, val in [(1, FAMILY), (2, style), (3, ps), (4, FAMILY + " " + style), (6, ps)]:
         name.setName(val, nid, 3, 1, 0x409); name.setName(val, nid, 1, 0, 0)
     f.save(f"{out}/TermurionWideBoldTest-{style}.ttf")
+
+# A ligature test font: DejaVu Sans Mono with "=>" and "===" each one glyph (the arrow), one cell
+# wide, so a ligature that covers several characters advances less than its cells.
+from fontTools.feaLib.builder import addOpenTypeFeaturesFromString
+FAMILY = "Termurion Ligature Test"
+f = TTFont("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf")
+opts = subset.Options(); opts.name_IDs = ["*"]; opts.layout_features = []; opts.hinting = False
+s = subset.Subsetter(opts); s.populate(unicodes=list(range(0x20, 0x7f)) + [0x2192]); s.subset(f)
+if "GSUB" in f:
+    del f["GSUB"]
+addOpenTypeFeaturesFromString(f, "languagesystem DFLT dflt; languagesystem latn dflt;\nfeature liga { sub equal greater by arrowright; sub equal equal equal by arrowright; } liga;")
+name = f["name"]
+ps = FAMILY.replace(" ", "") + "-Regular"
+for nid in (16, 17, 21, 22):
+    name.removeNames(nameID=nid)
+for nid, val in [(1, FAMILY), (2, "Regular"), (3, ps), (4, FAMILY + " Regular"), (6, ps)]:
+    name.setName(val, nid, 3, 1, 0x409); name.setName(val, nid, 1, 0, 0)
+f.save(f"{out}/TermurionLigatureTest-Regular.ttf")
