@@ -41,7 +41,33 @@ pub fn accent_color() -> Option<(u8, u8, u8)> {
 /// Unix has no taskbar button to toggle; the window manager decides what a dock or panel shows.
 pub fn set_skip_taskbar(_window: &Window, _skip: bool) {}
 
+/// Whether a window can leave the screen and come back. Not on Wayland: winit has no hide there
+/// (`set_visible` does nothing), so a "hidden" window stays drawn.
+pub fn can_hide() -> bool {
+    #[cfg(not(target_os = "macos"))]
+    {
+        use super::global_keys::{session_kind, SessionKind};
+        session_kind() != SessionKind::Wayland
+    }
+    #[cfg(target_os = "macos")]
+    true
+}
+
 /// An alpha surface needs no window flag on Unix.
 pub fn no_redirection_bitmap(attrs: WindowAttributes) -> WindowAttributes {
     attrs
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod tests {
+    use super::super::global_keys::{force_session, SessionKind};
+
+    #[test]
+    fn a_wayland_window_cannot_hide() {
+        force_session(Some(SessionKind::Wayland));
+        assert!(!super::can_hide());
+        force_session(Some(SessionKind::X11));
+        assert!(super::can_hide());
+        force_session(None);
+    }
 }

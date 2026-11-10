@@ -43,6 +43,11 @@ pub fn set_skip_taskbar(window: &Window, skip: bool) {
     imp::set_skip_taskbar(window, skip)
 }
 
+/// Whether a window can be hidden and shown again (false on Wayland).
+pub fn can_hide() -> bool {
+    imp::can_hide()
+}
+
 /// `attrs` for a window that gets its alpha from the compositor (no redirection bitmap on Windows).
 pub fn no_redirection_bitmap(attrs: WindowAttributes) -> WindowAttributes {
     imp::no_redirection_bitmap(attrs)

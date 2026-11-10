@@ -40,8 +40,9 @@ impl App {
         // The window that is closing is no terminal left (a hotkey window counts while it exists).
         let hotkeys = self.hotkey_windows().len().saturating_sub(usize::from(self.hotkey.is_some()));
         let decision = resident::after_last_window(false, hotkeys, self.user_interacted, ran, min, self.globals.bool(QUIT_KEY));
+        let decision = resident::after_last_window_where(crate::platform::window_style::can_hide(), hotkeys, decision);
         let graced = !self.user_interacted && (ran.as_secs_f64() < min) && self.globals.bool(QUIT_KEY) && hotkeys == 0;
-        if graced {
+        if graced && decision == AfterLast::StayResident {
             crate::host_base::log(resident::grace_note());
         }
         decision

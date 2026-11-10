@@ -46,6 +46,11 @@ pub fn set_skip_taskbar(window: &Window, skip: bool) {
     window.set_skip_taskbar(skip);
 }
 
+/// A Windows window can always be hidden.
+pub fn can_hide() -> bool {
+    true
+}
+
 pub fn no_redirection_bitmap(attrs: WindowAttributes) -> WindowAttributes {
     attrs.with_no_redirection_bitmap(true)
 }

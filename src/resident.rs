@@ -31,6 +31,17 @@ pub fn after_last_window(restoring: bool, terminals_left: usize, interacted: boo
     }
 }
 
+/// The resident window is the last window hidden. Where windows cannot be hidden (Wayland), it
+/// would stay on screen, empty, and no close would remove it, so with no terminal left Termurion
+/// quits instead.
+pub fn after_last_window_where(can_hide: bool, terminals_left: usize, decision: AfterLast) -> AfterLast {
+    if !can_hide && terminals_left == 0 {
+        AfterLast::Quit
+    } else {
+        decision
+    }
+}
+
 /// Whether the notification area icon is there: 13g's rule, or Termurion is resident (otherwise a
 /// Termurion with no window could not be reached).
 pub fn icon_wanted(tray_13g: bool, resident: bool) -> bool {
@@ -109,6 +120,15 @@ mod tests {
         assert!(icon_wanted(false, true) && icon_wanted(true, false) && icon_wanted(true, true));
         assert!(!icon_wanted(false, false));
         assert!(grace_note().starts_with("Not quitting Termurion because it ran very briefly"));
+    }
+
+    #[test]
+    fn a_window_that_cannot_hide_quits_instead_of_staying() {
+        use AfterLast::*;
+        assert_eq!(after_last_window_where(false, 0, StayResident), Quit, "Wayland: no hidden window to stay in");
+        assert_eq!(after_last_window_where(false, 1, StayResident), StayResident, "a terminal is left");
+        assert_eq!(after_last_window_where(true, 0, StayResident), StayResident, "X11, Windows and macOS follow iTerm2");
+        assert_eq!(after_last_window_where(true, 0, Quit), Quit);
     }
 
     #[test]
