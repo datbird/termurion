@@ -221,8 +221,8 @@ Termurion 1.0.0 is the first stable release. Get it from
 
 **Windows 10 or 11 (x64)**
 
-- `Termurion-1.0.0-setup.exe` installs for your user (no admin prompt), adds Start Menu entries, and upgrades earlier betas in place.
-- `Termurion-1.0.0-windows-x64.zip` is the portable build. Unzip it anywhere and run `termurion.exe`. Keep all the files together.
+- `Termurion-1.0.0-win64-installer.exe` installs for your user (no admin prompt), adds Start Menu entries, and upgrades earlier betas in place.
+- `Termurion-1.0.0-win64-portable.zip` is the portable build. Unzip it anywhere and run `termurion.exe`. Keep all the files together.
 - The files are not code-signed yet. If SmartScreen says they are unrecognized, choose More info, then Run anyway.
 
 **macOS (Apple Silicon)**

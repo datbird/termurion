@@ -6,8 +6,8 @@ Silicon), and on Linux (x86_64). Download the file for your system from
 
 | System | File |
 |---|---|
-| Windows installer | `Termurion-1.0.0-setup.exe` |
-| Windows portable | `Termurion-1.0.0-windows-x64.zip` |
+| Windows installer | `Termurion-1.0.0-win64-installer.exe` |
+| Windows portable | `Termurion-1.0.0-win64-portable.zip` |
 | macOS (Apple Silicon) | `Termurion-1.0.0-macos-arm64.zip` |
 | Linux (x86_64) | `Termurion-1.0.0-linux-x86_64.AppImage` |
 
@@ -19,7 +19,7 @@ Run anyway.
 
 ### The installer
 
-Run `Termurion-1.0.0-setup.exe`. It installs for your user only, so Windows does not ask for
+Run `Termurion-1.0.0-win64-installer.exe`. It installs for your user only, so Windows does not ask for
 admin rights. Files go to `%LOCALAPPDATA%\Programs\Termurion`.
 
 **1. License Agreement.** Termurion is under the GNU GPL v3 or later. Select "I accept the
@@ -61,12 +61,12 @@ folders too for a clean removal.
 For scripts, Setup takes the usual Inno Setup options. For example:
 
 ```
-Termurion-1.0.0-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS=desktopicon
+Termurion-1.0.0-win64-installer.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS=desktopicon
 ```
 
 ### The portable zip
 
-Unzip `Termurion-1.0.0-windows-x64.zip` into any folder and run `termurion.exe`. Keep all the
+Unzip `Termurion-1.0.0-win64-portable.zip` into any folder and run `termurion.exe`. Keep all the
 files in the folder together: `conpty.dll` and `OpenConsole.exe` must stay beside the exe.
 
 ## macOS
