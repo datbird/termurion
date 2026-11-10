@@ -68,6 +68,14 @@ pub fn on_taskbar_created(f: Box<dyn Fn() + Send + Sync>) {
     let _ = ON_TASKBAR.set(f);
 }
 
+/// Tray menu picks come back as menu events here; nothing else to hear.
+pub fn on_tray_pick(_f: Box<dyn Fn(String) + Send + Sync>) {}
+
+/// The icon can always be shown here.
+pub fn icon_can_show() -> bool {
+    true
+}
+
 /// Termurion's icon (the 32 px art from docs/assets/termurion, `presence::icon_rgba`), the generic application icon if
 /// Windows refuses to make it.
 fn icon() -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {

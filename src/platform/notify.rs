@@ -17,7 +17,7 @@ pub struct Click {
     pub activation: Option<String>,
 }
 
-pub use imp::{clear_if_shown, on_click, on_taskbar_created, on_tray, remove, set_resident, show_with, shown_count, window_handle};
+pub use imp::{clear_if_shown, icon_can_show, on_click, on_taskbar_created, on_tray, on_tray_pick, remove, set_resident, show_with, shown_count, window_handle};
 
 /// Whether the tray menu opens at the icon itself (the macOS menu bar status item) rather than on
 /// a window of Termurion's.
@@ -69,14 +69,17 @@ mod tests {
 
     /// The resident icon is the notification area icon on Windows and the menu bar status item on
     /// macOS, under the one rule (`resident::icon_wanted`): resident with no window, or 13g's
-    /// StatusBarIcon in UI element mode. Linux has none yet.
+    /// StatusBarIcon in UI element mode. On Linux it is a StatusNotifierItem.
     #[test]
     fn the_resident_icon_shows_under_the_same_rule_on_each_os() {
         use crate::resident::icon_wanted;
         assert!(icon_wanted(false, true), "resident with no window");
         assert!(icon_wanted(true, false), "13g's StatusBarIcon");
         assert!(!icon_wanted(false, false), "a window is open and no StatusBarIcon");
-        assert_eq!(MENU_AT_ICON, cfg!(target_os = "macos"), "the menu opens at the menu bar item on macOS only");
+        assert_eq!(MENU_AT_ICON, !cfg!(windows), "the menu opens at the icon on macOS and Linux (the panel draws Linux's)");
+        let linux = include_str!("linux/notify.rs");
+        let set = linux.split("pub fn set_resident").nth(1).and_then(|r| r.split("\n}").next()).expect("set_resident");
+        assert!(set.contains("tray::set(on)"), "Linux puts the StatusNotifierItem up and takes it down");
         let mac = include_str!("macos/notify.rs");
         let set = mac.split("pub fn set_resident").nth(1).and_then(|r| r.split("\n}").next()).expect("set_resident");
         assert!(set.contains("status_item::set(on)"), "macOS puts the item up and takes it down");

@@ -425,7 +425,7 @@ impl App {
     }
 
     /// Every app-wide record keyed by a window's id follows the window to its new id.
-    fn rekey_window(&mut self, old: WindowId, new: WindowId) {
+    pub(super) fn rekey_window(&mut self, old: WindowId, new: WindowId) {
         self.registry.rekey(key(old), key(new));
         self.windows.rekey_current(key(old), key(new));
         self.buried.rekey(key(old), key(new));

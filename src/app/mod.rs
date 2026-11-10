@@ -584,6 +584,11 @@ pub struct App {
     popup_menu: Option<muda::Menu>,
     /// The last tray menu closed on a pick: the next menu event is that pick (logged to host.log).
     tray_pick: bool,
+    /// Wayland cannot hide a window, so the resident one is destroyed: the id its slot still has,
+    /// until the wake makes a new window there (`remake_resident_window`).
+    resident_window_gone: Option<WindowId>,
+    /// An in-place wake came while the resident window was destroyed: the next Wake makes it.
+    wake_owed: bool,
     /// The open Tab Color picker: what it colors and the swatches it was built from, kept
     /// until its pick arrives. App-wide: the popup is modal, one at a time.
     color_pick: Option<(menu::ColorTarget, Vec<crate::palette::Rgb>)>,
@@ -2091,6 +2096,11 @@ pub fn run() {
     crate::platform::notify::on_tray(Box::new(move |right| {
         let _ = trays.lock().map(|p| p.send_event(UserEvent::Tray(right)));
     }));
+    // A pick from a menu the panel drew (Linux) arrives as any menu pick does.
+    let tray_picks = proxy.clone();
+    crate::platform::notify::on_tray_pick(Box::new(move |id| {
+        let _ = tray_picks.lock().map(|p| p.send_event(UserEvent::Menu(id)));
+    }));
     let taskbars = proxy.clone();
     crate::platform::notify::on_taskbar_created(Box::new(move || {
         let _ = taskbars.lock().map(|p| p.send_event(UserEvent::TaskbarCreated));
@@ -2354,6 +2364,8 @@ pub fn run() {
         command_info: None,
         popup_menu: None,
         tray_pick: false,
+        resident_window_gone: None,
+        wake_owed: false,
         color_pick: None,
         shortcuts: None,
         copy_modes: HashMap::new(),
@@ -4764,8 +4776,9 @@ impl App {
     }
 
     fn make_settings(&mut self, event_loop: &ActiveEventLoop, mode: Mode) {
-        let Some(g) = self.gpu.as_ref() else { return };
-        match SettingsWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, mode) {
+        // A resident Termurion on Wayland has no window, only its kept device (the tray's Settings).
+        let Some((i, a, d, q)) = self.gpu.as_ref().map(|g| (&g.instance, &g.adapter, &g.device, &g.queue)).or(self.prefs_gpu.as_ref().map(|(i, a, d, q)| (i, a, d, q))) else { return };
+        match SettingsWindow::open(event_loop, i, a, d, q, mode) {
             Ok(mut s) => {
                 s.follow_theme(crate::tab_theme::forced_dark(self.tab_style()));
                 // Hotkeys that failed to register show in the sheet.
@@ -7979,7 +7992,10 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::ShutdownAsk => return self.shutdown_query(event_loop),
             UserEvent::ShutdownAnswer(ok) => return self.shutdown_answered(ok, event_loop),
-            UserEvent::Wake => self.take_selection_paste(),
+            UserEvent::Wake => {
+                self.pay_wake_owed(event_loop);
+                self.take_selection_paste();
+            }
         }
         let mut changed = false;
         let mut outputs = Vec::new();

@@ -40,7 +40,7 @@ impl App {
         // The window that is closing is no terminal left (a hotkey window counts while it exists).
         let hotkeys = self.hotkey_windows().len().saturating_sub(usize::from(self.hotkey.is_some()));
         let decision = resident::after_last_window(false, hotkeys, self.user_interacted, ran, min, self.globals.bool(QUIT_KEY));
-        let decision = resident::after_last_window_where(crate::platform::window_style::can_hide(), hotkeys, decision);
+        let decision = resident::after_last_window_where(crate::platform::window_style::can_hide(), crate::platform::notify::icon_can_show(), hotkeys, decision);
         let graced = !self.user_interacted && (ran.as_secs_f64() < min) && self.globals.bool(QUIT_KEY) && hotkeys == 0;
         if graced && decision == AfterLast::StayResident {
             crate::host_base::log(resident::grace_note());
@@ -106,6 +106,10 @@ impl App {
             g.window.set_maximized(false);
             crate::platform::window_style::set_skip_taskbar(&g.window, true);
             g.window.set_visible(false);
+        }
+        // Wayland has no hide: the window goes, its device stays for the next one.
+        if resident::resident_away(crate::platform::window_style::can_hide()) == resident::Away::Destroy {
+            self.drop_resident_window();
         }
     }
 
@@ -177,6 +181,12 @@ impl App {
     /// new window with the default profile is (`open_window_with`'s steps for a window that is not
     /// an arrangement); the caller makes its tab next.
     fn wake_in_place(&mut self) {
+        // No window to wake (Wayland destroyed it): the next Wake makes one and comes back here.
+        if self.gpu.is_none() && self.resident_window_gone.is_some() {
+            self.wake_owed = true;
+            let _ = self.proxy.lock().map(|p| p.send_event(UserEvent::Wake));
+            return;
+        }
         self.leave_resident_for(false);
         let initial = crate::transparency::initial_use(None, self.store.default_profile());
         self.win_transparency = crate::transparency::WinTransparency::new(initial);
@@ -342,6 +352,32 @@ mod tests {
         assert!(resident_branch.contains("return;") && !resident_branch.contains("reopen_target"), "a hidden window is never focused");
         let presence = production(PRESENCE);
         assert!(presence.contains("presence::DockClick::Unhandled => self.reopen(event_loop)") && !presence.contains("Reopen::Focus(w) => self.focus_terminal_window(w)"), "the tray's click is the one reopen");
+    }
+
+    /// Wayland cannot hide a window: with a tray on the desktop the resident window is destroyed
+    /// (its device kept) and made again by every wake; with none, the last close quits.
+    #[test]
+    fn a_resident_window_on_wayland_is_destroyed_and_made_again() {
+        let after = body(production(OWN), "after_last_window_now");
+        assert!(after.contains("after_last_window_where(crate::platform::window_style::can_hide(), crate::platform::notify::icon_can_show(), hotkeys, decision)"));
+        let go = body(production(OWN), "go_resident");
+        let away = go.find("resident::Away::Destroy").expect("the destroy is decided by the pure rule");
+        assert!(go.find("set_visible(false)").unwrap() < away && go[away..].contains("self.drop_resident_window()"), "after the hidden window's last steps");
+        let w = production(WINDOWS);
+        let drop_fn = body(w, "drop_resident_window");
+        assert!(drop_fn.contains("self.prefs_gpu = Some(") && drop_fn.contains("menu::window_gone(&g.window)") && drop_fn.contains("self.resident_window_gone = Some("), "the device stays, the window is forgotten");
+        let remake = body(w, "remake_resident_window");
+        for step in ["create_window(", "init_gpu_from(", "self.rekey_window(old, window.id())", "self.install_menus()", "self.install_sizing()", "self.resident_window_gone = None"] {
+            assert!(remake.contains(step), "the remade window gets {step}");
+        }
+        let open = body(w, "open_window_with");
+        assert!(open.contains("if reused {\n                // Wayland destroyed the resident window: a new one takes its slot first.\n                break self.remake_resident_window(event_loop)"), "every new window from resident makes it first");
+        let place = body(production(OWN), "wake_in_place");
+        let owed = place.find("self.wake_owed = true").expect("an in-place wake with no window is owed");
+        assert!(owed < place.find("self.leave_resident_for(false)").unwrap() && place[..owed].contains("self.gpu.is_none() && self.resident_window_gone.is_some()"));
+        assert!(production(MOD).contains("UserEvent::Wake => {\n                self.pay_wake_owed(event_loop);"), "the Wake that follows pays it");
+        let pay = body(w, "pay_wake_owed");
+        assert!(pay.contains("remake_resident_window(event_loop)") && pay.contains("Wake::InPlace") && pay.contains("self.tabs.is_empty()"));
     }
 
     /// Final review item 3: three tabs asked for in one pass while resident (the Profiles window's Open

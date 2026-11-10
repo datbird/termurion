@@ -611,7 +611,8 @@ impl App {
         let mut kind = self.surface_kind_for(&first);
         let made = loop {
             if reused {
-                break Ok(None);
+                // Wayland destroyed the resident window: a new one takes its slot first.
+                break self.remake_resident_window(event_loop).map(|()| None);
             }
             let mut a = attrs.clone();
             if kind == crate::transparency::SurfaceKind::Alpha {
@@ -851,6 +852,68 @@ impl App {
             self.release_hotkey_windows(true);
         }
         Ok(id)
+    }
+
+    /// Wayland: the resident window cannot be hidden, so it is destroyed (`go_resident`). Its
+    /// slot stays current under the old id, and the device, adapter and queue are kept for the
+    /// next window and for panels opened meanwhile (`prefs_gpu`).
+    pub(super) fn drop_resident_window(&mut self) {
+        let Some(g) = self.gpu.take() else { return };
+        self.prefs_gpu = Some((g.instance.clone(), g.adapter.clone(), g.device.clone(), g.queue.clone()));
+        self.resident_window_gone = Some(g.window.id());
+        menu::window_gone(&g.window);
+        self.menu_bar = None;
+        let window = g.window.clone();
+        drop(g);
+        // Anything still holding the window keeps it on screen: the log says so.
+        crate::host_base::log(&format!("resident: window destroyed ({} other holders)", Arc::strong_count(&window) - 1));
+    }
+
+    /// Makes a window for the resident slot again after `drop_resident_window`, on the kept
+    /// device, with what `open_window_with` and `recreate_window_for_alpha` install per window.
+    /// It is still resident: the caller wakes it as it would the hidden window.
+    pub(super) fn remake_resident_window(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
+        let Some(old) = self.resident_window_gone else { return Ok(()) };
+        if self.gpu.is_some() {
+            return Ok(());
+        }
+        let attrs = crate::platform::window::attributes().with_title("Termurion").with_window_icon(crate::presence::window_icon()).with_inner_size(LogicalSize::new(1000.0, 650.0));
+        let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
+        window.set_ime_allowed(true);
+        // An opaque window: one whose profile wants alpha is remade for it as any window is.
+        let gpu = match &self.prefs_gpu {
+            Some(h) => init_gpu_from(window.clone(), h),
+            None => self.gpu_for(event_loop, window.clone(), crate::transparency::SurfaceKind::Opaque),
+        }?;
+        self.win_alpha_surface = crate::transparency::SurfaceKind::Opaque;
+        self.gpu = Some(gpu);
+        self.resident_window_gone = None;
+        self.rekey_window(old, window.id());
+        self.look_seen = None;
+        self.border_applied = None;
+        self.theme_applied = None;
+        self.font_sig = String::new();
+        self.pane_faces = Default::default();
+        self.install_sizing();
+        self.guard_theme();
+        self.install_menus();
+        crate::host_base::log("resident: window made again");
+        Ok(())
+    }
+
+    /// A Wake after an in-place wake found no window (`wake_in_place`): the window is made, then
+    /// woken with the tabs that came meanwhile. Nothing came (every tab failed): it stays resident.
+    pub(super) fn pay_wake_owed(&mut self, event_loop: &ActiveEventLoop) {
+        if !std::mem::take(&mut self.wake_owed) || !self.resident || self.tabs.is_empty() {
+            return;
+        }
+        if let Err(e) = self.remake_resident_window(event_loop) {
+            crate::host_base::log(&format!("resident: no window for the wake: {e}"));
+            return;
+        }
+        self.wake_from_resident(super::resident_ui::Wake::InPlace);
+        self.relayout();
+        self.redraw();
     }
 
     /// The current window is gone (its last tab closed): another window becomes current.
@@ -1162,8 +1225,14 @@ impl WinSlot {
 
 /// A window's surface and renderer on the first window's device.
 pub(super) fn init_gpu_shared(window: Arc<Window>, from: &Gpu) -> Result<Gpu, String> {
-    let surface = from.instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
-    let caps = surface.get_capabilities(&from.adapter);
+    init_gpu_from(window, &(from.instance.clone(), from.adapter.clone(), from.device.clone(), from.queue.clone()))
+}
+
+/// The same on kept handles (instance, adapter, device, queue).
+pub(super) fn init_gpu_from(window: Arc<Window>, from: &(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)) -> Result<Gpu, String> {
+    let (instance, adapter, device, queue) = from;
+    let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
+    let caps = surface.get_capabilities(adapter);
     let format = caps.formats.iter().copied().find(|f| f.is_srgb()).unwrap_or(caps.formats[0]);
     let size = window.inner_size();
     let config = wgpu::SurfaceConfiguration {
@@ -1177,10 +1246,10 @@ pub(super) fn init_gpu_shared(window: Arc<Window>, from: &Gpu) -> Result<Gpu, St
         desired_maximum_frame_latency: 2,
         color_space: wgpu::SurfaceColorSpace::Auto,
     };
-    surface.configure(&from.device, &config);
-    let mut renderer = Renderer::new(&from.device, &from.queue, format, &super::first_font(), FONT_PX * window.scale_factor() as f32);
-    renderer.set_view_formats(crate::render_fx_gpu::view_formats_supported(&from.adapter));
-    Ok(Gpu { surface, adapter: from.adapter.clone(), device: from.device.clone(), queue: from.queue.clone(), config, renderer, instance: from.instance.clone(), alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), window })
+    surface.configure(device, &config);
+    let mut renderer = Renderer::new(device, queue, format, &super::first_font(), FONT_PX * window.scale_factor() as f32);
+    renderer.set_view_formats(crate::render_fx_gpu::view_formats_supported(adapter));
+    Ok(Gpu { surface, adapter: adapter.clone(), device: device.clone(), queue: queue.clone(), config, renderer, instance: instance.clone(), alpha: None, shape: None, fx: None, bar: Default::default(), layout: None, title_sent: Default::default(), window })
 }
 
 impl App {

@@ -31,15 +31,28 @@ pub fn after_last_window(restoring: bool, terminals_left: usize, interacted: boo
     }
 }
 
-/// The resident window is the last window hidden. Where windows cannot be hidden (Wayland), it
-/// would stay on screen, empty, and no close would remove it, so with no terminal left Termurion
-/// quits instead.
-pub fn after_last_window_where(can_hide: bool, terminals_left: usize, decision: AfterLast) -> AfterLast {
-    if !can_hide && terminals_left == 0 {
+/// The resident window is the last window hidden. Where windows cannot be hidden (Wayland) it is
+/// destroyed instead and made again on the wake, which needs the icon to wake it from: with no
+/// tray on the desktop and no terminal left, Termurion quits.
+pub fn after_last_window_where(can_hide: bool, icon_can_show: bool, terminals_left: usize, decision: AfterLast) -> AfterLast {
+    if !can_hide && !icon_can_show && terminals_left == 0 {
         AfterLast::Quit
     } else {
         decision
     }
+}
+
+/// How the resident window leaves the screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Away {
+    /// Hidden, kept with its GPU (Windows, macOS, X11).
+    Hide,
+    /// Destroyed; its device is kept and the wake makes a new window (Wayland).
+    Destroy,
+}
+
+pub fn resident_away(can_hide: bool) -> Away {
+    if can_hide { Away::Hide } else { Away::Destroy }
 }
 
 /// Whether the notification area icon is there: 13g's rule, or Termurion is resident (otherwise a
@@ -123,12 +136,16 @@ mod tests {
     }
 
     #[test]
-    fn a_window_that_cannot_hide_quits_instead_of_staying() {
+    fn a_window_that_cannot_hide_stays_only_with_a_tray() {
         use AfterLast::*;
-        assert_eq!(after_last_window_where(false, 0, StayResident), Quit, "Wayland: no hidden window to stay in");
-        assert_eq!(after_last_window_where(false, 1, StayResident), StayResident, "a terminal is left");
-        assert_eq!(after_last_window_where(true, 0, StayResident), StayResident, "X11, Windows and macOS follow iTerm2");
-        assert_eq!(after_last_window_where(true, 0, Quit), Quit);
+        assert_eq!(after_last_window_where(false, true, 0, StayResident), StayResident, "Wayland with a tray: resident, as iTerm2");
+        assert_eq!(after_last_window_where(false, true, 0, Quit), Quit, "the quit setting still quits");
+        assert_eq!(after_last_window_where(false, false, 0, StayResident), Quit, "Wayland with no tray: nothing to wake it from");
+        assert_eq!(after_last_window_where(false, false, 1, StayResident), StayResident, "a terminal is left");
+        assert_eq!(after_last_window_where(true, false, 0, StayResident), StayResident, "X11, Windows and macOS follow iTerm2");
+        assert_eq!(after_last_window_where(true, true, 0, Quit), Quit);
+        assert_eq!(resident_away(true), Away::Hide);
+        assert_eq!(resident_away(false), Away::Destroy, "Wayland cannot hide it");
     }
 
     #[test]

@@ -8,4 +8,5 @@ pub mod proc_table;
 pub mod quarantine;
 pub mod screen_lock;
 pub mod secrets;
+pub mod tray;
 pub mod user_auth;

@@ -153,6 +153,12 @@ mod tests {
 /// Queues the menu for the window's next frame, where the overlay draws it (Linux). True: it was
 /// queued; the pick comes back as a menu event, not here. macOS pop-ups are `platform::macos`.
 pub fn popup<M: crate::platform::chrome::PopupMenu + ?Sized>(menu: &M, view: isize, position: Option<muda::dpi::Position>) -> bool {
+    // The tray menu: the panel draws it from the exported tree (there is no window to draw in).
+    #[cfg(target_os = "linux")]
+    if view == crate::platform::linux::tray::VIEW {
+        crate::platform::linux::tray::export(&menu.entries());
+        return true;
+    }
     let scale = WAKE.with(|w| w.borrow().get(&view).map(|w| w.scale_factor())).unwrap_or(1.0);
     let at = position.map(|p| to_pixels(p, scale));
     QUEUED.with(|q| q.borrow_mut().insert(view, QueuedPopup { items: menu.entries(), at }));

@@ -14,7 +14,6 @@ use zbus::zvariant::Value;
 
 use super::super::notify::Click;
 use super::super::window::APP_ID;
-use super::super::Unsupported;
 use crate::dlog;
 
 /// The name the notification shows under.
@@ -64,22 +63,38 @@ pub fn on_click(f: Box<dyn Fn(Click) + Send + Sync>) {
     *lock(&CLICK) = Some(Arc::from(f));
 }
 
-pub const MENU_AT_ICON: bool = false;
+/// The panel shows the tray menu at the icon itself, from the exported dbusmenu (`tray`).
+pub const MENU_AT_ICON: bool = true;
 
-/// What a click on the resident icon does. There is no icon on Linux yet.
-pub fn on_tray(_f: Box<dyn Fn(bool) + Send + Sync>) {}
-
-/// What Explorer restarting does. Linux has no such event.
-pub fn on_taskbar_created(_f: Box<dyn Fn() + Send + Sync>) {}
-
-/// No hidden notification window exists on Linux.
-pub fn window_handle() -> Option<isize> {
-    None
+/// What a click on the resident icon does; the watcher is followed from now on.
+pub fn on_tray(f: Box<dyn Fn(bool) + Send + Sync>) {
+    super::tray::on_click(f);
+    super::tray::watch();
 }
 
-/// The tray comes later.
-pub fn set_resident(_on: bool) -> Result<(), String> {
-    Err(Unsupported { feature: "The resident icon", plural: false }.into())
+/// What a pick from the icon's menu does (the panel draws that menu, so the pick comes from it).
+pub fn on_tray_pick(f: Box<dyn Fn(String) + Send + Sync>) {
+    super::tray::on_pick(f);
+}
+
+/// A StatusNotifierWatcher came (back) onto the bus: Windows' TaskbarCreated.
+pub fn on_taskbar_created(f: Box<dyn Fn() + Send + Sync>) {
+    super::tray::on_host_back(f);
+}
+
+/// The tray menu's anchor while the icon is up.
+pub fn window_handle() -> Option<isize> {
+    super::tray::view()
+}
+
+/// The StatusNotifierItem.
+pub fn set_resident(on: bool) -> Result<(), String> {
+    super::tray::set(on)
+}
+
+/// Whether a panel on this desktop shows tray icons at all.
+pub fn icon_can_show() -> bool {
+    super::tray::host_up()
 }
 
 /// The number of the newest show (see `SHOWN`).
@@ -362,7 +377,10 @@ pub fn show(_owner: isize, title: &str, body: &str) -> Result<(), String> {
     show_with(title, body, false)
 }
 
-pub fn remove(_owner: isize) {}
+/// Takes the tray icon down.
+pub fn remove(_owner: isize) {
+    let _ = super::tray::set(false);
+}
 
 #[cfg(test)]
 mod tests {

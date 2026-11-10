@@ -2114,7 +2114,7 @@ mod tests {
             }
         }
         let body = |src: &'static str, name: &str| -> &'static str { src.split(name).nth(1).unwrap().split("\n    }\n").next().unwrap() };
-        for (src, name) in [(include_str!("windows_ui.rs"), "fn drop_current_window"), (include_str!("windows_ui.rs"), "fn merge_all_windows"), (include_str!("transparency_ui.rs"), "fn recreate_window_for_alpha")] {
+        for (src, name) in [(include_str!("windows_ui.rs"), "fn drop_current_window"), (include_str!("windows_ui.rs"), "fn merge_all_windows"), (include_str!("transparency_ui.rs"), "fn recreate_window_for_alpha"), (include_str!("windows_ui.rs"), "fn drop_resident_window")] {
             assert!(body(src, name).contains("window_gone("), "{name} forgets the window it drops");
         }
     }

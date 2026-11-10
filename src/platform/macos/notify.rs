@@ -120,6 +120,14 @@ pub fn on_tray(f: Box<dyn Fn(bool) + Send + Sync>) {
 /// Nothing like Explorer restarting happens on macOS.
 pub fn on_taskbar_created(_f: Box<dyn Fn() + Send + Sync>) {}
 
+/// Tray menu picks come back as menu events here; nothing else to hear.
+pub fn on_tray_pick(_f: Box<dyn Fn(String) + Send + Sync>) {}
+
+/// The icon can always be shown here.
+pub fn icon_can_show() -> bool {
+    true
+}
+
 /// The tray menu's anchor: the menu bar status item's button, while it is there.
 pub fn window_handle() -> Option<isize> {
     super::status_item::button_view()

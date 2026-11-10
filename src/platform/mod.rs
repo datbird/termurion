@@ -261,7 +261,7 @@ mod tests {
             "Notifications are", "Password manager command line tools are", "Password manager is", "Printing is", "Python API scripts are",
             "Reporting to Termurion is", "Running a command line is", "Running git is", "Saving the debug log is",
             "Saving the debug log's files is", "Settings from a URL are", "The color dialog is",
-            "The command line utilities are", "The hotkey window on Wayland is", "The hotkey window without X11 is", "The registry is", "The resident icon is", "The terminal utilities are", "Verifying a signed script archive is", "Virtual desktops are", "X is",
+            "The command line utilities are", "The hotkey window on Wayland is", "The hotkey window without X11 is", "The registry is", "The terminal utilities are", "Verifying a signed script archive is", "Virtual desktops are", "X is",
         ];
         fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
             for e in std::fs::read_dir(dir).unwrap().flatten() {
