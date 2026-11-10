@@ -33,9 +33,12 @@ from fontTools.feaLib.builder import addOpenTypeFeaturesFromString
 FAMILY = "Termurion Ligature Test"
 f = TTFont("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf")
 opts = subset.Options(); opts.name_IDs = ["*"]; opts.layout_features = []; opts.hinting = False
-s = subset.Subsetter(opts); s.populate(unicodes=list(range(0x20, 0x7f)) + [0x2192]); s.subset(f)
+s = subset.Subsetter(opts); s.populate(unicodes=list(range(0x20, 0x7f)) + [0x2192, 0xe9]); s.subset(f)
 if "GSUB" in f:
     del f["GSUB"]
+# "é" is made 1.5 cells wide: a glyph whose advance is not the font's "W".
+adv, lsb = f["hmtx"]["eacute"]
+f["hmtx"]["eacute"] = (round(adv * 1.5), lsb)
 addOpenTypeFeaturesFromString(f, "languagesystem DFLT dflt; languagesystem latn dflt;\nfeature liga { sub equal greater by arrowright; sub equal equal equal by arrowright; } liga;")
 name = f["name"]
 ps = FAMILY.replace(" ", "") + "-Regular"
@@ -44,3 +47,17 @@ for nid in (16, 17, 21, 22):
 for nid, val in [(1, FAMILY), (2, "Regular"), (3, ps), (4, FAMILY + " Regular"), (6, ps)]:
     name.setName(val, nid, 3, 1, 0x409); name.setName(val, nid, 1, 0, 0)
 f.save(f"{out}/TermurionLigatureTest-Regular.ttf")
+
+# A right-to-left test font: DejaVu Sans with its Hebrew and Arabic letters and its own shaping
+# features (Arabic joining forms), renamed.
+FAMILY = "Termurion RTL Test"
+f = TTFont("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+opts = subset.Options(); opts.name_IDs = ["*"]; opts.layout_features = ["*"]; opts.hinting = False
+s = subset.Subsetter(opts); s.populate(unicodes=list(range(0x20, 0x7f)) + list(range(0x5d0, 0x5eb)) + list(range(0x621, 0x64b))); s.subset(f)
+name = f["name"]
+ps = FAMILY.replace(" ", "") + "-Regular"
+for nid in (16, 17, 21, 22):
+    name.removeNames(nameID=nid)
+for nid, val in [(1, FAMILY), (2, "Regular"), (3, ps), (4, FAMILY + " Regular"), (6, ps)]:
+    name.setName(val, nid, 3, 1, 0x409); name.setName(val, nid, 1, 0, 0)
+f.save(f"{out}/TermurionRtlTest-Regular.ttf")

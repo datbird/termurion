@@ -4,4 +4,6 @@ DejaVu Sans Mono and DejaVu Sans Mono Bold, ASCII only, renamed, with make.py (f
   python3 make.py tests/fixtures/fonts
 DejaVu fonts license: LICENSE-DejaVu in this folder.
 TermurionLigatureTest-Regular.ttf: DejaVu Sans Mono with "=>" and "===" turned into one arrow
-glyph one cell wide by a liga feature (render::tests::a_ligature_advances_one_cell_per_character).
+glyph one cell wide by a liga feature, and "é" 1.5 cells wide (render::tests::a_ligature_advances_one_cell_per_character and others).
+TermurionRtlTest-Regular.ttf: DejaVu Sans with its Hebrew and Arabic letters and shaping features,
+renamed (render::tests right-to-left and joined-run tests).
