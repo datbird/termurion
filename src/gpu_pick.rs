@@ -161,13 +161,32 @@ pub fn watch(device: &wgpu::Device, generation: u64) {
         }
     });
     device.on_uncaptured_error(Arc::new(move |e| {
-        let text = e.to_string();
+        let text = error_text(&e);
         if text.to_ascii_lowercase().contains("lost") {
             report_lost(generation, format!("device lost (error): {text}"));
-        } else {
-            crate::host_base::log(&format!("renderer: GPU error: {text}"));
+        } else if first_time(&text) {
+            crate::host_base::log(&format!("renderer: GPU error (later copies are not logged): {text}"));
         }
     }));
+}
+
+/// The whole text of a GPU error. A validation error's `Display` is only "Validation Error"; its
+/// description names the call and the cause.
+fn error_text(e: &wgpu::Error) -> String {
+    match e {
+        wgpu::Error::Validation { description, .. } => description.trim().to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// True the first time `text` is seen this run: an error raised each frame is logged once, not
+/// thousands of times a minute.
+fn first_time(text: &str) -> bool {
+    static SEEN: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let seen = seen.get_or_insert_with(Default::default);
+    // A bound, so errors that differ each frame cannot grow the set without end.
+    seen.len() < 64 && seen.insert(text.to_string())
 }
 
 /// Whether a loss has been reported and not yet taken.
