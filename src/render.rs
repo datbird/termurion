@@ -3324,13 +3324,17 @@ mod tests {
     /// and the screen's background.
     fn agent_frame(r: &Renderer, name: &str, preset: [u8; 3]) -> (Frame, (u32, u32), crate::palette::Rgb) {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/agents/");
-        let text = std::fs::read_to_string(format!("{dir}{name}.ansi")).unwrap();
-        let cursors = std::fs::read_to_string(format!("{dir}cursors.txt")).unwrap();
-        let line = cursors.lines().find(|l| l.split(' ').next() == Some(name)).unwrap();
-        let num = |key: &str| -> usize { line.split(' ').find_map(|w| w.strip_prefix(key)).unwrap().parse().unwrap() };
-        let rows: Vec<String> = text.trim_end_matches('\n').split('\n').map(|r| format!("\x1b[0m{r}")).collect();
         let mut s = crate::screen::Screen::new(100, 30);
-        s.feed(format!("\x1b[2J\x1b[H{}\x1b[{};{}H", rows.join("\r\n"), num("y=") + 1, num("x=") + 1).as_bytes());
+        if let Ok(raw) = std::fs::read(format!("{dir}{name}.raw")) {
+            s.feed(&raw);
+        } else {
+            let text = std::fs::read_to_string(format!("{dir}{name}.ansi")).unwrap();
+            let cursors = std::fs::read_to_string(format!("{dir}cursors.txt")).unwrap();
+            let line = cursors.lines().find(|l| l.split(' ').next() == Some(name)).unwrap();
+            let num = |key: &str| -> usize { line.split(' ').find_map(|w| w.strip_prefix(key)).unwrap().parse().unwrap() };
+            let rows: Vec<String> = text.trim_end_matches('\n').split('\n').map(|r| format!("\x1b[0m{r}")).collect();
+            s.feed(format!("\x1b[2J\x1b[H{}\x1b[{};{}H", rows.join("\r\n"), num("y=") + 1, num("x=") + 1).as_bytes());
+        }
         let cell = r.cell;
         let (w, h) = ((100.0 * cell.0).ceil() as u32, (30.0 * cell.1).ceil() as u32);
         let rect = crate::layout::Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
@@ -3445,6 +3449,33 @@ mod tests {
                 let inside = lit.iter().map(|s| lit_in(s, &plain, size.0, ys.clone(), b.left..b.right)).max().unwrap_or(0);
                 if out > 0 || inside < 40 {
                     bad.push(format!("{} edge {edge}: {out} lit outside the panel, {inside} inside", p.id));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
+    /// Claude Code in the right tmux pane: the lines light only between the pane's border and
+    /// the window's edge, none over the other pane.
+    #[test]
+    fn a_line_box_in_a_split_pane_lights_only_inside_the_pane() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let ch = r.cell.1;
+        let mut bad = Vec::new();
+        for p in crate::render_fx::discover(None).0 {
+            let preset = preset_of(&p);
+            let (frame, size, bg) = agent_frame(&r, "tmux-split-right", preset);
+            let b = frame.fx.as_ref().and_then(|f| f.input_box).expect("a line box");
+            assert!(b.kind == crate::scene::BoxKind::Lines && b.left > 0.0 && b.right > b.left, "the pane's edges are set");
+            let plain = r.draw_offscreen(&frame, size.0, size.1).unwrap();
+            let lit = fx_shots(&mut r, p.compile().unwrap(), &frame, size, bg, preset, true, true, &ENTER_SHOTS);
+            for edge in [b.top, b.bottom] {
+                let ys = (edge - 0.25 * ch)..(edge + 0.25 * ch);
+                let out = lit.iter().map(|s| lit_in(s, &plain, size.0, ys.clone(), 0.0..b.left)).max().unwrap_or(0);
+                let inside = lit.iter().map(|s| lit_in(s, &plain, size.0, ys.clone(), b.left..b.right)).max().unwrap_or(0);
+                if out > 0 || inside < 40 {
+                    bad.push(format!("{} line {edge}: {out} lit outside the pane, {inside} inside", p.id));
                 }
             }
         }

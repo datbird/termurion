@@ -211,7 +211,7 @@ pub fn wrap_glsl(body: &str) -> String {
 pub fn patch_input_box(body: &str) -> String {
     let up = |v: &str| format!("(Y_DOWN ? iResolution.y - {v} : {v})");
     let (top, bottom) = (up("iInputBox.x"), up("iInputBox.y"));
-    let outside = |x: &str| format!("iInputBox.z > 1.5 && ({x} < iInputBoxX.x || {x} > iInputBoxX.y)");
+    let outside = |x: &str| format!("iInputBox.z > 0.5 && iInputBoxX.y > 0.0 && ({x} < iInputBoxX.x || {x} > iInputBoxX.y)");
     let nearest = |at: &str, x: &str| {
         // Inside a band, more than half a row from both edges, is its text: no line there.
         format!(" if (iInputBox.z > 0.5) {{ float tA = {top}, tB = {bottom}; if ({}) return -1.0; float tN = abs({at} - tA) < abs({at} - tB) ? tA : tB; if (iInputBox.z > 1.5 && ({at} - tA) * ({at} - tB) < 0.0 && abs({at} - tN) > 0.5 * iCurrentCursor.w) return -1.0; return abs({at} - tN) <= reach ? tN : -1.0; }}", outside(x))
@@ -454,7 +454,7 @@ pub struct Uniforms {
     /// Termurion's `iInputBox`: the input box's top and bottom (pixels from the top), and z:
     /// 1 for a line box, 2 for a shaded band, 0 when there is none.
     pub input_box: [f32; 4],
-    /// `iInputBoxX`: a band box's left and right edge in pixels, zeros for lines.
+    /// `iInputBoxX`: a band box's left and right edge in pixels (also a line box in a split pane), zeros for a full-width line box.
     pub input_box_x: [f32; 4],
 }
 
