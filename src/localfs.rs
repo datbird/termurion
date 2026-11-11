@@ -600,6 +600,8 @@ mod tests {
     /// files shipped beside it, the temp folder it made), Windows' own folders, and PATH lookups. A
     /// new raw probe in a listed function changes its count and fails too.
     const OWN: &[(&str, &str, usize, &str)] = &[
+        ("platform/unix/update_fetch.rs", "system_curl", 1, "the fixed system paths /usr/bin/curl and /bin/curl, never a user's path"),
+        ("platform/unix/update_fetch.rs", "fetch", 1, "curl's working folder is the fixed root folder /, never a user's path"),
         ("url_launch.rs", "verify_server", 1, "the kernel's /proc/<pid>/exe link of the peer that serves the launch socket, read to compare programs; never a user's path, nothing is opened"),
         ("url_launch.rs", "unusable", 1, "the launch socket path in Termurion's own private runtime folder (ipc::url_pipe_name), its kind only, without following a link"),
         ("url_launch.rs", "lock_held", 2, "the launch socket's own lock file in the private runtime folder (its inode, without following a link) and the kernel's /proc/locks"),
