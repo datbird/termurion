@@ -1497,8 +1497,9 @@ pub fn pane_with(
         } else if !c.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
             // U+200B in a cell of its own (13o, Zero-Width Space Advances Cursor) draws as a
             // space: a zero-advance glyph in a shaped run would pull the text after it one cell
-            // left (S3).
-            text.push(if c.c == '\u{200B}' { ' ' } else { c.c });
+            // left (S3). A tab's first cell also draws as a space: the shaper gives a tab its
+            // own width, which pulls the rest of the row off the grid.
+            text.push(if matches!(c.c, '\u{200B}' | '\t') { ' ' } else { c.c });
             if let Some(extra) = c.zerowidth() {
                 text.extend(extra);
             }
@@ -6813,6 +6814,15 @@ mod tests {
         assert_eq!(row_text(&f, 0).trim_end(), "hello");
         assert_eq!(row_text(&f, 1).trim_end(), "world");
         assert_eq!((f.rows[1].x, f.rows[1].y), (0.0, 20.0));
+    }
+
+    #[test]
+    fn a_tab_draws_as_a_blank_cell() {
+        // `ls` on macOS lines its columns up with tabs.
+        let s = screen(b"a\tb");
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, &CursorLook::shown(true));
+        assert_eq!(row_text(&f, 0).trim_end(), "a       b");
     }
 
     #[test]
