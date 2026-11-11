@@ -159,7 +159,7 @@ fn runs_spans(screen: &Screen, spans: &[(i32, usize, usize)], exact_last: bool) 
         for c in cells {
             let c = &g[Line(line)][Column(c)];
             let (fg, bg) = palette.cell(c.fg, c.bg, c.flags);
-            let mut text = c.c.to_string();
+            let mut text = cell_char(c).to_string();
             if let Some(extra) = c.zerowidth() {
                 text.extend(extra);
             }
@@ -397,6 +397,12 @@ pub fn sgr_all(screen: &Screen) -> String {
     sgr_over(screen, &(top..=last).map(|l| (l, 0, last_col)).collect::<Vec<_>>())
 }
 
+/// A cell's character for text that keeps every cell. A tab's blanks are cells of their own, so
+/// the tab's first cell is one blank too: a real tab here would move the cursor twice on replay.
+pub(crate) fn cell_char(c: &Cell) -> char {
+    if c.c == '\t' { ' ' } else { c.c }
+}
+
 /// Session restoration's contents: the main screen's history and every row of its screen
 /// (blank rows too, so the rows line up with the shell's own view), and its cursor as
 /// (row, column) on the screen. Rows a full-screen program left behind (the alternate screen's
@@ -462,7 +468,7 @@ fn sgr_grid(g: &alacritty_terminal::grid::Grid<Cell>, spans: &[(i32, usize, usiz
                 out += &format!("\x1b[{}m", codes.join(";"));
                 last = Some(codes);
             }
-            let mut text = c.c.to_string();
+            let mut text = cell_char(c).to_string();
             if let Some(extra) = c.zerowidth() {
                 text.extend(extra);
             }
@@ -796,6 +802,16 @@ mod tests {
         s.feed(b"\x1b[31mone\x1b[0m\r\ntwo\r\nthree");
         assert_eq!(sgr_all(&s), "\x1b[0;31mone\x1b[0m\ntwo\x1b[0m\nthree\x1b[0m");
         assert_eq!(sgr_all(&Screen::new(5, 2)), "", "an empty screen saves nothing");
+    }
+
+    #[test]
+    fn a_restored_tab_row_keeps_its_columns() {
+        let mut s = Screen::new(40, 3);
+        s.feed(b"Applications\t\tb");
+        let (text, _) = sgr_restorable(&s);
+        let mut back = Screen::new(40, 3);
+        back.feed(text.as_bytes());
+        assert_eq!(back.term().grid()[Line(0)][Column(24)].c, 'b', "{text:?}");
     }
 
     #[test]

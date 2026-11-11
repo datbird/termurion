@@ -3856,7 +3856,7 @@ pub fn offscreen_band(frame: &mut Frame, screen: &Screen, band: Rect, text_origi
         if c.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
             continue;
         }
-        let mut text = c.c.to_string();
+        let mut text = crate::styled_copy::cell_char(c).to_string();
         if let Some(extra) = c.zerowidth() {
             text.extend(extra);
         }

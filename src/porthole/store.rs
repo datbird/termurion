@@ -117,7 +117,7 @@ impl Screen {
             let mut line = String::new();
             for l in first..=last {
                 let row = &g[Line(l)];
-                line.extend((0..g.columns()).map(|c| &row[Column(c)]).filter(|c| !c.flags.contains(Flags::WIDE_CHAR_SPACER)).map(|c| c.c));
+                line.extend((0..g.columns()).map(|c| &row[Column(c)]).filter(|c| !c.flags.contains(Flags::WIDE_CHAR_SPACER)).map(crate::styled_copy::cell_char));
                 if !(l < last && row[Column(g.columns() - 1)].flags.contains(Flags::WRAPLINE)) {
                     lines.push(line.trim_end().to_string());
                     line.clear();
