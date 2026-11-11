@@ -22,6 +22,10 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 
 ## Done
 
+21. **Settings text ran past the window and the pages did not fill it.** Seen 2026-11-10 on macOS. Long rows were cut off in a narrow window, and pages stayed narrow in a wide window. Done in 1.0.1: pages fill the window and rows, the tab bar and profile tabs wrap.
+
+22. **Columns from `ls` drew on top of each other.** Seen 2026-11-10 on macOS. BSD `ls` lines up columns with tabs, and the renderer shaped the tab cell at the tab's own width. Done in 1.0.1: a tab cell draws as a blank (`scene.rs`, test `a_tab_draws_as_a_blank_cell`). Copy still reads the tab.
+
 19. **Ctrl+V did not paste.** Seen 2026-10-30 on the desktop. Cause: only the Shortcut Key's
     Paste (iTerm2's Cmd+V, Ctrl+Shift+V by default) pasted; a plain Ctrl+V went to the program
     as a raw ^V. Done 2026-10-30 (1cf1e621, released in 0.0.1-beta7): Ctrl+V pastes in every

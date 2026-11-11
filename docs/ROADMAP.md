@@ -9,7 +9,7 @@ release, is out on Windows, macOS, and Linux.
 
 | | |
 |---|---|
-| Release | 1.0.0 (2026-11-10), the first stable release, on Windows, macOS, and Linux |
+| Release | 1.0.1 (2026-11-10), the current stable release, on Windows, macOS, and Linux |
 | Milestones done | 0 to 14, including 13a to 13y2 and the AI browser tools |
 | Tests | 7,473 (`#[test]` functions in `src` and `tests`) |
 | Rust | about 547,000 lines (`src`, `crates`, and `tests`) |
