@@ -1,15 +1,15 @@
 # Installing Termurion
 
-Termurion 1.0.1 is the current stable release. It runs on Windows 10 and 11 (x64), on macOS (Apple
+Termurion 1.0.2 is the current stable release. It runs on Windows 10 and 11 (x64), on macOS (Apple
 Silicon), and on Linux (x86_64). Download the file for your system from
-[Releases](https://github.com/datbird/termurion/releases) (the 1.0.1 release is marked Latest).
+[Releases](https://github.com/datbird/termurion/releases) (the 1.0.2 release is marked Latest).
 
 | System | File |
 |---|---|
-| Windows installer | `Termurion-1.0.1-win64-installer.exe` |
-| Windows portable | `Termurion-1.0.1-win64-portable.zip` |
-| macOS (Apple Silicon) | `Termurion-1.0.1-macos-arm64.zip` |
-| Linux (x86_64) | `Termurion-1.0.1-linux-x86_64.AppImage` |
+| Windows installer | `Termurion-1.0.2-win64-installer.exe` |
+| Windows portable | `Termurion-1.0.2-win64-portable.zip` |
+| macOS (Apple Silicon) | `Termurion-1.0.2-macos-arm64.zip` |
+| Linux (x86_64) | `Termurion-1.0.2-linux-x86_64.AppImage` |
 
 ## Windows
 
@@ -19,7 +19,7 @@ Run anyway.
 
 ### The installer
 
-Run `Termurion-1.0.1-win64-installer.exe`. It installs for your user only, so Windows does not ask for
+Run `Termurion-1.0.2-win64-installer.exe`. It installs for your user only, so Windows does not ask for
 admin rights. Files go to `%LOCALAPPDATA%\Programs\Termurion`.
 
 **1. License Agreement.** Termurion is under the GNU GPL v3 or later. Select "I accept the
@@ -61,19 +61,19 @@ folders too for a clean removal.
 For scripts, Setup takes the usual Inno Setup options. For example:
 
 ```
-Termurion-1.0.1-win64-installer.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS=desktopicon
+Termurion-1.0.2-win64-installer.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS=desktopicon
 ```
 
 ### The portable zip
 
-Unzip `Termurion-1.0.1-win64-portable.zip` into any folder and run `termurion.exe`. Keep all the
+Unzip `Termurion-1.0.2-win64-portable.zip` into any folder and run `termurion.exe`. Keep all the
 files in the folder together: `conpty.dll` and `OpenConsole.exe` must stay beside the exe.
 
 ## macOS
 
 Termurion needs an Apple Silicon Mac (arm64).
 
-1. Download `Termurion-1.0.1-macos-arm64.zip` and unzip it.
+1. Download `Termurion-1.0.2-macos-arm64.zip` and unzip it.
 2. Move `Termurion.app` to Applications.
 3. Open it. The app is ad hoc signed and not notarized, so macOS blocks the first open.
 4. Open System Settings > Privacy & Security, scroll down, and choose Open Anyway. Then open Termurion again.
@@ -90,8 +90,8 @@ folders too for a clean removal.
 Termurion needs an x86_64 computer with a desktop that runs X11 or Wayland. It was tested on
 Ubuntu 26.04 with GNOME on Wayland. X11 also works.
 
-1. Download `Termurion-1.0.1-linux-x86_64.AppImage`.
-2. Make it executable: `chmod +x Termurion-1.0.1-linux-x86_64.AppImage`.
+1. Download `Termurion-1.0.2-linux-x86_64.AppImage`.
+2. Make it executable: `chmod +x Termurion-1.0.2-linux-x86_64.AppImage`.
 3. Run it. The first run adds Termurion to the app launcher with its icon.
 
 The AppImage needs FUSE (`fusermount3`), which most desktops have. Where FUSE is missing, start it

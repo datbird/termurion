@@ -22,6 +22,8 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 
 ## Done
 
+23. **Restored text with tabs came back with its columns spread out.** Seen 2026-11-10 on the macOS port. A saved row held each tab and the blanks it skipped, so replay moved the cursor twice. Done in 1.0.2: text that keeps every cell writes the tab's first cell as a blank (`styled_copy::cell_char`, test `a_restored_tab_row_keeps_its_columns`). Rows saved before 1.0.2 stay spread out until they leave the history.
+
 21. **Settings text ran past the window and the pages did not fill it.** Seen 2026-11-10 on macOS. Long rows were cut off in a narrow window, and pages stayed narrow in a wide window. Done in 1.0.1: pages fill the window and rows, the tab bar and profile tabs wrap.
 
 22. **Columns from `ls` drew on top of each other.** Seen 2026-11-10 on macOS. BSD `ls` lines up columns with tabs, and the renderer shaped the tab cell at the tab's own width. Done in 1.0.1: a tab cell draws as a blank (`scene.rs`, test `a_tab_draws_as_a_blank_cell`). Copy still reads the tab.
