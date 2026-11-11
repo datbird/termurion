@@ -60,11 +60,15 @@ pub fn set(text: &str, html: &str, rtf: &str) -> Result<(), String> {
         return Ok(());
     }
     let mut cb = arboard::Clipboard::new().map_err(|e| format!("could not open the clipboard ({e})"))?;
-    match plan {
-        Plan::Html(h) => cb.set_html(h, Some(text.to_string())),
-        _ => cb.set_text(text.to_string()),
-    }
-    .map_err(|e| format!("could not set the clipboard ({e})"))
+    let write = |cb: &mut arboard::Clipboard| match &plan {
+        Plan::Html(h) => cb.set_html(h.as_str(), Some(text)),
+        _ => cb.set_text(text),
+    };
+    #[cfg(target_os = "macos")]
+    let done = again(&mut cb, arboard::Clipboard::new, write);
+    #[cfg(not(target_os = "macos"))]
+    let done = write(&mut cb);
+    done.map_err(|e| format!("could not set the clipboard ({e})"))
 }
 
 /// No file list on the clipboard is read on Unix yet, so there is none to report.
@@ -72,9 +76,51 @@ pub fn files() -> Vec<std::path::PathBuf> {
     Vec::new()
 }
 
-/// The Mac pasteboard needs no window, so arboard is the clipboard as it is.
+/// Runs a write, and if it fails, runs it once more on a fresh handle from `fresh`. The Mac
+/// pasteboard sometimes refuses a write (writeObjects returns false, seen after an unlock), and
+/// a second try on a new handle goes through. The first error is kept when no new handle opens.
+#[cfg(any(target_os = "macos", test))]
+fn again<C, T, E>(slot: &mut C, fresh: impl FnOnce() -> Result<C, E>, mut write: impl FnMut(&mut C) -> Result<T, E>) -> Result<T, E> {
+    let first = match write(slot) {
+        Ok(v) => return Ok(v),
+        Err(e) => e,
+    };
+    match fresh() {
+        Ok(c) => {
+            *slot = c;
+            write(slot)
+        }
+        Err(_) => Err(first),
+    }
+}
+
+/// The Mac pasteboard through arboard. Writes get a second try on a fresh handle (`again`).
 #[cfg(target_os = "macos")]
-pub type Clipboard = arboard::Clipboard;
+pub struct Clipboard(arboard::Clipboard);
+
+#[cfg(target_os = "macos")]
+impl Clipboard {
+    pub fn new() -> Result<Self, arboard::Error> {
+        arboard::Clipboard::new().map(Self)
+    }
+
+    pub fn set_text<'a, T: Into<std::borrow::Cow<'a, str>>>(&mut self, text: T) -> Result<(), arboard::Error> {
+        let text = text.into();
+        again(&mut self.0, arboard::Clipboard::new, |c| c.set_text(text.clone()))
+    }
+
+    pub fn get_text(&mut self) -> Result<String, arboard::Error> {
+        self.0.get_text()
+    }
+
+    pub fn get_image(&mut self) -> Result<arboard::ImageData<'static>, arboard::Error> {
+        self.0.get_image()
+    }
+
+    pub fn set_image(&mut self, image: arboard::ImageData<'_>) -> Result<(), arboard::Error> {
+        again(&mut self.0, arboard::Clipboard::new, |c| c.set_image(image.clone()))
+    }
+}
 
 /// Nothing to attach on macOS.
 #[cfg(target_os = "macos")]
@@ -386,7 +432,7 @@ pub fn set_private_text(cb: &mut Clipboard, text: &str) -> Result<(), arboard::E
     #[cfg(target_os = "macos")]
     {
         use arboard::SetExtApple;
-        cb.set().exclude_from_history().text(text)
+        again(&mut cb.0, arboard::Clipboard::new, |c| c.set().exclude_from_history().text(text))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -402,6 +448,43 @@ pub fn set_private_text(cb: &mut Clipboard, text: &str) -> Result<(), arboard::E
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A handle whose writes fail while `refuses` is set; `id` tells handles apart.
+    struct Fake {
+        id: u32,
+        refuses: bool,
+    }
+
+    fn put(c: &mut Fake) -> Result<u32, String> {
+        if c.refuses { Err(format!("refused by {}", c.id)) } else { Ok(c.id) }
+    }
+
+    #[test]
+    fn a_refused_write_goes_through_on_a_fresh_handle() {
+        let mut slot = Fake { id: 1, refuses: true };
+        assert_eq!(again(&mut slot, || Ok::<_, String>(Fake { id: 2, refuses: false }), put), Ok(2));
+        // The fresh handle stays for the next write.
+        assert_eq!(slot.id, 2);
+    }
+
+    #[test]
+    fn a_good_write_opens_no_new_handle() {
+        let mut slot = Fake { id: 1, refuses: false };
+        assert_eq!(again(&mut slot, || -> Result<Fake, String> { panic!("opened a new handle") }, put), Ok(1));
+    }
+
+    #[test]
+    fn two_refusals_report_the_second() {
+        let mut slot = Fake { id: 1, refuses: true };
+        assert_eq!(again(&mut slot, || Ok::<_, String>(Fake { id: 2, refuses: true }), put), Err("refused by 2".into()));
+    }
+
+    #[test]
+    fn no_new_handle_keeps_the_first_error() {
+        let mut slot = Fake { id: 1, refuses: true };
+        assert_eq!(again(&mut slot, || Err::<Fake, _>("no pasteboard".to_string()), put), Err("refused by 1".into()));
+        assert_eq!(slot.id, 1);
+    }
 
     #[test]
     fn html_part_finds_the_document() {

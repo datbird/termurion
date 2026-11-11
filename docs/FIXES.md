@@ -22,6 +22,8 @@ commit. The list from before the beta is in [`TWEAKS.md`](TWEAKS.md).
 
 ## Done
 
+24. **A copy failed now and then on macOS with "NSPasteboard#writeObjects: returned false".** Seen 2026-11-11 after the Mac was left locked. The pasteboard refused one write, and the clipboard handle made at launch had no second try. Done in 1.0.3: a refused write tries once more on a fresh handle (`platform::unix::clipboard::again`, tests `a_refused_write_goes_through_on_a_fresh_handle` and three more). Copy with styles and password copies get the same retry.
+
 23. **Restored text with tabs came back with its columns spread out.** Seen 2026-11-10 on the macOS port. A saved row held each tab and the blanks it skipped, so replay moved the cursor twice. Done in 1.0.2: text that keeps every cell writes the tab's first cell as a blank (`styled_copy::cell_char`, test `a_restored_tab_row_keeps_its_columns`). Rows saved before 1.0.2 stay spread out until they leave the history.
 
 21. **Settings text ran past the window and the pages did not fill it.** Seen 2026-11-10 on macOS. Long rows were cut off in a narrow window, and pages stayed narrow in a wide window. Done in 1.0.1: pages fill the window and rows, the tab bar and profile tabs wrap.
