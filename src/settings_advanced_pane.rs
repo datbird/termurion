@@ -190,7 +190,7 @@ pub fn page(ui: &mut egui::Ui, g: &mut Globals, st: &mut AdvancedState) -> bool 
     };
     // The table's column headers stay above the scrolling rows, as NSTableView's header view.
     setting_row(ui, &mut |ui| _ = ui.strong(advanced_pane::SETTING_COLUMN), &mut |ui| _ = ui.strong(advanced_pane::VALUE_COLUMN));
-    egui::ScrollArea::vertical().show(ui, |ui| {
+    egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
         // Each header's category, top and height, for the pinned header.
         let mut headers: Vec<(&str, f32, f32)> = Vec::new();
         for (n, item) in items.into_iter().enumerate() {

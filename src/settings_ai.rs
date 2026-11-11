@@ -676,7 +676,11 @@ fn failure_mark(ui: &mut egui::Ui, text: &str) {
 
 /// A right-aligned label in the General sub-tab's first column.
 fn row_label(ui: &mut egui::Ui, text: &str) {
-    ui.allocate_ui_with_layout(egui::vec2(90.0, 20.0), egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(text));
+    // A right-to-left child shrinks to its label, and the grid sizes the column from that.
+    ui.allocate_ui_with_layout(egui::vec2(90.0, 20.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.set_min_width(90.0);
+        ui.label(text)
+    });
 }
 
 /// A checkbox on a stored boolean. True when it changed.
@@ -794,7 +798,7 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
         ui.vertical(|ui| {
             changed |= bool_box(ui, g, ai::SAFETY_CHECK, SAFETY, on.rest);
             changed |= bool_box(ui, g, ai::ZERO_DATA_RETENTION, ZDR, true);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let mut updates = g.bool(ai::MODEL_UPDATES);
                 ui.add_enabled(false, egui::Checkbox::new(&mut updates, AUTO_UPDATE)).on_disabled_hover_text(UPDATES_OFF);
                 ui.add_enabled(false, egui::Button::new(UPDATE_NOW)).on_disabled_hover_text(UPDATES_OFF);
@@ -1107,7 +1111,10 @@ fn sheet_modal(ctx: &egui::Context, g: &mut Globals, sh: &mut Sheet, editor: &mu
 
 /// A right-aligned label in the editor's first column (`G:672-677`).
 fn editor_label(ui: &mut egui::Ui, text: &str) {
-    ui.allocate_ui_with_layout(egui::vec2(150.0, 20.0), egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(text));
+    ui.allocate_ui_with_layout(egui::vec2(150.0, 20.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.set_min_width(150.0);
+        ui.label(text)
+    });
 }
 
 /// The editor's field column width (`G:662-664`).
@@ -1542,6 +1549,28 @@ mod tests {
     use crate::pwm::Secret;
     use std::path::Path;
     use toml::Value;
+
+    /// Column one keeps its full width, so a value never draws over its label.
+    #[test]
+    fn row_labels_hold_their_column_open() {
+        for (draw, width) in [(row_label as fn(&mut egui::Ui, &str), 90.0), (editor_label, 150.0)] {
+            let ctx = egui::Context::default();
+            let (mut left, mut value) = (0.0, 0.0);
+            for _ in 0..4 {
+                let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0))), ..Default::default() };
+                let mut out = ctx.run_ui(input, |ui| {
+                    left = ui.max_rect().left();
+                    egui::Grid::new("labels").num_columns(2).show(ui, |ui| {
+                        draw(ui, REQUESTS_LABEL);
+                        value = ui.label("value").rect.left();
+                        ui.end_row();
+                    });
+                });
+                out.textures_delta.clear();
+            }
+            assert!(value >= left + width, "value at {value}, column one is {width} wide from {left}");
+        }
+    }
 
     /// The notice's OK sits right under its text (a guard: a Modal sizes to its content, so the
     /// bounded bar changes nothing visible here).

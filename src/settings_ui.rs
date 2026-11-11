@@ -992,7 +992,7 @@ impl SettingsWindow {
             let mut revealed: Option<&'static crate::settings_search::Doc> = search.pending.take().and_then(|key| crate::settings_search::documents().iter().find(|d| d.key == key));
             if mode == Mode::Settings {
                 egui::Panel::top("pages").show(ui, |ui| {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         // The red mark iTerm2 puts at the left of the title bar when settings are unsaved.
                         if let Some(url) = unsaved {
                             let glyph = settings_keys::icon_text(ui.ctx(), crate::transparency::WARNING_GLYPH).unwrap_or_else(|| egui::RichText::new("!"));
@@ -1010,7 +1010,13 @@ impl SettingsWindow {
                                 page = p;
                             }
                         }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // The search field takes its own line when the tabs leave no room.
+                        // A wrapping row's `available_width` is the full width, not what is left.
+                        if ui.available_size_before_wrap().x < 230.0 {
+                            ui.end_row();
+                        }
+                        let bar = egui::vec2(ui.available_size_before_wrap().x, ui.spacing().interact_size.y);
+                        ui.allocate_ui_with_layout(bar, egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let title = settings_keys::icon_text(ui.ctx(), SEARCH_GLYPH).unwrap_or_else(|| egui::RichText::new(SEARCH_OPTIONS));
                             ui.menu_button(title, |ui| {
                                 let mut on = globals.bool("NoSyncHideDefaultValuedSettings");
@@ -1259,7 +1265,7 @@ impl SettingsWindow {
                 if !crate::browser::tab_visible(schema::TABS[tab], browser, browser_profiles) {
                     tab = 0;
                 }
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     for (i, name) in schema::TABS.iter().enumerate() {
                         if !crate::browser::tab_visible(name, browser, browser_profiles) {
                             continue;
@@ -1333,7 +1339,7 @@ impl SettingsWindow {
                         ui.colored_label(ui.visuals().warn_fg_color, crate::tab_theme::MODE_WARNING);
                     }
                 }
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
                     // Edit Session: copy this session's settings to a profile (`02:984`).
                     if edit_session.is_some() && schema::TABS[tab] == "General" {
                         let dest = copy_destination(copy_dest.as_deref(), &profiles, &list_selected);
@@ -1532,7 +1538,7 @@ impl SettingsWindow {
                             // The subtitle needs a tall enough tab bar (`updateSubtitlesAllowed`).
                             if s.key == "Subtitle" && !subtitles_allowed(style, globals.number("DefaultTabBarHeight")) {
                                 ui.add_enabled(false, egui::Label::new(&s.label));
-                                ui.horizontal(|ui| {
+                                ui.horizontal_wrapped(|ui| {
                                     ui.label(egui::RichText::new(SUBTITLE_NEEDS_TALL_BAR).small());
                                     if ui.add(egui::Button::new(ENABLE_TALL_TAB_BAR).small()).clicked() {
                                         globals.set("DefaultTabBarHeight", Value::Float(TALL_TAB_BAR));
@@ -2384,7 +2390,7 @@ fn control_inner(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bo
     // A text or number field's context menu starts with "Reset to <default>" while it differs.
     let reset_to = profile_default_value(s, &key);
     let differs = !profile_is_default(profile, s, &key);
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.add_enabled_ui(!s.macos_only, |ui| {
             let enabled = ui.is_enabled();
             match s.kind {

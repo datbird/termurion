@@ -858,7 +858,7 @@ pub fn tmux_attach_rows(ui: &mut egui::Ui, g: &mut Globals) -> bool {
     let (mut checked, mut popup) = (attach_checkbox(mode), attach_popup(mode));
     let mut changed = false;
     changed |= ui.checkbox(&mut checked, ATTACH_CHECKBOX_LABEL).changed();
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.add_enabled_ui(attach_popup_enabled(attach_set(checked, popup)), |ui| {
             ui.label(ATTACH_POPUP_LABEL);
             egui::ComboBox::from_id_salt("OpenTmuxWindowsIn").selected_text(ATTACH_POPUP_CHOICES[popup.clamp(0, 1) as usize]).show_ui(ui, |ui| {
@@ -1108,11 +1108,12 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
                 Some(r.rect)
             }
             Kind::Enum => {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(&s.label);
                     let now = g.get(&s.key);
                     let shown = s.choices.iter().find(|c| Some(&c.value) == now.as_ref()).map_or(String::new(), |c| c.label.clone());
                     egui::ComboBox::from_id_salt(&s.key)
+                        .truncate()
                         .selected_text(shown)
                         .show_ui(ui, |ui| {
                             for c in &s.choices {
@@ -1131,7 +1132,7 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
             // A ranged float is a slider with two decimals (the Dimming amount, `APV:351-374`).
             Kind::Float if s.min_f64().is_some() && s.max_f64().is_some() => {
                 let (lo, hi) = (s.min_f64().unwrap_or(0.0), s.max_f64().unwrap_or(1.0));
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(&s.label);
                     let mut v = g.number(&s.key).unwrap_or(lo).clamp(lo, hi);
                     let r = ui.add(egui::Slider::new(&mut v, lo..=hi).fixed_decimals(2));
@@ -1147,7 +1148,7 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
             // An Int row is a drag value (iTerm2's integer text fields), bounded when the schema
             // bounds it; the margins are not bounded (13l).
             Kind::Int => {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(&s.label);
                     let mut v = g.int(&s.key);
                     let drag = egui::DragValue::new(&mut v);
@@ -1171,7 +1172,7 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
             // The keyboard locale: the installed layouts by name (`KP:252-352`); a stored id that is
             // no longer installed shows empty, and an unknown id forces nothing.
             Kind::String if s.key == "KeyboardLocale" => {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(&s.label);
                     let stored = g.string(&s.key);
                     let layouts = crate::input_locale::layouts_cached();
@@ -1208,7 +1209,7 @@ pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: 
             }
             // Any other String row is a text field (the word rows and the keyboard locale have their own above).
             Kind::String => {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(&s.label);
                     let mut text = g.string(&s.key);
                     let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(220.0));
@@ -1272,7 +1273,7 @@ pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profile
         changed = true;
     }
     st.leader = keystroke::parse(&g.string("Leader"));
-    egui::ScrollArea::vertical().show(ui, |ui| {
+    egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
         ui.strong("Key Bindings");
         let mut map = g.table("GlobalKeyMap");
         match table(ui, "global-keys", &rows(&map), &mut st.selected) {
@@ -1744,7 +1745,7 @@ pub fn custom_scripts_folder_row(ui: &mut egui::Ui, g: &mut Globals, home: &std:
     let on = g.bool("UseCustomScriptsFolder");
     let mut text = g.string("CustomScriptsFolder");
     let setting = schema::find_global("CustomScriptsFolder");
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.add_enabled_ui(on, |ui| {
             let field = ui.text_edit_singleline(&mut text);
             if field.changed() {
@@ -1829,7 +1830,7 @@ pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &m
     let mut prefs = PrefsAction::None;
     let home = crate::platform::paths::home_dir().unwrap_or_default();
     let rows = page_rows(tab);
-    egui::ScrollArea::vertical().show(ui, |ui| {
+    egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
         let mut sections: Vec<&str> = Vec::new();
         for s in &rows {
             if !sections.contains(&s.section.as_str()) {
@@ -2004,7 +2005,7 @@ fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path
     let mut text = g.string(rp::FOLDER_KEY);
     let setting = schema::find_global(rp::FOLDER_KEY);
     let mut valid = false;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.add_enabled_ui(on, |ui| {
             let field = crate::settings_keys::field(ui, egui::TextEdit::singleline(&mut text).hint_text(rp::FOLDER_HINT));
             if field.changed() {
@@ -2088,7 +2089,7 @@ impl PrefsAction {
 /// iTerm2's Pointer pane.
 pub fn pointer_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profiles: &[(String, String)]) -> bool {
     let mut changed = false;
-    egui::ScrollArea::vertical().show(ui, |ui| {
+    egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
         ui.strong("General");
         for s in globals_in("General").into_iter().filter(|s| s.tab == "Pointer") {
             changed |= global_control(ui, g, s, true);
@@ -4257,6 +4258,54 @@ mod tests {
         assert_eq!(row_hidden("ShortcutKey"), crate::platform::keys::CMD_IS_A_KEY);
         // Only Windows has a hook that could hand its own Win shortcuts back.
         assert_eq!(row_hidden("AllowSymbolicHotKeys"), !crate::platform::IS_WINDOWS);
+    }
+
+    /// A settings page claims the whole window width, so its scroll bar sits at the window edge.
+    #[test]
+    fn a_settings_page_fills_the_window_width() {
+        for width in [1400.0, 900.0] {
+            let ctx = egui::Context::default();
+            let mut g = Globals::empty(std::path::Path::new("page-width-test.toml"));
+            let (mut avail, mut used) = (0.0, 0.0);
+            for _ in 0..4 {
+                let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 600.0))), ..Default::default() };
+                let mut out = ctx.run_ui(input, |ui| {
+                    avail = ui.available_width();
+                    schema_page(ui, &mut g, "General");
+                    used = ui.min_rect().width();
+                });
+                out.textures_delta.clear();
+            }
+            assert!(used >= avail - 1.0, "page used {used} of {avail}");
+        }
+    }
+
+    /// A narrow settings window wraps its rows, so no text runs past the right edge.
+    #[test]
+    fn a_narrow_settings_page_keeps_its_text_inside() {
+        for tab in ["General", "Appearance"] {
+            let ctx = egui::Context::default();
+            let mut g = Globals::empty(std::path::Path::new("page-narrow-test.toml"));
+            let mut ai = crate::settings_ai::State::default();
+            let width = 420.0;
+            let mut shapes = Vec::new();
+            for _ in 0..4 {
+                let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 4000.0))), ..Default::default() };
+                let mut out = ctx.run_ui(input, |ui| {
+                    schema_page_with(ui, &mut g, tab, &mut |ui, g| crate::settings_ai::section(ui, g, &mut ai));
+                });
+                out.textures_delta.clear();
+                shapes = out.shapes;
+            }
+            let over: Vec<String> = shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::epaint::Shape::Text(t) if t.visual_bounding_rect().right() > width => Some(format!("{:.0}: {}", t.visual_bounding_rect().right(), t.galley.text())),
+                    _ => None,
+                })
+                .collect();
+            assert!(over.is_empty(), "{tab}: {over:#?}");
+        }
     }
 
     /// What Settings > Keys draws after the page (the Hotkey section) scrolls with it: a window
