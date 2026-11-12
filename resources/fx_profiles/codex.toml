@@ -1,6 +1,7 @@
 name = "Codex"
 
 [match]
+program = ["codex"]
 text = ["OpenAI Codex"]
 prompt = "›"
 

@@ -302,8 +302,6 @@ mod tests {
         let dir = tmp("tie");
         drop(Store::open(&dir));
         std::fs::write(dir.join("zzz.toml"), "name = \"Zzz\"\n[match]\ntext = [\"$\"]\n").unwrap();
-        let codex = std::fs::read_to_string(dir.join("codex.toml")).unwrap().replace("[match]\n", "[match]\nprogram = [\"codex\"]\n");
-        std::fs::write(dir.join("codex.toml"), codex).unwrap();
         let st = Store::open(&dir);
         let mut s = Screen::new(80, 10);
         s.feed(b"user@host:~$ ");

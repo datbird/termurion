@@ -2381,7 +2381,7 @@ impl Screen {
         });
         self.parser.advance(&mut self.term, bytes);
         // RIS stops the progress bar (`terminalDidReset`).
-        self.clears += self.term.erases - self.erases_seen;
+        self.clears += self.term.erases.saturating_sub(self.erases_seen);
         self.erases_seen = self.term.erases;
         if self.term.resets != self.resets_seen {
             self.clears += 1;

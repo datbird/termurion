@@ -224,4 +224,9 @@ test data) is left out. Changes:
     inside it sets `watch_hit`. Termurion watches the tmux pane Enter was pressed in, so another
     pane's output does not hold back or fire that pane's done effect.
 
+40. `term/mod.rs`: `erases`, a count of the ED 2 and ED 3 erases that ran (`ClearMode::All`, and
+    `ClearMode::Saved` whether or not there was history to drop). Termurion's `Screen` reads it
+    after each feed (with `resets` and the alternate screen exit) into `Screen.clears`, so FX
+    profile detection forgets what a region showed once the screen was cleared.
+
 To update alacritty_terminal, copy the new version here and apply these changes again.

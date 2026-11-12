@@ -1,6 +1,7 @@
 name = "opencode"
 
 [match]
+program = ["opencode"]
 text = ["OpenCode"]
 
 [box]

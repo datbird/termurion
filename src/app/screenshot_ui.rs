@@ -22,7 +22,8 @@ impl App {
         // A batch must fit in one texture; iTerm2 renders 1000 lines at a time.
         let max_rows = ((8192.0 / cell.1).floor() as usize).clamp(1, 1000);
         let bg = screen.palette.bg;
-        let draw = self.draw_prefs_for(face);
+        let mut draw = self.draw_prefs_for(face);
+        draw.fx_rules = self.panes.get(&pane).map(|p| p.fx_rules.clone());
         let mut out = Vec::with_capacity((width as usize) * (total_h as usize) * 4);
         for (b0, b1) in screenshot::batches(first, last, max_rows) {
             let count = b1 + 1 - b0;

@@ -1,6 +1,7 @@
 name = "Claude Code"
 
 [match]
+program = ["claude"]
 text = ["Claude Code"]
 prompt = "❯"
 

@@ -1328,6 +1328,8 @@ pub struct App {
     fx_find: Arc<crate::fx_profile::FxRules>,
     /// The focused pane last time detection looked, to re-run it on a focus change.
     fx_focus: Option<PaneId>,
+    /// Look at the profile folder on the next tick (the window gained focus).
+    fx_scan: bool,
     settings: Option<SettingsWindow>,
     profiles_win: Option<SettingsWindow>,
     /// When unsaved settings edits are due to be written.
@@ -2746,6 +2748,7 @@ pub fn run() {
         fx_find: fx_profiles.find_rules(),
         fx_profiles,
         fx_focus: None,
+        fx_scan: false,
         settings: None,
         save_due: None,
         logout_armed: false,
@@ -8117,6 +8120,9 @@ impl ApplicationHandler<UserEvent> for App {
         if let WindowEvent::Focused(f) = &event {
             let terminal = self.is_terminal_window(id);
             self.key_aux = key_aux_after(self.key_aux, id, *f, terminal);
+            if *f && terminal {
+                self.fx_scan = true;
+            }
         }
         // Cmd-W or Cmd-Q that reaches a panel as a key (AppKit gave it to the window, not the menu):
         // Cmd-W closes the panel, Cmd-Q quits as the menu's Quit does.
