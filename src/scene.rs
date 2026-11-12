@@ -858,6 +858,8 @@ pub fn painted_cursor(screen: &Screen) -> Option<(usize, usize, bool)> {
     // Every box with one reverse cell in it: tmux panes stacked or side by side can each hold
     // a Claude Code. Whole-width boxes are read from the bottom up.
     let mut found: Vec<(usize, usize, bool)> = Vec::new();
+    // Each found cell's box, top and bottom line rows.
+    let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut below = lines;
     while found.len() < 8 {
         let Some(bottom) = (1..below).rev().find(|&r| box_line(term, offset, r, whole)) else { break };
@@ -866,6 +868,7 @@ pub fn painted_cursor(screen: &Screen) -> Option<(usize, usize, bool)> {
         match cells.next().filter(|_| cells.next().is_none()) {
             Some(one) => {
                 found.push(one);
+                spans.push((top, bottom));
                 below = top;
             }
             // A tmux border or a rule in the output: its top line may be a box's bottom.
@@ -886,12 +889,21 @@ pub fn painted_cursor(screen: &Screen) -> Option<(usize, usize, bool)> {
         }
         if reverse(top + 1..bottom).all(|(r, c, _)| c < pane.0 || c > pane.1 || (r, c) == (row, col)) {
             found.push((row, col, wide));
+            spans.push((top, bottom));
         }
     }
     if found.len() > 1 {
         // The pane being typed in: where the hidden cursor landed after the last keystroke,
         // else where it is now (the last thing tmux drew). Same pane first, then nearest row.
-        let at = screen.echo_at.unwrap_or((term.grid().cursor.point.line.0, term.grid().cursor.point.column.0));
+        // An echo counts only inside a box: a pane switch's first character is tmux's border.
+        let in_box = |(line, col): (i32, usize)| {
+            let row = line + offset as i32;
+            found.iter().zip(&spans).any(|(&(r, c, _), &(top, bottom))| {
+                let pane = pane_cols(term, offset, r, c);
+                row > top as i32 && row < bottom as i32 && col >= pane.0 && col <= pane.1
+            })
+        };
+        let at = screen.echo_at.filter(|&e| in_box(e)).unwrap_or((term.grid().cursor.point.line.0, term.grid().cursor.point.column.0));
         let (at_row, at_col) = (at.0 + offset as i32, at.1);
         return found.into_iter().min_by_key(|&(row, col, _)| {
             let pane = pane_cols(term, offset, row, col);
@@ -10159,6 +10171,21 @@ mod agent_box_tests {
         s.feed(b"\x1b[10;3Hx\x1b[7m \x1b[0m\x1b[23;1HScurrying");
         assert_eq!(painted_cursor(&s), Some((9, 3, false)));
         assert_eq!(fx_of(&s).input_box.map(|b| [b.top, b.bottom]), Some([170.0, 210.0]), "the effects ring the top box");
+    }
+
+    #[test]
+    fn a_pane_switch_follows_the_cursor_not_the_border() {
+        // tmux 3.4's Ctrl+B Down, recorded: the border is the first character after the key, then
+        // the cursor goes to the active pane. Typing in the top box came first; the border sits
+        // nearer the top box.
+        let (mut s, o) = stacked();
+        s.feed(o.as_bytes());
+        s.note_typed();
+        s.feed(b"\x1b[10;3Hx\x1b[7m \x1b[0m\x1b[12;1H");
+        assert_eq!(painted_cursor(&s), Some((9, 3, false)));
+        s.note_typed();
+        s.feed(format!("\x1b[15;1H\x1b[32m{}\x1b[39m\x1b(B\x1b[m\x1b[28;80H", "\u{2500}".repeat(80)).as_bytes());
+        assert_eq!(painted_cursor(&s), Some((25, 2, false)), "the bottom pane, where tmux left the cursor");
     }
 
     #[test]
