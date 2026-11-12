@@ -11,6 +11,9 @@ const FOLDER: &str = "FXProfiles";
 const BOOKKEEPING: &str = ".shipped.toml";
 const MAX_PROFILES: usize = 64;
 const SCAN_EVERY: Duration = Duration::from_secs(1);
+/// The biggest profile file import will read.
+const MAX_IMPORT: u64 = 64 * 1024;
+const MAX_SLUG: usize = 64;
 
 /// `FXProfiles` beside the settings file.
 pub fn user_dir() -> PathBuf {
@@ -51,6 +54,8 @@ pub struct Store {
     dir: PathBuf,
     stamp: Stamp,
     last_scan: Option<Instant>,
+    /// The last bookkeeping write that failed, shown as an error until one succeeds.
+    book_err: Option<String>,
 }
 
 /// FNV-1a 64 as 16 hex digits.
@@ -75,17 +80,18 @@ struct Record {
     deleted: bool,
 }
 
-fn read_records(dir: &Path) -> BTreeMap<String, Record> {
+/// None when the file is missing or broken.
+fn read_records(dir: &Path) -> Option<BTreeMap<String, Record>> {
     let mut out = BTreeMap::new();
-    let Ok(text) = std::fs::read_to_string(dir.join(BOOKKEEPING)) else { return out };
-    let Ok(t) = text.parse::<toml::Table>() else { return out };
+    let text = std::fs::read_to_string(dir.join(BOOKKEEPING)).ok()?;
+    let t = text.parse::<toml::Table>().ok()?;
     for (k, v) in t {
         let Some(v) = v.as_table() else { continue };
         let hash = v.get("hash").and_then(|h| h.as_str()).unwrap_or_default().to_string();
         let deleted = v.get("deleted").and_then(|d| d.as_bool()).unwrap_or(false);
         out.insert(k, Record { hash, deleted });
     }
-    out
+    Some(out)
 }
 
 fn write_records(dir: &Path, recs: &BTreeMap<String, Record>) -> io::Result<()> {
@@ -102,12 +108,22 @@ fn write_records(dir: &Path, recs: &BTreeMap<String, Record>) -> io::Result<()> 
 fn slug(name: &str) -> String {
     let s: String = name.chars().map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
     let s = s.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-");
-    if s.is_empty() { "profile".into() } else { s }
+    let s: String = s.chars().take(MAX_SLUG).collect();
+    let s = s.trim_end_matches('-').to_string();
+    let reserved = matches!(s.as_str(), "con" | "prn" | "aux" | "nul")
+        || ((s.starts_with("com") || s.starts_with("lpt")) && s.len() == 4 && s.as_bytes()[3].is_ascii_digit() && s.as_bytes()[3] != b'0');
+    if s.is_empty() {
+        "profile".into()
+    } else if reserved {
+        format!("{s}-profile")
+    } else {
+        s
+    }
 }
 
 impl Store {
     pub fn open(dir: &Path) -> Store {
-        let mut s = Store { profiles: Vec::new(), errors: Vec::new(), dir: dir.to_path_buf(), stamp: Vec::new(), last_scan: None };
+        let mut s = Store { profiles: Vec::new(), errors: Vec::new(), dir: dir.to_path_buf(), stamp: Vec::new(), last_scan: None, book_err: None };
         if let Err(e) = std::fs::create_dir_all(dir) {
             s.errors.push((dir.to_path_buf(), ParseError { line: None, message: format!("cannot create the folder: {e}") }));
             return s;
@@ -117,35 +133,49 @@ impl Store {
         s
     }
 
-    /// First start, updates and deletions of the shipped files.
+    fn write_book(&mut self, recs: &BTreeMap<String, Record>) -> io::Result<()> {
+        let r = write_records(&self.dir, recs);
+        self.book_err = r.as_ref().err().map(|e| format!("cannot write {BOOKKEEPING}: {e}"));
+        r
+    }
+
+    /// First start, updates and deletions of the shipped files. Without usable bookkeeping in a folder
+    /// that already has profiles, an absent shipped file is one the person deleted.
     fn sync_shipped(&mut self) {
-        let mut recs = read_records(&self.dir);
+        let loaded = read_records(&self.dir);
+        let first_start = loaded.is_none() && self.scan().is_empty();
+        let known = loaded.is_some();
+        let mut recs = loaded.unwrap_or_default();
         for (name, text) in SHIPPED {
             let path = self.dir.join(name);
             let embedded = hash(text.as_bytes());
             match std::fs::read(&path) {
                 Err(e) if e.kind() == io::ErrorKind::NotFound => match recs.get_mut(*name) {
                     Some(r) => r.deleted = true,
-                    None => {
+                    None if first_start || known => {
                         if write_atomic(&path, text).is_ok() {
                             recs.insert((*name).into(), Record { hash: embedded, deleted: false });
                         }
+                    }
+                    None => {
+                        recs.insert((*name).into(), Record { hash: String::new(), deleted: true });
                     }
                 },
                 Err(_) => {}
                 Ok(bytes) => {
                     let h = hash(&bytes);
+                    // No record: an unknown hash, so an edited-looking file is kept, never overwritten.
                     let r = recs.entry((*name).into()).or_default();
                     r.deleted = false;
                     if h == embedded {
                         r.hash = h;
-                    } else if h == r.hash && write_atomic(&path, text).is_ok() {
+                    } else if !r.hash.is_empty() && h == r.hash && write_atomic(&path, text).is_ok() {
                         r.hash = embedded;
                     }
                 }
             }
         }
-        let _ = write_records(&self.dir, &recs);
+        let _ = self.write_book(&recs);
     }
 
     fn scan(&self) -> Stamp {
@@ -167,10 +197,13 @@ impl Store {
     }
 
     fn reload(&mut self) {
-        let recs = read_records(&self.dir);
+        let recs = read_records(&self.dir).unwrap_or_default();
         self.stamp = self.scan();
         self.profiles.clear();
         self.errors.clear();
+        if let Some(m) = &self.book_err {
+            self.errors.push((self.dir.join(BOOKKEEPING), ParseError { line: None, message: m.clone() }));
+        }
         for (n, _, _) in &self.stamp {
             let path = self.dir.join(n);
             let fail = |line, message: String| ParseError { line, message };
@@ -241,7 +274,7 @@ impl Store {
 
     /// Writes back every shipped file that is gone.
     pub fn restore_shipped(&mut self) -> io::Result<()> {
-        let mut recs = read_records(&self.dir);
+        let mut recs = read_records(&self.dir).unwrap_or_default();
         for (name, text) in SHIPPED {
             let path = self.dir.join(name);
             if !path.exists() {
@@ -249,7 +282,7 @@ impl Store {
                 recs.insert((*name).into(), Record { hash: hash(text.as_bytes()), deleted: false });
             }
         }
-        write_records(&self.dir, &recs)?;
+        self.write_book(&recs)?;
         self.reload();
         Ok(())
     }
@@ -264,9 +297,9 @@ impl Store {
         let Some(text) = p.shipped else { return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a shipped profile")) };
         let (path, file) = (p.file.clone(), p.file.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default());
         write_atomic(&path, text)?;
-        let mut recs = read_records(&self.dir);
+        let mut recs = read_records(&self.dir).unwrap_or_default();
         recs.insert(file, Record { hash: hash(text.as_bytes()), deleted: false });
-        write_records(&self.dir, &recs)?;
+        self.write_book(&recs)?;
         self.reload();
         Ok(())
     }
@@ -287,6 +320,9 @@ impl Store {
         if self.profiles.iter().any(|p| p.rules.name == rules.name && Some(p.file.as_path()) != file) {
             return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("a profile named {} exists", rules.name)));
         }
+        if file.is_some_and(|f| f.parent() != Some(self.dir.as_path())) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "the file is not in the profiles folder"));
+        }
         let path = file.map_or_else(|| self.fresh_path(&rules.name), Path::to_path_buf);
         write_atomic(&path, &fx_profile::to_toml(rules, keep))?;
         self.reload();
@@ -298,9 +334,9 @@ impl Store {
         std::fs::remove_file(&path)?;
         if let Some(f) = path.file_name().map(|f| f.to_string_lossy().into_owned()) {
             if SHIPPED.iter().any(|(s, _)| *s == f) {
-                let mut recs = read_records(&self.dir);
+                let mut recs = read_records(&self.dir).unwrap_or_default();
                 recs.entry(f).or_default().deleted = true;
-                write_records(&self.dir, &recs)?;
+                self.write_book(&recs)?;
             }
         }
         self.reload();
@@ -309,7 +345,20 @@ impl Store {
 
     /// Copies a profile file in. Returns the profile's name.
     pub fn import(&mut self, from: &Path, replace: bool) -> Result<String, ImportError> {
-        let text = std::fs::read_to_string(from)?;
+        let from = crate::localfs::judge_io(from)?;
+        let st = crate::localfs::stat(&from)?;
+        if !st.is_file {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "that is not a regular file").into());
+        }
+        if st.len > MAX_IMPORT {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "a profile file is at most 64 KiB").into());
+        }
+        let mut bytes = Vec::new();
+        io::Read::read_to_end(&mut io::Read::take(crate::localfs::open(&from)?, MAX_IMPORT + 1), &mut bytes)?;
+        if bytes.len() as u64 > MAX_IMPORT {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "a profile file is at most 64 KiB").into());
+        }
+        let text = String::from_utf8(bytes).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "the file is not UTF-8 text"))?;
         let (rules, _) = parse(&text).map_err(ImportError::Invalid)?;
         let existing = self.profiles.iter().find(|p| p.rules.name == rules.name).map(|p| p.file.clone());
         let path = match existing {
@@ -323,7 +372,8 @@ impl Store {
     }
 
     pub fn export(&self, name: &str, to: &Path) -> io::Result<()> {
-        std::fs::copy(&self.file_of(name)?.file, to).map(|_| ())
+        let from = crate::localfs::judge_io(&self.file_of(name)?.file)?;
+        crate::localfs::copy(&from, &crate::localfs::judge_io(to)?).map(|_| ())
     }
 }
 
@@ -361,7 +411,7 @@ mod tests {
         Store::open(&d);
         let old = "name = \"Codex\"\n# old\n";
         std::fs::write(d.join("codex.toml"), old).unwrap();
-        let mut recs = read_records(&d);
+        let mut recs = read_records(&d).unwrap();
         recs.get_mut("codex.toml").unwrap().hash = hash(old.as_bytes());
         write_records(&d, &recs).unwrap();
         let s = Store::open(&d);
@@ -381,7 +431,7 @@ mod tests {
         let p = s.profiles.iter().find(|p| p.rules.name == "Codex").unwrap();
         assert!(p.changed && !p.newer_shipped);
         // Pretend the shipped text moved on since the last write.
-        let mut recs = read_records(&d);
+        let mut recs = read_records(&d).unwrap();
         recs.get_mut("codex.toml").unwrap().hash = hash(b"older text");
         write_records(&d, &recs).unwrap();
         let s = Store::open(&d);
@@ -507,6 +557,61 @@ mod tests {
         s.export("Codex", &out).unwrap();
         let (_, text) = SHIPPED.iter().find(|(f, _)| *f == "codex.toml").unwrap();
         assert_eq!(std::fs::read_to_string(out).unwrap(), *text);
+    }
+
+    #[test]
+    fn broken_bookkeeping_does_not_resurrect_a_deleted_file() {
+        let d = tmp("book");
+        Store::open(&d);
+        std::fs::remove_file(d.join("hermes.toml")).unwrap();
+        std::fs::write(d.join(BOOKKEEPING), "not [ toml").unwrap();
+        let s = Store::open(&d);
+        assert!(!d.join("hermes.toml").exists());
+        assert_eq!(s.profiles.len(), 5);
+        assert!(!Store::open(&d).profiles.iter().any(|p| p.rules.name == "Hermes"));
+        assert!(!d.join("hermes.toml").exists());
+        // The bookkeeping is whole again, and a missing one behaves the same.
+        std::fs::remove_file(d.join(BOOKKEEPING)).unwrap();
+        Store::open(&d);
+        assert!(!d.join("hermes.toml").exists());
+        assert!(s.profiles.iter().all(|p| !p.changed));
+    }
+
+    #[test]
+    fn a_failed_bookkeeping_write_is_an_error() {
+        let d = tmp("bookfail");
+        Store::open(&d);
+        std::fs::remove_file(d.join(BOOKKEEPING)).unwrap();
+        std::fs::create_dir(d.join(BOOKKEEPING)).unwrap();
+        let s = Store::open(&d);
+        assert!(s.errors.iter().any(|(p, e)| p.ends_with(BOOKKEEPING) && e.message.contains("cannot write")));
+    }
+
+    #[test]
+    fn import_refuses_a_folder_and_a_big_file() {
+        let d = tmp("importcap");
+        let mut s = Store::open(&d.join("store"));
+        let dir = d.join("adir");
+        std::fs::create_dir(&dir).unwrap();
+        assert!(matches!(s.import(&dir, false), Err(ImportError::Io(_))));
+        let big = d.join("big.toml");
+        std::fs::write(&big, format!("name = \"Big\"\n# {}\n", "x".repeat(70_000))).unwrap();
+        match s.import(&big, false) {
+            Err(ImportError::Io(e)) => assert!(e.to_string().contains("64 KiB")),
+            other => panic!("{other:?}"),
+        }
+        assert!(s.by_name("Big").is_none());
+    }
+
+    #[test]
+    fn slugs_dodge_device_names_and_stay_short() {
+        for n in ["con", "CON", "Nul", "aux", "prn", "com1", "LPT9"] {
+            assert_eq!(slug(n), format!("{}-profile", n.to_ascii_lowercase()));
+        }
+        assert_eq!(slug("com0"), "com0");
+        assert_eq!(slug("console"), "console");
+        assert_eq!(slug(&"a".repeat(200)).len(), 64);
+        assert_eq!(slug("..."), "profile");
     }
 
     #[test]
