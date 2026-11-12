@@ -854,40 +854,53 @@ pub fn painted_cursor(screen: &Screen) -> Option<(usize, usize, bool)> {
         })
     };
     let whole = (0, term.columns().saturating_sub(1));
-    let lines_box = (|| {
-        let bottom = (1..term.screen_lines()).rev().find(|&r| box_line(term, offset, r, whole))?;
-        let top = (0..bottom).rev().find(|&r| box_line(term, offset, r, whole))?;
-        Some((top, bottom))
-    })();
-    if let Some((top, bottom)) = lines_box {
+    let lines = term.screen_lines();
+    // Every box with one reverse cell in it: tmux panes stacked or side by side can each hold
+    // a Claude Code. Whole-width boxes are read from the bottom up.
+    let mut found: Vec<(usize, usize, bool)> = Vec::new();
+    let mut below = lines;
+    while found.len() < 8 {
+        let Some(bottom) = (1..below).rev().find(|&r| box_line(term, offset, r, whole)) else { break };
+        let Some(top) = (0..bottom).rev().find(|&r| box_line(term, offset, r, whole)) else { break };
         let mut cells = reverse(top + 1..bottom);
-        if let Some(one) = cells.next().filter(|_| cells.next().is_none()) {
-            return Some(one);
+        match cells.next().filter(|_| cells.next().is_none()) {
+            Some(one) => {
+                found.push(one);
+                below = top;
+            }
+            // A tmux border or a rule in the output: its top line may be a box's bottom.
+            None => below = bottom,
         }
     }
     // A box in a split pane: a reverse cell with a line row just under it and one above, over
     // the pane's columns, and no other reverse cell between the two.
-    let in_pane = (|| {
-        let mut found = None;
-        for (row, col, wide) in reverse(0..term.screen_lines()).take(8) {
-            let pane = pane_cols(term, offset, row, col);
-            if pane == whole {
-                continue;
-            }
-            let Some(bottom) = (row + 1..term.screen_lines().min(row + 3)).find(|&r| box_line(term, offset, r, pane)) else { continue };
-            let Some(top) = (0..row).rev().find(|&r| box_line(term, offset, r, pane)) else { continue };
-            if !pane_walled(term, offset, pane, top, bottom) {
-                continue;
-            }
-            let others = reverse(top + 1..bottom).filter(|&(r, c, _)| c >= pane.0 && c <= pane.1 && (r, c) != (row, col)).count();
-            if others == 0 && found.replace((row, col, wide)).is_some() {
-                return None;
-            }
+    for (row, col, wide) in reverse(0..lines).take(8) {
+        let pane = pane_cols(term, offset, row, col);
+        if pane == whole || found.contains(&(row, col, wide)) {
+            continue;
         }
-        found
-    })();
-    if in_pane.is_some() {
-        return in_pane;
+        let Some(bottom) = (row + 1..lines.min(row + 3)).find(|&r| box_line(term, offset, r, pane)) else { continue };
+        let Some(top) = (0..row).rev().find(|&r| box_line(term, offset, r, pane)) else { continue };
+        if !pane_walled(term, offset, pane, top, bottom) {
+            continue;
+        }
+        if reverse(top + 1..bottom).all(|(r, c, _)| c < pane.0 || c > pane.1 || (r, c) == (row, col)) {
+            found.push((row, col, wide));
+        }
+    }
+    if found.len() > 1 {
+        // The pane being typed in: where the hidden cursor landed after the last keystroke,
+        // else where it is now (the last thing tmux drew). Same pane first, then nearest row.
+        let at = screen.echo_at.unwrap_or((term.grid().cursor.point.line.0, term.grid().cursor.point.column.0));
+        let (at_row, at_col) = (at.0 + offset as i32, at.1);
+        return found.into_iter().min_by_key(|&(row, col, _)| {
+            let pane = pane_cols(term, offset, row, col);
+            let apart = (row as i32 - at_row).unsigned_abs();
+            (at_col < pane.0 || at_col > pane.1, apart)
+        });
+    }
+    if let Some(one) = found.pop() {
+        return Some(one);
     }
     // A band: exactly one reverse cell on screen, and it sits in a band box. The scan stops at
     // a second cell, so band_box runs once at most.
@@ -10115,6 +10128,77 @@ mod agent_box_tests {
         }
         o += &format!("\x1b[10;1H{line}\x1b[10;50H\u{2560}\x1b[10;51H{line}\x1b[12;1H{line}\x1b[12;50H\u{256C}\x1b[12;51H{line}\x1b[11;3H");
         assert_eq!(feed(30, &o).input_box, None);
+    }
+
+    /// Two Claude Code boxes in tmux panes stacked one over the other (rows 9-11 and 25-27,
+    /// a tmux border on row 15), the real cursor hidden.
+    fn stacked() -> (crate::screen::Screen, String) {
+        let s = crate::screen::Screen::new(80, 30);
+        let line = "\u{2500}".repeat(80);
+        let o = format!("\x1b[?25l\x1b[2J\x1b[9;1H{line}\x1b[10;1H\u{276f} \x1b[7m \x1b[0m\x1b[11;1H{line}\x1b[15;1H{line}\x1b[25;1H{line}\x1b[26;1H\u{276f} \x1b[7m \x1b[0m\x1b[27;1H{line}");
+        (s, o)
+    }
+
+    #[test]
+    fn stacked_panes_follow_the_pane_tmux_drew_last() {
+        // The top pane is busy: its spinner is the last thing drawn, and the bottom box no longer wins.
+        let (mut s, o) = stacked();
+        s.feed(format!("{o}\x1b[6;1HScurrying").as_bytes());
+        assert_eq!(painted_cursor(&s), Some((9, 2, false)));
+        s.feed(b"\x1b[28;1Hstatus");
+        assert_eq!(painted_cursor(&s), Some((25, 2, false)));
+    }
+
+    #[test]
+    fn stacked_panes_follow_the_pane_typed_in() {
+        let (mut s, o) = stacked();
+        s.feed(o.as_bytes());
+        // A key's echo lands in the top box; the bottom pane's spinner draws after it.
+        s.note_typed();
+        s.feed(b"\x1b[10;3Hx\x1b[7m \x1b[0m\x1b[10;3H");
+        s.feed(b"\x1b[23;1HScurrying");
+        assert_eq!(painted_cursor(&s), Some((9, 3, false)));
+        assert_eq!(fx_of(&s).input_box.map(|b| [b.top, b.bottom]), Some([170.0, 210.0]), "the effects ring the top box");
+    }
+
+    #[test]
+    fn side_by_side_panes_follow_the_pane_typed_in() {
+        let mut s = crate::screen::Screen::new(100, 30);
+        let line = "\u{2500}".repeat(49);
+        let mut o = String::from("\x1b[?25l\x1b[2J");
+        for r in 1..=29 {
+            o += &format!("\x1b[{r};50H\u{2502}");
+        }
+        for c in [1, 51] {
+            o += &format!("\x1b[20;{c}H{line}\x1b[21;{c}H\u{276f} \x1b[7m \x1b[0m\x1b[22;{c}H{line}");
+        }
+        s.feed(o.as_bytes());
+        s.note_typed();
+        s.feed(b"\x1b[21;3H\x1b[7m \x1b[0m");
+        s.feed(b"\x1b[24;51Hspinner");
+        assert_eq!(painted_cursor(&s), Some((20, 2, false)));
+    }
+
+    #[test]
+    fn a_mixed_layout_follows_the_pane_typed_in() {
+        // One whole-width pane on top, two side by side under it, Claude Code in all three.
+        let mut s = crate::screen::Screen::new(100, 30);
+        let (full, half) = ("\u{2500}".repeat(100), "\u{2500}".repeat(49));
+        let mut o = format!("\x1b[?25l\x1b[2J\x1b[5;1H{full}\x1b[6;1H\u{276f} \x1b[7m \x1b[0m\x1b[7;1H{full}\x1b[10;1H{full}");
+        for r in 11..=29 {
+            o += &format!("\x1b[{r};50H\u{2502}");
+        }
+        for c in [1, 51] {
+            o += &format!("\x1b[20;{c}H{half}\x1b[21;{c}H\u{276f} \x1b[7m \x1b[0m\x1b[22;{c}H{half}");
+        }
+        s.feed(o.as_bytes());
+        s.note_typed();
+        s.feed(b"\x1b[21;53H\x1b[7m \x1b[0m");
+        s.feed(b"\x1b[3;1HScurrying");
+        assert_eq!(painted_cursor(&s), Some((20, 52, false)), "the bottom right pane");
+        s.note_typed();
+        s.feed(b"\x1b[6;3H\x1b[7m \x1b[0m");
+        assert_eq!(painted_cursor(&s), Some((5, 2, false)), "the top pane");
     }
 
     #[test]

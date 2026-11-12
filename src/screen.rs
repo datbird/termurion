@@ -234,6 +234,11 @@ pub struct Screen {
     bidi_cache: std::cell::RefCell<std::collections::HashMap<u64, BidiEntry>>,
     /// When the program hid the cursor (DECTCEM), until it shows it again (Reduce Flicker).
     pub cursor_hidden_at: Option<std::time::Instant>,
+    /// Set by a keystroke: the next output marks where the hidden cursor lands (`echo_at`).
+    echo_due: bool,
+    /// Where a hidden cursor landed after the last keystroke, in grid lines and columns: with
+    /// two tmux panes of Claude Code, the pane being typed in (`scene::painted_cursor`).
+    pub echo_at: Option<(i32, usize)>,
     title: Option<String>,
     /// The profile's Allow Title Setting: whether programs may set the title (OSC 0, 1, 2).
     pub allow_title: bool,
@@ -676,6 +681,8 @@ impl Screen {
             events,
             palette,
             cursor_hidden_at: None,
+            echo_due: false,
+            echo_at: None,
             title: None,
             allow_title: true,
             cell_px: (0, 0),
@@ -1301,6 +1308,11 @@ impl Screen {
 
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
+    }
+
+    /// The user sent keys: the next output shows where they went (`echo_at`).
+    pub fn note_typed(&mut self) {
+        self.echo_due = true;
     }
 
     /// Feeds app output. Returns the bytes the terminal must send back, such as
@@ -2372,6 +2384,11 @@ impl Screen {
             (true, Some(_)) => self.cursor_hidden_at = None,
             (false, None) => self.cursor_hidden_at = Some(std::time::Instant::now()),
             _ => {}
+        }
+        // The first output after a keystroke is its echo, drawn in the pane being typed in.
+        if std::mem::take(&mut self.echo_due) {
+            let p = self.term.grid().cursor.point;
+            self.echo_at = (!self.term.mode().contains(TermMode::SHOW_CURSOR)).then_some((p.line.0, p.column.0));
         }
         // The alternate screen turns the prompt state machine off (`MS:839-845`).
         let alt = self.term.mode().contains(TermMode::ALT_SCREEN);

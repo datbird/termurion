@@ -1842,6 +1842,7 @@ impl Pane {
         if self.replay.is_some() {
             return;
         }
+        self.own_mut().note_typed();
         self.live_input(bytes);
     }
 
