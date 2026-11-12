@@ -779,7 +779,7 @@ fn box_line(term: &alacritty_terminal::Term<crate::screen::Listener>, display_of
 /// The shaded band around the cursor cell, as Codex and opencode draw their input: a run of one
 /// background color over at least half the columns on the cursor's row, grown up and down over
 /// rows with the same run (within 2 cells). It is 2 to 12 rows and at most half the screen,
-/// and the rows around it differ over its columns (or are the screen edge). A `▀` row in the
+/// and the rows around it differ over its columns (or are the screen edge). A `▀` row (the rules' edge glyphs) in the
 /// band color under it joins as a half row. Returns (top row, bottom row, first col, last col,
 /// bottom is a half-block edge row). Colors compare as resolved RGB. The default background is
 /// never a band, and neither is a run whose rows above and below are both single strips with the
@@ -835,8 +835,8 @@ fn band_box(term: &alacritty_terminal::Term<crate::screen::Listener>, palette: &
     if top > 0 && !differs(top - 1) {
         return None;
     }
-    // A `▀` edge row: the band color on the upper half of most of the band's columns.
-    let edge = bottom + 1 < lines && (left..=right).filter(|&c| cell(bottom + 1, c).c == '\u{2580}' && palette.color(cell(bottom + 1, c).fg) == color).count() * 2 >= right - left + 1;
+    // An edge row (`▀`): the band color on the upper half of most of the band's columns.
+    let edge = bottom + 1 < lines && (left..=right).filter(|&c| rules.edge_glyphs.contains(&cell(bottom + 1, c).c) && palette.color(cell(bottom + 1, c).fg) == color).count() * 2 >= right - left + 1;
     let after = bottom + 1 + edge as usize;
     if after < lines && !differs(after) {
         return None;
@@ -10033,6 +10033,25 @@ mod agent_box_tests {
         pane_with(&mut frame, &s, rect, (10.0, 20.0), true, &crate::cursor_look::CursorLook::shown(true), &draw, None, crate::render::DEFAULT_FACE);
         let b = frame.fx.expect("an fx pane").input_box.expect("a line box");
         assert_eq!((b.kind, b.top, b.bottom), (BoxKind::Lines, 170.0, 210.0));
+    }
+
+    #[test]
+    fn a_lower_half_edge_row_counts_only_when_the_rules_name_it() {
+        let band = |n: usize| format!("\x1b[{n};1H\x1b[48;2;40;40;40m{}\x1b[0m", " ".repeat(80));
+        let edge = format!("\x1b[13;1H\x1b[38;2;40;40;40m{}\x1b[0m", "\u{2584}".repeat(80));
+        let mut s = crate::screen::Screen::new(80, 20);
+        s.feed(format!("\x1b[2J{}{}{}{edge}\x1b[11;3H", band(10), band(11), band(12)).as_bytes());
+        let bottom = |rules: FxRules| {
+            let draw = DrawPrefs { fx_cursor: Some(crate::palette::rgb(255, 0, 0)), fx_rules: Some(std::sync::Arc::new(rules)), ..Default::default() };
+            let mut frame = Frame::default();
+            let rect = crate::layout::Rect { x: 0.0, y: 0.0, w: 1000.0, h: 600.0 };
+            pane_with(&mut frame, &s, rect, (10.0, 20.0), true, &crate::cursor_look::CursorLook::shown(true), &draw, None, crate::render::DEFAULT_FACE);
+            frame.fx.expect("an fx pane").input_box.expect("a band").bottom
+        };
+        assert_eq!(bottom(FxRules::default()), 240.0, "Shell rules know only the upper half block");
+        let mut rules = FxRules::default();
+        rules.boxes.edge_glyphs = vec!['\u{2580}', '\u{2584}'];
+        assert_eq!(bottom(rules), 250.0, "the lower half block joins as a half row");
     }
 
     fn feed(rows: usize, o: &str) -> FxPane {
