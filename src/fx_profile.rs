@@ -40,7 +40,7 @@ pub enum PaintedMark {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CursorRule {
     pub kind: CursorKind,
-    pub mark: PaintedMark,
+    pub marks: Vec<PaintedMark>,
     pub echo_anchor: bool,
 }
 
@@ -79,7 +79,7 @@ impl Default for FxRules {
         FxRules {
             name: "Shell".to_string(),
             matching: Match::default(),
-            cursor: CursorRule { kind: CursorKind::Either, mark: PaintedMark::Reverse, echo_anchor: true },
+            cursor: CursorRule { kind: CursorKind::Either, marks: vec![PaintedMark::Reverse], echo_anchor: true },
             boxes: BoxRule {
                 kind: BoxKindRule::Either,
                 line_glyphs: vec!['\u{2500}', '\u{2501}'],
@@ -285,8 +285,20 @@ pub fn parse(text: &str) -> Result<(FxRules, Vec<String>), ParseError> {
     if let Some(i) = rd.kind(c, "cursor", "kind", &["real", "painted", "either"])? {
         r.cursor.kind = [CursorKind::Real, CursorKind::Painted, CursorKind::Either][i];
     }
-    if let Some(s) = rd.string(c, "cursor", "mark")? {
-        r.cursor.mark = parse_mark(&s).ok_or_else(|| rd.err("cursor", "mark", "must be \"reverse\" or a color like \"#2c2c2c\""))?;
+    if let Some(v) = c.and_then(|c| c.get("mark")) {
+        let bad = || rd.err("cursor", "mark", "must be \"reverse\" or a color like \"#2c2c2c\", or a list of them (1 to 32)");
+        let items: Vec<&toml::Value> = match v {
+            toml::Value::Array(a) => a.iter().collect(),
+            one => vec![one],
+        };
+        if items.is_empty() || items.len() > MAX_GLYPHS {
+            return Err(bad());
+        }
+        let mut marks = Vec::new();
+        for i in items {
+            marks.push(i.as_str().and_then(parse_mark).ok_or_else(bad)?);
+        }
+        r.cursor.marks = marks;
     }
     if let Some(b) = rd.boolean(c, "cursor", "echo_anchor")? {
         r.cursor.echo_anchor = b;
@@ -405,11 +417,15 @@ pub fn to_toml(rules: &FxRules, keep: &toml::Table) -> String {
         CursorKind::Painted => "painted",
         CursorKind::Either => "either",
     };
-    let mark = match rules.cursor.mark {
+    let one = |m: &PaintedMark| match m {
         PaintedMark::Reverse => "reverse".to_string(),
         PaintedMark::Background(c) => format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b),
     };
-    o.push_str(&format!("\n[cursor]\nkind = {}\nmark = {}\necho_anchor = {}\n", q(kind), q(&mark), rules.cursor.echo_anchor));
+    let mark = match rules.cursor.marks.as_slice() {
+        [m] => q(&one(m)),
+        many => list(&many.iter().map(one).collect::<Vec<_>>()),
+    };
+    o.push_str(&format!("\n[cursor]\nkind = {}\nmark = {}\necho_anchor = {}\n", q(kind), mark, rules.cursor.echo_anchor));
     o.push_str(&extras(keep, "cursor", CURSOR_KEYS));
 
     let b = &rules.boxes;
@@ -448,9 +464,8 @@ pub fn to_toml(rules: &FxRules, keep: &toml::Table) -> String {
     o
 }
 
-/// The Shell numbers with every rule's line glyphs, edge glyphs and prompt marks added. Used to
-/// find the cursor before a profile is chosen. The painted mark stays reverse video (a rule set
-/// holds one mark).
+/// The Shell numbers with every rule's line glyphs, edge glyphs, prompt marks and painted marks added. Used to
+/// find the cursor before a profile is chosen. Painted marks are added too.
 pub fn union(rules: &[&FxRules]) -> FxRules {
     let mut u = FxRules::default();
     for r in rules {
@@ -463,6 +478,11 @@ pub fn union(rules: &[&FxRules]) -> FxRules {
                 if !to.contains(g) {
                     to.push(*g);
                 }
+            }
+        }
+        for m in &r.cursor.marks {
+            if !u.cursor.marks.contains(m) {
+                u.cursor.marks.push(*m);
             }
         }
     }
@@ -522,7 +542,7 @@ osc133 = false
         assert_eq!(r.matching.prompt, vec!['λ']);
         assert_eq!(r.matching.shape, Some(BoxKindRule::Band));
         assert_eq!(r.cursor.kind, CursorKind::Painted);
-        assert_eq!(r.cursor.mark, PaintedMark::Background(rgb(0x10, 0x20, 0x30)));
+        assert_eq!(r.cursor.marks, vec![PaintedMark::Background(rgb(0x10, 0x20, 0x30))]);
         assert!(!r.cursor.echo_anchor);
         assert_eq!(r.boxes.kind, BoxKindRule::Either);
         assert_eq!(r.boxes.line_glyphs, vec!['═']);
@@ -578,9 +598,9 @@ osc133 = false
 
     #[test]
     fn a_painted_mark_is_reverse_or_a_color() {
-        let m = |s: &str| parse(&format!("[cursor]\nmark = \"{s}\"\n")).map(|(r, _)| r.cursor.mark);
-        assert_eq!(m("reverse").unwrap(), PaintedMark::Reverse);
-        assert_eq!(m("#2c2c2c").unwrap(), PaintedMark::Background(rgb(44, 44, 44)));
+        let m = |s: &str| parse(&format!("[cursor]\nmark = \"{s}\"\n")).map(|(r, _)| r.cursor.marks);
+        assert_eq!(m("reverse").unwrap(), vec![PaintedMark::Reverse]);
+        assert_eq!(m("#2c2c2c").unwrap(), vec![PaintedMark::Background(rgb(44, 44, 44))]);
         assert!(m("blue").is_err());
         assert!(m("#12345").is_err());
     }
@@ -636,5 +656,28 @@ osc133 = false
         assert_eq!(u.boxes.line_glyphs.len(), 3);
         assert!(u.prompt_marks.contains(&'λ') && u.prompt_marks.contains(&'❯'));
         assert_eq!(u.done, shell.done);
+    }
+
+    #[test]
+    fn marks_may_be_a_list() {
+        let t = "[cursor]\nmark = [\"reverse\", \"#2c2c2c\"]\n";
+        let (r, _) = parse(t).unwrap();
+        assert_eq!(r.cursor.marks, vec![PaintedMark::Reverse, PaintedMark::Background(rgb(44, 44, 44))]);
+        let out = to_toml(&r, &toml::Table::new());
+        assert!(out.contains("mark = [\"reverse\", \"#2c2c2c\"]"), "{out}");
+        assert_eq!(parse(&out).unwrap().0, r);
+        assert!(parse("[cursor]\nmark = []\n").is_err());
+        assert!(parse("[cursor]\nmark = [\"reverse\", \"blue\"]\n").is_err());
+        let many = format!("[cursor]\nmark = [{}]\n", vec!["\"reverse\""; 33].join(","));
+        assert!(parse(&many).is_err());
+    }
+
+    #[test]
+    fn union_takes_every_painted_mark() {
+        let mut a = FxRules::default();
+        a.cursor.marks = vec![PaintedMark::Background(rgb(44, 44, 44))];
+        let shell = FxRules::default();
+        let u = union(&[&shell, &a, &a]);
+        assert_eq!(u.cursor.marks, vec![PaintedMark::Reverse, PaintedMark::Background(rgb(44, 44, 44))]);
     }
 }
