@@ -9956,6 +9956,36 @@ mod agent_box_tests {
         frame.fx.expect("an fx pane")
     }
 
+    /// 35 recorded tmux layouts of agents (raw client bytes plus the pane table): what the
+    /// scene reads from each is pinned in `expected.txt`. `TERMURION_BLESS=1` rewrites it.
+    #[test]
+    fn tmux_agent_layouts_match_the_recorded_baseline() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tmux-agents/");
+        let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".raw").map(String::from)).collect();
+        names.sort();
+        assert_eq!(names.len(), 35);
+        let mut out = String::new();
+        for name in &names {
+            let panes = std::fs::read_to_string(format!("{dir}{name}.panes")).unwrap();
+            let (mut cols, mut rows) = (0, 0);
+            for l in panes.lines() {
+                let n: Vec<usize> = l.split(' ').map(|w| w.parse().unwrap()).collect();
+                cols = cols.max(n[1] + n[3]);
+                rows = rows.max(n[2] + n[4]);
+            }
+            let mut s = crate::screen::Screen::new(cols, rows + 1);
+            s.feed(&std::fs::read(format!("{dir}{name}.raw")).unwrap());
+            let r = |v: f32| v.round() as i64;
+            let boxed = fx_of(&s).input_box.map(|b| (b.kind, r(b.top), r(b.bottom), r(b.left), r(b.right)));
+            out.push_str(&format!("{name} watch={:?} cursor={:?} box={:?}\n", output_watch(&s), cursor_cell(&s).or_else(|| painted_cursor(&s)), boxed));
+        }
+        let file = format!("{dir}expected.txt");
+        if std::env::var("TERMURION_BLESS").is_ok() {
+            std::fs::write(&file, &out).unwrap();
+        }
+        assert_eq!(out, std::fs::read_to_string(&file).unwrap());
+    }
+
     fn feed(rows: usize, o: &str) -> FxPane {
         let mut s = crate::screen::Screen::new(80, rows);
         s.feed(o.as_bytes());
