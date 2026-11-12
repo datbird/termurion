@@ -131,7 +131,8 @@ mod tests {
         let bare: Vec<String> = ["LoadLibraryW", "LoadLibraryA", "LoadLibraryExA", "LoadPackagedLibrary", "libloading"].iter().map(|t| t.to_string()).collect();
         let ex = "LoadLibraryEx".to_string() + "W";
         let flag = "LOAD_LIBRARY_SEARCH_".to_string() + "SYSTEM32";
-        let allowed = [root.join("src").join("dll.rs"), root.join("crates").join("alacritty_terminal").join("src").join("tty").join("windows").join("conpty.rs")];
+        let winit = root.join("crates").join("winit").join("src").join("platform_impl").join("windows");
+        let allowed = [root.join("src").join("dll.rs"), root.join("crates").join("alacritty_terminal").join("src").join("tty").join("windows").join("conpty.rs"), winit.join("util.rs"), winit.join("dark_mode.rs")];
         let this = root.join("src").join("dll.rs");
         let mut bad = Vec::new();
         for f in files {
@@ -146,7 +147,7 @@ mod tests {
             }
             for (at, _) in code.match_indices(ex.as_str()) {
                 if !allowed.contains(&f) {
-                    bad.push(format!("{}: LoadLibraryExW outside the two allowed files", f.display()));
+                    bad.push(format!("{}: LoadLibraryExW outside the allowed files", f.display()));
                     break;
                 }
                 let call = &code[at..(at + 200).min(code.len())];

@@ -155,3 +155,5 @@ alacritty_terminal = { path = "crates/alacritty_terminal" }
 vte = { path = "crates/vte" }
 # glyphon with a mask filter for aliased and thin text (crates/glyphon/TERMURION-PATCHES.md).
 glyphon = { path = "crates/glyphon" }
+# winit with Retina custom cursors on macOS (crates/winit/TERMURION-PATCHES.md).
+winit = { path = "crates/winit" }

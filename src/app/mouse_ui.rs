@@ -213,7 +213,11 @@ impl App {
         let scale2 = self.scale() > 1.5;
         let make = |(rgba, w, h): (Vec<u8>, u16, u16)| {
             let (hx, hy) = ps::hot_spot(w, h);
-            winit::window::CustomCursor::from_rgba(rgba, w, h, hx, hy).ok().map(|c| event_loop.create_custom_cursor(c))
+            let source = winit::window::CustomCursor::from_rgba(rgba, w, h, hx, hy).ok();
+            // macOS sizes a cursor in points, so the 2x image must say so or it shows twice as big.
+            #[cfg(target_os = "macos")]
+            let source = source.map(|s| winit::platform::macos::CustomCursorSourceExtMacOS::with_scale(s, if scale2 { 2.0 } else { 1.0 }));
+            source.map(|c| event_loop.create_custom_cursor(c))
         };
         self.cursors = make(ps::draw_ibeam(scale2)).zip(make(ps::draw_ibeam_circle(scale2))).map(|(ibeam, ibeam_circle)| ps::Cursors { ibeam, ibeam_circle });
     }
