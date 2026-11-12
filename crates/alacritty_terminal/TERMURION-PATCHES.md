@@ -209,4 +209,13 @@ test data) is left out. Changes:
 37. `term/mod.rs`: ED 1 (erase above) with the cursor on the second row erases the first row too.
     Upstream reset the rows above only from the third row down.
 
+38. `term/mod.rs`: left and right margins. DEC mode 69 (DECLRMM) turns them on; `CSI Pl ; Pr s`
+    (DECSLRM) sets them while it is on, and a bare `CSI s` saves the cursor while it is off.
+    With margins narrower than the screen: LF, RI, SU, SD, IL and DL scroll only the columns
+    between them (`scroll_lr`, never into history) and do nothing to the scroll edge row when the
+    cursor is outside them; text wraps at the right margin to the left one; CR goes to the left
+    margin; ICH and DCH stop at the right margin; origin mode counts columns from the left margin.
+    RIS, mode 69 off and a resize reset them. tmux turns margins on for Termurion and redrew
+    side-by-side panes wrongly without them.
+
 To update alacritty_terminal, copy the new version here and apply these changes again.

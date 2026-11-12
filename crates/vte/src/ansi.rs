@@ -649,6 +649,14 @@ pub trait Handler {
     /// DECSTBM - Set the terminal scrolling region.
     fn set_scrolling_region(&mut self, _top: usize, _bottom: Option<usize>) {}
 
+    /// Termurion patch 2: `CSI Pl ; Pr s`. DECSLRM while DECLRMM (mode 69) is on, else a
+    /// bare `CSI s` saves the cursor.
+    fn set_left_right_margins(&mut self, left: Option<usize>, right: Option<usize>) {
+        if left.is_none() && right.is_none() {
+            self.save_cursor_position();
+        }
+    }
+
     /// DECKPAM - Set keypad to applications mode (ESCape instead of digits).
     fn set_keypad_application_mode(&mut self) {}
 
@@ -1734,7 +1742,13 @@ where
                 handler.set_scrolling_region(top, bottom);
             },
             ('S', []) => handler.scroll_up(next_param_or(1) as usize),
-            ('s', []) => handler.save_cursor_position(),
+            // Termurion patch 2: DECSLRM or SCOSC, the handler decides by DECLRMM.
+            ('s', []) => {
+                let mut param = || params_iter.next().map(|p| p[0] as usize).filter(|&p| p != 0);
+                let left = param();
+                let right = param();
+                handler.set_left_right_margins(left, right);
+            },
             ('T', []) => handler.scroll_down(next_param_or(1) as usize),
             ('t', []) => match next_param_or(1) as usize {
                 14 => handler.text_area_size_pixels(),

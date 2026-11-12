@@ -338,6 +338,11 @@ pub struct Term<T> {
     /// Range going from top to bottom of the terminal, indexed from the top of the viewport.
     scroll_region: Range<Line>,
 
+    /// Termurion patch 38: DECLRMM (DEC mode 69) and the left and right margins DECSLRM set,
+    /// first and last column. Full width while the mode is off.
+    lr_mode: bool,
+    lr_margin: (usize, usize),
+
     /// Modified terminal colors.
     colors: Colors,
 
@@ -421,6 +426,11 @@ pub struct Term<T> {
     /// Termurion patch: characters written to the screen, ever. Termurion compares it between two
     /// points in the output ("has the program drawn anything since").
     pub printed: u64,
+
+    /// Termurion: armed by a keystroke; the next printed character records its cell in
+    /// `echo_point` (where the echo landed, before anything else in the same read moves on).
+    pub echo_armed: bool,
+    pub echo_point: Option<Point>,
 
     /// Termurion: whether a scroll region that starts at the top but stops above the bottom row
     /// saves the lines leaving it to scrollback (iTerm2's Scrollback With Status Bar).
@@ -544,6 +554,8 @@ impl<T> Term<T> {
             block: 0,
             inactive_grid,
             scroll_region,
+            lr_mode: false,
+            lr_margin: (0, num_cols.saturating_sub(1)),
             event_proxy,
             damage,
             config,
@@ -569,6 +581,8 @@ impl<T> Term<T> {
             history_splices: Vec::new(),
             width_rule: None,
             printed: 0,
+            echo_armed: false,
+            echo_point: None,
             scrollback_with_region: true,
             cursor_blink_change: true,
             active_charset: Default::default(),
@@ -971,6 +985,8 @@ impl<T> Term<T> {
 
         // Reset scrolling region.
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
+        // Termurion patch 38: and the left and right margins.
+        self.lr_margin = (0, num_cols.saturating_sub(1));
 
         // Resize damage information.
         self.damage.resize(num_cols, num_lines);
@@ -1293,6 +1309,53 @@ impl<T> Term<T> {
         &self.colors
     }
 
+    /// Termurion patch 38: left and right margins narrower than the screen are in force.
+    fn lr_active(&self) -> bool {
+        self.lr_mode && (self.lr_margin.0 > 0 || self.lr_margin.1 + 1 < self.columns())
+    }
+
+    /// Termurion patch 38: the cursor's column is between the left and right margins.
+    fn cursor_in_lr(&self) -> bool {
+        let col = self.grid.cursor.point.column.0;
+        col >= self.lr_margin.0 && col <= self.lr_margin.1
+    }
+
+    /// Termurion patch 38: scrolls rows `origin` to the region's bottom by `lines` between the
+    /// left and right margins only (up when `up`), blanking what comes in. Never touches history.
+    fn scroll_lr(&mut self, origin: Line, lines: usize, up: bool) {
+        let end = self.scroll_region.end;
+        let rows = (end - origin).0.max(0) as usize;
+        let lines = cmp::min(lines, rows);
+        if lines == 0 {
+            return;
+        }
+        let (left, right) = self.lr_margin;
+        let right = cmp::min(right, self.last_column().0);
+        let bg = self.grid.cursor.template.bg;
+        let copy = |term: &mut Self, from: Line, to: Line| {
+            for c in left..=right {
+                let cell = term.grid[from][Column(c)].clone();
+                term.grid[to][Column(c)] = cell;
+            }
+        };
+        if up {
+            for i in 0..rows - lines {
+                copy(self, origin + (i + lines), origin + i);
+            }
+        } else {
+            for i in (lines..rows).rev() {
+                copy(self, origin + (i - lines), origin + i);
+            }
+        }
+        let blank = if up { rows - lines..rows } else { 0..lines };
+        for i in blank {
+            for c in left..=right {
+                self.grid[origin + i][Column(c)] = bg.into();
+            }
+        }
+        self.mark_fully_damaged();
+    }
+
     /// Insert a linebreak at the current cursor position.
     #[inline]
     fn wrapline(&mut self)
@@ -1315,6 +1378,8 @@ impl<T> Term<T> {
         trace!("Wrapping input");
 
         self.grid.cursor_cell().flags.insert(Flags::WRAPLINE);
+        // Termurion patch 38: only a wrap from inside the margins returns to the left margin.
+        let left = if self.lr_active() && self.cursor_in_lr() { self.lr_margin.0 } else { 0 };
 
         if self.grid.cursor.point.line + 1 >= self.scroll_region.end {
             self.linefeed();
@@ -1323,7 +1388,7 @@ impl<T> Term<T> {
             self.grid.cursor.point.line += 1;
         }
 
-        self.grid.cursor.point.column = Column(0);
+        self.grid.cursor.point.column = Column(left);
         self.grid.cursor.input_needs_wrap = false;
         self.damage_cursor();
     }
@@ -1596,7 +1661,8 @@ impl<T: EventListener> Handler for Term<T> {
         }
 
         // If in insert mode, first shift cells to the right.
-        let columns = self.columns();
+        // Termurion patch 38: inside the left and right margins the line ends at the right margin.
+        let columns = if self.lr_active() && self.cursor_in_lr() { self.lr_margin.1 + 1 } else { self.columns() };
         if self.mode.contains(TermMode::INSERT) && self.grid.cursor.point.column + width < columns {
             let line = self.grid.cursor.point.line;
             let col = self.grid.cursor.point.column;
@@ -1605,6 +1671,12 @@ impl<T: EventListener> Handler for Term<T> {
             for col in (col.0..(columns - width)).rev() {
                 row.swap(col + width, col);
             }
+        }
+
+        // Termurion: the first character after a keystroke marks where its echo landed.
+        if self.echo_armed {
+            self.echo_armed = false;
+            self.echo_point = Some(self.grid.cursor.point);
         }
 
         if width == 1 {
@@ -1670,9 +1742,16 @@ impl<T: EventListener> Handler for Term<T> {
             (Line(0), self.bottommost_line())
         };
 
+        // Termurion patch 38: origin mode counts columns from the left margin, up to the right one.
+        let (x_offset, max_x) = if self.mode.contains(TermMode::ORIGIN) && self.lr_mode {
+            (self.lr_margin.0, Column(self.lr_margin.1))
+        } else {
+            (0, self.last_column())
+        };
+
         self.damage_cursor();
         self.grid.cursor.point.line = cmp::max(cmp::min(line + y_offset, max_y), Line(0));
-        self.grid.cursor.point.column = cmp::min(col, self.last_column());
+        self.grid.cursor.point.column = cmp::min(col + x_offset, max_x);
         self.damage_cursor();
         self.grid.cursor.input_needs_wrap = false;
     }
@@ -1680,7 +1759,10 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn goto_line(&mut self, line: i32) {
         trace!("Going to line: {line}");
-        self.goto(line, self.grid.cursor.point.column.0)
+        // Termurion patch 38: the column stays where it is, whatever origin mode adds.
+        let col = self.grid.cursor.point.column;
+        self.goto(line, 0);
+        self.grid.cursor.point.column = col;
     }
 
     #[inline]
@@ -1694,12 +1776,20 @@ impl<T: EventListener> Handler for Term<T> {
         let cursor = &self.grid.cursor;
         let bg = cursor.template.bg;
 
+        // Termurion patch 38: inside the left and right margins the line ends at the right margin.
+        let columns = if self.lr_active() && self.cursor_in_lr() { self.lr_margin.1 + 1 } else { self.columns() };
+        // Termurion patch 38: outside the left and right margins ICH does nothing.
+        if self.lr_active() && !self.cursor_in_lr() {
+            return;
+        }
+        let cursor = &self.grid.cursor;
+
         // Ensure inserting within terminal bounds
-        let count = cmp::min(count, self.columns() - cursor.point.column.0);
+        let count = cmp::min(count, columns - cursor.point.column.0);
 
         let source = cursor.point.column;
         let destination = cursor.point.column.0 + count;
-        let num_cells = self.columns() - destination;
+        let num_cells = columns - destination;
 
         let line = cursor.point.line;
         self.damage.damage_line(line.0 as usize, 0, self.columns() - 1);
@@ -1957,7 +2047,11 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn carriage_return(&mut self) {
         trace!("Carriage return");
-        let new_col = 0;
+        // Termurion patch 38: from inside or right of the left margin, CR goes to the left margin.
+        let left = self.lr_margin.0;
+        // In origin mode it always does.
+        let origin = self.mode.contains(TermMode::ORIGIN);
+        let new_col = if self.lr_active() && (origin || self.grid.cursor.point.column.0 >= left) { left } else { 0 };
         let line = self.grid.cursor.point.line.0 as usize;
         self.damage.damage_line(line, new_col, self.grid.cursor.point.column.0);
         self.grid.cursor.point.column = Column(new_col);
@@ -1975,7 +2069,10 @@ impl<T: EventListener> Handler for Term<T> {
         }
         let next = self.grid.cursor.point.line + 1;
         if next == self.scroll_region.end {
-            self.scroll_up(1);
+            // Termurion patch 38: outside the left and right margins the bottom row stays put.
+            if !self.lr_active() || self.cursor_in_lr() {
+                self.scroll_up(1);
+            }
         } else if next < self.screen_lines() {
             self.damage_cursor();
             self.grid.cursor.point.line += 1;
@@ -2035,12 +2132,20 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn scroll_up(&mut self, lines: usize) {
         let origin = self.scroll_region.start;
+        // Termurion patch 38: inside the left and right margins only.
+        if self.lr_active() {
+            return self.scroll_lr(origin, lines, true);
+        }
         self.scroll_up_relative(origin, lines);
     }
 
     #[inline]
     fn scroll_down(&mut self, lines: usize) {
         let origin = self.scroll_region.start;
+        // Termurion patch 38: inside the left and right margins only.
+        if self.lr_active() {
+            return self.scroll_lr(origin, lines, false);
+        }
         self.scroll_down_relative(origin, lines);
     }
 
@@ -2049,6 +2154,15 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Inserting blank {lines} lines");
 
         let origin = self.grid.cursor.point.line;
+        // Termurion patch 38: with margins, only inside them, and only between them.
+        if self.lr_active() {
+            if self.cursor_in_lr() && self.scroll_region.contains(&origin) {
+                self.scroll_lr(origin, lines, false);
+                self.grid.cursor.point.column = Column(self.lr_margin.0);
+                self.grid.cursor.input_needs_wrap = false;
+            }
+            return;
+        }
         if self.scroll_region.contains(&origin) {
             self.scroll_down_relative(origin, lines);
         }
@@ -2061,6 +2175,15 @@ impl<T: EventListener> Handler for Term<T> {
 
         trace!("Deleting {lines} lines");
 
+        // Termurion patch 38: with margins, only inside them, and only between them.
+        if self.lr_active() {
+            if lines > 0 && self.cursor_in_lr() && self.scroll_region.contains(&origin) {
+                self.scroll_lr(origin, lines, true);
+                self.grid.cursor.point.column = Column(self.lr_margin.0);
+                self.grid.cursor.input_needs_wrap = false;
+            }
+            return;
+        }
         if lines > 0 && self.scroll_region.contains(&origin) {
             self.scroll_up_relative(origin, lines);
         }
@@ -2087,14 +2210,20 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn delete_chars(&mut self, count: usize) {
-        let columns = self.columns();
+        // Termurion patch 38: inside the left and right margins the line ends at the right margin.
+        let columns = if self.lr_active() && self.cursor_in_lr() { self.lr_margin.1 + 1 } else { self.columns() };
+        // Termurion patch 38: outside the left and right margins DCH does nothing.
+        if self.lr_active() && !self.cursor_in_lr() {
+            return;
+        }
         let cursor = &self.grid.cursor;
         let bg = cursor.template.bg;
 
         // Ensure deleting within terminal bounds.
-        let count = cmp::min(count, columns);
-
+        // Termurion patch 38: never more than the cells from the cursor to the line's end, so the
+        // clear below stays right of the cursor.
         let start = cursor.point.column.0;
+        let count = cmp::min(count, columns - start);
         let end = cmp::min(start + count, columns - 1);
         let num_cells = columns - end;
 
@@ -2109,7 +2238,7 @@ impl<T: EventListener> Handler for Term<T> {
         // Clear last `count` cells in the row. If deleting 1 char, need to delete
         // 1 cell.
         let end = columns - count;
-        for cell in &mut row[end..] {
+        for cell in &mut row[end..columns] {
             *cell = bg.into();
         }
     }
@@ -2431,6 +2560,9 @@ impl<T: EventListener> Handler for Term<T> {
         self.grid.reset();
         self.inactive_grid.reset();
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
+        // Termurion patch 38: RIS turns DECLRMM off and the margins go back to full width.
+        self.lr_mode = false;
+        self.lr_margin = (0, self.columns().saturating_sub(1));
         // Termurion patch: a reset restores the configured spacing.
         self.tabs = TabStops::new(self.columns(), self.tab_width);
         self.title_stack = Vec::new();
@@ -2457,7 +2589,10 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Reversing index");
         // If cursor is at the top.
         if self.grid.cursor.point.line == self.scroll_region.start {
-            self.scroll_down(1);
+            // Termurion patch 38: outside the left and right margins the top row stays put.
+            if !self.lr_active() || self.cursor_in_lr() {
+                self.scroll_down(1);
+            }
         } else {
             self.damage_cursor();
             self.grid.cursor.point.line = cmp::max(self.grid.cursor.point.line - 1, Line(0));
@@ -2544,6 +2679,11 @@ impl<T: EventListener> Handler for Term<T> {
                 self.mode.insert(TermMode::META_SENDS_ESCAPE);
                 return;
             },
+            PrivateMode::Unknown(69) => {
+                // Termurion patch 38: DECLRMM, left and right margin mode.
+                self.lr_mode = true;
+                return;
+            },
             PrivateMode::Unknown(mode) => {
                 debug!("Ignoring unknown mode {mode} in set_private_mode");
                 return;
@@ -2627,6 +2767,12 @@ impl<T: EventListener> Handler for Term<T> {
             PrivateMode::Unknown(1036) => {
                 // Termurion patch: DECSET 1036, metaSendsEscape.
                 self.mode.remove(TermMode::META_SENDS_ESCAPE);
+                return;
+            },
+            PrivateMode::Unknown(69) => {
+                // Termurion patch 38: DECLRMM off also drops the margins.
+                self.lr_mode = false;
+                self.lr_margin = (0, self.columns().saturating_sub(1));
                 return;
             },
             PrivateMode::Unknown(mode) => {
@@ -2724,6 +2870,7 @@ impl<T: EventListener> Handler for Term<T> {
             PrivateMode::Unknown(2048) => self.resize_reports.into(),
             // Termurion patch: DECSET 1036 answers set or reset.
             PrivateMode::Unknown(1036) => self.mode.contains(TermMode::META_SENDS_ESCAPE).into(),
+            PrivateMode::Unknown(69) => self.lr_mode.into(),
             PrivateMode::Unknown(_) => ModeState::NotSupported,
         };
 
@@ -2813,6 +2960,27 @@ impl<T: EventListener> Handler for Term<T> {
         let screen_lines = Line(self.screen_lines() as i32);
         self.scroll_region.start = cmp::min(start, screen_lines);
         self.scroll_region.end = cmp::min(end, screen_lines);
+        self.goto(0, 0);
+    }
+
+    /// Termurion patch 38: `CSI Pl ; Pr s` is DECSLRM while DECLRMM is on; otherwise a bare
+    /// `CSI s` saves the cursor (SCOSC) and one with parameters does nothing, as in xterm.
+    #[inline]
+    fn set_left_right_margins(&mut self, left: Option<usize>, right: Option<usize>) {
+        if !self.lr_mode {
+            if left.is_none() && right.is_none() {
+                self.save_cursor_position();
+            }
+            return;
+        }
+        let columns = self.columns();
+        let left = left.filter(|&l| l > 0).unwrap_or(1);
+        let right = cmp::min(right.filter(|&r| r > 0).unwrap_or(columns), columns);
+        if left >= right {
+            debug!("Invalid left and right margins: ({left};{right})");
+            return;
+        }
+        self.lr_margin = (left - 1, right - 1);
         self.goto(0, 0);
     }
 

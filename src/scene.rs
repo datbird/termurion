@@ -10154,9 +10154,9 @@ mod agent_box_tests {
         let (mut s, o) = stacked();
         s.feed(o.as_bytes());
         // A key's echo lands in the top box; the bottom pane's spinner draws after it.
+        // Both arrive in one read: the echo still marks the top pane.
         s.note_typed();
-        s.feed(b"\x1b[10;3Hx\x1b[7m \x1b[0m\x1b[10;3H");
-        s.feed(b"\x1b[23;1HScurrying");
+        s.feed(b"\x1b[10;3Hx\x1b[7m \x1b[0m\x1b[23;1HScurrying");
         assert_eq!(painted_cursor(&s), Some((9, 3, false)));
         assert_eq!(fx_of(&s).input_box.map(|b| [b.top, b.bottom]), Some([170.0, 210.0]), "the effects ring the top box");
     }

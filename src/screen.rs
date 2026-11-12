@@ -234,8 +234,6 @@ pub struct Screen {
     bidi_cache: std::cell::RefCell<std::collections::HashMap<u64, BidiEntry>>,
     /// When the program hid the cursor (DECTCEM), until it shows it again (Reduce Flicker).
     pub cursor_hidden_at: Option<std::time::Instant>,
-    /// Set by a keystroke: the next output marks where the hidden cursor lands (`echo_at`).
-    echo_due: bool,
     /// Where a hidden cursor landed after the last keystroke, in grid lines and columns: with
     /// two tmux panes of Claude Code, the pane being typed in (`scene::painted_cursor`).
     pub echo_at: Option<(i32, usize)>,
@@ -681,7 +679,6 @@ impl Screen {
             events,
             palette,
             cursor_hidden_at: None,
-            echo_due: false,
             echo_at: None,
             title: None,
             allow_title: true,
@@ -1310,9 +1307,9 @@ impl Screen {
         self.title.as_deref()
     }
 
-    /// The user sent keys: the next output shows where they went (`echo_at`).
+    /// The user sent keys: the next printed character shows where they went (`echo_at`).
     pub fn note_typed(&mut self) {
-        self.echo_due = true;
+        self.term.echo_armed = true;
     }
 
     /// Feeds app output. Returns the bytes the terminal must send back, such as
@@ -2385,9 +2382,9 @@ impl Screen {
             (false, None) => self.cursor_hidden_at = Some(std::time::Instant::now()),
             _ => {}
         }
-        // The first output after a keystroke is its echo, drawn in the pane being typed in.
-        if std::mem::take(&mut self.echo_due) {
-            let p = self.term.grid().cursor.point;
+        // The first character printed after a keystroke is its echo, drawn in the pane being
+        // typed in; a hidden cursor makes it the effects' anchor (`scene::painted_cursor`).
+        if let Some(p) = self.term.echo_point.take() {
             self.echo_at = (!self.term.mode().contains(TermMode::SHOW_CURSOR)).then_some((p.line.0, p.column.0));
         }
         // The alternate screen turns the prompt state machine off (`MS:839-845`).
@@ -4245,6 +4242,68 @@ mod tests {
 
     fn row_text(s: &Screen, l: i32) -> String {
         (0..s.term.columns()).map(|c| s.term.grid()[Line(l)][Column(c)].c).collect::<String>().trim_end().to_string()
+    }
+
+    /// tmux 3.4 told the terminal has margins (`-T margins`): two side-by-side panes, the right
+    /// one split and scrolled by 30 lines. The screen matches what tmux draws without margins.
+    #[test]
+    fn tmux_side_panes_drawn_with_margins() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tmux/");
+        let mut s = Screen::new(60, 20);
+        s.feed(&std::fs::read(format!("{dir}margins-3.4-side-scroll.bin")).unwrap());
+        let want = std::fs::read_to_string(format!("{dir}margins-3.4-side-scroll.txt")).unwrap();
+        for (l, line) in want.lines().enumerate() {
+            assert_eq!(row_text(&s, l as i32), line.trim_end(), "row {l}");
+        }
+    }
+
+    /// Screen rows 0..n as text.
+    fn rows(s: &Screen, n: i32) -> Vec<String> {
+        (0..n).map(|l| row_text(s, l)).collect()
+    }
+
+    #[test]
+    fn margins_scroll_only_their_columns() {
+        let mut s = Screen::new(10, 4);
+        s.feed(b"aaaaaaaaaa\r\nbbbbbbbbbb\r\ncccccccccc\r\ndddddddddd");
+        // Columns 3-6, rows 1-4: a line feed at the bottom row moves those columns up.
+        s.feed(b"\x1b[?69h\x1b[3;6s\x1b[1;4r\x1b[4;3H\n");
+        assert_eq!(rows(&s, 4), ["aabbbbaaaa", "bbccccbbbb", "ccddddcccc", "dd    dddd"]);
+        // RI at the top row moves them down.
+        s.feed(b"\x1b[1;3H\x1bM");
+        assert_eq!(rows(&s, 4), ["aa    aaaa", "bbbbbbbbbb", "cccccccccc", "dddddddddd"]);
+        // Outside the margins a line feed at the bottom row moves nothing.
+        s.feed(b"\x1b[4;9H\n");
+        assert_eq!(rows(&s, 4), ["aa    aaaa", "bbbbbbbbbb", "cccccccccc", "dddddddddd"]);
+    }
+
+    #[test]
+    fn margins_bound_text_wrap_and_insert() {
+        let mut s = Screen::new(10, 3);
+        s.feed(b"\x1b[?69h\x1b[3;6s");
+        // Text wraps at the right margin to the left margin; CR goes to the left margin.
+        s.feed(b"\x1b[1;3Habcdef\rX");
+        assert_eq!(rows(&s, 2), ["  abcd", "  Xf"]);
+        // ICH stops at the right margin: the cell past it is not touched.
+        s.feed(b"\x1b[3;7HZ\x1b[3;3Hpq\x1b[3;3H\x1b[2@");
+        assert_eq!(rows(&s, 3)[2], "    pqZ");
+        // Without DECLRMM, CSI s saves the cursor and CSI u restores it.
+        let mut t = Screen::new(10, 3);
+        t.feed(b"\x1b[2;4H\x1b[s\x1b[1;1H\x1b[uQ");
+        assert_eq!(rows(&t, 2), ["", "   Q"]);
+        // DCH stops at the right margin, and a big count clears only from the cursor on.
+        let mut d = Screen::new(10, 1);
+        d.feed(b"0123456789\x1b[?69h\x1b[3;6s\x1b[1;3H\x1b[P");
+        assert_eq!(rows(&d, 1), ["01345 6789"]);
+        d.feed(b"\x1b[1;4H\x1b[9P");
+        assert_eq!(rows(&d, 1), ["013   6789"]);
+        // A wrap from right of the margins goes to the first column, not the left margin.
+        let mut w = Screen::new(10, 2);
+        w.feed(b"\x1b[?69h\x1b[3;6s\x1b[1;10Hxy");
+        assert_eq!(rows(&w, 2), ["         x", "y"]);
+        // DECLRMM off drops the margins.
+        s.feed(b"\x1b[?69l\x1b[1;1H0123456789");
+        assert_eq!(rows(&s, 1), ["0123456789"]);
     }
 
     #[test]
