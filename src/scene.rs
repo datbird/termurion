@@ -423,11 +423,15 @@ pub struct DrawPrefs {
     /// font), each ASCII cell is its own piece at its cell's x, as iTerm2 draws each glyph at its
     /// cell, so the text stays on the grid the cursor and backgrounds use.
     pub monospace: bool,
+    /// The rules the pane's effects read its screen with (its FX profile). None is the Shell rules.
+    pub fx_rules: Option<std::sync::Arc<FxRules>>,
+    /// The union of every profile's rules, for finding the cursor to anchor on. None is the Shell rules.
+    pub fx_find: Option<std::sync::Arc<FxRules>>,
 }
 
 impl Default for DrawPrefs {
     fn default() -> Self {
-        DrawPrefs { underline_hyperlinks: true, solid_underlines: false, metrics: crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 }, scale: 1.0, ligatures: STOCK_LIGATURES, alt_level: 2, masks: crate::fonts::MaskRules::STOCK, custom_boxes: true, powerline: false, powerline_extended: true, powerline_wide: true, table: None, fx_cursor: None, monospace: true }
+        DrawPrefs { underline_hyperlinks: true, solid_underlines: false, metrics: crate::underline::Metrics { underline_offset: 0.0, thickness: 0.0, x_height: 0.0, baseline: 0.0 }, scale: 1.0, ligatures: STOCK_LIGATURES, alt_level: 2, masks: crate::fonts::MaskRules::STOCK, custom_boxes: true, powerline: false, powerline_extended: true, powerline_wide: true, table: None, fx_cursor: None, monospace: true, fx_rules: None, fx_find: None }
     }
 }
 
@@ -438,7 +442,7 @@ impl DrawPrefs {
     /// The prefs the live frame and a screenshot both draw with: the two Advanced switches from
     /// `globals`, the renderer's face metrics and the window's scale.
     pub fn from_globals(globals: &crate::globals::Globals, metrics: crate::underline::Metrics, scale: f32) -> DrawPrefs {
-        DrawPrefs { underline_hyperlinks: globals.bool("UnderlineHyperlinks"), solid_underlines: globals.bool("SolidUnderlines"), metrics, scale, ligatures: crate::fonts::LigatureRules { prefer_speed: globals.bool("PreferSpeedToFullLigatureSupport"), ..STOCK_LIGATURES }, alt_level: STOCK_LIGATURES.level, masks: crate::fonts::MaskRules { retina: scale >= 2.0, force_aa_on_retina: globals.bool("ForceAntialiasingOnRetina"), ..crate::fonts::MaskRules::STOCK }, custom_boxes: !globals.bool("DisableCustomBoxDrawing"), powerline: false, powerline_extended: globals.bool("SupportPowerlineExtendedSymbols"), powerline_wide: globals.bool("MakeSomePowerlineSymbolsWide"), table: None, fx_cursor: None, monospace: true }
+        DrawPrefs { underline_hyperlinks: globals.bool("UnderlineHyperlinks"), solid_underlines: globals.bool("SolidUnderlines"), metrics, scale, ligatures: crate::fonts::LigatureRules { prefer_speed: globals.bool("PreferSpeedToFullLigatureSupport"), ..STOCK_LIGATURES }, alt_level: STOCK_LIGATURES.level, masks: crate::fonts::MaskRules { retina: scale >= 2.0, force_aa_on_retina: globals.bool("ForceAntialiasingOnRetina"), ..crate::fonts::MaskRules::STOCK }, custom_boxes: !globals.bool("DisableCustomBoxDrawing"), powerline: false, powerline_extended: globals.bool("SupportPowerlineExtendedSymbols"), powerline_wide: globals.bool("MakeSomePowerlineSymbolsWide"), table: None, fx_cursor: None, monospace: true, fx_rules: None, fx_find: None }
     }
 
     /// The metrics to draw with in a cell of height `ch`: the face's, or (none measured) an
@@ -662,6 +666,14 @@ pub fn pane(frame: &mut Frame, screen: &Screen, rect: Rect, cell: (f32, f32), fo
     pane_with(frame, screen, rect, cell, focused, look, &DrawPrefs::default(), None, crate::render::DEFAULT_FACE)
 }
 
+use crate::fx_profile::{BoxKindRule, BoxRule, CursorKind, FxRules, PaintedMark};
+
+/// The Shell rules, for callers that have no profile.
+fn shell_rules() -> &'static FxRules {
+    static SHELL: std::sync::OnceLock<FxRules> = std::sync::OnceLock::new();
+    SHELL.get_or_init(FxRules::default)
+}
+
 /// The cursor's screen row and column, and whether it sits on a wide character; None when
 /// the program hid it or it is scrolled off the view.
 pub fn cursor_cell(screen: &Screen) -> Option<(usize, usize, bool)> {
@@ -744,15 +756,15 @@ fn pane_walled(term: &alacritty_terminal::Term<crate::screen::Listener>, display
 /// Whether a visible row is a box line: most of the pane's cells (columns `pane`, the whole
 /// width without a split) are a horizontal line glyph. A tmux or zellij border row is not one:
 /// it has a junction or frame corner at the pane's edge, a junction in its cells, or a pane title.
-fn box_line(term: &alacritty_terminal::Term<crate::screen::Listener>, display_offset: usize, row: usize, pane: (usize, usize)) -> bool {
+fn box_line(term: &alacritty_terminal::Term<crate::screen::Listener>, display_offset: usize, row: usize, pane: (usize, usize), rules: &BoxRule) -> bool {
     let cols = term.columns();
     let (left, right) = pane;
     if cols == 0 || right < left || right >= cols {
         return false;
     }
-    let n = (left..=right).filter(|&c| matches!(glyph(term, display_offset, row, c), '\u{2500}' | '\u{2501}')).count();
+    let n = (left..=right).filter(|&c| rules.line_glyphs.contains(&glyph(term, display_offset, row, c))).count();
     let width = right - left + 1;
-    if n * 10 < width * 8 {
+    if (n as f32) < width as f32 * rules.line_fill {
         return false;
     }
     let edges = [left.checked_sub(1), Some(right + 1).filter(|&c| c < cols)];
@@ -772,7 +784,7 @@ fn box_line(term: &alacritty_terminal::Term<crate::screen::Listener>, display_of
 /// bottom is a half-block edge row). Colors compare as resolved RGB. The default background is
 /// never a band, and neither is a run whose rows above and below are both single strips with the
 /// band color past them (a vim window between status lines).
-fn band_box(term: &alacritty_terminal::Term<crate::screen::Listener>, palette: &crate::palette::Palette, display_offset: usize, row: usize, col: usize, pane: (usize, usize)) -> Option<(usize, usize, usize, usize, bool)> {
+fn band_box(term: &alacritty_terminal::Term<crate::screen::Listener>, palette: &crate::palette::Palette, display_offset: usize, row: usize, col: usize, pane: (usize, usize), rules: &BoxRule) -> Option<(usize, usize, usize, usize, bool)> {
     use alacritty_terminal::index::{Column, Line};
     let (cols, lines) = (term.columns(), term.screen_lines());
     if row >= lines || col >= cols || pane.1 >= cols || col < pane.0 || col > pane.1 {
@@ -802,11 +814,11 @@ fn band_box(term: &alacritty_terminal::Term<crate::screen::Listener>, palette: &
         return None;
     }
     let (left, right) = run(row, col, color)?;
-    if (right - left + 1) * 2 < width {
+    if ((right - left + 1) as f32) < width as f32 * rules.band_min_width {
         return None;
     }
     let mid = (left + right) / 2;
-    let same = |r: usize| run(r, mid, color).is_some_and(|(l, e)| l.abs_diff(left) <= 2 && e.abs_diff(right) <= 2);
+    let same = |r: usize| run(r, mid, color).is_some_and(|(l, e)| l.abs_diff(left) <= rules.band_tolerance && e.abs_diff(right) <= rules.band_tolerance);
     let (mut top, mut bottom) = (row, row);
     while top > 0 && same(top - 1) {
         top -= 1;
@@ -815,7 +827,7 @@ fn band_box(term: &alacritty_terminal::Term<crate::screen::Listener>, palette: &
         bottom += 1;
     }
     let rows = bottom - top + 1;
-    if rows < 2 || rows > 12 || rows * 2 > lines {
+    if rows < rules.band_rows.0 || rows > rules.band_rows.1 || rows as f32 > lines as f32 * rules.band_max_screen {
         return None;
     }
     // A row differs from the band when under half of the band's columns have its color.
@@ -845,13 +857,13 @@ fn band_box(term: &alacritty_terminal::Term<crate::screen::Listener>, palette: &
 /// junction or the screen's edge (a program's own bars do not); rows stop at the nearest row of
 /// nothing but line glyphs across those columns, past the input box's own lines. A status bar (a top or bottom row with no default background) is left out. Without
 /// a cursor, None (everything counts).
-pub fn output_watch(screen: &Screen) -> Option<(usize, usize, usize, usize)> {
+pub fn output_watch(screen: &Screen, rules: &FxRules) -> Option<(usize, usize, usize, usize)> {
     use alacritty_terminal::index::{Column, Line};
     use alacritty_terminal::vte::ansi::{Color, NamedColor};
     let term = screen.term();
     let offset = term.grid().display_offset();
     let (lines, cols) = (term.screen_lines(), term.columns());
-    let (row, col, _) = cursor_cell(screen).or_else(|| painted_cursor(screen))?;
+    let (row, col, _) = effects_cursor(screen, rules)?;
     let bg = |r: usize, c: usize| term.grid()[Line(r as i32 - offset as i32)][Column(c)].bg;
     // A status bar is colored all along and unlike the row beside it (a program that paints its
     // whole background, as opencode does, colors both the same).
@@ -868,11 +880,11 @@ pub fn output_watch(screen: &Screen) -> Option<(usize, usize, usize, usize)> {
     let cells = |r: usize| (left..=right).map(move |c| glyph(term, offset, r, c));
     let line = |g: char| matches!(g, '\u{2500}' | '\u{2501}');
     // An input box's line: mostly line glyphs, and no frame corner (`╰──╯` is a framed box's edge).
-    let box_row = |r: usize| cells(r).filter(|&g| line(g)).count() * 10 >= (right - left + 1) * 8 && !cells(r).any(is_corner_glyph);
+    let box_row = |r: usize| cells(r).filter(|g| rules.boxes.line_glyphs.contains(g)).count() as f32 >= (right - left + 1) as f32 * rules.boxes.line_fill && !cells(r).any(is_corner_glyph);
     // A pane border: line glyphs or junctions in every cell (a program's rules carry text or gaps).
     let border = |r: usize| cells(r).all(|g| line(g) || is_junction_glyph(g));
     // A line just under the cursor closes its input box; the box's top line is then skipped too.
-    let box_bottom = (row + 1..(last + 1).min(row + 3)).find(|&r| box_row(r));
+    let box_bottom = (row + 1..(last + 1).min(row + 1 + rules.boxes.bottom_within)).find(|&r| box_row(r));
     let box_top = box_bottom.and_then(|_| (first..row).rev().find(|&r| box_row(r)));
     let bottom = (box_bottom.map_or(row + 1, |b| b + 1)..=last).find(|&r| border(r)).map_or(last, |r| r - 1);
     let top = (first..box_top.unwrap_or(row)).rev().find(|&r| border(r)).map_or(first, |r| r + 1);
@@ -883,14 +895,22 @@ pub fn output_watch(screen: &Screen) -> Option<(usize, usize, usize, usize)> {
 /// the lowest two box lines on screen (Claude Code's input box), else the one reverse-video cell
 /// on screen when it sits in a shaded band (`band_box`: Codex, opencode). Row, column, wide, as
 /// `cursor_cell`.
-pub fn painted_cursor(screen: &Screen) -> Option<(usize, usize, bool)> {
+pub fn painted_cursor(screen: &Screen, rules: &FxRules) -> Option<(usize, usize, bool)> {
     use alacritty_terminal::index::{Column, Line};
     let term = screen.term();
     let offset = term.grid().display_offset();
+    let (bx, marks) = (&rules.boxes, &rules.cursor.marks);
+    let palette = &screen.palette;
+    let marked = |cell: &alacritty_terminal::term::cell::Cell| {
+        marks.iter().any(|m| match m {
+            PaintedMark::Reverse => cell.flags.contains(Flags::INVERSE),
+            PaintedMark::Background(c) => palette.color(cell.bg) == *c,
+        })
+    };
     let reverse = |rows: std::ops::Range<usize>| {
         rows.flat_map(move |row| {
             let line = &term.grid()[Line(row as i32 - offset as i32)];
-            (0..term.columns()).filter(move |&c| line[Column(c)].flags.contains(Flags::INVERSE)).map(move |c| (row, c, line[Column(c)].flags.contains(Flags::WIDE_CHAR)))
+            (0..term.columns()).filter(move |&c| marked(&line[Column(c)])).map(move |c| (row, c, line[Column(c)].flags.contains(Flags::WIDE_CHAR)))
         })
     };
     let whole = (0, term.columns().saturating_sub(1));
@@ -902,8 +922,8 @@ pub fn painted_cursor(screen: &Screen) -> Option<(usize, usize, bool)> {
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut below = lines;
     while found.len() < 8 {
-        let Some(bottom) = (1..below).rev().find(|&r| box_line(term, offset, r, whole)) else { break };
-        let Some(top) = (0..bottom).rev().find(|&r| box_line(term, offset, r, whole)) else { break };
+        let Some(bottom) = (1..below).rev().find(|&r| box_line(term, offset, r, whole, bx)) else { break };
+        let Some(top) = (0..bottom).rev().find(|&r| box_line(term, offset, r, whole, bx)) else { break };
         let mut cells = reverse(top + 1..bottom);
         match cells.next().filter(|_| cells.next().is_none()) {
             Some(one) => {
@@ -922,8 +942,8 @@ pub fn painted_cursor(screen: &Screen) -> Option<(usize, usize, bool)> {
         if pane == whole || found.contains(&(row, col, wide)) {
             continue;
         }
-        let Some(bottom) = (row + 1..lines.min(row + 3)).find(|&r| box_line(term, offset, r, pane)) else { continue };
-        let Some(top) = (0..row).rev().find(|&r| box_line(term, offset, r, pane)) else { continue };
+        let Some(bottom) = (row + 1..lines.min(row + 1 + bx.bottom_within)).find(|&r| box_line(term, offset, r, pane, bx)) else { continue };
+        let Some(top) = (0..row).rev().find(|&r| box_line(term, offset, r, pane, bx)) else { continue };
         if !pane_walled(term, offset, pane, top, bottom) {
             continue;
         }
@@ -961,7 +981,16 @@ pub fn painted_cursor(screen: &Screen) -> Option<(usize, usize, bool)> {
     if cells.next().is_some() {
         return None;
     }
-    band_box(term, &screen.palette, offset, one.0, one.1, pane_cols(term, offset, one.0, one.1)).map(|_| one)
+    band_box(term, &screen.palette, offset, one.0, one.1, pane_cols(term, offset, one.0, one.1), bx).map(|_| one)
+}
+
+/// The cursor the effects anchor on: the real one, else (unless the rules say the app's cursor
+/// is always real) the one the app paints.
+pub fn effects_cursor(screen: &Screen, rules: &FxRules) -> Option<(usize, usize, bool)> {
+    match rules.cursor.kind {
+        CursorKind::Real => cursor_cell(screen),
+        CursorKind::Painted | CursorKind::Either => cursor_cell(screen).or_else(|| painted_cursor(screen, rules)),
+    }
 }
 
 /// Whether the cursor blinks where someone can see it: a program that hid it (DECTCEM) or
@@ -1422,7 +1451,7 @@ pub fn pane_with(
     // The cursor's logical cell; `cursor` below is where it draws once rows are in display order.
     // While an effect runs, Claude Code's painted cursor stands in for a hidden real one, so the
     // effects find a cursor in their color (`painted_cursor`).
-    let painted = (draw.fx_cursor.is_some() && focused && ime.is_none() && cursor_cell(screen).is_none()).then(|| painted_cursor(screen)).flatten();
+    let painted = (draw.fx_cursor.is_some() && focused && ime.is_none() && cursor_cell(screen).is_none()).then(|| effects_cursor(screen, draw.fx_find.as_deref().unwrap_or(shell_rules()))).flatten();
     let shape = if painted.is_some() { CursorShape::Block } else { content.cursor.shape };
     let cursor_at = cursor_cell(screen).or(painted).filter(|_| ime.is_none() && look.visible && look.alpha > CURSOR_MIN_ALPHA && !(look.hide_unfocused && !focused)).map(|(row, col, _)| (row, col));
     let wide_cursor = cursor_cell(screen).or(painted).is_some_and(|(_, _, w)| w);
@@ -1877,14 +1906,15 @@ pub fn pane_with(
             crate::render_fx::Cursor { rect: [r.x, r.y, r.w, r.h], color: [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0, 1.0], style: kind, visible: true }
         });
         let program_cursor = term.colors()[alacritty_terminal::vte::ansi::NamedColor::Cursor as usize];
+        let rules = draw.fx_rules.as_deref().unwrap_or(shell_rules());
         let input_box = cursor.and_then(|(row, col)| {
             let pane = pane_cols(term, content.display_offset, row, col);
             let whole = (0, term.columns().saturating_sub(1));
             let mid = |r: usize| rect.y + r as f32 * ch + ch / 2.0;
             let lines_in = |pane: (usize, usize)| {
-                let box_row = |r: usize| box_line(term, content.display_offset, r, pane);
+                let box_row = |r: usize| box_line(term, content.display_offset, r, pane, &rules.boxes);
                 let split = pane != whole;
-                let bottom = (row + 1..lines.min(row + 3)).find(|&r| box_row(r))?;
+                let bottom = (row + 1..lines.min(row + 1 + rules.boxes.bottom_within)).find(|&r| box_row(r))?;
                 let top = (0..row).rev().find(|&r| box_row(r))?;
                 if split && !pane_walled(term, content.display_offset, pane, top, bottom) {
                     return None;
@@ -1895,10 +1925,13 @@ pub fn pane_with(
             };
             // A tall rounded box has `│` columns that look like a border: when the pane finds
             // nothing, the whole width is judged as before.
-            let lines_box = lines_in(pane).or_else(|| if pane != whole { lines_in(whole) } else { None });
+            let lines_box = if matches!(rules.boxes.kind, BoxKindRule::Lines | BoxKindRule::Either) { lines_in(pane).or_else(|| if pane != whole { lines_in(whole) } else { None }) } else { None };
             // A line box wins over a band.
             lines_box.or_else(|| {
-                let (top, bottom, left, right, half) = band_box(term, palette, content.display_offset, row, col, pane)?;
+                if !matches!(rules.boxes.kind, BoxKindRule::Band | BoxKindRule::Either) {
+                    return None;
+                }
+                let (top, bottom, left, right, half) = band_box(term, palette, content.display_offset, row, col, pane, &rules.boxes)?;
                 let bottom_px = if half { mid(bottom) } else { rect.y + (bottom + 1) as f32 * ch };
                 Some(InputBox { top: rect.y + top as f32 * ch, bottom: bottom_px, kind: BoxKind::Band, left: rect.x + left as f32 * cw, right: rect.x + (right + 1) as f32 * cw })
             })
@@ -9977,13 +10010,29 @@ mod agent_box_tests {
             s.feed(&std::fs::read(format!("{dir}{name}.raw")).unwrap());
             let r = |v: f32| v.round() as i64;
             let boxed = fx_of(&s).input_box.map(|b| (b.kind, r(b.top), r(b.bottom), r(b.left), r(b.right)));
-            out.push_str(&format!("{name} watch={:?} cursor={:?} box={:?}\n", output_watch(&s), cursor_cell(&s).or_else(|| painted_cursor(&s)), boxed));
+            out.push_str(&format!("{name} watch={:?} cursor={:?} box={:?}\n", output_watch(&s, &FxRules::default()), effects_cursor(&s, &FxRules::default()), boxed));
         }
         let file = format!("{dir}expected.txt");
         if std::env::var("TERMURION_BLESS").is_ok() {
             std::fs::write(&file, &out).unwrap();
         }
         assert_eq!(out, std::fs::read_to_string(&file).unwrap());
+    }
+
+    #[test]
+    fn a_custom_profile_reads_a_box_shell_rules_do_not() {
+        let line = "\u{2550}".repeat(80);
+        let mut s = crate::screen::Screen::new(80, 20);
+        s.feed(format!("\x1b[2J\x1b[9;1H{line}\x1b[10;1H\u{3bb} \x1b[11;1H{line}\x1b[10;3H").as_bytes());
+        assert_eq!(fx_of(&s).input_box, None, "the Shell rules know no double line");
+        let mut rules = FxRules::default();
+        rules.boxes.line_glyphs = vec!['\u{2550}'];
+        let draw = DrawPrefs { fx_cursor: Some(crate::palette::rgb(255, 0, 0)), fx_rules: Some(std::sync::Arc::new(rules)), ..Default::default() };
+        let mut frame = Frame::default();
+        let rect = crate::layout::Rect { x: 0.0, y: 0.0, w: 1000.0, h: 600.0 };
+        pane_with(&mut frame, &s, rect, (10.0, 20.0), true, &crate::cursor_look::CursorLook::shown(true), &draw, None, crate::render::DEFAULT_FACE);
+        let b = frame.fx.expect("an fx pane").input_box.expect("a line box");
+        assert_eq!((b.kind, b.top, b.bottom), (BoxKind::Lines, 170.0, 210.0));
     }
 
     fn feed(rows: usize, o: &str) -> FxPane {
@@ -10119,7 +10168,7 @@ mod agent_box_tests {
         }
         o += &format!("\x1b[20;51H{line}\x1b[21;51H\u{276f} \x1b[7m \x1b[0m\x1b[22;51H{line}\x1b[?25l");
         s.feed(o.as_bytes());
-        assert_eq!(painted_cursor(&s), Some((20, 52, false)));
+        assert_eq!(painted_cursor(&s, &FxRules::default()), Some((20, 52, false)));
     }
 
     #[test]
@@ -10226,9 +10275,9 @@ mod agent_box_tests {
         // The top pane is busy: its spinner is the last thing drawn, and the bottom box no longer wins.
         let (mut s, o) = stacked();
         s.feed(format!("{o}\x1b[6;1HScurrying").as_bytes());
-        assert_eq!(painted_cursor(&s), Some((9, 2, false)));
+        assert_eq!(painted_cursor(&s, &FxRules::default()), Some((9, 2, false)));
         s.feed(b"\x1b[28;1Hstatus");
-        assert_eq!(painted_cursor(&s), Some((25, 2, false)));
+        assert_eq!(painted_cursor(&s, &FxRules::default()), Some((25, 2, false)));
     }
 
     #[test]
@@ -10239,7 +10288,7 @@ mod agent_box_tests {
         // Both arrive in one read: the echo still marks the top pane.
         s.note_typed();
         s.feed(b"\x1b[10;3Hx\x1b[7m \x1b[0m\x1b[23;1HScurrying");
-        assert_eq!(painted_cursor(&s), Some((9, 3, false)));
+        assert_eq!(painted_cursor(&s, &FxRules::default()), Some((9, 3, false)));
         assert_eq!(fx_of(&s).input_box.map(|b| [b.top, b.bottom]), Some([170.0, 210.0]), "the effects ring the top box");
     }
 
@@ -10252,10 +10301,10 @@ mod agent_box_tests {
         s.feed(o.as_bytes());
         s.note_typed();
         s.feed(b"\x1b[10;3Hx\x1b[7m \x1b[0m\x1b[12;1H");
-        assert_eq!(painted_cursor(&s), Some((9, 3, false)));
+        assert_eq!(painted_cursor(&s, &FxRules::default()), Some((9, 3, false)));
         s.note_typed();
         s.feed(format!("\x1b[15;1H\x1b[32m{}\x1b[39m\x1b(B\x1b[m\x1b[28;80H", "\u{2500}".repeat(80)).as_bytes());
-        assert_eq!(painted_cursor(&s), Some((25, 2, false)), "the bottom pane, where tmux left the cursor");
+        assert_eq!(painted_cursor(&s, &FxRules::default()), Some((25, 2, false)), "the bottom pane, where tmux left the cursor");
     }
 
     #[test]
@@ -10264,13 +10313,13 @@ mod agent_box_tests {
         s.feed(o.as_bytes());
         s.note_typed();
         s.feed(b"\x1b[10;3Hx\x1b[7m \x1b[0m");
-        assert_eq!(output_watch(&s), Some((0, 13, 0, 79)), "the top pane: past its box, up to the border");
+        assert_eq!(output_watch(&s, &FxRules::default()), Some((0, 13, 0, 79)), "the top pane: past its box, up to the border");
         s.note_typed();
         s.feed(b"\x1b[26;3Hy\x1b[7m \x1b[0m");
-        assert_eq!(output_watch(&s), Some((15, 29, 0, 79)), "the bottom pane: from the border down");
+        assert_eq!(output_watch(&s, &FxRules::default()), Some((15, 29, 0, 79)), "the bottom pane: from the border down");
         let mut plain = crate::screen::Screen::new(40, 10);
         plain.feed(b"$ ls");
-        assert_eq!(output_watch(&plain), Some((0, 9, 0, 39)), "no split: the whole screen");
+        assert_eq!(output_watch(&plain, &FxRules::default()), Some((0, 9, 0, 39)), "no split: the whole screen");
     }
 
     #[test]
@@ -10281,7 +10330,7 @@ mod agent_box_tests {
             o += &format!("\x1b[{r};50H\u{2502}");
         }
         s.feed(format!("{o}\x1b[30;1H\x1b[42m{}\x1b[0m\x1b[5;55H$ ", " ".repeat(100)).as_bytes());
-        assert_eq!(output_watch(&s), Some((0, 28, 50, 99)), "the right pane, without tmux's status bar");
+        assert_eq!(output_watch(&s, &FxRules::default()), Some((0, 28, 50, 99)), "the right pane, without tmux's status bar");
     }
 
     #[test]
@@ -10295,7 +10344,7 @@ mod agent_box_tests {
         s.feed(b"\x1b[10;3Hx\x1b[7m \x1b[0m");
         let mut sig = Signals::default();
         sig.enter(t0);
-        s.watch_output(output_watch(&s));
+        s.watch_output(output_watch(&s, &FxRules::default()));
         let feed = |s: &mut crate::screen::Screen, sig: &mut Signals, bytes: &[u8], at: std::time::Instant| {
             s.feed(bytes);
             if s.watched_output() {
@@ -10319,7 +10368,7 @@ mod agent_box_tests {
         // Enter in the top pane again: only the bottom pane talks, and done never fires.
         let t1 = t0 + ms(10_000);
         sig.enter(t1);
-        s.watch_output(output_watch(&s));
+        s.watch_output(output_watch(&s, &FxRules::default()));
         let fired = (0..60).any(|i| feed(&mut s, &mut sig, b"\x1b[20;1HScurrying\x1b[10;4H", t1 + ms(i * 100)));
         assert!(!fired, "the bottom pane's work is not this pane's answer");
     }
@@ -10339,7 +10388,7 @@ mod agent_box_tests {
         s.note_typed();
         s.feed(b"\x1b[21;3H\x1b[7m \x1b[0m");
         s.feed(b"\x1b[24;51Hspinner");
-        assert_eq!(painted_cursor(&s), Some((20, 2, false)));
+        assert_eq!(painted_cursor(&s, &FxRules::default()), Some((20, 2, false)));
     }
 
     #[test]
@@ -10358,10 +10407,10 @@ mod agent_box_tests {
         s.note_typed();
         s.feed(b"\x1b[21;53H\x1b[7m \x1b[0m");
         s.feed(b"\x1b[3;1HScurrying");
-        assert_eq!(painted_cursor(&s), Some((20, 52, false)), "the bottom right pane");
+        assert_eq!(painted_cursor(&s, &FxRules::default()), Some((20, 52, false)), "the bottom right pane");
         s.note_typed();
         s.feed(b"\x1b[6;3H\x1b[7m \x1b[0m");
-        assert_eq!(painted_cursor(&s), Some((5, 2, false)), "the top pane");
+        assert_eq!(painted_cursor(&s, &FxRules::default()), Some((5, 2, false)), "the top pane");
     }
 
     #[test]
@@ -10378,7 +10427,7 @@ mod agent_box_tests {
         }
         o += &format!("\x1b[20;51H{line}\x1b[21;51H\u{276f} \x1b[7m \x1b[0m\x1b[22;51H{line}\x1b[?25l");
         s.feed(o.as_bytes());
-        assert_eq!(painted_cursor(&s), None);
+        assert_eq!(painted_cursor(&s, &FxRules::default()), None);
     }
 
     #[test]

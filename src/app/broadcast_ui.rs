@@ -48,7 +48,7 @@ impl App {
         {
             p.fx_signal.enter(Instant::now());
             // In tmux another pane's output must not hold back or fire this pane's done.
-            let watch = crate::scene::output_watch(&p.screen);
+            let watch = crate::scene::output_watch(&p.screen, &crate::fx_profile::FxRules::default());
             p.screen.watch_output(watch);
         }
         self.write_to_domain(sender, bytes, what, false);
