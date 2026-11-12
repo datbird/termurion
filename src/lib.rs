@@ -8,6 +8,7 @@
 
 pub mod platform;
 pub mod fx_profile;
+pub mod fx_store;
 pub mod posix_words;
 pub mod mouse;
 pub mod scrollbar;
