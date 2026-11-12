@@ -1009,6 +1009,8 @@ impl Screen {
         self.term.set_grow_keeps_rows(self.pty_backed);
         self.cut_bar_tail(cols);
         self.term.resize(GridSize { cols, rows });
+        // The watched pane moved: any output counts again.
+        self.term.print_watch = None;
         self.sync_selection();
         // Reflow moved rows: triggers go on from the cursor.
         self.triggers_from_cursor();
@@ -1305,6 +1307,19 @@ impl Screen {
 
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
+    }
+
+    /// After Enter, only characters printed in these visible rows and columns (top, bottom,
+    /// first, last) count as the program's output (`watched_output`); None counts all of them.
+    pub fn watch_output(&mut self, rows_cols: Option<(usize, usize, usize, usize)>) {
+        let offset = self.term.grid().display_offset() as i32;
+        self.term.print_watch = rows_cols.map(|(t, b, l, r)| (t as i32 - offset, b as i32 - offset, l, r));
+        self.term.watch_hit = false;
+    }
+
+    /// Whether the output since the last call printed in the watched cells (always, unwatched).
+    pub fn watched_output(&mut self) -> bool {
+        std::mem::take(&mut self.term.watch_hit) || self.term.print_watch.is_none()
     }
 
     /// The user sent keys: the next printed character shows where they went (`echo_at`).

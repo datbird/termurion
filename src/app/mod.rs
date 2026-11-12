@@ -8073,7 +8073,9 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         for id in &outputs {
-            if let Some(p) = self.panes.get_mut(id) {
+            if let Some(p) = self.panes.get_mut(id)
+                && p.screen.watched_output()
+            {
                 p.fx_signal.output(now);
             }
         }

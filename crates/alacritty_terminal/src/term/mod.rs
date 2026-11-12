@@ -432,6 +432,11 @@ pub struct Term<T> {
     pub echo_armed: bool,
     pub echo_point: Option<Point>,
 
+    /// Termurion patch: a block of cells (top line, bottom line, first column, last column);
+    /// `watch_hit` turns true when a character is printed inside it.
+    pub print_watch: Option<(i32, i32, usize, usize)>,
+    pub watch_hit: bool,
+
     /// Termurion: whether a scroll region that starts at the top but stops above the bottom row
     /// saves the lines leaving it to scrollback (iTerm2's Scrollback With Status Bar).
     scrollback_with_region: bool,
@@ -583,6 +588,8 @@ impl<T> Term<T> {
             printed: 0,
             echo_armed: false,
             echo_point: None,
+            print_watch: None,
+            watch_hit: false,
             scrollback_with_region: true,
             cursor_blink_change: true,
             active_charset: Default::default(),
@@ -1677,6 +1684,12 @@ impl<T: EventListener> Handler for Term<T> {
         if self.echo_armed {
             self.echo_armed = false;
             self.echo_point = Some(self.grid.cursor.point);
+        }
+        if let Some((top, bottom, left, right)) = self.print_watch {
+            let p = self.grid.cursor.point;
+            if (top..=bottom).contains(&p.line.0) && (left..=right).contains(&p.column.0) {
+                self.watch_hit = true;
+            }
         }
 
         if width == 1 {

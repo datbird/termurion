@@ -839,6 +839,46 @@ fn band_box(term: &alacritty_terminal::Term<crate::screen::Listener>, palette: &
     Some((top, if edge { bottom + 1 } else { bottom }, left, right, edge))
 }
 
+/// The cells (top row, bottom row, first col, last col) whose printing after Enter is the
+/// program's answer: the multiplexer pane around the effects' cursor, so another tmux pane's
+/// output neither holds back nor fires done. Columns stop at a vertical border whose ends meet a
+/// junction or the screen's edge (a program's own bars do not); rows stop at the nearest row of
+/// nothing but line glyphs across those columns, past the input box's own lines. A status bar (a top or bottom row with no default background) is left out. Without
+/// a cursor, None (everything counts).
+pub fn output_watch(screen: &Screen) -> Option<(usize, usize, usize, usize)> {
+    use alacritty_terminal::index::{Column, Line};
+    use alacritty_terminal::vte::ansi::{Color, NamedColor};
+    let term = screen.term();
+    let offset = term.grid().display_offset();
+    let (lines, cols) = (term.screen_lines(), term.columns());
+    let (row, col, _) = cursor_cell(screen).or_else(|| painted_cursor(screen))?;
+    let bg = |r: usize, c: usize| term.grid()[Line(r as i32 - offset as i32)][Column(c)].bg;
+    // A status bar is colored all along and unlike the row beside it (a program that paints its
+    // whole background, as opencode does, colors both the same).
+    let status = |r: usize, beside: usize| r != row && (0..cols).all(|c| bg(r, c) != Color::Named(NamedColor::Background)) && bg(r, 0) != bg(beside, 0);
+    let first = if lines > 1 && status(0, 1) { 1 } else { 0 };
+    let last = if lines > 1 && status(lines - 1, lines - 2) { lines - 2 } else { lines - 1 };
+    let wall = |c: usize| {
+        border_run(term, offset, c, row).is_some_and(|(top, bottom)| {
+            (top <= first || is_junction_glyph(glyph(term, offset, top, c))) && (bottom >= last || is_junction_glyph(glyph(term, offset, bottom, c)))
+        })
+    };
+    let left = (0..col).rev().find(|&c| wall(c)).map_or(0, |c| c + 1);
+    let right = (col + 1..cols).find(|&c| wall(c)).map_or(cols - 1, |c| c - 1);
+    let cells = |r: usize| (left..=right).map(move |c| glyph(term, offset, r, c));
+    let line = |g: char| matches!(g, '\u{2500}' | '\u{2501}');
+    // An input box's line: mostly line glyphs, and no frame corner (`╰──╯` is a framed box's edge).
+    let box_row = |r: usize| cells(r).filter(|&g| line(g)).count() * 10 >= (right - left + 1) * 8 && !cells(r).any(is_corner_glyph);
+    // A pane border: line glyphs or junctions in every cell (a program's rules carry text or gaps).
+    let border = |r: usize| cells(r).all(|g| line(g) || is_junction_glyph(g));
+    // A line just under the cursor closes its input box; the box's top line is then skipped too.
+    let box_bottom = (row + 1..(last + 1).min(row + 3)).find(|&r| box_row(r));
+    let box_top = box_bottom.and_then(|_| (first..row).rev().find(|&r| box_row(r)));
+    let bottom = (box_bottom.map_or(row + 1, |b| b + 1)..=last).find(|&r| border(r)).map_or(last, |r| r - 1);
+    let top = (first..box_top.unwrap_or(row)).rev().find(|&r| border(r)).map_or(first, |r| r + 1);
+    Some((top, bottom, left, right))
+}
+
 /// The cursor a program paints when it hides the real one: the one reverse-video cell between
 /// the lowest two box lines on screen (Claude Code's input box), else the one reverse-video cell
 /// on screen when it sits in a shaded band (`band_box`: Codex, opencode). Row, column, wide, as
@@ -10189,6 +10229,72 @@ mod agent_box_tests {
     }
 
     #[test]
+    fn output_watch_is_the_tmux_pane_around_the_input_box() {
+        let (mut s, o) = stacked();
+        s.feed(o.as_bytes());
+        s.note_typed();
+        s.feed(b"\x1b[10;3Hx\x1b[7m \x1b[0m");
+        assert_eq!(output_watch(&s), Some((0, 13, 0, 79)), "the top pane: past its box, up to the border");
+        s.note_typed();
+        s.feed(b"\x1b[26;3Hy\x1b[7m \x1b[0m");
+        assert_eq!(output_watch(&s), Some((15, 29, 0, 79)), "the bottom pane: from the border down");
+        let mut plain = crate::screen::Screen::new(40, 10);
+        plain.feed(b"$ ls");
+        assert_eq!(output_watch(&plain), Some((0, 9, 0, 39)), "no split: the whole screen");
+    }
+
+    #[test]
+    fn output_watch_stops_at_a_side_border() {
+        let mut s = crate::screen::Screen::new(100, 30);
+        let mut o = String::new();
+        for r in 1..=29 {
+            o += &format!("\x1b[{r};50H\u{2502}");
+        }
+        s.feed(format!("{o}\x1b[30;1H\x1b[42m{}\x1b[0m\x1b[5;55H$ ", " ".repeat(100)).as_bytes());
+        assert_eq!(output_watch(&s), Some((0, 28, 50, 99)), "the right pane, without tmux's status bar");
+    }
+
+    #[test]
+    fn another_tmux_pane_neither_holds_back_nor_fires_done() {
+        use crate::render_fx::{Signal, Signals};
+        let ms = |n: u64| std::time::Duration::from_millis(n);
+        let t0 = std::time::Instant::now();
+        let (mut s, o) = stacked();
+        s.feed(o.as_bytes());
+        s.note_typed();
+        s.feed(b"\x1b[10;3Hx\x1b[7m \x1b[0m");
+        let mut sig = Signals::default();
+        sig.enter(t0);
+        s.watch_output(output_watch(&s));
+        let feed = |s: &mut crate::screen::Screen, sig: &mut Signals, bytes: &[u8], at: std::time::Instant| {
+            s.feed(bytes);
+            if s.watched_output() {
+                sig.output(at);
+            }
+            sig.tick(at)
+        };
+        // The top pane answers for 2 seconds while the bottom pane's spinner runs for 6.
+        let mut fired = None;
+        for i in 0..60 {
+            let at = t0 + ms(i * 100);
+            if i < 20 && feed(&mut s, &mut sig, b"\x1b[7;1HScurrying", at) {
+                fired.get_or_insert(i);
+            }
+            if feed(&mut s, &mut sig, b"\x1b[20;1HScurrying\x1b[10;4H", at) {
+                fired.get_or_insert(i);
+            }
+        }
+        assert_eq!(fired, Some(31), "done 1.2 s after the top pane went quiet, the bottom pane notwithstanding");
+        assert_eq!(sig.current(t0 + ms(3200)), Some(Signal::Done));
+        // Enter in the top pane again: only the bottom pane talks, and done never fires.
+        let t1 = t0 + ms(10_000);
+        sig.enter(t1);
+        s.watch_output(output_watch(&s));
+        let fired = (0..60).any(|i| feed(&mut s, &mut sig, b"\x1b[20;1HScurrying\x1b[10;4H", t1 + ms(i * 100)));
+        assert!(!fired, "the bottom pane's work is not this pane's answer");
+    }
+
+    #[test]
     fn side_by_side_panes_follow_the_pane_typed_in() {
         let mut s = crate::screen::Screen::new(100, 30);
         let line = "\u{2500}".repeat(49);
@@ -10254,3 +10360,4 @@ mod agent_box_tests {
         assert_eq!((b.kind, b.top, b.bottom), (BoxKind::Lines, 90.0, 150.0));
     }
 }
+

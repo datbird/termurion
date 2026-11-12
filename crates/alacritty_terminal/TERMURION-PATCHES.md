@@ -218,4 +218,10 @@ test data) is left out. Changes:
     RIS, mode 69 off and a resize reset them. tmux turns margins on for Termurion and redrew
     side-by-side panes wrongly without them.
 
+39. `term/mod.rs`: where printing lands, for the cursor effects. `echo_armed` (set by a
+    keystroke) makes the next printed character record its cell in `echo_point`. `print_watch`
+    is a block of cells (top line, bottom line, first column, last column); a character printed
+    inside it sets `watch_hit`. Termurion watches the tmux pane Enter was pressed in, so another
+    pane's output does not hold back or fire that pane's done effect.
+
 To update alacritty_terminal, copy the new version here and apply these changes again.
