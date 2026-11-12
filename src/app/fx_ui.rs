@@ -202,3 +202,64 @@ mod tests {
         assert_eq!(xterm_256(255), [238.0 / 255.0; 3]);
     }
 }
+
+/// Detection runs for a pane at most this often.
+const DETECT_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+/// The folder is looked at this often.
+const FOLDER_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+impl App {
+    /// Reloads the FX profile folder, and picks each pane's profile when it got output or a
+    /// key (or the focus moved to it), at most four times a second. The time of the next look.
+    pub(super) fn tick_fx_profiles(&mut self) -> Option<Instant> {
+        let now = Instant::now();
+        let reloaded = self.fx_profiles.refresh(now);
+        if reloaded {
+            self.fx_find = self.fx_profiles.find_rules();
+        }
+        let focused = self.tabs.get(self.active).map(|t| t.focused);
+        if focused != self.fx_focus {
+            self.fx_focus = focused;
+            if let Some(p) = focused.and_then(|id| self.panes.get_mut(&id)) {
+                p.fx_dirty = true;
+            }
+        }
+        let mut due = Some(now + FOLDER_EVERY);
+        let ids: Vec<PaneId> = self.panes.keys().copied().collect();
+        for id in ids {
+            let Some(p) = self.panes.get(&id) else { continue };
+            if !(reloaded || p.fx_dirty) {
+                continue;
+            }
+            if let Some(next) = p.fx_checked.map(|t| t + DETECT_EVERY).filter(|&n| n > now && !reloaded) {
+                due = due.map(|d| d.min(next));
+                continue;
+            }
+            let picked = p.fx_pick.as_ref().and_then(|n| self.fx_profiles.by_name(n));
+            // A job is read only when Auto will use it: the process table is not free.
+            let job = if picked.is_none() { self.fx_job(id) } else { None };
+            let Some(p) = self.panes.get_mut(&id) else { continue };
+            p.fx_dirty = false;
+            p.fx_checked = Some(now);
+            p.fx_rules = match picked {
+                Some(rules) => rules,
+                None => {
+                    p.fx_memory.forget_cleared(&p.screen);
+                    p.fx_memory.choose(&self.fx_profiles, &p.screen, job.as_deref()).1
+                }
+            };
+        }
+        due
+    }
+
+    /// The foreground program of a local pane's shell. None when tmux or ssh sits in between,
+    /// where its name says nothing about what the screen shows.
+    fn fx_job(&self, id: PaneId) -> Option<String> {
+        if self.tmux.contains_key(&id) {
+            return None;
+        }
+        let name = self.panes.get(&id)?.shell_pid().and_then(crate::platform::proc::foreground_job)?.name;
+        let base = name.trim().trim_end_matches(".exe").to_ascii_lowercase();
+        (!matches!(base.as_str(), "tmux" | "ssh" | "mosh" | "mosh-client" | "autossh")).then_some(name)
+    }
+}

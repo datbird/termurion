@@ -1323,6 +1323,11 @@ pub struct App {
     utilities: Option<PathBuf>,
     clipboard: Option<crate::platform::clipboard::Clipboard>,
     store: Store,
+    /// The FX profiles (shipped and the user's FXProfiles folder), and the union that finds the cursor.
+    fx_profiles: crate::fx_store::Store,
+    fx_find: Arc<crate::fx_profile::FxRules>,
+    /// The focused pane last time detection looked, to re-run it on a focus change.
+    fx_focus: Option<PaneId>,
     settings: Option<SettingsWindow>,
     profiles_win: Option<SettingsWindow>,
     /// When unsaved settings edits are due to be written.
@@ -2315,6 +2320,7 @@ pub fn run() {
     let ui_element_confirmed = globals.bool(crate::presence::UI_ELEMENT_KEY);
     let cockpit_view = cockpit_app::initial_view(&globals);
     let (web_envs, web_events) = webhost_app::Envs::seeded(adblock_app::proxy_args_of(&globals), globals.bool("WebKitAdblockEnabled"));
+    let fx_profiles = crate::fx_store::Store::open(&crate::fx_store::user_dir());
     let mut app = App {
         host,
         hotkey: None,
@@ -2737,6 +2743,9 @@ pub fn run() {
         utilities,
         clipboard: crate::platform::clipboard::Clipboard::new().ok(),
         store,
+        fx_find: fx_profiles.find_rules(),
+        fx_profiles,
+        fx_focus: None,
         settings: None,
         save_due: None,
         logout_armed: false,
@@ -6906,7 +6915,7 @@ impl App {
                 // face; the window's chrome (after the loop) keeps the default cell and face.
                 let cell = self.pane_cell(id);
                 let face = self.pane_faces.face(id).unwrap_or(crate::render::DEFAULT_FACE);
-                let draw = self.draw_prefs_for(face);
+                let mut draw = self.draw_prefs_for(face);
                 let receives = self.broadcast.receives(&bview, id);
                 let sends = self.broadcast.sends(&bview, id);
                 if let Some(b) = backgrounds.iter().find(|b| b.pane == id) {
@@ -6975,6 +6984,7 @@ impl App {
                             held_updates.push((id, None, p.screen.cursor_hidden_at.map(|t| t + crate::flicker::HOLD)));
                         }
                         None => {
+                            draw.fx_rules = Some(p.fx_rules.clone());
                             scene::pane_with(&mut frame, &p.screen, self.text_rect(id, rect), cell, self.focused && id == tab.focused, &self.cursor_look_for(id, self.focused && id == tab.focused, cover.is_none()), &draw, Some(&hl), face);
                             if let Some(c) = cover {
                                 composer_ui::skip_covered(&mut frame.overlay, overlay_from, &mut frame.underlines, underline_from, &mut frame.strikes, strike_from, &mut frame.glyphs, glyph_from, c);
@@ -7972,7 +7982,8 @@ impl ApplicationHandler<UserEvent> for App {
         let (update_wake, tip_of_day_wake) = (update_app::idle_due(self.update_due, self.resident), update_app::idle_due(self.tip_due, self.resident));
         let egui_due = crate::egui_host::delayed_repaints(Instant::now());
         let gpu_due = self.gpu_recovery_tick();
-        let wake = [gpu_due, egui_due, tray_due, workgroup_due, jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, panels_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
+        let fx_due = self.tick_fx_profiles();
+        let wake = [fx_due, gpu_due, egui_due, tray_due, workgroup_due, jump_due, bindings_due, cmdinfo_due, pathnav_due, command_due, open_due, ended_due, restart_due, self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, scrollbars, self.attention_due, badge_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, panels_due, self.catalog_due, self.suppressed_retitle_due, update_wake, tip_of_day_wake, self.access_due, dynamic_due, icon_due, browser_due, tip_due, flash_due, ai_due, chat_due, orch_due, chat_window_due, cockpit_due, desktop_due, self.display_due, sel_scroll_due, cursor_due, frame_due, flicker_due, progress_due, sleep_due].into_iter().flatten().min();
         match wake {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),

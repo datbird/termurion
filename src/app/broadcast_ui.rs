@@ -42,14 +42,18 @@ impl App {
     /// User input from `sender`: to every session of its broadcast domain (the same bytes,
     /// as the sender encoded them), or to the sender alone.
     pub(super) fn user_write(&mut self, sender: PaneId, bytes: &[u8], what: Write) {
-        // Render plugins: a typed Enter is cursor-fx's Enter signal (no hook needed on the host).
-        if what == Write::Key && bytes == b"\r"
+        if what == Write::Key
             && let Some(p) = self.panes.get_mut(&sender)
         {
-            p.fx_signal.enter(Instant::now());
-            // In tmux another pane's output must not hold back or fire this pane's done.
-            let watch = crate::scene::output_watch(&p.screen, &crate::fx_profile::FxRules::default());
-            p.screen.watch_output(watch);
+            // A key may move the cursor to another tmux pane: detection looks again.
+            p.fx_dirty = true;
+            // Render plugins: a typed Enter is cursor-fx's Enter signal (no hook needed on the host).
+            if bytes == b"\r" {
+                p.fx_signal.enter(Instant::now());
+                // In tmux another pane's output must not hold back or fire this pane's done.
+                let watch = crate::scene::output_watch(&p.screen, &p.fx_rules);
+                p.screen.watch_output(watch);
+            }
         }
         self.write_to_domain(sender, bytes, what, false);
     }

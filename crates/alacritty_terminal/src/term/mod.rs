@@ -401,6 +401,9 @@ pub struct Term<T> {
     /// holder of row numbers that a clear shifts.
     pub history_clears: u64,
 
+    /// Termurion patch: how many times ED 2 or ED 3 ran, for detection that forgets on a clear.
+    pub erases: u64,
+
     /// Termurion patch: a tab at the last column wraps to the next line (iTerm2's tabsWrapAround).
     pub tabs_wrap: bool,
 
@@ -579,6 +582,7 @@ impl<T> Term<T> {
             resize_reports: false,
             resets: 0,
             history_clears: 0,
+            erases: 0,
             tabs_wrap: false,
             max_url_len: 2_097_152,
             alt_scrollback: true,
@@ -2511,6 +2515,7 @@ impl<T: EventListener> Handler for Term<T> {
                 self.selection = self.selection.take().filter(|s| !s.intersects_range(range));
             },
             ansi::ClearMode::All => {
+                self.erases += 1;
                 if self.mode.contains(TermMode::ALT_SCREEN) {
                     // Termurion patch: iTerm2 always scrolls the alternate screen into its history
                     // before a full clear (`VT100ScreenMutableState.m:1712-1720`).
@@ -2533,6 +2538,7 @@ impl<T: EventListener> Handler for Term<T> {
                 self.selection = None;
             },
             ansi::ClearMode::Saved if self.history_size() > 0 => {
+                self.erases += 1;
                 self.grid.clear_history();
                 self.history_clears += 1;
 
@@ -2542,7 +2548,7 @@ impl<T: EventListener> Handler for Term<T> {
                 self.selection = self.selection.take().filter(|s| !s.intersects_range(..Line(0)));
             },
             // We have no history to clear.
-            ansi::ClearMode::Saved => (),
+            ansi::ClearMode::Saved => self.erases += 1,
         }
 
         self.mark_fully_damaged();

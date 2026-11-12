@@ -344,6 +344,9 @@ pub struct Screen {
     pub progress: crate::progress::Progress,
     /// `Term::resets` as last looked at.
     resets_seen: u64,
+    /// Clears seen: ED 2, ED 3, RIS and leaving the alternate screen (FX detection forgets on a change).
+    pub clears: u64,
+    erases_seen: u64,
     /// History splices taken so far (an alternate screen's rows joined the main history).
     splices_taken: u64,
     /// When output last arrived (Idle and Activity After Idle event triggers).
@@ -726,6 +729,8 @@ impl Screen {
             bell_count: 0,
             progress: crate::progress::Progress::Stopped,
             resets_seen: 0,
+            clears: 0,
+            erases_seen: 0,
             splices_taken: 0,
             last_output: None,
             next_porthole: 0,
@@ -2376,7 +2381,10 @@ impl Screen {
         });
         self.parser.advance(&mut self.term, bytes);
         // RIS stops the progress bar (`terminalDidReset`).
+        self.clears += self.term.erases - self.erases_seen;
+        self.erases_seen = self.term.erases;
         if self.term.resets != self.resets_seen {
+            self.clears += 1;
             self.resets_seen = self.term.resets;
             self.set_progress(crate::progress::Progress::Stopped);
             self.pointer = None;
@@ -2411,6 +2419,7 @@ impl Screen {
             // Back on the main screen: rows may have moved meanwhile (a resize), and the
             // checkpoint goes to the main screen's cursor.
             if !alt {
+                self.clears += 1;
                 self.composer_rows_moved();
             }
         }

@@ -414,6 +414,7 @@ impl App {
             prefs.monospace = g.renderer.face_monospace(face);
             prefs.fx_cursor = g.fx.as_ref().and_then(|f| f.cursor_color());
         }
+        prefs.fx_find = Some(self.fx_find.clone());
         prefs
     }
 }

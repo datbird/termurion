@@ -984,6 +984,31 @@ pub fn painted_cursor(screen: &Screen, rules: &FxRules) -> Option<(usize, usize,
     band_box(term, &screen.palette, offset, one.0, one.1, pane_cols(term, offset, one.0, one.1), bx).map(|_| one)
 }
 
+/// Whether a box of the rules' kind surrounds the cursor cell: input lines above and just below
+/// it, or a shaded band. The same reading the effects use for their ring, without the pixels.
+pub fn has_box(screen: &Screen, rules: &BoxRule, row: usize, col: usize) -> bool {
+    let term = screen.term();
+    let offset = term.grid().display_offset();
+    let (lines, cols) = (term.screen_lines(), term.columns());
+    if row >= lines || col >= cols {
+        return false;
+    }
+    let pane = pane_cols(term, offset, row, col);
+    let whole = (0, cols.saturating_sub(1));
+    let lines_in = |pane: (usize, usize)| {
+        let bottom = (row + 1..lines.min(row + 1 + rules.bottom_within)).find(|&r| box_line(term, offset, r, pane, rules));
+        let top = (0..row).rev().find(|&r| box_line(term, offset, r, pane, rules));
+        match (top, bottom) {
+            (Some(t), Some(b)) => pane == whole || pane_walled(term, offset, pane, t, b),
+            _ => false,
+        }
+    };
+    if matches!(rules.kind, BoxKindRule::Lines | BoxKindRule::Either) && (lines_in(pane) || (pane != whole && lines_in(whole))) {
+        return true;
+    }
+    matches!(rules.kind, BoxKindRule::Band | BoxKindRule::Either) && band_box(term, &screen.palette, offset, row, col, pane, rules).is_some()
+}
+
 /// The cursor the effects anchor on: the real one, else (unless the rules say the app's cursor
 /// is always real) the one the app paints.
 pub fn effects_cursor(screen: &Screen, rules: &FxRules) -> Option<(usize, usize, bool)> {
