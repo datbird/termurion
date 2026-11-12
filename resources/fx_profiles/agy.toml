@@ -1,0 +1,11 @@
+name = "agy"
+
+[match]
+text = ["Antigravity"]
+prompt = ">"
+
+[box]
+kind = "lines"
+
+[prompt_mark]
+glyphs = ">"

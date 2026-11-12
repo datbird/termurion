@@ -1,0 +1,5 @@
+# The shell: the effects' built-in reading rules. Keys left out take these values.
+name = "Shell"
+
+[prompt_mark]
+glyphs = "❯>$%#›"

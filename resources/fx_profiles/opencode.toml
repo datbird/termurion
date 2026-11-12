@@ -1,0 +1,10 @@
+name = "opencode"
+
+[match]
+text = ["OpenCode"]
+
+[box]
+kind = "band"
+
+[prompt_mark]
+glyphs = ""

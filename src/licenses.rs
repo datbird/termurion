@@ -136,6 +136,7 @@ mod tests {
     const RESOURCES: &[(&str, Cover)] = &[
         ("browser/", Cover::Folder),
         ("render_plugins/", Cover::Folder),
+        ("fx_profiles/", Cover::Own("Termurion's own FX profiles")),
         ("ssh/", Cover::Folder),
         ("utilities/", Cover::Folder),
         ("tab_icons/", Cover::Folder),

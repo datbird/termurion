@@ -1,0 +1,14 @@
+name = "Claude Code"
+
+[match]
+text = ["Claude Code"]
+prompt = "❯"
+
+[cursor]
+kind = "either"
+
+[box]
+kind = "lines"
+
+[prompt_mark]
+glyphs = "❯"

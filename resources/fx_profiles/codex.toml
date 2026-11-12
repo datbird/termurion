@@ -1,0 +1,11 @@
+name = "Codex"
+
+[match]
+text = ["OpenAI Codex"]
+prompt = "›"
+
+[box]
+kind = "band"
+
+[prompt_mark]
+glyphs = "›"

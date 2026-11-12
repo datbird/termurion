@@ -1,0 +1,11 @@
+name = "Hermes"
+
+[match]
+text = ["Hermes Agent", "Hermes"]
+prompt = "❯"
+
+[box]
+kind = "lines"
+
+[prompt_mark]
+glyphs = "❯"
