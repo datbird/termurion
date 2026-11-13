@@ -228,6 +228,18 @@ fn detect(store: &crate::fx_store::Store, panes: &mut HashMap<PaneId, crate::pan
     due
 }
 
+/// Moves every pick that names `old` to `new`; true when any moved.
+fn rename_picks(panes: &mut HashMap<PaneId, crate::pane::Pane>, old: &str, new: &str) -> bool {
+    let mut moved = false;
+    for p in panes.values_mut().filter(|p| p.fx_pick.as_deref() == Some(old)) {
+        p.fx_pick = Some(new.to_string());
+        p.fx_dirty = true;
+        p.fx_checked = None;
+        moved = true;
+    }
+    moved
+}
+
 impl App {
     /// Looks at the FX profile folder (the store holds its own one second gate) and, when it
     /// changed, takes the new union and has every pane pick again. True when it changed.
@@ -238,6 +250,22 @@ impl App {
         }
         self.fx_find = self.fx_profiles.find_rules();
         true
+    }
+
+    /// A profile was renamed in the GUI: the panes that picked it follow, and pick again now.
+    pub(super) fn rename_fx_profile(&mut self, old: &str, new: &str) {
+        if rename_picks(&mut self.panes, old, new) {
+            self.fx_scan = true;
+        }
+    }
+
+    /// The menu's pick for a pane ("" is Auto): the pane runs detection again at once.
+    pub(super) fn set_fx_pick(&mut self, id: PaneId, name: &str) {
+        let Some(p) = self.panes.get_mut(&id) else { return };
+        p.fx_pick = (!name.is_empty()).then(|| name.to_string());
+        p.fx_dirty = true;
+        p.fx_checked = None;
+        self.fx_scan = true;
     }
 
     /// Picks each pane's profile after output, a key or a focus move; the folder is looked at
@@ -296,5 +324,53 @@ mod tests {
         panes.get_mut(&1).unwrap().fx_dirty = true;
         assert_eq!(detect(&store, &mut panes, false, now, &none), Some(now + DETECT_EVERY), "throttled, due again");
     }
-}
 
+    /// A full-width Codex screen: its band and prompt, the cursor in it.
+    fn codex_screen() -> crate::screen::Screen {
+        let line = "\u{2500}".repeat(60);
+        let mut s = crate::screen::Screen::new(80, 24);
+        s.feed(format!("\x1b[?25l\x1b[2J\x1b[2;1HOpenAI Codex\x1b[19;1H{line}\x1b[20;1H\x1b[48;2;44;44;44m{}\x1b[0m\x1b[?25h\x1b[20;4H", " ".repeat(60)).as_bytes());
+        s
+    }
+
+    fn picked(pick: Option<&str>, tag: &str) -> String {
+        let dir = std::env::temp_dir().join(format!("fx_ui_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::fx_store::Store::open(&dir);
+        let mut p = crate::pane::Pane::recording(1, 80, 24);
+        p.screen = codex_screen();
+        p.fx_pick = pick.map(str::to_string);
+        p.fx_dirty = true;
+        let mut panes = HashMap::new();
+        panes.insert(1, p);
+        detect(&store, &mut panes, false, Instant::now(), &|_, _| None);
+        panes[&1].fx_rules.name.clone()
+    }
+
+    #[test]
+    fn picking_a_profile_overrides_detection() {
+        assert_eq!(picked(None, "auto"), "Codex", "Auto detects");
+        assert_eq!(picked(Some("Shell"), "pick"), "Shell");
+    }
+
+    #[test]
+    fn a_pick_whose_profile_vanished_falls_back_to_auto() {
+        assert_eq!(picked(Some("No Such Profile"), "gone"), "Codex");
+    }
+
+    #[test]
+    fn renaming_a_profile_moves_the_picks() {
+        let mut panes = HashMap::new();
+        for (id, pick) in [(1, Some("Old")), (2, Some("Other")), (3, None)] {
+            let mut p = crate::pane::Pane::recording(id, 10, 3);
+            p.fx_pick = pick.map(str::to_string);
+            panes.insert(id, p);
+        }
+        assert!(rename_picks(&mut panes, "Old", "New"));
+        assert_eq!(panes[&1].fx_pick.as_deref(), Some("New"));
+        assert_eq!(panes[&2].fx_pick.as_deref(), Some("Other"));
+        assert_eq!(panes[&3].fx_pick, None);
+        assert!(panes[&1].fx_dirty && panes[&1].fx_checked.is_none(), "detection runs at once");
+        assert!(!rename_picks(&mut panes, "Old", "Newer"));
+    }
+}

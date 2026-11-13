@@ -170,6 +170,8 @@ pub struct Ctx {
     /// The tmux pause item: None for a pane that is not in a pause-mode tmux session.
     pub tmux_paused: Option<bool>,
     pub terminal_state: TerminalState,
+    /// The FX Profile submenu rows (empty: no item).
+    pub fx_profile: Vec<Row>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -430,6 +432,9 @@ fn main_rows(m: &mut Vec<Row>, c: &Ctx) {
         }
     }
     m.push(Row::Sub { label: "Terminal State".into(), rows: state });
+    if !c.fx_profile.is_empty() {
+        m.push(Row::Sub { label: "FX Profile".into(), rows: c.fx_profile.clone() });
+    }
     // PS:14841-14856.
     if let Some(paused) = c.tmux_paused {
         sep(m);
@@ -440,6 +445,20 @@ fn main_rows(m: &mut Vec<Row>, c: &Ctx) {
 /// The Profiles of New Window (`action` "newwin") or New Tab ("newtab") (`PT:7234-7262`, `iTermController
 /// addBookmarksToMenu:`): a profile by guid, a tag folder as a submenu, and "Open All" after a line
 /// for the folder at `path`. The profile's shortcut is not shown: iTerm2 shows none in this menu.
+/// The FX Profile submenu: Auto, then every loaded profile, the pick checked. A pick that no
+/// longer loads shows as missing (and the pane runs Auto).
+pub fn fx_profile_rows(names: &[String], pick: Option<&str>) -> Vec<Row> {
+    let mut rows = vec![check("fxpick:", "Auto", true, pick.is_none()), Row::Sep];
+    for n in names {
+        rows.push(check(&format!("fxpick:{n}"), n, true, pick == Some(n.as_str())));
+    }
+    if let Some(gone) = pick.filter(|p| !names.iter().any(|n| n == p)) {
+        rows.push(Row::Sep);
+        rows.push(check(&format!("fxpick:{gone}"), &format!("{gone} (missing)"), true, true));
+    }
+    rows
+}
+
 pub fn profile_rows(nodes: &[crate::profile_menu::Node], action: &str) -> Vec<Row> {
     use crate::profile_menu::Node;
     let mut out = Vec::new();
@@ -892,5 +911,17 @@ mod tests {
         cell.fg = Color::Spec(alacritty_terminal::vte::ansi::Rgb { r: 1, g: 2, b: 3 });
         cell.bg = Color::Indexed(240);
         assert_eq!(char_description(&cell).unwrap(), "fg=24bit(1,2,3) bg=gray8/22; Bold Italic Dir-Unk");
+    }
+
+    #[test]
+    fn the_menu_lists_auto_and_every_profile() {
+        let names: Vec<String> = ["Shell", "Codex"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(outline(&fx_profile_rows(&names, None)), ["[x] Auto", "----", "[ ] Shell", "[ ] Codex"]);
+        assert_eq!(outline(&fx_profile_rows(&names, Some("Codex"))), ["[ ] Auto", "----", "[ ] Shell", "[x] Codex"]);
+        // A pick that no longer loads shows, checked, as missing.
+        assert_eq!(outline(&fx_profile_rows(&names, Some("Gone"))), ["[ ] Auto", "----", "[ ] Shell", "[ ] Codex", "----", "[x] Gone (missing)"]);
+        let c = Ctx { fx_profile: fx_profile_rows(&names, None), ..Ctx::default() };
+        assert!(outline(&build(&c)).contains(&"FX Profile >".to_string()));
+        assert!(!outline(&build(&Ctx::default())).contains(&"FX Profile >".to_string()));
     }
 }

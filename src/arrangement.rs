@@ -430,6 +430,19 @@ pub fn save_stable_id(session: &mut Table, id: &str) {
     session.insert(STABLE_ID_KEY.into(), Value::String(id.into()));
 }
 
+/// Writes a pane's FX pick into its session table (session restoration only); Auto writes nothing.
+pub fn save_fx_pick(session: &mut Table, pick: Option<&str>) {
+    if let Some(name) = pick {
+        session.insert(FX_PROFILE_KEY.into(), Value::String(name.into()));
+    }
+}
+
+/// The FX pick a restored session may take: only the launch's own restoration, never a file.
+pub fn adoptable_fx_pick(session: &Value, launch: bool) -> Option<String> {
+    let name = session.get(ADOPT_FX_KEY)?.as_str()?;
+    (launch && !name.is_empty() && name.len() <= 256 && !name.chars().any(char::is_control)).then(|| name.to_string())
+}
+
 /// At launch: the saved reference and stable id become adoptable (the persisted keys are
 /// removed, and a marker a file carried is dropped first).
 pub fn mark_adoptable(session: &mut Table) {
@@ -440,6 +453,10 @@ pub fn mark_adoptable(session: &mut Table) {
     session.remove(ADOPT_STABLE_KEY);
     if let Some(saved) = session.remove(STABLE_ID_KEY) {
         session.insert(ADOPT_STABLE_KEY.into(), saved);
+    }
+    session.remove(ADOPT_FX_KEY);
+    if let Some(saved) = session.remove(FX_PROFILE_KEY) {
+        session.insert(ADOPT_FX_KEY.into(), saved);
     }
 }
 
@@ -564,6 +581,11 @@ pub const ADOPT_REF_KEY: &str = "Termurion Adopt Reference";
 /// Session restoration only: the pane's stable id (`Pane::stable_id`), which a model names the
 /// session by. Written only by `Contents::restoring` snapshots; never in an arrangement or file.
 pub const STABLE_ID_KEY: &str = "Termurion Stable Session ID";
+/// Session restoration only: the pane's FX profile pick, by name. Absent means Auto. Written
+/// only by restoration snapshots; never in an arrangement or file.
+pub const FX_PROFILE_KEY: &str = "Termurion FX Profile";
+/// The launch's marker for the saved FX pick (as `ADOPT_STABLE_KEY` is for the stable id).
+pub const ADOPT_FX_KEY: &str = "Termurion Adopt FX Profile";
 /// The launch's marker for the saved stable id (as `ADOPT_REF_KEY` is for the reference).
 pub const ADOPT_STABLE_KEY: &str = "Termurion Adopt Stable Session ID";
 /// Session restoration's contents: styled text (SGR sequences only).
@@ -1408,5 +1430,30 @@ mod tests {
         let mut bad = Table::new();
         bad.insert(ADOPT_STABLE_KEY.into(), Value::String("ptys_bad".into()));
         assert_eq!(adopted(&Value::Table(bad), true, &|_| false), None);
+    }
+
+    #[test]
+    fn a_pick_survives_restore() {
+        let mut t = Table::new();
+        save_fx_pick(&mut t, Some("Codex"));
+        assert_eq!(t.get(FX_PROFILE_KEY).and_then(|v| v.as_str()), Some("Codex"));
+        // Not adoptable until the launch reads it.
+        assert_eq!(adoptable_fx_pick(&Value::Table(t.clone()), true), None);
+        mark_adoptable(&mut t);
+        assert!(t.get(FX_PROFILE_KEY).is_none());
+        let session = Value::Table(t);
+        assert_eq!(adoptable_fx_pick(&session, true).as_deref(), Some("Codex"));
+        assert_eq!(adoptable_fx_pick(&session, false), None, "an arrangement, file or duplicate");
+        // Auto writes nothing, so a session without the key is Auto.
+        let mut auto = Table::new();
+        save_fx_pick(&mut auto, None);
+        assert!(auto.is_empty());
+        mark_adoptable(&mut auto);
+        assert_eq!(adoptable_fx_pick(&Value::Table(auto), true), None);
+        // A marker that came in a file is dropped at launch, not trusted.
+        let mut marked = Table::new();
+        marked.insert(ADOPT_FX_KEY.into(), Value::String("Codex".into()));
+        mark_adoptable(&mut marked);
+        assert_eq!(adoptable_fx_pick(&Value::Table(marked), true), None);
     }
 }

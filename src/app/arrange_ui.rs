@@ -81,10 +81,11 @@ pub(super) fn saved_ssh_session(session: &Value) -> bool {
 
 /// The pane's chat reference and stable id go into a session table only when the snapshot is
 /// session restoration; a saved arrangement, a file or a duplicate carries neither.
-pub(super) fn carry_ids(t: &mut toml::Table, contents: Contents, reference: &str, stable_id: &str) {
+pub(super) fn carry_ids(t: &mut toml::Table, contents: Contents, reference: &str, stable_id: &str, fx_pick: Option<&str>) {
     if contents.restoring() {
         arrangement::save_reference(t, reference);
         arrangement::save_stable_id(t, stable_id);
+        arrangement::save_fx_pick(t, fx_pick);
     }
 }
 
@@ -214,7 +215,7 @@ impl App {
             t.extend(self.inline_table(id));
             // Session restoration keeps the pane's chat reference, so a chat's link survives a
             // relaunch; a saved arrangement, a file or a duplicate never carries it.
-            carry_ids(t, contents, &p.session_guid, &p.stable_id);
+            carry_ids(t, contents, &p.session_guid, &p.stable_id, p.fx_pick.as_deref());
         }
         // A session that runs ssh saved without contents (an arrangement, Duplicate Tab): the
         // hops to reconnect through, each with its directory (`PS:7342-7347`), as Duplicate
@@ -746,6 +747,10 @@ impl App {
                         p.keep_reference(&guid);
                     }
                     self.adopt_stable_id(id, &session, launch);
+                    if let (Some(name), Some(p)) = (arrangement::adoptable_fx_pick(&session, launch), self.panes.get_mut(&id)) {
+                        p.fx_pick = Some(name);
+                        p.fx_dirty = true;
+                    }
                     // PS:7325: the saved lock overrides Default Pane Locked.
                     // A restored pane keeps the folder its shell first started in (P9), not the
                     // current folder it was saved in.

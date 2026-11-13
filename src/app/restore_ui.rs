@@ -448,7 +448,7 @@ mod tests {
         const ID: &str = "ptys_0123456789ABW";
         // Session restoration saves the id and the launch read makes it adoptable.
         let mut t = toml::Table::new();
-        carry_ids(&mut t, Contents::Styled(100), "6F1C2A3B-0000-4000-8000-000000000001", ID);
+        carry_ids(&mut t, Contents::Styled(100), "6F1C2A3B-0000-4000-8000-000000000001", ID, None);
         assert_eq!(t.get(crate::arrangement::STABLE_ID_KEY).and_then(|v| v.as_str()), Some(ID));
         let mut window = toml::Table::new();
         let mut view = toml::Table::new();
@@ -464,12 +464,26 @@ mod tests {
         // An arrangement, a file or a duplicate holds no id at all, with or without contents.
         for c in [Contents::None, Contents::Plain] {
             let mut t = toml::Table::new();
-            carry_ids(&mut t, c, "6F1C2A3B-0000-4000-8000-000000000001", ID);
+            carry_ids(&mut t, c, "6F1C2A3B-0000-4000-8000-000000000001", ID, Some("Codex"));
             assert!(t.is_empty(), "{c:?}");
         }
         // A saved value that is not a stable id gives None, so a fresh id is minted.
         let mut bad = toml::Table::new();
         bad.insert(crate::arrangement::ADOPT_STABLE_KEY.into(), Value::String("ptys_bad".into()));
         assert_eq!(stable_id_in(&Value::Table(bad)), None);
+    }
+
+    #[test]
+    fn an_arrangement_never_carries_the_pick() {
+        use super::super::arrange_ui::{carry_ids, Contents};
+        let guid = "6F1C2A3B-0000-4000-8000-000000000001";
+        for c in [Contents::None, Contents::Plain] {
+            let mut t = toml::Table::new();
+            carry_ids(&mut t, c, guid, "ptys_0123456789ABW", Some("Codex"));
+            assert!(t.get(crate::arrangement::FX_PROFILE_KEY).is_none(), "{c:?}");
+        }
+        let mut t = toml::Table::new();
+        carry_ids(&mut t, Contents::Styled(100), guid, "ptys_0123456789ABW", Some("Codex"));
+        assert_eq!(t.get(crate::arrangement::FX_PROFILE_KEY).and_then(|v| v.as_str()), Some("Codex"));
     }
 }

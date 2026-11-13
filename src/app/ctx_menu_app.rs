@@ -205,6 +205,8 @@ impl App {
             }
         }
         self.context_pane_facts(id, point, &mut c);
+        let names: Vec<String> = self.fx_profiles.profiles.iter().map(|p| p.rules.name.clone()).collect();
+        c.fx_profile = ctx_menu::fx_profile_rows(&names, self.panes.get(&id).and_then(|p| p.fx_pick.as_deref()));
         // The script providers' items (`CMH:898-914`), for that session.
         pend.providers = crate::script_fn::context_rows(&self.api_fns.context_menu_items());
         c.providers = pend.providers.clone();
@@ -356,7 +358,9 @@ impl App {
     }
 
     fn context_other_picked(&mut self, item: &str, pend: CtxPending, event_loop: &ActiveEventLoop) {
-        if item == "stopcoprocess" {
+        if let Some(name) = item.strip_prefix("fxpick:") {
+            self.set_fx_pick(pend.pane, name);
+        } else if item == "stopcoprocess" {
             self.stop_coprocess(pend.pane);
         } else if item == "togglebroadcast" {
             self.toggle_broadcast_pane(pend.pane);
@@ -659,7 +663,7 @@ mod tests {
                 assert!(pick.contains(&format!("\"{action}\"")) || src.contains(&format!("\"{action}\"")), "{action} has a pick");
             }
         }
-        for prefix in ["selecttab:", "newwin:", "newtab:", "newwinall:", "newtaball:", "img.", "action.", "helper."] {
+        for prefix in ["selecttab:", "newwin:", "newtab:", "newwinall:", "newtaball:", "img.", "action.", "helper.", "fxpick:"] {
             assert!(pick.contains(&format!("\"{prefix}")), "{prefix} has a pick");
         }
     }
