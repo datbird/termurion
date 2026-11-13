@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::fx_profile::DoneRule;
+
 use wgpu::naga;
 
 /// Ghostty's uniform block and `iChannel0`, ready for naga.
@@ -246,11 +248,20 @@ pub fn patch_input_box(body: &str) -> String {
             text = text.replace("colorDist(", "termurionMarkDist(").replace("iBackgroundColor", "termurionMarkBg");
         } else if mark_fns.iter().any(|f| trimmed.starts_with(f)) && trimmed.ends_with('{') {
             in_mark = true;
+            // The profile's own mark, when Rust found one (zero: the pixel checks below run).
+            if trimmed.starts_with("bool clChevron(") {
+                text.push_str(" if (iPromptMark.z > 0.5) return abs(x - iPromptMark.x) < 0.5 * w;");
+            } else if trimmed.starts_with("float clMarkLeft(") {
+                text.push_str(&format!(" if (iPromptMark.z > 0.5) return abs({} - cur.y) < 0.5 * cur.w ? iPromptMark.x : -1.0;", up("iPromptMark.y")));
+            }
             // The helper goes on the line of whichever comes first, so line numbers stay.
             if !have_mark_dist {
                 text.insert_str(0, mark_dist);
                 have_mark_dist = true;
             }
+        } else if trimmed.starts_with("vec2 clMarkAbove(vec4 cur, vec2 res)") && trimmed.ends_with('{') {
+            // A wrapped prompt: the mark sits on a row above the cursor's.
+            text.push_str(&format!(" if (iPromptMark.z > 0.5) {{ float mT = {}; return mT > cur.y + 0.5 * cur.w ? vec2(iPromptMark.x, mT) : vec2(-1.0); }}", up("iPromptMark.y")));
         } else if have_mark_dist && trimmed.starts_with("void mainImage(out vec4 fragColor, in vec2 fragCoord)") && trimmed.ends_with('{') {
             // Only after a mark function: screenAt and Y_DOWN are the built-ins' own, so a
             // plain Ghostty shader would not compile with this line.
@@ -456,6 +467,8 @@ pub struct Uniforms {
     pub input_box: [f32; 4],
     /// `iInputBoxX`: a band box's left and right edge in pixels (also a line box in a split pane), zeros for a full-width line box.
     pub input_box_x: [f32; 4],
+    /// `iPromptMark`: the profile's prompt mark cell (left, top, set, cell width), zeros when none.
+    pub prompt_mark: [f32; 4],
 }
 
 impl Default for Uniforms {
@@ -487,6 +500,7 @@ impl Default for Uniforms {
             selection_background: [1.0; 3],
             input_box: [0.0; 4],
             input_box_x: [0.0; 4],
+            prompt_mark: [0.0; 4],
         }
     }
 }
@@ -537,6 +551,7 @@ impl Uniforms {
         f("iSelectionBackgroundColor", floats(&self.selection_background));
         f("iInputBox", floats(&self.input_box));
         f("iInputBoxX", floats(&self.input_box_x));
+        f("iPromptMark", floats(&self.prompt_mark));
         // A vec4 here (see the prefix): channel 0 runs on the frame's clock.
         f("iChannelTime", floats(&[self.time, 0.0, 0.0, 0.0]));
         // Arrays: element i at offset + i * stride.
@@ -644,11 +659,6 @@ impl Clock {
 
 /// How long a signal stays on (cursor-fx's SIGNAL_TIME, longer than the longest Enter effect).
 pub const SIGNAL_TIME: Duration = Duration::from_millis(1900);
-/// Quiet after a busy stretch that counts as "the answer arrived".
-pub const DONE_QUIET: Duration = Duration::from_millis(1200);
-/// Output must keep coming this long after Enter for a done signal: a quick shell command is
-/// not an answer worth a surge (cursor-fx plays done only when a long command ends).
-pub const DONE_BUSY: Duration = Duration::from_millis(1500);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Signal {
@@ -669,6 +679,10 @@ pub struct Signals {
     parity: bool,
     /// Since Enter: (when, the last output after it).
     waiting: Option<(Instant, Option<Instant>)>,
+    /// The done times of the profile active at Enter, fixed for this wait.
+    quiet: Duration,
+    busy: Duration,
+    osc133: bool,
 }
 
 impl Signals {
@@ -677,10 +691,11 @@ impl Signals {
         self.on = Some((s, now));
     }
 
-    /// Enter was pressed.
-    pub fn enter(&mut self, now: Instant) {
+    /// Enter was pressed; `done` is the active profile's rule, kept for this wait.
+    pub fn enter(&mut self, now: Instant, done: &DoneRule) {
         self.fire(Signal::Enter, now);
         self.waiting = Some((now, None));
+        (self.quiet, self.busy, self.osc133) = (done.quiet, done.busy, done.osc133);
     }
 
     /// The pane printed something.
@@ -692,8 +707,11 @@ impl Signals {
 
     /// A shell reported the command ended (OSC 133;D): done now, if it ran long enough.
     pub fn command_ended(&mut self, now: Instant) {
+        if !self.osc133 {
+            return;
+        }
         if let Some((since, _)) = self.waiting.take()
-            && now.saturating_duration_since(since) >= DONE_BUSY
+            && now.saturating_duration_since(since) >= self.busy
         {
             self.fire(Signal::Done, now);
         }
@@ -702,11 +720,11 @@ impl Signals {
     /// Fires done once the output after Enter has gone quiet. True when it fired.
     pub fn tick(&mut self, now: Instant) -> bool {
         let Some((since, Some(last))) = self.waiting else { return false };
-        if now.saturating_duration_since(last) < DONE_QUIET {
+        if now.saturating_duration_since(last) < self.quiet {
             return false;
         }
         self.waiting = None;
-        if last.saturating_duration_since(since) >= DONE_BUSY {
+        if last.saturating_duration_since(since) >= self.busy {
             self.fire(Signal::Done, now);
             return true;
         }
@@ -975,6 +993,39 @@ mod tests {
         assert_eq!(errors[0].0, "broken");
     }
 
+    fn done() -> DoneRule {
+        crate::fx_profile::FxRules::default().done
+    }
+
+    #[test]
+    fn a_wait_keeps_its_own_done_times() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut s = Signals::default();
+        s.enter(t0, &DoneRule { quiet: Duration::from_millis(3000), ..done() });
+        s.output(ms(0));
+        s.output(ms(2000));
+        assert!(!s.tick(ms(4100)), "2100 ms of quiet is not 3000");
+        assert!(s.tick(ms(5100)));
+        // The next wait takes the rule it is given.
+        s.enter(ms(6000), &done());
+        s.output(ms(6000));
+        s.output(ms(7600));
+        assert!(s.tick(ms(8800)));
+    }
+
+    #[test]
+    fn osc133_off_ignores_command_ended() {
+        let t0 = Instant::now();
+        let mut s = Signals::default();
+        s.enter(t0, &DoneRule { osc133: false, ..done() });
+        s.command_ended(t0 + Duration::from_secs(4));
+        assert_eq!(s.current(t0 + Duration::from_secs(4)), None, "no done, and the Enter signal has run out");
+        s.enter(t0, &done());
+        s.command_ended(t0 + Duration::from_secs(4));
+        assert_eq!(s.current(t0 + Duration::from_secs(4)), Some(Signal::Done));
+    }
+
     #[test]
     fn enter_and_done_signals_follow_cursor_fx() {
         let t0 = Instant::now();
@@ -982,7 +1033,7 @@ mod tests {
         let mut s = Signals::default();
         let base = [0x9f, 0xd0, 0xfe];
         assert_eq!(s.apply(base, t0), base, "no signal, no change");
-        s.enter(t0);
+        s.enter(t0, &done());
         assert_eq!(s.current(ms(100)), Some(Signal::Enter));
         assert_eq!(s.apply(base, ms(100)), [0x9f, 0xd0, 0xff], "Enter: blue odd, green even, red flipped");
         // The answer streams for 3 s, then goes quiet.
@@ -1002,12 +1053,12 @@ mod tests {
     fn a_quick_command_gets_no_done() {
         let t0 = Instant::now();
         let mut s = Signals::default();
-        s.enter(t0);
+        s.enter(t0, &done());
         s.output(t0 + Duration::from_millis(80));
         assert!(!s.tick(t0 + Duration::from_secs(5)));
         assert_eq!(s.current(t0 + Duration::from_secs(5)), None);
         // A shell's command-ended mark after a long run is done at once.
-        s.enter(t0);
+        s.enter(t0, &done());
         s.command_ended(t0 + Duration::from_secs(4));
         assert_eq!(s.current(t0 + Duration::from_secs(4)), Some(Signal::Done));
     }
@@ -1029,6 +1080,19 @@ mod tests {
             if let Some(c) = constant {
                 assert!(list.iter().all(|p| p.shader_text(&p.manifest.shaders[0]).unwrap().contains(&format!(" {c} "))), "{c} is in every built-in");
             }
+        }
+    }
+
+    #[test]
+    fn every_builtin_reads_the_prompt_mark_uniform() {
+        // The text of the function that starts with `head`, up to the next column 0 `}`.
+        let body_of = |src: &str, head: &str| -> String { src.lines().skip_while(|l| !l.starts_with(head)).take_while(|l| !l.starts_with('}')).collect::<Vec<_>>().join("\n") };
+        for p in discover(None).0 {
+            let patched = patch_input_box(&p.shader_text(&p.manifest.shaders[0]).unwrap());
+            for head in ["float clMarkLeft(", "bool clChevron(", "vec2 clMarkAbove("] {
+                assert!(body_of(&patched, head).contains("iPromptMark"), "{}: {head} reads iPromptMark", p.id);
+            }
+            p.compile().unwrap_or_else(|e| panic!("{}: {e}", p.id));
         }
     }
 

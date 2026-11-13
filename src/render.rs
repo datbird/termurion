@@ -3185,7 +3185,7 @@ mod tests {
                             p.next = f;
                         }
                         "enter" => {
-                            p.sig.enter(now);
+                            p.sig.enter(now, &crate::fx_profile::FxRules::default().done);
                             cues.push(serde_json::json!({"shot": id, "f": f, "type": "enter", "fx": p.effect}));
                             if p.claude {
                                 p.history.push(format!("\u{0}{}", p.typed));
@@ -3370,6 +3370,7 @@ mod tests {
                 u.foreground = [222.0 / 255.0; 3];
                 u.input_box = fx.input_box.map_or([0.0; 4], |b| b.uniform());
                 u.input_box_x = fx.input_box.map_or([0.0; 4], |b| b.uniform_x());
+                u.prompt_mark = fx.uniform_mark();
                 let px = r.draw_offscreen_fx(&frame, Some((chain, &u)), w, h).unwrap();
                 let img = image::RgbImage::from_fn(w, h, |x, y| {
                     let i = ((y * w + x) * 4) as usize;
@@ -3497,6 +3498,7 @@ mod tests {
                     u.foreground = [222.0 / 255.0; 3];
                     u.input_box = fx.input_box.map_or([0.0; 4], |b| b.uniform());
                     u.input_box_x = fx.input_box.map_or([0.0; 4], |b| b.uniform_x());
+                    u.prompt_mark = fx.uniform_mark();
                     let px = r.draw_offscreen_fx(&frame, Some((&mut chain, u)), w, h).unwrap();
                     image::RgbaImage::from_raw(w, h, px).unwrap().save(out.join(format!("f{:05}.png", n.get()))).unwrap();
                     n.set(n.get() + 1);
@@ -3513,7 +3515,7 @@ mod tests {
             }
             shoot(&draw_screen(&base, prompt, None), 6, false, &mut sig, &mut clock, &mut u);
             // Enter: the prompt moves into the history and the box clears.
-            sig.enter(now_of(n.get()));
+            sig.enter(now_of(n.get()), &crate::fx_profile::FxRules::default().done);
             let mut sent = base.clone();
             for (i, l) in wrap(prompt).iter().enumerate() {
                 sent.push(format!("\x1b[48;5;236m{} {l}\x1b[K\x1b[0m", if i == 0 { "\u{276f}" } else { " " }));
@@ -3583,6 +3585,7 @@ mod tests {
                 u.background = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
                 u.input_box = frame.fx.as_ref().and_then(|f| f.input_box).map_or([0.0; 4], |b| b.uniform());
                 u.input_box_x = frame.fx.as_ref().and_then(|f| f.input_box).map_or([0.0; 4], |b| b.uniform_x());
+                u.prompt_mark = frame.fx.as_ref().map_or([0.0; 4], |f| f.uniform_mark());
                 let px = r.draw_offscreen_fx(&frame, Some((&mut chain, u)), w, h).unwrap();
                 if let Some(name) = save {
                     image::RgbaImage::from_raw(w, h, px).unwrap().save(out.join(name)).unwrap();
@@ -3594,7 +3597,7 @@ mod tests {
             for ms in (0..1500).step_by(33) {
                 frame_at(ms, &typed, None, &sig, &mut clock, &mut u);
             }
-            sig.enter(t0 + Duration::from_millis(1500));
+            sig.enter(t0 + Duration::from_millis(1500), &crate::fx_profile::FxRules::default().done);
             for ms in (1500..3600).step_by(33) {
                 let save = [1650u64, 1800, 2000, 2300, 2700].iter().find(|m| (ms as i64 - **m as i64).abs() < 17).map(|m| format!("{}-{:04}.png", p.id, m - 1500));
                 frame_at(ms, &sent, save, &sig, &mut clock, &mut u);
@@ -3644,7 +3647,8 @@ mod tests {
                     let (mut clock, mut u, mut sig) = (Clock::default(), Uniforms::default(), Signals::default());
                     u.background = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0];
                     u.input_box = frame.fx.as_ref().and_then(|f| f.input_box).map_or([0.0; 4], |b| b.uniform());
-                u.input_box_x = frame.fx.as_ref().and_then(|f| f.input_box).map_or([0.0; 4], |b| b.uniform_x());
+                    u.input_box_x = frame.fx.as_ref().and_then(|f| f.input_box).map_or([0.0; 4], |b| b.uniform_x());
+                    u.prompt_mark = frame.fx.as_ref().map_or([0.0; 4], |f| f.uniform_mark());
                     assert!(u.input_box[2] > 0.5, "{family} {px} input {input}: the scene finds the box");
                     let t0 = Instant::now();
                     let mut best = (0usize, 0usize);
@@ -3654,7 +3658,7 @@ mod tests {
                     };
                     for ms in (0u64..2600).step_by(50) {
                         if ms == 1000 {
-                            sig.enter(t0 + Duration::from_millis(ms));
+                            sig.enter(t0 + Duration::from_millis(ms), &crate::fx_profile::FxRules::default().done);
                         }
                         let now = t0 + Duration::from_millis(ms);
                         let mut cur = frame.fx.clone().unwrap().cursor;
@@ -3719,12 +3723,13 @@ mod tests {
         let b = frame.fx.as_ref().and_then(|f| f.input_box).filter(|_| boxed);
         u.input_box = b.map_or([0.0; 4], |b| b.uniform());
         u.input_box_x = b.map_or([0.0; 4], |b| b.uniform_x());
+        u.prompt_mark = frame.fx.as_ref().map_or([0.0; 4], |f| f.uniform_mark());
         let t0 = Instant::now();
         let mut out = Vec::new();
         for ms in (0..=shots.iter().copied().max().unwrap_or(0)).step_by(50) {
             let now = t0 + Duration::from_millis(ms);
             if enter && ms == 1000 {
-                sig.enter(now);
+                sig.enter(now, &crate::fx_profile::FxRules::default().done);
             }
             let mut cur = frame.fx.clone().unwrap().cursor;
             if let Some(c) = cur.as_mut() {
@@ -3927,6 +3932,44 @@ mod tests {
                 if lit < 8 {
                     bad.push(format!("{name} {}: {lit} pixels of the mark's cell changed", p.id));
                 }
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
+    /// A prompt mark no pixel check would take for a chevron (a `λ`) is restyled by PROMPT_EFFECT
+    /// in every built-in once the profile names it, and left alone under the Shell rules.
+    #[test]
+    fn a_profile_mark_changes_its_look_in_every_effect() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 14.0);
+        let (cw, ch) = r.cell;
+        let bg = crate::palette::rgb(30, 31, 36);
+        let (cols, rows) = (60usize, 12usize);
+        let (w, h) = ((cols as f32 * cw).ceil() as u32, (rows as f32 * ch).ceil() as u32);
+        let mut s = crate::screen::Screen::new(cols, rows);
+        s.palette.bg = bg;
+        s.feed("\x1b[2J\x1b[6;1H\u{3bb} ls".as_bytes());
+        let rect = crate::layout::Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 };
+        let mut bad = Vec::new();
+        for p in crate::render_fx::discover(None).0 {
+            if !p.shader_text(&p.manifest.shaders[0]).unwrap().contains("PROMPT_EFFECT") {
+                continue;
+            }
+            let preset = preset_of(&p);
+            let mut lit_with = |rules: crate::fx_profile::FxRules| {
+                let draw = crate::scene::DrawPrefs { fx_cursor: Some(rgb(preset[0], preset[1], preset[2])), fx_rules: Some(std::sync::Arc::new(rules)), ..Default::default() };
+                let mut frame = Frame { clear: rgba(bg, 1.0), fade: 1.0, ..Default::default() };
+                crate::scene::pane_with(&mut frame, &s, rect, (cw, ch), true, &crate::cursor_look::CursorLook::shown(true), &draw, None, DEFAULT_FACE);
+                let plain = r.draw_offscreen(&frame, w, h).unwrap();
+                let shot = fx_shots(&mut r, p.compile_with(&[("PROMPT_EFFECT", true)]).unwrap(), &frame, (w, h), bg, preset, false, false, &[600]).remove(0);
+                lit_in(&shot, &plain, w, (5.0 * ch)..(6.0 * ch), 0.0..cw)
+            };
+            let mut custom = crate::fx_profile::FxRules::default();
+            custom.prompt_marks = vec!['\u{3bb}'];
+            let (named, unnamed) = (lit_with(custom), lit_with(crate::fx_profile::FxRules::default()));
+            if named < 8 || unnamed >= 8 {
+                bad.push(format!("{}: {named} pixels changed with the mark named, {unnamed} without", p.id));
             }
         }
         assert!(bad.is_empty(), "{}", bad.join("\n"));

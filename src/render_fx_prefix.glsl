@@ -39,6 +39,9 @@ layout(set = 0, binding = 1, std140) uniform Globals {
     vec4  iInputBox;
     // Termurion: a band box's left and right edge in pixels (x, y), zeros for a line box.
     vec4  iInputBoxX;
+    // Termurion: the prompt mark's cell from the profile's glyphs (x, y: left and top in pixels from
+    // the top, same as iInputBox; z = 1 when set, 0 when none; w: the cell's width).
+    vec4  iPromptMark;
 };
 
 // Termurion: how far above the cursor the input box reaches (it grows with a long prompt):

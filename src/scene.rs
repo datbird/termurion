@@ -146,6 +146,16 @@ pub struct FxPane {
     /// The input box around the cursor, read from the grid (Claude Code's lines, or a shaded
     /// band as Codex and opencode draw). None without a box.
     pub input_box: Option<InputBox>,
+    /// The prompt mark's cell from the profile's glyphs (left, top, width, height in window
+    /// pixels). None when the profile finds none.
+    pub prompt_mark: Option<[f32; 4]>,
+}
+
+impl FxPane {
+    /// iPromptMark: x, y (top), z = 1 when set, w = the cell's width.
+    pub fn uniform_mark(&self) -> [f32; 4] {
+        self.prompt_mark.map_or([0.0; 4], |[x, y, w, _]| [x, y, 1.0, w])
+    }
 }
 
 /// Which shape an input box has.
@@ -689,6 +699,43 @@ pub fn cursor_cell(screen: &Screen) -> Option<(usize, usize, bool)> {
 
 fn glyph(term: &alacritty_terminal::Term<crate::screen::Listener>, display_offset: usize, row: usize, col: usize) -> char {
     term.grid()[alacritty_terminal::index::Line(row as i32 - display_offset as i32)][alacritty_terminal::index::Column(col)].c
+}
+
+/// The prompt mark's cell (left, top, width, height in window pixels): the nearest glyph from
+/// the profile's `prompt_marks` left of the cursor on its row, within the pane's columns, spaces
+/// skipped. A wrapped prompt (the cursor below the box's first text row) has it in the box's
+/// first columns on the row under the top line instead. None when there is none.
+fn prompt_mark_cell(term: &alacritty_terminal::Term<crate::screen::Listener>, display_offset: usize, rules: &FxRules, (row, col): (usize, usize), pane: (usize, usize), input_box: Option<&InputBox>, origin: (f32, f32), (cw, ch): (f32, f32)) -> Option<[f32; 4]> {
+    let cols = term.columns();
+    if rules.prompt_marks.is_empty() || row >= term.screen_lines() || cols == 0 {
+        return None;
+    }
+    let cell = |r: usize, c: usize| [origin.0 + c as f32 * cw, origin.1 + r as f32 * ch, cw, ch];
+    let is_mark = |c: char| rules.prompt_marks.contains(&c);
+    // The row under the box's top line, when the cursor is further down than that.
+    let first_row = input_box.map(|b| {
+        let top = ((b.top - origin.1) / ch).floor().max(0.0) as usize;
+        if b.kind == BoxKind::Lines { top + 1 } else { top }
+    });
+    if let Some(first) = first_row.filter(|&f| f < row) {
+        let start = match input_box {
+            Some(b) if b.kind == BoxKind::Band => (((b.left - origin.0) / cw).round().max(0.0) as usize).max(pane.0),
+            _ => pane.0,
+        };
+        let end = (start + 3).min(pane.1 + 1).min(cols);
+        for r in first..row {
+            // The first glyph in the box's first cells; a row of blanks or edge glyphs is no text row.
+            let found = (start..end).map(|c| (c, glyph(term, display_offset, r, c))).find(|&(_, g)| g != ' ' && g != '\0');
+            match found {
+                Some((_, g)) if rules.boxes.edge_glyphs.contains(&g) => continue,
+                Some((c, g)) if is_mark(g) => return Some(cell(r, c)),
+                Some(_) => return None,
+                None => continue,
+            }
+        }
+        // No text row above the cursor's (a band's padding): the cursor's row holds the mark.
+    }
+    (pane.0..col.min(cols)).rev().find(|&c| is_mark(glyph(term, display_offset, row, c))).map(|c| cell(row, c))
 }
 
 /// A straight vertical border glyph, or a junction where a border meets another (tmux).
@@ -1961,6 +2008,10 @@ pub fn pane_with(
                 Some(InputBox { top: rect.y + top as f32 * ch, bottom: bottom_px, kind: BoxKind::Band, left: rect.x + left as f32 * cw, right: rect.x + (right + 1) as f32 * cw })
             })
         });
+        let prompt_mark = cursor.and_then(|(row, col)| {
+            let pane = pane_cols(term, content.display_offset, row, col);
+            prompt_mark_cell(term, content.display_offset, rules, (row, col), pane, input_box.as_ref(), (rect.x, rect.y), (cw, ch))
+        });
         frame.fx = Some(FxPane {
             cursor: fx_cursor,
             focused,
@@ -1973,6 +2024,7 @@ pub fn pane_with(
             selected_text: palette.selected_text,
             ansi: palette.ansi,
             input_box,
+            prompt_mark,
         });
     }
 
@@ -10044,6 +10096,47 @@ mod agent_box_tests {
         assert_eq!(out, std::fs::read_to_string(&file).unwrap());
     }
 
+    /// What the effects get for `screen` under `rules`.
+    fn fx_under(s: &crate::screen::Screen, rules: FxRules) -> FxPane {
+        let draw = DrawPrefs { fx_cursor: Some(crate::palette::rgb(255, 0, 0)), fx_rules: Some(std::sync::Arc::new(rules)), ..Default::default() };
+        let mut frame = Frame::default();
+        let rect = crate::layout::Rect { x: 0.0, y: 0.0, w: 1000.0, h: 600.0 };
+        pane_with(&mut frame, s, rect, (10.0, 20.0), true, &crate::cursor_look::CursorLook::shown(true), &draw, None, crate::render::DEFAULT_FACE);
+        frame.fx.expect("an fx pane")
+    }
+
+    #[test]
+    fn the_prompt_mark_is_found_from_the_profile() {
+        let mut s = crate::screen::Screen::new(80, 20);
+        s.feed("\x1b[2J\x1b[10;1H\u{3bb} ".as_bytes());
+        assert_eq!(fx_under(&s, FxRules::default()).prompt_mark, None, "the Shell rules know no lambda");
+        let mut rules = FxRules::default();
+        rules.prompt_marks = vec!['\u{3bb}'];
+        assert_eq!(fx_under(&s, rules).prompt_mark, Some([0.0, 180.0, 10.0, 20.0]));
+    }
+
+    #[test]
+    fn a_wrapped_prompt_marks_the_row_under_the_top_line() {
+        let line = "\u{2500}".repeat(80);
+        let mut s = crate::screen::Screen::new(80, 20);
+        s.feed(format!("\x1b[2J\x1b[8;1H{line}\x1b[9;1H\u{276f} first line of it\x1b[10;1H  second line\x1b[11;1H{line}\x1b[10;14H").as_bytes());
+        let fx = fx_under(&s, FxRules::default());
+        assert_eq!(fx.prompt_mark, Some([0.0, 160.0, 10.0, 20.0]), "the mark of the first row, not the cursor's");
+    }
+
+    #[test]
+    fn codex_mark_is_its_chevron() {
+        let (_, text) = crate::fx_profile::SHIPPED.iter().find(|(f, _)| *f == "codex.toml").unwrap();
+        let rules = crate::fx_profile::parse(text).unwrap().0;
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/agents/");
+        let text = std::fs::read_to_string(format!("{dir}codex.ansi")).unwrap();
+        let rows: Vec<String> = text.trim_end_matches('\n').split('\n').map(|r| format!("\x1b[0m{r}")).collect();
+        let mut s = crate::screen::Screen::new(100, 30);
+        s.feed(format!("\x1b[2J\x1b[H{}\x1b[27;8H", rows.join("\r\n")).as_bytes());
+        let row = (0..30).find(|&r| s.line_text(r as i32).starts_with('\u{203a}')).expect("the chevron row");
+        assert_eq!(fx_under(&s, rules).prompt_mark, Some([0.0, row as f32 * 20.0, 10.0, 20.0]));
+    }
+
     #[test]
     fn a_custom_profile_reads_a_box_shell_rules_do_not() {
         let line = "\u{2550}".repeat(80);
@@ -10387,7 +10480,7 @@ mod agent_box_tests {
         s.note_typed();
         s.feed(b"\x1b[10;3Hx\x1b[7m \x1b[0m");
         let mut sig = Signals::default();
-        sig.enter(t0);
+        sig.enter(t0, &crate::fx_profile::FxRules::default().done);
         s.watch_output(output_watch(&s, &FxRules::default()));
         let feed = |s: &mut crate::screen::Screen, sig: &mut Signals, bytes: &[u8], at: std::time::Instant| {
             s.feed(bytes);
@@ -10411,7 +10504,7 @@ mod agent_box_tests {
         assert_eq!(sig.current(t0 + ms(3200)), Some(Signal::Done));
         // Enter in the top pane again: only the bottom pane talks, and done never fires.
         let t1 = t0 + ms(10_000);
-        sig.enter(t1);
+        sig.enter(t1, &crate::fx_profile::FxRules::default().done);
         s.watch_output(output_watch(&s, &FxRules::default()));
         let fired = (0..60).any(|i| feed(&mut s, &mut sig, b"\x1b[20;1HScurrying\x1b[10;4H", t1 + ms(i * 100)));
         assert!(!fired, "the bottom pane's work is not this pane's answer");

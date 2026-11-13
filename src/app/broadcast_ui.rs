@@ -48,8 +48,8 @@ impl App {
             // A key may move the cursor to another tmux pane: detection looks again.
             p.fx_dirty = true;
             // Render plugins: a typed Enter is cursor-fx's Enter signal (no hook needed on the host).
-            if bytes == b"\r" {
-                p.fx_signal.enter(Instant::now());
+            if !bytes.is_empty() && bytes == p.fx_rules.done.enter.as_slice() {
+                p.fx_signal.enter(Instant::now(), &p.fx_rules.done);
                 // In tmux another pane's output must not hold back or fire this pane's done.
                 let watch = crate::scene::output_watch(&p.screen, &p.fx_rules);
                 p.screen.watch_output(watch);
