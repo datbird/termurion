@@ -167,3 +167,4 @@ The ssh part of the suite runs only when you name a host. Set `TERMURION_TMUX_SS
 - [Shell Integration](shell-integration.md)
 - [SSH Integration](ssh-integration.md)
 - [Status Bar](status-bar.md)
+- [FX Profiles](fx-profiles.md): the cursor effects pick a profile for each tmux pane.

@@ -130,6 +130,7 @@ rows until they read `have`. Where iTerm2 has a quirk, Termurion keeps it and wr
 ### AI, SSH, and the browser
 - AI chat, inline help, and the Cockpit, with Anthropic, Gemini, DeepSeek, and Ollama
 - Claude Code integration through a `cc-status` hook
+- Cursor effects that find the input box of Claude Code, Codex, opencode, Hermes, agy, and shells, set by [FX profiles](docs/help/fx-profiles.md) you can edit, add, import, and export
 - iTerm2's SSH integration: the conductor, file transfers, and `ssh:` URLs
 - A WebView2 browser pane (Windows only) with find, Copy Mode, marks, triggers, and reader mode
 - A password manager on Windows Credential Manager, the macOS Keychain, or the Linux Secret Service, plus 1Password and LastPass on Windows
@@ -150,10 +151,13 @@ with `python scripts/acid.py` (add `--loop` to repeat). [Full-size video](docs/a
 
 Render plugins: the 13 built-in cursor effects from
 [ghostty-cursor-fx](https://github.com/Avarce/ghostty-cursor-fx), each with its own Enter and
-done look on Claude Code's input box (at any font, size and box height), and nothing to install
-on the host. Drawn by Termurion's own renderer
+done look on an AI tool's input box (at any font, size and box height), and nothing to install
+on the host. The video shows Claude Code. Codex, opencode, Hermes, agy, and plain shells work
+too, also in each pane of a tmux window. Drawn by Termurion's own renderer
 (`render_demo_video` in `src/render.rs`). [Full-size video](docs/assets/render-plugins.mp4),
 [how to turn them on](docs/render-plugins.md). [FX profiles](docs/help/fx-profiles.md) tell them how each app lays out its screen.
+Termurion picks a profile for each pane on its own, and you can pick one by hand. Make your own
+for any other app in Settings > FX Profiles.
 
 <table>
 <tr>

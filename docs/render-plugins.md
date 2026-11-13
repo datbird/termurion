@@ -25,9 +25,23 @@ Phosphor, Shockwave and Teleport.
 Each effect is made for one cursor color (its `cursor_color`). Termurion gives that color to the
 effect unless a program set its own cursor color.
 
-## Claude Code: the Enter and done effects
+## Which app: FX profiles
 
-The effects play when you send a prompt and when Claude finishes. Termurion makes both signals
+The effects read the screen to find the cursor, the input box, and the prompt mark. Each app
+draws these differently, so an [FX profile](help/fx-profiles.md) tells the effects how to read
+one app. A profile does not choose which effects run.
+
+Termurion ships profiles for Claude Code, Codex, opencode, Hermes, agy, and Shell. Shell is the
+fallback for any other app. Termurion picks a profile for each pane from the program name and
+the screen text. Inside tmux it picks one for each tmux pane.
+
+- To pick a profile by hand, right-click the pane and open **FX Profile**.
+- To make, duplicate, import, or export a profile, open **Settings > FX Profiles**.
+- To edit the files directly, press **Show Folder** on that page.
+
+## The Enter and done effects
+
+The effects play when you send a prompt and when the app finishes. Termurion makes both signals
 itself, so nothing needs to be installed on the computer where Claude Code runs. This also
 works over ssh and inside tmux:
 
@@ -36,7 +50,11 @@ works over ssh and inside tmux:
   draws until the answer is in) stays quiet for 1.2 seconds. With shell integration, a long
   shell command's end (OSC 133;D) plays it at once.
 
-Under **Effects**, the **Claude Code** group turns each part on or off: the Enter surge, the
+Each FX profile can change these times, or turn a signal off, in its `[done]` table. Inside
+tmux, Termurion watches only the tmux pane you typed in. Output in another tmux pane does not
+delay or start your done effect.
+
+Under **Effects**, the **Claude Code** group turns each part on or off for every app, not only Claude Code: the Enter surge, the
 done surge, the input box lines in the effect's color, input box lines that are always alive,
 the prompt mark's look, and Termurion's own signals. The **General** group has the jump bolt and
 the idle animation. These switches apply to every effect.
@@ -111,9 +129,11 @@ as Ghostty's custom shaders, so most Ghostty shaders run without changes:
 | `iFocus`, `iTimeFocus` | 1 when the window has focus; `iTime` when focus came back |
 | `iBackgroundColor`, `iForegroundColor`, `iCursorColor`, `iCursorText` | profile colors |
 | `iSelectionBackgroundColor`, `iSelectionForegroundColor`, `iPalette[256]` | more colors |
-| `iInputBox` | Termurion only: Claude Code's input box lines, read from the grid. `x` and `y` are the top and bottom line's height in pixels from the top, `z` is 1 when there is a box |
+| `iInputBox` | Termurion only: the input box, found with the pane's FX profile. `x` and `y` are the top and bottom in pixels from the top. `z` is 1 for a line box, 2 for a shaded band, 0 for none |
+| `iInputBoxX` | Termurion only: a band's left and right edge in pixels (`x`, `y`), zeros for a line box |
+| `iPromptMark` | Termurion only: the prompt mark's cell, found with the profile's glyphs. `x` and `y` are its left and top in pixels, `z` is 1 when found, `w` is the cell width |
 
-Claude Code's input box grows upward as a prompt gets longer. cursor-fx shaders look for its
+An input box grows upward as a prompt gets longer. cursor-fx shaders look for its
 lines near the cursor, at most 4 rows up. Termurion patches every shader that has cursor-fx's
 `boxLineY`, `clLineNear` or `boxLines` while it compiles it, so they use `iInputBox` instead and
 reach the top line at any height. The shader files themselves stay unchanged.

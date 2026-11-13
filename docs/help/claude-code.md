@@ -4,6 +4,8 @@ Termurion can work with Claude Code, Anthropic's coding agent that runs in a ter
 
 All of this is optional and undoable.
 
+The cursor effects work with Claude Code without this setup. The shipped Claude Code [FX profile](fx-profiles.md) tells them where its input box is.
+
 ## Set it up
 
 Choose Termurion > Install Claude Code Integration. A setup window called "Claude Code Integration Setup" first lists what it will change, under "Before You Start":
