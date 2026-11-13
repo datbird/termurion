@@ -701,9 +701,9 @@ fn glyph(term: &alacritty_terminal::Term<crate::screen::Listener>, display_offse
     term.grid()[alacritty_terminal::index::Line(row as i32 - display_offset as i32)][alacritty_terminal::index::Column(col)].c
 }
 
-/// The prompt mark's cell (left, top, width, height in window pixels): the nearest glyph from
-/// the profile's `prompt_marks` left of the cursor on its row, within the pane's columns, spaces
-/// skipped. A wrapped prompt (the cursor below the box's first text row) has it in the box's
+/// The prompt mark's cell (left, top, width, height in window pixels):
+/// the first inked cell of the cursor's row (within 8 cells of the region's left edge, a blank
+/// after it), when its glyph is in the profile's `prompt_marks`. A wrapped prompt (the cursor below the box's first text row) has it in the box's
 /// first columns on the row under the top line instead. None when there is none.
 fn prompt_mark_cell(term: &alacritty_terminal::Term<crate::screen::Listener>, display_offset: usize, rules: &FxRules, (row, col): (usize, usize), pane: (usize, usize), input_box: Option<&InputBox>, origin: (f32, f32), (cw, ch): (f32, f32)) -> Option<[f32; 4]> {
     let cols = term.columns();
@@ -735,7 +735,18 @@ fn prompt_mark_cell(term: &alacritty_terminal::Term<crate::screen::Listener>, di
         }
         // No text row above the cursor's (a band's padding): the cursor's row holds the mark.
     }
-    (pane.0..col.min(cols)).rev().find(|&c| is_mark(glyph(term, display_offset, row, c))).map(|c| cell(row, c))
+    // As the shaders' clMarkLeft did: from the region's left edge, the first inked cell within 8
+    // cells is the candidate, and counts when a blank follows and it is not within 2 cells of the cursor.
+    let blank = |c: usize| c >= cols || matches!(glyph(term, display_offset, row, c), ' ' | '\0');
+    for c in pane.0..(pane.0 + 8).min(cols) {
+        if c + 2 > col {
+            return None;
+        }
+        if !blank(c) {
+            return (is_mark(glyph(term, display_offset, row, c)) && blank(c + 1)).then(|| cell(row, c));
+        }
+    }
+    None
 }
 
 /// A straight vertical border glyph, or a junction where a border meets another (tmux).
@@ -10122,6 +10133,43 @@ mod agent_box_tests {
         s.feed(format!("\x1b[2J\x1b[8;1H{line}\x1b[9;1H\u{276f} first line of it\x1b[10;1H  second line\x1b[11;1H{line}\x1b[10;14H").as_bytes());
         let fx = fx_under(&s, FxRules::default());
         assert_eq!(fx.prompt_mark, Some([0.0, 160.0, 10.0, 20.0]), "the mark of the first row, not the cursor's");
+    }
+
+    /// A 80 by 20 screen with `text` on row 10.
+    fn shell_with_text(text: &str) -> crate::screen::Screen {
+        let mut s = crate::screen::Screen::new(80, 20);
+        s.feed(format!("\x1b[2J\x1b[10;1H{text}").as_bytes());
+        s
+    }
+
+    #[test]
+    fn typed_text_never_moves_or_adds_a_mark() {
+        let at = |text: &str| fx_under(&shell_with_text(text), FxRules::default()).prompt_mark;
+        assert_eq!(at("$ echo a > b"), None, "a shell's $ is no mark, and the redirect is not one");
+        assert_eq!(at("\u{276f} echo a > b"), Some([0.0, 180.0, 10.0, 20.0]), "the first cell stays the mark");
+        assert_eq!(at("echo 50% done"), None);
+        assert_eq!(at("# a comment"), None);
+        assert_eq!(at("\u{276f}x"), None, "a mark needs a blank after it");
+        assert_eq!(at("         \u{276f} far"), None, "past 8 cells nothing counts");
+    }
+
+    #[test]
+    fn every_recorded_screen_gives_the_old_pixel_rules_mark() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/agents/");
+        let cursors = std::fs::read_to_string(format!("{dir}cursors.txt")).unwrap();
+        // Each screen with its own shipped profile; the cell is (row, column) or none.
+        let want = [("codex", "codex", Some(26)), ("codex-after", "codex", Some(26)), ("opencode", "opencode", None), ("opencode-after", "opencode", None), ("hermes", "hermes", Some(28)), ("hermes-after", "hermes", Some(28)), ("agy", "agy", Some(8))];
+        for (name, profile, row) in want {
+            let (_, text) = crate::fx_profile::SHIPPED.iter().find(|(f, _)| *f == format!("{profile}.toml")).unwrap();
+            let rules = crate::fx_profile::parse(text).unwrap().0;
+            let line = cursors.lines().find(|l| l.split(' ').next() == Some(name)).unwrap();
+            let num = |key: &str| -> usize { line.split(' ').find_map(|w| w.strip_prefix(key)).unwrap().parse().unwrap() };
+            let ansi = std::fs::read_to_string(format!("{dir}{name}.ansi")).unwrap();
+            let rows: Vec<String> = ansi.trim_end_matches('\n').split('\n').map(|r| format!("\x1b[0m{r}")).collect();
+            let mut s = crate::screen::Screen::new(100, 30);
+            s.feed(format!("\x1b[2J\x1b[H{}\x1b[{};{}H", rows.join("\r\n"), num("y=") + 1, num("x=") + 1).as_bytes());
+            assert_eq!(fx_under(&s, rules).prompt_mark, row.map(|r| [0.0, r as f32 * 20.0, 10.0, 20.0]), "{name}");
+        }
     }
 
     #[test]

@@ -91,7 +91,7 @@ impl Default for FxRules {
                 band_tolerance: 2,
                 edge_glyphs: vec!['\u{2580}'],
             },
-            prompt_marks: "\u{276f}>$%#\u{203a}".chars().collect(),
+            prompt_marks: "\u{276f}>\u{203a}".chars().collect(),
             done: DoneRule { enter: b"\r".to_vec(), quiet: Duration::from_millis(1200), busy: Duration::from_millis(1500), osc133: true },
         }
     }

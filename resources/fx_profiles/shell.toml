@@ -2,4 +2,4 @@
 name = "Shell"
 
 [prompt_mark]
-glyphs = "❯>$%#›"
+glyphs = "❯>›"
