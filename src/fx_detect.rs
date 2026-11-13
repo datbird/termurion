@@ -14,12 +14,51 @@ pub type Region = (usize, usize, usize, usize);
 const STRONG: u8 = 3;
 const KEEP: usize = 16;
 
-/// The region's visible text for searching: rows joined by newlines (blank rows left out), and
-/// a set of the byte pairs that occur in it, so most texts that are not there fail without a scan.
+/// Every text the profiles look for, ready to search with: sorted, and the hash of each one's
+/// first four bytes. Built once per set of profiles, not per screen.
+struct Needles {
+    sorted: Vec<String>,
+    starts: Vec<u64>,
+    /// Which bytes a text of four or more bytes starts with.
+    first: Vec<bool>,
+    short: Vec<String>,
+    longest: usize,
+}
+
+/// A hash of four bytes (the first in the low byte) into 2^20 bits, to skip positions no
+/// text starts at.
+fn gram(k: u32) -> usize {
+    (k.wrapping_mul(0x9E37_79B1) >> 12) as usize
+}
+
+impl Needles {
+    fn new<'a>(texts: impl Iterator<Item = &'a str>) -> Needles {
+        let mut sorted: Vec<String> = texts.map(String::from).collect();
+        sorted.sort_unstable();
+        sorted.dedup();
+        let mut starts = vec![0u64; 1 << 14];
+        let mut first = vec![false; 256];
+        let mut short = Vec::new();
+        for n in &sorted {
+            if n.len() < 4 {
+                short.push(n.clone());
+            } else {
+                let g = gram(u32::from_le_bytes([n.as_bytes()[0], n.as_bytes()[1], n.as_bytes()[2], n.as_bytes()[3]]));
+                starts[g >> 6] |= 1 << (g & 63);
+                first[n.as_bytes()[0] as usize] = true;
+            }
+        }
+        let longest = sorted.iter().map(|n| n.len()).max().unwrap_or(0);
+        Needles { sorted, starts, first, short, longest }
+    }
+}
+
+/// The region's visible text for searching: rows joined by newlines, blank rows left out.
+/// `find` looks for every profile's texts in one pass; `has` answers from that.
 struct Haystack {
     text: String,
-    pairs: Vec<u64>,
-    seen: std::collections::HashMap<String, bool>,
+    found: std::collections::HashSet<String>,
+    searched: bool,
 }
 
 impl Haystack {
@@ -28,41 +67,91 @@ impl Haystack {
         use alacritty_terminal::term::cell::Flags;
         let term = screen.term();
         let offset = term.grid().display_offset() as i32;
-        let mut text = String::new();
+        let mut bytes: Vec<u8> = Vec::new();
+        let right = right.min(term.columns().saturating_sub(1));
         for r in top..=bottom.min(term.screen_lines().saturating_sub(1)) {
-            let line = &term.grid()[Line(r as i32 - offset)];
-            let from = text.len();
-            for c in left..=right.min(term.columns().saturating_sub(1)) {
-                let cell = &line[Column(c)];
-                if !cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
-                    text.push(cell.c);
+            let cells = &term.grid()[Line(r as i32 - offset)][Column(left)..Column(right + 1)];
+            let from = bytes.len();
+            let mut blank = true;
+            // Plain loops: this runs over every cell of the region, and debug builds feel iterator chains.
+            for cell in cells {
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                if cell.c.is_ascii() {
+                    let b = cell.c as u8;
+                    blank &= b == b' ' || b == 0;
+                    bytes.push(b);
+                } else {
+                    blank = false;
+                    let mut buf = [0u8; 4];
+                    bytes.extend_from_slice(cell.c.encode_utf8(&mut buf).as_bytes());
                 }
             }
-            if text[from..].trim().is_empty() {
-                text.truncate(from);
+            if blank {
+                bytes.truncate(from);
             } else {
-                text.push('\n');
+                bytes.push(b'\n');
             }
         }
-        let mut pairs = vec![0u64; 1024];
-        for w in text.as_bytes().windows(2) {
-            let i = (w[0] as usize) << 8 | w[1] as usize;
-            pairs[i >> 6] |= 1 << (i & 63);
-        }
-        Haystack { text, pairs, seen: Default::default() }
+        // Only ASCII and whole characters went in, so this is valid text.
+        let text = String::from_utf8(bytes).unwrap_or_default();
+        Haystack { text, found: Default::default(), searched: false }
     }
 
-    fn has(&mut self, needle: &str) -> bool {
-        if let Some(&known) = self.seen.get(needle) {
-            return known;
+    /// Which of the needles the text holds: at each place a needle may start, the needles that
+    /// are a prefix of the text from there, found by binary search over the sorted list. Cost
+    /// follows the text, not the needle count.
+    fn find(&mut self, needles: &Needles) {
+        self.searched = true;
+        let sorted = &needles.sorted;
+        let bytes = self.text.as_bytes();
+        // Screens repeat themselves: a stretch already looked at is not looked at again.
+        let mut looked: std::collections::HashSet<&[u8]> = std::collections::HashSet::new();
+        for (pos, &first) in bytes.iter().enumerate() {
+            if !needles.first[first as usize] || pos + 4 > bytes.len() {
+                continue;
+            }
+            let g = gram(u32::from_le_bytes([first, bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]]));
+            if needles.starts[g >> 6] & (1 << (g & 63)) == 0 {
+                continue;
+            }
+            let mut s = &bytes[pos..(pos + needles.longest).min(bytes.len())];
+            if !looked.insert(s) {
+                continue;
+            }
+            // Walk down the sorted list, each step cutting the text to what it shares with the
+            // needle just above it.
+            loop {
+                let i = sorted.partition_point(|n| n.as_bytes() <= s);
+                let Some(n) = i.checked_sub(1).map(|j| &sorted[j]) else { break };
+                if s.starts_with(n.as_bytes()) {
+                    if !self.found.contains(n) {
+                        self.found.insert(n.clone());
+                    }
+                    s = &s[..n.len() - 1];
+                } else {
+                    let l = n.bytes().zip(s.iter()).take_while(|(a, b)| a == *b).count();
+                    s = &s[..l];
+                }
+                if s.is_empty() {
+                    break;
+                }
+            }
         }
-        let possible = needle.as_bytes().windows(2).all(|w| {
-            let i = (w[0] as usize) << 8 | w[1] as usize;
-            self.pairs[i >> 6] & (1 << (i & 63)) != 0
-        });
-        let found = possible && self.text.contains(needle);
-        self.seen.insert(needle.to_string(), found);
-        found
+        for n in &needles.short {
+            if self.text.contains(n.as_str()) {
+                self.found.insert(n.clone());
+            }
+        }
+    }
+
+    fn has(&self, needle: &str) -> bool {
+        if self.searched {
+            self.found.contains(needle)
+        } else {
+            self.text.contains(needle)
+        }
     }
 }
 
@@ -80,7 +169,7 @@ fn prompt_char(screen: &Screen, cursor: (usize, usize), left: usize) -> Option<c
 }
 
 /// The score of one profile given the pieces `choose` computes once per region.
-fn score_with(rules: &FxRules, screen: &Screen, text: &mut Haystack, cursor: Option<(usize, usize)>, left: usize, job: Option<&str>) -> (u8, u32) {
+fn score_with(rules: &FxRules, screen: &Screen, text: &Haystack, cursor: Option<(usize, usize)>, left: usize, job: Option<&str>) -> (u8, u32) {
     let m = &rules.matching;
     if let Some(j) = job {
         let hits = m.program.iter().filter(|p| crate::proctree::same_job(p, j)).count() as u32;
@@ -108,7 +197,10 @@ fn score_with(rules: &FxRules, screen: &Screen, text: &mut Haystack, cursor: Opt
 /// 3 text, 4 program; hits count the matches of that kind. `job` None skips `program`.
 pub fn score(rules: &FxRules, screen: &Screen, region: Region, job: Option<&str>) -> (u8, u32) {
     let cursor = effects_cursor(screen, rules).map(|(r, c, _)| (r, c)).filter(|&(r, c)| r >= region.0 && r <= region.1 && c >= region.2 && c <= region.3);
-    score_with(rules, screen, &mut Haystack::new(screen, region), cursor, region.2, job)
+    let needles = Needles::new(rules.matching.text.iter().map(String::as_str));
+    let mut text = Haystack::new(screen, region);
+    text.find(&needles);
+    score_with(rules, screen, &text, cursor, region.2, job)
 }
 
 /// What each region showed that was worth remembering: a banner scrolls away, its profile stays.
@@ -116,6 +208,7 @@ pub fn score(rules: &FxRules, screen: &Screen, region: Region, job: Option<&str>
 pub struct Memory {
     regions: Vec<(Region, String)>,
     clears_seen: u64,
+    needles: Option<(Vec<usize>, Needles)>,
 }
 
 fn overlaps(a: Region, b: Region) -> bool {
@@ -129,13 +222,20 @@ impl Memory {
         let cursor = effects_cursor(screen, &find).map(|(r, c, _)| (r, c));
         let (lines, cols) = (screen.term().screen_lines(), screen.term().columns());
         let region = output_watch(screen, &find).unwrap_or((0, lines.saturating_sub(1), 0, cols.saturating_sub(1)));
+        // The sorted texts are kept while the same profiles are loaded.
+        let key: Vec<usize> = store.profiles.iter().map(|l| Arc::as_ptr(&l.rules) as usize).collect();
+        if self.needles.as_ref().is_none_or(|(k, _)| *k != key) {
+            self.needles = Some((key, Needles::new(store.profiles.iter().flat_map(|l| l.rules.matching.text.iter().map(String::as_str)))));
+        }
+        let needles = &self.needles.as_ref().expect("just built").1;
         let mut text = Haystack::new(screen, region);
+        text.find(needles);
         // Shipped profiles first, then the user's in name order; the first of equals wins.
         let mut order: Vec<&crate::fx_store::Loaded> = store.profiles.iter().collect();
         order.sort_by_key(|l| (l.shipped.is_none(), if l.shipped.is_none() { l.rules.name.clone() } else { String::new() }));
         let mut best: Option<(u8, u32, &Arc<FxRules>)> = None;
         for l in order {
-            let (s, h) = score_with(&l.rules, screen, &mut text, cursor, region.2, job);
+            let (s, h) = score_with(&l.rules, screen, &text, cursor, region.2, job);
             if s > 0 && best.is_none_or(|(bs, bh, _)| (s, h) > (bs, bh)) {
                 best = Some((s, h, &l.rules));
             }
@@ -312,12 +412,13 @@ mod tests {
         assert_eq!(Memory::default().choose(&st, &s, None).1.name, "Codex");
     }
 
-    #[test]
-    fn detection_with_64_profiles_fits_the_budget() {
-        let dir = tmp("budget");
+    /// The best of five `choose` runs over a 500 by 200 screen with 64 profiles of 16 texts each
+    /// (a loaded machine slows a run, never speeds it up).
+    fn budget(tag: &str, text_of: &dyn Fn(usize, usize) -> String) {
+        let dir = tmp(tag);
         drop(Store::open(&dir));
         for i in 0..64 {
-            let texts: Vec<String> = (0..16).map(|j| format!("\"needle number {i} {j} that is not on screen\"")).collect();
+            let texts: Vec<String> = (0..16).map(|j| format!("\"{}\"", text_of(i, j))).collect();
             std::fs::write(dir.join(format!("p{i:02}.toml")), format!("name = \"P{i:02}\"\n[match]\ntext = [{}]\n", texts.join(", "))).unwrap();
         }
         let st = Store::open(&dir);
@@ -325,10 +426,35 @@ mod tests {
         let mut s = Screen::new(500, 200);
         let row = "the quick brown fox jumps over the lazy dog ".repeat(11);
         s.feed(format!("{}\x1b[1;1H", format!("{row}\r\n").repeat(199)).as_bytes());
+        // One pane's memory keeps the sorted texts between screens, as in the app.
         let mut m = Memory::default();
-        let t = Instant::now();
-        m.choose(&st, &s, None);
+        let best = (0..5)
+            .map(|_| {
+                let t = Instant::now();
+                let (_, rules) = m.choose(&st, &s, None);
+                assert_eq!(rules.name, "Shell", "none of the texts is on the screen");
+                t.elapsed()
+            })
+            .min()
+            .unwrap();
         let limit = if cfg!(debug_assertions) { 20 } else { 2 };
-        assert!(t.elapsed().as_millis() < limit, "{:?}", t.elapsed());
+        assert!(best.as_millis() < limit, "{best:?}");
+    }
+
+    #[test]
+    fn detection_with_64_profiles_fits_the_budget() {
+        budget("budget", &|i, j| format!("needle number {i} {j} that is not on screen"));
+    }
+
+    /// Every pair of bytes in these texts is on the screen, and so is their long shared start:
+    /// nothing can be skipped by a pair check.
+    #[test]
+    fn detection_fits_the_budget_when_every_byte_pair_is_on_screen() {
+        let words = ["the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog", "the"];
+        budget("budget_pairs", &|i, j| {
+            let n = i * 16 + j;
+            let tail: Vec<&str> = (0..4).map(|k| words[(n / 9usize.pow(k)) % 9]).collect();
+            format!("the quick brown fox jumps over the lazy {}", tail.join(" "))
+        });
     }
 }
