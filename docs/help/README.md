@@ -1,6 +1,6 @@
 # Termurion Help
 
-These pages describe Termurion 1.0.5 on Windows, macOS, and Linux. The shortcuts are written for Windows and Linux, where Open Settings is Ctrl+Shift+, . The app Shortcut Key (the key iTerm2 calls Cmd) defaults to Ctrl+Shift there. You can change it to Ctrl+Alt in Settings > Keys. Option is Alt. No shortcut uses the Win key, which Windows keeps. On macOS the Shortcut Key is Cmd and Option is Option, so every shortcut is iTerm2's own: read Ctrl+Shift as Cmd.
+These pages describe Termurion 1.1.0 on Windows, macOS, and Linux. The shortcuts are written for Windows and Linux, where Open Settings is Ctrl+Shift+, . The app Shortcut Key (the key iTerm2 calls Cmd) defaults to Ctrl+Shift there. You can change it to Ctrl+Alt in Settings > Keys. Option is Alt. No shortcut uses the Win key, which Windows keeps. On macOS the Shortcut Key is Cmd and Option is Option, so every shortcut is iTerm2's own: read Ctrl+Shift as Cmd.
 
 A few features are not on macOS and Linux yet (for example coprocesses and the browser pane). Each page says so where it matters, and [Installing](installing.md) lists them. The chords that need three of iTerm2's modifiers have keys of their own, listed in [Shortcut keys on Windows](copy-mode.md#shortcut-keys-on-windows).
 
@@ -21,6 +21,7 @@ Ctrl+V pastes in every Shortcut Key mode, as in Windows Terminal, beside the Sho
 - [Coprocesses](coprocesses.md): a program wired to a session's input and output.
 - [Copy Mode](copy-mode.md): select and copy text from the keyboard.
 - [Dynamic Profiles](dynamic-profiles.md): define profiles in JSON or property list files.
+- [FX Profiles](fx-profiles.md): rules that tell the cursor effects how an app lays out its screen.
 - [GPU Renderer](gpu-renderer.md): which graphics API and which GPU Termurion draws with, on each system.
 - [Installing](installing.md): Windows (the installer and the portable zip), macOS, and Linux.
 - [Inline Images](inline-images.md): show pictures in the terminal with imgcat, sixel, and kitty graphics.
