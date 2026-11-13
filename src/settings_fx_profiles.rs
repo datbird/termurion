@@ -59,17 +59,22 @@ fn glyphs(v: &[char]) -> String {
     v.iter().map(|c| if coded(c) { format!("U+{:04X}", *c as u32) } else { c.to_string() }).collect::<Vec<_>>().join(" ")
 }
 
-/// The glyphs a field says: plain characters, and `U+XXXX` codes (separated by spaces).
-fn parse_glyphs(s: &str) -> Vec<char> {
+/// The glyphs a field says: plain characters, and `U+XXXX` codes (separated by spaces). A
+/// token that starts with `U+` must be a real Unicode scalar value.
+fn parse_glyphs(s: &str) -> Result<Vec<char>, String> {
     let mut out = Vec::new();
     for tok in s.split_whitespace() {
-        let code = tok.strip_prefix("U+").or_else(|| tok.strip_prefix("u+")).filter(|h| (4..=6).contains(&h.len())).and_then(|h| u32::from_str_radix(h, 16).ok()).and_then(char::from_u32);
-        match code {
-            Some(c) => out.push(c),
-            None => out.extend(tok.chars()),
+        let Some(hex) = tok.strip_prefix("U+").or_else(|| tok.strip_prefix("u+")) else {
+            out.extend(tok.chars());
+            continue;
+        };
+        let bad = || format!("`{tok}` is not a character code (U+ and 4 to 6 hex digits, not a surrogate or past U+10FFFF).");
+        if !(4..=6).contains(&hex.len()) {
+            return Err(bad());
         }
+        out.push(u32::from_str_radix(hex, 16).ok().and_then(char::from_u32).ok_or_else(bad)?);
     }
-    out
+    Ok(out)
 }
 
 fn lines(v: &[String]) -> String {
@@ -155,11 +160,11 @@ impl Form {
         valid_name(&r.name, others)?;
         r.matching.program = list(&self.programs);
         r.matching.text = list(&self.texts);
-        r.matching.prompt = chars(&self.prompt);
+        r.matching.prompt = chars(&self.prompt)?;
         r.cursor.marks = list(&self.marks).iter().map(|m| fx_profile::parse_mark(m).ok_or_else(|| format!("cursor mark `{m}` must be reverse or a color like #2c2c2c"))).collect::<Result<_, _>>()?;
-        r.boxes.line_glyphs = chars(&self.line_glyphs);
-        r.boxes.edge_glyphs = chars(&self.edge_glyphs);
-        r.prompt_marks = chars(&self.prompt_marks);
+        r.boxes.line_glyphs = chars(&self.line_glyphs)?;
+        r.boxes.edge_glyphs = chars(&self.edge_glyphs)?;
+        r.prompt_marks = chars(&self.prompt_marks)?;
         r.done.enter = unescape(&self.enter)?;
         r.done.quiet = std::time::Duration::from_millis(self.quiet);
         r.done.busy = std::time::Duration::from_millis(self.busy);
@@ -486,9 +491,9 @@ fn editor(ui: &mut egui::Ui, store: &mut Store, state: &mut PageState, screen: O
             })
             .inner
         });
-        row(ui, "Band max screen", &format!("The most of the screen's height a band may fill, 0 to 1. Shell default: {}.", d.boxes.band_max_screen), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.band_max_screen).range(0.1..=1.0).speed(0.01)));
-        row(ui, "Band min width", &format!("The least of the width a band must cover, 0 to 1. Shell default: {}.", d.boxes.band_min_width), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.band_min_width).range(0.1..=1.0).speed(0.01)));
-        row(ui, "Band tolerance", &format!("How many rows may differ in color inside a band, 0 to 50. Shell default: {}.", d.boxes.band_tolerance), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.band_tolerance).range(0..=20)));
+        row(ui, "Band max screen", &format!("The most of the screen's height a band may fill, 0.1 to 1. Shell default: {}.", d.boxes.band_max_screen), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.band_max_screen).range(0.1..=1.0).speed(0.01)));
+        row(ui, "Band min width", &format!("The least of the width a band must cover, 0.1 to 1. Shell default: {}.", d.boxes.band_min_width), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.band_min_width).range(0.1..=1.0).speed(0.01)));
+        row(ui, "Band tolerance", &format!("How many rows may differ in color inside a band, 0 to 50. Shell default: {}.", d.boxes.band_tolerance), |ui| ui.add(egui::DragValue::new(&mut form.draft.boxes.band_tolerance).range(0..=50)));
         text_row(ui, "Edge glyphs", "Half block characters that end a band as an edge row; write them as codes like U+2580. Shell default: U+2580.", &mut form.edge_glyphs, false);
     });
     ui.strong("Prompt Mark");
@@ -631,9 +636,12 @@ mod tests {
         assert_eq!(form.build(&[]).unwrap(), *form.base, "clean after the save");
         let l = store.profiles.iter().find(|p| p.file == form.file).unwrap();
         assert!(Arc::ptr_eq(&form.base, &l.rules));
-        assert_eq!(parse_glyphs("U+2500 u+2501 \u{203a}>"), vec!['\u{2500}', '\u{2501}', '\u{203a}', '>']);
+        assert_eq!(parse_glyphs("U+2500 u+2501 \u{203a}>").unwrap(), vec!['\u{2500}', '\u{2501}', '\u{203a}', '>']);
+        for bad in ["U+ZZZZ", "U+110000", "U+D800", "U+25", "U+", "ok U+12345678"] {
+            assert!(parse_glyphs(bad).is_err(), "{bad}");
+        }
         assert_eq!(glyphs(&['\u{2500}', '>']), "U+2500 >");
-        assert_eq!(parse_glyphs(&glyphs(&['\u{2580}'])), vec!['\u{2580}']);
+        assert_eq!(parse_glyphs(&glyphs(&['\u{2580}'])).unwrap(), vec!['\u{2580}']);
     }
 
     #[test]
