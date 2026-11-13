@@ -688,10 +688,28 @@ pub fn read_noauth_file(_path: &str) -> Option<NoauthFile> {
     None
 }
 
+/// Socket names handed to tests, removed (with their lock files) when the test run exits.
+#[cfg(test)]
+static TEST_NAMES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 #[cfg(test)]
 pub(crate) fn test_name(what: &str) -> String {
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    format!("termurion-test-{what}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    static SWEEP: std::sync::Once = std::sync::Once::new();
+    // A host a test starts runs on a thread that never ends, so its socket outlives the test.
+    extern "C" fn sweep() {
+        let (Ok(dir), Ok(names)) = (runtime_dir(), TEST_NAMES.try_lock()) else { return };
+        for n in names.iter() {
+            let _ = std::fs::remove_file(dir.join(n));
+            let _ = std::fs::remove_file(dir.join(format!("{n}.lock")));
+        }
+    }
+    SWEEP.call_once(|| unsafe {
+        libc::atexit(sweep);
+    });
+    let name = format!("termurion-test-{what}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    TEST_NAMES.lock().unwrap_or_else(|e| e.into_inner()).push(name.clone());
+    name
 }
 
 #[cfg(test)]
