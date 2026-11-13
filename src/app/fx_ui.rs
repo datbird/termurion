@@ -124,6 +124,12 @@ impl App {
             self.banners.set(BANNER, format!("Effects: {}", errors.join("; ")));
         }
         gpu.window.request_redraw();
+        // Detection skips panes while no effect runs; it starts again now.
+        for p in self.panes.values_mut() {
+            p.fx_dirty = true;
+            p.fx_checked = None;
+        }
+        self.fx_scan = true;
     }
 }
 
@@ -186,25 +192,32 @@ impl FxRuntime {
 /// Detection runs for a pane at most this often.
 const DETECT_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// The foreground program of a local pane's shell. None when tmux or ssh sits in between,
-/// where its name says nothing about what the screen shows.
-fn fx_job(p: &crate::pane::Pane, gateway: bool) -> Option<String> {
+/// The foreground program of a local pane's shell, from the job watcher (no process table read
+/// here). None when tmux or ssh sits in between, where its name says nothing about the screen.
+fn fx_job(jobs: &crate::jobwatch::JobWatch, p: &crate::pane::Pane, gateway: bool) -> Option<String> {
     if gateway {
         return None;
     }
-    let name = p.shell_pid().and_then(crate::platform::proc::foreground_job)?.name;
+    let name = jobs.job(p.shell_pid()?).job?.name;
     let base = name.trim().trim_end_matches(".exe").to_ascii_lowercase();
     (!matches!(base.as_str(), "tmux" | "ssh" | "mosh" | "mosh-client" | "autossh")).then_some(name)
 }
 
 /// Picks the profile of every pane that got output or a key (or all of them when `all`), at
 /// most four times a second each. The time a throttled pane is due again; None when nothing waits.
-fn detect(store: &crate::fx_store::Store, panes: &mut HashMap<PaneId, crate::pane::Pane>, all: bool, now: Instant, job: &dyn Fn(PaneId, &crate::pane::Pane) -> Option<String>) -> Option<Instant> {
+fn detect(store: &crate::fx_store::Store, panes: &mut HashMap<PaneId, crate::pane::Pane>, all: bool, now: Instant, on: &dyn Fn(PaneId) -> bool, job: &dyn Fn(PaneId, &crate::pane::Pane) -> Option<String>) -> Option<Instant> {
     let mut due: Option<Instant> = None;
     let ids: Vec<PaneId> = panes.keys().copied().collect();
     for id in ids {
         let Some(p) = panes.get(&id) else { continue };
         if !(all || p.fx_dirty) {
+            continue;
+        }
+        // No effect runs in this pane's window: nothing reads the rules. Turning effects on marks panes again.
+        if !on(id) {
+            if let Some(p) = panes.get_mut(&id) {
+                p.fx_dirty = false;
+            }
             continue;
         }
         if let Some(next) = p.fx_checked.map(|t| t + DETECT_EVERY).filter(|&n| n > now && !all) {
@@ -336,6 +349,21 @@ impl App {
         self.fx_scan = true;
     }
 
+    /// The panes of the windows that run a render plugin effect right now.
+    fn fx_live_panes(&self) -> std::collections::HashSet<PaneId> {
+        let on = |g: &Option<super::Gpu>| g.as_ref().and_then(|g| g.fx.as_ref()).is_some_and(|f| f.active());
+        let mut out = std::collections::HashSet::new();
+        if on(&self.gpu) {
+            self.tabs.iter().for_each(|t| out.extend(t.layout.panes()));
+        }
+        for (_, s) in self.windows.parked() {
+            if on(&s.gpu) {
+                s.tabs.iter().for_each(|t| out.extend(t.layout.panes()));
+            }
+        }
+        out
+    }
+
     /// Picks each pane's profile after output, a key or a focus move; the folder is looked at
     /// only on that activity. The time of the next look, None when nothing waits.
     pub(super) fn tick_fx_profiles(&mut self) -> Option<Instant> {
@@ -352,7 +380,9 @@ impl App {
         }
         let reloaded = self.fx_profiles_poll();
         let tmux = &self.tmux;
-        detect(&self.fx_profiles, &mut self.panes, reloaded, Instant::now(), &|id, p| fx_job(p, tmux.contains_key(&id)))
+        let jobs = &self.jobs;
+        let live = self.fx_live_panes();
+        detect(&self.fx_profiles, &mut self.panes, reloaded, Instant::now(), &|id| live.contains(&id), &|id, p| fx_job(jobs, p, tmux.contains_key(&id)))
     }
 }
 
@@ -386,11 +416,35 @@ mod tests {
         panes.insert(1, p);
         let now = Instant::now();
         let none = |_: PaneId, _: &crate::pane::Pane| None;
-        assert_eq!(detect(&store, &mut panes, false, now, &none), None, "idle");
+        assert_eq!(detect(&store, &mut panes, false, now, &|_| true, &none), None, "idle");
         panes.get_mut(&1).unwrap().fx_dirty = true;
-        assert_eq!(detect(&store, &mut panes, false, now, &none), None, "ran, nothing left");
+        assert_eq!(detect(&store, &mut panes, false, now, &|_| true, &none), None, "ran, nothing left");
         panes.get_mut(&1).unwrap().fx_dirty = true;
-        assert_eq!(detect(&store, &mut panes, false, now, &none), Some(now + DETECT_EVERY), "throttled, due again");
+        assert_eq!(detect(&store, &mut panes, false, now, &|_| true, &none), Some(now + DETECT_EVERY), "throttled, due again");
+    }
+
+    #[test]
+    fn detection_skips_a_pane_with_no_effect_on() {
+        let dir = std::env::temp_dir().join(format!("fx_ui_off_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = crate::fx_store::Store::open(&dir);
+        let mut p = crate::pane::Pane::recording(1, 80, 24);
+        p.screen = codex_screen();
+        p.fx_dirty = true;
+        let mut panes = HashMap::new();
+        panes.insert(1, p);
+        let jobs_read = std::cell::Cell::new(0);
+        let job = |_: PaneId, _: &crate::pane::Pane| {
+            jobs_read.set(jobs_read.get() + 1);
+            None
+        };
+        detect(&store, &mut panes, true, Instant::now(), &|_| false, &job);
+        assert_eq!(panes[&1].fx_rules.name, "Shell", "not picked while effects are off");
+        assert!(!panes[&1].fx_dirty && panes[&1].fx_checked.is_none());
+        assert_eq!(jobs_read.get(), 0);
+        panes.get_mut(&1).unwrap().fx_dirty = true;
+        detect(&store, &mut panes, false, Instant::now(), &|_| true, &job);
+        assert_eq!(panes[&1].fx_rules.name, "Codex", "picked once effects are on");
     }
 
     /// A full-width Codex screen: its band and prompt, the cursor in it.
@@ -411,7 +465,7 @@ mod tests {
         p.fx_dirty = true;
         let mut panes = HashMap::new();
         panes.insert(1, p);
-        detect(&store, &mut panes, false, Instant::now(), &|_, _| None);
+        detect(&store, &mut panes, false, Instant::now(), &|_| true, &|_, _| None);
         panes[&1].fx_rules.name.clone()
     }
 
