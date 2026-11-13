@@ -6,7 +6,7 @@ text = ["OpenAI Codex"]
 prompt = "›"
 
 [box]
-kind = "band"
+kind = "either"
 
 [prompt_mark]
 glyphs = "›"

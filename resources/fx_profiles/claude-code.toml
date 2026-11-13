@@ -9,7 +9,7 @@ prompt = "❯"
 kind = "either"
 
 [box]
-kind = "lines"
+kind = "either"
 
 [prompt_mark]
 glyphs = "❯"

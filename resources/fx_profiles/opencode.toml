@@ -5,7 +5,7 @@ program = ["opencode"]
 text = ["OpenCode"]
 
 [box]
-kind = "band"
+kind = "either"
 
 [prompt_mark]
 glyphs = ""

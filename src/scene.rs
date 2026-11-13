@@ -10147,6 +10147,79 @@ mod agent_box_tests {
         frame.fx.expect("an fx pane")
     }
 
+    /// The effects' input box under Auto detection with the shipped store, as the app wires it:
+    /// the picked profile's rules, the union's finder.
+    fn auto_box(st: &crate::fx_store::Store, s: &crate::screen::Screen) -> Option<(BoxKind, i64, i64, i64, i64)> {
+        let rules = crate::fx_detect::Memory::default().choose(st, s, None).1;
+        let draw = DrawPrefs { fx_cursor: Some(crate::palette::rgb(255, 0, 0)), fx_rules: Some(rules), fx_find: Some(st.find_rules()), ..Default::default() };
+        let mut frame = Frame::default();
+        let rect = crate::layout::Rect { x: 0.0, y: 0.0, w: 1000.0, h: 600.0 };
+        pane_with(&mut frame, s, rect, (10.0, 20.0), true, &crate::cursor_look::CursorLook::shown(true), &draw, None, crate::render::DEFAULT_FACE);
+        let r = |v: f32| v.round() as i64;
+        frame.fx.expect("an fx pane").input_box.map(|b| (b.kind, r(b.top), r(b.bottom), r(b.left), r(b.right)))
+    }
+
+    fn shipped_store(tag: &str) -> crate::fx_store::Store {
+        let dir = std::env::temp_dir().join(format!("scene_fx_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::fx_store::Store::open(&dir)
+    }
+
+    /// Parity with 1.0.5: Auto with the shipped profiles finds the box the Shell rules found
+    /// (`expected.txt`, never re-blessed) on every recorded tmux layout and agent screen.
+    #[test]
+    fn auto_detection_keeps_the_1_0_5_input_box() {
+        let st = shipped_store("parity");
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tmux-agents/");
+        let expected = std::fs::read_to_string(format!("{dir}expected.txt")).unwrap();
+        let mut seen = 0;
+        for line in expected.lines() {
+            let name = line.split(' ').next().unwrap();
+            let want = line.split(" box=").nth(1).unwrap();
+            let panes = std::fs::read_to_string(format!("{dir}{name}.panes")).unwrap();
+            let (mut cols, mut rows) = (0, 0);
+            for l in panes.lines() {
+                let n: Vec<usize> = l.split(' ').map(|w| w.parse().unwrap()).collect();
+                cols = cols.max(n[1] + n[3]);
+                rows = rows.max(n[2] + n[4]);
+            }
+            let mut s = crate::screen::Screen::new(cols, rows + 1);
+            s.feed(&std::fs::read(format!("{dir}{name}.raw")).unwrap());
+            assert_eq!(format!("{:?}", auto_box(&st, &s)), want, "{name}");
+            seen += 1;
+        }
+        assert_eq!(seen, 35);
+        // The agent screens: Auto equals the Shell rules (what the scene tests above assert for each).
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/agents/");
+        let cursors = std::fs::read_to_string(format!("{dir}cursors.txt")).unwrap();
+        for line in cursors.lines() {
+            let name = line.split(' ').next().unwrap();
+            let num = |key: &str| -> usize { line.split(' ').find_map(|w| w.strip_prefix(key)).unwrap().parse().unwrap() };
+            let text = std::fs::read_to_string(format!("{dir}{name}.ansi")).unwrap();
+            let rows: Vec<String> = text.trim_end_matches('\n').split('\n').map(|r| format!("\x1b[0m{r}")).collect();
+            let mut s = crate::screen::Screen::new(100, 30);
+            s.feed(format!("\x1b[2J\x1b[H{}\x1b[{};{}H", rows.join("\r\n"), num("y=") + 1, num("x=") + 1).as_bytes());
+            let r = |v: f32| v.round() as i64;
+            let shell = fx_of(&s).input_box.map(|b| (b.kind, r(b.top), r(b.bottom), r(b.left), r(b.right)));
+            assert!(shell.is_some(), "{name}: the Shell rules find a box");
+            assert_eq!(auto_box(&st, &s), shell, "{name}");
+        }
+    }
+
+    /// Another agent's name on the screen must not take the box away (a Codex pane that talks about Claude Code).
+    #[test]
+    fn a_mention_of_another_agent_keeps_the_band() {
+        let st = shipped_store("mention");
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/agents/");
+        let text = std::fs::read_to_string(format!("{dir}codex.ansi")).unwrap().replace("OpenAI Codex", "Ask Claude Code or Hermes about it");
+        let rows: Vec<String> = text.trim_end_matches('\n').split('\n').map(|r| format!("\x1b[0m{r}")).collect();
+        let mut s = crate::screen::Screen::new(100, 30);
+        s.feed(format!("\x1b[2J\x1b[H{}\x1b[27;8H", rows.join("\r\n")).as_bytes());
+        let found = auto_box(&st, &s);
+        assert_eq!(found.map(|b| b.0), Some(BoxKind::Band), "{found:?}");
+        assert_eq!(found, fx_of(&s).input_box.map(|b| (b.kind, b.top.round() as i64, b.bottom.round() as i64, b.left.round() as i64, b.right.round() as i64)));
+    }
+
     #[test]
     fn the_prompt_mark_is_found_from_the_profile() {
         let mut s = crate::screen::Screen::new(80, 20);
